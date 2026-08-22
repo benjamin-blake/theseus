@@ -132,6 +132,51 @@ class TestVacuityMatrix:
         assert declaration is not None
         assert declaration.kind == "skipped"
 
+    def test_excluded_basename_filtered_from_oracle(self, tmp_path: Path) -> None:
+        """__init__.py is a real .py file under an eligible top-level dir but is explicitly
+        excluded -- exercises the _EXCLUDED_BASENAMES `continue` branch (line 68)."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        (repo / "README.md").write_text("base\n", encoding="utf-8")
+        _commit_all(repo, "base")
+        (repo / "scripts").mkdir()
+        (repo / "scripts" / "foo.py").write_text("x = 1\n", encoding="utf-8")
+        (repo / "scripts" / "__init__.py").write_text("", encoding="utf-8")
+        _commit_all(repo, "add scripts/foo.py and scripts/__init__.py")
+
+        failed: list[str] = []
+        registry.pop_declaration()
+        validate_vacuity_justified(failed, root=repo, checker_files=[])
+        assert len(failed) == 1
+        assert "scripts/foo.py" in failed[0]
+        assert "__init__.py" not in failed[0]
+        declaration = registry.pop_declaration()
+        assert declaration is not None
+        assert declaration.count == 1
+
+    def test_ineligible_top_level_filtered_from_oracle(self, tmp_path: Path) -> None:
+        """A .py file whose first path segment is neither src nor scripts is excluded --
+        exercises the _ELIGIBLE_TOP_LEVEL `continue` branch (line 70)."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        (repo / "README.md").write_text("base\n", encoding="utf-8")
+        _commit_all(repo, "base")
+        (repo / "scripts").mkdir()
+        (repo / "scripts" / "foo.py").write_text("x = 1\n", encoding="utf-8")
+        (repo / "docs").mkdir()
+        (repo / "docs" / "helper.py").write_text("y = 2\n", encoding="utf-8")
+        _commit_all(repo, "add scripts/foo.py and docs/helper.py")
+
+        failed: list[str] = []
+        registry.pop_declaration()
+        validate_vacuity_justified(failed, root=repo, checker_files=[])
+        assert len(failed) == 1
+        assert "scripts/foo.py" in failed[0]
+        assert "docs/helper.py" not in failed[0]
+        declaration = registry.pop_declaration()
+        assert declaration is not None
+        assert declaration.count == 1
+
     def test_delete_only_commit_never_false_alarms(self, tmp_path: Path) -> None:
         """A deleted source file is listed by raw `git diff --name-only` but must be dropped by
         the oracle's existence filter -- otherwise a delete-only commit fires a false fail-closed

@@ -109,6 +109,41 @@ class TestDeclarationSlotAndRowAccumulatorLifecycle:
         assert row.status == "undeclared"
 
 
+class TestFailureDetailChannel:
+    """failure_detail(items) (this plan, coverage-failure-attribution): a second declaration
+    channel alongside examined()/skipped() -- set, popped-and-cleared, and reset by
+    outcome_scope() exactly like _CURRENT_DECLARATION."""
+
+    def test_failure_detail_declared_and_popped(self) -> None:
+        registry.pop_failure_detail()  # clear any stray slot from a prior test
+        registry.failure_detail(["scripts/foo.py: 95.8% (expected 100%)"])
+        detail = registry.pop_failure_detail()
+        assert detail == ["scripts/foo.py: 95.8% (expected 100%)"]
+
+    def test_pop_clears_the_slot(self) -> None:
+        registry.failure_detail(["a"])
+        registry.pop_failure_detail()
+        assert registry.pop_failure_detail() is None
+
+    def test_no_declaration_pops_none(self) -> None:
+        registry.pop_failure_detail()  # clear any stray slot from a prior test
+        assert registry.pop_failure_detail() is None
+
+    def test_outcome_scope_resets_a_stale_failure_detail(self) -> None:
+        registry.failure_detail(["stale"])
+        with registry.outcome_scope("check_x"):
+            pass
+        assert registry.pop_failure_detail() is None
+
+    def test_failure_detail_independent_of_examined_declaration(self) -> None:
+        """Both channels can be declared together in the same dispatch -- failure_detail is
+        additive, never a replacement for examined()/skipped()."""
+        registry.examined(3)
+        registry.failure_detail(["x.py: 1", "y.py: 2"])
+        assert registry.pop_declaration() is not None
+        assert registry.pop_failure_detail() == ["x.py: 1", "y.py: 2"]
+
+
 class TestScaffoldOutcomeHarvest:
     """record_scaffold_outcome() is the scaffold-side harvesting counterpart to
     dispatch_recording() -- used by non-check scaffolds like ensure_fresh_dq_results."""

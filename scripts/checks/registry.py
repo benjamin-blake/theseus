@@ -158,6 +158,14 @@ class CheckOutcome:
 # concurrent -- so a single module-level slot is sufficient; this is deliberately not reentrant.
 _CURRENT_DECLARATION: _Declaration | None = None
 
+# Per-dispatch failure-detail slot (this plan, coverage-failure-attribution). A second,
+# independent declaration channel alongside _CURRENT_DECLARATION -- a check that appends to
+# `failed` may ALSO declare failure_detail(items) to hand its own per-failure identity (e.g. the
+# failing file paths) to the recorder, instead of only the constant label it appends to `failed`.
+# Same lifecycle as _CURRENT_DECLARATION: reset by outcome_scope() on entry, read-and-cleared by
+# pop_failure_detail() immediately after the scope exits.
+_CURRENT_FAILURE_DETAIL: list[str] | None = None
+
 
 def examined(count: int, *, unit: str = "items") -> None:
     """Declare that the calling check/scaffold examined `count` items of `unit`. count == 0
@@ -175,14 +183,25 @@ def skipped(reason: str) -> None:
     _CURRENT_DECLARATION = _Declaration(kind="skipped", reason=reason)
 
 
+def failure_detail(items: list[str]) -> None:
+    """Declare the calling check's own per-failure detail (e.g. the failing file identities it
+    is about to append a constant label for) -- a structured channel alongside examined()/
+    skipped() that lets a check hand identity to the recorder instead of only a constant label
+    inside `failed`. Harvested by validation_result.dispatch_recording() onto the new top-level
+    failed_check_details key (docs/contracts/check-accounting.yaml)."""
+    global _CURRENT_FAILURE_DETAIL
+    _CURRENT_FAILURE_DETAIL = list(items)
+
+
 @contextlib.contextmanager
 def outcome_scope(name: str, kind: str = "check") -> Iterator[None]:
     """Reset the per-dispatch declaration slot for one check/scaffold's body. `name`/`kind` are
     accepted for call-site readability at the wrapping site; the actual CheckOutcome is built by
     the caller (via pop_declaration() + build_outcome()) immediately after this scope exits, since
     the row accumulator lives in scripts.checks.validation_result, not here."""
-    global _CURRENT_DECLARATION
+    global _CURRENT_DECLARATION, _CURRENT_FAILURE_DETAIL
     _CURRENT_DECLARATION = None
+    _CURRENT_FAILURE_DETAIL = None
     yield
 
 
@@ -193,6 +212,15 @@ def pop_declaration() -> _Declaration | None:
     declaration = _CURRENT_DECLARATION
     _CURRENT_DECLARATION = None
     return declaration
+
+
+def pop_failure_detail() -> list[str] | None:
+    """Read and clear the current failure-detail slot. Called by the harvesting caller
+    (validation_result.dispatch_recording) immediately after an outcome_scope exits."""
+    global _CURRENT_FAILURE_DETAIL
+    detail = _CURRENT_FAILURE_DETAIL
+    _CURRENT_FAILURE_DETAIL = None
+    return detail
 
 
 def derive_status(declaration: _Declaration | None, appended_to_failed: bool) -> str:

@@ -82,4 +82,5 @@ def validate_test_coverage(failed: list[str]) -> None:
     if coverage_errors:
         for e in coverage_errors:
             print(f"  - {e}")
+        registry.failure_detail(coverage_errors)
         failed.append("Coverage below 100%")
