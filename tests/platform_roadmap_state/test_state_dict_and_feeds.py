@@ -355,6 +355,29 @@ class TestLiveGateEvaluations:
 # ---------------------------------------------------------------------------
 
 
+def _install_safe_load_outcome_spy(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Patch scripts.platform_roadmap_state's yaml.safe_load to record each call's outcome
+    while still delegating to the real loader. Must re-raise rather than swallow -- a
+    swallowing spy would record "raised" while safe_load appears to the caller to return
+    None, which hits the isinstance-dict branch instead of the except branch."""
+    import scripts.platform_roadmap_state as prs
+
+    outcomes: list[str] = []
+    real_safe_load = prs.yaml.safe_load
+
+    def _spy(stream: object) -> object:
+        try:
+            loaded = real_safe_load(stream)
+        except Exception:
+            outcomes.append("raised")
+            raise
+        outcomes.append("returned-dict" if isinstance(loaded, dict) else "returned-non-dict")
+        return loaded
+
+    monkeypatch.setattr(prs.yaml, "safe_load", _spy)
+    return outcomes
+
+
 class TestComputeFollowonState:
     """compute_followon_state: in-flight plan vs no plan; live-items-only scoping."""
 
@@ -429,10 +452,15 @@ class TestComputeFollowonState:
         result = compute_followon_state(doc, tmp_path)
         assert "A" not in result, "not_started items must not appear in followon state"
 
-    def test_malformed_plan_skipped(self, tmp_path: Path) -> None:
+    def test_malformed_plan_skipped(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         doc = self._make_doc([self._in_progress_item("A", [{"id": "c1", "text": "x", "status": "open"}])])
-        (tmp_path / "PLAN-bad.yaml").write_text("invalid: [yaml: {content")
+        # Must carry `closes_criteria` so the line-111 substring pre-filter doesn't
+        # short-circuit before yaml.safe_load is reached, and still fail to parse so the
+        # except-Exception branch this test exists to cover actually fires.
+        (tmp_path / "PLAN-bad.yaml").write_text("closes_criteria: [T-1: {")
+        outcomes = _install_safe_load_outcome_spy(monkeypatch)
         result = compute_followon_state(doc, tmp_path)
+        assert outcomes == ["raised"], f"expected exactly one raising safe_load call; got: {outcomes}"
         assert result["A"]["needs_followon_plan"] is True
 
     def test_plans_dir_default_is_absolute_repo_anchored(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -508,11 +536,15 @@ class TestComputeFollowonStateMalformedPlanShapes:
         item["exit_criteria"] = criteria
         return item
 
-    def test_plan_yaml_top_level_not_dict_skipped(self, tmp_path: Path) -> None:
-        # Valid YAML that parses to a list (not a dict) at the top level.
+    def test_plan_yaml_top_level_not_dict_skipped(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        # Valid YAML that parses to a list (not a dict) at the top level. Its first entry is
+        # the literal `closes_criteria` so the line-111 substring pre-filter doesn't
+        # short-circuit before yaml.safe_load is reached.
         doc = self._make_doc([self._in_progress_item("A", [{"id": "c1", "text": "x", "status": "open"}])])
-        (tmp_path / "PLAN-list-toplevel.yaml").write_text("- a\n- b\n")
+        (tmp_path / "PLAN-list-toplevel.yaml").write_text("- closes_criteria\n- b\n")
+        outcomes = _install_safe_load_outcome_spy(monkeypatch)
         result = compute_followon_state(doc, tmp_path)
+        assert outcomes == ["returned-non-dict"], f"expected one non-dict-returning safe_load call; got: {outcomes}"
         assert result["A"]["needs_followon_plan"] is True
 
     def test_closes_criteria_not_a_list_skipped(self, tmp_path: Path) -> None:
