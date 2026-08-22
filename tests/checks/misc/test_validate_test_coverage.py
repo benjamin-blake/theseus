@@ -187,6 +187,50 @@ class TestDeclaredAccounting:
             validate_test_coverage([])
         mock_examined.assert_called_once_with(0, unit="source_files")
 
+    def test_declares_failing_file_detail(self, tmp_path: Path) -> None:
+        """The check's own coverage_errors list is declared via registry.failure_detail() at the
+        point it appends the constant "Coverage below 100%" label -- the one-line origin fix
+        (this plan, coverage-failure-attribution) for the failing filename being logged but never
+        recorded. Two runs failing on DIFFERENT files must declare different detail."""
+        source = tmp_path / "src" / "config.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("def foo(): pass", encoding="utf-8")
+
+        mock_checker = MagicMock()
+        mock_checker.get_changed_source_files.return_value = [source]
+        mock_checker.check_test_file_exists.return_value = (True, "test file found")
+        mock_checker.check_per_file_coverage.return_value = ["src/config.py: 90.0% line coverage (expected >= 100%)"]
+
+        with (
+            patch("scripts.checks.misc.validate_test_coverage._load_coverage_checker", return_value=mock_checker),
+            patch.object(registry, "failure_detail") as mock_failure_detail,
+        ):
+            failed: list[str] = []
+            validate_test_coverage(failed)
+        mock_failure_detail.assert_called_once_with(["src/config.py: 90.0% line coverage (expected >= 100%)"])
+
+        mock_checker_2 = MagicMock()
+        mock_checker_2.get_changed_source_files.return_value = [source]
+        mock_checker_2.check_test_file_exists.return_value = (True, "test file found")
+        mock_checker_2.check_per_file_coverage.return_value = ["src/other.py: 90.0% line coverage (expected >= 100%)"]
+        with (
+            patch("scripts.checks.misc.validate_test_coverage._load_coverage_checker", return_value=mock_checker_2),
+            patch.object(registry, "failure_detail") as mock_failure_detail_2,
+        ):
+            validate_test_coverage([])
+        mock_failure_detail_2.assert_called_once_with(["src/other.py: 90.0% line coverage (expected >= 100%)"])
+        assert mock_failure_detail.call_args != mock_failure_detail_2.call_args
+
+    def test_passing_run_never_declares_failure_detail(self) -> None:
+        mock_checker = MagicMock()
+        mock_checker.get_changed_source_files.return_value = []
+        with (
+            patch("scripts.checks.misc.validate_test_coverage._load_coverage_checker", return_value=mock_checker),
+            patch.object(registry, "failure_detail") as mock_failure_detail,
+        ):
+            validate_test_coverage([])
+        mock_failure_detail.assert_not_called()
+
     def test_real_run_declares_examined_count(self, tmp_path: Path) -> None:
         source = tmp_path / "src" / "config.py"
         source.parent.mkdir(parents=True)

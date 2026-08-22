@@ -121,6 +121,32 @@ def _load_attributions(validation_result_path: Path | None) -> list[tuple[str, s
     return pairs
 
 
+def _load_check_details(validation_result_path: Path | None) -> dict[str, list[str]]:
+    """Best-effort load of the top-level failed_check_details map (schema_version 3,
+    scripts.checks.validation_result, this plan's coverage-failure-attribution channel) --
+    {check: [detail, ...]}. Never raises -- a missing, malformed, or absent artifact (or one
+    predating this field) degrades to an empty dict, which simply means no check declared detail
+    this run; mirrors _load_attributions' degrade-gracefully contract. classify_failures' own
+    return-tuple width is untouched -- detail travels on this separate channel, consumed only by
+    scripts.ci_rca.evidence's _resolve_error_signatures."""
+    if validation_result_path is None:
+        return {}
+    try:
+        data = json.loads(Path(validation_result_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    raw = data.get("failed_check_details")
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, list[str]] = {}
+    for check, detail in raw.items():
+        if isinstance(check, str) and isinstance(detail, list) and all(isinstance(item, str) for item in detail):
+            result[check] = list(detail)
+    return result
+
+
 def _classify_via_attribution(validation_result_path: Path | None, func_map: dict[str, str]) -> list[tuple[str, str, str]]:
     """Priority-0 helper: every validation-result attribution whose check name resolves through
     function_to_category -- the CARRIED fact (validate.py's own dispatch chokepoint attributed
