@@ -47,9 +47,9 @@ primary/fallback mechanism, never the architecture; the ROLES are the commitment
    limits bound it: (a) no role may be filled by an id in that file's `retired_providers` --
    restoring one requires a Decision superseding the entry that retired it (122/CD.28 for bedrock,
    116 for copilot-sdk and gemini_byok); (b) primary and fallback must resolve to DIFFERENT providers
-   -- a same-vendor pair is no escape hatch; (c) a swap changing the vendor or billing shape under
-   Decision 116's shared-allowance coupling re-arms Decisions 116's and 164's reversal conditions and
-   owes a dated annotation on both. Untouched:
+   -- a same-vendor pair is no escape hatch; (c) a swap changing the vendor or billing shape of
+   EITHER role re-arms Decisions 116's and 164's reversal conditions and owes a dated annotation on
+   both; (d) the PRIMARY role must be `metered_marginal` -- 164's volume argument. Untouched:
    `provider_defaults.executor_path` and `model_registry.py`'s `_VALID_PROVIDERS` /
    `_DEFAULT_EXECUTOR_PROVIDER`, the T4.2-owned interim transport set.
 3. **Decision 164's argument is restated as SHAPE claims**, which is what lets it survive a swap:
@@ -60,7 +60,7 @@ primary/fallback mechanism, never the architecture; the ROLES are the commitment
    fixed-allowance contention.
 4. **New rule, conditional on billing shape:** a tier billed as a FIXED, NON-ROLLOVER ALLOWANCE
    requires a remaining-allowance assertion at cold start; a METERED tier, a credential-liveness
-   probe; a Deferred tier declares `not_applicable` until committed. This supersedes CD.28's ">10%
+   probe; a Deferred tier declares `not_applicable` -- state beats shape. This supersedes CD.28's ">10%
    remaining Anthropic pool" wording, now that rule's fixed-allowance INSTANCE, and makes
    `billing_shape` a contract field.
 5. **Provider-agnostic is the COMMITMENT; the implementation reaches it at T4.2.**

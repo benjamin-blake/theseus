@@ -101,6 +101,17 @@ def test_tier_rows_are_role_keyed_with_billing_shape() -> None:
     for role, provider in resolved.items():
         assert _normalise_provider(provider) not in retired, f"role {role} is filled from retired_providers: {provider}"
 
+    # selection_constraints.primary_billing_shape (Decision 173 clause 2(d)). Without this the
+    # primary role could be moved to a fixed non-rollover allowance by a contract edit, voiding
+    # Decision 164's volume argument and stranding two reversal conditions that presuppose a
+    # metered primary.
+    primary_rows = [row for row in rows if row["role"] == PRIMARY_ROLE]
+    assert len(primary_rows) == 1, f"expected exactly one {PRIMARY_ROLE} row, got {len(primary_rows)}"
+    assert primary_rows[0]["billing_shape"] == METERED, (
+        f"the {PRIMARY_ROLE} role must bill as {METERED}; moving it to {FIXED_ALLOWANCE} "
+        f"requires a Decision superseding Decision 164's volume argument: {primary_rows[0]}"
+    )
+
 
 def test_fixed_allowance_tier_requires_remaining_allowance_assertion() -> None:
     """Decision 173 clause 4: the cold-start assertion follows the billing shape, both directions."""
@@ -109,17 +120,27 @@ def test_fixed_allowance_tier_requires_remaining_allowance_assertion() -> None:
 
     assert tier_model["cold_start_assertion_rule"].strip(), "cold_start_assertion_rule must be declared"
     constraints = tier_model["selection_constraints"]
-    for key in ("retired_providers_excluded", "vendor_independence", "coupled_reversal_conditions"):
-        assert constraints.get(key, "").strip(), f"selection_constraints.{key} must be declared"
+    for key in (
+        "retired_providers_excluded",
+        "vendor_independence",
+        "coupled_reversal_conditions",
+        "primary_billing_shape",
+    ):
+        declared = constraints.get(key)
+        assert isinstance(declared, str) and declared.strip(), f"selection_constraints.{key} must be a declared string"
 
+    # Branch order encodes the rule's stated PRECEDENCE: state: Deferred overrides billing_shape.
+    # The limbs are not disjoint (tier 3 is metered_marginal AND Deferred), so an order that put
+    # billing_shape first would demand remaining_allowance from a Deferred fixed-allowance tier,
+    # contradicting the prose that authorises not_applicable for it.
     for row in tier_model["tiers"]:
         shape = row["billing_shape"]
         assertion = row["cold_start_assertion"]
         deferred = str(row.get("state", "")).strip().lower().startswith("deferred")
-        if shape == FIXED_ALLOWANCE:
-            assert assertion == "remaining_allowance", row
-        elif deferred:
+        if deferred:
             assert assertion == "not_applicable", row
+        elif shape == FIXED_ALLOWANCE:
+            assert assertion == "remaining_allowance", row
         else:
             assert shape == METERED, row
             assert assertion == "credential_liveness", row
