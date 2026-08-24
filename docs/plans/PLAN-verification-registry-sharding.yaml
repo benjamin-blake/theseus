@@ -1,0 +1,1012 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "verification-registry-sharding"
+intent: >-
+  Re-grain the graduated verification-check registry from one flat append-at-tail YAML sequence
+  into a directory of one file per check_id behind a single loader, and close the differential
+  admission gate's silent-modification hole, so concurrent plans stop conflicting deterministically
+  and a graduated check can no longer be neutered without re-admission.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-verification-registry-sharding.yaml
+phase: >-
+  PLATFORM T3.1 / CD.29 verification-graduation surface. Driven by rec-3231 (ad_hoc_rec soft-warn
+  exception, so the Tier Item Freshness Gate is skipped -- no tier_item is claimed). Names T3.7 as
+  the successor lifecycle instrument for the retired size roster entries.
+scope:
+  - file: config/agent/verification_registry/registry.yaml
+    action: Delete
+    purpose: >-
+      the flat entries[] sequence is both the deterministic conflict surface (rec-3231) and the
+      pinned size surface (5,972/6,000 effective lines, 2,315/2,315 longest line)
+  - file: config/agent/verification_registry/entries/deprecated/.gitkeep
+    action: Create
+    purpose: >-
+      makes the loader-excluded retirement reservation survive a clone; git does not track empty
+      directories (precedent: config/lambda/ducklake-reader/.gitkeep)
+  - file: config/agent/verification_registry/entries/*.yaml
+    action: Create
+    purpose: >-
+      one file per check_id, 476 files; filename is the primary key so uniqueness becomes
+      structural and concurrent authors touch disjoint paths
+  - file: scripts/verification_graduation.py
+    action: Modify
+    purpose: >-
+      add load_entries(), entries_at_ref(ref) and shard_path_for(check_id) as the sole read path;
+      exclude the reserved deprecated/ subtree by glob
+  - file: scripts/checks/verification/validate_verification_registry.py
+    action: Modify
+    purpose: >-
+      repoint at the loader; add the filename-equals-check_id placement leg and the
+      flat-file-resurrection leg; treat MODIFIED records like added ones in the differential gate;
+      adopt the Decision 170 examined()/skipped() declaration
+  - file: scripts/checks/verification/validate_graduation_completeness.py
+    action: Modify
+    purpose: repoint _current_registry_entries and _default_baseline_registry_entries at the loader
+  - file: scripts/test_coverage_checker.py
+    action: Modify
+    purpose: >-
+      register both decomposed sources in _CONCERN_SPLIT_TEST_PACKAGES (Decision 131 clause 1) --
+      the SOLE mechanism routing a source to a test PACKAGE DIRECTORY. Verified: map_source_to_test
+      currently resolves scripts/verification_graduation.py and
+      scripts/checks/verification/validate_graduation_completeness.py to the two FILES this plan
+      deletes, so without this registration check_test_file_exists returns 'missing test file' and
+      validate_test_coverage fails the full tier that VP step 16 runs. The tests/test_coverage_checker/
+      precedent this plan cites required exactly this: that module is itself a member.
+  - file: scripts/checks/registry.py
+    action: Modify
+    purpose: re-ground the docstring's flat-path reference (docstring only, no behavior change)
+  - file: scripts/ci/reconcile_reachability.py
+    action: Modify
+    purpose: re-ground the docstring's flat-path reference (docstring only, no behavior change)
+  - file: config/structural_size_budgets.yaml
+    action: Modify
+    purpose: >-
+      delete both raise-approved dec-166 roster entries (no authorization needed -- see constraints);
+      re-ground the config class row's actual_purpose and relief_valve, which name registry.yaml as
+      the class cap's primary justification. Do NOT edit the roadmaps row's
+      unit_gameability_residual, and do NOT assert in the Decision that deleting the registry's
+      2,315 allowance restores that claim's literal truth -- long_line_budgets still carries
+      logs/.retro-lite-log.jsonl (2,523) and logs/.execution-step-telemetry.jsonl (6,679), both in
+      a class whose companion is 2,000. The honest distinguisher is that those two survivors are
+      machine-APPENDED JSONL journals, not hand-joinable authored surfaces, so the join-evasion the
+      residual describes has no author to exploit it there. State that; do not assume it
+  - file: config/check_accounting_baseline.yaml
+    action: Modify
+    purpose: shrink-only removal of validate_verification_registry (Decision 170 touch-it-fix-it)
+  - file: docs/contracts/verification-registry.yaml
+    action: Modify
+    purpose: >-
+      Class A amendment contract_version 4 -> 5 with semantic_break true; re-ground both data-file
+      path references AND the stale governance_notes sentence at line 224 ("this registry sits well
+      under its 6,000-line trigger"), false at 5,972/6,000 today and doubly stale once the
+      instrument is retired; record the shard grammar, the loader as sole read path, the deprecated/
+      reservation, and the re-authored rows in governance_notes
+  - file: docs/contracts/plan-obligations.yaml
+    action: Modify
+    purpose: re-ground the flat-path reference at line 50
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      mint a numbered Decision carrying the path selection (re-grain over clause 6's pre-committed
+      CD.29 archival lifecycle; retirement of the 6,000-line instrument; the accretion-successor
+      disposition), with the typed significance envelope and amends [166]; AND append a dated
+      amendment_forms pointer annotation on Decision 166 pointing at it (the Decision 167/173 pairing form
+      -- number plus pointer, never one instead of the other)
+  - file: docs/ROADMAP-PLATFORM.yaml
+    action: Modify
+    purpose: >-
+      re-ground the flat-path reference at line 7152; note T3.7 as the successor lifecycle
+      instrument for the retired roster entries
+  - file: .claude/skills/implement/SKILL.md
+    action: Modify
+    purpose: graduation producer writes entries/<check_id>.yaml instead of appending to entries[]
+  - file: tests/test_verification_graduation.py
+    action: Delete
+    purpose: >-
+      SLOC decompose-by-default (Decision 128): measured 489/500 SLOC with 11 lines of headroom,
+      unregistered in config/sloc_budgets.yaml, so validate_sloc_limits HARD-ERRORS once the new
+      loader classes land and --update-sloc-budgets will not auto-seed it. Decomposed into the
+      package below, mirroring the tests/test_coverage_checker/ precedent.
+  - file: tests/verification_graduation/__init__.py
+    action: Create
+    purpose: package marker for the decomposed mirror of scripts/verification_graduation.py
+  - file: tests/verification_graduation/conftest.py
+    action: Create
+    purpose: >-
+      home for the shared git/seed helpers (_git, _init_repo, _commit_all, _seed_graduation_deps,
+      _GRADUATION_DEPS, _MANIFEST_DOMAINS) used across the differential classes and needed by both
+      new loader classes. Without it the implementer must duplicate ~60 SLOC or import across
+      test_* modules, which validate_no_cross_test_imports fails in both tiers (Decision 131
+      clause 2). The sibling package already has one; the asymmetry was the defect.
+  - file: tests/verification_graduation/test_materialize.py
+    action: Create
+    purpose: existing materialize_check / materialize_check_in_tree classes, moved verbatim
+  - file: tests/verification_graduation/test_differential.py
+    action: Create
+    purpose: existing run_differential / worktree classes, moved verbatim
+  - file: tests/verification_graduation/test_loader.py
+    action: Create
+    purpose: >-
+      new loader classes -- TestBaselineReaderSpansLayouts, TestDeprecatedSubtreeExcluded,
+      TestLoaderOrdering, TestConcurrentGraduationsMergeClean
+  - file: tests/checks/verification/test_validate_verification_registry.py
+    action: Modify
+    purpose: >-
+      structural rewrite, not an addition: every existing fixture writes a flat registry.yaml (13
+      sites), and the _entries_at_ref unit tests assert == [] on unresolvable refs -- the contract
+      this plan partially reverses. Add the placement, flat-file-resurrection and modified-record
+      classes. SLOC CONTINGENCY: measured 308/500 and unregistered. It is the one file of the three
+      not being decomposed and the one gaining the most content; at its own density (117 and 115
+      SLOC for its two largest classes) the rewrite projects to ~450-490. If it crosses 500,
+      decompose it into a package the same way as its two siblings -- do NOT register a budget
+      raise (Decision 128), and do not improvise the call mid-implementation
+  - file: tests/checks/verification/test_validate_graduation_completeness.py
+    action: Delete
+    purpose: >-
+      SLOC decompose-by-default (Decision 128): measured 495/500 SLOC with 5 lines of headroom and
+      unregistered, so the N-file fixture rewrite plus TestShardedRegistryReaders would hard-error.
+      Decomposed into the package below.
+  - file: tests/checks/verification/validate_graduation_completeness/__init__.py
+    action: Create
+    purpose: package marker for the decomposed mirror
+  - file: tests/checks/verification/validate_graduation_completeness/conftest.py
+    action: Create
+    purpose: >-
+      home for EVERY helper crossing the split boundary -- measured, not assumed: _write_registry
+      (rewritten from a single flat yaml.safe_dump to an N-file writer; definition line 85, call
+      sites 223 and 565), the 5 _REGISTRY_REL bindings (24, 86, 440, 460, 475), plus _step,
+      _write_plan, _plan_dict, _git, _init_repo, _commit_all, _ImplementFixture and
+      _MALFORMED_REGISTRIES. Naming only the first two would reproduce the exact defect fixed for
+      the sibling package: the implementer duplicates ~80 SLOC across the two modules, or imports
+      across test_* modules, which validate_no_cross_test_imports fails in both tiers (Decision 131
+      clause 2; conftest.py is exempt by construction)
+  - file: tests/checks/verification/validate_graduation_completeness/test_plan_leg.py
+    action: Create
+    purpose: >-
+      TestPlanPrLeg and TestWaiver, moved verbatim. Every existing class is assigned to exactly one
+      of the two modules -- none may be left unhomed
+  - file: tests/checks/verification/validate_graduation_completeness/test_implement_leg.py
+    action: Create
+    purpose: >-
+      TestImplementPrLeg, TestObligationAwareDiagnostics, TestLoadErrorHandling,
+      TestRegistryReaders and TestContentKeyedResolution, plus the new TestShardedRegistryReaders;
+      the incumbent test_current_entries_missing_file_is_empty is re-authored against the
+      four-branch rule
+  - file: tests/validate/test_driver_seam.py
+    action: Modify
+    purpose: repoint the two literal registry-path bindings
+  - file: tests/esb_text_fix/test_persona_routing_rationale.py
+    action: Modify
+    purpose: >-
+      repoint REGISTRY_PATH AND replace its registry["entries"] destructuring with the loader
+  - file: tests/esb_text_fix/test_fallback_spec.py
+    action: Modify
+    purpose: repoint the registry reference
+  - file: tests/provider_agnostic_tier_model/test_role_based_tier_model.py
+    action: Modify
+    purpose: >-
+      repoint REGISTRY_PATH AND replace its registry["entries"] destructuring with the loader
+bundled_recommendations:
+  - rec-3231
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    Two branches cut from the same base, each adding one graduated check, both merge with no
+    conflict in the registry (rec-3231's stated acceptance).
+  - >-
+    load_entries() returns exactly the 476 check_ids present in the pre-migration registry.yaml,
+    with every field of every record identical after YAML round-trip (field-identical, not
+    byte-identical -- the migration deliberately re-renders at width=200).
+  - >-
+    entries_at_ref() returns the full 476-record baseline for a ref carrying the legacy flat file
+    AND for a ref carrying the shard directory, so the differential gate sees zero newly-added
+    records across the migration.
+  - >-
+    A record whose check_spec is modified without changing its check_id IS re-admitted by the
+    differential gate (the silent-neutering hole is closed).
+  - >-
+    A record whose filename does not equal its check_id fails validate_verification_registry, as
+    does the reappearance of a flat config/agent/verification_registry/registry.yaml.
+  - >-
+    Both raise-approved dec-166 roster entries are absent from config/structural_size_budgets.yaml
+    and both structural-size checks pass with no replacement roster entry for the registry. No
+    Decision clause is cited as authorizing this: scripts/checks/_marker_guard.authorization_failure
+    iterates current_entries only, so a roster removal is never examined.
+  - >-
+    Every re-authored self-referential record materializes and returns PASS.
+  - >-
+    validate_verification_registry declares examined()/skipped() and is absent from
+    config/check_accounting_baseline.yaml.
+  - >-
+    No reference to config/agent/verification_registry/registry.yaml remains under the swept roots:
+    scripts/, config/, tests/, docs/contracts/, docs/ROADMAP-PLATFORM.yaml, .claude/. Deliberately
+    NOT swept, because they are historical records this plan's constraints forbid rewriting:
+    docs/plans/, audits/, docs/audit-prompts/, docs/DECISIONS.md, and the generated
+    docs/decisions-index.json. Baseline at plan time: 32 references (29 literal + 3 segment-composed) (including self-references inside registry.yaml itself, which this plan deletes), all under files in scope. Verified RED today, exit 1.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Corpus fidelity -- the union of shards equals the pre-migration corpus exactly, by check_id
+      set and by per-record field equality.
+    command: >-
+      bin/venv-python -c "import subprocess,yaml; from scripts.verification_graduation import
+      load_entries; old=yaml.safe_load(subprocess.run(['git','show','origin/main:config/agent/verification_registry/registry.yaml'],capture_output=True,text=True,check=True).stdout)['entries'];
+      new=load_entries(); a={e['check_id']:e for e in old}; b={e['check_id']:e for e in new};
+      assert a.keys()==b.keys(), sorted(set(a)^set(b)); bad=[k for k in a if a[k]!=b[k]];
+      assert not bad, bad; print(f'corpus fidelity OK: {len(b)} records, field-identical')"
+    expected: "corpus fidelity OK: 476 records, field-identical"
+    fix_if: >-
+      A missing/extra check_id means the migration dropped or duplicated a record; a field
+      mismatch means the YAML re-render was not round-trip exact (re-dump at width=200).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      One-shot migration-moment assertion against a pre-migration baseline that ceases to exist
+      after this PR merges. The durable corpus-integrity properties are graduated separately at
+      steps 2, 3 and 4.
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Placement is enforced -- a record whose filename does not equal its check_id fails the gate.
+    command: bin/venv-python -m pytest tests/checks/verification/test_validate_verification_registry.py::TestShardPlacement -q
+    expected: All tests pass; a misplaced-record fixture produces a failure naming the filename/check_id mismatch.
+    fix_if: >-
+      A misplaced fixture passing means the placement leg is not wired into
+      validate_verification_registry's failure path.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: registry-shard-filename-is-check-id
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Flat-file resurrection is rejected -- reappearance of registry.yaml, or records outside
+      entries/, fails the gate.
+    command: bin/venv-python -m pytest tests/checks/verification/test_validate_verification_registry.py::TestFlatFileRejected -q
+    expected: All tests pass; a fixture reintroducing a flat registry.yaml fails.
+    fix_if: A resurrected flat file passing means the monolith can silently return.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: registry-flat-file-rejected
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      The baseline reader spans both layouts -- entries_at_ref returns the full record set for a
+      ref carrying the legacy flat file and for a ref carrying the shard directory.
+    command: >-
+      bin/venv-python -m pytest
+      tests/verification_graduation/test_loader.py::TestBaselineReaderSpansLayouts
+      tests/checks/verification/validate_graduation_completeness/test_implement_leg.py::TestShardedRegistryReaders -q
+    expected: >-
+      All tests pass for both the legacy-flat ref and the shard-directory ref, across BOTH
+      registry readers (validate_verification_registry and validate_graduation_completeness).
+    fix_if: >-
+      An empty baseline for either layout is the CI-melting failure -- every record would read as
+      newly added, costing ~7.1s each (476 records is ~56 minutes against a 300s fast-tier budget
+      this check already dominates). Must fail loud on a genuinely missing directory, never
+      silently return an empty list (Decision 55).
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: registry-baseline-reader-spans-layouts
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      The migration itself triggers zero differential admissions, because every check_id survives.
+    command: >-
+      bin/venv-python -c "import yaml;
+      from scripts.checks.verification.validate_verification_registry import _added_entries;
+      from scripts.verification_graduation import load_entries;
+      plan=yaml.safe_load(open('docs/plans/PLAN-verification-registry-sharding.yaml'));
+      owed={s['graduation_check_id'] for s in plan['verification_plan'] if s.get('graduation')=='graduate'};
+      added={e['check_id'] for e in _added_entries(load_entries())};
+      print('added:', len(added), '| owed by this plan:', len(owed), '| migration-attributable:', sorted(added-owed));
+      assert added <= owed, sorted(added-owed)"
+    expected: >-
+      "migration-attributable: []" -- the added set is a SUBSET of this plan's own 13 obligated
+      graduation_check_ids. Zero before the graduation walk, exactly those 12 after it; either way
+      the re-grain itself contributes nothing.
+    fix_if: >-
+      A NON-EMPTY migration-attributable set means the baseline reader is not resolving
+      origin/main's layout; fix step 4 before proceeding -- do NOT let this PR run hundreds of
+      worktree differentials. Asserting a bare zero here would be WRONG: this plan's 12
+      graduate dispositions each obligate a new record (validate_graduation_completeness's
+      implement-PR leg fails the PR without them), so the added set is legitimately 12 after the
+      graduation walk. The invariant is subset-of-owed, not empty.
+      NOTE: this step gates the ADDED set only and is structurally blind to the MODIFIED set that
+      execution step 4 introduces -- step 19 is its symmetric gate and both must pass.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Asserts a property of this migration's own diff (no new check_ids) rather than a standing
+      invariant; in steady state it is tautological. The durable property -- that the baseline
+      reader resolves both layouts -- is graduated at step 4.
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      The silent-modification hole is closed -- a record whose check_spec changes while its
+      check_id stays the same IS re-admitted by the differential gate.
+    command: bin/venv-python -m pytest tests/checks/verification/test_validate_verification_registry.py::TestModifiedRecordReadmitted -q
+    expected: >-
+      All tests pass; a fixture replacing a record's check_spec with a tautology (bash -c 'exit 0')
+      is selected for differential re-admission and rejected as non-discriminating.
+    fix_if: >-
+      If the mutated fixture is not selected, the gate still permits neutering a graduated check
+      into a no-op. Keep this hunk independently revertible (Decision 170 clause 2 precedent).
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: registry-modified-record-re-admitted
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      The reserved deprecated/ subtree is excluded from the live set by the loader.
+    command: bin/venv-python -m pytest tests/verification_graduation/test_loader.py::TestDeprecatedSubtreeExcluded -q
+    expected: A record placed under entries/deprecated/ is absent from load_entries() output.
+    fix_if: >-
+      Inclusion means retirement by git mv would not actually retire anything; exclusion must be a
+      loader glob rule, never a documented convention (Decision 168).
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: registry-deprecated-subtree-excluded
+  - step: 8
+    phase: pre-deploy
+    action: >-
+      Loader ordering is deterministic and no consumer depends on directory order.
+    command: bin/venv-python -m pytest tests/verification_graduation/test_loader.py::TestLoaderOrdering -q
+    expected: load_entries() returns records sorted by filename, stable across repeated calls.
+    fix_if: Non-deterministic ordering makes diffs and failure messages irreproducible.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: registry-loader-order-deterministic
+  - step: 9
+    phase: pre-deploy
+    action: >-
+      Both dec-166 roster entries are gone and the structural-size gates pass with no replacement
+      entry for the registry.
+    command: >-
+      bin/venv-python -c "import yaml,pathlib; from scripts.checks.structural.size_limits import
+      validate_structural_size_limits; from scripts.checks.structural.budget_raises import
+      validate_structural_size_budget_raises; f=[]; validate_structural_size_limits(f);
+      validate_structural_size_budget_raises(f); assert not f, f;
+      reg=yaml.safe_load(pathlib.Path('config/structural_size_budgets.yaml').read_text());
+      stale=[k for k in list(reg.get('budgets') or {})+list(reg.get('long_line_budgets') or {}) if
+      'verification_registry' in k]; assert not stale, stale; print('size gates green; both registry
+      raise entries removed')"
+    expected: "size gates green; both registry raise entries removed"
+    fix_if: >-
+      A surviving roster key means the retirement under Decision 166 reversal condition (c) was
+      not completed. A size violation on a shard means the per-record render exceeded the config
+      class defaults (500 effective lines / 2,000 chars) -- re-dump at width=200.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: registry-size-raises-removed
+  - step: 10
+    phase: pre-deploy
+    action: >-
+      Every re-authored self-referential record still materializes and returns PASS.
+    command: >-
+      bin/venv-python -c "from scripts.verification_graduation import load_entries,
+      materialize_check; rows=[e for e in load_entries() if 'verification_registry' in
+      str(e.get('check_spec')) or str(e.get('guard_target','')).startswith('config/agent/verification_registry')];
+      bad=[e['check_id'] for e in rows if materialize_check(e).run().status.name!='PASS'];
+      print('live self-referential records:', len(rows), 'failing:', bad); assert not bad, bad"
+    expected: >-
+      Seven LIVE self-referential records report PASS; failing list empty. The eighth,
+      plan-obligations-enumeration-homed, is retired into deprecated/ by execution step 7 and is
+      therefore absent from load_entries() -- it is not excluded by a special case here, it is
+      simply no longer in the live set.
+    fix_if: >-
+      A failure means a re-authored check_spec still reads the deleted flat path or parses the old
+      entries[] shape. Re-author against the loader, preserving the record's original claim.
+      MEASURED PRE-EXISTING FAILURE: plan-obligations-enumeration-homed returns FAIL on today's
+      tree -- its command_exit_zero spec asserts scripts/CLAUDE.md SHRANK relative to origin/main,
+      a one-shot migration-moment assertion that went permanently red the moment it merged. Nobody
+      noticed because graduated records are never re-executed as a standing suite. Do NOT re-author
+      it: its claim is spent, so retire it (execution step 7). If it were re-authored instead, this
+      plan's own new modified-record rule would select it and run_differential would return
+      admitted=False ('does not pass on HEAD'), hard-failing the PR -- and the non-fatal skipped
+      escape hatch does not apply, since _differential_skip_reason returns None for any slot that
+      is not test_selector and this record is command_exit_zero.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: registry-self-referential-records-green
+  - step: 11
+    phase: pre-deploy
+    action: >-
+      rec-3231 acceptance -- two branches cut from the same base, each adding one graduated
+      record, merge with no conflict.
+    command: bin/venv-python -m pytest tests/verification_graduation/test_loader.py::TestConcurrentGraduationsMergeClean -q
+    expected: >-
+      The merge succeeds and both records are present; the same scenario against a single flat
+      sequence conflicts (the discriminating half).
+    fix_if: >-
+      A conflict means records are still sharing a file. Note the one informative conflict that
+      MUST survive: two branches minting the same check_id produce an add/add conflict.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: registry-concurrent-graduations-merge-clean
+  - step: 12
+    phase: pre-deploy
+    action: >-
+      Decision 170 touch-it-fix-it is satisfied -- the module declares examined()/skipped() and is
+      no longer baselined.
+    command: >-
+      bin/venv-python -c "import pathlib; from scripts.checks.hygiene.validate_check_accounting
+      import validate_check_accounting; src=pathlib.Path('scripts/checks/verification/validate_verification_registry.py').read_text();
+      assert 'examined(' in src or 'skipped(' in src, 'no declaration';
+      base=pathlib.Path('config/check_accounting_baseline.yaml').read_text();
+      assert 'validate_verification_registry' not in base, 'still baselined'; f=[];
+      validate_check_accounting(f); assert not f, f; print('declaration adopted; baseline entry removed')"
+    expected: "declaration adopted; baseline entry removed"
+    fix_if: >-
+      Editing a baselined check's defining module without adopting the declaration in the same PR
+      fails validate_check_accounting. Removal is the permitted shrink-only direction.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: registry-check-accounting-declared
+  - step: 13
+    phase: pre-deploy
+    action: >-
+      The Class A contract records the new layout at version 5 with a consistent amendment entry.
+    command: >-
+      bin/venv-python -c "import yaml,pathlib;
+      d=yaml.safe_load(pathlib.Path('docs/contracts/verification-registry.yaml').read_text());
+      assert d['contract']['contract_version']==5, d['contract']['contract_version'];
+      e=d['amendment_log'][0]; assert (e['change_class']=='prose_improvement')!=bool(e['semantic_break']),
+      e; assert 'registry.yaml' not in d['contract']['description'], 'stale data-file path';
+      print('contract v5; amendment consistent; path re-grounded')"
+    expected: "contract v5; amendment consistent; path re-grounded"
+    fix_if: >-
+      PREPEND the new amendment_log entry: the log is newest-first (2026-08-06, 2026-07-16,
+      2026-07-04) so [0] is the newest, and an APPEND would leave this assertion inspecting the OLD
+      entry, which satisfies the XOR and passes vacuously.
+      contracts_enforcement._amendment_entry_consistent requires prose_improvement XOR
+      semantic_break; a description/semantics edit with a non-prose change_class needs
+      semantic_break true or it is rejected as category 6.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: verification-registry-contract-v5-shard-layout
+  - step: 14
+    phase: pre-deploy
+    action: >-
+      Stale-reference sweep -- no live reference to the deleted flat path survives outside
+      historical artefacts (docs/plans/, audits/).
+    command: >-
+      bin/venv-python -c "import subprocess,sys;
+      pat=r'config/agent/verification_registry/registry[.]yaml|\"verification_registry\" / \"registry[.]yaml\"';
+      r=subprocess.run(['git','grep','-n','-E',pat,'--','scripts/','config/','tests/','docs/contracts/','docs/ROADMAP-PLATFORM.yaml','.claude/'],capture_output=True,text=True);
+      hits=[l for l in r.stdout.splitlines() if l.strip()]; print('live_flat_path_refs=',len(hits));
+      [print('  ',h[:140]) for h in hits[:10]]; sys.exit(1 if hits else 0)"
+    expected: "live_flat_path_refs= 0"
+    fix_if: >-
+      Any hit is a consumer still bound to the deleted file. Baseline at plan time is 32 hits (verified RED, exit 1, no warnings), so this step discriminates. Authored in Python deliberately:
+      the shell form needed nested quoting that a YAML folded scalar mangles, and an unquoted
+      --include=*.py globs against CWD (setup.py exists), silently narrowing the sweep.
+      docs/plans/, audits/, docs/audit-prompts/, docs/DECISIONS.md and docs/decisions-index.json
+      are deliberately unswept -- historical records this plan's constraints forbid rewriting.
+      The pattern is an ALTERNATION deliberately: four in-scope files compose the path from path
+      SEGMENTS (_common.ROOT / "config" / "agent" / "verification_registry" / "registry.yaml"),
+      which a literal-string pattern cannot see -- including validate_verification_registry.py:115,
+      the very module this plan rewrites. This step is graduated as a permanent standing guard, so
+      a pattern blind to the segment form would ship a weak guard, not just an incomplete sweep.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: registry-flat-path-no-live-refs
+  - step: 15
+    phase: pre-deploy
+    action: >-
+      Measure the affected-test selector's output on this migration diff against its CAP of 35 and
+      record the result; do not assume the cap absorbs a 476-file add plus a delete referenced by
+      five test modules.
+    command: >-
+      bin/venv-python -c "from scripts.checks.deps.affected_tests import derive_affected_tests, CAP;
+      from scripts.checks import _common;
+      sel=derive_affected_tests(_common.get_status_aware_diff(), repo_root=_common.ROOT);
+      m=sel['manifest']; print('CAP:', CAP, '| selected:', len(sel.get('selected') or []),
+      '| capped:', m.get('capped'), '| deferred:', m.get('deferred'));
+      assert not m.get('capped'), 'selector hit CAP and truncated -- run the full tier'"
+    expected: >-
+      capped: False. Asserts the selector's OWN truncation flag, which is stronger than counting
+      stdout lines -- scripts/checks/deps/affected_tests.py has no __main__, no argparse and no
+      --base flag, so a module-invocation form would print nothing and exit 0 unconditionally,
+      passing vacuously. Verified by execution.
+    fix_if: >-
+      Silent truncation would under-select tests for this PR -- a 476-file add plus a delete
+      referenced by five test modules is exactly the shape that overflows. If the cap is hit,
+      record the deferral and run the full tier (step 16) before handoff; do not widen CAP.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      A real gate on the selector's own capped flag, so it IS kernel-expressible -- but its subject
+      is this migration's own diff shape (a one-time 476-file add), not a standing property of the
+      repository, so graduating it would register a guard with no future subject.
+  - step: 16
+    phase: pre-deploy
+    action: Full validation passes end to end before commit.
+    command: bin/venv-python -m scripts.validate
+    expected: Exit 0 with no failures.
+    fix_if: >-
+      Fix forward, never revert (Decision 55). A fast-tier budget breach here is the step-4
+      failure mode -- check newly-added record count first.
+    hermetic: false
+    graduation: not-applicable
+  - step: 17
+    phase: post-deploy
+    action: Confirm rec-3231 closed after the squash merge's Resolves trailer fires.
+    command: >-
+      bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json,pathlib;
+      rows=[json.loads(l) for l in
+      pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()];
+      r=next(x for x in rows if x['id']=='rec-3231'); print('rec-3231 status:', r['status']);
+      assert r['status']=='closed', r['status']"
+    expected: "rec-3231 status: closed"
+    fix_if: >-
+      If rec-autoclose did not fire, close via the portal fallback: ops_data_portal --update-rec
+      rec-3231 --status closed --resolution "..." (Decision 70).
+  - step: 18
+    phase: pre-deploy
+    action: >-
+      The two docstring-only re-groundings changed no behavior -- their owning modules' mirror
+      tests still pass.
+    command: >-
+      bin/venv-python -m pytest tests/test_checks_registry_test_obligations.py
+      tests/test_reconcile_reachability.py -q
+    expected: All tests pass, unchanged from before the edit.
+    fix_if: >-
+      A failure means the edit touched executable code, not just the docstring -- revert to a
+      prose-only change or promote the file to a real test obligation.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Asserts the ABSENCE of behavior change from a prose-only edit. The modules' real behavior is
+      already guarded by these same standing mirror tests, so graduating this would register a
+      duplicate of coverage that already exists rather than a new regression guard.
+  - step: 19
+    phase: pre-deploy
+    action: >-
+      Symmetric gate on the MODIFIED-record set that execution step 4 introduces -- size its
+      differential cost, together with the ADDED set step 5 counts, against the fast-tier budget.
+    command: >-
+      bin/venv-python -c "import yaml;
+      from scripts.verification_graduation import load_entries;
+      from scripts.checks.verification.validate_verification_registry import _modified_entries;
+      plan=yaml.safe_load(open('docs/plans/PLAN-verification-registry-sharding.yaml'));
+      mod=_modified_entries(load_entries());
+      grad=[s for s in plan['verification_plan'] if s.get('graduation')=='graduate'];
+      ts=len([s for s in grad if 'pytest' in s.get('command','')]);
+      ce=len(mod)+len(grad)-ts;
+      worst=ts*8.2+ce*4.5;
+      print('modified',len(mod),'added',len(grad),'test_selector',ts,'command_exit_zero',ce,'-> worst',round(worst),'s of 300s');
+      assert worst < 150, f'projects to {round(worst)}s, over half the fast-tier budget'"
+    expected: >-
+      modified 7 (the 8 self-referential records minus plan-obligations-enumeration-homed, retired),
+      added 13 (this plan's graduate dispositions) -> 20 records. PER-SLOT, because the two slots
+      differ by ~4x: ALL 7 modified records are command_exit_zero, and all 7 test_selector records
+      come from the ADDED set (the pytest-shaped graduate steps) -- so 7 test_selector at 8.2s worst
+      plus 13 command_exit_zero at 4.5s worst = ~116s, under the 150s half-budget assertion with
+      ~34s of margin. Adding another pytest-shaped graduation to this plan needs re-checking.
+    fix_if: >-
+      This plan is the first exerciser of the modified-record rule it introduces, on a check that
+      already dominates the fast tier and has twice exceeded it. This gate sizes BOTH halves,
+      because the fast tier pays for both in the same run. If the projection breaches, split the
+      re-authoring across PRs rather than widening the budget.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      A cost projection specific to this migration's own diff, not a standing invariant -- in
+      steady state a PR re-authors zero or one record. The durable behavior (modified records ARE
+      re-admitted) is graduated at step 6. It calls the GATE's own _modified_entries selector
+      rather than re-deriving a heuristic, so it gates the implementation rather than restating the
+      plan's expectation.
+  - step: 20
+    phase: pre-deploy
+    action: >-
+      Both decomposed sources resolve to their test PACKAGE directories, not to the deleted files.
+    command: >-
+      bin/venv-python -c "from pathlib import Path;
+      from scripts.test_coverage_checker import map_source_to_test;
+      from scripts.checks.misc.validate_test_coverage import validate_test_coverage;
+      srcs=['scripts/verification_graduation.py','scripts/checks/verification/validate_graduation_completeness.py'];
+      [print(' ',s,'->',map_source_to_test(Path(s))) for s in srcs];
+      assert all(map_source_to_test(Path(s)).is_dir() for s in srcs), 'still routing to a file';
+      f=[]; validate_test_coverage(f); assert not f, f; print('both sources route to packages; coverage gate green')"
+    expected: Both sources resolve to directories and validate_test_coverage appends nothing.
+    fix_if: >-
+      Resolution to a FILE means the _CONCERN_SPLIT_TEST_PACKAGES registration is missing -- the
+      full tier will fail with 'missing test file'. A wrong directory name means the stem rule was
+      not followed: _mirror_source_to_test derives the package from the SOURCE STEM, so
+      validate_graduation_completeness.py maps to validate_graduation_completeness/, never a
+      shortened form.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: decomposed-sources-route-to-test-packages
+test_obligations:
+  - source: scripts/verification_graduation.py
+    behavior: >-
+      load_entries unions the shard directory excluding deprecated/, in deterministic filename
+      order; entries_at_ref resolves both the shard-directory and legacy-flat layouts at a git ref
+      and fails loud rather than returning an empty baseline.
+    verification_step: 4
+    test_selector: tests/verification_graduation/test_loader.py::TestBaselineReaderSpansLayouts
+    red_green_expectation: >-
+      Red before (neither function exists), green after. Note this file carries no
+      config/coverage_baseline.yaml entry, so the new code is held to the 100% per-file line
+      coverage standard -- error branches included.
+  - source: scripts/checks/verification/validate_verification_registry.py
+    behavior: >-
+      Rejects a record whose filename does not equal its check_id, rejects a resurrected flat
+      registry.yaml, and selects MODIFIED records for differential re-admission rather than only
+      novel check_ids.
+    verification_step: 6
+    test_selector: tests/checks/verification/test_validate_verification_registry.py::TestModifiedRecordReadmitted
+    red_green_expectation: >-
+      Red before -- proven by execution against the live corpus: replacing a record's check_spec
+      with bash -c 'exit 0' while keeping its check_id yields zero records to re-admit. Green after.
+  - source: scripts/checks/verification/validate_graduation_completeness.py
+    behavior: >-
+      Both the current-state and baseline registry readers resolve the sharded layout, preserving
+      the (plan_slug, check_id) join the implement-PR leg relies on.
+    verification_step: 4
+    test_selector: tests/checks/verification/validate_graduation_completeness/test_implement_leg.py::TestShardedRegistryReaders
+    red_green_expectation: red before (readers bound to the flat path), green after
+  - source: scripts/checks/registry.py
+    behavior: unchanged -- docstring path reference only
+    verification_step: 18
+    test_selector: tests/test_checks_registry_test_obligations.py
+    waiver_reason: >-
+      Docstring-only edit re-grounding a path reference in prose; no executable behavior changes,
+      so no red-before state exists to assert against.
+  - source: scripts/ci/reconcile_reachability.py
+    behavior: unchanged -- docstring path reference only
+    verification_step: 18
+    test_selector: tests/test_reconcile_reachability.py
+    waiver_reason: >-
+      Docstring-only edit re-grounding a path reference in prose; no executable behavior changes,
+      so no red-before state exists to assert against.
+  - source: config/agent/verification_registry/entries/*.yaml
+    behavior: >-
+      the migrated corpus is field-identical to the pre-migration registry -- every check_id
+      present, every field equal after the width=200 re-render
+    verification_step: 1
+    command: corpus fidelity OK
+    red_green_expectation: >-
+      red before (the shard directory does not exist, so the loader import fails), green after
+  - source: config/agent/verification_registry/entries/deprecated/.gitkeep
+    behavior: >-
+      the reservation exists after clone and its contents are excluded from the live set by the
+      loader glob, not by convention
+    verification_step: 7
+    test_selector: tests/verification_graduation/test_loader.py::TestDeprecatedSubtreeExcluded
+    red_green_expectation: red before (no reservation, no exclusion rule), green after
+  - source: scripts/test_coverage_checker.py
+    behavior: >-
+      both decomposed sources resolve to their test PACKAGE directories rather than to the deleted
+      mirror files, so validate_test_coverage stays green
+    verification_step: 20
+    command: map_source_to_test
+    red_green_expectation: >-
+      red before -- verified by execution today, map_source_to_test resolves both sources to the
+      two files this plan deletes and the assertion reports "still routing to a file". Green after.
+  - source: config/structural_size_budgets.yaml
+    behavior: >-
+      both raise-approved dec-166 roster entries are gone and both structural-size gates pass with
+      no replacement entry for the registry
+    verification_step: 9
+    command: validate_structural_size_budget_raises
+    red_green_expectation: >-
+      red before -- verified today, the assertion reports both surviving registry roster keys.
+      Green after.
+  - source: config/check_accounting_baseline.yaml
+    behavior: >-
+      validate_verification_registry is absent from the baseline and its module declares
+      examined()/skipped(), satisfying Decision 170 touch-it-fix-it
+    verification_step: 12
+    command: validate_check_accounting
+    red_green_expectation: >-
+      red before -- verified today, the assertion reports "no declaration". Green after.
+  - source: docs/contracts/verification-registry.yaml
+    behavior: >-
+      the Class A contract records the sharded layout at version 5 with a consistent amendment
+      entry and no stale data-file path
+    verification_step: 13
+    command: contract_version
+    red_green_expectation: >-
+      red before -- verified today, the assertion reports contract_version 4. Green after.
+  - source: docs/contracts/plan-obligations.yaml
+    behavior: no live reference to the deleted flat registry path survives in this contract
+    verification_step: 14
+    command: live_flat_path_refs
+    red_green_expectation: >-
+      red before -- this file is one of the 32 hits the sweep reports today. Green after.
+  - source: docs/ROADMAP-PLATFORM.yaml
+    behavior: >-
+      no live reference to the deleted flat registry path survives in the roadmap, and the T3.7
+      successor note is present
+    verification_step: 14
+    command: live_flat_path_refs
+    red_green_expectation: >-
+      red before -- line 7152 is one of the 32 hits the sweep reports today. Green after.
+constraints:
+  - No rescue agents or workaround loops (Decision 55); fail loud, fix forward, never auto-revert.
+  - >-
+    MINT a numbered Decision, and ALSO append a dated pointer annotation on Decision 166 -- the
+    Decision 167/173 pairing form (167 annotated 150 and 160; 173 annotated 116, 122 and 164),
+    never one instead of the other. Decision 147 is NOT an instance of the pairing form -- verified
+    that Decision 114 carries no annotation and never mentions 147 -- so cite 147 only as the
+    own-numbered-entry precedent, which is what it actually is. Routing per
+    decision-entry.yaml significance.routing_rule: three of the four pieces are owned by existing
+    rows (record grammar and loader semantics -> field_semantics in the owning contract;
+    T3.7-as-successor -> work_item; the change record -> the PR body), but the PATH SELECTION
+    itself -- choosing re-grain over clause 6's pre-committed CD.29 archival lifecycle, and
+    retiring the size instrument -- is owned by NONE of them -- so question 3
+    ("does NO existing routing row already own this content?") answers YES, as do questions 1 and
+    2, and all three yeses route to numbered_decision. Decision 147 is the near-exact precedent: responding to Decision 114's
+    reversal trigger by selecting among Path A/C/D got its own numbered entry, not an annotation
+    on 114. The entry carries the typed envelope (number, significance: numbered_decision with a
+    justification naming the rejected contract alternative) and amends [166], and must fit the
+    6,144-byte per-entry hard cap -- route measurement detail to the contract and the PR body.
+    Corpus headroom verified affordable: 126/132 live headers, 108,079/112,000 index bytes,
+    749,903/780,000 combined bytes.
+  - >-
+    Do NOT cite Decision 166 reversal condition (c) as authorizing the roster deletions. (c)
+    governs a CLASS ROW and prescribes retiring that row; this plan keeps the config class row and
+    deletes two GRANDFATHER ROSTER ENTRIES, a different object. The on-point condition is (f),
+    which names 'its grain' verbatim -- and (f)'s TRIGGER has not fired (5,972 < 6,000; no second
+    raise is proposed), so the plan elects (f)'s prescribed RESPONSE ahead of its trigger. Say that
+    plainly rather than claiming pre-authorization. Separately, the deletions need no authorization
+    at all: scripts/checks/_marker_guard.authorization_failure iterates current_entries only, so an
+    entry present at base and absent at head is never examined.
+  - >-
+    The merged corpus exists only in memory. Never write a combined registry file to disk -- a
+    materialized union recreates the contended hot file this plan removes. Record this in
+    docs/contracts/verification-registry.yaml's governance_notes, not only here: a plan document is
+    a workflow_outputs artifact nobody reads later.
+  - >-
+    No index or manifest listing the entry files. The directory listing IS the index; a committed
+    manifest reintroduces the shared-append conflict. Record in the contract's governance_notes.
+  - >-
+    No cached aggregate (e.g. a stored corpus count). Any future count must be computed from the
+    glob, never read from a number an author bumps. Record in the contract's governance_notes.
+  - >-
+    No per-entry line in config/structural_size_budgets.yaml for shards. Config-class governance
+    (500 effective lines / 2,000 chars) covers new files implicitly -- keep it that way.
+  - >-
+    No "regenerate the merged YAML for readability" convenience artifact, in any form.
+  - >-
+    Records are insert-once. Retirement is git mv into the reserved, loader-excluded deprecated/
+    subtree; no lifecycle machinery, status column, or version key is built by this plan. The
+    contract must tell T3.7's implementer that deprecated/ is excluded from the live set and has to
+    be read explicitly by any orphan sweep.
+  - >-
+    Re-author self-referential records in place, preserving check_id and the record's original
+    claim. A record whose CLAIM changes requires a new check_id per the contract.
+  - Do not rewrite docs/plans/ or audits/ artefacts -- they are historical records of past work.
+  - Only files listed in Scope may be modified.
+context:
+  - >-
+    rec-3231 (bundled): the flat entries[] sequence makes any two concurrent plans conflict
+    deterministically. Reproduced in a git lab -- flat list conflicts, per-record files merge clean.
+  - >-
+    Measured against main @ 6b09dedd: 476 records, 5,972/6,000 effective lines (28 lines = 2.2
+    block-style records of headroom), longest line 2,315 against an allowance of exactly 2,315
+    (zero headroom), 108 distinct plan_slugs. Liveness, PREDICATE DEFINED (the brief's undefined '470/476' does not
+    reproduce): guard_target path resolves 474/476; check_spec path-or-node-id file resolves
+    474/476; BOTH resolve 473/476 -- so genuine retirement candidates number ~2-3, not 6.
+  - >-
+    The size ceiling is already being satisfied by reformatting, not restraint -- #940 and
+    #948/#950 each landed a whole record as a single-line flow mapping (1 line vs ~12.8).
+    config/structural_size_budgets.yaml:135 asserts this join-evasion "counterfactual fails here"
+    because effective lines are paired with a 2,000-char companion, and that the residual is
+    "confined to ... docs/ROADMAP-PLATFORM.yaml" -- both false for this file, whose own long-line
+    allowance is 2,315, ABOVE that companion. Re-ground that text as part of this plan.
+  - >-
+    Per-record render measured at width=200: 476 files, mean 12.6 lines/file, longest line anywhere
+    424 chars, YAML round-trip exact. Files classify into the config class (fnmatch config/*.yaml
+    crosses /), so both raise entries are removable with no replacement.
+  - >-
+    All 476 check_ids verified safe as filename stems -- unique, max 58 chars, no separators, no
+    case-insensitive collisions.
+  - >-
+    Differential admission costs 7.1s per record (measured). The baseline reader is therefore
+    load-bearing: a lost baseline means 476 x 7.1s = ~56 minutes against a 300s fast-tier budget
+    that this check already dominates and has twice exceeded.
+  - >-
+    EIGHT self-referential records, enumerated: coverage-checker-move-no-stale-refs,
+    in-scope-graduated-rows-still-resolve, registry-other-lambda-writes-asserted,
+    registry-rows-green-on-split-roots, fallback-reevaluation-check-registered,
+    plan-obligations-enumeration-homed, structural-engine-green-and-scoped,
+    no-retired-ci-role-in-live-surfaces. A literal-path grep finds only seven -- the eighth
+    references the directory, not the file -- so match on 'verification_registry', not the full path.
+  - >-
+    Silent-modification hole proven by execution: replacing a record's check_spec with a tautology
+    while keeping its check_id yields zero records to re-admit. The contract's governance_notes
+    record prior in-place RE-AUTHORED rows -- those are instances of this defect, so cite them as
+    evidence, not as authority. Fixed by this plan.
+  - >-
+    Grain rationale vs Decision 169's intermediate grain (18 manifests / ~120 checks): manifest
+    records carry dispatch semantics (pre, pre_globs, full_segment) and registry.py derives tier
+    sequence from them against six frozen-order anchors, so those records are ordered and NOT
+    independent, with a stable parent key. This registry is an unordered set keyed by check_id
+    (verified -- no positional access anywhere; the sole enumerate is an error-message index) whose
+    candidate grouping keys are migrating (plan_slug, per T2.26/T4.16) or mutable (guard_target,
+    197 values). Grain follows contention and ordering.
+  - >-
+    Decision 114/110 "N fragments an agent must reassemble" does not bind: verified by grep that no
+    skill or command reads this registry whole -- the only agent-facing references are a per-record
+    append instruction (.claude/skills/implement/SKILL.md:372) and a per-record obligation
+    (plan-obligations.yaml:50). State this distinguisher explicitly; the flag fires on file count
+    alone otherwise. Decision 147 chose Path A for ROADMAP-PLATFORM.yaml on the opposite fact.
+  - >-
+    THE ARITHMETIC IS THE ARGUMENT for narrowing clause 6 -- lead the Decision with it, not with the
+    facade-versus-YAML distinction (a loader-plus-shard-directory is arguably the YAML analogue of a
+    facade package, so that distinction is thin on its face). Four measured numbers: headroom is 28
+    effective lines; CD.29 exercised to exhaustion reclaims ~2-3 records (~25-38 lines); clause 6's
+    own measured growth rate is ~1,200 lines/month; and THIS PLAN's 13 graduate dispositions are
+    ~155-165 effective lines. The pre-committed relief valve cannot absorb even the PR that
+    triggers it -- absent the re-grain, this plan's own graduations would breach the 6,000 ceiling.
+    Clause 6 also predicted '1.7 months of runway' from 3,987 lines on 2026-08-04; the file reached
+    5,972 in under three weeks, roughly double the predicted rate.
+  - >-
+    Per-record files make clause 6's pre-committed valve CHEAPER, not foreclosed (retire = git mv
+    into deprecated/). Do NOT argue the valve is unreachable: Decision 93 makes T3.7's
+    deferred_post_mvp status reactivable, so unreachability is a choice, not a fact.
+  - >-
+    DISCHARGE THE ACCRETION PURPOSE EXPLICITLY -- do not delete the config class row's
+    actual_purpose sentence silently. That sentence ('registries agents append to must surface
+    lifecycle pressure instead of accreting silently') is about accretion, not comprehension, and
+    476 files can become 4,760 with nothing surfacing. The argument that it has no subject:
+    differential admission costs 7.1s per NEWLY-ADDED record, not per corpus record, so admission
+    cost is invariant to corpus size; and the structural census measures 0.09-0.13s over 195 governed
+    files, projecting to ~0.32-0.44s with +476 -- immaterial against reversal condition (b)'s
+    'materially attributes to the census walk' bar. The whole-file-load half holds independently:
+    exactly one agent-facing reference exists (.claude/skills/implement/SKILL.md:372), a per-record
+    append instruction.
+  - >-
+    The count-budget successor obligation transfers to T3.7's registry orphan detection, which the
+    roadmap already assigns (lines 1143, 6752, 6790) and which fires on a record dying rather than
+    on a threshold. No runtime budget: verified that nothing executes the corpus as a standing
+    suite -- the only production caller of run_differential is the newly-added-records path.
+  - >-
+    IN-REPO PRECEDENT, cheaper and more persuasive than the industry citations:
+    config/agent/data_quality/decisions/ is already a directory of per-record YAML files under
+    config/agent/ (5 files). Lead with it. Decision 169's own general clause -- table-shaped rather
+    than logic-shaped decomposition: convert a growing set of similar items with no per-item
+    control flow into a data table plus one generic interpreter -- affirmatively SUPPORTS this
+    shape. Cite 169 in favour, not only to distinguish its manifest grain.
+  - >-
+    WHY NOT THE WAREHOUSE -- state this in the Decision, because it is the first question a reader
+    asks of a registry-grain Decision. The differential gate reads its baseline AT A GIT REF
+    (git show origin/main:...), which a DuckLake table structurally cannot serve; admission is a
+    property of a commit and must run pre-merge and hermetically; the record must revert atomically
+    with the code it verifies; and pre-merge CI on a public repo would need write credentials for
+    records that may never merge. The warehouse's legitimate role here is a downstream read-only
+    projection (the DECISIONS.md -> ops_decisions ETL pattern), never source of truth.
+  - >-
+    Industry precedent split: CPython Misc/NEWS.d, GitLab changelogs/unreleased, towncrier and reno
+    are DRAINING fragment directories and support only the merge-conflict half. The cumulative half
+    rests on Elastic detection-rules, SigmaHQ and Semgrep, none of which cap record count.
+  - >-
+    MODIFIED-RECORD DETECTION COMPARES PARSED RECORD MAPPINGS, never bytes or text. This is
+    load-bearing and is the reason acceptance criterion 2 says field-identical rather than
+    byte-identical: the migration re-renders every record at width=200, so a byte- or text-based
+    detector would select all 476 records instead of the 8 whose content actually changed.
+  - >-
+    entries_at_ref NEEDS FOUR BRANCHES, not two. (i) ref resolves + entries/ present -> shards;
+    (ii) ref resolves + entries/ absent + flat file present -> legacy fallback; (iii) ref resolves +
+    both absent -> FAIL LOUD (this is the ~56-minute failure mode); (iv) ref does NOT resolve at all
+    -> SKIP THE DIFFERENTIAL LEG with a printed reason, matching _marker_guard's 'SKIP: origin/main
+    unreachable (advisory locally, authoritative in CI)'. Say SKIP THE LEG, never 'return an empty
+    baseline': the incumbent _entries_at_ref returns [] on a nonzero git show and
+    validate_verification_registry has NO reachability guard before _added_entries, so an empty
+    return means all 476 records read as newly added -- reproducing the exact melt branch (iii)
+    exists to prevent. Conflating (iii) and (iv) instead wedges every environment with an
+    unreachable origin/main. Two further cases the incumbent TestEntriesAtRef already covers and
+    the rewrite must keep: malformed YAML at the ref, and a non-dict document at the ref.
+  - >-
+    load_entries and entries_at_ref MUST take repo_root (defaulting None), matching
+    scripts/verification_graduation.py's existing convention on git_worktree, run_differential,
+    make_worktree_revert_runner and run_verifier_differential. Without it,
+    validate_graduation_completeness's fixture suite cannot delegate to the loader without
+    re-introducing rec-3166 -- 'the root seam had no paired base seam', i.e. reading the real
+    repository while operating on an injected root.
+  - "Decision-scout verdict + CITE list (verbatim decision ids): round 1 BLOCK (Decision 166 clause 6), round 2 FLAGS_FOUND, round 3 FLAGS_FOUND. CITE: dec-173, dec-166, dec-165, dec-163, dec-170, dec-169, dec-168, dec-167, dec-162, dec-160, dec-153, dec-150, dec-147, dec-146, dec-137, dec-135, dec-132, dec-131, dec-128, dec-118, dec-114, dec-110, dec-104, dec-93, dec-87, dec-86, dec-85, dec-73, dec-67, dec-55, dec-48, dec-43; CD.29, T3.1, T3.7, T2.26, T4.16."
+  - "gates: decision-scout=FLAGS_FOUND after 3 round(s); plan-critique=REVISE round 1 (12 findings) then REVISE round 2 (5 blocking B1-B5 + 6 non-blocking N1-N6), all adopted; REVISE round 3 (F1-F3 blocking, all mechanical and introduced by the round-2 test decomposition; F4-F8 non-blocking), all adopted; REVISE round 4 (operator-authorized past the cap; B1 step-19 SyntaxError, B2 stale count, B3 conftest helper set, N1-N6), all adopted. NOTE: dec-131 and dec-173 entered scope AFTER the round-3 scout run and were not adjudicated by it -- both verified by inspection at round 4"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - >-
+    Only the plan-cited decision sections read -- Decision 166 (clause 6 and reversal conditions),
+    169, 170, 163, 168, 147, 137, 132, 118
+  - docs/contracts/verification-registry.yaml read in full (Class A, governs the record schema)
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    Add load_entries(repo_root=None), entries_at_ref(ref, repo_root=None) and
+    shard_path_for(check_id) to scripts/verification_graduation.py -- repo_root defaulting to None
+    matches the module's existing convention and preserves rec-3166's paired root/base seam.
+    Discovery is by directory glob, never a manifest; exclude entries/deprecated/; sort by filename
+    for deterministic order. entries_at_ref implements the FOUR-branch rule from Context: shards
+    when the directory is present at the ref; legacy flat file when the directory is absent but the
+    file is present; FAIL LOUD when the ref resolves and both are absent; and TOLERATE (advisory
+    skip, incumbent posture) when the ref itself does not resolve.
+  - >-
+    Migrate all 476 records to config/agent/verification_registry/entries/<check_id>.yaml, one
+    mapping per file, rendered at width=200 so no line exceeds the 2,000-char class cap. Assert
+    round-trip equality against the pre-migration file BEFORE deleting it. Delete
+    config/agent/verification_registry/registry.yaml. Create the entries/deprecated/ reservation with a .gitkeep placeholder -- git does not track empty directories, so without it the reservation would not survive a clone (precedent: config/lambda/ducklake-reader/.gitkeep).
+  - >-
+    Repoint validate_verification_registry and validate_graduation_completeness at the loader.
+    Add the placement leg (filename == check_id) and the flat-file-resurrection leg.
+  - >-
+    Close the silent-modification hole -- select MODIFIED records for differential re-admission, not
+    only novel check_ids, keeping the existing non-fatal skipped outcome as the escape hatch for
+    legitimate re-pointing. Keep this hunk independently revertible.
+  - >-
+    Adopt the Decision 170 examined()/skipped() declaration in
+    validate_verification_registry.py and remove its entry from config/check_accounting_baseline.yaml.
+  - >-
+    Re-author the EIGHT self-referential records (enumerated in Context) against the loader,
+    preserving each record's check_id and claim; record the re-authoring in the contract's
+    governance_notes per its RE-AUTHORED precedent. These are the first exercisers of the
+    modified-record rule added above -- run VP step 19 before VP step 16 to size their differential
+    cost against the fast-tier budget.
+  - >-
+    Retire plan-obligations-enumeration-homed into entries/deprecated/ -- git mv, check_id
+    preserved, no edit to its spec. Its claim (a one-shot assertion that scripts/CLAUDE.md shrank
+    during a past migration) is spent and the record has been failing silently. This is the first
+    exerciser of the retirement path this plan reserves, and it is the concrete instance behind the
+    accretion argument: the corpus's real lifecycle event is a record dying, which is why T3.7's
+    orphan detection -- not a count threshold -- is the named successor instrument. Record the
+    retirement in the contract's governance_notes.
+  - >-
+    Delete both raise-approved dec-166 entries from config/structural_size_budgets.yaml and
+    re-ground the config class row's actual_purpose and relief_valve, discharging the accretion
+    purpose rather than deleting the sentence silently. Leave the ROADMAPS row's
+    unit_gameability_residual untouched. Record the near-miss as evidence in the Decision, but
+    claim only what is true: the registry was the one HAND-AUTHORED counterexample to that
+    residual, and deleting its allowance removes that counterexample -- the two surviving
+    over-2,000 entries are machine-appended JSONL journals with no author to exploit the evasion.
+  - >-
+    Amend docs/contracts/verification-registry.yaml to contract_version 5 with semantic_break true
+    and a non-prose change_class; re-ground both data-file path references; and move the three
+    anti-accretion commitments into governance_notes (no manifest/index, no cached aggregate, the
+    merged corpus exists only in memory) alongside the record grammar, filename == check_id, the
+    deprecated/ reservation, and an explicit line telling T3.7's implementer that deprecated/ is
+    excluded from the live set and must be read separately by any orphan sweep.
+  - >-
+    Mint the numbered Decision. Re-check the current max '## Decision NNN:' header at execution
+    time (a concurrent PR may have claimed the number). Required content, within the 6,144-byte
+    per-entry hard cap: the typed yaml envelope (number; significance value numbered_decision with
+    a justification naming the contract alternative considered and why it was rejected; amends
+    [166]); the path selection stated as the commitment (re-grain to one record per file over
+    clause 6's pre-committed CD.29 archival lifecycle, and retirement of the 6,000-line
+    instrument); the four-number arithmetic from Context as its lead argument; the explicit note
+    that (f)'s response is being elected ahead of (f)'s trigger and that the roster deletions
+    themselves need no authorization; the accretion-purpose discharge; the whole-file-read
+    distinguisher against Decisions 114/110/147; and reversal conditions. THEN append a dated
+    amendment_forms pointer annotation on Decision 166 pointing at the new number -- both, never
+    one instead of the other (Decision 167/173 pairing form). Keep measurement detail in the
+    contract and the PR body, not in the entry, or the byte cap will reject it.
+  - >-
+    Update .claude/skills/implement/SKILL.md's graduation producer step to write
+    entries/<check_id>.yaml, and re-ground the remaining flat-path references in
+    scripts/checks/registry.py, scripts/ci/reconcile_reachability.py,
+    docs/contracts/plan-obligations.yaml and docs/ROADMAP-PLATFORM.yaml (adding the T3.7
+    successor note).
+  - >-
+    Repoint the five test modules binding the flat path and add the new test classes named in the
+    Verification Plan.
+  - >-
+    Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and
+    RCA (Decision 55). Steps 5 AND 19 are both gates and are not redundant: step 5 sizes the ADDED
+    set, step 19 the MODIFIED set. Do not proceed while either is breaching.
+  - "Report: what was implemented, verification results, and the selector measurement from step 15."
+work_areas: []
+rollback: >-
+  Single-commit revert restores the flat registry.yaml, both roster entries, the baseline readers
+  and the contract version together -- the migration is one atomic change. The
+  modified-record differential hunk (execution step 4) is authored to be independently revertible
+  if it proves to over-select, without unwinding the layout change.
