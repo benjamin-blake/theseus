@@ -150,22 +150,24 @@ verification_plan:
     is rec-3264 flow-control territory, not a per-string registry row.
 - step: 6
   phase: pre-deploy
-  action: '[PR-A] Corpus integrity: header count unchanged, all tranche numbers still present, every live entry parses with
-    a non-empty Decision marker, Intent bytes of D151/D152 unchanged vs origin/main.'
-  command: bin/venv-python -c "from scripts.decisions_md import parse_decisions_md, decision_header_numbers; from pathlib
-    import Path; import subprocess,re; live=Path('docs/DECISIONS.md'); ns=decision_header_numbers([live]); assert len(ns)==128,
-    len(ns); tr={27,66,74,77,93,95,102,124,127,128,131,132,135,142,149,150,151,152,160,162,166,167}; assert tr<=ns; base=subprocess.run(['git','show','origin/main:docs/DECISIONS.md'],capture_output=True,text=True,encoding='utf-8').stdout;
-    ext=lambda t,n:(re.search(rf'^## Decision {n}:.*?(?=^## Decision |\\Z)',t,re.M|re.S) or [None]) and re.search(rf'^##
-    Decision {n}:.*?(?=^## Decision |\\Z)',t,re.M|re.S).group(0); intent=lambda b:(re.search(r'\\*\\*Intent:\\*\\*.*?(?=\\n\\*\\*[A-Z]|\\n---)',b,re.S)
-    or type('',(),{'group':lambda s,i=0:''})()).group(0); [None for n in (151,152) if intent(ext(base,n))==intent(ext(live.read_text(encoding='utf-8'),n))
-    or (_ for _ in ()).throw(AssertionError(n))]; print('OK')"
+  action: '[PR-A head only] Corpus integrity relative to origin/main: live header count unchanged (PR-A adds and removes
+    no header), all tranche numbers still present, and Intent sections of the post-D151 entries (D151, D152) byte-identical
+    to origin/main.'
+  command: 'bin/venv-python -c "import subprocess, re; from pathlib import Path; live = Path(''docs/DECISIONS.md'').read_text(encoding=''utf-8'');
+    base = subprocess.run([''git'',''show'',''origin/main:docs/DECISIONS.md''], capture_output=True, text=True, encoding=''utf-8'').stdout;
+    hn = lambda t: re.findall(r''^## Decision (\d+):'', t, re.M); assert len(hn(live)) == len(hn(base)), (len(hn(live)),
+    len(hn(base))); tr = {27,66,74,77,93,95,102,124,127,128,131,132,135,142,149,150,151,152,160,162,166,167}; assert tr
+    <= {int(n) for n in hn(live)}; sec = lambda t, n: re.search(rf''^## Decision {n}:.*?(?=^## Decision |\Z)'', t, re.M
+    | re.S).group(0); intent = lambda b: (re.search(r''\*\*Intent:\*\*.*?(?=\n\*\*[A-Z]|\n---)'', b, re.S).group(0) if re.search(r''\*\*Intent:\*\*'',
+    b) else ''''); [None for n in (151, 152) if intent(sec(live, n)) == intent(sec(base, n)) or (_ for _ in ()).throw(AssertionError(n))];
+    print(''OK'')"'
   expected: OK printed, exit 0.
-  fix_if: 'Header-count assert fails: a header was removed or duplicated -- restore it (never_remove_headers). Intent assert
-    fails: a post-D151 Intent section was reflowed -- restore it byte-identical.'
+  fix_if: 'Header-count assert fails: a header was added or removed on the PR-A head -- PR-A must be header-neutral (never_remove_headers;
+    the mint belongs to PR-B). Intent assert fails: a post-D151 Intent section was reflowed -- restore it byte-identical.'
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: Wave-scoped one-time integrity sweep pinned to the 128-header snapshot; the standing invariant
-    becomes the PR-B guard itself, which subsumes this for every future diff.
+  graduation_waiver_reason: Wave-scoped one-time integrity sweep relative to origin/main; the standing invariant becomes
+    the PR-B guard itself, which subsumes this for every future diff.
 - step: 7
   phase: pre-deploy
   action: '[PR-A] Index pins and freshness after regeneration.'
