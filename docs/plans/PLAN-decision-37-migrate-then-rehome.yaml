@@ -324,7 +324,8 @@ verification_plan:
       eligibility criterion, the manifest's class entry and retirement condition, the check's
       taxonomy row, and the smoke-test docstring repoint.
     command: >-
-      bash -c "grep -q 'migrate_then_rehome' docs/contracts/decision-entry.yaml && grep -q
+      bash -c "! grep -q '37:.superseded_pointer' config/agent/verification_registry/registry.yaml
+      && grep -q 'migrate_then_rehome' docs/contracts/decision-entry.yaml && grep -q
       'rehoming destination' docs/contracts/decision-entry.yaml && grep -q 'citation-stranded'
       docs/decision-migration/MANIFEST.yaml && grep -q 'retires'
       docs/decision-migration/MANIFEST.yaml && grep -q 'validate_secret_material_handling'
@@ -332,8 +333,13 @@ verification_plan:
       scripts/ducklake_neon_smoke_test.py && echo 'OK structural'"
     expected: "OK structural"
     fix_if: >-
-      Any grep fails -- the named surface was not edited. The failing literal names the missing
-      change directly.
+      The FIRST term fails -- the graduated decisions-index-currency-derivation row in
+      config/agent/verification_registry/registry.yaml still hardcodes 37:'superseded_pointer'.
+      This term exists because scripts.validate CANNOT catch that: validate_verification_registry
+      runs its differential only over entries ADDED relative to origin/main, matched by check_id
+      (_added_entries), and that row is baseline-present -- so it stays green however its
+      check_spec changes. Any other grep fails -- the named surface was not edited; the failing
+      literal names the missing change directly.
     hermetic: true
     graduation: graduate
     graduation_check_id: "d37-governance-surfaces-landed"
@@ -508,11 +514,14 @@ test_obligations:
     behavior: >-
       The graduated decisions-index-currency-derivation check agrees with the post-compaction
       corpus, and the five new graduated rows are registered.
-    verification_step: 12
-    command: "bin/venv-python -m scripts.validate"
+    verification_step: 9
+    command: "! grep -q '37:.superseded_pointer' config/agent/verification_registry/registry.yaml"
     red_green_expectation: >-
-      GREEN before and RED after until updated, same inverted direction as the row above: the
-      row's embedded map hardcodes 37:'superseded_pointer'.
+      Red before (the row still hardcodes 37:'superseded_pointer'), green after. Deliberately NOT
+      linked to the full-tier step: validate_verification_registry differentials only entries
+      ADDED against origin/main by check_id, and this row is baseline-present, so scripts.validate
+      is green whether the row is stale or repaired. Without this grep the repair would ship
+      unverified.
   - source: docs/decisions-index.json
     behavior: Decision 37 projects currency superseded_compacted and the index stays within its pin.
     verification_step: 5
@@ -828,7 +837,10 @@ context:
     line of headroom. ALSO landed on main mid-planning: PLAN-verification-registry-sharding
     (#952, commit 88fd8b45). It is a plan artifact only, so registry.yaml is unchanged and this
     plan's 5,972/6,000 arithmetic still holds -- but if that plan lands before this one,
-    re-measure the registry headroom before authoring the five graduated rows.
+    re-measure the registry headroom before authoring the five graduated rows. PLAN-dead-file-cleanup
+    (#953) also landed and overlaps on docs/DECISIONS.md and docs/contracts/file-router.yaml; it
+    deletes nothing this plan depends on (the audit file is not in its delete set), so the risk is
+    merge conflict only.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
