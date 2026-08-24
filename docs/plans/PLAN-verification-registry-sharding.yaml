@@ -45,6 +45,16 @@ scope:
   - file: scripts/checks/verification/validate_graduation_completeness.py
     action: Modify
     purpose: repoint _current_registry_entries and _default_baseline_registry_entries at the loader
+  - file: scripts/test_coverage_checker.py
+    action: Modify
+    purpose: >-
+      register both decomposed sources in _CONCERN_SPLIT_TEST_PACKAGES (Decision 131 clause 1) --
+      the SOLE mechanism routing a source to a test PACKAGE DIRECTORY. Verified: map_source_to_test
+      currently resolves scripts/verification_graduation.py and
+      scripts/checks/verification/validate_graduation_completeness.py to the two FILES this plan
+      deletes, so without this registration check_test_file_exists returns 'missing test file' and
+      validate_test_coverage fails the full tier that VP step 16 runs. The tests/test_coverage_checker/
+      precedent this plan cites required exactly this: that module is itself a member.
   - file: scripts/checks/registry.py
     action: Modify
     purpose: re-ground the docstring's flat-path reference (docstring only, no behavior change)
@@ -101,6 +111,14 @@ scope:
   - file: tests/verification_graduation/__init__.py
     action: Create
     purpose: package marker for the decomposed mirror of scripts/verification_graduation.py
+  - file: tests/verification_graduation/conftest.py
+    action: Create
+    purpose: >-
+      home for the shared git/seed helpers (_git, _init_repo, _commit_all, _seed_graduation_deps,
+      _GRADUATION_DEPS, _MANIFEST_DOMAINS) used across the differential classes and needed by both
+      new loader classes. Without it the implementer must duplicate ~60 SLOC or import across
+      test_* modules, which validate_no_cross_test_imports fails in both tiers (Decision 131
+      clause 2). The sibling package already has one; the asymmetry was the defect.
   - file: tests/verification_graduation/test_materialize.py
     action: Create
     purpose: existing materialize_check / materialize_check_in_tree classes, moved verbatim
@@ -124,19 +142,19 @@ scope:
       SLOC decompose-by-default (Decision 128): measured 495/500 SLOC with 5 lines of headroom and
       unregistered, so the N-file fixture rewrite plus TestShardedRegistryReaders would hard-error.
       Decomposed into the package below.
-  - file: tests/checks/verification/graduation_completeness/__init__.py
+  - file: tests/checks/verification/validate_graduation_completeness/__init__.py
     action: Create
     purpose: package marker for the decomposed mirror
-  - file: tests/checks/verification/graduation_completeness/conftest.py
+  - file: tests/checks/verification/validate_graduation_completeness/conftest.py
     action: Create
     purpose: >-
       the shared _write_registry fixture writer, rewritten from a single flat yaml.safe_dump to an
       N-file writer; measured 2 call sites (lines 223, 565) plus its definition, and 5
       _REGISTRY_REL bindings (lines 24, 86, 440, 460, 475), all of which move with it
-  - file: tests/checks/verification/graduation_completeness/test_plan_leg.py
+  - file: tests/checks/verification/validate_graduation_completeness/test_plan_leg.py
     action: Create
     purpose: existing plan-PR-leg classes, moved verbatim
-  - file: tests/checks/verification/graduation_completeness/test_implement_leg.py
+  - file: tests/checks/verification/validate_graduation_completeness/test_implement_leg.py
     action: Create
     purpose: >-
       existing implement-PR-leg classes plus TestShardedRegistryReaders; the incumbent
@@ -245,7 +263,7 @@ verification_plan:
     command: >-
       bin/venv-python -m pytest
       tests/verification_graduation/test_loader.py::TestBaselineReaderSpansLayouts
-      tests/checks/verification/graduation_completeness/test_implement_leg.py::TestShardedRegistryReaders -q
+      tests/checks/verification/validate_graduation_completeness/test_implement_leg.py::TestShardedRegistryReaders -q
     expected: >-
       All tests pass for both the legacy-flat ref and the shard-directory ref, across BOTH
       registry readers (validate_verification_registry and validate_graduation_completeness).
@@ -425,6 +443,9 @@ verification_plan:
       print('contract v5; amendment consistent; path re-grounded')"
     expected: "contract v5; amendment consistent; path re-grounded"
     fix_if: >-
+      PREPEND the new amendment_log entry: the log is newest-first (2026-08-06, 2026-07-16,
+      2026-07-04) so [0] is the newest, and an APPEND would leave this assertion inspecting the OLD
+      entry, which satisfies the XOR and passes vacuously.
       contracts_enforcement._amendment_entry_consistent requires prose_improvement XOR
       semantic_break; a description/semantics edit with a non-prose change_class needs
       semantic_break true or it is rejected as category 6.
@@ -458,15 +479,17 @@ verification_plan:
       record the result; do not assume the cap absorbs a 476-file add plus a delete referenced by
       five test modules.
     command: >-
-      bin/venv-python -c "from scripts.checks.deps.affected_tests import CAP;
-      import subprocess,sys;
-      r=subprocess.run(['bin/venv-python','-m','scripts.checks.deps.affected_tests','--base','origin/main'],capture_output=True,text=True);
-      print(r.stdout[-2000:]); mods=[l for l in r.stdout.splitlines() if l.strip().endswith('.py')];
-      print('selected modules:', len(mods), 'CAP:', CAP);
-      sys.exit(1 if len(mods) >= CAP else 0)"
+      bin/venv-python -c "from scripts.checks.deps.affected_tests import derive_affected_tests, CAP;
+      from scripts.checks import _common;
+      sel=derive_affected_tests(_common.get_status_aware_diff(), repo_root=_common.ROOT);
+      m=sel['manifest']; print('CAP:', CAP, '| selected:', len(sel.get('tests') or []),
+      '| capped:', m.get('capped'), '| deferred:', m.get('deferred'));
+      assert not m.get('capped'), 'selector hit CAP and truncated -- run the full tier'"
     expected: >-
-      Selected-module count printed and strictly below CAP. Exits 1 at or above the cap, so a
-      silent truncation cannot pass unnoticed -- which is the entire reason this step exists.
+      capped: False. Asserts the selector's OWN truncation flag, which is stronger than counting
+      stdout lines -- scripts/checks/deps/affected_tests.py has no __main__, no argparse and no
+      --base flag, so a module-invocation form would print nothing and exit 0 unconditionally,
+      passing vacuously. Verified by execution.
     fix_if: >-
       Silent truncation would under-select tests for this PR -- a 476-file add plus a delete
       referenced by five test modules is exactly the shape that overflows. If the cap is hit,
@@ -474,9 +497,9 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
-      Now a real threshold gate rather than a recorded measurement, so it IS kernel-expressible --
-      but its subject is this migration's own diff shape (a one-time 476-file add), not a standing
-      property of the repository, so graduating it would register a guard with no future subject.
+      A real gate on the selector's own capped flag, so it IS kernel-expressible -- but its subject
+      is this migration's own diff shape (a one-time 476-file add), not a standing property of the
+      repository, so graduating it would register a guard with no future subject.
   - step: 16
     phase: pre-deploy
     action: Full validation passes end to end before commit.
@@ -518,6 +541,28 @@ verification_plan:
       Asserts the ABSENCE of behavior change from a prose-only edit. The modules' real behavior is
       already guarded by these same standing mirror tests, so graduating this would register a
       duplicate of coverage that already exists rather than a new regression guard.
+  - step: 20
+    phase: pre-deploy
+    action: >-
+      Both decomposed sources resolve to their test PACKAGE directories, not to the deleted files.
+    command: >-
+      bin/venv-python -c "from pathlib import Path;
+      from scripts.test_coverage_checker import map_source_to_test;
+      from scripts.checks.misc.validate_test_coverage import validate_test_coverage;
+      srcs=['scripts/verification_graduation.py','scripts/checks/verification/validate_graduation_completeness.py'];
+      [print(' ',s,'->',map_source_to_test(Path(s))) for s in srcs];
+      assert all(map_source_to_test(Path(s)).is_dir() for s in srcs), 'still routing to a file';
+      f=[]; validate_test_coverage(f); assert not f, f; print('both sources route to packages; coverage gate green')"
+    expected: Both sources resolve to directories and validate_test_coverage appends nothing.
+    fix_if: >-
+      Resolution to a FILE means the _CONCERN_SPLIT_TEST_PACKAGES registration is missing -- the
+      full tier will fail with 'missing test file'. A wrong directory name means the stem rule was
+      not followed: _mirror_source_to_test derives the package from the SOURCE STEM, so
+      validate_graduation_completeness.py maps to validate_graduation_completeness/, never a
+      shortened form.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: decomposed-sources-route-to-test-packages
   - step: 19
     phase: pre-deploy
     action: >-
@@ -530,12 +575,17 @@ verification_plan:
       import yaml; plan=yaml.safe_load(open('docs/plans/PLAN-verification-registry-sharding.yaml'));
       owed=sum(1 for s in plan['verification_plan'] if s.get('graduation')=='graduate');
       n=len(rows); total=n+owed; print('modified:', n, 'added:', owed, 'total:', total,
-      '-> projected', round(total*1.64), 's mean /', round(total*4.36), 's worst of a 300s budget');
-      assert total*4.36 < 150, f'{total} records exceeds half the fast-tier budget at observed worst-case'"
+      ts=sum(1 for e in rows if e.get('primitive_slot')=='test_selector')
+      + sum(1 for s in plan['verification_plan'] if s.get('graduation')=='graduate'
+      and s.get('command','').find('pytest')>=0); ce=total-ts;
+      worst=ts*8.2+ce*4.5; print('test_selector:', ts, 'command_exit_zero:', ce,
+      '-> worst-case', round(worst), 's of a 300s budget');
+      assert worst < 150, f'{total} records project to {round(worst)}s, over half the fast-tier budget'"
     expected: >-
-      modified 8 (the re-authored self-referential records, minus any retired), added 12 (this
-      plan's obligated graduations), total 20 -> ~33s at the measured mean and ~87s at the observed
-      worst case, both under the 150s half-budget assertion.
+      modified 7 (the 8 self-referential records minus plan-obligations-enumeration-homed, retired),
+      added 12 -> ~19 records. PER-SLOT, because the two slots differ by ~4x and the populations are
+      mixed: ~7 test_selector at a measured 5.6s mean / 8.2s max, ~12 command_exit_zero at 1.3s mean
+      / 4.5s max -> ~55s mean, ~111s worst case. Under the 150s half-budget assertion.
     fix_if: >-
       This plan's own migration is the first exerciser of the modified-record rule it introduces,
       on a check that already dominates the fast tier and has twice exceeded it. This gate sizes
@@ -578,7 +628,7 @@ test_obligations:
       Both the current-state and baseline registry readers resolve the sharded layout, preserving
       the (plan_slug, check_id) join the implement-PR leg relies on.
     verification_step: 4
-    test_selector: tests/checks/verification/graduation_completeness/test_implement_leg.py::TestShardedRegistryReaders
+    test_selector: tests/checks/verification/validate_graduation_completeness/test_implement_leg.py::TestShardedRegistryReaders
     red_green_expectation: red before (readers bound to the flat path), green after
   - source: scripts/checks/registry.py
     behavior: unchanged -- docstring path reference only
@@ -723,8 +773,8 @@ context:
     lifecycle pressure instead of accreting silently') is about accretion, not comprehension, and
     476 files can become 4,760 with nothing surfacing. The argument that it has no subject:
     differential admission costs 7.1s per NEWLY-ADDED record, not per corpus record, so admission
-    cost is invariant to corpus size; and the structural census measures 0.092s over 195 governed
-    files, projecting to ~0.32s with +476 -- immaterial against reversal condition (b)'s
+    cost is invariant to corpus size; and the structural census measures 0.09-0.13s over 195 governed
+    files, projecting to ~0.32-0.44s with +476 -- immaterial against reversal condition (b)'s
     'materially attributes to the census walk' bar. The whole-file-load half holds independently:
     exactly one agent-facing reference exists (.claude/skills/implement/SKILL.md:372), a per-record
     append instruction.
@@ -777,7 +827,7 @@ context:
     re-introducing rec-3166 -- 'the root seam had no paired base seam', i.e. reading the real
     repository while operating on an injected root.
   - "Decision-scout verdict + CITE list (verbatim decision ids): round 1 BLOCK (Decision 166 clause 6), round 2 FLAGS_FOUND, round 3 FLAGS_FOUND. CITE: dec-166, dec-165, dec-163, dec-170, dec-169, dec-168, dec-167, dec-162, dec-160, dec-153, dec-150, dec-147, dec-146, dec-137, dec-135, dec-132, dec-128, dec-118, dec-114, dec-110, dec-104, dec-93, dec-87, dec-86, dec-85, dec-73, dec-67, dec-55, dec-48, dec-43; CD.29, T3.1, T3.7, T2.26, T4.16."
-  - "gates: decision-scout=FLAGS_FOUND after 3 round(s); plan-critique=REVISE round 1 (12 findings) then REVISE round 2 (5 blocking B1-B5 + 6 non-blocking N1-N6), all adopted; round 3 pending"
+  - "gates: decision-scout=FLAGS_FOUND after 3 round(s); plan-critique=REVISE round 1 (12 findings) then REVISE round 2 (5 blocking B1-B5 + 6 non-blocking N1-N6), all adopted; REVISE round 3 (F1-F3 blocking, all mechanical and introduced by the round-2 test decomposition; F4-F8 non-blocking), all adopted; convergence cap reached and escalated to the operator"
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
