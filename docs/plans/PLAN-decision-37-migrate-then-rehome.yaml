@@ -103,11 +103,6 @@ scope:
   - file: scripts/ducklake_neon_smoke_test.py
     action: Modify
     purpose: Docstring citation repoint to the new contract (not Lambda-packaged).
-  - file: docs/CLAUDE.md
-    action: Modify
-    purpose: >-
-      Add the decision-migration manifest to the Class-to-home map, mirroring the existing
-      intent-migration sibling row.
   - file: docs/decisions-index.json
     action: Modify
     purpose: Regenerated after compaction; Decision 37 flips to currency superseded_compacted.
@@ -480,13 +475,6 @@ test_obligations:
     test_selector: tests/checks/structural/test_budget_raises.py
     red_green_expectation: >-
       Green if the entry is absent (trim sufficed) or correctly marked; red on an unmarked raise.
-  - source: docs/CLAUDE.md
-    behavior: The decision-migration manifest has a Class-to-home map row.
-    verification_step: 12
-    command: "bin/venv-python -m scripts.validate"
-    red_green_expectation: >-
-      Waived as a discriminating unit -- this is a navigation-index row with no behavior of its
-      own; the full-tier run is what proves it did not break the prose/placement gates.
   - source: docs/decisions-index.json
     behavior: Decision 37 projects currency superseded_compacted and the index stays within its pin.
     verification_step: 5
@@ -593,7 +581,9 @@ constraints:
     split) so a reader cannot conflate the two, and must contain NO account IDs, ARNs or
     ExternalIds (Decision 101 public-repo boundary; this repository is PUBLIC).
   - >-
-    The Decision 163 stub-grammar narrowing stays in the decisions-domain check
+    The stub-grammar narrowing (Decision 149's stub_grammar, as amended by Decision 165 -- NOT
+    Decision 163, which governs the full-tier verification-plan obligation and carries no
+    stub-grammar content) stays in the decisions-domain check
     (validate_decision_entry_conformance). Do NOT fuse it into the new contract's evaluator --
     that evaluator's sole job is resolving secret-material-handling.yaml, and mixing domains
     would make the Class D evaluator claim coverage it does not have.
@@ -618,6 +608,17 @@ constraints:
     'docs/contracts/decision-entry.yaml' (or 'docs/contracts') -- _marker_guard's
     _expand_ancestor_candidates yields exactly those two candidates for that key, and Decision 165
     authorizes by the cited entry NAMING the key, never by the entry merely existing.
+  - >-
+    Do NOT add a docs/CLAUDE.md Class-to-home map row for the decision-migration manifest, even
+    though the docs/intent-migration sibling has one. config/prose_budgets.yaml pins
+    S2 docs/CLAUDE.md at 3813 bytes and the file measures exactly 3813 -- ZERO headroom -- so the
+    ~61-byte row reds validate_prose_limits in BOTH tiers. A prose raise is not in scope and would
+    need its own '# raise-approved: dec-174' marker plus the literal 'docs/CLAUDE.md' in
+    Decision 174's body (_expand_ancestor_candidates yields that single candidate). The row is
+    redundant anyway: docs/contracts/file-router.yaml already carries the route, and
+    docs/PROJECT_CONTEXT.md names file-router.yaml the discovery-and-ownership index. This is the
+    SAME zero-headroom property that ruled out an agent_surface evaluator -- scoping an S2 edit
+    here would have contradicted the plan's own reasoning.
   - >-
     config/agent/verification_registry/registry.yaml measures 5,972 effective lines against its
     6,000 ceiling -- 28 lines of headroom. Every 'graduate' disposition in this plan costs a
@@ -683,9 +684,14 @@ context:
     WRONG, because it would force compaction on partially-superseded entries and contradict the
     eligibility criterion this plan preserves. The rule keys on the body declaring
     '**Status:** Superseded' instead, which catches a malformed compaction attempt while leaving
-    a full-bodied entry with a forward pointer alone. Measured today its blast radius across BOTH
-    corpus files is exactly {44, 58}, both already conforming (the archive uses no
-    '**Status:** Superseded' markers). Decision 37 carries no '**Status:**' marker at all today,
+    a full-bodied entry with a forward pointer alone. THE MANDATED PREDICATE IS
+    scripts.decisions_md.status_is_superseded -- never a literal substring test. This matters:
+    docs/DECISIONS_ARCHIVE.md DOES carry ten '**Status:** Superseded by Decision N' lines
+    (Decisions 23, 40, 42, 49, 50, 51, 56, 68, 69, 71), and a substring implementation would pull
+    all ten full-bodied archive entries into the enforcement set and red them. They are excluded
+    only because bold_status() normalizes to exactly 'Superseded', which 'Superseded by Decision N'
+    does not equal. With the correct predicate, measured blast radius across BOTH corpus files is
+    exactly {44, 58}, both already conforming. Decision 37 carries no '**Status:**' marker at all today,
     so it ENTERS the enforcement set only once compaction begins -- an in-PR transient, never a
     pre-existing red. Round 2's proposed key ('**Superseded by: Decision N**') was verified to
     falsely flag Decision 149 itself, which mentions the marker in prose while full-bodied and live.
@@ -730,13 +736,22 @@ context:
     (historical change records -- immutable by nature, correctly left pointing at the number,
     which still resolves to a header).
   - >-
-    ACCEPTED WARN: Decision 174 will likely exceed Decision 167 clause 3's 6,144-byte per-entry
-    authoring norm -- it carries an amendment, the branch mechanism, the exercised instance and
-    an explicit non-claim. (It carries NO Decision 166 (d) acknowledgement: constraint 8 forbids
-    one, because (d) does not fire.) Re-measure the drafted entry; if it now fits under 6,144
-    bytes, no warning is owed at all. That norm is WARN-tier by design.
-    Accept the warning or trim the Related block; Decision 167's own reversal conditions forbid
-    raising the cap to fit.
+    HARD CONSTRAINT, NOT A WARNING: Decision 167 clause 3's 6,144-byte per-entry authoring cap
+    HARD-FAILS on a new-in-diff entry. It was WARN-tier only until migration step 3 flipped it,
+    and step 3 fired at PR #895 (commit eaff8043) -- the same commit this plan already tracks for
+    the iam-simulate-fixture marker. Verified in scripts/checks/decisions/validate_decisions_size.py:
+    _per_entry_cap_failures (renamed from _per_entry_cap_warnings precisely because the old name
+    misleads) appends 'DECISIONS size governance' to failed, and decisions/_manifest.py registers
+    the check with pre=True AND full_segment='full_after_lint' -- both tiers, unscoped. Decision 174
+    is not in the baseline, so it WILL be measured. It MUST land under 6,144 bytes or verification
+    steps 10 and 12 both go red and acceptance criterion 10 cannot be met. Relief is trimming the
+    Related block or deferring detail to docs/contracts/decision-entry.yaml -- NEVER a raise
+    (Decision 167's own reversal conditions and Decision 166 point 6 both forbid raising to fit).
+    Calibration: the four entries authored since the cap armed measure 5,757 / 6,056 / 5,775 /
+    6,137 bytes, so a conforming entry of this scope is achievable but has little slack.
+    Decision 174 carries an amendment, the branch mechanism, the exercised instance and an
+    explicit non-claim -- and NO Decision 166 (d) acknowledgement, which constraint 8 forbids
+    because (d) does not fire.
   - >-
     MANIFEST WORDING CAUTION: the unprocessed rows (Decision 80, marker-carrying via an inbound
     Decision 104 edge; Decisions 24 and 25, marker-less) must be worded as ENUMERATION ONLY.
@@ -765,7 +780,10 @@ context:
     Branch was 0 commits behind origin/main at planning time; no scope overlap with main. A
     parallel session is scoping a DECISIONS.md sweep over decision-entry.yaml's compaction
     section -- coordinate before implementing to avoid a collision in a file with one effective
-    line of headroom.
+    line of headroom. ALSO landed on main mid-planning: PLAN-verification-registry-sharding
+    (#952, commit 88fd8b45). It is a plan artifact only, so registry.yaml is unchanged and this
+    plan's 5,972/6,000 arithmetic still holds -- but if that plan lands before this one,
+    re-measure the registry headroom before authoring the five graduated rows.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -834,8 +852,10 @@ execution_steps:
     scripts/ducklake_neon_smoke_test.py; make credential-routing.yaml DELEGATE its
     SECRET-VALUE-OUT-OF-BAND invariant to the new contract rather than restate it.
   - >-
-    docs/contracts/file-router.yaml -- add both routes; the contract route's topic must equal the
-    Class D subject exactly.
+    docs/contracts/file-router.yaml -- add both routes (the contract route's topic must equal the
+    Class D subject exactly) AND the amendment_log[] entry check_amendment_log_for_class_d
+    requires of any parsed-content change to this Class D file. Do NOT add a docs/CLAUDE.md
+    Class-to-home row -- see the constraint forbidding it.
   - Regenerate the index -- bin/venv-python -m scripts.decisions_index --write.
   - Execute the Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55).
   - >-
