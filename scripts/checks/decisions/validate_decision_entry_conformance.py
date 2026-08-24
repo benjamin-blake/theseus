@@ -44,8 +44,10 @@ from scripts.decisions_md import (
     _BOLD_STATUS_RE,
     _DECISION_MARKER_BODY,
     extract_entry_envelope,
+    extract_superseded_by,
     is_compacted_stub,
     iter_decision_headings,
+    status_is_superseded,
 )
 
 _CONTRACT_REL_PATH = "docs/contracts/decision-entry.yaml"
@@ -165,6 +167,42 @@ def _load_envelope_config(root: Path, failed: list[str]) -> Optional[tuple[list[
     return [str(f) for f in envelope_cfg["required_fields"]], {str(k): str(v) for k, v in routing.items()}
 
 
+def _superseded_stub_grammar_issues(
+    current_entries: dict[int, str], new_number_set: set[int], required_markers: list[str]
+) -> tuple[list[str], int]:
+    """Widened stub_grammar enforcement (Decision 175 / T2.56 migration step 7, closing the hole
+    where a malformed compaction of a baseline-present entry passed CI silently): ANY entry whose
+    body declares '**Status:** Superseded' must be a conforming compacted stub, independent of
+    origin/main baseline presence. Keys on status_is_superseded (the body declaring '**Status:**
+    Superseded' exactly) -- never a '**Superseded by:**' substring test, which would falsely catch
+    a full-bodied entry that merely mentions the marker in prose (e.g. Decision 149) while missing
+    a genuinely malformed compaction whose Status line reads differently. New-in-diff entries get
+    this for free from the caller's own envelope-conformance loop (a strictly stronger check), so
+    this walks only baseline-present numbers. Returns (issues, count of entries examined)."""
+    issues: list[str] = []
+    checked = 0
+    for n in sorted(current_entries):
+        if n in new_number_set:
+            continue
+        block = current_entries[n]
+        if not status_is_superseded(block):
+            continue
+        checked += 1
+        missing = _missing_markers(block, required_markers)
+        if missing:
+            issues.append(
+                f"  FAIL: Decision {n} declares '**Status:** Superseded' but is missing marker(s): {missing} "
+                "(docs/contracts/decision-entry.yaml compaction.stub_grammar)."
+            )
+        if not extract_superseded_by(block):
+            issues.append(
+                f"  FAIL: Decision {n} declares '**Status:** Superseded' but carries no resolvable "
+                "'**Superseded by: Decision N**' pointer -- malformed compacted stub "
+                "(docs/contracts/decision-entry.yaml compaction.stub_grammar)."
+            )
+    return issues, checked
+
+
 # Module-level alias, not a re-implementation: the compaction-stub predicate is promoted to
 # scripts.decisions_md.is_compacted_stub (DAF-03 / PLAN-decision-corpus-currency) so exactly one
 # definition exists. Retained under this private name because this module's existing test suite
@@ -213,45 +251,18 @@ def _significance_issues(envelope: dict, routing_tokens: dict[str, str]) -> list
     return issues
 
 
-@registry.register("validate_decision_entry_conformance", owner="platform")
-def validate_decision_entry_conformance(
-    failed: list[str],
-    root: Path | None = None,
-    baseline_reader: BaselineReaderFn | None = None,
-) -> None:
-    """Enforce the decision-entry authoring grammar on new-in-diff decision numbers only.
-
-    root / baseline_reader are test/dogfood injection seams (mirrors the vp_replay /
-    graduation_completeness precedents) -- default to _common.ROOT and a real
-    `git show origin/main:...` reader respectively.
-    """
-    print("\n=== Decision-entry authoring-grammar conformance (DAF-03) ===")
-    root = root if root is not None else _common.ROOT
-    baseline_reader = baseline_reader or _default_baseline_decision_numbers
-
-    baseline_numbers = baseline_reader(root)
-    if baseline_numbers is None:
-        print("  SKIP: origin/main unreachable (advisory locally, authoritative in CI).")
-        return
-
-    required_markers = _load_required_markers(root, failed)
-    if required_markers is None:
-        return
-
-    current_entries = _current_decision_entries(root)
-    new_numbers = sorted(set(current_entries) - baseline_numbers)
-
-    if not new_numbers:
-        print("  PASS: no genuinely-new decision entries in this diff (origin/main baseline unchanged).")
-        return
-
-    envelope_config = _load_envelope_config(root, failed)
-    if envelope_config is None:
-        return
-    envelope_required_fields, routing_tokens = envelope_config
-
-    block_separator_form = _load_block_separator_form(root)
-
+def _new_entry_conformance_issues(
+    new_numbers: list[int],
+    current_entries: dict[int, str],
+    required_markers: list[str],
+    block_separator_form: str | None,
+    envelope_required_fields: list[str],
+    routing_tokens: dict[str, str],
+) -> list[str]:
+    """Full envelope-conformance sweep over new-in-diff decision numbers: required markers, the
+    block_separator obligation, metadata-envelope well-formedness, the number-match sub-check,
+    Significance routing, and envelope/body-marker conflicts. A Decision 149 compacted stub is
+    exempt from the envelope obligation (a compaction replaces a body it never authored)."""
     issues: list[str] = []
     for n in new_numbers:
         block = current_entries[n]
@@ -294,6 +305,66 @@ def validate_decision_entry_conformance(
 
         for conflict in _envelope_body_conflicts(envelope, block):
             issues.append(f"  FAIL: Decision {n} envelope conflicts with its bold-marker twin on {conflict}.")
+    return issues
+
+
+@registry.register("validate_decision_entry_conformance", owner="platform")
+def validate_decision_entry_conformance(
+    failed: list[str],
+    root: Path | None = None,
+    baseline_reader: BaselineReaderFn | None = None,
+) -> None:
+    """Enforce the decision-entry authoring grammar on new-in-diff decision numbers only.
+
+    root / baseline_reader are test/dogfood injection seams (mirrors the vp_replay /
+    graduation_completeness precedents) -- default to _common.ROOT and a real
+    `git show origin/main:...` reader respectively.
+    """
+    print("\n=== Decision-entry authoring-grammar conformance (DAF-03) ===")
+    root = root if root is not None else _common.ROOT
+    baseline_reader = baseline_reader or _default_baseline_decision_numbers
+
+    baseline_numbers = baseline_reader(root)
+    if baseline_numbers is None:
+        print("  SKIP: origin/main unreachable (advisory locally, authoritative in CI).")
+        registry.skipped("origin/main unreachable")
+        return
+
+    required_markers = _load_required_markers(root, failed)
+    if required_markers is None:
+        registry.skipped("required_markers unavailable")
+        return
+
+    current_entries = _current_decision_entries(root)
+    new_numbers = sorted(set(current_entries) - baseline_numbers)
+    new_number_set = set(new_numbers)
+
+    issues, superseded_checked = _superseded_stub_grammar_issues(current_entries, new_number_set, required_markers)
+
+    if not new_numbers:
+        if issues:
+            for issue in issues:
+                print(issue)
+            failed.append("Decision-entry conformance")
+        else:
+            print(
+                "  PASS: no genuinely-new decision entries in this diff (origin/main baseline unchanged); "
+                "no baseline-present Superseded entry is a malformed stub."
+            )
+        registry.examined(superseded_checked, unit="superseded_status_entries")
+        return
+
+    envelope_config = _load_envelope_config(root, failed)
+    if envelope_config is None:
+        registry.skipped("envelope_config unavailable")
+        return
+    envelope_required_fields, routing_tokens = envelope_config
+
+    block_separator_form = _load_block_separator_form(root)
+
+    issues += _new_entry_conformance_issues(
+        new_numbers, current_entries, required_markers, block_separator_form, envelope_required_fields, routing_tokens
+    )
 
     if issues:
         for issue in issues:
@@ -302,3 +373,4 @@ def validate_decision_entry_conformance(
     else:
         plural = "y" if len(new_numbers) == 1 else "ies"
         print(f"  PASS: {len(new_numbers)} new decision entr{plural} conform to the canonical grammar ({new_numbers}).")
+    registry.examined(len(new_numbers) + superseded_checked, unit="decision_entries_checked")

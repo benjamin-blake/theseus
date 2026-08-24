@@ -1,9 +1,11 @@
 # CD.28 T0.4 -- Tier 1 (DeepSeek) and Tier 2 (Anthropic) inference credential envelopes.
 #
 # Secret VALUES are set out-of-band via aws secretsmanager put-secret-value -- never Terraform-managed.
-# No secret-version resources: key material must never enter Terraform state (Decision 37 out-of-band
-# precedent). The neon_ducklake_catalog.tf DSN is the in-band counter-example; these API keys differ --
-# they are entered by the human via CLI and must never appear in state.
+# No secret-version resources: key material must never enter Terraform state
+# (docs/contracts/secret-material-handling.yaml SECRET-VALUE-OUT-OF-BAND pattern, Decision 175 --
+# rehomed from the Decision 37 precedent). The neon_ducklake_catalog.tf DSN is the in-band
+# counter-example; these API keys differ -- they are entered by the human via CLI and must never
+# appear in state.
 #
 # Both ARNs are exported as outputs and referenced by the InferenceCredentialsRead IAM statement
 # in platform_roles.tf, ensuring the grant is ARN-scoped (no wildcard).

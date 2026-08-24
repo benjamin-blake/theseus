@@ -344,8 +344,9 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
 
   statement {
     # T2.43 gap: the scheduled-agent-dispatcher / findings-processor GitHub PAT secret --
-    # read-only; the value is set out-of-band (Decision 37), this apply role owns the secret's
-    # lifecycle only.
+    # read-only; the value is set out-of-band
+    # (docs/contracts/secret-material-handling.yaml, Decision 175), this apply role owns the
+    # secret's lifecycle only.
     sid       = "SecretsManagerGithubPatRead"
     effect    = "Allow"
     actions   = ["secretsmanager:Describe*", "secretsmanager:Get*"]
@@ -369,7 +370,8 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
   statement {
     # Broker credential envelopes (Alpaca paper + live) -- plan-time refresh-read so the
     # speculative-plan / drift jobs can DescribeSecret these during the provider refresh walk for
-    # secrets_manager_brokers.tf (T2.14). Read-only; values are out-of-band (Decision 37).
+    # secrets_manager_brokers.tf (T2.14). Read-only; values are out-of-band
+    # (docs/contracts/secret-material-handling.yaml, Decision 175).
     sid     = "SecretsManagerBrokerCredentialsRead"
     effect  = "Allow"
     actions = ["secretsmanager:Describe*", "secretsmanager:Get*"]

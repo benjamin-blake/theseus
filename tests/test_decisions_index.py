@@ -226,7 +226,7 @@ class TestCurrencyProjection:
         expected = {
             44: "superseded_compacted",
             58: "superseded_compacted",
-            37: "superseded_pointer",
+            37: "superseded_compacted",  # Decision 175 migrate_then_rehome compaction
             80: "superseded_pointer",
             43: "amended",
             67: "amended",
