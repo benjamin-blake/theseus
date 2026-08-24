@@ -1,0 +1,322 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "executor-substrate-guard-deferral"
+intent: >-
+  Register, as an enforced roadmap dependency rather than a remembered intention, that the
+  deterministic apply guard must classify the executor's compute-substrate resource types before
+  the executor can execute anything -- and close out T2.45, whose shipped work has sat unmarked
+  for a month and is the precedent for exactly the rot this registration exists to prevent.
+plan_type: IMPLEMENTATION
+verification_tier: V1
+plan_path: docs/plans/PLAN-executor-substrate-guard-deferral.yaml
+phase: >-
+  Platform tier_item T4.2 (agent-persona nodes; the item whose completion activates personas and
+  to which Decision 67's reversal is tied via CD.17). Bookkeeping-only registration; builds no
+  guard stage and selects no substrate.
+scope:
+  - file: docs/ROADMAP-PLATFORM.yaml
+    action: Modify
+    purpose: >-
+      Append exit criterion c7 to T4.2 recording the guard-classification prerequisite and its
+      trigger; flip T2.45 to status complete with completed_at, a progress_note, and per-criterion
+      status met + met_by pointing at the merged plan that shipped the work.
+  - file: tests/executor_substrate_guard_deferral/__init__.py
+    action: Create
+    purpose: Package marker, mirroring the tests/provider_agnostic_tier_model/ precedent.
+  - file: tests/executor_substrate_guard_deferral/test_deferral_registration.py
+    action: Create
+    purpose: >-
+      Mirror test asserting the registration actually exists and the closeout is well-formed: T4.2
+      carries an open criterion naming the guard prerequisite and its trigger, and T2.45 is complete
+      with every criterion met and a met_by that resolves.
+bundled_recommendations: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    T4.2 carries a NEW exit criterion (dict-shaped, status open) stating that deterministic guard
+    classification of the executor's compute-substrate resource types must be live before any
+    persona can execute, and naming its trigger: the substrate ratified by T4.15, and rec-2816's
+    gated-apply approval weakness remediated.
+  - >-
+    The criterion is APPENDED to T4.2's existing six bare-string criteria, not inserted, so the
+    model's positional c1..c6 auto-assignment is undisturbed and the new id is stable at c7.
+    Verified: the mixed bare-string-plus-dict list validates against TierItem and yields unique ids.
+  - >-
+    T2.45 reads status complete with completed_at set, a progress_note citing the evidence, and all
+    three criteria status met with met_by "terraform-guard-resource-policy" -- which resolves to a
+    real docs/plans/PLAN-terraform-guard-resource-policy.yaml, satisfying validate_platform_roadmap
+    check (i).
+  - >-
+    The T2.45 closeout is grounded in re-executed evidence, not inference: a Principal "*"
+    aws_lambda_permission exits the guard 2, the EventBridge safe shape exits 0, and all six
+    RESOURCE_POLICY_TYPES block on a non-inert change (Decision 136 Status-Trusted-Never-Inferred).
+  - >-
+    A recommendation is filed through the ops portal carrying the verified recon for the deferred
+    guard work, so the next session does not re-derive it: the measured fall-through, the candidate
+    type list with its provider-version caveat, and the four mechanical constraints.
+  - >-
+    No guard stage, resource-type frozenset, or contract classification row is created by this
+    plan. scripts/terraform_apply_guard.py and docs/contracts/environment-taxonomy.yaml are
+    untouched, so the CODEOWNERS protected-path review is not triggered.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Run the mirror test: it parses the real roadmap and asserts the T4.2 criterion exists and is
+      open, and that T2.45 is complete with all criteria met and a resolving met_by.
+    command: bin/venv-python -m pytest tests/executor_substrate_guard_deferral/ -q
+    expected: Exit 0, no failures and no collection errors.
+    fix_if: >-
+      The T4.2 assertion fails -- the criterion was not appended or its text omits the trigger. The
+      T2.45 assertion fails -- a criterion was left open, completed_at is unset, or met_by does not
+      resolve to a real plan file.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      config/agent/verification_registry/registry.yaml measures 5,972 of its 6,000 effective-line
+      budget and one row in the precedent shape costs 14 lines, leaving room for two rows total; a
+      separate registry refactor is being commissioned to relieve exactly this. Spending a row on a
+      roadmap-content assertion is the wrong call while that headroom is the binding constraint --
+      the criterion is already durable in git and schema-enforced by validate_platform_roadmap.
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Re-execute the evidence for the T2.45 closeout rather than trusting the prior session's word:
+      drive the real guard over synthesized plans for its three criteria and print one verdict line.
+    command: >-
+      bin/venv-python -c "from scripts.terraform_apply_guard import evaluate_plan,
+      RESOURCE_POLICY_TYPES as T;
+      rc=lambda t,a,af: {'address':f'{t}.x','type':t,'change':{'actions':a,'before':None,'after':af}};
+      c1=len(evaluate_plan({'resource_changes':[rc('aws_lambda_permission',['create'],{'principal':'*','action':'lambda:InvokeFunction','function_name':'agent-platform-x'})]}));
+      c2=len(evaluate_plan({'resource_changes':[rc('aws_lambda_permission',['create'],{'principal':'events.amazonaws.com','action':'lambda:InvokeFunction','function_name':'agent-platform-x'})]}));
+      c3=len({f['type'] for f in evaluate_plan({'resource_changes':[rc(t,['update'],{'policy':'{}'}) for t in T]})});
+      print('c1_blocked=%s c2_passes=%s c3_types_blocked=%d' % (c1>0, c2==0, c3))"
+    expected: >-
+      Exactly "c1_blocked=True c2_passes=True c3_types_blocked=6". Re-run this session and it
+      printed that; if it does not print it now, the closeout is not evidenced and must not land.
+    fix_if: >-
+      Any value differs -- T2.45's criteria do NOT all hold on the current tree, so the closeout is
+      unfounded. STOP and do not flip the item; report the divergence instead.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The three assertions this proves are already the subject of the graduated row
+      guard-resource-policy-types-registered (plan_slug terraform-guard-resource-policy, graduated
+      2026-07-21), whose check_spec counts the same six type literals. A second row over the same
+      invariant would consume 14 of the registry's 28 remaining effective lines for no new coverage.
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Confirm the filed recommendation is retrievable from the warehouse after a cache sync, so the
+      deferred recon is durably recorded and will surface in a future /orient.
+    command: >-
+      bin/venv-python -m scripts.sync.ops pull && bin/venv-python -c "import json,pathlib;
+      rows=[json.loads(l) for l in
+      pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()];
+      m=[r for r in rows if 'guard' in (r.get('title') or '').lower() and 'substrate' in
+      (r.get('title') or '').lower() and r.get('status')=='open'];
+      print('matching_open_recs=%d' % len(m))"
+    expected: '"matching_open_recs=1" or greater. Zero means the portal write did not land.'
+    fix_if: >-
+      Zero matches -- the file_rec call failed or was skipped. A portal write that cannot complete
+      fails loudly at the call site (Decision 84 I-4); re-file after restoring connectivity. Never
+      hand-edit logs/.recommendations-log.jsonl to satisfy this step -- it is a read cache and
+      validate.py fails CI on a direct write.
+    hermetic: false
+    graduation: not-applicable
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Fast presubmit tier -- the authoritative PR gate. Covers validate_platform_roadmap (schema,
+      criteria-status integrity checks (i)/(ii)/(iii)), validate_plan_documents and
+      validate_structural_size_limits.
+    command: bin/venv-python -m scripts.validate --pre
+    expected: >-
+      Exit 0, ending with the two lines "=== Validation Summary (scope: pre) ===" then
+      "All checks passed." (verified against this tree before the change).
+    fix_if: >-
+      Check (i) fails -- a met_by does not resolve to a real plan or 40-hex sha. Check (ii) fails --
+      a diff-touched tier_item still carries bare-string criteria. Check (iii) fails -- a
+      closes_criteria ref somewhere does not resolve.
+    hermetic: false
+    graduation: not-applicable
+  - step: 5
+    phase: pre-deploy
+    action: Full presubmit tier before handoff.
+    command: bin/venv-python -m scripts.validate
+    expected: Exit 0, ending with "All checks passed."
+    fix_if: >-
+      A full-tier-only check fails; fix the flagged file. Do not narrow the scope to make the tier
+      pass.
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: docs/ROADMAP-PLATFORM.yaml
+    behavior: >-
+      T4.2 carries an open criterion naming the guard-classification prerequisite and its trigger,
+      and T2.45 is complete with every criterion met and a met_by that resolves to a real plan.
+    verification_step: 1
+    test_selector: tests/executor_substrate_guard_deferral/test_deferral_registration.py
+    red_green_expectation: >-
+      red before (T4.2 has six criteria and no guard criterion; T2.45 is not_started with three open
+      criteria), green after
+constraints:
+  - >-
+    Bookkeeping only. Do NOT create the guard stage, the resource-type frozenset, or the contract
+    classification row. Deferring that work is the entire point of this plan; implementing it here
+    would defeat it.
+  - >-
+    Decision 136 / Status-Trusted-Never-Inferred: the T2.45 flip is grounded in step 2's re-executed
+    evidence, and every met_by names terraform-guard-resource-policy -- the merged plan that shipped
+    the work -- never this plan. If step 2 does not print its expected line, do not flip the item.
+  - >-
+    APPEND the T4.2 criterion; never insert. TierItem._normalize_exit_criteria assigns bare-string
+    criteria positional ids c1..c6, so inserting ahead of them renumbers what other artefacts may
+    reference. Appending as an explicit dict with id c7 was verified to validate and keep ids unique.
+  - >-
+    Do NOT convert T4.2's six bare-string criteria to dicts. Verified: validate_platform_roadmap
+    check (ii) derives touched_ids from `- id:` lines in the diff and matches them against
+    TIER_ITEM ids, so criterion ids never trigger it and the conversion is not required. Leaving
+    them is the smaller diff; converting is separable work.
+  - >-
+    Decision 84 Single Portal Invariant: the recommendation is filed via
+    scripts.ops_data_portal only, with get_rec_write_guidance() called before file_rec() per the
+    Precision Context Injection rule. Never write logs/.recommendations-log.jsonl directly, and
+    never supply a client-side rec id -- the writer allocates it.
+  - >-
+    Decision 86: the deferral is forward intent and belongs on a tier_item. Do not create a prose
+    document for it, and do not put it in a Decision body.
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - "Decision-scout verdict + CITE list (verbatim decision ids): <pending Step 6a re-dispatch>"
+  - "gates: decision-scout=<pending>; plan-critique=<pending>"
+  - >-
+    WHY THIS PLAN EXISTS INSTEAD OF THE GUARD CHANGE. A 14-file plan adding the guard stage was
+    drafted this session and deliberately abandoned. Measured cause: of the 30 resource types
+    declared in terraform/personal, 21 fall through the guard to auto-apply, and the 12 types the
+    guard change would have covered have ZERO declarations anywhere -- so it closed no reachable
+    path. The executor is frozen (Decision 67), holds no GitHub credential (verified: no
+    executor-scoped PR-write workflow, all six scheduled agents enabled: false, and the only
+    executor references in terraform/personal are LLM API keys and table comments), and its layer-2
+    substrate is unratified, so the type list itself was speculative ahead of T4.15.
+  - >-
+    THE DECIDING ARGUMENT, from a Fable consult given facts only. The guard change's entire effect
+    is to redirect traffic INTO the tf-gated-apply human approval. rec-2816 (open, Critical) records
+    that gate as a weak control: no pending-approval notification, no independent plan verification,
+    and "the human often just trusts the agent's relay of the plan." The construction window is the
+    highest-iteration period in the project -- 96 merged commits touched terraform/personal in 90
+    days, and the DEP-02 probe alone went teardown/reland four times in three days. Routing that
+    volume through an unnotified rubber-stamp does not add assurance; it spends the gate's
+    credibility before the moment it matters.
+  - >-
+    PRECEDENT ASYMMETRY. The guard's only prior classification extension (T2.45, merged 2026-07-21)
+    was RETROSPECTIVE: verified at its parent commit, aws_lambda_permission had 8 live declarations,
+    aws_lambda_function_url 5, aws_s3_bucket_policy 1. The abandoned plan would have been the first
+    prospective one.
+  - >-
+    WHY A CRITERION AND NOT A NOTE. T2.45 itself is the counterexample that justifies this plan's
+    existence: its work shipped 2026-07-21 and its graduated registry row is dated the same day, yet
+    the item sat status not_started with all three criteria open for over a month until this session
+    re-adjudicated them. An untracked intention rots. The trigger belongs in an exit criterion where
+    validate_platform_roadmap enforces its shape, not in prose anyone must remember to re-read.
+  - >-
+    WHY T4.2 AND NOT T4.18. T4.2 is the item whose completion actually activates personas, it
+    already carries T4.15 in depends_on, and Decision 67's reversal is tied to CD.17/T4.2 (CD.17
+    state: pending). T4.18 is the operator supervision surface, a consumer rather than the
+    activation gate.
+  - >-
+    THE STRUCTURAL FIX THAT DISSOLVES THIS, recorded so it is not lost: the durable answer is a
+    default-deny stage for unclassified resource types, converting the guard from an enumerated
+    blocklist into an earned-autonomy allowlist (Decision 92 point 5's "autonomy is earned and
+    revocable PER CHANGE-CLASS"). That flip is only safe once rec-2816 makes the gate it routes to
+    real, and it would supersede the type-list approach entirely rather than extend it. It is NOT in
+    scope here.
+  - >-
+    CARVE-OUT worth preserving for the future session: a CONTENT-based security-group rule (for
+    example, route any 0.0.0.0/0 ingress to gated-apply) is a fire-code check that legitimately
+    applies during construction, independent of the type-blanket classification this plan defers.
+  - >-
+    RECON THE FILED REC MUST CARRY so it is never re-derived. The defect: evaluate_plan is one loop
+    of five continue-terminated stages with NO default case, and its docstring states an empty
+    finding list means safe to auto-apply. The candidate types, subject to re-derivation from
+    whatever T4.15 selects: aws_sfn_state_machine, aws_sfn_alias, aws_ecs_task_definition,
+    aws_ecs_service, aws_ecs_cluster, aws_ecr_repository and the four security-group family types
+    (aws_security_group, aws_security_group_rule, aws_vpc_security_group_ingress_rule,
+    aws_vpc_security_group_egress_rule -- the rule types are SEPARATE resources, so guarding only
+    aws_security_group leaves the modern idiom falling through), plus aws_ecr_repository_policy and
+    aws_ecr_registry_policy for the existing resource-policy stage. Type literals cannot be verified
+    against the provider schema from CC-web: terraform is not on PATH, there is no plugin cache, and
+    the s3 backend blocks `terraform providers` (Decision 119). They target hashicorp/aws 5.100.0
+    per terraform/personal/.terraform.lock.hcl.
+  - >-
+    THE FOUR MECHANICAL CONSTRAINTS the future session will hit, all measured this session.
+    (1) tests/test_terraform_apply_guard.py is at EXACTLY 500 of 500 effective SLOC and
+    validate_sloc_limits is pre=True, so it blocks the PR; Decision 128 forces decomposition and
+    Decision 165 admits no raise because no Decision authorises one. (2) Decomposing it requires
+    registering scripts/terraform_apply_guard.py in scripts/test_coverage_checker.py's
+    _CONCERN_SPLIT_TEST_PACKAGES, or the per-file 100% coverage floor becomes unsatisfiable --
+    map_source_to_test resolves the guard to that single module today, and the guard has no
+    config/coverage_baseline.yaml entry. (3) docs/contracts/environment-taxonomy.yaml is
+    contract class D with amendment_log: [], so check_amendment_log_for_class_d (pre=True) fails any
+    parsed-content change lacking a new entry; row keys must stay domain terms like criteria /
+    guard_verdict, never `description` or `type`, which are Class A descriptor keys that trip
+    detect_smuggled_shape. (4) The guard_classification section has NO evaluator -- nothing in
+    scripts/ reads it, and validate_environment_taxonomy lints only two-axis vocabulary on changed
+    docs while explicitly allowlisting that file -- so per Decision 168 any row added there is
+    unenforced unless it carries a machine-readable roster with a parity test against the code.
+  - >-
+    ALSO ADJACENT, not bundled: rec-2817 (open, High) targets the same guard file for a different
+    change -- carving planner-role convergence-conditioned inline-policy edits out of the in-budget
+    auto-apply set. rec-3231 (open, Medium) is the registry.yaml concurrent-append conflict, now
+    being addressed by a separate commissioned refactor.
+  - >-
+    Branch cut from origin/main at 4b5808d; preflight reported main 0 behind / 0 ahead, creds ok,
+    and ci_rca empty (no HARD BLOCK). open_recs 1107 with the non-automatable softcap breached at
+    960 -- planning context only per Decision 73. data_quality.last_run reads verdict FAIL with
+    0 passed / 0 failed / 0 warned and 0 checks defined, a degenerate empty run rather than a data
+    defect; this plan touches no table or write path.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - >-
+    Step 2 run BEFORE editing the roadmap -- its output is the evidence the T2.45 closeout rests on,
+    and a divergent result forbids the flip
+execution_steps:
+  - >-
+    Run verification step 2 first and record its output. If it does not print
+    "c1_blocked=True c2_passes=True c3_types_blocked=6", STOP: the T2.45 closeout is unfounded.
+  - >-
+    docs/ROADMAP-PLATFORM.yaml -- APPEND to T4.2's exit_criteria a dict {id: c7, status: open, text:
+    ...} stating that deterministic guard classification of the executor's compute-substrate
+    resource types must be live before any persona can execute, and naming the trigger: the
+    substrate ratified by T4.15, and rec-2816's gated-apply approval weakness remediated. Leave the
+    six existing bare-string criteria untouched.
+  - >-
+    docs/ROADMAP-PLATFORM.yaml -- flip T2.45 to status complete with completed_at, a progress_note
+    citing step 2's output and the merged plan, and convert its three criteria to status met with
+    met_by "terraform-guard-resource-policy".
+  - >-
+    tests/executor_substrate_guard_deferral/ -- add __init__.py and
+    test_deferral_registration.py parsing the real roadmap: assert T4.2 has a criterion whose text
+    names the guard prerequisite and both trigger conditions and whose status is open; assert T2.45
+    is complete with completed_at set, all criteria met, and met_by resolving to an existing
+    docs/plans/PLAN-*.yaml.
+  - >-
+    File the recommendation via the ops portal: call get_rec_write_guidance() first, then file_rec()
+    with the recon from this plan's context (the defect, the candidate type list and its
+    provider-schema caveat, the four mechanical constraints, and the default-deny structural note).
+    Let the writer allocate the id.
+  - >-
+    Execute the Verification Plan -- run each step; loop until pass; on unrecoverable failure stop
+    and RCA (Decision 55).
+  - 'Report: what was registered, step 2''s evidence line, and the allocated rec id.'
+rollback: >-
+  Single-commit revert restores T4.2's six criteria and T2.45's not_started status; the test package
+  is additive and deletes cleanly. The filed recommendation is warehouse state, not file state -- if
+  the plan is reverted, close it via the portal with a resolution naming the revert rather than
+  attempting to delete the row.
