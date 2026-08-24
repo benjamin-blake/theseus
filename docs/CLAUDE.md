@@ -38,22 +38,16 @@ Audit OUTPUTS live in `audits/`, not under `docs/`. The discovery index is
 there -- new operator procedures are `procedure:` blocks in the owning contract, per the row above.
 
 ## Plans lifecycle (RS-07)
-`docs/plans/` root holds ACTIVE plans (not yet merged-and-verified) plus the still-at-root `.yaml`
-history (see the lagged-sweep note below). The archival criterion is deterministic and
-machine-checkable: a depth-1 `docs/plans/` file is archived iff its extension is `.md` -- `.md` is
-the deprecated pre-T1.11 planning format, superseded one-way by the schema-validated `.yaml`
-format (Decision 85), so every depth-1 `.md` is definitionally pre-standard/superseded and belongs
-under `docs/plans/archive/` (in-tree history, out of the hot glob path) -- keeps the active-set
-glob cheap without deleting Decision 85 history. The first sweep (195 pre-existing `PLAN-*.md`
-files) landed at RS-07 (repository-structure restructure, phase P6); `docs/plans/archive/` was
-created BY that sweep, not merely "on first archival" as this section previously read.
+`.md` is the retired pre-T1.11 planning format, superseded one-way by the schema-validated
+`.yaml` format (Decision 85, amended by Decision 174: the superseded format carries no
+working-tree retention obligation). Retirement is by deletion, with provenance in git history --
+`docs/plans/archive/` is no longer a live destination; no `.md` plan exists in the working tree
+and none may be newly authored there.
 
-Completed `.yaml` plans are explicitly OUT of this criterion for now: a `.yaml` plan's
-"completed" status is a judgment call (merged-and-verified), not a cheap extension check, so its
-archival is deliberately LAGGED to a future, separately-scoped sweep rather than evaluated
-per-plan at completion time -- this avoids a standing done/not-done classifier in the hot
-`/plan` and `/implement` load path. Until that lagged sweep lands, completed `.yaml` plans remain
-at the `docs/plans/` root alongside active ones; do not hand-move an individual `.yaml` plan to
-`archive/` outside that sweep. `docs/contracts/file-router.yaml`'s `prose_allowlist.allowed_globs`
-entry `docs/plans/**/*.md` already covers `docs/plans/archive/*.md` via its recursive `**`
-matcher, so no file-router edit was needed for the RS-07 move.
+`docs/plans/` root holds ACTIVE `.yaml` plans (not yet merged-and-verified) plus the still-at-root
+completed `.yaml` history. A `.yaml` plan's "completed" status is a judgment call
+(merged-and-verified), not a cheap extension check, so its archival stays deliberately LAGGED to a
+future, separately-scoped sweep pending upload to the DuckLake warehouse table -- this avoids a
+standing done/not-done classifier in the hot `/plan` and `/implement` load path. Until that lagged
+sweep lands, completed `.yaml` plans remain at the `docs/plans/` root alongside active ones; do
+not hand-move an individual `.yaml` plan out of it outside that sweep.

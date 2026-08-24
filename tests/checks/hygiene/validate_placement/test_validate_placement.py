@@ -81,7 +81,7 @@ class TestValidatePlacement:
             "    targets: [logs/.recommendations-log.jsonl]\n"
             "    runtime: true\n",
         )
-        with patch("scripts.checks._common.run", side_effect=self._mock_ls_files(["logs/.friction-analysis-log.jsonl"])):
+        with patch("scripts.checks._common.run", side_effect=self._mock_ls_files(["logs/.retro-lite-log.jsonl"])):
             failed: list[str] = []
             self.validate_placement(failed, router_path=router)
         assert failed == []

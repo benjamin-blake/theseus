@@ -2,6 +2,79 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 174: A deprecated planning-artefact format carries no working-tree retention obligation -- retirement is by deletion, with provenance in git history (amends Decision 85) (Decided)
+
+```yaml
+number: 174
+status: Decided
+decided_date: "2026-08-24"
+amends: [85]
+significance:
+  value: numbered_decision
+  justification: >-
+    Establishes a forward-standing, reversal-relevant rule governing every future
+    deprecated-format retirement, so the next format transition needs no fresh adjudication. A
+    docs/contracts/*.yaml governance-note home was considered and REJECTED: no existing contract
+    owns artefact-format lifecycle (file-router owns placement, log-storage owns log routing,
+    decision-entry owns entry grammar), so a note there would create a new orphan surface rather
+    than populate an existing one.
+```
+
+**Status:** Decided
+**Date:** 2026-08-24
+**Warehouse ID:** dec-174
+
+**Problem:**
+Decision 85 records "Historical PLAN-*.md files remain in the working tree and commit history;
+none are retroactively converted (one-way, non-rolling migration)" -- accurate as a statement of
+ratification-time state, but read on its own it also reads as a forward retention directive.
+PLAN-dead-file-cleanup proposed deleting the 195 legacy `docs/plans/archive/*.md` files that
+migration left behind (dead weight: zero inbound references, ~10% of tracked bytes, and a
+measured ~21-22% share of repo-wide agent grep noise), and the decision-scout gate BLOCKed on
+exactly this clause. The repository owner clarified in-session that the clause described the
+migration's state at ratification, not a standing commitment to keep the retired format live in
+the working tree indefinitely.
+
+**Decision:**
+A deprecated planning-artefact format -- the retired `PLAN-*.md` shape Decision 85 superseded
+with the schema-validated `PlanDocument` `.yaml` format -- carries no working-tree retention
+obligation once superseded. Retirement is by deletion; provenance survives in git history and
+commit messages (Decision 147's precedent). This rule is forward-standing: it governs every
+future deprecated-artefact-format retirement, not only this one-off cleanup, so the next format
+transition needs no fresh adjudication of whether history must be kept live in the tree.
+
+A dated trailer alone under Decision 85 would not suffice for this purpose: a trailer there can
+only record that Decision 85's OWN working-tree clause was descriptive rather than directive. A
+future author retiring a DIFFERENT deprecated format has no Decision 85 entry to consult, and an
+amendment cannot carry a commitment broader than the entry it amends. This entry states the
+general rule a Decision 85 trailer cannot carry on its own; the trailer under Decision 85 (below)
+points here.
+
+**Rationale:**
+`docs/plans/archive/` sat outside the active-plan glob (`validate_plan_documents` is
+non-recursive) but not outside the agent grep path -- measured `git grep -l` hit share landing in
+that directory: `validate.py` 139/643 (21%), `ops_recommendations` 60/284 (21%), `"terraform
+apply"` 40/175 (22%). In an agent-first repository, that is a real operating cost, not cosmetic
+noise. Deletion is reversible (Decision 147: `git revert` restores the full content; commit
+history is the durable record), matching the physical-deletion posture Decision 70 reserves for
+exceptional, deliberate cases -- this Decision is what makes a deprecated-format retirement one of
+those cases, rather than a bespoke ad hoc justification each time one arises.
+
+**Related:** Decision 85 (amended -- its working-tree clause is reclassified as descriptive of
+ratification-time state, not a forward directive), Decision 121 (precedent: retire a sanctioned
+artefact outright via a numbered Decision rather than converting it), Decision 147 (provenance
+survives in git history; follow-on-recommendation pattern this plan also uses instead of closing
+rec-031), Decision 70 (physical deletion stays exceptional and deliberate -- this entry is what
+licenses it here), Decision 86 (inbound-reference sweep required before deleting a grandfathered
+doc), Decision 127 (sanctioned-prose taxonomy is unaffected -- the `docs/plans/**/*.md`
+prose_allowlist glob is kept), Decision 166 (structural-size governance's workflow_outputs exempt
+class is unaffected -- no `structural_size_budgets.yaml` edit is implied by this cleanup),
+Decision 167 (significance/category-consistency this entry's envelope follows), Decision 168
+(Class D declared-evaluator and amendment-trailer pattern this entry's Decision-85 trailer
+follows), Decision 115 (retire-by-convention without a standing guard).
+
+---
+
 ## Decision 173: Executor inference tiers are ROLES -- provider identity is configuration, and a tier's cold-start assertion follows its billing shape (amends Decisions 116, 122 and 164) (Decided)
 
 ```yaml
@@ -4803,6 +4876,9 @@ Historical PLAN-*.md files remain in the working tree and commit history; none a
 **Rationale:** Mirrors the RoadmapDocument gate (T-1.5) and the Decision 79 ratify-in-implementing-PR precedent. The `.agents/skills/` mirrors were updated as voluntary legacy hygiene -- Decision 76 supersedes Decision 58's sync obligation; no sync obligation is claimed.
 
 **Related:** CD.13, CD.22, T1.11, Decision 76 (clause 3 amended here), Decision 79 (ratification precedent), Decision 58 (superseded mirror rule), Decision 80 (registry-friendly check design).
+
+[Amendment 2026-08-24: the working-tree half of this clause was descriptive of ratification-time
+state, not a forward retention directive -- see Decision 174.]
 
 ---
 
