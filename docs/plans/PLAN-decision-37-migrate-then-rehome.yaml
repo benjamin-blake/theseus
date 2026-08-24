@@ -103,6 +103,19 @@ scope:
   - file: scripts/ducklake_neon_smoke_test.py
     action: Modify
     purpose: Docstring citation repoint to the new contract (not Lambda-packaged).
+  - file: tests/test_decisions_index.py
+    action: Modify
+    purpose: >-
+      Update the live-corpus currency expectation (line 229) from 37: superseded_pointer to
+      37: superseded_compacted. This test calls build_index() against the REAL corpus, not a
+      fixture, so it passes today and fails the moment Decision 37 is compacted.
+  - file: config/agent/verification_registry/registry.yaml
+    action: Modify
+    purpose: >-
+      Two edits: (a) repair the graduated decisions-index-currency-derivation row (check_id at
+      line 5273), whose command embeds the same 37:'superseded_pointer' map and becomes false on
+      compaction; (b) append the five new graduated rows this plan's graduate dispositions owe,
+      in the compact one-line style, per constraint 16.
   - file: docs/decisions-index.json
     action: Modify
     purpose: Regenerated after compaction; Decision 37 flips to currency superseded_compacted.
@@ -238,7 +251,13 @@ verification_plan:
     expected: Index freshness passes and the committed-size pin (112,000 bytes) holds.
     fix_if: >-
       Freshness fails -- run 'bin/venv-python -m scripts.decisions_index --write' and commit.
-      Pin fails -- do NOT raise it; the operator's standing position is that this pin is never raised.
+      Pin fails -- do NOT raise it; the operator's standing position is that this pin is never
+      raised. MOST LIKELY FAILURE, and neither of the above: the currency expectation hardcoded at
+      tests/test_decisions_index.py line 229 (37: 'superseded_pointer') and the identical map
+      embedded in the graduated decisions-index-currency-derivation row of
+      config/agent/verification_registry/registry.yaml. Both run against the REAL corpus and both
+      pin the PRE-compaction state, so both go red the moment Decision 37 is compacted. Update
+      both to superseded_compacted; do not touch the index or the pin for this.
     hermetic: true
     graduation: not-applicable
   - step: 6
@@ -475,11 +494,33 @@ test_obligations:
     test_selector: tests/checks/structural/test_budget_raises.py
     red_green_expectation: >-
       Green if the entry is absent (trim sufficed) or correctly marked; red on an unmarked raise.
+  - source: tests/test_decisions_index.py
+    behavior: >-
+      The live-corpus currency expectation names Decision 37 as superseded_compacted, so the
+      suite tracks the compaction instead of pinning the pre-compaction state.
+    verification_step: 5
+    test_selector: tests/test_decisions_index.py
+    red_green_expectation: >-
+      GREEN before and RED after until updated -- this is a pin on the pre-change state, the
+      inverse of the usual direction. That inversion is the finding: leaving it unscoped makes
+      acceptance criterion 5 unreachable.
+  - source: config/agent/verification_registry/registry.yaml
+    behavior: >-
+      The graduated decisions-index-currency-derivation check agrees with the post-compaction
+      corpus, and the five new graduated rows are registered.
+    verification_step: 12
+    command: "bin/venv-python -m scripts.validate"
+    red_green_expectation: >-
+      GREEN before and RED after until updated, same inverted direction as the row above: the
+      row's embedded map hardcodes 37:'superseded_pointer'.
   - source: docs/decisions-index.json
     behavior: Decision 37 projects currency superseded_compacted and the index stays within its pin.
     verification_step: 5
     test_selector: tests/test_decisions_index.py
-    red_green_expectation: Red before (projects superseded_pointer), green after.
+    red_green_expectation: >-
+      The index projection itself is red before / green after. NOTE the named selector's own
+      direction is the inverse -- see the tests/test_decisions_index.py obligation above, which
+      owns updating the hardcoded expectation.
   - source: terraform/personal/inference_credentials.tf
     behavior: The citation repoint is comment-only and produces no terraform diff.
     verification_step: 6
@@ -687,8 +728,9 @@ context:
     a full-bodied entry with a forward pointer alone. THE MANDATED PREDICATE IS
     scripts.decisions_md.status_is_superseded -- never a literal substring test. This matters:
     docs/DECISIONS_ARCHIVE.md DOES carry ten '**Status:** Superseded by Decision N' lines
-    (Decisions 23, 40, 42, 49, 50, 51, 56, 68, 69, 71), and a substring implementation would pull
-    all ten full-bodied archive entries into the enforcement set and red them. They are excluded
+    (Decisions 23, 40, 42, 49, 50, 51, 56, 68, 69, 71) -- and a substring implementation would pull
+    ELEVEN blocks in, since Decision 36's blockquoted '> **Status:** Superseded by Decision 37
+    (April 2026)' contains the substring too -- and red them all. They are excluded
     only because bold_status() normalizes to exactly 'Superseded', which 'Superseded by Decision N'
     does not equal. With the correct predicate, measured blast radius across BOTH corpus files is
     exactly {44, 58}, both already conforming. Decision 37 carries no '**Status:**' marker at all today,
@@ -744,7 +786,7 @@ context:
     misleads) appends 'DECISIONS size governance' to failed, and decisions/_manifest.py registers
     the check with pre=True AND full_segment='full_after_lint' -- both tiers, unscoped. Decision 174
     is not in the baseline, so it WILL be measured. It MUST land under 6,144 bytes or verification
-    steps 10 and 12 both go red and acceptance criterion 10 cannot be met. Relief is trimming the
+    steps 10 and 12 both go red and acceptance criterion 9 cannot be met. Relief is trimming the
     Related block or deferring detail to docs/contracts/decision-entry.yaml -- NEVER a raise
     (Decision 167's own reversal conditions and Decision 166 point 6 both forbid raising to fit).
     Calibration: the four entries authored since the cap armed measure 5,757 / 6,056 / 5,775 /
@@ -768,8 +810,11 @@ context:
     rec-2822 RELEVANCE VERDICT: scripts.rec_relevance returns 'stale_target' because
     docs/decision-migration/MANIFEST.yaml is absent -- which is inverted for a Create-type rec,
     since the file is absent precisely because the rec exists to create it. The operator
-    confirmed bundling. Separately, the planning skill prescribes a propose_or_close_rec helper
-    that does not exist in scripts/rec_relevance.py; worth its own recommendation.
+    confirmed bundling. Separately: the planning skill's propose_or_close_rec import path reads as
+    scripts.rec_relevance, but the helper actually lives at scripts/ops_data_portal.py:476, which
+    is where .claude/skills/implement/SKILL.md imports it from. Nothing is missing -- do NOT file
+    a recommendation for a non-existent gap; at most the planning skill's wording could be
+    reconciled with the implement skill's.
   - >-
     rec-2823 ACCEPTANCE MISMATCH: its acceptance probe is
     'grep -q "Multi-Environment Deployment Strategy" docs/DECISIONS_ARCHIVE.md', which targets
