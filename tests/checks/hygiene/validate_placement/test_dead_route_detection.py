@@ -21,8 +21,8 @@ _RETIRED_TOPICS = {"friction-analysis-log", "rejected-suggestions-log"}
 class TestDeadRouteDetection:
     def test_retired_topics_absent_from_file_router(self) -> None:
         """friction-analysis-log and rejected-suggestions-log must not reappear as routes --
-        asserted on topic NAME, never on the deleted file path (a hardcoded
-        `.friction-analysis-log.jsonl` literal would itself red the plan's live-code-reference
+        asserted on topic NAME, never on the deleted files' paths (a hardcoded literal
+        naming either retired log file would itself red the plan's live-code-reference
         sweep)."""
         content = yaml.safe_load(_ROUTER_PATH.read_text(encoding="utf-8"))
         topics = {route.get("topic") for route in content["routes"] if isinstance(route, dict)}
