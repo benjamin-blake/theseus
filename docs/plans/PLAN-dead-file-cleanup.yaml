@@ -156,13 +156,14 @@ scope:
   - file: tests/checks/hygiene/validate_placement/test_dead_route_detection.py
     action: Create
     purpose: >-
-      New test, TWO assertions. (a) Behavioural guard: call
-      scripts.checks.hygiene.validate_placement._dead_targets_for_route(route, tracked) -- real
-      signature `(route: dict, tracked: set[str]) -> list[str]` at validate_placement.py:92 -- with a
-      synthetic non-runtime route whose target is absent from `tracked`, and assert it is reported dead;
-      then assert the same route marked runtime: true with a tracked parent dir is NOT reported. That
-      pair is what makes the runtime marker's meaning executable rather than rhetorical. (b) Regression
-      guard: assert topics `friction-analysis-log` and `rejected-suggestions-log` are absent from
+      New test. Its load-bearing content is a REGRESSION guard; do not claim novel behavioural coverage.
+      The runtime-vs-dead-target semantics are ALREADY asserted by
+      tests/checks/hygiene/validate_placement/test_validate_placement.py:61-72
+      (test_dead_target_reports_failure) and :74-88 (test_runtime_row_parent_tracked_passes), so a
+      _dead_targets_for_route pair here would be a second entry point to the same behaviour, not new
+      coverage -- include it only as cheap defence-in-depth, never as this test's justification. THE
+      assertion that earns its place: assert topics `friction-analysis-log` and
+      `rejected-suggestions-log` are absent from
       docs/contracts/file-router.yaml routes. Assert on TOPIC NAMES, never on the deleted file paths --
       a hardcoded `.friction-analysis-log.jsonl` literal would itself red verification step 3 (its regex
       alternatives all require a leading literal dot, so bare topic strings are safe).
@@ -170,23 +171,33 @@ scope:
     action: Create
     purpose: >-
       New test asserting every entry in docs/contracts/log-storage.yaml's
-      patterns.locally_produced.examples resolves to a git-tracked file under logs/. Hardcodes no
-      basename, so it cannot red verification step 3, and it is the generic control whose absence let
-      log-storage.yaml:66 escape the plan-time fixpoint sweep. Genuinely red/green when authored in the
-      order execution steps prescribe: RED once the log files are deleted and the contract still lists
-      one, GREEN after the contract edit.
+      patterns.locally_produced.examples (six entries at :61-67) satisfies at least one of: git-tracked
+      under logs/, OR gitignored, OR carrying a `runtime: true` file-router route. All three arms are
+      REQUIRED -- "git-tracked under logs/" alone is FALSE for three of the six and would make this test
+      unpassable. VERIFIED status of each today: .retro-lite-log.jsonl and .execution-step-telemetry.jsonl
+      are tracked; .recommendations-log.jsonl is gitignored (.gitignore:130) AND runtime-routed;
+      .session-telemetry.jsonl is gitignored (.gitignore:133); .north-star-log.jsonl is neither tracked
+      nor gitignored but IS runtime-routed (file-router.yaml:297-300); .friction-analysis-log.jsonl is
+      tracked today. Hardcodes no basename, so it cannot red verification step 3. Genuinely red/green in
+      the prescribed order: once .friction-analysis-log.jsonl is `git rm`'d it satisfies NO arm (it is
+      not in .gitignore and its route is non-runtime and is deleted at execution step 7), so the test is
+      RED at execution step 6 and GREEN once execution step 8 removes the entry.
   - file: tests/checks/hygiene/validate_placement/test_validate_placement.py
     action: Modify
     purpose: >-
       Repoint the synthetic fixture string at :84 (_mock_ls_files) from the deleted
-      logs/.friction-analysis-log.jsonl to a still-tracked path. The fixture is arbitrary and the test
-      passes either way, but leaving a deleted path in a fixture is exactly the stale reference this
-      sweep exists to remove.
+      logs/.friction-analysis-log.jsonl to a still-tracked path UNDER logs/ (e.g.
+      logs/.retro-lite-log.jsonl). The path is NOT arbitrary: the route under test is runtime: true
+      targeting logs/.recommendations-log.jsonl, and _dead_targets_for_route (validate_placement.py:100-104)
+      asserts the PARENT DIR logs/ appears in the mocked snapshot -- repointing outside logs/ reds
+      test_runtime_row_parent_tracked_passes.
   - file: tests/session/preflight/test_env_git.py
     action: Modify
     purpose: >-
       Repoint the fake `git status --porcelain` string at :318 and its assertion at :323 off the deleted
-      logs/.friction-analysis-log.jsonl to a still-tracked path. Same rationale as above.
+      logs/.friction-analysis-log.jsonl to a still-tracked path UNDER logs/. Also not arbitrary:
+      test_log_sync_committed_when_only_logs_dirty asserts status == "committed" precisely because every
+      dirty path is under logs/; a path outside logs/ inverts the case the test exists to cover.
 bundled_recommendations: []
 closes_criteria: []
 infrastructure_dependencies: []
@@ -300,8 +311,14 @@ verification_plan:
       archived .md plans are historical record and are expected to remain (constraint 6).
   - step: 4
     phase: pre-deploy
-    graduation: graduate
-    graduation_check_id: dead-file-sweep-router-dead-target-scan
+    graduation: waive
+    graduation_waiver_reason: >-
+      Not admittable, by this step's own nature. The registry's differential gate
+      (validate_verification_registry.py:40-74 -> verification_graduation.run_differential:237-249)
+      requires a candidate check to FAIL in an origin/main worktree and PASS on HEAD; this command is
+      GREEN on the unmodified tree (it is a partial-application guard), so it would be refused as
+      tautological and would red validate --pre. It is additionally duplicative: validate_placement is
+      already a registered check running in both tiers.
     action: >-
       Prove the file-router dead-target scan is green after the two routes are retired. This is a
       partial-application guard, not before/after evidence -- it is GREEN on the unmodified tree and
@@ -337,18 +354,28 @@ verification_plan:
     graduation_check_id: log-storage-examples-resolve
     action: >-
       Red/green evidence for the log-storage.yaml edit -- assert every
-      patterns.locally_produced.examples entry resolves to a git-tracked logs/ file. Generic and
-      hardcode-free, so it survives future example changes and cannot red step 3.
+      patterns.locally_produced.examples entry is tracked under logs/, OR gitignored, OR carries a
+      runtime: true file-router route. Generic and hardcode-free, so it survives future example changes
+      and cannot red step 3.
     command: bin/venv-python -m pytest "tests/contracts_enforcement/test_log_storage_examples_resolve.py" -q
     expected: all tests pass
     fix_if: >-
       Authored per execution step 6, AFTER the log deletions and BEFORE the contract edit, so it is
-      genuinely RED on first run (the contract still lists a now-untracked file) and GREEN at execution
-      step 8. If it is green on first run, it is not actually resolving entries against `git ls-files`.
+      genuinely RED on first run (.friction-analysis-log.jsonl is then listed but satisfies no arm) and
+      GREEN at execution step 8. All THREE arms are required: a tracked-only predicate is false for
+      .recommendations-log.jsonl, .session-telemetry.jsonl and .north-star-log.jsonl and can never go
+      green. If it is green on first run, it is not resolving entries against `git ls-files` /
+      `git check-ignore` / the router at all.
   - step: 7
     phase: pre-deploy
-    graduation: graduate
-    graduation_check_id: dead-file-sweep-carve-outs-intact
+    graduation: waive
+    graduation_waiver_reason: >-
+      Not admittable, and actively harmful if it were. In an origin/main worktree the merge-base diff is
+      empty, so both clauses pass and the differential gate
+      (validate_verification_registry.py:40-74) refuses it as tautological. Were it admitted, a standing
+      check asserting "no docs/plans/PLAN-*.yaml shows a non-A row and no terraform/ file changes" would
+      red every future terraform change and every /implement graduate-to-waive disposition flip -- the
+      normal post-merge plan edit. Plan-local carve-out guard only.
     action: >-
       Prove the two explicit out-of-scope carve-outs held: the .yaml plan corpus is untouched (pending
       DuckLake upload) and terraform/ is untouched. The terraform half matters because deleting a .tf
@@ -443,15 +470,17 @@ test_obligations:
       detector's semantics rather than passing because a file happens to be absent.
   - source: docs/contracts/log-storage.yaml
     behavior: >-
-      Every patterns.locally_produced.examples entry resolves to a git-tracked logs/ file, so the
-      contract cannot keep asserting the existence of a retired artefact.
+      Every patterns.locally_produced.examples entry is tracked under logs/, OR gitignored, OR carries a
+      runtime: true file-router route, so the contract cannot keep asserting the existence of a retired
+      artefact that satisfies none of the three.
     verification_step: 6
     test_selector: tests/contracts_enforcement/test_log_storage_examples_resolve.py
     red_green_expectation: >-
       RED before -- authored at execution step 6, after the log deletions and before the contract edit,
-      so .friction-analysis-log.jsonl is listed but no longer tracked. GREEN at execution step 8 when
-      the entry is removed. Hardcodes no basename, so it cannot red verification step 3, and it is the
-      generic control whose absence let this row escape the plan-time fixpoint sweep.
+      so .friction-analysis-log.jsonl is listed while satisfying no arm (untracked, not gitignored, and
+      its route non-runtime). GREEN at execution step 8 when the entry is removed. Hardcodes no basename,
+      so it cannot red verification step 3, and it is the generic control whose absence let this row
+      escape the plan-time fixpoint sweep.
 constraints:
   - >-
     Do NOT delete, move, or modify any docs/plans/PLAN-*.yaml file. They are held in-repo pending upload
