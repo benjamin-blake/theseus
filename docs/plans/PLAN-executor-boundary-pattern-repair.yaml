@@ -2,6 +2,7 @@ schema_version: 4
 handoff_policy:
   full_validation_required_before_commit: true
   timeout_disposition: blocked
+implementation_declared: true
 slug: "executor-boundary-pattern-repair"
 intent: >-
   Repair the executor self-modification boundary, which names a file deleted at T-1.13 and therefore
@@ -118,21 +119,31 @@ verification_plan:
       known to retain it, so a typo collapses the control to zero and the check fails rather than
       reporting a clean sweep. Verified both ways: the correct pattern gives 5/5, a typo'd one gives
       0/0 and exits non-zero. An earlier form that typed the literal twice and controlled on a
-      different literal in a different file produced a demonstrated false pass. Two exclusions, both deliberate:
-      docs/CHANGELOG.md and the SESSION_LOG/DECISIONS_ARCHIVE ledgers are append-only history that
-      correctly retains references to deleted files; docs/INTENT-* are the Decision 86 clause 3
-      retiring set, each carrying its own per-doc drift reconciliation, and their three surviving
-      references are recorded on T4.18 rather than fixed here.
+      different literal in a different file produced a demonstrated false pass. Four exclusions, all
+      deliberate: docs/CHANGELOG.md and the SESSION_LOG/DECISIONS_ARCHIVE ledgers are append-only
+      history that correctly retains references to deleted files; docs/INTENT-* are the Decision 86
+      clause 3 retiring set, each carrying its own per-doc drift reconciliation, and their three
+      surviving references are recorded on T4.18 rather than fixed here. Discovered at execution
+      time (pre-edit, both files scored zero): tests/test_classify_automatable.py's own
+      test_boundary_lists_move_in_lockstep asserts the dead row's ABSENCE by literal string, and
+      docs/ROADMAP-PLATFORM.yaml's new T4.18 criterion c7 names the dead path descriptively while
+      recording the docs/INTENT-* cleanup this sweep already routes elsewhere -- both are this
+      plan's own new content proving the fix, not stale legacy references, so both are excluded on
+      the same historical/self-referential-mention rationale as the four above.
     command: >-
       p="develop-executor.prompt.md"; hits=$(grep -rn "$p" --include=*.py --include=*.yaml --include=*.md . |
-      grep -vE '(^\./\.git|^\./logs/|^\./docs/plans/|^\./audits/|SESSION_LOG|DECISIONS_ARCHIVE|^\./docs/INTENT-|^\./docs/CHANGELOG\.md)' |
+      grep -vE '(^\./\.git|^\./logs/|^\./docs/plans/|^\./audits/|SESSION_LOG|DECISIONS_ARCHIVE|^\./docs/INTENT-|^\./docs/CHANGELOG\.md|^\./tests/test_classify_automatable\.py|^\./docs/ROADMAP-PLATFORM\.yaml)' |
       wc -l); ctl=$(grep -rn "$p" --include=*.md docs/CHANGELOG.md | wc -l);
       echo "live_stale_refs=$hits control=$ctl"; [ "$hits" -eq 0 ] && [ "$ctl" -gt 0 ]
     expected: "live_stale_refs=0 control=5, exit 0"
     fix_if: >-
       A non-zero hits count names a live file still referencing the deleted path. A control of 0
       means the pattern or the traversal is broken, so the zero-hits result is meaningless -- that
-      is the whole point of using the identical literal for the control.
+      is the whole point of using the identical literal for the control. tests/test_classify_automatable.py
+      and docs/ROADMAP-PLATFORM.yaml are excluded because this plan's own new content in each
+      legitimately mentions the dead path as text (a negative-assertion literal and a T4.18
+      criterion, respectively) -- verify any future non-zero hit there is still one of those two
+      known lines before assuming the exclusion is being abused to hide a real regression.
   - step: 3
     phase: pre-deploy
     hermetic: true
@@ -163,8 +174,15 @@ verification_plan:
   - step: 4
     phase: pre-deploy
     hermetic: true
-    graduation: graduate
-    graduation_check_id: executor-instructions-globs-name-no-claude-surface
+    graduation: waive
+    graduation_waiver_reason: >-
+      Differential admission rejected the candidate as tautological: scripts.verification_graduation.run_differential
+      returned admitted=False, reason "not admitted -- revert did not produce FAIL (tautological)". Neither
+      instructions file contained a .claude/ reference on origin/main either -- this diff only removes the
+      .github/prompts/develop-executor.prompt.md reference, so the revert-to-origin/main leg also PASSES (0
+      matches) instead of failing. The invariant this step proves is real and durable (see action text below),
+      but the differential mechanism needs a discriminating diff to key off and this one is not it -- confirmed
+      empirically, not assumed.
     action: >-
       Prove acceptance criterion 3 -- neither instructions glob names a .claude/ surface. This is a
       DURABLE repository invariant, not a property of this diff: the two instruction bodies instruct
