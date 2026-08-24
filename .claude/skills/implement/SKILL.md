@@ -368,8 +368,9 @@ the legacy best-effort walk in step 1 below.
    the check, runs it live (must PASS), then checks it out in a real `git worktree` at
    `origin/main` and runs it there (must FAIL). This is a genuine `git worktree add`/`remove` --
    never a simulated revert.
-4. **Admitted rows** (`outcome.admitted`) get appended to
-   `config/agent/verification_registry/registry.yaml`'s `entries` list.
+4. **Admitted rows** (`outcome.admitted`) get written to their own
+   `config/agent/verification_registry/entries/<check_id>.yaml` shard -- never appended to a
+   shared file.
 5. **A declared-`graduate` candidate that is REJECTED (tautological, or fails on HEAD/live) is
    un-graduatable, not silently dropped.** Flip that VP step's disposition from `graduate` to
    `waive` in `docs/plans/PLAN-{slug}.yaml`, setting `graduation_waiver_reason` to the concrete
@@ -391,7 +392,7 @@ the legacy best-effort walk in step 1 below.
    waive and why, which legacy-fallback candidates were rejected and dropped, or "no
    graduate-disposition VP steps this session -- none graduated"). This record is ephemeral
    PR-body evidence (Decision 115) -- NOT a numbered Decision, NOT a warehouse write. The durable
-   artefacts are the registry.yaml diff and any plan disposition flips, committed in the same
+   artefacts are the new registry shard(s) and any plan disposition flips, committed in the same
    commit as the plan's other changes (Step 7's `git add -A` picks it up).
 
 ### Constraints

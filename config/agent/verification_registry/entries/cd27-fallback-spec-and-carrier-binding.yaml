@@ -1,0 +1,84 @@
+check_id: cd27-fallback-spec-and-carrier-binding
+primitive_slot: command_exit_zero
+guard_target: docs/ROADMAP-PLATFORM.yaml
+guard_symbol: null
+plan_slug: esb-fallback-spec-carrier
+graduated_at: '2026-08-03'
+graduated_by: implement-agent
+check_spec:
+  command:
+  - bin/venv-python
+  - -c
+  - '
+
+    import re, yaml
+
+    d = yaml.safe_load(open(''docs/ROADMAP-PLATFORM.yaml''))
+
+    cd = [c for c in d[''candidate_decisions''] if c[''id''] == ''CD.27''][0]
+
+    specs = [q for q in cd[''discipline_points''] if isinstance(q, dict) and ''fallback_spec'' in q]
+
+    assert len(specs) == 1, f''fallback_spec must appear exactly once in CD.27, found {len(specs)}''
+
+    s = specs[0][''fallback_spec'']
+
+    required = {''trigger'', ''substrate'', ''state_schema'', ''checkpoint_granularity'', ''driver'', ''cutover'', ''effort'', ''reevaluation_carrier'', ''lapse_condition''}
+
+    assert required <= set(s), f''fallback_spec missing {sorted(required - set(s))}''
+
+    thin = [k for k, v in s.items() if isinstance(v, str) and len(v.strip()) < 40]
+
+    assert not thin, f''fallback_spec key(s) present but contentless: {thin}''
+
+    sch = s[''state_schema'']
+
+    sreq = {''grain'', ''identity'', ''partition_key'', ''sort_key'', ''attributes'', ''write_mode''}
+
+    assert sreq <= set(sch), f''state_schema missing {sorted(sreq - set(sch))}''
+
+    assert ''one item per'' in sch[''grain''].lower(), f"grain must be one-item-per: {sch[''grain'']!r}"
+
+    assert sch[''write_mode''].startswith(''append_only''), f"write_mode must be append_only: {sch[''write_mode'']!r}"
+
+    assert ''ULID'' in sch[''identity''], ''identity must mint a ULID at the write boundary''
+
+    assert ''validate_fallback_reevaluation'' in s[''reevaluation_carrier''], ''carrier key must name the registered check''
+
+    lapse = s[''lapse_condition'']
+
+    assert ''LAPSE'' in lapse.upper(), f''lapse_condition must state a lapse: {lapse!r}''
+
+    assert any(t in lapse for t in (''ESB-04'', ''ESB-06'', ''spike'')), ''lapse_condition must bind to the layer-2 selection''
+
+    mat = [q for q in cd[''discipline_points''] if isinstance(q, str) and q.startswith(''Lambda Durable Functions maturity monitoring'')]
+
+    assert len(mat) == 1, f''expected exactly 1 maturity-monitoring point, found {len(mat)}''
+
+    m = mat[0]
+
+    phantoms = [p for p in (''recorded as an INTENT Open Question'', ''checkpoint-replay verified'') if p in m]
+
+    assert not phantoms, f''maturity point still carries the phantom/stale clause: {phantoms}''
+
+    missing_live = [t for t in (''fallback_spec'', ''validate_fallback_reevaluation'') if t not in m]
+
+    assert not missing_live, f''maturity point does not name: {missing_live}''
+
+    gates = cd[''gates'']
+
+    tok = re.compile(r''(?<![\w.])('' + ''|''.join(re.escape(g) for g in gates) + r'')(?![\w])'')
+
+    named = sorted(set(tok.findall(m)))
+
+    assert set(named) == set(gates), f''DOC-SAYS-X / CONTROL-DOES-Y: control triggers on {gates} but text names only {named}''
+
+    blob = yaml.safe_dump(specs[0], sort_keys=False)
+
+    assert ''arn:'' not in blob.lower(), ''fallback_spec contains an ARN (PUBLIC repository)''
+
+    assert not re.search(r''(?<!\d)\d{12}(?!\d)'', blob), ''fallback_spec contains a 12-digit account-id-shaped token''
+
+    print(''OK fallback_spec specified;'', len(s), ''keys;'', len(sch), ''state_schema keys; maturity point phantom-free, carrier-bound, trigger-agreed over'', gates)
+
+    '

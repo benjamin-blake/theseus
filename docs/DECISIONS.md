@@ -2,6 +2,95 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 176: Re-grain the verification graduation registry to one record per file, retiring its 6,000-line calibrated ceiling (elects Decision 166 reversal condition (f) ahead of its trigger; amends Decision 166) (Decided)
+
+```yaml
+number: 176
+status: Decided
+decided_date: "2026-08-24"
+amends: [166]
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable path-selection commitment with reversal-relevant consequences, unclaimed by any
+    other routing row: no CD gate-clears (not cd_state_flip), field_semantics owns the record
+    grammar (routed to docs/contracts/verification-registry.yaml) but not the CHOICE of shape,
+    and T3.7 already owns successor sequencing (not work_item). Rejected alternative: Decision
+    166 point 6's own pre-committed CD.29 mark-then-drop archival lifecycle on the flat file,
+    plus a bare second ceiling raise (Decision 128's silent-trade anti-pattern).
+```
+
+**Status:** Decided
+**Date:** 2026-08-24
+**Warehouse ID:** dec-176 (per Decision 84, synced via `ops_data_portal --backfill-decisions-md`)
+
+**Problem:** rec-3231: `registry.yaml`'s flat, append-only `entries` list (under
+`config/agent/verification_registry/`) made two concurrent graduating plans conflict at the list
+tail deterministically -- reproduced live on PR #940, twice in under an hour. Decision 166 point 6
+seeded the file at a CALIBRATED 6,000-effective-line ceiling (not a grandfather), pre-committing
+CD.29 mark-then-drop archival when it fired, never a second raise. The file reached 5,972/6,000
+(28 lines of headroom) at this plan's authoring -- roughly double Decision 166's own predicted
+growth rate (~1,200 lines/month vs. "1.7 months of runway" predicted from 3,987 lines).
+
+**Decision:** Re-grain to one record per file --
+`config/agent/verification_registry/entries/<check_id>.yaml`, filename-equals-check_id enforced
+structurally -- and retire the 6,000-line instrument, rather than exercising Decision 166 point
+6's archival pre-commitment on the flat file.
+
+1. **The arithmetic is the argument**, not facade-vs-YAML framing (thin on its face). Headroom
+   was 28 effective lines; CD.29 archival exhausted reclaims only ~2-3 genuinely dead records
+   (~25-38 lines, liveness-verified); clause 6's growth rate is ~1,200 lines/month; this plan's
+   own 13 `graduate` dispositions are ~155-165 lines. The archival valve cannot absorb even the
+   PR that triggers it.
+2. **Electing (f) ahead of its trigger.** Reversal condition (f) fires on a SECOND raise past
+   6,000 (not yet happened, 5,972 < 6,000); this Decision elects (f)'s response (re-audit grain
+   and retirement discipline) pre-emptively on the arithmetic above. Condition (c) does not
+   apply -- it retires a CLASS ROW; this Decision keeps `config/structural_size_budgets.yaml`'s
+   `config` row, deleting only two GRANDFATHER ROSTER ENTRIES. Those deletions need no
+   authorization: `_marker_guard.authorization_failure` iterates `current_entries` only, so an
+   entry present at base and absent at head is never examined.
+3. **Accretion purpose, discharged not deleted.** The `config` class row's purpose -- surface
+   lifecycle pressure instead of silent accretion -- loses its corpus-size subject here:
+   differential admission costs ~7.1s per NEWLY-ADDED record, invariant to corpus size, and the
+   structural census (~0.1s/~195 files) stays immaterial with +476 files. The whole-file-read
+   half holds independently: exactly one agent-facing whole-file reference existed
+   (`.claude/skills/implement/SKILL.md`'s per-record append instruction) -- Decision 114/110's
+   "N fragments to reassemble" flag does not bind, unlike Decision 147's opposite-fact case.
+4. **Why not the warehouse:** the differential gate reads its baseline at a GIT REF (`git show
+   origin/main:...`), which DuckLake cannot serve; admission is a property of a commit, runs
+   pre-merge and hermetically, and must revert atomically with the code it verifies. Pre-merge CI
+   on a public repo would also need write credentials for records that may never merge.
+5. **No index, no cached aggregate, no materialized merge.** The directory listing is the only
+   index; any count is computed from the glob; the merged corpus (tree union baseline) exists
+   only in memory. Retirement is `git mv` to `entries/deprecated/`, no status/version key. Full
+   grammar in `docs/contracts/verification-registry.yaml` governance_notes (Decision 86/127).
+
+**Reversal conditions:** (a) the per-file grain defeats a consumer needing whole-corpus
+comprehension (none identified) -- reopen the grain choice; (b) `entries/` approaches a
+file-count pressure point with no live orphan-sweep owner -- escalate to T3.7, not a threshold;
+(c) per-record `git show` cost dominates the fast tier at this grain -- profile/batch before
+reconsidering the grain.
+
+**Rationale:** Per-record files make Decision 166 point 6's valve CHEAPER, not foreclosed
+(retire = `git mv`) -- never unreachable, only pricier than the alternative elected here.
+`config/agent/data_quality/decisions/` (five files) is in-repo precedent for this exact shape in
+this exact zone. Decision 169's table-shaped-decomposition clause affirmatively supports it
+(cited in favour, not only to distinguish its own ordered, dispatch-bearing manifest grain from
+this unordered check_id-keyed set).
+
+**Related:** Decision 166 (amended -- point 6 superseded, ceiling retired), Decision 128
+(decompose-by-default; ceiling motivation now moot), Decision 55 (fail-loud), Decision 169
+(table-shaped decomposition, cited in favour), Decisions 147/114/110 (opposite-fact
+N-fragments precedent distinguished against), Decisions 132/170 (graduation obligation and
+examined()/skipped() declaration this file's validators carry), Decisions 86/127
+(field-semantics routing). Roadmap refs: rec-3231 (closed), CD.29 (superseded), T3.1 (owning
+tier_item), T3.7 (successor lifecycle instrument for the retired roster).
+
+[Amendment 2026-08-24: point 5's retirement fired twice, not once -- a second undifferentiable
+self-referential record was also retired. See verification-registry.yaml governance_notes.]
+
+---
+
 ## Decision 175: Migrate-then-rehome compaction branch for citation-stranded superseded entries; amends Decision 149 (Decided)
 
 ```yaml
@@ -507,6 +596,8 @@ code-review round 1 LOW finding: `_classify.py` fails open if the residual class
 removed), rec-3021 (open -- code-review round 1 LOW finding: `_marker_guard.py`'s pre-existing
 "origin/main unreachable" message is misleading for a brand-new registry's own installing PR),
 T1.5 (the STRATEGIC, CD.17-frozen portal cutover that eventually retires `docs/decisions-index.json` entirely, named in point 9 as the surface's actual successor).
+
+[Amendment 2026-08-24: Decision 176 supersedes point 6's CD.29 archival pre-commitment and reversal condition (f)'s response for `config/agent/verification_registry/registry.yaml` -- the file is re-grained to one record per file under `entries/<check_id>.yaml` and its calibrated 6,000-effective-line / 2,315-character ceiling is retired outright (no replacement roster entry). Both `budgets:`/`long_line_budgets:` roster entries this point seeded are removed from `config/structural_size_budgets.yaml`. See Decision 176 for the full path selection and rationale.]
 
 ---
 

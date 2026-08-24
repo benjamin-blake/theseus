@@ -43,8 +43,7 @@ from __future__ import annotations
 import json
 import re
 
-import yaml
-
+from scripts import verification_graduation
 from scripts.decisions_md import decision_header_numbers, parse_decisions_md
 from scripts.verification_checks import CheckStatus, GrepCountCheck
 from tests.esb_text_fix._anchors import REPO_ROOT, load_roadmap
@@ -56,7 +55,7 @@ DECISION_NUMBER = 164
 DECISIONS_PATH = "docs/DECISIONS.md"
 DECISIONS_INDEX_PATH = "docs/decisions-index.json"
 ROADMAP_PATH = "docs/ROADMAP-PLATFORM.yaml"
-REGISTRY_PATH = "config/agent/verification_registry/registry.yaml"
+REGISTRY_PATH = "config/agent/verification_registry/entries/"
 
 AMENDMENT_TRAILER_PREFIX = "[Amendment 2026-08-03:"
 AMENDED_ENTRIES = (116, 122)
@@ -233,10 +232,9 @@ class TestGraduatedDecisionsMdGrepRows:
 
     @staticmethod
     def _rows() -> list[dict]:
-        registry = yaml.safe_load((REPO_ROOT / REGISTRY_PATH).read_text(encoding="utf-8"))
         return [
             e
-            for e in registry["entries"]
+            for e in verification_graduation.load_entries(repo_root=REPO_ROOT)
             if e["primitive_slot"] == "grep_count" and e["check_spec"].get("path") == DECISIONS_PATH
         ]
 

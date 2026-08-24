@@ -2,8 +2,8 @@
 resolution -- see the amendment on Decision 132/148 in docs/DECISIONS.md).
 
 VF-05 (T3.18) shipped the graduation PRODUCER (the implement skill's Tier_item bookkeeping
-walk graduates a plan's own kernel-expressible VP steps into
-config/agent/verification_registry/registry.yaml) and VF-06 (validate_verification_registry's
+walk graduates a plan's own kernel-expressible VP steps into a new
+config/agent/verification_registry/entries/<check_id>.yaml shard) and VF-06 (validate_verification_registry's
 real differential admission gate). Neither one is an OBLIGATION: nothing forces a fix PR to
 actually add the registry row it owes, so a skip is invisible to CI (a plan-PR incident, PR
 #586, shipped 4 orphaned checks -- no new registry entries, so "correctly graduated nothing"
@@ -58,9 +58,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from scripts import verification_graduation
 from scripts.checks import _common, registry
-
-_REGISTRY_REL_PATH = "config/agent/verification_registry/registry.yaml"
 
 LoadPlanFn = Callable[[str, Path], object]
 BaselineRegistryReaderFn = Callable[[Path], list[dict]]
@@ -129,48 +128,23 @@ def _plan_pr_leg(plan_files: list[str], root: Path, failed: list[str], base: str
 
 
 def _current_registry_entries(root: Path) -> list[dict]:
-    registry_path = root / _REGISTRY_REL_PATH
-    if not registry_path.exists():
-        return []
-    import yaml  # noqa: PLC0415
-
-    try:
-        data = yaml.safe_load(registry_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(data, dict):
-        return []
-    entries = data.get("entries") or []
-    return entries if isinstance(entries, list) else []
+    """The live registry at `root`, via the loader's sole read path."""
+    return verification_graduation.load_entries(repo_root=root)
 
 
 def _default_baseline_registry_entries(root: Path, base: str = "origin/main") -> list[dict]:
-    """Registry entries at `base`. A missing file/ref yields an empty (legitimate) baseline.
+    """Registry entries at `base`, spanning both the sharded and legacy-flat layouts (the
+    loader's entries_at_ref). A `base` that does not resolve yields an empty (legitimate)
+    baseline; a `base` that resolves but carries neither layout is a genuine anomaly and fails
+    loud (Decision 55) rather than silently returning empty.
 
     `base` defaults to "origin/main" for direct callers (e.g. tests exercising this reader in
     isolation) but is always passed explicitly by `validate_graduation_completeness`, defaulted
     there from `push_context_base() or "origin/main"` -- never derived here, so a check running
     against an injected `root` reads its baseline from THAT repository.
     """
-    result = _common.run(
-        ["git", "show", f"{base}:{_REGISTRY_REL_PATH}"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        cwd=root,
-    )
-    if result.returncode != 0:
-        return []
-    import yaml  # noqa: PLC0415
-
-    try:
-        data = yaml.safe_load(result.stdout)
-    except Exception:
-        return []
-    if not isinstance(data, dict):
-        return []
-    entries = data.get("entries") or []
-    return entries if isinstance(entries, list) else []
+    baseline = verification_graduation.entries_at_ref(base, repo_root=root)
+    return baseline if baseline is not None else []
 
 
 def _new_registry_rows(root: Path, baseline_registry_reader: BaselineRegistryReaderFn) -> list[dict]:
@@ -254,8 +228,8 @@ def validate_graduation_completeness(
     """Enforce the plan-declared VF-05 graduation obligation (T3.21) across both legs.
 
     changed_files / root / load_plan / baseline_registry_reader are test/dogfood injection
-    seams -- default to _common.get_changed_files(), _common.ROOT, _common.load_plan, and a
-    real `git show {base}:...registry.yaml` reader respectively.
+    seams -- default to _common.get_changed_files(), _common.ROOT, _common.load_plan, and the
+    loader's `verification_graduation.entries_at_ref(base, ...)` reader respectively.
 
     Composes exactly ONE terminal Decision 170 declaration (see module docstring). The
     empty-domain early return (no docs/plans/PLAN-*.yaml in the diff) fires BEFORE any base

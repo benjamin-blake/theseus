@@ -6,7 +6,7 @@
 contract:
   id: verification-registry
   class: A
-  contract_version: 4
+  contract_version: 5
   status: ratified
   ratified_at: "2026-06-29"
   ratified_via: "dec-102: PLAN-t3-1-verifier-harness merge to main (T3.1 CD.25 ritual)"
@@ -16,8 +16,10 @@ contract:
     gate (T3.1 / CD.29). Each row represents one graduated verification check and names
     the primitive slot it occupies (one of the six canonical CD.29 slots), the artefact
     it guards, and the plan that authored it. Indexed by guard_target + guard_symbol so
-    downstream orphan detection (T3.7) is deterministic. Data file:
-    config/agent/verification_registry/registry.yaml.
+    downstream orphan detection (T3.7) is deterministic. Data files: one YAML mapping per
+    check_id at config/agent/verification_registry/entries/<check_id>.yaml (Decision 176),
+    read exclusively through scripts.verification_graduation's loader -- see
+    governance_notes below for the full shard grammar.
 fields:
   check_id:
     type: str
@@ -37,8 +39,9 @@ fields:
       fails the PR when no row with that exact pair was newly added in the diff.
     populated_by: >-
       Plan author at graduation time. The implementing agent sets this when authoring
-      the check definition and inserting the row into
-      config/agent/verification_registry/registry.yaml.
+      the check definition and writing the row to
+      config/agent/verification_registry/entries/<check_id>.yaml (shard_path_for), the
+      filename derived from this same field (Decision 176).
     dq_intent:
       not_null:
         enforced: true
@@ -205,6 +208,41 @@ fields:
       not_null:
         enforced: false
 governance_notes: >-
+  RE-GRAIN (Decision 176, 2026-08-24): the data file under config/agent/verification_registry/
+  is no longer a single flat registry.yaml -- one record now lives at
+  entries/<check_id>.yaml (config/agent/verification_registry/entries/<check_id>.yaml in full),
+  filename-equals-check_id enforced structurally by validate_verification_registry's placement
+  leg (never a documented convention alone). scripts.verification_graduation's load_entries() / entries_at_ref() /
+  shard_path_for() are the SOLE READ PATH -- no other module hand-rolls a path join to either
+  layout. config/agent/verification_registry/entries/deprecated/ is a reserved, loader-excluded
+  retirement subtree (a single-level, non-recursive directory glob structurally excludes it,
+  not a documented convention): git mv a record there to retire it, no status column, no
+  version key, no other lifecycle machinery. Any future orphan sweep (T3.7, the named successor
+  lifecycle instrument for the retired size roster) must read entries/deprecated/ explicitly,
+  since the live loader never does. Three anti-accretion commitments bind every future
+  consumer: (1) no index or manifest listing the entry files -- the directory listing IS the
+  index; (2) no cached aggregate (e.g. a stored corpus count) -- any count is computed from the
+  glob, never read from a bumped number; (3) the differential gate's merged corpus (current
+  tree union origin/main baseline) exists ONLY IN MEMORY, never materialized to disk, which
+  would recreate the contended hot file this re-grain removes. The 6,000-effective-line /
+  2,315-character CALIBRATED CEILING this file was seeded at under Decision 166 point 6 is
+  RETIRED along with the flat file -- config/structural_size_budgets.yaml carries no roster
+  entry (raised or otherwise) for the registry; each shard is governed implicitly by the config
+  class's per-file default instead. Re-authoring: of the eight self-referential rows enumerated
+  in Decision 176, six were re-pointed at the loader in place (check_id and claim preserved,
+  only the internal reference to the deleted flat path changed); TWO retired into
+  entries/deprecated/ instead -- the first exercisers of the retirement path this paragraph
+  reserves. plan-obligations-enumeration-homed's one-shot migration-moment claim had already
+  gone stale (permanently FAIL, unnoticed because graduated records are never re-executed as a
+  standing suite). no-retired-ci-role-in-live-surfaces was DISCOVERED tautological by this same
+  migration's own new modified-record differential rule (VP step 6): re-pointing its registry
+  target from the deleted flat path to entries/ triggered its first re-differential since
+  graduation, which revealed the retired CI role names it guards against have been absent from
+  every one of its scanned surfaces on every reachable ref for long enough that no revertable
+  counter-example remains -- permanently TRUE rather than permanently FALSE, the same
+  un-provable-going-forward shape as its sibling, so it retires under the identical rule rather
+  than being edited to force a fake admission.
+
   rec-3059 wave 2 (PLAN-class-d-enforcers-wave-2, 2026-08-16): three rows dispositioned for the
   evaluator.none_grandfathered retirement (full record:
   docs/contracts/contract-population.yaml's retirement_notes.evaluator_none_grandfathered).
@@ -221,8 +259,19 @@ governance_notes: >-
   composite-action-shape-rosters mirror test's roster-drift red-path exemplar). Net effect: +1
   row. This is an ordinary removal recorded as a governance note, not the CD.29 mark-then-drop
   archival lifecycle (Decision 166 point 6) -- that lifecycle is gated on an unratified
-  candidate decision, and this registry sits well under its 6,000-line trigger.
+  candidate decision.
 amendment_log:
+  - date: "2026-08-24"
+    semantic_break: true
+    change_class: governance_note_add
+    summary: >-
+      Decision 176 (verification-registry-sharding): bumped contract_version 4 -> 5. Re-grained
+      the data file, formerly one flat registry.yaml under config/agent/verification_registry/,
+      to one record per config/agent/verification_registry/entries/<check_id>.yaml shard, closing
+      rec-3231's deterministic append-tail merge conflict and the silent-modification hole in
+      the differential admission gate. No field schema change -- check_id, primitive_slot,
+      guard_target, guard_symbol, plan_slug, graduated_at, graduated_by and check_spec are all
+      unchanged; only the file-layout mechanics governance_notes describes moved.
   - date: "2026-08-06"
     semantic_break: true
     change_class: governance_note_add

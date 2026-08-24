@@ -2,6 +2,7 @@ schema_version: 4
 handoff_policy:
   full_validation_required_before_commit: true
   timeout_disposition: blocked
+implementation_declared: true
 slug: "verification-registry-sharding"
 intent: >-
   Re-grain the graduated verification-check registry from one flat append-at-tail YAML sequence
@@ -242,12 +243,16 @@ verification_plan:
     fix_if: >-
       A missing/extra check_id means the migration dropped or duplicated a record; a field
       mismatch means the YAML re-render was not round-trip exact (re-dump at width=200).
-    hermetic: true
+    hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
       One-shot migration-moment assertion against a pre-migration baseline that ceases to exist
       after this PR merges. The durable corpus-integrity properties are graduated separately at
-      steps 2, 3 and 4.
+      steps 2, 3 and 4. hermetic is deliberately false (not the narrow/deterministic-against-final-
+      tree contract validate_vp_replay requires of a hermetic step): this step's own assertion
+      (current shard key-set equals the pre-migration flat corpus) is definitionally false once
+      execution steps 7-8 retire two records and this plan's graduation walk adds thirteen more --
+      replaying it against the final tree would diverge by construction, not by regression.
   - step: 2
     phase: pre-deploy
     action: >-
@@ -393,10 +398,13 @@ verification_plan:
       bad=[e['check_id'] for e in rows if materialize_check(e).run().status.name!='PASS'];
       print('live self-referential records:', len(rows), 'failing:', bad); assert not bad, bad"
     expected: >-
-      Seven LIVE self-referential records report PASS; failing list empty. The eighth,
-      plan-obligations-enumeration-homed, is retired into deprecated/ by execution step 7 and is
-      therefore absent from load_entries() -- it is not excluded by a special case here, it is
-      simply no longer in the live set.
+      Thirteen LIVE self-referential records report PASS; failing list empty. Of the original
+      eight, six remain live; the other two -- plan-obligations-enumeration-homed (execution step
+      7) and no-retired-ci-role-in-live-surfaces (implementation-time deviation, see the context
+      bullet above) -- are retired into deprecated/ and therefore absent from load_entries(),
+      neither excluded by a special case here. The remaining seven of the thirteen are newly
+      graduated by this plan's own execution steps and are themselves self-referential by the same
+      filter.
     fix_if: >-
       A failure means a re-authored check_spec still reads the deleted flat path or parses the old
       entries[] shape. Re-author against the loader, preserving the record's original claim.
@@ -913,6 +921,22 @@ context:
     repository while operating on an injected root.
   - "Decision-scout verdict + CITE list (verbatim decision ids): round 1 BLOCK (Decision 166 clause 6), round 2 FLAGS_FOUND, round 3 FLAGS_FOUND. CITE: dec-173, dec-166, dec-165, dec-163, dec-170, dec-169, dec-168, dec-167, dec-162, dec-160, dec-153, dec-150, dec-147, dec-146, dec-137, dec-135, dec-132, dec-131, dec-128, dec-118, dec-114, dec-110, dec-104, dec-93, dec-87, dec-86, dec-85, dec-73, dec-67, dec-55, dec-48, dec-43; CD.29, T3.1, T3.7, T2.26, T4.16."
   - "gates: decision-scout=FLAGS_FOUND after 3 round(s); plan-critique=REVISE round 1 (12 findings) then REVISE round 2 (5 blocking B1-B5 + 6 non-blocking N1-N6), all adopted; REVISE round 3 (F1-F3 blocking, all mechanical and introduced by the round-2 test decomposition; F4-F8 non-blocking), all adopted; REVISE round 4 (operator-authorized past the cap; B1 step-19 SyntaxError, B2 stale count, B3 conftest helper set, N1-N6), all adopted. NOTE: dec-131 and dec-173 entered scope AFTER the round-3 scout run and were not adjudicated by it -- both verified by inspection at round 4"
+  - >-
+    IMPLEMENTATION-TIME DEVIATION (code-review round 1, High, adopted): a SECOND self-referential
+    record, no-retired-ci-role-in-live-surfaces, proved un-differentiable during re-authoring --
+    reverting to origin/main strips the migration's own new entries/ target, and the retired CI
+    role names it scans for have already been absent from every one of its scanned surfaces on
+    every reachable ref long enough that no revertable counter-example remains. This is the same
+    permanently-true, un-provable-going-forward shape as plan-obligations-enumeration-homed's
+    permanently-false one (both un-differentiable, one true and one false), so it was retired into
+    entries/deprecated/ under the identical rule execution step 7 reserves, rather than edited to
+    force a fake admission. NOT pre-authorized by this plan's scope or execution steps at approval
+    time -- recorded here per the code-review finding rather than silently absorbed. Full rationale
+    in docs/contracts/verification-registry.yaml's governance_notes. VP step 10's expected count is
+    stale as a result (see that step): six of the original eight self-referential records remain
+    live pre-graduation, not seven; the live count rises to thirteen once this plan's own thirteen
+    newly-graduated rows are included, several of which are themselves self-referential by the same
+    filter. All thirteen live self-referential records PASS.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read

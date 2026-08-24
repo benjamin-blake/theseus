@@ -41,8 +41,8 @@ REQUIRED_STATE_SCHEMA_KEYS = {"grain", "identity", "partition_key", "sort_key", 
 
 #: A fallback_spec key present but under this length is contentless/stubbed, not a real value.
 #: Duplicated (not importable) in VP step 1's command and its graduated registry-row check_spec
-#: (config/agent/verification_registry/registry.yaml, check_id
-#: cd27-fallback-spec-and-carrier-binding) -- both are standalone `bin/venv-python -c` scripts
+#: (config/agent/verification_registry/entries/cd27-fallback-spec-and-carrier-binding.yaml) --
+#: both are standalone `bin/venv-python -c` scripts
 #: embedded in YAML documents, so they cannot import this constant; this module is the one site
 #: where naming it is possible at all (code review round 3, Low).
 _FALLBACK_SPEC_KEY_MIN_LEN = 40
