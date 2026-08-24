@@ -2,6 +2,41 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 175: Migrate-then-rehome compaction branch for citation-stranded superseded entries; amends Decision 149 (Decided)
+
+```yaml
+number: 175
+status: Decided
+decided_date: "2026-08-24"
+amends: [149]
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable architectural commitment: docs/contracts/decision-entry.yaml's compaction
+    eligibility_criterion now admits a check-backed rehoming destination as an alternate
+    restater, with reversal-relevant consequences for every future citation-stranded superseded
+    entry's compact-vs-stay-full-bodied outcome.
+```
+
+**Status:** Decided
+**Date:** 2026-08-24
+**Warehouse ID:** dec-175 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+**Problem:**
+Decision 149's compaction lifecycle (`docs/contracts/decision-entry.yaml` `compaction:`) requires the superseder to restate or subsume EVERY live clause before a superseded entry may compact to a stub -- eligibility has exactly one restater, the superseder. A superseded entry whose superseder restates NONE of its live content is stuck: it cannot archive (live code still cites its number), and it cannot compact (the superseder does not cover it), so it sits full-bodied, superseded, and permanent. Decision 37 is the measured instance: superseded by Decision 116 (scheduled-agent provider routing), which contains none of Decision 37's live Secrets Manager content -- seventeen files still cite it by name for two DERIVED patterns (SECRET-VALUE-OUT-OF-BAND, RUNTIME-FETCH) that survive even though Decision 37's ORIGINAL subject (the scheduled-agent dispatcher Lambdas) is dead.
+
+**Decision:**
+1. **A third compaction branch, migrate_then_rehome, joins archive and compact-in-place** in `docs/contracts/decision-entry.yaml` `compaction.procedure`: when eligibility fails only because the superseder omits live DERIVED content (not the entry's original subject), author or extend a mechanism contract with a resolving evaluator to own that content, repoint its live citers, and record the migration in a self-retiring manifest -- THEN the widened `eligibility_criterion` treats that contract as an alternate restater alongside the superseder, and the entry compacts via the existing stub_grammar mechanism.
+2. **Exercised end-to-end on Decision 37**: `docs/contracts/secret-material-handling.yaml` is the rehoming destination (a Class D contract with a resolving evaluator, `validate_secret_material_handling`); `docs/decision-migration/MANIFEST.yaml` records the citation-stranded class and Decision 37's disposition; Decision 37 is now a compacted stub pointing at both Decision 116 and the new contract.
+3. **Scope is SUPERSEDED entries only.** This branch never extracts content from a LIVE (non-superseded) entry -- routing is one-way-at-entry, and no lifecycle mechanism can undo a misroute later. Extracting HOW content from live entries is a separate, larger capability (rec-3246), deliberately out of this Decision's scope.
+
+**Rationale:**
+The alternative -- widening eligibility to accept ANY partial coverage -- was rejected: it would let a superseder settle only some of a victim's clauses and still compact it, silently dropping the uncovered clauses' authority. Requiring a CHECK-BACKED destination (a resolving evaluator, not prose) keeps the bar as high as the superseder bar: the content must be genuinely enforced somewhere, not merely asserted moved. `docs/contracts/decision-entry.yaml` stays the single source of truth for the branch; no parallel compaction path was created.
+
+**Related:** Decision 149 (compaction lifecycle amended), Decision 116 (Decision 37's superseder), Decision 157 (adjacent IAM-verb plane the new contract names to avoid conflation), Decision 146 (still-cited-live archival carve-out), Decision 55 (forward-fix; no rescue-loop weakening of the eligibility guarantee).
+
+---
+
 ## Decision 174: A deprecated planning-artefact format carries no working-tree retention obligation -- retirement is by deletion, with provenance in git history (amends Decision 85) (Decided)
 
 ```yaml
@@ -1419,6 +1454,13 @@ CD.16/CD.24 -> dec-079 precedent the batch-wave form codifies forward).
 > compaction stub, the superseder's body is also consulted for authorization, so a future
 > compaction of a live-cited Decision cannot silently un-authorize every marker citing it. This
 > body is otherwise unedited; see Decision 165 for the full derivation.
+
+> **Amended by Decision 175 (2026-08-24):** a third compaction branch, migrate_then_rehome, joins
+> archive and compact-in-place; `compaction.eligibility_criterion` now also accepts a check-backed
+> rehoming destination as an alternate restater when the superseder omits live DERIVED content, so
+> a superseded entry whose superseder restates NONE of its live content is no longer permanently
+> stuck full-bodied. This body is otherwise unedited; see Decision 175 for the full derivation and
+> its first exercised instance (Decision 37).
 
 **Problem:**
 Decision 145's stopgap ceiling raise (400,000 -> 500,000 bytes) bought headroom but explicitly named the un-built structural fix as audits/decision-consolidation-growth-f79d6b5.yaml's DCG-01/DCG-02/DCG-05: a number-preserving compact-to-stub lifecycle, so the live corpus can shed fully-superseded bodies without breaking the ~12,103 unguarded inbound "Decision N" citations or orphaning a warehouse current-projection row (DCG-03: if a header were ever removed from both files, its ops_decisions current row would be served forever in its last state with no signal it was retired). Decision 146 (the archival sibling, landed first) covers entries with no live citations outside the corpus; it explicitly carves out entries "still cited as a LIVE constraint" (its own worked example: Decision 44 -> 117) as staying in the corpus, with no compaction mechanism yet built for them.
@@ -6124,44 +6166,10 @@ single-command session close.
 
 ## Decision 37: Lambda + GitHub Models API for Scheduled Agents (Decided)
 
-**Decision:** Replace the GitHub Actions scheduled-agents workflow with AWS Lambda functions
-that call the GitHub Models API directly, using a GitHub PAT stored in Secrets Manager.
+**Status:** Superseded
+**Date:** 2026-04
 
-**Context:**
-- Decision 36 (GitHub Actions OIDC) was blocked by SCP denying `sts:AssumeRoleWithWebIdentity`
-  from external IP ranges (GitHub Actions runner IPs)
-- Static IAM users are also blocked (`iam:CreateUser` SCP)
-- GitHub Models API (`https://models.github.ai/inference/chat/completions`) is compatible with
-  the same free-tier models used via Copilot CLI, accessible via PAT authentication
-
-**Implementation:**
-- `aws_lambda_function.scheduled_agent_dispatcher` — reads `schedule.yaml`, runs due agents
-  via GitHub Models API, writes findings to `agents/{name}/{timestamp}.jsonl`
-- `aws_lambda_function.findings_processor` — triggered by S3 ObjectCreated on `agents/` prefix,
-  unions findings to `findings/unified.jsonl`, compares against existing recs via Models API,
-  appends new ones to `recommendations/agent-recommendations.jsonl`
-- `aws_secretsmanager_secret.github_pat` — stores GitHub PAT (value set manually post-deploy)
-- EventBridge hourly rule triggers dispatcher; S3 event notification triggers processor
-- Lambda runs at `api.github.com` endpoint (no SCP restriction — Lambda egress is not blocked)
-
-**Trade-offs:**
-- Requires a GitHub PAT in Secrets Manager (manual step after `terraform apply`)
-- PAT must have GitHub Models API access (same scope as Copilot CLI PAT)
-- Lambda cold-start adds ~1s latency (acceptable for scheduled background work)
-- Free tier: 150 requests/day, 15 requests/minute — sufficient for 4 agents/week
-
-**S3 key layout:**
-```
-agents/{name}/{timestamp}.jsonl       ← raw findings per agent
-findings/unified.jsonl                ← union of all findings
-recommendations/agent-recommendations.jsonl  ← agent-generated recs (agent-NNN)
-```
-
-**Recommendation namespace separation:**
-- Local: `logs/.recommendations-log.jsonl` (IDs: `rec-NNN`) — manual sessions, code review
-- S3: `recommendations/agent-recommendations.jsonl` (IDs: `agent-NNN`) — Lambda-generated
-
-**Decision status:** Decided — April 2026
+**Decision:** Superseded by Decision 116 (scheduled-agent provider routing), which restates none of this entry's live content; the two still-live DERIVED patterns this entry's citers actually rely on (SECRET-VALUE-OUT-OF-BAND, RUNTIME-FETCH) migrated to `docs/contracts/secret-material-handling.yaml` via Decision 175's migrate_then_rehome branch (first exercise of that branch, `docs/contracts/decision-entry.yaml` `compaction.procedure`); kept live here rather than archived because five `terraform/personal` files, `terraform/bootstrap/github_ci_apply_reads.tf` and `scripts/ducklake_neon_smoke_test.py` still cite "Decision 37" by name (Decision 146's still-cited-live carve-out). This entry's ORIGINAL subject -- the scheduled-agent dispatcher/findings-processor Lambdas -- is dead, retired per CD.21.
 
 **Superseded by: Decision 116**
 

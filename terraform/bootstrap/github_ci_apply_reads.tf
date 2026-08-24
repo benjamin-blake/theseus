@@ -152,8 +152,10 @@ locals {
         # carried moved to the prefixed SecretsManagerMetadataRead above; the only net narrowing is
         # on neon-api-key-* (the one non-agent-platform-* ARN here), whose sole consumer is a
         # data.aws_secretsmanager_secret_version -- a GetSecretValue call, not a metadata one.
-        # Each ARN's lifecycle is human-owned / out-of-band (Decision 37); CI reads these, never
-        # writes them. The writable DuckLake Neon DSN secret keeps its own statement above.
+        # Each ARN's lifecycle is human-owned / out-of-band
+        # (docs/contracts/secret-material-handling.yaml, Decision 175 -- rehomed from the
+        # Decision 37 precedent); CI reads these, never writes them. The writable DuckLake Neon
+        # DSN secret keeps its own statement above.
         #   neon-api-key-*                              : Neon provider API key (Phase 0 out-of-band).
         #   agent-platform-terraform-personal-tfvars-* : tfvars sourcing at apply time.
         #   agent-platform-deepseek/anthropic-api-key-*: inference credential envelopes (admin-applied).
