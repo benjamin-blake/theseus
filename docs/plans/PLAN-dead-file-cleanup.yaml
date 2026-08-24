@@ -7,11 +7,11 @@ slug: dead-file-cleanup
 intent: >-
   Delete 206 verified-dead one-shot agent artefacts (195 legacy docs/plans/archive/*.md plans,
   5 decommissioned logs/ files, 6 orphaned audit artefacts; 4.01 MB), retire the two file-router
-  routes whose targets those deletions remove, and record the governance edits deletion requires.
-  A repo-wide sweep proved the Python tree is 100% import-reachable (428/429 non-test modules; the
-  one outlier is a 1-line package marker), so NO source code is in scope -- all deadweight is
-  accumulated workflow output. docs/plans/PLAN-*.yaml are explicitly OUT of scope pending their
-  DuckLake upload. terraform/ contributes ZERO deletions.
+  routes and the one log-storage example entry whose targets those deletions remove, and record the
+  governance edits deletion requires. A repo-wide sweep proved the Python tree is 100%
+  import-reachable (428/429 non-test modules; the one outlier is a 1-line package marker), so NO
+  source code is in scope -- all deadweight is accumulated workflow output. docs/plans/PLAN-*.yaml
+  are explicitly OUT of scope pending their DuckLake upload. terraform/ contributes ZERO deletions.
 plan_type: IMPLEMENTATION
 verification_tier: V2
 plan_path: docs/plans/PLAN-dead-file-cleanup.yaml
@@ -30,9 +30,10 @@ scope:
       nothing. Three dead depth-1 .md plan paths survive in code and are deliberately NOT retired by
       this plan (scripts/roadmap/find_plan.py:68 PLAN-{slug}.md, :73 legacy PLAN.md, and
       scripts/roadmap/plan_audit.py:52-53 + :225-226); all three resolve against docs/plans/ depth-1,
-      where zero .md files exist, so they are unaffected by deleting archive/. The directory holds
-      exactly 195 entries, all .md, all tracked, zero untracked strays, so `git rm` removes it cleanly.
-      It is not a file-router route target.
+      where zero .md files exist, so they are unaffected. The directory holds exactly 195 entries, all
+      .md, all tracked, zero untracked strays. It is not a file-router route target. Deleting every
+      member removes the directory, but the plan asserts only "no .md remains under it" (see step 1)
+      so a future RS-07 lagged .yaml sweep may legitimately re-create it.
   - file: logs/.metrics-analysis-log.jsonl
     action: Delete
     purpose: >-
@@ -57,8 +58,7 @@ scope:
       VERIFIED no production reader or writer. The only tests/ hits are synthetic fixture STRINGS
       (test_validate_placement.py:84 passes it to _mock_ls_files; test_env_git.py:318 embeds it in a
       fake porcelain string) -- neither opens the real file. Has TWO contract references that must be
-      retired with it: the file-router route (below) and docs/contracts/log-storage.yaml:66. Frozen at
-      2026-05-28.
+      retired with it: the file-router route and docs/contracts/log-storage.yaml:66. Frozen 2026-05-28.
   - file: logs/.rejected-suggestions.jsonl
     action: Delete
     purpose: >-
@@ -100,64 +100,81 @@ scope:
       DELETE the friction-analysis-log route (:288-290) and the rejected-suggestions-log route
       (:306-308) outright. Do NOT mark them `runtime: true`: :13-16 defines that marker as "a route
       whose target is a warehouse read-cache: a gitignored or otherwise untracked file that is
-      REGENERATED AT RUNTIME (Decision 84 local-cache model)". Neither target is regenerated (this
-      plan's own analysis proves neither has any writer) and neither is gitignored, unlike all four
-      genuine runtime rows (north-star-log has a live writer at scripts/north_star_tracker.py:106;
-      recommendations-log, decisions-index and execution-checkpoint-state are gitignored at
-      .gitignore:130,134,129). Flipping the marker would permanently silence the dead-target scan on a
-      false semantic basis. A route to an artefact that no longer exists is not a discovery route --
-      retire it. Add an amendment_log entry with change_class: accepted_values_narrow (from the closed
-      8-value vocabulary at scripts/contracts_schema.py:50-60). KEEP the prose_allowlist glob
-      docs/plans/**/*.md unchanged: 4 docs/plans/reports/*.md still match it.
+      REGENERATED AT RUNTIME (Decision 84 local-cache model)". Neither target is regenerated (neither
+      has any writer) and neither is gitignored, unlike all four genuine runtime rows (north-star-log
+      has a live writer at scripts/north_star_tracker.py:106; recommendations-log, decisions-index and
+      execution-checkpoint-state are gitignored at .gitignore:130,134,129). Flipping the marker would
+      permanently silence the dead-target scan on a false semantic basis. Add an amendment_log entry
+      with change_class: accepted_values_narrow (closed vocabulary at scripts/contracts_schema.py:50-60;
+      file-router.yaml:44 is direct precedent for that class removing an entry). KEEP the
+      prose_allowlist glob docs/plans/**/*.md unchanged: 4 docs/plans/reports/*.md still match it.
   - file: docs/contracts/log-storage.yaml
     action: Modify
     purpose: >-
       Remove `.friction-analysis-log.jsonl` from patterns.locally_produced.examples at :66 -- it names
-      a file this plan deletes. This is a Class D contract, so the edit also requires its own
-      amendment_log entry (change_class: accepted_values_narrow) per
-      docs/contracts/contract-population.yaml:233-235. NOTE: validate_log_storage_registry.py:38-62
-      only compares the `routing` block against s3_log_store's fallback constants, so a stale entry
-      here would NOT red CI -- which is exactly why it must be caught deliberately. Decision 86's
-      inbound-reference sweep is the governing obligation.
+      a file this plan deletes. Class D contract (log-storage.yaml:8), so the edit also requires its own
+      amendment_log entry (change_class: accepted_values_narrow) per contract-population.yaml:232-236.
+      NOTE: validate_log_storage_registry.py:38-62 reads only the `routing` block, so a stale entry here
+      would NOT red CI -- which is why the new test in scope guards it mechanically rather than relying
+      on this sweep. Decision 86's inbound-reference sweep is the governing obligation.
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-
-      Add ONE numbered Decision, authored as a FORWARD-STANDING COMMITMENT (significance.value:
-      numbered_decision; justification: it establishes a durable, reversal-relevant rule for every
-      future deprecated-format retirement, not a point-fix). Frame it as: "a deprecated
-      planning-artefact format carries no working-tree retention obligation; retirement is by
-      deletion, with provenance surviving in git history (Decision 147)." Do NOT frame it as a
-      retrospective reading of Decision 85's sentence -- that shape reads as operational_fact under
-      docs/contracts/decision-entry.yaml's routing, which Decision 167 clause 2 rejects outright for a
-      numbered entry. Declare `amends: [85]` in the envelope, and add a dated amendment trailer under
-      Decision 85 itself (the Decision 168 pattern: "[Amendment YYYY-MM-DD: ...]"), so a future reader
-      of Decision 85's retention clause finds the pointer. Removes/renumbers no header (Decision 149).
-      Per AGENTS.md's change-record content rule, what changed / why now / measurements go in the PR
-      body, NOT this entry.
+      Add ONE numbered Decision, drafted verbatim below so the category-consistency gate can be
+      rendered at plan time rather than deferred to implement time where no reviewer stands. Heading:
+      "## Decision NNN: A deprecated planning-artefact format carries no working-tree retention
+      obligation -- retirement is by deletion, with provenance in git history (amends Decision 85)
+      (Decided)". Envelope: number: NNN; status: Decided; decided_date: <implement date>;
+      amends: [85]; significance.value: numbered_decision; significance.justification: "Establishes a
+      forward-standing, reversal-relevant rule governing every future deprecated-format retirement, so
+      the next format transition needs no fresh adjudication. A docs/contracts/*.yaml governance-note
+      home was considered and REJECTED: no existing contract owns artefact-format lifecycle (file-router
+      owns placement, log-storage owns log routing, decision-entry owns entry grammar), so a note there
+      would create a new orphan surface rather than populate an existing one." Also state, in the body,
+      why the Decision-85 amendment trailer alone is insufficient: the trailer records that ONE clause
+      was descriptive, whereas the rule must bind future formats that Decision 85 never contemplated --
+      an amendment cannot carry a commitment broader than the entry it amends. ALSO append a dated
+      trailer under Decision 85 itself in the pinned trailing_bracket form (decision-entry.yaml:130-134,
+      Decision 168 pattern): "[Amendment YYYY-MM-DD: the working-tree half of this clause was descriptive
+      of ratification-time state, not a forward retention directive -- see Decision NNN.]". Removes and
+      renumbers no header (Decision 149). Per AGENTS.md's change-record content rule, what changed / why
+      now / measurements go in the PR body, NOT the entry.
   - file: docs/CLAUDE.md
     action: Modify
     purpose: >-
       Rewrite the "Plans lifecycle (RS-07)" section (lines 40-59). It currently defines the archival
       criterion as "a depth-1 docs/plans/ file is archived iff its extension is .md" and points at
-      docs/plans/archive/ -- a directory this plan deletes. Restate as: .md is the retired format and
+      docs/plans/archive/ -- a directory this plan empties. Restate as: .md is the retired format and
       carries no working-tree retention obligation; .yaml plans stay at the docs/plans/ root pending
       their DuckLake upload; the lagged .yaml sweep remains deferred. HARD CONSTRAINT: the file is at
-      3813 bytes against a 3813-byte budget (config/prose_budgets.yaml:37) -- ZERO headroom. The
-      rewrite MUST NOT grow the file. Shrinking is safe (prose_limits.py:79-83 routes under-budget to a
-      non-blocking advisory); growing by one byte hard-fails validate_prose_limits, which
-      scripts/checks/prose/_manifest.py:12-18 registers pre=True with no pre_globs. Leave
-      config/structural_size_budgets.yaml:145's `relief_valve: "archival lifecycle (RS-07)"` reference
-      resolvable -- do not delete the RS-07 heading itself.
+      3813 bytes against a 3813-byte budget (config/prose_budgets.yaml:37) -- ZERO headroom. The rewrite
+      MUST NOT grow the file. Shrinking is safe (prose_limits.py:79-83 routes under-budget to a
+      non-blocking advisory); growing by one byte hard-fails validate_prose_limits, registered pre=True
+      with no pre_globs (scripts/checks/prose/_manifest.py:12-18). Keep the RS-07 heading so
+      config/structural_size_budgets.yaml:145's `relief_valve: "archival lifecycle (RS-07)"` stays
+      resolvable.
   - file: tests/checks/hygiene/validate_placement/test_dead_route_detection.py
     action: Create
     purpose: >-
-      New test with TWO assertions. (a) Behavioural guard: build a synthetic routes payload containing
-      a route whose target is neither tracked nor marked runtime, and assert
-      validate_placement._dead_targets_for_route (or the public path) reports it dead -- this is the
-      property that actually protects the repo, and it cannot pass vacuously. (b) Regression guard:
-      assert the topics `friction-analysis-log` and `rejected-suggestions-log` are absent from
-      docs/contracts/file-router.yaml's routes. Assert on TOPIC NAMES, never on the deleted file paths
-      -- a hardcoded `.friction-analysis-log.jsonl` literal would itself red verification step 3.
+      New test, TWO assertions. (a) Behavioural guard: call
+      scripts.checks.hygiene.validate_placement._dead_targets_for_route(route, tracked) -- real
+      signature `(route: dict, tracked: set[str]) -> list[str]` at validate_placement.py:92 -- with a
+      synthetic non-runtime route whose target is absent from `tracked`, and assert it is reported dead;
+      then assert the same route marked runtime: true with a tracked parent dir is NOT reported. That
+      pair is what makes the runtime marker's meaning executable rather than rhetorical. (b) Regression
+      guard: assert topics `friction-analysis-log` and `rejected-suggestions-log` are absent from
+      docs/contracts/file-router.yaml routes. Assert on TOPIC NAMES, never on the deleted file paths --
+      a hardcoded `.friction-analysis-log.jsonl` literal would itself red verification step 3 (its regex
+      alternatives all require a leading literal dot, so bare topic strings are safe).
+  - file: tests/contracts_enforcement/test_log_storage_examples_resolve.py
+    action: Create
+    purpose: >-
+      New test asserting every entry in docs/contracts/log-storage.yaml's
+      patterns.locally_produced.examples resolves to a git-tracked file under logs/. Hardcodes no
+      basename, so it cannot red verification step 3, and it is the generic control whose absence let
+      log-storage.yaml:66 escape the plan-time fixpoint sweep. Genuinely red/green when authored in the
+      order execution steps prescribe: RED once the log files are deleted and the contract still lists
+      one, GREEN after the contract edit.
   - file: tests/checks/hygiene/validate_placement/test_validate_placement.py
     action: Modify
     purpose: >-
@@ -168,79 +185,89 @@ scope:
   - file: tests/session/preflight/test_env_git.py
     action: Modify
     purpose: >-
-      Repoint the fake `git status --porcelain` string at :318 and its assertion at :323 off the
-      deleted logs/.friction-analysis-log.jsonl to a still-tracked path. Same rationale as above.
+      Repoint the fake `git status --porcelain` string at :318 and its assertion at :323 off the deleted
+      logs/.friction-analysis-log.jsonl to a still-tracked path. Same rationale as above.
 bundled_recommendations: []
 closes_criteria: []
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
-    All 195 docs/plans/archive/*.md files are deleted and the docs/plans/archive/ directory no longer
-    exists in the working tree.
+    No .md file remains under docs/plans/archive/ (all 195 deleted). The directory itself may cease to
+    exist; the assertion is deliberately on .md membership, not directory absence, so a future RS-07
+    lagged .yaml sweep may re-create it.
   - >-
     All 5 in-scope logs/ files are deleted; the other 5 tracked logs/ files
     (.customizations-manifest.json, .execution-step-telemetry.jsonl, .plan-audit-log.jsonl,
     .retro-lite-log.jsonl, .session-metrics-log.jsonl) are UNTOUCHED, each having a live writer or reader.
   - >-
     All 6 in-scope audit artefacts are deleted, and audits/ and docs/audit-prompts/ both remain
-    non-empty (53 and 23 files respectively).
+    non-empty and above the thresholds verification step 2 asserts (>=50 and >=20 tracked files).
   - >-
-    No pre-existing docs/plans/PLAN-*.yaml file is deleted, modified, or renamed. The only permitted
-    entry in `git diff --name-status origin/main -- 'docs/plans/PLAN-*.yaml'` is the single 'A' row for
-    this plan file itself.
-  - Zero files under terraform/ are modified or deleted.
+    No pre-existing docs/plans/PLAN-*.yaml file is deleted, modified, or renamed. Evaluated against the
+    MERGE BASE (`git diff --name-status origin/main...HEAD`), never main's tip: the only permitted entry
+    is the single 'A' row for this plan file itself.
+  - Zero files under terraform/ are modified or deleted, likewise evaluated against the merge base.
   - >-
     docs/contracts/file-router.yaml no longer declares the friction-analysis-log or
     rejected-suggestions-log routes, carries a new amendment_log entry, and still declares the
     prose_allowlist glob docs/plans/**/*.md. Neither route is marked runtime: true.
   - >-
-    docs/contracts/log-storage.yaml no longer lists .friction-analysis-log.jsonl and carries its own
-    new amendment_log entry.
+    docs/contracts/log-storage.yaml no longer lists .friction-analysis-log.jsonl and carries its own new
+    amendment_log entry.
   - >-
-    docs/DECISIONS.md carries one new numbered Decision, framed as a forward-standing commitment with
-    a declared significance.value of numbered_decision and `amends: [85]`, plus a dated amendment
-    trailer under Decision 85. docs/CLAUDE.md's RS-07 section no longer references docs/plans/archive/.
+    docs/DECISIONS.md carries one new numbered Decision matching the drafted heading and envelope, with
+    significance.value numbered_decision and amends: [85].
   - >-
-    docs/CLAUDE.md is at most 3813 bytes after the rewrite (config/prose_budgets.yaml:37 has zero
-    headroom).
+    Decision 85 carries a dated amendment trailer in the pinned trailing_bracket form pointing at the
+    new Decision.
+  - >-
+    docs/CLAUDE.md's RS-07 section no longer references docs/plans/archive/ as a live destination, and
+    the file is at most 3813 bytes (config/prose_budgets.yaml:37 has zero headroom).
   - >-
     No file under scripts/, src/, tests/, .github/, bin/ or config/ references any deleted path.
   - >-
-    bin/venv-python -m scripts.validate --pre passes, with the file-router placement check reporting
-    zero dead targets.
+    bin/venv-python -m scripts.validate --pre passes with the file-router placement check reporting zero
+    dead targets, AND the full tier (bin/venv-python -m scripts.validate) passes, as
+    handoff_policy.full_validation_required_before_commit requires.
 verification_plan:
   - step: 1
     phase: pre-deploy
     graduation: graduate
     graduation_check_id: dead-file-sweep-targets-removed
     action: >-
-      Prove all 206 in-scope paths are gone. Deliberately asserts ONLY the negative
-      (deleted-paths-stay-deleted) half, so the graduated kernel check never becomes a standing
-      mandate that some other file must exist forever. Survivors are asserted separately in step 2,
-      which is intentionally NOT graduated.
+      Prove all 206 in-scope paths are gone. Asserts only the negative (deleted-paths-stay-deleted)
+      half, so the graduated kernel check never becomes a standing mandate that some other file must
+      exist. The archive clause asserts NO .md REMAINS rather than directory absence, so a future RS-07
+      lagged .yaml sweep that re-creates docs/plans/archive/ cannot red this registered check.
     command: >-
-      test ! -d docs/plans/archive && test ! -f logs/.metrics-analysis-log.jsonl && test ! -f
-      logs/.token-budget-log.jsonl && test ! -f logs/.transcript-index.jsonl && test ! -f
-      logs/.friction-analysis-log.jsonl && test ! -f logs/.rejected-suggestions.jsonl && test ! -f
-      audits/dependency-management-c8a2a17.md && test ! -f audits/dependency-management-c8a2a17.yaml &&
-      test ! -f audits/platform-roadmap-strategic-audit-ffd58dc.md && test ! -f
+      test -z "$(git ls-files docs/plans/archive | grep '\.md$')" && test ! -f
+      logs/.metrics-analysis-log.jsonl && test ! -f logs/.token-budget-log.jsonl && test ! -f
+      logs/.transcript-index.jsonl && test ! -f logs/.friction-analysis-log.jsonl && test ! -f
+      logs/.rejected-suggestions.jsonl && test ! -f audits/dependency-management-c8a2a17.md && test ! -f
+      audits/dependency-management-c8a2a17.yaml && test ! -f
+      audits/platform-roadmap-strategic-audit-ffd58dc.md && test ! -f
       audits/platform-roadmap-strategic-audit-ffd58dc.yaml && test ! -f
       docs/audit-prompts/AUDIT-dependency-management.md && test ! -f
       docs/audit-prompts/AUDIT-platform-roadmap-strategic-audit.md && echo SWEEP-COMPLETE
     expected: SWEEP-COMPLETE
     fix_if: >-
-      Pre-edit this exits 1 at the first clause because docs/plans/archive/ still exists. All 6 audit
+      Pre-edit this exits 1 at the first clause, which lists 195 tracked .md files. All 6 audit
       artefacts are named individually -- an earlier draft asserted only 3 and could not prove
-      acceptance criterion 3. If a clause fails post-edit, that path was missed by the sweep; delete it
-      with `git rm`, never plain `rm` (validate_placement snapshots `git ls-files`, the index).
+      acceptance criterion 3. If a clause fails post-edit, that path was missed; delete it with `git rm`,
+      never plain `rm` (validate_placement snapshots `git ls-files`, the index, so a plain rm leaves the
+      path tracked and this step green while the scan still sees it).
   - step: 2
     phase: pre-deploy
-    graduation: not-applicable
+    graduation: waive
+    graduation_waiver_reason: >-
+      Deliberately NOT graduated. The command is kernel-expressible (a single chained test), so
+      not-applicable would be the wrong disposition -- but freezing "these five logs and these directory
+      counts must hold" into the verification registry would install a permanent retention mandate that
+      no Decision ratifies and that would red a future legitimate retirement of any one of them. Its
+      value is as a plan-local blast-radius check for THIS sweep, not as a standing obligation.
     action: >-
-      Prove the deliberately-retained neighbours survived -- the assertion that distinguishes this
-      sweep from an over-broad glob. NOT graduated on purpose: freezing "these five logs must exist"
-      into the verification registry would install a permanent retention mandate that no Decision
-      ratifies and that would red a future legitimate retirement.
+      Prove the deliberately-retained neighbours survived -- the assertion that distinguishes this sweep
+      from an over-broad glob.
     command: >-
       test -f logs/.retro-lite-log.jsonl && test -f logs/.session-metrics-log.jsonl && test -f
       logs/.plan-audit-log.jsonl && test -f logs/.execution-step-telemetry.jsonl && test -f
@@ -248,30 +275,29 @@ verification_plan:
       ls-files docs/audit-prompts | wc -l)" -ge 20 && echo SURVIVORS-INTACT
     expected: SURVIVORS-INTACT
     fix_if: >-
-      A failure here means the sweep deleted a RETAINED artefact -- restore it immediately from git.
-      Losing logs/.retro-lite-log.jsonl is the worst case: it is READ by the registered
+      A failure means the sweep deleted a RETAINED artefact -- restore it from git. Losing
+      logs/.retro-lite-log.jsonl is the worst case: it is READ by the registered
       validate_prompt_compliance check (scripts/checks/contracts/validate_prompt_compliance.py:26). A
-      directory-count failure means a glob ate audits/ or docs/audit-prompts/ wholesale.
+      count failure means a glob ate audits/ or docs/audit-prompts/ wholesale. Counts are 57 and 25
+      today, 53 and 23 post-sweep, so the thresholds carry headroom for unrelated merges.
   - step: 3
     phase: pre-deploy
     graduation: graduate
     graduation_check_id: dead-file-sweep-no-live-code-refs
     action: >-
       Prove no live code, test, config or workflow still names a deleted path. Genuine red/green: it
-      currently returns 3 hits across the 2 stale-fixture files in scope, and also catches the new test
-      if it hardcodes a deleted path instead of asserting on topic names.
+      currently returns 3 hits across the 2 stale-fixture files in scope, and also catches either new
+      test if it hardcodes a deleted path instead of asserting structurally.
     command: >-
       test -z "$(git grep -nE 'plans/archive|\.metrics-analysis-log|\.token-budget-log|\.transcript-index|\.friction-analysis-log|\.rejected-suggestions'
       -- scripts/ src/ tests/ .github/ bin/ config/ ':!*.pyc')" && echo NO-LIVE-REFS
     expected: NO-LIVE-REFS
     fix_if: >-
       Pre-edit this prints exactly 3 hits: test_validate_placement.py:84, test_env_git.py:318 and :323.
-      Repoint those fixture strings; do NOT delete the tests. If it reds AFTER the change, the most
-      likely cause is the new test hardcoding a deleted path -- assert on topic names instead. The
-      regex requires a leading literal dot, so the topic strings friction-analysis-log and
-      rejected-suggestions-log do NOT match and are safe to use. Deliberately scoped to code
-      directories: docs/ and audits/ prose citations to archived .md plans are historical record and
-      are expected to remain (see constraint 6).
+      Repoint those fixture strings; do NOT delete the tests. If it reds AFTER the change, the likeliest
+      cause is a new test hardcoding a deleted path -- assert on topic names or resolve entries
+      structurally instead. Deliberately scoped to code directories: docs/ and audits/ prose citations to
+      archived .md plans are historical record and are expected to remain (constraint 6).
   - step: 4
     phase: pre-deploy
     graduation: graduate
@@ -286,44 +312,39 @@ verification_plan:
     expected: PLACEMENT-PASS
     fix_if: >-
       If this reports "dead target(s)" naming logs/.friction-analysis-log.jsonl or
-      logs/.rejected-suggestions.jsonl, the route deletion is missing or incomplete. Do NOT resolve it
-      by restoring the log files, and do NOT resolve it by adding `runtime: true` -- that marker means
-      "regenerated at runtime" (file-router.yaml:13-16) and neither file has a writer, so the marker
-      would be a false claim that permanently silences this scan.
+      logs/.rejected-suggestions.jsonl, the route deletion is missing or incomplete. Do NOT resolve it by
+      restoring the log files, and do NOT resolve it by adding `runtime: true` -- that marker means
+      "regenerated at runtime" (file-router.yaml:13-16) and neither file has a writer, so it would be a
+      false claim that permanently silences this scan.
   - step: 5
     phase: pre-deploy
     graduation: graduate
     graduation_check_id: dead-route-detection-behavioural-guard
     action: >-
-      Red/green evidence for the contract edit -- assert the dead-target detector actually fires on a
-      synthetic non-runtime untracked route, and that the two retired topics are absent. The
-      behavioural half is what makes this non-vacuous: an assertion that merely checked the topics were
-      gone would also pass on a repo that had silenced them by mislabelling.
+      Red/green evidence for the file-router edit. The behavioural half exercises
+      _dead_targets_for_route directly on synthetic routes, so it cannot pass merely because a file is
+      absent; the regression half pins the two retired topics.
     command: bin/venv-python -m pytest "tests/checks/hygiene/validate_placement/test_dead_route_detection.py" -q
     expected: all tests pass
     fix_if: >-
-      Pre-edit this exits 4 with "file or directory not found" because the test does not exist yet. If
-      the behavioural assertion passes before the detector is exercised, it is asserting on the wrong
-      thing -- it must construct a route with an untracked, non-runtime target and assert the check
-      reports it, not merely inspect the committed YAML.
+      Authored per execution step 5 while the routes are still declared, so its regression half is
+      genuinely RED on first run and goes GREEN at execution step 7. If the behavioural half passes
+      before the detector is exercised, it is asserting on the wrong thing -- it must build a route dict
+      and a tracked set and call _dead_targets_for_route, not merely inspect the committed YAML.
   - step: 6
     phase: pre-deploy
     graduation: graduate
-    graduation_check_id: dead-file-sweep-claude-md-prose-budget
+    graduation_check_id: log-storage-examples-resolve
     action: >-
-      Prove the docs/CLAUDE.md rewrite did not grow the file past its zero-headroom prose budget. This
-      is the single most likely accidental CI failure in the plan, and the scope guard would block the
-      obvious remedy (editing config/prose_budgets.yaml, which is not in scope).
-    command: >-
-      test "$(wc -c < docs/CLAUDE.md)" -le 3813 && bin/venv-python -c "from scripts.checks.prose import
-      prose_limits; f=[]; prose_limits.validate_prose_limits(f); assert not f, f; print('PROSE-OK')"
-    expected: PROSE-OK
+      Red/green evidence for the log-storage.yaml edit -- assert every
+      patterns.locally_produced.examples entry resolves to a git-tracked logs/ file. Generic and
+      hardcode-free, so it survives future example changes and cannot red step 3.
+    command: bin/venv-python -m pytest "tests/contracts_enforcement/test_log_storage_examples_resolve.py" -q
+    expected: all tests pass
     fix_if: >-
-      config/prose_budgets.yaml:37 pins docs/CLAUDE.md at 3813 bytes and the file is currently exactly
-      3813 -- zero headroom. If this reds, SHORTEN the RS-07 rewrite; do not raise the budget. Shrinking
-      is always safe (prose_limits.py:79-83 routes under-budget to a non-blocking advisory). Raising
-      would require adding config/prose_budgets.yaml to scope with a `# raise-approved: dec-NNN` marker,
-      which is a deliberate, reviewable exception and not the intended path here.
+      Authored per execution step 6, AFTER the log deletions and BEFORE the contract edit, so it is
+      genuinely RED on first run (the contract still lists a now-untracked file) and GREEN at execution
+      step 8. If it is green on first run, it is not actually resolving entries against `git ls-files`.
   - step: 7
     phase: pre-deploy
     graduation: graduate
@@ -333,81 +354,104 @@ verification_plan:
       DuckLake upload) and terraform/ is untouched. The terraform half matters because deleting a .tf
       from an applied root is a DESTROY operation, not cleanup.
     command: >-
-      test -z "$(git diff --name-only origin/main -- terraform/)" && test -z "$(git diff --name-status
-      origin/main -- 'docs/plans/PLAN-*.yaml' | grep -v '^A')" && echo CARVE-OUTS-INTACT
+      test -z "$(git diff --name-only origin/main...HEAD -- terraform/)" && test -z "$(git diff
+      --name-status origin/main...HEAD -- 'docs/plans/PLAN-*.yaml' | grep -v '^A')" && echo
+      CARVE-OUTS-INTACT
     expected: CARVE-OUTS-INTACT
     fix_if: >-
-      The second clause permits exactly the 'A' row for this plan file (which the branch adds) while
-      rejecting any D, M or rename R entry. An earlier draft also asserted a hardcoded count of 359,
-      which was dropped: it reds spuriously after the execution-step rebase whenever an unrelated plan
-      merges to main, and clause 2 already catches every deletion, modification and rename. Any
-      terraform/ diff must be reverted outright -- this plan deletes nothing there.
+      THREE-DOT (origin/main...HEAD) is required and is not a stylistic choice. Two-dot `git diff
+      origin/main` compares against main's TIP, so every plan merged to main after this branch point
+      surfaces as a phantom 'D' and reds the step for reasons unrelated to the sweep -- an earlier draft
+      had exactly that bug. Three-dot compares against the merge base, matching
+      contract-population.yaml's own base_resolution semantics. Clause 2 permits exactly the 'A' row for
+      this plan file while rejecting any D, M or rename R. Any terraform/ diff must be reverted
+      outright -- this plan deletes nothing there.
   - step: 8
     phase: pre-deploy
     graduation: waive
     graduation_waiver_reason: >-
-      The decisions corpus checks are already registered and graduated in their own right; adding a
-      registry row that re-runs the same pytest selectors would duplicate an existing gate rather than
-      add coverage. This step proves THIS plan's DECISIONS.md edit parses, not a new standing check.
+      docs/CLAUDE.md's byte budget is already enforced by the registered validate_prose_limits check,
+      which sources the number from config/prose_budgets.yaml. Graduating a registry copy would freeze
+      the literal 3813 and then block a future legitimate `# raise-approved: dec-NNN` raise -- the same
+      frozen-constant brittleness this plan corrected elsewhere. Plan-local guard only.
+    action: >-
+      Prove the docs/CLAUDE.md rewrite did not grow the file past its zero-headroom prose budget. This
+      is the most likely accidental CI failure in the plan, and the scope guard blocks the obvious
+      remedy (config/prose_budgets.yaml is deliberately not in scope).
+    command: >-
+      bin/venv-python -c "from scripts.checks.prose import prose_limits; f=[];
+      prose_limits.validate_prose_limits(f); assert not f, f; print('PROSE-OK')"
+    expected: PROSE-OK
+    fix_if: >-
+      config/prose_budgets.yaml:37 pins docs/CLAUDE.md at 3813 bytes and the file is currently exactly
+      3813 -- zero headroom. If this reds, SHORTEN the RS-07 rewrite; do not raise the budget. Shrinking
+      is always safe (prose_limits.py:79-83 routes under-budget to a non-blocking advisory). The command
+      reads the budget from config rather than hardcoding it, so it stays correct if the budget moves.
+  - step: 9
+    phase: pre-deploy
+    graduation: waive
+    graduation_waiver_reason: >-
+      The decisions corpus checks are already registered and graduated in their own right; a registry row
+      re-running the same pytest selectors would duplicate an existing gate rather than add coverage.
+      This step proves THIS plan's DECISIONS.md edit parses, not a new standing check.
     action: >-
       Prove the new Decision entry and the Decision 85 amendment trailer are well-formed and the
       decisions corpus still parses and indexes.
     command: bin/venv-python -m pytest tests/decisions_md/ tests/test_decisions_index.py -q
     expected: all tests pass
     fix_if: >-
-      A parse failure means the entry's header, envelope or required markers deviate from
-      docs/contracts/decision-entry.yaml's grammar -- fix the entry, never the parser. If a size check
-      complains, docs/DECISIONS.md is near its Decision 134 ceiling and the entry must be tightened; the
-      change-record content belongs in the PR body, not the entry.
-  - step: 9
+      A parse failure means the entry's header, envelope or trailer deviates from
+      docs/contracts/decision-entry.yaml's grammar -- fix the entry, never the parser. The trailer must
+      use the pinned trailing_bracket form (:130-134). If a size check complains, docs/DECISIONS.md is
+      near its Decision 134 ceiling and the entry must be tightened; change-record content belongs in the
+      PR body, not the entry.
+  - step: 10
     phase: pre-deploy
     graduation: waive
     graduation_waiver_reason: >-
-      This is the repository-wide presubmit gate itself, already authoritative in PR CI per Decision
-      73's two-tier model. Graduating a registry check that shells out to the whole --pre tier would be
+      This is the repository-wide presubmit gate itself, authoritative in PR CI per Decision 73's
+      two-tier model. Graduating a registry check that shells out to the whole validate run would be
       circular, so its disposition is a deliberate waiver rather than a new kernel check.
     action: >-
-      Run the authoritative fast-tier presubmit over the complete change set. A deletion-only diff still
-      dispatches the plan/roadmap/placement checks, because the pre_globs gate reads
-      get_status_aware_diff(), which retains status-D entries.
-    command: bin/venv-python -m scripts.validate --pre
+      Run BOTH presubmit tiers over the complete change set. The full tier is mandatory, not optional:
+      this plan declares handoff_policy.full_validation_required_before_commit, and
+      scripts/checks/verification/validate_handoff_full_tier.py:109-115 FAILS any such plan whose
+      verification_plan contains no `-m scripts.validate` invocation without --pre. An earlier draft
+      declared the policy with only a --pre step and was red on arrival for exactly that reason.
+    command: bin/venv-python -m scripts.validate --pre && bin/venv-python -m scripts.validate
     expected: "All checks passed."
     fix_if: >-
-      The three most likely failures, in order: (1) validate_prose_limits on docs/CLAUDE.md exceeding
-      3813 bytes -- diagnose with step 6 and SHORTEN the rewrite; (2) validate_contract_drift reporting
-      a Class D contract whose content changed with no new amendment_log entry -- add the missing entry
-      to file-router.yaml or log-storage.yaml; (3) validate_placement dead targets -- diagnose with
-      step 4. A 204-file deletion of this shape was rehearsed in an isolated worktree and returned
-      EXIT=0, so a failure outside these three indicates a divergence from the rehearsed change set.
-      Never disable or narrow a check to get green.
+      The likeliest failures, in order: (1) handoff-full-tier, if the full-tier segment was dropped --
+      the matcher splits on && and requires a segment with `-m scripts.validate` and no --pre, which the
+      second half of this command supplies; (2) validate_prose_limits on docs/CLAUDE.md -- diagnose with
+      step 8 and SHORTEN the rewrite; (3) validate_contract_drift reporting a Class D contract whose
+      content changed with no new amendment_log entry -- add it to file-router.yaml or log-storage.yaml;
+      (4) validate_placement dead targets -- diagnose with step 4. Never disable or narrow a check to get
+      green.
 test_obligations:
   - source: docs/contracts/file-router.yaml
     behavior: >-
-      The dead-target scan reports a route whose target is neither git-tracked nor marked runtime, and
-      the two routes whose targets this plan deletes are retired rather than exempted -- so route
-      retirement cannot be substituted by a false runtime: true label that silences the scan.
+      The dead-target scan reports a non-runtime route whose target is untracked and does NOT report an
+      equivalent runtime route, and the two routes whose targets this plan deletes are retired rather
+      than exempted -- so route retirement cannot be substituted by a false runtime: true label.
     verification_step: 5
     test_selector: tests/checks/hygiene/validate_placement/test_dead_route_detection.py
     red_green_expectation: >-
-      RED before -- the test file does not exist, and once written its regression half fails because
-      both topics are still declared while their targets are still tracked. GREEN after the two routes
-      are retired and the log files deleted. The behavioural half asserts on a synthetic route, so it
-      exercises the detector directly rather than passing merely because a file is absent.
+      RED before -- authored at execution step 5 while both routes are still declared and their targets
+      already deleted, so the regression half fails. GREEN at execution step 7 when the routes are
+      retired. The behavioural half calls _dead_targets_for_route on synthetic routes, so it proves the
+      detector's semantics rather than passing because a file happens to be absent.
   - source: docs/contracts/log-storage.yaml
     behavior: >-
-      patterns.locally_produced.examples no longer names .friction-analysis-log.jsonl, a file this plan
-      deletes, so the contract stops asserting the existence of a retired artefact.
-    verification_step: 9
-    command: bin/venv-python -m scripts.validate --pre
-    waiver_reason: >-
-      Deliberate per-source waiver, not an oversight. The edited key is a non-executable examples list:
-      validate_log_storage_registry.py:38-62 compares only the `routing` block against s3_log_store's
-      fallback constants and never reads `patterns.locally_produced.examples`, so no assertion on this
-      key can go red-to-green through a real gate. A test hardcoding the deleted basename to assert its
-      absence would additionally red verification step 3, which greps tests/ for exactly that literal --
-      so the obvious test is actively harmful here. The genuine controls are the mandatory Class D
-      amendment_log entry (enforced by validate_contract_drift via step 9) and the pre-implementation
-      contract sweep in the checklist, which is what surfaced this row in the first place.
+      Every patterns.locally_produced.examples entry resolves to a git-tracked logs/ file, so the
+      contract cannot keep asserting the existence of a retired artefact.
+    verification_step: 6
+    test_selector: tests/contracts_enforcement/test_log_storage_examples_resolve.py
+    red_green_expectation: >-
+      RED before -- authored at execution step 6, after the log deletions and before the contract edit,
+      so .friction-analysis-log.jsonl is listed but no longer tracked. GREEN at execution step 8 when
+      the entry is removed. Hardcodes no basename, so it cannot red verification step 3, and it is the
+      generic control whose absence let this row escape the plan-time fixpoint sweep.
 constraints:
   - >-
     Do NOT delete, move, or modify any docs/plans/PLAN-*.yaml file. They are held in-repo pending upload
@@ -435,7 +479,7 @@ constraints:
     Prose citations to archived .md plans in docs/DECISIONS.md, docs/SESSION_LOG*.md,
     docs/ROADMAP-PLATFORM.yaml and logs/*.jsonl are historical record and MUST be left as-is -- narrative
     mentions, not functional dependencies. This carve-out does NOT extend to docs/contracts/: a contract
-    is a machine-read surface, and log-storage.yaml:66 is in scope precisely for that reason.
+    is a machine-read surface, which is why log-storage.yaml is in scope.
   - >-
     Do NOT grow docs/CLAUDE.md. It sits at exactly its 3813-byte budget with zero headroom, and
     config/prose_budgets.yaml is not in scope, so the scope guard blocks the raise remedy.
@@ -446,6 +490,10 @@ constraints:
     Use `git rm` / plain deletion via Bash. The .claude/hooks/edit_scope_guard.py PreToolUse hook gates
     Edit/Write/MultiEdit/NotebookEdit only -- its docstring states "Bash is NOT gated". `git rm` (not
     `rm`) is required so the index updates: validate_placement snapshots `git ls-files`.
+  - >-
+    Evaluate every diff-based assertion against the MERGE BASE (`origin/main...HEAD` three-dot, or
+    `$(git merge-base origin/main HEAD)`), never two-dot `origin/main`. Two-dot compares against main's
+    tip and reports every post-branch-point merge as a phantom deletion.
 context:
   - >-
     ORIGIN: user-requested repo-wide dead-file sweep. The premise inverted during discovery -- there is
@@ -459,35 +507,45 @@ context:
   - >-
     METHOD: candidates were derived by fixpoint reference analysis -- a file is orphaned only if every
     inbound textual reference comes from another file also being deleted -- matching full path, basename,
-    PLAN-/AUDIT- stem, bare slug, and sha-stripped slug. The bare-slug term is load-bearing: a first pass
-    matching only stems produced 24 false positives, because docs/ROADMAP-PLATFORM.yaml pins plans by
-    bare slug via `met_by:`, which scripts/checks/roadmap/validate_platform_roadmap.py:62-73
-    existence-checks as a hard CI failure. That analysis nonetheless MISSED
-    docs/contracts/log-storage.yaml:66 (found at the plan-critique gate), which is why constraint 6 now
-    names docs/contracts/ explicitly rather than relying on the sweep.
+    PLAN-/AUDIT- stem, bare slug, and sha-stripped slug. The bare-slug term earned its place on the
+    depth-1 .yaml corpus, where docs/ROADMAP-PLATFORM.yaml pins plans by bare slug via `met_by:` and
+    scripts/checks/roadmap/validate_platform_roadmap.py:62-73 existence-checks them; it saved 24 false
+    positives there. It is NOT what makes THIS deletion safe: that check resolves `PLAN-{met_by}.yaml` at
+    docs/plans/ depth-1 only, so an archive/*.md file could never satisfy or break it. The method's real
+    limitation is that it swept only the plans/audits/prompts zones and code directories, which is how
+    docs/contracts/log-storage.yaml:66 escaped -- found later at the plan-critique gate, and now guarded
+    mechanically by the test at verification step 6.
   - >-
-    REHEARSED: a 204-file deletion of this shape was applied in an isolated git worktree against
-    origin/main and validated. `validate --pre` returned EXIT=0 with all checks passing, including "File
-    router placement check (RS-04): PASS: 86 route(s), zero dead targets". pytest across
-    tests/checks/hygiene/, roadmap/, structural/, contracts/, tests/docs/, test_plan_obligations.py,
-    test_decisions_index.py and tests/decisions_md/ returned 1037 passed. The worktree was removed; no
-    repo state changed. CAVEAT: the rehearsal used the since-rejected `runtime: true` flip rather than
-    route deletion, and predated the log-storage.yaml and prose-budget findings -- treat it as evidence
-    the deletion set is CI-safe, not as evidence the current contract edits are.
+    REHEARSED: a 204-file deletion was applied in an isolated git worktree against origin/main and
+    validated -- `validate --pre` returned EXIT=0 including "File router placement check (RS-04): PASS:
+    86 route(s), zero dead targets", and pytest across tests/checks/hygiene/, roadmap/, structural/,
+    contracts/, tests/docs/, test_plan_obligations.py, test_decisions_index.py and tests/decisions_md/
+    returned 1037 passed. The worktree was removed; no repo state changed. The 204 vs 206 delta is
+    exactly logs/.friction-analysis-log.jsonl and logs/.rejected-suggestions.jsonl, added to scope after
+    the rehearsal. TREAT THE REHEARSAL AS EVIDENCE THE BULK DELETION IS CI-SAFE, NOT as evidence for the
+    plan as now written: it used the since-rejected runtime: true flip rather than route deletion, and
+    predated the log-storage.yaml, prose-budget and full-tier findings.
   - >-
     DECISION-GATE HISTORY: the decision-scout gate returned BLOCK on Decision 85, whose clause reads
     "Historical PLAN-*.md files remain in the working tree and commit history; none are retroactively
     converted (one-way, non-rolling migration)." The author (this repo's owner) clarified in-session that
-    this was descriptive of the state at ratification, not a forward retention directive. The new
-    Decision must nonetheless be authored as a forward-standing rule rather than as that clarification,
-    because a retrospective reading routes as operational_fact, which Decision 167 clause 2 rejects for a
-    numbered entry.
+    this was descriptive of ratification-time state, not a forward retention directive. The new Decision
+    is nonetheless authored as a forward-standing rule rather than as that clarification, because a
+    retrospective reading routes as operational_fact, which Decision 167 clause 2 rejects for a numbered
+    entry.
   - >-
     WHY DELETION IS WORTH IT: docs/plans/archive/ is out of the validate_plan_documents glob (which is
     non-recursive) but NOT out of the agent grep path. Measured share of repo-wide `git grep -l` hits
     landing in docs/plans/archive/: validate.py 139/643 (21%), ops_recommendations 60/284 (21%),
     "terraform apply" 40/175 (22%). The 195 files are 9.7% of tracked files and ~10% of tracked bytes. In
     an agent-first repository that grep noise is the actual cost.
+  - >-
+    RS-07 DISPOSITION: audits/repository-structure-cb02572.yaml:533 records the ideal state as
+    "completed/deprecated plans under docs/plans/archive/". That finding carries no status field and no
+    mechanical obligation, and its acceptance clause (:539, "docs/plans/ root contains no completed
+    deprecated-format .md plan files") is still satisfied by deletion. Note the superseding disposition in
+    the new Decision or the PR body so a future reader of RS-07 is not left holding a reversed remedy
+    with no pointer.
   - >-
     LOGS TRIAGE: of 10 tracked logs/ files, 5 are dead and 5 live. All 5 dead ones are frozen at their
     2026-05-28 commit, predating the entire current plan corpus. The 5 retained ones each have a live
@@ -502,12 +560,12 @@ context:
     must NOT carry a Resolves: trailer for it -- closing it would be false.
   - >-
     FOLLOW-ON, and its relationship to this plan's graduations: verification steps 1 and 3, once
-    graduated, become a narrow anti-regrowth guard for THESE 206 paths specifically. They are not a
-    general detector. File one recommendation for a general mechanical artefact-orphan detector, scoped
-    to DETECTION ONLY -- never auto-deletion, per Decision 70's refusal to create a routine destructive
-    path. This mirrors Decision 147 clause 4, which filed rec-2781 rather than shipping the one-shot
-    compaction bare. Use `bin/venv-python -m scripts.ops_data_portal` (call get_rec_write_guidance()
-    before file_rec()).
+    graduated, become a narrow anti-regrowth guard for THESE 206 paths specifically; steps 5 and 6 become
+    standing structural guards for the two contracts. None is a general detector. File one recommendation
+    for a general mechanical artefact-orphan detector, scoped to DETECTION ONLY -- never auto-deletion,
+    per Decision 70's refusal to create a routine destructive path. This mirrors Decision 147 clause 4,
+    which filed rec-2781 rather than shipping the one-shot compaction bare. Use `bin/venv-python -m
+    scripts.ops_data_portal` (call get_rec_write_guidance() before file_rec()).
   - >-
     DECISIONS TO CITE in the new entry and the PR body: 85 (the clause being amended), 121 (retire a
     sanctioned prose artefact outright via a numbered Decision -- the template here), 147 (provenance
@@ -520,27 +578,26 @@ pre_implementation_checklist:
   - Confirm the branch is a harness-assigned claude/... branch and NOT main (`git branch --show-current`).
   - >-
     Re-run the orphan derivation before deleting, so the set reflects main at implement time rather than
-    at plan time: confirm `ls docs/plans/archive/*.md | wc -l` is 195 and that `grep -rn "plans/archive"
-    scripts/ tests/ config/ .github/ .claude/ docs/contracts/` is still empty. If either has changed,
-    STOP and re-derive.
+    at plan time: confirm `git ls-files docs/plans/archive | grep -c '\.md$'` is 195 and that `grep -rn
+    "plans/archive" scripts/ tests/ config/ .github/ .claude/ docs/contracts/` is still empty. If either
+    has changed, STOP and re-derive.
   - >-
-    Re-run the contract sweep the plan-time analysis missed: `grep -rn "friction-analysis\|
-    rejected-suggestions\|metrics-analysis\|token-budget\|transcript-index" docs/contracts/` and confirm
-    log-storage.yaml:66 is the only hit. If there are others, add them to scope before proceeding.
+    Re-run the contract sweep the plan-time analysis missed: `grep -rn
+    "friction-analysis\|rejected-suggestions\|metrics-analysis\|token-budget\|transcript-index"
+    docs/contracts/` and confirm log-storage.yaml:66 is the only hit. If there are others, add them to
+    scope before proceeding.
   - >-
     Record the pre-change byte count of docs/CLAUDE.md (`wc -c docs/CLAUDE.md`, expected 3813) so the
-    rewrite can be checked against it as it is drafted, not only afterwards.
+    RS-07 rewrite can be checked against it while drafting, not only afterwards.
   - >-
-    Read docs/contracts/decision-entry.yaml before writing the new Decision -- it owns the required
-    markers and the significance.routing rule that decides whether content belongs in the entry or in the
-    PR body.
+    Read docs/contracts/decision-entry.yaml before writing the new Decision -- it owns the envelope
+    fields, the pinned trailing_bracket amendment form (:130-134) and the significance.routing rule.
   - >-
     Determine the next Decision number from docs/DECISIONS.md (DECISIONS.md is the numbering authority;
     never allocate client-side from the warehouse cache).
 execution_steps:
   - >-
-    Delete the 195 legacy .md plans: `git rm -q docs/plans/archive/*.md`. Confirm the directory is gone
-    (git removes it once empty).
+    Delete the 195 legacy .md plans: `git rm -q docs/plans/archive/*.md`.
   - >-
     Delete the 5 dead logs: `git rm -q logs/.metrics-analysis-log.jsonl logs/.token-budget-log.jsonl
     logs/.transcript-index.jsonl logs/.friction-analysis-log.jsonl logs/.rejected-suggestions.jsonl`.
@@ -550,42 +607,50 @@ execution_steps:
     audits/platform-roadmap-strategic-audit-ffd58dc.yaml docs/audit-prompts/AUDIT-dependency-management.md
     docs/audit-prompts/AUDIT-platform-roadmap-strategic-audit.md`. Run verification steps 1 and 2.
   - >-
+    ORDER MATTERS FROM HERE: both new tests are authored BEFORE the contract edits they guard, so each
+    has an observable RED. Do not reorder.
+  - >-
+    Write tests/checks/hygiene/validate_placement/test_dead_route_detection.py per its scope row. Run
+    verification step 5 and CONFIRM IT IS RED (both routes still declared). Assert on topic names, never
+    on deleted file paths.
+  - >-
+    Write tests/contracts_enforcement/test_log_storage_examples_resolve.py per its scope row. Run
+    verification step 6 and CONFIRM IT IS RED (log-storage.yaml still lists a now-untracked file).
+  - >-
     Edit docs/contracts/file-router.yaml: DELETE the friction-analysis-log and rejected-suggestions-log
     route blocks entirely (do not mark them runtime: true), and add one amendment_log entry with
-    change_class: accepted_values_narrow naming both retired topics and the reason.
+    change_class: accepted_values_narrow naming both retired topics and the reason. Re-run verification
+    step 5 -- it must now be GREEN -- and step 4.
   - >-
     Edit docs/contracts/log-storage.yaml: remove `.friction-analysis-log.jsonl` from
     patterns.locally_produced.examples at :66 and add its own amendment_log entry (change_class:
-    accepted_values_narrow).
-  - >-
-    Write tests/checks/hygiene/validate_placement/test_dead_route_detection.py with both assertions
-    described in its scope row. Assert on TOPIC NAMES, never on the deleted file paths -- a hardcoded
-    `.friction-analysis-log.jsonl` literal would red verification step 3. Run step 5 and confirm
-    red-to-green across the contract edit.
+    accepted_values_narrow). Re-run verification step 6 -- it must now be GREEN.
   - >-
     Repoint the two stale test fixtures (test_validate_placement.py:84 and test_env_git.py:318,323) off
     the deleted logs/.friction-analysis-log.jsonl to a still-tracked path. Run verification step 3.
   - >-
-    Add the new numbered Decision to docs/DECISIONS.md as a forward-standing commitment with `amends:
-    [85]` and a declared significance.value of numbered_decision, and append a dated amendment trailer
-    under Decision 85 itself. Run verification step 8.
+    Add the new numbered Decision to docs/DECISIONS.md using the heading, envelope and significance
+    justification drafted in its scope row, and append the dated trailing_bracket amendment trailer under
+    Decision 85. Run verification step 9.
   - >-
     Rewrite the RS-07 section of docs/CLAUDE.md (lines 40-59) so it no longer describes
-    docs/plans/archive/ and no longer asserts a working-tree retention obligation for .md plans. Keep the
-    RS-07 heading so config/structural_size_budgets.yaml:145's relief_valve reference stays resolvable.
-    The rewrite MUST NOT grow the file past 3813 bytes -- run verification step 6 immediately after.
+    docs/plans/archive/ as a live destination and no longer asserts a working-tree retention obligation
+    for .md plans. Keep the RS-07 heading so config/structural_size_budgets.yaml:145's relief_valve
+    reference stays resolvable. The rewrite MUST NOT grow the file past 3813 bytes -- run verification
+    step 8 immediately after.
   - >-
-    Run verification steps 4 and 7, then the full presubmit (step 9). Commit with a
-    feat(dead-file-cleanup): prefix, rebase onto origin/main, push, and open the PR. The PR body carries
-    the change record: file counts, the 4.01 MB figure, the measured grep-noise percentages, the
-    terraform zero-deletion result, and the Decision 85 amendment rationale.
+    Run verification step 7, then step 10, which runs BOTH the fast tier and the full tier. The full tier
+    is required by handoff_policy and is not optional. Commit with a feat(dead-file-cleanup): prefix,
+    rebase onto origin/main, push, and open the PR. The PR body carries the change record: file counts,
+    the 4.01 MB figure, the measured grep-noise percentages, the terraform zero-deletion result, the
+    RS-07 disposition note, and the Decision 85 amendment rationale.
   - >-
     After the PR is open, file the anti-regrowth follow-on recommendation described in Context. Do not
     add a Resolves: trailer for rec-031.
 work_areas: []
 rollback: >-
   Every change is a deletion or an additive/subtractive text edit, all captured in one squash commit, so
-  `git revert <sha>` restores all 206 files and reverses the five text edits atomically. No
+  `git revert <sha>` restores all 206 files and reverses the six text edits atomically. No
   infrastructure, warehouse table, deployed artefact or runtime state is touched, so there is nothing to
   unwind outside git. If a problem surfaces after merge, revert first and re-derive the orphan set rather
   than patching forward -- a partial restore risks leaving a retired route absent while its target is
