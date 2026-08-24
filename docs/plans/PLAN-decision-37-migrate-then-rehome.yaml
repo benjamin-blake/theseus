@@ -18,7 +18,9 @@ scope:
     action: Modify
     purpose: >-
       Mint Decision 174 (migrate-then-rehome branch, amending Decision 149's eligibility
-      criterion); compact Decision 37 to a conforming stub_grammar stub pointing at both
+      criterion); annotate Decision 149's own block with the required
+      '> **Amended by Decision 174 (DATE):**' forward pointer (validate_supersession_annotations,
+      full tier); compact Decision 37 to a conforming stub_grammar stub pointing at both
       Decision 116 and the new contract.
   - file: docs/contracts/decision-entry.yaml
     action: Modify
@@ -63,12 +65,14 @@ scope:
     action: Modify
     purpose: >-
       Delegate its SECRET-VALUE-OUT-OF-BAND audit invariant to the new contract rather than
-      restate it, so the invariant text lives in exactly one place.
+      restate it, so the invariant text lives in exactly one place -- while PRESERVING the
+      unrelated ASCII-tag-charset invariant bundled into the same row. Add an amendment_log entry.
   - file: docs/contracts/file-router.yaml
     action: Modify
     purpose: >-
       Routes for the new contract (route topic must equal the Class D subject) and for the
-      decision-migration manifest.
+      decision-migration manifest, PLUS the amendment_log[] entry that
+      check_amendment_log_for_class_d requires of any parsed-content change to this Class D file.
   - file: scripts/checks/decisions/validate_decision_entry_conformance.py
     action: Modify
     purpose: >-
@@ -99,6 +103,11 @@ scope:
   - file: scripts/ducklake_neon_smoke_test.py
     action: Modify
     purpose: Docstring citation repoint to the new contract (not Lambda-packaged).
+  - file: docs/CLAUDE.md
+    action: Modify
+    purpose: >-
+      Add the decision-migration manifest to the Class-to-home map, mirroring the existing
+      intent-migration sibling row.
   - file: docs/decisions-index.json
     action: Modify
     purpose: Regenerated after compaction; Decision 37 flips to currency superseded_compacted.
@@ -142,8 +151,13 @@ acceptance_criteria:
     Every live Decision 37 citation either resolves through the stub's pointer or is repointed;
     the un-repointed set is recorded in the manifest with an explicit reason.
   - >-
-    validate_decision_entry_conformance fails a malformed compacted stub on a baseline-present
-    entry (the hole that let a bad stub pass CI silently is closed).
+    validate_decision_entry_conformance fails a compacted stub on a BASELINE-PRESENT entry that
+    is missing a required stub_grammar marker, closing the baseline-exemption hole. NOTE the
+    residual limit, stated honestly rather than over-claimed: scripts.decisions_md.is_compacted_stub
+    is a two-marker PRESENCE predicate, so a stub carrying both markers PLUS residual
+    pre-compaction body still satisfies it. That malformation is caught for Decision 37 by
+    verification step 4's explicit shape assertion, not by the widened check. Closing it
+    generally would mean a stub_grammar shape validator, which is deliberately out of scope here.
   - bin/venv-python -m scripts.validate --pre exits 0.
 verification_plan:
   - step: 1
@@ -201,12 +215,19 @@ verification_plan:
       parse_decisions_md, is_compacted_stub, extract_superseded_by; rows =
       parse_decisions_md([Path('docs/DECISIONS.md')]); r = next(x for x in rows if
       x['decision_id'] == '37'); b = r['raw_block']; assert is_compacted_stub(b), 'not a stub';
-      assert extract_superseded_by(b) == 'dec-116', extract_superseded_by(b); print('OK stub,
-      sole superseder dec-116')"
-    expected: "OK stub, sole superseder dec-116"
+      assert extract_superseded_by(b) == 'dec-116', extract_superseded_by(b); body = [l for l in
+      b.splitlines() if l.strip()][1:]; assert all(l.startswith(('**Status:**', '**Date:**',
+      '**Decision:**', '**Superseded by:', '---')) for l in body), 'residual pre-compaction line:
+      %r' % [l for l in body if not l.startswith(('**Status:**', '**Date:**', '**Decision:**',
+      '**Superseded by:', '---'))]; assert '**Superseded by: Decision 116**' in b, 'wrong marker
+      spelling'; print('OK stub, sole superseder dec-116, no residual body')"
+    expected: "OK stub, sole superseder dec-116, no residual body"
     fix_if: >-
-      is_compacted_stub is False -- a pre-compaction marker line survived the edit, or
-      '**Status:** Superseded' is missing. Compaction is a FULL body replacement, not a partial edit.
+      'not a stub' -- '**Status:** Superseded' or the superseded-by pointer is missing.
+      'residual pre-compaction line' -- the body replacement was partial; is_compacted_stub is
+      only a two-marker PRESENCE predicate and returns True on a stub that still carries its old
+      body, which is why this step asserts the shape rather than trusting that predicate.
+      'wrong marker spelling' -- use the exact pinned form, never '**Superseded by:** Decision N'.
     hermetic: true
     graduation: graduate
     graduation_check_id: "decision-37-compacted-stub-sole-superseder"
@@ -226,7 +247,7 @@ verification_plan:
       Confirm the terraform citation repoints are comment-only -- no resource attribute line
       changed, so the expected plan is a no-op.
     command: >-
-      bash -c "git diff origin/main -- terraform/ | grep '^[+-]' | grep -v '^[+-][+-]' |
+      bash -c "git diff origin/main...HEAD -- terraform/ | grep '^[+-]' | grep -v '^[+-][+-]' |
       grep -vE '^[+-][[:space:]]*#' | grep -vE '^[+-][[:space:]]*$' | tee /dev/stderr | wc -l |
       grep -qx 0 && echo 'OK comment-only'"
     expected: "OK comment-only"
@@ -234,8 +255,12 @@ verification_plan:
       Non-comment lines appear -- a description = \"...\" attribute was edited. Revert it; those
       citations stay and are recorded in the manifest as deferred.
     hermetic: true
-    graduation: graduate
-    graduation_check_id: "d37-repoint-terraform-comment-only"
+    graduation: waive
+    graduation_waiver_reason: >-
+      Keys on this session's transient repo state (a diff against origin/main), which the
+      planning skill names verbatim as the waive case. Post-merge the diff is empty, so a
+      standing guard would be permanently vacuous at best; at worst it would fail any future PR
+      that legitimately edits a non-comment terraform line.
   - step: 7
     phase: pre-deploy
     action: >-
@@ -244,15 +269,17 @@ verification_plan:
     command: >-
       bin/venv-python -c "import subprocess; from scripts.lambda_manifest import
       compute_affected_artifacts; changed = subprocess.run(['git','diff','--name-only',
-      'origin/main'], capture_output=True, text=True).stdout.split(); a =
+      'origin/main...HEAD'], capture_output=True, text=True).stdout.split(); a =
       compute_affected_artifacts(changed); assert not a, a; print('OK no Lambda artifacts affected')"
     expected: "OK no Lambda artifacts affected"
     fix_if: >-
       An artifact is named -- src/common/ducklake_runtime.py or src/lambdas/ducklake_catalog_dr/*
       was edited. Revert; those citers are deliberately deferred and recorded in the manifest.
     hermetic: true
-    graduation: graduate
-    graduation_check_id: "d37-plan-touches-no-lambda-artifact"
+    graduation: waive
+    graduation_waiver_reason: >-
+      Same transient-repo-state case as the step above: it classifies THIS branch's diff, so it
+      is vacuous once merged and cannot serve as a standing regression guard.
   - step: 8
     phase: pre-deploy
     action: >-
@@ -301,6 +328,40 @@ verification_plan:
     hermetic: false
     graduation: not-applicable
   - step: 11
+    phase: pre-deploy
+    action: >-
+      Verify acceptance criterion 7 mechanically: every live Decision 37 citer, under the
+      exclusion set this plan states, appears in the manifest with a disposition. No citer is
+      silently dropped.
+    command: >-
+      bash -c "for f in $(git grep -l -E 'Decision[ -]37\b' -- . ':!docs/DECISIONS.md'
+      ':!docs/DECISIONS_ARCHIVE.md' ':!docs/decisions-index.json' ':!logs/' ':!audits/'
+      ':!docs/plans/' ':!docs/audit-prompts/'); do grep -q \"$f\"
+      docs/decision-migration/MANIFEST.yaml || { echo \"UNDISPOSED: $f\"; exit 1; }; done; echo
+      'OK every citer dispositioned'"
+    expected: "OK every citer dispositioned"
+    fix_if: >-
+      'UNDISPOSED: <path>' -- that citer is missing from the manifest. Add it with a reason
+      (repointed / Lambda-packaged / description-attribute / legacy-root / not-a-citation).
+      Never drop a citer silently -- this is the audit's own abort surface, 'misrouting is worse
+      than retention'.
+    hermetic: true
+    graduation: not-applicable
+  - step: 12
+    phase: pre-deploy
+    action: >-
+      Full-tier presubmit. This is the ONLY step that sees the full-tier-only checks, notably
+      validate_supersession_annotations (the Decision 149 amends-annotation obligation).
+    command: bin/venv-python -m scripts.validate
+    expected: All checks passed.
+    fix_if: >-
+      validate_supersession_annotations fails -- Decision 174 declares amends: [149] but
+      Decision 149's block carries no '> **Amended by Decision 174 (DATE):**' annotation.
+      validate_verification_registry fails -- the graduated rows breached the 6,000-line ceiling;
+      per Decision 166 point 6 the response is CD.29 archival, NEVER a second raise.
+    hermetic: false
+    graduation: not-applicable
+  - step: 13
     phase: post-deploy
     action: >-
       Write the terminal Superseded SCD2 version for Decision 37 to ops_decisions and confirm
@@ -314,16 +375,36 @@ verification_plan:
       dispose it explicitly. Reader outage is tolerated per Decision 155; retry.
     hermetic: false
     graduation: not-applicable
+  - step: 14
+    phase: post-deploy
+    action: Verify both bundled recommendations actually closed after the portal sync.
+    command: >-
+      bash -c "bin/venv-python -m scripts.sync.ops pull && bin/venv-python -c \"import json;
+      rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip()];
+      d={r['id']: r['status'] for r in rows};
+      assert d.get('rec-2822')=='closed', d.get('rec-2822');
+      assert d.get('rec-2823')=='closed', d.get('rec-2823'); print('OK both recs closed')\""
+    expected: "OK both recs closed"
+    fix_if: >-
+      A rec is still open -- the --update-rec call did not land. Re-file via the portal; a write
+      that cannot complete FAILS LOUDLY at the call site (Decision 84 I-4), so there is no
+      offline outbox to drain.
+    hermetic: false
+    graduation: not-applicable
 test_obligations:
   - source: scripts/checks/iam_tf/validate_secret_material_handling.py
     behavior: >-
       An aws_secretsmanager_secret envelope carrying an undeclared companion _version resource is
-      flagged; a declared exception is not.
+      flagged; a declared exception is not; AND the verdict follows the CONTRACT rather than
+      hardcoded names -- removing ducklake_neon_catalog_dsn from a fixture
+      secret-material-handling.yaml must make the check flag it.
     verification_step: 3
     test_selector: tests/checks/iam_tf/test_validate_secret_material_handling.py
     red_green_expectation: >-
-      Red before (module absent), green after; the undeclared-fixture case fails if the check
-      stops reading the contract's exception list.
+      Red before (module absent), green after. The contract-mutation case is the load-bearing
+      one: without it, pass-on-current-tree and fail-on-undeclared-fixture BOTH pass identically
+      if the check hardcodes the two exception names, and Decision 168 clause 2's
+      demonstrably-reads-the-contract claim would be untested.
   - source: scripts/checks/decisions/validate_decision_entry_conformance.py
     behavior: >-
       A malformed compacted stub on a baseline-present entry FAILS, while a full-bodied entry
@@ -342,7 +423,7 @@ test_obligations:
   - source: docs/contracts/secret-material-handling.yaml
     behavior: The contract loads as a valid Class D envelope and its evaluator resolves.
     verification_step: 2
-    test_selector: tests/checks/contracts/test_validate_contract_drift.py
+    test_selector: tests/checks/contracts/validate_contract_drift/
     red_green_expectation: >-
       Red before (file absent), green after. Fails if the evaluator is declared but unsequenced.
   - source: docs/contracts/decision-entry.yaml
@@ -387,6 +468,13 @@ test_obligations:
     test_selector: tests/checks/structural/test_budget_raises.py
     red_green_expectation: >-
       Green if the entry is absent (trim sufficed) or correctly marked; red on an unmarked raise.
+  - source: docs/CLAUDE.md
+    behavior: The decision-migration manifest has a Class-to-home map row.
+    verification_step: 12
+    command: "bin/venv-python -m scripts.validate"
+    red_green_expectation: >-
+      Waived as a discriminating unit -- this is a navigation-index row with no behavior of its
+      own; the full-tier run is what proves it did not break the prose/placement gates.
   - source: docs/decisions-index.json
     behavior: Decision 37 projects currency superseded_compacted and the index stays within its pin.
     verification_step: 5
@@ -395,34 +483,34 @@ test_obligations:
   - source: terraform/personal/inference_credentials.tf
     behavior: The citation repoint is comment-only and produces no terraform diff.
     verification_step: 6
-    command: "git diff origin/main -- terraform/"
+    command: "git diff origin/main...HEAD -- terraform/"
     red_green_expectation: >-
       Waived as a per-file unit -- step 6 asserts the property across the whole terraform tree at
       once, which is strictly stronger than a per-file grep.
   - source: terraform/personal/secrets_manager_brokers.tf
     behavior: The citation repoint is comment-only and produces no terraform diff.
     verification_step: 6
-    command: "git diff origin/main -- terraform/"
+    command: "git diff origin/main...HEAD -- terraform/"
     red_green_expectation: Waived as a per-file unit -- covered tree-wide by step 6.
   - source: terraform/personal/prod_lambdas.tf
     behavior: The citation repoint is comment-only and produces no terraform diff.
     verification_step: 6
-    command: "git diff origin/main -- terraform/"
+    command: "git diff origin/main...HEAD -- terraform/"
     red_green_expectation: Waived as a per-file unit -- covered tree-wide by step 6.
   - source: terraform/personal/neon_ducklake_catalog.tf
     behavior: The citation repoint is comment-only and produces no terraform diff.
     verification_step: 6
-    command: "git diff origin/main -- terraform/"
+    command: "git diff origin/main...HEAD -- terraform/"
     red_green_expectation: Waived as a per-file unit -- covered tree-wide by step 6.
   - source: terraform/personal/oidc.tf
     behavior: The citation repoint is comment-only and produces no terraform diff.
     verification_step: 6
-    command: "git diff origin/main -- terraform/"
+    command: "git diff origin/main...HEAD -- terraform/"
     red_green_expectation: Waived as a per-file unit -- covered tree-wide by step 6.
   - source: terraform/bootstrap/github_ci_apply_reads.tf
     behavior: The citation repoint is comment-only and produces no terraform diff.
     verification_step: 6
-    command: "git diff origin/main -- terraform/"
+    command: "git diff origin/main...HEAD -- terraform/"
     red_green_expectation: Waived as a per-file unit -- covered tree-wide by step 6.
   - source: scripts/ducklake_neon_smoke_test.py
     behavior: The docstring citation points at the new contract and the module still imports.
@@ -474,11 +562,16 @@ constraints:
   - >-
     Exhaust the contracts class's first-listed relief valve (compact amendment_log / defer detail)
     and RECORD THE ARITHMETIC before adding any structural-size raise marker. Decision 166
-    reversal condition (d) treats roster growth as a signal to re-audit, not to raise -- and the
-    budgets roster ALREADY grew 15 -> 16 inside the 90-day window (docs/contracts/
-    iam-simulate-fixture.yaml, dec-168, 2026-08-10), so a dec-174 entry would be the 17th. If a
-    residual raise is unavoidable, Decision 174 must record that 15 -> 16 -> 17 count as an
-    explicit, disposed acknowledgement of (d) rather than passing over it silently.
+    reversal condition (d) treats roster growth as a signal to re-audit, not to raise. MEASURED
+    RECORD (re-derived at plan-critique after an earlier draft of this plan carried a WRONG
+    figure): the roster was 16 at install (13 budgets + 3 long_line_budgets), and is 14 TODAY
+    (11 + 3) after PR #906 decomposed oidc.tf and github_ci_apply.tf out of it. Net movement over
+    the 90-day window is -2, so reversal condition (d) DOES NOT FIRE, and a dec-174 entry would
+    be the 15th. docs/contracts/iam-simulate-fixture.yaml was present at install; dec-168 only
+    RAISED ITS VALUE (584 -> 608) and re-attributed its marker, which is not roster growth.
+    Decision 174 must NOT record a (d) acknowledgement or any growth claim -- a false measurement
+    in a numbered Decision body is permanent. Re-derive the count at implement time and use what
+    you measure.
   - >-
     docs/contracts/secret-material-handling.yaml governs the VALUE-MATERIAL plane only. It must
     name Decision 157 as the adjacent IAM-VERB plane (Secrets Manager metadata-vs-value verb
@@ -489,6 +582,34 @@ constraints:
     (validate_decision_entry_conformance). Do NOT fuse it into the new contract's evaluator --
     that evaluator's sole job is resolving secret-material-handling.yaml, and mixing domains
     would make the Class D evaluator claim coverage it does not have.
+  - >-
+    TWO REGISTRATION OBLIGATIONS THAT ARE MECHANICALLY ENFORCED AND EASY TO MISS:
+    (a) docs/contracts/file-router.yaml is itself a Class D contract, so
+    check_amendment_log_for_class_d FAILS any parsed-content change with no new amendment_log[]
+    entry -- adding the two routes requires one. (b) Decision 174's envelope declares
+    amends: [149], and validate_supersession_annotations requires that edge be annotated on
+    Decision 149's OWN block, in the '> **Amended by Decision 174 (DATE):**' form Decisions 155
+    and 165 already use. That check is FULL-TIER ONLY, so only the full-tier step sees it.
+  - >-
+    docs/contracts/credential-routing.yaml's SECRET-VALUE-OUT-OF-BAND audit_invariant BUNDLES a
+    second, unrelated invariant: 'Secret tag values use the ASCII tag charset only -- no
+    parentheses (a prior Purpose-tag parenthesis broke TagResource; see inference_credentials.tf)'.
+    Delegating the row wholesale would DELETE it. Either retain that sentence in place alongside
+    the delegation pointer, or carry it into the new contract explicitly -- and say which. Add an
+    amendment_log entry for the semantic edit even though check_amendment_for_diff does not
+    require one for audit_invariants.
+  - >-
+    If a residual structural-budget raise lands, Decision 174's BODY must contain the literal
+    'docs/contracts/decision-entry.yaml' (or 'docs/contracts') -- _marker_guard's
+    _expand_ancestor_candidates yields exactly those two candidates for that key, and Decision 165
+    authorizes by the cited entry NAMING the key, never by the entry merely existing.
+  - >-
+    config/agent/verification_registry/registry.yaml measures 5,972 effective lines against its
+    6,000 ceiling -- 28 lines of headroom. Every 'graduate' disposition in this plan costs a
+    registry row at implement time. Author the new rows in the COMPACT one-line style the tail of
+    that file already uses, not the block style. Decision 166 point 6 pre-commits that the
+    response to breaching 6,000 is the CD.29 mark-then-drop archival lifecycle, NEVER a second
+    raise.
   - No rescue agents or workaround loops (Decision 55). A failure is diagnosed, not retried blindly.
   - >-
     Single Portal Invariant: the ops_decisions write happens ONLY via
@@ -544,8 +665,12 @@ context:
     WRONG, because it would force compaction on partially-superseded entries and contradict the
     eligibility criterion this plan preserves. The rule keys on the body declaring
     '**Status:** Superseded' instead, which catches a malformed compaction attempt while leaving
-    a full-bodied entry with a forward pointer alone. Measured today it flags exactly {44, 58},
-    both already conforming, plus Decision 37 until compacted.
+    a full-bodied entry with a forward pointer alone. Measured today its blast radius across BOTH
+    corpus files is exactly {44, 58}, both already conforming (the archive uses no
+    '**Status:** Superseded' markers). Decision 37 carries no '**Status:**' marker at all today,
+    so it ENTERS the enforcement set only once compaction begins -- an in-PR transient, never a
+    pre-existing red. Round 2's proposed key ('**Superseded by: Decision N**') was verified to
+    falsely flag Decision 149 itself, which mentions the marker in prose while full-bodied and live.
   - >-
     CLASS CENSUS for the manifest (measured 2026-08-24 from docs/decisions-index.json): of 126
     live entries, 93 current, 29 amended, 2 superseded_pointer (37, 80), 2 superseded_compacted
@@ -562,8 +687,14 @@ context:
     An in-flight DECISIONS.md sweep session is blocked on rec-3246 and should sequence behind it,
     consuming this plan's manifest as its enumeration substrate rather than re-deriving it.
   - >-
-    COMPLETE CITER DISPOSITION (every live Decision 37 citer must appear in the manifest with a
-    reason, none silently dropped). REPOINTED to the new contract: credential-routing.yaml, the
+    COMPLETE CITER DISPOSITION. EXCLUSION SET (stated explicitly, because an unstated one
+    produced a wrong count in an earlier draft of this plan): docs/DECISIONS.md,
+    docs/DECISIONS_ARCHIVE.md, docs/decisions-index.json, logs/, audits/, docs/plans/,
+    docs/audit-prompts/. Under exactly that set, git grep -l 'Decision 37' returns SEVENTEEN
+    files, not the fourteen an earlier draft claimed -- the three it missed are docs/CHANGELOG.md,
+    docs/INTENT-ops-decisions-graduation.md and docs/SESSION_LOG_ARCHIVE.md. Re-derive this at
+    implement time; verification step 11 asserts every returned path appears in the manifest.
+    REPOINTED to the new contract: credential-routing.yaml, the
     five terraform/personal files, terraform/bootstrap/github_ci_apply_reads.tf,
     scripts/ducklake_neon_smoke_test.py. NOT REPOINTED, each recorded with its reason:
     src/common/ducklake_runtime.py and src/lambdas/ducklake_catalog_dr/{handler.py,manifest.yaml}
@@ -574,7 +705,11 @@ context:
     non-applied root per CD.21; it resolves through the stub's Decision 116 pointer);
     config/agent/data_quality/decisions/ops_decisions.yaml line 68 (NOT a citation at all -- a
     DQ allowed-values string literal quoting another entry's historical status text; record it as
-    not-a-citation so a follow-on sweep does not churn it).
+    not-a-citation so a follow-on sweep does not churn it);
+    docs/INTENT-ops-decisions-graduation.md line 504 (the SAME DQ allowed-values string literal;
+    not-a-citation, same disposition); docs/CHANGELOG.md and docs/SESSION_LOG_ARCHIVE.md
+    (historical change records -- immutable by nature, correctly left pointing at the number,
+    which still resolves to a header).
   - >-
     ACCEPTED WARN: Decision 174 will likely exceed Decision 167 clause 3's 6,144-byte per-entry
     authoring norm -- it carries an amendment, the branch mechanism, the exercised instance, the
