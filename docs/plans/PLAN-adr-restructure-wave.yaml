@@ -18,7 +18,7 @@ scope:
   action: Modify
   purpose: 'PR-A: rewrite the 22 tranche entries per the disposition table (D37 is not in the tranche -- already compacted
     by PR #956) plus 6 dated append annotations (D65, D119, D172, D117, D110, D35). PR-B: mint the ratifying Decision (next
-    free header, nominally 176) and append the D151 in-Intent annotation naming that Decision by number.'
+    free header, nominally 177) and append the D151 in-Intent annotation naming that Decision by number.'
 - file: docs/decisions-index.json
   action: Modify
   purpose: Regenerated after each corpus edit (freshness-gated).
@@ -63,8 +63,9 @@ scope:
   purpose: 'D95 authority re-point: all NINE "Decision 95" citation lines (3, 7, 30, 60, 94, 115, 118, 291, 296 at plan
     time) flip to the surface owning the roster, same commit as the D95 rewrite. This is a Class A RITUAL contract: contracts_enforcement.check_amendment_for_diff
     fails any change to contract.description or a field''s description/semantics without a NEW per-field amendment_log entry
-    -- six of the nine lines are field-level values, so the re-point commit MUST carry the corresponding amendment_log entries
-    (headroom exists: 309/500 effective lines).'
+    -- four of the nine lines are amendment-gated (line 30 contract.description; 94/115/118 field-level description/semantics
+    values; 3/7 are comments and 60/291/296 governance notes outside the gate), so the re-point commit MUST carry the corresponding
+    amendment_log entries (headroom exists: 309/500 effective lines).'
 - file: docs/contracts/telemetry-lexicon.yaml
   action: Modify
   purpose: D95 destination-side governance note only if the re-point requires it; if the note lands as YAML data (not a
@@ -142,7 +143,7 @@ verification_plan:
   action: '[PR-A and PR-B] Authoritative gate on each PR head: full fast tier including the five marker-authorization guards,
     decision-entry conformance, decisions size, currency, index freshness, prose budgets.'
   command: bin/venv-python -m scripts.validate --pre
-  expected: Exit 0. In particular check_present_markers re-authorizes all 13 dec-166 and 2 dec-150 raise markers against
+  expected: Exit 0. In particular check_present_markers re-authorizes all 11 dec-166 and 2 dec-150 raise markers against
     the REWRITTEN bodies.
   fix_if: 'A marker-guard failure names a de-authorized key: restore the verbatim mention per the disposition table (D150
     clauses 1-2 skill paths; D166 clause 5/6 roster keys AND clause 3''s docs/ROADMAP-PLATFORM.yaml), never delete the marker.
@@ -181,19 +182,23 @@ verification_plan:
   action: '[PR-A head ONLY -- run manually during the PR-A gate; hermetic false because validate_vp_replay would replay
     it against the PR-B tree, where the mint legitimately adds a header and the D151 annotation legitimately grows the Intent]
     Corpus integrity relative to origin/main: live header count unchanged, all tranche numbers present, Intent sections
-    of D151/D152/D160/D162 byte-identical to origin/main.'
+    of D151/D152 byte-identical to origin/main. The Intent extractor is LINE-ANCHORED (^**Intent:** with re.M) because D152
+    carries a mid-line prose mention of the marker two lines before its real section; a first-match unanchored regex pins
+    the wrong span (delta-verify finding). D160/D162 carry no Intent marker at all, so the constitution''s byte-preserve
+    clause is trivially satisfied for them and they are deliberately not in the tuple.'
   command: 'bin/venv-python -c "import subprocess, re; from pathlib import Path; live = Path(''docs/DECISIONS.md'').read_text(encoding=''utf-8'');
     base = subprocess.run([''git'',''show'',''origin/main:docs/DECISIONS.md''], capture_output=True, text=True, encoding=''utf-8'').stdout;
     hn = lambda t: re.findall(r''^## Decision (\d+):'', t, re.M); assert len(hn(live)) == len(hn(base)), (len(hn(live)),
     len(hn(base))); tr = {27,66,74,77,93,95,102,124,127,128,131,132,135,142,149,150,151,152,160,162,166,167}; assert tr
     <= {int(n) for n in hn(live)}; sec = lambda t, n: re.search(rf''^## Decision {n}:.*?(?=^## Decision |\Z)'', t, re.M
-    | re.S).group(0); intent = lambda b: (re.search(r''\*\*Intent:\*\*.*?(?=\n\*\*[A-Z]|\n---)'', b, re.S).group(0) if re.search(r''\*\*Intent:\*\*'',
-    b) else ''''); [None for n in (151, 152, 160, 162) if intent(sec(live, n)) == intent(sec(base, n)) or (_ for _ in ()).throw(AssertionError(n))];
-    print(''OK'')"'
+    | re.S).group(0); intent = lambda b: (re.search(r''^\*\*Intent:\*\*.*?(?=\n\*\*[A-Z]|\n---)'', b, re.M | re.S).group(0)
+    if re.search(r''^\*\*Intent:\*\*'', b, re.M) else ''''); [None for n in (151, 152) if intent(sec(live, n)) == intent(sec(base,
+    n)) or (_ for _ in ()).throw(AssertionError(n))]; assert intent(sec(live, 152)) != '''', ''D152 Intent section must
+    resolve (line-anchored)''; print(''OK'')"'
   expected: OK printed, exit 0.
   fix_if: 'Header-count assert fails: a header was added or removed on the PR-A head -- PR-A must be header-neutral (never_remove_headers;
-    the mint belongs to PR-B). Intent assert fails: a post-D151 Intent section (D151, D152, D160, D162) was reflowed --
-    restore it byte-identical.'
+    the mint belongs to PR-B). Intent assert fails: the D151 or D152 Intent section was reflowed -- restore it byte-identical.
+    The D152-resolves assert fails: the extractor lost its line anchor.'
   hermetic: false
   graduation: waive
   graduation_waiver_reason: Wave-scoped one-time integrity sweep relative to origin/main; the standing invariant becomes
@@ -237,6 +242,19 @@ verification_plan:
   expected: rec-3249 status is closed in the refreshed read cache.
   fix_if: 'Still open after ~5 minutes: close manually per Decision 70 -- bin/venv-python -m scripts.ops_data_portal --update-rec
     rec-3249 --status closed --resolution "Wave + lock landed (PR-A, PR-B); guard registered and green."'
+- step: 11
+  phase: pre-deploy
+  action: '[both PRs, pre-handoff] Full-tier validation before commit/handoff, satisfying handoff_policy.full_validation_required_before_commit
+    (the full tier adds the both-file supersession-annotation and currency sweeps the fast tier scopes down).'
+  command: bin/venv-python -m scripts.validate
+  expected: Full tier exits 0 on the PR head.
+  fix_if: 'A full-tier-only check fails (e.g. supersession annotations on the ratifying entry''s amends edge): fix per its
+    message -- for the amends edge, the D151 in-Intent annotation must name the minted Decision number. Never demote or
+    skip the failing check.'
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: The command is the full presubmit gate itself; a graduated registry row invoking scripts.validate
+    would recurse the gate (same exclusion class as step 3).
 test_obligations:
 - source: scripts/checks/decisions/validate_live_entry_immutability.py
   behavior: Destructive edits to baseline-present non-superseded live bodies fail; the five legitimate shapes pass; no waiver
@@ -266,6 +284,36 @@ test_obligations:
   verification_step: 2
   command: grep -q validate_live_entry_immutability config/ci_rca_taxonomy.yaml
   red_green_expectation: red before (row absent), green after
+- source: docs/decisions-index.json
+  behavior: Committed triage index stays fresh, correctly derived, and within the 112,000-byte pin after every corpus edit.
+  verification_step: 7
+  command: bin/venv-python -m pytest tests/test_decisions_index.py -q
+  waiver_reason: Generated artifact -- regenerated by scripts.decisions_index, never hand-edited; correctness is owned by
+    the standing freshness check and the committed byte-pin suite this command runs, so a bespoke red/green unit for this
+    plan would duplicate the standing guard.
+- source: docs/contracts/decision-entry.yaml
+  behavior: Contingency-only authority re-point; expected untouched; any data-level edit must stay net-non-positive and
+    carry a Class D amendment_log entry.
+  verification_step: 3
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: 'Expected-untouched contingency row: the Class D amendment-log gate (check_amendment_log_for_class_d via
+    validate_contract_drift) and the structural budget guard already fail any nonconforming edit; a plan-specific test would
+    assert the absence of a change.'
+- source: docs/contracts/telemetry_agents.yaml
+  behavior: All nine Decision 95 citation lines re-pointed to the roster-owning surface with same-commit per-field amendment_log
+    entries (Class A ritual contract).
+  verification_step: 3
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: 'Prose/semantics re-point on a ritual Class A contract: contracts_enforcement.check_amendment_for_diff
+    enforces the per-field amendment_log obligation mechanically at VP step 3; the change carries no executable behavior
+    a red/green unit test could exercise beyond that standing gate.'
+- source: docs/contracts/telemetry-lexicon.yaml
+  behavior: Contingency-only destination-side governance note for the D95 re-point; if landed as YAML data it carries a
+    Class D amendment_log entry.
+  verification_step: 3
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: 'Expected-minimal contingency row on a Class D contract: the amendment-log gate fails any data-level note
+    lacking its entry; no executable behavior exists for a bespoke red/green test to cover.'
 constraints:
 - 'Wave constitution (operator-ratified 2026-08-24): clause/point numbering and labels are frozen public API in every residual;
   required markers, header lines with original parentheticals, amendment trails, Warehouse ID lines, and fenced reversal-conditions
@@ -320,15 +368,15 @@ context:
 - 'Two-PR topology (operator-ratified): PR-A (wave) then PR-B (lock + ratifying Decision) off updated main, because the
   guard diffs against origin/main and would fail the very diff introducing the wave. Each PR follows the standard push ->
   PR -> CI-green wake -> squash-merge flow; the Resolves trailer rides PR-B.'
-- 'Ratifying Decision (PR-B): next free header at execution time (nominally 176; re-check per the numbering-race note --
-  D174 and D175 were both claimed by other plans during this session). Envelope significance.value numbered_decision; amends
-  [151]; body < 6144 bytes; title contains the phrase "append-only live-body immutability"; records the five-branch invariant
-  (exact-line append-only; strict stub bound on new supersessions; embedded archive moves; the fenced-stanza interior carve-out
-  with presence lock; the two retired micro-shapes) and the post-lock correction dialect, and fenced reversal conditions
-  (so decision_conditions.py monitors them) INCLUDING the T1.5 portal-cutover retirement path (Decision 167 condition (c)
-  precedent). CRITICAL (supersession-edge closure): the amends [151] envelope edge makes validate_supersession_annotations
+- 'Ratifying Decision (PR-B): next free header at execution time (nominally 177; re-check per the numbering-race note --
+  D174, D175 and D176 were all claimed by other plans during this session). Envelope significance.value numbered_decision;
+  amends [151]; body < 6144 bytes; title contains the phrase "append-only live-body immutability"; records the five-branch
+  invariant (exact-line append-only; strict stub bound on new supersessions; embedded archive moves; the fenced-stanza interior
+  carve-out with presence lock; the two retired micro-shapes) and the post-lock correction dialect, and fenced reversal
+  conditions (so decision_conditions.py monitors them) INCLUDING the T1.5 portal-cutover retirement path (Decision 167 condition
+  (c) precedent). CRITICAL (supersession-edge closure): the amends [151] envelope edge makes validate_supersession_annotations
   require the literal "Decision <minted number>" inside D151''s block -- the D151 in-Intent annotation therefore MUST name
-  the ratifying Decision by number, e.g. "[Amendment 2026-08-24, Decision 176 (operator-directed): clause 3(v)''s no-validator
+  the ratifying Decision by number, e.g. "[Amendment 2026-08-24, Decision 177 (operator-directed): clause 3(v)''s no-validator
   stance is narrowed by the append-only live-body guard; the 500,000-byte backstop it rested on was retired by Decision
   160 point 1.]" -- adjust the number to the one actually minted.'
 - 'Lock semantics (FINAL, critique round 3 -- strict stub bound, stanza carve-out, hardened archive branch): for every decision
@@ -362,8 +410,10 @@ context:
   micro-shapes.'
 - 'Staleness protocol at implement time (mechanical trigger, critique round 1): before rewriting each entry, run git diff
   6b09dedd HEAD -- docs/DECISIONS.md scoped to that entry''s span. STOP and surface iff the entry''s body differs from the
-  census base (the D37/D174/D175 deltas excepted) OR any string its disposition row quotes no longer appears in the current
-  body. Otherwise proceed.'
+  census base (the D37/D174/D175/D176 deltas excepted -- D176 (PR #957, verification-registry sharding) added its own entry
+  AND appended a sanctioned trailing-bracket amendment to Decision 166''s body ("[Amendment 2026-08-24: Decision 176 supersedes
+  point 6''s CD.29 archival pre-commitment...]"); that trailer is part of D166''s amendment trail and is preserved verbatim
+  like every other trail) OR any string its disposition row quotes no longer appears in the current body. Otherwise proceed.'
 - 'Backfill provenance is automated: rec-autoclose.yml runs backfill_decisions_from_md() post-merge, writing a new SCD2
   version per rewritten body to ops_decisions (content_hash-gated, Decision 84/134). No manual backfill step.'
 - 'Annotation set (PR-A, dated source-cited appends per amendment_forms): D65 records that its owning contract now inverts
@@ -681,22 +731,23 @@ context:
   and terraform/personal/oidc.tf are no longer in config/structural_size_budgets.yaml, docs/contracts/iam-simulate-fixture.yaml
   is now marked ''raise-approved: dec-168'', and the roster header still says ''(13 entries)'' over 11.; PRESERVE: Point
   5''s fifteen roster keys are GATE-READ TEXT. scripts/checks/_marker_guard.py:authorization_failure substring-matches each
-  governed key (or a >=2-segment ancestor prefix) against this Decision''s body; 13 ''raise-approved: dec-166'' markers
-  in config/structural_size_budgets.yaml depend on those literals being present. Deleting or paraphrasing any surviving
-  key fails validate_structural_size_budget_raises in BOTH presubmit tiers. Stale extra keys are inert (the guard tests
-  presence only), so the roster drift is a documentation defect, not a red build. The reversal-conditions (a)-(g) block
-  and the Significance paragraph''s self-routing statement must also survive intact.; VERIFY: Point 9''s pin is a LIVE parallel
-  copy, not dead provenance -- the entry says the arithmetic lives in the test module, and that module (112_000, re-derived
-  at migration step 5) is the declared SoT, mirrored at decision-entry.yaml:600. Only pointerize kills the drift; trim leaves
-  the corpse, and condition (g) names the dead 131,000. Point 5''s roster is gate-read (13 markers, not 21).; RATIONALE:
-  17 KB, and the spec is ALREADY routed out -- the Significance paragraph says the class table, counting rule and glob grammar
-  live in config/structural_size_budgets.yaml, ''not restated here''. What remains detachable is change record: point 9''s
-  worked byte-pin arithmetic and verification narrative (provenance in the test module, per the entry itself), and point
-  5''s re-census-vs-audit-draft narrative. Point 6''s growth measurement is the WHY for the 6,000 calibration and stays.;
-  ADDITIONAL BINDING CONSTRAINT (critique round 1): the residual MUST also keep clause 3''s literal ''docs/ROADMAP-PLATFORM.yaml''
-  mention -- size_limits.py''s always-on E3 leg authorizes that file''s defer_to_incumbent against dec-166''s body (no ancestor
-  candidate for a 2-segment key), and the graduated registry row structural-decision-166-authorizes-every-roster-key asserts
-  D166 authorizes every current roster key. Clause 5/6''s verbatim roster-key list stays in full, as already stated.'
+  governed key (or a >=2-segment ancestor prefix) against this Decision''s body; 11 ''raise-approved: dec-166'' markers
+  (13 at census; 2 retired with the registry monolith by PR #957) in config/structural_size_budgets.yaml depend on those
+  literals being present. Deleting or paraphrasing any surviving key fails validate_structural_size_budget_raises in BOTH
+  presubmit tiers. Stale extra keys are inert (the guard tests presence only), so the roster drift is a documentation defect,
+  not a red build. The reversal-conditions (a)-(g) block and the Significance paragraph''s self-routing statement must also
+  survive intact.; VERIFY: Point 9''s pin is a LIVE parallel copy, not dead provenance -- the entry says the arithmetic
+  lives in the test module, and that module (112_000, re-derived at migration step 5) is the declared SoT, mirrored at decision-entry.yaml:600.
+  Only pointerize kills the drift; trim leaves the corpse, and condition (g) names the dead 131,000. Point 5''s roster is
+  gate-read (13 markers, not 21).; RATIONALE: 17 KB, and the spec is ALREADY routed out -- the Significance paragraph says
+  the class table, counting rule and glob grammar live in config/structural_size_budgets.yaml, ''not restated here''. What
+  remains detachable is change record: point 9''s worked byte-pin arithmetic and verification narrative (provenance in the
+  test module, per the entry itself), and point 5''s re-census-vs-audit-draft narrative. Point 6''s growth measurement is
+  the WHY for the 6,000 calibration and stays.; ADDITIONAL BINDING CONSTRAINT (critique round 1): the residual MUST also
+  keep clause 3''s literal ''docs/ROADMAP-PLATFORM.yaml'' mention -- size_limits.py''s always-on E3 leg authorizes that
+  file''s defer_to_incumbent against dec-166''s body (no ancestor candidate for a 2-segment key), and the graduated registry
+  row structural-decision-166-authorizes-every-roster-key asserts D166 authorizes every current roster key. Clause 5/6''s
+  verbatim roster-key list stays in full, as already stated.'
 - 'D167: pointerize_dup; ~1500B; DEST: docs/contracts/decision-entry.yaml (metadata_envelope, significance.routing/routing_rule,
   size_governance.per_entry_size_norm); DRIFT: Clause 2 says ''four significance.routing tokens'' -- contract now has FIVE
   (work_item added 2026-08-19). Clause 3 says the 6,144-byte norm ''triggers a named WARN ... never a --pre failure''; validate_decisions_size.py
@@ -727,6 +778,12 @@ context:
   round 1 = REVISE x3; round 2 = PROCEED/REVISE/REVISE; round 3 = PROCEED (execution) / REVISE (governance: strict-stub
   bound, Class A amendment leg, stanza carve-out -- all folded) / REVISE (formal: D152 constraint corrected -- folded);
   convergence disposition recorded in the approved-plan commit per operator direction at the round cap'
+- 'Post-#957 registry note (mechanical rebase update): the verification graduation registry is re-grained to one record
+  per file (Decision 176) -- the step-1 graduation walk therefore CREATES config/agent/verification_registry/entries/live-entry-guard-discriminates.yaml
+  in PR-B per the updated implement skill, instead of appending to a monolith; plan_obligations reports no additional scope
+  obligation for it (the walk is implement-skill bookkeeping, same as the plan-file flip). Index-pin headroom tightened
+  to ~1.4KB (110,623/112,000 at rebase time) before PR-B''s ~800B new row -- VP step 7 is the STOP-and-surface point and
+  archival remains the only relief.'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
