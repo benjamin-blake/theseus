@@ -15,11 +15,12 @@ from typing import Any
 
 import yaml
 
+from scripts import verification_graduation
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_PATH = REPO_ROOT / "docs" / "contracts" / "inference-provider.yaml"
 ROADMAP_PATH = REPO_ROOT / "docs" / "ROADMAP-PLATFORM.yaml"
 DECISIONS_PATH = REPO_ROOT / "docs" / "DECISIONS.md"
-REGISTRY_PATH = REPO_ROOT / "config" / "agent" / "verification_registry" / "registry.yaml"
 PLAN_PATH = REPO_ROOT / "docs" / "plans" / "PLAN-provider-agnostic-tier-model.yaml"
 
 PLAN_SLUG = "provider-agnostic-tier-model"
@@ -219,8 +220,7 @@ def test_provider_variable_tier_item_and_transport_criterion() -> None:
 
 def test_graduated_registry_row_matches_declared_disposition() -> None:
     """Decision 132 implement-PR leg: the graduate disposition owns exactly one registry row."""
-    registry = _load_yaml(REGISTRY_PATH)
-    rows = [e for e in registry["entries"] if e.get("plan_slug") == PLAN_SLUG]
+    rows = [e for e in verification_graduation.load_entries(repo_root=REPO_ROOT) if e.get("plan_slug") == PLAN_SLUG]
     assert len(rows) == 1, f"expected exactly one registry row for {PLAN_SLUG}, got {len(rows)}"
     row = rows[0]
 
