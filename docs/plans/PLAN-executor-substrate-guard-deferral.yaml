@@ -22,11 +22,19 @@ scope:
     action: Modify
     purpose: >-
       Convert T4.2's six bare-string exit criteria to ExitCriterion objects with text preserved
-      byte-for-byte; append criterion c7 carrying the guard-classification prerequisite, the
-      check_id of its future evaluator, and both triggers; add a dated T4.2 progress_note line.
-      Flip T2.45 to complete (compacting its terminal fields per Decision 147 clause 4) with
-      per-criterion met/met_by. Add ONE dated retraction line to T2.48's progress_note.
-  - file: tests/roadmap/test_substrate_guard_deferral.py
+      byte-for-byte; append criterion c7 whose TEXT carries the guard-classification prerequisite,
+      the check_id of its future evaluator, and both triggers -- ExitCriterion is extra="forbid"
+      with only id/text/status/met_by, so none of those may be a sibling key (verified: a sibling
+      check_id is rejected). Flip T2.45 to complete, applying Decision 147 clause 2's field list.
+      Add ONE dated retraction line to T2.48's progress_note.
+  - file: tests/executor_substrate_guard_deferral/__init__.py
+    action: Create
+    purpose: >-
+      Package marker. The test goes in a PLAN-SLUG package, not tests/roadmap/ -- that directory is
+      the Decision 131 mirror home for scripts/roadmap/* (it holds only plan_document/, a genuine
+      mirror), and this test mirrors no module. Roadmap-CONTENT invariants live in plan-slug packages
+      here: tests/esb_text_fix/, tests/provider_agnostic_tier_model/.
+  - file: tests/executor_substrate_guard_deferral/test_deferral_registration.py
     action: Create
     purpose: >-
       The enforcement this plan turns on. Reads RAW YAML (never the Pydantic loader, whose
@@ -50,6 +58,17 @@ scope:
       The graduated entry for the mirror test, one record per file per Decision 176. Nine keys:
       check_id, primitive_slot test_selector, guard_target docs/ROADMAP-PLATFORM.yaml, guard_symbol
       null, plan_slug, graduated_at, graduated_by, and check_spec.node_id.
+  - file: docs/contracts/verification-registry.yaml
+    action: Modify
+    purpose: >-
+      One governance_notes paragraph recording the t4x repair as CLAIM-PRESERVING. Decision 176
+      deleted every per-record lifecycle field, so this block is now the only provenance surface an
+      in-place modification can land on, and both prior modification waves used it. It also settles
+      the check_id question the contract's own semantics raises ("changing a check implementation
+      requires a new check_id"): the precedent
+      (contract-census-declared-includes-env-taxonomy, re-authored command-only, retaining
+      plan_slug cfg-11-environment-taxonomy-conversion and graduated_at 2026-08-13) establishes that
+      a claim-preserving edit keeps check_id and all provenance fields.
   - file: tests/esb_text_fix/test_resume_property_vocabulary.py
     action: Modify
     purpose: >-
@@ -60,6 +79,21 @@ scope:
       ("T4.2's exit criteria remain bare strings" -- false after this plan) and RENAME the function at
       line 99, test_t42_criteria_remain_bare_strings, which would otherwise assert the opposite of its
       own body and is the grep-discoverable handle a future session finds first.
+  - file: config/agent/verification_registry/entries/t42-criteria-readers-use-ledger-text.yaml
+    action: Create
+    purpose: >-
+      The graduated record for step 5's structural count -- a grep_count primitive asserting no T4.2
+      criteria reader still indexes [0] without ['text']. Differentially admissible: 4 on origin/main,
+      0 on HEAD after repointing. Nothing else owns this invariant.
+  - file: tests/esb_text_fix/test_decision_scope_notes.py
+    action: Modify
+    purpose: >-
+      The SEVENTH T4.2 exit_criteria reader, and the one that does not break: it resolves a bare cN
+      reference POSITIONALLY (lines 190, 199, 208, 212) via str(c), so after the conversion it keeps
+      passing while silently degrading from a criterion-TEXT test to a dict-REPR test, and its
+      comment at 202-203 documents the bare-string convention verbatim as still current. Re-key the
+      resolver on c["id"] == crit_ref with a text read, and correct the comment. Surviving-but-
+      degraded is the defect class this plan already renames a function and fixes a docstring for.
   - file: tests/provider_agnostic_tier_model/test_role_based_tier_model.py
     action: Modify
     purpose: >-
@@ -103,16 +137,20 @@ acceptance_criteria:
     only tier_item ids -- and once all seven are explicit dicts positional assignment stops, so the
     residual hazard is a future bare string inserted at index 0 taking c1.
   - >-
-    All SIX coupling sites across THREE files read the ledger form: the four T4.2 criteria readers in
+    SEVEN T4.2 exit_criteria readers exist across FOUR files; all seven read the ledger form after
+    this plan. Six break under the conversion and one survives-but-degrades (see the scope row for
+    tests/esb_text_fix/test_decision_scope_notes.py). The six breaking sites: the four T4.2 criteria readers in
     tests/esb_text_fix/test_resume_property_vocabulary.py (lines 55, 75, 93 positional; 102
     isinstance), the one in tests/provider_agnostic_tier_model/test_role_based_tier_model.py (line
     212), AND the graduated check t4x-persona-contracts-mechanism-word-free, now its own shard at
-    config/agent/verification_registry/entries/, whose check_spec does the same positional read. Measured
-    counts on the pre-change tree: 3 bare positional reads and 1 isinstance guard in the esb module,
-    1 isinstance guard in the tier-model module. Both test files green before and after (baseline 12
-    passed); the registry row exits 0 before and must exit 0 after.
+    config/agent/verification_registry/entries/, whose check_spec does the same positional read.
+    Measured on the pre-change tree: 4 bare positional reads across the two esb modules, 1 isinstance
+    guard in each of the esb and tier-model modules. The pin files are green before and after; the
+    registry check exits 0 before and must exit 0 after.
   - >-
-    T2.45 reads status complete with completed_at, a compacted progress_note, and all three criteria
+    T2.45 reads status complete with completed_at, no progress_note, a one-line intent, an emptied
+    files_in_scope (Decision 147 clause 2's field list for a terminal item -- measured: 89 of 92
+    complete items already carry neither progress_note nor files_in_scope), and all three criteria
     status met with met_by "terraform-guard-resource-policy", which resolves to a real plan file and
     so satisfies validate_platform_roadmap check (i).
   - >-
@@ -132,13 +170,19 @@ acceptance_criteria:
     AND clears the VF-06 differential as a MODIFIED entry. Measured on the rebased tree: unrepaired
     it exits 0 on bare strings and 1 ("AttributeError: 'dict' object has no attribute 'lower'") on
     ledger form -- the exact inverse of what the differential requires; repaired to [0]['text'] it
-    exits 1 on bare strings ("TypeError: string indices must be integers, not 'str'") and 0 on
-    ledger form, which is ADMITTED.
+    exits 1 on bare strings and 0 on ledger form, which is ADMITTED. The bare-leg exit is a
+    TypeError only where an importable interpreter exists (CI); in a local origin/main worktree it
+    is a venv-absence error instead, so the local signal is non-discriminating -- see the constraint.
   - >-
     config/agent/verification_registry/entries/t42-carries-substrate-guard-deferral-criterion.yaml
     exists carrying all required fields (check_id, primitive_slot, guard_target, plan_slug,
     graduated_at) plus graduated_by and check_spec.node_id, matching the nine-key shape Decision 176
     established, and the flat registry.yaml is NOT resurrected (the validator checks for that).
+  - >-
+    Both new graduated records exist as their own Decision 176 shards --
+    t42-carries-substrate-guard-deferral-criterion (test_selector) and
+    t42-criteria-readers-use-ledger-text (grep_count) -- each matching its VP step's
+    graduation_check_id, and the flat registry.yaml is not resurrected.
   - >-
     No guard stage, resource-type frozenset, or contract classification row is created.
     scripts/terraform_apply_guard.py and docs/contracts/environment-taxonomy.yaml are untouched, so
@@ -149,7 +193,7 @@ verification_plan:
     action: >-
       Run the mirror test. It reads raw YAML and asserts the ledger shape, c7's content and named
       evaluator, criterion-id uniqueness, both status couplings, and T2.45's closeout.
-    command: bin/venv-python -m pytest tests/roadmap/test_substrate_guard_deferral.py -q
+    command: bin/venv-python -m pytest tests/executor_substrate_guard_deferral/test_deferral_registration.py -q
     expected: Exit 0, no failures and no collection errors.
     fix_if: >-
       The shape assertion fails -- the conversion is incomplete, or the test is reading through the
@@ -220,29 +264,49 @@ verification_plan:
       they assert -- four readers in the esb_text_fix module and one in the tier-model mirror.
     command: >-
       bin/venv-python -m pytest tests/esb_text_fix/test_resume_property_vocabulary.py
-      tests/provider_agnostic_tier_model/test_role_based_tier_model.py -q && bin/venv-python -c
-      "import re, pathlib;
-      s=pathlib.Path('tests/esb_text_fix/test_resume_property_vocabulary.py').read_text();
-      print('bare_positional_reads=%d' % len(re.findall(r'exit_criteria\"\]\[0\](?!\[)', s)))"
+      tests/provider_agnostic_tier_model/test_role_based_tier_model.py
+      tests/esb_text_fix/test_decision_scope_notes.py -q
     expected: >-
-      Exit 0, "12 passed" (the measured baseline count, which must not fall), THEN
-      "bare_positional_reads=0". The second half exists because a pass count structurally cannot see
-      a vacuous assertion: verified on this tree that with the conversion applied and NO repointing,
-      test_nine_de_mechanised_sites_are_mechanism_free still PASSES -- mechanism_hits(dict) simply
-      finds nothing -- so the line-75 repoint would otherwise be invisible to every step in this
-      plan. Measured pre-change count: 3.
+      Exit 0 with 24 passed -- the measured baseline for these three files, which must not fall.
+      A count alone cannot see a vacuous assertion, which is why step 5 exists as its structural
+      companion: verified on this tree that with the conversion applied and NO repointing,
+      test_nine_de_mechanised_sites_are_mechanism_free still PASSES (mechanism_hits does
+      str(text).lower(), so a dict simply yields no hits), and
+      test_cd27_exit_criterion_cross_references_resolve also still passes while silently degrading
+      from a text test to a dict-repr test.
     fix_if: >-
       An AttributeError on .lower() -- a positional read still expects a string. A P1/P2/P3
       membership failure -- a substring test degraded into a dict-key test. An isinstance failure --
-      the guard was not repointed. bare_positional_reads greater than 0 -- a reader still indexes
-      [0] without ['text'], so it is passing vacuously rather than asserting.
+      the guard was not repointed. A cross-reference-resolution failure in
+      test_decision_scope_notes.py -- its positional cN resolver was repointed incorrectly.
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
-      Both files are already executed by the standing full-suite pytest run in the full tier, and
-      step 1's graduated row covers the new invariant this plan introduces. A row duplicating two
-      pre-existing modules' selectors would add no coverage.
+      These modules are already executed by the standing full-suite pytest run in the full tier, so
+      a test_selector row would duplicate existing coverage. The half of this step's original scope
+      that IS durably graduatable -- the bare-positional-read count -- is split out as step 5 and
+      graduated there rather than waived here.
   - step: 5
+    phase: pre-deploy
+    action: >-
+      Structural companion to step 4: count the T4.2 criteria readers that still index [0] WITHOUT
+      ['text']. A pass count cannot detect an assertion that silently stopped asserting, and two of
+      the repointed readers pass either way, so this is the only signal that those repoints landed.
+    command: >-
+      bin/venv-python -c "import re, pathlib;
+      s=''.join(pathlib.Path(f).read_text() for f in
+      ('tests/esb_text_fix/test_resume_property_vocabulary.py','tests/esb_text_fix/test_decision_scope_notes.py'));
+      print('bare_positional_reads=%d' % len(re.findall(r'exit_criteria.\]\[0\](?!\[)', s)))"
+    expected: >-
+      Exactly "bare_positional_reads=0". Verified non-vacuous: the same command prints 4 on the
+      pre-change tree (3 in the vocabulary module, 1 in the scope-notes module).
+    fix_if: >-
+      Greater than 0 -- a reader still indexes [0] without ['text'], so it is passing vacuously
+      rather than asserting. Repoint it; do not relax the count.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: "t42-criteria-readers-use-ledger-text"
+  - step: 6
     phase: pre-deploy
     action: >-
       Execute the EXISTING graduated check t4x-persona-contracts-mechanism-word-free through its own
@@ -271,7 +335,7 @@ verification_plan:
       entry, and Decision 176's modified-entry detector already routes it through the real
       differential at step 6. Graduating a second entry that runs the first would add a level of
       indirection, not coverage.
-  - step: 6
+  - step: 7
     phase: pre-deploy
     action: >-
       Fast presubmit tier -- the authoritative PR gate. Covers validate_platform_roadmap,
@@ -290,7 +354,7 @@ verification_plan:
       trigger it. Step 1 is the only thing that catches that.
     hermetic: false
     graduation: not-applicable
-  - step: 7
+  - step: 8
     phase: pre-deploy
     action: Full presubmit tier before handoff.
     command: bin/venv-python -m scripts.validate
@@ -305,15 +369,35 @@ test_obligations:
       its evaluator check_id; criterion ids are unique; T4.2 status and c7 status are coupled in
       both directions; T2.45 is complete with every criterion met and a resolving met_by.
     verification_step: 1
-    test_selector: tests/roadmap/test_substrate_guard_deferral.py
+    test_selector: tests/executor_substrate_guard_deferral/test_deferral_registration.py
     red_green_expectation: >-
       red before (T4.2 has six bare-string criteria and no c7; T2.45 is not_started with three open
       criteria), green after
+  - source: config/agent/verification_registry/entries/t42-criteria-readers-use-ledger-text.yaml
+    behavior: >-
+      The grep_count record asserts no T4.2 criteria reader indexes [0] without ['text'], matching
+      step 5's graduation_check_id.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    red_green_expectation: >-
+      red before (validate_graduation_completeness fails a graduate-disposition step with no matching
+      record), green after
+  - source: docs/contracts/verification-registry.yaml
+    behavior: >-
+      The governance_notes block records the t4x repair as claim-preserving, so the only provenance
+      surface Decision 176 left for an in-place modification is not silently skipped.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      A provenance narrative in a governance_notes block has no behavioural surface to assert on;
+      pinning its prose would test wording, not behaviour. The contract's structural conformance is
+      exercised by step 7, and the repair the note describes is behaviourally asserted by step 6 and
+      differentially admitted by step 7's validate_verification_registry leg.
   - source: config/agent/verification_registry/entries/t4x-persona-contracts-mechanism-word-free.yaml
     behavior: >-
       The repaired check_spec reads T4.2's first criterion through the ledger form and still asserts
       workspace continuity, so it passes on the converted roadmap instead of raising AttributeError.
-    verification_step: 5
+    verification_step: 6
     command: >-
       bin/venv-python -c "import yaml, subprocess, pathlib;
       row=yaml.safe_load(pathlib.Path('config/agent/verification_registry/entries/t4x-persona-contracts-mechanism-word-free.yaml').read_text());
@@ -329,7 +413,7 @@ test_obligations:
       The graduated record for t42-carries-substrate-guard-deferral-criterion exists as its own
       Decision 176 shard, matches step 1's graduation_check_id, and carries every required field
       plus check_spec.node_id.
-    verification_step: 6
+    verification_step: 7
     command: bin/venv-python -m scripts.validate --pre
     red_green_expectation: >-
       red before (validate_graduation_completeness fails a graduate-disposition step with no
@@ -338,11 +422,11 @@ test_obligations:
     behavior: >-
       The module's check behaviour is unchanged; only its docstring's factual claims about T4.2's
       criteria shape are corrected.
-    verification_step: 6
+    verification_step: 7
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: >-
       Docstring-only edit with no behavioural surface. The module's own check is exercised by step
-      5, which must report "gated (phase names ['T4.2']), fallback_reevaluation present." A test
+      7, which must report "gated (phase names ['T4.2']), fallback_reevaluation present." A test
       asserting docstring prose would pin wording rather than behaviour, and the claim it corrects
       is verified by step 1 and step 3 instead.
 constraints:
@@ -353,9 +437,10 @@ constraints:
     THE CONVERSION IS NOT A FREE EDIT -- this is the finding that broke two earlier drafts of this
     plan. Putting ANY mapping into T4.2's exit_criteria (converting all six, or merely appending c7)
     breaks SIX sites across THREE files: three positional string reads and two isinstance-str guards
-    in the two pin test files, plus the graduated registry row
-    t4x-persona-contracts-mechanism-word-free, whose command body positionally reads the same
-    criterion. All six are in scope.
+    in the two pin test files, plus the graduated check
+    t4x-persona-contracts-mechanism-word-free, whose check_spec positionally reads the same
+    criterion. A SEVENTH reader in a FOURTH file (tests/esb_text_fix/test_decision_scope_notes.py)
+    does NOT break -- it degrades silently instead. All seven are in scope.
     Do not attempt the append-a-dict-without-converting shortcut: it breaks the same guards while
     forfeiting the ledger form c7 needs to carry status and met_by.
   - >-
@@ -385,8 +470,10 @@ constraints:
     retraction is ONE dated line naming two shas and the corrected verdict; c7's text names its
     evaluator check_id and states the assertion in one sentence. The derivation stays in this plan.
   - >-
-    Decision 147 clause 4: a terminal tier_item is stored compact. Compact T2.45's narrative fields
-    as part of the flip rather than accreting; the roadmap measured 9,293 of its 10,000-line ceiling.
+    Decision 147: clause 4 is the durable norm, but CLAUSE 2 is the operative field list for a
+    status: complete tier_item -- drop progress_note, note and decomposition_hints entirely, collapse
+    multi-line intent to one descriptive line, and empty files_in_scope. Apply it to T2.45 rather
+    than adding narrative; the roadmap measures 9,296 of its 10,000-line ceiling.
   - >-
     Write the new graduated record as its OWN FILE at
     config/agent/verification_registry/entries/<check_id>.yaml (Decision 176, one record per file).
@@ -396,11 +483,20 @@ constraints:
   - >-
     EDITING t4x's check_spec IN PLACE MAKES IT A MODIFIED ENTRY. Decision 176's validator added
     _modified_entries, which compares parsed record mappings against origin/main and routes every
-    added-OR-modified entry through the real VF-06 differential. Verified the repair satisfies it:
-    repaired, the check exits 1 on origin/main's bare strings ("TypeError: string indices must be
-    integers, not 'str'") and 0 on HEAD's ledger form, which is ADMITTED. Do NOT sidestep this by
-    minting a new check_id and deprecating the old one -- the repair is the honest edit and it
-    clears the gate.
+    added-OR-modified entry through the real VF-06 differential. The repair satisfies it, but the
+    DISCRIMINATING EVIDENCE IS CI-ONLY and the plan must not claim otherwise. run_differential's
+    revert leg runs the repaired command with cwd set to a real origin/main worktree, which has no
+    .venv -- measured: bin/venv-python there exits 1 with "venv Python not found ... and no PATH
+    interpreter can import 'pydantic'", NOT the TypeError. So locally the revert leg fails for ANY
+    bin/venv-python-invoking command_exit_zero record, and a local "admitted" line proves nothing
+    about discrimination: it would admit a NEUTERED repair identically. In CI, where
+    requirements-fast.txt provides an importable interpreter, the same command exits 1 with
+    "TypeError: string indices must be integers, not 'str'" and the admission is real. To get local
+    discriminating evidence, run the repaired command against
+    `git show origin/main:docs/ROADMAP-PLATFORM.yaml` from inside the live tree, where the venv
+    resolves. Do NOT sidestep the gate by minting a new check_id and deprecating the old one -- a
+    claim-preserving in-place edit keeps check_id, plan_slug and graduated_at (precedent:
+    contract-census-declared-includes-env-taxonomy, re-authored command-only, provenance retained).
   - No rescue agents or workaround loops (Decision 55).
 context:
   - >-
@@ -422,7 +518,7 @@ context:
     (`test_t42_criteria_remain_bare_strings`, an explicit isinstance guard), and
     tests/provider_agnostic_tier_model/test_role_based_tier_model.py:211 ("T4.2 exit_criteria must
     stay bare strings"). All read raw YAML against the real roadmap, so the Pydantic normalizer
-    never launders them. Measured green baseline today: 12 passed across the two files. The
+    never launders them. Measured green baseline today: 24 passed across the three reader files. The
     conversion is sanctioned rather than forbidden --
     scripts/checks/roadmap/validate_fallback_reevaluation.py's docstring says the phase leg is what
     makes its carrier reachable "until a T4.x plan converts to ledger form" -- but it is not free,
@@ -521,10 +617,11 @@ context:
   - >-
     THE LIVE FALL-THROUGH SURFACE IS DIFFERENT WORK and is deliberately not registered on c7. The 21
     types that auto-apply today are S3, Lambda, SNS, DynamoDB, CloudWatch, Secrets Manager, SSM,
-    Athena, Glue -- and null_resource, which carries local-exec provisioners at
-    terraform/personal/main.tf:297, :354 and :417, i.e. arbitrary command execution on the apply
-    runner, auto-applying now. That is the most security-relevant member of the set and an earlier
-    draft's enumeration omitted it. Their remedy is the default-deny structural fix below, which
+    Athena, Glue -- and null_resource, which carries FIVE local-exec provisioners in
+    terraform/personal/main.tf (blocks at 297, 354, 417, 467, 523; provisioners at 308, 365, 423,
+    476, 532), i.e. arbitrary command execution on the apply runner, auto-applying now. That is the
+    most security-relevant member of the set; an earlier draft omitted it entirely and a later one
+    undercounted it at three, citing block-start lines as if they were the provisioner lines. Their remedy is the default-deny structural fix below, which
     supersedes rather than extends any type list; registering them on c7 would conflate two problems
     with different answers.
   - >-
@@ -589,7 +686,8 @@ context:
     VF-06, and does. (3) #957 added an import to
     tests/provider_agnostic_tier_model/test_role_based_tier_model.py, shifting its isinstance pin from
     line 211 to 212; the other four pin sites are byte-identical and the two files' baseline is still
-    12 passed. (4) #955 deleted 206 dead agent artefacts; every file this plan cites survives, and
+    12 passed across the two pin files (24 once the third reader module is included in step 4), and
+    the roadmap now measures 9,296 lines. (4) #955 deleted 206 dead agent artefacts; every file this plan cites survives, and
     the validate_fallback_reevaluation docstring claim it corrects still stands verbatim.
   - >-
     Branch cut from origin/main at 4b5808d, rebased to 4b9d252; preflight reported main 0 behind / 0 ahead, creds ok,
@@ -609,7 +707,8 @@ pre_implementation_checklist:
   - >-
     Baseline the two pin files BEFORE converting (bin/venv-python -m pytest
     tests/esb_text_fix/test_resume_property_vocabulary.py
-    tests/provider_agnostic_tier_model/test_role_based_tier_model.py -q; expect 12 passed) so step
+    tests/provider_agnostic_tier_model/test_role_based_tier_model.py
+    tests/esb_text_fix/test_decision_scope_notes.py -q; expect 24 passed) so step
     4's count comparison has a recorded starting point
   - >-
     Confirm config/agent/verification_registry/entries/ is the live shape and registry.yaml is absent
@@ -617,7 +716,7 @@ execution_steps:
   - >-
     Run verification step 2 and record its output. If it does not print
     "c1_blocked=True c2_passes=True c3_types_blocked=6", STOP: the T2.45 closeout is unfounded.
-    Then baseline the two pin files (expect 12 passed).
+    Then baseline the three reader files (expect 24 passed).
   - >-
     docs/ROADMAP-PLATFORM.yaml -- convert T4.2's six bare-string exit_criteria to
     {id: cN, text: <verbatim>, status: open} objects, preserving each string byte-for-byte.
@@ -630,9 +729,14 @@ execution_steps:
     recon at docs/plans/PLAN-executor-substrate-guard-deferral.yaml. Append a dated T4.2
     progress_note line, following its existing 2026-07-03 precedent.
   - >-
-    docs/ROADMAP-PLATFORM.yaml -- flip T2.45 to status complete with completed_at, a COMPACTED
-    progress_note citing step 2's output and the merged plan (Decision 147 clause 4), and set its
-    three criteria to status met with met_by "terraform-guard-resource-policy".
+    docs/ROADMAP-PLATFORM.yaml -- flip T2.45 to status complete with completed_at, set its three
+    criteria to status met with met_by "terraform-guard-resource-policy", and apply Decision 147
+    CLAUSE 2's field list for a terminal item: collapse its 7-line intent to one descriptive line
+    and EMPTY its files_in_scope (currently
+    ['scripts/terraform_apply_guard.py', 'tests/test_terraform_apply_guard.py']). Add NO
+    progress_note -- clause 2 drops that field on complete items, and T2.45 has none to keep.
+    Step 2's evidence line goes in the PR body, which is where AGENTS.md's change-record rule puts
+    measurements.
   - >-
     docs/ROADMAP-PLATFORM.yaml -- append ONE dated retraction line to T2.48's progress_note naming
     78e4d10 and 2281467, the 17.8-hour ordering, and that closing T2.45 discharges T2.48's sole
@@ -647,18 +751,28 @@ execution_steps:
     the ledger form with the same intent-preserving rewrite.
   - >-
     scripts/checks/roadmap/validate_fallback_reevaluation.py -- correct the PHASE-LEG
-    INSTANTIABILITY docstring paragraph: T4.2 is now ledger-form, its criteria are no longer pinned
-    bare, and a "T4.2:cN" closes_criteria ref is now resolvable by check (iii).
+    INSTANTIABILITY docstring paragraph PRECISELY, and do not over-generalise it: T4.1 (13 criteria)
+    and T4.4 (6 criteria) REMAIN bare strings and remain unresolvable by check (iii); T4.2 alone
+    becomes ledger-form, so a "T4.2:cN" ref is now resolvable; and the paragraph's "two live guards
+    pin those criteria bare" becomes ONE, naming it --
+    tests/esb_text_fix/test_workspace_store_criteria.py::test_t41_exit_criteria_remain_bare_strings,
+    which pins T4.1 and is untouched by this plan. Note the original count was already an undercount
+    (three guards existed, not two).
   - >-
-    tests/roadmap/test_substrate_guard_deferral.py -- read RAW YAML (yaml.safe_load on the file, NOT
+    tests/executor_substrate_guard_deferral/test_deferral_registration.py -- read RAW YAML (yaml.safe_load on the file, NOT
     scripts.roadmap.platform_roadmap.load) and assert against the live roadmap: every T4.2 criterion
     is a mapping; c7 exists with both triggers and the evaluator check_id; criterion ids unique;
     T2.45 complete with all criteria met and a resolving met_by. Then factor the two status couplings
-    into a PURE PREDICATE over (tier_item_dict, registry_check_ids) and exercise it on SYNTHETIC
+    into a PURE PREDICATE over (tier_item_dict, registry_check_ids) and BOTH (a) evaluate it against
+    the LIVE T4.2 dict and the live set of graduated check_ids, and (b) exercise it on SYNTHETIC
     structures: {complete, met} passes, {complete, open} flagged, {not_started, open} passes, {c7 met,
-    check_id absent} flagged -- the live roadmap leaves both antecedents false, so without the
-    synthetic cases an inverted comparison or a typo'd check_id would ship undetected until the exact
-    moment the enforcement is meant to bite. tests/roadmap/__init__.py exists -- do not add one.
+    check_id absent} flagged. Both halves are required and neither substitutes for the other: the live
+    call is what makes the guard apply to real data, and the synthetic cases are what prove the
+    predicate discriminates, since the live roadmap leaves both antecedents false. Without (a) it is a
+    unit test of a helper nothing invokes; without (b) an inverted comparison or a typo'd check_id
+    would ship undetected until the exact moment the enforcement is meant to bite. Create the
+    package __init__.py -- tests/roadmap/ is NOT the home (Decision 131 reserves it for
+    scripts/roadmap/* mirrors).
   - >-
     config/agent/verification_registry/entries/t4x-persona-contracts-mechanism-word-free.yaml --
     repair the check_spec: repoint c1=t42['exit_criteria'][0] to [0]['text']. No character budget
@@ -671,6 +785,15 @@ execution_steps:
     docs/ROADMAP-PLATFORM.yaml, guard_symbol null, plan_slug executor-substrate-guard-deferral,
     graduated_at, graduated_by, and check_spec.node_id pointing at the mirror test. Admit it via
     scripts.verification_graduation.run_differential.
+  - >-
+    config/agent/verification_registry/entries/t42-criteria-readers-use-ledger-text.yaml -- CREATE
+    the graduated record for step 5 (primitive_slot grep_count, guard_target
+    tests/esb_text_fix/test_resume_property_vocabulary.py, plan_slug
+    executor-substrate-guard-deferral), admitted via run_differential.
+  - >-
+    docs/contracts/verification-registry.yaml -- add the governance_notes paragraph recording the
+    t4x repair as claim-preserving, and keep the record's check_id, plan_slug and graduated_at
+    unchanged.
   - >-
     Execute the Verification Plan -- run each step; loop until pass; on unrecoverable failure stop
     and RCA (Decision 55).
