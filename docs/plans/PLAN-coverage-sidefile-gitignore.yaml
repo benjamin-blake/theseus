@@ -9,7 +9,7 @@ intent: >-
   test_plan_obligations and risks sweeping build artifacts into history via the git add -A used by
   every implement commit flow.
 plan_type: IMPLEMENTATION
-verification_tier: V1
+verification_tier: V2
 plan_path: docs/plans/PLAN-coverage-sidefile-gitignore.yaml
 phase: >-
   Platform maintenance -- CI hygiene. No tier_item: this is an ad-hoc rec fix (soft-warn exception
@@ -139,7 +139,25 @@ verification_plan:
       reported filename; if it is a report path rather than a data file, the writer hardcodes its
       location and needs its own fix (see the follow-on rec in Context).
     hermetic: true
-    graduation: not-applicable
+    graduation: waive
+    graduation_waiver_reason: >-
+      Depends on this session's transient post-full-validate repo state -- it is meaningful only
+      after step 6 has actually produced coverage artifacts, so in a clean replay worktree it would
+      pass vacuously and could not clear VF-06's differential admission gate. The underlying
+      invariant is already graduated by step 1. Classified waive rather than not-applicable for
+      consistency with step 4, which is a strict superset of this command and carries a waiver.
+  - step: 8
+    phase: post-deploy
+    action: >-
+      Verify both bundled recs actually closed after the squash merge, discharging AC5. The Resolves
+      trailer drives rec-autoclose.yml; this step confirms it fired rather than assuming it did.
+    command: "bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c \"import json,pathlib; rows=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text(encoding='utf-8').splitlines() if l.strip()]; by={r['id']: r for r in rows}; ids=('rec-3277','rec-3109'); [print(i, by[i]['status']) for i in ids]; assert all(by[i]['status']=='closed' for i in ids)\""
+    expected: Both ids print "closed" and the assertion passes.
+    fix_if: >-
+      rec-autoclose.yml did not fire, or the Resolves trailer was malformed. Fall back to the
+      explicit '--update-rec <id> --status closed --resolution "..."' portal call per Decision 70.
+      For rec-3109 the resolution must record that '.coverage.*' supersedes its narrower literal
+      acceptance string by covering every hostname, not just the one observed.
 test_obligations:
   - source: .gitignore
     behavior: >-
@@ -167,8 +185,13 @@ context:
     "Decision-scout verdict + CITE list (verbatim decision ids)": verdict FLAGS_FOUND, 130 of 130
     decisions triaged. CITE - Decision 72 (RCA-as-plan-source for CI gate failures, the route this
     rec took), Decision 163 (full-tier VP step, step 6), Decision 132 (graduation dispositions),
-    Decision 148 (hermetic default for pre-deploy steps). CONTRADICT - Decision 48 [NOTE], tier
-    reclassified V2 -> V1 on its deterministic rules. RELATED - Decision 84 I-4, Decision 142,
+    Decision 148 (hermetic default for pre-deploy steps). CONTRADICT - Decision 48 [NOTE] proposed V2 -> V1 on a
+    literal reading of its prose trigger row; RESOLVED BACK TO V2 at plan-critique round 1, because
+    the repo's own executable encoding of that rule (scripts/checks/roadmap/validate_tier_floor.py:57-58)
+    escalates on ANY .py path with no tests/ carve-out, and Decision 130 already closed the identical
+    tests/-exempt-by-omission gap for size governance. The automated guard misses it only because it
+    filters schema_version != 2. The V2 minimum is already discharged by VP steps 2 and 6, so the
+    correction costs nothing. RELATED - Decision 84 I-4, Decision 142,
     Decision 130, Decision 159. SPIRIT - Decision 75 [WARN] frame-lock, Decision 55 [NOTE] residual.
   - >-
     "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
@@ -183,8 +206,18 @@ context:
     The decisive argument survived - .coverage.json is a REPORT path hardcoded as the literal
     'json:.coverage.json' at scripts/checks/misc/coverage_baseline.py:112, reached in the full tier
     via validate_test_coverage whenever changed source files exist, i.e. effectively every real PR.
-    data_file does not govern report paths, so relocation is NOT a superset of this fix - it would
-    leave .coverage.json commit-eligible and need a second change to be coherent.
+    data_file does not govern report paths, so relocation is NOT a superset of this fix and would
+    still need a second change at :112 to be coherent. PRECISION CORRECTION (plan-critique round 1,
+    finding 4): an earlier draft of this rationale claimed relocation would leave .coverage.json
+    "commit-eligible". That overstated it -- coverage_baseline.py:143-149 unlinks the file in a
+    finally block on the normal path, so it is TRANSIENTLY present (up to the 300s per-file
+    subprocess window, long enough to break a concurrent before/after git status snapshot) and
+    persists only on the timeout branch at :125-133 or an interrupted run. The conclusion survives
+    on the corrected fact -- relocation covers neither the transient window nor the report path --
+    but the margin is narrower than the original wording implied, and follow-on rec (a) must be
+    filed against this true behavior rather than the overstatement. The PRIMARY leak this plan
+    fixes, the parallel-mode .coverage.<host>.<pid>.<rand> data file that actually broke PR #961,
+    is persistent until session-end combine and is unaffected by this correction.
   - >-
     Ephemeral-container framing (operator-confirmed): because no container persists, cleanup-for-
     tidiness has no value and stray files cannot accumulate across sessions. The only lasting harm
@@ -237,9 +270,12 @@ context:
     '.coverage.*', and no .gitignore negation rule interacts with it - both verified.
   - >-
     Preflight at planning time - 0 unresolved ci-rca recs (no hard block), no uncommitted changes,
-    main 0 behind / 0 ahead so no Main Divergence Assessment was required, empty ops outbox. Neither
+    main 0 behind / 0 ahead at that moment, empty ops outbox. Neither
     scope file is Lambda-packaged, so no build/deploy/smoke steps are owed. data_quality.last_run is
     null (checks have never run); not relevant here, as this plan touches no data pipeline or table.
+      The branch has since fallen 1 commit behind main (e730bf42, PR #962 closing out T2.45). No
+      Main Divergence Assessment is owed: neither scope file is touched by that commit, and this
+      plan targets no tier_item. Rebase happens at commit-flow time per AGENTS.md, not here.
   - >-
     Blocking context - PR #962 (branch claude/executor-substrate-guard-deferral-liui1n) was in
     flight at planning time, and preflight's budget_bypass_alert shows rec-3276 filed as a fast-tier
