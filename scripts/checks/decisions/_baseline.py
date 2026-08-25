@@ -1,10 +1,11 @@
-"""Shared origin/main decision-number baseline reader (PLAN-decision-entry-flow-governance,
+"""Shared origin/main decision baseline readers (PLAN-decision-entry-flow-governance,
 Decision 153 fast-tier budget).
 
-Single git-read primitive for the two --pre consumers that need "which decision numbers exist
-at origin/main" -- validate_decision_entry_conformance (new-vs-baseline routing) and
-validate_decisions_size (the per-entry cap's new-entry classification). Memoized per root so a
-single --pre run pays for exactly one `git show` per file, not one per consumer.
+Single git-read primitive for the --pre consumers that need origin/main decision state --
+validate_decision_entry_conformance (new-vs-baseline routing), validate_decisions_size (the
+per-entry cap's new-entry classification), and validate_live_entry_immutability (per-number
+body text, for the append-only embedding check). Memoized per root so a single --pre run pays
+for exactly one `git show` per file, not one per consumer.
 
 Reachability delegates to scripts.checks._common.origin_main_reachable -- never a private
 duplicate (Decision 134 clause 3 shared-parser mandate; this module supersedes the former
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from scripts.checks import _common
-from scripts.decisions_md import iter_decision_headings
+from scripts.decisions_md import iter_decision_headings, iter_decision_sections
 
 _DECISIONS_REL_PATHS = ("docs/DECISIONS.md", "docs/DECISIONS_ARCHIVE.md")
 
@@ -28,7 +29,14 @@ _DECISIONS_REL_PATHS = ("docs/DECISIONS.md", "docs/DECISIONS_ARCHIVE.md")
 # instead of each declaring their own.
 BaselineReaderFn = Callable[[Path], Optional[set[int]]]
 
+# Companion seam for the body reader: per-corpus-file {decision number -> heading-inclusive
+# raw block} at origin/main. Keyed by the same repo-relative path strings as
+# _DECISIONS_REL_PATHS so a consumer can tell a live-file baseline from an archive one.
+BaselineBodies = dict[str, dict[int, str]]
+BaselineBodyReaderFn = Callable[[Path], Optional[BaselineBodies]]
+
 _cache: dict[Path, Optional[set[int]]] = {}
+_body_cache: dict[Path, Optional[BaselineBodies]] = {}
 
 
 def baseline_decision_numbers(root: Path) -> Optional[set[int]]:
@@ -58,3 +66,40 @@ def baseline_decision_numbers(root: Path) -> Optional[set[int]]:
         numbers.update(int(m.group(1)) for m in iter_decision_headings(result.stdout))
     _cache[root] = numbers
     return numbers
+
+
+def baseline_decision_bodies(root: Path) -> Optional[BaselineBodies]:
+    """Per-corpus-file {decision number -> heading-inclusive raw block} at origin/main.
+
+    The body counterpart to baseline_decision_numbers, for consumers that must compare a
+    current body against its baseline text rather than merely test number membership. Blocks
+    come from the shared iter_decision_sections grammar -- never a private header regex.
+
+    Returns None on the same advisory-skip sentinel as baseline_decision_numbers (origin/main
+    unresolvable at all). A corpus file that simply does not exist at origin/main yields an
+    empty dict for that path, which is distinct from the None sentinel: absent-at-baseline is
+    a real, representable state (every number in it is new), unreachable-baseline is not.
+    Memoized per root, independently of the numbers cache.
+    """
+    if root in _body_cache:
+        return _body_cache[root]
+    if not _common.origin_main_reachable(root):
+        _body_cache[root] = None
+        return None
+    bodies: BaselineBodies = {}
+    for rel in _DECISIONS_REL_PATHS:
+        per_file: dict[int, str] = {}
+        result = _common.run(
+            ["git", "show", f"origin/main:{rel}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=root,
+        )
+        if result.returncode == 0:
+            for match, block in iter_decision_sections(result.stdout):
+                per_file[int(match.group(1))] = block
+        bodies[rel] = per_file
+    _body_cache[root] = bodies
+    return bodies

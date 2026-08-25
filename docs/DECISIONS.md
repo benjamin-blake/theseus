@@ -2,6 +2,99 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 177: The decision corpus enforces append-only live-body immutability -- a waiver-free lock with a dated-annotation correction dialect (amends Decision 151) (Decided)
+
+```yaml
+number: 177
+status: Decided
+decided_date: "2026-08-25"
+amends: [151]
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable architectural commitment with reversal-relevant consequences: every future correction
+    to a ratified body is constrained to a dated append, a supersession, or an archive move, and two
+    micro-shapes are retired. Unclaimed by another routing row -- it clears no CD gate, and
+    decision-entry.yaml owns the amendment GRAMMAR but not the choice to lock the corpus.
+```
+
+**Status:** Decided
+**Date:** 2026-08-25
+**Warehouse ID:** dec-177 (canonical; per Decision 84)
+
+**Problem:**
+A 19-agent census of all live entries (rec-3249) found confirmed drift in 55 of 126: bodies edited
+in place after ratification until they contradicted the surfaces they described. Decision 151
+clause 3 established a dated-append convention and left enforcement to convention only -- "no
+validator, no stored guard" -- backstopped by PR review and a byte ceiling Decision 160 has since
+retired. Nothing mechanical distinguished a sanctioned annotation from a silent rewrite.
+
+**Decision:**
+A registered both-tier guard, `validate_live_entry_immutability`, holds every baseline-present
+decision body append-only. For each number present at the origin/main baseline:
+
+1. **Exact-line append-only** for a live body not newly declaring Superseded. Every baseline line
+   must appear verbatim as a distinct current line, in order -- an injective, order-preserving
+   embedding. New lines insert anywhere, including inside an Intent section (Decision 151 clause
+   3(ii) accretion stays legal). Modification, deletion, join, or reorder fails. Injectivity is
+   load-bearing: deleting one of two identical lines fails, each duplicate consuming its own match.
+2. **A strict stub bound on a NEW supersession.** A body newly declaring `**Status:** Superseded`
+   must reduce to the compaction stub grammar. `scripts.decisions_md.is_compacted_stub` is
+   deliberately NOT the predicate -- it tests marker presence only, so a full body carrying both
+   supersession markers would pass it. The shape bound closes that Status-flip bypass.
+3. **Archive moves embed, they do not rewrite.** A Decision 146 move must embed the baseline lines
+   under the same ordered rule, with exactly two exemptions: the header line (whose trailing
+   parenthetical the move retitles) and the baseline Status marker. Relocation is not a content escape.
+4. **One carve-out: fenced reversal-conditions stanza interiors.** That stanza is a mutable,
+   machine-monitored surface -- `scripts/preflight/decision_conditions.py` is its watcher and its
+   own `on_trigger` dialect says "update or re-arm this stanza" -- so re-arms and `review_by` bumps
+   stay legal. Stanza EXISTENCE is locked: a baseline stanza must survive. The Decision 167
+   envelope's bare ```yaml fence is NOT carved out.
+5. **No waiver route, no config input.** The guard reads no allowlist, accepts no marker, and
+   exposes no exemption parameter. An escape hatch would be the Decision 163 anti-pattern -- and is
+   unnecessary, since the dialect below absorbs every legitimate change. A number vanishing from
+   both corpus files fails unconditionally (never_remove_headers, Decision 149).
+
+**Post-lock correction dialect:** a dated, source-cited annotation (`decision-entry.yaml`
+`amendment_forms`), a supersession, or an archive move. **Two micro-shapes are retired:** the
+mid-line splice (editing a clause in place to correct it) and the table-cell append. A correction
+now lands as its own line, which is what makes it dated, attributable, and diff-visible.
+
+**Rationale:**
+Convention-only enforcement was tried and measured: Decision 151 chose it deliberately, mirroring
+Decision 146's operator-disposed stance, and 55 of 126 entries drifted anyway. The difference is
+that "was this body edited since ratification" IS mechanically decidable against a git baseline,
+unlike "is this entry fully superseded" -- so Decision 55's fail-loud discipline applies where it
+could not before. The exact-line rule, rather than a similarity threshold, is what makes the guard
+explainable: it never argues about how much a body changed, only whether a ratified line survived.
+That strictness is affordable precisely because the dialect absorbs every legitimate edit.
+
+**Reversal conditions:**
+
+```yaml reversal-conditions
+decision: 177
+review_by: 2026-11-25
+on_trigger: "re-decide via /plan whether the exact-line rule still fits the corpus's authoring reality; update or re-arm this stanza"
+conditions:
+  - id: legitimate-shape-blocked-twice
+    kind: manual
+    description: "Two or more legitimate corrections cannot be expressed in the post-lock dialect without contorting the entry -> widen the dialect at decision-entry.yaml's amendment_forms, never add a waiver route to the guard."
+  - id: t15-portal-cutover-retires-the-surface
+    kind: manual
+    description: "T1.5's portal cutover moves the corpus off docs/DECISIONS.md to warehouse-verb storage -> this file-diff guard loses its subject and retires with it; the invariant re-homes onto the warehouse's own append-only SCD2 versioning (Decision 167 condition (c) precedent)."
+```
+
+**Related:** Decision 151 (amended -- clause 3(v)'s convention-only stance narrowed to a
+mechanically-enforced one; the accretion grammar it sanctions is what branch 1 keeps legal),
+Decision 149 (never_remove_headers; the stub grammar branch 2 bounds against), Decision 146
+(archival policy, branch 3), Decision 133 (the monitored stanza, branch 4), Decision 167 (the
+envelope deliberately NOT carved out; its condition (c) is the T1.5-retirement precedent),
+Decision 163 (the exception-path anti-pattern the no-waiver posture avoids), Decision 55
+(fail-loud), Decision 160 (retired the ceiling Decision 151's convention rested on). Roadmap refs:
+rec-3249 (resolved by this wave), rec-3264 / rec-3265 (drift flow-control, out of scope).
+
+---
+
 ## Decision 176: Re-grain the verification graduation registry to one record per file, retiring its 6,000-line calibrated ceiling (elects Decision 166 reversal condition (f) ahead of its trigger; amends Decision 166) (Decided)
 
 ```yaml
@@ -1350,6 +1443,10 @@ dated, source-cited, append-only annotations -- a deliberately SCD2-shaped choic
 supply the reader-visible valid-time the current transaction-time-only SCD2 substrate otherwise lacks,
 letting a post-MVP migration to cloud-hosted verb-queried storage map this field's accretion onto warehouse
 SCD2 versioning with no remodel.
+[Amendment 2026-08-25, Decision 177 (operator-directed): clause 3(v)'s convention-only, no-validator
+stance is narrowed by the append-only live-body guard, which now enforces this dated-annotation
+convention mechanically over every ratified body -- not only the Intent section. The 500,000-byte
+live-file ceiling clause 3(v) named as its backstop was retired by Decision 160 point 1.]
 
 **Decision:**
 1. **Optional Intent marker.** `docs/contracts/decision-entry.yaml`'s `optional_markers_fixed_spelling`

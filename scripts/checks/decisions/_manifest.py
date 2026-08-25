@@ -35,6 +35,17 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_live_entry_immutability",
+        module="scripts.checks.decisions.validate_live_entry_immutability",
+        attr="validate_live_entry_immutability",
+        pre=True,
+        pre_globs=(
+            "docs/DECISIONS.md",
+            "docs/DECISIONS_ARCHIVE.md",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_supersession_annotations",
         module="scripts.checks.decisions.validate_supersession_annotations",
         attr="validate_supersession_annotations",

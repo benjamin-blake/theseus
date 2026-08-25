@@ -36,3 +36,37 @@ class TestDecisionsManifest:
     def test_registry_resolve_matches_the_manifest_entry(self, entry) -> None:
         module = importlib.import_module(entry.module)
         assert registry.resolve(entry.name) is getattr(module, entry.attr)
+
+
+# Membership FLOOR, not an exhaustive roster (tests/CLAUDE.md count-coupling rules): naming the
+# checks this domain must not silently lose keeps the parametrized tests above honest -- they
+# assert properties of whatever ENTRIES happens to contain, so an accidentally-dropped Entry
+# would leave them green with nothing to iterate over. A NEW check may be added freely without
+# touching this list; removing one named here must be a deliberate edit.
+_REQUIRED_ENTRY_NAMES = frozenset(
+    {
+        "validate_decisions_size",
+        "validate_decisions_index_freshness",
+        "validate_decision_entry_conformance",
+        "validate_live_entry_immutability",
+        "validate_supersession_annotations",
+        "validate_decision_currency",
+    }
+)
+
+
+class TestRequiredEntryMembership:
+    def test_every_required_check_is_registered_in_this_manifest(self) -> None:
+        present = {entry.name for entry in _manifest.ENTRIES}
+        assert _REQUIRED_ENTRY_NAMES <= present, f"missing from ENTRIES: {sorted(_REQUIRED_ENTRY_NAMES - present)}"
+
+    def test_live_entry_immutability_runs_in_both_tiers(self) -> None:
+        """The append-only lock is a both-tier gate: a --pre-only registration would let a
+        destructive edit reach main through any path that skips the fast tier."""
+        entry = next(e for e in _manifest.ENTRIES if e.name == "validate_live_entry_immutability")
+        assert entry.pre is True
+        assert entry.full_segment == "full_after_lint"
+
+    def test_live_entry_immutability_pre_globs_cover_both_corpus_files(self) -> None:
+        entry = next(e for e in _manifest.ENTRIES if e.name == "validate_live_entry_immutability")
+        assert set(entry.pre_globs) == {"docs/DECISIONS.md", "docs/DECISIONS_ARCHIVE.md"}
