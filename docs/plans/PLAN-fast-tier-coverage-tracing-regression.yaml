@@ -80,22 +80,27 @@ verification_plan:
   - step: 1
     phase: pre-deploy
     action: >-
-      Prove the acute regression is real and sysmon repays it, on a real affected set, by
-      running the SAME test selection three ways and comparing wall-clock.
+      Prove the acute regression is real and that sysmon repays it, on a real affected set.
+      Clears stale coverage parallel-mode data first: leftover .coverage.vm.pid* files from an
+      interrupted prior run make the json report exit non-zero and read as a false failure
+      (observed at plan time).
     command: >-
-      bin/venv-python -c "import subprocess,sys,time,os;from scripts.checks.deps.affected_tests
-      import derive_affected_tests;from scripts.checks import _common;m=['scripts/checks/roadmap/validate_fallback_reevaluation.py','docs/ROADMAP-PLATFORM.yaml','docs/contracts/verification-registry.yaml','tests/esb_text_fix/test_decision_scope_notes.py','tests/esb_text_fix/test_resume_property_vocabulary.py','tests/provider_agnostic_tier_model/test_role_based_tier_model.py'];t=sorted(derive_affected_tests([('M',f)
-      for f in m],repo_root=_common.ROOT)['selected']);B=['-n','auto','--timeout','60','--timeout-method=thread','--randomly-seed=20260710','-q'];C=['--cov=src','--cov=scripts','--cov-fail-under=0','--cov-report=json:/tmp/vp1.json'];r=lambda
-      e,f:(lambda s:(time.monotonic()-s))(time.monotonic()) if
-      subprocess.run([sys.executable,'-m','pytest',*B,*f,*t],cwd=_common.ROOT,capture_output=True,env={**os.environ,**e})
-      else 0;import json;s=time.monotonic();subprocess.run([sys.executable,'-m','pytest',*B,*C,*t],cwd=_common.ROOT,capture_output=True,env={**os.environ,'COVERAGE_CORE':'sysmon'});print('SYSMON_S',round(time.monotonic()-s,1))"
+      rm -f .coverage .coverage.vm.pid* ; bin/venv-python -c "import subprocess,sys,time,os;
+      from scripts.checks.deps.affected_tests import derive_affected_tests; from scripts.checks
+      import _common; m=['scripts/checks/roadmap/validate_fallback_reevaluation.py','docs/ROADMAP-PLATFORM.yaml','docs/contracts/verification-registry.yaml','tests/esb_text_fix/test_decision_scope_notes.py','tests/esb_text_fix/test_resume_property_vocabulary.py','tests/provider_agnostic_tier_model/test_role_based_tier_model.py'];
+      t=sorted(derive_affected_tests([('M',f) for f in m],repo_root=_common.ROOT)['selected']);
+      flags=['-n','auto','--timeout','60','--timeout-method=thread','--randomly-seed=20260710','-q','--cov=src','--cov=scripts','--cov-fail-under=0','--cov-report=json:/tmp/vp1-cov.json'];
+      s=time.monotonic(); r=subprocess.run([sys.executable,'-m','pytest',*flags,*t],cwd=_common.ROOT,capture_output=True,text=True,env={**os.environ,'COVERAGE_CORE':'sysmon'});
+      print('MODULES',len(t),'RC',r.returncode); print('SYSMON_S',round(time.monotonic()-s,1))"
     expected: >-
-      SYSMON_S prints a value under 90 (measured 67.0s at plan time, versus 210.3s under the
-      default C tracer and 60.1s with no coverage at all).
+      MODULES 35, RC 0, and SYSMON_S under 90. Measured four times at plan time on this exact
+      command: 67.0 / 68.7 / 68.4 / 67.2 seconds, versus 210.3s for the identical selection
+      under the default C tracer and 60.1s with no coverage at all.
     fix_if: >-
-      A value at or above 90s means sysmon is not actually engaging -- check COVERAGE_CORE is
-      reaching the subprocess env and that coverage>=7.4 is installed; do NOT proceed by
-      raising the budget.
+      SYSMON_S at or above 90 means sysmon is not engaging -- confirm COVERAGE_CORE reaches the
+      subprocess env and coverage>=7.4 is installed; do NOT proceed by raising the budget. A
+      non-zero RC with a passing plain run means stale coverage data survived the rm -- widen
+      the clear rather than treating it as a real test failure.
     graduation: waive
     graduation_waiver_reason: >-
       Wall-clock timing on a shared 4-vCPU runner is exactly the flappy signal this plan
