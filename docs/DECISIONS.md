@@ -343,6 +343,14 @@ conditions:
 
 **Related:** Decision 94 (both-sub-forms guard this entry must not weaken), Decision 77 + Decision 92 (gated-apply routing for the IAM trust diff), Decision 55 (forward-fix, never a workaround), Decision 35 (exact-match enumeration principle the no-wildcard constraint rests on), Decision 167 (typed envelope / Significance claim), Decision 133 (reversal-conditions stanza grammar this entry follows).
 
+> **Update (2026-08-25):** Reversal condition `legacy-entries-provably-dead-with-proof` reads
+> discharged in the current tree: `terraform/personal/oidc.tf`'s `local.github_repos` now carries
+> only the immutable numeric-id entry (`benjamin-blake@217728084/theseus@1252427466`); the two
+> legacy name-only entries this stanza's condition names have already been contracted. The stanza
+> above still stands armed (not yet re-decided via `/plan`) -- its `review_by: 2026-11-15` date and
+> open condition list are recorded facts, not stale; routed to the operator to re-arm or close the
+> stanza, not resolved here.
+
 ---
 
 ## Decision 171: The repository is renamed agent-platform -> theseus and relicensed Apache-2.0 -> BUSL-1.1, forward-only (Decided)
@@ -3355,6 +3363,15 @@ Decision; terraform/CLAUDE.md and the planning SKILL carry enforcement/guidance 
 55 (RCA-first / loud failure -- the proxy-skip predicate is a narrow co-occurrence check, never a
 bare "403" substring, so it cannot mask a genuine non-github failure).
 
+> **Update (2026-08-25):** The reversal condition above (an S3-backed `provider_installation`
+> `filesystem_mirror`) was realized by Decision 120's `terraform-provider-mirror-seed.yml` /
+> `tf-provider-mirror/` mechanism -- unnoticed at the time because prose reversal conditions (unlike
+> the fenced YAML kind) are not machine-monitored. Per Decision 120's own text this RELAXES, not
+> REMOVES, the CI-delegation this Decision establishes for the routine (non-admin) flow:
+> `validate`/`plan`/`apply` for `terraform/personal` stay CI-mediated there; only the ADMIN
+> container's interactive human-gated loop regained local `init`. Routed to the operator for a
+> disposition -- not resolved here.
+
 ---
 
 ## Decision 118: Ratify CD.25 -- pre-codegen contract ratification ritual (scoped, necessary not sufficient) (Decided)
@@ -3431,6 +3448,12 @@ SSOT into multiple files reintroduces the sync-drift risk this decision closes.
 
 **Related:** Decision 44 (superseded), Decision 116 (companion decision in the same ULF-05 audit
 closure session), audits/unclosed-loops-44ef5c6.yaml ULF-05.
+
+> **Update (2026-08-25):** The reversal condition above has fired: `scripts/classify_automatable.py`'s
+> `_BOUNDARY_PATTERNS` duplicate list now carries 19 entries against `capabilities.yaml`'s 33 --
+> missing `tests/conftest.py` and the entire 13-entry infrastructure-boundary section
+> (`terraform/`, `.tf`, `.github/workflows/`, etc.) added to `capabilities.yaml` since. Recorded per
+> this Decision's own condition; routed to the operator for the lockstep fix, not resolved here.
 
 ---
 
@@ -3671,6 +3694,13 @@ agent-first structured-data exemplar (e.g. a return to markdown-with-prose canon
 **Related:** Decision 86 (rationale-to-Decisions / field-semantics-to-contracts, no new prose-
 architecture docs -- the discipline this exemplar embodies), Decision 105 (the ratification lane
 executing this); T5.5 (the ongoing broader migration this Decision does not claim finished).
+
+> **Update (2026-08-25):** `scripts/preflight/prose_context.py`'s module docstring and its
+> preflight-report heading ("Prose context (Decision 110)") cite this Decision as authority for
+> prose-context byte measurement (the S1/S2/S3/S4/S8 categories) -- content this Decision's own
+> body never states; this ratifies CD.13 on `ROADMAP-PLATFORM.yaml` as a structured-data exemplar,
+> not a prose-budget measurement mechanism. A loose inbound citation, recorded here; routed to the
+> operator to re-point it or file a clarifying rec, not resolved here.
 
 ---
 
@@ -5825,6 +5855,13 @@ doc for ops_recommendations is a legacy artefact; it is not maintained going for
 decision manifest YAML (`config/data_quality/decisions/{table}.yaml`) remains the remediation
 state authority.
 
+> **Update (2026-08-25):** `config/agent/data_quality/ops.yaml`'s own `tables.ops_decisions.description`
+> now reads "DECISIONS.md is decommissioned after Phase 3b" -- contradicted by the live
+> warehouse-as-source-of-truth model (Decision 84), under which `docs/DECISIONS.md` is the SOLE
+> write/ETL source for `ops_decisions`, never decommissioned. This Decision's own currency reads
+> `current`, so the owning contract and the live corpus disagree with no recorded resolution;
+> routed to the operator as a possible unrecorded supersession, not resolved here.
+
 ## Decision 64: Bootstrap Cohort Anchor for ops_recommendations is 2026-05-01 (Decided)
 
 The bootstrap cohort for ops_recommendations consists of all records created before 2026-05-01
@@ -6151,6 +6188,13 @@ infrastructure changes.
 **Decision status:** Decided — April 2026
 
 [Amendment 2026-07-21: amended by Decision 77 clause 3 -- the unconditional "apply is never automatic" is scoped; sandbox auto-applies behind the deterministic guard (`scripts/terraform_apply_guard.py`) plus subagent plan review.]
+
+[Amendment 2026-08-25: `terraform/personal/oidc.tf` (3 sites) and `scripts/checks/iam_tf/_read_coverage.py`
+cite this Decision, paired with Decision 98, as authority for an "enumerated with literal ARNs" /
+exact-match IAM-statement principle -- content neither this Decision's body (terraform workflow
+gating in `/plan`/`/implement`) nor Decision 98's (CI-role provisioning model) states directly. A
+loose, propagated inbound citation, recorded here; routed to the operator to trace its origin and
+re-point it, not resolved here.]
 
 ---
 
