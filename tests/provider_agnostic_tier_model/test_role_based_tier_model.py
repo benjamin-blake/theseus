@@ -209,7 +209,9 @@ def test_provider_variable_tier_item_and_transport_criterion() -> None:
     t42 = items["T4.2"]
     assert f"Decision {DECISION_NUMBER}" in t42["intent"]
     assert f"[Annotation {ANNOTATION_DATE}" in t42["intent"]
-    assert all(isinstance(c, str) for c in t42["exit_criteria"]), "T4.2 exit_criteria must stay bare strings"
+    assert all(isinstance(c, dict) and "id" in c and "text" in c for c in t42["exit_criteria"]), (
+        "T4.2 exit_criteria must be ledger-form ExitCriterion objects"
+    )
 
     roadmap = _load_yaml(ROADMAP_PATH)
     cd28 = next(cd for cd in roadmap["candidate_decisions"] if cd["id"] == "CD.28")

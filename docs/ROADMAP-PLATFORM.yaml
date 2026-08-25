@@ -5749,39 +5749,34 @@ tier_items:
   - id: T2.45
     tier: T2
     name: "Guard resource-based-policy classification: route wildcard/external-principal grants to gated-apply (DEP-06)"
-    intent: |
-      scripts/terraform_apply_guard.py classifies IAM identity-policy diffs but does not yet
-      classify resource-based policies (Lambda permissions, S3/SNS/Secrets-Manager/Glue resource
-      policies) -- a wildcard or external-principal grant on one of these can currently guard-PASS
-      and auto-apply unreviewed (DEP-06). MUST land no later than T2.48's write-axis broadening,
-      which removes the accidental protection some of these types get today from sitting outside
-      the enumerated identity-policy allow-list -- widening the write surface without this guard
-      classification first would open the gap DEP-06 already names. T2.48 depends_on this item.
+    intent: "scripts/terraform_apply_guard.py now classifies resource-based policies (Lambda permissions, S3/SNS/Secrets-Manager/Glue resource policies), routing wildcard/external-principal grants to gated-apply (DEP-06)."
     depends_on: []
-    files_in_scope:
-      - scripts/terraform_apply_guard.py
-      - tests/test_terraform_apply_guard.py
+    files_in_scope: []
     exit_criteria:
       - id: c1
         text: >-
           A test plan adding an aws_lambda_permission resource with Principal "*" exits the guard
           with code 2 (routes to gated-apply)
-        status: open
+        status: met
+        met_by: terraform-guard-resource-policy
       - id: c2
         text: >-
           The known-safe EventBridge AddPermission shape can still be classified in-budget
           explicitly (no false-positive regression on the existing safe pattern)
-        status: open
+        status: met
+        met_by: terraform-guard-resource-policy
       - id: c3
         text: >-
           aws_lambda_permission, aws_s3_bucket_policy, aws_sns_topic_policy,
           aws_secretsmanager_secret_policy, aws_lambda_function_url, and aws_glue_resource_policy
           are each classified sensitive by the guard, or covered by a principal-wildcard rule
-        status: open
+        status: met
+        met_by: terraform-guard-resource-policy
     related_decisions: [144, 92, 77]
     effort: S
     strategic: false
-    status: not_started
+    status: complete
+    completed_at: "2026-08-25"
 
   - id: T2.46
     tier: T2
@@ -6053,6 +6048,14 @@ tier_items:
       filed: open rec-2910, filed by the sibling plan on 2026-07-30, already owns it exactly.
       NO status or criterion flip in this note either: c1-c5 remain met, c6 remains open, item stays
       in_progress, and T2.47 is left untouched for rec-2920 to adjudicate.
+      2026-08-25 (PLAN-executor-substrate-guard-deferral): RETRACTION of the 2026-07-30 entry's
+      sequencing claim above ("a pre-existing Decision-144-pt7 sequencing gap this plan inherits,
+      not causes"). Measured commit timestamps refute it: 78e4d10 (T2.45's guard classification)
+      merged 2026-07-21T22:30:40+01:00, 2281467 (slice E, terraform-iam-allowlist-inversion) merged
+      2026-07-22T16:18:30+01:00 -- the guard landed 17.8 hours FIRST, so T2.45's Decision-144-pt7
+      sequencing clause was SATISFIED, not breached. T2.45 now flips to complete (see its own
+      entry), discharging T2.48's sole depends_on. No other status or criterion flip in this note:
+      c1-c5 remain met, c6 remains open, item stays in_progress.
 
   - id: T2.49
     tier: T2
@@ -7472,12 +7475,33 @@ tier_items:
       - scripts/llm/client.py           # rewrite to LiteLLM transport; remove Bedrock + Gemini-CLI paths
       - config/agent/executor/prompts/  # per-persona prompt templates (one per Durable Function)
     exit_criteria:
-      - "Each persona deployment satisfies CD.27 resume_properties P1, P2 and P3: an interruption mid-persona-loop resumes without re-doing completed work (P1), continues without losing workspace state (P2), and bounds any lost work to a small, characterizable slice of the persona's operations (P3)"
-      - "End-to-end smoke: rec -> plan_agent -> Parallel(plan_critic, decision_scout) -> critique_gate PASS -> implement_agent -> code_reviewer -> file_pr -> verdict-callback (T4.9a) PRE_PASS permits merge -> PR opens and validates green"
-      - "All telemetry emitted via agent_sdk per turn (rec_id, step_id, turn_index, model_id, tokens_in, tokens_out, cached_tokens_read, cached_tokens_written, est_cost_usd, latency_ms); no orphan process_events"
-      - "LiteLLM is the only LLM transport: grep `import boto3.*bedrock` and `import google.generativeai` and `from copilot` return zero hits in src/lambdas/*/"
-      - "Stability: grace_period_elapsed(T4.2, 14) AND zero unrecovered failures during the grace period -- this is the CD.17 reversal precondition (verbatim, structurally unchanged from the pre-amendment CD.17)"
-      - "State-machine-enforced budget counters (max plan/implementation revisions and total LLM calls per rec, per T4.11) are live and exercised in the e2e smoke run"
+      - id: c1
+        text: "Each persona deployment satisfies CD.27 resume_properties P1, P2 and P3: an interruption mid-persona-loop resumes without re-doing completed work (P1), continues without losing workspace state (P2), and bounds any lost work to a small, characterizable slice of the persona's operations (P3)"
+        status: open
+      - id: c2
+        text: "End-to-end smoke: rec -> plan_agent -> Parallel(plan_critic, decision_scout) -> critique_gate PASS -> implement_agent -> code_reviewer -> file_pr -> verdict-callback (T4.9a) PRE_PASS permits merge -> PR opens and validates green"
+        status: open
+      - id: c3
+        text: "All telemetry emitted via agent_sdk per turn (rec_id, step_id, turn_index, model_id, tokens_in, tokens_out, cached_tokens_read, cached_tokens_written, est_cost_usd, latency_ms); no orphan process_events"
+        status: open
+      - id: c4
+        text: "LiteLLM is the only LLM transport: grep `import boto3.*bedrock` and `import google.generativeai` and `from copilot` return zero hits in src/lambdas/*/"
+        status: open
+      - id: c5
+        text: "Stability: grace_period_elapsed(T4.2, 14) AND zero unrecovered failures during the grace period -- this is the CD.17 reversal precondition (verbatim, structurally unchanged from the pre-amendment CD.17)"
+        status: open
+      - id: c6
+        text: "State-machine-enforced budget counters (max plan/implementation revisions and total LLM calls per rec, per T4.11) are live and exercised in the e2e smoke run"
+        status: open
+      - id: c7
+        text: >-
+          Deterministic guard classification of the executor's compute substrate must be live
+          before any persona can execute, asserted by registry check_id
+          executor-substrate-guard-classification-complete: for every resource type the ratified
+          substrate's terraform module declares, the guard blocks a non-inert change and passes an
+          inert one. Triggers: T4.15 ratifying the substrate; rec-2816's tf-gated-apply approval
+          weakness remediated. Recon: docs/plans/PLAN-executor-substrate-guard-deferral.yaml.
+        status: open
     related_candidate_decisions: [CD.17, CD.27, CD.28, CD.43, CD.44]
     related_decisions: [116, 122, 164]
     related_intents: [recommendation-executor, provider-agnostic-executor]
@@ -7493,6 +7517,12 @@ tier_items:
         and Decision 93, wired T4.9a (verdict-callback + merge authority) and T4.10a (persona
         contract authoring) into depends_on, reworded the e2e-smoke criterion to name the T4.9a
         callback mechanism, and added the budget-counter e2e-smoke exit criterion (T4.11).
+      - 2026-08-25 (PLAN-executor-substrate-guard-deferral): converted c1-c6 to ExitCriterion
+        objects (text preserved byte-for-byte) and appended c7, registering that deterministic
+        guard classification of the executor's compute substrate must be live before any persona
+        executes. Bookkeeping only -- no guard stage, resource-type frozenset or contract
+        classification row is created; gated on T4.15's substrate ratification and rec-2816's
+        remediation.
     decomposition_hints:
       split_by: per_persona
       atomic_plans:
