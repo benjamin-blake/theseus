@@ -33,12 +33,20 @@ both corpus files, via the shared scripts.checks.decisions._baseline reader):
         enforcement, which owns historical stubs and superseded bodies.
 
 LINE PREPARATION for every comparison: both bodies are taken as line sequences with each line
-rstripped (so a trailing-whitespace-only difference is not a modification), and lines INSIDE a
-fenced ```yaml reversal-conditions stanza are EXCLUDED on both sides. That stanza is a mutable,
+rstripped (so a trailing-whitespace-only difference is not a modification), and lines inside a
+CLOSED fenced reversal-conditions stanza are EXCLUDED on both sides. That stanza is a mutable,
 machine-monitored surface -- scripts/preflight/decision_conditions.py is its watcher and its own
 on_trigger dialect says "update or re-arm this stanza" -- so re-arms and review_by bumps stay
 legal. STANZA PRESENCE is still guarded: if the baseline body contains such a stanza, the
 current body must contain one too. Interiors free, existence locked.
+
+Two properties keep that carve-out from becoming the bypass this lock exists to prevent, and both
+are load-bearing rather than incidental. The fence grammar is IMPORTED from the owning module, so
+the set of spellings this lock exempts is identical BY CONSTRUCTION to the set that module
+monitors -- a locally-authored pattern even slightly wider would exempt a fence nothing else
+polices. And an UNTERMINATED fence grants no exemption at all: its opening line and everything
+after it stay in the comparison, so opening a fence and never closing it cannot lift a body out
+of this lock's reach.
 
 Consequence, recorded in the ratifying Decision: mid-line splices and table-cell appends are
 retired micro-shapes. A correction lands as its own dated annotation line, never as an edit to
@@ -57,15 +65,23 @@ from scripts.checks import _common, registry
 from scripts.checks.decisions._baseline import BaselineBodyReaderFn
 from scripts.checks.decisions._baseline import baseline_decision_bodies as _default_baseline_decision_bodies
 from scripts.decisions_md import iter_decision_sections, status_is_superseded
+from scripts.preflight.decision_conditions import _FENCE_CLOSE_RE, _FENCE_OPEN_RE
 
 _LIVE_REL_PATH = "docs/DECISIONS.md"
 _ARCHIVE_REL_PATH = "docs/DECISIONS_ARCHIVE.md"
 
-# Opening fence of a Decision 133 monitored reversal-conditions stanza. Matched on the exact
-# decorated info string scripts/preflight/decision_conditions.py keys on -- never a bare
-# ```yaml (that spelling is the Decision 167 metadata envelope, which is NOT carved out).
-_STANZA_OPEN_RE = re.compile(r"^```yaml\s+reversal-conditions\s*$")
-_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
+# The carve-out's fence grammar is IMPORTED from scripts/preflight/decision_conditions.py -- the
+# module that owns the Decision 133 monitored stanza -- and never re-spelled here (Decision 134
+# clause 3 shared-parser mandate, the same rule _baseline.py's docstring cites).
+#
+# This is load-bearing, not stylistic. A locally-authored pattern even slightly WIDER than the
+# owner's is a self-service bypass of this lock: a fence spelling the lock carves out but the
+# owner does not recognise is invisible to validate_reversal_stanzas, so its span leaves this
+# lock's jurisdiction with nothing else policing it. Importing makes the two sets identical by
+# construction, so they cannot drift apart in a later edit.
+#
+# Note the owner's regexes are compiled with re.MULTILINE for whole-block .search(); they are
+# used here per-line with .match(), which is unaffected by that flag.
 
 _STATUS_MARKER_RE = re.compile(r"^\*\*Status:\*\*")
 _HEADING_RE = re.compile(r"^#{2,3}\s+Decision\s+\d+:")
@@ -82,30 +98,36 @@ _STUB_LINE_PATTERNS = (
 
 
 def prepare_lines(block: str) -> list[str]:
-    """Rstripped line sequence with fenced reversal-conditions stanza interiors removed.
+    """Rstripped line sequence with CLOSED reversal-conditions stanza interiors removed.
 
     The stanza's own fence lines are dropped alongside its interior: a re-arm that rewrites the
     whole stanza (fences included) must not fail on a fence-line mismatch, and stanza PRESENCE
     is asserted separately by has_reversal_stanza rather than by line embedding.
+
+    FAIL-SAFE ON AN UNTERMINATED FENCE: a stanza that opens and never closes before the end of
+    the block grants NO exemption -- its opening fence and every line after it stay in the
+    comparison. Excluding them would hand an author a one-line, self-service way to move a whole
+    body out of this lock's jurisdiction, which is precisely what the lock exists to prevent. The
+    exemption is a reward for a well-formed stanza, never a consequence of an ill-formed one.
     """
-    prepared: list[str] = []
-    in_stanza = False
-    for raw in block.splitlines():
-        line = raw.rstrip()
-        if in_stanza:
-            if _FENCE_CLOSE_RE.match(line):
-                in_stanza = False
+    lines = [raw.rstrip() for raw in block.splitlines()]
+    excluded: set[int] = set()
+    open_at: int | None = None
+    for i, line in enumerate(lines):
+        if open_at is None:
+            if _FENCE_OPEN_RE.match(line):
+                open_at = i
             continue
-        if _STANZA_OPEN_RE.match(line):
-            in_stanza = True
-            continue
-        prepared.append(line)
-    return prepared
+        if _FENCE_CLOSE_RE.match(line):
+            excluded.update(range(open_at, i + 1))
+            open_at = None
+    # A still-open stanza at end-of-block is deliberately NOT added to `excluded`.
+    return [line for i, line in enumerate(lines) if i not in excluded]
 
 
 def has_reversal_stanza(block: str) -> bool:
-    """True iff block contains a fenced reversal-conditions stanza opener."""
-    return any(_STANZA_OPEN_RE.match(raw.rstrip()) for raw in block.splitlines())
+    """True iff block contains a reversal-conditions stanza opener the OWNER also recognises."""
+    return any(_FENCE_OPEN_RE.match(raw.rstrip()) for raw in block.splitlines())
 
 
 def embeds_in_order(baseline: list[str], current: list[str], exempt: set[int] | None = None) -> int | None:

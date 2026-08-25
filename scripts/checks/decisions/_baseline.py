@@ -94,6 +94,7 @@ def baseline_decision_bodies(root: Path) -> Optional[BaselineBodies]:
             capture_output=True,
             text=True,
             encoding="utf-8",
+            errors="replace",
             cwd=root,
         )
         if result.returncode == 0:

@@ -214,6 +214,72 @@ status: Decided
         assert failed
 
 
+class TestStanzaCarveOutCannotBecomeABypass:
+    """Regression suite for the carve-out's two bypass holes (code-review H-1 + M-1).
+
+    Both were live and verified before the fix: a fence spelling WIDER than the owning parser's
+    exempted a span nothing else policed, and an UNTERMINATED fence lifted every following line
+    out of the lock's jurisdiction. Either one let an author rewrite a ratified body with the
+    lock silent -- which would have made the ratifying Decision's no-waiver claim false.
+    """
+
+    _RULING = "ORIGINAL ratified ruling that must never change."
+
+    def _body(self, fence: str | None, *, close: bool) -> str:
+        parts = ["## Decision 4: Probe (Decided)", "", "**Status:** Decided", ""]
+        if fence is not None:
+            parts += [fence, "decision: 4"]
+            if close:
+                parts.append("```")
+        parts += ["", "**Decision:**", self._RULING, "", "---", ""]
+        return "\n".join(parts)
+
+    def test_lock_and_owning_parser_agree_on_every_fence_spelling(self) -> None:
+        """The exempted set must equal the monitored set BY CONSTRUCTION -- the property the
+        import of the owner's regex buys, and the one a re-spelled local pattern would lose."""
+        from scripts.preflight.decision_conditions import _extract_stanza
+
+        for fence in (
+            "```yaml reversal-conditions",
+            "```yaml  reversal-conditions",
+            "```yaml\treversal-conditions",
+            "```yaml reversal-conditions  ",
+            "```yaml",
+        ):
+            body = self._body(fence, close=True)
+            owner_sees = _extract_stanza(body)[0]
+            assert mod.has_reversal_stanza(body) == owner_sees, f"divergence on fence {fence!r}"
+
+    def test_wider_fence_spelling_cannot_shelter_a_destructive_edit(self, tmp_path: Path) -> None:
+        """H-1: a two-space fence used to be carved out by the lock but invisible to the owner."""
+        baseline = self._body("```yaml  reversal-conditions", close=False)
+        tampered = baseline.replace(self._RULING, "REWRITTEN -- destroyed.")
+        failed = _run(tmp_path, _baseline(live={4: baseline}), {_LIVE: tampered})
+        assert failed, "a wider-than-owner fence spelling sheltered a destructive edit"
+
+    def test_unterminated_fence_grants_no_exemption(self, tmp_path: Path) -> None:
+        """M-1: even a CORRECTLY spelled fence grants nothing if it never closes."""
+        baseline = self._body("```yaml reversal-conditions", close=False)
+        tampered = baseline.replace(self._RULING, "REWRITTEN -- destroyed.")
+        failed = _run(tmp_path, _baseline(live={4: baseline}), {_LIVE: tampered})
+        assert failed, "an unterminated fence lifted the body out of the lock's jurisdiction"
+
+    def test_unterminated_fence_keeps_its_own_lines_in_the_comparison(self) -> None:
+        body = self._body("```yaml reversal-conditions", close=False)
+        prepared = mod.prepare_lines(body)
+        assert "```yaml reversal-conditions" in prepared
+        assert "decision: 4" in prepared
+        assert self._RULING in prepared
+
+    def test_closed_fence_still_exempts_its_interior(self) -> None:
+        """The carve-out must survive the hardening -- a well-formed stanza is still exempt."""
+        body = self._body("```yaml reversal-conditions", close=True)
+        prepared = mod.prepare_lines(body)
+        assert "decision: 4" not in prepared
+        assert "```yaml reversal-conditions" not in prepared
+        assert self._RULING in prepared
+
+
 class TestBranchTwoNewlySuperseded:
     """(ii) A Status flip to Superseded demands the strict stub shape."""
 
@@ -281,6 +347,51 @@ class TestBranchThreeArchiveMove:
         )
         failed = _run(tmp_path, _baseline(live={1: _BASELINE_BODY}), {_LIVE: "", _ARCHIVE: moved})
         assert failed
+
+
+class TestArchiveMoveStanzaPresence:
+    def test_move_that_drops_the_stanza_fails(self, tmp_path: Path) -> None:
+        """Stanza existence survives an archive move, exactly as it does in place."""
+        baseline = _STANZA_BODY
+        start = baseline.index("```yaml reversal-conditions")
+        end = baseline.index("```\n", baseline.index("conditions:")) + len("```\n")
+        moved = (
+            (baseline[:start] + baseline[end:])
+            .replace(
+                "## Decision 3: An entry with a monitored stanza (Decided)",
+                "## Decision 3: An entry with a monitored stanza (Superseded, archived)",
+            )
+            .replace("**Status:** Decided", "**Status:** Superseded -- archived")
+        )
+        failed = _run(tmp_path, _baseline(live={3: baseline}), {_LIVE: "", _ARCHIVE: moved})
+        assert failed
+
+
+class TestStubShapeHelper:
+    def test_block_without_a_heading_line_is_reported_as_missing_header(self) -> None:
+        assert mod._stub_shape_violation("**Status:** Superseded\n") == "missing '## Decision N:' header line"
+
+    def test_empty_block_is_reported_as_missing_header(self) -> None:
+        assert mod._stub_shape_violation("") == "missing '## Decision N:' header line"
+
+
+class TestMissingCorpusFile:
+    def test_absent_archive_file_is_treated_as_empty_not_an_error(self, tmp_path: Path) -> None:
+        """A repo with no DECISIONS_ARCHIVE.md on disk must not crash the walk -- the number is
+        simply absent from both files, which branch (iv) then reports."""
+        docs = tmp_path / "docs"
+        docs.mkdir(parents=True, exist_ok=True)
+        (docs / "DECISIONS.md").write_text(_BASELINE_BODY, encoding="utf-8")
+        assert not (docs / "DECISIONS_ARCHIVE.md").exists()
+
+        failed: list[str] = []
+        validate_live_entry_immutability(
+            failed,
+            root=tmp_path,
+            baseline_body_reader=lambda _root: _baseline(live={1: _BASELINE_BODY}),
+        )
+        assert failed == []
+        assert mod._current_entries(tmp_path, _ARCHIVE) == {}
 
 
 class TestBranchFourVanishedNumber:
