@@ -75,10 +75,9 @@ def _decisions_size_issues(
 
 
 _PER_ENTRY_CAP_HARD_FAIL_CITATION = (
-    'Decision 167 clause 3: "A new entry over 6,144 bytes ... triggers a named WARN from '
-    "validate_decisions_size, never a --pre failure -- a DATED pre-commitment ... this clause "
-    "explicitly disclaims that the lever is installed until migration step 3 (destination "
-    'readiness) flips it to hard-fail." migration-step-3-grandfathering IS that migration step.'
+    'Decision 167 clause 3: "A new entry over 6,144 bytes ... fails validate_decisions_size in '
+    "the --pre tier -- Decision 160 point 11 named a per-entry norm as the only lever that bends "
+    "the corpus's growth RATE, and this clause installs it.\""
 )
 
 

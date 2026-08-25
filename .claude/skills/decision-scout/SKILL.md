@@ -11,11 +11,11 @@ This is a BLOCKING gate before `/plan` Step 6 "Present Findings and Confirm". A 
 
 ### Why a subagent, and why bounded
 
-A naive inline grep from the planning agent misses implicit contradictions (different vocabulary, same concept) and would force it to load the corpus to judge -- the exact cost this gate avoids. Bounded retrieval keeps that judgement in the subagent without the whole-corpus cost: triage every live title + `triage_excerpt` from the index, then read ONLY shortlisted entries as targeted source-file sections.
+A naive inline grep from the planning agent misses implicit contradictions (different vocabulary, same concept) and would force it to load the corpus to judge. Bounded retrieval keeps that judgement in the subagent without the whole-corpus cost: triage every live title + `triage_excerpt` from the index, then read ONLY shortlisted entries as targeted source-file sections.
 
 ### Lambda / portal migration contract (T1.5 c1 owns this; rec-2774)
 
-The index-plus-targeted-reads mechanism is the INTERIM arrangement, not the T1.5 portal cutover (Decision 134 clause 5). T1.5 c1 owns swapping Phase 1 step 1's two reads for a queried tool call; the output contract, buckets, severity taxonomy, and quality gates below are the stable interface across that swap.
+The index-plus-targeted-reads mechanism (Decision 160) is the INTERIM arrangement, not the T1.5 portal cutover (Decision 134 clause 5). T1.5 c1 owns swapping Phase 1 step 1's two reads for a queried tool call; the output contract, buckets, severity taxonomy, and quality gates below are the stable interface across that swap.
 
 ---
 
