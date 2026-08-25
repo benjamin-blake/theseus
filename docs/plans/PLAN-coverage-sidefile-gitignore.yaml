@@ -1,0 +1,278 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "coverage-sidefile-gitignore"
+intent: >-
+  Close the .gitignore gap that lets coverage.py parallel-mode side-files and the coverage JSON
+  report land commit-eligible in the repo root, which flakes the tree-mutation guard in
+  test_plan_obligations and risks sweeping build artifacts into history via the git add -A used by
+  every implement commit flow.
+plan_type: IMPLEMENTATION
+verification_tier: V1
+plan_path: docs/plans/PLAN-coverage-sidefile-gitignore.yaml
+phase: >-
+  Platform maintenance -- CI hygiene. No tier_item: this is an ad-hoc rec fix (soft-warn exception
+  categories ad_hoc_rec + hotfix), so the Tier Item Freshness Gate is skipped by rule.
+scope:
+  - file: .gitignore
+    action: Modify
+    purpose: >-
+      Add a single '.coverage.*' line beside the existing literal '.coverage' (line 35, under the
+      "# Testing" heading) so every coverage.py sibling artifact is non-commit-eligible.
+  - file: tests/test_gitignore_artifact_hygiene.py
+    action: Create
+    purpose: >-
+      Regression guard asserting via git check-ignore that the parallel-mode side-file shape,
+      .coverage.json and the plain .coverage are ignored while .coveragerc stays trackable. The
+      negative control is load-bearing -- it is what discriminates the correct '.coverage.*' from
+      the '.coverage*' shorthand, which would wrongly swallow .coveragerc.
+bundled_recommendations:
+  - rec-3277
+  - rec-3109
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    '.gitignore' contains a line exactly equal to '.coverage.*', and 'git check-ignore' reports
+    IGNORED for '.coverage', '.coverage.json' and a '.coverage.<host>.<pid>.<rand>' probe.
+  - >-
+    'git check-ignore' still reports NOT-IGNORED for '.coveragerc', proving the pattern is the
+    narrow '.coverage.*' and not the '.coverage*' shorthand.
+  - >-
+    'tests/test_plan_obligations.py::TestMainCli::test_cli_subprocess_never_mutates_tree' passes
+    with a coverage side-file present in the repo root -- the exact condition that failed on PR #961.
+  - >-
+    After a full 'scripts.validate' run, 'git status --porcelain' reports no untracked '.coverage'
+    artifact, so nothing of that class is commit-eligible.
+  - Both bundled recs are closed via the Resolves trailer on the squash merge.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Assert the ignore semantics directly, including the negative control that discriminates
+      '.coverage.*' from the '.coverage*' shorthand.
+    command: 'git check-ignore -q .coverage && git check-ignore -q .coverage.json && git check-ignore -q .coverage.host.pid1.abc && ! git check-ignore -q .coveragerc'
+    expected: Exit 0 -- first three probes ignored, .coveragerc not ignored.
+    fix_if: >-
+      Exit 1 on one of the first three means the '.coverage.*' line is missing or misspelled. Exit 1
+      on the last means the pattern was written as the over-broad '.coverage*' and is swallowing
+      .coveragerc -- narrow it to '.coverage.*'.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: coverage-sidefiles-gitignored
+  - step: 2
+    phase: pre-deploy
+    action: Run the new regression test file.
+    command: bin/venv-python -m pytest tests/test_gitignore_artifact_hygiene.py -v
+    expected: All tests pass; the suite reports the four probe outcomes explicitly.
+    fix_if: >-
+      A failing probe names which artifact shape is unguarded. If the test errors on the git
+      subprocess, confirm it passes encoding='utf-8', errors='replace' with text=True per AGENTS.md.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates the graduated check-ignore assertion in step 1 at the registry level -- both encode
+      the same invariant, and a second slot would double-count it. The pytest file is still the
+      repo-native regression host: because the affected-test derivation matches non-.py changes by
+      quoted basename token, this test references the literal ".gitignore" and is therefore
+      auto-selected by the fast tier on any future edit to that file.
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Reproduce the originally reported failure condition and prove it is fixed -- run the victim
+      test with a coverage side-file actually present in the repo root.
+    command: "touch .coverage.probe.pid1.abc; bin/venv-python -m pytest 'tests/test_plan_obligations.py::TestMainCli::test_cli_subprocess_never_mutates_tree' -q; rc=$?; rm -f .coverage.probe.pid1.abc; test $rc -eq 0"
+    expected: >-
+      The test passes with the side-file present. Before the fix this same command fails with
+      "AssertionError: assert '' == '?? .coverage.probe.pid1.abc'".
+    fix_if: >-
+      Still failing means git status is still reporting the probe, so the ignore rule is not
+      matching -- re-check the pattern with 'git check-ignore -v .coverage.probe.pid1.abc' to see
+      which .gitignore line (if any) claims it.
+    hermetic: false
+    graduation: not-applicable
+  - step: 4
+    phase: pre-deploy
+    action: Verify rec-3277's own stated acceptance criterion verbatim, as filed.
+    command: 'grep -q ''^\.coverage\.\*$'' .gitignore && test $(git status --porcelain | grep -c ''^?? \.coverage\.'') -eq 0'
+    expected: Exit 0 -- the literal line is present and no untracked .coverage sibling is reported.
+    fix_if: >-
+      The grep half failing means the line is not anchored on its own line exactly as '.coverage.*'.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Encodes rec-3277's literal acceptance text rather than the general invariant, and the
+      invariant itself is already graduated by step 1. Graduating a rec-specific acceptance string
+      would pin the registry to the wording of a closed ticket.
+  - step: 5
+    phase: pre-deploy
+    action: Fast-tier presubmit.
+    command: bin/venv-python -m scripts.validate --pre
+    expected: "=== Validation Summary (scope: pre) === All checks passed."
+    fix_if: >-
+      A ruff format failure on the new test file is the likely first failure; run
+      'bin/venv-python -m ruff format tests/test_gitignore_artifact_hygiene.py' and re-run.
+    hermetic: false
+    graduation: not-applicable
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      Full-tier presubmit. Required by Decision 163 -- validate_handoff_full_tier fails any
+      diff-added plan declaring full_validation_required_before_commit unless a verification_plan
+      step invokes '-m scripts.validate' without --pre.
+    command: bin/venv-python -m scripts.validate
+    expected: "=== Validation Summary (scope: all) === All checks passed."
+    fix_if: >-
+      Investigate the named check. Do not re-run hoping for green; a full-tier failure is a real
+      signal and the forward-fix rule (Decision 55) applies.
+    hermetic: false
+    graduation: not-applicable
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      Confirm the end-state objective: after a full validate run has actually produced coverage
+      artifacts, nothing of that class is commit-eligible.
+    command: 'test "$(git status --porcelain | grep -c ''^?? \.coverage'')" -eq 0'
+    expected: Exit 0 -- no untracked .coverage artifact is reported by git.
+    fix_if: >-
+      A non-zero count names a coverage artifact shape the pattern does not cover. Inspect the
+      reported filename; if it is a report path rather than a data file, the writer hardcodes its
+      location and needs its own fix (see the follow-on rec in Context).
+    hermetic: true
+    graduation: not-applicable
+test_obligations:
+  - source: .gitignore
+    behavior: >-
+      Coverage parallel-mode side-files, the coverage JSON report and the plain .coverage data file
+      stay git-ignored, while .coveragerc remains trackable.
+    verification_step: 2
+    test_selector: tests/test_gitignore_artifact_hygiene.py::test_coverage_artifacts_are_ignored
+    red_green_expectation: >-
+      Red before the change -- the .coverage.json and .coverage.<host>.<pid>.<rand> probes report
+      NOT-IGNORED today (verified live this session: 2 of 4 assertions fail). Green after.
+constraints:
+  - >-
+    Only .gitignore and the new test file may be modified. The tree-mutation assertion in
+    tests/test_plan_obligations.py is deliberately NOT hardened -- that treats the symptom and
+    weakens a genuine guard.
+  - >-
+    The ignore pattern must be exactly '.coverage.*', never the '.coverage*' shorthand, which
+    swallows .coveragerc. Verified empirically this session in a throwaway git repo.
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    Out-of-scope findings become recommendations via scripts.ops_data_portal, never inline fixes
+    (AGENTS.md).
+context:
+  - >-
+    "Decision-scout verdict + CITE list (verbatim decision ids)": verdict FLAGS_FOUND, 130 of 130
+    decisions triaged. CITE - Decision 72 (RCA-as-plan-source for CI gate failures, the route this
+    rec took), Decision 163 (full-tier VP step, step 6), Decision 132 (graduation dispositions),
+    Decision 148 (hermetic default for pre-deploy steps). CONTRADICT - Decision 48 [NOTE], tier
+    reclassified V2 -> V1 on its deterministic rules. RELATED - Decision 84 I-4, Decision 142,
+    Decision 130, Decision 159. SPIRIT - Decision 75 [WARN] frame-lock, Decision 55 [NOTE] residual.
+  - >-
+    "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - >-
+    Decision 75 frame-lock, resolved as a CONSCIOUS carry-forward. The scout correctly noted a third
+    option neither the rec nor the initial approach considered - relocating coverage's data_file via
+    [tool.coverage.run] in pyproject.toml so the write never lands in the repo root, preserving the
+    tree-mutation guard at full strength. It was evaluated and rejected on evidence, not overlooked.
+    Two arguments against it were tested and FAILED - coverage.py does create missing parent
+    directories for data_file (verified live), and the "changes every developer's setup" objection
+    does not apply because all development happens in ephemeral, uniformly provisioned containers.
+    The decisive argument survived - .coverage.json is a REPORT path hardcoded as the literal
+    'json:.coverage.json' at scripts/checks/misc/coverage_baseline.py:112, reached in the full tier
+    via validate_test_coverage whenever changed source files exist, i.e. effectively every real PR.
+    data_file does not govern report paths, so relocation is NOT a superset of this fix - it would
+    leave .coverage.json commit-eligible and need a second change to be coherent.
+  - >-
+    Ephemeral-container framing (operator-confirmed): because no container persists, cleanup-for-
+    tidiness has no value and stray files cannot accumulate across sessions. The only lasting harm
+    is commit-escape via the git add -A used by every implement commit flow, which is precisely
+    rec-3109's complaint. The correct objective is therefore "no stray artifact is commit-eligible",
+    not "no stray artifact exists" - and against that objective the ignore line is the COMPLETE fix
+    while relocation is the partial one.
+  - >-
+    Decision 55 residual, accepted explicitly rather than papered over. git status --porcelain omits
+    ignored files, so after this change the tree-mutation guard stops seeing the .coverage.* class -
+    the assertion passes because the artifact became invisible, not because the tree stopped being
+    mutated. Accepted on two grounds - the plain '.coverage' sibling is ALREADY ignored, so this
+    completes an existing deliberate intent rather than opening a new blind spot; and under the
+    ephemeral-container model the hidden class cannot accumulate, leaving only commit-escape, which
+    this fix eliminates head-on.
+  - >-
+    Root cause, causally proven this session rather than inferred. Both presubmit tiers run pytest
+    with -n auto plus --cov (fast tier via _PYTEST_FLAGS in scripts/checks/_pytest_diff.py:39, full
+    tier via _build_unit_test_cmd in scripts/checks/_scaffolding.py), putting coverage.py into
+    parallel mode, which writes .coverage.<host>.<pid>.<rand> into the repo root. Demonstrated
+    live - an IGNORED .coverage yields 0 git status --porcelain lines, while an unignored side-file
+    yields exactly the '?? ' line that breaks before == after.
+  - >-
+    Decision 142 corroboration - logs/debug/ is already ignored (.gitignore:116), which covers the
+    --junitxml sibling artifact emitted by the same pytest command. That makes '.coverage.*' the
+    last remaining hole in that command's artifact set.
+  - >-
+    rec-3109 (open, filed 2026-08-13, duplicate root cause) documents the SECOND harm - side-files
+    risk being swept into a commit by git add -A. Operator confirmed closing it. Its acceptance
+    string is the over-narrow literal "grep -q 'coverage.vm.pid'", where 'vm' was only the hostname
+    of the machine that happened to hit it; the correct general pattern will not satisfy that text
+    verbatim. The resolution must record that '.coverage.*' supersedes the literal by covering every
+    hostname, not just the one observed.
+  - >-
+    Relevance gate (planning skill, run_acceptance_probe=False) returned 'unknown' for both
+    rec-3277 and rec-3109 - no signals available - which is a proceed-and-bundle verdict.
+  - >-
+    Follow-on recs to file at implement time, NOT to be fixed in this plan. (a) The data_file
+    relocation described above, as a test-sensitivity improvement rather than a tidiness one; it
+    must bundle a fix for coverage_baseline.py:112's hardcoded report path to be coherent. (b)
+    tests/conftest.py:261 and :275 cite "Decision 149" for the retired-outbox guard, but the sibling
+    tests/fixtures/outbox_guard.py:5 cites Decision 84 I-4 for the same rule - the two files
+    contradict each other and conftest is the wrong one. Operator confirmed filing. (c) Under -n
+    auto all xdist workers share one working directory, so test_cli_subprocess_never_mutates_tree's
+    global-tree assertion is structurally unable to attribute an observed file to the CLI under
+    test - tests/conftest.py:283 already acknowledges exactly this for the outbox guard.
+  - >-
+    plan_obligations reported no unmet registration obligations for this scope (no check module, so
+    no manifest Entry, ci_rca_taxonomy row or mirror test is owed). No tracked file matches
+    '.coverage.*', and no .gitignore negation rule interacts with it - both verified.
+  - >-
+    Preflight at planning time - 0 unresolved ci-rca recs (no hard block), no uncommitted changes,
+    main 0 behind / 0 ahead so no Main Divergence Assessment was required, empty ops outbox. Neither
+    scope file is Lambda-packaged, so no build/deploy/smoke steps are owed. data_quality.last_run is
+    null (checks have never run); not relevant here, as this plan touches no data pipeline or table.
+  - >-
+    Blocking context - PR #962 (branch claude/executor-substrate-guard-deferral-liui1n) was in
+    flight at planning time, and preflight's budget_bypass_alert shows rec-3276 filed as a fast-tier
+    bypass on that same branch.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    Modify .gitignore - add a line exactly '.coverage.*' immediately after the existing '.coverage'
+    on line 35, inside the "# Testing" block. Do not use the '.coverage*' shorthand.
+  - >-
+    Create tests/test_gitignore_artifact_hygiene.py - assert via 'git check-ignore -q' that
+    '.coverage', '.coverage.json' and a '.coverage.<host>.<pid>.<rand>' probe are ignored, and that
+    '.coveragerc' is NOT ignored. Name the primary test test_coverage_artifacts_are_ignored to match
+    the declared test_selector. Reference the path as the literal string ".gitignore" so the
+    affected-test derivation auto-selects this file on future edits. Pass encoding='utf-8',
+    errors='replace' with text=True on the subprocess call per AGENTS.md. Probe names are a
+    deliberately-sized fixture, not a growing curated collection, so no count-coupling waiver applies.
+  - >-
+    Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and
+    RCA (Decision 55)
+  - >-
+    File the three follow-on recs named in Context via 'bin/venv-python -m scripts.ops_data_portal',
+    calling get_rec_write_guidance() before file_rec() per the Precision Context Injection rule.
+  - >-
+    Include 'Resolves: rec-3277, rec-3109' in the squash-merge commit body. For rec-3109, state in
+    the resolution that '.coverage.*' supersedes its narrower literal acceptance string.
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Revert the single .gitignore line and delete the new test file. No state migration, no deploy, no
+  infrastructure change -- the change is inert outside git's own path-matching.
