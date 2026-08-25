@@ -51,6 +51,21 @@ scope:
       report["budget_drift_alert"], and call the summary printer. Without this row the alert is
       computed and printable but never assembled into the report -- alerts.py and summary.py
       alone do not surface anything.
+  - file: scripts/checks/_scaffolding.py
+    action: Modify
+    purpose: >-
+      Add _file_budget_drift_rec to the facade re-export at line 26. validate.py imports the
+      budget filers FROM this facade (lines 43-52), not from _budget_recs directly, and there is
+      no __getattr__ passthrough -- so without this row the warn branch cannot reach the filer,
+      and the established patch target (patch("validate._file_budget_breach_rec"),
+      test_budget.py:39) has no drift-rec equivalent to bind.
+  - file: tests/test_session_preflight_decomposition.py
+    action: Modify
+    purpose: >-
+      Bump the frozen preflight report schema from 50 to 51 keys to admit budget_drift_alert.
+      The file pins it by exact set equality and count (lines 129, 380-381) and its own
+      assertion message directs the deliberate edit: "fix the constant, not the assertion".
+      Without this row, writing the new report key hard-fails TestReportSchemaFreeze.
   - file: tests/validate/test_warn_band.py
     action: Create
     purpose: >-
@@ -91,10 +106,14 @@ acceptance_criteria:
     named notice that the C-tracer cost is being retained, and does not silently proceed as
     though sysmon were active (Decision 55).
   - >-
-    Every --pre run prints a phase breakdown naming all six scaffold phases individually, the
-    aggregate check-registry total, and the ten slowest individual checks -- and the breakdown
-    ALWAYS contains whatever phase dominant_phase resolves to. It is emitted on the pass path,
-    the warn path, both forced paths, and the ordinary breach path.
+    Every --pre run prints a phase breakdown naming the five COMPLETED scaffold phases
+    individually (lint, precommit_changed, mypy_diff, pytest_diff, verifier_coverage_report),
+    the aggregate check-registry total, and the ten slowest individual checks -- and the
+    breakdown ALWAYS contains whatever phase dominant_phase resolves to. budget_assertion's own
+    timing is structurally unavailable and is excluded by construction: validate.py:388 records
+    phase_times[step.name] only AFTER a step returns, and budget_assertion is step 86 of 86, so
+    at print time its entry does not yet exist. Emitted on the pass path, the warn path, both
+    forced paths, and the ordinary breach path.
   - >-
     Elapsed in [255s, 300s] on a NON-forced run prints a phase-attributed warn notice, mirrors
     it to GITHUB_STEP_SUMMARY, and exits zero. Locally it files exactly one drift rec, deduped
@@ -110,8 +129,11 @@ acceptance_criteria:
     Elapsed above 300s on a non-forced run retains the existing breach behaviour exactly
     (breach rec + exit 1) and does not additionally file a drift rec for the same run.
   - >-
-    A filed budget_drift rec surfaces in the preflight report as its own alert key, verified by
-    a test, so the Decision's named review trigger is true rather than aspirational.
+    A filed budget_drift rec surfaces in the ASSEMBLED preflight report under its own
+    budget_drift_alert key, asserted by the frozen-report-schema harness (which drives a stubbed
+    main() and therefore actually reaches report assembly) -- not merely by the pure derivation
+    tests in test_alerts.py, which structurally cannot see report keys. That is what makes the
+    Decision's named review trigger true rather than aspirational.
   - >-
     docs/DECISIONS.md gains a single new '## Decision N:' entry with a conformant yaml metadata
     envelope naming amends [153], its reversal conditions in the monitored
@@ -157,15 +179,23 @@ verification_plan:
   - step: 2
     phase: pre-deploy
     action: >-
-      Prove sysmon does not under-measure, on a BOUNDED fixed selection, asserting core-vs-core
-      equality rather than absolute counts (which move every commit).
+      Prove sysmon does not under-measure, asserting core-vs-core equality rather than absolute
+      counts (which move every commit). The equivalence test must NOT re-run repo tests: it
+      builds a tiny synthetic source module plus a synthetic test file in tmp_path and traces
+      THAT under both cores. Two such subprocesses cost a few seconds, not the ~277s two real
+      traced runs over the affected set would cost against 65s of projected headroom -- and the
+      marker escape hatch is unavailable, since -m "not integration" is applied by BOTH tiers
+      (_pytest_diff.py:404, _scaffolding.py:138), so marking it would delete the check from CI
+      rather than relocate it. Point COVERAGE_FILE at tmp_path for the nested runs so their
+      parallel-mode data files cannot collide with the parent run's .coverage* at the repo root
+      (the same hazard VP step 1's fix_if documents).
     command: >-
       bin/venv-python -m pytest tests/validate/test_pytest_diff_coverage.py -q
     expected: >-
-      All tests pass, including an equivalence test that runs one small fixed selection under
-      both cores and asserts covered_lines, num_statements, missing_lines and the per-file
-      covered_lines map are EQUAL between them. (Plan-time whole-set evidence, not asserted
-      here: 8208/35143 lines across 416 files, zero files differing.)
+      All tests pass, including the synthetic-fixture equivalence test asserting covered_lines,
+      num_statements, missing_lines and the per-file covered_lines map are EQUAL between the two
+      cores, and completing in seconds. (Plan-time whole-set evidence, recorded but deliberately
+      NOT asserted by this standing check: 8208/35143 lines across 416 files, zero differing.)
     fix_if: >-
       Any divergence means sysmon measures differently on this codebase -- stop, do not ship the
       pin, and reassess (branch coverage is not configured here, which is precisely the
@@ -214,9 +244,10 @@ verification_plan:
     command: >-
       bin/venv-python -m pytest "tests/validate/test_warn_band.py::TestPhaseBreakdown" -q
     expected: >-
-      Tests pass asserting the breakdown names all six scaffold phases, the check-registry
-      aggregate and the ten slowest checks; that dominant_phase is always present in it; and
-      that it is emitted on the pass, warn, forced and breach paths alike.
+      Tests pass asserting the breakdown names the five completed scaffold phases, the
+      check-registry aggregate and the ten slowest checks; that budget_assertion is absent by
+      construction; that dominant_phase is always present; and that it is emitted on the pass,
+      warn, forced and breach paths alike.
     fix_if: >-
       A breakdown missing on the breach path means it is printed after the pre_sequence loop
       rather than inside _scaffold_budget_assertion, which sys.exit(1)s from within the loop.
@@ -248,10 +279,12 @@ verification_plan:
       Prove the drift rec actually reaches the preflight surface, so the Decision's named review
       trigger is real.
     command: >-
-      bin/venv-python -m pytest tests/session/preflight/test_alerts.py -q
+      bin/venv-python -m pytest tests/session/preflight/test_alerts.py
+      "tests/test_session_preflight_decomposition.py::TestReportSchemaFreeze" -q
     expected: >-
-      Tests pass showing a budget_drift rec produces a populated budget_drift alert key in the
-      preflight report, and that a None cache degrades to None without a reader call.
+      Both legs pass. Derivation leg: a budget_drift rec produces a populated alert dict, and a
+      None cache degrades to None with no reader call. Assembly leg: the report carries the
+      budget_drift_alert key and the frozen schema is 51 keys.
     fix_if: >-
       A drift rec that surfaces nowhere makes the Decision's review trigger false -- the alarm
       would have no listener, which is precisely the Decision 163 failure mode this plan claims
@@ -325,7 +358,10 @@ test_obligations:
       Red before (alerts.py filters only ci_rca / budget_bypass / budget_breach, so a drift rec
       surfaces nowhere), green after.
   - source: scripts/preflight/summary.py
-    behavior: The budget_drift alert is rendered by a dedicated summary printer.
+    behavior: >-
+      print_budget_drift_alert renders a populated drift alert dict and prints nothing for None.
+      A direct printer unit test is adequate here (it is a pure dict-to-stderr function); the
+      report-assembly claim is carried by the scripts/session/preflight.py row instead.
     verification_step: 7
     test_selector: tests/session/preflight/test_alerts.py::TestBudgetDriftAlert
     red_green_expectation: Red before, green after.
@@ -334,7 +370,7 @@ test_obligations:
       The assembled preflight report carries a budget_drift_alert key populated from the drift
       check, so the alert reaches the operator rather than stopping at the derivation.
     verification_step: 7
-    test_selector: tests/session/preflight/test_alerts.py::TestBudgetDriftAlert
+    test_selector: tests/test_session_preflight_decomposition.py::TestReportSchemaFreeze
     red_green_expectation: >-
       Red before (no such report key exists), green after.
 constraints:
@@ -398,6 +434,20 @@ constraints:
     -c requirements.lock), and requirements-dev.txt pins pytest-cov>=4.1.0 with no coverage
     floor. Add coverage>=7.4 to requirements-dev.txt ONLY if the loud guard proves it necessary
     in CI; otherwise record it as an accepted residual in the PR body rather than widening scope.
+  - >-
+    KEEP the _find_open_budget_breach_rec compatibility wrapper when parameterizing the finder
+    on source. A round-2 critique advisory called it dead code with "zero callers or patch
+    targets outside _budget_recs.py"; that is incorrect -- tests/checks/test__budget_recs.py
+    imports it at line 19 and exercises it at lines 282, 295, 306, 317, 328 and 331. Removing it
+    would redden that suite, and that file is deliberately NOT in scope. Keep the wrapper, or
+    bring the test file into scope and update all seven usages.
+  - >-
+    The drift stream dedupes on (branch, dominant_phase), matching the breach stream's key
+    rather than diverging from it. Acknowledged risk, deliberately accepted: ephemeral claude/*
+    branches are part of why the breach stream accumulated 46 open duplicates of one condition.
+    The mitigations are that the 255s band sits above the ~235s post-fix projection so it fires
+    rarely, and that reversal condition (b) trips at more than 10 open drift recs. If it does
+    become noisy, re-keying on dominant_phase alone is the first remedy -- not silencing.
   - No rescue agents or workaround loops (Decision 55).
 context:
   - >-
@@ -407,7 +457,8 @@ context:
     84, Decision 170. RELATED: Decision 169, Decision 142, Decision 103, Decision 154, Decision
     100, Decision 48, Decision 131, Decision 88, Decision 163, Decision 151, Decision 62."
   - >-
-    "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE then PROCEED after 2 round(s)"
+    "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE (round 1), REVISE (round 2),
+    then PROCEED after 3 round(s)"
   - >-
     ATTRIBUTION. preflight budget_breach_summary reports count=9, by_phase={"pytest_diff": 9}
     -- 9 of 9 recent breaches attribute to one phase. 77 budget recs are open (46 breach + 31
