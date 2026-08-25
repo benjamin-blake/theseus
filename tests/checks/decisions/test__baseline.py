@@ -125,3 +125,110 @@ class TestBaselineReaderFnType:
     def test_type_alias_is_a_callable_annotation(self) -> None:
         """BaselineReaderFn is the shared injection-seam type both --pre consumers import."""
         assert _baseline.BaselineReaderFn is not None
+
+    def test_body_reader_type_alias_is_exported(self) -> None:
+        """BaselineBodyReaderFn is the companion seam validate_live_entry_immutability imports."""
+        assert _baseline.BaselineBodyReaderFn is not None
+
+
+class TestBaselineBodies:
+    """baseline_decision_bodies -- the per-number body reader the append-only lock consumes."""
+
+    def test_no_git_repo_returns_none_sentinel(self, tmp_path: Path) -> None:
+        _baseline._body_cache.clear()
+        assert _baseline.baseline_decision_bodies(tmp_path) is None
+
+    def test_returns_heading_inclusive_blocks_keyed_by_corpus_file(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _write_decisions(
+            repo,
+            "## Decision 1: Live entry (Decided)\n\n**Status:** Decided\n\nBody line.\n",
+            archive="## Decision 2: Archived entry (Decided)\n\n**Status:** Superseded\n",
+        )
+        sha = _commit_all(repo, "base")
+        _git(repo, ["update-ref", "refs/remotes/origin/main", sha])
+        _baseline._body_cache.clear()
+
+        bodies = _baseline.baseline_decision_bodies(repo)
+
+        assert bodies is not None
+        assert set(bodies) == {"docs/DECISIONS.md", "docs/DECISIONS_ARCHIVE.md"}
+        assert set(bodies["docs/DECISIONS.md"]) == {1}
+        assert set(bodies["docs/DECISIONS_ARCHIVE.md"]) == {2}
+        live_block = bodies["docs/DECISIONS.md"][1]
+        assert live_block.startswith("## Decision 1: Live entry (Decided)")
+        assert "Body line." in live_block
+
+    def test_multiple_entries_split_at_heading_boundaries(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _write_decisions(
+            repo,
+            "## Decision 1: First (Decided)\n\nAlpha.\n\n---\n\n## Decision 2: Second (Decided)\n\nBeta.\n",
+        )
+        sha = _commit_all(repo, "base")
+        _git(repo, ["update-ref", "refs/remotes/origin/main", sha])
+        _baseline._body_cache.clear()
+
+        bodies = _baseline.baseline_decision_bodies(repo)
+
+        assert bodies is not None
+        live = bodies["docs/DECISIONS.md"]
+        assert set(live) == {1, 2}
+        assert "Alpha." in live[1] and "Beta." not in live[1]
+        assert "Beta." in live[2] and "Alpha." not in live[2]
+
+    def test_missing_corpus_file_yields_empty_dict_not_none(self, tmp_path: Path) -> None:
+        """origin/main resolves but the corpus files are absent there: every number is new.
+        Distinct from the None advisory-skip sentinel."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        (repo / "README.md").write_text("base\n", encoding="utf-8")
+        sha = _commit_all(repo, "base")
+        _git(repo, ["update-ref", "refs/remotes/origin/main", sha])
+        _baseline._body_cache.clear()
+
+        bodies = _baseline.baseline_decision_bodies(repo)
+
+        assert bodies is not None
+        assert bodies["docs/DECISIONS.md"] == {}
+        assert bodies["docs/DECISIONS_ARCHIVE.md"] == {}
+
+    def test_second_call_performs_no_further_git_invocations(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _write_decisions(repo, "## Decision 1: Entry (Decided)\n\n**Status:** Decided\n")
+        sha = _commit_all(repo, "base")
+        _git(repo, ["update-ref", "refs/remotes/origin/main", sha])
+        _baseline._body_cache.clear()
+
+        real_run = _baseline._common.run
+        with patch("scripts.checks.decisions._baseline._common.run", wraps=real_run) as mock_run:
+            first = _baseline.baseline_decision_bodies(repo)
+            calls_after_first = mock_run.call_count
+            second = _baseline.baseline_decision_bodies(repo)
+            calls_after_second = mock_run.call_count
+
+        assert first is not None and second is not None
+        assert calls_after_first > 0
+        assert calls_after_second == calls_after_first
+
+    def test_body_cache_is_independent_of_numbers_cache(self, tmp_path: Path) -> None:
+        """The two readers memoize separately -- clearing one never silently serves the other
+        a stale or missing entry."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        _write_decisions(repo, "## Decision 1: Entry (Decided)\n\n**Status:** Decided\n")
+        sha = _commit_all(repo, "base")
+        _git(repo, ["update-ref", "refs/remotes/origin/main", sha])
+        _baseline._cache.clear()
+        _baseline._body_cache.clear()
+
+        assert _baseline.baseline_decision_numbers(repo) == {1}
+        assert repo in _baseline._cache
+        assert repo not in _baseline._body_cache
+
+        bodies = _baseline.baseline_decision_bodies(repo)
+        assert bodies is not None
+        assert repo in _baseline._body_cache
