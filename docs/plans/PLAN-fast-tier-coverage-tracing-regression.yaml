@@ -1,0 +1,447 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "fast-tier-coverage-tracing-regression"
+intent: >-
+  Restore the --pre fast tier to its ratified 300s budget by repaying a coverage-tracing
+  regression that consumes half the budget for a report-only artifact, and close the
+  per-phase-cost blind spot that let that regression land and persist undetected.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-fast-tier-coverage-tracing-regression.yaml
+phase: >-
+  Platform / validation-tier health. No tier_item claimed: this is a soft-warn exception
+  (ci_rca-adjacent regression repair on the sole pre-merge merge gate), surfaced by the
+  preflight budget_bypass_alert and budget_breach_summary rather than by roadmap eligibility.
+scope:
+  - file: scripts/checks/_pytest_diff.py
+    action: Modify
+    purpose: >-
+      Run the ONE coverage-traced pytest invocation under COVERAGE_CORE=sysmon (PEP 669),
+      with a loud Decision-55 guard that prints the retained C-tracer cost rather than
+      silently substituting when sys.monitoring or coverage>=7.4 is unavailable.
+  - file: scripts/validate.py
+    action: Modify
+    purpose: >-
+      Print the full per-phase elapsed breakdown at the end of every --pre run (phase_times
+      is computed today and discarded except for one dominant_phase string on breach), and
+      add the 255s sub-budget warn band that files a drift rec without failing the run.
+  - file: scripts/checks/_budget_recs.py
+    action: Modify
+    purpose: >-
+      Add the warn-band drift rec filer, reusing the existing breach-path dedupe on
+      (branch, dominant_phase) and taking exactly one reader call, gated behind the crossing.
+  - file: tests/validate/test_pytest_diff_coverage.py
+    action: Modify
+    purpose: >-
+      Cover the sysmon env on the coverage invocation, the loud-guard fallback path, and the
+      ctrace/sysmon artifact-equivalence proof.
+  - file: tests/validate/test_budget.py
+    action: Modify
+    purpose: >-
+      Cover the warn band (fires at >=255s, silent below, does not exit non-zero, does not
+      double-fire with the breach path) and the always-on phase breakdown.
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      Append Decision 178 (amends 153) ratifying the warn band as an explicitly-declared
+      alarm-not-gate, with its derivation rule and noise-based reversal conditions.
+bundled_recommendations: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    The coverage-traced pytest invocation in scripts/checks/_pytest_diff.py runs with
+    COVERAGE_CORE=sysmon, and the coverage artifact it produces is line-for-line identical
+    to the artifact the default C tracer produces on the same test set.
+  - >-
+    On a representative affected set (>=30 modules), the coverage-traced invocation completes
+    in under 90s, versus the ~210s the same invocation costs under the default C tracer.
+  - >-
+    When sys.monitoring is unavailable or coverage is older than 7.4, the run prints a LOUD
+    named notice that the C-tracer cost is being retained, and does not silently proceed as
+    though sysmon were active (Decision 55).
+  - >-
+    Every --pre run prints a per-phase elapsed breakdown covering all six pre-sequence
+    phases, on the pass path as well as the warn and breach paths.
+  - >-
+    Elapsed at or above 255s but at or below 300s prints a phase-attributed warn notice,
+    mirrors it to GITHUB_STEP_SUMMARY, files exactly one drift rec (deduped per
+    (branch, dominant_phase)), and exits zero.
+  - >-
+    Elapsed below 255s files no drift rec and issues no reader call at all.
+  - >-
+    Elapsed above 300s retains the existing breach behaviour exactly (breach rec + exit 1),
+    and does not additionally file a drift rec for the same run.
+  - >-
+    docs/DECISIONS.md gains a single new '## Decision N:' entry carrying a conformant yaml
+    metadata envelope with amends including 153, and no pre-existing entry body is edited.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Prove the acute regression is real and sysmon repays it, on a real affected set, by
+      running the SAME test selection three ways and comparing wall-clock.
+    command: >-
+      bin/venv-python -c "import subprocess,sys,time,os;from scripts.checks.deps.affected_tests
+      import derive_affected_tests;from scripts.checks import _common;m=['scripts/checks/roadmap/validate_fallback_reevaluation.py','docs/ROADMAP-PLATFORM.yaml','docs/contracts/verification-registry.yaml','tests/esb_text_fix/test_decision_scope_notes.py','tests/esb_text_fix/test_resume_property_vocabulary.py','tests/provider_agnostic_tier_model/test_role_based_tier_model.py'];t=sorted(derive_affected_tests([('M',f)
+      for f in m],repo_root=_common.ROOT)['selected']);B=['-n','auto','--timeout','60','--timeout-method=thread','--randomly-seed=20260710','-q'];C=['--cov=src','--cov=scripts','--cov-fail-under=0','--cov-report=json:/tmp/vp1.json'];r=lambda
+      e,f:(lambda s:(time.monotonic()-s))(time.monotonic()) if
+      subprocess.run([sys.executable,'-m','pytest',*B,*f,*t],cwd=_common.ROOT,capture_output=True,env={**os.environ,**e})
+      else 0;import json;s=time.monotonic();subprocess.run([sys.executable,'-m','pytest',*B,*C,*t],cwd=_common.ROOT,capture_output=True,env={**os.environ,'COVERAGE_CORE':'sysmon'});print('SYSMON_S',round(time.monotonic()-s,1))"
+    expected: >-
+      SYSMON_S prints a value under 90 (measured 67.0s at plan time, versus 210.3s under the
+      default C tracer and 60.1s with no coverage at all).
+    fix_if: >-
+      A value at or above 90s means sysmon is not actually engaging -- check COVERAGE_CORE is
+      reaching the subprocess env and that coverage>=7.4 is installed; do NOT proceed by
+      raising the budget.
+    graduation: waive
+    graduation_waiver_reason: >-
+      Wall-clock timing on a shared 4-vCPU runner is exactly the flappy signal this plan
+      declines to install as a gate (see Decision 178's alarm-not-gate rationale); graduating
+      it into the standing registry would recreate the noise problem the plan argues against.
+      The durable regression guard is step 2's artifact-equivalence check, which is
+      deterministic and IS graduated.
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Prove sysmon does not under-measure: run the same selection under both cores and diff
+      the resulting coverage artifacts field by field (Decision 159 consumes coverage.py
+      output, so equivalence must be executed, not asserted in prose).
+    command: >-
+      bin/venv-python -m pytest tests/validate/test_pytest_diff_coverage.py -q
+    expected: >-
+      All tests pass, including the artifact-equivalence test asserting covered_lines,
+      num_statements, missing_lines and the per-file covered_lines map are identical between
+      the two cores (measured at plan time: 8208/35143 lines, 416 files, zero files differing).
+    fix_if: >-
+      Any divergence means sysmon is measuring differently on this codebase -- stop, do not
+      ship the pin, and reassess (branch coverage is not configured here, which is precisely
+      the condition under which the two cores agree).
+    graduation: graduate
+    graduation_check_id: "pytest-diff-coverage-core-artifact-equivalence"
+  - step: 3
+    phase: pre-deploy
+    action: Exercise the warn band and the breach band as distinct, non-overlapping outcomes.
+    command: bin/venv-python -m pytest tests/validate/test_budget.py -q
+    expected: >-
+      All tests pass, including: warn fires at 255s and at 299s; warn is silent at 254s;
+      warn exits zero; breach at 301s still exits 1; a single run never files both a drift
+      rec and a breach rec.
+    fix_if: >-
+      A warn firing below 255s means the threshold derivation is wrong; a warn that exits
+      non-zero means the band was wired as a gate, contradicting Decision 178.
+    graduation: graduate
+    graduation_check_id: "fast-tier-warn-band-exits-zero"
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Prove no reader call is issued below the warn threshold (Decision 88: catalog egress is
+      a first-class budget and must not move onto the hot path).
+    command: >-
+      bin/venv-python -m pytest tests/validate/test_budget.py -q -k "reader or egress or dedupe"
+    expected: >-
+      Tests pass showing _fetch_open_recs is not called for a sub-255s run, and is called at
+      most once for a warn-band run.
+    fix_if: >-
+      Any reader call on a fast, in-budget run means the dedupe read was hoisted above the
+      crossing -- move it inside the branch.
+    graduation: graduate
+    graduation_check_id: "fast-tier-warn-band-no-reader-call-under-threshold"
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      Confirm the per-phase breakdown is emitted on the ordinary pass path, not only on
+      failure, so cost is attributable before the cliff.
+    command: >-
+      bin/venv-python -m pytest tests/validate/test_budget.py -q -k "breakdown or phase_times"
+    expected: >-
+      Tests pass asserting the printed breakdown names all six pre-sequence phases with an
+      elapsed value each, on a run that neither warns nor breaches.
+    fix_if: >-
+      A breakdown emitted only on warn/breach leaves the blind spot open -- that is the exact
+      defect this plan exists to close.
+    graduation: graduate
+    graduation_check_id: "fast-tier-phase-breakdown-emitted-on-pass"
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      Confirm the new Decision entry is conformant and that no pre-existing decision body was
+      edited (Decision 177 append-only immutability, no waiver route).
+    command: >-
+      bin/venv-python -m scripts.validate --pre 2>&1 | grep -E
+      "live_entry_immutability|decision_entry_conformance|Failed checks" || echo "ALL_DECISION_GATES_CLEAN"
+    expected: >-
+      No failure from validate_live_entry_immutability or
+      validate_decision_entry_conformance.
+    fix_if: >-
+      An immutability failure means the entry spliced an existing body -- rewrite it as a
+      pure append; a conformance failure means the yaml envelope is missing a required field.
+    graduation: not-applicable
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      Full-tier gate before handoff, and the end-to-end proof that the fast tier now fits its
+      own budget with the breakdown visible.
+    command: bin/venv-python -m scripts.validate
+    expected: >-
+      Exit 0. The --pre leg reports elapsed comfortably under 300s with the per-phase
+      breakdown printed (projection from measured data: CI's failing 378s run becomes ~235s,
+      leaving 65s / 22% headroom).
+    fix_if: >-
+      Still above 300s after the pin lands means a SECOND cost source exists beyond coverage
+      tracing -- read the new per-phase breakdown, which now names it directly, and scope that
+      separately rather than raising the budget.
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/checks/_pytest_diff.py
+    behavior: >-
+      The coverage-traced invocation carries COVERAGE_CORE=sysmon, and falls back LOUDLY
+      (never silently) when PEP 669 is unavailable.
+    verification_step: 2
+    test_selector: tests/validate/test_pytest_diff_coverage.py::TestPrimaryInvocationCarriesCoverageFlags
+    red_green_expectation: >-
+      Red before (no env is passed to the invocation today, so the sysmon assertion fails),
+      green after.
+  - source: scripts/validate.py
+    behavior: >-
+      A run between 255s and 300s warns, attributes the dominant phase, and exits zero; a run
+      above 300s still breaches and exits 1; every run prints the per-phase breakdown.
+    verification_step: 3
+    test_selector: tests/validate/test_budget.py::TestHeadroomWarnBand
+    red_green_expectation: >-
+      Red before (no warn band exists; a 260s run is silent today), green after.
+  - source: scripts/checks/_budget_recs.py
+    behavior: >-
+      The drift rec is deduped per (branch, dominant_phase) and costs at most one reader call,
+      never issued below the warn threshold.
+    verification_step: 4
+    test_selector: tests/validate/test_budget.py::TestDriftRecReaderBudget
+    red_green_expectation: >-
+      Red before (no drift filer exists), green after.
+constraints:
+  - >-
+    Do NOT raise _FAST_TIER_BUDGET_SECONDS. The tier fits 300s once the regression is repaid;
+    raising it would ratify the drift. Decision 153 point 3 is explicit that the fast tier
+    retains exactly ONE design budget.
+  - >-
+    Do NOT move the diff-coverage classifier to the full tier. Under sysmon it costs ~7s, and
+    the pre-merge patch-coverage signal that #946 installed is worth that.
+  - >-
+    Do NOT make the local run advisory while CI stays hard. Considered and rejected during
+    planning: CI breaches on the same diff (run 32857137736, 378s, FAILURE), so a local-only
+    relaxation would hide the problem while the merge gate still blocks.
+  - >-
+    The warn band is an ALARM, not a gate. It must never exit non-zero and must never ratchet.
+    Decision 163 forbids declared-but-ungated surfaces that carry the appearance of
+    enforcement; the answer here is to label it honestly, with a named review trigger and a
+    noise-based reversal condition, not to give it fake teeth.
+  - >-
+    255s is DERIVED (0.85 x the 300s budget), never independently negotiated. If the budget
+    ever moves the band is re-derived from it. This is the same not-a-tier discipline
+    Decision 153 point 3 applied to its 1500s forced-run ceiling.
+  - >-
+    Phase timings are printed to stdout and the existing GITHUB_STEP_SUMMARY mirror ONLY. Do
+    not create a machine-readable cross-run timing store: Decision 135 point 5 defers manifest
+    registration to T2.36, triggered by the "first written cross-run query", and this plan
+    deliberately does not arm that trigger. T2.36 is not actioned here.
+  - >-
+    Do not extend validation-result.json. Its schema v3 is pinned by Decision 170 /
+    check-accounting.yaml, --pre does not write it at all today, and per-phase wall-clock is a
+    different grain from per-check accounting. Adding it there would create the competing
+    second measurement surface Decision 170 warns against.
+  - >-
+    Decision 128 / SLOC: tests/validate/test_pytest_diff.py is 465 SLOC and
+    tests/validate/test_budget.py is 403 SLOC against the unregistered-file 500 default. New
+    coverage-core tests belong in tests/validate/test_pytest_diff_coverage.py (167 SLOC, ample
+    room). If test_budget.py would cross 500, DECOMPOSE it into a mirror package -- never add
+    a budget-raise entry.
+  - >-
+    docs/DECISIONS.md is append-only and exact-line immutable in both tiers with no waiver
+    route (Decision 177). Decision 153's body is NOT edited. A reciprocal one-line dated
+    pointer annotation on Decision 153 is permitted as a pure append, but is optional and is
+    never the ruling.
+  - >-
+    Re-check the highest '## Decision N:' header at implement time. 178 is the next free
+    number as of planning; a concurrent PR may claim it, and shifting to the next free number
+    at execution time is safe and expected.
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - >-
+    "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND (130 of 130
+    triaged). CITE: Decision 73, Decision 153, Decision 135, Decision 177, Decision 167,
+    Decision 159, Decision 128, Decision 130, Decision 165, Decision 55, Decision 61,
+    Decision 84, Decision 170. RELATED: Decision 169, Decision 142, Decision 103, Decision
+    154, Decision 100, Decision 48, Decision 131, Decision 88, Decision 163, Decision 151."
+  - >-
+    "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - >-
+    ATTRIBUTION. preflight budget_breach_summary reports count=9, by_phase={"pytest_diff": 9}
+    -- 9 of 9 recent breaches attribute to one phase. 77 budget recs are open (46 breach + 31
+    bypass); 92 events total since 2026-07-04; bypass elapsed distribution (n=33) min 4.4,
+    median 5.9, max 9.3 min.
+  - >-
+    ACUTE CAUSE. Commit 94c2f82e (#946, 2026-08-22, "report-only patch coverage classifier")
+    attached --cov=src --cov=scripts to the primary pytest_diff invocation. Measured on a
+    reconstructed real breaching affected set (35 modules / 693 tests): 60.1s with no
+    coverage, 210.3s with coverage under the default C tracer (+150.2s / +250%), 67.0s with
+    COVERAGE_CORE=sysmon. Saving 143.3s -- roughly half the entire 300s budget.
+  - >-
+    THE ARTIFACT GATES NOTHING. Its sole consumer, scripts/checks/misc/validate_diff_coverage.py
+    line 393, reads "del failed  # never appended to -- report-only by construction". The fast
+    tier was paying half its budget for a report.
+  - >-
+    EQUIVALENCE PROOF (plan time). ctrace vs sysmon on the same selection: covered_lines
+    8208 = 8208, num_statements 35143 = 35143, missing_lines 26935 = 26935, percent 23.4 =
+    23.4, 416 files both, files with differing covered_lines = 0. No branch coverage is
+    configured (pyproject [tool.coverage.run] sets source/omit only), which is exactly the
+    condition under which the two cores agree. Environment: Python 3.12.3, coverage 7.15.4
+    (sysmon requires >=7.4); COVERAGE_CORE is set nowhere in the repo today.
+  - >-
+    THIS BREACHES CI, NOT JUST LOCAL SESSIONS. Run 32857137736 on branch
+    claude/executor-substrate-guard-deferral-liui1n, job pr-validate, step "Validate fast
+    tier": 17:17:56 -> 17:24:14 = 378s, conclusion FAILURE, log verbatim "ERROR: Fast tier
+    exceeded budget (5 min). Elapsed: 6.3 min. Dominant phase: pytest_diff." Every content
+    check PASSED. --ignore-budget is forbidden in CI by validate.py's own guard, so the PR was
+    hard-blocked with no escape hatch. pr-validate installs requirements-fast.txt AND
+    requirements-dev.txt, so pytest-cov and a sysmon-capable coverage are both present there.
+  - >-
+    THE DETECTION GAP (the structural defect). #946's own PR (run 32591487373) passed CI in
+    about 4 minutes because its own affected set was small; the +150s only materialised later
+    on larger diffs. validate.py computes phase_times for every phase and then discards it,
+    surfacing a single dominant_phase string only at the moment of failure. So a change can
+    consume half the budget and nothing notices until the cliff -- where the only remedies are
+    --ignore-budget locally or a blocked PR in CI. That is why bypass became routine rather
+    than exceptional.
+  - >-
+    NOT A "MANY SLOW CHECKS" PROBLEM. The entire check registry costs 40.1s measured
+    (slowest single check: validate_platform_roadmap at 5.67s). The affected-set cap is a
+    COUNT cap (35 modules), not a time cap, so it bounds breadth but not cost. Affected-set
+    derivation itself costs 4.5s.
+  - >-
+    WHY HEADROOM KEEPS BEING RE-CONSUMED. Test files grew 111 (2026-06-12) -> 136 -> 161 ->
+    372 (2026-07-25) -> 540 (now). Two prior plans already reclaimed headroom on this same
+    gate -- PLAN-fast-tier-budget-overrun and PLAN-pre-validation-performance -- and it was
+    re-consumed. This plan therefore pairs the repayment with the detection fix; repayment
+    alone would be the third instance of the same treadmill.
+  - >-
+    PROJECTION. 378s (CI measured, failing) - 143.3s (measured saving) = 234.7s, leaving 65.3s
+    / 22% headroom under the 300s budget. The warn band was originally drafted at 70% (210s)
+    and corrected to 85% (255s) during planning precisely because 210s would fire on nearly
+    every post-fix run at ~235s, making it noise from day one.
+  - >-
+    THRESHOLD RESOLUTION ON THE DECISION 163 FLAG. Three options were put to the operator:
+    (A) alarm-not-gate, explicitly declared; (B) shrink-only wall-clock ratchet with real
+    teeth; (C) telemetry only. The operator chose A. Rationale recorded: a wall-clock ratchet
+    on a shared 4-vCPU runner flaps, and a flappy gate gets bypassed -- recreating this very
+    problem in a new form. Decision 163's objection is to surfaces that PRETEND to gate; an
+    explicitly-labelled alarm with a named review trigger is not that.
+  - >-
+    OPEN RECS DISPOSITION. The 77 open budget recs are auto-filed telemetry duplicating one
+    condition, not 77 distinct findings. They are deliberately NOT listed in
+    bundled_recommendations (a 77-id Resolves: trailer is unworkable and would misrepresent
+    them as individually-scoped work). Execution step 8 closes them in bulk through the ops
+    portal with a resolution note citing this plan, only AFTER verification step 7 passes.
+  - >-
+    SOFT-WARN EXCEPTION, no tier_item claimed. Preflight at planning time: venv ok, creds ok,
+    branch claude/pre-budget-breaches-ezuf3v, main 0 behind / 0 ahead, ci_rca_unresolved_recs
+    empty (no hard block), uncommitted_changes false, ops_outbox empty. Main Divergence
+    Assessment: no overlap possible, branch is level with origin/main.
+  - >-
+    non_automatable_softcap_breached is true (992 of 1140 open recs). Surfaced as planning
+    context only; per Decision 73 individual review is suspended until CD.17 / T4.2 reverses.
+  - >-
+    data_quality.last_run is null -- DQ checks have never established a baseline. Non-blocking
+    and unrelated to this plan's scope (no data pipeline or table schema is touched).
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - >-
+    Only the plan-cited decision sections read -- Decision 73, 153, 135, 177, 167, 159, 163,
+    170, 88, 55, 128 -- never the full DECISIONS.md
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - >-
+    Re-checked the current highest '## Decision N:' header in docs/DECISIONS.md; 178 may have
+    been claimed by a concurrent PR
+execution_steps:
+  - >-
+    scripts/checks/_pytest_diff.py -- introduce a module-level helper that returns the
+    subprocess env for the coverage-traced invocation, setting COVERAGE_CORE=sysmon when
+    sys.monitoring exists and coverage>=7.4 is importable. When either is absent, return the
+    unmodified env AND print a loud named notice naming the retained C-tracer cost (Decision
+    55: no silent substitution). Pass that env to the single _COV_FLAGS invocation only --
+    the collect-only partition and the reactive probes carry no --cov flags and are left
+    untouched. Add a why-comment at the assignment recording the measured 210.3s -> 67.0s and
+    94c2f82e as the introducing commit (per the scout's adjudication (b), this pin earns an
+    inline comment and a PR-body record, NOT a numbered Decision of its own).
+  - >-
+    scripts/validate.py -- extract the phase breakdown into a small formatter and print it
+    unconditionally at the end of the --pre run, before the Validation Summary, naming each
+    of the six pre-sequence phases and its elapsed seconds. Keep the existing dominant_phase
+    computation as-is for the breach and waiver notices.
+  - >-
+    scripts/validate.py -- add _FAST_TIER_WARN_SECONDS, derived in code as
+    int(_FAST_TIER_BUDGET_SECONDS * 0.85) with a comment stating the derivation rule and that
+    it is never independently negotiated. In _scaffold_budget_assertion, insert the warn
+    branch strictly BETWEEN the ignore-budget branch and the breach branch, so the three
+    outcomes remain mutually exclusive: warn only when _FAST_TIER_WARN_SECONDS <= elapsed <=
+    _FAST_TIER_BUDGET_SECONDS. The warn branch prints a phase-attributed notice, mirrors it
+    via the existing _mirror_budget_notice_to_summary, files the drift rec, and returns
+    WITHOUT exiting.
+  - >-
+    scripts/checks/_budget_recs.py -- add _file_budget_drift_rec(elapsed_s, diff_manifest,
+    dominant_phase) modelled on _file_budget_breach_rec, with source distinguishing it from
+    budget_breach. It reuses _fetch_open_recs / _find_open_budget_breach_rec for dedupe on
+    (branch, dominant_phase). The reader call happens inside this function only, which is
+    itself only reachable once the warn threshold is crossed -- so a fast in-budget run issues
+    zero reader calls (Decision 88).
+  - >-
+    tests/validate/test_pytest_diff_coverage.py -- extend
+    TestPrimaryInvocationCarriesCoverageFlags to assert the env passed to the coverage
+    invocation carries COVERAGE_CORE=sysmon; add a class covering the loud-guard path when
+    sys.monitoring is absent; add the artifact-equivalence test backing verification step 2.
+  - >-
+    tests/validate/test_budget.py -- add TestHeadroomWarnBand (fires at 255s and 299s, silent
+    at 254s, exits zero, mirrors to step summary, never co-fires with the breach path),
+    TestDriftRecReaderBudget (zero reader calls below threshold, at most one above), and a
+    phase-breakdown-on-pass test. Check SLOC after: at 403 today, decompose into a mirror
+    package rather than raising if the file would cross 500 (Decision 128).
+  - >-
+    docs/DECISIONS.md -- APPEND (never splice) Decision 178 "The fast tier carries a derived
+    sub-budget warn band as an explicitly-declared alarm, not a gate (amends Decision 153)".
+    Envelope: number, status Decided, decided_date, amends [153], significance.value
+    numbered_decision with a justification that names the contract home considered and
+    rejected (decision-entry.yaml owns the amendment grammar but not the choice to add a
+    standing band to a ratified enforcement gate). Body must carry: the derivation rule (255s
+    = 0.85 x 300s, re-derived if the budget moves, never independently negotiated); Decision
+    153 point 4's not-a-tier test applied explicitly to the band; the alarm-not-gate
+    declaration answering Decision 163 head-on, with a named review trigger (the band's recs
+    surface via preflight) and reversal conditions -- (a) the band fires on a majority of runs
+    over any 30-day window, making it noise, in which case re-derive or retire it rather than
+    silencing it; (b) the drift recs accumulate unclosed past a stated count, which means the
+    alarm has no owner and must gain one or be retired; (c) the 300s budget itself moves, in
+    which case the band is re-derived, never renegotiated.
+  - >-
+    AFTER verification step 7 passes -- close the 77 open budget_breach / budget_bypass recs
+    in bulk via bin/venv-python -m scripts.ops_data_portal --update-rec <id> --status closed
+    --resolution "Root cause repaid: coverage tracing pinned to sysmon (PLAN-fast-tier-
+    coverage-tracing-regression); fast tier back under 300s." Iterate the ids from the read
+    cache after a sync. This is a portal write, never a direct edit of logs/*.jsonl.
+  - >-
+    Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure
+    stop and RCA (Decision 55)
+  - >-
+    'Report: what was implemented, verification results, and the measured before/after
+    elapsed for the fast tier'
+work_areas: []
+rollback: >-
+  Three independent reverts, each safe alone. (1) The sysmon pin is one env assignment --
+  delete it and the C-tracer cost returns, with no schema, contract or artifact change (the
+  artifact is byte-identical either way). (2) The warn band is one branch in
+  _scaffold_budget_assertion plus one filer function -- delete both and the assertion returns
+  to its exact Decision 153 shape; no data migration, since the drift recs are ordinary
+  ops_recommendations rows discriminated by source. (3) The phase breakdown is a print
+  statement. Decision 178 carries its own reversal conditions and would be superseded by a
+  dated entry, never by editing its body (Decision 177).
