@@ -65,7 +65,10 @@ scope:
       Bump the frozen preflight report schema from 50 to 51 keys to admit budget_drift_alert.
       The file pins it by exact set equality and count (lines 129, 380-381) and its own
       assertion message directs the deliberate edit: "fix the constant, not the assertion".
-      Without this row, writing the new report key hard-fails TestReportSchemaFreeze.
+      Without this row, writing the new report key hard-fails TestReportSchemaFreeze. While
+      there, rename the already-stale test_report_key_set_matches_frozen_49 method and its
+      "frozen 49-key list" docstring (lines 376, 378) to match the new count -- the VP selector
+      is class-level, so the rename breaks nothing.
   - file: tests/validate/test_warn_band.py
     action: Create
     purpose: >-
@@ -119,7 +122,9 @@ acceptance_criteria:
     it to GITHUB_STEP_SUMMARY, and exits zero. Locally it files exactly one drift rec, deduped
     per (branch, dominant_phase) against prior budget_drift recs. In CI it files no rec at all
     and the step-summary mirror is the only surface, matching _file_budget_breach_rec's
-    existing CI early-return.
+    existing CI early-return. Exactly ONE step-summary section is written on that path: let
+    _mirror_budget_notice_to_summary own it and have the drift filer's CI branch print to stdout
+    only, so this criterion stays literally true rather than emitting two sections.
   - >-
     A run with full_suite_forced true never files a drift rec and never emits a warn notice at
     any elapsed value -- Decision 153 rules a forced run is deterministic, not drift.
@@ -312,7 +317,7 @@ verification_plan:
       AFTER the PR merges, close the open budget recs and confirm none remain. Post-merge by
       design: closing pre-merge would close 77 recs against a fix that might never land.
     command: >-
-      bin/venv-python -m scripts.sync.ops pull && bin/venv-python -c "import json,pathlib;
+      bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json,pathlib;
       rows=[json.loads(l) for l in
       pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()];
       n=[r for r in rows if r.get('source') in ('budget_breach','budget_bypass') and
@@ -320,7 +325,10 @@ verification_plan:
     expected: >-
       STILL_OPEN 0 and exit 0, after the closure loop has run. Enumerate the ids to close from
       the live open_recs reader verb (never from the read cache, which is a projection); the
-      command above re-syncs and then re-queries purely as the confirmation leg.
+      command above re-syncs through the portal and then re-queries purely as the confirmation
+      leg. Use the portal's --sync, never 'scripts.sync.ops pull': that subcommand does not exist
+      (choices=["sync"], so it exits 2 and the && short-circuits, making the step unpassable),
+      and AGENTS.md forbids calling sync.ops or any drain/compact/pull CLI directly.
     fix_if: >-
       A non-zero STILL_OPEN means the closure loop missed rows -- re-enumerate from open_recs
       and re-run. Never edit logs/*.jsonl directly; closure goes through --update-rec only.
@@ -372,7 +380,11 @@ test_obligations:
     verification_step: 7
     test_selector: tests/test_session_preflight_decomposition.py::TestReportSchemaFreeze
     red_green_expectation: >-
-      Red before (no such report key exists), green after.
+      Red before (no such report key exists), green after. The test must assert the JOIN, not
+      merely key presence: _run_stubbed_main already accepts overrides: dict[tuple[object, str],
+      object], so pass an entry patching alerts._check_budget_drift_alert to a populated dict and
+      assert report["budget_drift_alert"] equals it. Key-set equality alone would not show the
+      report key is wired to that derivation.
 constraints:
   - >-
     Do NOT raise _FAST_TIER_BUDGET_SECONDS. The tier fits 300s once the regression is repaid;
@@ -428,7 +440,10 @@ constraints:
   - >-
     Re-check the highest '## Decision N:' header at implement time. 178 was next free at
     planning; a concurrent PR may claim it, and shifting to the next free number at execution
-    time is safe and expected.
+    time is safe and expected. Also check the live-entry CEILING, not just the number:
+    _DECISIONS_LIVE_MAX_H2 = 132 with 130 live entries, so this plan takes it to 131 with two
+    slots spare. If concurrent PRs consume the rest, the remedy is the Decision 146 archival
+    wave, never raising the ceiling.
   - >-
     pr-validate installs its deps unconstrained (ci.yml:71-72, unlike main-validate's
     -c requirements.lock), and requirements-dev.txt pins pytest-cov>=4.1.0 with no coverage
@@ -440,7 +455,10 @@ constraints:
     targets outside _budget_recs.py"; that is incorrect -- tests/checks/test__budget_recs.py
     imports it at line 19 and exercises it at lines 282, 295, 306, 317, 328 and 331. Removing it
     would redden that suite, and that file is deliberately NOT in scope. Keep the wrapper, or
-    bring the test file into scope and update all seven usages.
+    bring the test file into scope and update all seven usages. The wrapper must keep DEFAULTING
+    source="budget_breach", not merely preserve the arity: test_no_match_on_different_source
+    (lines 288-295) feeds a budget_bypass row and asserts None, so a wrapper that forwarded a
+    caller-supplied source without that default would fail too.
   - >-
     The drift stream dedupes on (branch, dominant_phase), matching the breach stream's key
     rather than diverging from it. Acknowledged risk, deliberately accepted: ephemeral claude/*
@@ -589,9 +607,12 @@ execution_steps:
     _scaffold_budget_assertion, before any branch. budget_assertion is the last pre_sequence
     step, so this single site is reached on the pass, warn, forced-waiver, forced-ceiling and
     ordinary-breach paths alike -- unlike a print after the loop, which the sys.exit(1)s at
-    lines 345/356 would skip. The breakdown names the six scaffolds individually, the
+    lines 345/356 would skip. The breakdown names the FIVE COMPLETED scaffolds individually, the
     check-registry aggregate, and the ten slowest checks, and always includes dominant_phase
-    even if it falls outside the top ten.
+    even if it falls outside the top ten. Five, not six: budget_assertion is step 86 of 86 and
+    validate.py:388 writes phase_times[step.name] only after a step returns, so its own entry
+    does not exist at print time. Do not emit a sixth row for it -- VP step 5 asserts its
+    absence.
   - >-
     scripts/validate.py -- add _FAST_TIER_WARN_SECONDS = int(_FAST_TIER_BUDGET_SECONDS * 0.85)
     with a comment stating the derivation rule and that it is never independently negotiated.
@@ -627,9 +648,11 @@ execution_steps:
   - >-
     tests/validate/test_budget.py -- adjust only existing assertions disturbed by the new
     breakdown print or the restructured branch chain. tests/validate/test_pytest_diff_coverage.py
-    -- extend TestPrimaryInvocationCarriesCoverageFlags for the sysmon env, add the loud-guard
-    path, and add the BOUNDED both-core equivalence test (small fixed selection, assert
-    core-vs-core equality, never plan-time absolute counts).
+    -- extend TestPrimaryInvocationCarriesCoverageFlags for the sysmon env (the loud-guard test
+    lands in that same class), and add the both-core equivalence test in exactly the shape VP
+    step 2 specifies: a synthetic source module plus a synthetic test file built in tmp_path,
+    traced under both cores with COVERAGE_FILE pointed into tmp_path, asserting core-vs-core
+    equality and never plan-time absolute counts. Do NOT re-run repo tests under both cores.
     tests/session/preflight/test_alerts.py -- add TestBudgetDriftAlert.
   - >-
     docs/DECISIONS.md -- APPEND (never splice) the new entry, "The fast tier carries a derived
