@@ -40,7 +40,17 @@ scope:
       preflight alert and Decision 178's "named review trigger" claim would be false at merge.
   - file: scripts/preflight/summary.py
     action: Modify
-    purpose: Render the budget_drift alert in the preflight one-line summary and report JSON.
+    purpose: >-
+      Add print_budget_drift_alert, mirroring print_budget_bypass_alert. This module is
+      presentation-only: every alert dict it renders is computed elsewhere and passed in.
+  - file: scripts/session/preflight.py
+    action: Modify
+    purpose: >-
+      The orchestrator that closes the chain: import the drift check, submit it to the phase_b
+      pool alongside _check_budget_bypass_alert, collect the result, write
+      report["budget_drift_alert"], and call the summary printer. Without this row the alert is
+      computed and printable but never assembled into the report -- alerts.py and summary.py
+      alone do not surface anything.
   - file: tests/validate/test_warn_band.py
     action: Create
     purpose: >-
@@ -315,10 +325,18 @@ test_obligations:
       Red before (alerts.py filters only ci_rca / budget_bypass / budget_breach, so a drift rec
       surfaces nowhere), green after.
   - source: scripts/preflight/summary.py
-    behavior: The budget_drift alert is rendered in the preflight summary and report JSON.
+    behavior: The budget_drift alert is rendered by a dedicated summary printer.
     verification_step: 7
     test_selector: tests/session/preflight/test_alerts.py::TestBudgetDriftAlert
     red_green_expectation: Red before, green after.
+  - source: scripts/session/preflight.py
+    behavior: >-
+      The assembled preflight report carries a budget_drift_alert key populated from the drift
+      check, so the alert reaches the operator rather than stopping at the derivation.
+    verification_step: 7
+    test_selector: tests/session/preflight/test_alerts.py::TestBudgetDriftAlert
+    red_green_expectation: >-
+      Red before (no such report key exists), green after.
 constraints:
   - >-
     Do NOT raise _FAST_TIER_BUDGET_SECONDS. The tier fits 300s once the regression is repaid;
@@ -541,11 +559,16 @@ execution_steps:
     reader lookup happen, and the loud step-summary mirror is the only surface. The reader call
     lives inside this function, which is only reachable past the warn threshold (Decision 88).
   - >-
-    scripts/preflight/alerts.py -- add _derive_budget_drift_recent and a _check_budget_drift_alert
+    Close the full preflight chain -- all three modules, or the alert surfaces nowhere.
+    scripts/preflight/alerts.py: add _derive_budget_drift_recent and _check_budget_drift_alert
     mirroring the budget_bypass pair (client-side derivation off the supplied cache rows, zero
-    reader call, None cache degrades to None). scripts/preflight/summary.py -- render the new
-    alert key. Without this the drift rec surfaces in no preflight alert and the Decision's
-    review trigger would be false.
+    reader call, None cache degrades to None). scripts/preflight/summary.py: add
+    print_budget_drift_alert alongside print_budget_bypass_alert (presentation only).
+    scripts/session/preflight.py: import the check, submit it to the phase_b pool next to
+    _check_budget_bypass_alert (see lines 66, 282, 296, 421-422 for the exact existing pattern),
+    collect it, write report["budget_drift_alert"], and call the printer. Without the third
+    module the alert is computed and printable but never assembled, and the Decision's review
+    trigger would be false.
   - >-
     tests/validate/test_warn_band.py (new) -- TestHeadroomWarnBand, TestDriftRecReaderBudget and
     TestPhaseBreakdown, covering verification steps 3, 4 and 5. All new warn-band tests live
