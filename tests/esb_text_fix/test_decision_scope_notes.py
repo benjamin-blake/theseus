@@ -24,6 +24,11 @@ from tests.esb_text_fix._anchors import REPO_ROOT, cd27, load_decisions_text, lo
 DECISION_HEADING_RE = re.compile(r"^## Decision (\d+):.*$", re.MULTILINE)
 
 
+def _criterion_text(c: object) -> str:
+    """Ledger-form criteria (dicts) and legacy bare-string criteria both resolve to their text."""
+    return c["text"] if isinstance(c, dict) else str(c)
+
+
 def _sections(text: str) -> dict[int, str]:
     headings = list(DECISION_HEADING_RE.finditer(text))
     out = {}
@@ -187,7 +192,7 @@ def test_cd27_exit_criterion_cross_references_resolve():
     quoted_refs = re.findall(r"(T4\.\d+[a-z]?) exit criterion \"([^\"]+)\"", blob)
     for item_id, phrase in quoted_refs:
         item = tier_item(item_id, d)
-        criteria_text = " ".join(str(c) for c in item["exit_criteria"])
+        criteria_text = " ".join(_criterion_text(c) for c in item["exit_criteria"])
         assert phrase in criteria_text, (
             f"CD.27 quotes {item_id} exit criterion {phrase!r} verbatim, but it no longer appears "
             f"in {item_id}'s exit_criteria -- a renamed criterion left a dangling quoted reference"
@@ -199,17 +204,15 @@ def test_cd27_exit_criterion_cross_references_resolve():
         assert item["exit_criteria"], (
             f"CD.27 references {item_id} exit criterion {crit_ref!r}, but {item_id} has no exit_criteria"
         )
-        # This plan's own convention treats a bare "c<N>" reference as the (N-1)-th bare-string
-        # criterion (see this plan's VP steps' `c1=t42['exit_criteria'][0]`). Verify it resolves
-        # to a real index and, since every such reference in this plan is property-bound, that
-        # the resolved criterion actually names at least one of P1/P2/P3.
+        # Ledger-form criteria carry an explicit `id` field (PLAN-executor-substrate-guard-deferral);
+        # resolve a bare "c<N>" reference by matching that id rather than treating it as a positional
+        # index into the criteria list. Verify it resolves to a real criterion and, since every such
+        # reference in this plan is property-bound, that the resolved criterion actually names at
+        # least one of P1/P2/P3.
         if re.fullmatch(r"c[0-9]+", crit_ref):
-            idx = int(crit_ref[1:]) - 1
-            n_criteria = len(item["exit_criteria"])
-            assert 0 <= idx < n_criteria, (
-                f"CD.27 references {item_id} exit criterion {crit_ref!r}, out of range for {n_criteria} criteria"
-            )
-            resolved = str(item["exit_criteria"][idx])
+            matches = [c for c in item["exit_criteria"] if isinstance(c, dict) and c.get("id") == crit_ref]
+            assert matches, f"CD.27 references {item_id} exit criterion {crit_ref!r}, which does not resolve to a criterion id"
+            resolved = matches[0]["text"]
             assert any(p in resolved for p in ("P1", "P2", "P3")), (
                 f"CD.27's {crit_ref!r} reference for {item_id} resolves to a criterion carrying none of P1/P2/P3: {resolved!r}"
             )
