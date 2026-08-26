@@ -329,13 +329,13 @@ existence-only ("Confirm the Athena view was created" doesn't confirm correct da
 apply` succeeded" -- infra existing isn't enough); prose-only (no executable command -- the
 implement agent will substitute a weaker check).
 
-**Hermetic authoring (T3.15 / VF-01, amended by Decision 148):** `hermetic: true` is the correct
-default again for `pre-deploy` feature-verification steps -- narrow, deterministic, creds-free
-commands. Steps are replayed at implement time by `validate_vp_replay`, not plan time: a
-plan-only PR defers with a printed reason (no `feat({slug})` commit -- Decision 76); the implement
-PR resolves `PLAN-{slug}.yaml` from `feat({slug})` commits on `git log origin/main..HEAD` and
-replays its hermetic steps against the complete tree. Advisory-SKIPs on unreachable `origin/main`
-or an absent plan (Decision 132 limitation B). `bin/venv-python` is now safe here -- it falls back
+**Hermetic authoring (T3.15 / VF-01, amended by Decision 148/plan-resolution-content-keyed):**
+`hermetic: true` is the correct default again for `pre-deploy` feature-verification steps --
+narrow, deterministic, creds-free commands. Steps are replayed at implement time by
+`validate_vp_replay`, not plan time: a plan-only PR defers with a printed reason
+(`implementation_declared` not newly true); the implement PR resolves plans via
+`_common.resolve_declared_plans` and replays their hermetic steps against the complete tree.
+Advisory-SKIPs on unreachable `origin/main`. `bin/venv-python` is now safe here -- it falls back
 to a sentinel-dep-importing interpreter when `.venv` is absent, resolving in venv-less CI too.
 Never mark a step hermetic if it invokes `scripts/validate.py --pre` (recursion). Steps needing
 pytest/deploys stay `hermetic: false`, excluded with a printed reason.
@@ -375,6 +375,22 @@ Check `docs/contracts/decision-entry.yaml`'s `significance:` section before draf
 architectural commitment with reversal-relevant consequences clears the bar. A CD state-flip,
 operational fact, or field-semantics change routes per that section's four rows instead (the
 batch-wave clause below, a rec/tier_item note, or a contract governance note).
+
+Three property tests gate the draft -- checkable assertions on the drafted text, never an
+open-ended "consider whether" prompt:
+1. **Envelope marker cited.** The drafted entry's fenced ```yaml metadata envelope carries a
+   `significance` field naming one of the four routing keys plus a non-empty justification
+   (`decision-entry.yaml`'s `metadata_envelope.required_fields`, Decision 167 clause 2) -- a
+   Significance claim made only in narrative prose, with no envelope field, fails this test.
+2. **Contract-first justification (rec-3015).** The envelope justification names, in one clause,
+   why not a contract: the specific `docs/contracts/*.yaml` governance-note home (or in-place
+   amendment) considered for this content and the concrete reason it was rejected in favor of a
+   fresh number. A justification that never names a rejected alternative fails this test.
+3. **amendment_forms routing alternative (rec-3016).** Before minting a number to amend exactly
+   one prior entry at a single call site, check whether `decision-entry.yaml`'s `amendment_forms`
+   (a dated in-place annotation on the amended entry) already carries the same commitment at zero
+   header cost -- draft the amendment_forms shape instead unless the content independently clears
+   the significance bar on its own terms.
 
 ## Candidate Decision Ratification (Workflow Step 5b, when the plan realizes/ratifies a CD)
 

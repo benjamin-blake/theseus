@@ -25,6 +25,13 @@ _ATTRIBUTIONS: list[dict[str, str]] = []
 # never read as history, so it needs no merge key/identity/partitioning.
 _OUTCOMES: list[registry.CheckOutcome] = []
 
+# Accumulator of {check: [detail, ...]}, populated by dispatch_recording() when a check declares
+# registry.failure_detail() (this plan, coverage-failure-attribution). Reset by clear(), same
+# lifecycle as _ATTRIBUTIONS/_OUTCOMES. Emitted on write_completed()'s NEW top-level
+# failed_check_details key -- deliberately separate from _ATTRIBUTIONS/failed_check_attributions,
+# which stay byte-for-byte pinned (Decision 170 clause 1 / docs/contracts/check-accounting.yaml).
+_FAILURE_DETAILS: dict[str, list[str]] = {}
+
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
@@ -34,6 +41,7 @@ def clear(path: Path = RESULT_PATH) -> None:
     path.unlink(missing_ok=True)
     _ATTRIBUTIONS.clear()
     _OUTCOMES.clear()
+    _FAILURE_DETAILS.clear()
 
 
 def _harvest_declared_outcome(name: str, kind: str, appended_to_failed: bool) -> None:
@@ -64,6 +72,9 @@ def dispatch_recording(name: str, failed: list[str], fn: Callable[[list[str]], N
     appended = failed[before:]
     for label in appended:
         _ATTRIBUTIONS.append({"check": name, "label": label})
+    detail = registry.pop_failure_detail()
+    if detail is not None:
+        _FAILURE_DETAILS[name] = detail
     _harvest_declared_outcome(name, "check", appended_to_failed=bool(appended))
 
 
@@ -98,6 +109,7 @@ def write_completed(
     *, started_at: str, exit_code: int, failed_checks: list[str], path: Path = RESULT_PATH
 ) -> dict[str, object]:
     outcomes_snapshot = list(_OUTCOMES)
+    details_snapshot = dict(_FAILURE_DETAILS)
     record: dict[str, object] = {
         "schema_version": 3,
         "command": "bin/venv-python -m scripts.validate",
@@ -111,6 +123,11 @@ def write_completed(
         "check_outcomes": [dataclasses.asdict(outcome) for outcome in outcomes_snapshot],
         **_rollups(outcomes_snapshot),
     }
+    if details_snapshot:
+        # NEW top-level key (Decision 170 clause 1 / check-accounting.yaml validation_result_
+        # schema_v3): deliberately NOT merged into failed_check_attributions, which stays
+        # byte-for-byte pinned. Present only when at least one check declared detail this run.
+        record["failed_check_details"] = details_snapshot
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")

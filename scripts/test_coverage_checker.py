@@ -235,6 +235,10 @@ _CONCERN_SPLIT_TEST_PACKAGES: frozenset[str] = frozenset(
         "scripts/ci_rca/taxonomy.py",
         "scripts/decisions_md.py",
         "scripts/checks/contracts/validate_contract_drift.py",
+        "scripts/roadmap/plan_document.py",
+        "scripts/convergence_health/code_drift.py",
+        "scripts/verification_graduation.py",
+        "scripts/checks/verification/validate_graduation_completeness.py",
     }
 )
 

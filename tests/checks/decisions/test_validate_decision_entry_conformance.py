@@ -1,12 +1,6 @@
-"""Tests for validate_decision_entry_conformance() (DAF-03 / Decision 134 cl.3; extended by
-PLAN-decision-entry-flow-governance / Decision 167 with the typed metadata envelope, the
-Significance routing claim, and the envelope/body conflict and number-match sub-checks).
-
-Exercises the root/baseline_reader injection seams (mirrors the vp_replay /
-graduation_completeness precedents) rather than real git plumbing for the deterministic cases.
-`_default_baseline_decision_numbers` is the shared `_baseline.baseline_decision_numbers`
-function, imported under its legacy name so this module's own call sites need no further edit.
-"""
+"""Tests for validate_decision_entry_conformance() (DAF-03 / Decision 167 typed envelope +
+Significance routing + Decision 175 widened stub_grammar). Exercises the root/baseline_reader
+injection seams rather than real git plumbing for the deterministic cases."""
 
 from __future__ import annotations
 
@@ -102,8 +96,7 @@ class TestSkipOnUnreachableBaseline:
         assert failed == []
 
     def test_default_reader_skips_with_no_git_repo_at_all(self, tmp_path: Path) -> None:
-        """No .git directory anywhere under tmp_path -- origin/main is genuinely unreachable,
-        exercising the DEFAULT baseline_reader (not an injected seam)."""
+        """No .git dir under tmp_path -- exercises the DEFAULT baseline_reader, not an injected seam."""
         _write_contract(tmp_path, _FULL_CONTRACT_YAML)
         _write_decisions_md(tmp_path, "## Decision 1: New entry (Decided)\n\n**Status:** Decided\n")
         failed: list[str] = []
@@ -141,8 +134,7 @@ class TestNewEntryConformance:
 
 class TestHistoricalEntryGrandfathered:
     def test_modified_historical_entry_is_not_flagged(self, tmp_path: Path) -> None:
-        """A baseline-present number is grandfathered even missing required markers/envelope
-        (DPI-07: Decisions 52/53/54 carry no separate **Date:** marker and must not self-fail)."""
+        """Grandfathered even missing required markers/envelope (DPI-07: Decisions 52/53/54)."""
         _write_contract(tmp_path, _CONTRACT_YAML)
         _write_decisions_md(
             tmp_path,
@@ -154,9 +146,7 @@ class TestHistoricalEntryGrandfathered:
         assert failed == []
 
     def test_archive_h3_to_h2_promote_does_not_manufacture_a_new_entry(self, tmp_path: Path) -> None:
-        """Baseline computed over h3-shaped text (pre-promote); current tree has the same
-        number promoted to h2 (post-promote) and missing the Date marker -- must not be
-        flagged as new, proving the shared '#{2,3}' grammar covers both heading levels."""
+        """h3-shaped baseline vs h2-promoted current tree -- must not be flagged new (shared '#{2,3}' grammar)."""
         _write_contract(tmp_path, _CONTRACT_YAML)
         # baseline_reader simulates decisions_md.iter_decision_headings() over the origin/main
         # (pre-promote, h3) blob -- decision 52 is visible there too, via the same #{2,3} grammar.
@@ -168,6 +158,34 @@ class TestHistoricalEntryGrandfathered:
         failed: list[str] = []
         validate_decision_entry_conformance(failed, root=tmp_path, baseline_reader=lambda r: {52})
         assert failed == []
+
+
+class TestWidenedStubGrammarEnforcement:
+    """Decision 175: Superseded-status entries enforced off-baseline; prose-only pointers (Decision 149's shape) left alone."""
+
+    @pytest.mark.parametrize(
+        ("number", "body", "expect_fail"),
+        [
+            (44, "**Status:** Superseded\n\n**Decision:** x.\n", True),  # missing Date + pointer
+            (
+                44,
+                "**Status:** Superseded\n\n**Date:** 2026-08-24\n\n**Decision:** x.\n\n**Superseded by: Decision 117**\n",
+                False,
+            ),
+            (
+                149,
+                "**Status:** Decided\n\n**Date:** 2026-07-01\n\n**Decision:** x.\n\nNote: '**Superseded by: Decision N**'.\n",
+                False,
+            ),
+        ],
+        ids=["malformed_fails", "conforming_passes", "full_bodied_left_alone"],
+    )
+    def test_baseline_present_cases(self, tmp_path: Path, number: int, body: str, expect_fail: bool) -> None:
+        _write_contract(tmp_path, _CONTRACT_YAML)
+        _write_decisions_md(tmp_path, f"## Decision {number}: Case (Decided)\n\n" + body)
+        failed: list[str] = []
+        validate_decision_entry_conformance(failed, root=tmp_path, baseline_reader=lambda r: {number})
+        assert failed == (["Decision-entry conformance"] if expect_fail else [])
 
 
 class TestBlockSeparatorSubCheck:
@@ -200,8 +218,7 @@ class TestBlockSeparatorSubCheck:
         assert failed == []
 
     def test_missing_block_separator_key_is_a_tolerated_absence(self, tmp_path: Path) -> None:
-        """The default (pre-CFG-06) contract fixture carries no block_separator key -- the
-        sub-check must no-op rather than failing every pre-existing conformance test fixture."""
+        """No block_separator key in the default fixture -- the sub-check must no-op, not fail."""
         _write_contract(tmp_path, _FULL_CONTRACT_YAML)  # no block_separator key
         _write_decisions_md(
             tmp_path,
@@ -215,10 +232,9 @@ class TestBlockSeparatorSubCheck:
 
 
 class TestMissingContract:
-    """Contract-shape failures. The metadata_envelope/significance load is deferred until AFTER
-    the no-new-entries early-return, so a bare required_markers-only contract stays valid for a
-    diff with no new entries (TestNewEntryConformance.test_no_new_entries_passes_trivially) but
-    fails once a new entry needs it -- exercised here via the "new" fixtures below."""
+    """Contract-shape failures. metadata_envelope/significance load is deferred until AFTER the
+    no-new-entries early-return, so a bare required_markers-only contract stays valid with no new
+    entries but fails once one needs it -- exercised via the "new" fixtures below."""
 
     @pytest.mark.parametrize(
         ("contract_text", "md_content", "expected_snippet"),
@@ -247,10 +263,8 @@ class TestMissingContract:
 
 
 class TestLoadEnvelopeConfigDirect:
-    """Direct unit coverage of _load_envelope_config's failure branches -- each is unreachable
-    through the main check's call sequence (a missing/malformed contract already halts at
-    _load_required_markers first, since both read the same file), so these exercise the
-    function directly, mirroring TestLoadRequiredMarkersMalformedYaml's pattern."""
+    """Direct coverage of _load_envelope_config's failure branches -- unreachable through the
+    main check (a bad contract already halts at _load_required_markers, same file)."""
 
     def test_missing_contract_file_fails(self, tmp_path: Path) -> None:
         failed: list[str] = []
@@ -302,8 +316,7 @@ class TestIsCompactedStubHelper:
 
 
 class TestEnvelopeMissingRequiredField:
-    """Includes a code-review follow-up: a malformed 'number: abc' must produce the ordinary
-    no-well-formed-envelope FAIL, never an unhandled ValueError from int(envelope["number"])."""
+    """A malformed 'number: abc' produces the ordinary FAIL, never an unhandled ValueError."""
 
     @pytest.mark.parametrize(
         "envelope_yaml",
@@ -360,10 +373,8 @@ class TestEnvelopeWellFormedness:
         assert failed == []
 
     def test_compacted_stub_is_exempt_from_envelope_obligation(self, tmp_path: Path) -> None:
-        """Decision 149 compacted stub -- '**Status:** Superseded' plus a live '**Superseded
-        by: Decision N**' pointer -- is exempt from the envelope obligation even though it is
-        a genuinely new-in-diff entry number (a compaction that lands on a same-session-new
-        number is a degenerate but legal case)."""
+        """A compacted stub is exempt from the envelope obligation even on a new-in-diff number
+        (a same-session-new compacted number is a degenerate but legal case)."""
         _write_contract(tmp_path, _FULL_CONTRACT_YAML)
         _write_decisions_md(
             tmp_path,
@@ -378,8 +389,7 @@ class TestEnvelopeWellFormedness:
 
 
 class TestEnvelopeBodyConflict:
-    """VP step 4: envelope/bold-marker conflict on one field fails; agreement passes; absence
-    of the bold marker passes."""
+    """VP step 4: envelope/bold-marker conflict on one field fails; agreement/absence passes."""
 
     @pytest.mark.parametrize(
         ("envelope_kwargs", "body_tail", "expect_fail"),
@@ -400,13 +410,9 @@ class TestEnvelopeBodyConflict:
         assert failed == (["Decision-entry conformance"] if expect_fail else [])
 
     def test_bold_date_marker_absent_passes(self, tmp_path: Path) -> None:
-        """Envelope declares decided_date but the body carries no bold **Date:** marker at all
-        -- nothing to conflict with, so this passes. required_markers still demands a literal
-        Date marker SOMEWHERE in the block, satisfied here by the block_separator-form Status
-        line's own Date-free shape being irrelevant: this fixture keeps a bold **Date:** marker
-        for required_markers but on a DIFFERENT decision (5 has none) to isolate the conflict
-        sub-check from the marker-presence sub-check -- required_markers is patched out via a
-        contract with only Status/Decision required."""
+        """Envelope declares decided_date but the body has no bold **Date:** marker -- nothing to
+        conflict with, so this passes (required_markers patched to Status/Decision only, isolating
+        this sub-check from marker-presence)."""
         _write_contract(
             tmp_path,
             "required_markers:\n  - Status\n  - Decision\n" + _SIGNIFICANCE_YAML,
@@ -423,8 +429,8 @@ class TestEnvelopeBodyConflict:
 
 
 class TestSignificanceEnforcement:
-    """VP step 3: presence, the contract-read token vocabulary, the non-empty justification, and
-    the strict rejection of the two "Never a numbered Decision" rows on a new entry."""
+    """VP step 3: presence, contract-read token vocabulary, non-empty justification, and
+    rejection of "Never a numbered Decision" rows on a new entry."""
 
     def _fixture(self, significance_yaml: str) -> str:
         return (
@@ -468,10 +474,8 @@ class TestSignificanceEnforcement:
 
 
 class TestContractTokenParity:
-    """VP step 8: the four significance.routing tokens the check enforces are exactly the keys
-    in decision-entry.yaml, and the two rejected rows are identified from the contract's own
-    "Never a numbered Decision" text rather than a hardcoded list -- adding a fifth routing row
-    to the fixture contract changes the accepted set with no code edit."""
+    """VP step 8: the routing tokens the check enforces are exactly decision-entry.yaml's keys,
+    and rejected rows are read from the contract's own text, not a hardcoded list."""
 
     def test_contract_parity_added_fifth_routing_row_is_accepted_with_no_code_change(self, tmp_path: Path) -> None:
         contract = (
@@ -524,10 +528,8 @@ class TestRealContractIntegration:
 
 
 class TestDefaultBaselineDecisionNumbersRealRepo:
-    """Covers the reachable-origin/main branch of the shared baseline reader, exercised via this
-    module's own `_default_baseline_decision_numbers` re-export -- every test above bypasses it
-    via the injected baseline_reader= seam. Real throwaway repo with a refs/remotes/origin/main
-    ref (mirrors test_validate_graduation_completeness.py's _git/_commit_all)."""
+    """Covers the reachable-origin/main branch of the shared baseline reader (every test above
+    bypasses it via the injected baseline_reader= seam) against a real throwaway repo."""
 
     def test_reads_decision_numbers_from_both_files_at_origin_main_ref(self, tmp_path: Path) -> None:
         repo = tmp_path / "repo"

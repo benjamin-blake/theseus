@@ -2,6 +2,394 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 177: The decision corpus enforces append-only live-body immutability -- a waiver-free lock with a dated-annotation correction dialect (amends Decision 151) (Decided)
+
+```yaml
+number: 177
+status: Decided
+decided_date: "2026-08-25"
+amends: [151]
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable architectural commitment with reversal-relevant consequences: every future correction
+    to a ratified body is constrained to a dated append, a supersession, or an archive move, and two
+    micro-shapes are retired. Unclaimed by another routing row -- it clears no CD gate, and
+    decision-entry.yaml owns the amendment GRAMMAR but not the choice to lock the corpus.
+```
+
+**Status:** Decided
+**Date:** 2026-08-25
+**Warehouse ID:** dec-177 (canonical; per Decision 84)
+
+**Problem:**
+A 19-agent census of all live entries (rec-3249) found confirmed drift in 55 of 126: bodies edited
+in place after ratification until they contradicted the surfaces they described. Decision 151
+clause 3 established a dated-append convention and left enforcement to convention only -- "no
+validator, no stored guard" -- backstopped by PR review and a byte ceiling Decision 160 has since
+retired. Nothing mechanical distinguished a sanctioned annotation from a silent rewrite.
+
+**Decision:**
+A registered both-tier guard, `validate_live_entry_immutability`, holds every baseline-present
+decision body append-only. For each number present at the origin/main baseline:
+
+1. **Exact-line append-only** for a live body not newly declaring Superseded. Every baseline line
+   must appear verbatim as a distinct current line, in order -- an injective, order-preserving
+   embedding. New lines insert anywhere, including inside an Intent section (Decision 151 clause
+   3(ii) accretion stays legal). Modification, deletion, join, or reorder fails. Injectivity is
+   load-bearing: deleting one of two identical lines fails, each duplicate consuming its own match.
+2. **A strict stub bound on a NEW supersession.** A body newly declaring `**Status:** Superseded`
+   must reduce to the compaction stub grammar. `scripts.decisions_md.is_compacted_stub` is
+   deliberately NOT the predicate -- it tests marker presence only, so a full body carrying both
+   supersession markers would pass it. The shape bound closes that Status-flip bypass.
+3. **Archive moves embed, they do not rewrite.** A Decision 146 move must embed the baseline lines
+   under the same ordered rule, with exactly two exemptions: the header line (whose trailing
+   parenthetical the move retitles) and the baseline Status marker. Relocation is not a content escape.
+4. **One carve-out: fenced reversal-conditions stanza interiors.** That stanza is a mutable,
+   machine-monitored surface -- `scripts/preflight/decision_conditions.py` is its watcher and its
+   own `on_trigger` dialect says "update or re-arm this stanza" -- so re-arms and `review_by` bumps
+   stay legal. Stanza EXISTENCE is locked: a baseline stanza must survive. The Decision 167
+   envelope's bare ```yaml fence is NOT carved out.
+5. **No waiver route, no config input.** The guard reads no allowlist, accepts no marker, and
+   exposes no exemption parameter. An escape hatch would be the Decision 163 anti-pattern -- and is
+   unnecessary, since the dialect below absorbs every legitimate change. A number vanishing from
+   both corpus files fails unconditionally (never_remove_headers, Decision 149).
+
+**Post-lock correction dialect:** a dated, source-cited annotation (`decision-entry.yaml`
+`amendment_forms`), a supersession, or an archive move. **Two micro-shapes are retired:** the
+mid-line splice (editing a clause in place to correct it) and the table-cell append. A correction
+now lands as its own line, which is what makes it dated, attributable, and diff-visible.
+
+**Rationale:**
+Convention-only enforcement was tried and measured: Decision 151 chose it deliberately, mirroring
+Decision 146's operator-disposed stance, and 55 of 126 entries drifted anyway. The difference is
+that "was this body edited since ratification" IS mechanically decidable against a git baseline,
+unlike "is this entry fully superseded" -- so Decision 55's fail-loud discipline applies where it
+could not before. The exact-line rule, rather than a similarity threshold, is what makes the guard
+explainable: it never argues about how much a body changed, only whether a ratified line survived.
+That strictness is affordable precisely because the dialect absorbs every legitimate edit.
+
+**Reversal conditions:**
+
+```yaml reversal-conditions
+decision: 177
+review_by: 2026-11-25
+on_trigger: "re-decide via /plan whether the exact-line rule still fits the corpus's authoring reality; update or re-arm this stanza"
+conditions:
+  - id: legitimate-shape-blocked-twice
+    kind: manual
+    description: "Two or more legitimate corrections cannot be expressed in the post-lock dialect without contorting the entry -> widen the dialect at decision-entry.yaml's amendment_forms, never add a waiver route to the guard."
+  - id: t15-portal-cutover-retires-the-surface
+    kind: manual
+    description: "T1.5's portal cutover moves the corpus off docs/DECISIONS.md to warehouse-verb storage -> this file-diff guard loses its subject and retires with it; the invariant re-homes onto the warehouse's own append-only SCD2 versioning (Decision 167 condition (c) precedent)."
+```
+
+**Related:** Decision 151 (amended -- clause 3(v)'s convention-only stance narrowed to a
+mechanically-enforced one; the accretion grammar it sanctions is what branch 1 keeps legal),
+Decision 149 (never_remove_headers; the stub grammar branch 2 bounds against), Decision 146
+(archival policy, branch 3), Decision 133 (the monitored stanza, branch 4), Decision 167 (the
+envelope deliberately NOT carved out; its condition (c) is the T1.5-retirement precedent),
+Decision 163 (the exception-path anti-pattern the no-waiver posture avoids), Decision 55
+(fail-loud), Decision 160 (retired the ceiling Decision 151's convention rested on). Roadmap refs:
+rec-3249 (resolved by this wave), rec-3264 / rec-3265 (drift flow-control, out of scope).
+
+---
+
+## Decision 176: Re-grain the verification graduation registry to one record per file, retiring its 6,000-line calibrated ceiling (elects Decision 166 reversal condition (f) ahead of its trigger; amends Decision 166) (Decided)
+
+```yaml
+number: 176
+status: Decided
+decided_date: "2026-08-24"
+amends: [166]
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable path-selection commitment with reversal-relevant consequences, unclaimed by any
+    other routing row: no CD gate-clears (not cd_state_flip), field_semantics owns the record
+    grammar (routed to docs/contracts/verification-registry.yaml) but not the CHOICE of shape,
+    and T3.7 already owns successor sequencing (not work_item). Rejected alternative: Decision
+    166 point 6's own pre-committed CD.29 mark-then-drop archival lifecycle on the flat file,
+    plus a bare second ceiling raise (Decision 128's silent-trade anti-pattern).
+```
+
+**Status:** Decided
+**Date:** 2026-08-24
+**Warehouse ID:** dec-176 (per Decision 84, synced via `ops_data_portal --backfill-decisions-md`)
+
+**Problem:** rec-3231: `registry.yaml`'s flat, append-only `entries` list (under
+`config/agent/verification_registry/`) made two concurrent graduating plans conflict at the list
+tail deterministically -- reproduced live on PR #940, twice in under an hour. Decision 166 point 6
+seeded the file at a CALIBRATED 6,000-effective-line ceiling (not a grandfather), pre-committing
+CD.29 mark-then-drop archival when it fired, never a second raise. The file reached 5,972/6,000
+(28 lines of headroom) at this plan's authoring -- roughly double Decision 166's own predicted
+growth rate (~1,200 lines/month vs. "1.7 months of runway" predicted from 3,987 lines).
+
+**Decision:** Re-grain to one record per file --
+`config/agent/verification_registry/entries/<check_id>.yaml`, filename-equals-check_id enforced
+structurally -- and retire the 6,000-line instrument, rather than exercising Decision 166 point
+6's archival pre-commitment on the flat file.
+
+1. **The arithmetic is the argument**, not facade-vs-YAML framing (thin on its face). Headroom
+   was 28 effective lines; CD.29 archival exhausted reclaims only ~2-3 genuinely dead records
+   (~25-38 lines, liveness-verified); clause 6's growth rate is ~1,200 lines/month; this plan's
+   own 13 `graduate` dispositions are ~155-165 lines. The archival valve cannot absorb even the
+   PR that triggers it.
+2. **Electing (f) ahead of its trigger.** Reversal condition (f) fires on a SECOND raise past
+   6,000 (not yet happened, 5,972 < 6,000); this Decision elects (f)'s response (re-audit grain
+   and retirement discipline) pre-emptively on the arithmetic above. Condition (c) does not
+   apply -- it retires a CLASS ROW; this Decision keeps `config/structural_size_budgets.yaml`'s
+   `config` row, deleting only two GRANDFATHER ROSTER ENTRIES. Those deletions need no
+   authorization: `_marker_guard.authorization_failure` iterates `current_entries` only, so an
+   entry present at base and absent at head is never examined.
+3. **Accretion purpose, discharged not deleted.** The `config` class row's purpose -- surface
+   lifecycle pressure instead of silent accretion -- loses its corpus-size subject here:
+   differential admission costs ~7.1s per NEWLY-ADDED record, invariant to corpus size, and the
+   structural census (~0.1s/~195 files) stays immaterial with +476 files. The whole-file-read
+   half holds independently: exactly one agent-facing whole-file reference existed
+   (`.claude/skills/implement/SKILL.md`'s per-record append instruction) -- Decision 114/110's
+   "N fragments to reassemble" flag does not bind, unlike Decision 147's opposite-fact case.
+4. **Why not the warehouse:** the differential gate reads its baseline at a GIT REF (`git show
+   origin/main:...`), which DuckLake cannot serve; admission is a property of a commit, runs
+   pre-merge and hermetically, and must revert atomically with the code it verifies. Pre-merge CI
+   on a public repo would also need write credentials for records that may never merge.
+5. **No index, no cached aggregate, no materialized merge.** The directory listing is the only
+   index; any count is computed from the glob; the merged corpus (tree union baseline) exists
+   only in memory. Retirement is `git mv` to `entries/deprecated/`, no status/version key. Full
+   grammar in `docs/contracts/verification-registry.yaml` governance_notes (Decision 86/127).
+
+**Reversal conditions:** (a) the per-file grain defeats a consumer needing whole-corpus
+comprehension (none identified) -- reopen the grain choice; (b) `entries/` approaches a
+file-count pressure point with no live orphan-sweep owner -- escalate to T3.7, not a threshold;
+(c) per-record `git show` cost dominates the fast tier at this grain -- profile/batch before
+reconsidering the grain.
+
+**Rationale:** Per-record files make Decision 166 point 6's valve CHEAPER, not foreclosed
+(retire = `git mv`) -- never unreachable, only pricier than the alternative elected here.
+`config/agent/data_quality/decisions/` (five files) is in-repo precedent for this exact shape in
+this exact zone. Decision 169's table-shaped-decomposition clause affirmatively supports it
+(cited in favour, not only to distinguish its own ordered, dispatch-bearing manifest grain from
+this unordered check_id-keyed set).
+
+**Related:** Decision 166 (amended -- point 6 superseded, ceiling retired), Decision 128
+(decompose-by-default; ceiling motivation now moot), Decision 55 (fail-loud), Decision 169
+(table-shaped decomposition, cited in favour), Decisions 147/114/110 (opposite-fact
+N-fragments precedent distinguished against), Decisions 132/170 (graduation obligation and
+examined()/skipped() declaration this file's validators carry), Decisions 86/127
+(field-semantics routing). Roadmap refs: rec-3231 (closed), CD.29 (superseded), T3.1 (owning
+tier_item), T3.7 (successor lifecycle instrument for the retired roster).
+
+[Amendment 2026-08-24: point 5's retirement fired twice, not once -- a second undifferentiable
+self-referential record was also retired. See verification-registry.yaml governance_notes.]
+
+---
+
+## Decision 175: Migrate-then-rehome compaction branch for citation-stranded superseded entries; amends Decision 149 (Decided)
+
+```yaml
+number: 175
+status: Decided
+decided_date: "2026-08-24"
+amends: [149]
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable architectural commitment: docs/contracts/decision-entry.yaml's compaction
+    eligibility_criterion now admits a check-backed rehoming destination as an alternate
+    restater, with reversal-relevant consequences for every future citation-stranded superseded
+    entry's compact-vs-stay-full-bodied outcome.
+```
+
+**Status:** Decided
+**Date:** 2026-08-24
+**Warehouse ID:** dec-175 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+**Problem:**
+Decision 149's compaction lifecycle (`docs/contracts/decision-entry.yaml` `compaction:`) requires the superseder to restate or subsume EVERY live clause before a superseded entry may compact to a stub -- eligibility has exactly one restater, the superseder. A superseded entry whose superseder restates NONE of its live content is stuck: it cannot archive (live code still cites its number), and it cannot compact (the superseder does not cover it), so it sits full-bodied, superseded, and permanent. Decision 37 is the measured instance: superseded by Decision 116 (scheduled-agent provider routing), which contains none of Decision 37's live Secrets Manager content -- seventeen files still cite it by name for two DERIVED patterns (SECRET-VALUE-OUT-OF-BAND, RUNTIME-FETCH) that survive even though Decision 37's ORIGINAL subject (the scheduled-agent dispatcher Lambdas) is dead.
+
+**Decision:**
+1. **A third compaction branch, migrate_then_rehome, joins archive and compact-in-place** in `docs/contracts/decision-entry.yaml` `compaction.procedure`: when eligibility fails only because the superseder omits live DERIVED content (not the entry's original subject), author or extend a mechanism contract with a resolving evaluator to own that content, repoint its live citers, and record the migration in a self-retiring manifest -- THEN the widened `eligibility_criterion` treats that contract as an alternate restater alongside the superseder, and the entry compacts via the existing stub_grammar mechanism.
+2. **Exercised end-to-end on Decision 37**: `docs/contracts/secret-material-handling.yaml` is the rehoming destination (a Class D contract with a resolving evaluator, `validate_secret_material_handling`); `docs/decision-migration/MANIFEST.yaml` records the citation-stranded class and Decision 37's disposition; Decision 37 is now a compacted stub pointing at both Decision 116 and the new contract.
+3. **Scope is SUPERSEDED entries only.** This branch never extracts content from a LIVE (non-superseded) entry -- routing is one-way-at-entry, and no lifecycle mechanism can undo a misroute later. Extracting HOW content from live entries is a separate, larger capability (rec-3246), deliberately out of this Decision's scope.
+
+**Rationale:**
+The alternative -- widening eligibility to accept ANY partial coverage -- was rejected: it would let a superseder settle only some of a victim's clauses and still compact it, silently dropping the uncovered clauses' authority. Requiring a CHECK-BACKED destination (a resolving evaluator, not prose) keeps the bar as high as the superseder bar: the content must be genuinely enforced somewhere, not merely asserted moved. `docs/contracts/decision-entry.yaml` stays the single source of truth for the branch; no parallel compaction path was created.
+
+**Related:** Decision 149 (compaction lifecycle amended), Decision 116 (Decision 37's superseder), Decision 157 (adjacent IAM-verb plane the new contract names to avoid conflation), Decision 146 (still-cited-live archival carve-out), Decision 55 (forward-fix; no rescue-loop weakening of the eligibility guarantee).
+
+---
+
+## Decision 174: A deprecated planning-artefact format carries no working-tree retention obligation -- retirement is by deletion, with provenance in git history (amends Decision 85) (Decided)
+
+```yaml
+number: 174
+status: Decided
+decided_date: "2026-08-24"
+amends: [85]
+significance:
+  value: numbered_decision
+  justification: >-
+    Establishes a forward-standing, reversal-relevant rule governing every future
+    deprecated-format retirement, so the next format transition needs no fresh adjudication. A
+    docs/contracts/*.yaml governance-note home was considered and REJECTED: no existing contract
+    owns artefact-format lifecycle (file-router owns placement, log-storage owns log routing,
+    decision-entry owns entry grammar), so a note there would create a new orphan surface rather
+    than populate an existing one.
+```
+
+**Status:** Decided
+**Date:** 2026-08-24
+**Warehouse ID:** dec-174
+
+**Problem:**
+Decision 85 records "Historical PLAN-*.md files remain in the working tree and commit history;
+none are retroactively converted (one-way, non-rolling migration)" -- accurate as a statement of
+ratification-time state, but read on its own it also reads as a forward retention directive.
+PLAN-dead-file-cleanup proposed deleting the 195 legacy `docs/plans/archive/*.md` files that
+migration left behind (dead weight: zero inbound references, ~10% of tracked bytes, and a
+measured ~21-22% share of repo-wide agent grep noise), and the decision-scout gate BLOCKed on
+exactly this clause. The repository owner clarified in-session that the clause described the
+migration's state at ratification, not a standing commitment to keep the retired format live in
+the working tree indefinitely.
+
+**Decision:**
+A deprecated planning-artefact format -- the retired `PLAN-*.md` shape Decision 85 superseded
+with the schema-validated `PlanDocument` `.yaml` format -- carries no working-tree retention
+obligation once superseded. Retirement is by deletion; provenance survives in git history and
+commit messages (Decision 147's precedent). This rule is forward-standing: it governs every
+future deprecated-artefact-format retirement, not only this one-off cleanup, so the next format
+transition needs no fresh adjudication of whether history must be kept live in the tree.
+
+A dated trailer alone under Decision 85 would not suffice for this purpose: a trailer there can
+only record that Decision 85's OWN working-tree clause was descriptive rather than directive. A
+future author retiring a DIFFERENT deprecated format has no Decision 85 entry to consult, and an
+amendment cannot carry a commitment broader than the entry it amends. This entry states the
+general rule a Decision 85 trailer cannot carry on its own; the trailer under Decision 85 (below)
+points here.
+
+**Rationale:**
+`docs/plans/archive/` sat outside the active-plan glob (`validate_plan_documents` is
+non-recursive) but not outside the agent grep path -- measured `git grep -l` hit share landing in
+that directory: `validate.py` 139/643 (21%), `ops_recommendations` 60/284 (21%), `"terraform
+apply"` 40/175 (22%). In an agent-first repository, that is a real operating cost, not cosmetic
+noise. Deletion is reversible (Decision 147: `git revert` restores the full content; commit
+history is the durable record), matching the physical-deletion posture Decision 70 reserves for
+exceptional, deliberate cases -- this Decision is what makes a deprecated-format retirement one of
+those cases, rather than a bespoke ad hoc justification each time one arises.
+
+**Related:** Decision 85 (amended -- its working-tree clause is reclassified as descriptive of
+ratification-time state, not a forward directive), Decision 121 (precedent: retire a sanctioned
+artefact outright via a numbered Decision rather than converting it), Decision 147 (provenance
+survives in git history; follow-on-recommendation pattern this plan also uses instead of closing
+rec-031), Decision 70 (physical deletion stays exceptional and deliberate -- this entry is what
+licenses it here), Decision 86 (inbound-reference sweep required before deleting a grandfathered
+doc), Decision 127 (sanctioned-prose taxonomy is unaffected -- the `docs/plans/**/*.md`
+prose_allowlist glob is kept), Decision 166 (structural-size governance's workflow_outputs exempt
+class is unaffected -- no `structural_size_budgets.yaml` edit is implied by this cleanup),
+Decision 167 (significance/category-consistency this entry's envelope follows), Decision 168
+(Class D declared-evaluator and amendment-trailer pattern this entry's Decision-85 trailer
+follows), Decision 115 (retire-by-convention without a standing guard).
+
+---
+
+## Decision 173: Executor inference tiers are ROLES -- provider identity is configuration, and a tier's cold-start assertion follows its billing shape (amends Decisions 116, 122 and 164) (Decided)
+
+```yaml
+number: 173
+status: Decided
+decided_date: "2026-08-19"
+amends: [116, 122, 164]
+significance:
+  value: numbered_decision
+  justification: >-
+    Tier MEMBERSHIP becomes configuration -- a provider swap is a contract edit, never a Decision
+    amendment -- and three entries' reversal conditions are re-keyed onto role and billing shape. The
+    provider VALUES do route to inference-provider.yaml (this entry performs that re-homing), but no
+    contract note constrains how future DECISIONS are written; amendment_forms was rejected because
+    this amends THREE entries and adds rules none carried.
+```
+
+**Status:** Decided
+**Date:** 2026-08-19
+**Warehouse ID:** dec-173
+
+**Problem:**
+Decision 122 ratified the tier model in VENDOR terms -- DeepSeek model ids, the Anthropic "Max x5
+programmatic pool" -- and keyed its reversal conditions to one vendor's unit price and the other's
+pool utilization; Decision 164's rationale and Decision 116's shared-pool condition are anchored the
+same way. LiteLLM was adopted so models and providers can change as they ship, and provider is to
+become a measured performance VARIABLE later. Vendor identity as architecture inverts that, and
+duplicates `litellm_tier_models` in `docs/contracts/inference-provider.yaml`, content
+Decision 86/127 routes to the contract.
+
+**Intent:** Tier 1 and Tier 2 were the right SELECTIONS at ratification and EXAMPLES of a
+primary/fallback mechanism, never the architecture; the ROLES are the commitment.
+
+**Decision:**
+1. **The tiers are ROLES.** Tier 1 = primary route; Tier 2 = warm-fetched fallback on a provider
+   INDEPENDENT of Tier 1's (Decision 47's lock-in escape hatch), validated at every harness cold
+   start; Tier 3 = deferred aggregator. DeepSeek-direct and Anthropic-direct are the CURRENT
+   selections and examples of that mechanism; Decision 122's naming of them is a selection record.
+   Unchanged: LiteLLM as the sole Layer-1 inference surface (provider-SDK imports forbidden),
+   Bedrock's retirement, the role pair, and the Decision-121 reconciliation.
+2. **Provider VALUES live in the contract, not in prose.** Which provider and model ids fill a role
+   is stated in `docs/contracts/inference-provider.yaml`; changing it needs no amendment. Three
+   limits bound it: (a) no role may be filled by an id in that file's `retired_providers` --
+   restoring one requires a Decision superseding the entry that retired it (122/CD.28 for bedrock,
+   116 for copilot-sdk and gemini_byok); (b) primary and fallback must resolve to DIFFERENT providers
+   -- a same-vendor pair is no escape hatch; (c) a swap changing the vendor or billing shape of
+   EITHER role re-arms Decisions 116's and 164's reversal conditions and owes a dated annotation on
+   both; (d) the PRIMARY role must be `metered_marginal` -- 164's volume argument. Untouched:
+   `provider_defaults.executor_path` and `model_registry.py`'s `_VALID_PROVIDERS` /
+   `_DEFAULT_EXECUTOR_PROVIDER`, the T4.2-owned interim transport set.
+3. **Decision 164's argument is restated as SHAPE claims**, which is what lets it survive a swap:
+   METERED marginal cost versus a FIXED, NON-ROLLOVER ALLOWANCE, and an HTTP transport
+   (runtime-agnostic) versus a CLI transport (needs a CLI-hosting runtime). Neither is a vendor
+   claim, so its conclusion and substrate-collapse obligation both survive. Its condition (c) is
+   re-read onto the PRIMARY role's metered unit price, and Decision 116's onto the fallback role's
+   fixed-allowance contention.
+4. **New rule, conditional on billing shape:** a tier billed as a FIXED, NON-ROLLOVER ALLOWANCE
+   requires a remaining-allowance assertion at cold start; a METERED tier, a credential-liveness
+   probe; a Deferred tier declares `not_applicable` -- state beats shape. This supersedes CD.28's ">10%
+   remaining Anthropic pool" wording, now that rule's fixed-allowance INSTANCE, and makes
+   `billing_shape` a contract field.
+5. **Provider-agnostic is the COMMITMENT; the implementation reaches it at T4.2.**
+   `scripts/llm/client.py` raises `LLMResponseError` for any provider but `gemini` and discards
+   `system_prompt`; no tier routing exists in code until T4.2's LiteLLM transport lands. It moves
+   no traffic and edits no transport. Disclosed per ESB-02
+   (`audits/executor-substrate-and-billing-shape-ad02653.yaml`), where a recorded-but-inoperative
+   control produced a false dismissal downstream.
+
+**Reversal conditions:** each reopens the QUESTION, never the answer; the price and utilization
+ones re-key Decisions 122's and 116's onto role and billing shape.
+
+```yaml reversal-conditions
+decision: 173
+review_by: 2026-11-19
+on_trigger: "re-decide via /plan whether the role model still holds; update or re-arm this stanza"
+conditions:
+  - id: fallback-billing-shape-change
+    kind: manual
+    description: "Fallback-role billing changes between metered and fixed-non-rollover-allowance -> re-derive clause 4's cold-start assertion"
+  - id: primary-unit-price-move
+    kind: manual
+    description: "The primary role's metered unit price moves >5x either way -> re-decide role membership"
+  - id: fixed-allowance-saturation
+    kind: manual
+    description: "A fixed-non-rollover-allowance fallback passes 70% utilization over 30 days, or contends with scheduled-agent draw on the same allowance (Decision 116's, re-keyed)"
+  - id: single-provider-collapse
+    kind: manual
+    description: "Only one provider stays reachable behind LiteLLM, or primary and fallback resolve to one vendor -> re-decide the role model"
+```
+
+**Related:** Decision 122 (amended -- ratification converted to roles), Decision 164 (amended --
+argument restated as shape claims; condition (c) re-read onto the primary role), Decision 116
+(amended -- its shared-allowance condition re-keyed onto the fallback role's billing shape; its
+routing unchanged), Decisions 121, 47 (archived), 86, 127, 133, 167, 84, 55, CD.28, tier_items
+T4.2 and T4.17.
+
+---
+
 ## Decision 172: GitHub's immutable OIDC subject-claim format governs post-rename repositories; trust additively, contract only with live proof (Decided)
 
 ```yaml
@@ -47,6 +435,52 @@ conditions:
 ```
 
 **Related:** Decision 94 (both-sub-forms guard this entry must not weaken), Decision 77 + Decision 92 (gated-apply routing for the IAM trust diff), Decision 55 (forward-fix, never a workaround), Decision 35 (exact-match enumeration principle the no-wildcard constraint rests on), Decision 167 (typed envelope / Significance claim), Decision 133 (reversal-conditions stanza grammar this entry follows).
+
+> **Update (2026-08-25):** Reversal condition `legacy-entries-provably-dead-with-proof` reads
+> discharged in the current tree: `terraform/personal/oidc.tf`'s `local.github_repos` now carries
+> only the immutable numeric-id entry (`benjamin-blake@217728084/theseus@1252427466`); the two
+> legacy name-only entries this stanza's condition names have already been contracted. The stanza
+> above still stands armed (not yet re-decided via `/plan`) -- its `review_by: 2026-11-15` date and
+> open condition list are recorded facts, not stale; routed to the operator to re-arm or close the
+> stanza, not resolved here.
+
+---
+
+## Decision 171: The repository is renamed agent-platform -> theseus and relicensed Apache-2.0 -> BUSL-1.1, forward-only (Decided)
+
+```yaml
+number: 171
+status: Decided
+decided_date: "2026-08-16"
+amends: [101, 127]
+significance:
+  value: numbered_decision
+  justification: An irreversible change to the repository's public identity and outbound licence, with standing consequences for contribution posture, the sanctioned-prose taxonomy, and every trust claim keyed on the repository slug.
+```
+
+**Status:** Decided
+**Date:** 2026-08-16
+**Warehouse ID:** dec-171 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+**Problem:**
+Decision 101 ratified Theseus as the platform's external brand but froze the repository name as an internal identifier "not to be altered without a separate explicit decision", and deferred a paid service offering as separately gated. The repo therefore shipped under a name used nowhere externally, under Apache-2.0 -- a licence permitting unrestricted commercial redistribution of a platform whose engineering IS the product. Both need one explicit decision because they share a blast radius: the slug is embedded in every OIDC trust policy, and the licence flip needs an unambiguous boundary commit a rename must not disturb.
+
+**Decision:**
+1. **Rename `benjamin-blake/agent-platform` -> `benjamin-blake/theseus`, in place.** This promotes ONLY Decision 101 point (b)'s repository-name row into the presentation layer. Every other (b) row is re-affirmed FROZEN -- `agent-platform-*` AWS resource names, the `agent_platform` profile and Glue database, `/agent-platform/*` SSM paths, `project_id = trading-system` -- and the deep internal rename stays deferred post-MVP. In place rather than a fresh repository; that rationale is in `LICENSING.md`.
+2. **Relicense to BUSL-1.1, forward-only.** Every version published up to and including commit `4de9df86e02b7eeccf58df83e74f6061fc1303e2` remains Apache-2.0 irrevocably, preserved verbatim at `LICENSE-APACHE`; no artefact makes a retroactive claim. The boundary, its provenance-scoped self-verifying rule, and why it lives in `LICENSING.md` rather than `NOTICE` (Apache-2.0 4(d) burdens a root NOTICE with a redistribution obligation) are stated there, not restated here.
+3. **Change Date 2030-08-15, Change License Apache-2.0.** The date is the exact four-year anniversary of the flip, rounded DOWN, never up: rounding up would breach BUSL-1.1's own cap, and a published version's Change Date may only ever move EARLIER. Apache-2.0 satisfies BUSL-1.1's GPL-compatibility requirement for the Change License because it is GPLv3-compatible; it is not GPLv2-compatible, and BUSL does not require that.
+4. **The Additional Use Grant restates the non-production baseline AND disclaims exhaustiveness inside the parameter value.** That slot exists to permit LIMITED PRODUCTION use, so a bare enumeration there invites an expressio unius reading that NARROWS the baseline the Terms already grant. The non-limitation sentence sits inside the parameter -- a clause in another section does not qualify a parameter.
+5. **Contribution posture changes, and Decision 101 point (f)'s "secondary aspiration: open-source community" is amended accordingly.** BUSL-1.1 is source-available, NOT OSI open source. Dual licensing rests on sole copyright ownership, which is UNVERIFIED: GitHub's inbound=outbound terms put contributions under the outbound licence, conferring no right to sublicense commercially, and AGENTS.md mandates a `Co-Authored-By` trailer on every commit (54 of the 60 commits visible in this shallow clone carry one). A trailer is a convention, not an assignment. `CONTRIBUTING.md` therefore requires assignment or an equivalently broad grant; a real CLA/DCO mechanism is a follow-on recommendation, and the trailer convention is NOT quietly dropped as a workaround.
+6. **Point (f)'s paid-service gate is discharged for the LICENCE half only.** Dual licensing is authorised; no commercial surface, pricing or terms is built here. `COMMERCIAL-LICENSE.md` is a contact stub at the repo root -- deliberately not `marketing/`, which Decision 101(c) names as the home for commercial PROSE, whereas a licence file belongs where licence files conventionally live.
+7. **Decision 127 point 1 gains a permanent prose class: licence-and-attribution artefacts** (`LICENSING.md`, `CONTRIBUTING.md`, `COMMERCIAL-LICENSE.md`). They enter `prose_allowlist.allowed_globs`, never `grandfathered_globs`, which is ratchet-only and may not grow. Precedent: Decision 101(c)'s scoped `marketing/**` carve-out. `validate_licence_consistency` enforces mutual consistency of the licence artefacts and guards the class-(a) repository-reference / class-(b) AWS-name split the rename turns on.
+
+**Rationale:**
+Decision 111's curated public-portal enumeration goes stale on merge -- three new root portal files land. The invariant is untouched, because licence artefacts are curated projection rather than an operational-data export, so Decision 111's reversal conditions do not fire; the enumeration is simply extended.
+
+**Reversal conditions:**
+Asymmetric by half. The RENAME was reversible by an owner-executed rename-back only while the old-slug OIDC subjects stayed trusted; that window closed with Decision 172's contraction, and a further rename now follows Decision 172 point 2's pre-stage playbook. The LICENCE flip is not reversible for published versions -- a later, more permissive relicense is always available prospectively, but no published BUSL version can be unpublished. Re-decide if: (a) a copyright-provenance audit finds a contribution not covered by an assignment, in which case the dual-licensing posture must be settled BEFORE any commercial licence is sold, not after; or (b) the Additional Use Grant is read as narrowing despite point 4, in which case it reverts to "None" and the Terms stand alone.
+
+**Related:** Decision 101, Decision 111, Decision 127, Decision 128, Decision 167, Decision 172.
 
 ---
 
@@ -159,6 +593,8 @@ significance:
 
 **Related:** Decision 118 (the CD.25 ritual this Decision extends with a fourth class), Decision 86 / Decision 127 (field-semantics-in-contract routing this Decision's own field-semantics home follows), Decision 165 (the shared raise-marker mechanism the ratchet binds to as a sixth consumer), Decision 128 (decompose-by-default -- the `_population.py` split), Decision 104 (the check-registry pattern the evaluator-resolution rule reads). Roadmap refs: audits/contract-first-governance-33c8667.yaml findings CFG-03/CFG-04/CFG-05/CFG-09 (partially addressed; population sweep remains open), tier_item T2.56 (not_started; this Decision closes none of its criteria), rec-3054 (the standing consumer of this Decision's filed drain recommendation).
 
+[Amendment 2026-08-16: clause 3's none_grandfathered half is inoperative -- rec-3059 wave 2 (PLAN-class-d-enforcers-wave-2) converted the last two contracts carrying the grandfather-only evaluator.none_grandfathered kind to resolving evaluators and then retired the kind itself: it is no longer declarable at all. See docs/contracts/contract-population.yaml's retirement_notes.evaluator_none_grandfathered for the live record (what, why, reversal path).]
+
 ---
 
 ## Decision 167: Decision-entry flow governance -- typed metadata envelope, required Significance routing claim, and a WARN-tier per-entry authoring size norm (amends Decision 150 and Decision 160) (Decided)
@@ -181,8 +617,8 @@ significance:
 
 **Decision:**
 1. **Typed metadata envelope.** A new decision entry (absent from the origin/main baseline) carries a fenced ```yaml metadata envelope immediately after its heading (docs/contracts/decision-entry.yaml `metadata_envelope`), read by `scripts/decisions_md.py`'s `parse_decisions_md` in PREFERENCE to the legacy bold-marker/title grammar, which remains the permanent fallback for every entry without one -- additive, never a cutover. `scripts/checks/decisions/validate_decision_entry_conformance.py` enforces well-formedness, the envelope's `number` against its heading, and envelope/bold-marker conflicts on new entries only; a Decision 149 compacted stub is exempt.
-2. **Required Significance routing claim.** The envelope's `significance` field is required on every new entry: a value naming one of `decision-entry.yaml`'s four `significance.routing` tokens, plus a non-empty one-line justification, read from the contract at check time. `operational_fact` and `field_semantics` are REJECTED outright -- both routing rows' own text says the content is "Never a numbered Decision," so claiming either on an entry that is by construction minting one is a contradiction the check catches rather than trusts.
-3. **Per-entry authoring size norm, WARN tier.** A new entry over 6,144 bytes (heading-to-next-heading UTF-8 span) triggers a named WARN from `validate_decisions_size`, never a `--pre` failure -- a DATED pre-commitment, not the accrual-rate lever itself: Decision 160 point 11 named a per-entry norm as the only lever that bends the corpus's growth RATE, and this clause explicitly disclaims that the lever is installed until migration step 3 (destination readiness) flips it to hard-fail.
+2. **Required Significance routing claim.** The envelope's `significance` field is required on every new entry: a value naming one of `decision-entry.yaml`'s `significance.routing` tokens, plus a non-empty one-line justification, read from the contract at check time. `operational_fact` and `field_semantics` are REJECTED outright -- both routing rows' own text says the content is "Never a numbered Decision," so claiming either on an entry that is by construction minting one is a contradiction the check catches rather than trusts. The current routing-token roster is maintained at `decision-entry.yaml`'s `significance.routing`, not restated here.
+3. **Per-entry authoring size norm.** A new entry over 6,144 bytes (heading-to-next-heading UTF-8 span) fails `validate_decisions_size` in the `--pre` tier -- Decision 160 point 11 named a per-entry norm as the only lever that bends the corpus's growth RATE, and this clause installs it.
 4. **Routing rule and standing commitment homed in the contract.** The three-question routing rule (durable commitment? reversal-relevant? unclaimed by another row?) and its standing-commitment clause live in `decision-entry.yaml`'s `significance.routing_rule` / `significance.standing_commitment` keys, machine-checkable rather than asserted only in this prose.
 
 **Reversal conditions:** (a) more than 2 of the first 10 new entries authored under the 6,144-byte cap cannot fit their ruling/rationale/reversal content without losing DECISION substance -- retune the cap value or abort the norm, never raise it silently to fit a single entry; (b) two or more entries land in the SAME PR specifically to evade the per-entry cap (split-then-recombine) -- close the loophole at the check, not by raising the cap; (c) T1.5's portal cutover retires the flow this envelope feeds -- these obligations retire with it; (d) migration step 3 never lands and the cap stays WARN-tier indefinitely -- re-audit whether the lever does any work at WARN tier alone. Per Decision 166 point 6 / Decision 145's own precedent: the response to cap pressure is compaction or trimming Related pointer blocks, never a raise to fit.
@@ -190,6 +626,27 @@ significance:
 **Rationale:** The envelope and the Significance claim are the same shape decision-scout already reads machine-readably for triage (category_tags, triage_excerpt) -- extending that machine-readability to the routing claim itself closes the "self-certified with no record" gap CFG-03 named. The WARN-tier cap is staged behind a destination-readiness gate (migration step 3) so the pressure is felt before the lever is armed to fail builds -- the audit's own sequencing warning against pressure before a landing spot exists for it.
 
 **Significance:** clears the Decision 150 significance bar -- a durable architectural commitment (a typed envelope grammar, an enforced Significance routing claim, and a dated WARN-tier size norm, each backed by a `--pre`-registered check) with reversal-relevant consequences; not a CD state-flip, operational fact, or field-semantics change (field shapes and the exact byte value live in `docs/contracts/decision-entry.yaml`, not restated here).
+
+> **Update (2026-08-17):** The f2 routing-consistency lint proposed by
+> audits/contract-first-governance-33c8667.yaml's amendment is REJECTED, not built. Four
+> independent consults found it malformed on construct-validity grounds -- proxy P1 duplicates
+> the already-armed per-entry size cap (clause 3) and adds no discriminating signal beyond it;
+> proxy P2 is anti-directional, since Decision 168 already rewards a `docs/contracts/` reference
+> and the window's top P2 scorer is already correctly classified -- and on Goodhart grounds:
+> proxy P3 would reward an agent author for trimming legitimate enforcement references to clear
+> the warning, degrading the very traceability Decision 168 protects. The deterministic subset
+> already deployed by clauses 1-4 above (the envelope, the required routing claim, and the
+> per-entry size norm) is the permanent control; no lint is added alongside it.
+
+```yaml reversal-conditions
+decision: 167
+review_by: 2026-11-17
+on_trigger: "re-decide via /plan whether the deterministic subset still suffices or the f2 routing-consistency lint should be reconsidered; update or re-arm this stanza"
+conditions:
+  - id: mis-routed-past-both-gates
+    kind: manual
+    description: "A post-167 entry is demonstrated mis-routed past BOTH the decision-entry conformance check and the plan-critique category-consistency verdict (.claude/skills/plan-critique/SKILL.md section 12p) -> the deterministic-subset-only control proved insufficient; re-open the routing-consistency-lint question with the new failure instance as evidence."
+```
 
 **Related:** Decision 150 (the Significance bar enforced machine-readably), Decision 160 (point 11's accrual-rate lever, installed here at WARN tier only), Decision 134 (the two stock size ceilings this norm sits alongside), Decision 145 (the never-raise-to-fit precedent), Decision 149 (the compacted-stub exemption), Decision 84 (warehouse-safety boundary keeping `significance` index-only), Decision 153 (the shared, memoized baseline read). Roadmap refs: audits/contract-first-governance-33c8667.yaml findings CFG-01/CFG-03/CFG-07 (closed), rec-2934 (resolved by `per_entry_size_norm`), tier_item T2.56 (eventual owner of this corpus's shape; closes none of its criteria here).
 
@@ -227,9 +684,9 @@ significance:
 6. **`config/agent/verification_registry/registry.yaml` is seeded at a CALIBRATED 6,000-effective-line CEILING, not a grandfather at its current measured size (3,987 effective lines at landing, including this Decision's own 12 graduation rows).** Measured growth: 22 commits in 60 days, every one append-only with zero deletions, 66-167 lines each, roughly 1,200 lines/month -- because every graduating `/implement` plan appends to it, including this one. A 500-line cap grandfathered at current size would fail the very next graduating plan, and "each append is a reviewable cited raise" is false: `scripts.checks._marker_guard.authorization_failure` matches the entry KEY, never its VALUE, so one marker permanently authorizes every future bump of that entry -- Decision 128's own Problem statement reproduced in YAML form. The 6,000 ceiling buys roughly 1.7 months of runway at the landed size. **Pre-commitment:** when the 6,000 ceiling fires, the response is the CD.29 mark-then-drop archival lifecycle (a recommendation for which is filed by the same implementing session as this Decision), NEVER a second raise -- mirroring Decision 145's own warning that a second stopgap raise signals the structural fix is overdue, not a routine act to repeat. This is the audit's own prescribed relief valve for this class (`class_verdicts.config.relief_valve`: "archive/retire entries per lifecycle (valves 4/5); compact resolved rows; loud cited raise; decompose only where cohesion permits"), not an exception to the rule this same Decision installs -- decomposing this specific file into a facade is explicitly Python-specific machinery (the audit's Q4 sound-needs-generalization finding) and does not transfer to a YAML append-only registry.
 7. **Amendment: Decision 130 clause 1's `terraform` entry in `_SLOC_EXCLUDE_DIRS` was an `iter_gated_py_files` PYTHON-SCAN ARTIFACT, not a structural-axis exemption.** It excluded Python source files located under `terraform/`, never `.tf` files themselves -- absence of coverage was absence of scanning, not a recorded exemption (the audit's READ FIRST 3, confirmed). This structural-size class engine is the first gate to ever scan `.tf` files.
 8. **Amendment: Decision 43's declared "all repository code, prompts, and agents" scope is now implemented for the non-Python hand-authored structured-file population this engine covers** (terraform, config, contracts, ci_workflows, shell, lambda_manifests, roadmaps, data_query, residual). Markdown remains wholly out of scope (a future markdown decision inherits this taxonomy's shape, not its unit, per the audit's draft clause 9).
-9. **Amendment: Decision 160 point 9's committed `docs/decisions-index.json` byte pin is reassessed, exactly as that point invited** ("A future owner should reassess whether this indirect bound remains adequate as the corpus grows past the header ceiling's current runway"). This Decision's own installing PR is the acute instance: the prior 110,000-byte pin had only 236 bytes of headroom before this entry existed and is mathematically exhausted -- verified, not assumed (a maximally-terse version of this very entry, title and Problem section both compressed far below the 320-character triage-excerpt cap, still regenerated the index to 110,151 bytes). `tests/test_decisions_index.py`'s pin is RE-DERIVED (not bumped on faith) to 131,000 bytes: a live term (120-row `live_max_h2_headers` ceiling x 764 measured bytes/row, indent=2 pretty-printed) plus an archive term (54 rows -- twice the current 27-row archive population, a multi-quarter buffer -- x 726 measured bytes/row), full arithmetic recorded in the test module itself. Precedent: Decisions 159 and 160 both landed in this identical acute shape -- an entry whose own landing would fail the gate it is part of -- by shipping the governing entry and the guard change in the same PR; this Decision does the same. `docs/decisions-index.json` is recorded here as a T1.5-INTERIM surface: Decision 160 point 13 already names it so ("This arrangement is INTERIM, not the T1.5 portal cutover"), and T1.5 c1 -- per that item's own exit criteria, "T1.5 c1 owns swapping its bounded index-plus-targeted-reads mechanism for a queried tool call" -- is the single owner of retiring decision-scout's Phase 1 index read once the DuckLake ops-decisions portal cutover lands; T1.5 itself is STRATEGIC and CD.17-frozen (AGENTS.md Temporary Operational Constraints), so this re-derived pin is not a permanent fixture but persists at least that long. The archive term's structural fix -- skeleton rows for `live: false` entries, dropping the `triage_excerpt`/`category_tags` fields decision-scout never reads for archived rows -- is deferred to rec-3012 (filed alongside this Decision), not built here: the human explicitly chose the minimal scope extension (this test file only) over also thinning the generator in the same PR, to limit new surface on this keystone slice. NOTED, not relieved by this point: the 120-header `live_max_h2_headers` ceiling itself (Decision 134 clause 2) measures 119/120 live headers at this entry's landing -- binding within ONE more live entry, not two, regardless of this byte-pin re-derivation; only an operator-disposed archival wave under Decision 146 relieves it, and queuing one is out of this Decision's scope.
+9. **Amendment: Decision 160 point 9's committed `docs/decisions-index.json` byte pin is reassessed, exactly as that point invited** ("A future owner should reassess whether this indirect bound remains adequate as the corpus grows past the header ceiling's current runway"). This Decision's own installing PR is the acute instance: the prior pin had negligible headroom before this entry existed and was mathematically exhausted -- verified, not assumed. `tests/test_decisions_index.py`'s pin is RE-DERIVED (not bumped on faith); the full arithmetic and current value are maintained at that test module and at `docs/contracts/decision-entry.yaml`'s `size_governance.index_max_bytes`, not restated here. Precedent: Decisions 159 and 160 both landed in this identical acute shape -- an entry whose own landing would fail the gate it is part of -- by shipping the governing entry and the guard change in the same PR; this Decision does the same. `docs/decisions-index.json` is recorded here as a T1.5-INTERIM surface: Decision 160 point 13 already names it so ("This arrangement is INTERIM, not the T1.5 portal cutover"), and T1.5 c1 -- per that item's own exit criteria, "T1.5 c1 owns swapping its bounded index-plus-targeted-reads mechanism for a queried tool call" -- is the single owner of retiring decision-scout's Phase 1 index read once the DuckLake ops-decisions portal cutover lands; T1.5 itself is STRATEGIC and CD.17-frozen (AGENTS.md Temporary Operational Constraints), so this re-derived pin is not a permanent fixture but persists at least that long. The archive term's structural fix -- skeleton rows for `live: false` entries, dropping the `triage_excerpt`/`category_tags` fields decision-scout never reads for archived rows -- was deferred to rec-3012 (filed alongside this Decision) rather than built here, to limit new surface on this keystone slice. NOTED, not relieved by this point: the 120-header `live_max_h2_headers` ceiling itself (Decision 134 clause 2) measures 119/120 live headers at this entry's landing -- binding within ONE more live entry, not two, regardless of this byte-pin re-derivation; only an operator-disposed archival wave under Decision 146 relieves it, and queuing one is out of this Decision's scope.
 
-**Reversal conditions:** (a) the engine false-positives against a genuinely-conformant shape more than once per class-year -- fix the classifier or the class row, never widen the marker escape; (b) a measured fast-tier budget breach attributes materially to the census walk -- move the engine full-tier-only (the raise-guard stays fast-tier); (c) a class row's recorded `actual_purpose` loses its referent (its consumer is rebuilt or retired) -- retire that ROW, Decision-160 style; the engine survives its classes; (d) the grandfather roster shows net growth over any 90-day window -- re-audit the gate design rather than raising budgets; (e) the assumed NS-A harm (lower-tier mis-edits scaling with file size) is ever OBSERVED in a governed non-Python class -- revisit the audit's Q6 calm sequencing toward active drain waves; (f) a second raise fires on `config/agent/verification_registry/registry.yaml` past its 6,000-line ceiling -- this re-audits the registry's design (its grain, its retirement discipline, whether CD.29 needs to be exercised sooner) rather than renewing the ceiling a second time; (g) point 9's re-derived 131,000-byte `docs/decisions-index.json` pin is itself approached again -- the correct response is landing rec-3012 (archive-row skeletonization) first, never a third bump on faith, unless T1.5 c1 has by then retired the surface entirely.
+**Reversal conditions:** (a) the engine false-positives against a genuinely-conformant shape more than once per class-year -- fix the classifier or the class row, never widen the marker escape; (b) a measured fast-tier budget breach attributes materially to the census walk -- move the engine full-tier-only (the raise-guard stays fast-tier); (c) a class row's recorded `actual_purpose` loses its referent (its consumer is rebuilt or retired) -- retire that ROW, Decision-160 style; the engine survives its classes; (d) the grandfather roster shows net growth over any 90-day window -- re-audit the gate design rather than raising budgets; (e) the assumed NS-A harm (lower-tier mis-edits scaling with file size) is ever OBSERVED in a governed non-Python class -- revisit the audit's Q6 calm sequencing toward active drain waves; (f) a second raise fires on `config/agent/verification_registry/registry.yaml` past its 6,000-line ceiling -- this re-audits the registry's design (its grain, its retirement discipline, whether CD.29 needs to be exercised sooner) rather than renewing the ceiling a second time; (g) point 9's re-derived `docs/decisions-index.json` pin (current value at `tests/test_decisions_index.py`) is itself approached again -- the correct response is landing rec-3012 (archive-row skeletonization) first, never a third bump on faith, unless T1.5 c1 has by then retired the surface entirely.
 
 **Rationale:** The ratchet family (registry, implicit default, one-directional movement, marker-gated raises, bounded grandfathers) is sound and portable -- proven end to end by rec-2709 draining Decision 130's own 24-file `tests/` grandfather to a single marked survivor -- and Python-specific exactly where the relief valves live: this repository already runs six distinct relief valves, and each class here is assigned its honest one (decompose for terraform's native multi-file roots; archival lifecycle for the verification registry; rotation for tracked jsonl journals) rather than inheriting decompose-into-a-facade uniformly. One parameterized engine, not per-class replication, because the raise-marker guard was already quintuplicated across five incumbent gates before Decision 165 consolidated it (SGE-07) -- a sixth copy here would have reproduced exactly the defect that consolidation closed. Exemptions key on provenance and production pattern, never on which model reads a file, because the workflow_outputs exemption (82 percent of the audit's affected population) rests on a traced edit pattern -- narrow field flips, never whole-file comprehension -- not on a claim about model capability.
 
@@ -240,6 +697,8 @@ code-review round 1 LOW finding: `_classify.py` fails open if the residual class
 removed), rec-3021 (open -- code-review round 1 LOW finding: `_marker_guard.py`'s pre-existing
 "origin/main unreachable" message is misleading for a brand-new registry's own installing PR),
 T1.5 (the STRATEGIC, CD.17-frozen portal cutover that eventually retires `docs/decisions-index.json` entirely, named in point 9 as the surface's actual successor).
+
+[Amendment 2026-08-24: Decision 176 supersedes point 6's CD.29 archival pre-commitment and reversal condition (f)'s response for `config/agent/verification_registry/registry.yaml` -- the file is re-grained to one record per file under `entries/<check_id>.yaml` and its calibrated 6,000-effective-line / 2,315-character ceiling is retired outright (no replacement roster entry). Both `budgets:`/`long_line_budgets:` roster entries this point seeded are removed from `config/structural_size_budgets.yaml`. See Decision 176 for the full path selection and rationale.]
 
 ---
 
@@ -348,6 +807,17 @@ cited-as-given premise into a conscious, reversal-conditioned choice). CD.27 lay
 reopen would collapse), CD.28 (ratified as Decision 122), tier_items T4.2 and T4.12 (the executor and
 scheduled sides of the split).
 
+[Amendment 2026-08-19: Decision 173 restates this entry's rationale as SHAPE claims -- metered
+marginal cost versus a fixed, non-rollover allowance, and an HTTP transport (runtime-agnostic)
+versus a CLI transport (needs a CLI-hosting runtime) -- so the argument and its substrate-collapse
+pricing obligation survive a change of which provider fills either tier. The DeepSeek/Anthropic
+naming above is the then-current selection, not the premise. Two reversal conditions are re-read
+accordingly: (c)'s "DeepSeek-direct unit pricing" is read as the PRIMARY role's metered unit price,
+and (a)'s shared-Max-pool contention as contention on the FALLBACK role's fixed-non-rollover
+allowance. The conclusion -- personas route to the LiteLLM tiers rather than claude -p -- and the
+reopen-pricing obligation are unchanged. A swap changing the vendor or billing shape under either
+re-keyed condition re-arms it and owes a further dated annotation here.]
+
 ---
 
 ## Decision 163: A universal, exceptionless obligation is enforced structurally, not gated -- the pre-handoff full-tier run is now a checked verification-plan step, not declared metadata alone (Decided)
@@ -400,9 +870,29 @@ The fast (`--pre`) tier's diff-scoped design (Decision 73) is deliberately narro
 rec-2923: `write-convergence-record`'s always-run status writer accepted an EMPTY reviewer outcome as if it meant "not starved," latching a false platform-halting red for a run in which terraform apply never executed. The producer half was already fixed by PR #812 (commit 0726593) -- `review.sh` clears the inherited composite-step errexit and pre-writes a fail-closed `outcome=starved` before any fallible command -- but that fix addressed one symptom of a defect CLASS that remains structurally reproducible anywhere else in this repo's `.github/actions/`: CI-embedded shell whose control flow can silently not run (inherited errexit aborting a body mid-assignment), leaving a step output undefined for a downstream consumer to misread as a legitimate value. Two of the three actions that bind a step output to a consumed `outputs.<id>.value` today -- `deterministic-guard` and `fetch-saved-plan` -- still carry inline, non-delegated bash bodies producing exactly such outputs; only `subagent-plan-review` (post-#812) is a thin, testable adapter. Nothing prevented a fourth such action, or a regression of the third, from reintroducing rec-2923's shape unnoticed.
 
 **Decision:**
-1. **R1 -- thin adapter required for output-producing bodies.** Any composite `shell: bash`/`sh` step body that PRODUCES a consumed `outputs.<id>.value` binding must delegate to a `.sh` script under the action directory (a shell invocation of that script plus, at most, an `if`/`then`/`exit`/`fi` control-flow wrapper -- no other computation). `scripts/checks/ci_guards/validate_composite_action_shell_bodies.py` enforces this in both presubmit tiers, filesystem-only (no network, no subprocess -- Decision 153 fast-tier budget). The rule has **no marker escape, ever**, on either axis. MEMBERSHIP: `deterministic-guard` and `fetch-saved-plan` are pinned as known, pre-existing instances of the rec-2923 class in `config/composite_action_body_baseline.yaml`'s `r1:` section, cross-checked against a frozen constant in the guard module itself -- a config-file edit alone can never admit a third violator; growing the set requires editing the guard's own source in a reviewed change. SIZE: each pinned entry's declared line count is an enforced ceiling, so a pinned body that grows FAILS, and no `# raise-approved:` marker rescues it (that escape is R3-only). The section is strictly shrinking on both axes: extract or reduce, never grow.
+1. **R1 -- thin adapter required for output-producing bodies.** Any composite `shell: bash`/`sh`
+   step body that PRODUCES a consumed `outputs.<id>.value` binding must delegate to a `.sh` script
+   under the action directory. `scripts/checks/ci_guards/validate_composite_action_shell_bodies.py`
+   enforces this in both presubmit tiers, filesystem-only (no network, no subprocess -- Decision 153
+   fast-tier budget). The rule has **no marker escape, ever**, on either axis. MEMBERSHIP:
+   `deterministic-guard` and `fetch-saved-plan` are pinned as known, pre-existing instances of the
+   rec-2923 class, cross-checked against a frozen constant in the guard module itself -- a
+   config-file edit alone can never admit a third violator; growing the set requires editing the
+   guard's own source in a reviewed change. The exact delegate-shape grammar, the pinned baseline,
+   and its per-entry size ceilings are maintained at `docs/contracts/composite-action-shape.yaml`,
+   not restated here.
 2. **R2 -- literal-argv test coverage for every R1-conformant delegate.** Each script an output-producing step delegates to must be driven by a test under the LITERAL GitHub composite-step invocation, `bash --noprofile --norc -e -o pipefail <script>` -- the exact argv whose inherited errexit was rec-2923's root cause. A script never exercised under that literal argv has never had its errexit-inheritance behaviour actually proven; a convenience `bash script.sh` invocation would silently drop the `-e` that is the whole point (the pattern `tests/test_subagent_review_wiring.py` and the new `tests/test_convergence_review_outcome_contract.py` both establish).
-3. **R3 -- ratcheted line-count ceiling on every other inline body.** Every remaining inline `shell: bash`/`sh` body (non-output-producing, or an output-producing body that already fails R1) is measured by effective (non-blank, non-comment) line count against `config/composite_action_body_baseline.yaml`'s `r3:` section. A live body exceeding its declared ceiling fails UNLESS the baseline entry carries an inline `# raise-approved: dec-NNN <reason>` marker (Decision 128's grammar, reused verbatim) naming a real `## Decision N:` header -- scoped to R3 only. The `r3:` baseline is seeded at the state this Decision's carrying plan (PLAN-ci-rca-starved-surface) leaves the repo in: a ONE-TIME grandfather in the sense of Decision 130 clause 2, explicitly not a precedent, so the PR installing the ratchet is not punished by its own rule. Touch-it-fix-it binds from the next edit onward.
+3. **R3 -- ratcheted line-count ceiling on every other inline body.** Every remaining inline
+   `shell: bash`/`sh` body (non-output-producing, or an output-producing body that already fails R1)
+   is measured by effective (non-blank, non-comment) line count against a checked-in baseline. A
+   live body exceeding its declared ceiling fails UNLESS the baseline entry carries an inline
+   `# raise-approved: dec-NNN <reason>` marker (Decision 128's grammar, reused verbatim) naming a
+   real `## Decision N:` header -- scoped to R3 only. The baseline was seeded at the state this
+   Decision's carrying plan (PLAN-ci-rca-starved-surface) left the repo in: a ONE-TIME grandfather
+   in the sense of Decision 130 clause 2, explicitly not a precedent, so the PR installing the
+   ratchet is not punished by its own rule. Touch-it-fix-it binds from the next edit onward. The
+   exact surfaces R3 measures, their section keys, and the current baseline are maintained at
+   `docs/contracts/composite-action-shape.yaml`, not restated here.
 4. **The strict consumer, as the concrete R1 instance closing rec-2923 itself.** `write-convergence-record/assert_review_outcome.sh` enforces the two-sided contract this Decision's rule R1 exists to generalise: when a review step ran (`REVIEW_STEP_OUTCOME` is `success`/`failure`), `REVIEW_OUTCOME` must be exactly one of `proceed`/`revise`/`starved` -- empty or unrecognised fails loudly, BEFORE any S3 write, exactly the rec-2923 counterfactual. When no review step ran, `REVIEW_OUTCOME` must be empty. It sits AFTER all five pre-existing skip/marker branches (refused/still-actionable/routed/pre-apply-failure/STARVED) and immediately before the green/red write, so a genuine STARVED episode is never hard-failed by a future contract bug, and the placement is invoked via an explicit `if ! bash "..."; then exit 1; fi` rather than a bare call relying on ambient errexit.
 
 **Rationale:**
@@ -528,14 +1018,14 @@ raise, is the sanctioned response.
 7. **Decision 152 gate (ii) widened; Decision 152's mandated revisit performed.** The SPIRIT lane's
    verbatim-quotability requirement (Decision 152 gate (ii)) now admits a quote of the entry's
    Decision-marker clause -- a REQUIRED marker per `docs/contracts/decision-entry.yaml` -- in addition to
-   the existing Intent-marker and a specific Problem/Rationale sentence. This widening is what
-   takes `triage_excerpt` coverage from 115 to 135 of 139 entries (measured at authoring time). It also
-   performs the revisit Decision 152's own reversal conditions mandated once the whole-file-read
-   inefficiency is removed: "make the SPIRIT axis leaner and query-driven rather than prose-budget-funded."
-   The freed whole-file-read prose in `.claude/skills/decision-scout/SKILL.md` funds the new bounded
-   protocol text in place; the skill's `config/prose_budgets.yaml` S4 entry is ratcheted DOWN (11379 ->
-   11325 bytes, measured) and its `# raise-approved: dec-152` marker is REMOVED (a decrease needs no
-   marker) -- the raise Decision 152 point 3 authorized is retired along with the text it funded.
+   the existing Intent-marker and a specific Problem/Rationale sentence, materially widening
+   `triage_excerpt` coverage. It also performs the revisit Decision 152's own reversal conditions
+   mandated once the whole-file-read inefficiency is removed: "make the SPIRIT axis leaner and
+   query-driven rather than prose-budget-funded." The freed whole-file-read prose in
+   `.claude/skills/decision-scout/SKILL.md` funds the new bounded protocol text in place; the skill's
+   `config/prose_budgets.yaml` S4 entry is ratcheted DOWN and its `# raise-approved: dec-152` marker is
+   REMOVED (a decrease needs no marker) -- the raise Decision 152 point 3 authorized is retired along
+   with the text it funded.
 
 8. **Residual, stated not hidden.** A small terse-historical band -- live Decisions 63, 64, 65, and 67
    (the pre-Decision-77 band already carried in the DAF-01 fidelity baseline) -- carries no quotable
@@ -549,11 +1039,8 @@ raise, is the sanctioned response.
    `/plan` surface (decision-scout's Phase 1 step 1). It carries NO byte guard of its own -- it is bounded
    only INDIRECTLY, by the 120-header live ceiling (point 4, since the index's live-row count tracks the
    live header count 1:1) and by this plan's own acceptance-criterion pin (the committed projection must
-   stay <= 110,000 bytes; measured 105,609 bytes, ~20.4% of the live file, at this entry's FINAL
-   measured state -- the point 7/14 `category_tags` addition grew the projection after an earlier
-   draft of this point recorded a smaller pre-category_tags figure; this is the corrected number). A future
-   owner should reassess whether this indirect bound remains adequate as the corpus grows past the
-   header ceiling's current runway (point 11).
+   stay <= 110,000 bytes). A future owner should reassess whether this indirect bound remains adequate as
+   the corpus grows past the header ceiling's current runway (point 11).
 
 10. **Decision 151 backstop consequence.** Decision 151 clause 3(v) left its Intent-marker accretion cap
     convention-only, "backstopped by the existing 500,000-byte live-file ceiling and ordinary PR review."
@@ -562,25 +1049,16 @@ raise, is the sanctioned response.
     introduced here. If Intent-marker accretion becomes material on its own, it remains visible the same
     way any other accretion is -- via the combined ceiling and the dated runway below.
 
-11. **The dated runway -- days, not months, and a named owner.** At this plan's own measured inflow rate
-    (294 KB and 56 entries/month) and MEASURED including THIS entry as committed: live headers are 113 /
-    120 (headroom 7 headers, ~4 days of runway at ~1.87 headers/day); live+archive combined bytes are
-    625,905 / 700,000 (headroom 74,095 bytes, ~8 days of runway at ~9,800 bytes/day -- this entry landed
-    larger than the plan's own ~12 KB pre-authoring estimate, which is why the combined figure is ~8 days
-    rather than the plan's earlier ~8-9 day forecast; the header figure is unaffected since one entry is
-    always +1 header regardless of its byte size). The HEADER ceiling is the FIRST binding constraint, the
-    COMBINED ceiling second. "Nothing goes unguarded" is true; "nothing is urgent" is NOT. OWNER: the
-    deferred per-entry authoring size norm (rec filed by this plan, point 12) is the only lever that bends
-    the accrual RATE; until it lands, the runway above is the honest, disclosed cost of deferring it, not
-    an oversight -- and THIS entry's own above-estimate size is itself a live illustration of why the norm
-    is needed.
+11. **The dated runway -- days, not months, and a named owner.** At this plan's authoring-time measured
+    inflow rate, both surviving ceilings (point 4) carried only a few days of runway, not months --
+    "nothing goes unguarded" is true; "nothing is urgent" is NOT. OWNER: the deferred per-entry
+    authoring size norm (rec filed by this plan, point 12) is the only lever that bends the accrual
+    RATE; until it lands, the runway is the honest, disclosed cost of deferring it, not an oversight.
 
-12. **Follow-on recommendations filed, by substitution not deletion.** rec-2783 ("watch docs/DECISIONS.md
-    headroom against the Decision 145 500,000-byte ceiling") named a ceiling this Decision retires, so it
-    is superseded rather than left stale: a new successor-watch recommendation (naming the surviving
-    120-header and 700,000-combined-byte ceilings this Decision retains) is filed by this plan and named
-    as rec-2783's resolution when it is closed. A second new recommendation for the deferred per-entry
-    authoring size norm (point 11's named owner) is also filed by this plan.
+12. **Follow-on recommendations filed, by substitution not deletion.** rec-2783 (watching the ceiling
+    this Decision retires) is superseded rather than left stale by a new successor-watch recommendation
+    naming the surviving ceilings (point 4); a second new recommendation carries point 11's deferred
+    per-entry authoring size norm forward.
 
 13. **This arrangement is INTERIM, not the T1.5 portal cutover.** Decision 134 clause 5 designates the
     end state as a portal/warehouse read; T1.5 c1 still owns replacing decision-scout's Phase 1 step 1 (the
@@ -590,42 +1068,30 @@ raise, is the sanctioned response.
     UNCHANGED and stays the stable interface across that future swap.
 
 14. **Recall measurement and the `category_tags` fix (VP step 9), FINAL measured state.** Live
-    decision-scout dispatches -- whole-file baseline vs bounded protocol, same two probe briefs
-    (a Neon-Postgres pg_dump-backup-Lambda proposal; a DECISIONS.md-topic-registry-split proposal)
-    -- measured a REAL recall regression in the first cut of the bounded index-pass triage: a
-    decision that governs by ARTIFACT TYPE (e.g. any new Lambda touches the Lambda-packaging/
-    deploy-channel decisions regardless of what it does) rather than shared vocabulary was being
-    silently discarded as IRRELEVANT before ever reaching a targeted read -- round 1 lost 5 of 6
-    CITE entries on the pg_dump probe alone. Two rounds of SKILL.md prose-only tightening each
-    recovered some entries and left others (e.g. Decision 126's title says "deployment model", not
-    "deploy", so a prose rule enumerating only "Lambda/Terraform/IAM/Secrets Manager" nouns missed
-    it even though the scout followed the rule as written) -- a per-entry LLM judgment call over
-    ~113 live entries in one context is inherently unreliable. A Fable advice-consult diagnosed the
-    residual as a prompt-level instruction-following ceiling, not a further-fixable prose problem,
-    and recommended converting the shortlist from an LLM judgment call into a mechanical lookup:
-    `scripts/decisions_index.py` derives a deterministic `category_tags` list per entry (regex
-    classes over title + `triage_excerpt` only, never the full body -- eight classes including
-    lambda/terraform/iam/deploy/egress and credential-handling, each verified under ~17% of live
-    entries so the shortlist stays materially smaller than the corpus), and
-    `.claude/skills/decision-scout/SKILL.md` Phase 2 step 3 shortlists by tag-set intersection
-    FIRST, before any judgment-based triage. Round 4 (post-fix) measured: pg_dump probe, 5 of 6
-    baseline CITE entries now match EXACTLY (including Decision 126, the round 1-3 holdout), one
-    (Decision 157) found but bucketed RELATED instead of CITE; topic_registries probe, 2 of 4 match
-    exactly, one (Decision 149) found but bucketed CONTRADICT instead of CITE, one (Decision 105 --
-    carries no category_tags match, a pure judgment-lane entry) genuinely absent, present in round
-    3's dispatch on the identical probe but not round 4's. `category_tags` closed every FULLY-MISSED
-    artifact-type entry measured across all four rounds. The residual that remains -- 3 of 10 total
-    baseline CITE entries across both probes, ALL either found-but-reclassified (157, 149) or a
-    single non-tagged entry with round-to-round presence variance (105) -- is judged, per the Fable
-    consult, to be ordinary inter-run LLM judgment noise on entries `category_tags` cannot reach by
-    construction (no artifact-type signal to key on), the same class of variance two whole-file
-    baseline runs would likely also show against each other. This is the disclosed, HONEST COST of
-    bounded retrieval per this plan's own self-attestation framing (AC5): not zero, materially
-    better than any of rounds 1-3, and not further closable by index enrichment without a
-    structurally different mechanism (e.g. a full warehouse/portal read -- T1.5's eventual scope,
-    point 13). `category_tags` is generator-internal and revisable without Decision ceremony -- a
-    retrieval aid, not a governance taxonomy; the tag vocabulary may grow as new artifact classes
-    accrue decisions, without amending this entry.
+    decision-scout dispatches against real probe briefs measured a REAL recall regression in the
+    first cut of the bounded index-pass triage: a decision that governs by ARTIFACT TYPE (e.g. any
+    new Lambda touches the Lambda-packaging/deploy-channel decisions regardless of what it does)
+    rather than shared vocabulary was being silently discarded as IRRELEVANT before ever reaching a
+    targeted read. Prose-only SKILL.md tightening recovered some entries but not others -- a
+    per-entry LLM judgment call over the whole live corpus in one context is inherently unreliable.
+    A Fable advice-consult diagnosed the residual as a prompt-level instruction-following ceiling,
+    not a further-fixable prose problem, and recommended converting the shortlist from an LLM
+    judgment call into a mechanical lookup: `scripts/decisions_index.py` derives a deterministic
+    `category_tags` list per entry (regex classes over title + `triage_excerpt` only, never the
+    full body -- eight classes including lambda/terraform/iam/deploy/egress and
+    credential-handling), and `.claude/skills/decision-scout/SKILL.md` Phase 2 step 3 shortlists by
+    tag-set intersection FIRST, before any judgment-based triage. `category_tags` closed every
+    FULLY-MISSED artifact-type entry measured across all rounds; a small residual of
+    found-but-reclassified or non-tagged entries remained, judged by the Fable consult to be
+    ordinary inter-run LLM judgment noise on entries `category_tags` cannot reach by construction
+    (no artifact-type signal to key on) -- the same class of variance two whole-file baseline runs
+    would likely also show against each other. This is the disclosed, HONEST COST of bounded
+    retrieval per this plan's own self-attestation framing (AC5): not zero, materially better than
+    the pre-fix baseline, and not further closable by index enrichment without a structurally
+    different mechanism (e.g. a full warehouse/portal read -- T1.5's eventual scope, point 13).
+    `category_tags` is generator-internal and revisable without Decision ceremony -- a retrieval
+    aid, not a governance taxonomy; the tag vocabulary may grow as new artifact classes accrue
+    decisions, without amending this entry.
 
 **Reversal conditions:** Revisit if the header ceiling (120) or the combined ceiling (700,000) is
 breached before the per-entry authoring size norm (point 11's named owner) lands -- a breach at that
@@ -697,6 +1163,18 @@ after 3 rounds with all blocking items applied. Roadmap/queue refs (not DECISION
 > (`validate_coverage_baseline_edits`) now delegates to the shared `scripts/checks/_marker_guard.py`
 > authorization mechanism, upgrading its marker check from existence to authorization. This body
 > is otherwise unedited; see Decision 165 for the full derivation.
+
+> **Amendment (2026-08-18, PLAN-root-scoped-diff-base / rec-3166, forward reference -- mints no new
+> Decision number):** clause 1's `push_context_base()` gains an optional `root: Path | None = None`
+> parameter, threaded through `get_changed_files()` and `get_status_aware_diff()` as well -- every
+> git probe and path-existence filter inside all three now runs against `root` (defaulting to
+> `_common.ROOT` when omitted, so this widening is contract-unchanged for every existing caller,
+> per Decision 135 pt 3). The `GITHUB_EVENT_NAME` / `GITHUB_EVENT_BEFORE` env signal stays
+> job-global regardless of `root` -- only the git probes and existence filters became root-scoped.
+> This closes rec-3166: a check evaluating an injected root (e.g. a fixture repository in a test)
+> had a `root` seam with no paired `base` seam, so in push context it silently read the REAL
+> repository's push-context base instead of the injected one. This body is otherwise unedited; see
+> PLAN-root-scoped-diff-base for the full derivation.
 
 **Problem:** `get_status_aware_diff()` and `test_coverage_checker.get_changed_source_files()` resolve their base via `merge-base(origin/main, HEAD)`, which equals HEAD on a clean post-merge main checkout; `get_changed_files()` diffs `origin/main` directly, also HEAD on main. Same result either way: every diff-aware full-tier check silently no-ops post-merge. A MEASUREMENT CORRECTION (Decision 82 framing), not a relaxation.
 
@@ -883,25 +1361,24 @@ Reversal conditions below).
 
 **Decision:**
 1. **SPIRIT bucket + four gates.** `.claude/skills/decision-scout/SKILL.md` gains a Phase-2
-   spirit-alignment overlay step defining a SPIRIT bucket that fires ONLY when all four hold: (i) no
-   literal CONTRADICT on the same decision (literal supersedes; a decision appears in at most one
-   lane); (ii) the flag quotes VERBATIM the violated decision's **Intent:** marker (new entries) or a
-   specific Problem/Rationale sentence (historical band) -- unquotable means no flag; (iii) severity
-   WARN or NOTE only (BLOCK stays literal-contradiction-only); (iv) capped at 3 flags, inside the
-   existing ~1,200-word response budget.
-2. **Output contract + verdict.** A mandatory-even-when-empty `### Spirit-Alignment Flags (SPIRIT)`
-   section with a "None" default (the parent parser never branches), and a widened Verdict definition:
-   FLAGS_FOUND fires on >=1 SPIRIT flag OR >=1 CONTRADICT WARN/NOTE. The three verdict strings
-   (NO_FLAGS | FLAGS_FOUND | BLOCK) and the `## Decision Scout Report` / `Verdict` interface are
-   UNCHANGED -- every existing caller (the /plan Step 6a gate, the overseer decision-scout gate) parses
-   the same surface. Two Quality-Gate rows enforce the gates (every SPIRIT flag carries a verbatim
-   quote; SPIRIT count <= 3 with no CONTRADICT overlap).
-3. **Prose-budget funding.** The addition breaches the skill's zero-headroom `config/prose_budgets.yaml`
-   S4 entry; this Decision funds the raise via a `# raise-approved: dec-152` marker (Decision 127/43
-   sanctioned-prose taxonomy). Decision 128's decompose-don't-raise relief valve is SLOC-specific and,
-   by the prose registry's own header, does not apply here; the registry forbids @-import fragmentation
-   (Decision 114/110), so a loud Decision-cited raise is the correct relief valve. Only the FILE byte
-   budget is raised; the ~1,200-word RESPONSE cap is unchanged.
+   spirit-alignment overlay step defining a SPIRIT bucket that fires ONLY when all four gates hold:
+   (i) no literal CONTRADICT on the same decision (literal supersedes; a decision appears in at most
+   one lane); (ii) the flag quotes VERBATIM the violated decision's **Intent:** marker, a specific
+   Problem/Rationale sentence, or (widened by Decision 160) a **Decision:** clause -- unquotable means
+   no flag; (iii) severity WARN or NOTE only (BLOCK stays literal-contradiction-only); (iv) capped at
+   3 flags, inside the existing response-word budget. The exact gate wording and the section/output
+   surfaces they govern are maintained at `.claude/skills/decision-scout/SKILL.md` itself, not
+   restated here.
+2. **Output contract + verdict.** A mandatory-even-when-empty Spirit-Alignment Flags section, and a
+   widened Verdict definition firing on >=1 SPIRIT flag OR >=1 CONTRADICT WARN/NOTE. The three
+   verdict strings and the `## Decision Scout Report` / `Verdict` interface are UNCHANGED -- every
+   existing caller parses the same surface. The exact section heading, Quality-Gate row wording, and
+   verdict logic are maintained at `.claude/skills/decision-scout/SKILL.md`, not restated here.
+3. **Prose-budget funding.** The addition breached the skill's zero-headroom prose byte budget; this
+   Decision funded the raise (Decision 127/43 sanctioned-prose taxonomy) -- Decision 128's
+   decompose-don't-raise relief valve is SLOC-specific and, by the prose registry's own header, does
+   not apply here. Only the FILE byte budget was raised; the response-word cap is unchanged. The
+   current budget and marker state are maintained at `config/prose_budgets.yaml`, not restated here.
 
 **Rationale:**
 The SPIRIT axis is the consumer that makes Decision 151's Intent marker load-bearing end-to-end: DCG-06
@@ -966,6 +1443,10 @@ dated, source-cited, append-only annotations -- a deliberately SCD2-shaped choic
 supply the reader-visible valid-time the current transaction-time-only SCD2 substrate otherwise lacks,
 letting a post-MVP migration to cloud-hosted verb-queried storage map this field's accretion onto warehouse
 SCD2 versioning with no remodel.
+[Amendment 2026-08-25, Decision 177 (operator-directed): clause 3(v)'s convention-only, no-validator
+stance is narrowed by the append-only live-body guard, which now enforces this dated-annotation
+convention mechanically over every ratified body -- not only the Intent section. The 500,000-byte
+live-file ceiling clause 3(v) named as its backstop was retired by Decision 160 point 1.]
 
 **Decision:**
 1. **Optional Intent marker.** `docs/contracts/decision-entry.yaml`'s `optional_markers_fixed_spelling`
@@ -973,18 +1454,13 @@ SCD2 versioning with no remodel.
    -> Rationale). Exactly as optional and forward-only as the other five entries in that list -- no change
    to `required_markers`, no retro-enforcement of the historical band.
 2. **Typed extraction, warehouse column, and deploy path.** `scripts/decisions_md.py::parse_decisions_md`
-   gains an `intent` key via `_extract_multiline_section(body, "Intent")`, a NEW separate key -- the
-   existing `context` extraction (Rationale/Key details/Context) is untouched. `docs/contracts/
-   ops_decisions.yaml` (the CD.25 Class A contract, Decision 118) gains a nullable `intent` field mirroring
-   the raw_block/reversal_conditions shape (`dq_intent.not_null.enforced: false`, Phase-2 deferral),
-   regenerated into `config/lambda/ducklake/field_semantics.yaml` via `scripts.schema_to_field_semantics`
-   (never hand-edited, Decision 65). `intent` is threaded onto both `src/schemas/decision.py::
-   DecisionPayload` and `scripts/executor/jsonl_store.py::Decision` as a PLAIN `str | None` -- never
-   `Annotated[...]`/`DqNotNull`/any `Dq*` marker (keeps `validate_pydantic_yaml_drift` out of scope, same
-   reasoning as the DAF-01 fields) -- and into `scripts/ops_portal/decisions.py::_DECISION_BACKFILL_COLS`
-   so the backfill ETL threads it to the writer. Ships through the governed DuckLake code-deploy channel
-   (Decision 79/125/126); the physical `ALTER TABLE ADD COLUMN` is an operator-invoked `reconcile_columns`
-   admin verb (Decision 143), never autonomous.
+   gains a new, separately-extracted `intent` key -- the existing `context` extraction (Rationale/Key
+   details/Context) is untouched. `docs/contracts/ops_decisions.yaml` (the CD.25 Class A contract, Decision
+   118) gains a nullable `intent` field mirroring the raw_block/reversal_conditions shape, threaded through
+   the schema layer and the backfill ETL as a PLAIN `str | None` -- never `Annotated[...]`/`DqNotNull`/any
+   `Dq*` marker (keeps `validate_pydantic_yaml_drift` out of scope, same reasoning as the DAF-01 fields).
+   Ships through the governed DuckLake code-deploy channel (Decision 79/125/126); the physical `ALTER TABLE
+   ADD COLUMN` is an operator-invoked `reconcile_columns` admin verb (Decision 143), never autonomous.
 3. **Intent mutability convention (Step 6b option c).** Once ratified, an Intent section is never freely
    rewritten in place. (i) draft-until-merge -- before merge, the Intent marker is an ordinary draft,
    rewritten freely during PR review (this entry's own Intent marker above was drafted and revised under
@@ -1011,11 +1487,6 @@ SCD2 versioning with no remodel.
    convention-only, mirroring Decision 146's operator-disposed archival stance: NO validator, no stored
    guard, no intent-drift signal now (a read-time query later, per audit Q4, is a different, unbuilt thing)
    -- backstopped by the existing 500,000-byte live-file ceiling (Decision 134/145) and ordinary PR review.
-4. **`decision-entry.yaml` pointer note.** A short `intent_accretion_note` paragraph is added adjacent to
-   `amendment_forms`, stating the Intent marker follows this same dated-append accretion model
-   post-ratification and pointing here for the full convention. `significance:` (Decision 150) and
-   `compaction:` (Decision 149) are untouched.
-
 **Rationale:**
 The dated-append-only model is deliberately SCD2-shaped, and that is the load-bearing reason it was chosen
 over free in-place editing: `ops_decisions` is Type-2 SCD on TRANSACTION time only (a new row version
@@ -1088,15 +1559,16 @@ defaults to minting one Decision per CD instead of one shared wave entry.
 **Decision:**
 1. **Significance bar (realizes DCG-05).** `docs/contracts/decision-entry.yaml` gains a
    `significance:` section: a numbered `## Decision NNN:` entry is reserved for a durable
-   architectural commitment with reversal-relevant consequences; three other classes of durable
-   content route elsewhere instead of minting a new number -- a CD state-flip routes to the
-   batch-wave clause below (clause 2), an operational fact routes to a recommendation or tier_item
-   note, and field semantics route to a governance note in the owning contract (Decision 86/127
-   routing). `.claude/skills/planning/SKILL.md` cites this section at a new "Decision Significance
-   Gate" note just before the Candidate Decision Ratification step (Step 5b), so any
-   numbered-Decision draft -- fresh governance Decision or CD ratification -- is checked against it
-   before drafting. The section's four routing rows are a citable classification vocabulary in
-   their own right, independent of any one Decision.
+   architectural commitment with reversal-relevant consequences; other classes of durable content
+   route elsewhere instead of minting a new number -- a CD state-flip routes to the batch-wave
+   clause below (clause 2), an operational fact routes to a recommendation or tier_item note, and
+   field semantics route to a governance note in the owning contract (Decision 86/127 routing).
+   `.claude/skills/planning/SKILL.md` cites this section at a new "Decision Significance Gate" note
+   just before the Candidate Decision Ratification step (Step 5b), so any numbered-Decision draft --
+   fresh governance Decision or CD ratification -- is checked against it before drafting. The
+   section's routing rows are a citable classification vocabulary in their own right, independent
+   of any one Decision; the current row roster is maintained at `docs/contracts/decision-entry.yaml`
+   itself, not restated here.
 2. **Batch-wave ratified form (amends Decision 105, realizes DCG-04).** Same-session PURE
    candidate_decision (CD.NN) ratifications -- gate-clears carrying no content beyond "this CD's
    work is realized" -- may land as ONE `## Decision N` wave entry instead of one entry per CD:
@@ -1104,15 +1576,15 @@ defaults to minting one Decision per CD instead of one shared wave entry.
    `filed_via` points at the same shared `dec-NNN`. A ratification that carries independent
    content keeps its own entry; it is never bundled. This codifies forward, as a first-class form,
    the many-to-one shape Decision 105's own ratification lane already exercised (CD.16 and CD.24
-   both ratified under Decision 79; Decision 105 itself reconciled 5 CDs in one entry) --
-   `docs/contracts/candidate-decision-ratification.yaml` gains a `batch_wave_ratified_form` section
-   documenting the shape and noting that the R1-R3 referential guard tolerates it by construction
-   (each CD is checked independently; no cross-CD `ratified_as` uniqueness bar).
-   `.claude/skills/implement/SKILL.md`'s CD Ratification Bookkeeping step gains a matching
-   batch-wave clause: entry-authoring and the portal ETL run once for the whole wave, but the three
-   per-CD sub-steps -- the roadmap-flip, the marking-convention obligation, and the pending-window
-   prose sweep -- repeat once per bundled CD; preflight and validate still run once over all
-   bundled CDs; tier_item status flips remain a separate bookkeeping step (Decision 90, unchanged).
+   both ratified under Decision 79; Decision 105 itself reconciled 5 CDs in one entry). The exact
+   shape, the content-bearing exception, and the R1-R3 referential-guard compatibility argument are
+   maintained at `docs/contracts/candidate-decision-ratification.yaml`'s `batch_wave_ratified_form`
+   section, not restated here. `.claude/skills/implement/SKILL.md`'s CD Ratification Bookkeeping
+   step carries a matching batch-wave clause: entry-authoring and the portal ETL run once for the
+   whole wave, but the three per-CD sub-steps -- the roadmap-flip, the marking-convention
+   obligation, and the pending-window prose sweep -- repeat once per bundled CD; preflight and
+   validate still run once over all bundled CDs; tier_item status flips remain a separate
+   bookkeeping step (Decision 90, unchanged).
 
 **Rationale:**
 Decision 134/145 govern how big the corpus may get and Decision 149 governs how a superseded entry
@@ -1165,14 +1637,37 @@ CD.16/CD.24 -> dec-079 precedent the batch-wave form codifies forward).
 > compaction of a live-cited Decision cannot silently un-authorize every marker citing it. This
 > body is otherwise unedited; see Decision 165 for the full derivation.
 
+> **Amended by Decision 175 (2026-08-24):** a third compaction branch, migrate_then_rehome, joins
+> archive and compact-in-place; `compaction.eligibility_criterion` now also accepts a check-backed
+> rehoming destination as an alternate restater when the superseder omits live DERIVED content, so
+> a superseded entry whose superseder restates NONE of its live content is no longer permanently
+> stuck full-bodied. This body is otherwise unedited; see Decision 175 for the full derivation and
+> its first exercised instance (Decision 37).
+
 **Problem:**
 Decision 145's stopgap ceiling raise (400,000 -> 500,000 bytes) bought headroom but explicitly named the un-built structural fix as audits/decision-consolidation-growth-f79d6b5.yaml's DCG-01/DCG-02/DCG-05: a number-preserving compact-to-stub lifecycle, so the live corpus can shed fully-superseded bodies without breaking the ~12,103 unguarded inbound "Decision N" citations or orphaning a warehouse current-projection row (DCG-03: if a header were ever removed from both files, its ops_decisions current row would be served forever in its last state with no signal it was retired). Decision 146 (the archival sibling, landed first) covers entries with no live citations outside the corpus; it explicitly carves out entries "still cited as a LIVE constraint" (its own worked example: Decision 44 -> 117) as staying in the corpus, with no compaction mechanism yet built for them.
 
 **Decision:**
-1. **Compaction lifecycle.** `docs/contracts/decision-entry.yaml` gains a `compaction:` section: an eligibility criterion (an entry compacts only when its ENTIRE body is superseded/inert and the superseder restates/subsumes every live clause; direction-consistency -- only the superseded victim compacts, never the superseder, per the archived-52-supersedes-live-37/40 inversion), a stub grammar (the header line and its ORIGINAL parenthetical are unchanged; the body carries `**Status:** Superseded`, an ISO `**Date:**`, a non-empty one-line `**Decision:**`, and the exact `**Superseded by: Decision N**` marker), and a never-remove-headers rule (number retirement and destructive merges are permanently out of the mechanism's vocabulary). An operator `procedure:` block (Decision 127 pattern) names the archive-vs-compact branch: archive whole per Decision 146 when nothing live cites the number by name; compact in place only when it can't.
-2. **First exercised compaction: Decision 44.** Its ~40-line boundary-pattern-table body is replaced with a conforming stub. The table itself has lived in `config/agent/executor/capabilities.yaml` since Decision 117; the stub stays in DECISIONS.md (not archived) because `capabilities.yaml` and `scripts/checks/executor/validate_executor_boundary.py` still cite "Decision 44" by name.
-3. **DCG-03 orphan-divergence guard.** `scripts/ops_portal/decisions.py`'s `backfill_decisions_from_md` gains `_assert_no_orphaned_current_rows()`: bulk-reads the `ops_decisions` current projection via the closed Decision-84-I-3 named-verb boundary (`reader.current_state('ops_decisions')`, no caller SQL, no new Lambda verb), diffs it against `scripts.decisions_md.decision_header_numbers()` (both files), and raises `RuntimeError` loudly (Decision 55) on any current-projection id with no matching header that is not in the checked-in allowlist-diff baseline, `config/agent/data_quality/decisions/orphan_baseline.yaml` (mirrors the sibling `fidelity_baseline.yaml` pattern). The baseline seeds exactly one entry, `dec-010` -- a pre-existing leaked "Test Decision" warehouse row with no header ever written in either file and zero citations, discovered during this Decision's implementation. It is allowlisted (Decision 55: a loud, cited allowlist entry, never a silently-dropped assertion) rather than physically deleted in this same change; its physical removal (a Decision-70-sanctioned exception) is tracked separately by rec-2814, out of this Decision's scope. The dec-010 discovery itself was surfaced to the operator as a hand-back, not filed as a recommendation, per this plan's default no-new-recommendations stance; rec-2814 is a deliberate, sanctioned exception to that default, filed at the operator's explicit direction at plan approval (the Step 6b confirmation) specifically to carry the deferred physical-removal follow-up forward.
-4. **`decision-entry.yaml` doc-drift fix.** `size_governance.live_max_bytes` is corrected from a stale 400000 to 500000 -- the value `scripts/checks/decisions/validate_decisions_size.py` has actually enforced since Decision 145. This Decision does not itself lower the enforced ceiling; it only reconciles this file's documentation to the validator it describes.
+1. **Compaction lifecycle.** `docs/contracts/decision-entry.yaml` gains a `compaction:` section
+   governing when and how a fully-superseded entry may compact to a stub in place rather than
+   archive whole: direction-consistency (only the superseded victim compacts, never the
+   superseder, per the archived-52-supersedes-live-37/40 inversion), and a never-remove-headers
+   rule (number retirement and destructive merges are permanently out of the mechanism's
+   vocabulary). An operator `procedure:` block (Decision 127 pattern) names the archive-vs-compact
+   branch: archive whole per Decision 146 when nothing live cites the number by name; compact in
+   place only when it can't. The exact eligibility criterion and stub-body grammar are maintained
+   at `docs/contracts/decision-entry.yaml`'s `compaction:` section, not restated here.
+2. **First exercised compaction: Decision 44**, whose superseding table lives in
+   `config/agent/executor/capabilities.yaml` (Decision 117).
+3. **DCG-03 orphan-divergence guard.** `scripts/ops_portal/decisions.py`'s
+   `backfill_decisions_from_md` gains `_assert_no_orphaned_current_rows()`: bulk-reads the
+   `ops_decisions` current projection via the closed Decision-84-I-3 named-verb boundary, diffs it
+   against the corpus's own header numbers (both files), and raises `RuntimeError` loudly
+   (Decision 55) on any current-projection id with no matching header that is not in the checked-in
+   allowlist-diff baseline, `config/agent/data_quality/decisions/orphan_baseline.yaml` (mirrors the
+   sibling `fidelity_baseline.yaml` pattern) -- a loud, cited allowlist entry, never a
+   silently-dropped assertion. The baseline's current contents and provenance are maintained at
+   that file, not restated here.
 
 **Rationale:**
 This Decision is the structural mechanism Decision 145's own reversal conditions name ("when the DCG structural mechanism... lands and reclaims live headroom") -- it is authored as the owner of eventually triggering that reversal, not as the reversal itself: the compaction exercised here nets only a small live-byte reclaim (Decision 44's body shrank by roughly 2KB, largely offset by this entry), so the 500,000-byte ceiling stays exactly where Decision 145 set it. A future archival/compaction wave using this mechanism is what will actually reclaim enough headroom to revisit Decision 145's ceiling. Per Decision 86, rationale lives here and forward intent lives in the audit/contract, not in a new prose document -- `decision-entry.yaml` carries the mechanism's grammar and procedure, this Decision carries the why. The orphan baseline is an allowlist-diff, not a zero-assertion, because a zero-assertion would wedge on the pre-existing dec-010 orphan on the very first real backfill after this guard lands -- Decision 55 requires the divergence be loud and disposed (allowlisted with a reason, or fixed), never silently tolerated by weakening the guard itself.
@@ -1201,6 +1696,8 @@ This Decision is the structural mechanism Decision 145's own reversal conditions
 **Reversal conditions:** If the two-PR plan/implement flow (Decision 76) is ever replaced by co-present plan+code PRs as the norm, the plan-only-PR defer branch becomes dead code and replay can revert to diff-added triggering. If CI ever adopts a universal `.venv` across all jobs, the `bin/venv-python` fallback becomes redundant (harmless to leave in place, but no longer load-bearing).
 
 **Related:** Decision 132 (the two-leg replay/enforcement model this mirrors), Decision 104 (`_common.py` sole-home discipline, extended here), Decision 76 (the two-PR plan/implement flow whose absence-of-implementation this fix accounts for), Decision 73 (fast-tier budget guards, preserved unchanged), Decision 55 (fail-loud, no silent substitution -- governs both the replay advisory-SKIPs and the wrapper fallback).
+
+[Amendment 2026-08-17: the commit-subject resolution mechanism this entry describes (`feat({slug})` commit subjects on `git log origin/main..HEAD`) is replaced by an explicit, schema-validated `implementation_declared` boolean on `PlanDocument`, resolved content-keyed via `scripts.checks._common.resolve_declared_plans` (PLAN-plan-resolution-content-keyed, provenance: explicit operator direction given during that plan's authoring). The two-leg model and advisory-SKIP shape this entry describes are unchanged; only the resolution signal moves from commit-message grammar to diff-carried plan content.]
 
 ---
 
@@ -1584,75 +2081,50 @@ failure was actually the SAME unfixed cause recurring, rather than a genuine reg
 unrelated new failure sharing the coarse key.
 
 **Decision:**
-1. **Fingerprint v2** (`scripts/ci_rca/fingerprint.py`, new): `compute_fingerprint_v2(workflow_slug,
-   failure_category, error_signature) -> sha256` with a literal `"v2"` salt folded into the hashed
-   payload -- guarantees disjointness from any v1 fingerprint for the same logical failure, so NO
-   warehouse migration is required (the two keyspaces never collide). `error_signature` is
-   `"{exception_type}::{deepest_in_app_frame}::{normalized_message_head}"`, where
-   `deepest_in_app_frame` is `"{module}::{function}"` (no line number) -- the traceback frame,
-   walked bottom-up, that is the first one NOT in site-packages/pytest-internals/conftest.py.
-   junit-parsed (`error_signature_from_junit`, grouping failing testcases by identical raw tuple --
-   the anti-masking property AND cause-grouping fall out of this single walk: a plain assertion
-   failure's deepest in-app frame is the test function itself, so distinct tests never collide; an
-   error raised inside a shared `src/` helper resolves to that helper, so distinct tests sharing one
-   cause collapse together). Special cases: a pytest collection error keys on the failing MODULE
-   PATH (`failure_category=collection_error`, a taxonomy category this Decision adds to
-   `config/ci_rca_taxonomy.yaml` since none existed for a genuine collection failure, distinct from
-   the pre-existing `test_collection_empty` vacuous-pass category); a non-pytest failure (including a
-   terraform-apply-sandbox apply failure, Decision 92) uses `error_signature_from_log_tail(tool,
-   normalized-line)`; more than ~5 distinct new signatures in one run collapse to a single run-level
-   record (`collapse_mass_failure`).
+1. **Fingerprint v2** (`scripts/ci_rca/fingerprint.py`, new): `compute_fingerprint_v2` anchors the
+   grouping key on the failure's CAUSE -- a bottom-up traceback-frame walk to the deepest in-app
+   frame plus the exception type and a normalized message, or the failing module path for a
+   collection error, or a tool-specific signature for a non-pytest failure -- with a `"v2"` salt
+   guaranteeing disjointness from any v1 fingerprint, so no warehouse migration is required. This
+   single cause-anchored walk is what makes distinct failures in the same CI step stop masking
+   each other while still letting one shared-helper error group correctly across the different
+   tests it surfaces through. The exact signature grammar, taxonomy categories, and the
+   non-pytest fallback chain are maintained at `docs/contracts/ci-rca-lifecycle.yaml`, not
+   restated here.
 2. **junit wiring end-to-end**: `--junitxml=logs/debug/pytest-junit.xml` added to
    `scripts/checks/_scaffolding.py`'s `_build_unit_test_cmd()` (additive to the hermeticity flags);
    `.github/workflows/ci.yml`'s `main-validate` job and `.github/workflows/main-canary.yml`'s
    `canary` job upload it as the `pytest-junit` artifact on `if: always()`; `.github/workflows/ci-
    rca.yml` downloads it for the failing run (best-effort -- a non-pytest failure has no such
    artifact and falls back to the log-tail signature, never blocking the job).
-3. **Status-aware chain, never closed->open**
-   (`scripts/ops_portal/ci_rca_lifecycle.py`, new): `resolve_chain(fingerprint)` returns every
-   source=ci_rca record matching a fingerprint, newest first. Only the NEWEST record, and only
-   while `status=open`, is ever bumped (`newest_open_in_chain`) -- a closed head is never mutated.
-   The rec-2644 revive path (`reopen_ci_rca_rec` / `find_recent_ci_rca_rec_by_fingerprint`) is
-   REMOVED from `scripts/ops_portal/ci_rca_runtime.py`, and its call site -- the `file_rec()`
-   write-time backstop in `scripts/ops_data_portal.py` -- is repointed at the chain helpers in the
-   SAME change (portal-wedge guard: the two dead imports are deleted; `import
-   scripts.ops_data_portal` and the `tests/ops_data_portal/` suite are the standing proof it is not
-   ImportError-wedged). A closed-head fingerprint match runs `git merge-base --is-ancestor
-   <failing-commit> <head.fixed_by_sha>`: an ancestor (stale-code rerun) is dropped with a no-op
-   note (no insert, no bump, no reopen); a non-ancestor files a NEW record with `regression_of` set,
-   a `"REGRESSION: "` title prefix, and `priority="Critical"`. A closed head with NO `fixed_by_sha`
-   (every rec closed before this change; any manual closure) FAILS CLOSED to a REGRESSION -- the
-   ancestry check cannot run without a fix commit to compare against, so this never silently drops a
-   possibly-real recurrence (Decision 55). The closed->open prohibition is a fresh forward rule
-   CITING Decision 103's closure-proof clause (a closed rec's `fixed_by_sha` is exactly that proof;
-   reopening would discard it without contrary evidence) -- it does NOT amend a closed->open clause
-   in Decision 103 (no such clause exists there); Decision 70 governs bootstrap-record deletion, not
-   this.
-4. **Auto-close, three paths, all deterministic**: (a) fix-linked --
-   `.github/workflows/rec-autoclose.yml`, on closing a source=ci_rca rec from a `Resolves:`
-   trailer, calls the importable helper `ci_rca_lifecycle.stamp_fixed_by_sha(rec_id,
-   <merge-commit-sha>)`, recording the fix commit that powers point 3's ancestry check; (b) a purely
-   TIMESTAMP-based inactivity predicate (`is_inactive` -- `last_seen`/`created_timestamp` older than
-   a 30-day window AND rec created-age >= 14 days, BOTH bounds) closes via
-   `scripts/ci_rca/inactivity_sweep.py` (new; `.github/workflows/ci-rca-inactivity-sweep.yml`, new
-   scheduled + `workflow_dispatch` runner, OIDC creds, reads via the DuckLake reader NAMED VERBS
-   only -- Decision 84 I-3 / Decision 88) with `resolution=stale_no_recurrence` and the recorded
-   proof -- a purely deterministic timestamp probe stays inside Decision 103's
-   deterministic-satisfaction boundary (no `close_proposed` needed, no run-history data source
-   named); (c) a chain reaching 3 records is tagged `flaky` and quarantined instead of filing
-   another fresh critical.
+3. **Status-aware chain, never closed->open** (`scripts/ops_portal/ci_rca_lifecycle.py`, new): only
+   the newest record in a fingerprint's chain, and only while `status=open`, is ever bumped -- a
+   closed head is never mutated. The rec-2644 revive path is removed; a closed-head fingerprint
+   match instead runs an ancestry check against the closing fix commit: an ancestor is dropped as a
+   stale-code rerun, a non-ancestor files a new record as a regression, and a closed head with no
+   recorded fix commit FAILS CLOSED to a regression (Decision 55) rather than silently dropping a
+   possibly-real recurrence. The closed->open prohibition is a fresh forward rule CITING Decision
+   103's closure-proof clause (a closed rec's fix commit is exactly that proof; reopening would
+   discard it without contrary evidence) -- it does NOT amend a closed->open clause in Decision 103
+   (no such clause exists there); Decision 70 governs bootstrap-record deletion, not this. The exact
+   ancestry mechanics and record fields are maintained at `docs/contracts/ci-rca-lifecycle.yaml`,
+   not restated here.
+4. **Auto-close, three paths, all deterministic**: a fix-linked path stamps the closing commit at
+   merge time, powering point 3's ancestry check; a purely timestamp-based inactivity sweep closes
+   long-quiet chains under a deterministic dual-bound predicate (staying inside Decision 103's
+   deterministic-satisfaction boundary -- no `close_proposed` needed); and a chain reaching a
+   repeat-count threshold is tagged flaky and quarantined instead of filing another fresh critical.
+   The exact thresholds and workflow wiring are maintained at `docs/contracts/ci-rca-lifecycle.yaml`,
+   not restated here.
 5. **Escape-attribution** (`ci_rca_lifecycle.compute_escape_class`): a post-merge full-tier failure
-   is tagged `escape_class` in `{no-edge, capped, unknown-data-edge}` by diffing the failed test's
-   file against the merged PR's Decision-135 `--pre` selection manifest -- `no-edge` (never
-   selected, no reverse-dependency edge existed), `capped` (selected but deferred over the
-   transitive-residue cap), or `unknown-data-edge` (was selected and should have run, but still
-   escaped -- flagged for manual review, never silently assumed benign). `ci-rca.yml` best-effort
-   resolves the merged PR from the failing commit and downloads its `selection-manifest` artifact;
-   any resolution failure degrades to omitting `escape_class`, never blocking the job.
-6. **Projection, not columns**: `regression_of`, `fixed_by_sha`, `affected_nodeids`, `flaky`, and
-   `escape_class` are added to `CiRcaContext` (`scripts/ops_portal/ci_rca_schema.py`) as
-   `Optional[...]=None` fields riding in `context_v2_json` -- NO `schema_version` ceiling raise (all
-   backward-compatible additions), NO new `ops_recommendations` columns (Decision 84/103/63: the
+   is tagged with an escape class by diffing the failed test's file against the merged PR's
+   Decision-135 `--pre` selection manifest, distinguishing a never-selected miss from a
+   selected-but-capped defer from a genuinely unexplained escape flagged for manual review. Any
+   manifest-resolution failure degrades to omitting the tag, never blocking the job. The exact
+   class taxonomy is maintained at `docs/contracts/ci-rca-lifecycle.yaml`, not restated here.
+6. **Projection, not columns**: the new fields ride as optional, backward-compatible additions in
+   `CiRcaContext`'s existing JSON payload (`scripts/ops_portal/ci_rca_schema.py`) -- no
+   schema-version ceiling raise, no new `ops_recommendations` columns (Decision 84/103/63: the
    `ducklake_writer` owns the keyspace; fix-state is not denormalized onto the rec row). Field
    semantics are declared in `docs/contracts/ci-rca-lifecycle.yaml` (Decision 86: rationale here,
    semantics there), a non-ritual projection contract (no `contract:`/`class:` block, per Decision
@@ -1872,18 +2344,6 @@ and NOT a coverage cache -- so it lands in Decision 80 point 3's sanctioned "liv
 bucket, not point 4's deferred-orchestrator bucket. This Decision files NO KG.13 tier_item and ARMS
 NO revisit trigger; KG.13 stays deferred and undisturbed.
 
-**Net-budget math:** the added live-derivation cost (import-graph build ~2-4s + the data-edge
-single-pass scan + manifest emission) is net-funded by the collect-only batching's ~30x
-subprocess-spawn reduction; the S3 upload leg is best-effort/async and never counts against the
-5-minute budget assertion (Decision 73). VP step 17 (`validate --pre` dogfooding this very diff) is
-the empirical proof; p90 target ~2-2.5 minutes.
-
-**Verification tier:** V2 (Decision 48) -- the `ci.yml` edit is an `actions/upload-artifact` STEP
-(not a check; not in Decision 48's V3 trigger list), and the S3 manifest object is best-effort
-observability, not a contract another service consumes. The substantive verification is unit-level
-incident-replay against the REAL selector (`tests/checks/deps/test_affected_tests.py`), not a live
-deploy/invoke.
-
 **Rationale:**
 The prior edited-set selection was structurally blind to exactly the failure shape it exists to
 catch (a change whose blast radius extends beyond the files it touches). A live, additive
@@ -2018,34 +2478,23 @@ instruction an agent can forget under context pressure.
 
 **Decision:**
 1. **Schema: an optional, validated graduation disposition per VP step.**
-   `scripts/roadmap/plan_document.py`'s `VerificationStep` gains three optional fields:
-   `graduation` (`graduate | waive | not-applicable`, `None` by default), `graduation_check_id`
-   (required iff `graduation == "graduate"`), `graduation_waiver_reason` (required iff
-   `graduation == "waive"`). A `model_validator` enforces both directions (required-when-set and
-   forbidden-when-unset). The field is optional at the schema level -- `validate_plan_documents`
-   re-validates every `PLAN-*.yaml` whole-directory (Decision 85), so every historical plan
-   authored before this Decision keeps validating unchanged.
+   `scripts/roadmap/plan_document.py`'s `VerificationStep` gains an optional, cross-validated
+   graduation disposition (`graduate | waive | not-applicable`) plus its iff-required companion
+   fields (a check id when graduating, a reason when waiving). The field is optional at the
+   schema level -- `validate_plan_documents` re-validates every `PLAN-*.yaml` whole-directory
+   (Decision 85), so every historical plan authored before this Decision keeps validating
+   unchanged. The exact field names, enum values, and required-iff rules are maintained at
+   `VerificationStep` itself, not restated here.
 2. **New registered check: `validate_graduation_completeness` (both `--pre` and full tiers).**
-   Diff-scoped, two legs:
-   - **Plan-PR leg:** a diff-added or diff-modified `PLAN-*.yaml` must carry a graduation
-     disposition on every `pre-deploy` VP step -- field PRESENCE only, never a
-     kernel-expressibility inference (that classification judgement stays a human/plan-critique
-     call, at plan time, never mechanized here). Enforced only when the plan is net-new in the
-     diff (`git diff --diff-filter=A`) OR it already declares >=1 disposition -- a merely-modified
-     plan with zero dispositions anywhere (a correction to a pre-field plan, or the lagged `.yaml`
-     archival sweep) is a pre-field plan and is skipped, not failed.
-   - **Implement-PR leg:** resolves the plan(s) named by `feat({slug})` commit subjects on
-     `git log origin/main..HEAD`, loads `PLAN-{slug}.yaml`, and asserts every step declared
-     `graduate` produced a matching NEW-in-diff registry row (`plan_slug` + `check_id` ==
-     `graduation_check_id`). `waive`/`not-applicable` require no row. A step that proves
-     un-graduatable at implement time is expected to flip to `waive` (with a reason) in the same
-     PR -- the implement skill's Verification Graduation section is amended accordingly.
-   Both legs advisory-SKIP (never fail) rather than wedge a legitimate PR when: origin/main is
-   unreachable (the implement-PR leg cannot resolve new-vs-baseline without it), or a
-   `feat({slug})` commit names a plan whose `PLAN-{slug}.yaml` is absent (legacy `.md`-era,
-   archived, or a typo'd slug). Genuine errors (an import failure loading
-   `scripts.roadmap.plan_document`) stay fail-loud (Decision 55) -- there is no silent
-   "none enforced" path for an infrastructural error.
+   Diff-scoped, two legs: a plan-PR leg that requires a graduation disposition on every
+   pre-deploy VP step of a diff-added or already-dispositioned plan (presence only, never a
+   kernel-expressibility inference -- that classification judgement stays a human/plan-critique
+   call, at plan time, never mechanized here); and an implement-PR leg that asserts every step
+   declared `graduate` produced a matching new-in-diff registry row, with `waive`/`not-applicable`
+   requiring no row. Both legs advisory-SKIP (never fail) when the baseline is unreachable or the
+   resolved plan is absent; a genuine infrastructural error stays fail-loud (Decision 55) -- there
+   is no silent "none enforced" path. The exact diff filters, resolution mechanism, and SKIP
+   conditions are maintained at the check's own docstring, not restated here.
 3. **Planning and plan-critique skills carry the obligation forward.** The planning skill's VP
    Design section requires a disposition on every pre-deploy step and gives the three-way
    classification rubric plus a `graduation_check_id` naming convention. The plan-critique skill
@@ -2103,6 +2552,8 @@ grounded directly): CD.29 (six-slot kernel vocabulary, never touched by this Dec
 (the producer this Decision makes an obligation), VF-06 (the differential gate this Decision does
 not modify), VF-11, tier_item T3.18 (predecessor, complete) and T3.21 (this Decision's carrier).
 
+[Amendment 2026-08-17: the implement-PR leg's commit-subject resolution (`feat({slug})` commit subjects on `git log origin/main..HEAD`) is replaced by an explicit, schema-validated `implementation_declared` boolean on `PlanDocument`, resolved content-keyed via `scripts.checks._common.resolve_declared_plans` (PLAN-plan-resolution-content-keyed, provenance: explicit operator direction given during that plan's authoring). The plan-PR leg's disposition-presence obligation and the differential admission gate are unchanged; only the implement-PR leg's resolution signal moves from commit-message grammar to diff-carried plan content.]
+
 ---
 
 ## Decision 131: Test-colocation mapping inverted to a mirror rule + retiring grandfather-table; no-cross-test-import guard and per-package conftest hierarchy (amends Decision 104; enables rec-2709) (Decided)
@@ -2123,39 +2574,29 @@ conftest layering convention for the sub-packages the splits create.
 **Decision:**
 1. **Mirror rule + retiring grandfather-table.** `scripts/test_coverage_checker.py`'s
    `map_source_to_test` is inverted from unconditional Decision-104 colocation to a two-rule
-   function gated by a retiring grandfather-table. The pre-inversion body is preserved verbatim as
-   `_grandfathered_source_to_test`. `_ALL_MIRROR_TARGET_HOMES` is the fixed 24-basename rec-2709
-   roster (the Decision 130 grandfathered set); `_RETIRING_GRANDFATHER_HOMES` is a mutable subset,
-   seeded identical to the full roster on day one. `map_source_to_test` resolves a source path's
-   grandfathered home; while that home's basename is still in `_RETIRING_GRANDFATHER_HOMES`, the
-   colocation rule applies unchanged; once a wave deletes that basename (a one-line, low-conflict
-   edit), sources that grandfather to it resolve via `_mirror_source_to_test` -- drop the leading
-   `src`/`scripts` root, keep the remaining sub-path, name the test `test_<stem>.py`. A declared
-   concern-split monolith (`_CONCERN_SPLIT_TEST_PACKAGES`, seeded with the 11 known single-file
-   monoliths with no per-submodule source to mirror 1:1) instead resolves to a test PACKAGE
-   DIRECTORY. `check_test_file_exists` / `check_per_file_coverage` are extended to accept a
-   directory target (passes iff it exists with >=1 `test_*.py`; coverage runs pytest against the
-   directory). Day one, `_RETIRING_GRANDFATHER_HOMES == _ALL_MIRROR_TARGET_HOMES`, so the mirror
-   branch is dormant and `map_source_to_test` is byte-identical to the pre-inversion function for
-   every input -- proven by the pre-existing `TestMapSourceToTest` / `TestCheckTestFileExists`
-   suite staying green unchanged. `scripts/executor/**` and `scripts/ops_portal/**` continue to
-   return `None` on both rules (Decision 124 preserved).
-2. **No-cross-test-import guard.** A new AST-based check,
-   `scripts/checks/hygiene/validate_no_cross_test_imports.py`
-   (`validate_no_cross_test_imports`, registered in both `pre_sequence()` and `full_sequence()`
-   adjacent to `validate_test_count_coupling`), fails when a `tests/**/*.py` module imports from
-   another `test_*` module. `conftest.py` and `tests/fixtures/**` are exempt by construction (their
-   names never start with `test_`), encoding "each mirror package is self-contained." The one
-   pre-existing violation, `tests/test_verifier_harness.py` (a documented re-export shim of
-   `tests/test_verifiers/test_harness.py`), is grandfathered in
-   `_GRANDFATHERED_CROSS_TEST_IMPORTS` until a later wave removes the shim.
-3. **Per-package conftest hierarchy.** The global recursion guards (`_VALIDATE_DEPTH`,
-   `_COVERAGE_SUBPROCESS`, the `PYTEST_CURRENT_TEST` early-exit) and socket guards
-   (`--disable-socket` + `_allow_network_for_integration`) stay solely in the root
+   function gated by a retiring grandfather-table: while a grandfathered home's basename is still
+   in the retiring set, the colocation rule applies unchanged; once a wave retires that basename
+   (a one-line, low-conflict edit), sources that grandfather to it resolve via the mirror rule
+   instead. Day one, the retiring set equals the full grandfathered roster, so the mirror branch
+   is dormant and `map_source_to_test` is byte-identical to the pre-inversion function for every
+   input -- proven by the pre-existing test suite staying green unchanged. `scripts/executor/**`
+   and `scripts/ops_portal/**` continue to return `None` on both rules (Decision 124 preserved).
+   The live rosters, the mirror-path naming convention, and the concern-split-monolith carve-out
+   are maintained at `scripts/test_coverage_checker.py` itself, not restated here.
+2. **No-cross-test-import guard.** A new AST-based check, `validate_no_cross_test_imports`,
+   registered in both `pre_sequence()` and `full_sequence()` adjacent to
+   `validate_test_count_coupling`, fails when a `tests/**/*.py` module imports from another
+   `test_*` module. `conftest.py` and `tests/fixtures/**` are exempt by construction (their names
+   never start with `test_`), encoding "each mirror package is self-contained." The live
+   grandfathered-violation allowlist is maintained at
+   `scripts/checks/hygiene/validate_no_cross_test_imports.py` itself, not restated here.
+3. **Per-package conftest hierarchy.** Global recursion and socket guards stay solely in the root
    `tests/conftest.py`; pytest merges conftests up the tree, so a sub-package
    `tests/<pkg>/conftest.py` layers under it without redeclaration. `tests/checks/conftest.py` is
    added as a docstring-only example scaffold; package-specific autouse fixtures migrate into their
-   matching sub-conftest per-wave, alongside that package's test-file decomposition.
+   matching sub-conftest per-wave, alongside that package's test-file decomposition. The current
+   guard roster and where each one lives are maintained at the conftest files themselves, not
+   restated here.
 4. **Import-mode / `__init__.py` policy.** pytest stays in the default prepend import mode (the
    repo already depends on the package-path model via `from tests.fixtures.iceberg_fixture import
    ...`). Every mirror test directory carries an `__init__.py` so module paths stay fully-qualified
@@ -2359,28 +2800,24 @@ Decision-cited rather than a frictionless one-line YAML edit.
    the file into a facade package (the Decision 80/104/124 pattern: an `__init__.py` facade
    re-exporting the full public surface, cohesive submodules each under budget). A raise is a
    deliberate, justified exception -- not the default path of least resistance.
-2. **Fail-loud raise gate.** A new check, `validate_sloc_budget_raises`
-   (`scripts/checks/sloc/validate_sloc_budget_raises.py`, registered in `pre_sequence()`
-   immediately after `validate_sloc_limits`), diffs `config/sloc_budgets.yaml` against
-   `origin/main` on every PR. It FAILS the PR on any budget INCREASE, or any NEW >500-SLOC
-   registration, unless the changed entry line carries an inline `# raise-approved: dec-NNN
-   <reason>` marker naming a real `## Decision NNN:` header in `docs/DECISIONS.md`. Decreases and
-   removals always pass (the ratchet-down direction is unrestricted, matching Decision 102). The
-   check parses the raw YAML text (not `yaml.safe_load`, which drops comments) so the marker
-   survives; its base-content reader is injectable for tests and SKIPs (non-failing, advisory
-   locally / authoritative in CI) when `origin/main` is unreachable, mirroring
-   `validate_vp_replay`.
+2. **Fail-loud raise gate.** A new check, `validate_sloc_budget_raises`, diffs
+   `config/sloc_budgets.yaml` against `origin/main` on every PR and FAILS on any budget
+   INCREASE, or any NEW >500-SLOC registration, unless the changed entry line carries an inline
+   `# raise-approved: dec-NNN <reason>` marker. Decreases and removals always pass (the
+   ratchet-down direction is unrestricted, matching Decision 102). The marker's own authorization
+   semantics -- what a cited Decision's body must contain for the marker to validate -- are
+   maintained at the check's own docstring and `config/sloc_budgets.yaml`'s header, not restated
+   here.
 3. **Marker persistence is not required.** `_update_sloc_budgets` (the downward-only ratchet
    regenerator) is not required to preserve inline `# raise-approved` comments across a
    regeneration -- the raise is authorized at the diff-vs-base moment and, once merged, is
    durably recorded in git history plus the cited Decision. This deliberately avoids building a
    comment round-trip mechanism against `yaml.safe_dump`.
 4. **No auto-seed (B2 / rec-2418 family).** `_update_sloc_budgets` no longer seeds a newly-
-   oversized, currently-unregistered file at its current SLOC. Previously, running
-   `--update-sloc-budgets` would silently register any new >500-SLOC file, defeating the purpose
-   of a raise gate (an agent could regenerate its way around review). Now, a new oversized file
-   fails `validate_sloc_limits` until it is either decomposed below 500 SLOC or deliberately
-   registered with a `# raise-approved: dec-NNN` marker via a manual, reviewable edit.
+   oversized, currently-unregistered file at its current SLOC -- previously this would silently
+   defeat the raise gate (an agent could regenerate its way around review). The current auto-seed
+   behavior is maintained at `_update_sloc_budgets`'s own docstring and `config/sloc_budgets.yaml`'s
+   header, not restated here.
 5. **YAML-safe serialization (rec-2422).** `_update_sloc_budgets` emits `config/sloc_budgets.yaml`
    via `yaml.safe_dump` instead of raw f-string interpolation, so a future module path containing
    YAML-special characters cannot produce invalid YAML.
@@ -2416,6 +2853,13 @@ authored in DECISIONS.md then backfilled to `ops_decisions`, never written direc
 **Date:** 2026-07-13
 **Warehouse ID:** dec-127 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
 
+> **Amended by Decision 171 (2026-08-16):** point 1's enumeration gains a second separately
+> sanctioned NON-agent-instruction class, **licence-and-attribution artefacts** (added inline
+> below). The taxonomy's rule is unchanged; this is an addition to the permanent classes, made
+> as an `allowed_globs` entry and never as a `grandfathered_globs` one, since point 3's
+> grandfathered set is ratchet-only and may not grow. Points 2, 3 and 4 are unedited; see
+> Decision 171 for the full derivation.
+
 **Problem:**
 Decision 86 forbade new *standing prose-architecture / deliberation* documents and retired the
 INTENT-*.md corpus, but it never named the positive rule the repo actually needs: which prose is
@@ -2434,37 +2878,41 @@ and the INTENT-doc freeze existed), so new prose files could land anywhere with 
    artefact; a human-facing summary is a query result an agent produces on demand, never a
    stored artefact (AGENTS.md Agent-First Repository, extended here from principle to enforced
    taxonomy). The permanent classes are:
-   - (a) Universal/directory-scoped instruction files (`CLAUDE.md`, `AGENTS.md`, `**/CLAUDE.md`).
+   - (a) Universal/directory-scoped instruction files.
    - (b) Machine-readable contracts and their prose companions where the contract format is
-     itself markdown (`docs/contracts/**/*.md`) -- these are agent-consumed field/procedure
-     semantics, not human narrative.
-   - (c) Workflow surfaces: slash commands (`.claude/commands/**/*.md`), skills
-     (`.claude/skills/**/SKILL.md`), executor role prompts
-     (`config/agent/executor/prompts/**/*.md`).
-   - (d) Planning/audit artefacts consumed by the workflows that produce and read them:
-     `docs/plans/**/*.md`, `docs/audit-prompts/**/*.md`, `audits/**/*.md`.
-   - (e) CI/repository-governance files under `.github/**/*.md` (issue templates, PR templates,
-     scheduled-agent prompts) and `docs/PROJECT_CONTEXT.md` (the Layer-2 agent knowledge base,
-     instruction-architecture.yaml).
+     itself markdown -- agent-consumed field/procedure semantics, not human narrative.
+   - (c) Workflow surfaces: slash commands, skills, executor role prompts.
+   - (d) Planning/audit artefacts consumed by the workflows that produce and read them.
+   - (e) CI/repository-governance files and the Layer-2 agent knowledge base.
+   The current glob spelling for each class is maintained at `docs/contracts/file-router.yaml`'s
+   `prose_allowlist.allowed_globs`, not restated here.
    Permanently and separately sanctioned as a NON-agent-instruction class: `marketing/**/*.md`
    (Decision 101 point (c)'s carve-out). Marketing prose is one-way downstream -- authored for a
    human audience outside the agent loop and never fed back into any agent's context -- so it is
    not "prose whose audience-of-record is a human" in the sense this Decision forbids storing;
    it is pre-sanctioned here even though `marketing/` does not exist on disk yet, so a future
    marketing-content plan does not need to re-litigate this taxonomy.
+   Also permanently and separately sanctioned as a NON-agent-instruction class (Decision 171):
+   **licence-and-attribution artefacts** at the repository root. These are legal instruments and
+   their operative companions, not human narrative: their audience-of-record is a licensee, their
+   content is normative rather than explanatory, and no `procedure:` block in a contract can carry
+   them, because a licence must sit where a licensee looks for it. The current filename roster
+   lives alongside the agent-instruction classes at `docs/contracts/file-router.yaml`'s
+   `prose_allowlist.allowed_globs`; their consistency is machine-checked by
+   `validate_licence_consistency`, which is what keeps this class from becoming the
+   unenforced-prose drift point 3 exists to prevent.
 2. **`docs/runbooks/` is a retiring class.** Operator runbooks are human-audience prose by
    construction. The existing `docs/runbooks/ducklake-catalog-operations.md` is grandfathered
    (this Decision deletes nothing), but no new file may be added under `docs/runbooks/`; new
    operator procedures are `procedure:` blocks in the owning `docs/contracts/*.yaml` file (see
    point 3). `docs/CLAUDE.md`'s Class->home map is updated to drop the `docs/runbooks/` row.
 3. **Enforcement -- `prose_allowlist`.** `docs/contracts/file-router.yaml` gains a
-   `prose_allowlist` key (`allowed_globs` for the permanent classes above, `grandfathered_globs`
-   for every currently-tracked `.md` file not otherwise covered -- seeded day-one, ratchet-only,
-   may only shrink in a later plan, never grow). `scripts/checks/hygiene/validate_prose_allowlist.py`
-   enforces it in both `validate.py` tiers (Decision 104 registry pattern), fail-open if the key
-   is absent/unreadable. Its scope is repo-wide over every tracked `.md` file, distinct from (and
+   `prose_allowlist` key, enforced in both `validate.py` tiers by a dedicated guard (Decision 104
+   registry pattern). Its scope is repo-wide over every tracked `.md` file, distinct from (and
    may overlap, never conflict with) `validate_intent_doc_freeze`'s narrower ownership of whether
-   a given `docs/INTENT-*.md` may still exist per the intent-migration manifest.
+   a given `docs/INTENT-*.md` may still exist per the intent-migration manifest. The key's shape
+   (`allowed_globs` vs. the ratchet-only `grandfathered_globs`, fail-open-if-absent behavior) is
+   maintained at the contract itself, not restated here.
 4. **Instruction-architecture anti-pattern.** `docs/contracts/instruction-architecture.yaml`
    gains an anti-pattern row: a human runbook / operator-prose doc belongs in a `procedure:`
    block in the owning contract, not as a standing prose companion doc.
@@ -2708,7 +3156,7 @@ behaviour-preserving facade is the structural fix, exactly as ratified for valid
 **Decision:**
 Ratifies the facade-decomposition pattern for the ops-data layer, mirroring Decision 104 with
 one addition -- a patch-interception hybrid:
-- scripts/ops_data_portal.py collapses to a thin facade (383 SLOC) that KEEPS DEFINED the
+- scripts/ops_data_portal.py collapses to a thin facade that KEEPS DEFINED the
   patch-epicentre (file_rec, update_rec, propose_or_close_rec, _fetch_rec_from_reader, sync,
   get_ci_rca_strict_mode) so the majority of existing test patch sites need zero change; it
   imports every test-patched private dependency into its own namespace so
@@ -2716,28 +3164,22 @@ one addition -- a patch-interception hybrid:
   it re-exports every public symbol plus the 6 imported-name traps (subprocess, ET,
   DECISIONS_JSONL, RECS_JSONL, Recommendation, validate_source) and the
   _fetch_decision_from_athena back-compat alias.
-- Ten new scripts/ops_portal/*.py modules, one concern each: _common (shared ROOT/profile/
-  region primitives, Decision 104 precedent), ci_rca_schema (CiRcaContext/CiRcaEvidenceDispute
-  models + shape validators), ci_rca_runtime (write-time cross-check + back-validation,
-  carries the decision-43 waiver), writer_transport (DuckLake writer SigV4 transport),
-  risk_scoring (risk/automatable derivation), write_validators (write-time content checks),
-  cache (local read-cache refresh), decisions (ops_decisions CRUD + DECISIONS.md ETL),
-  maintenance_ops (selftests, bulk-enqueue, postmortem maintenance), cli (argparse surface,
-  carries the decision-43 waiver).
+- One concern per scripts/ops_portal/*.py module (the shared ROOT/profile/region-primitives
+  _common pattern established by Decision 104's precedent). The live module roster and each
+  module's owned concern are tracked at the package directory itself, not restated here.
 - Patch-interception hybrid (the addition Decision 104 did not need, since validate.py's
   extracted checks are called only through the registry dispatch loop): a private symbol
   moved to a submodule is patch-reachable at one of two namespaces depending on the calling
   context -- (a) via the facade, when the driving caller is one of the six facade-resident
   functions (which read the symbol as their own module global, since it was imported into the
   facade namespace); or (b) via the submodule that holds its own bare-imported copy, when the
-  driving caller has ALSO moved to a submodule (e.g. file_decision/update_decision/
-  backfill_decisions_from_md moved to decisions.py, so tests patching _ducklake_write/
-  DECISIONS_JSONL/_load_write_time_validators/_fetch_decision_from_reader while driving those
-  three functions target scripts.ops_portal.decisions.<sym>, not the facade). Cross-module
-  calls FROM a submodule TO a facade-resident function (file_rec/update_rec/
-  _fetch_rec_from_reader/get_ci_rca_strict_mode) use a function-local deferred import inside
-  the calling function, both to avoid a module-load cycle and so a facade-level patch of that
-  target is picked up at call time.
+  driving caller has ALSO moved to a submodule. Cross-module calls FROM a submodule TO a
+  facade-resident function use a function-local deferred import inside the calling function,
+  both to avoid a module-load cycle and so a facade-level patch of that target is picked up at
+  call time. The current moved-symbol roster (which callers moved where, and which patch
+  namespace each now resolves to) is maintained authoritatively in
+  `scripts/checks/ci_guards/validate_ops_portal_patch_targets.py`'s `_MOVED_CALLERS` table, not
+  restated here.
 - Coverage-gate mapping is DELIBERATELY NOT extended: scripts/test_coverage_checker.py's
   map_source_to_test leaves scripts/ops_portal/** unmapped (returns None -> skipped), identical
   to how scripts/executor/** and scripts/verifiers/** are already treated. The per-file 100%
@@ -2747,16 +3189,10 @@ one addition -- a patch-interception hybrid:
   across ~10 files (test_ops_data_portal.py plus test_ci_rca_*.py / _decisions / _validators)
   and no single test file covers a whole portal region -- consolidating those is a test
   reorganisation outside a behaviour-preserving code move. Deferred, not resolved.
-- check_source_registry.py (scripts/checks/ops_governance/) is extended to also scan
-  scripts/ops_portal/*.py for hardcoded source string literals, so the two literals that moved
-  out of the facade (ci_rca_warn_period_audit -> ci_rca_runtime.py, manual ->
-  maintenance_ops.py) stay validated against source_registry.yaml.
-- .importlinter's no-cycles-ops-data-portal-executor contract gains scripts.ops_portal as a
-  layer strictly between scripts.ops_data_portal and scripts.executor, with three new
-  ignore_imports entries (scripts.ops_portal.maintenance_ops / ci_rca_runtime / cli ->
-  scripts.ops_data_portal) mirroring the existing scripts.executor.jsonl_store carve-out --
-  the deferred-import mechanism above is invisible to import-linter's static layers check, so
-  each submodule making such a call must be named explicitly.
+- The layer boundary (.importlinter's no-cycles-ops-data-portal-executor contract, with
+  scripts.ops_portal strictly between scripts.ops_data_portal and scripts.executor) and the
+  hardcoded-source-literal static scan across the new modules (check_source_registry.py) are
+  owned by those surfaces, not restated here.
 - Decision 123 / T1.5 / CD.10 coordination: this mechanical, behaviour-preserving facade split
   is NOT in conflict with Decision 123's revival of the stashed agent/ops-decisions-phase-2 WIP
   inside T1.5. T1.5 is strategic=true and status=not_started, frozen by Decision 67 (STRATEGIC
@@ -2861,6 +3297,17 @@ planning).
 split rests on -- why T4.2's agentic personas route to these LiteLLM tiers even though Decision
 116's agentic criterion reaches them on its face -- and records the substrate-set collapse a reopen
 would cause. Audit finding ESB-03. No tier, provider, or reversal condition in this entry changes.]
+
+[Amendment 2026-08-19: Decision 173 converts this entry's tier model from vendor-anchored to
+ROLE-based. Tier 1 and Tier 2 name the primary and warm-fetched-fallback ROLES; DeepSeek-direct and
+Anthropic-direct are recorded here as the then-current selections and as EXAMPLES of that mechanism,
+not as architecture. The model ids and provider values now live in
+docs/contracts/inference-provider.yaml (model_id_formats.litellm_tier_models, the sole home), and
+this entry's >5x-price and >70%-pool reversal conditions are re-keyed there onto the PRIMARY role's
+metered unit price and the FALLBACK role's fixed-non-rollover allowance. A contract edit may not
+fill a role from retired_providers, and may not fill both roles from one vendor. Nothing else in
+this entry changes: LiteLLM as the sole Layer-1 inference surface, Bedrock's retirement, and the
+Decision-121 layer reconciliation stand.]
 
 ---
 
@@ -3013,6 +3460,15 @@ Decision; terraform/CLAUDE.md and the planning SKILL carry enforcement/guidance 
 55 (RCA-first / loud failure -- the proxy-skip predicate is a narrow co-occurrence check, never a
 bare "403" substring, so it cannot mask a genuine non-github failure).
 
+> **Update (2026-08-25):** The reversal condition above (an S3-backed `provider_installation`
+> `filesystem_mirror`) was realized by Decision 120's `terraform-provider-mirror-seed.yml` /
+> `tf-provider-mirror/` mechanism -- unnoticed at the time because prose reversal conditions (unlike
+> the fenced YAML kind) are not machine-monitored. Per Decision 120's own text this RELAXES, not
+> REMOVES, the CI-delegation this Decision establishes for the routine (non-admin) flow:
+> `validate`/`plan`/`apply` for `terraform/personal` stay CI-mediated there; only the ADMIN
+> container's interactive human-gated loop regained local `init`. Routed to the operator for a
+> disposition -- not resolved here.
+
 ---
 
 ## Decision 118: Ratify CD.25 -- pre-codegen contract ratification ritual (scoped, necessary not sufficient) (Decided)
@@ -3090,6 +3546,12 @@ SSOT into multiple files reintroduces the sync-drift risk this decision closes.
 **Related:** Decision 44 (superseded), Decision 116 (companion decision in the same ULF-05 audit
 closure session), audits/unclosed-loops-44ef5c6.yaml ULF-05.
 
+> **Update (2026-08-25):** The reversal condition above has fired: `scripts/classify_automatable.py`'s
+> `_BOUNDARY_PATTERNS` duplicate list now carries 19 entries against `capabilities.yaml`'s 33 --
+> missing `tests/conftest.py` and the entire 13-entry infrastructure-boundary section
+> (`terraform/`, `.tf`, `.github/workflows/`, etc.) added to `capabilities.yaml` since. Recorded per
+> this Decision's own condition; routed to the operator for the lockstep fix, not resolved here.
+
 ---
 
 ## Decision 116: Scheduled-agent provider routing -- routine/non-agentic agents to LiteLLM (DeepSeek), judgment/agentic agents to claude -p (Supersedes Decision 49; amends CD.28's scheduled-agent clause) (Decided)
@@ -3142,6 +3604,16 @@ scheduled agents. T4.2's executor personas are agentic tool-using loops by this 
 criterion but route to the Decision 122 LiteLLM tiers; Decision 164 records why, and records the
 substrate-set collapse a reopen would cause. Audit finding ESB-03. No scheduled-agent routing in
 this entry changes.]
+
+[Amendment 2026-08-19: Decision 173 re-keys this entry's reversal condition off vendor identity:
+"shared Anthropic Max-pool capacity contention between executor Tier-2 and scheduled-agent
+claude -p usage" is read as contention on whatever FIXED, NON-ROLLOVER ALLOWANCE fills the executor
+fallback ROLE, together with the scheduled-agent draw on that same allowance. The scheduled-agent
+split itself is unchanged -- routine/non-agentic to the primary tier, judgment/agentic to
+claude -p, realization still T4.3-owned -- and copilot-sdk and gemini stay retired: Decision 173
+clause 2(a) forbids filling any tier role from retired_providers, so no contract edit can restore
+them. A swap changing the vendor or billing shape under the coupling above re-arms this condition
+and owes a further dated annotation here.]
 
 ---
 
@@ -3319,6 +3791,13 @@ agent-first structured-data exemplar (e.g. a return to markdown-with-prose canon
 **Related:** Decision 86 (rationale-to-Decisions / field-semantics-to-contracts, no new prose-
 architecture docs -- the discipline this exemplar embodies), Decision 105 (the ratification lane
 executing this); T5.5 (the ongoing broader migration this Decision does not claim finished).
+
+> **Update (2026-08-25):** `scripts/preflight/prose_context.py`'s module docstring and its
+> preflight-report heading ("Prose context (Decision 110)") cite this Decision as authority for
+> prose-context byte measurement (the S1/S2/S3/S4/S8 categories) -- content this Decision's own
+> body never states; this ratifies CD.13 on `ROADMAP-PLATFORM.yaml` as a structured-data exemplar,
+> not a prose-budget measurement mechanism. A loose inbound citation, recorded here; routed to the
+> operator to re-point it or file a clarifying rec, not resolved here.
 
 ---
 
@@ -3645,29 +4124,17 @@ toward the reduction that Decision 43 itself mandated.
 
 **Decision:**
 The `# complexity-waiver: decision-43` comment no longer authorises unbounded SLOC growth.
-Oversized scripts/ and src/ Python files are instead pinned to their current size in a
-checked-in registry (`config/sloc_budgets.yaml`) and enforced by `validate_sloc_limits` at
-`current SLOC <= budget`. Budgets ratchet DOWN only:
-
-- Raising a budget requires a manual, reviewable edit to `config/sloc_budgets.yaml`.
-- Shrinking a file and re-running `validate --update-sloc-budgets` automatically lowers the
-  registered budget to the new size.
-- Files that shrink to <=500 SLOC are dropped from the registry automatically.
-- A file >500 SLOC that is NOT registered in `config/sloc_budgets.yaml` fails the gate,
-  regardless of whether it carries the waiver comment.
-- A file <=500 SLOC that still carries the waiver comment is a stale-waiver advisory (not a
-  failure), because the comment may still be load-bearing for the cyclomatic-complexity gate
-  (validate_cc_limits). Do not remove the comment without verifying the CC gate first.
+Oversized Python files are instead pinned to their current size in a checked-in registry
+(`config/sloc_budgets.yaml`) and enforced by `validate_sloc_limits` at `current SLOC <= budget`.
+Budgets ratchet DOWN only. The registry's raise path, auto-lowering on shrink, auto-drop at
+<=500 SLOC, unregistered-oversized failure, and stale-waiver-advisory semantics -- plus the
+repo-relative key convention that survives module moves -- are maintained authoritatively at
+`config/sloc_budgets.yaml`'s header and `scripts/checks/sloc/sloc_limits.py`, not restated here.
 
 **Preserved from Decision 43:**
 The cyclomatic-complexity (CC) row of Decision 43 is UNCHANGED. The `_WAIVER_PATTERN` and the
 `validate_cc_limits` gate are not modified by this decision. The shared waiver comment still
 waives the CC gate; its SLOC semantics are amended here only.
-
-**Forward-compatibility (Decision 80):**
-`config/sloc_budgets.yaml` keys are repo-relative forward-slash paths. When `scripts/validate.py`
-is decomposed per Decision 80, keys are re-pointed at the new module paths via
-`validate --update-sloc-budgets`. No other migration is required.
 
 **Deferred breakdown program:**
 The breakdown of registered files below 500 SLOC (split each file, drop from registry,
@@ -3678,11 +4145,31 @@ consumes; it does not resolve rec-2414.
 Decision 73 (one-directional enforced-budget ratchet precedent), Decision 86 (rationale routed
 to this numbered Decision).
 
+> **Update (2026-08-24, wave restructure):** The raise-approval marker mechanism this registry
+> depends on (`# raise-approved: dec-NNN <reason>`) was recorded against Decision 128; its scope
+> was widened by Decision 130 from scripts/ and src/ to every hand-authored directory; marker
+> validation was upgraded by Decision 165 from bare existence to authorization. See those entries
+> for the mechanism's current shape.
+
 ## Decision 101: External brand identity (Theseus / Guerdon / Semanto) -- presentation-layer only, with a scoped Agent-First marketing-prose exception (Decided)
 
 **Status:** Decided
 **Date:** 2026-06-28
 **Warehouse ID:** dec-101 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+> **Amended by Decision 171 (2026-08-16):** three clauses move, and only three. (1) Point (b)'s
+> **repository-name row** is promoted into the presentation layer -- the repository is renamed
+> `benjamin-blake/agent-platform` -> `benjamin-blake/theseus`. This is the "separate explicit
+> decision" that row required. The other four (b) rows -- `agent-platform-*` AWS resource
+> prefixes, the `agent_platform` IAM profile, the `agent_platform` Glue database, and
+> `project_id = trading-system` -- are re-affirmed FROZEN, and the deep internal rename stays
+> deferred post-MVP. (2) Point (f)'s **deferred paid service offering** is discharged for the
+> LICENCE half only: Decision 171 relicenses to BUSL-1.1 and authorises dual licensing, but
+> builds no commercial surface, pricing or terms, so the remainder of that deferral stands.
+> (3) Point (f)'s **"secondary aspiration: open-source community"** is amended: BUSL-1.1 is
+> source-available, NOT OSI open source, and contributions now require a copyright assignment
+> or equivalently broad grant (`CONTRIBUTING.md`). Points (a), (c), (d) and (e) are unedited;
+> see Decision 171 for the full derivation.
 
 **Problem:**
 The platform and its trading product were operating under purely internal identifiers (repo
@@ -4056,36 +4543,22 @@ Ratifying seven contracts over this draft would ratify the accretion. The model 
 Adopt a session-rooted trace/observation model (the OpenTelemetry / Langfuse shape) and collapse the
 seven draft tables to FOUR canonical tables:
 
-1. **telemetry_sessions** -- the trace ROOT. One row per session; PK session_id. Root-unification anchor:
-   every telemetry row traces back to a session. A spawned sub-agent gets its own session linked to its
-   parent via `parent_session_id` (nullable), so agent work is rooted, not orphaned. Carries project_id
-   as a forward-declared field (realized at T2.17, per the project-id.yaml Class C pattern).
-
-2. **telemetry_observations** -- the unified node table. One row per observation (a timed node in the
-   session's trace tree); PK observation_id; FK session_id (root); FK parent_observation_id (nullable
-   self-reference, building the tree). An `observation_type` discriminator
-   (phase | step | process_event | model_call | ...) absorbs the four collapsed sibling tables. This is
-   the core unification: one node table with a type column and a parent pointer, not four sibling tables.
-
-3. **telemetry_transcripts** -- large-payload sidecar. Prompt / response / transcript blobs, linked by FK
+1. **telemetry_sessions** -- the trace ROOT; one row per session (PK session_id), every telemetry row
+   traces back to it; a spawned sub-agent's session links to its parent via `parent_session_id`.
+2. **telemetry_observations** -- the unified node table; one row per timed node in a session's trace
+   tree, discriminated by `observation_type` (phase | step | process_event | model_call | ...),
+   collapsing the four sibling draft tables into one.
+3. **telemetry_transcripts** -- the large-payload sidecar; prompt / response / transcript blobs, FK'd
    to observation_id (and session_id), kept OUT of telemetry_observations so the node table stays small
-   and hot. One row per blob.
+   and hot.
+4. **telemetry_agents** -- the agent dimension (agent_type, model, version); identifies WHICH agent a
+   session / observation belongs to, replacing telemetry_agent_invocations.
 
-4. **telemetry_agents** -- the agent dimension. Identifies WHICH agent (agent_type, model, version) a
-   session / observation belongs to, joined by session_id / observation_id. Replaces
-   telemetry_agent_invocations: agent identity becomes a rooted dimension, and the agent's WORK is
-   captured as observations / linked sub-sessions, resolving the rootless-invocation defect.
-
-**Root unification rule:**
-Every telemetry row is reachable from a telemetry_sessions row. There are no rootless telemetry entities.
-Cross-agent linkage uses `parent_session_id` (sub-agent session -> spawning session); in-session
-structure uses `parent_observation_id` (observation -> parent observation). The two pointers together
-form one connected trace tree per top-level run.
-
-**Collapse rule:**
-telemetry_phases, telemetry_steps, telemetry_process_events, telemetry_model_calls are NOT separate
-tables. They are values of `telemetry_observations.observation_type`. The discriminator's accepted-value
-set is ratified per-table at T0.12.6.
+Root unification (every row reachable from a telemetry_sessions row, via `parent_session_id` across
+agents and `parent_observation_id` within a session) and the collapse rule (the four retired sibling
+tables become values of `telemetry_observations.observation_type`) are maintained at
+`docs/contracts/telemetry-lexicon.yaml` and the telemetry_observations Class A contract, not restated
+here.
 
 **Canonical lexicon:**
 The canonical vocabulary (session / trace, observation, observation_type, transcript, root unification,
@@ -4095,15 +4568,6 @@ gate skips (no top-level `contract:` / `class:`, per the read-engine.yaml / stor
 precedent). The lexicon is term-level only: per-field DQ checks live in
 config/agent/data_quality/telemetry.yaml and per-field contract semantics in the Class A contracts. It
 exists so every downstream telemetry contract, prompt, and agent ratifies against ONE vocabulary.
-
-**session-id.yaml amendment (recorded; executed at T0.12.6):**
-session-id.yaml (Class C, ratified at T0.12.7) is amended ADDITIVELY -- semantic_break: false -- when the
-new contracts land: a `prose_improvement` entry updates its stale six-table star-schema description to the
-four-table model, and a `governance_note_add` entry records ULID as the canonical target for session_id
-(Decision 97). No format flip and no field change occur in the amendment; the closed CD.25 change_class
-vocabulary (INTENT Part 4 Invariant 3) carries no breaking-format class precisely because such a change is
-forward-declared, not applied in place. The edit is coupled to the new Class A contracts and is therefore
-part of the re-scoped T0.12.6, not this REPORT-ONLY decision.
 
 **Decision 67 reversal-predicate restatement:**
 Decision 67's STRATEGIC-clause reversal condition names the draft tables telemetry_process_events,
@@ -4115,14 +4579,6 @@ passing data quality checks, AND executor re-enabled per CD.17 / T4.2." The four
 replaced by telemetry_observations; telemetry_sessions is retained; telemetry_transcripts /
 telemetry_agents are added. The AND-executor-re-enabled clause and the CD.17 / T4.2 gate are unchanged.
 Decision 67's reversal-condition text gets an inline pointer to this restatement.
-
-**T0.12.6 re-scope:**
-T0.12.6 (Ratify Class A telemetry table contracts) is re-scoped in this plan from seven per-table plans
-to: four table contracts (telemetry_sessions, telemetry_observations, telemetry_transcripts,
-telemetry_agents), two new Class C key contracts (observation-id.yaml, parent-observation-id.yaml at
-contract_version: 1), and the additive session-id.yaml amendment above. decomposition_hints, exit_criteria,
-name, and intent are updated; related_decisions records this decision. The roadmap edit lands with this
-decision.
 
 **Scope:**
 REPORT-ONLY. No code or runtime behaviour changes. Deliverables are this decision (95-97), the
@@ -4211,17 +4667,12 @@ New platform work is MVP-critical by default; items leave MVP scope only by cons
 **PLATFORM-INTERNAL scoping:**
 The no-live-dep restriction is enforced by platform_roadmap.py model_validator ONLY -- not added to product_roadmap.py. Cross-roadmap edges from ROADMAP-PRODUCT.yaml to deferred platform items (e.g. E.env.3 -> PLATFORM:T2.9) are permitted and remain dormant until product work begins, per the platform-first directive [ratified with reversal conditions by Decision 133 (2026-07-16); the circular "until product work begins" / "product roadmap is activated" end-condition is superseded by Decision 133's named conditions]. These edges are revisited when the product roadmap is activated.
 
-**Items parked (deferred_post_mvp) at Decision 93 ratification:**
-- T2.8 (backup/DR posture for the personal account): clean leaf; hardening, not on the autonomous-loop critical path.
-- T2.9 (secrets rotation policy + automation): hardening; platform edge T2.14 corrected (see below); product edge E.env.3 left dormant per platform-first directive [ratified with reversal conditions by Decision 133].
-- T2.11a (Codespaces devcontainer substrate): public-surface polish; not in the autonomous-loop critical path.
-- T2.11b (public-portal artefacts): co-parked with T2.11a (depends_on T2.11a; same public-surface-polish category; downstream T2.12/T2.13 already complete so nothing live is stranded).
+**Items parked (deferred_post_mvp) at Decision 93 ratification:** T2.8, T2.9, T2.11a, T2.11b.
+Each item's live status, parking rationale, and any dormant cross-roadmap edges are maintained
+per-item at `docs/ROADMAP-PLATFORM.yaml` (status + `progress_note`), not restated here.
 
 **T5.2 exclusion rationale:**
 T5.2 (teardown) was considered but excluded: it is a near-due cost-saver (grace elapses ~2026-06-28), user_action_required, and currently eligible. Parking it would hide a billing-stopper from the eligibility surface.
-
-**T2.14 depends_on edge correction:**
-T2.14 (broker credential routing) declared depends_on: [T2.1, T2.9]. The T2.9 edge was incorrect: T2.14 provisions its own Secrets Manager surface and does not require rotation automation as a prerequisite. Edge re-pointed to depends_on: [T2.1]. Required for the no-live-dep invariant to pass with T2.9 parked.
 
 **Related:** Decision 73 (sandbox-only / forward-fix posture -- the boundary is consistent with it, not a re-derivation), Decision 75 (frame-lock anti-pattern; defer-by-exception avoids it), Decision 80 (validate.py single source of truth; the invariant lives in platform_roadmap.py model_validator, picked up by validate_platform_roadmap via load()), Decision 86 (no new prose-architecture doc; boundary semantics live in Decision 93 + ROADMAP-PLATFORM.yaml agent_instructions only), Decision 90 (four-tier workflow; parked items are excluded from the next_eligible eligibility surface, not surfaced in an orient bucket).
 
@@ -4470,19 +4921,41 @@ The free-tier breach proved the cap is real and the access pattern, not the work
 **Decision:**
 1. Plans, plan-critiques, and plan-revisions WILL become first-class warehouse entities. Destination state: warehouse-authoritative, on the DuckLake-on-Neon SCD2 substrate (Decision 84).
 2. The authority-flip from git to warehouse is TIMED to the existence of the autonomous plan producer (`plan_agent`, a T4.x capability gated behind the CD.17 executor freeze) -- NOT now. For the interactive era, git/PR remains the authoritative approval surface, because `PLAN-{slug}.yaml` artefacts are human-authored, low-frequency, and diff-reviewed -- every property that favours git as source-of-truth. Warehouse-authoritative is the right model only once a machine produces plans at frequency.
-3. Until the flip, `ops_plans` is a downstream read-projection of the git-authoritative `PLAN-{slug}.yaml`, populated by git->warehouse ETL. This is the legitimate write path under the Decision 84 warehouse-SoT invariant -- the same sanctioned "ETL from a non-warehouse source of truth" pattern as `DECISIONS.md -> ops_decisions`, not a read-cache-as-write-source violation. The warehouse-SoT invariant remains absolute for operational records (recs, decisions, queue); plans are scoped as projection-until-T4.x.
-4. Lifecycle splits across three surfaces, by purpose:
-   - `ops_plans` (SCD2) -- the plan document + status gate: `pending -> approved | rejected | needs-revision` (lifecycle-state closure per Decision 70).
+3. Until the flip, `ops_execution_plans` is a downstream read-projection of the git-authoritative `PLAN-{slug}.yaml`, populated by git->warehouse ETL. This is the legitimate write path under the Decision 84 warehouse-SoT invariant -- the same sanctioned "ETL from a non-warehouse source of truth" pattern as `DECISIONS.md -> ops_decisions`, not a read-cache-as-write-source violation. The warehouse-SoT invariant remains absolute for operational records (recs, decisions, queue); plans are scoped as projection-until-T4.x.
+4. [Amended 2026-08-19, PLAN-executor-two-plane-roadmap-encoding: consolidated onto ONE plans table.] Lifecycle lands on a single plans table plus telemetry, by purpose:
+   - `ops_execution_plans` (SCD2) -- the plan document + status gate: `pending -> approved | rejected | needs-revision` (lifecycle-state closure per Decision 70).
      [Amendment 2026-07-03, Decision-70 mis-cite (audit f80508b): the "lifecycle-state closure per
      Decision 70" citation above is a mis-cite -- the closure-proof principle is Decision 103;
      Decision 70 governs Physical Deletion of Bootstrap Records.]
-   - `ops_plan_revisions` -- machine-actionable revision directives (the imperative: "change X -> Y"), authored by the critique agent for planning-agent consumption. A revision-request is to a plan what a rec is to the repo; the two may converge in shape later but are not unified now.
-   - telemetry -- the critique's full deliberation/rationale (observability), for optimization and debugging. The imperative lives in `ops_plan_revisions`; the deliberation lives in telemetry; they are not duplicated.
-5. RBAC is enforced at the verb layer, extending the Decision 84 closed writer boundary (I-2 writer-owned keyspace, I-3 named verbs) and the Decision 81 cl.2 extensible verb surface: planning agents get an `insert_plan` verb that hardcodes `status=pending` and cannot mutate status; critique agents get `set_plan_status` + `insert_revision` and cannot author plan bodies. All plan writes transit `ops_data_portal` (Single-Portal Invariant, Decisions 69/78); ids are writer-allocated atomically, never client-side.
-6. Plans and recs remain distinct grains: a rec is WHAT work should be done; a plan is HOW to implement it. Planning and implementation stay sequentially coupled (the executor's runtime `ExecutionPlan` stays in-process; only its persisted document would ever join `ops_plans`). Decoupling -- where plans are written faster than implemented and can go stale against an evolving repo -- is gated on a plan-staleness story (base-commit pinning + divergence detection + re-validate-before-implement) that does not yet exist. Frame-lock-aware deferral per Decision 75.
+   - The original clause 4 split plan state across a SECOND, separate plans table and a companion `ops_plan_revisions` directive table. That two-table split is RETIRED-BEFORE-BUILT: neither table was ever created, so there is no migration, no deprecation window and nothing to delete. `ops_plan_revisions` was a critic-authored DIRECTIVE INBOX (machine-actionable revision directives -- the imperative "change X -> Y", authored by the critique agent for planning-agent consumption), never a history table; the consolidation therefore holds because `critique_history`, already a column on the single plan row, IS that directive's home under the critic-or-gate authorship boundary -- the critic or the gate appends the verdict and its imperative there, and the planner reads them from the row it already fetches rather than recording a verdict against itself. The SCD2 grain of the single plans table (one row per plan revision; current = latest revision) is a supporting fact, not the reason.
+   - telemetry -- the critique's full deliberation/rationale (observability), for optimization and debugging. The imperative lives in `critique_history` on the single plans table; the deliberation lives in telemetry; they are not duplicated.
+5. RBAC is enforced at the verb layer, extending the Decision 84 closed writer boundary (I-2 writer-owned keyspace, I-3 named verbs) and the Decision 81 cl.2 extensible verb surface: planning agents get an `insert_plan` verb that hardcodes `status=pending` and cannot mutate status; critique agents get `set_plan_status` plus the critique-append verb on the single plans table, and cannot author plan bodies. [Amended 2026-08-19, same plan: the original grant named `insert_revision`, whose target table clause 4 above retires, so that one verb is RE-POINTED at the critique-append verb on the single plans table `ops_execution_plans`, which writes `critique_history` and nothing else. Clause 5's verb-RBAC PRINCIPLE -- writer-layer role scoping -- is unchanged, and stays a writer concern rather than a schema one.] All plan writes transit `ops_data_portal` (Single-Portal Invariant, Decisions 69/78); ids are writer-allocated atomically, never client-side.
+6. Plans and recs remain distinct grains: a rec is WHAT work should be done; a plan is HOW to implement it. Planning and implementation stay sequentially coupled (the executor's runtime `ExecutionPlan` stays in-process; only its persisted document would ever join `ops_execution_plans`). Decoupling -- where plans are written faster than implemented and can go stale against an evolving repo -- is gated on a plan-staleness story (base-commit pinning + divergence detection + re-validate-before-implement) that does not yet exist. Frame-lock-aware deferral per Decision 75.
+
+[Amendment 2026-08-19, PLAN-executor-two-plane-roadmap-encoding -- RESIDENCY-SCOPED; clause 4 consolidated onto one plans table.]
+Clause 2 above times the git-to-warehouse flip to the existence of the autonomous plan producer, while
+T4.5's deferral rationale held that no warehouse consumer of plans exists until the T4.6 loop. Those two
+are CIRCULAR once that producer is designed: the producer cannot function until its own plans are
+warehouse-readable, so the producer's existence cannot itself be the trigger that makes them so. This
+amendment breaks the circularity by separating RESIDENCY from AUTHORITY, and it moves RESIDENCY only.
+Warehouse RESIDENCY of executor-authored plans -- written to, and read back from, `ops_execution_plans`
+by named verb -- is a PREREQUISITE for T4.2 rather than a consequence of it. The AUTHORITY flip is NOT
+moved: it stays timed to T4.6 exactly as clause 2 intended, so git/PR remains the authoritative approval
+surface for the human `PLAN-{slug}.yaml` planning surface until T4.6 executes that flip, and Decision 85's
+git-authoritative clause is not superseded early. Executor-authored plans are born warehouse-native and
+never had a git life, so for them there is nothing to flip at all. Clause 4 is amended in the same act:
+there is ONE single plans table, `ops_execution_plans`, and the originally-proposed two-table split is
+retired-before-built, with `critique_history` on that one row carrying the critic-or-gate directive the
+retired companion table would have held. The surviving NAME is ruled rather than left open:
+`ops_execution_plans` is the implemented name, carried on 278 matching lines across 80 files, 32 of them
+load-bearing -- terraform, `config/lambda/ducklake/field_semantics.yaml`, `.importlinter`, the
+verification and data-quality registries, the portal and sync modules, and 12 test modules -- while the
+rejected alternative name occurs on 30 prose-only lines across 8 files and in no schema, terraform, code,
+config or test file. Ease of standardisation decides it, and the ruling adds no work: the table already
+exists, so no rows, verbs, schema, terraform or contract entries move in either direction.
 
 **Rationale:**
-No downstream warehouse consumer of plans exists today, and the ones that would (autonomous `plan_agent`, plan-revision loop) are far off behind CD.17/T4.2. Flipping authority now would route the interactive loop through warehouse round-trips it does not need, for no consumer -- building ahead of need. Recording the destination + timing now captures the design while it is fresh and prevents both re-litigation ("should plans be warehouse entities?") and premature build. Form follows Decision 86: rationale here, field/schema semantics to `docs/contracts/*` (the `ops_plans`/`ops_plan_revisions` schema + verb-RBAC contract, when built), forward build intent to T4.x tier_items (T4.5-T4.7). No standing prose-architecture doc is created (intent-doc-freeze compliant).
+No downstream warehouse consumer of plans exists today, and the ones that would (autonomous `plan_agent`, plan-revision loop) are far off behind CD.17/T4.2. Flipping authority now would route the interactive loop through warehouse round-trips it does not need, for no consumer -- building ahead of need. Recording the destination + timing now captures the design while it is fresh and prevents both re-litigation ("should plans be warehouse entities?") and premature build. Form follows Decision 86: rationale here, field/schema semantics to `docs/contracts/*` (the single plans table's schema + verb-RBAC contract, as extended), forward build intent to T4.x tier_items (T4.5-T4.7). No standing prose-architecture doc is created (intent-doc-freeze compliant).
 
 **Forward note:** At the T4.x authority-flip, Decision 85's git-authoritative clause for plans (and the plan-scoping of the Decision 84 invariant in cl.3 above) is superseded by warehouse-authoritative; until then both stand. Build work, when it lands, decomposes into atomic IMPLEMENTATION-type plans -- no STRATEGIC plan is authored under the CD.17 freeze (Decision 67 STRATEGIC clause).
 
@@ -4544,6 +5017,9 @@ Historical PLAN-*.md files remain in the working tree and commit history; none a
 
 **Related:** CD.13, CD.22, T1.11, Decision 76 (clause 3 amended here), Decision 79 (ratification precedent), Decision 58 (superseded mirror rule), Decision 80 (registry-friendly check design).
 
+[Amendment 2026-08-24: the working-tree half of this clause was descriptive of ratification-time
+state, not a forward retention directive -- see Decision 174.]
+
 ---
 
 ## Decision 84: DuckLake is the sole ops-store backend; Athena ops estate retired; writer-owned keyspace; named-verb read boundary (Decided)
@@ -4571,6 +5047,15 @@ The T2.19 recs-first cutover left the ops store straddling two warehouses. The r
 semantics preserved inside the priority_queue_current verb)" citation above is a mis-cite --
 Decision 70 governs Physical Deletion of Bootstrap Records, not queue current-state semantics; the
 queue current-state semantics referenced here are this decision's own `priority_queue_current` verb.]
+
+> **[Amendment 2026-08-17, PLAN-agents-md-ambient-trim]:** rehomes the Iceberg-DELETE-resurrection
+> mechanism condensed out of AGENTS.md's read-cache-is-never-a-write-source hard rule. An Iceberg
+> DELETE removes only a snapshot; if the same row is re-staged from a stale local cache on any
+> clone, runner, or worktree, it is re-injected as a new append and wins the SCD2 dedupe because
+> `_prepare_record` (`scripts/ops_writer.py:199`) refreshes `last_updated_timestamp = now` --
+> producing an infinite resurrection loop in which deletes never stick. Scoped to the
+> still-Iceberg tables; the never-re-stage-from-a-read-cache rule applies to DuckLake tables (I-4)
+> regardless.
 
 ---
 
@@ -4891,34 +5376,34 @@ sandbox where no real capital is at risk.
 
 **Decision:**
 
-1. **Two-axis taxonomy (the durable fix).** Establish `docs/contracts/environment-taxonomy.md` as
+1. **Two-axis taxonomy (the durable fix).** Establish `docs/contracts/environment-taxonomy.yaml` as
    the canonical vocabulary contract. The PLATFORM environment axis (sandbox / SIT / PROD) answers
    "does this break infrastructure / is the money real"; the PRODUCT phase axis (research,
    backtest_canonical, paper, live_small, live_full) answers "does this strategy deserve capital".
-   Reserved vocabulary, enforced by `scripts/validate.py:validate_environment_taxonomy`:
-   "environment" = platform axis only; product states are "phases"; "promotion" must be
-   axis-qualified.
+   The reserved-vocabulary table and its lint enforcement (`scripts/validate.py:validate_environment_taxonomy`)
+   are maintained at that contract, not restated here.
 
 2. **Affirm the platform promotion train** (cite Decisions 24, 73). Section 6 of
    `INTENT-ci-cd-architecture.md` is the canonical platform-axis design. SIT and PROD remain
    future-state.
 
-3. **Scope Decision 35.** Permit sandbox auto-apply on push to main behind the deterministic guard
-   (`scripts/terraform_apply_guard.py`, fail-closed on any destroy / IAM / trust-policy change) plus
-   a subagent plan review (`.github/workflows/terraform-apply-sandbox.yml`). SIT and PROD stay
-   human-gated. This scopes -- does not overturn -- Decision 35: apply stays human-gated everywhere
-   except the mocked sandbox, where the guard + review are the compensating gate (Decision 89 /
-   CD.20: branch protection and required status checks are unavailable).
+3. **Scope Decision 35, not overturn it.** Permit sandbox auto-apply behind a deterministic guard
+   plus a subagent plan review. SIT and PROD stay human-gated. This scopes -- does not overturn --
+   Decision 35: apply stays human-gated everywhere except the mocked sandbox, where the guard +
+   review are the compensating gate (Decision 89 / CD.20: branch protection and required status
+   checks are unavailable). The guard's fail-closed classification (what auto-applies vs. what
+   routes to human-gated apply) and the no-TOCTOU apply-the-inspected-plan clause are maintained at
+   `docs/contracts/environment-taxonomy.yaml`'s guard_classification, not restated here.
 
 4. **Product promotion stays config-only.** CDP.6 / CDP.7 remain valid for the product axis:
    single-account, promotion-as-config-change. The ROADMAP-PRODUCT retirement is scoped to the
    product axis ONLY and does not touch the platform train.
 
-5. **Single-account-until-live_full (load-bearing).** The platform stays SINGLE-ACCOUNT (the current
-   personal account, sandbox environment only) until the product axis reaches live_full approaching
-   real capital -- that product event is the named trigger to stand up a dedicated SIT then PROD
-   account. Affirming the train as future-state does NOT re-introduce the multi-account posture
-   CDP.7 retired.
+5. **Single-account-until-live_full (load-bearing).** The platform stays single-account until the
+   product axis reaches live_full approaching real capital -- that product event is the named
+   trigger to stand up a dedicated SIT then PROD account. Affirming the train as future-state does
+   NOT re-introduce the multi-account posture CDP.7 retired. The rule is maintained at
+   `docs/contracts/environment-taxonomy.yaml`'s single_account_rule, not restated here.
 
 6. **Re-base Decision 24 vocabulary.** "staging" is renamed "SIT" on the platform axis. Decision
    24's `envs/sandbox.tfvars` multi-tfvars model is superseded by the `terraform/personal/`
@@ -4933,13 +5418,6 @@ sandbox where no real capital is at risk.
   manual admin-apply path regardless.
 - Single-account-until-live_full keeps the affirmation cheap: no new accounts are stood up until a
   concrete product event justifies them.
-
-**Constraints:**
-- The guard AND the workflow MUST fail closed: apply runs only on guard `success()`; the guard step
-  carries no `continue-on-error`; any non-zero guard exit blocks apply; apply consumes the SAME plan
-  file the guard inspected (no re-plan -- no TOCTOU).
-- The bootstrap (S3 backend migration + apply role creation) is a one-time MANUAL admin apply under
-  `agent_platform_admin`; the workflow takes over only afterwards.
 
 **Related:** Decision 24 (Multi-Environment Deployment Strategy), Decision 35 (Terraform Workflow
 Integration), Decision 73 (Two-Tier CI + promotion train), Decision 67 (STRATEGIC deferral; its
@@ -5042,16 +5520,14 @@ Recognise frame-lock as a named architectural-planning failure mode. Embed two m
 **Date:** 2026-05-22
 
 **Problem:**
-ci-rca runs `26284914206` and `26287172232` both failed at `Install Claude Code CLI` with `npm error code EACCES ... mkdir '/usr/lib/node_modules/@anthropic-ai'`. The runner's `npm install -g` runs as the `ubuntu` user, which lacks write access to the global node_modules directory. Although Ubuntu cloud AMIs grant passwordless sudo, the existing step did not use `sudo`. The result: every CI failure since 2026-05-22 produced no ci-rca rec -- the Decision 73 forward-fix model received zero failure signals while `ci_rca_liveness_alert` fired continuously (69.6 minutes elapsed at planning time, referencing run `26286390667`). Additionally, there was no mechanism to re-run ci-rca against a past failure without pushing a fake CI commit to trigger `workflow_run`.
+ci-rca runs failed at `Install Claude Code CLI` with `npm error code EACCES ... mkdir '/usr/lib/node_modules/@anthropic-ai'`. The runner's `npm install -g` runs as the `ubuntu` user, which lacks write access to the global node_modules directory. Although Ubuntu cloud AMIs grant passwordless sudo, the existing step did not use `sudo`. The result: every CI failure since 2026-05-22 produced no ci-rca rec -- the Decision 73 forward-fix model received zero failure signals while `ci_rca_liveness_alert` fired continuously. Additionally, there was no mechanism to re-run ci-rca against a past failure without pushing a fake CI commit to trigger `workflow_run`.
 
 **Decision:**
 Two changes to restore and harden the harness:
 
-1. **Sudo + pinned install in the workflow**: Replace `npm install -g @anthropic-ai/claude-code` with `sudo npm install -g @anthropic-ai/claude-code@2.1.148 --omit=dev --omit=optional && sudo npm cache clean --force`. Version pin `@2.1.148` locks the install to the version confirmed working as of 2026-05-22 (`npm view @anthropic-ai/claude-code dist.unpackedSize` returned 136KB unpacked). The `--omit` flags reduce install footprint on the 20GB volume (82% used, 3.6GB free).
+1. **Sudo + pinned install in the workflow**: Replace `npm install -g @anthropic-ai/claude-code` with `sudo npm install -g @anthropic-ai/claude-code@2.1.148 --omit=dev --omit=optional && sudo npm cache clean --force`. Version pin `@2.1.148` locks the install to the version confirmed working as of 2026-05-22. The `--omit` flags reduce install footprint on the runner volume.
 
-2. **workflow_dispatch escape hatch**: Add `workflow_dispatch: inputs: run_id` trigger to `.github/workflows/ci-rca.yml` so the agent can be manually re-dispatched against any past CI run ID without pushing a fake commit. Enables `gh workflow run ci-rca.yml --ref <branch> -f run_id=26286390667` to retroactively diagnose the SLOC limit violation on `scripts/product_roadmap.py` (631 SLOC) from the triggering CI failure.
-
-**Deferred:** Pre-baking the CLI in `terraform/ec2_runner.tf` user_data was planned but deferred. During implementation, `terraform plan` revealed that `data.aws_ami.ubuntu_22_04 { most_recent = true }` had resolved to a newer AMI (`ami-0adb4b73a38358d7c` -> `ami-02b81edd0fb821197`), causing the instance to be flagged for destroy-and-replace regardless of the user_data change. Recreating the production runner is out of scope. A follow-on plan should pin the AMI ID (removing `most_recent = true`) before attempting the user_data pre-bake apply.
+2. **workflow_dispatch escape hatch**: Add `workflow_dispatch: inputs: run_id` trigger to `.github/workflows/ci-rca.yml` so the agent can be manually re-dispatched against any past CI run ID without pushing a fake commit.
 
 **Rationale:**
 - EACCES is structural: non-root npm global install on Ubuntu requires sudo. `sudo` is the minimal correct fix.
@@ -5059,17 +5535,12 @@ Two changes to restore and harden the harness:
 - The `workflow_dispatch` trigger adds an operator escape hatch missing from Decision 72's original implementation without changing `workflow_run` semantics.
 - The existing runner self-heals via the workflow YAML change -- no runner recreation is needed for the immediate fix.
 
-**Constraints:**
-- Existing runner is NOT restarted or recreated. The `sudo` fix self-heals on the next ci-rca dispatch after this branch merges.
-- `CLAUDE_CODE_OAUTH_TOKEN` rotation (90-day expiry) deferred -- 90-day migration window to GitHub-hosted runners makes rotation unlikely to bite before migration lands.
-- Version `@2.1.148` is current as of 2026-05-22. Future plans may bump.
-
 **Acknowledges:**
 - Decision 72 (RCA-as-Plan-Source): this decision hardens the harness Decision 72 introduced.
 - Decision 73 (Forward-Fix CI model): this decision restores the failure-signal path Decision 73 depends on.
-- Decision 68 (Self-Hosted Runner): terraform apply deferred due to pre-existing AMI drift triggering instance replacement; see Deferred note above.
+- Decision 68 (Self-Hosted Runner): terraform apply deferred due to pre-existing AMI drift triggering instance replacement.
 
-**Related:** Decision 68, Decision 72, Decision 73, failed ci-rca run `26287172232`, triggering CI run `26286390667`
+**Related:** Decision 68, Decision 72, Decision 73
 
 > **Update (2026-07-21):** The self-hosted EC2 runner substrate this decision hardens was retired 2026-05-28 per CD.21, ratified by Decision 112. CI now runs on GitHub-hosted OIDC runners. The `workflow_dispatch` escape hatch (item 2) survives unchanged in `.github/workflows/ci-rca.yml`.
 
@@ -5456,30 +5927,16 @@ should expose field semantics before accepting a write, not only after rejecting
 
 **Semantic Enforcement Architecture (Wave 2 addendum -- 2026-05-10):**
 
-Formalised four enforcement tiers, each catching a different class of quality failure:
-
-- **Tier A -- Pre-write injection:** `get_rec_write_guidance()` surfaces ops.yaml
-  `description` + `semantics` + source registry to the agent before composition. Agents
-  that call this before `file_rec()` self-evaluate against the spec and produce higher-quality
-  values without being rejected. Auto-populated from ops.yaml column entries; no code change
-  to `rec_write_guidance.py` required when new fields are added to ops.yaml.
-
-- **Tier B -- Write-time deterministic rejection:** `file_rec()` validators enforce structural
-  rules that are always correct regardless of repository state: path format (`_validate_file_path`),
-  context length (`_validate_context_length` -- 80-char minimum), banned acceptance patterns
-  (`lint_acceptance_command`), source registry membership (`validate_source`), and formula-derived
-  fields (`automatable` from `compute_automatable`, `risk` from `compute_risk`). Validators are
-  in `scripts/ops_data_portal.py`. Agents cannot override `automatable` or `risk` directly;
-  the portal derives them from `config/executor_capabilities.yaml`.
-
-- **Tier C -- Execution-time feasibility:** `validate_acceptance_feasibility()` in
-  `scripts/executor/acceptance_lint.py` runs at executor invocation time, not write time.
-  File existence and module availability checks are intentionally deferred here -- the target
-  file may not exist until the executor creates it, so existence is context-dependent.
-
-- **Tier D -- LLM semantic judge:** Not yet implemented. Intended to detect acceptance commands
-  that are syntactically valid but semantically incorrect (e.g., grep for the wrong pattern,
-  pytest for the wrong test class). Filed as a recommendation for a future session.
+Four enforcement tiers, each catching a different class of quality failure: **Tier A** --
+pre-write injection, surfacing field semantics to the agent before composition. **Tier B** --
+write-time deterministic rejection, structural validators that are always correct regardless of
+repository state. **Tier C** -- execution-time feasibility; existence and availability checks are
+intentionally deferred to executor invocation time, not write time, because the target file may
+not exist until the executor creates it, so existence is context-dependent. **Tier D** -- LLM
+semantic judge, not yet implemented; filed as a recommendation for a future session. The
+per-function inventory (validator names and locations, the context-length floor, the
+automatable/risk derivation) is maintained at `docs/contracts/ops_recommendations.yaml`, not
+restated here.
 
 ---
 
@@ -5494,6 +5951,13 @@ new tables. Add field context as `description` + `semantics` in the YAML directl
 doc for ops_recommendations is a legacy artefact; it is not maintained going forward. The
 decision manifest YAML (`config/data_quality/decisions/{table}.yaml`) remains the remediation
 state authority.
+
+> **Update (2026-08-25):** `config/agent/data_quality/ops.yaml`'s own `tables.ops_decisions.description`
+> now reads "DECISIONS.md is decommissioned after Phase 3b" -- contradicted by the live
+> warehouse-as-source-of-truth model (Decision 84), under which `docs/DECISIONS.md` is the SOLE
+> write/ETL source for `ops_decisions`, never decommissioned. This Decision's own currency reads
+> `current`, so the owning contract and the live corpus disagree with no recorded resolution;
+> routed to the operator as a possible unrecorded supersession, not resolved here.
 
 ## Decision 64: Bootstrap Cohort Anchor for ops_recommendations is 2026-05-01 (Decided)
 
@@ -5779,44 +6243,10 @@ single-command session close.
 
 ## Decision 37: Lambda + GitHub Models API for Scheduled Agents (Decided)
 
-**Decision:** Replace the GitHub Actions scheduled-agents workflow with AWS Lambda functions
-that call the GitHub Models API directly, using a GitHub PAT stored in Secrets Manager.
+**Status:** Superseded
+**Date:** 2026-04
 
-**Context:**
-- Decision 36 (GitHub Actions OIDC) was blocked by SCP denying `sts:AssumeRoleWithWebIdentity`
-  from external IP ranges (GitHub Actions runner IPs)
-- Static IAM users are also blocked (`iam:CreateUser` SCP)
-- GitHub Models API (`https://models.github.ai/inference/chat/completions`) is compatible with
-  the same free-tier models used via Copilot CLI, accessible via PAT authentication
-
-**Implementation:**
-- `aws_lambda_function.scheduled_agent_dispatcher` — reads `schedule.yaml`, runs due agents
-  via GitHub Models API, writes findings to `agents/{name}/{timestamp}.jsonl`
-- `aws_lambda_function.findings_processor` — triggered by S3 ObjectCreated on `agents/` prefix,
-  unions findings to `findings/unified.jsonl`, compares against existing recs via Models API,
-  appends new ones to `recommendations/agent-recommendations.jsonl`
-- `aws_secretsmanager_secret.github_pat` — stores GitHub PAT (value set manually post-deploy)
-- EventBridge hourly rule triggers dispatcher; S3 event notification triggers processor
-- Lambda runs at `api.github.com` endpoint (no SCP restriction — Lambda egress is not blocked)
-
-**Trade-offs:**
-- Requires a GitHub PAT in Secrets Manager (manual step after `terraform apply`)
-- PAT must have GitHub Models API access (same scope as Copilot CLI PAT)
-- Lambda cold-start adds ~1s latency (acceptable for scheduled background work)
-- Free tier: 150 requests/day, 15 requests/minute — sufficient for 4 agents/week
-
-**S3 key layout:**
-```
-agents/{name}/{timestamp}.jsonl       ← raw findings per agent
-findings/unified.jsonl                ← union of all findings
-recommendations/agent-recommendations.jsonl  ← agent-generated recs (agent-NNN)
-```
-
-**Recommendation namespace separation:**
-- Local: `logs/.recommendations-log.jsonl` (IDs: `rec-NNN`) — manual sessions, code review
-- S3: `recommendations/agent-recommendations.jsonl` (IDs: `agent-NNN`) — Lambda-generated
-
-**Decision status:** Decided — April 2026
+**Decision:** Superseded by Decision 116 (scheduled-agent provider routing), which restates none of this entry's live content; the two still-live DERIVED patterns this entry's citers actually rely on (SECRET-VALUE-OUT-OF-BAND, RUNTIME-FETCH) migrated to `docs/contracts/secret-material-handling.yaml` via Decision 175's migrate_then_rehome branch (first exercise of that branch, `docs/contracts/decision-entry.yaml` `compaction.procedure`); kept live here rather than archived because five `terraform/personal` files, `terraform/bootstrap/github_ci_apply_reads.tf` and `scripts/ducklake_neon_smoke_test.py` still cite "Decision 37" by name (Decision 146's still-cited-live carve-out). This entry's ORIGINAL subject -- the scheduled-agent dispatcher/findings-processor Lambdas -- is dead, retired per CD.21.
 
 **Superseded by: Decision 116**
 
@@ -5855,6 +6285,13 @@ infrastructure changes.
 **Decision status:** Decided — April 2026
 
 [Amendment 2026-07-21: amended by Decision 77 clause 3 -- the unconditional "apply is never automatic" is scoped; sandbox auto-applies behind the deterministic guard (`scripts/terraform_apply_guard.py`) plus subagent plan review.]
+
+[Amendment 2026-08-25: `terraform/personal/oidc.tf` (3 sites) and `scripts/checks/iam_tf/_read_coverage.py`
+cite this Decision, paired with Decision 98, as authority for an "enumerated with literal ARNs" /
+exact-match IAM-statement principle -- content neither this Decision's body (terraform workflow
+gating in `/plan`/`/implement`) nor Decision 98's (CI-role provisioning model) states directly. A
+loose, propagated inbound citation, recorded here; routed to the operator to trace its origin and
+re-point it, not resolved here.]
 
 ---
 
@@ -5982,14 +6419,6 @@ terraform/
 - **Universal scope:** Every developer who runs setup automation gets the fix automatically; no separate workaround steps needed.
 - **Regex pattern choice:** Single targeted pattern (`r'VIRTUAL_ENV="([^"]+)"'`) minimizes risk of unintended modifications to script logic.
 
-**Design Validation:**
-Comprehensive test suite (5 tests) validated:
-- Basic Windows→Git Bash path conversion including drive letter transformation
-- Idempotency (running twice produces unchanged output)
-- Graceful handling when `.venv/Scripts/activate` doesn't exist (early return)
-- Content preservation (only VIRTUAL_ENV lines modified)
-- Edge case coverage (multiple drive letters D:, E:, etc.)
-
-**Status:** Agent-decided — approved by test suite (135/135 pass) and code review (0 Critical/High findings, 1 Low style suggestion implemented)
+**Status:** Agent-decided
 
 ---

@@ -301,44 +301,124 @@ cost_projection:
   executor_substrate_billing:
     provenance: Folded from audits/executor-substrate-and-billing-shape-ad02653.yaml billing_model (ESB-09); per-substrate envelope at concurrency=1 (T4.1's current cap), recorded scale 100-300 recs/month
     gross_free_tier_stance: Figures are GROSS. Lambda's 400k GB-s / 1M requests, the 4000 free SFN transitions and CloudWatch's 5 GB free tier are ignored, because a 2026-created account may sit on the post-2025 credit plan rather than the perpetual free tier (unverified)
-    non_discrimination_conclusion: At concurrency=1, every candidate substrate (durable_functions, sfn_over_stateless_workers, self_checkpointed_lambda_dynamodb, long_running_container, plus the near-zero-marginal-dollar hosted_cli_runner) costs single-digit-to-low-double-digit dollars per month at recorded scale; envelope deltas between AWS-priced candidates are <= approximately $10-15/month -- economics do NOT discriminate the layer-2 substrate choice
+    non_discrimination_conclusion: >-
+      NARROWED at concurrency=1: economics now discriminate AGAINST the codebuild-class candidate
+      only (aws_native_codebuild_runner, ASSESSED ELIMINATED, never a member of CD.27's pinned
+      candidate set); CD.27's pinned five (durable_functions, sfn_over_stateless_workers,
+      self_checkpointed_lambda_dynamodb, long_running_container, hosted_cli_runner) are UNCHANGED
+      and remain economically indistinguishable AT ANY FIXED SCALE POINT. Per
+      executor_substrate_billing.provenance's block-level "recorded scale 100-300 recs/month",
+      reading a band low as the 100-rec point and a band high as the 300-rec point: at the
+      100-rec band low the pinned four span 1/1/1/5 (max delta 4.0/month); at the 300-rec band
+      high they span 8/10/8/20 (max delta 12.0/month) -- both figures fall inside the prior
+      approximately $10-15/month non-discrimination reading once compared AT THE SAME scale
+      point rather than across scale points.
     per_substrate_envelope_usd_per_month:
       durable_functions:
         envelope: "1-8"
         note: per-operation $8.00/M ops at 250-1000 ops/rec (0.20-0.80) plus data-written and retention terms
         region: eu-west-2
         rate_basis: AWS Price List bulk offer files, region eu-west-2, fetched 2026-08-01
+        provenance_class: aws_price_list
+        in_pinned_candidate_set: true
       sfn_over_stateless_workers:
         envelope: "1-10"
         note: transitions dominate at higher per-iteration counts (I~20-30 iterations x 5 personas)
         region: eu-west-2
         rate_basis: AWS Price List bulk offer files, region eu-west-2, fetched 2026-08-01
+        provenance_class: aws_price_list
+        in_pinned_candidate_set: true
       self_checkpointed_lambda_dynamodb:
         envelope: "1-8"
         note: DynamoDB on-demand write/read plus storage; state lives in owned storage
         region: eu-west-2
         rate_basis: AWS Price List bulk offer files, region eu-west-2, fetched 2026-08-01
+        provenance_class: aws_price_list
+        in_pinned_candidate_set: true
       long_running_container:
-        envelope: "~5"
-        note: Fargate x86 0.04656 usd per vCPU-hr plus 0.00511 usd per GB-hr at roughly 1 task-hour/rec
+        envelope: "5-20"
+        note: >-
+          Fargate x86 0.04656 usd per vCPU-hr plus 0.00511 usd per GB-hr; ~1 task-hour/rec at 100
+          recs/month (band low, 2026-08-01 Price List basis) widening to ~1.2 task-hours/rec at
+          300 recs/month (band high, OE-07/OE-08 operator estimate, 2026-08-21 session).
         region: eu-west-2
         rate_basis: AWS Price List bulk offer files, region eu-west-2, fetched 2026-08-01
+        provenance_class: aws_price_list
+        in_pinned_candidate_set: true
+        utilisation_basis: >-
+          RATE remains Price-List-provenanced (AWS Price List bulk offer files, region eu-west-2,
+          fetched 2026-08-01, unchanged); the UTILISATION producing the band high is an operator
+          estimate (OE-07/OE-08, 2026-08-21 session), explicitly not measurement.
+      aws_native_codebuild_runner:
+        envelope: "~108"
+        assessment: "ASSESSED, ELIMINATED at current shape"
+        in_pinned_candidate_set: false
+        provenance_class: published_pricing_page_regional
+        region: eu-west-2
+        rate_basis: "AWS published pricing page (regional), region eu-west-2, fetched 2026-08-21"
+        note: >-
+          Best orchestration integration in the set -- the optimized Step Functions
+          codebuild:startBuild.sync integration returns the full Build object (status, phases,
+          resolvedSourceVersion, log group) with a StopBuild kill switch, a 36h timeout ceiling,
+          64-128 GB disk, custom ECR images to 50 GB, private-by-default logs. Eliminated on
+          price plus region plus quota, NOT on integration: eu-west-2 on-demand bills full
+          wall-clock per-minute rounded up with no idle discount (general1.small 0.005 usd/min =
+          0.30 usd/h, ~2.6x the equivalently-sized 2vCPU/4GB Fargate shape -- against 1vCPU/2GB
+          the ratio is 5.3x); both escape hatches (Lambda compute per-second, reserved fleets)
+          are absent from eu-west-2; the concurrent-build quota is self-contradictory in AWS's
+          own docs (table says 1 per compute type, prose says 20 default for some platforms)
+          exactly where OE-08's 5-wide scout swarms sit. If ever revisited: eu-west-1 restores
+          both escape hatches (the region trade was rejected for data-lake and Neon co-location
+          in London); StartBuild's buildspecOverride/serviceRoleOverride/imageOverride are a
+          lateral-movement surface AWS itself flags, needing condition keys.
+      agentcore_managed_runtime:
+        envelope: "~13"
+        assessment: "ASSESSED, VIABLE BUT UNJUSTIFIED at current scale"
+        in_pinned_candidate_set: false
+        provenance_class: published_pricing_page_unqualified
+        region: not_region_qualified
+        region_caveat: >-
+          AWS publishes no eu-west-2 price list for Bedrock AgentCore Runtime while runtime
+          microVMs are GA in eu-west-2; the published rate is region-unqualified.
+        rate_basis: "AWS published pricing page (region-unqualified), fetched 2026-08-21"
+        note: >-
+          The no-CPU-during-idle property is REAL, verified for CPU (pricing page: I/O wait and
+          idle time free if no background process runs; AWS's example confirms it
+          arithmetically) at 0.0895 usd/vCPU-h plus 0.00945 usd/GB-h. CAVEAT: memory appears
+          billed on wall-clock INCLUDING waits (peak-memory-consumed-up-to-that-second formula;
+          reverse-engineering AWS's example reconciles only on full session seconds) -- a
+          HYPOTHESIS needing AWS confirmation before any cost model relies on it. Model-agnostic
+          (any foundation model, in or outside Bedrock; no dec-122/CD.28 conflict). Eliminated at
+          current scale by STRUCTURE not billing: a 2 GB image cap, 1 GB session storage and 750
+          MB zip (none adjustable) cannot hold the 5.4 GB dependency env; the only escape (EFS/S3
+          Files) forces VPC mode: no internet by default, hence NAT gateway egress plus
+          site-packages over NFS; ARM64 containers mandatory; personas become HTTP servers with a
+          non-blocking ping heartbeat against a 15-min idle kill; session storage wiped each
+          runtime version update; no .sync SFN integration (optimized integration wraps
+          InvokeHarness only, Bedrock-Converse-shaped; needs SDK integration plus
+          waitForTaskToken). At OE-05 duty the advantage over Fargate is ~7 usd/month at 300
+          recs, which does not buy the rebuild. Q2's async-mode generalization is PARTIALLY
+          FALSIFIED: the no-CPU-during-wait mechanism exists in-region, but the ~1.9x Fargate
+          vCPU premium eats most of it below the ~42 percent duty break-even.
     durable_execution_corrected_rates:
       per_operation_usd:
         value: 0.0000134
         region: eu-west-2
         rate_basis: AWS Price List bulk offer files, region eu-west-2, fetched 2026-08-01
         note: corrects the audit's understated 8e-6 figure, 1.7x low
+        provenance_class: aws_price_list
       data_written_usd_per_gb:
         value: 0.41
         region: eu-west-2
         rate_basis: AWS Price List bulk offer files, region eu-west-2, fetched 2026-08-01
         note: corrects the audit's understated 0.25/GB figure, 1.6x low
+        provenance_class: aws_price_list
       retention_usd_per_gb_month:
         value: 0.25
         region: eu-west-2
         rate_basis: AWS Price List bulk offer files, region eu-west-2, fetched 2026-08-01
         note: corrects the audit's understated 0.15/GB-month figure, 1.7x low
+        provenance_class: aws_price_list
     nat_contingency:
       applies_to: EFS-for-Lambda workspace backing store, IF selected at wave 2 (ESB-01); not incurred under the incumbent or the container/hosted-CLI candidates
       standing_usd_per_month: "33-35"
@@ -346,10 +426,34 @@ cost_projection:
       region: eu-west-2
       rate_basis: Published EFS plus VPC plus NAT Gateway tier pricing plus one third-party aggregator estimate, cross-checked against the audit's independent approximately 32 usd/month note; NOT the AWS Price List bulk offer files this block's other lines cite -- that basis does not cover NAT Gateway or EFS, which is exactly why this line is a bracket at confidence medium rather than an exact figure
     substrate_reevaluation_triggers:
-      - A2+ concurrency raise (T4.4 autonomy-gate ratchet) -- the concurrency=1 non-discrimination conclusion no longer holds
-      - 100x scale (recs/month grows an order of magnitude beyond the 100-300 recorded baseline)
-      - Repo-visibility change (a private flip removes hosted_cli_runner's free-minutes term)
+      - A2+ concurrency raise (T4.4 autonomy-gate ratchet) -- the concurrency=1 non-discrimination conclusion no longer holds; also re-triggers the GitHub Actions usage-policy fit (T4.15 c10), since clause 4's disproportionate-burden reading assumed concurrency=1
+      - 100x scale (recs/month grows an order of magnitude beyond the 100-300 recorded baseline) -- also re-triggers the GitHub Actions usage-policy fit (T4.15 c10), since the measured burden posture assumed this baseline
+      - Repo-visibility change (a private flip removes hosted_cli_runner's free-minutes term AND changes the clause-4 disproportionate-burden calculus for the GitHub Actions usage-policy fit, T4.15 c10, since GitHub's public-repo minute allowance no longer applies)
       - Egress shape change per Decision 88 clause 2 (the Neon catalog egress measurement lands a real figure)
+  operator_estimates:
+    source: >-
+      operator estimate, 2026-08-21 session; judgment from interactive /plan + /implement
+      observation, NOT measurement; automated-executor tasks expected simpler than interactive
+      sessions
+    entries:
+      - {id: "OE-01", input: "persona wall-clock", assumed_value: "plan_agent first draft <=20 min, plan_critic ~6, decision_scout ~4, revision cycles ~10+6, simple rec ~10 all-planning-included",
+         why: "unstated; derived from this session's own observed persona timings", sensitivity: "HIGH; dominant cost term everywhere"}
+      - {id: "OE-02", input: "convergence cycles", assumed_value: "avg 2 plan-critique cycles, worst observed 5 interactively, non-convergence worst case ~1.5 h of planning wall-clock",
+         why: "unstated; observed distribution across this session's planning rounds", sensitivity: "medium; multiplies OE-01 directly"}
+      - {id: "OE-03", input: "implement_agent edit time", assumed_value: "5-30 min of edit time once verification and validation are excluded per c9; interactively those add ~30 min verification plus ~30 min full validate.py",
+         why: "unstated; c9 excludes verifier wall-clock from the persona's own measured time", sensitivity: "medium; the exclusion is what keeps this line small"}
+      - {id: "OE-04", input: "code_reviewer time", assumed_value: "5 min avg / 10 max, critical+high fix incorporation <=5 min, medium/low rec filing ~1 min",
+         why: "unstated; derived from this session's own review-round timings", sensitivity: "low; smallest persona line"}
+      - {id: "OE-05", input: "CPU duty cycle", assumed_value: "thinking-dominated and LLM-blocked, plan_agent ~5 of 30 min on tools, plan_critic highest tool share, decision_scout minimal, blended planning-time duty ~20 percent",
+         why: "unstated; observed tool-call share across this session's personas", sensitivity: "decides agentcore-vs-Fargate ordering only at a ~42 percent break-even, not the headline"}
+      - {id: "OE-06", input: "memory footprint", assumed_value: "2 GB per persona assumed, 4 GB safe ceiling, CC-web interactive container 16 GB / 4 vCPU at ~0.6 GB observed idle, pytest the driver and full-suite runs excluded",
+         why: "unstated; observed idle footprint of this session's own container", sensitivity: "low; well under any candidate's memory ceiling"}
+      - {id: "OE-07", input: "composed per-rec billed persona time", assumed_value: "typical ~72 min, simple ~21, bad ~140 at 5 cycles and 30 min implement; billed time is the SUM of persona invocations because waitForTaskToken states are non-billed",
+         why: "unstated; composed from OE-01/OE-02/OE-03/OE-04 under the non-billed-wait composition rule", sensitivity: "HIGH; drives the long_running_container envelope band directly"}
+      - {id: "OE-08", input: "throughput", assumed_value: "60 recs/month initial at 2/day supervised, 300/month the scale case, rec-level concurrency stays 1, persona-level concurrency up to 5",
+         why: "unstated; operator's own stated supervised-rollout schedule", sensitivity: "medium; sets the 100-300 recs/month scale band this block reads against"}
+      - {id: "OE-09", input: "failure and re-run rate", assumed_value: "rare once a session is established, clustered at connection setup, DeepSeek personas assumed less reliable than interactive Claude, drives checkpoint frequency",
+         why: "unstated; observed connection-setup clustering in this session's own failures", sensitivity: "medium; sets checkpoint-frequency assumptions, not billing"}
   projected_100tb_scale:
     total_per_month_usd: "910-1880"
     dominant_cost: S3 storage (~$800-1500/mo with Intelligent-Tiering)
@@ -566,7 +670,7 @@ candidate_decisions:
     title: Fargate-based executor supersedes Lambda dispatcher
     detail: |
       [Amendment 2026-05-27 -- narrowly superseded by CD.27]: the "Fargate-as-executor-substrate" clause
-      is retired. CD.27 (Step Functions + Lambda Durable Functions + Lambda) is the new executor substrate.
+      is retired. CD.27 (Step Functions + Lambda Durable Functions, the incumbent layer-2 candidate, + Lambda) is the new executor substrate.
       Fargate is NOT eliminated from the architecture -- it is demoted from "the executor's substrate" to
       "the long-step escape hatch within the executor's Step Functions orchestrator," accessed via the
       arn:aws:states:::ecs:runTask.sync integration for deterministic steps that genuinely exceed 15
@@ -821,21 +925,25 @@ candidate_decisions:
       process. Substrate decomposes into three cleanly-separated layers:
 
         1. Step Functions (workflow orchestration substrate)
-           One Step Functions execution per rec. The state machine carries rec_id, branch_slug, plan_s3_uri,
-           and per-step verdicts as execution state. Native Parallel state fans out critic personas. Native
+           One Step Functions execution per rec. The state machine carries rec_id, branch_slug, a plan
+           identifier (rec_id, revision, ulid-or-hash) and per-step verdicts as execution state. The
+           original plan_s3_uri payload contract is considered-and-rejected: the plans table already
+           carries plan_text, so the warehouse row is the sole plan artifact and every persona
+           fetches it by named verb. Native Parallel state fans out critic personas. Native
            Choice state routes critique aggregation (back to plan_agent on block; forward to implement_agent
            on pass). Native retry policies are deterministic-only -- LLM-judgment failures escalate via the
            rec/RCA path per Decision 55 (RCA-first executor). Step Functions Standard Workflows support
            executions up to 1 year, so the umbrella per-rec lifecycle is durable end-to-end.
 
-        2. Lambda Durable Functions (agent-persona execution substrate)
+        2. Lambda Durable Functions (agent-persona execution substrate; the INCUMBENT layer-2
+           candidate -- the T4.15 spike may re-point it)
            Each agent persona (plan_agent, plan_critic, decision_scout, implement_agent, code_reviewer)
-           runs as a Lambda Durable Function. Iterative read-code -> call-LLM -> tool-use -> emit-output
+           runs, on the incumbent, as a Lambda Durable Function. Iterative read-code -> call-LLM -> tool-use -> emit-output
            loops are checkpointed step-by-step inside the Lambda; on timeout, the next invocation replays
            from the last completed checkpoint and skips completed tool calls. This eliminates the 15-minute
            Lambda ceiling that originally drove the Fargate decision -- per-persona loops can now run
-           arbitrarily long via checkpointed replay without losing in-flight state. Each Durable Function
-           writes its substantive artefact (plan markdown, critique verdict, diff) to S3 and returns the
+           arbitrarily long via checkpointed replay without losing in-flight state. On the incumbent,
+           each Durable Function writes its substantive artefact (plan markdown, critique verdict, diff) to S3 and returns the
            S3 URI to the Step Functions state, keeping payload under the 256 KB transition limit.
 
         3. Lambda (deterministic glue)
@@ -854,7 +962,7 @@ candidate_decisions:
       long-step escape hatch within the executor's Step Functions orchestrator."
 
       Industry precedent and substrate-existence verification:
-        - AWS Lambda Durable Functions launched at re:Invent 2025 (December 2025); GA in US-East (Ohio)
+        - The incumbent layer-2 candidate, AWS Lambda Durable Functions, launched at re:Invent 2025 (December 2025); GA in US-East (Ohio)
           + 13 additional regions December 2025; expanded to 16 additional regions including eu-west-2
           (London) April 2026; documented at https://docs.aws.amazon.com/lambda/latest/dg/durable-functions.html.
           Supported runtimes: Python 3.13/3.14, Node.js 22/24, Java 17+, .NET/C# 8/10. Max execution duration: 1 year.
@@ -943,9 +1051,9 @@ candidate_decisions:
               signal_passes: true
               rationale: 0.04 is under the 5 percent threshold for this signal, so signal_passes is true for unplanned_resume_rate on this persona; the 14-day trigger overall fires only when ALL personas satisfy every per-signal threshold above across days 8-14 -- this worked example demonstrates one persona's unplanned_resume_rate signal passing, not the whole 14-day trigger alone
           trigger_semantics: fires only when ALL personas' executions satisfy every per-signal threshold above across days 8-14 of the grace window (see baseline_window)
-      - Layer-2 ratification precondition (ESB-04). Before this CD ratifies, the ratifying plan must carry a comparative record over the pinned candidate substrate set (durable_functions, sfn_over_stateless_workers, self_checkpointed_lambda_dynamodb, long_running_container, hosted_cli_runner) plus the Q5 spike outcome (decision_scout as the spike vehicle). The selected layer-2 substrate must be a MANAGED orchestration primitive unless the selecting plan authors an explicit Decision 39 supersession -- this CD does not by itself widen the admissible substrate set beyond what Decision 39 ratified.
-      - Layer-2 ratification precondition (ESB-06). If the Q5 spike selects a substrate whose resume model is replay-based (re-runs handler code from the start on resume, as durable_functions and sfn_over_stateless_workers do), the ratifying plan must also carry the determinism rules for step-wrapped code plus a validate.py static check enforcing them, before ratification. If the spike instead selects a non-replay substrate (self_checkpointed_lambda_dynamodb, long_running_container, hosted_cli_runner), this determinism-rules-plus-static-check obligation LAPSES -- it does not carry forward as dead weight onto a substrate the rules do not apply to.
-      - Layer-2 ratification precondition (ESB-01). Before this CD ratifies, the ratifying plan (the CD.27 layer-2 spike, wave 5) must select the executor's workspace backing store against CD.43's criteria and record the choice in CD.43's workspace_store_selection.selected_store, replacing the TBD_at_CD.43_ratification deferral marker. The store discriminates directly between substrates -- container-local disk erases the workspace half of the resumability gap this CD exists to close; an EFS-backed store imposes a standing VPC/NAT term and forecloses the hosted_cli_runner candidate outright; S3-sync is the only fully portable option across the candidate set but commits every interruption to a re-materialization cost. CD.43 holds the full criteria set; this precondition does not restate them.
+      - Layer-2 ratification precondition (ESB-04). Before this CD ratifies, the ratifying plan must carry a comparative record over the pinned candidate substrate set (durable_functions, sfn_over_stateless_workers, self_checkpointed_lambda_dynamodb, long_running_container, hosted_cli_runner) plus the Q5 spike outcome (decision_scout as the spike vehicle). T4.15 is the tier item that OWNS that spike and that comparative record, so this precondition discharges against T4.15 and against nothing else. The selected layer-2 substrate must be a MANAGED orchestration primitive unless the selecting plan authors an explicit Decision 39 supersession -- this CD does not by itself widen the admissible substrate set beyond what Decision 39 ratified. [Annotation 2026-08-19, PLAN-executor-two-plane-roadmap-encoding -- the surviving literal wording above, MANAGED orchestration primitive, is the clause CD.44's GOV-1 rules on. It is left VERBATIM and unamended here on purpose, because whether a given candidate satisfies it is a READING of this clause, and the reading belongs in the ratifying record T4.15 produces rather than in a quiet rewrite of the clause being read.]
+      - Layer-2 ratification precondition (ESB-06), discharged against T4.15, which owns the Q5 spike. If the Q5 spike selects a substrate whose resume model is replay-based (re-runs handler code from the start on resume, as durable_functions and sfn_over_stateless_workers do), the ratifying plan must also carry the determinism rules for step-wrapped code plus a validate.py static check enforcing them, before ratification. If the spike instead selects a non-replay substrate (self_checkpointed_lambda_dynamodb, long_running_container, hosted_cli_runner), this determinism-rules-plus-static-check obligation LAPSES -- it does not carry forward as dead weight onto a substrate the rules do not apply to.
+      - Layer-2 ratification precondition (ESB-01), discharged against T4.15. Before this CD ratifies, the ratifying plan (the CD.27 layer-2 spike, wave 5, owned by tier item T4.15) must select the executor's workspace backing store against CD.43's criteria and record the choice in CD.43's workspace_store_selection.selected_store, replacing the TBD_at_CD.43_ratification deferral marker. The store discriminates directly between substrates -- container-local disk erases the workspace half of the resumability gap this CD exists to close; an EFS-backed store imposes a standing VPC/NAT term and forecloses the hosted_cli_runner candidate outright; S3-sync is the only fully portable option across the candidate set but commits every interruption to a re-materialization cost. CD.43 holds the full criteria set; this precondition does not restate them.
       - Precondition-discharge rule -- a ratified candidate decision must record a non-empty precondition_discharge entry for every ratification precondition id its own text declares, per rule R4 of docs/contracts/candidate-decision-ratification.yaml, enforced by validate_candidate_decision_ratification.
 
   - id: CD.28
@@ -963,6 +1071,14 @@ candidate_decisions:
       - Prompt cache strategy on DeepSeek is hash-based and automatic -- no client breakpoint placement required. This simplifies Layer-3 (agent loop) compared to the Bedrock cachePoint design previously planned in INTENT.
       - Bedrock IAM policies in T0.3 (PlatformDev DailyOps `bedrock:InvokeModel`) become vestigial-but-harmless. Annotated as such in T0.3; not removed (avoids re-Terraform churn). Retirement is tracked under PLAN-retire-bedrock-code-paths in the follow-on plan inventory below.
       - Cost-projection numbers in this CD reference DeepSeek V3.2 pricing as of 2026-05-27 ($0.252 input / $0.378 output per 1M tokens; $0.0252 cache-hit input). Spot-check arithmetic at typical executor scale (100 recs/month, ~50K input + ~10K output tokens/rec, ~80% prefix cache-hit) yields ~91% cost reduction vs Bedrock-DeepSeek -- the headline ~75% figure in cost_projection is intentionally conservative; the realised savings should exceed it.
+      - "[Annotation 2026-08-19, Decision 173 -- the tiers above name ROLES: Tier 1 is the primary route,
+        Tier 2 the independent-vendor warm-fetched fallback. DeepSeek-direct and Anthropic-direct are the
+        then-current SELECTIONS, held in docs/contracts/inference-provider.yaml, not architecture. The
+        Tier-2 '>10% remaining pool' assertion above is the fixed-non-rollover-allowance INSTANCE of
+        Decision 173 clause 4's billing-shape rule; a metered fallback needs a credential-liveness probe
+        only, and a deferred tier declares not_applicable. No contract edit may fill a role from
+        retired_providers or fill both roles from one vendor. Every clause above is left verbatim and
+        unamended -- the reading belongs here, not in a quiet rewrite of the clause being read.]"
 
   - id: CD.29
     title: Validation suite is a graduated, deduplicated, machine-curated asset; verification graduates into validation; hard-gate by default behind a hermeticity precondition
@@ -1080,6 +1196,7 @@ candidate_decisions:
       - Diff-coverage threshold and the ratchet baseline are config-driven; the global baseline only moves up, never down. The initial global baseline is captured at T3.7 implementation (computed from the current suite and stored in a governed config/state file); the ratchet compares each PR against that stored value.
       - The ratchet is enforced in scripts/validate.py; test_coverage_checker.py is retargeted from the per-changed-file 100% floor to diff-line-coverage + ratchet, not run as a separate parallel gate.
       - Lockstep consumers at ratification (follow-on plan, via log-decision for the Decision text): Decision 48 V2-row text, config/agent/executor/prompts/critique.prompt.md (V3 behavioural-acceptance language), and the planning skill's tier-classification guidance. Until amended they enforce the old per-file-100% minimum.
+      - "[Recurrence evidence, 2026-08-16] The full-tier-only sub-100% coverage escape (registered at scripts/checks/misc/_manifest.py, validate_test_coverage Entry, full_segment=full_after_lint with no pre=True) has now fired twice with an identical CI-RCA v2 fingerprint 6e7ad27818dccc594b39886c30a72683eeaaef21765db65be2792bd7831896b9: rec-3043 (2026-08-05, validate_composite_action_shell_bodies.py at 98.7%) and rec-3147 (2026-08-15, validate_oidc_failopen_guards.py at 89.0%). Both closed corrective-only; the RCA-proposed --pre promotion stays rejected on two independent grounds -- the VTS-07 sequencing bar above (land the slash->dotted --cov fix first, then this ratchet, then promote) and the Decision 163 measurement of roughly 3m17s for a single mapped mirror suite against Decision 73's 300s fast-tier budget -- plus a third, independent deferral ground already on the roadmap: T3.7's own progress_note records that compensating controls for this failure class (the T1.13 c8/c10/c11 vacuous-pass detection spine plus the main-validate canary / forward-fix posture, Decision 73) already landed, concluding Deferral valid. Escalation trigger: a third recurrence of this fingerprint re-audits the sequencing bar instead of producing another corrective-only fix."
 
   - id: CD.31
     title: Adopt DuckLake for the operational lakehouse (ops + telemetry tables)
@@ -1224,7 +1341,7 @@ candidate_decisions:
   - id: CD.37
     title: Parallel rec execution requires semantic locks, not file locks alone
     detail: |
-      Forward intent for the future autonomous executor (Step Functions + Durable Lambdas, CD.27); inert
+      Forward intent for the future autonomous executor (Step Functions + Durable Lambdas per CD.27, the incumbent); inert
       under the Decision 67 / CD.17 freeze and the T4.1 concurrency=1 ceiling until the autonomy gates
       (T4.4) raise concurrency above 1. File-level exclusion is necessary but insufficient for safe parallel
       rec execution: two recs may touch disjoint files yet conflict semantically (e.g. one edits the
@@ -1252,7 +1369,7 @@ candidate_decisions:
       persona cognition and that Step Functions retries are deterministic-only; this CD specifies the
       verification leg CD.27 left unstated. The autonomous executor does NOT run validate.py or registered
       verifiers inside AWS Lambda / Step Functions. AWS owns orchestration (Step Functions) and persona
-      cognition (Durable Lambdas); GitHub Actions owns PR `--pre` validation, main full-validate, the
+      cognition (Durable Lambdas, per CD.27 the incumbent layer-2 candidate); GitHub Actions owns PR `--pre` validation, main full-validate, the
       verifier-registry execution (CD.29), and merge truth (remote CI is the authoritative pre-merge gate
       per the AGENTS.md merge protocol). Step Functions records correlation ids (PR number, check-run id,
       workflow-run id, rec id, execution id) and WAITS on GitHub Actions verdict callbacks. PR `--pre` PASS
@@ -1567,6 +1684,118 @@ candidate_decisions:
         cite this CD as authorizing a selection. The store is selected by a separate ratifying act
         (the CD.27 layer-2 spike, wave 5), which records the choice in selected_store and flips
         this CD's state to ratified.
+
+  - id: CD.44
+    title: Two-plane executor recorded as a layer-2 CANDIDATE -- orchestration keeps identifiers only, the compute plane is the open question, and the warehouse row is the sole plan artifact (selects nothing)
+    detail: |
+      Records the operator's Two-Plane Executor design as a CANDIDATE arm for the CD.27 layer-2
+      substrate. It SELECTS NOTHING. The resolving instrument is the comparative spike owned by
+      T4.15; CD.27's incumbent stands until that spike rules, and CD.43's workspace store stays
+      TBD_at_CD.43_ratification.
+
+      SHAPE OF THE CANDIDATE. The orchestration plane keeps the state machine and carries
+      IDENTIFIERS ONLY -- rec_id, revision, head SHA, task token. The compute plane runs every
+      persona and every verification gate, all LiteLLM in-process, with no persona shelling out to
+      a hosted CLI. The plan artifact lives in neither plane -- it is a warehouse row that every
+      downstream persona fetches by named verb. The dispatch-and-wait motif is not new: T4.1's
+      contracted node list already crosses this boundary twice, at await_verdict (waiting on a CI
+      verdict callback) and at deploy_dispatch (dispatching merged-change application to the
+      gated-apply pipeline). This candidate extends the same motif to the five personas and changes
+      nothing else.
+
+      GOV-1 -- does the candidate satisfy CD.27's ESB-04 "MANAGED orchestration primitive"
+      precondition? RULED HERE, by COMPUTE RECLASSIFICATION rather than by the falsifiable claim
+      that the compute plane "performs no orchestration". The narrow claim, which is what this CD
+      asserts: under this candidate the compute plane holds NO DURABLE STATE across persona
+      invocations, mints NO CORRELATION IDENTIFIERS of its own, and carries NO RETRY OR ROUTING
+      POLICY BETWEEN PERSONAS -- all three stay on the orchestration plane, which is the managed
+      primitive ESB-04 is about, and which Decision 39 already ratified. What moves is COMPUTE
+      PLACEMENT, not the orchestrator. Moving the orchestrator would force a Decision 39
+      supersession; moving only the compute does not. The clause itself is left verbatim on CD.27
+      and this ruling is a reading of it, which is why the reading is recorded here and the
+      ratifying record T4.15 produces has to carry it forward.
+
+      GOV-2 -- is this the pinned hosted_cli_runner candidate re-specified, or a sixth candidate?
+      STATED, as the audit requires it to be stated rather than left implicit. It is the PINNED
+      candidate RE-SPECIFIED, not a new one. The pinned entry bundled the runner with a hosted CLI
+      transport; this candidate keeps the runner and drops the CLI, calling LiteLLM in-process per
+      dec-122, so the admissible substrate set is unchanged and CD.27 does not widen it. An
+      unstated reframing would read as a set violation, so it is stated in the first paragraph of
+      any ratifying plan as well as here.
+
+      MECH-1 -- the orchestration-to-compute dispatch credential. There is no native integration,
+      so it is either a function calling the compute plane's API or an http:invoke task through a
+      managed connection; either way a long-lived credential must live on the AWS side with its own
+      rotation story, alongside the existing one, on a PUBLIC repository. CONSIDERED-AND-REJECTED
+      for this role: Step Functions Activities, whose poll-based worker model needs a long-lived
+      poller process on the compute plane -- exactly the always-on component this candidate exists
+      to avoid, and it would reintroduce a durable-state holder on the plane the GOV-1 ruling above
+      says holds none. T4.15 owns resolving the credential and must exercise it UNSTUBBED.
+
+      OPS-1 -- concurrency grouping caps the executor's own work; it does not PRIORITISE CI.
+      A concurrency group is a self-imposed ceiling on your own workflows and reserves no slots
+      from the shared pool, so protecting CI means capping agent work well below the pool size so
+      headroom survives. Worse, a queued run that does not cancel in progress holds its task token
+      while it waits, so queue depth converts directly into token-timeout pressure. Cap
+      deliberately, and set token timeouts against worst-case queue depth rather than expected
+      runtime.
+
+      OPS-2 -- every persona invocation is a COLD START, and dec-122 mandates Tier-2 credential
+      validation at every cold start (key-shape probe plus a usage query asserting remaining pool).
+      On a long-lived process that is once per session; under this candidate it is once per persona
+      run, plus once per fanned-out scout if scouts count. Either the rate and latency are
+      acceptable and T4.15 measures them, or "cold start" needs redefining for this substrate.
+      Nobody has checked, and this CD does not pretend otherwise.
+
+      THE WAREHOUSE ROW IS THE SOLE PLAN ARTIFACT, and this is a DELIBERATELY SELECTIVE
+      transcription of the design rather than a faithful one. The design's plan-publication stage
+      writes the plan document to S3 AND the queryable projection to the plans table. That dual
+      write is CONSIDERED-AND-REJECTED: the plans table already carries plan_text, so the plan body
+      is in the row, and an S3 document would be a second copy behind a second read path with no
+      reconciliation story. For the same reason the orchestration plane returns IDENTIFIERS ONLY
+      and never an LLM-authored plan summary -- content crossing the plane is not an identifier and
+      is not deterministic on re-fetch, so it is not a payload channel.
+
+      CRITIQUE AUTHORSHIP. A critique verdict is written by the CRITIC or by the GATE, never by the
+      critiqued persona. critique_history is a column on the plan row whose only write path today
+      takes a whole plan document -- the planner's path -- so an unqualified encoding forces either
+      a critic that can rewrite the plan it critiqued or a planner that records the verdict against
+      itself, which is the pair Decision 87 clause 5 exists to forbid. The content pin's hash is
+      therefore scoped to the plan BODY EXCLUDING critique_history, because a pin over the whole
+      row is invalidated by every critique append and would fail closed on the loop's normal path.
+      Naming the boundary is in scope here; BUILDING the split verb routes to T4.5/T4.6, and the
+      tier-item form of this boundary is carried by T4.16.
+
+      THE PLANS-TABLE NAME IS RULED, not left open. Decision 87 clause 4 as amended names ONE plans
+      table and it is ops_execution_plans -- the implemented name, carried on 278 matching lines
+      across 80 files, 32 of them load-bearing, and the only one with any enforcement surface
+      (terraform, field_semantics, .importlinter, the verification and data-quality registries, the
+      portal and sync modules, and 12 test modules), against 30 prose-only lines across 8 files for
+      the rejected alternative name, none of them load-bearing. The originally-proposed two-table
+      split is retired-before-built. Recording it here discharges nothing on its own -- the tracked
+      home is T4.16's exit criterion, because that is the item that binds a physical name into the
+      read registry.
+    gates: [T4.15]
+    state: pending
+    filed_via: pending_log_decision_lambda
+    discipline_points:
+      - The candidate selects nothing. Any plan citing this CD as authorizing a layer-2 substrate is misreading it; selection is T4.15's act, against CD.27's P1/P2/P3 and CD.43's W1-W8.
+      - Candidate-specific MECHANISM stays in this CD body and out of lifecycle-tracked roadmap fields, which carry CD.27's substrate-neutral P1/P2/P3 property language instead. Purging the incumbent's vocabulary from those fields while admitting the candidate's would make a ruling FOR the incumbent cost a re-sweep and a ruling for the candidate cost nothing -- switching-cost bias, and ESB-05 with the sign flipped.
+      - >-
+        Out-of-file repairs this encoding surfaced and filed rather than fixed inline, referenced by
+        id so none of them lives only in a paragraph. rec-3213 -- the retired two-table plans split
+        still stands in Decision 136's Reversal-conditions and Related lines and in
+        exit-criteria-ledger.yaml, outside the amendment's scope. rec-3214 -- the planning skill
+        still asserts the pre-existing routing-row count, and decision-entry.yaml names that skill
+        as the significance block's primary consumer, which makes it the highest-priority member of
+        the set. rec-3215 -- the same count is asserted in AGENTS.md and in Decisions 150 and 167,
+        miscounting in both directions. rec-3216 -- AGENTS.md routes the plans table to the wrong
+        backend (DATA-4), also carried as a T4.16 exit criterion. rec-3217 -- a three-way skew
+        between the ops_recommendations contract's status vocabulary and the portal's writable set,
+        which is why a deliberate deferral routes to declined or to the roadmap and never to a
+        deferred status. rec-3218 -- validate_executor_boundary is a no-op in CI and never inspects
+        a diff, which is the standing half of the merge-node guard T4.16 owns. rec-3219 -- T4.8,
+        T4.9a and T3.10 still declare files inside the frozen Life-1 executor tree.
 
 tier_items:
   # ----- T-1: Governance ratification + harness integration -----
@@ -2668,6 +2897,22 @@ tier_items:
       - "grep -rE 'from scripts.ops_data_portal import|import scripts.ops_data_portal' scripts/ src/ returns zero in production code outside src/lambdas/ (Lambda handlers retain internal imports)"
       - "tests/ importers either migrated to agent_sdk fixtures OR explicitly retained with rationale per-file (test infrastructure may need direct portal access for fixture setup; document any exceptions)"
       - "All 7 production importer call sites migrated to agent_sdk verbs"
+      - >-
+        A retrieval-quality gate measures decision-scout findability parity (bounded
+        triage-plus-targeted-reads recall against the pre-cutover whole-corpus baseline),
+        complementing c2's recoverability check -- c2 proves content survives the portal cutover,
+        this criterion proves it stays FINDABLE through it. A fresh baseline is captured AT
+        cutover time using committed fixtures (never gitignored logs, so the baseline itself is
+        reviewable and reproducible), over a probe set including at least one BLOCK-severity
+        CONTRADICT brief and one null brief (a brief matching no decision, proving the gate does
+        not just reward over-triage). Each probe's pass rule is named explicitly per probe --
+        single-run-exact for category_tags-shortlisted entries (mechanical, deterministic) and
+        majority-of-3 for judgment-lane (SPIRIT-overlay) entries (non-deterministic judgment) --
+        never a blanket tolerance percentage across the whole set. The gate's successor clause
+        (what a later swap of the read path must still satisfy) is bound to this SAME probe
+        protocol and baseline, not a fresh one. tests/test_decision_scout_retrieval.py -- today a
+        keyword-scoring proxy against docs/decisions-index.json -- is repointed onto this live
+        gate as its mechanical vehicle
     related_intents: [ops-decisions-graduation, dq-enforcement]
     related_candidate_decisions: [CD.10, CD.18]
     effort: L
@@ -3762,7 +4007,7 @@ tier_items:
     files_in_scope: []
     exit_criteria:
       - "GitHub OIDC provider registered in personal AWS account via Terraform"
-      - "CI role trust policy restricts assumption to this repository (repo: benjamin-blake/agent-platform) and limits permissions to the minimum required for the workload"
+      - "CI role trust policy restricts assumption to this repository (repo: benjamin-blake/theseus) and limits permissions to the minimum required for the workload"
       - "Workflows that previously ran on self-hosted run successfully on ubuntu-latest with OIDC-acquired credentials"
       - "terraform/ec2_runner.tf has a deprecation header referencing CD.21; resource definitions retained for portfolio-narrative purposes"
       - "validate.py / CI green on hosted runners; no remaining workflow references the self-hosted runner label"
@@ -5142,9 +5387,12 @@ tier_items:
       - id: c3
         text: >-
           A deployment record (function name -> deployed CodeSha256 -> source git SHA) is
-          written on every governed deploy and is readable by convergence-health/drift tooling
+          written on every governed deploy and is correctly interpreted by convergence-health/
+          drift tooling via the reachability oracle (Decision 103), not the bare equality
+          comparison this criterion originally assumed -- the 2026-08-17 incident showed the
+          latter could misread a workflow_dispatch recovery deploy as stale
         status: met
-        met_by: ducklake-governed-deploy-channel  # deploy records written + freshness-asserted (source_git_sha == github.sha) in the run 29289207218 smoke job
+        met_by: convergence-health-prod-drift-red  # realized-differently rewrite: original met_by (ducklake-governed-deploy-channel) proved the record was written and read, but under the equality comparison the incident falsified; this plan's reachability oracle is what makes "correctly interpreted" true
       - id: c4
         text: >-
           docs/contracts/build-lambda.yaml deploy_channels.ducklake_functions.break_glass_only
@@ -5359,10 +5607,13 @@ tier_items:
       - id: c4
         text: >-
           A deployment record (function name -> deployed CodeSha256 -> source git SHA) is written
-          on every governed deploy (deploy-records/prod/<function>.json) and is readable by
-          convergence-health/drift tooling (detect_prod_code_drift)
+          on every governed deploy (deploy-records/prod/<function>.json) and is correctly
+          interpreted by convergence-health/drift tooling (detect_prod_code_drift) via the
+          reachability oracle (Decision 103), not the bare equality comparison this criterion
+          originally assumed -- the 2026-08-17 incident showed the latter could misread a
+          workflow_dispatch recovery deploy as stale
         status: met
-        met_by: prod-lambda-provision-deploy-channel
+        met_by: convergence-health-prod-drift-red  # realized-differently rewrite: original met_by (prod-lambda-provision-deploy-channel) proved the record was written and read, but under the equality comparison the incident falsified; this plan's reachability oracle is what makes "correctly interpreted" true
       - id: c5
         text: >-
           docs/contracts/build-lambda.yaml deploy_channels.prod_functions / .ops_compaction carry
@@ -5498,39 +5749,34 @@ tier_items:
   - id: T2.45
     tier: T2
     name: "Guard resource-based-policy classification: route wildcard/external-principal grants to gated-apply (DEP-06)"
-    intent: |
-      scripts/terraform_apply_guard.py classifies IAM identity-policy diffs but does not yet
-      classify resource-based policies (Lambda permissions, S3/SNS/Secrets-Manager/Glue resource
-      policies) -- a wildcard or external-principal grant on one of these can currently guard-PASS
-      and auto-apply unreviewed (DEP-06). MUST land no later than T2.48's write-axis broadening,
-      which removes the accidental protection some of these types get today from sitting outside
-      the enumerated identity-policy allow-list -- widening the write surface without this guard
-      classification first would open the gap DEP-06 already names. T2.48 depends_on this item.
+    intent: "scripts/terraform_apply_guard.py now classifies resource-based policies (Lambda permissions, S3/SNS/Secrets-Manager/Glue resource policies), routing wildcard/external-principal grants to gated-apply (DEP-06)."
     depends_on: []
-    files_in_scope:
-      - scripts/terraform_apply_guard.py
-      - tests/test_terraform_apply_guard.py
+    files_in_scope: []
     exit_criteria:
       - id: c1
         text: >-
           A test plan adding an aws_lambda_permission resource with Principal "*" exits the guard
           with code 2 (routes to gated-apply)
-        status: open
+        status: met
+        met_by: terraform-guard-resource-policy
       - id: c2
         text: >-
           The known-safe EventBridge AddPermission shape can still be classified in-budget
           explicitly (no false-positive regression on the existing safe pattern)
-        status: open
+        status: met
+        met_by: terraform-guard-resource-policy
       - id: c3
         text: >-
           aws_lambda_permission, aws_s3_bucket_policy, aws_sns_topic_policy,
           aws_secretsmanager_secret_policy, aws_lambda_function_url, and aws_glue_resource_policy
           are each classified sensitive by the guard, or covered by a principal-wildcard rule
-        status: open
+        status: met
+        met_by: terraform-guard-resource-policy
     related_decisions: [144, 92, 77]
     effort: S
     strategic: false
-    status: not_started
+    status: complete
+    completed_at: "2026-08-25"
 
   - id: T2.46
     tier: T2
@@ -5802,6 +6048,14 @@ tier_items:
       filed: open rec-2910, filed by the sibling plan on 2026-07-30, already owns it exactly.
       NO status or criterion flip in this note either: c1-c5 remain met, c6 remains open, item stays
       in_progress, and T2.47 is left untouched for rec-2920 to adjudicate.
+      2026-08-25 (PLAN-executor-substrate-guard-deferral): RETRACTION of the 2026-07-30 entry's
+      sequencing claim above ("a pre-existing Decision-144-pt7 sequencing gap this plan inherits,
+      not causes"). Measured commit timestamps refute it: 78e4d10 (T2.45's guard classification)
+      merged 2026-07-21T22:30:40+01:00, 2281467 (slice E, terraform-iam-allowlist-inversion) merged
+      2026-07-22T16:18:30+01:00 -- the guard landed 17.8 hours FIRST, so T2.45's Decision-144-pt7
+      sequencing clause was SATISFIED, not breached. T2.45 now flips to complete (see its own
+      entry), discharging T2.48's sole depends_on. No other status or criterion flip in this note:
+      c1-c5 remain met, c6 remains open, item stays in_progress.
 
   - id: T2.49
     tier: T2
@@ -6897,8 +7151,11 @@ tier_items:
           the VP Compliance Gate all-PASS, before the commit flow) that enumerates VP steps
           expressible in the six-slot kernel, runs the REAL differential admission gate
           (scripts.verification_graduation.run_differential, git-worktree revert against
-          origin/main) for each candidate, writes admitted rows to
-          config/agent/verification_registry/registry.yaml per the contract, and otherwise records
+          origin/main) for each candidate, writes admitted rows to their own
+          config/agent/verification_registry/entries/<check_id>.yaml shard per the contract
+          (Decision 176 re-grain; one record per file, filename equals check_id -- retirement is
+          git mv into the reserved, loader-excluded entries/deprecated/ subtree, the successor
+          lifecycle instrument T3.7 must read explicitly), and otherwise records
           an explicit ephemeral "none graduated" note in the PR body; worktree/materialize/revert
           errors stop-and-surface (Decision 55). Realized via audit-remediation-wave-4-xetn3o,
           whose own diff carried no kernel-expressible VP step to graduate (per its own scope
@@ -7086,7 +7343,7 @@ tier_items:
       State-machine shape (per CD.27 boundary diagram):
         - pick_rec [Lambda]                          : poll priority queue; ADMISSION PREDICATE gates the return -- admit a rec only when its T3.8 relevance verdict == relevant (CD.36 / Decision 103), automatable == true, and risk is within the current T4.4 autonomy-gate ceiling (Decision 92 ratchet), AND its targets do NOT match Decision 117 boundary_patterns (config/agent/executor/capabilities.yaml); a refused pick emits a typed telemetry event and a boundary_patterns hit re-routes the rec to the human path (Decision 55), never auto-executed; returns rec_id + branch_slug
         - prepare_workspace [Lambda]                 : clone repo, create agent/{slug} branch, set up worktree, return workspace_uri
-        - plan_agent [resumable persona (CD.27 P1/P2/P3), T4.2]        : iterative read-code -> LLM -> tool-use -> emit plan; writes PLAN-{slug}.md to S3; returns {plan_s3_uri, plan_summary}
+        - plan_agent [resumable persona (CD.27 P1/P2/P3), T4.2]        : iterative read-code -> LLM -> tool-use -> emit plan; publishes the plan to the warehouse row, which is the SOLE plan artifact -- writing a plan document to S3 as well is considered-and-rejected (the table carries plan_text, so an S3 copy is a second artifact behind a second read path), and with it the {plan_s3_uri, plan_summary} return shape. The node returns IDENTIFIERS ONLY -- (rec_id, revision, ulid-or-hash); no payload crosses the state machine, and an LLM-authored plan summary is a payload, not an identifier
         - Parallel { plan_critic, decision_scout, ... } [resumable persona (CD.27 P1/P2/P3), T4.2]  : critic personas run in parallel
         - critique_gate [Lambda]                     : aggregate parallel critic verdicts; route back to plan_agent on block, forward on pass
         - implement_agent [resumable persona (CD.27 P1/P2/P3), T4.2]   : iterative read-plan -> edit-files -> run-tests -> emit-diff
@@ -7114,9 +7371,12 @@ tier_items:
       - "CloudWatch observability wired: per-Lambda p50/p99 + per-state-machine execution success/failure rate; alarms file rec via log-rec on threshold breach (per T1.9 pattern)"
       - "Concurrency cap = 1 on the state machine initially per Decision 55 RCA-first; raise as autonomy gates A2+ pass per T4.4"
       - "Every waitForTaskToken / verdict-wait state in the state machine carries HeartbeatSeconds and TimeoutSeconds; timeout transitions route to ci-rca (Decision 72), never a silent re-wait -- the executor analogue of the interactive dropped-green-signal backstop"
-      - "pick_rec admission predicate enforced (not merely poll priority queue): a rec is admitted for autonomous execution only when its T3.8 relevance verdict == relevant (CD.36 / Decision 103), automatable == true, and its risk is within the current T4.4 autonomy-gate ceiling (Decision 92 ratchet), AND none of its targets match the Decision 117 boundary_patterns SSOT (config/agent/executor/capabilities.yaml); a refused pick emits a typed telemetry event, and a boundary_patterns hit re-routes the rec to the human path (Decision 55) -- never auto-executed"
-      - "file_pr / merge GitHub-side credential scoping is specified in the T4.1 / T4.9(a) atomic plans (the IAM criteria above cover the AWS leg only): which credential (PAT or GitHub App) files and merges PRs, its scopes, storage, rotation, and why no persona environment other than file_pr / merge holds it (Decision 92 least-privilege OIDC precedent)"
-      - "A single named operator kill-switch is documented (disable the EventBridge trigger AND set state-machine concurrency to 0) with its authority, and is covered by a test proving an in-flight execution stops cleanly (Decision 55) and no new execution starts"
+      - "pick_rec admission predicate enforced (not merely poll priority queue): a rec is admitted for autonomous execution only when its T3.8 relevance verdict == relevant (CD.36 / Decision 103), automatable == true, and its risk is within the current T4.4 autonomy-gate ceiling (Decision 92 ratchet), AND none of its targets match the Decision 117 boundary_patterns SSOT (config/agent/executor/capabilities.yaml); a refused pick emits a typed telemetry event, and a boundary_patterns hit re-routes the rec to the human path (Decision 55) -- never auto-executed. The standing validate_executor_boundary guard is NOT a substitute: it reads a gitignored derivative cache, returns silently when that cache is absent (every fresh clone, and CI), and never inspects a diff -- tracked as rec-3218 and repaired outside this item"
+      - "The GitHub credential model for file_pr and merge is specified in the T4.1 / T4.9(a) atomic plans (the IAM criteria above cover the AWS leg only): PAT versus GitHub App, its scopes, storage, rotation, and why no persona environment other than file_pr / merge holds it (Decision 92 least-privilege OIDC precedent). This is a DIFFERENT credential from the orchestration-to-compute dispatch credential (MECH-1, owned by T4.15) -- neither discharges the other"
+      - "A single named operator kill-switch is documented (disable the EventBridge trigger AND set state-machine concurrency to 0) with its authority, and is covered by a test proving an in-flight execution stops cleanly (Decision 55) and no new execution starts. OPS-4 -- the switch must reach EVERY control plane the loop actually runs on: an orchestration-side switch has no reach into compute that executes outside AWS, so closing it needs a flag checked at the start of every persona invocation plus a cancel-and-disable path on that plane wired into the same control. Known and closeable, but it means the stop button lives in two places and the criterion is met only when both work"
+      - "MECH-2 -- no verdict-wait state can hang on a lost worker. Every dispatched unit reports terminally through an always-run reporting step, so a cancellation, a lost host or a duration-ceiling hit fails the task token instead of leaving it to time out silently, and every wait state carries HeartbeatSeconds. The token-success/token-failure grant on the reporting identity is IAM-sensitive, so it routes through the tf-gated-apply Environment rather than a routine apply (CD.35 / Decision 92)"
+      - "OPS-5 -- persona transcripts never land in a world-readable log sink, and telemetry stops being best-effort. This repository is PUBLIC, so sinking transcripts to the private object store is required by the publication boundary rather than merely preferred; and scripts/s3_log_store.py today logs and swallows write failures, which is correct for a side channel and wrong the moment that store is the only execution history that exists"
+      - "OPS-6 -- prepare_workspace's agent/{slug} allocation is decided to be either a RESERVATION or a real remote ref, and the criterion says which. If the planning persona publishes its plan to the warehouse and commits nothing, the branch may not exist on the remote until the implementer first pushes -- which decides whether a failed planning run leaves anything behind to inspect, and whether branch-lifecycle cleanup has anything to clean"
       - "The executor's workspace backing store for prepare_workspace's workspace_uri output is selected by CD.43's ratification alongside the CD.27 layer-2 spike, not implied by prepare_workspace's implementation -- against CD.43's criteria W1 substrate portability, W2 foreclosure disclosure, W3 recomputed standing cost, W4 egress-profile validity, W5 re-materialization cost, W6 scale basis, W7 coverage-case completeness, and W8 managed-primitive preference"
     related_candidate_decisions: [CD.10, CD.16, CD.17, CD.24, CD.27, CD.28, CD.43]
     related_intents: [recommendation-executor]
@@ -7154,14 +7414,22 @@ tier_items:
         independently testable.
   - id: T4.2
     tier: T4
-    name: Agent-persona Lambda Durable Functions + LiteLLM transport (STRATEGIC, XL)
+    name: Agent-persona resumable persona nodes (Lambda Durable Functions per CD.27, the incumbent layer-2 candidate) + LiteLLM transport (STRATEGIC, XL)
     intent: |
       Per CD.27, each agent persona is a Lambda Durable Function -- the iterative read-code -> call-LLM
       -> tool-use -> emit-output loop runs as a checkpointed Lambda whose execution can span multiple
       invocations via replay-from-last-checkpoint semantics. This eliminates the 15-minute Lambda ceiling
       that originally drove the Fargate decision. Personas to land:
 
-        - plan_agent          : reads repo + rec; emits PLAN-{slug}.md to S3; returns plan summary
+        - plan_agent          : reads repo + rec; publishes the plan to the warehouse row (the SOLE
+                                plan artifact -- the table already carries plan_text, so the design's
+                                second copy as a plan document to S3 is considered-and-rejected: a
+                                second artifact behind a second read path with no reconciliation
+                                story). Returns IDENTIFIERS ONLY -- (rec_id, revision, ulid-or-hash);
+                                the earlier "returns plan summary" contract is superseded, because an
+                                LLM-authored plan summary is content, not an identifier, is not
+                                deterministic on re-fetch, and the state machine is not a payload
+                                channel
         - plan_critic         : fresh-context critique of the plan deliverable
         - decision_scout      : decision-contradiction check (per the planning skill's Step 6a gate)
         - implement_agent     : reads plan; iterative edit-files + run-tests + emit-diff loop
@@ -7185,25 +7453,56 @@ tier_items:
       rec/RCA path). Telemetry emitted via agent_sdk shim (T0.8).
 
       Atomic-plan decomposition per the freeze override: this XL tier item splits into multiple
-      atomic IMPLEMENTATION plans -- one per persona Durable Function -- since STRATEGIC plan filing
+      atomic IMPLEMENTATION plans -- one per persona node (a Lambda Durable Function under CD.27's
+      incumbent layer-2 candidate; the T4.15 spike may re-point it) -- since STRATEGIC plan filing
       is blocked until CD.17 trigger fires, and THIS item is the trigger precondition.
-    depends_on: [T4.1, T3.4, T1.6, T4.9a, T4.10a]
+
+      [Annotation 2026-08-19, Decision 173 -- the tier and provider names above are the then-current
+      SELECTIONS, not the architecture: Tier 1 and Tier 2 are the primary and warm-fetched-fallback ROLES,
+      and which provider and model ids fill them is resolved from docs/contracts/inference-provider.yaml
+      (model_id_formats.litellm_tier_models, the sole provider-identity home). The LiteLLM transport this
+      item builds must read tier membership from that contract, so swapping a provider is a contract edit
+      and never a scripts/llm/client.py edit; each tier's cold-start assertion follows its declared
+      billing_shape. T4.17:c5 is the trackable criterion for that requirement.]
+    depends_on: [T4.1, T3.4, T1.6, T4.9a, T4.10a, T4.15, T4.16]
     files_in_scope:
-      - src/lambdas/plan_agent/         # new -- Durable Function persona
-      - src/lambdas/plan_critic/        # new -- Durable Function persona
-      - src/lambdas/decision_scout/     # new -- Durable Function persona
-      - src/lambdas/implement_agent/    # new -- Durable Function persona
-      - src/lambdas/code_reviewer/      # new -- Durable Function persona
+      - "per CD.27 (incumbent layer-2 candidate): the persona paths below are substrate-shaped"
+      - src/lambdas/plan_agent/         # new -- persona node
+      - src/lambdas/plan_critic/        # new -- persona node
+      - src/lambdas/decision_scout/     # new -- persona node
+      - src/lambdas/implement_agent/    # new -- persona node
+      - src/lambdas/code_reviewer/      # new -- persona node
       - scripts/llm/client.py           # rewrite to LiteLLM transport; remove Bedrock + Gemini-CLI paths
       - config/agent/executor/prompts/  # per-persona prompt templates (one per Durable Function)
     exit_criteria:
-      - "Each persona deployment satisfies CD.27 resume_properties P1, P2 and P3: an interruption mid-persona-loop resumes without re-doing completed work (P1), continues without losing workspace state (P2), and bounds any lost work to a small, characterizable slice of the persona's operations (P3)"
-      - "End-to-end smoke: rec -> plan_agent -> Parallel(plan_critic, decision_scout) -> critique_gate PASS -> implement_agent -> code_reviewer -> file_pr -> verdict-callback (T4.9a) PRE_PASS permits merge -> PR opens and validates green"
-      - "All telemetry emitted via agent_sdk per turn (rec_id, step_id, turn_index, model_id, tokens_in, tokens_out, cached_tokens_read, cached_tokens_written, est_cost_usd, latency_ms); no orphan process_events"
-      - "LiteLLM is the only LLM transport: grep `import boto3.*bedrock` and `import google.generativeai` and `from copilot` return zero hits in src/lambdas/*/"
-      - "Stability: grace_period_elapsed(T4.2, 14) AND zero unrecovered failures during the grace period -- this is the CD.17 reversal precondition (verbatim, structurally unchanged from the pre-amendment CD.17)"
-      - "State-machine-enforced budget counters (max plan/implementation revisions and total LLM calls per rec, per T4.11) are live and exercised in the e2e smoke run"
-    related_candidate_decisions: [CD.17, CD.27, CD.28, CD.43]
+      - id: c1
+        text: "Each persona deployment satisfies CD.27 resume_properties P1, P2 and P3: an interruption mid-persona-loop resumes without re-doing completed work (P1), continues without losing workspace state (P2), and bounds any lost work to a small, characterizable slice of the persona's operations (P3)"
+        status: open
+      - id: c2
+        text: "End-to-end smoke: rec -> plan_agent -> Parallel(plan_critic, decision_scout) -> critique_gate PASS -> implement_agent -> code_reviewer -> file_pr -> verdict-callback (T4.9a) PRE_PASS permits merge -> PR opens and validates green"
+        status: open
+      - id: c3
+        text: "All telemetry emitted via agent_sdk per turn (rec_id, step_id, turn_index, model_id, tokens_in, tokens_out, cached_tokens_read, cached_tokens_written, est_cost_usd, latency_ms); no orphan process_events"
+        status: open
+      - id: c4
+        text: "LiteLLM is the only LLM transport: grep `import boto3.*bedrock` and `import google.generativeai` and `from copilot` return zero hits in src/lambdas/*/"
+        status: open
+      - id: c5
+        text: "Stability: grace_period_elapsed(T4.2, 14) AND zero unrecovered failures during the grace period -- this is the CD.17 reversal precondition (verbatim, structurally unchanged from the pre-amendment CD.17)"
+        status: open
+      - id: c6
+        text: "State-machine-enforced budget counters (max plan/implementation revisions and total LLM calls per rec, per T4.11) are live and exercised in the e2e smoke run"
+        status: open
+      - id: c7
+        text: >-
+          Deterministic guard classification of the executor's compute substrate must be live
+          before any persona can execute, asserted by registry check_id
+          executor-substrate-guard-classification-complete: for every resource type the ratified
+          substrate's terraform module declares, the guard blocks a non-inert change and passes an
+          inert one. Triggers: T4.15 ratifying the substrate; rec-2816's tf-gated-apply approval
+          weakness remediated. Recon: docs/plans/PLAN-executor-substrate-guard-deferral.yaml.
+        status: open
+    related_candidate_decisions: [CD.17, CD.27, CD.28, CD.43, CD.44]
     related_decisions: [116, 122, 164]
     related_intents: [recommendation-executor, provider-agnostic-executor]
     effort: XL
@@ -7218,15 +7517,21 @@ tier_items:
         and Decision 93, wired T4.9a (verdict-callback + merge authority) and T4.10a (persona
         contract authoring) into depends_on, reworded the e2e-smoke criterion to name the T4.9a
         callback mechanism, and added the budget-counter e2e-smoke exit criterion (T4.11).
+      - 2026-08-25 (PLAN-executor-substrate-guard-deferral): converted c1-c6 to ExitCriterion
+        objects (text preserved byte-for-byte) and appended c7, registering that deterministic
+        guard classification of the executor's compute substrate must be live before any persona
+        executes. Bookkeeping only -- no guard stage, resource-type frozenset or contract
+        classification row is created; gated on T4.15's substrate ratification and rec-2816's
+        remediation.
     decomposition_hints:
       split_by: per_persona
       atomic_plans:
         - "PLAN-llm-client-litellm-transport -- scripts/llm/client.py rewrite to LiteLLM; remove Bedrock + Gemini-CLI; tier routing wired to CD.28 model registry (precursor; lands before persona plans)"
-        - "PLAN-persona-plan-agent -- plan_agent Durable Function"
-        - "PLAN-persona-plan-critic -- plan_critic Durable Function"
-        - "PLAN-persona-decision-scout -- decision_scout Durable Function"
-        - "PLAN-persona-implement-agent -- implement_agent Durable Function"
-        - "PLAN-persona-code-reviewer -- code_reviewer Durable Function"
+        - "PLAN-persona-plan-agent -- plan_agent persona node (per CD.27, the incumbent)"
+        - "PLAN-persona-plan-critic -- plan_critic persona node (per CD.27, the incumbent)"
+        - "PLAN-persona-decision-scout -- decision_scout persona node (per CD.27, the incumbent)"
+        - "PLAN-persona-implement-agent -- implement_agent persona node (per CD.27, the incumbent)"
+        - "PLAN-persona-code-reviewer -- code_reviewer persona node (per CD.27, the incumbent)"
       rationale: |
         Per CD.27 boundary diagram, each persona is independently authorable. Splitting per-persona
         keeps each plan's blast radius narrow and lets the substrate (T4.1) prove out under stub
@@ -7309,6 +7614,7 @@ tier_items:
       - varies
     exit_criteria:
       - "Each gate A0-A5 has documented entry/exit criteria"
+      - "What reliability is proven means NUMERICALLY is pinned across the whole ladder: every gate A0-A5 carries a numeric threshold, with its denominator, its window and its data source named. The ladder today has exactly one illustrative threshold anywhere, and ownership is split across two XL not-started items -- this criterion is what stops the ladder being adjudicated by narrative"
       - "Each gate has a documented rollback criterion (e.g. A3 -> A2 when 7-day unrecovered failure rate > 5%)"
       - "Rollback automation: when threshold breached, current gate flips to An-1 and a rec is filed via log-rec with source='autonomy_rollback'"
       - "Current gate exposed in preflight + roadmap state"
@@ -7327,32 +7633,42 @@ tier_items:
       authority (T4.13->T4.2 only; no cycle).
   - id: T4.5
     tier: T4
-    name: Plan / critique / revision warehouse entities (ops_plans, ops_plan_revisions) + verb-RBAC
+    name: Plan / critique / revision warehouse entities -- EXTEND the single plans table ops_execution_plans (the ops_plan_revisions split is retired-before-built) + verb-RBAC
     intent: |
       Promote the git-authoritative PLAN-{slug}.yaml artefact (Decision 85, PlanDocument
-      schema_version 1) into first-class warehouse entities, per Decision 87. Three surfaces:
-      ops_plans (SCD2: plan document + status gate pending -> approved | rejected | needs-revision),
-      ops_plan_revisions (machine-actionable revision directives -- the imperative the planning
-      agent consumes), and existing telemetry (critique deliberation/rationale -- not duplicated here).
-      Until the T4.6 authority-flip, ops_plans is a downstream read-projection of the git-authoritative
-      PLAN-*.yaml, populated by git->warehouse ETL -- the same sanctioned "ETL from a non-warehouse
-      source of truth" pattern as DECISIONS.md -> ops_decisions, so the Decision 84 warehouse-SoT
-      invariant holds (plans scoped as projection-until-T4.x). RBAC enforced at the DuckLake writer
-      verb layer (extends Decision 84 I-2/I-3, Decision 81 cl.2): planning personas get insert_plan
-      (hardcodes status=pending, cannot mutate status); critique personas get set_plan_status +
-      insert_revision (cannot author plan bodies). All writes transit ops_data_portal (Single-Portal
-      Invariant, Decisions 69/78); ids writer-allocated. Deferred per Decision 87 -- no warehouse
-      consumer of plans exists until the T4.6 loop; built when that consumer lands, not before.
+      schema_version 1) into first-class warehouse entities, per Decision 87 AS AMENDED
+      (2026-08-19). Clause 4 as amended names ONE plans table, so this item EXTENDS the live
+      ops_execution_plans table rather than constructing new entities. The originally-proposed
+      second plans table plus its companion ops_plan_revisions directive inbox is
+      retired-before-built -- neither was ever created, so there is no migration, no deprecation
+      window and nothing to delete -- and critique_history, already a column on the single plan
+      row, is that directive's home. Surfaces: ops_execution_plans (SCD2: plan document + status
+      gate pending -> approved | rejected | needs-revision) and existing telemetry (critique
+      deliberation/rationale -- not duplicated here). RESIDENCY versus AUTHORITY, per the same
+      amendment: warehouse RESIDENCY of executor-authored plans is a prerequisite for T4.2, while
+      the AUTHORITY flip for the human PLAN-*.yaml surface stays timed to T4.6 -- so until that
+      flip ops_execution_plans remains a downstream read-projection of the git-authoritative
+      PLAN-*.yaml, populated by git->warehouse ETL, the same sanctioned "ETL from a non-warehouse
+      source of truth" pattern as DECISIONS.md -> ops_decisions, and the Decision 84 warehouse-SoT
+      invariant holds. RBAC enforced at the DuckLake writer verb layer (extends Decision 84
+      I-2/I-3, Decision 81 cl.2): planning personas get insert_plan (hardcodes status=pending,
+      cannot mutate status); critique personas get set_plan_status plus the critique-append verb on
+      the single plans table (cannot author plan bodies). All writes transit ops_data_portal
+      (Single-Portal Invariant, Decisions 69/78); ids writer-allocated. The old deferral rationale
+      is SUPERSEDED: the T4.6 loop is no longer the first consumer, because the two-plane encoding
+      has the executor's own personas fetch their plan by named verb at MVP.
     depends_on: [T4.2]
     files_in_scope:
       - docs/contracts/plan-entities.yaml  # new
       - scripts/ops_data_portal.py
     exit_criteria:
-      - "ops_plans and ops_plan_revisions tables exist on the DuckLake-on-Neon SCD2 substrate"
+      - "ops_execution_plans is EXTENDED to carry the plan document + SCD2 status gate on the DuckLake-on-Neon substrate, and NO second plans table is created -- Decision 87 clause 4 as amended names one plans table and records the ops_plan_revisions split as retired-before-built, so there is nothing to migrate and nothing to delete"
       - "Schema + verb-RBAC documented in docs/contracts/plan-entities.yaml (no standing prose doc, per Decision 86)"
-      - "insert_plan / set_plan_status / insert_revision verbs live behind the closed writer boundary, role-scoped"
-      - "git->warehouse ETL projects PLAN-{slug}.yaml into ops_plans; round-trip parity test passes"
+      - "insert_plan / set_plan_status / critique-append verbs live behind the closed writer boundary, role-scoped; the retired insert_revision grant is re-pointed at the critique-append verb on ops_execution_plans, which writes critique_history and nothing else"
+      - "The BUSINESS KEY generalizes, and this item designs the replacement: ops_execution_plans carries merge_key rec_id ALONE today (not the pair with revision), and human PLAN-*.yaml plans have no rec_id at all, so once the one plans table holds human plans alongside executor-authored ones rec_id no longer identifies a row and a re-dispatched writer can emit revision N twice with different bodies. Design a plan-identity key here -- grain first, per docs/contracts/data-modeling-standard.yaml -- with rec_id demoted to one nullable attribute among others; do not assume rec_id suffices"
+      - "git->warehouse ETL projects PLAN-{slug}.yaml into ops_execution_plans; round-trip parity test passes"
       - "Read access via named verbs (no caller SQL); plan<->rec linkage queryable"
+      - "The out-of-scope tail of the one-plans-table consolidation is tracked by id and NOT fixed inside the Decision 87 amendment: rec-3213 covers Decision 136's Reversal-conditions and Related lines and docs/contracts/exit-criteria-ledger.yaml, both of which still name the retired two-table split as live future work"
     related_decisions: [87]
     related_candidate_decisions: [CD.17]
     effort: L
@@ -7362,14 +7678,17 @@ tier_items:
     decomposition_hints:
       split_by: surface
       atomic_plans:
-        - "ops_plans table + SCD2 status-gate schema + named read verbs (umbrella atomic plan)"
-        - "ops_plan_revisions table + insert_revision verb + planning-agent read inbox"
+        - "Extend ops_execution_plans with the SCD2 status-gate columns + named read verbs (umbrella atomic plan)"
+        - "Critique-append verb on ops_execution_plans writing critique_history -- this REPLACES the retired ops_plan_revisions directive inbox (retired-before-built; never created, so no table is dropped)"
         - "Verb-RBAC: insert_plan / set_plan_status role scoping at the ducklake_writer boundary"
+        - "Plan-identity business key: generalize ops_execution_plans off merge_key rec_id so human plans carrying no rec_id are addressable"
         - "git->warehouse ETL of PLAN-{slug}.yaml + round-trip parity smoke-test"
       rationale: |
-        Per Decision 87 the three surfaces split by purpose (state / directive / deliberation). Each
-        table + its verbs is independently testable; the ETL projection waits on nothing but the
-        PlanDocument schema (Decision 85, live), so it can land first as the queryability slice.
+        Per Decision 87 as amended there is ONE plans table; the surfaces that remain split by
+        purpose are state-plus-directive (the single plans row, with critique_history carrying the
+        directive) and deliberation (telemetry). Each verb is independently testable; the ETL
+        projection waits on nothing but the PlanDocument schema (Decision 85, live), so it can land
+        first as the queryability slice.
         strategic: true, status: not_started -- deferred forward intent; when pulled forward under the
         CD.17 freeze each atomic plan is an IMPLEMENTATION-type plan (no STRATEGIC plan authored).
   - id: T4.6
@@ -7377,22 +7696,27 @@ tier_items:
     name: Autonomous plan -> critique -> revision loop + git->warehouse authority-flip
     intent: |
       Wire the T4.2 agent personas (plan_agent, plan_critic) into the closed plan -> critique ->
-      revision loop over the T4.5 entities, per Decision 87. plan_agent emits a plan (insert_plan,
-      status=pending); plan_critic either flips status=approved or sets status=needs-revision and
-      inserts one or more ops_plan_revisions rows (the imperative); plan_agent reads its open-revision
-      inbox, emits revision N+1, marks rows resolved. This is where the authority-flip lands: once a
-      machine produces plans at frequency, warehouse-authoritative becomes the right model and
-      ops_plans stops being a git projection and becomes the source of truth. At that point Decision
-      85's git-authoritative clause for plans is superseded (pre-recorded in Decision 87's forward
-      note). Gated behind the CD.17 executor-freeze reversal via T4.2 stability -- the autonomous
-      producer whose existence Decision 87 ties the flip to.
+      revision loop over the T4.5 entities, per Decision 87 AS AMENDED (2026-08-19). plan_agent
+      emits a plan (insert_plan, status=pending); plan_critic either flips status=approved or sets
+      status=needs-revision and appends the imperative to critique_history on the same plan row --
+      the ops_plan_revisions directive inbox is retired-before-built and its role consolidates onto
+      that column; plan_agent reads its open-directive inbox from the row it already fetches, emits
+      revision N+1, and marks the directives resolved. This is where the AUTHORITY flip lands, and
+      only the authority flip: RESIDENCY moved earlier (Decision 87 as amended makes warehouse
+      residency of executor-authored plans a T4.2 prerequisite), so what remains here is the human
+      PLAN-*.yaml surface. Once a machine produces plans at frequency, warehouse-authoritative
+      becomes the right model and ops_execution_plans stops being a git projection and becomes the
+      source of truth for that surface too. At that point Decision 85's git-authoritative clause
+      for plans is superseded (pre-recorded in Decision 87's forward note). Gated behind the CD.17
+      executor-freeze reversal via T4.2 stability -- the autonomous producer whose existence
+      Decision 87 ties the AUTHORITY flip to.
     depends_on: [T4.2, T4.5]
     files_in_scope: []
     exit_criteria:
-      - "plan_critic can set_plan_status(approved) and set_plan_status(needs-revision)+insert_revision but cannot author plan bodies"
-      - "plan_agent consumes its open-revision inbox and emits revision N+1 as a new ops_plans SCD2 row"
+      - "plan_critic can set_plan_status(approved) and set_plan_status(needs-revision) plus the critique-append verb, but cannot author plan bodies -- and a critique verdict is written by the CRITIC or by the GATE, never by the critiqued persona (verb-RBAC per Decision 87 clause 5 as amended; the split itself lands with T4.5)"
+      - "plan_agent consumes its open-directive inbox (critique_history on the plan row -- the retired ops_plan_revisions table is never built) and emits revision N+1 as a new ops_execution_plans SCD2 row"
       - "Closed loop runs end-to-end on a fixture rec: plan -> needs-revision -> revised plan -> approved"
-      - "Authority-flip executed: ops_plans is source of truth; PLAN-{slug}.yaml retired or demoted to export; Decision 85 plan clause marked superseded"
+      - "Authority-flip executed for the HUMAN planning surface: ops_execution_plans is source of truth; PLAN-{slug}.yaml retired or demoted to export; Decision 85 plan clause marked superseded. Warehouse RESIDENCY of executor-authored plans is NOT gated here -- Decision 87 as amended makes it a T4.2 prerequisite"
       - "CD.17 reversal preconditions satisfied (T4.2 complete + grace period) before flip lands"
     related_decisions: [87]
     related_candidate_decisions: [CD.17]
@@ -7403,9 +7727,9 @@ tier_items:
     decomposition_hints:
       split_by: lifecycle_stage
       atomic_plans:
-        - "Critique write-path: set_plan_status + insert_revision wired to plan_critic persona"
-        - "Revision read-path: plan_agent open-revision inbox + revision N+1 emission + resolve"
-        - "Authority-flip cutover: ops_plans becomes SoT, git PLAN-*.yaml demoted, Decision 85 superseded"
+        - "Critique write-path: set_plan_status + the critique-append verb on ops_execution_plans wired to plan_critic (the retired ops_plan_revisions inbox is never built)"
+        - "Revision read-path: plan_agent open-directive inbox from critique_history + revision N+1 emission + resolve"
+        - "Authority-flip cutover for the human surface: ops_execution_plans becomes SoT, git PLAN-*.yaml demoted, Decision 85 superseded"
       rationale: |
         Per Decision 87 the loop is the consumer that justifies the warehouse entities and triggers the
         authority-flip. Split by lifecycle stage (critique-write / revision-read / cutover) so the read
@@ -7425,7 +7749,7 @@ tier_items:
     depends_on: [T4.5]
     files_in_scope: []
     exit_criteria:
-      - "ops_plans carries a base_commit_sha captured at plan authoring time"
+      - "ops_execution_plans carries a base_commit_sha captured at plan authoring time"
       - "Implement-time divergence check compares base_commit_sha to HEAD and classifies staleness"
       - "Stale plans are blocked or auto-routed to needs-revision before implementation runs"
       - "Decoupling (plan-ahead-of-implement) is documented as unblocked once this gate is live"
@@ -7857,6 +8181,414 @@ tier_items:
       Created 2026-07-08 per EXR-08 (7d57a0d) / Decision 93; depends_on T4.2 (not_started/live) -- no
       live->deferred edge.
 
+  - id: T4.15
+    tier: T4
+    name: Layer-2 substrate comparative spike -- the CD.27 ESB-04 resolving instrument
+    intent: |
+      CD.27's layer-2 substrate is NOT selected, and this item is the instrument that selects it.
+      Until this spike runs the incumbent stands and nothing else is pinned. The spike compares the
+      pinned candidate set -- durable_functions, sfn_over_stateless_workers,
+      self_checkpointed_lambda_dynamodb, long_running_container and hosted_cli_runner -- against
+      CD.27's substrate-neutral resume properties P1 (resume without re-doing completed work), P2
+      (workspace continuity) and P3 (bounded loss), using decision_scout as the spike vehicle. It
+      also carries the two-plane compute-placement design recorded in CD.44 as a CANDIDATE arm.
+      This item SELECTS nothing until it runs: the encoding that created it pre-empts neither CD.27
+      nor CD.43. Sequenced BEFORE T4.2, because building the persona layer against an unselected
+      substrate is the frame-lock CD.27 has already paid for once, and CD.27's ESB-04, ESB-06 and
+      ESB-01 ratification preconditions all discharge against this item.
+    depends_on: []
+    files_in_scope: []
+    exit_criteria:
+      - id: c1
+        text: >-
+          The comparative record covers every substrate in CD.27's pinned candidate set and scores each ONLY
+          against CD.27's substrate-neutral P1/P2/P3 resume properties, never against an incumbent-specific
+          mechanism -- that contamination is ESB-05, and scoring through a contaminated criterion is not cured by
+          flagging it
+        status: open
+      - id: c2
+        text: >-
+          The spike forces a MID-LOOP kill on every arm: each candidate persona is interrupted mid-run, in-flight,
+          with work in progress rather than between clean steps, and the record states what each arm lost and what
+          it resumed. Resumability is the property being compared, so criteria without a forced mid-loop kill
+          discriminate nothing
+        status: open
+      - id: c3
+        text: >-
+          Every arm's leg is WORKSPACE-MUTATING: the persona edits files on a branch and the kill lands with
+          uncommitted work in the tree. A read-only persona never exercises P2 (workspace continuity), which is
+          the highest-severity open finding (ESB-01), so a read-only spike would compare the arms on the one
+          property that is not in question
+        status: open
+      - id: c4
+        text: >-
+          SYMMETRIC REALISM is required and stated in the record: neither arm is stubbed, and the same realism
+          applies on each arm. A stubbed incumbent arm rigs the comparison toward the candidate exactly as a
+          stubbed candidate arm would rig it the other way
+        status: open
+      - id: c5
+        text: >-
+          MECH-1 -- the dispatch credential by which the orchestration plane starts a candidate-arm run is
+          UNSTUBBED and live for the duration of the spike: a real credential, actually exercised, with its
+          storage and rotation story recorded. It is the candidate arm's single largest unbuilt piece, so stubbing
+          it hides the cost the spike exists to measure. This is NOT the file_pr/merge credential model, which is
+          a different credential owned by T4.1 -- do not discharge one with the other
+        status: open
+      - id: c6
+        text: >-
+          MECH-3 -- each arm's continuation mechanism when a persona legitimately exceeds that arm's duration
+          ceiling is recorded: who re-dispatches, whether the correlation token survives, and how the checkpoint
+          is handed over. CD.27's stability_definition_14d already exempts scheduled duration-ceiling
+          continuations, so an arm with no continuation story cannot satisfy the exemption it relies on
+        status: open
+      - id: c7
+        text: >-
+          GOV-3 -- the two ratification obligations that LAPSE for a non-replay substrate (ESB-06's determinism
+          rules plus its static check, and CD.27's DynamoDB self-checkpoint fallback_spec, whose own
+          lapse_condition names the same class) are CLAIMED explicitly in the ratifying record whenever they
+          lapse, never left for a reviewer to discover as unmet obligations
+        status: open
+      - id: c8
+        text: >-
+          The record selects the executor's workspace backing store from CD.43's option_set against W1-W8 and
+          replaces CD.43's TBD_at_CD.43_ratification marker, discharging ESB-01 in the same act
+        status: open
+      - id: c9
+        text: >-
+          SUBSTRATE-NEUTRAL VERIFICATION SPLIT. Verification (V1/V2/V3 scripts) and validation
+          (validate.py --pre on push, full suite on merge) execute on GitHub Actions under the
+          sole-verifier authority carried by the LIVE T4.9a c1, REGARDLESS of the layer-2
+          substrate selected; persona compute on any arm performs edit/think/tool loops only and
+          NEVER runs validate.py or verifier scripts as part of the persona's own execution -- on
+          an arm whose substrate IS GitHub Actions the boundary is that the persona job and the
+          CI job are DISTINCT WORKFLOW RUNS, not one blended job, which is the formulation that
+          keeps the criterion meaningful on every arm; the spike's per-arm cost and duration
+          measurements must EXCLUDE verification and validation wall-clock, and any arm's record
+          that includes it is measuring the wrong boundary; verification steps are converted to
+          deterministically-runnable scripts dispatched via the T4.9a callback pattern (--pre ~5
+          min cap on push, 1-2 per rec; full suite 30 min cap on merge only; V3 tiers remain rare
+          and agent-supervised as the named exception, routed per their own tier rules). Decision
+          163 CLAUSE 3 already scopes the pre-handoff full-tier run to the interactive CC-web
+          session and explicitly does NOT extend it to the executor, so the executor's full tier
+          runs ONCE at merge and is not run twice; handoff_policy.full_validation_required_before_commit
+          is Literal[True] on every plan including executor-authored ones, so its "before commit"
+          wording is discharged at merge on the executor and reconciling the flag itself is
+          T4.9a / CD.17 work, not this criterion's. This is a conscious, reversal-conditioned
+          carry-forward (Decision 75) whose trigger is Decision 112's own reversal condition (CI
+          moving off GitHub-hosted runners plus OIDC federation). T4.9 c1 and T4.9a c1 are both
+          NOT rehomed by this criterion.
+        status: open
+      - id: c10
+        text: >-
+          GITHUB ACTIONS USAGE-POLICY FIT. The spike's ratifying record quotes the GitHub Terms
+          for Additional Products and Features, Actions section (retrieved 2026-08-21) and states
+          the usage-policy fit: clause 5 ("If using GitHub-hosted runners, any other activity
+          unrelated to the production, testing, deployment, or publication of the software
+          project associated with the repository") is SATISFIED by executor personas, which
+          produce and test this repository -- the clause tests purpose, not authorship; the
+          BINDING constraint is clause 4 (burden "disproportionate to the benefits", example "as
+          part of a serverless application"), to which the dispatch-and-callback shape is
+          structurally adjacent, so the record must state the measured burden posture (rec
+          concurrency, recs/day, job-minutes/month) and show it proportionate; re-evaluation
+          triggers are the A2+ concurrency raise, a repo-visibility flip, and recs/month growing
+          an order of magnitude past the 100-300 baseline; and a BUSL-1.1 relicensing note that
+          clause 3 (reselling Actions) is not engaged by developing commercial software ON
+          Actions and would engage only if customer workloads ever executed on Actions minutes.
+        status: open
+    related_candidate_decisions: [CD.27, CD.43, CD.44]
+    effort: L
+    strategic: false
+    status: not_started
+    note: >-
+      Created by PLAN-executor-two-plane-roadmap-encoding. The dossier calls the resolving spike the
+      single highest-leverage unowned action in the subsystem; before this item it had no owner and
+      no plan, so CD.27's three ratification preconditions could not discharge against anything.
+
+  - id: T4.16
+    tier: T4
+    name: Executor plan data plane -- named read verb, content pin, critique-authorship boundary (MVP slice)
+    intent: |
+      Decision 87 as amended makes warehouse RESIDENCY of executor-authored plans a prerequisite for
+      T4.2 rather than a consequence of it, and the two-plane design recorded in CD.44 has every
+      persona fetch its plan from the warehouse row instead of receiving it through the orchestration
+      plane. That moves the plan data plane from post-MVP to MVP-critical: nothing downstream of
+      plan_agent can run without it. This item lands the MVP slice -- the named read verb, the
+      content pin that makes a fetch verifiable, and the authorship boundary around critique_history
+      -- and routes the verb-RBAC split itself forward to T4.5/T4.6, where per-persona credentials
+      exist. It builds no persona and selects no substrate.
+    depends_on: []
+    files_in_scope:
+      - src/common/ducklake_scd2_schema.py
+      - scripts/ops_portal/execution_plans.py
+      - config/lambda/ducklake/field_semantics.yaml
+    exit_criteria:
+      - id: c1
+        text: >-
+          DATA-1 -- the named read verb execution_plan_by_rec, taking (rec_id, revision), is registered in the
+          NAMED_READS registry and reachable across the closed reader boundary. Personas fetch their plan through
+          it and never through query_ops, which accepts caller SQL: the agent contract is named verbs precisely so
+          no caller SQL crosses the boundary
+        status: open
+      - id: c2
+        text: >-
+          The read verb's spec PINS CONTENT, not merely the revision: every fetch verifies a writer-minted ULID or
+          a content hash carried alongside (rec_id, revision) and fails closed on mismatch. merge_key is rec_id
+          ALONE and revision is a caller-supplied scalar, so a re-dispatched writer can emit revision N twice with
+          different bodies and the pair on its own is not idempotent
+        status: open
+      - id: c3
+        text: >-
+          The content pin is the MVP-side guarantee for a verb split that cannot be enforced yet: every persona
+          presents one identity at the writer boundary today, so server-side role scoping distinguishes nothing.
+          The orchestration plane carries (rec_id, revision, ulid-or-hash), every persona fetch and the merge node
+          verify it, and the verb-RBAC split itself -- insert_plan / set_plan_status / the critique-append verb,
+          role-scoped -- routes to T4.5/T4.6 where per-persona credentials exist
+        status: open
+      - id: c4
+        text: >-
+          A critique verdict is written by the CRITIC or by the GATE, never by the critiqued persona, and the
+          content pin's hash is scoped to the plan BODY EXCLUDING critique_history -- a pin taken over the whole
+          row is invalidated by every critique append and would fail closed on the loop's normal path
+        status: open
+      - id: c5
+        text: >-
+          The plans-table NAME is RULED rather than defaulted, and this item is where the ruling has to be legible
+          because the read verb BINDS a physical name into NAMED_READS: ops_execution_plans is the single plans
+          table, selected on prevalence (the implemented name, carried on 278 matching lines across 80 files, 32
+          of them load-bearing across terraform, field_semantics, .importlinter, the verification and data-quality
+          registries and 12 test modules, against 30 prose-only lines across 8 files for the rejected alternative
+          name, none load-bearing). No surface leaves the name open
+        status: open
+      - id: c6
+        text: >-
+          The read path survives a Neon COLD RESUME: a cold-start reconnect is retried with bounded backoff before
+          the step is failed, and the bound is stated. The design declares unattended operation impossible without
+          it, so an unretried cold resume is an outage rather than a latency spike
+        status: open
+      - id: c7
+        text: >-
+          MECH-4 -- a reaper unsticks a rec whose executor run died mid-flight. ci-rca-inactivity-sweep.yml closes
+          genuinely-inactive open source=ci_rca recs on a timestamp predicate and is NOT a reaper for a crashed
+          run holding a queue slot; without an equivalent the queue silently loses a slot per crashed run
+        status: open
+      - id: c8
+        text: >-
+          DATA-2 -- the per-revision append log has a home that survives an ephemeral compute plane. jsonl_store's
+          repo-relative PLANS_JSONL dies with the job, and the portal explicitly refuses to collapse it onto the
+          one-row-per-rec_id cache because that would destroy its per-revision history. Either the SCD2 history
+          table absorbs the role or the log gets a durable home; today it is inherited rather than decided
+        status: open
+      - id: c9
+        text: >-
+          DATA-3 -- every fanned-out scout leg is HANDED its parent's observation_id as an input.
+          parent-observation-id.yaml is explicit that a child never re-mints a correlation key it did not
+          originate, so a naive matrix fan-out records N disconnected roots and violates the contract by default;
+          the contract also notes there is no current populator, so the swarm tree is contracted but not built
+        status: open
+      - id: c10
+        text: >-
+          OPS-3 -- LLM-authored code must not execute inside a session holding broad cloud credentials.
+          implement_agent writes tests and then runs them; Decision 117 boundary patterns gate which recs are
+          ADMITTED, not what an agent writes once admitted. Credentials are scoped to the specific steps that need
+          them rather than held for the whole run
+        status: open
+      - id: c11
+        text: >-
+          A MERGE-NODE DIFF-PATH GUARD is live: at the merge node the PR diff is inspected and the merge is
+          refused when that diff touches .github/workflows/** or any path matching the Decision 117
+          boundary_patterns SSOT. ci.yml runs on pull_request, so a same-repo branch runs its own version of the
+          workflow -- the guard has to sit on the plane the agent cannot edit through its own merge loop, and the
+          diff, the workflow path and the merge node have to be gated together in one control rather than in three
+        status: open
+      - id: c12
+        text: >-
+          QUEUE SEEDING for the first queue-fed run is decided rather than discovered: what populates
+          ops_priority_queue before the executor has filed any recs of its own, and which producer owns that
+          seeding
+        status: open
+      - id: c13
+        text: >-
+          ONE eligibility predicate is authoritative and the divergent versions are reconciled to it -- including
+          the effort and target-SLOC admission gates Life 1 actually enforced, which appear in none of the forward
+          design
+        status: open
+      - id: c14
+        text: >-
+          The three CLOSURE POINTS are adjudicated: the executor closing the rec itself, the Resolves: trailer on
+          push, and post-merge full-validate PASS. Which one counts as done, and what happens when they disagree
+        status: open
+      - id: c15
+        text: >-
+          A cross-run FAILURE BUDGET either exists with a numeric threshold and a named owner, or is recorded as
+          deliberately absent with the reason. Per-rec loop budgets (T4.11) bound one run and are not a rate
+          limiter ACROSS runs
+        status: open
+      - id: c16
+        text: >-
+          Where an executor-authored RCA rec surfaces is decided: source=ci_rca carries a preflight section, a
+          hard block, liveness alerts, a fingerprint chain and an inactivity sweep, while executor-rca and
+          executor-postmortem recs have none of it and land in a generic backlog current policy leaves unexamined
+          until the executor exists
+        status: open
+      - id: c17
+        text: >-
+          Whether ops_recommendations gains a PLURAL TARGETS field is decided: both the Decision 117 boundary
+          predicate and the semantic-lock derivation are specified over a rec's targets, while the schema carries
+          a single scalar file, so neither is implementable as written
+        status: open
+      - id: c18
+        text: >-
+          DATA-4 is repaired outside this item and referenced by id: rec-3216 (AGENTS.md routes
+          ops_execution_plans to Athena over Iceberg while storage-substrate.yaml records it live on
+          DuckLake-on-Neon). It is independent of the two-plane proposal and lands as its own commit, not inline
+          here
+        status: open
+    related_candidate_decisions: [CD.44]
+    related_decisions: [87]
+    effort: L
+    strategic: false
+    status: not_started
+    note: >-
+      Created by PLAN-executor-two-plane-roadmap-encoding. MVP-critical rather than post-MVP because
+      Decision 87 as amended separates RESIDENCY (a T4.2 prerequisite) from AUTHORITY (still timed to
+      T4.6); the verb split itself stays with T4.5/T4.6.
+
+  - id: T4.17
+    tier: T4
+    name: Provider as a measured performance variable -- comparative inference-tier telemetry
+    intent: |
+      Decision 173 makes tier MEMBERSHIP configuration rather than architecture; this item is where the
+      consequence the operator named -- providers become a VARIABLE whose performance is measured --
+      gets an owner. It builds the measurement surface, not a swap: per-call telemetry dimensioned by
+      provider and model so two tier-1 candidates can be compared on one workload, plus the comparative
+      record naming the current selection for each ROLE and the evidence behind it. It SELECTS no
+      provider and changes no tier: a selection made against this item's evidence is a contract edit
+      under Decision 173 clause 2 and needs no Decision amendment. c5 additionally carries the
+      transport-side config-resolution requirement that Decision 173 clause 2 places on T4.2's
+      LiteLLM transport -- it is homed here, in structured form, because T4.2's own exit_criteria are
+      bare strings pinned by four live guards in tests/esb_text_fix/.
+    depends_on: [T4.2]
+    files_in_scope: []
+    exit_criteria:
+      - id: c1
+        text: >-
+          Every executor inference call emits provider AND model_id as telemetry dimensions alongside
+          tokens, cost and latency, so a per-provider comparison is a query rather than a re-run. A
+          record that cannot separate the provider dimension measures nothing about provider choice
+        status: open
+      - id: c2
+        text: >-
+          The comparative record scores at least two candidate primary-tier providers on the SAME
+          workload (identical prompts, identical effort band) and states cost per rec, latency and task
+          outcome per provider -- symmetric realism, neither arm stubbed
+        status: open
+      - id: c3
+        text: >-
+          The current selection for each ROLE (primary, warm-fetched fallback) is recorded in
+          docs/contracts/inference-provider.yaml together with the evidence that chose it, and changing
+          a selection is a contract edit alone -- no Decision amendment, per Decision 173 clause 2
+        status: open
+      - id: c4
+        text: >-
+          Each tier's declared billing_shape carries the cold-start assertion Decision 173 clause 4
+          requires for that shape (remaining-allowance for a fixed non-rollover allowance,
+          credential-liveness for a metered tier, not_applicable while deferred), and the assertion is
+          exercised, not merely declared
+        status: open
+      - id: c5
+        text: >-
+          Tier membership is resolved from docs/contracts/inference-provider.yaml at runtime by the
+          T4.2 LiteLLM transport -- swapping which provider or model fills the primary or fallback ROLE
+          requires no edit to scripts/llm/client.py -- and the transport refuses a configuration that
+          fills a role from retired_providers or fills both roles from one vendor (Decision 173 clause
+          2(a) and 2(b))
+        status: open
+    related_candidate_decisions: [CD.28]
+    related_decisions: [116, 122, 164, 173]
+    effort: M
+    strategic: false
+    status: not_started
+    note: >-
+      Created by PLAN-provider-agnostic-tier-model as the forward-intent home for the operator's
+      "providers will become a variable at a later date to measure performance metrics" directive
+      (Decision 86 routing: forward intent goes to a tier_item, never into a Decision body and never
+      into a new prose doc).
+
+  - id: T4.18
+    tier: T4
+    name: Executor operator supervision surface (deferred forward intent, Decision 86 routing)
+    intent: |
+      PLAN-executor-boundary-pattern-repair repaired the boundary SSOT (Decision 117) and, in doing
+      so, surfaced the supervision-surface work that motivated the discovery. The predecessor plan
+      (PLAN-develop-executor-supervisor.yaml) was withdrawn rather than patched after five
+      fresh-context gates -- the mandatory plan-critique plus four adversarial lenses (boundary
+      security, verification rigour, governance accuracy, frame-lock) -- returned
+      REVISE/REVISE/REVISE/REVISE/BLOCK. This item persists that substance as forward intent per
+      Decision 86 (forward intent routes to a tier_item, never to prose and never to a speculative
+      artefact authored ahead of its substrate) rather than building it against an unratified one.
+      It builds no persona and selects no substrate.
+    depends_on: [T4.15]
+    files_in_scope: []
+    exit_criteria:
+      - id: c1
+        text: >-
+          The supervision surface's compute substrate is SELECTED before any persona implementation
+          begins -- T4.15's comparative spike is the resolving instrument (CD.27 ESB-04), and this
+          item stays substrate-neutral until that spike rules
+        status: open
+      - id: c2
+        text: >-
+          The observability IAM prerequisite is granted: PlatformDev holds none of the ecs, states or
+          logs verbs the supervision surface needs to diagnose executor runs today, and the existing
+          LambdaLogGroupRead grant is scoped to a different role, not PlatformDev
+        status: open
+      - id: c3
+        text: >-
+          config/agent/executor/instructions/executor-supervisor-rules.instructions.md and
+          executor-supervisor-workflow.instructions.md are DELETED rather than repaired -- both
+          bodies instruct an agent to work on main, activate a venv and call bare python, commit
+          directly to main, and hand-edit logs/.recommendations-log.jsonl, describing a Windows-local
+          agent-branch workflow superseded by Decision 76 (CC-web workflow migration) and frozen by
+          Decision 67; deletion is the cleaner disposition for instructions describing a retired
+          workflow, not a repair target
+        status: open
+      - id: c4
+        text: >-
+          The 14-entry divergence between config/agent/executor/capabilities.yaml's boundary_patterns
+          (Decision 117 SSOT) and scripts/classify_automatable.py's _BOUNDARY_PATTERNS duplicate list
+          is reconciled, and the deeper question is decided: whether classify_automatable.py should
+          read capabilities.yaml directly, dissolving Decision 117's reversal condition, rather than
+          servicing it a third time with another hand-synced list
+        status: open
+      - id: c5
+        text: >-
+          The 12 open, automatable=true recommendations targeting AGENTS.md are re-derived through
+          the ops portal (their automatable verdict recomputed against the corrected boundary) before
+          an AGENTS.md row is added to boundary_patterns -- adding the row first would flip those 12
+          into validate_executor_boundary violations and redden the full tier wherever the read cache
+          exists
+        status: open
+      - id: c6
+        text: >-
+          Whether .claude/skills/ and .claude/commands/ are boundary classes in general is decided.
+          PLAN-executor-boundary-pattern-repair named only the three specific live files
+          (develop-executor, executor-rca, executor/capabilities.yaml) that were measured at zero
+          blast radius; the general class question for the two directories remains open
+        status: open
+      - id: c7
+        text: >-
+          The three surviving references to the deleted .github/prompts/develop-executor.prompt.md
+          path inside the docs/INTENT-* retiring set (Decision 86 clause 3) are reconciled through
+          each document's own per-doc drift-reconciliation process
+        status: open
+    related_decisions: [55, 67, 76, 86, 117]
+    effort: L
+    strategic: false
+    status: not_started
+    note: >-
+      Created by PLAN-executor-boundary-pattern-repair. Substrate-neutral: it names no compute
+      substrate and survives whichever way the T4.15 layer-2 comparative spike rules.
+
   # ----- T5: Decommissioning & cleanup -----
   - id: T5.1
     tier: T5
@@ -7994,8 +8726,9 @@ tier_items:
     intent: |
       [Created 2026-07-08, EXR-09, audit executor-roadmap-review-7d57a0d.] The frozen (Decision 67)
       single-process executor (scripts/execute_recommendation.py + scripts/executor/*) is unowned for
-      cutover: no tier_item names when/how it is harvested or retired once the T4.2 Durable Function
-      substrate replaces it. This item owns that disposition -- harvest reusable logic into the
+      cutover: no tier_item names when/how it is harvested or retired once the T4.2 persona-node
+      substrate (Durable Functions per CD.27, the incumbent) replaces it. This item owns that
+      disposition -- harvest reusable logic into the
       substrate, retire the rest, and guarantee the two never run concurrently against the same queue.
     depends_on: [T4.2]
     files_in_scope:
@@ -8170,7 +8903,7 @@ cross_tier_gates:
     rule: T3.2.status == "complete" and T3.2.latest_run.verdict == "PASS"
     rationale: Cloud analysis agent trusts that telemetry data is complete. Without verified causal chain, analysis runs on potentially-broken pipeline data. This is a RUNTIME aggregate, not encodable in depends_on alone.
   - id: G.9
-    name: T4.2 agent-persona Durable Functions stable for >=14 days before T5.1 VM decommission
+    name: T4.2 agent-persona resumable persona nodes (Durable Functions per CD.27, the incumbent) stable for >=14 days before T5.1 VM decommission
     rule: T4.2.status == "complete" and grace_period_elapsed(T4.2, 14)
     rationale: |
       VM is the dev fallback while autonomy is being validated. Decommissioning before autonomous executor

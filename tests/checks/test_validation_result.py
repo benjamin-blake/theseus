@@ -13,9 +13,11 @@ from scripts.checks import registry, validation_result
 def _reset_attributions():
     validation_result._ATTRIBUTIONS.clear()
     validation_result._OUTCOMES.clear()
+    validation_result._FAILURE_DETAILS.clear()
     yield
     validation_result._ATTRIBUTIONS.clear()
     validation_result._OUTCOMES.clear()
+    validation_result._FAILURE_DETAILS.clear()
 
 
 def test_clear_removes_stale_result(tmp_path: Path) -> None:
@@ -135,6 +137,44 @@ def test_write_completed_emits_schema_v3_with_failed_check_attributions(tmp_path
     on_disk = json.loads(path.read_text(encoding="utf-8"))
     assert on_disk["schema_version"] == 3
     assert on_disk["failed_check_attributions"] == record["failed_check_attributions"]
+
+
+def test_failed_check_details_emitted_additively(tmp_path: Path) -> None:
+    """failed_check_details (this plan, coverage-failure-attribution) appears under the NEW
+    top-level key only when a check actually declared detail this run; failed_checks and
+    failed_check_attributions stay byte-identical to today either way (Decision 170 clause 1 /
+    check-accounting.yaml's validation_result_schema_v3 pin)."""
+    path = tmp_path / "debug" / "result.json"
+    git = MagicMock(returncode=0, stdout="abc123\n")
+
+    def _fn(failed: list[str]) -> None:
+        registry.failure_detail(["scripts/checks/hygiene/validate_vacuity_justified.py: 95.8% (expected 100%)"])
+        failed.append("Coverage below 100%")
+
+    failed_list: list[str] = []
+    validation_result.dispatch_recording("validate_test_coverage", failed_list, _fn)
+    with patch("scripts.checks.validation_result.subprocess.run", return_value=git):
+        record = validation_result.write_completed(
+            started_at="2026-01-01T00:00:00+00:00", exit_code=1, failed_checks=failed_list, path=path
+        )
+    assert record["failed_check_details"] == {
+        "validate_test_coverage": ["scripts/checks/hygiene/validate_vacuity_justified.py: 95.8% (expected 100%)"]
+    }
+    assert record["failed_checks"] == ["Coverage below 100%"]
+    assert record["failed_check_attributions"] == [{"check": "validate_test_coverage", "label": "Coverage below 100%"}]
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["failed_check_details"] == record["failed_check_details"]
+
+    validation_result.clear(path)
+    failed_list2: list[str] = []
+    validation_result.dispatch_recording("validate_ok", failed_list2, lambda failed: None)
+    with patch("scripts.checks.validation_result.subprocess.run", return_value=git):
+        record2 = validation_result.write_completed(
+            started_at="2026-01-01T00:00:00+00:00", exit_code=0, failed_checks=failed_list2, path=path
+        )
+    assert "failed_check_details" not in record2
+    on_disk2 = json.loads(path.read_text(encoding="utf-8"))
+    assert "failed_check_details" not in on_disk2
 
 
 def test_write_completed_attributions_is_a_snapshot_not_a_live_reference(tmp_path: Path) -> None:

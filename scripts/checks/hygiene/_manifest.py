@@ -21,7 +21,10 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.hygiene.validate_test_count_coupling",
         attr="validate_test_count_coupling",
         pre=True,
-        pre_globs=("tests/**",),
+        pre_globs=(
+            "tests/**",
+            "scripts/checks/hygiene/**",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -65,6 +68,27 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_check_accounting",
         pre=True,
         pre_globs=("scripts/checks/**", "config/check_accounting_baseline.yaml"),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_licence_consistency",
+        module="scripts.checks.hygiene.validate_licence_consistency",
+        attr="validate_licence_consistency",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_root_scoped_diff_base",
+        module="scripts.checks.hygiene.validate_root_scoped_diff_base",
+        attr="validate_root_scoped_diff_base",
+        pre=True,
+        pre_globs=("scripts/checks/**",),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_vacuity_justified",
+        module="scripts.checks.hygiene.validate_vacuity_justified",
+        attr="validate_vacuity_justified",
         full_segment="full_after_lint",
     ),
 )

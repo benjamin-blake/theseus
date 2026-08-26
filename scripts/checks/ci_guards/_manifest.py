@@ -89,6 +89,12 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.ci_guards.validate_ops_portal_patch_targets",
         attr="validate_ops_portal_patch_targets",
         pre=True,
+        pre_globs=(
+            "tests/**",
+            "scripts/checks/ci_guards/**",
+            "scripts/ops_data_portal.py",
+            "scripts/ops_portal/**",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -96,6 +102,17 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.ci_guards.validate_ci_rca_adjudication",
         attr="validate_ci_rca_adjudication",
         pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_oidc_failopen_guards",
+        module="scripts.checks.ci_guards.validate_oidc_failopen_guards",
+        attr="validate_oidc_failopen_guards",
+        pre=True,
+        pre_globs=(
+            ".github/workflows/**",
+            "scripts/checks/ci_guards/validate_oidc_failopen_guards.py",
+        ),
         full_segment="full_after_lint",
     ),
 )

@@ -5,7 +5,7 @@ tests/test_ci_rca_taxonomy.py (Decision 128 decompose-by-default).
 
 import json
 
-from scripts.ci_rca.taxonomy import classify_failure, classify_failures
+from scripts.ci_rca.taxonomy import _load_check_details, classify_failure, classify_failures
 from tests.fixtures.ci_rca.taxonomy_data import (
     FAILED_CHECKS_TAXONOMY,
     MINIMAL_TAXONOMY,
@@ -155,6 +155,55 @@ class TestPriorityZeroAttribution:
         results = classify_failures("irrelevant log", path=p, validation_result_path=vr)
         assert len(results) == 1
         assert results[0][1] == "validate_test_coverage"
+
+
+class TestLoadCheckDetails:
+    """_load_check_details (coverage-failure-attribution): best-effort loader for the new
+    top-level failed_check_details map, mirroring _load_attributions' degrade-gracefully
+    contract. Detail is carried through when present; absence degrades to today's behaviour
+    (an empty dict, never a raise)."""
+
+    def test_load_check_details_returns_detail_by_check(self, tmp_path):
+        p = tmp_path / "validation-result.json"
+        p.write_text(
+            json.dumps({"failed_check_details": {"validate_test_coverage": ["scripts/foo.py: 90% (expected 100%)"]}}),
+            encoding="utf-8",
+        )
+        assert _load_check_details(p) == {"validate_test_coverage": ["scripts/foo.py: 90% (expected 100%)"]}
+
+    def test_load_check_details_absent_key_degrades_to_empty(self, tmp_path):
+        p = tmp_path / "validation-result.json"
+        p.write_text(json.dumps({"failed_checks": ["x"]}), encoding="utf-8")
+        assert _load_check_details(p) == {}
+
+    def test_load_check_details_none_path_degrades_to_empty(self):
+        assert _load_check_details(None) == {}
+
+    def test_load_check_details_missing_file_degrades_to_empty(self, tmp_path):
+        assert _load_check_details(tmp_path / "nonexistent.json") == {}
+
+    def test_load_check_details_malformed_json_degrades_to_empty(self, tmp_path):
+        p = tmp_path / "validation-result.json"
+        p.write_text("not json", encoding="utf-8")
+        assert _load_check_details(p) == {}
+
+    def test_load_check_details_not_a_mapping_degrades_to_empty(self, tmp_path):
+        p = tmp_path / "validation-result.json"
+        p.write_text(json.dumps({"failed_check_details": ["not", "a", "mapping"]}), encoding="utf-8")
+        assert _load_check_details(p) == {}
+
+    def test_load_check_details_top_level_not_a_mapping_degrades_to_empty(self, tmp_path):
+        p = tmp_path / "validation-result.json"
+        p.write_text(json.dumps(["not", "a", "mapping"]), encoding="utf-8")
+        assert _load_check_details(p) == {}
+
+    def test_load_check_details_malformed_entries_skipped(self, tmp_path):
+        p = tmp_path / "validation-result.json"
+        p.write_text(
+            json.dumps({"failed_check_details": {"good_check": ["ok"], "bad_check": "not a list", "42": 42}}),
+            encoding="utf-8",
+        )
+        assert _load_check_details(p) == {"good_check": ["ok"]}
 
 
 class TestEvidenceInsufficientRefusal:

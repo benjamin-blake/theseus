@@ -120,6 +120,24 @@ class TestMapSourceToTest:
         assert result is not None
         assert result == ROOT / "tests" / "test_ci_rca_filing.py"
 
+    def test_maps_scripts_roadmap_plan_document_to_concern_split_package(self) -> None:
+        """scripts/roadmap/plan_document.py maps to the tests/roadmap/plan_document/ concern-split
+        package (PLAN-decompose-test-plan-document: registers it in _CONCERN_SPLIT_TEST_PACKAGES
+        so the former tests/test_plan_document.py monolith's decomposition resolves to a test
+        PACKAGE DIRECTORY via rule 3, DIRECT CONCERN-SPLIT)."""
+        source = ROOT / "scripts" / "roadmap" / "plan_document.py"
+        result = map_source_to_test(source)
+        assert result is not None
+        assert result == ROOT / "tests" / "roadmap" / "plan_document"
+
+    def test_maps_still_grandfathered_roadmap_sibling_to_flat_home(self) -> None:
+        """scripts/roadmap/plan_audit.py and scripts/roadmap/find_plan.py (never on the 24-roster,
+        never concern-split) still resolve to their flat grandfathered homes -- proves registering
+        scripts/roadmap/plan_document.py as a direct concern-split entry did not perturb its
+        roadmap-family siblings."""
+        assert map_source_to_test(ROOT / "scripts" / "roadmap" / "plan_audit.py") == ROOT / "tests" / "test_plan_audit.py"
+        assert map_source_to_test(ROOT / "scripts" / "roadmap" / "find_plan.py") == ROOT / "tests" / "test_find_plan.py"
+
     def test_returns_none_for_unmapped_path(self, tmp_path: Path) -> None:
         """Paths not under src/ or scripts/ return None."""
         source = tmp_path / "docs" / "README.py"
@@ -289,12 +307,14 @@ class TestMapSourceToTest:
             ("approvals", "test_approvals.py"),
             ("assess", "test_assess.py"),
             ("escalate", "test_escalate.py"),
-            ("code_drift", "test_code_drift.py"),
             ("__main__", "test___main__.py"),
         ],
     )
     def test_maps_convergence_health_submodules_to_their_own_mirror(self, stem: str, expected_test_name: str) -> None:
         # rec-2709 Wave 6 PACKAGE-MIRROR: each submodule maps 1:1 to its own mirror file.
+        # code_drift.py is EXCLUDED from this parametrize set -- it is now a direct
+        # _CONCERN_SPLIT_TEST_PACKAGES entry (PLAN-convergence-health-prod-drift-red) and maps to
+        # a test PACKAGE DIRECTORY instead; see TestCodeDriftConcernSplitRegistration below.
         source = ROOT / "scripts" / "convergence_health" / f"{stem}.py"
         result = map_source_to_test(source)
         assert result is not None
@@ -351,3 +371,20 @@ class TestContractDriftConcernSplitRegistration:
 
     def test_contract_drift_pre_decomposition_single_file_module_is_gone(self) -> None:
         assert not (ROOT / "tests" / "checks" / "contracts" / "test_validate_contract_drift.py").exists()
+
+
+class TestCodeDriftConcernSplitRegistration:
+    """scripts/convergence_health/code_drift.py (PLAN-convergence-health-prod-drift-red) is
+    registered directly in _CONCERN_SPLIT_TEST_PACKAGES so the concern-split test decomposition
+    (tests/convergence_health/code_drift/) keeps measuring 100% coverage of the source module --
+    without this registration map_source_to_test would resolve the single retired flat mirror
+    file that no longer exists post-split, dropping the module out of the coverage roster
+    entirely (see the plan's coverage-measurement note). The retired file's non-existence is
+    swept authoritatively by the plan's own VP step 10 (a repo-wide grep for dangling
+    references), not re-asserted here."""
+
+    def test_maps_code_drift_to_concern_split_package_directory(self) -> None:
+        source = ROOT / "scripts" / "convergence_health" / "code_drift.py"
+        result = map_source_to_test(source)
+        assert result is not None
+        assert result == ROOT / "tests" / "convergence_health" / "code_drift"

@@ -52,9 +52,11 @@ locals {
 
 # ---------------------------------------------------------------------------
 # GitHub PAT secret (dispatcher / findings-processor GitHub Models API auth). Value set out-of-band
-# via put-secret-value -- never Terraform-managed (Decision 37 out-of-band precedent, mirrors
-# inference_credentials.tf / secrets_manager_brokers.tf). No secret-version resource: key material
-# must never enter Terraform state.
+# via put-secret-value -- never Terraform-managed
+# (docs/contracts/secret-material-handling.yaml SECRET-VALUE-OUT-OF-BAND pattern, Decision 175 --
+# rehomed from the Decision 37 precedent; mirrors inference_credentials.tf /
+# secrets_manager_brokers.tf). No secret-version resource: key material must never enter
+# Terraform state.
 # ---------------------------------------------------------------------------
 
 resource "aws_secretsmanager_secret" "github_pat" {

@@ -40,6 +40,7 @@ from scripts.ci_rca.fingerprint import (
     error_signature_from_junit,
     error_signature_from_log_tail,
     signature_for_collection_error,
+    signature_for_declared_detail,
     signature_for_evidence_insufficient,
 )
 
@@ -175,14 +176,21 @@ def _resolve_error_signatures(
     failures: list[tuple[str, str, str]],
     junit_groups: list[tuple[str, list[str]]],
     truncation_reason: str | None = None,
+    check_details: dict[str, list[str]] | None = None,
 ) -> list[tuple[str, str, str, list[str], str]]:
     """Resolve one (failure_category, failed_check, error_signature, affected_nodeids,
     classification_source) tuple per bundle, BEFORE mass-failure collapse. Collection errors key
     on the failing MODULE PATH; the evidence_insufficient refusal keys on the degenerate
     evidence_insufficient::<truncation_reason> signature (never log-tail derived, which would
     fabricate IDENTITY); everything else prefers a junit-parsed cause-group when available, else
-    a log-tail-derived signature per classify_failures() check. junit_groups is pre-parsed by
-    the caller (shared with has_junit_cause_group)."""
+    -- for a check that declared registry.failure_detail() (coverage-failure-attribution,
+    check_details is scripts.ci_rca.taxonomy._load_check_details' {check: [detail, ...]} map,
+    pre-loaded by the caller) -- the path-preserving signature_for_declared_detail derivation,
+    else the pre-existing log-tail-derived signature per classify_failures() check. A check
+    absent from check_details (or an empty/None map) falls back to log-tail unchanged, so a
+    detail-free failure's signature is byte-identical to before this plan. junit_groups is
+    pre-parsed by the caller (shared with has_junit_cause_group)."""
+    check_details = check_details or {}
     collection_entries = [f for f in failures if f[0] == "collection_error"]
     refusal_entries = [f for f in failures if f[0] == "evidence_insufficient"]
     other_entries = [f for f in failures if f[0] not in ("collection_error", "evidence_insufficient")]
@@ -208,8 +216,13 @@ def _resolve_error_signatures(
             resolved.append((default_cat, check_label, sig, nodeids, "junit"))
     else:
         for cat, check, _src in other_entries:
-            sig = error_signature_from_log_tail(log_text, tool=check)
-            resolved.append((cat, check, sig, [], "log_tail"))
+            detail = check_details.get(check)
+            if detail:
+                sig = signature_for_declared_detail(check, detail)
+                resolved.append((cat, check, sig, [], "declared_detail"))
+            else:
+                sig = error_signature_from_log_tail(log_text, tool=check)
+                resolved.append((cat, check, sig, [], "log_tail"))
 
     return resolved
 
@@ -265,7 +278,7 @@ def generate_bundles(
     failed_check_attributions (Priority 0) and the retrieval envelope's `limits` dict, threaded
     into classify_failures alongside has_junit_cause_group (one shared junit parse).
     """
-    from scripts.ci_rca.taxonomy import classify_failures, load_taxonomy
+    from scripts.ci_rca.taxonomy import _load_check_details, classify_failures, load_taxonomy
     from scripts.ci_rca.vacuous_pass import (
         compute_coverage_regression,
         compute_merge_gate_test_coverage,
@@ -339,7 +352,8 @@ def generate_bundles(
     failures = classify_failures(
         log_text, jobs, taxonomy_path, validation_result_path, complete=complete, has_junit_cause_group=bool(junit_groups)
     )
-    resolved = _resolve_error_signatures(log_text, failures, junit_groups, truncation_reason)
+    check_details = _load_check_details(validation_result_path)
+    resolved = _resolve_error_signatures(log_text, failures, junit_groups, truncation_reason, check_details)
     manifest = _load_selection_manifest(selection_manifest_path)
 
     collapsed_sig = collapse_mass_failure([r[2] for r in resolved])

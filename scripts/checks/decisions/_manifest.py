@@ -2,6 +2,15 @@
 
 Bare string-literal module=/attr= pairs only -- see docs/contracts/check-manifest.yaml. Aggregated
 by scripts/checks/registry.py; never imported by scripts/validate.py directly.
+
+Every gated Entry's pre_globs must cover the check's whole transitive first-party import closure,
+which is why each one carries scripts/checks/_common.py and scripts/checks/registry.py: both are
+module-scope imports of every check here AND are consumed at call time (_common.ROOT / diff
+helpers, registry.examined()/skipped() accounting), so a semantic change to either can redden a
+check body without any domain file in the diff. The rest of the scripts/checks/ spine
+(_schema.py, sibling domains' _manifest.py, the package __init__) is deliberately NOT globbed: a
+break there fails registry -> scripts/validate.py at IMPORT time, so the whole --pre run crashes
+red before any gate is consulted.
 """
 
 from __future__ import annotations
@@ -31,6 +40,27 @@ ENTRIES: tuple[Entry, ...] = (
         pre_globs=(
             "docs/DECISIONS.md",
             "docs/DECISIONS_ARCHIVE.md",
+            "docs/contracts/decision-entry.yaml",
+            "scripts/decisions_md.py",
+            "scripts/checks/decisions/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_live_entry_immutability",
+        module="scripts.checks.decisions.validate_live_entry_immutability",
+        attr="validate_live_entry_immutability",
+        pre=True,
+        pre_globs=(
+            "docs/DECISIONS.md",
+            "docs/DECISIONS_ARCHIVE.md",
+            "scripts/decisions_md.py",
+            "scripts/preflight/decision_conditions.py",
+            "scripts/checks/decisions/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
         ),
         full_segment="full_after_lint",
     ),
@@ -51,7 +81,10 @@ ENTRIES: tuple[Entry, ...] = (
             "docs/decisions-index.json",
             "docs/contracts/decision-entry.yaml",
             ".claude/skills/decision-scout/SKILL.md",
+            "scripts/decisions_md.py",
             "scripts/checks/decisions/validate_decision_currency.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
         ),
         full_segment="full_after_lint",
     ),

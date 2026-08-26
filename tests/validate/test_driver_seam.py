@@ -21,14 +21,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import yaml
 
+from scripts import verification_graduation
 from scripts.checks import registry
 from tests.fixtures.pre_sequence_stub import UnknownStepError, select_steps
 from tests.fixtures.validate_module import _validate
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_REGISTRY_PATH = _ROOT / "config" / "agent" / "verification_registry" / "registry.yaml"
 
 IN_SCOPE_PATHS = frozenset(
     {
@@ -40,9 +39,8 @@ IN_SCOPE_PATHS = frozenset(
         "tests/validate/test_budget.py",
         "tests/validate/test_manifest_isolation.py",
         "tests/checks/roadmap/test_check_graduation_guard.py",
-        "tests/test_plan_document.py",
         "tests/test_ci_claude_p_retry.py",
-        "config/agent/verification_registry/registry.yaml",
+        "config/agent/verification_registry/entries/",
         # Decision 169 (PLAN-validate-facade-manifest-dispatch): this plan's own scope, PLUS
         # scripts/checks/_common.py -- a guard_target of graduated rows this PR touches but not
         # itself a scope row -- PLUS tests/validate/test_scaffold_gates.py, which PR1 omitted.
@@ -81,6 +79,7 @@ IN_SCOPE_PATHS = frozenset(
         "scripts/checks/typing/_manifest.py",
         "scripts/checks/validation_result.py",
         "scripts/checks/verification/_manifest.py",
+        "scripts/roadmap/plan_document.py",
         "scripts/test_coverage_checker.py",
         "scripts/validate.py",
         "tests/checks/_common/__init__.py",
@@ -120,6 +119,10 @@ IN_SCOPE_PATHS = frozenset(
         "tests/checks/typing/test__manifest.py",
         "tests/checks/verification/test__manifest.py",
         "tests/checks/verification/test_validate_handoff_full_tier.py",
+        "tests/roadmap/plan_document/test_loader_cli.py",
+        "tests/roadmap/plan_document/test_obligations.py",
+        "tests/roadmap/plan_document/test_optional_fields.py",
+        "tests/roadmap/plan_document/test_schema.py",
         "tests/test_checks_registry.py",
         "tests/test_checks_registry_test_obligations.py",
         "tests/test_coverage_checker/test_coverage_checker_map.py",
@@ -198,8 +201,7 @@ class TestRegistryRows:
 
     @staticmethod
     def _rows() -> list[dict]:
-        data = yaml.safe_load(_REGISTRY_PATH.read_text(encoding="utf-8"))
-        return data["entries"]
+        return verification_graduation.load_entries(repo_root=_ROOT)
 
     @staticmethod
     def _in_scope_rows(rows: list[dict]) -> list[dict]:

@@ -20,7 +20,11 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.verification.validate_handoff_full_tier",
         attr="validate_handoff_full_tier",
         pre=True,
-        pre_globs=("docs/plans/**",),
+        pre_globs=(
+            "docs/plans/**",
+            "scripts/roadmap/**",
+            "scripts/checks/verification/**",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -47,6 +51,14 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.verification.validate_verification_registry",
         attr="validate_verification_registry",
         pre=True,
+        pre_globs=(
+            "config/agent/verification_registry/**",
+            "scripts/verification_graduation.py",
+            "scripts/verification_checks.py",
+            "scripts/checks/verification/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/_scaffolding.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(

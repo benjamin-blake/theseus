@@ -515,10 +515,13 @@ class TestRunPytestDiffSingleExecution:
 
         collect_only_cmds = [c for c in captured_cmds if "--collect-only" in c]
         assert len(collect_only_cmds) == 1, f"expected exactly one collect-only invocation, got: {collect_only_cmds}"
-        real_run_cmds = [c for c in captured_cmds if "--collect-only" not in c]
+        real_run_cmds = [c for c in captured_cmds if "pytest" in c and "--collect-only" not in c]
         assert len(real_run_cmds) == 1, f"expected exactly one real pytest run, got: {real_run_cmds}"
         assert "tests/test_validate.py" in real_run_cmds[0]
         assert "tests/test_iceberg_reader.py" not in real_run_cmds[0]
+        # Whole-tree tracing is gone (see tests/validate/test_pytest_diff_coverage.py for the
+        # scoped replacement); a mocked-git diff exposes no changed source file, so no --cov at all.
+        assert not any(flag.startswith("--cov") for flag in real_run_cmds[0])
         assert failed == []
 
     def test_runs_pytest_exactly_once_when_all_runnable_pass(self) -> None:
@@ -536,10 +539,13 @@ class TestRunPytestDiffSingleExecution:
         with patch("scripts.checks._common.run", side_effect=mock_run):
             run_pytest_diff(["tests/test_a.py", "tests/test_b.py"], failed)
 
-        real_run_cmds = [c for c in captured_cmds if "--collect-only" not in c]
+        real_run_cmds = [c for c in captured_cmds if "pytest" in c and "--collect-only" not in c]
         assert len(real_run_cmds) == 1, f"expected exactly one real pytest run, got: {real_run_cmds}"
         assert "tests/test_a.py" in real_run_cmds[0]
         assert "tests/test_b.py" in real_run_cmds[0]
+        # Whole-tree tracing is gone (see tests/validate/test_pytest_diff_coverage.py for the
+        # scoped replacement); a mocked-git diff exposes no changed source file, so no --cov at all.
+        assert not any(flag.startswith("--cov") for flag in real_run_cmds[0])
         assert failed == []
 
 

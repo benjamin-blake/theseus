@@ -36,3 +36,22 @@ class TestDepsManifest:
     def test_registry_resolve_matches_the_manifest_entry(self, entry) -> None:
         module = importlib.import_module(entry.module)
         assert registry.resolve(entry.name) is getattr(module, entry.attr)
+
+
+class TestGatedEntryInputClosures:
+    """A gated check's pre_globs must cover EVERY path its implementation reads. Under-inclusion
+    is a recall bug: a diff that touches an uncovered input silently skips the check in --pre."""
+
+    @staticmethod
+    def _globs(name: str) -> set[str]:
+        return set(next(e for e in _manifest.ENTRIES if e.name == name).pre_globs or ())
+
+    def test_check_manifests_is_gated_on_its_full_closure(self) -> None:
+        """AST-scans scripts/checks/*/_manifest.py, compares SEGMENT_TOKENS against
+        docs/contracts/check-manifest.yaml, and resolves every declared module through
+        scripts.dependency_graph.build_graph."""
+        assert {
+            "scripts/checks/**",
+            "docs/contracts/check-manifest.yaml",
+            "scripts/dependency_graph.py",
+        } <= self._globs("validate_check_manifests")
