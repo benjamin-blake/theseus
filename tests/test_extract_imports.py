@@ -1,4 +1,4 @@
-"""Tests for scripts/extract_imports.py — AST-based src.* import extraction."""
+"""Tests for scripts/extract_imports.py - AST-based src.* import extraction."""
 
 import ast
 import importlib.util
@@ -158,6 +158,113 @@ class TestExtractFirstPartyImports:
         f = tmp_path / "sample.py"
         f.write_text("from src.common.config import X\nfrom scripts.helper import Y\n", encoding="utf-8")
         assert extract_src_imports(f) == ["src.common.config"]
+
+
+class TestAbsoluteFromImportSubmoduleTargets:
+    """`from <pkg> import <sub>` must land the edge on the SUBMODULE, not only the package.
+
+    The package edge is kept as well: Python executes `<pkg>/__init__.py` on the way to the
+    submodule, and a facade `__init__` (Decision 124) may itself be the re-exporting body the
+    importer depends on -- so both edges are real and the union is the recall-safe (strictly
+    additive) answer.
+    """
+
+    @staticmethod
+    def _pkg(tmp_path: Path) -> Path:
+        (tmp_path / "src" / "pkg" / "child").mkdir(parents=True)
+        (tmp_path / "src" / "__init__.py").write_text("", encoding="utf-8")
+        (tmp_path / "src" / "pkg" / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (tmp_path / "src" / "pkg" / "sub.py").write_text("", encoding="utf-8")
+        (tmp_path / "src" / "pkg" / "child" / "__init__.py").write_text("", encoding="utf-8")
+        return tmp_path
+
+    def test_from_package_import_module_records_the_module(self, tmp_path: Path) -> None:
+        """A resolvable submodule target yields the dotted submodule name."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "consumer.py"
+        f.write_text("from src.pkg import sub\n", encoding="utf-8")
+        assert extract_first_party_imports(f, roots=("src",), _repo_root=root) == ["src.pkg", "src.pkg.sub"]
+
+    def test_from_package_import_subpackage_records_the_subpackage(self, tmp_path: Path) -> None:
+        """A submodule that is itself a package (dir with __init__.py) resolves too."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "consumer.py"
+        f.write_text("from src.pkg import child\n", encoding="utf-8")
+        assert extract_first_party_imports(f, roots=("src",), _repo_root=root) == ["src.pkg", "src.pkg.child"]
+
+    def test_from_package_import_symbol_keeps_package_only(self, tmp_path: Path) -> None:
+        """A name that is a symbol, not a module on disk, keeps the pre-existing behaviour."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "consumer.py"
+        f.write_text("from src.pkg import VALUE\n", encoding="utf-8")
+        assert extract_first_party_imports(f, roots=("src",), _repo_root=root) == ["src.pkg"]
+
+    def test_mixed_names_record_only_the_module_ones(self, tmp_path: Path) -> None:
+        """One statement importing a module and a symbol contributes exactly one extra name."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "consumer.py"
+        f.write_text("from src.pkg import VALUE, sub\n", encoding="utf-8")
+        assert extract_first_party_imports(f, roots=("src",), _repo_root=root) == ["src.pkg", "src.pkg.sub"]
+
+    def test_aliased_submodule_resolves_the_real_name(self, tmp_path: Path) -> None:
+        """`import sub as s` resolves the imported name, never the local alias."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "consumer.py"
+        f.write_text("from src.pkg import sub as s\n", encoding="utf-8")
+        assert extract_first_party_imports(f, roots=("src",), _repo_root=root) == ["src.pkg", "src.pkg.sub"]
+
+    def test_star_import_records_the_package_only(self, tmp_path: Path) -> None:
+        """`from src.pkg import *` has no module target -- '*' is not a module name."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "consumer.py"
+        f.write_text("from src.pkg import *\n", encoding="utf-8")
+        assert extract_first_party_imports(f, roots=("src",), _repo_root=root) == ["src.pkg"]
+
+    def test_absent_submodule_is_not_invented(self, tmp_path: Path) -> None:
+        """A name resolving to no file on disk contributes nothing (no phantom modules)."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "consumer.py"
+        f.write_text("from src.pkg import ghost\n", encoding="utf-8")
+        assert extract_first_party_imports(f, roots=("src",), _repo_root=root) == ["src.pkg"]
+
+    def test_namespace_dir_without_init_is_not_a_module(self, tmp_path: Path) -> None:
+        """A directory with no __init__.py is not a graph module, so it is not recorded."""
+        root = self._pkg(tmp_path)
+        (root / "src" / "pkg" / "nsdir").mkdir()
+        f = root / "src" / "consumer.py"
+        f.write_text("from src.pkg import nsdir\n", encoding="utf-8")
+        assert extract_first_party_imports(f, roots=("src",), _repo_root=root) == ["src.pkg"]
+
+    def test_relative_from_import_is_unchanged(self, tmp_path: Path) -> None:
+        """A relative `from . import sub` still resolves to the submodule alone -- no package edge."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "pkg" / "mod.py"
+        f.write_text("from . import sub\n", encoding="utf-8")
+        assert extract_first_party_imports(f, roots=("src",), _repo_root=root) == ["src.pkg.sub"]
+
+    def test_relative_submodule_from_import_is_unchanged(self, tmp_path: Path) -> None:
+        """`from .child import thing` still resolves to src.pkg.child alone."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "pkg" / "mod.py"
+        f.write_text("from .child import thing\n", encoding="utf-8")
+        assert extract_first_party_imports(f, roots=("src",), _repo_root=root) == ["src.pkg.child"]
+
+    def test_live_repo_root_is_the_default_resolution_base(self, tmp_path: Path) -> None:
+        """With no _repo_root the real repository tree resolves the target (build_graph's case)."""
+        f = tmp_path / "sample.py"
+        f.write_text("from scripts.checks import registry\n", encoding="utf-8")
+        assert extract_first_party_imports(f) == ["scripts.checks", "scripts.checks.registry"]
+
+    def test_pre_walked_nodes_resolve_submodules_identically(self, tmp_path: Path) -> None:
+        """The `_nodes` fast path (build_graph) gets the same submodule targets."""
+        root = self._pkg(tmp_path)
+        source = "from src.pkg import sub\n"
+        nodes = list(ast.walk(ast.parse(source)))
+        f = root / "src" / "consumer.py"
+        assert extract_first_party_imports(f, roots=("src",), _repo_root=root, _nodes=nodes) == [
+            "src.pkg",
+            "src.pkg.sub",
+        ]
 
 
 class TestResolveRelativeImport:

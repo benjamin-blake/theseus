@@ -13,6 +13,14 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_executor_boundary",
         module="scripts.checks.executor.validate_executor_boundary",
         attr="validate_executor_boundary",
+        pre=True,
+        pre_globs=(
+            "logs/.recommendations-log.jsonl",
+            "config/agent/executor/capabilities.yaml",
+            "scripts/checks/executor/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
 )

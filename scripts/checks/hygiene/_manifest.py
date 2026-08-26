@@ -39,6 +39,8 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_sys_executable",
         module="scripts.checks.hygiene.validate_sys_executable",
         attr="validate_sys_executable",
+        pre=True,
+        pre_globs=("scripts/**",),
         full_segment="full_after_lint",
     ),
     Entry(

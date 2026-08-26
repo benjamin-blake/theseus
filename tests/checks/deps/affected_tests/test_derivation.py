@@ -69,19 +69,29 @@ class TestCapAndDefer:
     plus transitive-residue overflow defers exactly the overflow."""
 
     def test_transitive_overflow_is_capped_and_deferred(self, tmp_path: Path) -> None:
+        """Overflow is what lies BEYOND the deepest kept import-distance layer: the residue budget
+        cuts on a layer boundary, so a fixture whose residue all sits at one distance is never
+        capped at all (see TestNearestFirstRanking in test_residue_budget.py)."""
         _write(tmp_path, "scripts/base.py", "def do():\n    pass\n")
         _write(tmp_path, "scripts/mid.py", "from scripts.base import do\n\ndef mid():\n    do()\n")
+        _write(tmp_path, "scripts/far.py", "from scripts.mid import mid\n\ndef far():\n    mid()\n")
         for i in range(10):
             _write(
                 tmp_path,
-                f"tests/test_mid_dep_{i:02d}.py",
+                f"tests/test_a_near_{i:02d}.py",
                 f"from scripts.mid import mid\n\ndef test_{i}():\n    mid()\n",
+            )
+        for i in range(5):
+            _write(
+                tmp_path,
+                f"tests/test_z_far_{i:02d}.py",
+                f"from scripts.far import far\n\ndef test_far_{i}():\n    far()\n",
             )
         result = at.derive_affected_tests([("M", "scripts/base.py")], repo_root=tmp_path, cap=4)
         manifest = result["manifest"]
         assert manifest["capped"] is True
-        assert len(manifest["deferred"]) > 0
-        assert len(result["selected"]) + len(manifest["deferred"]) == 10
+        assert len(manifest["deferred"]) == 5
+        assert len(result["selected"]) + len(manifest["deferred"]) == 15
         assert set(result["selected"]).isdisjoint(manifest["deferred"])
 
     def test_under_cap_nothing_deferred(self, tmp_path: Path) -> None:
@@ -96,7 +106,20 @@ class TestCapAndDefer:
 class TestManifestEmission:
     """Manifest emission + content: required keys, per-test provenance/channel correctness."""
 
-    _REQUIRED_KEYS = {"sha", "diff", "edited_set", "selected", "provenance", "capped", "deferred", "cap", "timings"}
+    _REQUIRED_KEYS = {
+        "sha",
+        "diff",
+        "edited_set",
+        "selected",
+        "provenance",
+        "capped",
+        "deferred",
+        "cap",
+        "residue_budget",
+        "residue_ranking",
+        "residue_kept_depth",
+        "timings",
+    }
 
     def test_manifest_has_required_keys(self, tmp_path: Path) -> None:
         _write(tmp_path, "tests/test_a.py", "def test_a():\n    assert True\n")
@@ -275,10 +298,16 @@ class TestEmptyDiff:
 
 
 class TestRootConftestForcesFullScope:
-    """VTS-03: a changed root/autouse conftest forces its subtree into protected/uncapped."""
+    """VTS-03: a changed root/autouse conftest forces its subtree into protected/uncapped. W2-D:
+    a plain sub-conftest is ALSO protected/uncapped now (see
+    tests/checks/deps/affected_tests/test_conftest_subtree.py for the dedicated coverage) --
+    this class keeps only the distinct-provenance assertion, since the old
+    forced-vs-cappable-by-capping-behavior split this test used to exercise no longer exists."""
 
-    def test_autouse_and_plain_sub_conftests_get_different_channel_treatment(self, tmp_path: Path) -> None:
-        """Autouse sub-conftest -> protected/uncapped; plain sub-conftest -> ordinary/cappable."""
+    def test_autouse_and_plain_sub_conftests_get_distinct_provenance_both_protected(self, tmp_path: Path) -> None:
+        """Autouse sub-conftest -> conftest_subtree_forced; plain sub-conftest ->
+        conftest_subtree_structural (W2-D). Both protected/uncapped even under a cap far below
+        either subtree's size."""
         _write(
             tmp_path,
             "tests/autouse_pkg/conftest.py",
@@ -289,13 +318,17 @@ class TestRootConftestForcesFullScope:
         for i in range(3):
             _write(tmp_path, f"tests/plain_pkg/test_{i}.py", f"def test_{i}():\n    assert True\n")
         diff = [("M", "tests/autouse_pkg/conftest.py"), ("M", "tests/plain_pkg/conftest.py")]
-        result = at.derive_affected_tests(diff, repo_root=tmp_path, cap=2)
+        result = at.derive_affected_tests(diff, repo_root=tmp_path, cap=1)
         manifest = result["manifest"]
         assert "tests/autouse_pkg/test_a.py" in result["selected"]
         assert manifest["provenance"]["tests/autouse_pkg/test_a.py"] == "conftest_subtree_forced"
+        for i in range(3):
+            path = f"tests/plain_pkg/test_{i}.py"
+            assert path in result["selected"]
+            assert manifest["provenance"][path] == "conftest_subtree_structural"
         assert manifest["full_suite_forced"] is False
-        assert manifest["capped"] is True
-        assert len(manifest["deferred"]) == 2
+        assert manifest["capped"] is False
+        assert manifest["deferred"] == []
 
     def test_rec_2725_incident_replay_real_repo(self) -> None:
         """rec-2725 victim (deferred pre-fix, past the 35-module alphabetical keep window)."""
@@ -308,18 +341,24 @@ class TestRootConftestForcesFullScope:
 
 
 class TestResidueChannelPriorityOrdering:
-    """VTS-04 M2: residue truncates by channel priority (mirror_map < conftest_subtree <
-    transitive), not alphabetically -- a higher-signal hit survives even sorting later."""
+    """W2-D: with conftest_subtree_structural promoted to protected, import_closure_transitive is
+    the ONLY channel left in the cappable residue pool -- mirror_map and conftest_subtree_*
+    hits are never deferred regardless of cap size. Within that pool the keep-set is ranked by
+    import distance and cut on a whole-layer boundary (see _residue_keep_set and
+    tests/checks/deps/affected_tests/test_residue_budget.py), never by filename."""
 
-    def test_full_priority_ordering_mirror_then_conftest_then_transitive(self, tmp_path: Path) -> None:
-        """cap=2 keeps mirror+conftest, defers transitive; cap=1 keeps mirror only -- proves the
-        strict pairwise ordering. Also carries the dec-142 coherence assertion (compute_escape_class
-        reads ONLY manifest['selected']/['deferred'] as flat, disjoint path-string lists)."""
+    def test_mirror_and_conftest_survive_a_cap_below_their_combined_size(self, tmp_path: Path) -> None:
+        """cap=1 is below the 2 protected hits (mirror_map + conftest_subtree_structural) --
+        proves both stay unconditional. The residue spans two distance layers so the cap still
+        bites, which also carries the dec-142 coherence assertion (compute_escape_class reads
+        ONLY manifest['selected']/['deferred'] as flat, disjoint path-string lists)."""
         from scripts.ops_portal.ci_rca_lifecycle import compute_escape_class
 
         _write(tmp_path, "scripts/base.py", "def do():\n    pass\n")
         _write(tmp_path, "scripts/mid.py", "from scripts.base import do\n\ndef mid():\n    do()\n")
+        _write(tmp_path, "scripts/deeper.py", "from scripts.mid import mid\n\ndef deeper():\n    mid()\n")
         _write(tmp_path, "tests/test_aaa_transitive.py", "from scripts.mid import mid\n\ndef test_x():\n    mid()\n")
+        _write(tmp_path, "tests/test_ddd_deeper.py", "from scripts.deeper import deeper\n\ndef test_d():\n    deeper()\n")
         _write(tmp_path, "tests/bbb_pkg/conftest.py", "")
         _write(tmp_path, "tests/bbb_pkg/test_b.py", "def test_b():\n    assert True\n")
         _write(tmp_path, "scripts/zzz_mirror_source.py", "def something():\n    pass\n")
@@ -327,17 +366,18 @@ class TestResidueChannelPriorityOrdering:
         diff = [("M", "scripts/base.py"), ("M", "tests/bbb_pkg/conftest.py"), ("M", "scripts/zzz_mirror_source.py")]
 
         with patch("scripts.test_coverage_checker.ROOT", tmp_path):
-            result_cap2 = at.derive_affected_tests(diff, repo_root=tmp_path, cap=2)
-            result_cap1 = at.derive_affected_tests(diff, repo_root=tmp_path, cap=1)
+            result = at.derive_affected_tests(diff, repo_root=tmp_path, cap=1)
 
-        manifest = result_cap2["manifest"]
-        assert set(result_cap2["selected"]) == {"tests/test_zzz_mirror_source.py", "tests/bbb_pkg/test_b.py"}
+        manifest = result["manifest"]
+        assert set(result["selected"]) == {
+            "tests/test_zzz_mirror_source.py",
+            "tests/bbb_pkg/test_b.py",
+            "tests/test_aaa_transitive.py",
+        }
         assert manifest["provenance"]["tests/test_zzz_mirror_source.py"] == "mirror_map"
-        assert manifest["provenance"]["tests/bbb_pkg/test_b.py"] == "conftest_subtree"
-        assert manifest["deferred"] == ["tests/test_aaa_transitive.py"]
-
-        assert result_cap1["selected"] == ["tests/test_zzz_mirror_source.py"]
-        assert set(result_cap1["manifest"]["deferred"]) == {"tests/bbb_pkg/test_b.py", "tests/test_aaa_transitive.py"}
+        assert manifest["provenance"]["tests/bbb_pkg/test_b.py"] == "conftest_subtree_structural"
+        assert manifest["deferred"] == ["tests/test_ddd_deeper.py"]
+        assert manifest["capped"] is True
 
         selected, deferred = manifest["selected"], manifest["deferred"]
         assert isinstance(selected, list) and all(isinstance(x, str) for x in selected)
@@ -345,6 +385,24 @@ class TestResidueChannelPriorityOrdering:
         assert set(selected).isdisjoint(deferred)
         assert compute_escape_class(deferred[0] + "::test", manifest) == "capped"
         assert compute_escape_class("tests/never_selected.py::test", manifest) == "no-edge"
+
+    def test_one_distance_layer_of_residue_is_kept_whole_under_any_cap(self, tmp_path: Path) -> None:
+        """Three siblings at the SAME import distance are equally-evidenced, so cap=1 keeps all
+        three rather than the alphabetically-first one. Filename order still decides the reported
+        ordering (selected/deferred are sorted), never membership."""
+        _write(tmp_path, "scripts/base.py", "def do():\n    pass\n")
+        _write(tmp_path, "scripts/mid.py", "from scripts.base import do\n\ndef mid():\n    do()\n")
+        for name in ("bbb", "aaa", "ccc"):
+            _write(
+                tmp_path,
+                f"tests/test_{name}_dep.py",
+                f"from scripts.mid import mid\n\ndef test_{name}():\n    mid()\n",
+            )
+        result = at.derive_affected_tests([("M", "scripts/base.py")], repo_root=tmp_path, cap=1)
+        manifest = result["manifest"]
+        assert result["selected"] == ["tests/test_aaa_dep.py", "tests/test_bbb_dep.py", "tests/test_ccc_dep.py"]
+        assert manifest["deferred"] == []
+        assert manifest["capped"] is False
 
 
 def test_setup_cloud_script_selects_contract_test_through_data_edge() -> None:

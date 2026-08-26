@@ -14,6 +14,8 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.product.trading.validate_broker_env_reads",
         attr="validate_broker_env_reads",
         owner="trading",
+        pre=True,
+        pre_globs=("scripts/**", "src/**"),
         full_segment="full_after_lint",
     ),
 )

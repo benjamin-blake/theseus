@@ -36,6 +36,24 @@ def _resolve_relative_import(
     return None
 
 
+def _resolvable_submodule(package: str, name: str, repo_root: Path | None = None) -> str | None:
+    """Return "<package>.<name>" when that names a real first-party MODULE on disk, else None.
+
+    `from <package> import <name>` is ambiguous in the AST: <name> is either a submodule or a
+    symbol re-exported by <package>/__init__.py. Only a submodule is an import edge to a
+    different file, so the disk decides -- a name resolving to no <name>.py and no
+    <name>/__init__.py contributes nothing (a namespace directory is deliberately excluded: it is
+    not a scripts.dependency_graph module node either, so an edge to it would be dropped anyway).
+    """
+    if not name.isidentifier():
+        return None
+    root = repo_root if repo_root is not None else _DEFAULT_REPO_ROOT
+    base = root.joinpath(*package.split("."), name)
+    if base.with_suffix(".py").is_file() or (base / "__init__.py").is_file():
+        return f"{package}.{name}"
+    return None
+
+
 def _walk_source(file_path: Path) -> Iterable[ast.AST] | None:
     """Read, parse and walk file_path's AST; None when unreadable or unparseable.
 
@@ -57,6 +75,10 @@ def extract_first_party_imports(
     """Return unique first-party module names imported in file_path.
 
     Covers absolute src.*/scripts.* imports AND relative imports (ImportFrom.level > 0).
+    An absolute `from <pkg> import <name>` yields <pkg> AND, when <name> resolves to a real
+    first-party module on disk (see _resolvable_submodule), <pkg>.<name> -- both are genuine
+    runtime dependencies, and recording only the package left every submodule of a package
+    invisible to the reverse-dependency lookups built on this (scripts.dependency_graph).
     Returns [] on syntax error or missing file. Order: first appearance.
     `_nodes` supplies an already-materialized `ast.walk()` of file_path's AST so a caller
     running several scans over one file (scripts.dependency_graph.build_graph) reads, parses
@@ -95,6 +117,9 @@ def extract_first_party_imports(
                 m = node.module or ""
                 if any(m == r or m.startswith(r + ".") for r in roots):
                     _add(m)
+                    # from <pkg> import <sub>: the package body runs too, so BOTH edges are real.
+                    for alias in node.names:
+                        _add(_resolvable_submodule(m, alias.name, _repo_root))
 
     return results
 

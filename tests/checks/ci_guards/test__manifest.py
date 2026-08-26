@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from fnmatch import fnmatch
 
 import pytest
 
@@ -56,3 +57,36 @@ class TestGatedEntryInputClosures:
             "scripts/ops_data_portal.py",
             "scripts/ops_portal/**",
         } <= self._globs("validate_ops_portal_patch_targets")
+
+    def test_ci_rca_trigger_is_gated_on_its_full_closure(self) -> None:
+        """Promoted into --pre: it is the odd one out of the three-check ci-rca family (taxonomy
+        and adjudication were already there) and its own docstring claims presubmit membership
+        per Decision 60. _check_ci_rca_filter reads main-canary.yml AND ci-rca.yml AND the
+        scheduled-agent doc carrying the FILED: marker contract -- all three are inputs."""
+        assert {
+            ".github/workflows/**",
+            ".claude/agents/scheduled/ci-rca.md",
+            "scripts/verify_ci_workflow.py",
+            "scripts/checks/ci_guards/**",
+        } <= self._globs("validate_ci_rca_trigger")
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            ".github/workflows/ci-rca.yml",
+            ".github/workflows/main-canary.yml",
+            ".claude/agents/scheduled/ci-rca.md",
+            "scripts/verify_ci_workflow.py",
+            "scripts/checks/ci_guards/validate_ci_rca_trigger.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ],
+    )
+    def test_a_diff_touching_only_a_ci_rca_trigger_input_still_matches_the_gate(self, path: str) -> None:
+        globs = self._globs("validate_ci_rca_trigger")
+        assert any(fnmatch(path, glob) for glob in globs)
+
+    def test_an_unrelated_path_does_not_match_the_ci_rca_trigger_gate(self) -> None:
+        """Anti-vacuity: the rows above would also pass against a catch-all pattern."""
+        globs = self._globs("validate_ci_rca_trigger")
+        assert not any(fnmatch("README.md", glob) for glob in globs)

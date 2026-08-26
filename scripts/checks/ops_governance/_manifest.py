@@ -26,6 +26,15 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_recommendations_schema",
         module="scripts.checks.ops_governance.validate_recommendations_schema",
         attr="validate_recommendations_schema",
+        pre=True,
+        pre_globs=(
+            "logs/.recommendations-log.jsonl",
+            "scripts/executor/jsonl_store.py",
+            "scripts/s3_log_store.py",
+            "scripts/checks/ops_governance/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -39,18 +48,24 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_rec_write_paths",
         module="scripts.checks.ops_governance.validate_rec_write_paths",
         attr="validate_rec_write_paths",
+        pre=True,
+        pre_globs=("scripts/**",),
         full_segment="full_after_lint",
     ),
     Entry(
         name="validate_decisions_local_writes",
         module="scripts.checks.ops_governance.validate_decisions_local_writes",
         attr="validate_decisions_local_writes",
+        pre=True,
+        pre_globs=("scripts/**",),
         full_segment="full_after_lint",
     ),
     Entry(
         name="validate_warehouse_write_sources",
         module="scripts.checks.ops_governance.validate_warehouse_write_sources",
         attr="validate_warehouse_write_sources",
+        pre=True,
+        pre_globs=("scripts/**", "src/**"),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -64,18 +79,45 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_pydantic_yaml_drift",
         module="scripts.checks.ops_governance.validate_pydantic_yaml_drift",
         attr="validate_pydantic_yaml_drift",
+        # Promoted into --pre; the module docstring's "full presubmit only (not --pre)" line is
+        # stale and THIS ENTRY is the authority. Left alone because the module is in the
+        # check-accounting grandfather baseline, whose touch-it-fix-it rule turns any edit to it
+        # into an examined()/skipped() adoption -- a separate change.
+        pre=True,
+        pre_globs=(
+            "config/agent/data_quality/ops.yaml",
+            "src/schemas/**",
+            "scripts/checks/ops_governance/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
         name="validate_dq_manifest_gate",
         module="scripts.checks.ops_governance.validate_dq_manifest_gate",
         attr="validate_dq_manifest_gate",
+        pre=True,
+        pre_globs=(
+            "config/agent/data_quality/**",
+            "scripts/checks/ops_governance/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
         name="validate_rec_relevance_contract",
         module="scripts.checks.ops_governance.validate_rec_relevance_contract",
         attr="validate_rec_relevance_contract",
+        pre=True,
+        pre_globs=(
+            "docs/contracts/recommendation-relevance.yaml",
+            "scripts/rec_relevance.py",
+            "scripts/checks/ops_governance/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(

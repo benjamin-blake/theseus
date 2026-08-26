@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from fnmatch import fnmatch
 
 import pytest
 
@@ -60,3 +61,70 @@ class TestDiffCoveragePreTierOnlyDisposition:
     def test_absent_from_full_sequence(self) -> None:
         names = {step.name for step in registry.full_sequence() if step.kind == "check"}
         assert "validate_diff_coverage" not in names
+
+
+class TestPromotedGateClosures:
+    """validate_invariants and validate_scheduled_agent_logs are promoted into --pre.
+
+    validate_invariants' second invariant compares the subprocess.run count inside
+    cleanup_after_merge() against the mock side_effect lengths in one specific test module, so
+    that test file is a real INPUT, not merely a scan target.
+    validate_scheduled_agent_logs engages only when EVERY changed file is under logs/, so a
+    logs/**-gated skip is exactly the branch the check would take anyway.
+    """
+
+    _CLOSURE_INPUTS: dict[str, tuple[str, ...]] = {
+        "validate_invariants": (
+            "scripts/executor/postflight.py",
+            "tests/test_execute_recommendation.py",
+            "scripts/checks/misc/validate_invariants.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        "validate_scheduled_agent_logs": (
+            "logs/.recommendations-log.jsonl",
+            "logs/agents/20260101T000000Z.jsonl",
+            "scripts/checks/misc/validate_scheduled_agent_logs.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+    }
+
+    @staticmethod
+    def _covered(name: str, path: str) -> bool:
+        globs = next(e for e in _manifest.ENTRIES if e.name == name).pre_globs or ()
+        return any(fnmatch(path, glob) for glob in globs)
+
+    @pytest.mark.parametrize(
+        ("name", "path"),
+        [(name, path) for name, paths in _CLOSURE_INPUTS.items() for path in paths],
+        ids=[f"{name}-{path}" for name, paths in _CLOSURE_INPUTS.items() for path in paths],
+    )
+    def test_a_diff_touching_only_this_closure_member_still_matches_the_gate(self, name: str, path: str) -> None:
+        assert self._covered(name, path)
+
+    @pytest.mark.parametrize("name", sorted(_CLOSURE_INPUTS))
+    def test_an_unrelated_path_is_not_matched(self, name: str) -> None:
+        """Anti-vacuity: the rows above would also pass against a catch-all pattern."""
+        assert not self._covered(name, "README.md")
+
+
+class TestExpensiveMiscChecksStayFullOnly:
+    """The two misc checks the promotion wave deliberately left behind, each for a recorded
+    reason -- asserted so a later wave has to argue with a red test rather than a comment."""
+
+    def test_test_coverage_stays_full_only(self) -> None:
+        """Decision 159 / Decision 163: one pytest+coverage subprocess PER changed source file
+        (measured 39s on a 3-file working-tree diff) against the 300s fast-tier budget, plus the
+        vacuous-pass hazard rec-2970 records. The pre tier carries the report-only
+        validate_diff_coverage instead."""
+        pre_names = {step.name for step in registry.pre_sequence() if step.kind == "check"}
+        full_names = {step.name for step in registry.full_sequence() if step.kind == "check"}
+        assert "validate_test_coverage" in full_names
+        assert "validate_test_coverage" not in pre_names
+
+    def test_ghas_probe_stays_full_only(self) -> None:
+        """Live GitHub API probe that SKIPS whenever GHAS_PROBE_TOKEN is unset -- the pr-validate
+        default -- so promoting it would add a permanently vacuous step to every --pre run."""
+        pre_names = {step.name for step in registry.pre_sequence() if step.kind == "check"}
+        assert "validate_ghas_probe" not in pre_names

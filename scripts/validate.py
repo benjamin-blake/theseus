@@ -294,6 +294,18 @@ def main() -> None:
         changed_tests = _affected_selection["selected"]
         emit_manifest(_affected_selection["manifest"])
 
+        # derive_affected_tests() degrades to the edited-set on any internal error and records it
+        # as manifest['fallback']. That is loud inside the derivation but was never surfaced in
+        # the summary an operator (or the CI step log) reads, so a persistent derivation bug
+        # could hold the gate at pre-Decision-135 recall indefinitely while still exiting 0.
+        _selection_fallback = bool(_affected_selection["manifest"].get("fallback", False))
+        if _selection_fallback:
+            print(
+                "\nWARNING: AFFECTED-SET SELECTION DEGRADED -- derivation fell back to the edited-set "
+                f"({len(changed_tests)} test file(s)); tests affected by this diff but not IN it are NOT "
+                f"gated pre-merge on this run. Reason: {_affected_selection['manifest'].get('fallback_reason', 'unknown')}"
+            )
+
         def _scaffold_lint() -> None:
             run_lint_checks(failed, files=changed)
 
@@ -351,6 +363,12 @@ def main() -> None:
                     )
                     sys.exit(1)
                 else:
+                    if _selection_fallback:
+                        print(
+                            "\nNOTE: this run's affected-set derivation fell back to the edited-set, so the "
+                            "pytest scope it just ran is not the scope this diff should have run -- read the "
+                            "phase attribution below as degraded, not as ordinary drift."
+                        )
                     _file_budget_breach_rec(elapsed, diff_manifest, dominant_phase)
                     print(
                         f"\nERROR: Fast tier exceeded budget (5 min). Elapsed: {elapsed / 60:.1f} min. "
