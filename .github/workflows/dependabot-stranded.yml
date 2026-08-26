@@ -1,0 +1,51 @@
+name: dependabot-stranded
+
+# Scheduled sweep for the half of the dependabot backlog that dependabot-auto-merge deliberately
+# does not own (WS3). Companion to .github/workflows/dependabot-auto-merge.yml: that workflow arms
+# GitHub-native auto-merge on minor/patch bumps the moment they open; this one exists for the PRs
+# that then sit still.
+#
+# THE PATHOLOGY IT CLEARS: a dependabot PR opened weeks ago is BEHIND main. Its required checks
+# were computed against a stale base, so a red terraform-validate inherited from that base never
+# re-runs on its own -- nothing pushes to the branch, so no `synchronize` event ever fires. The PR
+# is not blocked by a real failure; it is blocked by never having been re-evaluated. Meanwhile
+# open-pull-requests-limit: 5 (.github/dependabot.yml) is consumed per ecosystem, so a stranded
+# backlog also throttles dependabot's next weekly run.
+#
+# HOW IT COMPOSES (DRY, deliberately): the sweep does not merge anything and carries no merge
+# policy of its own. It only updates the branch. Updating a branch fires a `synchronize` event,
+# which re-triggers dependabot-auto-merge, which re-applies the ONE copy of the minor/patch policy
+# that lives in scripts/ci/dependabot_auto_merge.sh. Majors are simply left updated-and-green for
+# a human. That composition is why dependabot-auto-merge gates on the PR AUTHOR and not on
+# github.actor -- the update-branch call here runs as this workflow's actor, not as dependabot.
+#
+# SCHEDULE: Mondays 08:00 UTC, an hour after dependabot's observed ~06:56 UTC weekly run, so the
+# sweep sees that run's freshly-opened PRs rather than racing it. workflow_dispatch is kept for
+# on-demand backlog clearing.
+#
+# The single run: body is a one-line delegate (Decision 162 R1/R3) -- all sweep logic lives in the
+# script, which is directly testable and registers as a 1-line body in
+# config/composite_action_body_baseline.yaml.
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Sweep stranded dependabot PRs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/ci/dependabot_stranded_sweep.sh

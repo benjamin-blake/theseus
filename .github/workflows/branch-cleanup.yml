@@ -1,0 +1,63 @@
+name: branch-cleanup
+
+# Remote-branch hygiene (WS1 completion). Deleting a remote ref is blocked for CC-web sessions at
+# the git proxy, so an agent cannot clean up its own merged `claude/*` branches from a session --
+# the deletion has to happen from a runner. That is the only reason this is a workflow rather than
+# a script an agent runs directly.
+#
+# DISPATCH-ONLY, DELIBERATELY. There is no `schedule:` trigger yet. Ref deletion is irreversible
+# from the caller's side, and the classifier has never run against this repo's real branch set, so
+# the first runs are operator- or agent-dispatched with dry_run left at its default `true`, and the
+# printed decision table is read before anything is deleted. A schedule is a later, separate change
+# once the table has been boring for several runs -- not something to add speculatively here.
+#
+# HARD GUARDS live in scripts/ci/branch_cleanup.py, not in this file: main is never deleted, a
+# branch with an OPEN PR is never deleted, a branch whose tip is younger than min_age_hours is
+# never deleted, a branch whose tip age cannot be determined is never deleted, and a branch matching
+# no delete-eligible class is never deleted. extra_branches expresses explicit operator intent for a
+# specific branch and is still subject to every one of those guards -- it widens the candidate set,
+# it does not bypass the safety net.
+#
+# fetch-depth: 0 is required, not incidental: the classifier asks git whether each branch tip is an
+# ancestor of origin/main and how old that tip is, and both questions need the objects and the
+# remote-tracking refs a shallow single-branch checkout would omit.
+#
+# The single run: body is a one-line delegate (Decision 162 R1/R3) -- all decision logic lives in
+# the script, which is directly testable and registers as a 1-line body in
+# config/composite_action_body_baseline.yaml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Print the decision table without deleting anything'
+        type: boolean
+        default: true
+      min_age_hours:
+        description: 'Never delete a branch whose tip commit is younger than this many hours'
+        default: '48'
+      extra_branches:
+        description: 'Comma-separated branches to consider explicitly (still subject to every hard guard)'
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Classify and delete stale remote branches
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          MIN_AGE_HOURS: ${{ inputs.min_age_hours }}
+          EXTRA_BRANCHES: ${{ inputs.extra_branches }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/ci/branch_cleanup.sh
