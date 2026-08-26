@@ -33,11 +33,10 @@ def validate_warehouse_write_sources(failed: list[str]) -> None:
 
     _WHITELIST = {
         scripts_dir / "ops_data_portal.py",
-        scripts_dir / "session_postflight.py",
-        scripts_dir / "sync_ops.py",
+        scripts_dir / "session" / "postflight.py",
+        scripts_dir / "sync" / "ops.py",
         scripts_dir / "ops_writer.py",
         scripts_dir / "s3_log_store.py",
-        scripts_dir / "executor" / "plan.py",
         _self_path,  # this module's own docstring demonstrates the write call and matches the rule
     }
 
@@ -51,7 +50,7 @@ def validate_warehouse_write_sources(failed: list[str]) -> None:
     # Iceberg write is a silent split-brain. Catches any site, including whitelisted files.
     # Self-excluded: this module's docstring demonstrates the write call and would otherwise self-flag.
     # Tracked exemption: scripts/s3_log_store.py's dormant queue producer (T2.26 repoint; the
-    # scheduled-agent Lambdas that drive it are disabled -- see the AGENTS.md re-enable runbook caveat).
+    # scheduled-agent Lambdas that drive it are disabled -- see T4.12 / Decision 84).
     _MIGRATED = r"ops_(?:recommendations|decisions|priority_queue)"
     _MIGRATED_BLOCK_PATTERNS = [
         re.compile(r'OpsWriter\(\)\.write\(\s*["\']' + _MIGRATED),
@@ -62,10 +61,12 @@ def validate_warehouse_write_sources(failed: list[str]) -> None:
     _MIGRATED_BLOCK_EXEMPT = {scripts_dir / "s3_log_store.py"}  # dormant queue producer, T2.26
 
     errors: list[str] = []
+    file_count = 0
     for search_dir in [scripts_dir, src_dir]:
         if not search_dir.exists():
             continue
         for py_file in sorted(search_dir.glob("**/*.py")):
+            file_count += 1
             try:
                 content = py_file.read_text(encoding="utf-8")
             except OSError:
@@ -94,6 +95,7 @@ def validate_warehouse_write_sources(failed: list[str]) -> None:
                     )
                     break
 
+    registry.examined(file_count, unit="files")
     if errors:
         print("Warehouse write-source violations:")
         for e in errors:

@@ -2,17 +2,14 @@
 name: implement
 description: Deep methodology for executing implementation plans, including live verification protocols, strategic scoping gates, code review integration, and commit flows.
 model: sonnet
-required-context:
-  - logs/.preflight-report.json
-  - docs/PROJECT_CONTEXT.md
 ---
 
 # Implement Methodology & Rules
 
-You are using this skill to augment the `/implement` workflow. Apply these deep instructions when executing the workflow steps. The workflow defines WHAT to do and in WHAT ORDER. This skill defines HOW to do each step.
-You must treat every Turn as a cold-start. Disregard all system-generated conversation summaries and 'persistent memory' unless they are explicitly referenced by the USER in the current turn. If a file or task is not listed in the current IMPLEMENTATION plan's scope, you are forbidden from touching it, even if you believe it is a 'logical next step' or a cleanup from a previous session.
+You are using this skill to augment the `/implement` workflow. Apply these deep instructions when executing the workflow steps. The workflow defines WHAT to do and in WHAT ORDER; this skill defines HOW to do each step.
+Treat every Turn as a cold-start. Disregard all system-generated conversation summaries and 'persistent memory' unless explicitly referenced by the USER in the current turn. If a file or task is not listed in the current IMPLEMENTATION plan's scope, you are forbidden from touching it, even if you believe it is a 'logical next step' or a cleanup from a previous session.
 
-**Plan format (T1.11 / CD.22):** plans are `docs/plans/PLAN-{slug}.yaml`, schema-validated by `scripts/plan_document.py` (resolve via `scripts/find_plan.py`). If handed a legacy `PLAN-{slug}.md` path, emit a deprecation warning in the session output and proceed -- the .md path survives one release cycle, then is removed. Never author new .md plans.
+**Plan format (T1.11 / CD.22):** plans are `docs/plans/PLAN-{slug}.yaml`, schema-validated by `scripts/roadmap/plan_document.py` (resolve via `scripts/roadmap/find_plan.py`). If handed a legacy `PLAN-{slug}.md` path, emit a deprecation warning in the session output and proceed -- the .md path survives one release cycle, then is removed. Never author new .md plans.
 
 ## Behavioural Invariants
 ```yaml
@@ -24,13 +21,25 @@ review_as_scope: true            # Critical/High findings from code-review MUST 
 auto_review_and_commit: true     # Proactively trigger review and commit once VP passes -- do not wait for human
 ```
 
+## SLOC decompose-by-default (Decision 128, amends Decision 102)
+When an implementation step pushes a scripts/ or src/ file past its `config/sloc_budgets.yaml`
+budget (or past 500 SLOC if unregistered), decompose the file into a facade package (Decision
+80/104/124 pattern -- `__init__.py` facade re-exporting the full public surface, cohesive
+submodules each under budget) rather than raising the budget. A raise is a deliberate,
+Decision-cited exception (an inline `# raise-approved: dec-NNN <reason>` marker, enforced by
+`validate_sloc_budget_raises` in `--pre`) -- not the default response to hitting the ceiling. Do
+not reach for `--update-sloc-budgets` to silently register a new oversized file; it no longer
+auto-seeds one (Decision 128 / B2).
+
 ## Preflight Constraints (Workflow Step 1)
 When reading `logs/.preflight-report.json`, apply these conditionals:
 - **`venv_ok: false`** -- Auto-activate venv and rerun preflight. If still false, STOP.
 - **`creds_status: "unavailable"`** -- **Static-key recovery (non-fatal, Decision 60):** the static-key assume-role chain has no interactive login. Verify it with `aws sts get-caller-identity --profile agent_platform`; if the `agent_static` key was rotated, refresh `~/.aws/credentials`. Do NOT block -- continue in degraded mode (credential-dependent verifiers are skipped, emitting SKIPPED). Autonomous executors never attempt recovery.
-- **`ops_outbox` non-empty** -- Entries in migrated-table or `*_pending` dirs are ANOMALIES (Decision 84 I-4: those outboxes are retired and never drained) -- re-file the content via the portal and delete the files. Legacy staging dirs (telemetry/session_log/execution_plans) drain via `bin/venv-python -m scripts.sync_ops sync`. If that fails, STOP.
-- **`uncommitted_changes` non-empty** -- Ask human: "Resume, stash, or discard?". Wait. Continue on all other conditions.
-- **`main_freshness.status == "fetch_failed"`** -- Informational. Surface: "Could not refresh `origin/main` ([error]). Step 5 code-review will diff against the stale local main ref; Scope-overlap check will be skipped." Continue.
+- **`ops_outbox` non-empty** -- Entries in migrated-table or `*_pending` dirs are ANOMALIES (Decision 84 I-4: those outboxes are retired and never drained) -- re-file via the portal and delete the files. Legacy staging dirs (telemetry/session_log/execution_plans) drain via `bin/venv-python -m scripts.sync.ops sync`. If that fails, STOP.
+- **`uncommitted_changes` non-empty** -- Ask human: resume, stash, or discard? Wait. Continue on all other conditions.
+- **`main_freshness.status == "fetch_failed"`** -- Informational: surface the fetch error and note
+  that Step 5 code-review will diff against the stale local main ref and the Scope-overlap check
+  will be skipped. Continue.
 - **`main_freshness.commits_behind > 0`** -- Retain `main_freshness.main_files_changed_since_branch` for the Step 2 Main Divergence Check (below). Non-blocking at this step.
 - **`validate` (presubmit) non-zero exit** -- The gate has detected pre-existing blockers on the branch. File each failed check as a recommendation via the portal (`automatable: false`), surface to human with go/no-go, STOP if no-go. Credentials-unavailable -> skip with actionable guidance per Decision 60; do not crash.
 
@@ -81,10 +90,10 @@ if proposal: print('proposal:', proposal)
 verdicts route to the operator -- the agent never auto-acts on semantic judgment.
 
 ## Live Verification Protocol (Workflow Step 4 -- MANDATORY)
-After all code changes are complete and unit tests pass, the implementing agent MUST execute the Verification Plan from the PLAN-{slug}.yaml file before proceeding to code review.
+After code changes are complete and unit tests pass, the implementing agent MUST execute the Verification Plan from PLAN-{slug}.yaml before proceeding to code review.
 
 ### Why This Exists (Rationale)
-Acceptance commands prove the code landed (e.g. `grep` or `pytest`). Verification commands prove the feature works end-to-end. Examples of bugs that only verification catches:
+Acceptance commands prove the code landed (`grep`/`pytest`). Verification commands prove the feature works end-to-end. Examples of bugs only verification catches:
 - Athena view created successfully but returns 0 rows due to a bad filter
 - Lambda deployed successfully but times out on invocation
 - CLI script passes unit tests with mocks but crashes with real input
@@ -102,8 +111,8 @@ Track Attempts per step (see VP Compliance Gate below). This rule governs what a
 - If a step **FAILS** and is then re-run with an **EMPTY `git diff`** since the prior attempt (i.e. nothing in the tree changed) and the re-run goes green, the step is **NONDETERMINISTIC** -- record it as NONDETERMINISTIC in the VP compliance table, never as PASS. An empty-diff green is evidence the failure was flaky, not fixed, and a silent PASS would hide that.
 - Re-runs stay capped at the existing 3-fix-attempt bound. The nondeterminism rule does not license looping toward green -- it only names what an unexplained green means. On a NONDETERMINISTIC result, STOP and surface to the human (Decision 55: RCA-first, no rescue loops).
 - A genuine fix requires a real code change (a **non-empty** `git diff` since the prior attempt). After such a change, the step must pass **two consecutive times** to count as PASS. These two confirmation passes verify an ALREADY-APPLIED fix and are **not** additional fix attempts -- they do not consume the 3-attempt fix budget, which governs diagnose-and-change cycles only.
-- **Interactive-era alarm (now):** while the executor is frozen (Decision 67) a human is present at every `/implement` run, so the alarm is stop-and-surface-to-human. Files nothing.
-- **Forward-note (T3.19):** when the executor goes live (CD.17 reversal), this alarm flips to auto-file a rec via `scripts.ops_data_portal` (Decision 84), matching the executor-era quarantine-that-files-a-rec pattern (CD.29). Tracked as tier_item T3.19 (`deferred_post_mvp`) -- do not implement the auto-file path now.
+- **Interactive-era alarm (now):** while the executor is frozen (Decision 67) a human is present at every `/implement` run, so the alarm is stop-and-surface-to-human; files nothing.
+- **Forward-note (T3.19):** when the executor goes live (CD.17 reversal), this alarm flips to auto-file a rec via `scripts.ops_data_portal` (Decision 84), the executor-era quarantine-that-files-a-rec pattern (CD.29). Tracked as tier_item T3.19 (`deferred_post_mvp`) -- do not implement the auto-file path now.
 - **Distinguish from declared non-determinism:** a VP step's DETECTED nondeterminism (this rule -- an agent-observed flaky re-run) is not the same thing as a verifier's DECLARED `Hermeticity.NON_HERMETIC_BY_CONSTRUCTION` property (a typed, audited characteristic of the verifier itself). Never silently relabel a detected-flaky VP step as "expected non-hermetic behavior" to justify passing it -- the two are orthogonal, and only the latter is a designed exemption.
 
 ### Tier-Specific Guidance
@@ -115,11 +124,10 @@ Track Attempts per step (see VP Compliance Gate below). This rule governs what a
 
 ### VP Failure Is Not Negotiable
 If a VP step fails for ANY reason (including credential/environment issues), the status is FAIL.
-There is no "graceful" failure, no "local pass", no "env blocked" — only PASS or FAIL.
-If the failure is due to missing credentials or infrastructure, the agent MUST:
-1. Attempt the documented recovery (verify the static-key chain: `aws sts get-caller-identity --profile agent_platform`; refresh `~/.aws/credentials` if the `agent_static` key was rotated)
-2. Re-run the VP step
-3. If still failing, mark FAIL and STOP — do not proceed, do not merge
+There is no "graceful" failure, no "local pass", no "env blocked" — only PASS or FAIL. If the
+failure is due to missing credentials or infrastructure: attempt the static-key recovery (see
+Preflight Constraints above), re-run the VP step, and if still failing mark FAIL and STOP — do not
+proceed, do not merge.
 
 ### VP Compliance Gate
 Before proceeding to code review (Step 5), produce a VP compliance table in the chat output:
@@ -127,17 +135,21 @@ Before proceeding to code review (Step 5), produce a VP compliance table in the 
 | VP# | Command Executed | Actual Output (truncated) | Attempts | PASS/FAIL |
 ```
 - The "Command Executed" must be the actual shell command run.
-- The "Attempts" column records the number of executions of that step (1 = first-try pass; a step that failed once and then passed on re-run records 2, etc.). This is the per-step attempt count referenced by the nondeterminism rule below.
-- Bound each "Actual Output" cell: truncate to roughly 200 characters (or head+tail lines for multi-line output) so the table stays a compact, pasteable artifact rather than a full transcript dump.
-- PASS/FAIL is not the only allowed status: a step whose green result is flagged by the nondeterminism rule (see Live Verification Protocol Protocol subsection) is recorded as NONDETERMINISTIC, never as PASS.
+- The "Attempts" column records the number of executions (1 = first-try pass; failed-then-passed
+  records 2, etc.) -- the per-step count the nondeterminism rule below references.
+- Bound each "Actual Output" cell to ~200 characters (or head+tail lines) so the table stays a
+  compact, pasteable artifact rather than a full transcript dump.
+- PASS/FAIL is not the only status: a step whose green result is flagged by the nondeterminism
+  rule is recorded as NONDETERMINISTIC, never PASS.
 - If ANY row is FAIL, do NOT proceed.
 - If a VP step was skipped or is awaiting a human-gated action (e.g., terraform apply), mark it BLOCKED and wait.
-- Lack of AWS credentials is NOT automatically a block. Verify the static-key chain with `aws sts get-caller-identity --profile agent_platform`; there is no interactive login to run (refresh `~/.aws/credentials` if `agent_static` was rotated).
+- Lack of AWS credentials is NOT automatically a block. Verify the static-key chain per Preflight
+  Constraints; there is no interactive login to run.
 - This table is the proof artifact: per the IMPLEMENTATION Commit Flow below, it is appended to the PR body verbatim (with its Attempts column and any NONDETERMINISTIC markers) so the executed evidence survives past the chat transcript.
 
 ### V3 Merge Gate
 If the Verification Plan contains V3 post-deploy steps, execute the full sequence:
-0. Confirm credentials are active with `aws sts get-caller-identity --profile agent_platform`. There is no interactive login in the static-key model; if the chain fails, refresh `~/.aws/credentials` (rotated `agent_static`) and re-verify.
+0. Confirm credentials are active (static-key recovery per Preflight Constraints if the chain fails).
 1. Complete all pre-deploy VP steps.
 2. Present the deploy output.
 3. WAIT for human confirmation of deployment success.
@@ -150,6 +162,11 @@ Only when ALL steps pass can you proceed to code review.
 **You MUST trigger the code-review immediately after the Verification Plan passes. Do not wait for the human to prompt you.**
 
 ### Trigger
+**Subagent-dispatch mode:** same three-signal check as planning's subagent-dispatch gates -- if you
+are a subagent (`SUBAGENT CONTEXT` header, no `Agent` tool, or a nesting error), do not dispatch
+below; gate-request (`gate: code-review`, inputs branch+plan_path) and resume via `SendMessage` on
+verdict. Schema: `docs/contracts/overseer-dispatch.yaml#gate_request_trampoline`.
+
 Dispatch via the `Agent` tool with `subagent_type: "general-purpose"`, instructing the subagent to invoke the `code-review` skill via the Skill tool and return its structured output verbatim (the same idiom the plan.md decision-scout / plan-critique gates use) -- NOT via `bin/venv-python -m scripts.agent_development.run_skill --skill code-review`. The subagent runs in a fresh context window (anti-bias) and has full tool access (read, grep, glob, bash) to inspect the entire branch diff.
 
 Agent prompt template:
@@ -169,13 +186,11 @@ If the gate subagent errors or returns output missing the required Verdict/Recom
 - **Critical and High**: You MUST implement fixes for these findings before proceeding. They are mandatory extensions of the original plan. After fixing, re-run `bin/venv-python -m scripts.validate --pre` to confirm no regressions.
 - **Medium and Low**: File these as new recommendations using `bin/venv-python -m scripts.ops_data_portal`. Do not fix them inline -- they will be addressed in future sessions.
 
-### Rationale
-This ensures that even "perfect" implementations are audited for repository-wide patterns (e.g., mock exhaustion, safety rules, scope creep) that the planner might have missed. The review also catches regression risks before they reach `main`. The subagent dispatch (rather than `run_skill.py`) preserves the anti-bias property of fresh context while giving the reviewer enough surface area to see cross-file effects.
-
-
 ## Tier_item bookkeeping (post-verification, pre-merge)
 
-After the verification-pass gate fires and BEFORE the code-review subagent is dispatched, walk the tier_items referenced by the current plan and stage YAML status updates. This runs in parallel with code-review (which runs in the cloud and does not block the local agent).
+After the verification-pass gate fires and BEFORE code-review is dispatched (or GATE_REQUESTed --
+see Parallel-with-code-review state machine below), walk the tier_items referenced by the current
+plan and stage YAML status updates.
 
 ### Trigger
 Fires once the VP Compliance Gate table shows all rows PASS. Does not fire on FAIL or BLOCKED.
@@ -301,6 +316,11 @@ criteria-vs-reality mismatch on an already-complete item stages a criteria rewri
 silent pass.
 
 ### Parallel-with-code-review state machine
+**Subagent-dispatch mode:** no local step-1 dispatch -- return `GATE_REQUEST` (gate: code-review)
+and pause instead. Steps 2-3 MUST complete BEFORE that pause, in the same turn -- there is no
+concurrency to run them against once paused. Steps 4-5 apply after `SendMessage`-resume with the
+verdict.
+
 1. Dispatch the code-review subagent (Step 5 above).
 2. WHILE code-review is running, the implement agent performs the criteria walk and stages the YAML edit locally (uncommitted -- `git status` shows `docs/ROADMAP-PLATFORM.yaml` as modified).
 3. **Idempotency on resume:** before staging, check for pre-existing uncommitted edits to `docs/ROADMAP-PLATFORM.yaml`. If present and matching what the bookkeeping rule would produce, no-op. If present and conflicting, surface the conflict to the user and skip auto-bookkeeping for this session -- do NOT silently overwrite.
@@ -310,53 +330,70 @@ silent pass.
 5. **Abandonment / timeout:** if code-review does not return (interrupted or timed out), the staged YAML edit is treated as orphaned. On next session entry, the idempotency check detects the orphaned stage and reports it to the user for explicit accept/reject -- the implement skill does not auto-commit bookkeeping that lacks a verdict-attested verification pass.
 6. **Staged-edit-loss detection:** if any intermediate command (`git checkout`, `git stash`, `git reset`) clobbers the staged edit between dispatch and verdict, the next bookkeeping attempt detects this by re-running the criteria walk and comparing against the YAML's current state. Loss is observable, not silent.
 
-## Verification Graduation (VF-05, T3.18 -- fires on VP Compliance Gate all-PASS, before the commit flow)
+## Verification Graduation (VF-05, T3.18/T3.21 -- fires on VP Compliance Gate all-PASS, before the commit flow)
 
 Fires in the same window as Tier_item bookkeeping (after the VP Compliance Gate shows all rows
 PASS, before the commit flow in Step 7) but is a distinct action: it tries to promote this
-session's own VP steps into standing regression guards, not roadmap bookkeeping.
+session's own VP steps into standing regression guards, not roadmap bookkeeping. Execute each
+declared `test_obligations` selector/command first; record evidence on its VP step.
 
-### Rationale
-A VP step proves a feature works once, this session. Left as a throwaway, the next unrelated
-change can silently regress it. Graduating a VP step into
-`config/agent/verification_registry/registry.yaml` makes it a standing, differentially-admitted
-check (`validate_verification_registry`, both --pre and full tiers) -- but only if it genuinely
-distinguishes pre-change from post-change; a tautological check that passes on both trees would
-be worse than no check (false confidence). The differential admission gate is the guard against
-that: real, never simulated (Decision 55).
+**T3.21 (enforced, amends T3.18):** graduation is not optional. If this plan's `verification_plan`
+steps carry `graduation` dispositions (mandatory on pre-deploy steps for any plan authored after
+T3.21 -- see the planning skill), `validate_graduation_completeness`'s implement-PR leg (both
+tiers) FAILS the PR unless every step declared `graduate` produced a matching registry row. A plan
+authored before the field existed (no dispositions anywhere) is exempt -- treat its graduation as
+the legacy best-effort walk in step 1 below.
 
 ### Protocol
-1. **Enumerate candidates.** Walk this plan's `verification_plan` steps and identify any whose
-   `command` is expressible as one of the six canonical primitive slots in
+1. **Enumerate candidates from the plan's declared dispositions.** Walk this plan's
+   `verification_plan` steps and take every step whose `graduation == "graduate"` as a candidate;
+   its declared `graduation_check_id` IS the registry row's `check_id` (do not invent a
+   different slug -- the implement-PR leg matches on `plan_slug` + `graduation_check_id`
+   verbatim). Steps marked `waive` or `not-applicable` are never candidates. **Legacy fallback:**
+   if this plan predates the graduation field (zero dispositions anywhere in
+   `verification_plan`), fall back to the pre-T3.21 walk -- identify any step whose `command` is
+   expressible as one of the six canonical primitive slots in
    `scripts.verification_checks.CANONICAL_SLOTS` (command_exit_zero, command_output_matches,
-   file_presence, grep_count, test_selector, metric_under_threshold). A step that requires
-   multiple commands, human judgement, or live infrastructure (V3 deploy/invoke) is not a
-   candidate -- skip it.
-2. **Build a registry row** for each candidate: `check_id` (stable slug), `primitive_slot`,
-   `check_spec` (the primitive's parameters -- see `docs/contracts/verification-registry.yaml`
-   for the per-slot shape), `guard_target` (the artefact it defends), `guard_symbol` (optional),
-   `plan_slug` (this plan's slug), `graduated_at` (today's ISO date), `graduated_by` (this
-   session's canonical_id per Decision 66, or omit if none applies).
+   file_presence, grep_count, test_selector, metric_under_threshold) and invent a stable
+   `check_id` slug for it. A step that requires multiple commands, human judgement, or live
+   infrastructure (V3 deploy/invoke) is never a candidate either way -- skip it.
+2. **Build a registry row** for each candidate: `check_id` (the step's `graduation_check_id`, or
+   the invented slug under the legacy fallback), `primitive_slot`, `check_spec` (the primitive's
+   parameters -- see `docs/contracts/verification-registry.yaml` for the per-slot shape),
+   `guard_target` (the artefact it defends), `guard_symbol` (optional), `plan_slug` (this plan's
+   slug), `graduated_at` (today's ISO date), `graduated_by` (this session's canonical_id per
+   Decision 66, or omit if none applies).
 3. **Run the REAL differential admission gate** for each candidate row via
    `scripts.verification_graduation.run_differential(row, repo_root=<repo root>)`: it materializes
    the check, runs it live (must PASS), then checks it out in a real `git worktree` at
    `origin/main` and runs it there (must FAIL). This is a genuine `git worktree add`/`remove` --
    never a simulated revert.
-4. **Admitted rows** (`outcome.admitted`) get appended to
-   `config/agent/verification_registry/registry.yaml`'s `entries` list. **Rejected rows**
-   (tautological, or failing on HEAD/live) are dropped -- do not add them.
-5. **Errors are fail-loud (Decision 55).** A `scripts.verification_graduation.GraduationError`
-   (worktree add/remove failure, a materialization error, a missing check_spec key) STOPS this
-   step and surfaces to the human -- it never silently becomes "none graduated". Only a
-   legitimately empty candidate set (step 1 found nothing kernel-expressible) is a real "none
-   graduated" outcome.
-6. **Record the outcome ephemerally.** Whether rows were admitted or the candidate set was
-   legitimately empty, record an explicit note in the PR body (a `## Verification Graduation`
-   section: which check_ids were admitted, which candidates were rejected and why, or "no
-   kernel-expressible VP steps this session -- none graduated"). This record is ephemeral
+4. **Admitted rows** (`outcome.admitted`) get written to their own
+   `config/agent/verification_registry/entries/<check_id>.yaml` shard -- never appended to a
+   shared file.
+5. **A declared-`graduate` candidate that is REJECTED (tautological, or fails on HEAD/live) is
+   un-graduatable, not silently dropped.** Flip that VP step's disposition from `graduate` to
+   `waive` in `docs/plans/PLAN-{slug}.yaml`, setting `graduation_waiver_reason` to the concrete
+   rejection reason (e.g. "differential rejected -- passes even with origin/main reverted,
+   tautological given this repo's fixture state"), and remove `graduation_check_id`. Commit this
+   plan edit in the same PR (Step 7's `git add -A` picks it up) -- this is what satisfies
+   `validate_graduation_completeness`'s implement-PR leg for that step, since a `waive`
+   disposition requires no registry row. A legacy-fallback candidate (step 1's fallback path) that
+   is rejected is simply dropped, unchanged from pre-T3.21 behaviour -- there is no disposition
+   field to flip.
+6. **Errors are fail-loud (Decision 55).** A `scripts.verification_graduation.GraduationError`
+   (worktree add/remove failure, materialization error, missing check_spec key) STOPS this
+   step and surfaces to the human -- never a silent "none graduated". Only a
+   legitimately empty candidate set (no `graduate`-disposition steps, and -- under the legacy
+   fallback -- nothing kernel-expressible) is a real "none graduated" outcome.
+7. **Record the outcome ephemerally.** Whether rows were admitted, some were flipped to waive, or
+   the candidate set was legitimately empty, record an explicit note in the PR body (a
+   `## Verification Graduation` section: which check_ids were admitted, which were flipped to
+   waive and why, which legacy-fallback candidates were rejected and dropped, or "no
+   graduate-disposition VP steps this session -- none graduated"). This record is ephemeral
    PR-body evidence (Decision 115) -- NOT a numbered Decision, NOT a warehouse write. The durable
-   artefact is the registry.yaml diff itself, committed in the same commit as the plan's other
-   changes (Step 7's `git add -A` picks it up).
+   artefacts are the new registry shard(s) and any plan disposition flips, committed in the same
+   commit as the plan's other changes (Step 7's `git add -A` picks it up).
 
 ### Constraints
 - Never invent a registry row for a VP step that doesn't genuinely distinguish pre/post-change
@@ -396,7 +433,7 @@ this step NEVER runs without the explicit execution-time confirmation in step 2 
    mechanism description contradicted by the ratified reality), apply them in the SAME edit --
    do not leave the body describing a superseded mechanism after the flip (mirrors the
    exit-criteria "realized-differently" rule above).
-6. **Re-run `bin/venv-python -m scripts.session_preflight`** (or `-m scripts.platform_roadmap`
+6. **Re-run `bin/venv-python -m scripts.session.preflight`** (or `-m scripts.roadmap.platform_roadmap`
    for the full dict if the slim preflight payload omits the field you need) and confirm the
    ratified CD no longer appears in `blocked_on_cd` / `completion_blocked_on_cd` for any item it
    was gating.
@@ -408,6 +445,16 @@ this step NEVER runs without the explicit execution-time confirmation in step 2 
    decision (the section above) -- note in the PR body which items became unpark-eligible, if
    any, but let the normal bookkeeping walk decide status flips (Decision 90).
 
+### Batch-wave bundling (Decision 150, >=2 same-session PURE gate-clear CDs)
+When the ratification block bundles >=2 same-session PURE gate-clear CDs (no content beyond "this
+CD's work is realized"; a content-bearing ratification is never bundled), steps 3 (author ONE
+`## Decision N` wave entry, one clause per CD) and 4 (ETL) above run ONCE FOR THE WHOLE WAVE, but
+the three PER-CD sub-steps -- step 5's roadmap-flip (each CD's own ratified_as/filed_via pointing
+at the SHARED dec-NNN), the marking-convention obligation, and the pending-window prose sweep
+(candidate-decision-ratification.yaml `lane_steps.implement.execute` sub-steps 5-6) -- REPEAT ONCE
+PER BUNDLED CD. Steps 6 (preflight) and 7 (validate) run once over all bundled CDs. Step 8
+(Decision 90: tier_item status flips stay a separate bookkeeping step) is unchanged.
+
 ### Rejection handling
 If the human declines to confirm the Decision text in step 2 (asks for edits, defers, or says
 no), do NOT proceed to steps 3-8. Either incorporate the requested edits and re-present, or stop
@@ -415,11 +462,10 @@ the ratification portion of the plan entirely and report which steps were skippe
 non-ratification scope is otherwise complete may still commit/merge without the ratification
 having executed -- ratification is additive, not a blocking prerequisite for the rest of the plan.
 
-
 ## Strategic Scoping Rules (Workflow Step 3 -- STRATEGIC Plans only)
 
 ### JIT Context Injection
-When breaking a STRATEGIC plan into atomic recommendations, explicitly review `docs/PROJECT_CONTEXT.md`. Copy any relevant "Known Gotchas" or constraints directly into the recommendation's `context` field. Autonomous executors no longer read `copilot-instructions.md` by default, so they rely entirely on the JIT context you provide.
+When breaking a STRATEGIC plan into atomic recommendations, review `docs/PROJECT_CONTEXT.md`. Copy any relevant "Known Gotchas" or constraints directly into the recommendation's `context` field. Autonomous executors no longer read `copilot-instructions.md` by default, so they rely entirely on the JIT context you provide.
 
 ### Quality Gate Validation
 Before filing each recommendation using `bin/venv-python -m scripts.ops_data_portal`, apply this gate. FAIL if any check fails:
@@ -435,13 +481,20 @@ Before filing, search for open recs targeting the same file with at least 3 keyw
 ## Commit Flows (Workflow Step 7 -- MANDATORY)
 **Once validation passes (Step 6), execute the appropriate commit flow autonomously. Do not stop to ask permission -- the plan was approved during /plan.**
 
-This workflow runs on Claude Code on the web: the harness assigned this session its own branch (e.g. `claude/...`), the `gh` CLI is NOT available, and the container hibernates between turns. All GitHub operations use the GitHub MCP tools (`mcp__github__*`). Decision 83 (2026-06-08) reversed Decision 89's "Branch Protection Not Available" premise -- branch protection is now LIVE. The squash-merge-after-CI gate design is PRESERVED (Decision 89 stays as audit history; Decision 83 amends its premise only). The transport is the GitHub MCP `merge_pull_request` tool (Decision 76). See AGENTS.md `## Git-ops procedure` as the canonical git-ops authority.
+This workflow runs on Claude Code on the web: the harness assigns this session its own branch (e.g. `claude/...`), the `gh` CLI is NOT available, and the container hibernates between turns. All GitHub operations use the GitHub MCP tools (`mcp__github__*`). Branch protection is LIVE; the squash-merge-after-CI gate transport is the GitHub MCP `merge_pull_request` tool (Decision 76). See AGENTS.md `## Git-ops procedure` as the canonical git-ops authority.
 
-### Run the full gate locally first
-The PR gate runs ONLY the fast `--pre` tier; the full tier runs post-merge on main and a failure there spawns a ci-rca rec. To avoid a post-merge red main, run `bin/venv-python -m scripts.validate` (full, no flags) locally and get exit 0 BEFORE opening the PR.
+### Run the full gate locally first (in order)
+
+1. Run `bin/venv-python -m scripts.session.github_readiness`. States are independent: `unknown` is unproven, never PASS; fetch/API PASS never authorizes push/PR.
+2. Run `bin/venv-python -m scripts.test_coverage_checker --check-tests --check-coverage`. Repair failures; this is a diagnostic, not an overall gate.
+3. Set `implementation_declared: true` in the plan file, now that the graduation walk above wrote its registry rows.
+4. Run `bin/venv-python -m scripts.validate --pre`, then `bin/venv-python -m scripts.validate`. Handoff requires full exit 0, final `Validation Summary (scope: all)` PASS, and `logs/debug/validation-result.json` with scope `all`, exit 0, no failures, and current pre-commit HEAD. Child output, mypy, CI, and stale evidence cannot substitute. Any incomplete/mismatched result is BLOCKED; fix and rerun full from the start.
+5. Create `/tmp/implementation-retrospective.json` with the ten `scripts.session.postflight_evidence.CATEGORIES` keys. Values are bounded fact-string lists (`[]` if none); exclude credentials/raw output. Run `bin/venv-python -m scripts.session.postflight --evidence /tmp/implementation-retrospective.json` and confirm its gitignored output. `--auto` stops with `evidence_failed` before commit when invalid.
+
+Report readiness, validator verdicts, evidence, review, and real push/PR outcome separately.
 
 ### Wait-for-CI: event-driven, never polled
-Wait for the PR-tier CI (the fast `--pre` tier, ~1-3 min; Decision 73) via subscription, never polling. The wake mechanism -- `subscribe_pr_activity`, ending the turn, the `ci.yml` "CI green" comment wake signal, the one-shot `send_later` backstop bounds, and the GitHub-native auto-merge successor -- is canonical in AGENTS.md `## Git-ops procedure` steps 3-5; do not restate it here.
+Wait for the PR-tier CI (fast `--pre` tier; Decision 73) via subscription, never polling -- the wake mechanism is canonical in AGENTS.md `## Git-ops procedure` steps 3-5, not restated here.
 
 **On wake**, always confirm check runs via `mcp__github__pull_request_read` (`get_status` / `get_check_runs`) BEFORE merging, then branch on status:
    - **All green** -> `mcp__github__merge_pull_request(owner, repo, pullNumber, merge_method="squash")`, then `mcp__github__unsubscribe_pr_activity(...)`. Report the merge. **Carve-out:** for a PR touching `terraform/personal/**`, do NOT unsubscribe here -- defer to the "Hold subscription through apply" section below (the real outcome is the post-merge apply, not the merge).

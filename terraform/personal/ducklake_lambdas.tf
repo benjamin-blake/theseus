@@ -18,6 +18,13 @@
 #   2. terraform -chdir=terraform/personal plan  -> present to human -> apply via agent_platform_admin
 #   3. build_lambda --ducklake-only --deploy  (updates the two functions' code from S3)
 #
+# CODE/INFRA COUPLING (Decision 125, environment-taxonomy.yaml conformance): RESOLVED. The two
+# aws_lambda_function resources below now carry a lifecycle block ignoring source_code_hash
+# changes, so a code-only redeploy no longer surfaces as a Terraform diff on this IAM-gated apply
+# path. Code deploys now go via `build_lambda --ducklake-only --deploy` (update-function-code,
+# independent of terraform) -- knowingly-interim break-glass status (Decision 125 pt 2-5) pending
+# the governed code-deploy CD channel (tracked as rec-2646's residual scope / A2/B1 follow-on).
+#
 # SINGLE-PORTAL NOTE (Decision 78/81): at T2.19 these Function URLs become the CLOSED ops boundary --
 # the writer is the sole ops_* write authority, the reader the sole read authority. ops_data_portal
 # transits them unconditionally (sole backend, Decision 84 I-1); the caller surface is unchanged. This
@@ -50,6 +57,22 @@ resource "aws_lambda_layer_version" "ducklake_deps" {
   s3_key              = "lambda-packages/ducklake-deps-layer.zip"
   compatible_runtimes = ["python3.12"]
   source_code_hash    = try(filemd5("${path.module}/../../lambda-packages/ducklake-deps-layer.zip"), null)
+
+  # T2.42 c1 (rec-2646/rec-2654 pattern extended to layers, Decision 126 pt3/pt5, DEP-03): decouples
+  # routine rebuild churn from this IAM-gated apply path -- without this, every rebuild's
+  # non-reproducible zip bytes surface as a layer create+delete (replace) diff, which the Decision-77
+  # guard blocks as a delete action (routes to gated-apply for zero real change). s3_key stays the
+  # fixed literal (unaffected by T2.42 c3's content-addressed upload path).
+  #
+  # SILENT-FREEZE GUARD: source_code_hash is now ignored, so Terraform only publishes a new layer
+  # version when `description` changes. This description interpolates local.ducklake_version ONLY --
+  # a genuine non-duckdb dependency bump (psycopg2-binary / python-ulid / pyyaml) with an unchanged
+  # duckdb version leaves the description unchanged, so terraform publishes NO new layer version and
+  # the function silently keeps the OLD deps. Any such bump MUST also bump the description/marker (or
+  # go via the deploy-verb publish path, publish_canary_layers) to force republish.
+  lifecycle {
+    ignore_changes = [source_code_hash]
+  }
 }
 
 resource "aws_lambda_layer_version" "ducklake_extensions" {
@@ -59,6 +82,17 @@ resource "aws_lambda_layer_version" "ducklake_extensions" {
   s3_key              = "lambda-packages/ducklake-extensions-layer.zip"
   compatible_runtimes = ["python3.12"]
   source_code_hash    = try(filemd5("${path.module}/../../lambda-packages/ducklake-extensions-layer.zip"), null)
+
+  # T2.42 c1 (rec-2646/rec-2654 pattern extended to layers, Decision 126 pt3/pt5, DEP-03): decouples
+  # routine rebuild churn from this IAM-gated apply path -- without this, every rebuild's
+  # non-reproducible zip bytes surface as a layer create+delete (replace) diff, which the Decision-77
+  # guard blocks as a delete action (routes to gated-apply for zero real change). s3_key stays the
+  # fixed literal (unaffected by T2.42 c3's content-addressed upload path). This layer's description
+  # is fully duckdb-version-driven (local.ducklake_version), so a genuine content bump (a DuckDB
+  # version bump) always moves the description and republishes correctly -- no silent-freeze risk.
+  lifecycle {
+    ignore_changes = [source_code_hash]
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -101,9 +135,11 @@ data "aws_iam_policy_document" "lambda_assume" {
 }
 
 resource "aws_iam_role" "ducklake_writer" {
-  name               = "agent-platform-ducklake-writer"
-  description        = "Write-scoped DuckLake runtime: S3 RW on ducklake/ + smoke prefixes, Neon DSN read, metrics"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+  # Decision 144 (T2.48): mandatory broad-but-bounded exec-identity boundary (16/17 roles; PlatformAdmin excluded).
+  name                 = "agent-platform-ducklake-writer"
+  description          = "Write-scoped DuckLake runtime: S3 RW on ducklake/ + smoke prefixes, Neon DSN read, metrics"
+  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/agent-platform-github-ci-apply-boundary"
+  assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
 }
 
 resource "aws_iam_role_policy" "ducklake_writer" {
@@ -169,9 +205,11 @@ resource "aws_iam_role_policy" "ducklake_writer" {
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "ducklake_reader" {
-  name               = "agent-platform-ducklake-reader"
-  description        = "Read-scoped DuckLake runtime: S3 GetObject on ducklake/ + smoke prefixes only, Neon DSN read"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+  # Decision 144 (T2.48): mandatory broad-but-bounded exec-identity boundary (16/17 roles; PlatformAdmin excluded).
+  name                 = "agent-platform-ducklake-reader"
+  description          = "Read-scoped DuckLake runtime: S3 GetObject on ducklake/ + smoke prefixes only, Neon DSN read"
+  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/agent-platform-github-ci-apply-boundary"
+  assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
 }
 
 resource "aws_iam_role_policy" "ducklake_reader" {
@@ -257,6 +295,13 @@ resource "aws_lambda_function" "ducklake_writer" {
     aws_cloudwatch_log_group.ducklake_writer,
   ]
 
+  # Decision 125 physical decoupling: code deploys go via build_lambda --ducklake-only --deploy
+  # (update-function-code), not terraform. Without this, every rebuild's non-reproducible zip bytes
+  # trip a Terraform diff on this IAM-gated apply path (rec-2646/rec-2654).
+  lifecycle {
+    ignore_changes = [source_code_hash]
+  }
+
   tags = {
     Name    = "DuckLake Writer"
     Purpose = "T2.17 ducklake_writer runtime"
@@ -294,6 +339,13 @@ resource "aws_lambda_function" "ducklake_reader" {
     aws_iam_role_policy.ducklake_reader,
     aws_cloudwatch_log_group.ducklake_reader,
   ]
+
+  # Decision 125 physical decoupling: code deploys go via build_lambda --ducklake-only --deploy
+  # (update-function-code), not terraform. Without this, every rebuild's non-reproducible zip bytes
+  # trip a Terraform diff on this IAM-gated apply path (rec-2646/rec-2654).
+  lifecycle {
+    ignore_changes = [source_code_hash]
+  }
 
   tags = {
     Name    = "DuckLake Reader"

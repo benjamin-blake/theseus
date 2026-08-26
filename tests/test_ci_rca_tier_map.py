@@ -1,14 +1,12 @@
-"""Tests for scripts/ci_rca_tier_map.py (100% coverage)."""
+"""Tests for scripts/ci_rca/tier_map.py (100% coverage)."""
 
-import sys
 import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT))
 
-from scripts.ci_rca_tier_map import (  # noqa: E402
+from scripts.ci_rca.tier_map import (  # noqa: E402
     AST_WALKER_VERSION,
     build_tier_membership,
     compute_earliest_viable_gate,
@@ -112,7 +110,7 @@ class TestProbeRuntime:
         vpath = tmp_path / "validate.py"
         vpath.write_text("def validate_fast(failed):\n    pass\n")
         fake_samples = [0.05, 0.06, 0.05, 0.06, 0.05]
-        with patch("scripts.ci_rca_tier_map.subprocess.run") as mock_run:
+        with patch("scripts.ci_rca.tier_map.subprocess.run") as mock_run:
             responses = []
             for s in fake_samples:
                 m = MagicMock()
@@ -135,7 +133,7 @@ class TestProbeRuntime:
         vpath = tmp_path / "validate.py"
         vpath.write_text("def validate_fast(failed):\n    pass\n")
         fake_samples = [0.001, 0.001, 0.5, 1.0, 2.0]
-        with patch("scripts.ci_rca_tier_map.subprocess.run") as mock_run:
+        with patch("scripts.ci_rca.tier_map.subprocess.run") as mock_run:
             responses = []
             for s in fake_samples:
                 m = MagicMock()
@@ -150,7 +148,7 @@ class TestProbeRuntime:
     def test_probe_exception_returns_error(self, tmp_path):
         vpath = tmp_path / "validate.py"
         vpath.write_text("def validate_fast(failed):\n    pass\n")
-        with patch("scripts.ci_rca_tier_map.subprocess.run", side_effect=Exception("network error")):
+        with patch("scripts.ci_rca.tier_map.subprocess.run", side_effect=Exception("network error")):
             conf, median = probe_runtime("validate_fast", vpath)
         assert median is None
         assert "probe_failed" in conf
@@ -208,3 +206,31 @@ class TestComputeEarliestViableGate:
     def test_version_constant(self):
         assert isinstance(AST_WALKER_VERSION, int)
         assert AST_WALKER_VERSION >= 1
+
+    def test_none_default_undetermined_headroom(self):
+        """CIRCA-05: default (unmeasured) current_pre_runtime declines promotion, no fabricated 0.0s."""
+        tm = {"validate_x": ["presubmit"]}
+        gate, rationale = compute_earliest_viable_gate("validate_x", tm, "median=50ms", 0.05)
+        assert gate == "presubmit"
+        assert "undetermined-headroom" in rationale
+        assert "0.0s" not in rationale
+
+    def test_measured_fit_recommends_pre_with_real_runtime(self):
+        """CIRCA-05: measured runtime that fits headroom recommends pre with the real number embedded."""
+        tm = {"validate_x": ["presubmit"]}
+        gate, rationale = compute_earliest_viable_gate("validate_x", tm, "median=50ms", 0.05, current_pre_runtime=120.0)
+        assert gate == "pre"
+        assert "120.0s" in rationale
+
+    def test_measured_exceeds_headroom_stays_presubmit(self):
+        """CIRCA-05: measured runtime that exceeds headroom stays presubmit."""
+        tm = {"validate_x": ["presubmit"]}
+        gate, _ = compute_earliest_viable_gate("validate_x", tm, "median=400000ms", 400.0, current_pre_runtime=120.0)
+        assert gate == "presubmit"
+
+    def test_headroom_exhausted_stays_presubmit(self):
+        """CIRCA-05: current_pre_runtime >= budget (headroom <= 0) never recommends pre."""
+        tm = {"validate_x": ["presubmit"]}
+        gate, rationale = compute_earliest_viable_gate("validate_x", tm, "median=50ms", 0.05, current_pre_runtime=305.0)
+        assert gate == "presubmit"
+        assert "pre" != gate

@@ -1,9 +1,6 @@
 ---
 name: orient
 description: Read-only orientation session. Surfaces in-progress/eligible work, CI-RCA triage, ranked what-to-work-on, and up to N disjoint /plan prompts with an overlap matrix and keystone-first sequencing. Chat reply only; writes nothing.
-required-context:
-  - logs/.preflight-report.json
-  - docs/ROADMAP-PLATFORM.yaml
 ---
 
 # Orient Methodology
@@ -31,12 +28,14 @@ Status flips remain the verification-earned closing step owned by `/implement` t
 | Blocked-on-CD annotations | `logs/.preflight-report.json` (`platform_roadmap.blocked_on_cd`) | Read preflight cache |
 | Ratifiable CDs | `logs/.preflight-report.json` (`platform_roadmap.ratifiable_cds`) | Read preflight cache |
 | Realized-but-pending CDs | `logs/.preflight-report.json` (`platform_roadmap.realized_but_pending_cds`) | Read preflight cache |
+| Realization candidates | `logs/.preflight-report.json` (`platform_roadmap.realization_candidates`) | Read preflight cache |
 | Gate evaluations | `logs/.preflight-report.json` (`platform_roadmap.gate_evaluations`) | Read preflight cache |
 | Best-Practices signals | `logs/.preflight-report.json` (`convergence_health`, `telemetry_health`, `data_quality`, `non_automatable_softcap_breached`, `terraform_pending`) | Read preflight cache |
-| Roadmap detail (`files_in_scope`, `depends_on`) | `docs/ROADMAP-PLATFORM.yaml` | Typed-loader projection: `scripts.platform_roadmap.load()` (pure-local, no warehouse I/O -- distinct from the banned `-m scripts.platform_roadmap` module entrypoint), returning both a candidate-scoped projection (filtered to the ids already surfaced by the preflight cache) and a roadmap-wide `depends_index` (`{id: depends_on}`, cheap) for reverse-dependency lookups; see the orient command Step 2 for the literal runnable form. Full-file Read only as an error fallback if the extraction fails. |
+| Roadmap detail (`files_in_scope`, `depends_on`) | `docs/ROADMAP-PLATFORM.yaml` | Typed-loader projection: `scripts.roadmap.platform_roadmap.load()` (pure-local, no warehouse I/O -- distinct from the banned `-m scripts.roadmap.platform_roadmap` module entrypoint), returning both a candidate-scoped projection (filtered to the ids already surfaced by the preflight cache) and a roadmap-wide `depends_index` (`{id: depends_on}`, cheap) for reverse-dependency lookups; see the orient command Step 2 for the literal runnable form. Full-file Read only as an error fallback if the extraction fails. |
 | Recent main activity | `logs/.preflight-report.json` (`recent_main_commits`) | Read preflight cache |
+| Decision reversal-conditions monitor | `logs/.preflight-report.json` (`decision_conditions`: `monitored[]`, `surfaced[]`, `malformed[]`) | Read preflight cache (`scripts.preflight.decision_conditions.preflight_bucket()`, SEQ-02) |
 
-**Read-from-preflight-cache constraint (Decision 88 egress budget; Decision 84 closed boundary):** `/orient` reads the preflight cache -- it must NOT trigger a fresh warehouse reader fan-out. Do not call `bin/venv-python -m scripts.platform_roadmap` or any DuckLake reader verb during orient. The preflight script is the only path that may refresh `logs/.preflight-report.json`.
+**Read-from-preflight-cache constraint (Decision 88 egress budget; Decision 84 closed boundary):** `/orient` reads the preflight cache -- it must NOT trigger a fresh warehouse reader fan-out. Do not call `bin/venv-python -m scripts.roadmap.platform_roadmap` or any DuckLake reader verb during orient. The preflight script is the only path that may refresh `logs/.preflight-report.json`.
 
 **Full-projection requirement:** `/orient` requires the full preflight projection (`--roadmap-detail full`). If `platform_roadmap.gate_evaluations` is absent from the cached report, re-run preflight with `--roadmap-detail full` before proceeding (the orient command handles this check in Step 1).
 
@@ -97,6 +96,12 @@ Realized-but-pending (needs corroboration): CD.2 (hint: <realized_hint>) | CD.21
 ```
 `/orient` ranks these as candidates for a human-confirmed `/plan` ratification session -- it never ratifies them itself (read-only, same discipline as Ratifiable CDs). Preserve the "do NOT surface a pending CD with no `realization_evidence` in the RATIFIABLE list" rule above unchanged: a CD promoted out of this list into Ratifiable CDs only once `realization_evidence` is actually set (typically at ratification time, when the prose marker is folded into the structured field).
 
+**Realization candidates** (derived, lowest-confidence; audit PCD-01, building on Decision 105): read `platform_roadmap.realization_candidates` from the preflight cache -- pending CDs with no `realization_evidence` and no `[Realized` prose marker, whose every gated tier_item (or tier, via the same tier-shortcut gate-resolution used elsewhere) is `complete` or non-blocking (`reserved`/`deferred_post_mvp`), and whose detail does NOT match "fully superseded by CD.NN" (that prose belongs to the supersession lane, not here). This is a third tier, strictly disjoint from and BELOW Realized-but-pending CDs above: candidates for evidence-writing in a human-confirmed `/plan` session, never a status /orient computes or writes itself. List each as:
+```
+Realization candidates (derived): CD.4 (gates: ...) | CD.5 (gates: ...)
+```
+`/orient` stays read-only here exactly as elsewhere in this section -- it never writes `realization_evidence`; a human-confirmed `/plan` session is what would draft the evidence text (and, separately, the ratifying Decision, per the planning skill's ratification section). Preserve the "do NOT surface a pending CD with no `realization_evidence` in the RATIFIABLE list" rule above unchanged: a CD surfacing here never appears in Ratifiable CDs until a human writes `realization_evidence` for it.
+
 **Blocked-on-CD annotation**: for each item in `platform_roadmap.blocked_on_cd`, add a "gated by CD.NN" note in the Notes column including the relationship type (`gates`, `related`, or `decision_required_before`) and whether the item carries `bootstrap_completion_exempt: true` (in which case it may start/complete despite the pending CD). An item can be eligible-to-start while still annotated as gated-by-CD; the annotation informs planning, it is not a hard block on eligibility.
 
 Omit items with status `complete`, `reserved`, or blocked (depends_on not satisfied).
@@ -107,6 +112,13 @@ Cross-tier gates: G.1 pass | G.8 fail | G.9 fail | G.10 fail
   G.8 deferred reason: <reason> [only shown when verdict is deferred]
 ```
 Deferred gates include the reason string so the operator understands which runtime field is unresolved.
+
+**Decisions past review date / reversal conditions fired** (audit SEQ-02, Decision 133 follow-on): read `decision_conditions` from the preflight cache (`monitored[]`, `surfaced[]`, `malformed[]` -- see Inputs). This bucket is surfacing-only; it never gates a merge (only the separate `validate_reversal_stanzas` --pre check gates, and only on stanza well-formedness). Render (illustrative format placeholder only -- decision ids/states below are not live data; Decision 133's own repo_state predicates are both `predicate: null` today, so it cannot currently render FIRED):
+```
+Reversal conditions: Decision NNN FIRED (alpha-readiness) | Decision 108 REVIEW DUE (review_by 2026-05-01)
+  MALFORMED: Decision 77 -- unclosed 'yaml reversal-conditions' fence
+```
+Rank `surfaced[]` fired-first, then manual-review-due (the bucket is already sorted this way -- preserve order, do not re-sort). Render each `malformed[]` entry loudly on its own line naming the decision id and the error -- a malformed stanza is a data-quality signal the operator should not miss, even though it does not block anything here. Omit the whole block only when `monitored`, `surfaced`, and `malformed` are all empty (print nothing, not even a "(none)" placeholder -- unlike the Status Digest table, this is an optional addendum, not a fixed-shape table row). If `decision_conditions` carries an `error` key (the resilient `preflight_bucket()` degraded), surface "Reversal-conditions monitor degraded: <error>" instead of the ranked list.
 
 ### 2. CI-RCA Triage
 

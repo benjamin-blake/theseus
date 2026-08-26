@@ -10,10 +10,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from scripts.terraform_apply_guard import _classify_iam_change, _normalise_policy, _trust_changed, evaluate_plan, main
+from scripts.terraform_apply_guard import (
+    _REVIEWER_PREAMBLE,
+    _classify_iam_change,
+    _forced_resource_policy_attrs,
+    _normalise_policy,
+    _summarise_value,
+    _trust_changed,
+    build_digest,
+    evaluate_plan,
+    main,
+)
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "terraform_apply_guard"
 _REAL_CLEAN_CREATE = _FIXTURES / "clean_create_real.json"
@@ -219,12 +230,14 @@ def test_trust_changed_handles_non_dict_states() -> None:
 # else (wrong type, wrong action, unmanaged role, no budget) blocks.
 # ---------------------------------------------------------------------------
 
+# Budget v2 (Decision 144 / T2.48): boundary-carrying agent-platform-* managed-role PREFIX
+# (not the v1 two-role enumeration) + in_budget_actions ["create","update"] (subset-matched).
 _BUDGET = {
-    "schema_version": 1,
+    "schema_version": 2,
     "boundary_policy_name": "agent-platform-github-ci-apply-boundary",
-    "in_budget_managed_roles": ["agent-platform-github-ci-branch", "agent-platform-github-ci-pr"],
+    "in_budget_managed_role_prefix": "agent-platform-",
     "in_budget_resource_types": ["aws_iam_role_policy", "aws_iam_role_policy_attachment"],
-    "in_budget_actions": ["update"],
+    "in_budget_actions": ["create", "update"],
 }
 
 
@@ -307,20 +320,60 @@ def test_trust_diff_on_managed_role_type_still_blocks(tmp_path: Path, monkeypatc
     assert main([_write(tmp_path, plan)]) == 2
 
 
-def test_iam_create_on_in_budget_type_still_blocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Creates are not in in_budget_actions (["update"]) -- role CREATES stay gated (new trust surface).
+def test_in_budget_inline_policy_create_on_agent_platform_role_passes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Budget v2 (Decision 144): CREATE of a new inline policy on a boundary-carrying agent-platform-*
+    # role is now in-budget (subset-match ["create"] + prefix-match) -> auto-apply (exit 0).
+    monkeypatch.setenv("TF_AUTHORITY_BUDGET", str(_make_budget_file(tmp_path)))
+    plan = {"resource_changes": [_rc("aws_iam_role_policy", ["create"], after={"role": "agent-platform-x", "policy": "{}"})]}
+    assert evaluate_plan(plan, _BUDGET) == []
+    assert main([_write(tmp_path, plan)]) == 0
+
+
+def test_aws_iam_role_create_still_blocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Role CREATE (aws_iam_role type) stays gated under v2: aws_iam_role is NOT an in_budget_resource_type
+    # (Decision 144: gated-but-executable, never auto-applied).
+    monkeypatch.setenv("TF_AUTHORITY_BUDGET", str(_make_budget_file(tmp_path)))
+    plan = {"resource_changes": [_rc("aws_iam_role", ["create"], after={"name": "agent-platform-x"})]}
+    findings = evaluate_plan(plan, _BUDGET)
+    assert len(findings) == 1 and "out-of-budget" in findings[0]["reason"]
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+def test_apply_role_self_exclusion_blocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # SECURITY-CRITICAL (Decision 144, guard-side counterpart to DenySelfInlinePolicyWrite): the
+    # widened agent-platform-* prefix MATCHES agent-platform-github-ci-apply, so an inline-policy
+    # write on the apply role's own ARN must NEVER auto-apply -- it routes to gated (T2.23 self-grant
+    # break). Both UPDATE and CREATE on the apply role gate.
     budget_path = _make_budget_file(tmp_path)
     monkeypatch.setenv("TF_AUTHORITY_BUDGET", str(budget_path))
-    plan = {
-        "resource_changes": [
-            _rc(
-                "aws_iam_role_policy",
-                ["create"],
-                after={"role": "agent-platform-github-ci-branch", "policy": "{}"},
-            )
-        ]
+    for actions in (["update"], ["create"]):
+        change = _rc(
+            "aws_iam_role_policy",
+            actions,
+            before={"role": "agent-platform-github-ci-apply", "policy": "{}"},
+            after={"role": "agent-platform-github-ci-apply", "policy": '{"Version":"2012-10-17"}'},
+        )
+        assert _classify_iam_change(change, _BUDGET) is False
+        findings = evaluate_plan({"resource_changes": [change]}, _BUDGET)
+        assert len(findings) == 1
+        assert "out-of-budget" in findings[0]["reason"]
+
+
+def test_classify_non_subset_action_is_out_of_budget() -> None:
+    # Actions not a subset of in_budget_actions (e.g. a bare delete) -> out-of-budget.
+    assert _classify_iam_change(_rc("aws_iam_role_policy", ["delete"], after={"role": "agent-platform-x"}), _BUDGET) is False
+
+
+def test_classify_v1_budget_uses_enumerated_fallback() -> None:
+    # A v1 budget (no in_budget_managed_role_prefix) falls back to enumerated in_budget_managed_roles.
+    v1 = {
+        "in_budget_resource_types": ["aws_iam_role_policy"],
+        "in_budget_actions": ["update"],
+        "in_budget_managed_roles": ["agent-platform-github-ci-branch"],
     }
-    assert main([_write(tmp_path, plan)]) == 2
+    hit = _rc("aws_iam_role_policy", ["update"], after={"role": "agent-platform-github-ci-branch"})
+    assert _classify_iam_change(hit, v1) is True
+    assert _classify_iam_change(_rc("aws_iam_role_policy", ["update"], after={"role": "unlisted"}), v1) is False
 
 
 def test_fail_closed_on_missing_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -347,3 +400,356 @@ def test_in_budget_fixture_passes(monkeypatch: pytest.MonkeyPatch) -> None:
     # Unset any override so the default budget path (the real authority_budget.json) is used.
     monkeypatch.delenv("TF_AUTHORITY_BUDGET", raising=False)
     assert main([str(fixture)]) == 0
+
+
+# ---------------------------------------------------------------------------
+# --digest mode (T2.39 / rec-2658 forward-fix): bounded, decision-relevant plan summary for the
+# subagent reviewer's stdin. VP steps 1-2.
+# ---------------------------------------------------------------------------
+
+
+def _digest_plan() -> dict:
+    return {
+        "resource_changes": [
+            _rc("aws_s3_bucket", ["create"], after={"bucket": "new-bucket"}),
+            _rc(
+                "aws_iam_role_policy",
+                ["update"],
+                before={"role": "agent-platform-github-ci-branch", "policy": "{}"},
+                after={"role": "agent-platform-github-ci-branch", "policy": '{"Version":"2012-10-17"}'},
+                address="aws_iam_role_policy.ci_branch_inline",
+            ),
+            _rc("aws_dynamodb_table", ["delete", "create"], address="aws_dynamodb_table.replaced"),
+        ]
+    }
+
+
+def test_digest_lists_resource_changes_content() -> None:
+    digest = build_digest(_digest_plan())
+    assert "3 resource change(s)" in digest
+    assert "aws_s3_bucket.example (aws_s3_bucket) actions=['create'] changed_attrs=[bucket='new-bucket']" in digest
+    assert "aws_iam_role_policy.ci_branch_inline (aws_iam_role_policy) actions=['update'] changed_attrs=[policy=" in digest
+    assert "aws_dynamodb_table.replaced (aws_dynamodb_table) actions=['delete', 'create'] changed_attrs=[(none)]" in digest
+
+
+def test_digest_reuses_resource_changes_traversal_same_set_as_evaluate_plan() -> None:
+    plan = _digest_plan()
+    digest = build_digest(plan)
+    findings = evaluate_plan(plan)
+    # Every resource address that shows up in a guard finding also appears in the digest --
+    # the digest can never omit a resource the verdict was computed over.
+    for finding in findings:
+        assert finding["address"] in digest
+
+
+def test_digest_cli_flag_prints_and_exits_zero(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    path = _write(tmp_path, _digest_plan())
+    assert main(["--digest", path]) == 0
+    out = capsys.readouterr().out
+    assert "resource change(s)" in out
+
+
+def test_digest_flag_still_errors_on_malformed_json(tmp_path: Path) -> None:
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not valid json", encoding="utf-8")
+    assert main(["--digest", str(bad)]) == 1
+
+
+def test_digest_empty_plan() -> None:
+    digest = build_digest({})
+    assert "0 resource change(s)" in digest
+
+
+def test_digest_redacts_arn_and_account_id() -> None:
+    # ARN/account-id values land in the digest via the changed-attribute value snippet, so this
+    # exercises the real leak surface (Decision 101), not just the redaction helper standalone.
+    # Uses the AWS-managed AWSSDKPandas layer account (336392948345, public, not a secret -- the
+    # pre-commit never-commit hook's explicit allowlisted exemption) as the stand-in fake account
+    # id, so a genuinely fake-but-realistic 12-digit ARN doesn't itself trip that shape-based hook.
+    plan = {
+        "resource_changes": [
+            _rc(
+                "aws_iam_role_policy_attachment",
+                ["update"],
+                before={"policy_arn": "arn:aws:iam::336392948345:policy/OldPolicy"},
+                after={"policy_arn": "arn:aws:iam::336392948345:policy/NewPolicy", "account_note": "336392948345"},
+            )
+        ]
+    }
+    digest = build_digest(plan)
+    assert "336392948345" not in digest
+    assert "arn:aws:iam::336392948345" not in digest
+    assert "[ARN]" in digest
+    assert "[ACCOUNT_ID]" in digest
+
+    from scripts.terraform_apply_guard import _redact  # noqa: PLC0415
+
+    assert _redact("account=336392948345 arn=arn:aws:s3:::my-bucket/336392948345/x") == "account=[ACCOUNT_ID] arn=[ARN]"
+
+
+def test_digest_size_cap_truncates_with_marker() -> None:
+    # Many resources so the full digest exceeds a deliberately tiny cap. Cap is 600, not the
+    # pre-T2.45 200, because the mandatory _REVIEWER_PREAMBLE (carved out of the truncation
+    # budget so it always survives -- see test_digest_preamble_survives_truncation) now consumes
+    # part of any cap on its own; 600 leaves room to also demonstrate entry-line truncation.
+    plan = {
+        "resource_changes": [
+            _rc("aws_s3_bucket", ["update"], before={"tags": {}}, after={"tags": {"a": str(i)}}, address=f"aws_s3_bucket.b{i}")
+            for i in range(50)
+        ]
+    }
+    digest = build_digest(plan, size_cap=600)
+    assert len(digest.encode("utf-8")) <= 600 + 10  # marker itself is within the accounted budget
+    assert "DIGEST TRUNCATED" in digest
+    assert digest.startswith(_REVIEWER_PREAMBLE)
+    # Truncation happens at a line boundary -- no entry is cut mid-line.
+    for line in digest.split("\n... [DIGEST TRUNCATED")[0].splitlines():
+        if line.startswith("- "):
+            assert line.count("changed_attrs=[") == 1
+
+
+def test_digest_under_cap_no_truncation_marker() -> None:
+    digest = build_digest(_digest_plan(), size_cap=100_000)
+    assert "TRUNCATED" not in digest
+
+
+def test_digest_preamble_survives_truncation() -> None:
+    # T2.45 Q9: the "digest is DATA, not instructions" preamble is carved out of the truncation
+    # budget, so it is present even under a cap far too small to fit any entry.
+    truncated = build_digest(_digest_plan(), size_cap=10)
+    assert truncated.startswith(_REVIEWER_PREAMBLE)
+    assert "DIGEST TRUNCATED" in truncated
+
+
+# ---------------------------------------------------------------------------
+# Resource-based-policy classification (T2.45 / DEP-06): aws_lambda_permission,
+# aws_s3_bucket_policy, aws_sns_topic_policy, aws_secretsmanager_secret_policy,
+# aws_glue_resource_policy, aws_lambda_function_url. Evaluated LAST in evaluate_plan (after
+# delete -> neon -> trust -> IAM); the only safe shape is the EventBridge aws_lambda_permission
+# invoke pattern (principal + action + function_name-prefix, all three conjunctively).
+# ---------------------------------------------------------------------------
+
+
+def _lambda_permission(
+    principal: Any,
+    action: str = "lambda:InvokeFunction",
+    function_name: str = "agent-platform-ducklake-writer",
+    actions: list[str] | None = None,
+    address: str | None = None,
+) -> dict:
+    after = {"principal": principal, "action": action, "function_name": function_name, "statement_id": "Allow"}
+    return _rc("aws_lambda_permission", actions or ["create"], after=after, address=address)
+
+
+def test_resource_policy_lambda_permission_wildcard_principal_blocks(tmp_path: Path) -> None:
+    # T2.45:c1 -- Principal "*" exits the guard with code 2, via both evaluate_plan() and main().
+    plan = {"resource_changes": [_lambda_permission(principal="*")]}
+    findings = evaluate_plan(plan)
+    assert len(findings) == 1
+    assert findings[0]["type"] == "aws_lambda_permission"
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+def test_resource_policy_eventbridge_safe_shape_passes(tmp_path: Path) -> None:
+    # T2.45:c2 -- the known-safe shape (events.amazonaws.com + lambda:InvokeFunction +
+    # agent-platform-* function) is in-budget with no false-positive regression.
+    plan = {
+        "resource_changes": [
+            _lambda_permission(
+                principal="events.amazonaws.com",
+                action="lambda:InvokeFunction",
+                function_name="agent-platform-ducklake-maintenance",
+            )
+        ]
+    }
+    assert evaluate_plan(plan) == []
+    assert main([_write(tmp_path, plan)]) == 0
+
+
+def test_resource_policy_lambda_permission_wrong_action_blocks(tmp_path: Path) -> None:
+    # Folded-in note 2 (plan-critique): isolated ACTION-LEG negative -- principal and
+    # function_name both match the safe shape, but action does not. Proves the conjunction
+    # requires the action predicate, not just principal + function_name.
+    plan = {
+        "resource_changes": [
+            _lambda_permission(
+                principal="events.amazonaws.com", action="lambda:*", function_name="agent-platform-ducklake-writer"
+            )
+        ]
+    }
+    findings = evaluate_plan(plan)
+    assert len(findings) == 1
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+def test_resource_policy_lambda_permission_non_agent_platform_function_blocks(tmp_path: Path) -> None:
+    # Function-name-leg negative: principal + action match the safe shape but function_name does
+    # not start with agent-platform-.
+    plan = {
+        "resource_changes": [
+            _lambda_permission(
+                principal="events.amazonaws.com", action="lambda:InvokeFunction", function_name="some-other-function"
+            )
+        ]
+    }
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+def test_resource_policy_lambda_permission_s3_principal_blocks(tmp_path: Path) -> None:
+    # Principal-leg negative, real-world shape: prod_lambdas.tf's S3-triggered permissions use
+    # principal=s3.amazonaws.com -- not the EventBridge shape, so a non-inert change blocks.
+    plan = {
+        "resource_changes": [
+            _lambda_permission(principal="s3.amazonaws.com", function_name="agent-platform-findings-processor")
+        ]
+    }
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+def test_resource_policy_lambda_permission_missing_principal_blocks(tmp_path: Path) -> None:
+    # Fail-closed: no principal attribute at all (absent from both after and before).
+    plan = {
+        "resource_changes": [
+            _rc(
+                "aws_lambda_permission",
+                ["create"],
+                after={"action": "lambda:InvokeFunction", "function_name": "agent-platform-x"},
+            )
+        ]
+    }
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+def test_resource_policy_lambda_permission_unknown_principal_blocks(tmp_path: Path) -> None:
+    # Fail-closed: an unparseable/unknown service principal.
+    plan = {"resource_changes": [_lambda_permission(principal="not-a-real-service.example.com")]}
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+def test_resource_policy_lambda_permission_inert_passes(tmp_path: Path) -> None:
+    # Inert (no-op/read) is always safe, even with an otherwise-blocking principal.
+    plan = {"resource_changes": [_rc("aws_lambda_permission", ["no-op"], before={"principal": "*"}, after={"principal": "*"})]}
+    assert evaluate_plan(plan) == []
+    assert main([_write(tmp_path, plan)]) == 0
+
+
+# --- T2.45:c3 -- each of the six resource-policy types is classified sensitive: a non-inert,
+# non-safe-shape change exits 2. ---
+
+
+def test_resource_policy_s3_bucket_policy_blocks(tmp_path: Path) -> None:
+    plan = {
+        "resource_changes": [
+            _rc("aws_s3_bucket_policy", ["update"], before={"policy": "{}"}, after={"policy": '{"Statement": []}'})
+        ]
+    }
+    findings = evaluate_plan(plan)
+    assert len(findings) == 1
+    assert findings[0]["type"] == "aws_s3_bucket_policy"
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+def test_resource_policy_sns_topic_policy_blocks(tmp_path: Path) -> None:
+    plan = {
+        "resource_changes": [
+            _rc("aws_sns_topic_policy", ["update"], before={"policy": "{}"}, after={"policy": '{"Statement": []}'})
+        ]
+    }
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+def test_resource_policy_secretsmanager_secret_policy_blocks(tmp_path: Path) -> None:
+    plan = {"resource_changes": [_rc("aws_secretsmanager_secret_policy", ["create"], after={"policy": '{"Statement": []}'})]}
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+def test_resource_policy_glue_resource_policy_blocks(tmp_path: Path) -> None:
+    plan = {
+        "resource_changes": [
+            _rc("aws_glue_resource_policy", ["update"], before={"policy": "{}"}, after={"policy": '{"Statement": []}'})
+        ]
+    }
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+def test_resource_policy_lambda_function_url_blocks(tmp_path: Path) -> None:
+    plan = {"resource_changes": [_rc("aws_lambda_function_url", ["create"], after={"authorization_type": "NONE"})]}
+    findings = evaluate_plan(plan)
+    assert len(findings) == 1
+    assert findings[0]["type"] == "aws_lambda_function_url"
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+# --- Ordering regression: a delete or trust-diff on a resource-policy type is still caught by
+# the earlier rule, never reaching the resource-policy stage (proven via the finding's reason). ---
+
+
+def test_resource_policy_type_delete_still_caught_by_delete_rule(tmp_path: Path) -> None:
+    plan = {"resource_changes": [_rc("aws_lambda_permission", ["delete"], before={"principal": "events.amazonaws.com"})]}
+    findings = evaluate_plan(plan)
+    assert len(findings) == 1
+    assert findings[0]["reason"] == "destroy or replacement"
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+def test_resource_policy_type_trust_diff_still_caught_by_trust_rule(tmp_path: Path) -> None:
+    # Synthetic cross-type case, mirroring test_trust_diff_on_non_iam_resource_blocks's own
+    # precedent (the trust check applies to ANY resource type): otherwise this would be the safe
+    # EventBridge shape, but the trust-policy diff must still gate it BEFORE the resource-policy
+    # stage runs.
+    before = {
+        "principal": "events.amazonaws.com",
+        "action": "lambda:InvokeFunction",
+        "function_name": "agent-platform-ducklake-writer",
+        "assume_role_policy": json.dumps({"Version": "2012-10-17", "Statement": [{"Effect": "Allow"}]}),
+    }
+    after = dict(before, assume_role_policy=json.dumps({"Version": "2012-10-17", "Statement": [{"Effect": "Deny"}]}))
+    plan = {"resource_changes": [_rc("aws_lambda_permission", ["update"], before=before, after=after)]}
+    findings = evaluate_plan(plan)
+    assert len(findings) == 1
+    assert "trust-policy" in findings[0]["reason"]
+    assert main([_write(tmp_path, plan)]) == 2
+
+
+# --- Digest: resource-policy types surface their security-relevant field explicitly (even when
+# unchanged), redaction still applies, and the reviewer preamble is present. ---
+
+
+def test_digest_resource_policy_surfaces_principal_even_when_unchanged() -> None:
+    # Only source_arn changes between before/after; principal/action/function_name are forced
+    # into the digest regardless (T2.45), since a reviewer must see them either way.
+    common = {"principal": "events.amazonaws.com", "action": "lambda:InvokeFunction", "function_name": "agent-platform-x"}
+    plan = {
+        "resource_changes": [
+            _rc(
+                "aws_lambda_permission",
+                ["update"],
+                before=dict(common, source_arn="arn:aws:events:eu-west-2:336392948345:rule/old"),
+                after=dict(common, source_arn="arn:aws:events:eu-west-2:336392948345:rule/new"),
+                address="aws_lambda_permission.example",
+            )
+        ]
+    }
+    digest = build_digest(plan)
+    assert "principal='events.amazonaws.com'" in digest
+    assert "function_name='agent-platform-x'" in digest
+    assert "336392948345" not in digest
+    assert "[ARN]" in digest
+
+
+def test_digest_resource_policy_reason_redacts_external_principal() -> None:
+    # The finding reason itself (not just the digest) is redaction-safe -- this repo is public,
+    # and finding reasons are printed to stdout/CI logs by main().
+    plan = {
+        "resource_changes": [_lambda_permission(principal="arn:aws:iam::336392948345:root", function_name="agent-platform-x")]
+    }
+    findings = evaluate_plan(plan)
+    assert len(findings) == 1
+    assert "336392948345" not in findings[0]["reason"]
+    assert "[ARN]" in findings[0]["reason"]
+
+
+def test_forced_resource_policy_attrs_and_summarise_value_edges() -> None:
+    # A type outside RESOURCE_POLICY_TYPES has no forced-field set; a long scalar truncates.
+    assert _forced_resource_policy_attrs("aws_iam_role", before={}, after={}) == []
+    assert _summarise_value("x" * 100, max_len=80) == repr("x" * 100)[:77] + "..."

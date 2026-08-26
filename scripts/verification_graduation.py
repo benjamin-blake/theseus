@@ -20,6 +20,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+from scripts.checks._scaffolding import _excluded_and_absent, _excluded_heavy_import_names
 from scripts.checks.verification.validate_verifier_hermeticity import _verifier_is_non_hermetic
 from scripts.verification_checks import (
     CANONICAL_SLOTS,
@@ -49,6 +51,139 @@ ROOT = Path(__file__).resolve().parent.parent
 
 class GraduationError(RuntimeError):
     """Raised on any worktree/materialize/revert failure (fail-loud, Decision 55)."""
+
+
+# ---------------------------------------------------------------------------
+# Registry loader: config/agent/verification_registry/entries/<check_id>.yaml (VF-01 re-grain)
+# ---------------------------------------------------------------------------
+#
+# The registry is a directory of one YAML mapping per check_id, keyed by filename -- never a
+# manifest or an index. entries/deprecated/ is a reserved, loader-excluded retirement subtree
+# (git mv a record there to retire it). REGISTRY_DIR_REL/LEGACY_FLAT_BASENAME are shared, public
+# path vocabulary (composed from path SEGMENTS, never joined into one literal string) so a sibling
+# module needing the pre-migration flat path -- e.g. the flat-file-resurrection leg, checking it
+# never reappears -- imports these constants instead of re-deriving the literal segment-adjacent
+# form the standing sweep (VP step 14 / registry-flat-path-no-live-refs) is built to catch.
+
+ENTRIES_DIRNAME = "entries"
+DEPRECATED_DIRNAME = "deprecated"
+LEGACY_FLAT_BASENAME = "registry.yaml"
+REGISTRY_DIR_REL = Path("config") / "agent" / "verification_registry"
+REGISTRY_ENTRIES_REL = REGISTRY_DIR_REL / ENTRIES_DIRNAME
+
+
+def shard_path_for(check_id: str, repo_root: str | Path | None = None) -> Path:
+    """The on-disk path a graduated record for `check_id` lives (or would be written) at."""
+    root = Path(repo_root) if repo_root is not None else ROOT
+    return root / REGISTRY_ENTRIES_REL / f"{check_id}.yaml"
+
+
+def load_entries(repo_root: str | Path | None = None) -> list[dict]:
+    """The live registry: every record under entries/, excluding entries/deprecated/, sorted by
+    filename for deterministic order.
+
+    Discovery is a directory glob, never a manifest or a cached count (no index to drift from the
+    filesystem). ``Path.glob("*.yaml")`` is single-level (non-recursive), so entries/deprecated/
+    is excluded structurally by the glob itself, not by a documented convention or a name filter.
+    Raises GraduationError (fail-loud, Decision 55) on a malformed or non-mapping shard -- a
+    silent skip would make a live record invisible to the differential gate without a trace.
+    """
+    root = Path(repo_root) if repo_root is not None else ROOT
+    entries_dir = root / REGISTRY_ENTRIES_REL
+    if not entries_dir.is_dir():
+        return []
+
+    import yaml as _yaml  # noqa: PLC0415
+
+    rows: list[dict] = []
+    for path in sorted(entries_dir.glob("*.yaml")):
+        try:
+            data = _yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise GraduationError(f"load_entries: malformed shard {path.relative_to(root)}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise GraduationError(f"load_entries: shard {path.relative_to(root)} is not a mapping")
+        rows.append(data)
+    return rows
+
+
+def _ref_resolves(ref: str, root: Path) -> bool:
+    result = _run_git(["rev-parse", "--verify", "-q", ref], root)
+    return result.returncode == 0
+
+
+def _shard_paths_at_ref(ref: str, root: Path) -> list[str]:
+    """Repo-relative shard file paths at `ref`, excluding entries/deprecated/. Empty when the
+    entries/ directory does not exist at `ref` (git ls-tree on an absent path prints nothing,
+    exit 0 -- distinguished from a genuine git failure by the caller checking `ref` resolved)."""
+    rel_dir = REGISTRY_ENTRIES_REL.as_posix()
+    result = _run_git(["ls-tree", "-r", "--name-only", ref, "--", rel_dir], root)
+    if result.returncode != 0:
+        return []
+    deprecated_prefix = f"{rel_dir}/{DEPRECATED_DIRNAME}/"
+    return sorted(
+        line
+        for line in result.stdout.splitlines()
+        if line.strip() and line.endswith(".yaml") and not line.startswith(deprecated_prefix)
+    )
+
+
+def entries_at_ref(ref: str, repo_root: str | Path | None = None) -> list[dict] | None:
+    """The registry baseline at git ref `ref`, spanning both the sharded and legacy-flat layouts.
+
+    Four branches (both required so a lost baseline never silently misreads every live record as
+    newly added -- differential admission costs ~7.1s/record, i.e. ~56 minutes over 476 records):
+      (i)   `ref` resolves, entries/ present at `ref`      -> the shard rows at that ref.
+      (ii)  `ref` resolves, entries/ absent, legacy flat
+            registry.yaml present at `ref`                 -> the legacy flat entries (pre-migration ref).
+      (iii) `ref` resolves, BOTH layouts absent             -> GraduationError (fail loud, Decision 55) --
+            never an empty baseline.
+      (iv)  `ref` itself does not resolve                   -> None (advisory TOLERATE; the caller prints
+            a skip reason and skips the differential leg, matching _marker_guard's
+            "SKIP: origin/main unreachable" posture).
+
+    A caller distinguishes (iv) from a genuinely empty baseline via the None/list[dict] return
+    type -- None means "could not determine", never "determined empty."
+    """
+    root = Path(repo_root) if repo_root is not None else ROOT
+    if not _ref_resolves(ref, root):
+        return None  # (iv)
+
+    import yaml as _yaml  # noqa: PLC0415
+
+    shard_paths = _shard_paths_at_ref(ref, root)
+    if shard_paths:  # (i)
+        rows: list[dict] = []
+        for rel in shard_paths:
+            shown = _run_git(["show", f"{ref}:{rel}"], root)
+            if shown.returncode != 0:
+                continue
+            try:
+                data = _yaml.safe_load(shown.stdout)
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                rows.append(data)
+        return rows
+
+    flat_rel = (REGISTRY_DIR_REL / LEGACY_FLAT_BASENAME).as_posix()
+    flat_shown = _run_git(["show", f"{ref}:{flat_rel}"], root)
+    if flat_shown.returncode == 0:  # (ii) legacy pre-migration layout
+        try:
+            data = _yaml.safe_load(flat_shown.stdout)
+        except Exception:
+            return []
+        if not isinstance(data, dict):
+            return []
+        entries = data.get("entries") or []
+        return entries if isinstance(entries, list) else []
+
+    # (iii) ref resolves but neither layout exists there -- fail loud, never an empty baseline.
+    raise GraduationError(
+        f"entries_at_ref: ref {ref!r} resolves but neither {REGISTRY_ENTRIES_REL.as_posix()}/ nor "
+        f"{flat_rel} exists there -- refusing to return an empty baseline (would misread every live "
+        "record as newly added)"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +320,51 @@ def make_worktree_revert_runner(
 class DifferentialOutcome:
     admitted: bool
     reason: str
+    skipped: bool = False
+
+
+# rec-2655: a module-level guard has zero leading whitespace (indent 0) -- that's what
+# distinguishes it from a function/method-scope importorskip, which this predicate must not match.
+_MODULE_LEVEL_IMPORTORSKIP_RE = re.compile(r"^\w[\w.]*\s*=\s*pytest\.importorskip\(\s*['\"]([\w.]+)['\"]")
+
+
+def _module_level_importorskip_dep(file_path: Path) -> str | None:
+    """Return the dependency name of a module-level `pytest.importorskip(...)` guard in
+    `file_path`, or None if the file has no such guard (or cannot be read)."""
+    try:
+        text = file_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        match = _MODULE_LEVEL_IMPORTORSKIP_RE.match(line)
+        if match:
+            return match.group(1)
+    return None
+
+
+def _differential_skip_reason(row: dict, live: CheckResult, repo_root: Path) -> str | None:
+    """rec-2655: detect the narrow co-occurrence that makes a non-PASS live result a graceful
+    skip rather than a genuine failure -- a test_selector row whose node_id lives in a file with
+    a module-level `pytest.importorskip` guard on a deliberately-excluded, genuinely-absent heavy
+    dependency, AND a "found no collectors" collection error in the live output. Returns the skip
+    reason, or None (fail-closed: every other non-PASS shape stays a hard failure)."""
+    if row.get("primitive_slot") != "test_selector":
+        return None
+    node_id = (row.get("check_spec") or {}).get("node_id", "")
+    file_part = node_id.split("::", 1)[0]
+    if not file_part:
+        return None
+    combined_output = f"{live.message or ''} {live.actual or ''}".lower()
+    if "found no collectors" not in combined_output:
+        return None
+    dep = _module_level_importorskip_dep(repo_root / file_part)
+    if dep is None:
+        return None
+    excluded = _excluded_heavy_import_names()
+    found = _excluded_and_absent(dep, excluded)
+    if found is None:
+        return None
+    return f"skipped -- node in importorskip-guarded fast-tier-excluded file ({found})"
 
 
 def run_differential(row: dict, repo_root: Path | None = None) -> DifferentialOutcome:
@@ -193,6 +373,9 @@ def run_differential(row: dict, repo_root: Path | None = None) -> DifferentialOu
     head_check = materialize_check_in_tree(row, root)
     live = head_check.run()
     if live.status != CheckStatus.PASS:
+        skip_reason = _differential_skip_reason(row, live, root)
+        if skip_reason is not None:
+            return DifferentialOutcome(admitted=False, skipped=True, reason=skip_reason)
         return DifferentialOutcome(
             admitted=False, reason=f"not admitted -- check does not pass on HEAD: {live.message or live.actual}"
         )

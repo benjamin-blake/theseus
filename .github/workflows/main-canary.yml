@@ -18,6 +18,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v7
+      with:
+        fetch-depth: 2
 
     - name: Configure AWS credentials (OIDC -- branch role)
       uses: aws-actions/configure-aws-credentials@v6
@@ -34,17 +36,40 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt', 'requirements.lock') }}
         restore-keys: |
           ${{ runner.os }}-pip-
 
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install -r requirements-dev.txt
+        pip install -c requirements.lock -r requirements.txt
+        pip install -c requirements.lock -r requirements-dev.txt
 
     - name: Validate full tier against main
       env:
         AWS_DEFAULT_REGION: eu-west-2
       run: python -m scripts.validate
+
+    - name: Upload pytest junit report (v2 fingerprint substrate)
+      # ci-rca-identity-lifecycle: mirrors ci.yml's main-validate job -- Main Canary is a
+      # ci-rca.yml workflow_run trigger too, so its pytest failures need the same v2 signature.
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: pytest-junit
+        path: logs/debug/pytest-junit.xml
+        if-no-files-found: ignore
+        retention-days: 14
+
+    - name: Upload validation-result evidence (CI-RCA attribution substrate)
+      # ci-rca-evidence-fidelity: mirrors ci.yml's main-validate job -- the canary run is the
+      # workflow that produced all three misdiagnosed rec-2957/2958/2973 bundles, so it needs the
+      # same attribution substrate as the primary CI path.
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: validation-result
+        path: logs/debug/validation-result.json
+        if-no-files-found: ignore
+        retention-days: 14

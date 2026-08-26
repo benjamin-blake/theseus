@@ -1,0 +1,54 @@
+check_id: planning-skill-surfaces-fallback-reevaluation
+primitive_slot: command_exit_zero
+guard_target: .claude/skills/planning/SKILL.md
+guard_symbol: null
+plan_slug: esb-fallback-spec-carrier
+graduated_at: '2026-08-03'
+graduated_by: implement-agent
+check_spec:
+  command:
+  - bin/venv-python
+  - -c
+  - '
+
+    import pathlib, re
+
+    p = pathlib.Path(''.claude/skills/planning/SKILL.md'')
+
+    raw = pathlib.Path(''config/prose_budgets.yaml'').read_text(encoding=''utf-8'')
+
+    m = re.search(r''^\s*\.claude/skills/planning/SKILL\.md:\s*(\d+)'', raw, re.M)
+
+    assert m, ''planning SKILL.md has no prose budget entry to check against''
+
+    budget = int(m.group(1)); size = len(p.read_bytes())
+
+    assert size <= budget, f''planning SKILL.md is {size} bytes, over its {budget}-byte prose budget -- compact, do not raise''
+
+    text = p.read_text(encoding=''utf-8'')
+
+    heads = [i for i, l in enumerate(text.splitlines()) if l.startswith(''## '')]
+
+    lines = text.splitlines()
+
+    starts = [i for i in heads if ''Template'' in lines[i] and ''PLAN-'' in lines[i]]
+
+    assert len(starts) == 1, f''expected exactly 1 PLAN template section heading, found {len(starts)}''
+
+    s = starts[0]
+
+    nxt = [i for i in heads if i > s]
+
+    body = ''\n''.join(lines[s:(nxt[0] if nxt else len(lines))])
+
+    assert ''verification_plan:'' in body and ''plan_path:'' in body, ''the template section no longer contains the template''
+
+    required = (''schema_version'',''slug'',''intent'',''plan_type'',''verification_tier'',''plan_path'',''phase'',''scope'',''bundled_recommendations'',''acceptance_criteria'',''verification_plan'',''constraints'',''context'',''execution_steps'',''fallback_reevaluation'')
+
+    absent = [k for k in required if k + '':'' not in body]
+
+    assert not absent, f''the PLAN template section no longer surfaces field(s): {absent}''
+
+    print(''OK planning SKILL.md'', size, ''bytes <= budget'', budget, '';'', len(required), ''fields surfaced INSIDE the template section'')
+
+    '

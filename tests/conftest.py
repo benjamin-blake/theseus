@@ -51,19 +51,91 @@ def _clear_executor_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clear_aws_credential_env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Strip ambient AWS credential-signal env vars so profile-resolution tests stay hermetic.
+def _clear_push_context_env_vars(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Strip GITHUB_EVENT_NAME/GITHUB_EVENT_BEFORE for every test.
 
-    scripts.aws_profile.resolve_aws_profile returns None (boto3 default chain) when
-    AWS_ACCESS_KEY_ID or AWS_LAMBDA_FUNCTION_NAME is present. The OIDC main-validate runner
-    exports AWS_ACCESS_KEY_ID into the job env before pytest, which would flip named-profile
-    assertions to None and fail them only on CI. Clearing these keeps unit tests deterministic
-    across local and CI; integration tests opt out.
+    GITHUB_EVENT_NAME is a GitHub Actions default env var present for the WHOLE job
+    process (e.g. "push" throughout main-validate's push-triggered run), not just for
+    actual git operations. Left unmasked, scripts.checks._common.push_context_base()
+    would activate unconditionally for every test in a push-triggered CI run, breaking
+    mocked-subprocess tests that assume today's non-push get_changed_files() /
+    get_status_aware_diff() / get_changed_source_files() behaviour. Individual
+    push-context tests opt back in via their own monkeypatch.setenv.
     """
-    if "integration" in [m.name for m in request.node.own_markers]:
+    monkeypatch.delenv("GITHUB_EVENT_NAME", raising=False)
+    monkeypatch.delenv("GITHUB_EVENT_BEFORE", raising=False)
+
+
+_NONEXISTENT_AWS_DIR_SEGMENT = "nonexistent-aws-config-dir"
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_aws_profile(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """L1 (rec-2484): force boto3.Session(profile_name=...) to raise ProfileNotFound everywhere.
+
+    Consolidates the former _clear_aws_credential_env fixture. Deletes the ambient
+    credential-signal env vars scripts.aws_profile.resolve_aws_profile and boto3 consult
+    (AWS_PROFILE, AWS_DEFAULT_PROFILE, AWS_ACCESS_KEY_ID, AWS_LAMBDA_FUNCTION_NAME) -- a
+    delete-credential-signals design, never a fake AWS_ACCESS_KEY_ID, which would flip
+    resolve_aws_profile to None and silently break named-profile resolution
+    (tests/test_aws_profile.py) -- and redirects AWS_CONFIG_FILE / AWS_SHARED_CREDENTIALS_FILE
+    to a nonexistent path so no real profile (named or default) can resolve regardless of what
+    is on disk in ~/.aws, identically on dev and CI. Also disables the EC2 instance-metadata
+    credential provider so the default chain cannot fall through to IMDS. The OIDC
+    main-validate runner exports AWS_ACCESS_KEY_ID into the job env before pytest, which
+    would otherwise flip named-profile assertions to None only on CI; deleting it keeps unit
+    tests deterministic across local and CI. @pytest.mark.integration tests opt out -- they
+    need real AWS access. Uses get_closest_marker (not own_markers) so a class- or
+    module-level @pytest.mark.integration decorator is honoured, not just a method-level one.
+    """
+    if request.node.get_closest_marker("integration") is not None:
         return
-    for var in ("AWS_ACCESS_KEY_ID", "AWS_LAMBDA_FUNCTION_NAME"):
+    for var in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_ACCESS_KEY_ID", "AWS_LAMBDA_FUNCTION_NAME"):
         monkeypatch.delenv(var, raising=False)
+    nonexistent_dir = tmp_path / _NONEXISTENT_AWS_DIR_SEGMENT
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(nonexistent_dir / "config"))
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(nonexistent_dir / "credentials"))
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+
+
+@pytest.fixture(autouse=True)
+def _block_unmocked_aws_client(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """L2 (rec-2484): raise loudly on any un-mocked AWS client construction.
+
+    botocore.session.Session.create_client is the single chokepoint underneath
+    boto3.client(), boto3.resource(), and Session().client() -- patching it here catches
+    every construction path in one place, mirroring the _block_llm_cli_subprocess idiom
+    above. L1 already makes profile resolution fail (ProfileNotFound) for the common case;
+    this layer is defense-in-depth against the residual paths where a client could still be
+    built (e.g. the boto3 default credential chain, which does not require a named profile
+    at all). Tests that genuinely construct a client -- mocked (moto, Stubber) or live -- opt
+    in with @pytest.mark.aws. This is a separate opt-out from L1's @pytest.mark.integration:
+    a live-AWS integration test needs @pytest.mark.aws too to fully bypass both layers. Uses
+    get_closest_marker (not own_markers) so a class- or module-level @pytest.mark.aws
+    decorator is honoured, not just a method-level one. boto3/botocore are
+    deliberately excluded from requirements-fast.txt (rec-2485, ~3GB of heavy wheels) -- this
+    fixture is autouse and runs for every test in every tier, so the import is guarded the
+    same way _get_executor_env_vars/_isolate_plans_jsonl/_clear_fear_greed_cache above guard
+    their own optional imports: a genuinely-absent botocore means no test in this process can
+    construct a real client anyway, so the guard has nothing to do.
+    """
+    if request.node.get_closest_marker("aws") is not None:
+        return
+
+    try:
+        import botocore.session as _botocore_session  # noqa: PLC0415
+    except ImportError:
+        return
+
+    def _guarded_create_client(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        raise RuntimeError(
+            "Unit test constructed a real AWS client (boto3.client/resource/Session().client) "
+            "without mocking it. Mock the client (moto, unittest.mock.patch, botocore Stubber) "
+            "and mark the test @pytest.mark.aws, or mark it @pytest.mark.integration (+ "
+            "@pytest.mark.aws) if it legitimately needs real AWS access (rec-2484)."
+        )
+
+    monkeypatch.setattr(_botocore_session.Session, "create_client", _guarded_create_client)
 
 
 @pytest.fixture(autouse=True)
@@ -78,6 +150,24 @@ def _isolate_plans_jsonl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Non
         import scripts.executor.plan as _plan_mod  # noqa: PLC0415
 
         monkeypatch.setattr(_plan_mod, "PLANS_JSONL", tmp_path / "plans.jsonl")
+    except ImportError:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _isolate_selection_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirect DEBUG_MANIFEST_PATH to a per-test temp file.
+
+    Prevents tests/validate/ orchestrator tests that drive _validate.main() --pre
+    (with the real emit_manifest) from writing to the tracked
+    logs/debug/selection-manifest.json.  Tests that explicitly patch
+    DEBUG_MANIFEST_PATH (or call emit_manifest with an explicit repo_root)
+    themselves will simply override this fixture's value.
+    """
+    try:
+        import scripts.checks.deps.affected_tests as _at  # noqa: PLC0415
+
+        monkeypatch.setattr(_at, "DEBUG_MANIFEST_PATH", tmp_path / "selection-manifest.json")
     except ImportError:
         pass
 
@@ -125,9 +215,11 @@ def _allow_network_for_integration(request: pytest.FixtureRequest) -> None:
     the block when the test node carries @pytest.mark.integration.
     Integration skip-fixtures in test_iceberg_reader.py and test_ducklake_spike.py
     must request this fixture so the probe's own network call runs only after
-    sockets are restored.
+    sockets are restored. Uses get_closest_marker (not own_markers) so a class-
+    or module-level @pytest.mark.integration decorator is honoured, not just a
+    method-level one.
     """
-    if "integration" not in [m.name for m in request.node.own_markers]:
+    if request.node.get_closest_marker("integration") is None:
         return
     from pytest_socket import enable_socket  # noqa: PLC0415
 
@@ -136,8 +228,12 @@ def _allow_network_for_integration(request: pytest.FixtureRequest) -> None:
 
 @pytest.fixture(autouse=True)
 def _block_llm_cli_subprocess(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Guard against CI/local drift where LLM CLIs exist on dev but not on Ubuntu CI runners."""
-    if "integration" in [m.name for m in request.node.own_markers]:
+    """Guard against CI/local drift where LLM CLIs exist on dev but not on Ubuntu CI runners.
+
+    Uses get_closest_marker (not own_markers) so a class- or module-level
+    @pytest.mark.integration decorator is honoured, not just a method-level one.
+    """
+    if request.node.get_closest_marker("integration") is not None:
         return
 
     import subprocess as _sp  # noqa: PLC0415
@@ -156,6 +252,57 @@ def _block_llm_cli_subprocess(request: pytest.FixtureRequest, monkeypatch: pytes
         return _orig_run(args, *a, **kw)
 
     monkeypatch.setattr(_sp, "run", _guarded_run)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _outbox_hermeticity_session_guard() -> None:
+    """Session-start check: fail loudly if a RETIRED outbox dir already holds a file.
+
+    Decision 149 -- a pre-existing file in a retired-table dir (ops_recommendations,
+    ops_decisions, ops_priority_queue, ops_execution_plans, or any *_pending sibling) must
+    never be silently baselined into a per-machine tolerance; it is the resurrection shape
+    the warehouse-as-source-of-truth invariant (AGENTS.md) warns about. Legacy staging dirs
+    (telemetry, ops_session_log) may legitimately hold pending drain data and are not
+    checked here -- only retired dirs are ever illegitimate to find non-empty.
+    """
+    from tests.fixtures.outbox_guard import OUTBOX_BASE, retired_files, snapshot  # noqa: PLC0415
+
+    existing = retired_files(snapshot())
+    if existing:
+        remediation = "\n".join(f"  rm -f {p}" for p in sorted(existing))
+        pytest.exit(
+            f"Pre-existing file(s) found under a retired dir of {OUTBOX_BASE} -- these "
+            f"must never be committed or baselined (Decision 149). Remove them first:\n{remediation}",
+            returncode=1,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _outbox_hermeticity_per_test_guard(request: pytest.FixtureRequest):  # type: ignore[misc]
+    """Fail any individual test that writes into the real logs/.ops-outbox.
+
+    Snapshots before the test body runs and diffs in teardown (after the yield), so a leak
+    fails the test that produced it rather than surviving silently (gitignored, so neither
+    git nor CI would otherwise notice). Both tiers run pytest with -n auto (xdist), so all
+    workers share one working directory -- a file observed here may have been written by a
+    sibling test on another worker. The failure names the REPORTING test plus the path; it
+    does not claim the reporting test is necessarily the writer.
+    """
+    from tests.fixtures.outbox_guard import diff_new_files, snapshot  # noqa: PLC0415
+
+    before = snapshot()
+    yield
+    new_files = diff_new_files(before, snapshot())
+    for path in new_files:
+        path.unlink(missing_ok=True)
+    if new_files:
+        offending = ", ".join(str(p) for p in sorted(new_files))
+        pytest.fail(
+            f"logs/.ops-outbox gained new file(s) during {request.node.nodeid}: {offending}. "
+            "A test must never write into the real outbox -- point it at tmp_path instead. "
+            "(Under -n auto, the reporting test may not be the writer.)",
+            pytrace=False,
+        )
 
 
 @pytest.fixture

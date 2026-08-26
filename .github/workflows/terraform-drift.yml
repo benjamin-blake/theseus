@@ -21,10 +21,17 @@ name: terraform-drift
 # Design invariants:
 #   - NO terraform apply step (alarm-only; Decision 55/92).
 #   - Drift NEVER writes the record green -- green is written solely by a converged apply.
-#   - github_ci_drift is least-privilege: tfstate READ + scoped .tflock write + convergence
-#     read+write + ducklake-WRITER invoke ONLY. No state-object write, no tfplan, no IAM.
-#   - The new github_ci_drift role is guard-BLOCKED (IAM CreateRole, exit 2) and must be
-#     created via the human-gated apply BEFORE the first real scheduled run.
+#   - T2.49 / DEP-12 (Decision 144): this job now assumes the merged planner role
+#     (agent-platform-github-ci-planner, plan+drift c2) via its main-sub trust statement,
+#     using the RESERVED role-session-name (local.convergence_writer_session_name in
+#     terraform/personal/oidc.tf) -- the one session identity the planner's
+#     ConvergenceRecordWrite aws:userid condition accepts. This single assumption serves BOTH
+#     the terraform plan (refresh-read/tfstate-read/.tflock) and the convergence-record write.
+#     Least-privilege, unchanged from the pre-merge shape: tfstate READ + scoped .tflock write +
+#     convergence read+write + ducklake-WRITER invoke ONLY. No state-object write, no tfplan
+#     write, no IAM.
+#   - The planner role is guard-BLOCKED (IAM CreateRole, exit 2) and must be created via the
+#     human-gated apply BEFORE the first real scheduled run.
 #   - continue-on-error on the assume-role step covers the bootstrap window (role does not
 #     yet exist until the gated apply lands; pre-apply ticks no-op instead of erroring).
 #   - Serialisation with apply: via the native S3 lock only (NOT a shared GHA concurrency group
@@ -56,6 +63,11 @@ jobs:
     permissions:
       id-token: write  # REQUIRED for OIDC token minting
       contents: read
+      # CARRY-3 (DEP-11 plan-critique): read-only, needed for the PENDING_GATED_DRIFT branch's
+      # `gh api commits/.../pulls` lookup that resolves the pending PR from a pending_gated
+      # marker's commit_sha. This job never comments/writes to a PR (alarm-only, unlike
+      # reconcile.yml's wake-comment jobs which hold pull-requests: write) -- read suffices.
+      pull-requests: read
 
     env:
       AWS_DEFAULT_REGION: eu-west-2
@@ -64,17 +76,43 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Configure AWS credentials (OIDC -- drift role, main only)
-        # Bootstrap-window guard: before the gated apply creates agent-platform-github-ci-drift,
-        # the assume-role fails. continue-on-error keeps the job from failing; subsequent steps
-        # gate on steps.oidc_drift.outcome == 'success' and are skipped when creds are absent,
-        # so the job ends green-with-skipped rather than hard-failing during the bootstrap window.
+      - name: Configure AWS credentials (OIDC -- planner role, main-sub, RESERVED session)
+        # T2.49 / DEP-12 (Decision 144): repointed from the retired github_ci_drift role to the
+        # merged agent-platform-github-ci-planner (plan+drift, c2). role-session-name is set to
+        # the RESERVED value -- it MUST equal local.convergence_writer_session_name in
+        # terraform/personal/oidc.tf verbatim (coupled site 4/4; see that local's comment for the
+        # other 3 sites). This is the ONE session identity the planner's main-sub trust statement
+        # accepts AND the ONE identity its ConvergenceRecordWrite aws:userid condition allows --
+        # a mismatch here fails assume-role loudly rather than silently losing convergence-write.
+        # continue-on-error keeps the JOB from dying AT THIS STEP so the classifier below can emit a
+        # precise diagnosis; every substantive step still gates on
+        # steps.oidc_drift.outcome == 'success'. Decision 172 PR-2 removed the stale bootstrap-window
+        # justification that used to live here (the planner role exists): a green-with-everything-
+        # skipped run is no longer an acceptable outcome, because an alarm sensor that cannot fail
+        # is not a sensor -- live-confirmed on the 12:58/13:42/14:37Z runs of the OIDC outage, which
+        # all reported success while detecting nothing.
         id: oidc_drift
         continue-on-error: true
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-drift
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-planner
+          role-session-name: tf-drift-convergence-writer
           aws-region: eu-west-2
+
+      - name: Fail loudly on a failed assume (an ERROR, not "no drift detected")
+        # An assume failure is an ERROR, categorically distinct from "no drift": the plan never ran,
+        # so this cycle detected NOTHING. The workflow's own stated invariant already mandates loud
+        # on errors (exit 1 that is not a lock conflict). The convergence record stays untouched --
+        # drift never writes it green, and this is not drift. RESIDUAL, stated not implied:
+        # config/ci_rca_taxonomy.yaml deliberately excludes terraform-drift from ci-rca (Decision 92
+        # pt 6 routes it to the ops-portal alarm path, which needs the very credentials a failed
+        # assume just proved absent), so this produces a red hourly run and ZERO rec. That is
+        # strictly better than green-and-blind, but "loud" here means visible in Actions, not
+        # automatically triaged.
+        if: steps.oidc_drift.outcome != 'success'
+        run: |
+          echo "::error::OIDC_ASSUME_FAILED could not assume agent-platform-github-ci-planner (main-sub, reserved session ${{ env.AWS_DEFAULT_REGION }}). Every drift step below was SKIPPED, so this cycle detected nothing -- this is an ERROR, not absence of drift. Investigate the role's trust policy and existence."
+          exit 1
 
       - name: Read pinned Terraform version
         id: tfver
@@ -142,10 +180,11 @@ jobs:
         working-directory: ${{ env.WORKDIR }}
         run: |
           # Bounded retry for transient registry.terraform.io 5xx and provider-download network
-          # resets (parity with _TRANSIENT_INIT_SIGNATURES in scripts/checks/_scaffolding.py and
-          # the three grep -qE sites in terraform-apply-sandbox.yml).
-          # Signatures: "502", "Bad Gateway", "could not query provider registry", "failed after ",
-          # "connection reset by peer", "i/o timeout", "TLS handshake timeout", "unexpected EOF"
+          # resets (parity with _TRANSIENT_INIT_SIGNATURES in scripts/checks/_terraform.py and
+          # the grep -qE site in .github/actions/terraform-init-retry/action.yml).
+          # Signatures: "502", "Bad Gateway", "Gateway Timeout", "could not query provider registry",
+          # "failed after ", "connection reset by peer", "i/o timeout", "TLS handshake timeout",
+          # "unexpected EOF"
           set +e
           attempt=1
           while [ "$attempt" -le 3 ]; do
@@ -155,7 +194,7 @@ jobs:
               echo "$out"
               break
             fi
-            if echo "$out" | grep -qE '502|Bad Gateway|could not query provider registry|failed after |connection reset by peer|i/o timeout|TLS handshake timeout|unexpected EOF'; then
+            if echo "$out" | grep -qE '502|Bad Gateway|Gateway Timeout|could not query provider registry|failed after |connection reset by peer|i/o timeout|TLS handshake timeout|unexpected EOF'; then
               if [ "$attempt" -lt 3 ]; then
                 delay=$(( 2 ** attempt ))
                 echo "terraform init transient error (attempt ${attempt}/3); retrying in ${delay}s..." >&2
@@ -253,6 +292,7 @@ jobs:
           SERVER_URL: ${{ github.server_url }}
           REPO: ${{ github.repository }}
           PRIOR_STATUS: ${{ steps.prior_status.outputs.prior_status }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
@@ -262,8 +302,69 @@ jobs:
             exit 0
           fi
 
-          # Read the existing record to preserve fields; merge-write red + drift markers.
+          # DEP-11 / CARRY-2 (T2.47): a pending_gated marker means the delta this tick observed is
+          # EXPLAINED by a routed-pending gated-apply awaiting human review, not out-of-band drift.
+          # PENDING_GATED_DRIFT branch -- checked BEFORE the out-of-band red-flip below, and it
+          # NEVER red-flips the record (CARRY-2: status stays green + marker; only the tf_drift
+          # rec's NARRATIVE differs, and only once -- drift_flagged_at makes re-filing idempotent).
           EXISTING=$(aws s3 cp "s3://${CONVERGENCE_BUCKET}/${CONVERGENCE_KEY}" - 2>/dev/null || echo "{}")
+          PENDING_GATED_PRESENT=$(printf '%s' "$EXISTING" | python3 -c "import json,sys; d=json.load(sys.stdin); print('true' if d.get('pending_gated') else 'false')" 2>/dev/null || echo "false")
+
+          if [ "$PENDING_GATED_PRESENT" = "true" ]; then
+            ALREADY_FLAGGED=$(printf '%s' "$EXISTING" | python3 -c "import json,sys; d=json.load(sys.stdin); print('true' if d.get('pending_gated',{}).get('drift_flagged_at') else 'false')" 2>/dev/null || echo "false")
+            if [ "$ALREADY_FLAGGED" = "true" ]; then
+              echo "pending_gated already drift_flagged; skipping re-filing (idempotent, status stays green, PENDING_GATED_DRIFT)."
+              exit 0
+            fi
+
+            PENDING_SHA=$(printf '%s' "$EXISTING" | python3 -c "import json,sys; print(json.load(sys.stdin).get('pending_gated',{}).get('commit_sha',''))")
+            PENDING_RUN_URL=$(printf '%s' "$EXISTING" | python3 -c "import json,sys; print(json.load(sys.stdin).get('pending_gated',{}).get('run_url',''))")
+            PENDING_PR=$(gh api "repos/${REPO}/commits/${PENDING_SHA}/pulls" --jq '.[0].number' 2>/dev/null || echo "")
+            if [ -n "$PENDING_PR" ] && [ "$PENDING_PR" != "null" ]; then
+              PENDING_PR_TEXT=", PR #${PENDING_PR}"
+            else
+              PENDING_PR_TEXT=""
+            fi
+
+            TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            RECORD=$(EXISTING="$EXISTING" TS="$TS" python3 -c "
+          import json, os
+          existing = json.loads(os.environ.get('EXISTING', '{}') or '{}')
+          pg = existing.get('pending_gated', {})
+          pg['drift_flagged_at'] = os.environ['TS']
+          existing['pending_gated'] = pg
+          print(json.dumps(existing))
+          ")
+            printf '%s' "$RECORD" | aws s3 cp - "s3://${CONVERGENCE_BUCKET}/${CONVERGENCE_KEY}" \
+              --content-type application/json
+            echo "Stamped pending_gated.drift_flagged_at (status untouched, PENDING_GATED_DRIFT): ${RECORD}"
+
+            READBACK=$(aws s3 cp "s3://${CONVERGENCE_BUCKET}/${CONVERGENCE_KEY}" - 2>/dev/null || echo "")
+            READBACK_STATUS=$(printf '%s' "$READBACK" | python3 -c \
+              "import json,sys; print(json.load(sys.stdin).get('status','green'))" 2>/dev/null || echo "green")
+            if [ "$READBACK_STATUS" = "red" ]; then
+              echo "::error::CONVERGENCE_WRITE_VERIFY PENDING_GATED_DRIFT read-back status is 'red'; must never red-flip on this branch (CARRY-2)."
+              exit 1
+            fi
+            echo "Convergence record read-back verified: status=${READBACK_STATUS} (non-red, PENDING_GATED_DRIFT)."
+
+            # File the drift rec via the ops portal (Single Portal Invariant -- no outbox, fail loud).
+            .venv/bin/python -m scripts.ops_data_portal \
+              --file-rec \
+              --source tf_drift \
+              --priority Medium \
+              --effort S \
+              --risk low \
+              --verification-tier V2 \
+              --title "Terraform drift check found a pending-gated delta (not out-of-band drift)" \
+              --file ".github/workflows/terraform-drift.yml" \
+              --context "Scheduled terraform plan (T2.24) detected a state-vs-code delta fully explained by a routed-pending gated-apply awaiting human review (${PENDING_RUN_URL}${PENDING_PR_TEXT}) -- NOT out-of-band infra drift. The convergence record stays green with its pending_gated marker (Decision 55 anti-masking: no red-flip on an explained delta). Approve or reject the gated apply in GitHub Actions to resolve." \
+              --acceptance "aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json - | grep -qv pending_gated"
+            echo "PENDING_GATED_DRIFT tf_drift rec filed via ops portal."
+            exit 0
+          fi
+
+          # Absent marker: existing out-of-band red-flip, unchanged. Merge-write red + drift markers.
           TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           RECORD=$(EXISTING="$EXISTING" TS="$TS" RUN_URL="$RUN_URL" python3 -c "
           import json, sys, os

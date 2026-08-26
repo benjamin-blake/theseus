@@ -14,9 +14,10 @@ includes:
   - src/
   - scripts/__init__.py
   - scripts/aws_profile.py
-  - scripts/github_models_client.py
-  - scripts/llm_client.py
-  - scripts/llm_utils.py
+  - scripts/llm/__init__.py
+  - scripts/llm/github_models_client.py
+  - scripts/llm/client.py
+  - scripts/llm/utils.py
   - scripts/ops_writer.py
   - scripts/run_scheduled_agent.py
   - scripts/s3_log_store.py
@@ -27,6 +28,10 @@ excludes:
   # ducklake_* zips. The wildcard `includes: - src/` above would otherwise drag it into
   # data-pipeline.zip (and mark this artifact affected by DuckLake changes). Keep it out.
   - src/common/ducklake_runtime.py
+  - src/common/ducklake_writes.py
+  - src/common/ducklake_tables.py
+  - src/common/ducklake_reads.py
+  - src/common/ducklake_metrics.py
   - src/common/ducklake_scd2_schema.py
   - src/common/ducklake_connect_probe.py
   - src/common/ducklake_maintenance.py
@@ -44,10 +49,22 @@ assets:
   - config/config.yaml.example
 config:
   - config/lambda/data-pipeline/
-pip_packages: []
+pip_packages:
+  - pyyaml>=6.0
 runtime_config: []
 status: active
 notes: >-
   findings-processor slated for Phase-5 retirement (Decision 61).
   runtime_config SSM/AppConfig fetch mechanism declared for forward-compatibility; actual fetch deferred to follow-on plan.
   fetch, feature, write, discovery function names are future-state (not yet deployed as individual Lambda functions).
+  T2.43 (rec-2164): both functions are now PROVISIONED in terraform/personal/prod_lambdas.tf (the
+  decoupled_build_pipeline class, decoupled from day one) and governed-deployed via
+  .github/workflows/deploy-prod-lambdas.yml; the schedule stays disabled (Decision 61/37/116).
+  pip_packages carries only pyyaml (the sole third-party import scheduled_agent_handler /
+  findings_processor_handler / their direct script deps actually need -- verified against
+  source at T2.43 apply time) bundled directly into this zip. The full PROD_DEPS-based
+  data-pipeline-deps-layer.zip (numpy/pandas/pyarrow/scikit-learn/etc., built for the
+  future-state fetch/feature/write/discovery handlers) is NOT attached to these two functions:
+  its unzipped content exceeds the Lambda 262 MB layer ceiling (discovered at the first real
+  T2.43 apply -- PublishLayerVersion InvalidParameterValueException), and none of it is needed
+  here regardless.
