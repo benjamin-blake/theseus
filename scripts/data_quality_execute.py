@@ -109,7 +109,7 @@ def apply_backend_routing(all_checks: list[Check], database: str, *, table_filte
     """Rewrite the ops-table checks for the DuckLake reader (sole backend, Decision 84 I-1).
 
     Translates each ops-table check's SQL to the DuckDB dialect over the `current` TABLE and appends
-    the CD.33 clause-8 checks. Shared by main() AND DataQualityVerifier so both routes go through the
+    the CD.33 clause-8 checks. Shared by main() and the DQ scaffold route so both go through the
     closed reader. Mutates and returns *all_checks*.
     """
     for c in all_checks:

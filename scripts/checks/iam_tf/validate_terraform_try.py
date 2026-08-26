@@ -65,7 +65,9 @@ def validate_terraform_try(failed: list[str]) -> None:
     tf_dir = _common.ROOT / "terraform"
     errors: list[str] = []
 
-    for tf_file in sorted(tf_dir.rglob("*.tf")):
+    tf_files = sorted(tf_dir.rglob("*.tf"))
+    registry.examined(len(tf_files), unit="tf_files")
+    for tf_file in tf_files:
         content = _blank_comment_lines(tf_file.read_text(encoding="utf-8"))
         for m in re.finditer(r"\bfilemd5\s*\(|(?<![\w])file\s*\(", content):
             if not _is_inside_try(content, m.start()):

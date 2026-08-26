@@ -214,7 +214,7 @@ def main() -> int:
     all_checks.extend(build_tombstone_checks(tombstones, table_filter=args.table, database=database))
 
     # Decision 84 I-1: every ops-table check runs against the DuckLake closed reader (DuckDB dialect
-    # over the `current` TABLE), plus the CD.33 clause-8 checks. Shared with DataQualityVerifier.
+    # over the `current` TABLE), plus the CD.33 clause-8 checks.
     all_checks = apply_backend_routing(all_checks, database, table_filter=args.table)
 
     # Filter by check type (e.g. --checks tombstone_resurrection)

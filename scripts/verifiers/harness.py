@@ -161,7 +161,7 @@ async def main() -> None:
         choices=[s.name.lower() for s in VerifierSeverity],
         help="Minimum severity (advisory or hard_gate)",
     )
-    parser.add_argument("--verifier", help="Run only the specified verifier by name (e.g. DataQualityVerifier)")
+    parser.add_argument("--verifier", help="Run only the specified verifier by name (e.g. OutboxHealthVerifier)")
     parser.add_argument("--json", action="store_true", help="Output results as JSON")
     args = parser.parse_args()
 

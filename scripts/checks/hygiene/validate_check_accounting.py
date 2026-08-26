@@ -118,7 +118,6 @@ _BASELINE_SEED: frozenset[str] = frozenset(
         "validate_subprocess_encoding",
         "validate_supersession_annotations",
         "validate_sys_executable",
-        "validate_terraform_try",
         "validate_test_count_coupling",
         "validate_tier_floor",
         "validate_verification_harness",

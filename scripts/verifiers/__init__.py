@@ -7,14 +7,13 @@ from __future__ import annotations
 
 import fnmatch
 
-from .data_quality import DataQualityVerifier
 from .harness import Hermeticity, Verifier, VerifierResult, VerifierSeverity, VerifierStatus, VerifierTier
 
 # Registry of all verifiers that should run during the integration flow.
-# These provide hard gates for autonomous execution.
-REGISTRY: list[type[Verifier]] = [
-    DataQualityVerifier,
-]
+# Empty since the legacy verifier fleet retired with the platform cleanse; the harness
+# stays for the executor tier's future verifiers, and DQ enforcement runs through
+# validate.py's DQ scaffold (validate_dq_manifest_gate + scripts.data_quality_runner).
+REGISTRY: list[type[Verifier]] = []
 
 
 async def run_all_verifiers(

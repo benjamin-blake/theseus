@@ -22,7 +22,7 @@ from scripts import verification_graduation as vg
 # replicate it explicitly).
 _MANIFEST_DOMAINS = (
     "ci_guards contracts decisions deps executor hygiene iam_tf lambda_pkg misc "
-    "ops_governance product prompts prose roadmap sloc structural typing verification"
+    "ops_governance prompts prose roadmap sloc structural typing verification"
 ).split()
 
 _GRADUATION_DEPS = (
