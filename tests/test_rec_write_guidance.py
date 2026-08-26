@@ -134,3 +134,81 @@ class TestGetRecWriteGuidance:
                 continue
             assert "description" in col_data, f"{col_name} missing description"
             assert "semantics" in col_data, f"{col_name} missing semantics"
+
+
+class TestAcceptanceSemanticsProjection:
+    """rec-3220 / PLAN-probe-discrimination-vacuity-alarm: the ops.yaml acceptance semantics
+    edit propagates through get_rec_write_guidance() WITHOUT scripts/executor/rec_write_guidance.py
+    being edited -- get_rec_write_guidance() is a pure projection of ops.yaml's per-column
+    description/semantics (Decision 65 canonical source; Decision 66 single-authority)."""
+
+    def test_acceptance_semantics_states_discrimination_rule(self) -> None:
+        from scripts.executor.rec_write_guidance import get_rec_write_guidance
+
+        guidance = get_rec_write_guidance()
+        semantics = guidance["acceptance"]["semantics"]
+        assert "require_discrimination" in semantics
+        assert "negation" in semantics
+        assert "node_id" in semantics
+
+
+class TestCiRcaGuidanceSchemaLockstep:
+    """CIRCA-04/08/09: get_rec_write_guidance(source='ci_rca') text stays in lockstep with the
+    CiRcaContext schema amendments (version-gated why_chain ceiling, typed terminus override,
+    'unknown' actual_gate_that_caught_it)."""
+
+    def test_why_chain_documents_version_gated_ceiling(self) -> None:
+        """CIRCA-04 ceiling: guidance states 40-250 at schema_version 1 and 40-400 at version 2."""
+        from scripts.executor.rec_write_guidance import get_rec_write_guidance
+
+        guidance = get_rec_write_guidance(source="ci_rca")
+        why_chain_doc = guidance["context_v2_json"]["schema_fields"]["why_chain"]
+        assert "40-250" in why_chain_doc
+        assert "40-400" in why_chain_doc
+        assert "schema_version 1" in why_chain_doc
+        assert "schema_version 2" in why_chain_doc
+
+    def test_terminus_override_documents_required_typed_reason(self) -> None:
+        """CIRCA-08: guidance states the reason field is required and bounded 80-400 chars."""
+        from scripts.executor.rec_write_guidance import get_rec_write_guidance
+
+        guidance = get_rec_write_guidance(source="ci_rca")
+        terminus_doc = guidance["context_v2_json"]["schema_fields"]["why_chain_terminus_override"]
+        assert "80-400" in terminus_doc
+        assert "reason" in terminus_doc
+
+    def test_detection_gap_documents_unknown_and_mirror_null_instruction(self) -> None:
+        """CIRCA-09: guidance lists 'unknown' in actual_gate_that_caught_it and instructs the
+        agent to mirror a bundle-null value as 'unknown' rather than fabricating a real gate."""
+        from scripts.executor.rec_write_guidance import get_rec_write_guidance
+
+        guidance = get_rec_write_guidance(source="ci_rca")
+        detection_gap_doc = guidance["context_v2_json"]["schema_fields"]["detection_gap"]
+        assert "actual_gate_that_caught_it: pre|presubmit|CI|unknown" in detection_gap_doc
+        assert "unknown" in detection_gap_doc
+        assert "mirror" in detection_gap_doc.lower()
+        assert "null" in detection_gap_doc.lower()
+
+
+class TestCiRcaUnobservedStepsGuidance:
+    """PLAN-ci-rca-evidence-scope-declaration (Decision 66 / Precision Context Injection):
+    the ci_rca schema_fields authority documents the new unobserved_steps echo field and its
+    {job_id, step_index} pair shape, but never unobserved_steps_authoritative -- that field is
+    Tier-B portal-derived and the agent must never author it."""
+
+    def test_schema_fields_documents_unobserved_steps_pair_shape(self) -> None:
+        from scripts.executor.rec_write_guidance import get_rec_write_guidance
+
+        guidance = get_rec_write_guidance(source="ci_rca")
+        schema_fields = guidance["context_v2_json"]["schema_fields"]
+        assert "unobserved_steps" in schema_fields
+        doc = schema_fields["unobserved_steps"]
+        assert "job_id" in doc
+        assert "step_index" in doc
+        assert "retrieval_evidence.scope" in doc
+
+    def test_schema_fields_omits_authoritative_field(self) -> None:
+        from scripts.executor.rec_write_guidance import get_rec_write_guidance
+
+        guidance = get_rec_write_guidance(source="ci_rca")
+        assert "unobserved_steps_authoritative" not in guidance["context_v2_json"]["schema_fields"]

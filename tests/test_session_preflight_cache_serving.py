@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""D4 cache-serving unit tests for scripts/session_preflight.py (neon-egress-reduction).
+"""D4 cache-serving unit tests for scripts/session/preflight.py (neon-egress-reduction).
 
 Two properties (VP step 1):
 
@@ -26,14 +26,17 @@ from unittest.mock import MagicMock, patch
 import duckdb
 import pytest
 
+from scripts.preflight import _common, aws_infra, ci_rca_signals, context_docs, env_git
 from src.common.ducklake_scd2_schema import NAMED_READS
 
 # Load the module under test as a PRIVATE handle. Deliberately NOT registered as
 # sys.modules["session_preflight"] -- the sibling suite (test_session_preflight.py) registers that
 # name, and clobbering it makes its string-target patches ("session_preflight.<sym>") resolve to the
-# wrong module object. We patch this module via patch.object(_preflight, ...) instead, which targets
-# the object directly and is collision-free regardless of test ordering (pytest-randomly).
-_MODULE_PATH = Path(__file__).resolve().parent.parent / "scripts" / "session_preflight.py"
+# wrong module object. Moved-symbol patches target their home module directly (patch.object(env_git,
+# ...), patch.object(_common, ...), etc.) -- the same canonical target regardless of which alias this
+# file imports the facade under. Only the facade-resident PREFLIGHT_REPORT still patches via
+# patch.object(_preflight, ...), collision-free regardless of test ordering (pytest-randomly).
+_MODULE_PATH = Path(__file__).resolve().parent.parent / "scripts" / "session" / "preflight.py"
 _spec = importlib.util.spec_from_file_location("session_preflight_cache_serving_mod", _MODULE_PATH)
 assert _spec and _spec.loader
 _preflight = importlib.util.module_from_spec(_spec)
@@ -368,17 +371,17 @@ class TestPhaseBAbsenceOfReaderCalls:
             "main_files_changed_since_branch": [],
         }
         with (
-            patch.object(_preflight, "_make_reader", return_value=reader),
-            patch("scripts.sync_ops.warm_sync", return_value=warm),
-            patch.object(_preflight, "check_venv", return_value=True),
-            patch.object(_preflight, "get_git_status", return_value=("agent/test", False, [])),
-            patch.object(_preflight, "check_main_freshness", return_value=freshness),
-            patch.object(_preflight, "check_terraform_pending", return_value=False),
-            patch.object(_preflight, "check_credentials", return_value="ok"),
-            patch.object(_preflight, "parse_last_session", return_value=""),
-            patch.object(_preflight, "_get_recent_main_commits", return_value=[]),
-            patch.object(_preflight, "run_log_sync", return_value={"status": "skipped", "files": []}),
-            patch.object(_preflight, "_check_ci_rca_liveness", return_value=None),
+            patch.object(_common, "_make_reader", return_value=reader),
+            patch("scripts.sync.ops.warm_sync", return_value=warm),
+            patch.object(env_git, "check_venv", return_value=True),
+            patch.object(env_git, "get_git_status", return_value=("agent/test", False, [])),
+            patch.object(env_git, "check_main_freshness", return_value=freshness),
+            patch.object(aws_infra, "check_terraform_pending", return_value=False),
+            patch.object(aws_infra, "check_credentials", return_value="ok"),
+            patch.object(context_docs, "parse_last_session", return_value=""),
+            patch.object(env_git, "_get_recent_main_commits", return_value=[]),
+            patch.object(env_git, "run_log_sync", return_value={"status": "skipped", "files": []}),
+            patch.object(ci_rca_signals, "_check_ci_rca_liveness", return_value=None),
             patch.object(_preflight, "PREFLIGHT_REPORT", tmp_path / ".preflight-report.json"),
             patch("builtins.print"),
         ):
@@ -401,7 +404,7 @@ class TestLiveDuckLakeCiRcaOpenFile:
         import scripts.ops_data_portal as p
         from src.common.iceberg_reader import make_reader
 
-        marker_file = "scripts/ci_rca_tier_map.py"
+        marker_file = "scripts/ci_rca/tier_map.py"
         rec_id = p.file_rec(
             {
                 "title": "test_live_file_ci_rca_open_returns_file (ci-rca-likely-resolved-detection VP7)",

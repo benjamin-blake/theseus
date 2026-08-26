@@ -1,0 +1,231 @@
+# Structural-size governance class engine (audit findings SGE-01/SGE-02/SGE-04,
+# audits/size-governance-expansion-3dee4a5.yaml, Decision 166). Completes Decision 43's
+# declared "all repository code" scope and Decision 130's whole-repo intent for the
+# non-Python hand-authored structured-file population -- terraform, config, contracts,
+# ci_workflows, shell, lambda_manifests, roadmaps, data_query, residual -- while exempting
+# generated, workflow_outputs and test_fixtures by provenance/production-pattern, never by
+# consumer tier.
+#
+# THIS FILE IS THE FIELD-SEMANTICS HOME (Decision 86/127 routing) for the class table, the
+# counting rule, the glob grammar and the long-line threshold -- Decision 166 carries only
+# the durable commitment, the roster keys, and the reversal conditions.
+#
+# Counting rule (PINNED, no per-language cleverness): effective lines are non-blank lines
+# whose first non-whitespace character is not '#', applied verbatim to every class
+# regardless of source language. Longest-line is the character count of the longest raw
+# line. Both are computed over the file's raw text, never a parsed/reformatted form.
+#
+# Glob grammar: every glob is matched with fnmatch.fnmatch (a single '*' already crosses
+# '/', matching any depth -- scripts/validate.py::_pre_glob_match's own established
+# convention). Every glob row that can match a YAML file lists BOTH the .yaml and .yml
+# spellings (rec-2928's live defect: .github/ holds 27 .yml against 1 .yaml).
+#
+# Classification is layered, first-match-wins (scripts/checks/structural/_classify.py):
+#   1. exclusions (below) -- suffix or vendored/tooling directory -- file is not measured.
+#   2. provenance override -- generated_pinned membership, OR a narrow "GENERATED -- DO NOT
+#      EDIT" banner in the file's first 10 lines -- classifies as `generated` (exempt).
+#   3. the ordered `classes:` rows below (excluding the synthetic `generated`/`residual`
+#      rows), each an `include:` glob list -- first glob match wins.
+#   4. the mandatory `residual` row (always last) -- governs any unmatched tracked file at
+#      the implicit 500-effective-line / 2000-char-line default. Govern-by-default, not
+#      block-until-classified (NS-C: a wedge on unclassified files has no relief valve at
+#      introduction) and not leave-ungoverned (that reopens the day-one gap this table
+#      exists to close).
+#
+# Long-line companion (500 governed classes only; 2,000 chars): a line-count gate alone is
+# satisfiable by line-joining with zero load reduction (SGE-05's VD3 counterfactual) -- see
+# `long_line_budgets:` below. Exempt classes carry no companion; a known cost of exemption,
+# disclosed not gated (e.g. docs/plans/reports/OVERSEER-terraform-deploy-redesign.yaml's
+# 8,211-char line).
+schema_version: 1
+
+exclusions:
+  suffixes: [".py", ".md"]
+  dirs: [pip, lambda-packages, docker, .venv, node_modules, .git, personal_scripts]
+
+# Provenance-override membership list (row 1 of the class table). LOAD-BEARING, not
+# decorative: these five files carry NO do-not-edit banner at all (measured at
+# implement time), so a banner-only provenance test would drop docs/decisions-index.json
+# (2,298 eff) into the data_query class and force a 17th roster entry. Growing this list is
+# a reviewed code edit alongside its owning row's population, mirroring
+# scripts/checks/_marker_guard.py's RETRO_SCAN_GRANDFATHER shape -- never a silent config
+# drop-in.
+generated_pinned:
+  - docs/decisions-index.json
+  - config/mypy_baseline.yaml
+  - config/sloc_budgets.yaml
+  - terraform/personal/.terraform.lock.hcl
+  - terraform/github/.terraform.lock.hcl
+
+# Ordered class table, first-match-wins over the twelve audit-pinned slugs. `actual_purpose`
+# and `relief_valve` text is copied from audits/size-governance-expansion-3dee4a5.yaml
+# class_verdicts.<slug>.rationale.actual_purpose and class_verdicts.<slug>.relief_valve
+# (relief_valve sits at the verdict's top level, a sibling of rationale, not nested under it),
+# trimmed of point-in-time census figures that would go stale in a checked-in config (e.g. a
+# roster's exact byte/line count at audit time) -- substance and provenance-based reasoning are
+# preserved intact; only the transient measurements are dropped.
+classes:
+  - slug: generated
+    include: []
+    governed: false
+    unit: n/a
+    limit: n/a
+    max_line_chars: n/a
+    actual_purpose: "None at the artifact -- no agent hand-edits a generated file (the banner forbids it; the regenerator overwrites it), so NS-A has no subject. Governance belongs on the producer: freshness/drift gates already exist (validate_decisions_index_freshness, schema_to_field_semantics --check, validate_lockfile_sync), and the corpus ceilings bound decisions-index.json at its source."
+    relief_valve: "Regenerate; fix the producer (valve 7)."
+  - slug: terraform
+    include: ["terraform/*.tf"]
+    governed: true
+    unit: effective-lines
+    limit: 500
+    max_line_chars: 2000
+    actual_purpose: "A lower-tier model editing IAM-dense HCL must hold the whole file: a collateral mis-edit here is a production security event (trust policy, boundary, grant), not a test failure. The coverage half has no referent; plan-review plus the apply gates play that role."
+    relief_valve: "decompose by resource family (native .tf multi-file); change the producer (iceberg_tables.tf); loud cited raise"
+  - slug: config
+    include: ["config/*.yaml", "config/*.yml"]
+    governed: true
+    unit: effective-lines
+    limit: 500
+    max_line_chars: 2000
+    actual_purpose: "Registries agents append to must surface lifecycle pressure instead of accreting silently; dq manifests (522 eff) are hand-edited semantic surfaces this still governs directly. The verification-check registry (formerly one accreting registry.yaml) no longer has this row's accretion subject in the append-to-one-file sense: Decision 176 re-grained it to one record per file under config/agent/verification_registry/entries/<check_id>.yaml, so retirement is git mv into the reserved entries/deprecated/ subtree rather than shrinking a monolith, and differential-admission cost is invariant to corpus size (~7.1s per NEWLY-added record, never per corpus record) -- the census walk itself stays immaterial too (~0.1s over the governed population). The cap still converts unbounded per-file growth into a periodic, reviewable lifecycle decision for every other config-class member."
+    relief_valve: "archive/retire entries per lifecycle (valves 4/5); compact resolved rows; loud cited raise; per-record sharding (Decision 176 precedent) for an unordered registry keyed by a stable identity, mirroring config/agent/data_quality/decisions/"
+  - slug: contracts
+    include: ["docs/contracts/*.yaml", "docs/contracts/*.yml"]
+    governed: true
+    unit: effective-lines
+    limit: 500
+    max_line_chars: 2000
+    actual_purpose: "Contracts are the densest agent-consumed field semantics in the repository and are hand-amended (amendment logs, governance notes). Grain is already one-subject-per-file (Decision 86 collocation); the cap guards against amendment-log accretion turning a contract into a monolith an editing agent cannot hold."
+    relief_valve: "compact amendment history; defer detail (valve 3); loud cited raise; splitting a single subject is forbidden by collocation doctrine"
+  - slug: ci_workflows
+    include: [".github/*.yaml", ".github/*.yml"]
+    governed: true
+    unit: effective-lines
+    limit: 500
+    max_line_chars: 2000
+    actual_purpose: "Two-unit risk: file size tracks job sprawl, but the unit that produced a real incident (rec-2923) is the inline run: body -- and Decision 162's R3 ratchet covers only .github/actions/**, leaving 15 inline bodies in reconcile.yml alone ungoverned. File cap at 500 eff plus extending R3-style body governance to workflow files covers what either alone cannot."
+    relief_valve: "extract inline bodies to delegate scripts; split jobs into reusable workflows; loud cited raise. Glob note: .github/agents/schedule.yaml lands here by glob though its role is agent scheduling -- immaterial at 60 eff, recorded for the role-vs-extension key discussion (DD-C)"
+  - slug: shell
+    include: ["*.sh"]
+    governed: true
+    unit: effective-lines
+    limit: 500
+    max_line_chars: 2000
+    actual_purpose: "Hooks and wrappers run at every session bootstrap and CI step; a mis-edit breaks the harness itself. Population is healthy (max 106 eff) -- extending now forecloses debt before it exists, at zero migration cost."
+    relief_valve: "extract functions to sibling scripts; decompose"
+  - slug: lambda_manifests
+    include: ["src/lambdas/*/manifest.yaml", "src/lambdas/*/manifest.yml"]
+    governed: true
+    unit: effective-lines
+    limit: 500
+    max_line_chars: 2000
+    actual_purpose: "Packaging descriptors drive deploy gating (compute_affected_artifacts); small by construction (max 67 eff). Implicit-500 costs nothing and prevents a manifest becoming a dumping ground for per-Lambda config."
+    relief_valve: "relocate payload config to config/lambda/<name>/ (the existing three-zone layout)"
+  - slug: roadmaps
+    include: ["docs/ROADMAP-*.yaml", "docs/ROADMAP-*.yml"]
+    governed: true
+    unit: effective-lines
+    limit: 500
+    max_line_chars: 2000
+    defer_to_incumbent:
+      docs/ROADMAP-PLATFORM.yaml:
+        incumbent: validate_platform_roadmap
+        authorized_by: dec-166
+    limit_note: "This row stays at the residual default of 500. The audit's designed 6,000-line ceiling (class_verdicts.roadmaps) was authored FOR docs/ROADMAP-PRODUCT.yaml and was never ratified: the operator froze that file instead (see budget_notes below), so the ceiling has no subject left to serve. actual_purpose below is quoted verbatim from that same 6,000-ceiling verdict and describes the CLASS's load shape, not this row's limit -- the two are not in conflict. A roadmaps-class file that genuinely warrants a different ceiling is granted one per-slug in scripts/checks/structural/size_limits.py, never by editing this limit."
+    unit_gameability_residual: "SGE-05 VD3, recorded not closed: a line-count gate alone is satisfiable by line-joining. This class's unit is effective lines PLUS the 2,000-character long-line companion, so joining relieves neither and the counterfactual fails here. The residual is confined to the one file this engine does not measure, docs/ROADMAP-PLATFORM.yaml, whose incumbent ceiling counts raw splitlines with no long-line companion; that constant is fixed by Decisions 114/147 and its unit revisit belongs to the next ceiling revision, not to this row."
+    actual_purpose: "A monotonic work-list structurally cannot meet 500; its load problem is /plan-time read cost, governed by a per-file ceiling plus the PROVEN compaction lifecycle (Decision 147 reclaimed 2,667 lines in place). The principled boundary that lets ROADMAP-PLATFORM.yaml stand while the class is capped: PLATFORM's single-file 10,000-line treatment is a Decision 114/147 exception granted to how that roadmap currently exists -- decision-cited grandfathering, the same shape as every raise marker -- and explicitly NOT a precedent for future roadmap files, which enter under the class ceiling."
+    relief_valve: "compact in place (valve 4, proven); archive terminal items (valve 5); loud cited raise; per-tier split is FORBIDDEN (Decisions 110/114)"
+  - slug: workflow_outputs
+    include: ["docs/plans/*.yaml", "docs/plans/*.yml", "audits/*.yaml", "audits/*.yml"]
+    governed: false
+    unit: n/a
+    limit: n/a
+    max_line_chars: n/a
+    actual_purpose: "Exempt on PRODUCTION-PATTERN grounds, not consumer tier (NS-A quarantine respected). DD-D traced the lifecycle: plans are produced whole by /plan (with in-session critique revisions), then post-merge edits are narrow FIELD FLIPS -- /implement's graduate-to-waive disposition flip and closes_criteria bookkeeping -- whose working set is the target entry, located by search, never whole-file comprehension; audits are write-once; OVERSEER ledgers take per-slice status appends at runtime. No agent performs the whole-file comprehension edit NS-A protects."
+    relief_valve: "archival lifecycle (RS-07)"
+  - slug: test_fixtures
+    include: ["tests/fixtures/*"]
+    governed: false
+    unit: n/a
+    limit: n/a
+    max_line_chars: n/a
+    actual_purpose: "Fixture content is captured data asserted against, sometimes byte-for-byte -- tests/fixtures/terraform_apply_guard/clean_create_real.json is one 1,141-char line of REAL terraform plan JSON. A size gate here fires on files carrying no editing-comprehension load (the test reads them selectively) and pressures trimming captured reality to satisfy a formatter -- the NS-B tax case."
+    relief_valve: "n/a"
+  - slug: data_query
+    include: ["*.json", "*.jsonl", "*.toml"]
+    governed: true
+    unit: effective-lines
+    limit: 500
+    max_line_chars: 2000
+    actual_purpose: "Implicit-500 backstop over miscellaneous structured files (settings JSON, pyproject/toml, tracked jsonl journals). The hand-edited members (settings, toml) get the standard comprehension rationale; the tracked executor-era journals (logs/*.jsonl, max 330 eff) get the RIGHT pressure when they breach: rotation/archival per the warehouse invariant (rec-257 adjacent), not splitting."
+    relief_valve: "rotate/archive journals; relocate config detail; loud cited raise"
+  - slug: residual
+    include: []
+    governed: true
+    unit: effective-lines
+    limit: 500
+    max_line_chars: 2000
+    actual_purpose: "The default row: any tracked file matching no named class is governed at implicit 500 effective lines. When a NEW file class appears after this Decision lands, it is governed by default at the Python limit until a Decision classifies it -- govern-by-default was chosen over block-until-classified because a wedge on unclassified files fails NS-C (no relief valve at introduction time), and over leave-ungoverned because that re-opens the day-one gap this table exists to close."
+    relief_valve: "classify the new class properly (add a table row) or comply; MANIFEST.yaml drains by retirement"
+
+# Flat per-file effective-line grandfather roster (10 entries). Registered ONLY when a
+# governed file exceeds its class limit at install time. Ratchets DOWN only (Decision 102
+# precedent); raising an entry (or adding a new >limit registration) requires an inline
+# `# raise-approved: dec-NNN <reason>` marker naming a Decision whose body authorizes the
+# entry (scripts/checks/_marker_guard.py, Decision 165). The verification-check registry
+# carries no entry here (nor a replacement one) -- Decision 176 re-grained it to one record
+# per file under config/agent/verification_registry/entries/<check_id>.yaml, each governed by
+# this class row's implicit per-file default with no roster seed needed.
+budgets:
+  terraform/iceberg_tables.tf: 1491  # raise-approved: dec-166 terraform class grandfather, install-time census
+  terraform/data_pipeline.tf: 655  # raise-approved: dec-166 terraform class grandfather, install-time census
+  terraform/personal/platform_roles.tf: 587  # raise-approved: dec-166 terraform class grandfather, install-time census
+  config/agent/data_quality/decisions/ops_recommendations.yaml: 522  # raise-approved: dec-166 config class grandfather, install-time census
+  docs/contracts/iam-simulate-fixture.yaml: 605  # raise-approved: dec-168 migration-step-3-grandfathering Class D envelope seed
+  docs/contracts/ops_recommendations.yaml: 556  # raise-approved: dec-166 contracts class grandfather, install-time census
+  .github/workflows/reconcile.yml: 536  # raise-approved: dec-166 ci_workflows class grandfather, install-time census
+  .github/workflows/terraform-apply-sandbox.yml: 529  # raise-approved: dec-166 ci_workflows class grandfather, install-time census
+  docs/intent-migration/MANIFEST.yaml: 521  # raise-approved: dec-166 residual class grandfather, retires with T5.5
+  docs/ROADMAP-PRODUCT.yaml: 4707  # raise-approved: dec-166 roadmaps class grandfather at current measured size, not the SGE-05 6000 ceiling
+  docs/contracts/decision-entry.yaml: 508  # raise-approved: dec-175 trimmed amendment_log first (499 -> 493, -6), added migrate_then_rehome procedure branch (+7) and its amendment_log entry (+8) at net eligibility_criterion rewording (+0) -> 508, residual +8 over the 500 limit
+
+# Per-entry disposition notes for the `budgets:` roster above. Placed here deliberately: a
+# column-0 non-comment key, so it terminates the budgets section for the section-scoped
+# extractor rather than leaking into it. A frozen note records an operator freeze -- the pin
+# does not rise, and the entry retires by deleting the note and its budgets entry TOGETHER
+# once `retires_when` holds. Freeze and defer_to_incumbent are mutually exclusive dispositions.
+budget_notes:
+  docs/ROADMAP-PRODUCT.yaml:
+    frozen: true
+    rationale: >-
+      Operator directive, 2026-08-04: this file must not grow at all pending its migration to a
+      warehouse-backed dependency graph. The pin sits at the file's own measured size, so zero
+      headroom is the intent and not a wedge -- a red gate on this file is the freeze working.
+      SGE-05's proposed 6,000-effective-line ceiling is SUPERSEDED by this freeze, which is
+      strictly stricter than the ceiling the audit asked for.
+    retires_when: >-
+      docs/ROADMAP-PRODUCT.yaml's dependency content has migrated to the warehouse-backed
+      dependency graph and the file has shrunk or been deleted. At that point the note and the
+      budgets entry are removed together.
+  docs/contracts/decision-entry.yaml:
+    frozen: true
+    rationale: >-
+      Decision 175 (2026-08-24): the contracts class relief_valve forbids splitting this file
+      (collocation doctrine), and its 2-entry amendment_log was already trimmed to a 3/4-line
+      body each before this raise landed -- there is no further relief_valve headroom to exhaust
+      on a subsequent growth. The pin sits at this change's own measured size (508); any further
+      growth needs its own cited raise, never a silent creep against this note.
+    retires_when: >-
+      A future decision-entry.yaml edit either shrinks the file back under 500 effective lines
+      (amendment_log compaction or moving detail elsewhere) or is itself the subject of a new
+      cited raise that supersedes this note.
+
+# Flat per-file max-line-character grandfather roster (2 entries) -- this plan's own
+# measurement (the audit censused long lines only inside the exempt workflow_outputs class).
+# Same raise-marker discipline as budgets: above. Both survivors are machine-APPENDED JSONL
+# journals, not hand-joinable authored surfaces -- unlike the retired verification-registry
+# entry (the one HAND-AUTHORED counterexample to unit_gameability_residual above), neither has
+# an author to exploit the join-evasion that residual describes (Decision 176).
+long_line_budgets:
+  logs/.retro-lite-log.jsonl: 2523  # raise-approved: dec-166 long-line companion, install-time census
+  logs/.execution-step-telemetry.jsonl: 6679  # raise-approved: dec-166 long-line companion, install-time census

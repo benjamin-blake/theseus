@@ -4,12 +4,12 @@ This document is the architectural anchor for how the agent-platform hosts multi
 
 **Status:** Architectural anchor (exploratory). Records intent and boundaries; no migration committed, no recommendations filed, no executor work queued. The `project_id` mechanism and the IP-wall enforcement it relies on are **proposed and unbuilt** (see "Build-state reality" below). Authoritative for vocabulary and boundaries on landing; authoritative for implementation only after the Open Decisions are ratified and the enforcement substrate is built.
 
-**Builds on:** NS.1 (storage durable, compute interchangeable -- generalized by Decision 78 to "S3 + open table format at every scale"), NS.2 (account ownership reflects IP ownership), NS.4 (the repo is for agents); Decision 78 (ratifies CD.31: Iceberg for market-data/product tables, DuckLake for ops/telemetry); Decision 77 + `docs/contracts/environment-taxonomy.md` (the two-axis account model -- NOT altered here); Decision 75 (frame-lock anti-pattern -- the two-axis framing below is a conscious frame choice); Decision 67 (REPORT-ONLY framing during the executor freeze); KG.1 (a known-gap note whose singular "product roadmap" wording OD-5 would generalize -- see OD-5 for the dual-sense caveat).
+**Builds on:** NS.1 (storage durable, compute interchangeable -- generalized by Decision 78 to "S3 + open table format at every scale"), NS.2 (account ownership reflects IP ownership), NS.4 (the repo is for agents); Decision 78 (ratifies CD.31: Iceberg for market-data/product tables, DuckLake for ops/telemetry); Decision 77 + `docs/contracts/environment-taxonomy.yaml` (the two-axis account model -- NOT altered here); Decision 75 (frame-lock anti-pattern -- the two-axis framing below is a conscious frame choice); Decision 67 (REPORT-ONLY framing during the executor freeze); KG.1 (a known-gap note whose singular "product roadmap" wording OD-5 would generalize -- see OD-5 for the dual-sense caveat).
 
 **Companion documents (load-bearing):**
 - `docs/INTENT-aws-migration-platform-evolution.md` Part 2 -- the monorepo + `project_id` commitment this document extends. The `project_id` dimension, the registry, the reserved `platform` value, and the two-phase `RecPayload`/`DecisionPayload` rollout are **designed there (a DRAFT) and not yet built**; this document adopts that proposed design rather than inventing a second one.
 - `docs/INTENT-telemetry-system.md` -- the meta/domain tiering below is net-new (those terms do not appear there) and is layered on top of it; that INTENT predates Decision 78's DuckLake move and its star schema does not yet support the field-level split the tiering needs. This document does NOT claim to refine it.
-- `docs/contracts/environment-taxonomy.md` -- the account / blast-radius axis (a separate concern, not altered here).
+- `docs/contracts/environment-taxonomy.yaml` -- the account / blast-radius axis (a separate concern, not altered here).
 
 **Terminology:** "product" = a distinct application/domain the platform operates on, identified by `project_id`. Trading is product #1 and the only real one today; `reaper-tools` and `dbt-daywork` are prospective and exist nowhere in the repo yet. Orthogonal to the Decision-77 product *phase* axis (the trading strategy lifecycle).
 
@@ -135,7 +135,7 @@ No contradiction remains: same-owner = monorepo + `project_id` (their model); cr
 ## Open Decisions (require ratification before implementation)
 
 1. **OD-1: day-job meta-egress policy AND its enforcement interlock.** Default siloed; opt-in content-free aggregate meta only (`project_id=dbt-daywork`); gated by employer policy. Requires a *technical* interlock pinned to a gate file / tier-item (matching the migration INTENT's gate-pinning discipline), not prose: a registry/CI gate that refuses any `project_id=dbt-daywork` row into the personal store, plus the egress classifier/allowlist named in the Telemetry Tiering OPEN RISK. **`dbt-daywork` must not be onboarded until OD-1, OD-2, the egress gate, the DuckLake write-path cutover (FP-B/T2.19), AND a rollback/freeze mechanism all land** -- until then a leaked row is not cleanly reversible (resurrection risk; see Build-state reality).
-2. **OD-2: licence permits day-job use** of the substrate without entangling personal IP or violating employer terms. Gates `dbt-daywork` entirely.
+2. **OD-2: license permits day-job use** of the substrate without entangling personal IP or violating employer terms. Gates `dbt-daywork` entirely.
 3. **OD-3: trigger to revisit split-repo for same-owner products.** Currently deferred per the migration INTENT; default is to stay monorepo + `project_id`. Name the trigger (e.g. independent release cadence) if/when it arises.
 4. **OD-4: substrate versioning model.** Only load-bearing once the external (day-job) consumer exists; define semver + deprecation policy then.
 5. **OD-5: KG.1 wording (dual-sense caveat).** KG.1 (`docs/ROADMAP-PLATFORM.yaml:3866`) is cited in two senses: its literal text is a known-gap note that the trading product roadmap lives in a sibling document (singular wording), but Decision 78 also invokes "the KG.1 platform/product boundary" as the Iceberg-vs-DuckLake split. Generalizing the roadmap to N products is therefore more than a cosmetic wording edit -- it touches a boundary other decisions lean on. Deferred; pin the exact sense when edited.
@@ -146,7 +146,7 @@ No contradiction remains: same-owner = monorepo + `project_id` (their model); cr
 - **Not fragmenting the platform operational data store per product.** It is ONE DuckLake + `project_id` origin.
 - **Not superseding `INTENT-aws-migration-platform-evolution.md`.** This extends it to the cross-boundary case.
 - **Not asserting any mechanism is built.** `project_id`, the registry, the egress gate, the COALESCE gate, and the rollback/freeze path are all proposed and unbuilt; this is a design record, not an implementation claim.
-- **Not multiplying AWS accounts by product.** Account / blast-radius topology is the other axis, governed by Decision 77 / `environment-taxonomy.md`.
+- **Not multiplying AWS accounts by product.** Account / blast-radius topology is the other axis, governed by Decision 77 / `environment-taxonomy.yaml`.
 - **Not re-opening the per-domain table-format choice.** Ratified as Decision 78 (originating proposal CD.31).
 - **Not building an internal developer platform.** No portal framework, private index, or module registry until solo-developer scale forces it.
 

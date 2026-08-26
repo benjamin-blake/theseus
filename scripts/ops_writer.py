@@ -9,7 +9,7 @@ scripts/s3_log_store.py. Never raises exceptions to callers.
 
 See docs/contracts/ops_recommendations.yaml and docs/contracts/ops_decisions.yaml for
 the DuckLake-boundary Class A contracts. See docs/contracts/storage-substrate.yaml for
-the Iceberg-boundary tables (ops_session_log, ops_execution_plans) pending T2.26.
+the remaining Iceberg-boundary table (ops_session_log) pending its own T2.26 disposition.
 """
 
 from __future__ import annotations
@@ -23,8 +23,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from scripts.aws_profile import resolve_aws_profile
+from src.common.outbox_retirement import is_retired_dir
 
 ROOT = Path(__file__).resolve().parent.parent
+_OUTBOX_BASE = ROOT / "logs" / ".ops-outbox"
 
 try:
     import boto3 as _boto3
@@ -74,9 +76,10 @@ except ImportError:  # pragma: no cover
 
 # Recognised table names (ops data store) -- see docs/contracts/storage-substrate.yaml
 # ops_recommendations is EXCLUDED: recs transit the DuckLake closed boundary (Decision 81 cl.7 /
-# T2.19 cutover). OpsWriter can no longer stage or compact recs to Iceberg.
+# T2.19 cutover). OpsWriter can no longer stage or compact recs to Iceberg. ops_execution_plans is
+# EXCLUDED as of T2.26 (c9): it also transits the DuckLake closed boundary now (scripts/ops_portal/
+# execution_plans.py -> write_ops); no Iceberg staging path survives for it.
 _OPS_TABLE_NAMES: list[str] = [
-    "ops_execution_plans",
     "ops_session_log",
     "ops_decisions",
     "ops_priority_queue",
@@ -96,7 +99,6 @@ _BUCKET_ENV_VAR = "S3_LOG_BUCKET"
 # object columns when the target type is an array<> variant -- these overrides
 # supply the schema explicitly so compaction succeeds even for all-null batches.
 _OPS_TABLE_DTYPES: dict[str, dict[str, str]] = {
-    "ops_execution_plans": {},
     "ops_session_log": {
         "recs_attempted": "array<string>",
         "recs_closed": "array<string>",
@@ -277,7 +279,7 @@ class OpsWriter:
     def _write_to_outbox(self, table: str, entry: dict) -> None:
         """Write a failed S3 entry to the local outbox for later drain."""
         try:
-            outbox_dir = Path(__file__).parent.parent / "logs" / ".ops-outbox" / table
+            outbox_dir = _OUTBOX_BASE / table
             outbox_dir.mkdir(parents=True, exist_ok=True)
             outbox_file = outbox_dir / f"{uuid.uuid4()}.jsonl"
             outbox_file.write_text(
@@ -667,8 +669,7 @@ class OpsWriter:
             Dict mapping table name to number of records drained.
         """
         results: dict[str, int] = {t: 0 for t in TABLE_NAMES}
-        outbox_base = ROOT / "logs" / ".ops-outbox"
-        if not outbox_base.exists():
+        if not _OUTBOX_BASE.exists():
             return results
 
         client = self._get_client()
@@ -680,8 +681,8 @@ class OpsWriter:
         if not bucket:
             return results
 
-        for table in TABLE_NAMES:
-            table_dir = outbox_base / table
+        for table in (t for t in TABLE_NAMES if not is_retired_dir(t)):
+            table_dir = _OUTBOX_BASE / table
             if not table_dir.exists():
                 continue
 

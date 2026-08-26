@@ -2,10 +2,6 @@
 name: planning
 description: Deep methodology and rules for software planning, complexity assessment, and verification tier design. Use this when running the /plan workflow or when architecting new features.
 model: opus[1m]
-required-context:
-  - logs/.preflight-report.json
-  - docs/PROJECT_CONTEXT.md
-  - docs/ROADMAP-PLATFORM.yaml
 ---
 
 # Planning Methodology & Rules
@@ -27,31 +23,38 @@ never_on_main: true                # no file edits while on main branch
 When reading `logs/.preflight-report.json`, apply these conditionals:
 - **`venv_ok: false`** -- Verify `bin/venv-python -c "import sys; print(sys.executable)"` resolves to the venv interpreter and rerun preflight. If still false, STOP.
 - **`creds_status: "unavailable"`** -- **Static-key recovery (non-fatal, Decision 60):** the static-key assume-role chain has no interactive login. Verify it with `aws sts get-caller-identity --profile agent_platform`; if the `agent_static` key was rotated, refresh `~/.aws/credentials`. Do NOT block -- continue in degraded mode (credential-dependent verifiers are skipped, emitting SKIPPED). Autonomous executors never attempt recovery.
-- **`log_sync_result.status == "committed"`** -- Print: "Session logs synced to main ([N] file(s) committed)." Continue.
+- **`log_sync_result.status == "committed"`** -- Print a one-line confirmation naming the file
+  count committed to main. Continue.
 - **`log_sync_result.status == "conflict"`** -- STOP. Print error and require human resolution.
-- **`uncommitted_changes` non-empty** -- Ask human: "Resume, stash, or discard?". Wait.
-- **`main_freshness.status == "fetch_failed"`** -- Informational. Surface: "Could not refresh `origin/main` ([error]). Critique and Scope-overlap checks will use the stale local main ref." Continue.
-- **`main_freshness.commits_behind > 20`** -- Surface as planning context warning: "Branch is N commits behind `origin/main`. Plan-critique (Step 9) reads `docs/PROJECT_CONTEXT.md`, `DECISIONS.md`, and `ROADMAP-PLATFORM.yaml` from the working tree; if these have moved on main, the critique evaluates against stale context. Recommend rebasing before continuing." Non-blocking but prompt the human to decide.
+- **`uncommitted_changes` non-empty** -- Ask human: resume, stash, or discard? Wait.
+- **`main_freshness.status == "fetch_failed"`** -- Informational: surface the fetch error and note
+  that Critique and Scope-overlap checks will use the stale local main ref. Continue.
+- **`main_freshness.commits_behind > 20`** -- Non-blocking planning-context warning: N commits
+  behind `origin/main`; Step 9 plan-critique reads PROJECT_CONTEXT/DECISIONS/ROADMAP-PLATFORM from
+  the working tree, so a stale tree means a stale critique -- recommend rebasing, let the human decide.
 - **`main_freshness.commits_behind > 0`** -- Retain `main_freshness.main_files_changed_since_branch` for the Step 4 Main Divergence Assessment. Non-blocking at this step.
 - **`cron_review_fresh: false`** -- Note to human (non-blocking).
-- **`ops_outbox` non-empty** -- Entries in migrated-table or `*_pending` dirs are ANOMALIES (Decision 84 I-4: those outboxes are retired and never drained) -- re-file the content via the portal and delete the files. Legacy staging dirs (telemetry/session_log/execution_plans) drain via `bin/venv-python -m scripts.sync_ops sync`. If that fails, STOP.
+- **`ops_outbox` non-empty** -- Entries in migrated-table or `*_pending` dirs are ANOMALIES (Decision 84 I-4: those outboxes are retired and never drained) -- re-file the content via the portal and delete the files. Legacy staging dirs (telemetry/session_log/execution_plans) drain via `bin/venv-python -m scripts.sync.ops sync`. If that fails, STOP.
 - **`open_recommendations > 0`** -- Surface counts and ask whether to address. Wait.
 - **`non_automatable_recommendations > 0`** -- Informational. Surface counts; do not require per-rec discussion. Individual review is suspended per Decision 73 until CD.17 / T4.2 reverses (Decision 67's Lambda-deploy clause was lifted by Decision 79; the STRATEGIC clause survives).
   - If `non_automatable_softcap_breached` is true (count > 250), surface as a planning context note.
-- **`friction_patterns` non-empty** -- Surface repeated patterns as planning context.
-- **`metrics_anomalies` non-empty** -- Surface anomalies as planning context.
-- **`token_anomalies` non-empty** -- Surface as planning context: "Context file token warning: [file list] exceed the 50K token threshold."
-- **`data_quality.last_run.verdict == "FAIL"`** -- Surface as planning context: "Data quality checks failing ([N] failures across [tables]). Run `bin/venv-python -m scripts.data_quality_runner` for details." Non-blocking but relevant if the plan touches data pipelines or table schemas.
-- **`data_quality.last_run` is null** -- Note: "Data quality checks have never been run. After fixing the pipeline, run `bin/venv-python -m scripts.data_quality_runner` to establish a baseline." Non-blocking.
+- **`friction_patterns`, `metrics_anomalies` non-empty** -- Surface as planning context.
+- **`data_quality.last_run.verdict == "FAIL"`** -- Surface as planning context: N failures across
+  named tables; run `bin/venv-python -m scripts.data_quality_runner` for details. Non-blocking but
+  relevant if the plan touches data pipelines or table schemas.
+- **`data_quality.last_run` is null** -- Note that DQ checks have never run; after fixing the
+  pipeline, run the same command to establish a baseline. Non-blocking.
 - **`ci_rca_unresolved_recs` non-empty** -- **HARD BLOCK** at commitment time. `/plan` cannot scope unrelated work while any unresolved ci-rca rec exists. Proceed only to scope work that satisfies one of the three Related-Work conditions (see Step 8) OR has a logged deferral rationale in the new plan's Context section. (Legacy: if the report only has `ci_rca_recs` and no `ci_rca_unresolved_recs`, treat all entries as HARD BLOCK.) Full triage surfacing and the SOFT PROMPT / HARD ALERT classification is `/orient`'s responsibility -- run `/orient` for the full ci-rca visibility layer.
 - **`ci_rca_likely_resolved_recs`, `ci_rca_liveness_alert`, `forward_fix_recursion_alert`** -- Full triage (SOFT PROMPT, HARD ALERT, forward-fix recursion) is surfaced by `/orient`. If still unresolved when `/plan` runs, apply the close or triage guidance from the orient skill.
-- **`budget_bypass_alert` non-null** -- **Informational**. Surface the count and recent bypass reasons as planning context: "Fast-tier budget bypassed N times in 7 days." Repeated `--ignore-budget` use indicates fast-tier drift and likely warrants a planning session to revisit the budget or identify which check is slow.
+- **`budget_bypass_alert` non-null** -- **Informational.** Surface the bypass count and recent
+  reasons as planning context. Repeated `--ignore-budget` use indicates fast-tier drift and likely
+  warrants revisiting the budget or identifying the slow check.
 
 ### What Telemetry Health Represents
 
 The preflight `telemetry_health` section reports operational health of the telemetry and ops data pipelines:
 
-1. **Telemetry store status** (stub, Decision 84): the old Athena telemetry tables died with the 2026-05-28 account migration, so the preflight reports a single `telemetry-store: not migrated (Phase 4)` check with NO queries issued. Session metrics return when telemetry re-lands on DuckLake (Decision 84 Phase 4 / tier_item T2.36). Until then, do not gate plans on session counts/staleness.
+1. **Telemetry store status** (stub, Decision 84): the old Athena telemetry tables are retired, so the preflight reports a single `telemetry-store: not migrated (Phase 4)` check with NO queries issued. Session metrics return when telemetry re-lands on DuckLake (Decision 84 Phase 4 / tier_item T2.36). Until then, do not gate plans on session counts/staleness.
 
 2. **Data quality coverage** (from `config/agent/data_quality/*.yaml`): how many declarative checks (not_null, unique, accepted_values, relationships, row_count, recency) are defined across how many tables. This answers: "Do we have visibility into data correctness?"
 
@@ -176,7 +179,7 @@ continue. Closeouts replace dead work; they do not become an excuse to skip the 
 confirmation gate (Step 6b).
 
 ## Suggest Aligned Recommendations
-Search `logs/.recommendations-log.jsonl` for open recommendations that align with the current task (ensure cache is fresh via `bin/venv-python -m scripts.sync_ops pull` during preflight):
+Search `logs/.recommendations-log.jsonl` for open recommendations that align with the current task (ensure cache is fresh via `bin/venv-python -m scripts.sync.ops pull` during preflight):
 1. Extract keywords from the task description (file paths, module names, concepts)
 2. Match against `title`, `file`, and `context` fields of open recommendations
 3. Present top 3-5 matches (if any):
@@ -227,24 +230,21 @@ When a plan creates or modifies documentation artefacts, apply these rules:
   and `semantics` metadata fields directly to the column entry in ops.yaml or
   telemetry.yaml. These fields are ignored by the DQ runner and consumed by agents.
   Do not create a separate briefing doc for the same information.
-- Decision 86 routing rule -- no new standing prose-architecture docs under docs/:
-  route forward intent to tier_items, rationale to Decisions, field semantics to contracts.
-  Creating a new docs/INTENT-*.md or any equivalent standing prose-architecture doc is
-  forbidden. The validate.py intent-doc-freeze guard enforces this on-disk.
-  Existing INTENT docs are grandfathered via docs/intent-migration/MANIFEST.yaml and
-  retire as extraction waves complete.
+- Decision 86 routing rule -- no new standing prose-architecture docs under docs/: route forward
+  intent to tier_items, rationale to Decisions, field semantics to contracts. A new
+  docs/INTENT-*.md or equivalent is forbidden; validate.py's intent-doc-freeze guard enforces this
+  on-disk. Existing INTENT docs are grandfathered via docs/intent-migration/MANIFEST.yaml.
 
 ## Infrastructure & Lambda Assessment (Workflow Step 4)
-**Infrastructure:** If `.tf` files are in scope, add an "Infrastructure Dependencies table" to the plan. Lambda handlers must accept a `force_{param}` event field. Pre-merge vs Post-deploy timing must be specified.
+**Infrastructure:** If `.tf` files are in scope, add an "Infrastructure Dependencies table" to the plan. Lambda handlers must accept a `force_{param}` event field. Pre-merge vs post-deploy timing must be specified.
 
-**Speculative-plan expectations (CD.35 Wave 2 / T2.21, active):** When `.tf` files under `terraform/personal/` are in scope, the plan must account for the speculative-plan pipeline:
-- **Pre-merge (PR):** the `speculative-plan` job plans under `github_ci_plan`, posts a redacted diff + the guard's **predicted** verdict as a PR comment, and persists `plan.bin` to `s3://.../tfplan/personal/<pr-head-sha>.bin`. The predicted verdict is advisory; the merge-time guard re-run on the saved plan is authoritative.
-- **At merge (push to main):** the `apply-sandbox` job fetches the saved `plan.bin` reviewed on the PR and applies it -- **no re-plan** (Decision 77 no-TOCTOU). Apply is gated on the merge-time guard `success()` with no `continue-on-error`.
-- **Stale saved plan:** if the saved plan.bin is stale (Terraform detects state-serial mismatch), the apply exits non-zero, the convergence record goes red, and ci-rca files a `source=ci_rca` rec. Recovery is the `workflow_dispatch` acknowledge-and-retry (re-plans fresh, human-reviewed). **No silent re-plan-and-apply; the push path has no fallback.**
-- **IAM-sensitive diffs (guard exit 2):** the guard blocks IAM/trust/destroy changes from auto-applying. These land via `agent_platform_admin` human-gated apply (existing loop in `terraform/CLAUDE.md`). The speculative-plan job still runs and posts its comment; the predicted verdict will be BLOCKED.
-- **Convergence record `plan_sha`:** populated with `sha256(plan.bin)` on the push (saved-plan) path; null on `workflow_dispatch` (fresh plan).
+**Speculative-plan expectations (CD.35 Wave 2 / T2.21, active):** When `.tf` files under `terraform/personal/` are in scope, the plan must account for the speculative-plan pipeline: a PR-time plan is reviewed and saved, then re-applied at merge with no re-plan (Decision 77 no-TOCTOU), gated by the deterministic guard; IAM/trust/destroy diffs route to the human-gated path instead of auto-applying, and a stale saved plan recovers only via the human-reviewed acknowledge-and-retry path (never a silent re-plan-and-apply). `environment-taxonomy.yaml` is the sole SoT for the full pipeline mechanics (guard classification, saved-plan persistence, convergence-record shape); tier_item T2.21 tracks the pipeline's own completion. Do not re-derive the mechanics here -- name the required checks and point to that contract.
 
 **Lambda Deployment:** Use the manifest-derived file patterns (`bin/venv-python -m scripts.lambda_manifest --list-patterns`) to determine which scope files are Lambda-packaged, and `compute_affected_artifacts(changed_files)` to identify which active artifact(s) are affected. For each affected active artifact (status: active in its `src/lambdas/<slug>/manifest.yaml`), the plan MUST include per-Lambda build, deploy, smoke-test, and model ID validation steps (V3). Stub artifacts (status: stub) require no deploy step -- V1 suffices. Note: `config/agent/` is NOT Lambda-packaged and does NOT trigger this assessment. If `.tf` modifies IAM, terraform apply must precede Lambda deploy. (CD.16 + Decision 79)
+
+**Deploy channel by artifact class (Decision 125):** consult `docs/contracts/build-lambda.yaml`'s `deploy_channels` section (pointer-only; `environment-taxonomy.yaml` (conformance) is the sole classification SoT) to determine which channel an affected artifact deploys through:
+- **`terraform_personal_filemd5_coupled`** (the four `terraform/personal`-managed DuckLake Lambdas): the plan emits the governed decoupled code-deploy CD channel VP steps -- grep-only / CI-delegated per Decision 119 (name the required CI check or workflow as the authoritative verifier; no local `terraform init`/`plan` for `terraform/personal`). The bare local `bin/venv-python -m scripts.build_lambda --ducklake-only --deploy` invocation is break-glass only (Decision 125) and must never be the default VP step for this class. If the governed channel does not yet exist for the touched artifact, the plan must file a follow-on rec for it rather than defaulting to the local invocation.
+- **`decoupled_build_pipeline`** (the `data-pipeline`/`ops-compaction` targets in `src/data/handlers/`): local `bin/venv-python -m scripts.build_lambda --deploy` remains the routine deploy step -- these are not `terraform/personal`-managed, so Decision 125's channel gating does not apply to them.
 
 ## Complexity Assessment (Workflow Step 4)
 - **Scope files > 5** OR **estimated steps > 8** --> suggests classifying as **STRATEGIC**.
@@ -256,6 +256,40 @@ When a plan creates or modifies documentation artefacts, apply these rules:
 - If STRATEGIC (only valid when freeze is lifted), Work Areas must have precise lists, clear order, and concrete names.
 - If IMPLEMENTATION (and complex), execution steps must have explicit pre/post-conditions.
 - **Presentation Rule:** The classification MUST be presented to the human and confirmed, not assumed.
+- **SLOC decompose-by-default (Decision 128):** when a scope file's projected change would cross its `config/sloc_budgets.yaml` budget (or past 500 SLOC if currently unregistered), plan the crossing as a decomposition step (facade package, Decision 80/104/124 pattern), not a budget raise. A raise is a deliberate, Decision-cited exception -- do not default to it, and do not plan a bare `--update-sloc-budgets` re-seed as the fix (Decision 128 / B2: it no longer auto-seeds new oversized files).
+
+
+## Data-Model Assessment (Workflow Step 4)
+Conduct this assessment if a table (DDL/schema), a `field_semantics` entry, or a warehouse write path is
+in scope. Generalizes Precision Context Injection (Decision 66) to the data-modeling layer -- surface
+the standard at design time, before the plan commits to a schema, not as a post-rejection error. Full
+rules and the write-mode table live in `docs/contracts/data-modeling-standard.yaml`; AGENTS.md carries
+the ambient summary. Walk order:
+
+1. **Grain**: state "one row per ___" in one sentence. If it cannot be stated, the design is not ready
+   for the remaining steps.
+2. **merge_key + history/current split**: identify the business key the table merges on, and whether
+   the table needs a Type-1 current projection alongside its history table (SCD2) or history-only
+   (append_only).
+3. **Identity**: ULID, minted once at the write boundary -- never client-side, never a natural-key
+   primary key.
+4. **Join / correlation keys**: identify session/trace FKs and cross-table join keys the new table
+   participates in; consult `docs/contracts/_joins.yaml`.
+5. **Write mode**: SCD2 (mutable-entity ops tables) vs append_only (insert-once event/telemetry tables)
+   -- grain-first, NOT "default to SCD2" (telemetry/event tables are insert-once append_only with no
+   SCD2 envelope, Decision 96).
+6. **Partitioning** (CD.9): every table is partitioned; name the partition column.
+7. **Reject-CRUD checklist**: no in-place UPDATE/DELETE as the default write path, no
+   one-row-per-entity mutation model, a read cache is never a write source (AGENTS.md
+   Warehouse-as-source-of-truth invariant).
+8. **Fable escalation**: for load-bearing/novel calls only -- a NEW table, a NEW identity scheme, or a
+   `merge_key` change -- dispatch a `model:"fable"` advice-consult per the `overseer` skill's Fable
+   Advice-Consult Protocol before committing the design. Routine, already-settled calls (an additional
+   column on an existing SCD2 table, a grain that matches an existing sibling table) do not need
+   escalation.
+
+**Framing reminder**: append-only/SCD2 as a family is the design default/prior, explicitly NOT a ban on
+sanctioned exceptional physical deletes (Decision 70) or lifecycle-closure paths (Decision 103).
 
 
 ## Main Divergence Assessment (Workflow Step 4)
@@ -275,37 +309,88 @@ Classify deterministically. Highest tier wins.
 - **V2 (Unit):** Python source with no external integration. Must exercise real code paths.
 - **V3 (Integration):** External systems, Terraform, Lambdas. Must tag steps as `[pre-deploy]` or `[post-deploy]`.
 
-**Provider-init egress (terraform roots only):** a terraform root using a third-party
-(github.com-hosted) provider (e.g. `kislerdm/neon` in `terraform/personal`) cannot `terraform
-init`/`validate`/`plan` from a stock CC-web session -- the outbound proxy blocks the provider's
-github.com checksum fetch. Author local terraform VP steps as grep-only, plus `terraform fmt
--check` ONLY when terraform is present (fmt needs no provider install); delegate `terraform
-validate`/`plan` to CI -- name the required `terraform-validate` check and the speculative-plan job
-as the authoritative verifiers, never a local `terraform validate`/`init`/`plan` invocation. See
-`terraform/CLAUDE.md` and Decision 119 for the constraint and CI-delegation contract.
+**Provider-init egress (terraform roots only):** CC-web cannot fetch third-party provider checksums.
+Use grep and provider-free `terraform fmt -check` locally; delegate validate/plan to CI's required
+`terraform-validate` check and the speculative-plan job as the authoritative verifiers. Never
+author a local init/validate/plan VP command. See `terraform/CLAUDE.md`, Decision 119.
 
 **VP Design Rationale:**
 When writing Verification Plan steps, ask: "If this feature had a subtle bug (wrong column name, missing permission, off-by-one filter), would this step catch it?" If no, the step is too shallow.
 
-**Anti-patterns to reject:**
-- Structural-only: `grep -q "def my_function" src/module.py` -- proves existence, not function
-- Test-only: "Run pytest" -- proves mocked paths work, not the real integration
-- Existence-only: "Confirm the Athena view was created" -- does not confirm it returns correct data
-- Import-only: "Confirm `import module` succeeds" -- loading without error is not verification
-- Terraform-only: "Confirm `terraform apply` succeeded" -- infrastructure existing is not enough
-- Prose-only VP step: VP step describes what to check but has no executable command -- the implement agent will substitute a weaker check
+**Test Obligation Assessment:** new IMPLEMENTATION plans are schema 4 with one `test_obligations`
+row per behavior-capable scope file (shape below); waivers are per-source, never plan-wide.
+Graduate rows reuse the linked VP step and existing registry slots; adequacy is plan-critique's
+judgement, not schema inference.
 
-**Hermetic authoring (T3.15 / VF-01):** author `pre-deploy` VP steps hermetic where possible --
-narrow, deterministic, creds-free commands with no network or AWS calls -- and mark them
-`hermetic: true`. The `validate_vp_replay` check (`--pre` tier) independently re-executes every
-`phase: pre-deploy` + `hermetic: true` step of a diff-added/modified PLAN-*.yaml, so a hermetic
-pre-deploy step that fails on the PR tree cannot go green on self-report alone -- this is the
-independent re-execution of the per-change proof named in VF-01 /
-`docs/INTENT-verification-system.md`. Never mark a step hermetic if its command transitively
-invokes `scripts/validate.py --pre` or the full check sequence -- the replay would recurse into
-itself. Steps that must invoke pytest, deploy infrastructure, or otherwise cannot run hermetically
-stay `hermetic: false` (the default) and are excluded from replay with a printed reason, not
-silently skipped.
+**Anti-patterns to reject:** structural-only (`grep -q "def my_function" src/module.py` proves
+existence, not function); test-only ("Run pytest" proves mocked paths, not real integration);
+existence-only ("Confirm the Athena view was created" doesn't confirm correct data); import-only
+("Confirm `import module` succeeds" isn't verification); terraform-only ("Confirm `terraform
+apply` succeeded" -- infra existing isn't enough); prose-only (no executable command -- the
+implement agent will substitute a weaker check).
+
+**Hermetic authoring (T3.15 / VF-01, amended by Decision 148/plan-resolution-content-keyed):**
+`hermetic: true` is the correct default again for `pre-deploy` feature-verification steps --
+narrow, deterministic, creds-free commands. Steps are replayed at implement time by
+`validate_vp_replay`, not plan time: a plan-only PR defers with a printed reason
+(`implementation_declared` not newly true); the implement PR resolves plans via
+`_common.resolve_declared_plans` and replays their hermetic steps against the complete tree.
+Advisory-SKIPs on unreachable `origin/main`. `bin/venv-python` is now safe here -- it falls back
+to a sentinel-dep-importing interpreter when `.venv` is absent, resolving in venv-less CI too.
+Never mark a step hermetic if it invokes `scripts/validate.py --pre` (recursion). Steps needing
+pytest/deploys stay `hermetic: false`, excluded with a printed reason.
+
+**Graduation disposition authoring (T3.21, enforced VF-05):** every `phase: pre-deploy` VP step
+must carry a `graduation` field -- one of `graduate`, `waive`, or `not-applicable`.
+`validate_graduation_completeness`'s plan-PR leg (`--pre` and full tiers) fails a diff-added or
+diff-modified `PLAN-*.yaml` that leaves any pre-deploy step's disposition unset (see the
+implement skill's Bundled Recommendation Relevance Re-check-adjacent "Verification Graduation"
+section for what happens with each disposition at implement time). Classify each pre-deploy step
+at plan-authoring time:
+- **`graduate`** -- the step's command is expressible as one of the six canonical primitive
+  slots in `scripts.verification_checks.CANONICAL_SLOTS` (command_exit_zero,
+  command_output_matches, file_presence, grep_count, test_selector, metric_under_threshold) AND
+  is hermetic-or-cheap enough to run as a standing regression guard. Requires
+  `graduation_check_id`: a stable, human-readable slug (e.g. `"kernel-slot-count-eq-6"`,
+  matching the registry's `check_id` convention) that the implementing session will use verbatim
+  as the registry row's identity -- pick it now so the plan-implement-registry linkage is fixed
+  at plan time, not improvised later.
+- **`waive`** -- the step is kernel-expressible in principle but graduating it now is
+  impractical (e.g. it depends on this session's transient repo state, or duplicates an
+  already-graduated check). Requires `graduation_waiver_reason`: a substantive, specific reason
+  (not "not needed" or "skip") -- the plan-critique gate reviews this reason for honesty.
+- **`not-applicable`** -- the step is NOT kernel-expressible: it requires multiple commands,
+  human/LLM judgement, live infrastructure (a V3 deploy/invoke), or wall-clock/credential state.
+  No extra field required.
+
+Plan critique is the honesty check on this call, applied before the fix exists (so there is no
+pressure to wave through a finished implementation). When unsure, prefer `not-applicable`: a false
+`not-applicable` is a missed regression guard, a false `graduate` only a mandatory
+`waive`-with-reason detour at implement time.
+
+## Decision Significance Gate (before drafting any numbered Decision -- fresh or CD ratification)
+
+Check `docs/contracts/decision-entry.yaml`'s `significance:` section before drafting ANY numbered
+`## Decision NNN:` text (a fresh governance Decision, or a CD ratification below): only a durable
+architectural commitment with reversal-relevant consequences clears the bar. A CD state-flip,
+operational fact, or field-semantics change routes per that section's four rows instead (the
+batch-wave clause below, a rec/tier_item note, or a contract governance note).
+
+Three property tests gate the draft -- checkable assertions on the drafted text, never an
+open-ended "consider whether" prompt:
+1. **Envelope marker cited.** The drafted entry's fenced ```yaml metadata envelope carries a
+   `significance` field naming one of the four routing keys plus a non-empty justification
+   (`decision-entry.yaml`'s `metadata_envelope.required_fields`, Decision 167 clause 2) -- a
+   Significance claim made only in narrative prose, with no envelope field, fails this test.
+2. **Contract-first justification (rec-3015).** The envelope justification names, in one clause,
+   why not a contract: the specific `docs/contracts/*.yaml` governance-note home (or in-place
+   amendment) considered for this content and the concrete reason it was rejected in favor of a
+   fresh number. A justification that never names a rejected alternative fails this test.
+3. **amendment_forms routing alternative (rec-3016).** Before minting a number to amend exactly
+   one prior entry at a single call site, check whether `decision-entry.yaml`'s `amendment_forms`
+   (a dated in-place annotation on the amended entry) already carries the same commitment at zero
+   header cost -- draft the amendment_forms shape instead unless the content independently clears
+   the significance bar on its own terms.
 
 ## Candidate Decision Ratification (Workflow Step 5b, when the plan realizes/ratifies a CD)
 
@@ -319,8 +404,7 @@ this drafting step must satisfy.
 **Protocol:**
 1. Confirm the CD's `realization_evidence` (or equivalent corroborating evidence gathered this
    session) actually establishes the gated work is realized/live -- do not draft a ratification for
-   a forward-intent CD (Decision 55: no unilateral judgement calls; a CD with no realization
-   evidence is not a ratification candidate, full stop).
+   a forward-intent CD (Decision 55: no unilateral judgement calls; no evidence, no candidacy).
 2. Add a **ratification block** to the plan (own section, distinct from `scope`/`execution_steps`)
    containing:
    - The full drafted Decision text (title, body, any amendments to other Decisions/CDs it
@@ -331,10 +415,14 @@ this drafting step must satisfy.
      `--file-decision` single-row alternative) command sequence /implement will run.
    - The exact roadmap-flip diff: `state: ratified` + `ratified_as: dec-NNN` + `filed_via:
      ops_decisions:dec-NNN` (canonical shape; same NNN in both fields) on the target CD entry.
+   - **Wave bundling:** when >=2 same-session PURE gate-clear CDs realize together (no content
+     beyond "this CD's work is realized"), draft ONE wave `## Decision N` entry with a per-CD
+     clause each, all pointing at the shared dec-NNN (`batch_wave_ratified_form` in
+     candidate-decision-ratification.yaml) -- a content-bearing ratification keeps its own entry.
 3. This is a DRAFT only. Do not run the portal write or the roadmap flip during `/plan` --
    Decision 105 / the plan's own constraints reserve execution for `/implement` behind an
-   execution-time human confirmation gate. Planning-time writes here would make the Step 6b
-   confirmation gate meaningless (the write would already be done before the human signs off).
+   execution-time human confirmation gate. Planning-time writes would make Step 6b's confirmation
+   gate meaningless (the write already done before the human signs off).
 4. The Step 6b Confirmation Gate (below) and the Critique Gate (Workflow Step 9) ARE the human
    sign-off on the drafted Decision text -- do not add a separate approval step. If Decision-Scout
    (Step 6a) flags a contradiction with the drafted text, resolve it before presenting.
@@ -346,7 +434,7 @@ catches any resulting header mismatch, so shifting to the next free number at ex
 
 ## Decision Scout Gate (Workflow Step 6a, pre-presentation)
 
-This gate fires BEFORE Step 6b's presentation to the human. Its job is to surface any active decisions the proposed approach must cite, contradict, or pivot around -- without paying the cost of loading the full DECISIONS.md, currently >200KB, into the planning agent.
+This gate fires BEFORE Step 6b's presentation to the human. Its job is to surface any active decisions the proposed approach must cite, contradict, or pivot around -- without paying the cost of loading the full DECISIONS.md (large -- near its Decision 134 size ceiling) into the planning agent.
 
 **Example prompt body:**
 > "You are running the decision-scout gate in a fresh context window. Invoke the `decision-scout` skill via the Skill tool. The skill needs the following inputs (use them in your scout analysis):
@@ -358,7 +446,12 @@ This gate fires BEFORE Step 6b's presentation to the human. Its job is to surfac
 >
 > Return the skill's `## Decision Scout Report` output verbatim, including the final `Verdict:` line. Do not edit any files."
 
-**Dispatch shape:**
+**Subagent-dispatch mode:** if you are a subagent (`SUBAGENT CONTEXT` header, or no `Agent` tool, or
+a nesting error), do not dispatch inline -- gate-request (status `GATE_REQUEST`, `gate:
+decision-scout`) and resume via `SendMessage` on verdict. See the overseer skill's
+subagent-dispatch division of labor; schema: `docs/contracts/overseer-dispatch.yaml#gate_request_trampoline`.
+
+**Dispatch shape (non-subagent runs):**
 - `subagent_type: "general-purpose"` (needs `Skill`, `Read` access)
 - `description: "Decision scout gate"`
 - `prompt:` a self-contained brief per the example above, supplying Intent (Step 3), Proposed approach (Steps 3-5 synthesis), Scope file list (Step 4), Verification Tier (Step 5), and any decision IDs already cited by the human. Instruct the subagent to invoke the `decision-scout` skill via the `Skill` tool and return the structured `## Decision Scout Report` output verbatim.
@@ -377,6 +470,9 @@ Do not loop more than 3 times. If the gate keeps returning BLOCK after 3 revisio
 ## Confirmation Gate (Workflow Step 6b)
 Wait for explicit 'write the plan' (or clear equivalent) before proceeding. Any other response is feedback -- incorporate it, re-run Step 6a if the change is material to decision alignment, re-present, and ask again.
 IT IS **CRITICAL** THAT YOU DO NOT PROCEED UNTIL THE HUMAN CONFIRMS THE PLAN.
+**If you are a subagent** (no direct chat turn with the human to wait on), obtain this SAME
+confirmation via the `AskUserQuestion` tool -- it blocks for a real human reply regardless of
+caller; this checkpoint needs no overseer mediation (not a bias-fresh-context gate).
 
 ## Create Branch (Workflow Step 7)
 See AGENTS.md `## Git-ops procedure` as the canonical git-ops authority for branching topology (DEV vs ADMIN containers, AWS profiles, harness branch vs never agent/).
@@ -387,60 +483,72 @@ git branch --show-current
 ```
 If the result is `main`, STOP.
 
-Derive the plan slug from the task description (independent of the branch name). The plan filename is `docs/plans/PLAN-{slug}.yaml` (schema-validated by `scripts/plan_document.py`; the legacy `PLAN-{slug}.md` form is DEPRECATED per T1.11 / CD.22 -- never author new .md plans; tooling warns on the .md path for one release cycle, then it is removed). After writing and approving the plan, it is merged to `main` via a GitHub MCP PR so a fresh `/implement` session can read it by explicit path.
+Derive the plan slug from the task, not the branch. Author only `docs/plans/PLAN-{slug}.yaml`; legacy `.md` plans are deprecated. Merge the approved plan before implementation.
 
 ## PLAN-{slug}.yaml Template (Workflow Step 8)
-The plan is a YAML document validated against the `PlanDocument` Pydantic schema (`scripts/plan_document.py`, enforced by `validate.py` in both tiers). Unknown keys FAIL validation (`extra="forbid"`). Use exactly this structure -- comments document field semantics:
+The plan is a YAML document validated against the `PlanDocument` Pydantic schema (`scripts/roadmap/plan_document.py`, enforced by `validate.py` in both tiers). Unknown keys FAIL validation (`extra="forbid"`). Use exactly this structure -- comments document field semantics:
 ```yaml
-schema_version: 1                  # int; must be 1
-slug: "{slug}"                     # must match the filename PLAN-{slug}.yaml
-intent: >-                         # 1-2 sentences: how this work contributes toward the North Star
+schema_version: 4 # required on every NEW plan; historical versions 1-3 stay valid
+handoff_policy:
+  full_validation_required_before_commit: true # exact literal; commit/PR waits for completed full exit 0
+  timeout_disposition: blocked # exact literal; resume later and rerun full from the start
+slug: "{slug}" # must match the filename PLAN-{slug}.yaml
+intent: >- # 1-2 sentences: how this work contributes toward the North Star
   ...
-plan_type: IMPLEMENTATION          # IMPLEMENTATION | STRATEGIC | REPORT-ONLY
-verification_tier: V2              # V1 | V2 | V3
-plan_path: docs/plans/PLAN-{slug}.yaml   # must equal docs/plans/PLAN-{slug}.yaml (slug consistency)
-phase: >-                          # product phase from docs/ROADMAP-PRODUCT.yaml and/or platform tier_item id
+plan_type: IMPLEMENTATION # IMPLEMENTATION | STRATEGIC | REPORT-ONLY
+verification_tier: V2 # V1 | V2 | V3
+plan_path: docs/plans/PLAN-{slug}.yaml # must match the filename slug exactly
+phase: >- # product phase from docs/ROADMAP-PRODUCT.yaml and/or platform tier_item id
   ...
-scope:                             # min 1 entry; only files listed here may be modified
+scope: # min 1 entry; only files listed here may be modified
   - file: path/to/file.py
-    action: Create                 # Create | Modify | Delete
+    action: Create # Create | Modify | Delete
     purpose: why this file changes
-bundled_recommendations: []        # included open recs (list of str), or []
-infrastructure_dependencies: []    # list of str; populate when .tf files appear in scope
-acceptance_criteria:               # min 1; each independently verifiable
+bundled_recommendations: [] # included open recs (list of str), or []
+infrastructure_dependencies: [] # list of str; populate when .tf files appear in scope
+acceptance_criteria: # min 1; each independently verifiable
   - verifiable condition 1
-verification_plan:                 # min 1 step; step ids must be unique
+verification_plan: # min 1 step; step ids must be unique
   - step: 1
-    phase: pre-deploy              # pre-deploy | post-deploy
+    phase: pre-deploy # pre-deploy | post-deploy
     action: exercise the feature
-    command: executable shell command   # REQUIRED non-empty -- prose-only VP steps fail the schema
+    command: executable shell command # REQUIRED non-empty -- prose-only VP steps fail the schema
     expected: specific expected result
     fix_if: what failure looks like
+test_obligations: # v4 IMPLEMENTATION: one row per behavior-capable scope file
+  - source: path/to/file.py # must equal a scope[].file
+    behavior: what must stay guarded
+    verification_step: 1 # an existing step id that runs the evidence
+    test_selector: tests/test_x.py::test_y # exactly one of test_selector | command
+    red_green_expectation: red before, green after # or waiver_reason (>=20 chars)
 constraints:
-  - limits from docs/PROJECT_CONTEXT.md and DECISIONS.md
+  - limits from PROJECT_CONTEXT.md, DECISIONS.md
   - No rescue agents or workaround loops (Decision 55)
 context:
   - Relevant decisions, phase dependencies, known gotchas
-  - "Decision-scout verdict + CITE list (verbatim decision ids)"                  # REQUIRED ITEM (WF-04a)
+  - "Decision-scout verdict + CITE list (verbatim decision ids)" # REQUIRED ITEM (WF-04a)
   - "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s)" # REQUIRED ITEM (WF-08)
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
-  - DECISIONS.md read
+  - only the plan-cited decision sections
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
-execution_steps:                   # REQUIRED non-empty for IMPLEMENTATION plans
+execution_steps: # REQUIRED non-empty for IMPLEMENTATION plans
   - Specific file to create/modify -- what it must do
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - 'Report: what was implemented, verification results'
-work_areas: []                     # STRATEGIC plans only (required there, forbidden otherwise);
-                                   # entry shape: {area, scope, rationale, complexity: XS|S|M|L|XL}
-rollback: optional rollback note   # optional str; omit if not applicable
+work_areas: [] # STRATEGIC plans only (required there, forbidden otherwise);
+  # entry shape: {area, scope, rationale, complexity: XS|S|M|L|XL}
+rollback: optional rollback note # optional str; omit if not applicable
+# fallback_reevaluation: OPTIONAL, only if this plan names a CD.27-gated tier item
+# (validate_fallback_reevaluation); never on an ordinary plan. 4 fields, extra=forbid:
+# {reevaluated_on, substrate_status, verdict: continue_on_current_substrate|fallback_triggered|obligation_lapsed, basis}
 ```
 
 After writing, validate before committing:
 ```bash
-bin/venv-python -m scripts.plan_document docs/plans/PLAN-{slug}.yaml
+bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-{slug}.yaml
 ```
 
 **Platform compatibility:** Verify shell commands are Linux/bash-compatible and use `bin/venv-python` for Python invocations.
@@ -466,6 +574,10 @@ Apply this check when writing the PLAN file. It is CONDITIONAL -- additive plans
 ## Critique Gate (Workflow Step 9)
 **DO NOT output the completion message until this step completes.**
 
+**Subagent-dispatch mode:** same three-signal check as the Decision Scout Gate above -- if
+triggered, do not invoke `plan-critique` inline (same-context bias); return `GATE_REQUEST`
+(`gate: plan-critique`) and resume via `SendMessage` on verdict.
+
 Launch a zero-context Claude subagent via the `Agent` tool to run the `plan-critique` skill in a fresh context window. The fresh-context requirement is non-negotiable: it eliminates the cognitive bias the planning agent has from authoring the artefact. Do NOT invoke the `plan-critique` skill in the current session via the `Skill` tool (same context = same bias). Do not use `scripts.agent_development.run_skill` -- it is broken per rec-568; dispatch the gate via the `Agent` tool + `Skill` instead.
 
 **Invocation shape:**
@@ -474,7 +586,7 @@ Launch a zero-context Claude subagent via the `Agent` tool to run the `plan-crit
 - `prompt:` self-contained, mentions:
   - The absolute path to `docs/plans/PLAN-{slug}.yaml` (a `.md` path is deprecated -- surface a deprecation warning and proceed)
   - Instruction to invoke the `plan-critique` skill via the `Skill` tool against that path
-  - The skill's required-context files per its frontmatter (`docs/PROJECT_CONTEXT.md` full read; `docs/ROADMAP-PRODUCT.yaml`/`docs/ROADMAP-PLATFORM.yaml`/`docs/DECISIONS.md` targeted, not full-file -- see the `plan-critique` skill's Phase 1)
+  - Context files to load explicitly: `docs/PROJECT_CONTEXT.md` (full read) plus targeted (not full-file) projections of the roadmap items and decision sections the plan names from `docs/ROADMAP-PRODUCT.yaml` / `docs/ROADMAP-PLATFORM.yaml` / `docs/DECISIONS.md` -- see the `plan-critique` skill's Phase 1
   - For IMPLEMENTATION plans: instruction to also read every file in the plan's Scope table
   - Requirement to return the skill's structured output verbatim, including the final `Recommendation: PROCEED / REVISE` line
   - Forbid file edits
@@ -507,13 +619,11 @@ This gate reviews the PLAN artefact, not the report deliverable. For REPORT-ONLY
 
    For non-technical reports, pick perspectives that maximise differentiation (e.g. quantitative-rigour reviewer + narrative-clarity reviewer; or domain-A specialist + domain-B specialist). The principle is: orthogonal lenses surface more issues than two clones of the same lens.
 
-3. **Each agent prompt MUST:**
-   - Identify the deliverable file(s) under critique by absolute path
-   - Specify the perspective explicitly
-   - Specify supporting files to read freely (PROJECT_CONTEXT, sibling INTENT docs, relevant source code)
-   - Require structured output: Strengths (brief) / Concrete Issues or Risk Findings (numbered, specific, with file:line refs and severity) / Recommended Revisions / Verdict (PROCEED | REVISE | BLOCK)
-   - Forbid the agent from editing files
-   - Cap response length (~800-900 words) to keep findings focused
+3. **Each agent prompt MUST:** identify the deliverable file(s) by absolute path; specify the
+   perspective explicitly; name supporting files to read freely (PROJECT_CONTEXT, sibling INTENT
+   docs, relevant source); require structured output (Strengths / Concrete Issues or Risk
+   Findings with file:line refs and severity / Recommended Revisions / Verdict PROCEED | REVISE |
+   BLOCK); forbid file edits; cap response length (~800-900 words).
 
 4. **Synthesize findings.** When both agents return, identify consensus issues (cited by both -- highest priority) vs unique findings (one perspective only -- second priority). Cluster by severity.
 
@@ -530,12 +640,12 @@ This gate reviews the PLAN artefact, not the report deliverable. For REPORT-ONLY
    Do not loop indefinitely. After 3 rounds without convergence, escalate to the human for a decision call -- continued iteration typically signals either a structural issue with the deliverable's scope or diminishing returns.
 
 **Anti-patterns to reject:**
-- Single critique agent: misses orthogonal issues by definition
-- Same perspective twice: produces duplicate findings, wastes tokens
-- Sequential critiques: parallel critiques fire in roughly the same wall-clock window and surface independent findings faster
-- "Tell the agent what to look for": biases the critique. The agent should investigate fresh; the prompt frames perspective, not findings.
-- Skipping the re-critique after revision: a revision that "addresses" finding X may introduce finding Y; only a fresh critique catches it
-- Auto-accepting PROCEED on round 1 without reading findings: if both agents return PROCEED with shallow strengths and no issues, the prompts may have been too generic -- consider re-launching with sharper perspectives
+- Single critique agent (misses orthogonal issues by definition); same perspective twice
+  (duplicate findings, wasted tokens); sequential critiques (parallel surfaces findings faster);
+  "tell the agent what to look for" (biases the critique -- frame perspective, not findings);
+  skipping the re-critique after revision (a fix for X may introduce Y); auto-accepting PROCEED on
+  round 1 without reading findings (shallow strengths + no issues may mean prompts were too
+  generic -- relaunch with sharper perspectives).
 
 **When to skip Step 10 entirely** (human override):
 The human may explicitly state "skip report critique" after this step's purpose has been surfaced. This is logged in the PLAN's Known Gaps. Default is MANDATORY -- the gate fires unless explicitly waived.

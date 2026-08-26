@@ -31,6 +31,14 @@
 
 resource "aws_iam_role" "platform_dev" {
   name                 = "PlatformDev"
+  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/agent-platform-github-ci-apply-boundary"
+  # DEP-02 / Decision 144 (T2.48): PlatformDev carries the MANDATORY boundary (broad-but-bounded
+  # runtime identity). PlatformAdmin is DELIBERATELY EXCLUDED (control identity that must remain able
+  # to amend the boundary; attaching DenyBoundaryPolicyModification to it would wedge break-glass --
+  # Decision 144 pt.3 / Decision 113 two-principal split). PlatformDev's own DEP-13 Denies
+  # (DenyStateAndConvergenceWrite / DenyStateRead, slice B) are unaffected -- a boundary is a ceiling
+  # and an identity Deny always wins. PlatformDev bounding caps its FUTURE runtime to the boundary's
+  # DataPlaneAllow service set until a boundary amendment widens it (design note, Decision 144 pt.7).
   max_session_duration = 36000 # 10h; matches duration_seconds in ~/.aws/config so CC-web sessions run unattended
   description          = "Daily agent ops (runtime): Athena query, S3 read/write on the data lake, DynamoDB counters, Glue read"
 
@@ -192,6 +200,32 @@ resource "aws_iam_role_policy" "platform_dev_runtime" {
           aws_secretsmanager_secret.alpaca_paper.arn,
           aws_secretsmanager_secret.alpaca_live.arn,
         ]
+      },
+      {
+        # DEP-13 (T2.44 / Decision 144 pt.3, pt.7): explicit Deny overriding the bucket-wide
+        # S3ReadWrite Allow above -- fences the ambient PlatformDev runtime identity (every CC-web
+        # session) off the convergence-record anti-masking anchor and the tfplan/tfstate prefixes,
+        # so the runtime identity cannot spoof a green convergence record or tamper with a saved
+        # plan.bin. Explicit Deny always overrides an Allow elsewhere in the same policy.
+        Sid    = "DenyStateAndConvergenceWrite"
+        Effect = "Deny"
+        Action = ["s3:PutObject", "s3:DeleteObject"]
+        Resource = [
+          "${aws_s3_bucket.data_lake.arn}/convergence/personal/*",
+          "${aws_s3_bucket.data_lake.arn}/tfplan/personal/*",
+          "${aws_s3_bucket.data_lake.arn}/tfstate/personal/*",
+        ]
+      },
+      {
+        # DEP-13 (T2.44 / Decision 113): deny tfstate READ too -- both ExternalIds (PlatformDev's
+        # own and PlatformAdmin's) live in tfstate's assume_role_policy trust documents, so a
+        # DEV-container key theft that only reaches PlatformDev must not be able to read them out
+        # of state and escalate to PlatformAdmin. ExternalId-based state recovery is admin-tier-only
+        # (see terraform/CLAUDE.md).
+        Sid      = "DenyStateRead"
+        Effect   = "Deny"
+        Action   = ["s3:GetObject"]
+        Resource = ["${aws_s3_bucket.data_lake.arn}/tfstate/personal/*"]
       },
     ]
   })
@@ -564,6 +598,11 @@ resource "aws_iam_role_policy" "platform_admin_datalake" {
           "s3:GetBucketObjectLockConfiguration",
           "s3:GetBucketCORS",
           "s3:GetBucketWebsite",
+          # T2.43 gap: aws_s3_bucket_notification.data_lake_prod_triggers is provisioned by
+          # PlatformAdmin directly (admin-apply), so the admin role itself needs the write action
+          # too, not just the CI roles' refresh-read grant.
+          "s3:GetBucketNotification",
+          "s3:PutBucketNotification",
         ]
         Resource = [aws_s3_bucket.data_lake.arn]
       },
@@ -683,7 +722,7 @@ resource "aws_iam_role_policy" "platform_admin_datalake" {
 # ---------------------------------------------------------------------------
 # Bootstrap state backend (PLAN-terraform-cicd-bootstrap-root / T2.23): PlatformAdmin provisions and
 # uses the terraform/bootstrap root's S3 state backend. The bucket (agent-platform-bootstrap-tfstate)
-# is created out-of-band by the documented runbook (terraform/bootstrap/README.md) and is NOT a
+# is created out-of-band by the documented runbook (terraform/bootstrap/CLAUDE.md) and is NOT a
 # Terraform resource in any root -- codifying it would be circular (the bootstrap root's own state
 # lives in it). This is the admin provisioning path; it does NOT weaken the bootstrap isolation, which
 # fences the github_ci_apply CI role (the pipeline) out of bootstrap state. PlatformAdmin is the admin

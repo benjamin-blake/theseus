@@ -52,6 +52,13 @@ The bundle is a JSON object with these fields relevant to RCA:
 - `escape_mode`: how the check escaped the pre-merge gate (`check_ran_vacuously`, `no_premerge_gate_by_design`, `tier_misplaced`, `undetermined`)
 - `vacuous_pass`: whether pytest collected 0 tests (True/False/"undetermined")
 - `sha256`: bundle identifier for `evidence_bundle_ref`
+- `retrieval_evidence.limits`: the bounded-retrieval volume envelope (byte/line caps, whether
+  the retrieved log was truncated). A step marked retrieved can still have a truncated log --
+  `limits` is the sole reporter of that axis, orthogonal to `scope` below.
+- `retrieval_evidence.scope`: per failed job, EVERY step that executed as `{step_index,
+  conclusion, log_retrieved}`. `log_retrieved=false` means that step's log was NOT shown to
+  you -- you have no evidence for what happened in it and must not narrate about it as
+  observed fact. This is what Step 4's `unobserved_steps` echo is derived from.
 
 Use these fields directly in the `context_v2_json` you compose below. If the bundle is
 absent or unreadable (evidence step failed, apply-failure backstop path), fall back to
@@ -80,7 +87,7 @@ to CiRcaContext. All of the following fields are required:
   "schema_version": 2,
   "proximate_cause": "<100-600 chars: the observable fact the failing check reported>",
   "why_chain": [
-    "<3-7 entries, each 40-250 chars, iterative 'but why?' descent>",
+    "<3-7 entries, each 40-400 chars, iterative 'but why?' descent>",
     "<...>",
     "<final entry MUST contain a systemic keyword AND a file:line citation>"
   ],
@@ -92,9 +99,29 @@ to CiRcaContext. All of the following fields are required:
   },
   "recurrence_class": "<novel|instance_of_known_pattern|regression>",
   "corrective_action": "<100-600 chars: tactical fix that restores service>",
-  "preventive_action": "<100-800 chars: systemic change that prevents recurrence>"
+  "preventive_action": "<100-800 chars: systemic change that prevents recurrence>",
+  "unobserved_steps": [
+    {"job_id": "<int, from retrieval_evidence.scope>", "step_index": "<int, from retrieval_evidence.scope>"}
+  ]
 }
 ```
+
+`unobserved_steps` is a required field: DERIVE it yourself from `retrieval_evidence.scope` --
+list every `{job_id, step_index}` pair whose scope entry has `log_retrieved=false`. If every
+scope entry has `log_retrieved=true` (or `retrieval_evidence` is absent from the bundle), set
+`unobserved_steps` to an empty list `[]`. Do NOT copy a stamped value from anywhere -- there is
+nothing to copy: the authoritative `unobserved_steps_authoritative` field is computed by the
+portal INSIDE `file_rec`, after you compose this object, so it does not exist yet when you
+write `unobserved_steps`. The portal cross-checks your echo against its own computation and
+tags a mismatch; deriving it correctly the first time avoids that tag. A listed step was NOT
+observed -- do not narrate what happened inside it as if you had read its log.
+
+Each `why_chain` entry must be **40-400 characters** (schema_version=2 ceiling). The final
+entry MUST contain, verbatim, at least one of these 11 systemic keywords: `gate`, `tier`,
+`policy`, `contract`, `gap`, `missing`, `absent`, `placement`, `scope`, `invariant`,
+`enforcement` -- AND a file:line citation (e.g. `scripts/validate.py:284`). A terminus that
+only restates the symptom (no systemic keyword, no citation) is rejected; use
+`why_chain_terminus_override` only when a file:line terminus genuinely cannot be derived.
 
 Optional fields:
 - `prior_art_citation`: cite a rec-NNNN or Decision NNN if this is a known pattern
@@ -138,30 +165,35 @@ Requirements for each field:
 - **--context-v2-json**: The JSON object composed in Step 4, single-quoted to avoid shell
   expansion. If `json.loads` fails, the portal exits non-zero and files nothing.
 
-One rec per failed check (one evidence bundle = one filing). If multiple checks failed,
-diagnose and file for the primary cause only.
+One rec per failed check (one evidence bundle = one filing). When multiple checks failed
+(multiple bundles in `/tmp/ci-rca-bundles/`), diagnose and file ONE rec per bundle -- never
+collapse multiple bundles into a single filing. Repeat Steps 2-5 for each bundle.
 
 ### Step 6: Report
 
 Print a brief summary of:
 - Run ID diagnosed
-- Root cause classification (from evidence bundle or derived)
-- The rec ID that was filed (from the portal output)
+- Root cause classification per bundle (from evidence bundle or derived)
+- The rec ID filed for each bundle (from the portal output)
 
-As the **final line** of your output, emit exactly one of:
+As the **final lines** of your output, emit ONE marker per rec filed (one bundle = one
+line, each carrying that bundle's `failure_category` token):
 
 ```
-FILED: <rec_id>
+FILED: <rec_id> <failure_category>
 ```
 
-or, if no recommendation was filed:
+If a bundle produced no filing, emit its line as:
 
 ```
 FILED: none
 ```
 
-This marker is the sole authoritative filing signal parsed by the workflow.
-Downstream tooling (`scripts/ci_rca_filing.py`) reads only this marker --
+For a single-failure run, emit exactly one `FILED:` line. For a multi-failure run, emit one
+`FILED:` line per bundle, in the order the bundles were diagnosed.
+
+These markers are the sole authoritative filing signal parsed by the workflow.
+Downstream tooling (`scripts/ci_rca/filing.py`) reads only these markers --
 a bare mention of a rec id elsewhere in the output does NOT count as filed.
 
 ## Hard Rules

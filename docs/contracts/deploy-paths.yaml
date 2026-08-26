@@ -1,0 +1,121 @@
+# Deployment-model navigation index (Decision 126). A Class D mechanism contract
+# (migration-step-3-grandfathering, T2.56 migration step 3) as of the `contract:` block below.
+#
+# Purpose: for each of the three agent intents (provision / deploy_code / reconcile) plus the
+# operator-only admin tier, name the trigger, the actor role, and a recovery pointer -- PLUS
+# the operator-tier procedure (admin_out_of_band.procedure below): the quarantined break-glass
+# recovery steps, moved out of terraform/CLAUDE.md's ambient dev-loop doc per Decision 127 /
+# tier_item T2.41. It is a POINTER for the other tiers and a PROCEDURE for the operator tier --
+# never a second source of truth: the apply-model / guard-classification rules (what blocks an
+# apply, in-budget vs out-of-budget IAM, guard exit codes) live SOLELY in
+# docs/contracts/environment-taxonomy.yaml (Decision 92 point 5 sole-SoT; Decision 86 no-drift) --
+# this file never restates them, including inside admin_out_of_band.procedure.
+#
+# Roles below are logical names only. No confidential AWS identifiers of any kind (account
+# numbers, resource names, cross-account trust tokens) appear in this file (Decision 101
+# public-content boundary) -- this repository is PUBLIC.
+contract:
+  id: deploy-paths
+  class: D
+  contract_version: 1
+  status: active
+  description: >-
+    Class D mechanism-contract envelope for this file (migration-step-3-grandfathering, T2.56
+    migration step 3). The intent -> trigger -> recovery index body itself is unchanged by this
+    envelope.
+  subject: deploy-paths-navigation
+  evaluator:
+    agent_surface: AGENTS.md
+
+amendment_log:
+  - date: "2026-08-13"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      CFG-11 conversion: three blocks_ref anchors and the procedure description's citation
+      repointed from the deleted environment-taxonomy markdown contract's anchors to
+      environment-taxonomy.yaml key paths; deploy_code.description corrected from "four" to "five"
+      DuckLake Lambdas (rec-2751).
+
+schema_version: 1
+decision: Decision-126
+
+provision:
+  description: "Infra changes: anything under terraform/**."
+  trigger: "Open a PR touching terraform/**; CI plans and applies."
+  actor_role: agent
+  blocks_ref: "environment-taxonomy.yaml (axis_a apply gating + guard_classification)"
+  recovery: "If the guard blocks the change (IAM/trust/destroy or out-of-budget), see reconcile below; do not fall back to a local apply."
+  note: "Agents never run terraform apply as a self-directed, routine action -- the sole exception is the human-gated break-glass admin tier (see admin_out_of_band below)."
+
+deploy_code:
+  description: "Code-only deploys for artifacts on a governed code-deploy channel (e.g. the five DuckLake Lambdas, or the three prod-class Lambdas)."
+  trigger: "The governed code-deploy channel named in docs/contracts/build-lambda.yaml's deploy_channels. Terraform is not involved."
+  actor_role: agent
+  blocks_ref: "build-lambda.yaml#deploy_channels"
+  recovery: >-
+    Governed channel unavailable/not yet built for a given artifact: docs/contracts/build-lambda.yaml
+    names the interim break_glass_only command for that artifact (operator-only, see admin_out_of_band
+    below). DUCKLAKE COLUMN-RECONCILE RED STATE (hotfix follow-up to the 2026-07-24 ops_decisions
+    incident -- NOT the same thing as the `reconcile:` key below, which is the TERRAFORM infra-drift
+    Reconcile action; this is a DuckLake physical-schema reconcile, unrelated): if
+    deploy-ducklake-lambdas.yml's reconcile-gate job is red, a reconcile_scope=ducklake ops table in
+    config/lambda/ducklake/field_semantics.static.yaml has a non-empty pending_reconcile and the
+    serving deploy (writer/reader/catalog-dr) is refused by design -- the maintenance deploy still
+    ships ungated. The remedy is the admin-tier `reconcile_columns` action against the deployed
+    ducklake_maintenance function (Decision 143 cl.2 / Decision 151 cl.2: never autonomous, never
+    reachable from PlatformDev or CI) followed by clearing pending_reconcile in the sidecar (moving
+    the column into `reconciled` with the response body as evidence) -- see
+    scripts/checks/ops_governance/validate_reconcile_pending_gate.py. The Decision 125 break-glass
+    command (build_lambda --ducklake-only --deploy, above) bypasses this refusal entirely and is the
+    only escape hatch while the reconcile is outstanding; use it only under the same operator-directed
+    conditions as any other break-glass invocation.
+  status: "Two governed channels landed, now sharing ONE merged deploy role (T2.49 / DEP-12, Decision 144): (1) tier_item T2.38: .github/workflows/deploy-ducklake-lambdas.yml (five DuckLake Lambdas). (2) tier_item T2.43: .github/workflows/deploy-prod-lambdas.yml (the decoupled_build_pipeline class -- scheduled-agent-dispatcher, findings-processor, ops-compaction; provisioned by terraform/personal/prod_lambdas.tf). Both assume the merged role agent-platform-github-ci-deploy (UpdateFunctionCode-only on the function:agent-platform-* prefix, covering all 8 functions; replaces the two retired per-class deploy roles). The role is IAM-sensitive and lands via the tf-gated-apply Environment (Decision 92/126), not admin-create. Both workflows tolerate its bootstrap-window absence via a SCOPED continue-on-error (not blanket, Decision 55): the tolerance applies only while the operator-owned repo variable DEPLOY_ROLE_PROVISIONED (one shared variable, reconciled from the retired per-class DUCKLAKE_DEPLOY_ROLE_PROVISIONED / PROD_DEPLOY_ROLE_PROVISIONED) is not 'true'. The operator sets that variable to 'true' as part of the gated-apply step that creates the role; from then on a failed assume-role fails loud instead of a silent green no-op. break-glass remains available as a genuinely non-default fallback for both channels (see build-lambda.yaml#deploy_channels)."
+
+reconcile:
+  description: "The apply pipeline is red or the convergence record is drifted."
+  trigger: "One input-free Reconcile action (tier_item T2.37): reads the red commit from the convergence record and re-applies it. No operator-supplied SHA."
+  actor_role: agent
+  blocks_ref: "environment-taxonomy.yaml (guard_classification determines whether Reconcile can auto-apply or must route to gated-apply)"
+  recovery: "If Reconcile itself cannot proceed (e.g. an out-of-budget IAM delta needs human approval), it routes to the existing gated-apply Environment; see admin_out_of_band for the human action."
+  status: "Landed (tier_item T2.37): .github/workflows/reconcile.yml."
+
+admin_out_of_band:
+  description: "Operator-only admin tier: bootstrap root, agent_platform_admin IAM/trust/destroy changes, and the Decision 120 local-apply escape hatch."
+  trigger: "A human operator acting outside CI, per terraform/CLAUDE.md's operator-only / break-glass subsection."
+  actor_role: operator
+  blocks_ref: "environment-taxonomy.yaml (guard_classification); Decision 120 (the escape hatch this restored); Decision 98 (admin-create); Decision 77 (bootstrap)"
+  recovery: "For bootstrap root and agent_platform_admin IAM/trust/destroy changes, an agent's only move is to file a rec describing what's needed and why -- those are human-only. The Decision 120 break-glass local-apply loop is a narrower carve-out: an agent may execute terraform apply there only after a human has reviewed the plan and explicitly directed it -- never self-directed."
+  status: "Quarantined here (Decision 126 point 4 as amended by Decision 127; tier_item T2.41). T2.37 (the heal button) landed and was verified before this quarantine, per the Fable ordering invariant (Decision 126)."
+  procedure:
+    description: >-
+      Operator-recovery steps for the human-gated interactive apply loop. Never self-directed
+      by an agent; usable only after a human has reviewed the plan and explicitly directed the
+      apply (Decision 77 / Decision 126). Carries recovery STEPS only -- apply-model / guard-
+      classification rules stay solely in environment-taxonomy.yaml (Decision 92 point 5).
+    steps:
+      - "A human operator who wants to apply a change by hand directs the CC-web agent through the loop: terraform plan -> PRESENT the plan output -> the human explicitly accepts -> the agent runs terraform apply. Never apply without presenting the plan and getting explicit acceptance first."
+      - "This loop requires local terraform init to have succeeded first."
+      - "hashicorp/*-only roots (terraform/, terraform/github, terraform/bootstrap): local terraform init succeeds unconditionally, no proxy dependency."
+      - "terraform/personal (third-party kislerdm/neon provider): a stock CC-web session cannot locally init it (Decision 119, direct github.com fetch 403s) -- use the CI-mediated speculative-plan + apply-the-saved-plan pipeline instead for routine changes. On an ADMIN container with the S3 filesystem_mirror synced (Decision 120 -- bin/setup-cloud-env.sh ran with INSTALL_TERRAFORM=1 and the sync succeeded, so TF_CLI_CONFIG_FILE is set), local init does succeed and this loop is available for terraform/personal."
+      - "Recover the four no-default tfvars (account_id, owner_email, platform_dev_external_id, platform_admin_external_id) from the remote Terraform state in S3 regardless of which init path was used (see terraform/CLAUDE.md's remote-state recovery description); never paste their values into chat, a PR, or any committed file."
+      - >-
+        POST-APPLY, after any terraform/bootstrap apply that changes the apply role's GRANT SURFACE
+        (its inline policy, an attached customer-managed policy, or the permissions boundary), run
+        the standing live-simulate gate:
+        `bin/venv-python -m scripts.ci.iam_simulate --profile agent_platform_admin --fixture
+        docs/contracts/iam-simulate-fixture.yaml`.
+        Exit 0 with zero mismatches is the completion condition for the apply -- treat a mismatch on
+        a newly granted verb as a wrong boundary ceiling or resource scope (fix in HCL, re-apply
+        through this same human gate), and a mismatch on a `by_design` denial as a GRANT LEAK, i.e.
+        a security regression rather than a fixture error. WHY IT CANNOT BE A PR-TIME CHECK: a
+        static text check structurally cannot see condition-key evaluation (the
+        iam:PermissionsBoundary / iam:PassedToService conditions) or the identity/boundary
+        intersection -- a verb granted in the identity policy but absent from the boundary's
+        DataPlaneAllow ceiling is SILENTLY denied, and nothing in validate.py can observe that. It
+        is also deliberately not wired into `validate --pre`: between merge and this apply the code
+        legitimately declares verbs the live policy lacks, so gating the PR on it would red the very
+        PR that fixes the problem. RE-RUN IT ON ANY hashicorp/aws PROVIDER BUMP as well -- every
+        companion-verb inference in the fixture is scoped to the pinned provider version, and a
+        provider that migrates a call (e.g. logs:TagLogGroup -> logs:TagResource) silently changes
+        which verbs are load-bearing.

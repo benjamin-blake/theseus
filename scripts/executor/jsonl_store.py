@@ -291,7 +291,10 @@ def _create_postmortem_recommendation(failed_rec_id: str, branch: str, ci_attemp
             f"Feature branch {branch} was cleaned up. "
             "Review logs/transcripts/ for detailed failure context."
         ),
-        "acceptance": f"grep -q '{failed_rec_id}' logs/.recommendations-log.jsonl",
+        "acceptance": (
+            f"grep -q '{failed_rec_id}' logs/.recommendations-log.jsonl "
+            "&& grep -q '\"source\"' logs/.recommendations-log.jsonl"
+        ),
     }
 
     try:
@@ -351,6 +354,16 @@ class Decision(BaseModel):
     related_decisions: Optional[list[int]] = None
     related_decisions_v2: Optional[list[str]] = None
     decision_id: Optional[int] = None
+    # DAF-01 parity backstop (PLAN-daf-etl-parity-fidelity, Decision 134 cl.4) plus intent
+    # (PLAN-dcg-intent-capture, Decision 151, audit finding DCG-06). Plain Optional[str] --
+    # NEVER Annotated[...]/DqNotNull/any Dq* marker; hand-synced counterpart of
+    # src/schemas/decision.py::DecisionPayload's same fields (see that file's comment for the
+    # drift-check rationale).
+    raw_block: Optional[str] = None
+    reversal_conditions: Optional[str] = None
+    superseded_by: Optional[str] = None
+    content_hash: Optional[str] = None
+    intent: Optional[str] = None
 
     model_config = ConfigDict(extra="ignore")
 

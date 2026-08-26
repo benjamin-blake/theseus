@@ -1,0 +1,62 @@
+check_id: cd43-selection-criteria-well-formed
+primitive_slot: command_exit_zero
+guard_target: docs/ROADMAP-PLATFORM.yaml
+guard_symbol: null
+plan_slug: esb-workspace-store-criteria
+graduated_at: '2026-08-02'
+graduated_by: implement-agent
+check_spec:
+  command:
+  - bin/venv-python
+  - -c
+  - 'import re, yaml
+
+    d = yaml.safe_load(open(''docs/ROADMAP-PLATFORM.yaml''))
+
+    cds = [c for c in d[''candidate_decisions''] if c[''id''] == ''CD.43'']
+
+    assert cds, ''CD.43 absent -- the criteria CD was never added''
+
+    blocks = [p for p in cds[0][''discipline_points''] if isinstance(p, dict) and ''workspace_store_selection'' in p]
+
+    assert len(blocks) == 1, f''workspace_store_selection must appear exactly once, found {len(blocks)}''
+
+    b = blocks[0][''workspace_store_selection'']
+
+    sc = b[''selection_criteria'']
+
+    required_ids = {''W1'',''W2'',''W3'',''W4'',''W5'',''W6'',''W7'',''W8''}
+
+    assert required_ids <= set(sc), f''selection_criteria missing {sorted(required_ids - set(sc))}''
+
+    bad = {k: type(v).__name__ for k, v in sc.items() if not isinstance(v, str) or not v.strip()}
+
+    assert not bad, f''criteria must be non-empty strings (a colon-space turns a scalar into a mapping): {bad}''
+
+    cases = b[''coverage_cases'']
+
+    assert len(cases) == len(set(cases)), f''coverage_cases has duplicates: {cases}''
+
+    assert {''cross_invocation_persistence'',''inter_persona_handoff'',''persona_to_ecs_task_handoff''} <= set(cases), cases
+
+    assert b[''options_considered_and_rejected''], ''a rejected option must be recorded with its reason, not silently omitted''
+
+    money = {k: re.search(r''[\$]\s*\d'', v).group(0) for k, v in sc.items() if re.search(r''[\$]\s*\d'', v)}
+
+    assert not money, f''a criterion publishes a cost figure instead of a basis: {money}''
+
+    assert ''terraform/personal/variables.tf'' in sc[''W3''], ''W3 must name the region-pin source''
+
+    assert ''RECOMPUTED'' in sc[''W3''], ''W3 must demand recomputation at decision time''
+
+    assert ''Decision 100'' in sc[''W8''], ''W8 must name Decision 100 as the standard a self-built store argues against''
+
+    blob = yaml.safe_dump(cds[0], sort_keys=False)
+
+    assert ''arn:'' not in blob.lower(), ''CD.43 text contains an ARN (PUBLIC repository)''
+
+    assert not re.search(r''(?<!\d)\d{12}(?!\d)'', blob), ''CD.43 text contains a 12-digit account-id-shaped token''
+
+    print(''OK'', len(sc), ''criteria well-formed;'', len(cases), ''coverage cases covered'')
+
+    '
