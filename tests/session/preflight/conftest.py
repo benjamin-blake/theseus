@@ -45,6 +45,7 @@ def _disable_reader_and_git_fetch(request: pytest.FixtureRequest):
         "main_files_changed_since_branch": [],
     }
     class_name = request.cls.__name__ if request.cls else ""
+    module_name = request.module.__name__ if request.module else ""
 
     # warm_sync is the single warm-up reader touch main() makes (neon-egress-reduction D4); stub it
     # so main() integration tests never hit the network. reader_ok=True + empty rows => main derives
@@ -63,4 +64,10 @@ def _disable_reader_and_git_fetch(request: pytest.FixtureRequest):
         stack.enter_context(patch("session_preflight._sync_ops_pull", return_value={}))
         if class_name != "TestCheckMainFreshness":
             stack.enter_context(patch("scripts.preflight.env_git.check_main_freshness", return_value=freshness_stub))
+        # dependabot.check_stranded_prs shells out to `gh pr list` on every main() run and,
+        # unlike the other gh signals, carries NO creds guard to short-circuit it. Stub it for
+        # every main()-integration module here; test_dependabot owns the real function and must
+        # see it unpatched (same escape-hatch shape as TestCheckMainFreshness above).
+        if not module_name.endswith("test_dependabot"):
+            stack.enter_context(patch("scripts.preflight.dependabot.check_stranded_prs", return_value=None))
         yield

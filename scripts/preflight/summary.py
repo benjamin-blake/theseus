@@ -53,6 +53,31 @@ def print_budget_bypass_alert(alert: dict | None) -> None:
         )
 
 
+def print_dependabot_stranded_alert(alert: dict | None) -> None:
+    """Print the stranded-dependabot-PR alert (see dependabot.check_stranded_prs).
+
+    Silent on a None signal (gh unavailable -- the cache key already records UNKNOWN) and on a
+    clean backlog; a saturated ecosystem is called out by name because it, not the individual
+    stranded PR, is what stops Dependabot opening anything new."""
+    if not alert:
+        return
+    stranded = alert.get("stranded") or []
+    quota_saturated = alert.get("quota_saturated") or []
+    if not stranded and not quota_saturated:
+        return
+    quota_note = (
+        f" Quota saturated: {', '.join(quota_saturated)} -- Dependabot opens nothing new for those ecosystems."
+        if quota_saturated
+        else ""
+    )
+    print(
+        f"Dependabot backlog alert: {len(stranded)} of {alert.get('open_total', 0)} open dependabot PR(s) "
+        f"stranded (aged past the sweep threshold, or DIRTY/BLOCKED).{quota_note}"
+        " Dispatch the dependabot-stranded sweep to clear them.",
+        file=sys.stderr,
+    )
+
+
 def print_budget_breach_summary(summary: dict | None) -> None:
     """Print the fast-tier budget-breach summary (see alerts._check_budget_breach_summary)."""
     if summary is not None:

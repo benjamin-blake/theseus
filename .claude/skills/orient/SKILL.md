@@ -133,8 +133,6 @@ Source: `ci_rca_unresolved_recs`, `ci_rca_likely_resolved_recs`, `ci_rca_livenes
 | `status == "unknown"` | S3 read failed -- note as informational; may indicate transient credential issue. |
 | `status == "green"` or `convergence_health` is null | No action needed. |
 
-Do not surface this when `convergence_health` is null (preflight ran without credentials) or `status == "green"`.
-
 | Preflight signal | Classification | Operator action |
 |---|---|---|
 | `ci_rca_unresolved_recs` non-empty | **HARD BLOCK** | List each rec (id, priority, title). The next `/plan` enforces the block; orient surfaces it. |
@@ -142,7 +140,7 @@ Do not surface this when `convergence_health` is null (preflight ran without cre
 | `ci_rca_liveness_alert` non-null | **HARD ALERT** | Main CI red >30 min with no rec. Triage immediately. |
 | `forward_fix_recursion_alert` non-null | **HARD ALERT** | 3+ ci-rca recs targeting same file in 24h. Triage immediately. |
 
-If HARD BLOCK recs exist, note them prominently at the top of this section. The next `/plan` session will enforce the block; orient provides the full visibility layer.
+If HARD BLOCK recs exist, note them prominently at the top of this section.
 
 ### 3. Momentum & Direction
 
@@ -170,6 +168,7 @@ Render as a table: practice -> preflight signal -> PASS/WATCH/GAP.
 | CI-RCA liveness | `ci_rca_unresolved_recs` empty AND `ci_rca_liveness_alert` null | PASS if both clear; GAP if either non-empty or non-null |
 | Rec backlog (soft cap) | `non_automatable_softcap_breached` | PASS if false; GAP if true |
 | Terraform pending | `terraform_pending` | PASS if false or absent; WATCH if true |
+| Dependency backlog | `dependabot_stranded_prs` | PASS if `stranded` and `quota_saturated` both empty; WATCH if all `stranded` < 14d; GAP if any >= 14d or `quota_saturated` non-empty |
 
 If a signal is absent from the preflight cache, mark it UNKNOWN rather than inferring a verdict. Do not issue any read to resolve UNKNOWN.
 

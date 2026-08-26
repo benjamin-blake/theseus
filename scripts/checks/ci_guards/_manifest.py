@@ -124,4 +124,28 @@ ENTRIES: tuple[Entry, ...] = (
         ),
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_dependabot_automation",
+        module="scripts.checks.ci_guards.validate_dependabot_automation",
+        attr="validate_dependabot_automation",
+        pre=True,
+        pre_globs=(
+            ".github/workflows/**",
+            "scripts/ci/**",
+            "scripts/checks/ci_guards/validate_dependabot_automation.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_branch_cleanup",
+        module="scripts.checks.ci_guards.validate_branch_cleanup",
+        attr="validate_branch_cleanup",
+        pre=True,
+        pre_globs=(
+            ".github/workflows/**",
+            "scripts/ci/**",
+            "scripts/checks/ci_guards/validate_branch_cleanup.py",
+        ),
+        full_segment="full_after_lint",
+    ),
 )
