@@ -1,7 +1,7 @@
-"""sync orchestration + outbox + CLI + table-map invariants + upsert concern:
+"""sync orchestration + CLI + table-map invariants + upsert concern:
 tests/sync/ops/test_sync_cli.py (rec-2709 Wave 10).
 
-Split from the former tests/test_sync_ops.py monolith: TestSync, TestOutboxSummary, TestMain,
+Split from the former tests/test_sync_ops.py monolith: TestSync, TestMain,
 TestTelemetryMappings, TestPipelineConsolidation, TestUpsertCacheRow.
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 # ---------------------------------------------------------------------------
 # sync() tests
@@ -18,85 +18,15 @@ from unittest.mock import MagicMock, patch
 
 
 class TestSync:
-    def test_sync_calls_drain_then_pull(self):
-        """sync() calls drain() then _rebuild_local_cache() and returns combined result."""
-        with (
-            patch("scripts.sync.ops.drain", return_value={"ops_recommendations": 2}) as mock_drain,
-            patch("scripts.sync.ops._rebuild_local_cache", return_value={"ops_recommendations": 50}) as mock_rebuild,
-        ):
+    def test_sync_returns_pulled_counts(self):
+        """sync() delegates to _rebuild_local_cache() and returns its counts under "pulled"."""
+        with patch("scripts.sync.ops._rebuild_local_cache", return_value={"ops_recommendations": 50}) as mock_rebuild:
             from scripts.sync.ops import sync
 
             result = sync(profile="test-profile")
 
-        mock_drain.assert_called_once()
         mock_rebuild.assert_called_once_with("test-profile")
-        assert result["drained"] == {"ops_recommendations": 2}
-        assert result["pulled"] == {"ops_recommendations": 50}
-
-    def test_sync_drain_before_pull_ordering(self):
-        """sync() always calls drain before _rebuild_local_cache."""
-        call_order = []
-
-        def fake_drain():
-            call_order.append("drain")
-            return {}
-
-        def fake_rebuild(profile=None):
-            call_order.append("pull")
-            return {}
-
-        with (
-            patch("scripts.sync.ops.drain", side_effect=fake_drain),
-            patch("scripts.sync.ops._rebuild_local_cache", side_effect=fake_rebuild),
-        ):
-            from scripts.sync.ops import sync
-
-            sync()
-
-        assert call_order == ["drain", "pull"]
-
-
-# ---------------------------------------------------------------------------
-# outbox_summary() tests
-# ---------------------------------------------------------------------------
-
-
-class TestOutboxSummary:
-    def test_no_outbox_returns_empty(self, tmp_path):
-        """outbox_summary() returns {} when outbox dir does not exist."""
-        with patch("scripts.sync.ops._OUTBOX_DIR", tmp_path / "nonexistent"):
-            from scripts.sync.ops import outbox_summary
-
-            result = outbox_summary()
-        assert result == {}
-
-    def test_counts_files_per_table(self, tmp_path):
-        """outbox_summary() counts files in each table subdirectory."""
-        (tmp_path / "ops_recommendations").mkdir()
-        for i in range(3):
-            (tmp_path / "ops_recommendations" / f"entry-{i}.jsonl").write_text("{}", encoding="utf-8")
-        (tmp_path / "ops_execution_plans").mkdir()
-        (tmp_path / "ops_execution_plans" / "plan.jsonl").write_text("{}", encoding="utf-8")
-
-        with patch("scripts.sync.ops._OUTBOX_DIR", tmp_path):
-            from scripts.sync.ops import outbox_summary
-
-            result = outbox_summary()
-
-        assert result["ops_recommendations"] == 3
-        assert result["ops_execution_plans"] == 1
-
-    def test_empty_table_dir_excluded(self, tmp_path):
-        """outbox_summary() does not include tables with 0 files."""
-        (tmp_path / "ops_recommendations").mkdir()
-        # No files in dir
-
-        with patch("scripts.sync.ops._OUTBOX_DIR", tmp_path):
-            from scripts.sync.ops import outbox_summary
-
-            result = outbox_summary()
-
-        assert "ops_recommendations" not in result
+        assert result == {"pulled": {"ops_recommendations": 50}}
 
 
 # ---------------------------------------------------------------------------
@@ -176,54 +106,11 @@ class TestTelemetryMappings:
             assert table not in _TABLE_TO_LOCAL
 
     def test_migrated_ops_tables_present(self):
-        """All four migrated tables are cached locally; the Athena view map is deleted (Decision 84 I-1)."""
+        """All four migrated tables are cached locally from the DuckLake reader (Decision 84 I-1)."""
         import scripts.sync.ops as sync_ops
-        from src.common.outbox_retirement import DUCKLAKE_MIGRATED_TABLES as _sole_home_tables
 
         expected = {"ops_recommendations", "ops_decisions", "ops_priority_queue", "ops_execution_plans"}
         assert set(sync_ops._TABLE_TO_LOCAL) == expected
-        assert sync_ops.DUCKLAKE_MIGRATED_TABLES == frozenset(expected)
-        # The re-export must be the SAME object as the sole home, not a coincidentally-equal copy.
-        assert sync_ops.DUCKLAKE_MIGRATED_TABLES is _sole_home_tables
-        # The Athena pull estate is gone: no view map, no per-table Athena pull.
-        assert not hasattr(sync_ops, "_TABLE_TO_VIEW")
-        assert not hasattr(sync_ops, "_pull_single_table_athena")
-
-    def test_drain_handles_telemetry_outbox_files(self, tmp_path):
-        """drain() can process outbox files for telemetry tables."""
-        outbox_dir = tmp_path / "telemetry_sessions"
-        outbox_dir.mkdir(parents=True)
-        entry = {
-            "session_id": "sess-001",
-            "workflow": "executor",
-            "outcome": "success",
-        }
-        outfile = outbox_dir / "entry.jsonl"
-        outfile.write_text(json.dumps(entry) + "\n", encoding="utf-8")
-
-        mock_writer_instance = MagicMock()
-
-        class _FakeOpsWriter:
-            def __init__(self):
-                pass
-
-            def write(self, table, e):
-                mock_writer_instance.write(table, e)
-
-        with (
-            patch("scripts.sync.ops._OUTBOX_DIR", tmp_path),
-            patch.dict(
-                "sys.modules",
-                {"scripts.ops_writer": MagicMock(OpsWriter=_FakeOpsWriter)},
-            ),
-        ):
-            from scripts.sync import ops as sync_ops
-
-            result = sync_ops.drain()
-
-        assert result.get("telemetry_sessions") == 1
-        mock_writer_instance.write.assert_called_once_with("telemetry_sessions", entry)
-        assert not outfile.exists()
 
 
 class TestPipelineConsolidation:

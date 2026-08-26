@@ -7,7 +7,8 @@
 # have their own Class A contracts. Tables with Class A contracts are indexed there.
 #
 # For DuckLake-boundary tables: see docs/contracts/read-engine.yaml (version 3).
-# For Iceberg-boundary tables pending T2.26 disposition: see tier_item T2.26.
+# DuckLake-on-Neon is the sole substrate: every ops table listed here reads through the closed
+# ducklake_reader boundary and writes through ducklake_writer.
 #
 # Class A contracts (authoritative, not indexed here):
 #   ops_recommendations    -> docs/contracts/ops_recommendations.yaml (T0.12.5)
@@ -56,9 +57,9 @@ tables:
     substrate: DuckLake-on-Neon
     status: live
     reason: >-
-      T2.26 (c9): migrated onto the DuckLake closed writer/reader boundary. No live Iceberg table or
-      _current Athena view ever existed for this table in the personal account (create-fresh-on-
-      DuckLake); the executor producer stays CD.17-frozen so the table lands empty until resume.
+      T2.26 (c9): created fresh on the DuckLake closed writer/reader boundary -- no predecessor table
+      ever existed for it in the personal account. The executor producer stays CD.17-frozen so the
+      table lands empty until resume.
     write_boundary: ducklake_writer Lambda (action_write_ops, via scripts/ops_portal/execution_plans.py)
     read_boundary: ducklake_reader Lambda (NAMED VERBS + query_ops)
     merge_key: rec_id
@@ -84,47 +85,24 @@ tables:
     note: platform-generic append_only kernel proof (T1.14); no current_table in ScdTableSpec
 
   # ---------------------------------------------------------------------------
-  # Iceberg/Athena table pending its own T2.26 disposition (execution_plans migrated at c9;
-  # ops_session_log is the sole remaining Iceberg/Athena ops table, gated on CD.40/T3.20)
-  # ---------------------------------------------------------------------------
-  ops_session_log:
-    substrate: Iceberg/Athena
-    status: dormant
-    reason: not provisioned in the personal account (sync_ops 2026-05-28 migration note)
-    write_boundary: OpsWriter (scripts/ops_writer.py) -> S3 staging -> Iceberg via awswrangler
-    read_boundary: DuckDBIcebergReader (primary) / Athena fallback (CD.8/CD.15 escape hatch)
-    merge_key: session_id
-    grain: one row per session_id
-    write_mode: scd2
-    field_semantics: config/lambda/ducklake/field_semantics.yaml#ops_tables.ops_session_log
-    migration_ref: tier_item T2.26
-    disposition: T2.26 -- may retire per T-1.9; DuckLake migration or retirement gated on CD.40/T3.20
-
-  # ---------------------------------------------------------------------------
   # Telemetry tables -- canonical 4-table trace/observation model (Decision 95);
-  # live draft is 7 Iceberg/Athena tables, dead pending Phase 4 (Decision 84).
+  # unbuilt, pending the Phase 4 DuckLake rebuild (Decision 84).
   # ---------------------------------------------------------------------------
   telemetry_tables:
     note: >-
       CANONICAL model (Decision 95): four tables -- telemetry_sessions, telemetry_observations,
       telemetry_transcripts, telemetry_agents -- each with a ratified Class A contract authored at
       T0.12.6 (those four are indexed in the "Class A contracts (authoritative)" header above, NOT in
-      this substrate table). The LIVE implementation is still the seven-table DRAFT (telemetry_ prefix)
-      in trading_formulas_db (Glue, Athena engine v3, personal account); schema in
-      scripts/telemetry_schemas.py. The draft collapses to the canonical four at the Phase 4 rebuild:
-      telemetry_phases/_steps/_process_events/_model_calls -> telemetry_observations (observation_type
-      discriminator); telemetry_agent_invocations -> rooted telemetry_agents. This index entry covers the
-      live draft substrate until that rebuild retires it. (Corrected 2026-06-24: the prior 7 names --
-      telemetry_trades/_feature_vectors/etc. -- were a stale placeholder matching neither the DDL nor
-      the dataclasses.)
-    substrate: Iceberg/Athena
-    status: draft_dead
+      this substrate table). No telemetry table is provisioned today: the legacy draft schema and its
+      emitters were deleted with the retired query-engine estate, so the Class A contracts are
+      target-state only until the Phase 4 rebuild lands them on DuckLake.
+    substrate: DuckLake-on-Neon (target state)
+    status: not_provisioned
     reason: >-
-      Athena telemetry tables never migrated to the personal account (2026-05-28); writers still emit to
-      S3 staging but the destination tables are dead. config/agent/data_quality/telemetry.yaml is empty.
-    write_boundary: OpsWriter (scripts/ops_writer.py) -> S3 staging -> Iceberg (dead)
-    read_boundary: DuckDBIcebergReader / Athena fallback (dead)
-    schema_ref: scripts/telemetry_schemas.py
+      Legacy draft schema and emitters deleted; no telemetry table exists in the personal account and
+      no writer emits telemetry. Rebuild is owned by tier_item T2.36 / Phase 4.
+    write_boundary: ducklake_writer Lambda -- at the Phase 4 rebuild
+    read_boundary: ducklake_reader Lambda (NAMED VERBS only) -- at the Phase 4 rebuild
     contract_ref:
       - docs/contracts/telemetry_sessions.yaml
       - docs/contracts/telemetry_observations.yaml
@@ -135,15 +113,7 @@ tables:
       Phase 4 consolidation (after T2.26): rebuild on the DuckLake telemetry substrate as the canonical
       four-table model per the Class A contracts; partition day(started_at) / day(created_at)
       (Decision 96, realized at Phase 4 using the DuckLake partition-as-code mechanism T2.33 established
-      for the ops tables); ULID identity (Decision 97, realized when open_session migrates).
-    live_draft_tables:
-      - telemetry_sessions
-      - telemetry_phases
-      - telemetry_steps
-      - telemetry_process_events
-      - telemetry_model_calls
-      - telemetry_transcripts
-      - telemetry_agent_invocations
+      for the ops tables); ULID identity (Decision 97, realized when the session-open path is rebuilt).
     canonical_tables:
       - telemetry_sessions
       - telemetry_observations

@@ -40,7 +40,7 @@ resource "aws_iam_role" "platform_dev" {
   # and an identity Deny always wins. PlatformDev bounding caps its FUTURE runtime to the boundary's
   # DataPlaneAllow service set until a boundary amendment widens it (design note, Decision 144 pt.7).
   max_session_duration = 36000 # 10h; matches duration_seconds in ~/.aws/config so CC-web sessions run unattended
-  description          = "Daily agent ops (runtime): Athena query, S3 read/write on the data lake, DynamoDB counters, Glue read"
+  description          = "Daily agent ops (runtime): S3 read/write on the data lake, DynamoDB counters, DuckLake verb invokes"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -73,25 +73,6 @@ resource "aws_iam_role_policy" "platform_dev_runtime" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid      = "AthenaStartQuery"
-        Effect   = "Allow"
-        Action   = ["athena:StartQueryExecution", "athena:StopQueryExecution"]
-        Resource = [aws_athena_workgroup.production.arn]
-      },
-      {
-        # GetQueryExecution/GetQueryResults/ListWorkGroups/GetWorkGroup do not support
-        # workgroup-level resource constraints in IAM.
-        Sid    = "AthenaQueryStatus"
-        Effect = "Allow"
-        Action = [
-          "athena:GetQueryExecution",
-          "athena:GetQueryResults",
-          "athena:ListWorkGroups",
-          "athena:GetWorkGroup",
-        ]
-        Resource = "*"
-      },
-      {
         Sid      = "S3ReadWrite"
         Effect   = "Allow"
         Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
@@ -114,23 +95,6 @@ resource "aws_iam_role_policy" "platform_dev_runtime" {
           "dynamodb:UpdateItem",
         ]
         Resource = [aws_dynamodb_table.counters.arn]
-      },
-      {
-        Sid      = "GlueRead"
-        Effect   = "Allow"
-        Action   = ["glue:GetDatabase", "glue:GetTable", "glue:GetPartitions"]
-        Resource = "*"
-      },
-      {
-        # SchemaIntegrityVerifier / IcebergCompactionVerifier call these during OPTIMIZE/VACUUM.
-        Sid    = "GlueTableMutations"
-        Effect = "Allow"
-        Action = ["glue:CreateTable", "glue:UpdateTable", "glue:DeleteTable"]
-        Resource = [
-          "arn:aws:glue:${var.aws_region}:${var.account_id}:catalog",
-          "arn:aws:glue:${var.aws_region}:${var.account_id}:database/${aws_glue_catalog_database.ops.name}",
-          "arn:aws:glue:${var.aws_region}:${var.account_id}:table/${aws_glue_catalog_database.ops.name}/*",
-        ]
       },
       {
         # T2.19 recs cutover: the ops portal runs as PlatformDev at RUNTIME and reaches the closed
@@ -185,20 +149,6 @@ resource "aws_iam_role_policy" "platform_dev_runtime" {
         Resource = [
           aws_secretsmanager_secret.deepseek_api_key.arn,
           aws_secretsmanager_secret.anthropic_api_key.arn,
-        ]
-      },
-      {
-        # Broker-credential read for T2.14 / credential-routing contract: the PlatformDev runtime
-        # resolves Alpaca paper + live API keys via scripts/broker_secrets.py::resolve(), which
-        # calls GetSecretValue on the secret_name returned by the routing-key lookup.
-        # ARN-scoped to exactly the two broker secret ARNs (no wildcard) -- mirrors InferenceCredentialsRead.
-        # MANUAL admin-apply required (IAM change, Decision 77 guard fail-closes). # pragma: allowlist secret
-        Sid    = "BrokerCredentialsRead"
-        Effect = "Allow"
-        Action = ["secretsmanager:GetSecretValue"]
-        Resource = [
-          aws_secretsmanager_secret.alpaca_paper.arn,
-          aws_secretsmanager_secret.alpaca_live.arn,
         ]
       },
       {
@@ -500,7 +450,7 @@ resource "aws_iam_role_policy" "platform_admin_ops" {
 
 # PlatformDataLakeProvisioning: the data-plane rights AdminOps (iam:*/lambda/secrets) lacks, so
 # `terraform apply` under agent_platform_admin can provision + manage terraform/personal's data lake.
-# Least-privilege: ENUMERATED actions (no glue:*/athena:*/s3:*/dynamodb:*) scoped to the agent-platform
+# Least-privilege: ENUMERATED actions (no service wildcards) scoped to the agent-platform
 # data lake -- no Resource "*" where the action supports a resource, no legacy bblake-* ARNs. This is
 # the surface terraform apply of THIS module actually exercises: the same data-plane action set as the
 # github_ci_apply CI role (oidc.tf), minus the IAM/OIDC reconcile statements (those come from iam:* in
@@ -512,63 +462,6 @@ resource "aws_iam_role_policy" "platform_admin_datalake" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      {
-        # Glue catalog: create/read/update the ops database + its Iceberg tables and _current views
-        # (the null_resource Athena DDL creates them; CREATE OR REPLACE VIEW + schema evolution edit
-        # the table objects). Scoped to the catalog + the agent_platform DB + its tables. glue:GetTags
-        # is a refresh-time read the provider issues on aws_glue_catalog_database every plan.
-        Sid    = "GlueCatalog"
-        Effect = "Allow"
-        Action = [
-          "glue:CreateDatabase",
-          "glue:GetDatabase",
-          "glue:GetDatabases",
-          "glue:UpdateDatabase",
-          "glue:CreateTable",
-          "glue:GetTable",
-          "glue:GetTables",
-          "glue:UpdateTable",
-          "glue:DeleteTable",
-          "glue:GetPartitions",
-          "glue:BatchCreatePartition",
-          "glue:GetTags",
-          "glue:TagResource",
-          "glue:UntagResource",
-        ]
-        Resource = [
-          "arn:aws:glue:${var.aws_region}:${var.account_id}:catalog",
-          "arn:aws:glue:${var.aws_region}:${var.account_id}:database/${aws_glue_catalog_database.ops.name}",
-          "arn:aws:glue:${var.aws_region}:${var.account_id}:table/${aws_glue_catalog_database.ops.name}/*",
-        ]
-      },
-      {
-        # Athena: manage the production workgroup + run the provisioning DDL queries. Scoped to the
-        # one workgroup ARN.
-        Sid    = "AthenaWorkgroupManage"
-        Effect = "Allow"
-        Action = [
-          "athena:CreateWorkGroup",
-          "athena:GetWorkGroup",
-          "athena:UpdateWorkGroup",
-          "athena:TagResource",
-          "athena:UntagResource",
-          "athena:ListTagsForResource",
-          "athena:StartQueryExecution",
-          "athena:StopQueryExecution",
-        ]
-        Resource = ["arn:aws:athena:${var.aws_region}:${var.account_id}:workgroup/${aws_athena_workgroup.production.name}"]
-      },
-      {
-        # Query status/list actions do not support workgroup-level resource constraints in IAM.
-        Sid    = "AthenaQueryStatus"
-        Effect = "Allow"
-        Action = [
-          "athena:GetQueryExecution",
-          "athena:GetQueryResults",
-          "athena:ListWorkGroups",
-        ]
-        Resource = "*"
-      },
       {
         # S3 bucket configuration terraform manages (versioning, encryption, public-access-block,
         # policy, tagging) -- read + write variants. CreateBucket included for greenfield provisioning.
@@ -607,8 +500,8 @@ resource "aws_iam_role_policy" "platform_admin_datalake" {
         Resource = [aws_s3_bucket.data_lake.arn]
       },
       {
-        # S3 object IO: Iceberg table data + Athena query results + the terraform state object (all
-        # under this one bucket). Multipart actions cover large Athena result writes.
+        # S3 object IO: platform objects (tfstate, tfplan, convergence records, logs) under this
+        # one bucket. Multipart actions cover large object writes.
         Sid    = "DataLakeObjectIO"
         Effect = "Allow"
         Action = [

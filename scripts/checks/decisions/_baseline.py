@@ -2,9 +2,8 @@
 Decision 153 fast-tier budget).
 
 Single git-read primitive for the --pre consumers that need origin/main decision state --
-validate_decision_entry_conformance (new-vs-baseline routing), validate_decisions_size (the
-per-entry cap's new-entry classification), and validate_live_entry_immutability (per-number
-body text, for the append-only embedding check). Memoized per root so a single --pre run pays
+validate_decision_entry_conformance (new-vs-baseline routing) and validate_decisions_size (the
+per-entry cap's new-entry classification). Memoized per root so a single --pre run pays
 for exactly one `git show` per file, not one per consumer.
 
 Reachability delegates to scripts.checks._common.origin_main_reachable -- never a private

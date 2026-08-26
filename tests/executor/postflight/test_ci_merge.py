@@ -12,8 +12,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scripts.executor.postflight import (
-    _code_review_gate,
-    _scope_drift_check,
     cleanup_after_merge,
     finalize,
     merge_pr,
@@ -416,76 +414,3 @@ class TestFinalizeSkipCiMergeGuard:
 
         assert result is None
         mock_recovery.assert_called()
-
-
-class TestProcessEventEmission:
-    """Verify emit_process_event is called at the correct postflight decision points."""
-
-    def test_scope_drift_detected_emitted_when_unplanned_files_found(self) -> None:
-        """emit_process_event(category='scope_drift_detected') is called when unplanned files exist."""
-        plan_steps = [{"file": "scripts/executor/plan.py"}]
-        changed = ["scripts/executor/plan.py", "scripts/some_unplanned.py"]
-        mock_result = MagicMock(returncode=0, stdout="\n".join(changed) + "\n")
-
-        with (
-            patch("subprocess.run", return_value=mock_result),
-            patch("scripts.executor.postflight.emit_process_event") as mock_emit,
-        ):
-            unplanned = _scope_drift_check(plan_steps)
-
-        assert "scripts/some_unplanned.py" in unplanned
-        mock_emit.assert_called_once()
-        assert mock_emit.call_args.kwargs.get("category") == "scope_drift_detected"
-
-    def test_scope_drift_not_emitted_when_no_unplanned_files(self) -> None:
-        """emit_process_event is NOT called when all changed files are in the plan."""
-        plan_steps = [{"file": "scripts/executor/plan.py"}]
-        changed = ["scripts/executor/plan.py"]
-        mock_result = MagicMock(returncode=0, stdout="\n".join(changed) + "\n")
-
-        with (
-            patch("subprocess.run", return_value=mock_result),
-            patch("scripts.executor.postflight.emit_process_event") as mock_emit,
-        ):
-            unplanned = _scope_drift_check(plan_steps)
-
-        assert unplanned == []
-        mock_emit.assert_not_called()
-
-    def test_code_review_pass_emitted_when_no_blocking_findings(self) -> None:
-        """emit_process_event(category='code_review_pass') is called when review has no findings."""
-        mock_copilot_result = MagicMock(
-            exit_code=0,
-            content="No issues found.\nGATE: PASSED",
-            cost_usd=0.5,
-        )
-
-        with (
-            patch(
-                "scripts.executor.postflight.load_prompt",
-                return_value=("Review: {rec_id} {title} {acceptance} {plan_steps} {changed_files} {files_block}", "hash"),
-            ),
-            patch("scripts.executor.postflight.build_context_path", return_value=None),
-            patch("scripts.executor.postflight.llm_call", return_value=mock_copilot_result),
-            patch("scripts.executor.postflight.emit_process_event") as mock_emit,
-        ):
-            rec = {"id": "rec-tel-001", "title": "Test", "acceptance": "grep ..."}
-            from scripts.executor.plan import ExecutionPlan
-
-            plan = ExecutionPlan(
-                rec_id="rec-tel-001",
-                slug="test",
-                revision=1,
-                timestamp="2026-01-01T00:00:00Z",
-                status="approved",
-                model="test",
-                tokens_used=0,
-                steps=[],
-                plan_text="",
-            )
-            passed, cost, blocking = _code_review_gate(rec, plan, [])
-
-        assert passed is True
-        assert blocking == []
-        mock_emit.assert_called_once()
-        assert mock_emit.call_args.kwargs.get("category") == "code_review_pass"

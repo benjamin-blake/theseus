@@ -1,13 +1,11 @@
-"""DuckLakeReader (SigV4 Function-URL) concern of src/common/iceberg_reader.py (rec-2709 Wave 11).
+"""DuckLakeReader (SigV4 Function-URL) concern of src/common/ducklake_reader_client.py (rec-2709 Wave 11).
 
-T2.19: DuckLakeReader + make_reader factory + ops_storage_backend flag.
+T2.19: DuckLakeReader + make_reader factory.
 
 HEAVY-DEP MARKER MODULE: carries a module-level `import boto3  # noqa: F401` -- the
 non-integration tests here assert the non-skipped SigV4 path, which needs boto3/requests/botocore
 at runtime; the marker makes --collect-only fail so the fast tier proactively defers the whole
-module (ops_writer precedent).
-
-Split from tests/test_iceberg_reader.py (VERBATIM move).
+module.
 """
 
 from __future__ import annotations
@@ -30,7 +28,7 @@ class _FakeResp:
 
 def _patch_dl_invoke(monkeypatch, resp: _FakeResp, captured: dict):
     """Patch the DuckLakeReader SigV4 plumbing (boto3 + requests + profile) for a canned response."""
-    import src.common.iceberg_reader as ir
+    import src.common.ducklake_reader_client as ir
 
     monkeypatch.setenv("DUCKLAKE_READER_URL", "https://reader.example/")
 
@@ -68,7 +66,7 @@ def _patch_dl_invoke(monkeypatch, resp: _FakeResp, captured: dict):
 
 def _patch_dl_invoke_seq(monkeypatch, responses: list, captured: dict):
     """Like _patch_dl_invoke but returns *responses* in sequence and stubs time.sleep (retry tests)."""
-    import src.common.iceberg_reader as ir
+    import src.common.ducklake_reader_client as ir
 
     monkeypatch.setenv("DUCKLAKE_READER_URL", "https://reader.example/")
 
@@ -138,32 +136,22 @@ def test_ducklake_reader_non_transient_500_not_retried(monkeypatch):
 
 def test_ops_storage_backend_flag_retired():
     """Decision 84 I-1: the OPS_STORAGE_BACKEND rollback flag and its constants are deleted."""
-    import src.common.iceberg_reader as ir
+    import src.common.ducklake_reader_client as ir
 
     for name in ("ops_storage_backend", "_OPS_STORAGE_BACKEND_ENV", "_OPS_BACKEND_DEFAULT"):
         assert not hasattr(ir, name), f"retired symbol still present: {name}"
 
 
-def test_make_reader_always_returns_ducklake(monkeypatch):
-    """make_reader() returns DuckLakeReader unconditionally -- the env flag has no effect."""
-    import src.common.iceberg_reader as ir
-
-    monkeypatch.setenv("OPS_STORAGE_BACKEND", "iceberg")  # ignored: the flag is retired
-    assert isinstance(ir.make_reader(), ir.DuckLakeReader)
-    monkeypatch.delenv("OPS_STORAGE_BACKEND", raising=False)
-    assert isinstance(ir.make_reader(), ir.DuckLakeReader)
-
-
 def test_make_reader_all_tables_route_to_ducklake():
     """Every ops table (and the table=None default) transits the DuckLake boundary (Decision 84 I-1)."""
-    import src.common.iceberg_reader as ir
+    import src.common.ducklake_reader_client as ir
 
     for table in (None, "ops_recommendations", "ops_decisions", "ops_priority_queue"):
         assert isinstance(ir.make_reader(table=table), ir.DuckLakeReader), f"table={table!r}"
 
 
 def test_make_reader_passes_profile_through():
-    import src.common.iceberg_reader as ir
+    import src.common.ducklake_reader_client as ir
 
     reader = ir.make_reader(profile="agent_platform")
     assert isinstance(reader, ir.DuckLakeReader)
@@ -200,13 +188,13 @@ def test_ducklake_reader_query_returns_none_on_error(monkeypatch):
 
 
 def test_ducklake_reader_latest_snapshot_is_none():
-    import src.common.iceberg_reader as ir
+    import src.common.ducklake_reader_client as ir
 
     assert ir.DuckLakeReader().latest_snapshot("ops_recommendations") is None
 
 
 def test_ducklake_reader_url_loud_fail_when_unset(monkeypatch):
-    import src.common.iceberg_reader as ir
+    import src.common.ducklake_reader_client as ir
 
     monkeypatch.delenv("DUCKLAKE_READER_URL", raising=False)
     monkeypatch.setattr(ir, "_resolve_function_url_via_ssm", lambda *a, **k: None)
@@ -219,7 +207,7 @@ def test_ducklake_reader_url_loud_fail_when_unset(monkeypatch):
 
 def test_ducklake_reader_url_api_fallback(monkeypatch):
     """When env + terraform are unavailable, the reader URL resolves via GetFunctionUrlConfig (CI case)."""
-    import src.common.iceberg_reader as ir
+    import src.common.ducklake_reader_client as ir
 
     monkeypatch.delenv("DUCKLAKE_READER_URL", raising=False)
     monkeypatch.setattr(ir, "_resolve_function_url_via_ssm", lambda *a, **k: None)
@@ -272,7 +260,7 @@ def test_ducklake_reader_current_state_rejects_complex_filter(monkeypatch):
 
 def test_parse_single_key_filter():
     """_parse_single_key_filter returns the (column, value) pair, or None for non-matching shapes."""
-    import src.common.iceberg_reader as ir
+    import src.common.ducklake_reader_client as ir
 
     assert ir._parse_single_key_filter("id = 'rec-1'") == ("id", "rec-1")
     assert ir._parse_single_key_filter("  status='open'  ") == ("status", "open")
@@ -317,7 +305,7 @@ class TestDuckLakeReaderSSMResolution:
 
     def test_ssm_url_used_when_env_unset_and_terraform_absent(self, monkeypatch) -> None:
         """env absent + terraform absent + SSM present -> URL resolved via SSM (CC-web path)."""
-        import src.common.iceberg_reader as ir
+        import src.common.ducklake_reader_client as ir
 
         monkeypatch.delenv("DUCKLAKE_READER_URL", raising=False)
         monkeypatch.setattr("subprocess.run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
@@ -333,7 +321,7 @@ class TestDuckLakeReaderSSMResolution:
 
     def test_ssm_called_with_correct_path(self, monkeypatch) -> None:
         """_resolve_function_url_via_ssm is called with _DUCKLAKE_READER_SSM_PATH."""
-        import src.common.iceberg_reader as ir
+        import src.common.ducklake_reader_client as ir
 
         monkeypatch.delenv("DUCKLAKE_READER_URL", raising=False)
         monkeypatch.setattr("subprocess.run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
@@ -352,7 +340,7 @@ class TestDuckLakeReaderSSMResolution:
 
     def test_ssm_skipped_when_env_set(self, monkeypatch) -> None:
         """When DUCKLAKE_READER_URL is set, SSM is never called (env takes priority)."""
-        import src.common.iceberg_reader as ir
+        import src.common.ducklake_reader_client as ir
 
         monkeypatch.setenv("DUCKLAKE_READER_URL", "https://env-direct.example/")
 
@@ -370,7 +358,7 @@ class TestDuckLakeReaderSSMResolution:
 
     def test_ssm_failure_falls_through_to_terraform(self, monkeypatch) -> None:
         """SSM returns None -> resolution continues to terraform step."""
-        import src.common.iceberg_reader as ir
+        import src.common.ducklake_reader_client as ir
 
         monkeypatch.delenv("DUCKLAKE_READER_URL", raising=False)
         monkeypatch.setattr(ir, "_resolve_function_url_via_ssm", lambda *a, **k: None)

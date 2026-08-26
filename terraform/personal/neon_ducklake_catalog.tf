@@ -1,10 +1,9 @@
 # DuckLake operational lakehouse -- Neon serverless Postgres catalog (T2.16b / CD.34, pending).
 #
 # Replaces the T2.16 RDS catalog (rds_ducklake_catalog.tf, retired in Phase 2) with Neon serverless
-# Postgres on the free tier ($0). Like RDS, this is a Glue-analog metadata store, NOT a query engine:
+# Postgres on the free tier ($0). Like RDS, this is a catalog-metadata store, NOT a query engine:
 # DuckDB performs all computation against S3 Parquet; the catalog holds only DuckLake metadata
-# (table/version/snapshot pointers). Nothing consumes the catalog yet (live ops are Iceberg/Athena
-# until the T2.19 cutover), so present blast radius is zero.
+# (table/version/snapshot pointers).
 #
 # ---------------------------------------------------------------------------
 # APPLY POSTURE (Decision 77 + the 2026-06-04 posture pivot)

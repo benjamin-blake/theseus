@@ -75,7 +75,6 @@ CHECKED_TYPES: dict[str, dict] = {
     },
     "aws_sns_topic": {"read_actions": ("sns:Get*", "sns:List*"), "name_attrs": ("name",)},
     "aws_dynamodb_table": {"read_actions": ("dynamodb:DescribeTable",), "name_attrs": ("name",)},
-    "aws_glue_catalog_database": {"read_actions": ("glue:GetDatabase",), "name_attrs": ("name",)},
     "aws_ssm_parameter": {"read_actions": ("ssm:Get*", "ssm:Describe*", "ssm:List*"), "name_attrs": ("name",)},
     "aws_iam_openid_connect_provider": {"read_actions": ("iam:GetOpenIDConnectProvider",), "name_attrs": ("url",)},
     "aws_s3_bucket": {"read_actions": ("s3:GetBucketLocation",), "name_attrs": ("bucket",)},
@@ -83,7 +82,6 @@ CHECKED_TYPES: dict[str, dict] = {
     "aws_cloudwatch_log_group": {"read_actions": ("logs:Describe*", "logs:List*"), "name_attrs": None},
     "aws_cloudwatch_metric_alarm": {"read_actions": ("cloudwatch:Describe*", "cloudwatch:List*"), "name_attrs": None},
     "aws_sns_topic_subscription": {"read_actions": ("sns:GetSubscriptionAttributes",), "name_attrs": None},
-    "aws_athena_workgroup": {"read_actions": ("athena:GetWorkGroup",), "name_attrs": None},
 }
 
 ENUMERATED_IAM_TYPES: dict[str, dict] = {
@@ -471,7 +469,7 @@ def _statement_covers_resource(
     if not literal_only and "*" in _vir._QUOTED_RE.findall(raw):
         return True
     # Bare or interpolated Terraform resource reference (oidc.tf style), e.g.
-    # `aws_sns_topic.alerts.arn` or `${aws_glue_catalog_database.ops.name}`.
+    # `aws_sns_topic.alerts.arn` or `${aws_ssm_parameter.reader_url.name}`.
     if f"{rtype}.{rname}." in raw:
         return True
     return bool(resolved_name and _literal_or_prefix_match(resolved_name, raw, literal_only=literal_only))

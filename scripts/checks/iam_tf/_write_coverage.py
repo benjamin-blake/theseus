@@ -66,14 +66,8 @@ _PARAMETER_PREFIX = "parameter/agent-platform/*"
 _SECRET_PREFIX = "secret:agent-platform-*"  # pragma: allowlist secret -- ARN shape, not a value
 _DSN_SECRET_ARN = "secret:ducklake-neon-catalog-dsn-*"  # pragma: allowlist secret -- ARN shape, not a value
 _OIDC_PROVIDER_ARN = "oidc-provider/token.actions.githubusercontent.com"
-_GLUE_DATABASE_ARN = "database/agent_platform"
 _COUNTERS_TABLE_ARN = "table/agent-platform-counters"
 _DATA_LAKE_BUCKET_ARN = "arn:aws:s3:::agent-platform-data-lake"
-# Athena workgroup create/update are granted on the pre-existing AthenaWorkgroup Sid, whose Resource
-# is the bare wildcard. The marker is therefore the QUOTED wildcard entry itself -- it matches
-# `Resource = "*"` / `Resource = ["*"]` and nothing else (an ARN ending in `-*` has no `"` before
-# its star). Narrowing that Sid is a filed follow-on rec, deliberately out of scope here.
-_ANY_RESOURCE = '"*"'
 
 # ---------------------------------------------------------------------------
 # WRITE-coverage map: managed resource type -> the write actions github_ci_apply's grant surface
@@ -176,14 +170,6 @@ WRITE_COVERAGE: dict[str, dict] = {
         # terraform-managed -- so PutSecretValue is required, and only on that one enumerated ARN.
         "write_actions": ("secretsmanager:PutSecretValue",),
         "resource_marker": _DSN_SECRET_ARN,
-    },
-    "aws_athena_workgroup": {
-        "write_actions": ("athena:CreateWorkGroup", "athena:UpdateWorkGroup"),
-        "resource_marker": _ANY_RESOURCE,
-    },
-    "aws_glue_catalog_database": {
-        "write_actions": ("glue:CreateDatabase", "glue:UpdateDatabase", "glue:DeleteDatabase"),
-        "resource_marker": _GLUE_DATABASE_ARN,
     },
     "aws_dynamodb_table": {
         "write_actions": ("dynamodb:CreateTable", "dynamodb:UpdateTable", "dynamodb:DeleteTable"),

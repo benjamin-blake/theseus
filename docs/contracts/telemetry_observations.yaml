@@ -11,7 +11,7 @@
 # GREENFIELD (Decision 95): TARGET-STATE spec; the canonical observation_id/parent_observation_id/
 # observation_type columns do NOT exist in the draft (the draft has four tables with per-table UUID4
 # ids and ad-hoc phase_id/step_id FK nesting). Field semantics are grounded in the four draft
-# dataclasses (scripts/telemetry_schemas.py); the COLLAPSE MAPPING (governance_notes, below) records
+# dataclasses (the deleted draft schema module); the COLLAPSE MAPPING (governance_notes, below) records
 # where every draft column lands so none is silently dropped. Dead path pending Phase 4 (Decision 84).
 contract:
   id: telemetry_observations
@@ -35,7 +35,7 @@ contract:
       No generated artifact yet (telemetry is not on DuckLake; no telemetry field_semantics.yaml). This
       contract is the authoritative field-semantic source until the Phase 4 rebuild lands a generator.
       The draft sources are TelemetryPhases / TelemetrySteps / TelemetryProcessEvents / TelemetryModelCalls
-      in scripts/telemetry_schemas.py.
+      in the deleted draft schema module.
 fields:
   observation_id:
     $ref: observation-id.yaml#/contract/fields/observation_id
@@ -82,9 +82,9 @@ fields:
       step, telemetry_process_events -> process_event, telemetry_model_calls -> model_call. The set is
       OPEN to additive extension (accepted_values_extend) for new node kinds, never silently narrowed.
       "span" is deliberately NOT a value (lexicon: use "observation"). DQ ENFORCEMENT of the accepted
-      set lands in config/agent/data_quality/telemetry.yaml at Phase 4; the contract carries the intent.
+      set lands in the Phase 4 telemetry DQ config; the contract carries the intent.
     populated_by: >-
-      telemetry.py boundary (Phase 4): open_observation(observation_type=...). In the draft, the value is
+      the Phase 4 observation boundary: open_observation(observation_type=...). In the draft, the value is
       implicit in WHICH table was written; the collapse makes it an explicit column.
     dq_intent:
       not_null:
@@ -253,7 +253,7 @@ fields:
       Collapse mapping: telemetry_model_calls.provider -> provider. PROMOTED to a typed column (mirroring
       telemetry_agents.provider) so model-attribution analytics get typed access instead of JSON extraction.
       Open set; enforcement deferred to telemetry.yaml at the Phase 4 rebuild.
-    populated_by: scripts/executor/telemetry.py::emit_model_call.
+    populated_by: the Phase 4 observation boundary emit_model_call.
     dq_intent:
       not_null:
         enforced: false
@@ -267,7 +267,7 @@ fields:
       is the discriminator that drives the telemetry_sessions roll-ups (rework_count from tier=rework;
       exception_count from tier=exception) -- typed access is required for that reconciliation. Open set;
       enforcement deferred.
-    populated_by: scripts/executor/telemetry.py::emit_process_event.
+    populated_by: the Phase 4 observation boundary emit_process_event.
     dq_intent:
       not_null:
         enforced: false
@@ -279,7 +279,7 @@ fields:
     semantics: >-
       Collapse mapping: telemetry_steps.acceptance_passed -> acceptance_passed. PROMOTED to a typed boolean
       (a first-class self-improvement / T3-verifier signal) rather than buried in the metadata JSON.
-    populated_by: scripts/executor/telemetry.py::emit_step.
+    populated_by: the Phase 4 observation boundary emit_step.
     dq_intent:
       not_null:
         enforced: false
@@ -291,7 +291,7 @@ fields:
     semantics: >-
       Collapse mapping: telemetry_model_calls.exit_code -> exit_code. PROMOTED (typed bigint) for model-call
       success/failure analytics.
-    populated_by: scripts/executor/telemetry.py::emit_model_call.
+    populated_by: the Phase 4 observation boundary emit_model_call.
     dq_intent:
       not_null:
         enforced: false
@@ -303,7 +303,7 @@ fields:
     semantics: >-
       Collapse mapping: telemetry_process_events.time_lost_seconds -> time_lost_seconds. PROMOTED (typed
       bigint) for friction-cost analytics (the self-improvement loop's time-lost signal).
-    populated_by: scripts/executor/telemetry.py::emit_process_event.
+    populated_by: the Phase 4 observation boundary emit_process_event.
     dq_intent:
       not_null:
         enforced: false
@@ -353,7 +353,7 @@ fields:
     semantics: >-
       Operational append marker (writer-injected; default_factory in the draft). NOT the partition basis
       (started_at is) and NOT an SCD2 last_updated_timestamp (telemetry is insert-once).
-    populated_by: the telemetry write path (OpsWriter today; the Phase 4 DuckLake writer tomorrow).
+    populated_by: the Phase 4 DuckLake telemetry writer.
     dq_intent:
       not_null:
         enforced: false
@@ -361,8 +361,7 @@ governance:
   table_class: event
   partition_by: "day(started_at)"
   write_path: >-
-    LIVE (draft, dead): telemetry.py::open_phase/close_phase/emit_step/emit_process_event/emit_model_call
-    -> OpsWriter.emit(<one of four draft tables>) -> S3 staging -> Iceberg (unmigrated). TARGET
+    NOT PROVISIONED: the legacy draft emitters were deleted and no telemetry writer exists today. TARGET
     (Phase 4, post-T2.26): a single open_observation/emit boundary writing telemetry_observations on the
     DuckLake telemetry substrate, applying the schema/partition-as-code mechanism T2.33 established for the
     ops tables (Decision 96). Insert-once; no SCD2 merge.
@@ -381,7 +380,7 @@ governance_notes: >-
   semantics), including steps.prompt_hash and model_calls.prompt_hash. DROPPED: trade_date (Decision 96
   cl.2, every draft table). NULLABILITY AXES: a field's `nullable` is the TARGET-SCHEMA column constraint
   (what the Phase 4 DDL declares); `dq_intent.not_null.enforced` is the CURRENT DQ posture (false
-  everywhere now -- enforcement lands in config/agent/data_quality/telemetry.yaml at Phase 4). A
+  everywhere now -- enforcement lands in the Phase 4 telemetry DQ config). A
   `nullable: false` field with `enforced: false` means "required in the target schema, not yet
   DQ-enforced", NOT a contradiction. Conversely a PK/FK $ref'd from a Class C baseline keeps
   `nullable: true` (the loosest baseline) at the column axis with `not_null.enforced: true` at the DQ
@@ -390,7 +389,7 @@ governance_notes: >-
   no last_updated_timestamp, tz-aware UTC. Decision 97: ULID identity minted once, parent pointer
   propagated never re-derived. No merge_key (insert-once). dq_INTENT only here; ENFORCEMENT (including
   the closed observation_type accepted set and per-type required-field validators) lands in
-  config/agent/data_quality/telemetry.yaml at the Phase 4 rebuild. REPORT-ONLY: the unification is
+  the Phase 4 telemetry DQ config. REPORT-ONLY: the unification is
   documented, NOT implemented (the draft's four tables still exist until Phase 4 retires them).
 amendment_log: []
 previous_versions: []

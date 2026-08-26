@@ -29,7 +29,6 @@ from scripts.build_lambda_config import (
     DUCKLAKE_PGCLIENT_S3_PREFIX,
     PINNED_DUCKDB_VERSION,
     PINNED_PG_MAJOR,
-    PROD_DEPS,
     ROOT,
     _aws_profile_args,
     _build_size_limit_bytes,
@@ -86,24 +85,6 @@ def build_app_package(temp_dir: Path) -> Path:
     return _zip_staged_dir(app_dir, zip_path)
 
 
-def build_ops_compaction_package(temp_dir: Path) -> Path:
-    """Create ops-compaction.zip from the ops-compaction manifest (manifest-driven, CD.24).
-
-    Minimal zip -- no pip dependencies to stay under the 262 MB Lambda+AWSSDKPandas limit.
-    All bundled files are explicitly declared in src/lambdas/ops-compaction/manifest.yaml.
-    """
-    from scripts.lambda_manifest import load, stage_bundle  # noqa: PLC0415
-
-    manifest = load(ROOT / "src" / "lambdas" / "ops-compaction" / "manifest.yaml")
-    app_dir = temp_dir / "ops-app"
-    app_dir.mkdir(parents=True)
-
-    stage_bundle(manifest, app_dir, skip_pip=True)
-
-    zip_path = OUTPUT_DIR / "ops-compaction.zip"
-    return _zip_staged_dir(app_dir, zip_path)
-
-
 def list_bundle(artifact_slug: str) -> None:
     """Stage a manifest-driven bundle and emit the static file list to stdout.
 
@@ -125,54 +106,6 @@ def list_bundle(artifact_slug: str) -> None:
         for f in sorted(stage_dir.rglob("*")):
             if f.is_file() and "__pycache__" not in str(f):
                 print(str(f.relative_to(stage_dir)))
-
-
-def build_deps_layer(temp_dir: Path) -> Path:
-    """Create data-pipeline-deps-layer.zip with Lambda layer structure."""
-    site_packages = temp_dir / "layer" / "python" / "lib" / "python3.12" / "site-packages"
-    site_packages.mkdir(parents=True)
-
-    req_file = temp_dir / "requirements-lambda.txt"
-    req_file.write_text("\n".join(PROD_DEPS), encoding="utf-8")
-
-    print("  Installing to Lambda layer structure...")
-    pip_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--requirement",
-            str(req_file),
-            "--target",
-            str(site_packages),
-            "--platform",
-            "manylinux2014_x86_64",
-            "--implementation",
-            "cp",
-            "--python-version",
-            "3.12",
-            "--only-binary=:all:",
-            "--quiet",
-        ],
-        check=False,
-    )
-    if pip_result.returncode != 0:
-        print(f"ERROR: Dependency installation failed (exit {pip_result.returncode})")
-        sys.exit(1)
-
-    for pattern in ("*.dist-info", "__pycache__", "*.pyc", "tests", "test"):
-        for path in site_packages.rglob(pattern):
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-
-    zip_path = OUTPUT_DIR / "data-pipeline-deps-layer.zip"
-    layer_dir = temp_dir / "layer"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in layer_dir.rglob("*"):
-            if f.is_file():
-                zf.write(f, f.relative_to(layer_dir))
-    return zip_path
 
 
 def assert_within_size_limit(zip_path: Path) -> None:

@@ -61,7 +61,7 @@ def find_open_convergence_stale_rec(
 
 def _fetch_open_recs(profile: Optional[str] = None) -> list[dict[str, Any]]:
     """Fetch all open recs from the DuckLake reader (live, never the local JSONL cache)."""
-    from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
     return make_reader(profile=profile).named("open_recs") or []
 

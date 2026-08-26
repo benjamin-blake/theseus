@@ -11,7 +11,7 @@ those two names (sourced from _scaffolding) is likewise untouched.
 VTS-20 (audit validate-test-suite-4df4d48): a repeated fast-tier budget breach on the same
 (branch, dominant_phase) now UPDATES the existing open budget_breach rec instead of filing a
 duplicate. The dedupe lookup reads the open_recs reader boundary
-(src.common.iceberg_reader.make_reader -- Decision 84 warehouse-SoT), never
+(src.common.ducklake_reader_client.make_reader -- Decision 84 warehouse-SoT), never
 logs/.recommendations-log.jsonl (a read cache is never a write source). A reader failure
 loud-warns and falls through to filing a new rec -- the breach itself is always recorded; only
 the dedupe is best-effort (Decision 55: no silent skip). Decision 142 is the closest prior art
@@ -33,7 +33,7 @@ def _fetch_open_recs(profile: str | None = None) -> list[dict]:
     escalate._fetch_open_recs, scripts.preflight.recs_cache._derive_open_recs's server-side
     counterpart) -- the named verb returns every open rec; callers filter client-side.
     """
-    from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
     return make_reader(profile=profile).named("open_recs") or []
 

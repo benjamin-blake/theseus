@@ -97,7 +97,7 @@ class TestValidateAcceptanceFeasibility:
 
     def test_pytest_target_nonexistent_file(self, mock_shutil):
         """Test that pytest commands are FEASIBLE even when test file doesn't exist yet."""
-        acceptance = "python -m pytest tests/test_pysr_factory.py::TestPySRFactory -q"
+        acceptance = "python -m pytest tests/test_not_yet_written.py::TestNotYetWritten -q"
 
         with patch("pathlib.Path.exists", return_value=False):
             feasibility, message = validate_acceptance_feasibility(acceptance)

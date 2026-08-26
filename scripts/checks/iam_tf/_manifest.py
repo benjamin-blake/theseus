@@ -13,7 +13,6 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_environment_taxonomy",
         module="scripts.checks.iam_tf.validate_environment_taxonomy",
         attr="validate_environment_taxonomy",
-        product_coupled=True,
         full_segment="full_after_lint",
     ),
     Entry(
@@ -57,13 +56,6 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_convergence_writer_isolation",
         pre=True,
         full_segment="full_after_lint",
-    ),
-    Entry(
-        name="validate_iam_runner_policy",
-        module="scripts.checks.iam_tf.validate_iam_runner_policy",
-        attr="validate_iam_runner_policy",
-        pre=True,
-        full_segment="full_after_terraform_checks",
     ),
     Entry(
         name="validate_terraform_try",

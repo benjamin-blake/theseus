@@ -1,1 +1,1 @@
-"""Common utilities and shared code for the Lakehouse trading system."""
+"""Theseus platform: shared code, Lambda handlers, and DuckLake clients."""

@@ -49,10 +49,10 @@ each invites a wrong finding.
    classification in `scripts/ci_rca_taxonomy.py`; gate-escape/vacuous-pass detection in
    `scripts/ci_rca_vacuous_pass.py`. Auditing only the file the INTENT doc names by itself is a
    miss.
-2. **The INTENT contract's Athena/Iceberg prose is RETIRED, not current.** `docs/INTENT-ci-rca-methodology.md`
-   Sections 1, 3, 7 were written against a pre-Decision-84 Iceberg/Athena backend; `ops_*` moved to
+2. **The INTENT contract's legacy-warehouse prose is RETIRED, not current.** `docs/INTENT-ci-rca-methodology.md`
+   Sections 1, 3, 7 were written against a pre-Decision-84 legacy warehouse backend; `ops_*` moved to
    DuckLake-on-Neon (Decision 84/81). The doc marks these passages `[STALE]` inline. Audit the
-   IMPLEMENTATION. Do NOT file "the system uses Athena / Iceberg" findings -- it does not. (Whether
+   IMPLEMENTATION. Do NOT file "the system uses the legacy warehouse" findings -- it does not. (Whether
    the un-updated prose harms the contract's source-of-truth role IS in scope: that is Q4, a
    different claim.)
 3. **Bare `source=ci_rca` vs the sibling sources.** The cross-check spine applies ONLY to
@@ -180,7 +180,7 @@ question is given. Cite finding ids as basis.
   5 -- test whether that admission is adequately compensated). Verdict enum: `sound | adequate |
   weak`.
 - **Q4 -- Contract<->implementation coherence.** The INTENT doc is STALE-annotated throughout
-  (Athena/Iceberg -> DuckLake). Assess whether the drift undermines the doc's source-of-truth role
+  (legacy warehouse -> DuckLake). Assess whether the drift undermines the doc's source-of-truth role
   for a reader who relies on it, and whether any mechanism keeps contract and code coherent (a
   validator, a test, a review gate). Verdict enum: `coherent | drifting | incoherent`.
 - **Q5 -- Frontier benchmark (EXTERNAL CHECKLIST).** Rate the subsystem property-by-property against
@@ -255,7 +255,7 @@ rejected_candidate, or a reframe.
   back-validation match key is file-only (INTENT Section 7.2, a known weaker heuristic). Adjudicate
   which.
 - **C4.** `docs/INTENT-ci-rca-methodology.md` Sections 1/3/7 carry `[STALE]` annotations pointing to
-  a retired Athena/Iceberg backend. Hypothesis: contract drift; assess whether any test/validator/
+  a retired legacy warehouse backend. Hypothesis: contract drift; assess whether any test/validator/
   review gate keeps the contract coherent with the DuckLake implementation, or whether the doc can
   mislead a future reader.
 - **C5.** The enforced `why_chain` terminus check is (a) a systemic-keyword set and (b) a
@@ -379,8 +379,9 @@ anchors.
   abstention-rate gauge); c12(ii)
   bundle-absent fail-loud (implemented), c12(iii) preventive-action back-validation (implemented,
   file-only). T3.4 = STRATEGIC control-plane loop closure, `not_started`, depends on T1.13.
-- `docs/INTENT-ci-rca-methodology.md` (~582 lines): the contract; Sections 1/3/7 `[STALE]`
-  (Athena/Iceberg -> DuckLake, Decision 84/81); Section 5 "What this contract DOES NOT do" (semantic
+- `docs/INTENT-ci-rca-methodology.md` (~582 lines; RETIRED -- deleted from the tree, read from
+  git history if needed): the contract; Sections 1/3/7 `[STALE]`
+  (legacy warehouse -> DuckLake, Decision 84/81); Section 5 "What this contract DOES NOT do" (semantic
   ceiling admission); Section 6 phased warn->strict rollout; Section 7 observability (re-grounded to
   warm-cache gauges).
 
@@ -467,8 +468,8 @@ A hit means the territory is OWNED: classify the finding `planned-insufficient` 
   game.)
 - The executor is frozen (Decision 67); `ci_rca` recs are consumed by `/plan`, not an executor. Do
   not flag "no executor consumer".
-- Athena/Iceberg staleness in the INTENT doc is known and migration-tracked (Decision 84/81). Do not
-  file a fresh "system uses Athena" finding. (Q4's SoT-integrity question is fair game.)
+- Legacy-warehouse staleness in the INTENT doc is known and migration-tracked (Decision 84/81). Do not
+  file a fresh "system uses the legacy warehouse" finding. (Q4's SoT-integrity question is fair game.)
 - Causal-antecedence is deliberately unenforceable deterministically and routed to `/plan-critique`
   + human review (INTENT Section 5). Do not flag "why_chain doesn't verify causality" as novel; DO
   test whether the routing actually runs (C5).

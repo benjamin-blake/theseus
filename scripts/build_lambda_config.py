@@ -2,7 +2,7 @@
 """Build configuration data + resolution for the Lambda build/deploy tool (Decision 104 pattern).
 
 Holds constants (size limits, DuckLake dependency/extension/layer metadata, the DuckDB version
-pin via the SSOT loader per Decision 99), the lazy build-contract loader + its five accessors,
+pin via the SSOT loader per Decision 99), the lazy build-contract loader + its four accessors,
 Lambda file-pattern derivation, and the shared `_aws_profile_args` argv helper. Bottom of the
 build_lambda_* import DAG -- imports nothing from build_lambda_packaging or build_lambda_deploy,
 so those two may import from here with no cycle. See scripts/build_lambda.py for the CLI facade
@@ -26,20 +26,6 @@ from src.common.ducklake_version import (  # noqa: E402, I001
 )
 
 PINNED_DUCKDB_VERSION = _pinned_duckdb_version()
-
-PROD_DEPS = [
-    "numpy>=1.24.0",
-    "pandas>=2.0.0",
-    "pyyaml>=6.0",
-    "boto3>=1.28.0",
-    "pyarrow>=12.0.0",
-    "psycopg2-binary>=2.9.0",
-    "yfinance>=0.2.30",
-    "requests>=2.31.0",
-    "sympy>=1.12",
-    "scikit-learn>=1.3.0",
-    "aiohttp>=3.8.0",
-]
 
 # DuckLake deps layer (ducklake-deps): duckdb pinned exactly, plus the runtime's import-time deps.
 # pyyaml is required by ducklake_runtime.load_field_semantics; boto3 is provided by the Lambda base.
@@ -111,10 +97,8 @@ _LAMBDA_SCRIPTS = [
     "llm/github_models_client.py",
     "llm/client.py",
     "llm/utils.py",
-    "ops_writer.py",
     "run_scheduled_agent.py",
     "s3_log_store.py",
-    "telemetry_schemas.py",
     "tool_runtime.py",
 ]
 
@@ -122,10 +106,6 @@ _LAMBDA_FUNCTION_NAMES = [
     "agent-platform-scheduled-agent-dispatcher",
     "agent-platform-findings-processor",
 ]
-
-_OPS_COMPACTION_FUNCTION_NAME = "agent-platform-ops-compaction"
-_OPS_COMPACTION_ZIP_KEY = "lambda-packages/ops-compaction.zip"
-
 
 # ---------------------------------------------------------------------------
 # Build contract loader (T-1.16): lazy, cached, import-safe.
@@ -141,10 +121,6 @@ def _fallback_build_registry() -> dict:
         "size_limit_bytes": LAMBDA_SIZE_LIMIT_BYTES,
         "deploy_targets": {
             "prod_functions": list(_LAMBDA_FUNCTION_NAMES),
-            "ops_compaction": {
-                "function": _OPS_COMPACTION_FUNCTION_NAME,
-                "zip_key": _OPS_COMPACTION_ZIP_KEY,
-            },
             "ducklake_function_zip_keys": dict(_DUCKLAKE_FUNCTION_ZIP_KEYS),
             "ducklake_layer_names": list(DUCKLAKE_LAYER_NAMES),
         },
@@ -163,7 +139,6 @@ def _load_build_contract() -> dict:
             "size_limit_bytes": raw["size_limit_bytes"],
             "deploy_targets": {
                 "prod_functions": list(raw["deploy_targets"]["prod_functions"]),
-                "ops_compaction": dict(raw["deploy_targets"]["ops_compaction"]),
                 "ducklake_function_zip_keys": dict(raw["deploy_targets"]["ducklake_function_zip_keys"]),
                 "ducklake_layer_names": list(raw["deploy_targets"]["ducklake_layer_names"]),
             },
@@ -180,10 +155,6 @@ def _build_size_limit_bytes() -> int:
 
 def _build_prod_function_names() -> list[str]:
     return list(_load_build_contract()["deploy_targets"]["prod_functions"])
-
-
-def _build_ops_compaction() -> dict:
-    return dict(_load_build_contract()["deploy_targets"]["ops_compaction"])
 
 
 def _build_ducklake_function_zip_keys() -> dict[str, str]:

@@ -65,14 +65,13 @@ def load_checks(
 ) -> tuple[list[Check], dict[str, Any]]:
     """Load and compile checks from a YAML file.
 
-    Returns (checks, metadata) where metadata has database/workgroup info.
+    Returns (checks, metadata) where metadata carries the database name.
     """
     with open(yaml_path, encoding="utf-8") as f:
         spec = yaml.safe_load(f)
 
     database = spec.get("database", "agent_platform")
-    workgroup = spec.get("athena_workgroup", "agent-platform-production")
-    metadata = {"database": database, "athena_workgroup": workgroup}
+    metadata = {"database": database}
 
     checks: list[Check] = []
     tables = spec.get("tables", {})
@@ -314,12 +313,13 @@ def _compile_column_test(
 
 
 def to_ducklake_sql(sql: str, table: str, database: str) -> str:
-    """Translate an Athena/Trino check SQL to DuckDB dialect over the DuckLake `current` table.
+    """Normalise a compiled check SQL to the DuckDB dialect over the DuckLake `current` table.
 
-    - Rewrite the Athena table reference (`{database}.{table}_current` or `{database}.{table}`) to the
-      `{tbl}` placeholder the reader's query_ops substitutes with the DuckLake current TABLE.
-    - Translate Trino `regexp_like(x, p)` -> DuckDB `regexp_matches(x, p)`. `date_diff`, CURRENT_TIMESTAMP,
+    - Rewrite the qualified table reference (`{database}.{table}_current` or `{database}.{table}`) to
+      the `{tbl}` placeholder the reader's query_ops substitutes with the DuckLake current TABLE.
+    - Translate `regexp_like(x, p)` -> DuckDB `regexp_matches(x, p)`. `date_diff`, CURRENT_TIMESTAMP,
       DATE('...'), COUNT(*), NOT IN, IS NULL are already DuckDB-compatible.
+    - Idempotent: already-translated SQL passes through unchanged.
     """
     out = sql.replace(f"{database}.{table}_current", "{tbl}").replace(f"{database}.{table}", "{tbl}")
     out = re.sub(r"\bregexp_like\(", "regexp_matches(", out)

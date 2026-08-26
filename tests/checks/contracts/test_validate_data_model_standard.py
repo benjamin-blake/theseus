@@ -5,7 +5,7 @@ passes, a group entry without merge_key is skipped (no false positive), a missin
 data-modeling-standard.yaml fails, the diff gate skips when neither trigger file changed, and
 the check is wired into both presubmit tiers + resolves via scripts.checks.registry (Decision
 169, -k wiring). Follows the tmp_path + contracts_dir/changed_files override pattern used by
-test_validate_intent_doc_freeze.py / test_validate_contract_drift.py.
+test_validate_contract_drift.py.
 """
 
 from __future__ import annotations

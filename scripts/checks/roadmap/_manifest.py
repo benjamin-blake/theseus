@@ -36,14 +36,6 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
-        name="validate_product_roadmap",
-        module="scripts.checks.roadmap.validate_product_roadmap",
-        attr="validate_product_roadmap",
-        product_coupled=True,
-        pre=True,
-        full_segment="full_after_lint",
-    ),
-    Entry(
         name="validate_plan_documents",
         module="scripts.checks.roadmap.validate_plan_documents",
         attr="validate_plan_documents",

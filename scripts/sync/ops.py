@@ -1,23 +1,22 @@
 # complexity-waiver: decision-43
-"""sync_ops -- bidirectional sync between local JSONL files and the Iceberg ops tables.
+"""sync_ops -- one-way refresh of the local JSONL read caches from the DuckLake ops tables.
 
-Read path: the DuckLake closed reader, for every migrated table. There is no Athena
-fallback (Decision 84 I-1); on reader failure the cache is left untouched with a loud warning.
+Read path: the DuckLake closed reader, for every migrated table. It is the sole backend
+(Decision 84 I-1); on reader failure the cache is left untouched with a loud warning.
 
 Provides one CLI subcommand:
-  sync   -- drain outbox then pull all tables from Iceberg
+  sync   -- pull all migrated tables from the DuckLake reader
 
 Internal helpers (not for direct agent use):
-  drain              -- flush outbox entries to S3 via OpsWriter
-  _rebuild_local_cache -- read Iceberg current-state and overwrite local JSONL files
-  _pull_single_table -- pull a single table from the DuckLake reader (no fallback)
-  warm_sync          -- drain + pull all migrated tables in one warm-up pass, returning the
+  _rebuild_local_cache -- read current-state rows and overwrite local JSONL files
+  _pull_single_table -- pull a single table from the DuckLake reader
+  warm_sync          -- pull all migrated tables in one warm-up pass, returning the
                         pulled rows in-memory plus per-table reader reachability (the preflight
                         serves its Phase-B signals from these rows -- zero additional reader calls,
                         neon-egress-reduction D4). The disk caches are written as a side effect.
   upsert_cache_row   -- incremental single-row upsert into a local JSONL read-cache by merge key.
                         A read-cache refresh DOWNSTREAM of a synchronous ducklake_writer commit
-                        (Decision 84 I-4): never a write source, never re-staged to S3/the writer.
+                        (Decision 84 I-4): never a write source, never re-staged to the writer.
 
 Never raises to callers. All functions catch and log exceptions internally.
 """
@@ -33,19 +32,12 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.common.outbox_retirement import DUCKLAKE_MIGRATED_TABLES, is_retired_dir  # noqa: F401
-
 logger = logging.getLogger(__name__)
 
 _REPO_ROOT = Path(__file__).parent.parent.parent
 _LOGS_DIR = _REPO_ROOT / "logs"
-_OUTBOX_DIR = _LOGS_DIR / ".ops-outbox"
 
-# Maps Iceberg table name -> local JSONL file (relative to _LOGS_DIR)
-# Public-migration (2026-05-28): telemetry_* tables are NOT migrated to the personal account.
-# Their entries are removed so sync_ops.pull does not issue TABLE_NOT_FOUND queries on every sync.
-# Re-add if telemetry is reprovisioned. ops_execution_plans migrated at T2.26 (c9); ops_session_log
-# stays un-migrated pending its own CD.40/T3.20-gated disposition.
+# Maps warehouse table name -> local JSONL file (relative to _LOGS_DIR)
 _TABLE_TO_LOCAL: dict[str, str] = {
     "ops_recommendations": ".recommendations-log.jsonl",
     "ops_decisions": ".decisions-index.jsonl",
@@ -53,14 +45,6 @@ _TABLE_TO_LOCAL: dict[str, str] = {
     "ops_execution_plans": ".execution-plans-index.jsonl",
 }
 
-# Tables on the DuckLake closed boundary: their outbox dirs are never drained to Iceberg
-# (stale-store hazard) and their pulls have no Athena fallback (Decision 84 I-1).
-# DUCKLAKE_MIGRATED_TABLES is re-exported (imported above) from its sole home,
-# src/common/outbox_retirement.py, so every existing `from scripts.sync.ops import
-# DUCKLAKE_MIGRATED_TABLES` site still resolves.
-
-_DATABASE = "agent_platform"
-_WORKGROUP = "agent-platform-production"
 _SSO_PROFILE = "agent_platform"
 _SYNC_REJECTS_LOG = _LOGS_DIR / "debug" / "dq-sync-rejects.jsonl"
 _DECISIONS_SYNC_REJECTS_LOG = _LOGS_DIR / "debug" / "decisions-sync-rejects.jsonl"
@@ -71,10 +55,10 @@ def _pull_via_reader(table: str) -> list[dict] | None:
     """Return current-state rows for *table* via the DuckLake reader.
 
     Returns None on any exception so the caller can degrade LOUDLY (warn + cache
-    not updated). There is no Athena fallback for any migrated table (Decision 84 I-1).
+    not updated). The reader is the sole backend for every migrated table (Decision 84 I-1).
     """
     try:
-        from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+        from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
         reader = make_reader(table=table)
         if table == "ops_priority_queue":
@@ -99,13 +83,12 @@ def _write_sync_reject(row: dict, reason: str) -> None:
         logger.warning("sync_ops._write_sync_reject: could not write reject log: %s", exc)
 
 
-def _coerce_athena_array(val: object, *, elem_type: type = str) -> list:
-    """Parse an Athena VarChar-serialised array into a typed Python list.
+def _coerce_array(val: object, *, elem_type: type = str) -> list:
+    """Parse a string-serialised array into a typed Python list.
 
-    Athena represents array<string> and array<int> columns as "[elem1, elem2]"
-    with unquoted, comma-separated elements. ast.literal_eval is not suitable
-    here because elements are not quoted Python string literals.
-    Returns [] for null/empty values.
+    A legacy string-serialised column arrives as "[elem1, elem2]" with unquoted,
+    comma-separated elements. ast.literal_eval is not suitable here because elements
+    are not quoted Python string literals. Returns [] for null/empty values.
 
     Backend-agnostic: the DuckLake reader returns native Python lists (JSON arrays), so an
     already-list value is coerced element-wise and returned as-is rather than re-parsed from str().
@@ -143,10 +126,9 @@ def _coerce_athena_array(val: object, *, elem_type: type = str) -> list:
 
 
 def _coerce_ops_rec_row(row: dict) -> dict | None:
-    """Coerce Athena VarChar string values in an ops_recommendations row to proper Python types.
+    """Coerce string-serialised values in an ops_recommendations row to proper Python types.
 
-    Athena get_query_results returns every column as a VarCharValue string.
-    array<string> columns arrive as "[elem1, elem2]"; null scalars arrive as "".
+    Array columns may arrive as "[elem1, elem2]"; null scalars may arrive as "".
 
     Returns None and writes a reject log entry if the row has an invalid id prefix.
     """
@@ -155,7 +137,7 @@ def _coerce_ops_rec_row(row: dict) -> dict | None:
         _write_sync_reject(row, f"invalid id prefix: {rec_id!r}")
         return None
     for field in ("dependencies", "tags"):
-        row[field] = _coerce_athena_array(row.get(field))
+        row[field] = _coerce_array(row.get(field))
     steps = row.get("execution_steps")
     if not isinstance(steps, int):
         try:
@@ -172,9 +154,9 @@ def _coerce_ops_rec_row(row: dict) -> dict | None:
 
 
 def _coerce_ops_priority_queue_row(row: dict) -> dict:
-    """Coerce Athena VarChar strings in an ops_priority_queue row to proper Python types."""
+    """Coerce string-serialised values in an ops_priority_queue row to proper Python types."""
     for field in ("compound_with", "gates"):
-        row[field] = _coerce_athena_array(row.get(field))
+        row[field] = _coerce_array(row.get(field))
     rank = row.get("rank")
     if not isinstance(rank, int):
         try:
@@ -196,7 +178,7 @@ def _write_decisions_sync_reject(row: dict, reason: str) -> None:
 
 
 def _coerce_ops_decisions_row(row: dict) -> dict:
-    """Coerce Athena VarChar strings in an ops_decisions row to proper Python types.
+    """Coerce string-serialised values in an ops_decisions row to proper Python types.
 
     Also populates legacy decision_id from id (or vice versa) and logs a
     sync-reject entry when the dual-write invariant is violated.
@@ -207,7 +189,7 @@ def _coerce_ops_decisions_row(row: dict) -> dict:
             row["decision_id"] = int(decision_id) if decision_id else None
         except (ValueError, TypeError):
             row["decision_id"] = None
-    row["related_decisions"] = _coerce_athena_array(row.get("related_decisions"), elem_type=int)
+    row["related_decisions"] = _coerce_array(row.get("related_decisions"), elem_type=int)
 
     dec_id = row.get("id")
     coerced_did = row.get("decision_id")
@@ -231,8 +213,8 @@ def _coerce_ops_decisions_row(row: dict) -> dict:
 def _coerce_ops_execution_plans_row(row: dict) -> dict:
     """Decode the JSON-blob VARCHAR columns (steps/critique_history) back to native list objects.
 
-    The DuckLake reader returns BIGINT/VARCHAR scalar columns natively typed (unlike Athena's
-    blanket VarChar stringification), but steps/critique_history are VARCHAR columns carrying
+    The DuckLake reader returns BIGINT/VARCHAR scalar columns natively typed, but
+    steps/critique_history are VARCHAR columns carrying
     json.dumps'd JSON (scripts/ops_portal/execution_plans.py) -- decode them for local-cache
     consumers so the cache mirrors the pre-serialization ExecutionPlan shape.
     """
@@ -247,9 +229,9 @@ def _coerce_ops_execution_plans_row(row: dict) -> dict:
 
 
 def _coerce_ops_session_log_row(row: dict) -> dict:
-    """Coerce Athena VarChar strings in an ops_session_log row to proper Python types."""
+    """Coerce string-serialised values in an ops_session_log row to proper Python types."""
     for field in ("recs_attempted", "recs_closed"):
-        row[field] = _coerce_athena_array(row.get(field))
+        row[field] = _coerce_array(row.get(field))
     duration = row.get("duration_minutes")
     if not isinstance(duration, int):
         try:
@@ -276,62 +258,13 @@ def check_sso(profile: str = _SSO_PROFILE) -> bool:
         return False
 
 
-def drain() -> dict[str, int]:
-    """Flush all outbox entries to S3 via OpsWriter.
-
-    Returns:
-        Dict mapping table name to number of entries drained.
-        Empty dict if outbox is empty or does not exist.
-    """
-    counts: dict[str, int] = {}
-
-    if not _OUTBOX_DIR.exists():
-        return counts
-
-    try:
-        from scripts.ops_writer import OpsWriter  # noqa: PLC0415  # lazy import
-
-        writer = OpsWriter()
-
-        for table_dir in _OUTBOX_DIR.iterdir():
-            if not table_dir.is_dir():
-                continue
-            table = table_dir.name
-            if is_retired_dir(table):
-                logger.warning(
-                    "sync_ops.drain: skipping %s outbox dir -- the table transits the DuckLake "
-                    "closed boundary (Decision 84 I-1) and the offline outbox is retired (I-4). "
-                    "An entry here is an anomaly; re-file it via the portal instead.",
-                    table,
-                )
-                continue
-            drained = 0
-            for outbox_file in list(table_dir.glob("*.jsonl")):
-                try:
-                    raw = outbox_file.read_text(encoding="utf-8")
-                    entry = json.loads(raw.strip())
-                    writer.write(table, entry)
-                    outbox_file.unlink(missing_ok=True)
-                    drained += 1
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("sync_ops.drain: failed to drain %s: %s", outbox_file, exc)
-            if drained:
-                counts[table] = drained
-                logger.info("sync_ops.drain: drained %d entries for %s", drained, table)
-
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("sync_ops.drain: unexpected error: %s", exc)
-
-    return counts
-
-
 def _pull_single_table_with_rows(table: str, profile: str = _SSO_PROFILE) -> tuple[int, list[dict] | None]:
     """Pull a single ops table from the DuckLake reader; overwrite the local JSONL and return the rows.
 
     Returns (row_count, rows). On reader failure returns (0, None) -- the second element is None
     (NOT []) so a caller can distinguish "reader unreachable" from "genuinely empty table" without a
-    false-zero (Decision 55). No Athena fallback for any migrated table (Decision 84 I-1): on reader
-    failure the cache is left untouched with a loud warning.
+    false-zero (Decision 55). The reader is the sole backend for every migrated table
+    (Decision 84 I-1): on reader failure the cache is left untouched with a loud warning.
     """
     local_rel = _TABLE_TO_LOCAL.get(table)
     if not local_rel:
@@ -344,8 +277,8 @@ def _pull_single_table_with_rows(table: str, profile: str = _SSO_PROFILE) -> tup
         return _write_rows_to_local(table, rows, local_rel), rows
 
     logger.warning(
-        "sync_ops._pull_single_table_with_rows: DuckLake reader unreachable for %s -- no fallback "
-        "(Decision 84 I-1). Local cache not updated.",
+        "sync_ops._pull_single_table_with_rows: DuckLake reader unreachable for %s -- it is the "
+        "sole backend (Decision 84 I-1). Local cache not updated.",
         table,
     )
     return 0, None
@@ -354,8 +287,8 @@ def _pull_single_table_with_rows(table: str, profile: str = _SSO_PROFILE) -> tup
 def _pull_single_table(table: str, profile: str = _SSO_PROFILE) -> int:
     """Pull a single ops table from the DuckLake reader and overwrite the local JSONL file.
 
-    No Athena fallback for any migrated table (Decision 84 I-1): on reader failure the
-    cache is left untouched with a loud warning. Returns number of rows pulled, or 0 on failure.
+    The reader is the sole backend for every migrated table (Decision 84 I-1): on reader failure
+    the cache is left untouched with a loud warning. Returns number of rows pulled, or 0 on failure.
     """
     count, _rows = _pull_single_table_with_rows(table, profile=profile)
     return count
@@ -371,7 +304,7 @@ def upsert_cache_row(table: str, row: dict, *, merge_key: str = "id", path: Path
 
     This is a refresh of the READ cache DOWNSTREAM of a synchronous ducklake_writer commit
     (Decision 84 I-4 / warehouse-as-source-of-truth): it is NEVER a write source and is NEVER
-    re-staged to S3 or the writer. The authoritative write already transited ducklake_writer; this
+    re-staged to the writer. The authoritative write already transited ducklake_writer; this
     only keeps the local projection current without a reader round-trip (neon-egress-reduction D4).
 
     *path* overrides the cache-file location (defaults to _LOGS_DIR/_TABLE_TO_LOCAL[table]); the
@@ -473,7 +406,7 @@ def _rebuild_local_cache(profile: str = _SSO_PROFILE) -> dict[str, int]:
     """Read current-state and overwrite local JSONL files with fresh data.
 
     DESTRUCTIVE: overwrites local JSONL files with warehouse state. Every migrated
-    table pulls from the DuckLake reader; there is no Athena fallback (Decision 84 I-1).
+    table pulls from the DuckLake reader, its sole backend (Decision 84 I-1).
 
     Returns:
         Dict mapping table name to number of rows pulled.
@@ -485,21 +418,16 @@ def _rebuild_local_cache(profile: str = _SSO_PROFILE) -> dict[str, int]:
 
 
 def sync(profile: str = _SSO_PROFILE) -> dict[str, dict[str, int]]:
-    """Drain the legacy staging outbox then rebuild the local cache from the DuckLake reader.
-
-    Drain runs first so any locally-queued entries reach S3 before pulling,
-    ensuring the pulled snapshot includes recently-drained data.
+    """Rebuild the local read caches from the DuckLake reader.
 
     Returns:
-        {"drained": {table: count}, "pulled": {table: count}}
+        {"pulled": {table: count}}
     """
-    drain_result = drain()
-    pull_result = _rebuild_local_cache(profile)
-    return {"drained": drain_result, "pulled": pull_result}
+    return {"pulled": _rebuild_local_cache(profile)}
 
 
 def warm_sync(profile: str = _SSO_PROFILE) -> dict[str, object]:
-    """Single warm-up pass for preflight: drain the outbox, then pull every migrated table ONCE.
+    """Single warm-up pass for preflight: pull every migrated table ONCE.
 
     This is the ONE serial reader touch that absorbs the Neon cold-resume before the preflight
     fan-out. It returns the pulled rows in-memory so the caller can serve every Phase-B signal from
@@ -509,13 +437,11 @@ def warm_sync(profile: str = _SSO_PROFILE) -> dict[str, object]:
 
     Returns:
         {
-          "drained":   {table: count},
           "pulled":    {table: count},                 # rows written to the local cache
           "rows":      {table: [rows] | None},         # None => that table's reader pull failed
           "reader_ok": {table: bool},                  # per-table reachability (False on failure)
         }
     """
-    drain_result = drain()
     pulled: dict[str, int] = {}
     rows: dict[str, list[dict] | None] = {}
     reader_ok: dict[str, bool] = {}
@@ -524,28 +450,7 @@ def warm_sync(profile: str = _SSO_PROFILE) -> dict[str, object]:
         pulled[table] = count
         rows[table] = table_rows
         reader_ok[table] = table_rows is not None
-    return {"drained": drain_result, "pulled": pulled, "rows": rows, "reader_ok": reader_ok}
-
-
-def outbox_summary() -> dict[str, int]:
-    """Count outbox files per table without draining.
-
-    Returns:
-        Dict mapping table name to file count. Empty dict if no outbox.
-    """
-    if not _OUTBOX_DIR.exists():
-        return {}
-    summary: dict[str, int] = {}
-    try:
-        for table_dir in _OUTBOX_DIR.iterdir():
-            if not table_dir.is_dir():
-                continue
-            count = sum(1 for _ in table_dir.glob("*.jsonl"))
-            if count:
-                summary[table_dir.name] = count
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("sync_ops.outbox_summary: error: %s", exc)
-    return summary
+    return {"pulled": pulled, "rows": rows, "reader_ok": reader_ok}
 
 
 def main() -> None:

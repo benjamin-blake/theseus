@@ -8,7 +8,7 @@ from scripts.checks.iam_tf.validate_environment_taxonomy import validate_environ
 
 
 class TestValidateEnvironmentTaxonomy:
-    """Tests for validate_environment_taxonomy (two-axis vocabulary reservation lint)."""
+    """Tests for validate_environment_taxonomy (platform environment vocabulary reservation lint)."""
 
     def _run(self, tmp_path: Path, files: dict[str, str], changed: list[str]) -> list[str]:
         for rel, content in files.items():
@@ -23,18 +23,20 @@ class TestValidateEnvironmentTaxonomy:
             validate_environment_taxonomy(failed)
         return failed
 
-    def test_flags_phase_used_as_environment(self, tmp_path: Path) -> None:
-        failed = self._run(tmp_path, {"docs/x.md": "We run the live_full environment nightly.\n"}, ["docs/x.md"])
-        assert failed == ["Environment/phase taxonomy"]
-
     def test_flags_tier_used_as_phase(self, tmp_path: Path) -> None:
         failed = self._run(tmp_path, {"docs/x.md": "The sandbox phase mocks externals.\n"}, ["docs/x.md"])
         assert failed == ["Environment/phase taxonomy"]
 
+    def test_single_axis_lint_does_not_flag_a_non_tier_word_as_an_environment(self, tmp_path: Path) -> None:
+        """The retired second axis is gone: only a PLATFORM tier written as a "phase" is a finding.
+        A non-tier word next to "environment" is ordinary prose and must pass."""
+        failed = self._run(tmp_path, {"docs/x.md": "We run the research environment nightly.\n"}, ["docs/x.md"])
+        assert failed == []
+
     def test_clean_doc_passes(self, tmp_path: Path) -> None:
         failed = self._run(
             tmp_path,
-            {"docs/x.md": "The sandbox environment auto-applies; research is a phase.\n"},
+            {"docs/x.md": "The sandbox environment auto-applies; SIT is an environment too.\n"},
             ["docs/x.md"],
         )
         assert failed == []
@@ -50,14 +52,14 @@ class TestValidateEnvironmentTaxonomy:
     def test_allowlisted_file_skipped(self, tmp_path: Path) -> None:
         failed = self._run(
             tmp_path,
-            {"docs/DECISIONS.md": "The live_full environment and sandbox phase appear here.\n"},
+            {"docs/DECISIONS.md": "The sandbox phase appears here.\n"},
             ["docs/DECISIONS.md"],
         )
         assert failed == []
 
     def test_taxonomy_yaml_allowlisted(self, tmp_path: Path) -> None:
         """The converted Class D contract (CFG-11 conversion) is allowlisted at its NEW path --
-        it legitimately spans both axes and must not trip its own vocabulary lint."""
+        it defines the vocabulary and must not trip its own lint."""
         failed = self._run(
             tmp_path,
             {"docs/contracts/environment-taxonomy.yaml": "axis_a:\n  sandbox:\n    apply_gating: sandbox phase\n"},
@@ -68,7 +70,7 @@ class TestValidateEnvironmentTaxonomy:
     def test_github_and_tests_paths_skipped(self, tmp_path: Path) -> None:
         failed = self._run(
             tmp_path,
-            {".github/workflows/w.yml": "name: sandbox phase\n", "tests/fixture.md": "live_full environment\n"},
+            {".github/workflows/w.yml": "name: sandbox phase\n", "tests/fixture.md": "production phase\n"},
             [".github/workflows/w.yml", "tests/fixture.md"],
         )
         assert failed == []
@@ -76,7 +78,7 @@ class TestValidateEnvironmentTaxonomy:
     def test_non_doc_suffix_skipped(self, tmp_path: Path) -> None:
         failed = self._run(
             tmp_path,
-            {"scripts/foo.py": "# sandbox phase live_full environment\n"},
+            {"scripts/foo.py": "# sandbox phase, prod phase\n"},
             ["scripts/foo.py"],
         )
         assert failed == []

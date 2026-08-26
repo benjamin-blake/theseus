@@ -74,10 +74,6 @@ class TestStdoutDoesNotDumpFullJson:
                     "recommendations_count": 0,
                 },
             ),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
-            ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
@@ -123,10 +119,6 @@ class TestJsonOutputSchema:
                     "strategic_review_due": False,
                     "recommendations_count": 0,
                 },
-            ),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
             ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
@@ -204,10 +196,6 @@ class TestJsonOutputSchema:
                     "recommendations_count": 0,
                 },
             ),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
-            ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
             patch("builtins.print"),
@@ -278,10 +266,6 @@ class TestMainIncludesPriorityQueue:
                     "strategic_review_due": False,
                     "recommendations_count": 0,
                 },
-            ),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
             ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch(
@@ -354,10 +338,6 @@ class TestMainIncludesPriorityQueue:
                     "recommendations_count": 0,
                 },
             ),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
-            ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch(
                 "session_preflight.PREFLIGHT_REPORT",
@@ -423,10 +403,6 @@ class TestPreflightReportDisputeKey:
             patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
             patch("scripts.preflight.recs_cache.count_recommendations", return_value=(0, 0, 0, [])),
             patch("scripts.preflight.context_docs.read_context_files", return_value={}),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
-            ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("builtins.print"),
         ):
@@ -471,10 +447,6 @@ class TestDecisionConditionsGlue:
                     "strategic_review_due": False,
                     "recommendations_count": 0,
                 },
-            ),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
             ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.preflight.decision_conditions.preflight_bucket", return_value=canned_bucket),
@@ -524,10 +496,6 @@ class TestDecisionConditionsGlue:
                         "strategic_review_due": False,
                         "recommendations_count": 0,
                     },
-                ),
-                patch(
-                    "scripts.preflight.context_docs.check_telemetry_health",
-                    return_value={"overall": "ok", "checks": [], "friction_patterns": []},
                 ),
                 patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
                 patch("scripts.preflight.decision_conditions.preflight_bucket", return_value=canned_bucket),

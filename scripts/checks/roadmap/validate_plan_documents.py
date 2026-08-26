@@ -93,7 +93,7 @@ def validate_plan_documents(
 
     Runs in BOTH --pre and full presubmit: pure Python over a handful of YAML files,
     well under the Decision 60 fast-tier budget, and PLAN-*.yaml is an active editing
-    surface (same placement rationale as validate_product_roadmap). Historical PLAN-*.md
+    surface (same placement rationale as validate_platform_roadmap). Historical PLAN-*.md
     files are out of scope -- only the YAML artefact class is schema-governed.
 
     plans_dir overrides the scanned directory and added_plan_names overrides the git-derived
@@ -104,6 +104,7 @@ def validate_plan_documents(
     target_dir = plans_dir if plans_dir is not None else _common.ROOT / "docs" / "plans"
     plan_paths = sorted(target_dir.glob("PLAN-*.yaml"))
     if not plan_paths:
+        registry.examined(0, unit="plan_documents")
         print("  PASS: no PLAN-*.yaml files to validate.")
         return
 
@@ -114,6 +115,7 @@ def validate_plan_documents(
     try:
         from scripts.roadmap.plan_document import load  # noqa: PLC0415
 
+        registry.examined(len(plan_paths), unit="plan_documents")
         added_names = _added_plan_names() if added_plan_names is None else added_plan_names
         errors: list[str] = []
         for path in plan_paths:
@@ -133,6 +135,7 @@ def validate_plan_documents(
         else:
             print(f"  PASS: {len(plan_paths)} plan document(s) validate against PlanDocument schema.")
     except ImportError as exc:
+        registry.skipped(f"plan_document import failed: {exc}")
         print(f"  ERROR: Could not import plan_document: {exc}")
         failed.append("Plan document schema validation")
     finally:

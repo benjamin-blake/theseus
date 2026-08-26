@@ -174,7 +174,7 @@ class TestValidateStructuralSizeBudgetRaises:
         assert _BUDGET_SPEC.rel_path == _LONG_LINE_SPEC.rel_path
 
 
-_FROZEN_LINE = "  docs/ROADMAP-PRODUCT.yaml: 4707  # raise-approved: dec-166 grandfather at measured size\n"
+_FROZEN_LINE = "  docs/ROADMAP-SEMANTO.yaml: 4707  # raise-approved: dec-166 grandfather at measured size\n"
 _PLATFORM_DEFERRAL = (
     "    defer_to_incumbent:\n"
     "      docs/ROADMAP-PLATFORM.yaml:\n"
@@ -183,7 +183,7 @@ _PLATFORM_DEFERRAL = (
 )
 _FROZEN_NOTE = (
     "budget_notes:\n"
-    "  docs/ROADMAP-PRODUCT.yaml:\n"
+    "  docs/ROADMAP-SEMANTO.yaml:\n"
     "    frozen: true\n"
     "    rationale: operator freeze pending the warehouse-graph migration\n"
     "    retires_when: the migration has shrunk or deleted the file\n"
@@ -254,7 +254,7 @@ class TestFrozenBaseViolations:
         """Leg 3 closes the MEASURED bypass: a deferred path is dropped before measurement,
         so deferring a frozen file to a size-less incumbent un-governs it and reports green."""
         added = _PLATFORM_DEFERRAL + (
-            "      docs/ROADMAP-PRODUCT.yaml:\n        incumbent: validate_product_roadmap\n        authorized_by: dec-166\n"
+            "      docs/ROADMAP-SEMANTO.yaml:\n        incumbent: validate_platform_roadmap\n        authorized_by: dec-166\n"
         )
         current = _FROZEN_BASE.replace(_PLATFORM_DEFERRAL, added).replace(_FROZEN_NOTE, "").replace(_FROZEN_LINE, "")
         violations = _e4(_FROZEN_BASE, current)
@@ -275,7 +275,7 @@ class TestFrozenBaseViolations:
     def test_absent_registry_file_evaluates_no_frozen_leg(self, tmp_path: Path) -> None:
         """Mirrors check_diff's own not-found contract: with no current registry on disk
         there is nothing to diff, and the base_reader is never consulted."""
-        _write_decisions(tmp_path, [166], mentions={166: "docs/ROADMAP-PRODUCT.yaml"})
+        _write_decisions(tmp_path, [166], mentions={166: "docs/ROADMAP-SEMANTO.yaml"})
         calls: list[str] = []
 
         def _recording_reader(rel: str) -> str:
@@ -293,7 +293,7 @@ class TestFrozenBaseViolations:
     def test_wired_into_the_check_and_reds_the_gate(self, tmp_path: Path) -> None:
         current = _FROZEN_BASE.replace("4707  #", "9999  #")
         _write_current(tmp_path, current)
-        _write_decisions(tmp_path, [166], mentions={166: "docs/ROADMAP-PRODUCT.yaml"})
+        _write_decisions(tmp_path, [166], mentions={166: "docs/ROADMAP-SEMANTO.yaml"})
         base_reader = lambda rel: _FROZEN_BASE  # noqa: E731
 
         with patch("scripts.checks._common.ROOT", tmp_path):
@@ -319,7 +319,7 @@ class TestBaseUnreachableContract:
         base from a genuine pass.
         """
         _write_current(tmp_path, _FROZEN_BASE)
-        _write_decisions(tmp_path, [166], mentions={166: "docs/ROADMAP-PRODUCT.yaml"})
+        _write_decisions(tmp_path, [166], mentions={166: "docs/ROADMAP-SEMANTO.yaml"})
 
         calls: list[tuple[str, str]] = []
 
@@ -347,7 +347,7 @@ class TestBaseUnreachableContract:
         """Both outcomes leave `failed` empty, so the SKIP line is the only thing that tells
         an unreachable base apart from a real pass."""
         _write_current(tmp_path, _FROZEN_BASE)
-        _write_decisions(tmp_path, [166], mentions={166: "docs/ROADMAP-PRODUCT.yaml"})
+        _write_decisions(tmp_path, [166], mentions={166: "docs/ROADMAP-SEMANTO.yaml"})
         base_reader = lambda rel: _FROZEN_BASE  # noqa: E731
 
         with patch("scripts.checks._common.ROOT", tmp_path):

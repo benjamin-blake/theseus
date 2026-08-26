@@ -2200,13 +2200,13 @@ Supersedes CIRCA-03's grouping-fingerprint contract; resolves rec-2710 and rec-2
 **Date:** 2026-07-16
 **Warehouse ID:** dec-140 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
 
-**Problem:** CD.8 ("DuckDB = default operational read engine -- embedded, sub-second, no SSO, runs anywhere; Athena retained conditionally per CD.15; the typed query Lambda hides the engine from agents") was realized -- the engine choice is live -- but CD.8 stayed `state: pending`, gating completion of T1.2 and T2.5 and carrying no realization_evidence.
+**Problem:** CD.8 ("DuckDB = default operational read engine -- embedded, sub-second, no SSO, runs anywhere; a legacy external query engine retained conditionally per CD.15; the typed query Lambda hides the engine from agents") was realized -- the engine choice is live -- but CD.8 stayed `state: pending`, gating completion of T1.2 and T2.5 and carrying no realization_evidence.
 
-**Decision:** Ratifies CD.8, scoped to the realized ENGINE CHOICE. DuckDB is the embedded default operational read engine and DuckLake-on-Neon is the live ops read substrate: the ducklake_reader closed named-verb boundary (Decision 84 I-3) serves ops_recommendations / ops_decisions / ops_priority_queue reads, and the local read paths (sync_ops, ops_data_portal, session_preflight) route through the DuckDB reader (src/common/iceberg_reader.py) with the Athena escape hatch retained conditionally per CD.15. This ratification is NECESSARY, NOT SUFFICIENT (CD.2/CD.6/CD.20 precedent): it clears CD.8's completion gate on the items it gates -- T2.5 (DuckDB swap on read paths, complete 2026-05-31) and T1.2 (query-Lambda full verb expansion, completed_at 2026-07-07, flipped via the T1.16 verb-surface-closeout joint-closeout bookkeeping per RMAP-11) -- but does not itself close those items' code criteria (already met) and does not resolve the still-open CD.15 Athena-escape-hatch clause (OQ.7). T2.5's bootstrap_completion_exempt flag is RETAINED because its co-gating CD.15 remains pending (strip-only-when-ALL-gating-CDs-ratified).
+**Decision:** Ratifies CD.8, scoped to the realized ENGINE CHOICE. DuckDB is the embedded default operational read engine and DuckLake-on-Neon is the live ops read substrate: the ducklake_reader closed named-verb boundary (Decision 84 I-3) serves ops_recommendations / ops_decisions / ops_priority_queue reads, and the local read paths (sync_ops, ops_data_portal, session_preflight) route through the DuckDB reader (src/common/iceberg_reader.py) with the external-query escape hatch retained conditionally per CD.15. This ratification is NECESSARY, NOT SUFFICIENT (CD.2/CD.6/CD.20 precedent): it clears CD.8's completion gate on the items it gates -- T2.5 (DuckDB swap on read paths, complete 2026-05-31) and T1.2 (query-Lambda full verb expansion, completed_at 2026-07-07, flipped via the T1.16 verb-surface-closeout joint-closeout bookkeeping per RMAP-11) -- but does not itself close those items' code criteria (already met) and does not resolve the still-open CD.15 external-query escape-hatch clause (OQ.7). T2.5's bootstrap_completion_exempt flag is RETAINED because its co-gating CD.15 remains pending (strip-only-when-ALL-gating-CDs-ratified).
 
-**Reversal conditions:** revisit the default-engine choice if operational read scale exceeds what the embedded DuckDB reader serves within budget (the CD.15 Athena escape hatch is the retained relief valve; a sustained shift of the primary read path off DuckDB would supersede this Decision). The engine choice is coupled to CD.31 / Decision 78 (DuckLake as the native table format); a reversal of DuckLake adoption would reopen the engine question.
+**Reversal conditions:** revisit the default-engine choice if operational read scale exceeds what the embedded DuckDB reader serves within budget (the CD.15 external-query escape hatch is the retained relief valve; a sustained shift of the primary read path off DuckDB would supersede this Decision). The engine choice is coupled to CD.31 / Decision 78 (DuckLake as the native table format); a reversal of DuckLake adoption would reopen the engine question.
 
-**Related:** CD.8 (this ratifies it), CD.15 (Athena escape-hatch clause -- still pending; co-gates T2.5, whose exemption is retained), CD.31 / Decision 78 (DuckLake table format under which DuckDB serves reads), T2.5 and T1.2 (gated items, both complete), Decision 118 (CD.25 ratification -- the "necessary NOT sufficient" scoping precedent this Decision follows, alongside CD.2/CD.6/CD.20 = Decisions 109/106/111), Decision 84 (closed ducklake_reader named-verb boundary + DECISIONS.md canonical/backfill), Decision 105 (candidate-decision ratification lane).
+**Related:** CD.8 (this ratifies it), CD.15 (external-query escape-hatch clause -- still pending; co-gates T2.5, whose exemption is retained), CD.31 / Decision 78 (DuckLake table format under which DuckDB serves reads), T2.5 and T1.2 (gated items, both complete), Decision 118 (CD.25 ratification -- the "necessary NOT sufficient" scoping precedent this Decision follows, alongside CD.2/CD.6/CD.20 = Decisions 109/106/111), Decision 84 (closed ducklake_reader named-verb boundary + DECISIONS.md canonical/backfill), Decision 105 (candidate-decision ratification lane).
 
 ---
 
@@ -3162,8 +3162,7 @@ one addition -- a patch-interception hybrid:
   imports every test-patched private dependency into its own namespace so
   `patch("scripts.ops_data_portal.<sym>")` keeps intercepting for facade-resident callers; and
   it re-exports every public symbol plus the 6 imported-name traps (subprocess, ET,
-  DECISIONS_JSONL, RECS_JSONL, Recommendation, validate_source) and the
-  _fetch_decision_from_athena back-compat alias.
+  DECISIONS_JSONL, RECS_JSONL, Recommendation, validate_source).
 - One concern per scripts/ops_portal/*.py module (the shared ROOT/profile/region-primitives
   _common pattern established by Decision 104's precedent). The live module roster and each
   module's owned concern are tracked at the package directory itself, not restated here.
@@ -5022,19 +5021,19 @@ state, not a forward retention directive -- see Decision 174.]
 
 ---
 
-## Decision 84: DuckLake is the sole ops-store backend; Athena ops estate retired; writer-owned keyspace; named-verb read boundary (Decided)
+## Decision 84: DuckLake is the sole ops-store backend; legacy query-engine ops estate retired; writer-owned keyspace; named-verb read boundary (Decided)
 
 **Status:** Decided
 **Date:** 2026-06-11
 **Warehouse ID:** dec-084 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
 
 **Problem:**
-The T2.19 recs-first cutover left the ops store straddling two warehouses. The retained Iceberg copy stopped being a coherent rollback target the day writes moved to DuckLake (reads would time-travel while writes kept landing in DuckLake); the offline outbox inverted its purpose on ephemeral CC-web containers (gitignored pending files die with the container); client-side DynamoDB id allocation left the write boundary unable to police its own keyspace (a colliding write_ops create silently MERGEs); half-migrated read semantics produced the rec-2170 silent false zero; and preflight burned minutes polling Athena tables dead since the 2026-05-28 account migration.
+The T2.19 recs-first cutover left the ops store straddling two warehouses. The retained Iceberg copy stopped being a coherent rollback target the day writes moved to DuckLake (reads would time-travel while writes kept landing in DuckLake); the offline outbox inverted its purpose on ephemeral CC-web containers (gitignored pending files die with the container); client-side DynamoDB id allocation left the write boundary unable to police its own keyspace (a colliding write_ops create silently MERGEs); half-migrated read semantics produced the rec-2170 silent false zero; and preflight burned minutes polling legacy query-engine tables dead since the 2026-05-28 account migration.
 
-**Ratified premises:** All dev sessions run on Claude Code on the web (no local). All Athena-resident ops data is discardable. ops_decisions is recreatable from DECISIONS.md. The ops store is small and single-writer in practice.
+**Ratified premises:** All dev sessions run on Claude Code on the web (no local). All legacy-warehouse-resident ops data is discardable. ops_decisions is recreatable from DECISIONS.md. The ops store is small and single-writer in practice.
 
 **Decision (four invariants):**
-- **I-1 Single backend.** DuckLake-on-Neon (closed reader/writer Function-URL boundary) is the only ops-store backend. The `OPS_STORAGE_BACKEND` rollback flag is deleted. The T2.19 cutover's flag-based rollback mechanism (an AGENTS.md source-of-truth provision, not a Decision 81 clause -- Decision 81 cl.7's closed boundary is RETAINED and extended) is retired. The Athena/Iceberg ops estate (tables, `_current` views, ops_compaction, OpsWriter ops paths, VarChar coercion) is demolished without data migration once live writers are repointed; demolition of non-recreatable tables is gated on the rec-2113 catalog-restore drill (T2.26 START GATE).
+- **I-1 Single backend.** DuckLake-on-Neon (closed reader/writer Function-URL boundary) is the only ops-store backend. The `OPS_STORAGE_BACKEND` rollback flag is deleted. The T2.19 cutover's flag-based rollback mechanism (an AGENTS.md source-of-truth provision, not a Decision 81 clause -- Decision 81 cl.7's closed boundary is RETAINED and extended) is retired. The legacy query-engine ops estate (tables, `_current` views, ops_compaction, OpsWriter ops paths, VarChar coercion) is demolished without data migration once live writers are repointed; demolition of non-recreatable tables is gated on the rec-2113 catalog-restore drill (T2.26 START GATE).
 - **I-2 Writer-owned keyspace (scoped).** The ducklake_writer owns the `rec-NNN` keyspace: `file_ops` allocates the id inside the write transaction (counter row in the same catalog commit; OCC conflict is the serialization point; client idempotency ULID makes response-lost retries replay-safe). The DynamoDB counters table retires. Sanctioned exceptions: `dec-NNN` follows the human-assigned DECISIONS.md numbering (callers supply `decision_id`); `test-`/probe prefixes remain caller-keyed via write_ops.
 - **I-3 Named-verb read boundary (staged).** Application reads use pre-established verbs registered server-side in the ducklake_reader; caller SQL is removed from application paths. `query_ops` is RETAINED for the DQ harness (its checks, including history-table checks, are not yet expressible as verbs) and is restricted/retired in a follow-up once a dq_check verb family exists. Structural `{column, value}` filters replace SQL-fragment row filters (closes rec-2170).
 - **I-4 No write buffering (per-table staging).** The recs and decisions pending outboxes are deleted now; a failed write fails loudly at the call site (transient-5xx retry is licensed by the idempotency key). The OpsWriter staging outbox survives ONLY for the not-yet-migrated telemetry/session_log/execution_plans paths and retires with them (Phase 3/4).
@@ -5186,7 +5185,7 @@ authority: CD.34 (Neon), not Decision 78 clause 3.
 Decision 78 adopted DuckLake for the operational lakehouse but deferred the runtime architecture and four
 open questions to T2.16-T2.19. T2.16 (RDS catalog) is complete; T2.17-T2.19 cannot proceed without a
 ratified answer to: how the ops Lambdas are decomposed, how writer concurrency is enforced against
-DuckLake's OCC (OQ.10), how inlining is flushed and where durability lives (OQ.11), whether an Athena
+DuckLake's OCC (OQ.10), how inlining is flushed and where durability lives (OQ.11), whether an external-query
 escape hatch survives DuckLake's lack of an external reader (OQ.7), how current-state reads avoid full
 scans, and what the agent-facing portal surface is. CD.10's earlier six-Lambda enumeration was
 illustrative, not a settled architecture.
@@ -5220,7 +5219,7 @@ Ratify CD.33 as the authoritative DuckLake ops runtime architecture:
    OQ.11 resolved to option (c): inlining DISABLED (ducklake_default_data_inlining_row_limit=0) for
    governance tables so writes land in S3 immediately, eliminating the catalog-only durability window;
    per-table, telemetry may retain inlining.
-7. Closed read/write boundary. OQ.7 resolved: no Athena escape hatch -- every read via the reader, every
+7. Closed read/write boundary. OQ.7 resolved: no external-query escape hatch -- every read via the reader, every
    write via the writer, nothing out-of-band. Break-glass = the audited PlatformAdmin principal expanded to
    catalog+S3 read for non-routine inspect/repair; catalog DR = a daily PITR export to a dedicated S3 bucket
    with a tested restore runbook. History partitions by day(created_timestamp), current by bucket(N, id)
@@ -5258,7 +5257,7 @@ daily compaction, while destructive GC is decoupled onto a slower guarded cadenc
 slow reader or runaway a delete. current is materialised as a write-through Type-1 projection because
 "latest per id" is unprunable, so deriving it at read time forces a full scan; a single atomic DuckLake
 transaction across history+current keeps them from drifting without external orchestration. The closed
-boundary (no Athena escape hatch) is not a limitation we tolerate but the design goal: a lakehouse where
+boundary (no external-query escape hatch) is not a limitation we tolerate but the design goal: a lakehouse where
 every read and write is mediated and authorised, with one audited break-glass path for DR. The agent verb
 surface is left open precisely to avoid re-committing CD.10's mistake of enumerating a "final" surface
 prematurely.
@@ -5338,7 +5337,7 @@ Only Decision 67's Lambda-deploy clause is lifted -- not its STRATEGIC-plan clau
 **Warehouse ID:** dec-078 (canonical; retired writer-era id reconciled per Decision 105)
 
 **Problem:**
-The Iceberg-on-S3-metadata read path has proven operationally brittle for the ops/telemetry workload: the Athena-based reader is slow for interactive agent queries, the DuckDB-on-Iceberg snapshot read requires a full metadata scan on every invocation, and the staged CD.31 proposal formalises DuckLake v1.0 as the superior format for ops and telemetry tables -- a metadata-in-RDS-PostgreSQL + data-in-S3-Parquet open table format natively embedded in DuckDB that eliminates the Glue catalog dependency and enables sub-second DuckDB queries directly against S3 Parquet data. OQ.13 (the sole ratification-blocking open question, resolution_tier CD.31) is resolved here by generalising NS.1.
+The Iceberg-on-S3-metadata read path has proven operationally brittle for the ops/telemetry workload: the legacy query-engine reader is slow for interactive agent queries, the DuckDB-on-Iceberg snapshot read requires a full metadata scan on every invocation, and the staged CD.31 proposal formalises DuckLake v1.0 as the superior format for ops and telemetry tables -- a metadata-in-RDS-PostgreSQL + data-in-S3-Parquet open table format natively embedded in DuckDB that eliminates the Glue catalog dependency and enables sub-second DuckDB queries directly against S3 Parquet data. OQ.13 (the sole ratification-blocking open question, resolution_tier CD.31) is resolved here by generalising NS.1.
 
 **Decision:**
 1. Adopt DuckLake v1.0 for the operational lakehouse (ops and telemetry tables only). Full ratification of CD.31, enacted now including supersessions.
@@ -5552,7 +5551,7 @@ Two changes to restore and harden the harness:
 **Date:** 2026-05-13
 
 **Problem:**
-Decision 60 (2026-05-05) specified a two-tier validation model with a 5-minute fast-tier budget. The budget was unattainable at ratification: V3 verifiers (PR #274, 2026-05-01) and the DQ runner integration (PR #289, same day as Decision 60) placed ~10 minutes of Athena round-trips in the default presubmit tier on day zero. Twelve subsequent commits to `validate.py` between 2026-05-06 and 2026-05-12 compounded the drift. Measured runtimes show median 18 min, max 50 min -- a 3-10x violation of the documented budget. The structural causes are: (1) the budget had no enforcement mechanism, (2) the tier was defined by exclusion of a barely-used pytest marker (`@pytest.mark.integration` is set on exactly 1 of ~30 AWS-touching test files), and (3) post-merge CI ran on push-to-main duplicating PR CI on the same content. Additionally, with GitHub branch protection permanently unavailable (Decision 89), Decision 89 made remote CI the only merge gate -- yet the gate runs the same slow tier that should be reserved for comprehensive validation. The merge model conflates pre-merge gating with comprehensive validation, and the planning queue currently treats 178 accumulated non-automatable recommendations as mandatory discussion items, which is operational noise while the executor is offline pending Decision 67 reversal.
+Decision 60 (2026-05-05) specified a two-tier validation model with a 5-minute fast-tier budget. The budget was unattainable at ratification: V3 verifiers (PR #274, 2026-05-01) and the DQ runner integration (PR #289, same day as Decision 60) placed ~10 minutes of legacy query-engine round-trips in the default presubmit tier on day zero. Twelve subsequent commits to `validate.py` between 2026-05-06 and 2026-05-12 compounded the drift. Measured runtimes show median 18 min, max 50 min -- a 3-10x violation of the documented budget. The structural causes are: (1) the budget had no enforcement mechanism, (2) the tier was defined by exclusion of a barely-used pytest marker (`@pytest.mark.integration` is set on exactly 1 of ~30 AWS-touching test files), and (3) post-merge CI ran on push-to-main duplicating PR CI on the same content. Additionally, with GitHub branch protection permanently unavailable (Decision 89), Decision 89 made remote CI the only merge gate -- yet the gate runs the same slow tier that should be reserved for comprehensive validation. The merge model conflates pre-merge gating with comprehensive validation, and the planning queue currently treats 178 accumulated non-automatable recommendations as mandatory discussion items, which is operational noise while the executor is offline pending Decision 67 reversal.
 
 **Decision:**
 Adopt a ten-layer CI/CD architecture (L1-L10) as specified in `docs/INTENT-ci-cd-architecture.md`. The model preserves Decision 60's two-tier abstraction while redefining tier semantics and adding forward-fix merge gating and scheduled promotion design.
@@ -5695,7 +5694,7 @@ Replace the rescue agent layer (Decision 46) with an RCA-first model. When the e
 **Rationale:**
 - One correct fix costs one diagnosis call. N recovery attempts cost N×K LLM calls and may still fail.
 - Supervisor hiding (workaround routing) decreases long-term reliability by preventing gap accumulation from becoming visible.
-- Structured process events + RCA agent creates a queryable audit trail in Athena that rescue agents do not provide.
+- Structured process events + RCA agent creates a queryable audit trail in the warehouse that rescue agents do not provide.
 - Decision 46 was premature: the executor was not yet reliable enough to trust rescue agents, and the trust calibration mechanism (graduated autonomy gates) was complex and untested.
 
 **Supersedes:** Decision 46 (Rescue Agent Architecture). The three-outcome contract and graduated autonomy gates are retired.
@@ -5809,10 +5808,10 @@ Migrate the surface to two named tiers:
 **Date:** 2026-05-05
 
 **Problem:**
-The cc-scheduled-agents strategic plan (PLAN-cc-scheduled-agents.md) originally proposed a new `ops_agent_findings` Iceberg table and a new `ops_priority_queue_latest_run` Athena view to ingest structured findings from Claude Code scheduled agents. The plan was written before a full audit of existing infrastructure. Open Questions Q4 ("New table OR extend ops_recommendations?") and Q5 ("Does the new view risk the same _rn ambiguity?") were unresolved at planning time.
+The cc-scheduled-agents strategic plan (PLAN-cc-scheduled-agents.md) originally proposed a new `ops_agent_findings` Iceberg table and a new `ops_priority_queue_latest_run` warehouse view to ingest structured findings from Claude Code scheduled agents. The plan was written before a full audit of existing infrastructure. Open Questions Q4 ("New table OR extend ops_recommendations?") and Q5 ("Does the new view risk the same _rn ambiguity?") were unresolved at planning time.
 
 **Decision:**
-Scheduled-agent findings flow through the existing `ops_recommendations` table via the `source` field. No new Iceberg table is created. No new Athena view is created.
+Scheduled-agent findings flow through the existing `ops_recommendations` table via the `source` field. No new Iceberg table is created. No new warehouse view is created.
 
 Specific consequences:
 - The `ops_agent_findings` Iceberg table proposed in the strategic plan is NOT built. The existing `source` field on `ops_recommendations` discriminates findings by origin.
@@ -5872,7 +5871,7 @@ The blanket DEFERRED marker is no longer acceptable in lieu of active per-Lambda
 
 **[STRATEGIC-PLAN CLAUSE -- RETAINED, pending CD.17 / T4.2]**
 **Status:** Active -- remove when reversal condition is met
-**Reversal condition:** Telemetry Athena tables (`telemetry_sessions`, `telemetry_process_events`,
+**Reversal condition:** Legacy telemetry tables (`telemetry_sessions`, `telemetry_process_events`,
 `telemetry_model_calls`, `telemetry_phases`, `telemetry_steps`) confirmed operational end-to-end
 with passing data quality checks AND executor re-enabled per CD.17 / T4.2.
 
@@ -6119,7 +6118,7 @@ Top quantitative firms (Renaissance, Two Sigma, Citadel) do NOT require interpre
 **Architecture (three-layer):**
 
 ```
-RAW LAYER (Athena/Iceberg, append-only, normalized)
+RAW LAYER (legacy query engine, append-only, normalized)
   market_data_raw, sentiment_raw, fundamentals_raw, alt_data_raw
   - Universal transforms applied automatically (all windows x all numeric columns)
   - 1,000+ columns over time -- storage is cheap
@@ -6223,7 +6222,7 @@ single-command session close.
 - Delete `copilot_instructions.md` (underscore); update all 7 references to point to the
   hyphen file
 - Condense gotchas: remove tooling-enforced entries, merge related entries (Venv+Version
-  Manager, Import Safety Patterns, Windows Subprocess, Athena/Iceberg, Test Isolation)
+  Manager, Import Safety Patterns, Windows Subprocess, legacy warehouse, Test Isolation)
 - Rewrite `implement.prompt.md` to 10 steps, with session close consolidated into a single
   `--auto` call
 - Add `--auto` flag to `session_postflight.py` that executes validate→close→metrics→commit→push

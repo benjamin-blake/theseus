@@ -15,9 +15,7 @@ recently, indicating the docs may be out of date.
 2. For each doc file identified, check related source files. Use the following
    heuristic mapping:
    - `docs/DECISIONS.md` → any decision-affecting code changes
-   - `docs/ROADMAP-PRODUCT.md` → `docs/plans/`
    - `docs/ROADMAP-PLATFORM.yaml` → `docs/plans/`
-   - `docs/CHANGELOG.md` → recent commits
 
 3. For each doc, run:
    ```bash

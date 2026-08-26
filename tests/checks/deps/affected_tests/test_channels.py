@@ -151,17 +151,17 @@ class TestMirrorMapChannelDirectory:
     """A concern-split mirror package contributes file-grained affected-set entries."""
 
     def test_directory_mirror_target_expands_to_test_modules(self, tmp_path: Path) -> None:
-        _write(tmp_path, "scripts/ops_writer.py", "def write():\n    pass\n")
-        _write(tmp_path, "tests/ops_writer/test_write.py", "def test_write():\n    assert True\n")
-        _write(tmp_path, "tests/ops_writer/nested/test_retry.py", "def test_retry():\n    assert True\n")
-        _write(tmp_path, "tests/ops_writer/helper.py", "VALUE = 1\n")
-        _write(tmp_path, "tests/ops_writer/__pycache__/test_cached.py", "garbage\n")
+        _write(tmp_path, "scripts/ops_data_portal.py", "def write():\n    pass\n")
+        _write(tmp_path, "tests/ops_data_portal/test_write.py", "def test_write():\n    assert True\n")
+        _write(tmp_path, "tests/ops_data_portal/nested/test_retry.py", "def test_retry():\n    assert True\n")
+        _write(tmp_path, "tests/ops_data_portal/helper.py", "VALUE = 1\n")
+        _write(tmp_path, "tests/ops_data_portal/__pycache__/test_cached.py", "garbage\n")
         with patch("scripts.test_coverage_checker.ROOT", tmp_path):
-            result = at.derive_affected_tests([("M", "scripts/ops_writer.py")], repo_root=tmp_path)
-        assert "tests/ops_writer/test_write.py" in result["selected"]
-        assert "tests/ops_writer/nested/test_retry.py" in result["selected"]
-        assert "tests/ops_writer" not in result["selected"]
-        assert "tests/ops_writer/helper.py" not in result["selected"]
+            result = at.derive_affected_tests([("M", "scripts/ops_data_portal.py")], repo_root=tmp_path)
+        assert "tests/ops_data_portal/test_write.py" in result["selected"]
+        assert "tests/ops_data_portal/nested/test_retry.py" in result["selected"]
+        assert "tests/ops_data_portal" not in result["selected"]
+        assert "tests/ops_data_portal/helper.py" not in result["selected"]
         assert not any("__pycache__" in path for path in result["selected"])
 
 

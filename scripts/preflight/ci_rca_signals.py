@@ -127,7 +127,7 @@ def _fetch_ci_rca_recs(cache_rows: object = _common._READER_SENTINEL) -> list[di
     cache_rows (neon-egress-reduction D4): a supplied row list is served via _derive_ci_rca_open
     (zero reader call); a supplied None means the warm-up pull failed -> [] (degraded). Omitted
     (sentinel) -> reader path (back-compat / tests). Returns [] with a loud warning on reader failure
-    (Decision 55 / Decision 81 cl.7: no Athena fallback; loud degraded signal).
+    (Decision 55 / Decision 81 cl.7: the reader is the sole backend; loud degraded signal).
     """
     if cache_rows is not _common._READER_SENTINEL:
         return [] if cache_rows is None else _derive_ci_rca_open(cache_rows)  # type: ignore[arg-type]
@@ -140,7 +140,8 @@ def _fetch_ci_rca_recs(cache_rows: object = _common._READER_SENTINEL) -> list[di
 
     print(
         f"[WARN] preflight: ci_rca recs reader unreachable ({_reader_exc}) -- CI RCA Recs "
-        "section degraded (recs_read_status=reader_unreachable). No Athena fallback (Decision 81 cl.7).",
+        "section degraded (recs_read_status=reader_unreachable). The reader is the sole "
+        "backend (Decision 81 cl.7).",
         file=sys.stderr,
     )
     return []
@@ -180,7 +181,7 @@ def _fetch_ci_rca_recs_since(ts: str, cache_rows: object = _common._READER_SENTI
 
     cache_rows (neon-egress-reduction D4): a supplied row list is served via _derive_ci_rca_since
     (zero reader call); a supplied None -> []. Omitted (sentinel) -> reader path (back-compat).
-    Returns [] on any failure (Decision 81 cl.7: no Athena fallback).
+    Returns [] on any failure (Decision 81 cl.7: the reader is the sole backend).
     """
     if cache_rows is not _common._READER_SENTINEL:
         return [] if cache_rows is None else _derive_ci_rca_since(cache_rows, ts)  # type: ignore[arg-type]

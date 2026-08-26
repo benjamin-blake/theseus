@@ -21,7 +21,7 @@ Reject a plan that invents a third validation tier, treats mapped coverage or re
 
 2. Read `docs/PROJECT_CONTEXT.md` in full (for North Star and rules).
 
-3. **Targeted roadmap extraction, not a full-file read:** extract only the `tier_items[]` (from `docs/ROADMAP-PLATFORM.yaml`) and product-phase entries (from `docs/ROADMAP-PRODUCT.yaml`) the plan's `phase` and `context` fields name, via a `bin/venv-python -c` yaml.safe_load projection -- do not `Read` either file in full (ROADMAP-PLATFORM.yaml alone is >600KB).
+3. **Targeted roadmap extraction, not a full-file read:** extract only the `tier_items[]` (from `docs/ROADMAP-PLATFORM.yaml`) the plan's `phase` and `context` fields name, via a `bin/venv-python -c` yaml.safe_load projection -- do not `Read` the file in full (ROADMAP-PLATFORM.yaml alone is >600KB).
 
 4. **Targeted decision extraction + conflict-sweep, not a full-file read:** read only the decision sections named in the plan's context `Decision-scout verdict + CITE list` (locate each via `rg "^## Decision N:" docs/DECISIONS.md`), plus a conflict-sweep: `rg` 2-3 keywords drawn from the plan's approach over `^## Decision` headers in `docs/DECISIONS.md` to catch a contradiction the scout's CITE list omitted. Do not Read the full file -- it is large (near its Decision 134 size ceiling) and the decision-scout gate already paid that cost minutes earlier in the same workflow.
 
@@ -33,7 +33,7 @@ Reject a plan that invents a third validation tier, treats mapped coverage or re
 
 6. **Check for decision conflicts:** Does the plan contradict or re-decide anything already resolved in `docs/DECISIONS.md`? Cite specific decision numbers and the conflicting plan section.
 
-7. **Score North Star alignment (1-5):** Does the `## Intent` section directly serve the North Star ("Build a self-improving automated trading system")? A score of 1 means no discernible connection; 5 means it directly advances the goal. Provide a 1-2 sentence justification.
+7. **Score North Star alignment (1-5):** Does the `## Intent` section directly serve a North Star principle (NS.1-NS.5, `docs/ROADMAP-PLATFORM.yaml`)? A score of 1 means no discernible connection; 5 means it directly advances one. Name it and give a 1-2 sentence justification.
 
 8. **Evaluate Work Area scoping (STRATEGIC plans) or Scope breadth (IMPLEMENTATION plans):**
    - For STRATEGIC: Are Work Areas well-bounded (one logical concern per area)? Too large (suggest split)? Too small (merge with adjacent area)?
@@ -95,7 +95,7 @@ Phase 2 checks the plan's *details* against the existing frame. This phase chall
 
 Ask the following five questions against the plan's chosen approach. For each, write a one-sentence answer. Where the answer surfaces a concrete contradiction with a Decision, a Roadmap item, or a North Star principle, recommend REVISE. Otherwise surface the answer informationally -- the human or downstream planner decides whether to pivot.
 
-12e. **Question 1 -- Is the chosen primitive the right primitive?** What if the orchestrator / runtime / data store / interface in this plan wasn't this kind of thing? Could the role be filled by a platform-native primitive (Step Functions, EventBridge, SQS, DynamoDB Streams, Lambda, Athena) already in production in this codebase? If the plan introduces a custom orchestrator, scheduler, retry loop, state machine, or queue, name the platform primitive it could be replaced by and explain why it isn't.
+12e. **Question 1 -- Is the chosen primitive the right primitive?** What if the orchestrator / runtime / data store / interface in this plan wasn't this kind of thing? Could the role be filled by a platform-native primitive (Step Functions, EventBridge, SQS, DynamoDB Streams, Lambda) already in production in this codebase? If the plan introduces a custom orchestrator, scheduler, retry loop, state machine, or queue, name the platform primitive it could be replaced by and explain why it isn't.
 
 12f. **Question 2 -- Is the decomposition boundary right?** If the plan treats X as a single unit, could X be decomposed into smaller independently-deployable, independently-observable, independently-retryable units? If the plan proposes N independent units, should they collapse into one? The frame-lock case (Decision 75) was a monolithic Python loop that should have been decomposed into per-step Lambdas orchestrated by Step Functions; the corresponding question would have caught it.
 

@@ -2,7 +2,7 @@
 
 PLAN-coverage-paydown-ops-writer-sync-ops: covers the remaining uncovered branches across
 _coerce_rows_list (8), _coerce_ops_execution_plans_row (8), _coerce_ops_decisions_row (4),
-_coerce_athena_array (4) = 24 statements. Collision-free (existing module is test_coercion.py).
+_coerce_array (4) = 24 statements. Collision-free (existing module is test_coercion.py).
 """
 
 from __future__ import annotations
@@ -10,18 +10,18 @@ from __future__ import annotations
 from unittest.mock import patch
 
 
-class TestCoerceAthenaArrayExceptionPaths:
+class TestCoerceArrayExceptionPaths:
     def test_list_input_skips_element_that_fails_elem_type_conversion(self):
         """A native-list element that raises ValueError/TypeError on elem_type() is dropped."""
-        from scripts.sync.ops import _coerce_athena_array
+        from scripts.sync.ops import _coerce_array
 
-        assert _coerce_athena_array([1, "not-an-int", 2], elem_type=int) == [1, 2]
+        assert _coerce_array([1, "not-an-int", 2], elem_type=int) == [1, 2]
 
     def test_scalar_fallback_returns_empty_list_on_conversion_failure(self):
         """A non-bracketed scalar string that fails elem_type() conversion returns []."""
-        from scripts.sync.ops import _coerce_athena_array
+        from scripts.sync.ops import _coerce_array
 
-        assert _coerce_athena_array("not-an-int", elem_type=int) == []
+        assert _coerce_array("not-an-int", elem_type=int) == []
 
 
 class TestIntCoercionExceptionPaths:

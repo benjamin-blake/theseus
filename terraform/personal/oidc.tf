@@ -135,42 +135,6 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
   }
 
   statement {
-    # Athena refresh-time reads the provider issues on aws_athena_workgroup every plan.
-    # No StartQueryExecution / CreateWorkGroup / UpdateWorkGroup / Tag (write actions).
-    sid    = "AthenaRead"
-    effect = "Allow"
-    actions = [
-      "athena:GetQueryExecution",
-      "athena:GetQueryResults",
-      "athena:GetWorkGroup",
-      "athena:ListWorkGroups",
-      "athena:GetTags",
-      "athena:ListTagsForResource"
-    ]
-    resources = ["*"]
-  }
-
-  statement {
-    # Glue refresh-time reads the provider issues on aws_glue_catalog_database every plan.
-    # No Create/Update/Delete (write actions).
-    sid    = "GlueRead"
-    effect = "Allow"
-    actions = [
-      "glue:GetDatabase",
-      "glue:GetDatabases",
-      "glue:GetTable",
-      "glue:GetTables",
-      "glue:GetPartitions",
-      "glue:GetTags"
-    ]
-    resources = [
-      "arn:aws:glue:${var.aws_region}:${var.account_id}:catalog",
-      "arn:aws:glue:${var.aws_region}:${var.account_id}:database/${aws_glue_catalog_database.ops.name}",
-      "arn:aws:glue:${var.aws_region}:${var.account_id}:table/${aws_glue_catalog_database.ops.name}/*"
-    ]
-  }
-
-  statement {
     # DynamoDB refresh-time reads the provider issues on aws_dynamodb_table every plan.
     # No Create/Update/Put/Delete (write actions).
     sid    = "DynamoDBRead"
@@ -235,12 +199,11 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
       # refresh-readable by github_ci_planner once it enters terraform/personal state, or every
       # subsequent plan against this module fails closed with AccessDenied.
       "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-maintenance-smoke",
-      # T2.43 gap (same class as rec-2688 for ducklake-deploy): these three prod-class execution
+      # T2.43 gap (same class as rec-2688 for ducklake-deploy): these prod-class execution
       # roles must be refresh-readable by github_ci_planner once they enter terraform/personal
       # state, or every subsequent plan against this module fails closed with AccessDenied.
       "arn:aws:iam::${var.account_id}:role/agent-platform-scheduled-agent-dispatcher",
-      "arn:aws:iam::${var.account_id}:role/agent-platform-findings-processor",
-      "arn:aws:iam::${var.account_id}:role/agent-platform-ops-compaction"
+      "arn:aws:iam::${var.account_id}:role/agent-platform-findings-processor"
     ]
   }
 
@@ -364,19 +327,6 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
     resources = [
       "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-deepseek-api-key-*",
       "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-anthropic-api-key-*",
-    ]
-  }
-
-  statement {
-    # Broker credential envelopes (Alpaca paper + live) -- plan-time refresh-read so the
-    # speculative-plan / drift jobs can DescribeSecret these during the provider refresh walk for
-    # secrets_manager_brokers.tf (T2.14). Read-only; values are out-of-band
-    # (docs/contracts/secret-material-handling.yaml, Decision 175).
-    sid     = "SecretsManagerBrokerCredentialsRead"
-    effect  = "Allow"
-    actions = ["secretsmanager:Describe*", "secretsmanager:Get*"]
-    resources = [
-      "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-broker-*",
     ]
   }
 

@@ -22,7 +22,7 @@ class Check:
     severity: str = "error"
     enforced: bool = True
     exclude_before: str | None = None
-    backend: str = "athena"  # "athena" (Iceberg views) | "ducklake" (closed reader); set per-backend dispatch
+    backend: str = "ducklake"  # sole backend: the DuckLake closed reader (Decision 84 I-1)
 
 
 @dataclass

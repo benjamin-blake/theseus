@@ -7,7 +7,6 @@ TestCloseTelemetrySession.
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -108,8 +107,8 @@ class TestCloseMode:
 class TestCloseTelemetrySession:
     """Tests for close_telemetry_session()."""
 
-    def test_state_file_exists_calls_close_session(self, tmp_path: Path) -> None:
-        """When state file exists, restores ctx and calls close_session."""
+    def test_state_file_exists_removes_state_file(self, tmp_path: Path) -> None:
+        """When the state file exists, close_telemetry_session consumes and removes it."""
         import json as _json
 
         state_file = tmp_path / ".telemetry-active-session.json"
@@ -121,25 +120,9 @@ class TestCloseTelemetrySession:
         }
         state_file.write_text(_json.dumps(state), encoding="utf-8")
 
-        mock_tel = MagicMock()
-        mock_ctx = MagicMock()
-        mock_tel.get_context.return_value = mock_ctx
+        with patch("scripts.postflight._common.TELEMETRY_ACTIVE_SESSION_FILE", state_file):
+            _postflight.close_telemetry_session(outcome="success", files_changed=3)
 
-        original = sys.modules.get("scripts.executor.telemetry")
-        sys.modules["scripts.executor.telemetry"] = mock_tel
-        try:
-            with patch("scripts.postflight._common.TELEMETRY_ACTIVE_SESSION_FILE", state_file):
-                _postflight.close_telemetry_session(outcome="success", files_changed=3)
-        finally:
-            if original is not None:
-                sys.modules["scripts.executor.telemetry"] = original
-            else:
-                sys.modules.pop("scripts.executor.telemetry", None)
-
-        mock_tel.close_session.assert_called_once()
-        call_kwargs = mock_tel.close_session.call_args.kwargs
-        assert call_kwargs.get("outcome") == "success"
-        assert call_kwargs.get("files_changed") == 3
         assert not state_file.exists()
 
     def test_missing_state_file_does_not_crash(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:

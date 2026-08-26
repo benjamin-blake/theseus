@@ -15,12 +15,10 @@ import scripts.executor.step_runner as sr_mod
 import scripts.llm.model_registry as model_registry_mod
 from scripts.executor.step_runner import (
     OPUS_FALLBACK,
-    StepOutcome,
     escalate_implementation_model,
     get_implementation_model,
     get_last_verification_output,
     get_step_timeout_secs,
-    implement_step,
     run_verification,
 )
 
@@ -258,72 +256,6 @@ class TestRunVerification:
 
         bash_c_arg = captured_cmd[-1] if captured_cmd else ""
         assert "-m scripts.foo" in bash_c_arg
-
-
-class TestEmitStepTelemetry:
-    """Verify emit_step is called from implement_step's finally block."""
-
-    def _make_step(self, file: str = "src/module.py", action: str = "modify") -> dict:
-        return {"n": 1, "title": "telemetry test step", "file": file, "action": action, "description": "d", "acceptance": ""}
-
-    def test_emit_step_called_on_success(self) -> None:
-        """emit_step is called with outcome=SUCCESS.value after a successful implement_step."""
-        step = self._make_step()
-
-        mock_result = MagicMock()
-        mock_result.exit_code = 0
-        mock_result.model = "test-model"
-        mock_result.tokens_in = 100
-        mock_result.tokens_out = 0
-        mock_result.cost_usd = 0.5
-        mock_result.session_id = "sess-tel"
-
-        mock_val_proc = MagicMock()
-        mock_val_proc.returncode = 0
-        mock_val_proc.communicate.return_value = ("ok", "")
-        mock_val_proc.__enter__ = lambda self: self
-        mock_val_proc.__exit__ = MagicMock(return_value=False)
-
-        with (
-            patch("scripts.executor.step_runner.llm_call", return_value=mock_result),
-            patch("scripts.executor.step_runner.auto_format_test_files", return_value=True),
-            patch("scripts.executor.step_runner._run_ruff_fix", return_value=True),
-            patch("scripts.executor.step_runner._run_ruff_format", return_value=True),
-            patch("subprocess.Popen", return_value=mock_val_proc),
-            patch("scripts.executor.step_runner.emit_step") as mock_emit_step,
-            patch("scripts.executor.step_runner.emit_transcript"),
-            patch("scripts.executor.step_runner.emit_process_event"),
-        ):
-            outcome, reqs, _, _ = implement_step(step, "rec-tel-001", 1, 1)
-
-        assert outcome == StepOutcome.SUCCESS
-        mock_emit_step.assert_called_once()
-        assert mock_emit_step.call_args.kwargs.get("outcome") == StepOutcome.SUCCESS.value
-
-    def test_emit_step_called_on_ruff_error(self) -> None:
-        """emit_step is called even when implement_step returns RUFF_ERROR."""
-        step = self._make_step()
-
-        mock_result = MagicMock()
-        mock_result.exit_code = 0
-        mock_result.model = "test-model"
-        mock_result.tokens_in = 100
-        mock_result.tokens_out = 0
-        mock_result.cost_usd = 0.5
-
-        with (
-            patch("scripts.executor.step_runner.llm_call", return_value=mock_result),
-            patch("scripts.executor.step_runner.auto_format_test_files", return_value=True),
-            patch("scripts.executor.step_runner._run_ruff_fix", return_value=False),
-            patch("scripts.executor.step_runner.emit_step") as mock_emit_step,
-            patch("scripts.executor.step_runner.emit_transcript"),
-            patch("scripts.executor.step_runner.emit_process_event"),
-        ):
-            outcome, _, _, _ = implement_step(step, "rec-tel-002", 1, 1)
-
-        assert outcome == StepOutcome.RUFF_ERROR
-        mock_emit_step.assert_called_once()
-        assert mock_emit_step.call_args.kwargs.get("outcome") == StepOutcome.RUFF_ERROR.value
 
 
 class TestVenvPythonResolution:

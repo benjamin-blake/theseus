@@ -29,8 +29,8 @@ from scripts.checks import _common, _marker_guard, registry
 _BASELINE_REL_PATH = "config/check_accounting_baseline.yaml"
 _CONTRACT_REL_PATH = "docs/contracts/check-accounting.yaml"
 
-# The ratchet's frozen seed -- the 96 registered checks not yet adopting the declaration
-# obligation when this file landed (101 registered minus the 5 adopted in the same tranche).
+# The ratchet's frozen seed -- the registered checks not yet adopting the declaration obligation
+# when this file landed, less the five whose checks have since been retired.
 # Growing this set requires editing this constant in a reviewed code change; a
 # config/check_accounting_baseline.yaml edit alone can never admit a name absent from here
 # (Decision 162 r3 / _R1_KNOWN_VIOLATORS precedent: scripts/checks/ci_guards/
@@ -42,7 +42,6 @@ _BASELINE_SEED: frozenset[str] = frozenset(
         "validate_actions_evidence",
         "validate_authority_budget",
         "validate_boundary_attached",
-        "validate_broker_env_reads",
         "validate_candidate_decision_ratification",
         "validate_candidate_decision_supersession",
         "validate_cc_limits",
@@ -80,10 +79,8 @@ _BASELINE_SEED: frozenset[str] = frozenset(
         "validate_handoff_full_tier",
         "validate_hermeticity_flags",
         "validate_iam_policy_size",
-        "validate_iam_runner_policy",
         "validate_import_contracts",
         "validate_instruction_architecture_layers",
-        "validate_intent_doc_freeze",
         "validate_invariants",
         "validate_invoke_implies_resolve",
         "validate_lambda_bundle_completeness",
@@ -96,14 +93,12 @@ _BASELINE_SEED: frozenset[str] = frozenset(
         "validate_no_cross_test_imports",
         "validate_no_underscore_instructions",
         "validate_ops_portal_patch_targets",
-        "validate_outbox_staleness",
         "validate_placement",
         "validate_plan_documents",
         "validate_plan_scope_closure",
         "validate_platform_roadmap",
         "validate_portal_drift",
         "validate_pr_conflict_signal",
-        "validate_product_roadmap",
         "validate_prompt_compliance",
         "validate_prompt_files",
         "validate_prose_allowlist",

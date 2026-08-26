@@ -1,4 +1,4 @@
-"""Prompt-hash, diff-capture, and step/session telemetry tests (rec-2709 Wave 2)."""
+"""Prompt-hash, diff-capture, and step-telemetry-capture tests (rec-2709 Wave 2)."""
 
 import json
 import subprocess
@@ -304,70 +304,3 @@ class TestStepTelemetryPersistence:
         assert call1.kwargs["step_n"] == 1
         assert call1.kwargs["prompt_hash"] == "abc123def456"  # pragma: allowlist secret
         assert call1.kwargs["diff_stat"] == "1 file changed"
-
-
-class TestSessionTelemetry:
-    """Verify session/phase telemetry calls in _execute_recommendation_inner."""
-
-    def _base_patches(self):
-        return (
-            patch("scripts.execute_recommendation.open_session"),
-            patch("scripts.execute_recommendation.close_session"),
-            patch("scripts.execute_recommendation.open_phase"),
-            patch("scripts.execute_recommendation.close_phase"),
-            patch("scripts.execute_recommendation.emit_process_event"),
-            patch("scripts.execute_recommendation.load_recommendation", return_value=None),
-            patch("scripts.execute_recommendation.write_run_summary"),
-            patch("scripts.execute_recommendation.emit_failure_summary"),
-        )
-
-    def test_session_opened_on_entry(self) -> None:
-        """open_session is called with workflow='executor' on entering _execute_recommendation_inner."""
-        with (
-            patch("scripts.execute_recommendation.open_session") as mock_open_session,
-            patch("scripts.execute_recommendation.close_session"),
-            patch("scripts.execute_recommendation.open_phase"),
-            patch("scripts.execute_recommendation.close_phase"),
-            patch("scripts.execute_recommendation.emit_process_event"),
-            patch("scripts.execute_recommendation.load_recommendation", return_value=None),
-            patch("scripts.execute_recommendation.write_run_summary"),
-            patch("scripts.execute_recommendation.emit_failure_summary"),
-        ):
-            execute_recommendation("rec-tel-001")
-
-        mock_open_session.assert_called_once()
-        assert mock_open_session.call_args.kwargs.get("workflow") == "executor"
-
-    def test_session_closed_with_failed_outcome_on_early_failure(self) -> None:
-        """close_session is called with outcome='failed' when a Phase 1 gate fails."""
-        with (
-            patch("scripts.execute_recommendation.open_session"),
-            patch("scripts.execute_recommendation.close_session") as mock_close_session,
-            patch("scripts.execute_recommendation.open_phase"),
-            patch("scripts.execute_recommendation.close_phase"),
-            patch("scripts.execute_recommendation.emit_process_event"),
-            patch("scripts.execute_recommendation.load_recommendation", return_value=None),
-            patch("scripts.execute_recommendation.write_run_summary"),
-            patch("scripts.execute_recommendation.emit_failure_summary"),
-        ):
-            execute_recommendation("rec-tel-002")
-
-        mock_close_session.assert_called_once()
-        assert mock_close_session.call_args.kwargs.get("outcome") == "failed"
-
-    def test_phase_opened_with_preflight_on_entry(self) -> None:
-        """open_phase is called with phase='preflight' at the start of Phase 1."""
-        with (
-            patch("scripts.execute_recommendation.open_session"),
-            patch("scripts.execute_recommendation.close_session"),
-            patch("scripts.execute_recommendation.open_phase") as mock_open_phase,
-            patch("scripts.execute_recommendation.close_phase"),
-            patch("scripts.execute_recommendation.emit_process_event"),
-            patch("scripts.execute_recommendation.load_recommendation", return_value=None),
-            patch("scripts.execute_recommendation.write_run_summary"),
-            patch("scripts.execute_recommendation.emit_failure_summary"),
-        ):
-            execute_recommendation("rec-tel-003")
-
-        mock_open_phase.assert_called_once()
-        assert mock_open_phase.call_args.kwargs.get("phase") == "preflight"

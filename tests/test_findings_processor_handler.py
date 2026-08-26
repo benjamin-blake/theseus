@@ -326,15 +326,15 @@ class TestHandlerPriorityQueueRouting:
         assert result["queue_entries_written"] == 1
 
 
-class TestHandlerTelemetry:
-    """Tests that findings_processor_handler emits telemetry correctly."""
+class TestHandlerComparisonStep:
+    """Tests for the findings_processor comparison step's run/skip branches."""
 
     def _make_comparison_response(self) -> dict:
         content = '{"duplicate_ids": [], "new_recommendations": []}'
         return {"choices": [{"message": {"content": content}}]}
 
-    def test_record_model_call_emitted_when_comparison_runs(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """record_model_call is called when the comparison step runs."""
+    def test_comparison_runs_when_pat_available(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The comparison step calls the model when a PAT is available."""
         monkeypatch.delenv("S3_LOG_BUCKET", raising=False)
         monkeypatch.setenv("GITHUB_PAT", "ghp_test")
 
@@ -346,24 +346,17 @@ class TestHandlerTelemetry:
             patch(
                 "scripts.llm.github_models_client.chat_completion",
                 return_value=self._make_comparison_response(),
-            ),
+            ) as mock_chat,
             patch("builtins.open", MagicMock()),
-            patch("src.data.handlers.agent_telemetry.open_invocation") as mock_open,
-            patch("src.data.handlers.agent_telemetry.record_model_call") as mock_record,
-            patch("src.data.handlers.agent_telemetry.close_invocation") as mock_close,
         ):
             result = handler({}, None)
 
-        mock_open.assert_called_once()
-        mock_record.assert_called_once()
-        record_kwargs = mock_record.call_args.kwargs
-        assert record_kwargs.get("provider") == "github-models"
-        assert record_kwargs.get("purpose") == "comparison"
-        mock_close.assert_called_once()
+        mock_chat.assert_called_once()
         assert result["new_rec_count"] == 0
+        assert not result.get("skipped_comparison")
 
-    def test_record_model_call_not_emitted_when_comparison_skipped(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """record_model_call is NOT called when PAT is unavailable (comparison skipped)."""
+    def test_comparison_skipped_when_pat_unavailable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The comparison step is skipped (no model call) when no PAT is available."""
         monkeypatch.delenv("S3_LOG_BUCKET", raising=False)
         monkeypatch.delenv("GITHUB_PAT", raising=False)
         monkeypatch.delenv("GITHUB_PAT_SECRET_ARN", raising=False)
@@ -371,12 +364,10 @@ class TestHandlerTelemetry:
         with (
             patch("scripts.s3_log_store.read_all_agent_findings", return_value=[]),
             patch.object(proc_mod, "_get_github_pat", return_value=""),
+            patch("scripts.llm.github_models_client.chat_completion") as mock_chat,
             patch("builtins.open", MagicMock()),
-            patch("src.data.handlers.agent_telemetry.open_invocation"),
-            patch("src.data.handlers.agent_telemetry.record_model_call") as mock_record,
-            patch("src.data.handlers.agent_telemetry.close_invocation"),
         ):
             result = handler({}, None)
 
-        mock_record.assert_not_called()
+        mock_chat.assert_not_called()
         assert result.get("skipped_comparison") is True

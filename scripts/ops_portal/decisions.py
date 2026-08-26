@@ -38,13 +38,13 @@ import yaml
 
 from scripts.executor.jsonl_store import DECISIONS_JSONL, Decision
 from scripts.ops_portal._common import ROOT
-from scripts.ops_portal.cache import _refresh_cache_after_write, _sanitize_athena_record, _sync_table
+from scripts.ops_portal.cache import _refresh_cache_after_write, _sanitize_record, _sync_table
 from scripts.ops_portal.reader_transient import is_reader_unavailable
 from scripts.ops_portal.write_validators import _load_write_time_validators
 from scripts.ops_portal.writer_transport import _ducklake_write
 
 if TYPE_CHECKING:
-    from src.common.iceberg_reader import Reader
+    from src.common.ducklake_reader_client import Reader
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +163,7 @@ def _assert_no_orphaned_current_rows(profile: Optional[str] = None, reader: Opti
 
     active_reader = reader
     if active_reader is None:
-        from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+        from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
         active_reader = make_reader(profile=profile)
 
@@ -249,24 +249,20 @@ def _fetch_decision_from_reader(decision_id: str, profile: Optional[str] = None)
     """Fetch a single ops_decisions record by id via the decision_by_id read verb.
 
     Closed boundary (Decision 84 I-1/I-3): decisions read from DuckLake like every migrated
-    ops table; the Athena fallback retired with the estate. Decision 69: raises on reader
-    failure; never returns cache. Returns the coerced record dict or None if not found.
+    ops table, its sole backend. Decision 69: raises on reader failure; never returns cache.
+    Returns the coerced record dict or None if not found.
     """
     if not re.fullmatch(r"dec-\d+", decision_id):
         raise ValueError(f"_fetch_decision_from_reader: invalid decision_id: {decision_id!r}")
 
     from scripts.sync.ops import _coerce_ops_decisions_row  # noqa: PLC0415
-    from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
     rows = make_reader(profile=profile).named("decision_by_id", id=decision_id)
     if not rows:
         return None
     rec = _coerce_ops_decisions_row(dict(rows[0]))
-    return _sanitize_athena_record(rec) if rec is not None else None
-
-
-# Back-compat alias: read-engine.yaml's single_portal_invariant names the historical symbol.
-_fetch_decision_from_athena = _fetch_decision_from_reader
+    return _sanitize_record(rec) if rec is not None else None
 
 
 def update_decision(decision_id: str, updates: dict, profile: Optional[str] = None) -> bool:
@@ -284,7 +280,7 @@ def update_decision(decision_id: str, updates: dict, profile: Optional[str] = No
         True on success.
 
     Raises:
-        RuntimeError: If Athena is unreachable.
+        RuntimeError: If the warehouse is unreachable.
         ValidationError: If the merged record fails schema validation.
     """
     existing = _fetch_decision_from_reader(decision_id, profile=profile)
@@ -326,7 +322,7 @@ def backfill_decisions_from_md(profile: Optional[str] = None, orphan_reader: Opt
         {"written": N, "failed": M, "skipped": K}
     """
     from scripts.decisions_md import parse_decisions_md  # noqa: PLC0415
-    from scripts.sync.ops import _coerce_athena_array  # noqa: PLC0415
+    from scripts.sync.ops import _coerce_array  # noqa: PLC0415
 
     baseline = _load_fidelity_baseline()
     live_ids = _live_decision_ids()
@@ -352,7 +348,7 @@ def backfill_decisions_from_md(profile: Optional[str] = None, orphan_reader: Opt
         fields = {k: v for k, v in entry.items() if k in _DECISION_BACKFILL_COLS and v not in (None, "")}
         fields.setdefault("status", "unspecified")
         if "related_decisions" in fields:
-            fields["related_decisions"] = _coerce_athena_array(fields["related_decisions"], elem_type=int)
+            fields["related_decisions"] = _coerce_array(fields["related_decisions"], elem_type=int)
 
         dec_id = f"dec-{n:03d}"
         try:

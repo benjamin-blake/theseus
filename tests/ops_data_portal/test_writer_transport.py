@@ -81,7 +81,7 @@ class TestDuckLakeTransportHelpers:
 
     def test_resolve_writer_url_loud_fail(self, monkeypatch) -> None:
         import scripts.ops_data_portal as p
-        import src.common.iceberg_reader as ir
+        import src.common.ducklake_reader_client as ir
 
         monkeypatch.delenv("DUCKLAKE_WRITER_URL", raising=False)
         monkeypatch.setattr("subprocess.run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
@@ -94,7 +94,7 @@ class TestDuckLakeTransportHelpers:
     def test_resolve_writer_url_api_fallback(self, monkeypatch) -> None:
         """When env + terraform are unavailable, the writer URL resolves via GetFunctionUrlConfig (CI case)."""
         import scripts.ops_data_portal as p
-        import src.common.iceberg_reader as ir
+        import src.common.ducklake_reader_client as ir
 
         monkeypatch.delenv("DUCKLAKE_WRITER_URL", raising=False)
         monkeypatch.setattr("subprocess.run", lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))

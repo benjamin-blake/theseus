@@ -4,17 +4,11 @@
 # Ratified under the CD.25 pre-codegen contract ratification ritual (tier_item T0.12.6).
 #
 # GREENFIELD (Decision 95): the canonical 4-table model exists only as spec
-# (docs/contracts/telemetry-lexicon.yaml). This contract is TARGET-STATE, grounded in the live draft
-# (scripts/telemetry_schemas.py::TelemetrySessions + terraform/iceberg_tables.tf DDL) with documented
-# live-vs-target skew. The draft is a DEAD path pending DuckLake consolidation Phase 4 (Decision 84):
-# Athena tables unmigrated since 2026-05-28; config/agent/data_quality/telemetry.yaml is empty.
-# Per-field DQ ENFORCEMENT lands in telemetry.yaml when telemetry re-provisions; this contract carries
+# (docs/contracts/telemetry-lexicon.yaml). This contract is TARGET-STATE. No telemetry table is
+# provisioned and no emitter exists -- the legacy draft schema and its writers were deleted with the
+# retired query-engine estate -- so the substrate lands at the DuckLake consolidation Phase 4
+# (Decision 84). Per-field DQ ENFORCEMENT lands when telemetry re-provisions; this contract carries
 # dq_INTENT only (the lexicon authority boundary).
-#
-# Live-vs-target skew (encoded, NOT implemented here):
-#   - session_id: live UUID4 (str(uuid.uuid4())) -> target ULID (Decision 97 cl.4; flips when
-#     telemetry.py::open_session is migrated).
-#   - partition: live day(trade_date) -> target day(started_at) UTC (Decision 96); trade_date DROPPED.
 contract:
   id: telemetry_sessions
   class: A
@@ -33,10 +27,10 @@ contract:
   projects_to:
     note: >-
       No generated artifact yet. Unlike the ops Class A contracts (which project_to
-      config/lambda/ducklake/field_semantics.yaml), telemetry is not on DuckLake; there is NO telemetry
-      field_semantics.yaml. This contract IS the authoritative telemetry field-semantic source until the
-      Phase 4 rebuild (post-T2.26) lands a generator, applying the DuckLake schema-as-code mechanism
-      T2.33 established for the ops tables. The live draft schema is scripts/telemetry_schemas.py.
+      config/lambda/ducklake/field_semantics.yaml), telemetry is not yet on DuckLake; there is NO
+      telemetry field_semantics.yaml. This contract IS the authoritative telemetry field-semantic source
+      until the Phase 4 rebuild (post-T2.26) lands a generator, applying the DuckLake schema-as-code
+      mechanism T2.33 established for the ops tables.
 fields:
   session_id:
     $ref: session-id.yaml#/contract/fields/session_id
@@ -63,10 +57,10 @@ fields:
   project_id:
     $ref: project-id.yaml#/contract/fields/project_id
     governance_notes_local: >-
-      FORWARD-DECLARED (Decision 95 cl.1): not present in the draft TelemetrySessions; realized at T2.17
-      (project-id.yaml two-phase pattern -- Phase A Optional default "trading-system", Phase B not-null).
-      Added to the root so every telemetry row inherits a project partition once T2.17 lands. Stays
-      nullable per the project-id.yaml baseline.
+      FORWARD-DECLARED (Decision 95 cl.1): realized at T2.17 (project-id.yaml two-phase pattern --
+      Phase A Optional with the platform default, Phase B not-null). Added to the root so every
+      telemetry row inherits a project partition once T2.17 lands. Stays nullable per the
+      project-id.yaml baseline.
   workflow:
     type: str
     iceberg_type: string
@@ -78,9 +72,9 @@ fields:
       Required dimension; the primary grouping key for per-workflow analytics (duration, rework, outcome
       rates). REQUIRED in the draft (TelemetrySessions.REQUIRED_FIELDS). accepted_values are NOT closed in
       the contract -- the workflow set evolves with Decision 90; the closed enum (if any) is ratified into
-      config/agent/data_quality/telemetry.yaml at the Phase 4 rebuild, not here.
+      the Phase 4 telemetry DQ config, not here.
     populated_by: >-
-      telemetry.py::open_session(workflow=...); set by session_preflight.py --open-session --workflow NAME.
+      the Phase 4 session-open boundary (workflow=...); no emitter exists today.
     dq_intent:
       not_null:
         enforced: false
@@ -100,7 +94,7 @@ fields:
       close; session_postflight.py --close-session --outcome success|cancelled supplies the terminal
       value. Because telemetry is insert-once (Decision 96 cl.3), the "running"->terminal transition is a
       new append under Decision 97's mint-once rule, NOT an SCD2 update; the close row reuses session_id.
-    populated_by: telemetry.py::open_session (running) / close_session (terminal); session_postflight.
+    populated_by: the Phase 4 session-open boundary (running) / close_session (terminal); session_postflight.
     dq_intent:
       not_null:
         enforced: false
@@ -118,7 +112,7 @@ fields:
       Event-time, minted ONCE at the open_session boundary (Decision 97 cl.2), never re-derived. Naive or
       local-time values are rejected at the boundary (Decision 96 cl.4). NOT last_updated_timestamp
       (telemetry is insert-once, carries no SCD2 mutation envelope -- Decision 96 cl.3).
-    populated_by: telemetry.py::open_session -- minted once at session start.
+    populated_by: the Phase 4 session-open boundary -- minted once at session start.
     dq_intent:
       not_null:
         enforced: false
@@ -194,7 +188,7 @@ fields:
     semantics: >-
       Required. Distinguishes a fresh run from a resumed/retried one. Under Decision 97 mint-once, a
       resumed session reuses session_id; execution_attempt disambiguates the appended rows.
-    populated_by: telemetry.py::open_session.
+    populated_by: the Phase 4 session-open boundary.
     dq_intent:
       not_null:
         enforced: false
@@ -204,7 +198,7 @@ fields:
     nullable: true
     description: The git branch the session ran on (e.g. claude/focused-bell-5onhvu).
     semantics: Optional provenance; the harness session branch. Null when not applicable.
-    populated_by: telemetry.py::open_session.
+    populated_by: the Phase 4 session-open boundary.
     dq_intent:
       not_null:
         enforced: false
@@ -216,7 +210,7 @@ fields:
     semantics: >-
       Optional cross-reference into ops_recommendations.id. array<string> declared explicitly
       (TELEMETRY_TABLE_DTYPES) to avoid awswrangler null-inference failures on all-null batches.
-    populated_by: telemetry.py::open_session / close_session.
+    populated_by: the Phase 4 session-open boundary / close_session.
     dq_intent:
       not_null:
         enforced: false
@@ -226,7 +220,7 @@ fields:
     nullable: true
     description: The plan slug an implement/plan session is bound to (e.g. ratify-class-a-telemetry-contracts).
     semantics: Optional; links a session to docs/plans/PLAN-{slug}.yaml. Null for non-plan workflows.
-    populated_by: telemetry.py::open_session.
+    populated_by: the Phase 4 session-open boundary.
     dq_intent:
       not_null:
         enforced: false
@@ -343,7 +337,7 @@ fields:
     semantics: >-
       Optional; the headline model for the run. Per-call model attribution lives on
       telemetry_observations (observation_type=model_call) and telemetry_agents.model.
-    populated_by: telemetry.py::open_session.
+    populated_by: the Phase 4 session-open boundary.
     dq_intent:
       not_null:
         enforced: false
@@ -378,7 +372,7 @@ fields:
       Operational ingestion stamp (the writer always injects it; default_factory=_now_iso in the draft).
       NOT the partition basis (started_at is, Decision 96) and NOT an SCD2 last_updated_timestamp
       (telemetry is insert-once). Retained from the draft as the append-time marker.
-    populated_by: the telemetry write path (OpsWriter today; the Phase 4 DuckLake writer tomorrow).
+    populated_by: the Phase 4 DuckLake telemetry writer.
     dq_intent:
       not_null:
         enforced: false
@@ -386,17 +380,15 @@ governance:
   table_class: event
   partition_by: "day(started_at)"
   write_path: >-
-    LIVE (draft, dead): telemetry.py::open_session/close_session -> OpsWriter.emit('telemetry_sessions')
-    -> S3 staging -> Iceberg (Athena, unmigrated since 2026-05-28). TARGET (Phase 4): the DuckLake
-    telemetry writer boundary (Phase 4, post-T2.26). Insert-once; no SCD2 merge.
+    NOT PROVISIONED: no telemetry writer exists today. TARGET (Phase 4, post-T2.26): the DuckLake
+    telemetry writer boundary. Insert-once; no SCD2 merge.
 governance_notes: >-
   Decision 95: telemetry_sessions is the trace ROOT; root-unification means no rootless telemetry
   entities. Decision 96: insert-once EVENT data -- partition day(started_at) UTC, no trade_date, no
   last_updated_timestamp, tz-aware UTC timestamps. Decision 97: ULID-target identity, boundary-minted
   once, propagated to children as FKs. There is NO merge_key (insert-once, not SCD2). dq_INTENT only is
-  recorded here; per-field DQ ENFORCEMENT lands in config/agent/data_quality/telemetry.yaml at the
-  Phase 4 rebuild (the lexicon authority boundary). Live-vs-target skew (UUID4->ULID; trade_date->
-  day(started_at); 7 draft tables -> 4 canonical) is documented, NOT implemented (REPORT-ONLY).
+  recorded here; per-field DQ ENFORCEMENT lands at the Phase 4 rebuild (the lexicon authority
+  boundary). The canonical four-table shape is target-state, NOT implemented (REPORT-ONLY).
   ROLL-UP RECONCILIATION: process_event_count / rework_count / exception_count are denormalised tallies
   of telemetry_observations rows with observation_type=process_event (rework_count = tier=rework;
   exception_count = tier=exception, via the promoted telemetry_observations.tier column).

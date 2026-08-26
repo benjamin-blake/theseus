@@ -9,7 +9,7 @@ from pathlib import Path
 from scripts.checks import _common, registry
 
 # The COMPLETE scan set (constraints: exactly this list, never scripts/** wholesale -- src/ and
-# tests/ carry unrelated "source": "..." keys (yfinance, layer, mock, custom-source) that would
+# tests/ carry unrelated "source": "..." keys (layer, mock, custom-source) that would
 # red collaterally). Repo-relative STRINGS, joined against _common.ROOT at CALL TIME inside
 # _resolve_scanned_paths -- never resolved at import time: tests/checks/_common/test_primitives.py
 # patches scripts.checks._common.ROOT and dispatches this check, and an import-time absolute

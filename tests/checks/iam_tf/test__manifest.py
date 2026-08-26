@@ -21,6 +21,10 @@ class TestIamTfManifest:
         names = [entry.name for entry in _manifest.ENTRIES]
         assert len(names) == len(set(names))
 
+    def test_no_entry_is_product_coupled(self) -> None:
+        """Platform-only repository: no iam_tf check carries product-coupled ownership metadata."""
+        assert [entry.name for entry in _manifest.ENTRIES if entry.product_coupled] == []
+
     @pytest.mark.parametrize("entry", _manifest.ENTRIES, ids=[entry.name for entry in _manifest.ENTRIES])
     def test_entry_module_is_inside_this_domain_package(self, entry) -> None:
         assert entry.module.startswith("scripts.checks.iam_tf.")

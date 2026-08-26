@@ -87,9 +87,9 @@ anything:
 - **`docs/INTENT-*.md` at the docs root are grandfathered** and scheduled for extract-and-delete
   (T5.5, Decision 86). Do not file "delete the INTENT docs" as a novel finding; you MAY assess
   whether their current placement/handling is optimal in the interim.
-- **Multiple product-roadmap YAMLs are intentional.** The platform hosts multiple products;
-  `docs/ROADMAP-PRODUCT.yaml` and `docs/ROADMAP-SEMANTO.yaml` are per-product roadmaps under the
-  multi-product topology (CD.32). Do NOT propose merging the product YAMLs. A prose `.md` mirror
+- **Per-product roadmap YAMLs are intentional.** The platform hosts multiple products;
+  `docs/ROADMAP-SEMANTO.yaml` is a per-product roadmap under the
+  multi-product topology (CD.32). Do NOT propose merging the per-product YAMLs. A prose `.md` mirror
   of a `.yaml` roadmap is a separate matter (see candidate C6).
 
 ---
@@ -369,9 +369,8 @@ File-count observations (re-derive):
 - `docs/`: ~31 files at root; subtrees `plans/` (~357), `contracts/` (~29), `audit-reports/` (~8),
   `audit-prompts/` (~8), `dq/` (~2), `intent-migration/` (~1), `runbooks/` (~1).
 - `docs/` root file classes observed: `INTENT-*.md` (~13 files), `AUDIT-PROMPT-*.md` and
-  `AUDIT-*.yaml` (loose, e.g. `AUDIT-PROMPT-platform-roadmap-audit.md`,
-  `AUDIT-test-hermeticity.yaml`), `ROADMAP-*` (`ROADMAP-PLATFORM.yaml`, `ROADMAP-PRODUCT.yaml`,
-  `ROADMAP-PRODUCT.md`, `ROADMAP-SEMANTO.yaml`), `ARCHITECTURE*.md`, `REPORT-*.md`,
+  `AUDIT-*.yaml` (loose, e.g. `AUDIT-PROMPT-platform-roadmap-audit.md`),
+  `ROADMAP-*` (`ROADMAP-PLATFORM.yaml`, `ROADMAP-SEMANTO.yaml`), `ARCHITECTURE*.md`, `REPORT-*.md`,
   `SESSION_LOG*.md`, `DECISIONS*.md`, `PROJECT_CONTEXT.md`, `GETTING_STARTED.md`,
   `CHANGELOG.md`, `ducklake-spike-findings.md`.
 - Audit outputs exist under top-level `audits/` (~20 files, `.yaml`+`.md` pairs) AND
@@ -405,8 +404,8 @@ neutral hypothesis, not a verdict. Some will resolve to sound decided structure 
   `src/`/`scripts/` package layout.
 - **C5** (feeds Q1, Q2; DD-C): the `docs/` root holds ~31 mixed-class files (INTENT-*, AUDIT-*,
   ROADMAP-*, ARCHITECTURE-*, REPORT-*, SESSION_LOG-*, plus indices and spike notes).
-- **C6** (feeds Q1/EC10, Q3): `docs/ROADMAP-PRODUCT.md` is a prose file alongside
-  `docs/ROADMAP-PRODUCT.yaml`. (The per-product YAMLs themselves are intentional -- section 3
+- **C6** (feeds Q1/EC10, Q3): a prose `.md` roadmap sat alongside its `.yaml` source (both since
+  retired). (The per-product YAMLs themselves are intentional -- section 3
   trap 6; the question is only the `.md`-beside-`.yaml` prose mirror.)
 - **C7** (feeds Q1, Q2/VD3): `docs/plans/` holds ~357 accumulated plan files.
 - **C8** (feeds Q1/EC6, Q2/VD1, VD4): there is no `CODEOWNERS` or machine-readable

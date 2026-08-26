@@ -150,10 +150,6 @@ class TestAbstentionGauge:
                     "recommendations_count": 0,
                 },
             ),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
-            ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.ci_rca.probe_health.escalate", return_value={"action": "none", "rec_id": None}) as mock_escalate,
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
@@ -173,8 +169,8 @@ class TestAbstentionGauge:
 class TestCiRcaTelemetrySection:
     """T1.13 c1/c3: _compute_ci_rca_telemetry / print_ci_rca_telemetry / preflight report JSON.
 
-    Re-grounded (per docs/INTENT-ci-rca-methodology.md Section 7.1) from the originally-scoped
-    Athena design to warm-cache-derived surfacing (Decision 88 zero-egress).
+    Re-grounded from the originally-scoped query-engine design to warm-cache-derived surfacing
+    (Decision 88 zero-egress).
     """
 
     NOW = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
@@ -308,7 +304,7 @@ class TestCiRcaTelemetrySection:
             raise AssertionError("_compute_ci_rca_telemetry must not construct a DuckLake reader")
 
         rows = [self._row(recurrence_class="novel")]
-        with patch("src.common.iceberg_reader.make_reader", side_effect=_boom):
+        with patch("src.common.ducklake_reader_client.make_reader", side_effect=_boom):
             telemetry = _preflight._compute_ci_rca_telemetry(rows, window_days=7, now=self.NOW)
         assert telemetry is not None
         assert telemetry["ci_rca_total"] == 1
@@ -367,6 +363,6 @@ class TestCiRcaBackValidationSection:
         def _boom(*args, **kwargs):
             raise AssertionError("_derive_ci_rca_back_validation must not construct a DuckLake reader")
 
-        with patch("src.common.iceberg_reader.make_reader", side_effect=_boom):
+        with patch("src.common.ducklake_reader_client.make_reader", side_effect=_boom):
             result = _preflight._derive_ci_rca_back_validation([])
         assert result == []

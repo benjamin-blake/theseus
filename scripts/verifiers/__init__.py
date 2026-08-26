@@ -7,22 +7,13 @@ from __future__ import annotations
 
 import fnmatch
 
-from .athena_views import AthenaViewsVerifier
 from .data_quality import DataQualityVerifier
 from .harness import Hermeticity, Verifier, VerifierResult, VerifierSeverity, VerifierStatus, VerifierTier
-from .outbox_health import OutboxHealthVerifier
-from .schema_integrity import SchemaIntegrityVerifier
 
 # Registry of all verifiers that should run during the integration flow.
 # These provide hard gates for autonomous execution.
 REGISTRY: list[type[Verifier]] = [
-    OutboxHealthVerifier,
-    AthenaViewsVerifier,
-    SchemaIntegrityVerifier,
     DataQualityVerifier,
-    # CausalChainVerifier deregistered during public-repo CI bootstrap; telemetry tables
-    # are deferred. Reactivate per docs/ROADMAP-PLATFORM.yaml T2.15, T3.20, and CD.40
-    # once telemetry_agent_turns is live.
 ]
 
 
@@ -62,10 +53,9 @@ async def run_all_verifiers(
 def check_coverage(scope_files: list[str]) -> list[str]:
     """Return scope files not matched by any registered verifier's covers globs.
 
-    Wave 1 of INTENT-verification-system.md: surfaces V3 verifier coverage gaps
-    so planners and `validate.py --coverage` can identify scope files that lack
-    a verifier. Reads each verifier class's `covers` attribute (a list of
-    fnmatch globs) directly from the REGISTRY without instantiation.
+    Surfaces V3 verifier coverage gaps so planners and `validate.py --coverage` can identify
+    scope files that lack a verifier (Decision 48). Reads each verifier class's `covers`
+    attribute (a list of fnmatch globs) directly from the REGISTRY without instantiation.
     """
     all_globs: list[str] = []
     for verifier_cls in REGISTRY:

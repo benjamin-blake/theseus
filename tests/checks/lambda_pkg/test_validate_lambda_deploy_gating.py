@@ -23,15 +23,15 @@ class TestValidateLambdaDeployGating:
 
     def test_reports_affected_artifact_without_failing(self) -> None:
         mock_lm = MagicMock()
-        mock_lm.compute_affected_artifacts.return_value = {"data-pipeline": ["src/data/handlers/fetch_handler.py"]}
+        mock_lm.compute_affected_artifacts.return_value = {"data-pipeline": ["src/data/handlers/scheduled_agent_handler.py"]}
         with (
             patch.dict(sys.modules, {"scripts.lambda_manifest": mock_lm}),
-            patch("scripts.checks._common.get_changed_files", return_value=["src/data/handlers/fetch_handler.py"]),
+            patch("scripts.checks._common.get_changed_files", return_value=["src/data/handlers/scheduled_agent_handler.py"]),
         ):
             failed: list[str] = []
             validate_lambda_deploy_gating(failed)
         assert failed == []
-        mock_lm.compute_affected_artifacts.assert_called_once_with(["src/data/handlers/fetch_handler.py"])
+        mock_lm.compute_affected_artifacts.assert_called_once_with(["src/data/handlers/scheduled_agent_handler.py"])
 
     def test_no_affected_artifacts_is_advisory_pass(self) -> None:
         mock_lm = MagicMock()

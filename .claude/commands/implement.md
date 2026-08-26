@@ -92,7 +92,7 @@ Apply the appropriate **Commit Flow** (STRATEGIC or IMPLEMENTATION) defined in y
 When creating the PR body, emit a `Resolves: rec-NNNN[, rec-MMMM]` trailer if the plan's `bundled_recommendations` list is non-empty. After the merge, execute the **post-merge closeout fallback** from the implement skill (verify `rec-autoclose` closed each rec; close directly if not).
 
 ## Step 8: Capture Friction
-Record friction (parsing errors, ambiguous areas, bugs found) by filing a recommendation via `bin/venv-python -m scripts.ops_data_portal --file-rec ...` with `source=manual` (the Single Portal Invariant, Decision 84). (The legacy process-event emit to `telemetry_process_events` via the executor telemetry API is suspended until Decision 84 Phase 4 (T2.36) re-lands telemetry on DuckLake.) If no friction, this step is a no-op.
+Record friction (parsing errors, ambiguous areas, bugs found) by filing a recommendation via `bin/venv-python -m scripts.ops_data_portal --file-rec ...` with `source=manual` (the Single Portal Invariant, Decision 84). If no friction, this step is a no-op.
 
 **RCA-First Protocol (Decision 55):**
 If the friction was a recurring gap or unrecoverable failure, you MUST invoke the `executor-rca` skill via the `Skill` tool to diagnose the root cause and file a permanent fix. Do NOT silently workaround structural issues.

@@ -37,6 +37,18 @@ class TestValidateTerraformTry:
             self.validate_terraform_try(failed)
         assert "Terraform try() lint" in failed
 
+    def test_scans_nested_roots_not_only_the_terraform_directory(self, tmp_path: Path) -> None:
+        """Every live terraform root is a SUBDIRECTORY (terraform/personal, terraform/github,
+        terraform/bootstrap), so a depth-1 scan would examine nothing and pass vacuously. The
+        finding is keyed by repo-relative path, since basenames recur across roots."""
+        root_dir = tmp_path / "terraform" / "personal"
+        root_dir.mkdir(parents=True)
+        (root_dir / "main.tf").write_text('source_code_hash = filemd5("build/lambda.zip")\n', encoding="utf-8")
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            failed: list[str] = []
+            self.validate_terraform_try(failed)
+        assert "Terraform try() lint" in failed
+
     def test_passes_with_no_tf_files(self, tmp_path: Path) -> None:
         """No failure when terraform directory has no .tf files."""
         tf_dir = tmp_path / "terraform"

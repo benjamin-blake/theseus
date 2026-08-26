@@ -14,8 +14,7 @@ Some rules below restate root rules for proximity. Root `CLAUDE.md` is authorita
 - Region: `eu-west-2`
 - Account: personal platform account (ID supplied via gitignored `terraform/personal/terraform.personal.tfvars`; never committed).
 - Profile: `agent_platform` (PlatformDev, runtime) for agent operations; `agent_platform_admin` (PlatformAdmin) for provisioning (creates IAM + OIDC).
-- Glue database: `agent_platform` (personal module). Retained legacy `.tf` files at the repo root still reference `trading_formulas_db` (artefacts from a prior account; not applied).
-- Personal-account infra lives in the isolated `terraform/personal/` root module (own provider + state). Legacy `.tf` files in `terraform/` are retained as architectural-evolution artefacts per CD.21 but no longer applied; only `terraform/personal/` is live.
+- Personal-account infra lives in the isolated `terraform/personal/` root module (own provider + state); it is the only live root module. The legacy work-account root's `.tf` files (retained for a while as architectural-evolution artefacts per CD.21, never applied) were removed in the platform cleanse.
 - The personal account has no SCP restricting IAM users or external OIDC (Decisions 36/37 do not apply to this account). OIDC provider + CI roles are created in `terraform/personal/oidc.tf`.
 
 ## Running terraform/personal/ on CC-web (no local machine; vars come from remote state)
@@ -158,7 +157,7 @@ SAME reviewed plan.bin is applied -- not a re-plan.
 - Objects are inert once the speculative-plan job is removed; prune optionally.
 
 **Capability split (github_ci_pr vs the planner role's PR-sub statement)**:
-- `github_ci_pr`: athena/iceberg reads, convergence record read, DuckLake invoke. **No tfstate read** (fork-safe; `simulate-principal-policy` returns implicitDeny on `s3:GetObject tfstate/...`).
+- `github_ci_pr`: convergence record read, provider-mirror read, DuckLake invoke. **No tfstate read** (fork-safe; `simulate-principal-policy` returns implicitDeny on `s3:GetObject tfstate/...`).
 - Planner PR-sub (T2.49 merged plan+drift): tfstate READ, tfplan WRITE, full refresh-read surface (mirrors apply-role plan-time reads). No convergence write (see Convergence anchor below), no tfstate write/delete, no DeleteObject anywhere.
 - Fork gating: enforced at the WORKFLOW JOB level (`if: head.repo.full_name == github.repository`) -- NOT the OIDC trust condition. Trust mirrors `github_ci_pr` (pull_request sub) plus a `sts:RoleSessionName` partition (Convergence anchor below). The job gate + read-only policy together give the desired fork isolation.
 
@@ -272,14 +271,12 @@ inline policy (slated for removal) -- re-creating infra elsewhere will not resto
   policies -- `aws_iam_role_policy.platform_admin_ops` (`AdminOps`: identity admin -- `iam:*` + admin Lambda +
   secretsmanager) and `aws_iam_role_policy.platform_admin_datalake` (`PlatformDataLakeProvisioning`: the data-plane
   rights AdminOps lacks). The datalake grant is required so `terraform apply` under `agent_platform_admin` can
-  provision + manage the data lake, workgroup, Glue DB, and counters table. It is ENUMERATED least-privilege (no
-  `glue:*`/`athena:*`/`s3:*`/`dynamodb:*` service wildcards; no legacy `bblake-platform-*` ARNs), scoped to the
-  agent-platform data lake: Glue actions on the catalog + `agent_platform` DB + its tables; Athena manage on the
-  `agent-platform-production` workgroup (+ account-level query-status reads that don't support resource scoping);
+  provision + manage the data lake and counters table. It is ENUMERATED least-privilege (no
+  service wildcards; no legacy `bblake-platform-*` ARNs), scoped to the agent-platform data lake:
   `s3` bucket-config + object IO on `agent-platform-data-lake` only; DynamoDB TABLE-level actions (NOT item-level
   -- counter VALUES are PlatformDev runtime's domain) on `agent-platform-counters` only. The action set mirrors the
   `github_ci_apply` CI role's data-plane statements. NOTE: the set includes refresh-time READS the AWS provider
-  (v5.100) issues on every `plan` -- `glue:GetTags`, `dynamodb:DescribeContinuousBackups`/`DescribeTimeToLive` --
+  (v5.100) issues on every `plan` -- `dynamodb:DescribeContinuousBackups`/`DescribeTimeToLive` --
   which apply does not exercise but `plan` (and therefore CD) requires; do not prune them as "unused". IMPORT the
   role before apply; the trust policy MUST show NO change in `plan` (lockout guard -- this is the role the apply
   assumes). If a future module addition needs a new data-plane action, expect the FIRST `plan` after the apply to
@@ -289,10 +286,9 @@ inline policy (slated for removal) -- re-creating infra elsewhere will not resto
   `agent_platform` (PlatformDev) runtime role is now Terraform-managed. `aws_iam_role.platform_dev`
   (imported, ID `PlatformDev`) sets `max_session_duration = 36000` (was 3600 -- the 3600 max blocked
   CC-web's 10h unattended sessions); `aws_iam_role_policy.platform_dev_runtime` codifies the `DailyOps`
-  inline policy (Athena query on `agent-platform-production`; S3 read-write on `agent-platform-data-lake`;
-  DynamoDB on `agent-platform-counters`; Glue read + table mutations). Applied via `platform_breakglass`
-  with `-target` on the two role resources (the unrelated `null_resource` Athena-DDL replacements from a
-  later main.tf edit were deliberately excluded). Trust policy verified unchanged at apply time.
+  inline policy (S3 read-write on `agent-platform-data-lake`;
+  DynamoDB on `agent-platform-counters`; DuckLake verb invokes). Applied via `platform_breakglass`
+  with `-target` on the two role resources. Trust policy verified unchanged at apply time.
   Reconciliation at import time (the role was NOT permissionless, contrary to the prior PENDING note):
     - A stale pre-rename `DailyOps` (dead `bblake-*` targets + a live Bedrock invoke-model grant) already
       existed and was imported; the apply overwrote it with the agent-platform grant. Net live capability
@@ -322,19 +318,8 @@ model (PlatformDev + PlatformAdmin codification, Decision-57 SSO-recovery supers
   `Get*/List*` for six Sids; `Get*/Describe*/List*` for `SSMParameterRead`); no further iterative-discovery
   rounds are expected.
 
-## Athena workgroup rules
-- `agent-platform-production` (engine v3) — OPTIMIZE, MERGE writes, all production queries (personal module).
-- `primary` (engine v2, default) — **do not use** for Iceberg DML or VACUUM. v2 doesn't support full Iceberg semantics.
-
-## Athena/Iceberg DDL gotchas
-- `ALTER TABLE ADD COLUMNS` has no `IF NOT EXISTS`. Issue one column per statement; ignore "already exists" errors.
-- `CREATE TABLE IF NOT EXISTS` does not update TBLPROPERTIES on an existing table. Use `ALTER TABLE SET TBLPROPERTIES` instead.
-- `VACUUM` requires engine v3. Always use `WorkGroup='agent-platform-production'`.
-- Iceberg integer promotion: prior writes may have promoted `int` → `bigint`. Re-declaring as `int` fails ("Cannot change column type: long -> int"). Detect and honour existing promoted types.
-
 ## Lambda interaction
 - Lambda zipped deployment limit ~262144000 bytes. `scripts/build_lambda.py` asserts this.
 - Lambda runtime: Python 3.12.
-- Layer: `AWSSDKPandas-Python312:22` (managed) + extras layer.
 
 For Lambda deployment workflow rules, see `src/data/handlers/CLAUDE.md`.

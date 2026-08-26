@@ -16,7 +16,7 @@ class TestRunPytestDiffReactiveDefer:
     """Reactive lazy-import heavy-dep defer (acceptance criterion 2): a genuinely-absent
     excluded heavy dependency imported lazily (function scope, invisible to --collect-only) is
     caught only AFTER the combined run fails, via a per-file isolated re-classification pass
-    (rec-2572..2576 test_ops_writer.py shape). Every other failure shape reddens immediately."""
+    (rec-2572..2576 concern-split-package shape). Every other failure shape reddens immediately."""
 
     def test_runtime_lazy_import_of_excluded_dep_defers(self) -> None:
         """A file that collects fine but fails at real-run time with a genuinely-absent excluded
@@ -31,8 +31,8 @@ class TestRunPytestDiffReactiveDefer:
             else:
                 result.returncode = 1
                 result.stdout = (
-                    "FAILED tests/test_ops_writer.py::TestCompact::test_compact_x - "
-                    "ModuleNotFoundError: No module named 'pandas'\n"
+                    "FAILED tests/test_ops_data_portal.py::TestCompact::test_compact_x - "
+                    "ModuleNotFoundError: No module named 'duckdb'\n"
                 )
             return result
 
@@ -41,7 +41,7 @@ class TestRunPytestDiffReactiveDefer:
             patch("scripts.checks._common.run", side_effect=mock_run),
             patch("importlib.util.find_spec", return_value=None),
         ):
-            run_pytest_diff(["tests/test_ops_writer.py"], failed)
+            run_pytest_diff(["tests/test_ops_data_portal.py"], failed)
 
         assert failed == []
 
@@ -84,10 +84,10 @@ class TestRunPytestDiffReactiveDefer:
             else:
                 result.returncode = 1
                 result.stdout = (
-                    "FAILED tests/test_ops_writer.py::A::test_a - assert 0 == 1\n"
-                    "FAILED tests/test_ops_writer.py::B::test_b - "
-                    "ModuleNotFoundError: No module named 'pandas'\n"
-                    "FAILED tests/test_ops_writer.py::C::test_c - TypeError: 'NoneType' object is not subscriptable\n"
+                    "FAILED tests/test_ops_data_portal.py::A::test_a - assert 0 == 1\n"
+                    "FAILED tests/test_ops_data_portal.py::B::test_b - "
+                    "ModuleNotFoundError: No module named 'duckdb'\n"
+                    "FAILED tests/test_ops_data_portal.py::C::test_c - TypeError: 'NoneType' object is not subscriptable\n"
                 )
             return result
 
@@ -96,7 +96,7 @@ class TestRunPytestDiffReactiveDefer:
             patch("scripts.checks._common.run", side_effect=mock_run),
             patch("importlib.util.find_spec", return_value=None),
         ):
-            run_pytest_diff(["tests/test_ops_writer.py"], failed)
+            run_pytest_diff(["tests/test_ops_data_portal.py"], failed)
 
         assert failed == []
 
@@ -112,7 +112,9 @@ class TestRunPytestDiffReactiveDefer:
                 result.stdout = ""
             else:
                 result.returncode = 1
-                result.stdout = "FAILED tests/test_ops_writer.py::A::test_a - ModuleNotFoundError: No module named 'pandas'\n"
+                result.stdout = (
+                    "FAILED tests/test_ops_data_portal.py::A::test_a - ModuleNotFoundError: No module named 'duckdb'\n"
+                )
             return result
 
         failed: list[str] = []
@@ -120,7 +122,7 @@ class TestRunPytestDiffReactiveDefer:
             patch("scripts.checks._common.run", side_effect=mock_run),
             patch("importlib.util.find_spec", return_value=MagicMock()),
         ):
-            run_pytest_diff(["tests/test_ops_writer.py"], failed)
+            run_pytest_diff(["tests/test_ops_data_portal.py"], failed)
 
         assert failed == ["Tests (pytest)"]
 
@@ -142,13 +144,13 @@ class TestRunPytestDiffReactiveDefer:
                     result.stdout = "FAILED tests/test_a.py::test_x - assert 0 == 1\n"
                 else:
                     result.returncode = 1
-                    result.stdout = "FAILED tests/test_b.py::test_y - ModuleNotFoundError: No module named 'pandas'\n"
+                    result.stdout = "FAILED tests/test_b.py::test_y - ModuleNotFoundError: No module named 'duckdb'\n"
             elif "tests/test_b.py" in cmd:
                 # combined gate run: both files present, mixed failure signature
                 result.returncode = 1
                 result.stdout = (
                     "FAILED tests/test_a.py::test_x - assert 0 == 1\n"
-                    "FAILED tests/test_b.py::test_y - ModuleNotFoundError: No module named 'pandas'\n"
+                    "FAILED tests/test_b.py::test_y - ModuleNotFoundError: No module named 'duckdb'\n"
                 )
             else:
                 # reactive re-run of the survivor alone: genuine failure persists
@@ -185,7 +187,9 @@ class TestRunPytestDiffReactiveDefer:
             else:
                 # combined run and final survivor re-run both fail identically
                 result.returncode = 1
-                result.stdout = "FAILED tests/test_ops_writer.py::A::test_a - ModuleNotFoundError: No module named 'pandas'\n"
+                result.stdout = (
+                    "FAILED tests/test_ops_data_portal.py::A::test_a - ModuleNotFoundError: No module named 'duckdb'\n"
+                )
             return result
 
         failed: list[str] = []
@@ -193,7 +197,7 @@ class TestRunPytestDiffReactiveDefer:
             patch("scripts.checks._common.run", side_effect=mock_run),
             patch("importlib.util.find_spec", return_value=None),
         ):
-            run_pytest_diff(["tests/test_ops_writer.py"], failed)
+            run_pytest_diff(["tests/test_ops_data_portal.py"], failed)
 
         assert failed == ["Tests (pytest)"]
 
@@ -240,7 +244,9 @@ class TestPytestDiffParallelAndTimeout:
                 # deliberately-excluded, genuinely-absent heavy-dep signature so the
                 # reactive re-run path fires
                 result.returncode = 1
-                result.stdout = "FAILED tests/test_ops_writer.py::A::test_a - ModuleNotFoundError: No module named 'pandas'\n"
+                result.stdout = (
+                    "FAILED tests/test_ops_data_portal.py::A::test_a - ModuleNotFoundError: No module named 'duckdb'\n"
+                )
             else:
                 result.returncode = 0
                 result.stdout = ""
@@ -251,7 +257,7 @@ class TestPytestDiffParallelAndTimeout:
             patch("scripts.checks._common.run", side_effect=mock_run),
             patch("importlib.util.find_spec", return_value=None),
         ):
-            run_pytest_diff(["tests/test_ops_writer.py"], failed)
+            run_pytest_diff(["tests/test_ops_data_portal.py"], failed)
 
         real_run_cmds = [c for c in captured_cmds if "--collect-only" not in c]
         assert len(real_run_cmds) >= 2, f"expected at least primary + reactive rerun, got: {captured_cmds}"
@@ -269,13 +275,13 @@ class TestAttributeFailedTestFiles:
     def test_extracts_files_from_failed_lines(self) -> None:
         combined = (
             "FAILED tests/test_a.py::TestX::test_1 - assert 0 == 1\n"
-            "FAILED tests/test_b.py::TestY::test_2 - ModuleNotFoundError: No module named 'pandas'\n"
+            "FAILED tests/test_b.py::TestY::test_2 - ModuleNotFoundError: No module named 'duckdb'\n"
         )
         result = _attribute_failed_test_files(combined, ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py"])
         assert result == {"tests/test_a.py", "tests/test_b.py"}
 
     def test_extracts_files_from_error_lines_too(self) -> None:
-        combined = "ERROR tests/test_a.py::TestX::test_1 - ModuleNotFoundError: No module named 'pandas'\n"
+        combined = "ERROR tests/test_a.py::TestX::test_1 - ModuleNotFoundError: No module named 'duckdb'\n"
         assert _attribute_failed_test_files(combined, ["tests/test_a.py"]) == {"tests/test_a.py"}
 
     def test_returns_none_when_nothing_matches_runnable(self) -> None:
@@ -326,11 +332,11 @@ class TestReactiveProbeNarrowing:
             elif "-q" in cmd:
                 probed_files.append(next(f for f in cmd if f.startswith("tests/test_")))
                 result.returncode = 1
-                result.stdout = "FAILED tests/test_b.py::test_y - ModuleNotFoundError: No module named 'pandas'\n"
+                result.stdout = "FAILED tests/test_b.py::test_y - ModuleNotFoundError: No module named 'duckdb'\n"
             elif "tests/test_b.py" in cmd:
                 # original combined run over all three files: only test_b.py fails
                 result.returncode = 1
-                result.stdout = "FAILED tests/test_b.py::test_y - ModuleNotFoundError: No module named 'pandas'\n"
+                result.stdout = "FAILED tests/test_b.py::test_y - ModuleNotFoundError: No module named 'duckdb'\n"
             else:
                 # reactive re-run of survivors (test_b.py deferred, so it's absent here) -- passes
                 result.returncode = 0
@@ -367,7 +373,7 @@ class TestReactiveProbeNarrowing:
                     # original combined run: fails with a heavy-dep signature but no parseable
                     # FAILED/ERROR line -- attribution must fall back to the whole runnable set
                     result.returncode = 1
-                    result.stdout = "INTERNALERROR ModuleNotFoundError: No module named 'pandas'\n"
+                    result.stdout = "INTERNALERROR ModuleNotFoundError: No module named 'duckdb'\n"
                 else:
                     # reactive re-run of survivors (both files, since neither's isolated probe
                     # found a heavy-dep signature) -- passes

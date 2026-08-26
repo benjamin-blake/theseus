@@ -129,7 +129,7 @@ class TestGetChangedSourceFiles:
 
         mock_diff = MagicMock()
         mock_diff.returncode = 0
-        mock_diff.stdout = "src/data/pipeline.py\nscripts/validate.py\ndocs/README.md\nterraform/main.tf\n"
+        mock_diff.stdout = "src/common/ducklake_runtime.py\nscripts/validate.py\ndocs/README.md\nterraform/main.tf\n"
 
         with (
             patch("scripts.checks._common.push_context_base", return_value=None),
@@ -138,7 +138,7 @@ class TestGetChangedSourceFiles:
             result = get_changed_source_files()
 
         rel_parts = [str(p.relative_to(ROOT)).replace("\\", "/") for p in result]
-        assert any("src/data/pipeline.py" in r for r in rel_parts)
+        assert any("src/common/ducklake_runtime.py" in r for r in rel_parts)
         assert any("scripts/validate.py" in r for r in rel_parts)
         assert not any("docs" in r for r in rel_parts)
         assert not any(".tf" in r for r in rel_parts)
@@ -151,7 +151,7 @@ class TestGetChangedSourceFiles:
 
         mock_diff = MagicMock()
         mock_diff.returncode = 0
-        mock_diff.stdout = "src/data/__init__.py\nsrc/data/pipeline.py\n"
+        mock_diff.stdout = "src/common/__init__.py\nsrc/common/ducklake_runtime.py\n"
 
         with (
             patch("scripts.checks._common.push_context_base", return_value=None),
@@ -170,7 +170,7 @@ class TestGetChangedSourceFiles:
 
         mock_diff = MagicMock()
         mock_diff.returncode = 0
-        mock_diff.stdout = "tests/test_pipeline.py\nsrc/data/pipeline.py\n"
+        mock_diff.stdout = "tests/test_ducklake_runtime.py\nsrc/common/ducklake_runtime.py\n"
 
         with (
             patch("scripts.checks._common.push_context_base", return_value=None),
@@ -179,7 +179,7 @@ class TestGetChangedSourceFiles:
             result = get_changed_source_files()
 
         names = [p.name for p in result]
-        assert "test_pipeline.py" not in names
+        assert "test_ducklake_runtime.py" not in names
 
     def test_uses_explicit_files_list(self) -> None:
         """When --files is provided, git diff is not called."""
@@ -197,7 +197,7 @@ class TestGetChangedSourceFiles:
 
         mock_head_diff = MagicMock()
         mock_head_diff.returncode = 0
-        mock_head_diff.stdout = "src/data/pipeline.py\n"
+        mock_head_diff.stdout = "src/common/ducklake_runtime.py\n"
 
         with (
             patch("scripts.checks._common.push_context_base", return_value=None),
@@ -205,7 +205,7 @@ class TestGetChangedSourceFiles:
         ):
             result = get_changed_source_files()
 
-        assert any("pipeline.py" in str(p) for p in result)
+        assert any("ducklake_runtime.py" in str(p) for p in result)
 
 
 def test_coverage_reports_owning_target_and_module(tmp_path: Path, capsys) -> None:

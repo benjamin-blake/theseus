@@ -56,18 +56,11 @@ class TestExcludedHeavyDeps:
     def test_heavy_deps_in_excluded_set(self) -> None:
         excluded = _excluded_heavy_import_names()
         for name in (
-            "pyarrow",
-            "pandas",
-            "numpy",
+            "boto3",
             "duckdb",
-            "torch",
-            "pyiceberg",
-            "awswrangler",
             "psycopg2",
-            "sklearn",
-            "sympy",
-            "pysr",
-            "aiohttp",
+            "requests",
+            "ulid",
             "radon",
         ):
             assert name in excluded, f"{name} should be excluded (heavy, requirements.txt-only)"
@@ -178,7 +171,7 @@ class TestMixedBatchAttribution:
         def mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
             result = MagicMock()
             result.returncode = 2
-            result.stdout = _collect_error_block(bad_file, "pyarrow")
+            result.stdout = _collect_error_block(bad_file, "duckdb")
             result.stderr = ""
             return result
 
@@ -189,7 +182,7 @@ class TestMixedBatchAttribution:
             runnable, deferred = partition_changed_tests_by_collectability([*good_files, bad_file])
 
         assert sorted(runnable) == sorted(good_files)
-        assert deferred == [(bad_file, "pyarrow")]
+        assert deferred == [(bad_file, "duckdb")]
 
     def test_two_distinct_bad_files_both_attributed(self) -> None:
         good_file = "tests/test_good.py"
@@ -199,7 +192,7 @@ class TestMixedBatchAttribution:
         def mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
             result = MagicMock()
             result.returncode = 2
-            result.stdout = _collect_error_block(bad_file_1, "pyarrow") + _collect_error_block(bad_file_2, "duckdb")
+            result.stdout = _collect_error_block(bad_file_1, "duckdb") + _collect_error_block(bad_file_2, "duckdb")
             result.stderr = ""
             return result
 
@@ -210,13 +203,13 @@ class TestMixedBatchAttribution:
             runnable, deferred = partition_changed_tests_by_collectability([good_file, bad_file_1, bad_file_2])
 
         assert runnable == [good_file]
-        assert dict(deferred) == {bad_file_1: "pyarrow", bad_file_2: "duckdb"}
+        assert dict(deferred) == {bad_file_1: "duckdb", bad_file_2: "duckdb"}
 
 
 class TestFastTierCollectability:
     """Classifier routing: (collect-only signal for THIS file) -> (runnable | deferred) (rec-2485).
 
-    Every heavy-dep-absence case below monkeypatches importlib.util.find_spec because pyarrow
+    Every heavy-dep-absence case below monkeypatches importlib.util.find_spec because duckdb
     (and the other heavy deps) are actually installed in this dev venv -- only requirements-fast.txt
     (the pr-validate CI job) omits them, so genuine absence must be simulated here.
     """
@@ -228,7 +221,7 @@ class TestFastTierCollectability:
         def mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
             result = MagicMock()
             result.returncode = 2
-            result.stdout = _collect_error_block(test_file, "pyarrow")
+            result.stdout = _collect_error_block(test_file, "duckdb")
             result.stderr = ""
             return result
 
@@ -239,7 +232,7 @@ class TestFastTierCollectability:
             runnable, deferred = partition_changed_tests_by_collectability([test_file])
 
         assert runnable == []
-        assert deferred == [(test_file, "pyarrow")]
+        assert deferred == [(test_file, "duckdb")]
 
     def test_runtime_failure_hard_fails(self) -> None:
         """A file that collects fine but fails at runtime (pytest exit 1) still hard-fails the gate."""
@@ -321,7 +314,7 @@ class TestFastTierCollectability:
         def mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
             result = MagicMock()
             result.returncode = 2
-            result.stdout = _collect_error_block(test_file, "pyarrow")
+            result.stdout = _collect_error_block(test_file, "duckdb")
             result.stderr = ""
             return result
 
@@ -425,16 +418,16 @@ class TestFastTierCollectability:
         assert runnable == [good_file]
         assert deferred == [(skip_file, "duckdb")]
 
-    def test_iceberg_reader_defers_when_pyarrow_absent(self) -> None:
-        """Real-file proof: the actual PR #405 offending file (tests/test_iceberg_reader.py, which
-        imports pyarrow at module scope) lands in `deferred`, not `failed`, when pyarrow is simulated
-        absent via find_spec."""
-        test_file = "tests/test_iceberg_reader.py"
+    def test_reader_client_defers_when_duckdb_absent(self) -> None:
+        """Real-file proof: a real heavy-dep test module (the DuckLake reader client mirror
+        package, which imports duckdb at module scope) lands in `deferred`, not `failed`, when
+        duckdb is simulated absent via find_spec -- the PR #405 shape."""
+        test_file = "tests/common/ducklake_reader_client/test_ducklake_reader.py"
 
         def mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
             result = MagicMock()
             result.returncode = 2
-            result.stdout = _collect_error_block(test_file, "pyarrow")
+            result.stdout = _collect_error_block(test_file, "duckdb")
             result.stderr = ""
             return result
 
@@ -445,7 +438,7 @@ class TestFastTierCollectability:
             runnable, deferred = partition_changed_tests_by_collectability([test_file])
 
         assert runnable == []
-        assert deferred == [(test_file, "pyarrow")]
+        assert deferred == [(test_file, "duckdb")]
 
 
 class TestRunPytestDiff:
@@ -458,12 +451,12 @@ class TestRunPytestDiff:
         assert failed == []
 
     def test_prints_loud_warning_and_does_not_redden_when_all_defer(self, capsys: pytest.CaptureFixture) -> None:
-        test_file = "tests/test_iceberg_reader.py"
+        test_file = "tests/common/ducklake_reader_client/test_ducklake_reader.py"
 
         def mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
             result = MagicMock()
             result.returncode = 2
-            result.stdout = _collect_error_block(test_file, "pyarrow")
+            result.stdout = _collect_error_block(test_file, "duckdb")
             result.stderr = ""
             return result
 
@@ -477,7 +470,7 @@ class TestRunPytestDiff:
         captured = capsys.readouterr()
         assert "DEFERRED TO FULL TIER" in captured.out
         assert test_file in captured.out
-        assert "pyarrow" in captured.out
+        assert "duckdb" in captured.out
         assert failed == []
 
 
@@ -488,7 +481,7 @@ class TestRunPytestDiffSingleExecution:
     per-file isolated probe, no per-file collect-only subprocess."""
 
     def test_runs_pytest_exactly_once_in_mixed_case(self) -> None:
-        """tests/test_iceberg_reader.py defers at --collect-only (never gets a real run at all);
+        """tests/common/ducklake_reader_client/test_ducklake_reader.py defers at --collect-only (never gets a real run at all);
         tests/test_validate.py collects fine and passes, so it gets exactly one real run --
         both resolved from a SINGLE batched --collect-only invocation."""
         captured_cmds: list[list[str]] = []
@@ -498,7 +491,7 @@ class TestRunPytestDiffSingleExecution:
             result = MagicMock()
             if "--collect-only" in cmd:
                 result.returncode = 2
-                result.stdout = _collect_error_block("tests/test_iceberg_reader.py", "pyarrow")
+                result.stdout = _collect_error_block("tests/common/ducklake_reader_client/test_ducklake_reader.py", "duckdb")
                 result.stderr = ""
             else:
                 result.returncode = 0
@@ -511,14 +504,14 @@ class TestRunPytestDiffSingleExecution:
             patch("scripts.checks._common.run", side_effect=mock_run),
             patch("importlib.util.find_spec", return_value=None),
         ):
-            run_pytest_diff(["tests/test_iceberg_reader.py", "tests/test_validate.py"], failed)
+            run_pytest_diff(["tests/common/ducklake_reader_client/test_ducklake_reader.py", "tests/test_validate.py"], failed)
 
         collect_only_cmds = [c for c in captured_cmds if "--collect-only" in c]
         assert len(collect_only_cmds) == 1, f"expected exactly one collect-only invocation, got: {collect_only_cmds}"
         real_run_cmds = [c for c in captured_cmds if "--collect-only" not in c]
         assert len(real_run_cmds) == 1, f"expected exactly one real pytest run, got: {real_run_cmds}"
         assert "tests/test_validate.py" in real_run_cmds[0]
-        assert "tests/test_iceberg_reader.py" not in real_run_cmds[0]
+        assert "tests/common/ducklake_reader_client/test_ducklake_reader.py" not in real_run_cmds[0]
         assert "--cov=src" in real_run_cmds[0] and "--cov-fail-under=0" in real_run_cmds[0]
         assert failed == []
 
@@ -558,11 +551,11 @@ class TestLastBlockAttributionBounding:
             result = MagicMock()
             result.returncode = 2
             result.stdout = (
-                _collect_error_block(heavy_file, "pyarrow")
+                _collect_error_block(heavy_file, "duckdb")
                 + f"__________________ ERROR collecting {broken_file} ___________________\n"
                 "E   ImportError: cannot import name 'Thing' from 'scripts.foo'\n"
                 "=========================== short test summary info ============================\n"
-                f"ERROR {heavy_file} - ModuleNotFoundError: No module named 'pyarrow'\n"
+                f"ERROR {heavy_file} - ModuleNotFoundError: No module named 'duckdb'\n"
                 f"ERROR {broken_file} - ImportError: cannot import name 'Thing' from 'scripts.foo'\n"
                 "=========================== 2 errors in 0.12s ============================\n"
             )
@@ -576,4 +569,4 @@ class TestLastBlockAttributionBounding:
             runnable, deferred = partition_changed_tests_by_collectability([heavy_file, broken_file])
 
         assert broken_file in runnable, "the genuinely-broken last file must redden, not mis-defer"
-        assert dict(deferred) == {heavy_file: "pyarrow"}
+        assert dict(deferred) == {heavy_file: "duckdb"}

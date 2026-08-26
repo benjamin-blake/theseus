@@ -1,6 +1,6 @@
 """DuckLake table-maintenance primitives (T2.18 / CD.33, Decision 81).
 
-Scheduled pipeline replacing the Iceberg-era ops_compaction Lambda. Implements the full
+Scheduled maintenance pipeline for the DuckLake ops estate. Implements the full
 maintenance sequence as composable primitives:
 
   flush_inlined_data -> merge_adjacent_files -> expire_snapshots ->

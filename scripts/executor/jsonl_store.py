@@ -24,7 +24,7 @@ class Recommendation(BaseModel):
     """Pydantic v2 model for recommendation JSONL entries.
 
     Enforces canonical IDs (rec-, agent-, test-). Unknown fields (including
-    Decision-56-deprecated columns that still appear in legacy Iceberg rows) are
+    Decision-56-deprecated columns that still appear in legacy warehouse rows) are
     silently ignored so backward-compat reads do not fail.
     """
 
@@ -208,7 +208,7 @@ def _reset_rec_status(rec_id: str) -> None:
 
     reset_updates: dict = {"status": "open"}
     for f in _FAILURE_FIELDS:
-        reset_updates[f] = None  # OpsWriter last-wins; None fields clear them in Iceberg
+        reset_updates[f] = None  # writer last-wins; None fields clear them in the warehouse
 
     try:
         update_rec(rec_id, reset_updates)

@@ -1,4 +1,4 @@
-"""Tests for the DataQualityVerifier (Athena-based)."""
+"""Tests for the DataQualityVerifier (DuckLake-backed)."""
 
 from __future__ import annotations
 

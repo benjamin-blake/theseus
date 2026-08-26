@@ -85,10 +85,9 @@ distinct evidence: already-DONE is `mark_complete`; obsolete/SUPERSEDED is
   correctness, or anchor rot. You are triaging active items for MVP scope and
   redundancy. If you find yourself filing consistency findings, stop -- they are
   out of scope here.
-- **PLATFORM vs PRODUCT roadmap.** `docs/ROADMAP-PLATFORM.yaml` (tier_items
-  T-1..T5, infrastructure/governance) is in scope. `docs/ROADMAP-PRODUCT.yaml`
-  (phases, trading strategy lifecycle) is OUT of scope. Do not open it except to
-  confirm a cross-roadmap dependency edge exists.
+- **Roadmap scope.** `docs/ROADMAP-PLATFORM.yaml` (tier_items
+  T-1..T5, infrastructure/governance) is in scope. Retired roadmaps are OUT of
+  scope; do not open one except to confirm a cross-roadmap dependency edge exists.
 - **`strategic: true` (a boolean field on tier_items) is NOT the STRATEGIC
   plan-type.** The field marks large multi-file items. The STRATEGIC plan-type
   is frozen by Decision 67 / CD.17. They are linked only in that a `strategic:
@@ -146,7 +145,7 @@ Shared vocabulary:
 - `depends_on` entries are EITHER specific ids (e.g. T2.18) OR tier-name
   shortcuts (e.g. "T2" = all items in tier T2 complete).
 
-Out of scope, one line each: ROADMAP-PRODUCT.yaml; the June consistency audit;
+Out of scope, one line each: retired roadmaps; the June consistency audit;
 schema/validator correctness of the roadmap harness; ratified-decision
 relitigation (Section 13); any warehouse or AWS write.
 

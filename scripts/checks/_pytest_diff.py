@@ -377,7 +377,7 @@ def run_pytest_diff(changed_tests: list[str], failed: list[str]) -> None:
 
     Only on a non-zero return does this reactively check whether the failure signature names a
     deliberately-excluded, genuinely-absent heavy dependency (a lazy, function-scope import
-    invisible to `--collect-only`, e.g. the rec-2572..2576 test_ops_writer.py shape). If so, it
+    invisible to `--collect-only`, the rec-2572..2576 shape). If so, it
     falls back to per-file classification via `_runtime_heavy_dep_defer_reason` -- targeted at only
     the files `_attribute_failed_test_files` implicates in the combined run's FAILED/ERROR lines
     (falling back to the whole runnable set if attribution finds nothing, fail-safe), run

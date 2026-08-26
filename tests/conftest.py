@@ -115,7 +115,7 @@ def _block_unmocked_aws_client(request: pytest.FixtureRequest, monkeypatch: pyte
     decorator is honoured, not just a method-level one. boto3/botocore are
     deliberately excluded from requirements-fast.txt (rec-2485, ~3GB of heavy wheels) -- this
     fixture is autouse and runs for every test in every tier, so the import is guarded the
-    same way _get_executor_env_vars/_isolate_plans_jsonl/_clear_fear_greed_cache above guard
+    same way _get_executor_env_vars/_isolate_plans_jsonl above guard
     their own optional imports: a genuinely-absent botocore means no test in this process can
     construct a real client anyway, so the guard has nothing to do.
     """
@@ -190,30 +190,13 @@ def _patch_write_run_summary():  # type: ignore[misc]
 
 
 @pytest.fixture(autouse=True)
-def _clear_fear_greed_cache() -> None:
-    """Clear the module-level fear-greed index cache before each test.
-
-    src.data.feature_engine._fear_greed_cache is a module-level dict with a
-    5-minute TTL. If one test writes a cached value, a later test that also
-    calls _fetch_fear_greed_index() sees the cached value instead of its mock,
-    causing order-dependent failures.
-    """
-    try:
-        from src.data.feature_engine import _fear_greed_cache  # noqa: PLC0415
-
-        _fear_greed_cache.clear()
-    except ImportError:
-        pass
-
-
-@pytest.fixture(autouse=True)
 def _allow_network_for_integration(request: pytest.FixtureRequest) -> None:
     """Re-enable sockets for @pytest.mark.integration tests.
 
     --disable-socket in pyproject.toml addopts blocks network I/O globally.
     Integration tests need real AWS/S3 access; this fixture selectively lifts
     the block when the test node carries @pytest.mark.integration.
-    Integration skip-fixtures in test_iceberg_reader.py and test_ducklake_spike.py
+    Integration skip-fixtures (e.g. tests/test_ducklake_spike.py)
     must request this fixture so the probe's own network call runs only after
     sockets are restored. Uses get_closest_marker (not own_markers) so a class-
     or module-level @pytest.mark.integration decorator is honoured, not just a
@@ -252,88 +235,3 @@ def _block_llm_cli_subprocess(request: pytest.FixtureRequest, monkeypatch: pytes
         return _orig_run(args, *a, **kw)
 
     monkeypatch.setattr(_sp, "run", _guarded_run)
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _outbox_hermeticity_session_guard() -> None:
-    """Session-start check: fail loudly if a RETIRED outbox dir already holds a file.
-
-    Decision 149 -- a pre-existing file in a retired-table dir (ops_recommendations,
-    ops_decisions, ops_priority_queue, ops_execution_plans, or any *_pending sibling) must
-    never be silently baselined into a per-machine tolerance; it is the resurrection shape
-    the warehouse-as-source-of-truth invariant (AGENTS.md) warns about. Legacy staging dirs
-    (telemetry, ops_session_log) may legitimately hold pending drain data and are not
-    checked here -- only retired dirs are ever illegitimate to find non-empty.
-    """
-    from tests.fixtures.outbox_guard import OUTBOX_BASE, retired_files, snapshot  # noqa: PLC0415
-
-    existing = retired_files(snapshot())
-    if existing:
-        remediation = "\n".join(f"  rm -f {p}" for p in sorted(existing))
-        pytest.exit(
-            f"Pre-existing file(s) found under a retired dir of {OUTBOX_BASE} -- these "
-            f"must never be committed or baselined (Decision 149). Remove them first:\n{remediation}",
-            returncode=1,
-        )
-
-
-@pytest.fixture(autouse=True)
-def _outbox_hermeticity_per_test_guard(request: pytest.FixtureRequest):  # type: ignore[misc]
-    """Fail any individual test that writes into the real logs/.ops-outbox.
-
-    Snapshots before the test body runs and diffs in teardown (after the yield), so a leak
-    fails the test that produced it rather than surviving silently (gitignored, so neither
-    git nor CI would otherwise notice). Both tiers run pytest with -n auto (xdist), so all
-    workers share one working directory -- a file observed here may have been written by a
-    sibling test on another worker. The failure names the REPORTING test plus the path; it
-    does not claim the reporting test is necessarily the writer.
-    """
-    from tests.fixtures.outbox_guard import diff_new_files, snapshot  # noqa: PLC0415
-
-    before = snapshot()
-    yield
-    new_files = diff_new_files(before, snapshot())
-    for path in new_files:
-        path.unlink(missing_ok=True)
-    if new_files:
-        offending = ", ".join(str(p) for p in sorted(new_files))
-        pytest.fail(
-            f"logs/.ops-outbox gained new file(s) during {request.node.nodeid}: {offending}. "
-            "A test must never write into the real outbox -- point it at tmp_path instead. "
-            "(Under -n auto, the reporting test may not be the writer.)",
-            pytrace=False,
-        )
-
-
-@pytest.fixture
-def ohlcv_df():  # type: ignore[return]
-    """Standard single-symbol OHLCV DataFrame (60 business days, seed=42).
-
-    Use this fixture for tests that need a reproducible OHLCV frame without
-    caring about specific price behaviour. Tests that require controlled price
-    shape (e.g. MACD crossover tests) should build their own data locally.
-    """
-    import numpy as np  # noqa: PLC0415
-    import pandas as pd  # noqa: PLC0415
-
-    np.random.seed(42)
-    timestamps = pd.date_range("2026-01-01", periods=60, freq="B")
-    price = 100.0
-    rows = []
-    for ts in timestamps:
-        change = np.random.randn() * 1.5
-        new_price = price + change
-        rows.append(
-            {
-                "timestamp": ts,
-                "symbol": "TEST.L",
-                "open": round(price, 2),
-                "high": round(price + abs(np.random.randn()), 2),
-                "low": round(price - abs(np.random.randn()), 2),
-                "close": round(new_price, 2),
-                "adj_close": round(new_price, 2),
-                "volume": int(np.random.uniform(1e6, 5e6)),
-            }
-        )
-        price = new_price
-    return pd.DataFrame(rows)

@@ -470,14 +470,14 @@ class TestRoadmapGuardSubsumption:
         result = at.derive_affected_tests([("M", "scripts/unrelated_thing.py")], repo_root=tmp_path)
         assert "tests/test_roadmap_guard.py" not in result["selected"]
 
-    def test_product_roadmap_yaml_also_selects_via_general_channel(self, tmp_path: Path) -> None:
+    def test_semanto_roadmap_yaml_also_selects_via_general_channel(self, tmp_path: Path) -> None:
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
-        (tests_dir / "test_product_guard.py").write_text(
-            'ROADMAP = "ROADMAP-PRODUCT.yaml"\n\ndef test_x():\n    assert ROADMAP\n', encoding="utf-8"
+        (tests_dir / "test_semanto_guard.py").write_text(
+            'ROADMAP = "ROADMAP-SEMANTO.yaml"\n\ndef test_x():\n    assert ROADMAP\n', encoding="utf-8"
         )
-        result = at.derive_affected_tests([("M", "docs/ROADMAP-PRODUCT.yaml")], repo_root=tmp_path)
-        assert "tests/test_product_guard.py" in result["selected"]
+        result = at.derive_affected_tests([("M", "docs/ROADMAP-SEMANTO.yaml")], repo_root=tmp_path)
+        assert "tests/test_semanto_guard.py" in result["selected"]
 
     def test_special_case_function_no_longer_exists(self) -> None:
         assert not hasattr(_validate, "select_roadmap_guard_tests")

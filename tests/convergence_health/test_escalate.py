@@ -380,7 +380,7 @@ class TestFetchOpenRecs:
     def test_fetches_via_named_open_recs_verb(self) -> None:
         reader = MagicMock()
         reader.named.return_value = [{"id": "rec-1", "source": "tf_convergence_stale", "status": "open"}]
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader) as mk:
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader) as mk:
             result = ch._fetch_open_recs(profile="agent_platform")
         mk.assert_called_once_with(profile="agent_platform")
         reader.named.assert_called_once_with("open_recs")
@@ -389,7 +389,7 @@ class TestFetchOpenRecs:
     def test_returns_empty_list_when_verb_returns_none(self) -> None:
         reader = MagicMock()
         reader.named.return_value = None
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             result = ch._fetch_open_recs()
         assert result == []
 

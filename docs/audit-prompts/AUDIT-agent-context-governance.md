@@ -177,8 +177,7 @@ Decision 114) and the decision-scout offload are the model Q1/Q3 ask whether to 
 
 Out of scope (one line each): L5 executor role prompts (`config/agent/executor/prompts/`) and the
 scheduled-agent prompt surface (`.github/prompts/scheduled/`) -- non-interactive agents, not this
-audit; the SLOC CODE-governance itself -- mirror it, do not critique it; `ROADMAP-PRODUCT.*` --
-product axis; any trading-strategy content -- confidential and irrelevant.
+audit; the SLOC CODE-governance itself -- mirror it, do not critique it.
 
 ## SETUP
 

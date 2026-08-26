@@ -1,1 +1,1 @@
-"""Common utilities for the trading system."""
+"""Common utilities for the Theseus platform."""

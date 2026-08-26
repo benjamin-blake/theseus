@@ -19,8 +19,8 @@ sections:
     title: Catalog disaster-recovery (CD.34) -- DR Lambda, SNS alert wiring, co-tuning knobs
     control: CD.34 O-2 / Decision 82
   - id: 5
-    title: ops_compaction decommission (T2.19-gated)
-    control: Decision 78 clause 7 / Decision 70
+    title: Catalog restore drill + closed-boundary break-glass
+    control: CD.33 O-2 as amended by CD.34 / Decision 81 clause 7
 catalog:
   backend: Neon serverless Postgres (DIRECT endpoint, sslmode=require)
   dsn_secret: ducklake-neon-catalog-dsn
@@ -130,7 +130,7 @@ version_bump_surfaces:
 All TCP/5432 happens server-side inside ephemeral Lambda canaries; the orchestrator communicates
 over HTTPS/443 only (PLAN-oq12-clone-rehearsal-lambda / rec-2357). The direct-connection gates
 (`--churn-gate`, `--restore-drill`) are privileged-env-only break-glass paths for non-CC-web
-hosts with outbound TCP/5432 (a laptop, PySR compute node, or eu-west-2 bastion).
+hosts with outbound TCP/5432 (a laptop, a dedicated compute node, or an eu-west-2 bastion).
 
 **Direct-gate guard (Decision-88 egress acknowledgement):** `--churn-gate` and `--restore-drill`
 refuse to run unless `DUCKLAKE_ALLOW_DIRECT_GATE=1` is set in the environment. Setting it
@@ -443,158 +443,7 @@ Closure is confirmed by the plan's post-deploy Verification Plan step invoking
 `ducklake_neon_smoke_test --catalog-restore-drill` against the deployed layer; see the PR/rec-2113
 record for the passing run.
 
-## Section 5 -- ops_compaction decommission runbook (T2.19-gated)
-
-**CURRENT STATE (Decision 84):** `ops_compaction` serves ONLY the not-yet-migrated staging
-paths (`ops_session_log`, `ops_execution_plans`, telemetry). The migrated tables (recs,
-decisions, priority_queue) never touch it -- their reads AND writes transit the DuckLake closed
-boundary, and `sync_ops.drain` quarantines their outbox dirs. Do NOT disable or remove it before
-the T2.26 disposition of the remaining tables (the rec-2113 restore drill gates the demolition).
-
-**Migrated-table Athena `_current` views (T2.26 c4, 2026-07-05):** `ops_recommendations_current`
-(T2.19), `ops_decisions_current`, and `ops_priority_queue_current` are all now DROPPED (explicit
-one-shot `null_resource` DROP VIEW in `terraform/personal/main.tf`) -- the three migrated tables'
-Athena read surface is fully retired. This does not change the gate below: `ops_compaction`
-itself still runs for the not-yet-migrated tables and telemetry staging.
-
-**Retirement gate is now two-part, not one (re-grounded 2026-07-05, T2.26 c3):** full
-`ops_compaction` retirement additionally requires **telemetry retirement** (tier_item T2.36 /
-Decision 84 Phase 4) -- `ops_compaction_handler` compacts telemetry staging in the same run
-(`TABLE_NAMES` parses both `dt=` ops keys and `trade_date=` telemetry keys), so the ops-side
-disposition below is necessary but not sufficient. The `ops_session_log` / `ops_execution_plans`
-half is itself gated on tier_item T3.20 (retire-or-migrate) plus the unratified CD.40.
-
-The deprecation marker in `src/data/handlers/ops_compaction_handler.py` and the `notes` line in
-`src/lambdas/ops-compaction/manifest.yaml` are informational only -- no behavioural change.
-
-### T2.19-gated disable/removal sequence
-
-Execute the following steps ONLY after T2.19 "DuckLake ops write/read migration" is complete and
-the DuckLake writer is the proven live write path:
-
-```yaml
-decommission_steps:
-  gate: T2.26 disposition of ops_session_log/ops_execution_plans complete + rec-2113 restore drill passed (Decision 84) + telemetry retirement (T2.36 / Phase 4)
-  steps:
-    - id: 1
-      action: Disable the S3 trigger on agent-platform-ops-compaction
-      how: Remove aws_lambda_event_source_mapping or aws_s3_bucket_notification in terraform
-      safety: Verify ops writes still land in DuckLake after disabling (read-your-write probe)
-    - id: 2
-      action: Retire the Lambda function (set reserved_concurrent_executions=0 or delete)
-      how: terraform remove aws_lambda_function.ops_compaction (+ IAM role + log group)
-      safety: Monitor ops_portal writes for 24h to confirm no regression
-    - id: 3
-      action: Archive the code (mark manifest status=retired)
-      how: Set status=retired in src/lambdas/ops-compaction/manifest.yaml
-    - id: 4
-      action: File a Decision recording the retirement
-      how: bin/venv-python -m scripts.ops_data_portal file_decision ...
-  decision_required: true
-  decision_refs: [78, 70]
-```
-
-Do NOT skip the 24h monitoring window (step 2) -- a partial cutover could leave a write path open
-that drains to the old Iceberg store, causing ops data loss.
-
-## Section 6 -- T2.19 ops cutover, rollback, and restore-drill (Decision 81 / Decision 82)
-
-> **SUPERSEDED (Decision 84, 2026-06-11):** the `OPS_STORAGE_BACKEND` flag is retired; DuckLake is
-> the sole ops backend and the commands below that set the flag are historical (the env var is
-> ignored). Retained for the cutover audit trail only.
-
-The ops persistence layer WAS selected by the `OPS_STORAGE_BACKEND` env flag, read by
-`scripts/ops_data_portal.py`, `src/common/iceberg_reader.make_reader`, and
-`scripts/data_quality_runner.py`:
-
-| Value | Transport | Status |
-|-------|-----------|--------|
-| `ducklake` (**default**, signed off 2026-06-09) | closed `ducklake_writer` / `ducklake_reader` Function-URL boundary | the live recs backend |
-| `iceberg` | `OpsWriter()` staging + Athena/Iceberg reader | rollback target; retained (intact, `ops_compaction` live) |
-
-Scope: ONLY `ops_recommendations` is on DuckLake. `ops_decisions`, `ops_session_log`,
-`ops_execution_plans`, `ops_priority_queue` remain on Athena/Iceberg (DEFERRED).
-
-The Single-Portal caller surface (`file_rec`/`update_rec`/`file_decision`/`update_decision`/`sync`)
-is identical on both backends -- only the transport underneath swaps.
-
-### Cutover sequence -- HISTORICAL RECORD (performed 2026-06-09; seed tooling REMOVED at sign-off)
-
-This is the sequence that performed the recs cutover. The one-time migration tooling -- the maintenance
-`seed_ops_recommendations` action AND its `--emit-recs-seed-payload` payload emitter -- was REMOVED at
-step 8 (closed boundary, Decision 81 cl.7), so steps 4 and 7 below are NOT directly re-runnable today.
-**Re-seeding is now a break-glass operation: git-revert the sign-off removal commit (restores BOTH the
-action and the emitter), redeploy maintenance, re-seed, then re-remove.** See "Break-glass re-seed" below.
-
-```bash
-# 1. Build the ducklake zips (writer, reader, maintenance, catalog-dr) and upload to S3.
-bin/venv-python -m scripts.build_lambda --ducklake-only
-
-# 2. Apply the IAM widening + DUCKLAKE_DATA_PATH smoke->prod flip. PRESENT THE PLAN TO A HUMAN FIRST.
-#    The IAM change trips the Decision-77 fail-closed guard -> manual agent_platform_admin path.
-terraform -chdir=terraform/personal plan      # review: no destroys (ops_compaction stays live)
-terraform -chdir=terraform/personal apply      # via agent_platform_admin, after confirmation
-
-# 3. Deploy the writer/reader code.
-bin/venv-python -m scripts.build_lambda --ducklake-only --deploy
-
-# 4. [seed tooling removed at step 8 -- break-glass only now] Drain the Iceberg outbox, then seed
-#    DuckLake from Iceberg current-state + verify parity (excl. Decision-70 tombstones). The migration
-#    seed was the maintenance `seed_ops_recommendations` action, fed by `--emit-recs-seed-payload`:
-OPS_STORAGE_BACKEND=iceberg bin/venv-python -m scripts.ops_data_portal --sync
-#   (historically) emit the payload + SigV4-invoke the maintenance seed action (parity=PASS in-Lambda).
-#   NOTE: ~812 sequential SCD2 writes can approach the 300s Lambda timeout; if it times out, raise the
-#   maintenance timeout temporarily (900s) and invoke synchronously (--cli-read-timeout 900, AWS_MAX_ATTEMPTS=1),
-#   then restore. Re-seeding is idempotent (DROP+recreate); it also purges any leaked `test-*` selftest probe.
-
-# 5. Sign-off gates (any FAIL stops the cutover -- Decision 55, never relax a budget):
-bin/venv-python -m scripts.ducklake_neon_smoke_test --ops-read-your-write     # write_ops->read; absent->409
-bin/venv-python -m scripts.ducklake_neon_smoke_test --ops-churn-regate        # EC8 4-writer, 2000ms/0.20
-OPS_STORAGE_BACKEND=ducklake bin/venv-python -m scripts.data_quality_runner   # DQ PASS (clause-8 incl.)
-# NOTE: the pg_restore restore-drill (--catalog-restore-drill) is DEFERRED at sign-off -- see below.
-
-# 6. Rollback rehearsal (both backends serve recs reads; Iceberg + ops_compaction intact):
-OPS_STORAGE_BACKEND=iceberg  bin/venv-python -m scripts.ops_data_portal --selftest-read
-OPS_STORAGE_BACKEND=ducklake bin/venv-python -m scripts.ops_data_portal --selftest-read
-# NOTE (CC-web): the `iceberg` --selftest-read uses pyiceberg's direct-S3 (pyarrow) reader, which does
-# NOT resolve the PlatformDev assume-role chain from CC-web (ACCESS_DENIED on the metadata HeadObject,
-# even though the role + Athena CAN read it). The Iceberg rollback path is proven instead via Athena
-# (`session_preflight._run_athena_query` / `sync_ops`), which IS the read-cache rebuild path. Data intact.
-
-# 7. CUTOVER SIGN-OFF: flip the default to ducklake (the atomic doc + ROADMAP update lands with this),
-#    then prove the portal write+read path on DuckLake:
-OPS_STORAGE_BACKEND=ducklake bin/venv-python -m scripts.ops_data_portal --selftest-roundtrip
-# The roundtrip leaves a throwaway `test-roundtrip-*` probe (automatable unset -> would fail DQ). At
-# sign-off it was purged by re-running the step-4 seed. POST-REMOVAL there is no seed action, so if you
-# run --selftest-roundtrip again you must purge the probe via the break-glass re-seed below, or avoid
-# running it against the live backend (prefer OPS_STORAGE_BACKEND=iceberg for a throwaway proof).
-
-# 8. POST-SIGN-OFF: remove the seed_ops_recommendations action (+ the --emit-recs-seed-payload emitter)
-#    and redeploy maintenance -- the closed boundary now admits recs writes only via portal -> writer.
-bin/venv-python -m scripts.build_lambda --ducklake-only --deploy
-```
-
-### Break-glass re-seed (post-removal)
-
-The seed action and its emitter are no longer deployed. To re-seed DuckLake recs from Iceberg
-current-state (e.g. catalog corruption with the Iceberg snapshot still intact):
-
-1. `git revert` (or cherry-pick the pre-removal blob of) the sign-off commit that removed
-   `action_seed_ops_recommendations` from `src/lambdas/ducklake_maintenance/handler.py` and
-   `emit_recs_seed_payload` from `scripts/ducklake_neon_smoke_test.py`.
-2. `bin/venv-python -m scripts.build_lambda --ducklake-only --deploy` to redeploy maintenance with the
-   restored action.
-3. Emit the payload + SigV4-invoke the maintenance `seed_ops_recommendations` action (idempotent
-   DROP+recreate; ~812 writes may need the 900s-timeout workaround above).
-4. Re-remove the action + emitter and redeploy to restore the closed boundary.
-```
-
-### Rollback (one step, real)
-
-Set `OPS_STORAGE_BACKEND=iceberg` (env, or revert the default in the three flag sites). The portal
-immediately resumes the `OpsWriter()`/Athena path; the Iceberg tables + `ops_compaction` are intact
-(they were never retired). No data migration is needed to roll back. Re-run `scripts.ops_data_portal
---sync` to refresh the local cache from Iceberg (via Athena).
+## Section 5 -- catalog restore drill and closed-boundary break-glass
 
 ### Restore drill (CD.33 O-2 as amended by CD.34) -- DEFERRED at sign-off (Decision 81 cl.7)
 
@@ -607,7 +456,6 @@ controls:
 1. The daily `pg_dump`-to-S3 export (`--format=custom`, `src/common/catalog_dr.run_catalog_dump`) runs.
 2. A `>25h` freshness CloudWatch alarm fires if the daily export stops.
 3. Neon's own native PITR / branch backups provide an independent restore path.
-4. The Iceberg recs snapshot is retained as the flagged `OPS_STORAGE_BACKEND=iceberg` rollback target.
 
 **HARD GATE (follow-up rec filed in this cutover's PHASE 3):** the `pg_restore` restore drill MUST pass
 before the NEXT ops table migrates to DuckLake. When the pgclient layer ships `pg_restore`:
@@ -619,7 +467,7 @@ bin/venv-python -m scripts.ducklake_neon_smoke_test --catalog-restore-drill
 
 ### Closed boundary / break-glass (OQ.7, Decision 81 cl.7)
 
-Every ops read transits `ducklake_reader`; every write transits `ducklake_writer`. There is NO Athena
-escape hatch on the `ducklake` backend (`ops_data_portal` does not fall back to Athena when
-`OPS_STORAGE_BACKEND=ducklake`). The only break-glass is the audited PlatformAdmin principal reading
-the Neon catalog credential (Secrets Manager) + S3, plus the catalog-DR PITR export -- see Section 1.
+Every ops read transits `ducklake_reader`; every write transits `ducklake_writer`. There is no second
+read or write path -- `ops_data_portal` has no fallback transport. The only break-glass is the audited
+PlatformAdmin principal reading the Neon catalog credential (Secrets Manager) + S3, plus the
+catalog-DR PITR export -- see Section 1.

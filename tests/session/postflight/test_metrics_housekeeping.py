@@ -157,12 +157,6 @@ class TestPruneTelemetryLogs:
 class TestStageDocumentDerivedTables:
     """Tests for _stage_document_derived_tables() (neutered in Phase 0+1)."""
 
-    def test_is_noop_no_opswriter_call(self) -> None:
-        """Neutered stub does not invoke OpsWriter (ETL bypass removed)."""
-        with patch("scripts.ops_writer.OpsWriter") as mock_ow:
-            _postflight._stage_document_derived_tables()
-        mock_ow.assert_not_called()
-
     def test_does_not_raise(self) -> None:
         """Neutered stub completes without raising."""
         _postflight._stage_document_derived_tables()

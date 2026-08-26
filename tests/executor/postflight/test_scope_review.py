@@ -124,7 +124,6 @@ class TestCodeReviewGateEffortRouting:
             ),
             patch("scripts.executor.postflight.build_context_path", return_value=None),
             patch("scripts.executor.postflight.llm_call", return_value=mock_copilot_result),
-            patch("scripts.executor.postflight.emit_process_event"),
             patch("scripts.executor.postflight.model_registry") as mock_registry,
         ):
             mock_registry.resolve_model.return_value = "gemini-3-flash-preview"
@@ -161,7 +160,6 @@ class TestCodeReviewGateEffortRouting:
             ),
             patch("scripts.executor.postflight.build_context_path", return_value=None),
             patch("scripts.executor.postflight.llm_call", return_value=mock_copilot_result),
-            patch("scripts.executor.postflight.emit_process_event"),
             patch("scripts.executor.postflight.model_registry") as mock_registry,
         ):
             mock_registry.resolve_model.return_value = None

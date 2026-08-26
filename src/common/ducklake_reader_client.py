@@ -1,16 +1,14 @@
-"""Engine-agnostic reader protocol and DuckDB-on-Iceberg implementation.
+"""Engine-agnostic reader protocol and the DuckLake closed-boundary read client.
 
-The Reader protocol defines the minimal verb surface so an Athena-backed
-sibling can satisfy it without changing call sites (CD.8 engine-interchangeability).
-DuckDBIcebergReader is the default implementation: pyiceberg GlueCatalog -> Arrow
--> DuckDB in-process, with predicate/projection pushdown into pyiceberg .scan()
-and SCD2 dedup applied in DuckDB SQL.
+The Reader protocol defines the minimal verb surface so an alternative backing
+implementation can satisfy it without changing call sites (CD.8
+engine-interchangeability). DuckLakeReader is the sole implementation: every ops
+read transits the SigV4-signed ducklake_reader Function URL, and the SCD2
+latest-per-merge-key projection is materialised server-side in DuckLake.
 
-Current state qualification:
-- ops_recommendations, ops_decisions: ROW_NUMBER() OVER (PARTITION BY id
-  ORDER BY last_updated_timestamp DESC) = 1  (Decision 56)
-- ops_priority_queue: correlated subquery returning all entries from the
-  latest curator run identified by queue_run_id  (Decision 70)
+Current state qualification (materialised by the reader, not the client):
+- ops_recommendations, ops_decisions: latest row per id (Decision 56)
+- ops_priority_queue: all entries from the latest curator run (Decision 70)
 
 Credential resolution: resolve_aws_profile() returns the named agent_platform
 profile when present (local / Claude-Code-on-the-web) and None when running
@@ -29,14 +27,9 @@ from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_DATABASE = "agent_platform"
 _DEFAULT_REGION = "eu-west-2"
-_DEFAULT_CATALOG_NAME = "agent_platform"
 
-# DuckLake is the SOLE ops-store backend (Decision 84 I-1; the OPS_STORAGE_BACKEND rollback flag
-# was retired -- the frozen Iceberg copy stopped being a coherent rollback target the day writes
-# moved to DuckLake). DuckDBIcebergReader remains importable for non-ops Iceberg surfaces
-# (schema-integrity drift checks against the retained estate) until the demolition apply lands.
+# DuckLake is the SOLE ops-store backend (Decision 84 I-1).
 _DUCKLAKE_READER_URL_ENV = "DUCKLAKE_READER_URL"
 _DUCKLAKE_READER_FUNCTION_NAME = "agent-platform-ducklake-reader"
 
@@ -53,19 +46,7 @@ _READER_MAX_ATTEMPTS = 3
 _READER_TRANSIENT_STATUS = frozenset({502, 503, 504})
 _READER_RETRY_BACKOFF_S = (2.0, 4.0)
 
-# pk used for ROW_NUMBER() dedup (Decision 56)
-_TABLE_PARTITION_KEYS: dict[str, str] = {
-    "ops_recommendations": "id",
-    "ops_decisions": "id",
-}
-
-# tables using correlated-subquery current-state pattern (Decision 70)
-_CORRELATED_SUBQUERY_TABLES: frozenset[str] = frozenset({"ops_priority_queue"})
-
 _ORDER_BY_DEFAULT = "last_updated_timestamp"
-
-# Valid SQL identifier pattern -- used to guard column-name interpolation
-_COL_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*$")
 
 # Single-key equality row_filter: `<col> = '<value>'`. Both sides are extracted and sent as a
 # STRUCTURAL {column, value} filter -- never interpolated into SQL.
@@ -98,7 +79,7 @@ def _resolve_function_url_via_ssm(ssm_path: str, *, profile: str | None, region:
         resp = client.get_parameter(Name=ssm_path, WithDecryption=False)
         return resp["Parameter"]["Value"].rstrip("/") or None
     except Exception as exc:  # noqa: BLE001
-        logger.warning("iceberg_reader: SSM resolution failed for %s: %s", ssm_path, exc)
+        logger.warning("ducklake_reader_client: SSM resolution failed for %s: %s", ssm_path, exc)
         return None
 
 
@@ -116,15 +97,14 @@ def _resolve_function_url_via_api(function_name: str, *, profile: str | None, re
         client = boto3.Session(profile_name=profile).client("lambda", region_name=region)
         return client.get_function_url_config(FunctionName=function_name).get("FunctionUrl")
     except Exception as exc:  # noqa: BLE001 -- best-effort fallback; caller raises if this returns None
-        logger.warning("iceberg_reader: GetFunctionUrlConfig fallback failed for %s: %s", function_name, exc)
+        logger.warning("ducklake_reader_client: GetFunctionUrlConfig fallback failed for %s: %s", function_name, exc)
         return None
 
 
 class Reader(Protocol):
     """Minimal engine-agnostic read interface.
 
-    Both DuckDBIcebergReader and any future Athena-backed implementation must
-    satisfy this protocol without changing call sites (CD.8).
+    Any implementation must satisfy this protocol without changing call sites (CD.8).
 
     named(), query() and describe() are deliberately NOT part of this Protocol -- named() and
     query() were already undeclared DuckLakeReader-only extras before this file added describe(),
@@ -147,210 +127,6 @@ class Reader(Protocol):
     def latest_snapshot(self, table: str) -> int | None: ...
 
 
-class DuckDBIcebergReader:
-    """DuckDB-on-Iceberg read layer.
-
-    pyiceberg GlueCatalog resolves the table location; .scan() applies predicate
-    and projection pushdown before Arrow materialization; DuckDB executes the
-    current-state SQL (SCD2 ROW_NUMBER or priority-queue correlated subquery).
-
-    Engine is exposed directly here as a pre-Lambda bridge (CD.8 note: hiding
-    behind T0.7c/T0.8 verbs is deferred until those verbs land).
-    """
-
-    def __init__(
-        self,
-        profile: str | None = None,
-        catalog_name: str = _DEFAULT_CATALOG_NAME,
-        database: str = _DEFAULT_DATABASE,
-        region: str = _DEFAULT_REGION,
-    ) -> None:
-        self._profile = profile
-        self._catalog_name = catalog_name
-        self._database = database
-        self._region = region
-        self._catalog_instance: Any = None
-
-    def _catalog(self) -> Any:
-        if self._catalog_instance is None:
-            from pyiceberg.catalog.glue import GlueCatalog  # noqa: PLC0415
-
-            from scripts.aws_profile import resolve_aws_profile  # noqa: PLC0415
-
-            resolved = resolve_aws_profile(self._profile)
-            props: dict[str, str] = {
-                "client.region": self._region,
-                "s3.region": self._region,
-            }
-            if resolved is not None:
-                props["client.profile-name"] = resolved
-                props["s3.profile-name"] = resolved
-            self._catalog_instance = GlueCatalog(self._catalog_name, **props)
-        return self._catalog_instance
-
-    def _load_arrow(
-        self,
-        table: str,
-        *,
-        row_filter: str | None = None,
-        selected_fields: tuple[str, ...] | None = None,
-        snapshot_id: int | None = None,
-    ) -> Any:
-        """Scan Iceberg table to a PyArrow Table with optional pushdown.
-
-        row_filter and selected_fields are passed into pyiceberg .scan() so that
-        partition pruning and column projection happen before materialisation --
-        not as a post-filter on a full Arrow table.
-        """
-        catalog = self._catalog()
-        iceberg_table = catalog.load_table(f"{self._database}.{table}")
-
-        scan_kwargs: dict[str, Any] = {}
-        if row_filter is not None:
-            scan_kwargs["row_filter"] = row_filter
-        if selected_fields is not None:
-            scan_kwargs["selected_fields"] = selected_fields
-        if snapshot_id is not None:
-            scan_kwargs["snapshot_id"] = snapshot_id
-
-        scan = iceberg_table.scan(**scan_kwargs)
-        return scan.to_arrow()
-
-    def latest_snapshot(self, table: str) -> int | None:
-        """Return the id of the current snapshot for *table*, or None if the table is empty."""
-        try:
-            catalog = self._catalog()
-            iceberg_table = catalog.load_table(f"{self._database}.{table}")
-            snap = iceberg_table.current_snapshot()
-            return snap.snapshot_id if snap is not None else None
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("DuckDBIcebergReader.latest_snapshot: %s: %s", table, exc)
-            return None
-
-    def current_state(
-        self,
-        table: str,
-        *,
-        partition_by: str = "id",
-        order_by: str = _ORDER_BY_DEFAULT,
-        row_filter: str | None = None,
-        selected_fields: tuple[str, ...] | None = None,
-        snapshot_id: int | None = None,
-    ) -> list[dict]:
-        """Return current-state rows for *table* with SCD2 dedup applied in DuckDB.
-
-        For ops_priority_queue: correlated subquery selecting all entries from
-        the latest curator run (Decision 70).
-        For all other tables: ROW_NUMBER() OVER (PARTITION BY {pk} ORDER BY
-        last_updated_timestamp DESC) = 1 (Decision 56).
-
-        Pushdown: row_filter and selected_fields are forwarded into pyiceberg
-        .scan() before Arrow materialisation.
-
-        Returns [] when the table is empty or unreachable (signals the caller
-        to degrade gracefully when used from session_preflight).  Call sites
-        that must raise on unreachable (Decision 69: ops_data_portal) should
-        catch the exception themselves -- this method re-raises from _load_arrow.
-        """
-        import duckdb  # noqa: PLC0415
-
-        for col, label in ((partition_by, "partition_by"), (order_by, "order_by")):
-            if not _COL_NAME_RE.match(col):
-                raise ValueError(f"DuckDBIcebergReader.current_state: invalid {label} column name: {col!r}")
-
-        pk = _TABLE_PARTITION_KEYS.get(table, partition_by)
-
-        arrow_table = self._load_arrow(
-            table,
-            row_filter=row_filter,
-            selected_fields=selected_fields,
-            snapshot_id=snapshot_id,
-        )
-
-        if arrow_table.num_rows == 0:
-            return []
-
-        with duckdb.connect() as con:
-            con.register("_tbl", arrow_table)
-
-            if table in _CORRELATED_SUBQUERY_TABLES:
-                dedup_sql = (
-                    "SELECT * FROM _tbl "
-                    "WHERE queue_run_id = ("
-                    "  SELECT queue_run_id FROM _tbl "
-                    "  ORDER BY last_updated_timestamp DESC LIMIT 1"
-                    ")"
-                )
-            else:
-                dedup_sql = (
-                    "SELECT * EXCLUDE(row_num) FROM ("
-                    f"  SELECT *, ROW_NUMBER() OVER (PARTITION BY {pk} ORDER BY {order_by} DESC) AS row_num"
-                    "  FROM _tbl"
-                    ") WHERE row_num = 1"
-                )
-
-            cursor = con.execute(dedup_sql)
-            col_names = [desc[0] for desc in cursor.description]
-            return [dict(zip(col_names, row)) for row in cursor.fetchall()]
-
-    def query(
-        self,
-        table: str,
-        sql: str,
-        *,
-        params: tuple[Any, ...] = (),
-        snapshot_id: int | None = None,
-    ) -> list[dict] | None:
-        """Execute *sql* against the current-state Arrow table for *table*.
-
-        Builds the current-state view internally (same SCD2/correlated-subquery
-        logic as current_state) then runs *sql* on top of it. Use ``{tbl}`` in
-        *sql* as the table reference and ``?`` for bound params.
-
-        Returns None on any exception so callers can degrade gracefully.
-
-        This method exposes the engine directly as a pre-Lambda bridge.
-        Engine-hiding is restored when T0.7c/T0.8 verbs land (CD.8).
-        """
-        import duckdb  # noqa: PLC0415
-
-        try:
-            arrow_table = self._load_arrow(table, snapshot_id=snapshot_id)
-
-            if arrow_table.num_rows == 0:
-                return []
-
-            with duckdb.connect() as con:
-                con.register("_tbl", arrow_table)
-
-                if table in _CORRELATED_SUBQUERY_TABLES:
-                    current_sql = (
-                        "SELECT * FROM _tbl "
-                        "WHERE queue_run_id = ("
-                        "  SELECT queue_run_id FROM _tbl "
-                        "  ORDER BY last_updated_timestamp DESC LIMIT 1"
-                        ")"
-                    )
-                else:
-                    pk = _TABLE_PARTITION_KEYS.get(table, "id")
-                    current_sql = (
-                        "SELECT * EXCLUDE(row_num) FROM ("
-                        f"  SELECT *, ROW_NUMBER() OVER (PARTITION BY {pk} ORDER BY last_updated_timestamp DESC) AS row_num"
-                        "  FROM _tbl"
-                        ") WHERE row_num = 1"
-                    )
-
-                con.execute(f"CREATE TEMP VIEW _current AS {current_sql}")
-                final_sql = sql.replace("{tbl}", "_current")
-                cursor = con.execute(final_sql, list(params))
-                col_names = [desc[0] for desc in cursor.description]
-                return [dict(zip(col_names, row)) for row in cursor.fetchall()]
-
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("DuckDBIcebergReader.query: %s: %s", table, exc)
-            return None
-
-
 class ReaderInvokeError(RuntimeError):
     """A ducklake_reader invocation returned a non-200 response.
 
@@ -358,12 +134,10 @@ class ReaderInvokeError(RuntimeError):
     otherwise) alongside the flat message, so a caller building typed exceptions on top (e.g.
     scripts/agent_sdk/errors.py) can map the boundary's own {"ok": false, "error"/"error_type"}
     shapes instead of regexing this exception's message string. Defined HERE (not imported from
-    scripts/agent_sdk/errors.py) because this module is bundled into the data-pipeline and
-    ops-compaction Lambda manifests, which enumerate scripts/ files explicitly and do not include
-    scripts/agent_sdk/** -- a module-scope import from there would ModuleNotFoundError in both
-    prod Lambdas. errors.py imports FROM here, never the reverse. Subclassing RuntimeError keeps
-    the existing repo-wide `except RuntimeError` reader site (scripts/verifiers/athena_views.py)
-    from regressing.
+    scripts/agent_sdk/errors.py) because this module is bundled into the data-pipeline Lambda
+    manifest, which enumerates scripts/ files explicitly and does not include
+    scripts/agent_sdk/** -- a module-scope import from there would ModuleNotFoundError in the
+    prod Lambda. errors.py imports FROM here, never the reverse.
     """
 
     def __init__(self, action: str | None, status: int | None, text: str, body: dict[str, Any] | None) -> None:
@@ -388,9 +162,9 @@ class DuckLakeReader:
 
     Satisfies the Reader protocol over the AWS_IAM Function URL (SigV4-signed). `current_state`
     returns the `current` write-through projection (the SCD2 latest-per-merge-key is materialised in
-    DuckLake itself, so there is no client-side ROW_NUMBER dedup). There is no Athena escape hatch:
-    a reader failure raises (the portal's closed-boundary callers surface it; sync_ops/preflight
-    catch to degrade gracefully, same as the Iceberg reader).
+    DuckLake itself, so there is no client-side dedup). There is no escape hatch: a reader failure
+    raises (the portal's closed-boundary callers surface it; sync_ops/preflight catch to degrade
+    gracefully).
     """
 
     def __init__(self, profile: str | None = None, region: str = _DEFAULT_REGION) -> None:
@@ -511,7 +285,7 @@ class DuckLakeReader:
         return list(body.get("rows", []))
 
     def latest_snapshot(self, table: str) -> int | None:
-        """DuckLake current is a live projection (no Iceberg snapshot id). Returns None by contract."""
+        """DuckLake current is a live projection (no snapshot id). Returns None by contract."""
         return None
 
     def describe(self) -> dict[str, dict[str, Any]]:
@@ -556,7 +330,6 @@ def make_reader(profile: str | None = None, table: str | None = None) -> Reader:
     """Return the operational Reader: DuckLakeReader for every ops table (Decision 84 I-1).
 
     The *table* parameter is retained for call-site compatibility; all ops_* tables transit the
-    closed DuckLake boundary. DuckDBIcebergReader is no longer reachable from here -- it survives
-    as an importable class for non-ops Iceberg surfaces until the estate demolition lands.
+    closed DuckLake boundary.
     """
     return DuckLakeReader(profile=profile)

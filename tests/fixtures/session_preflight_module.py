@@ -28,7 +28,7 @@ this module's body executes exactly once per process; every consumer does
 identical object.
 
 MODULE_PATH is also re-exported (public, no leading underscore) so tests/session/preflight/
-test_context_docs.py's TestRetiredAthenaEstate -- which reads the source text of
+test_context_docs.py's TestRetiredStagingEstate -- which reads the source text of
 scripts/session/preflight.py directly to assert a retired symbol is absent -- has a single
 source of truth for the path instead of recomputing it locally.
 """

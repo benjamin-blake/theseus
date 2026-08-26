@@ -128,16 +128,16 @@ class TestClassifyPath:
         with patch("scripts.checks._common.ROOT", tmp_path):
             assert _classify.classify_path("config/pinned_no_banner.yaml") == "generated"
 
-    def test_roadmap_platform_deferred_roadmap_product_included(self, tmp_path: Path) -> None:
+    def test_roadmap_platform_deferred_other_roadmap_included(self, tmp_path: Path) -> None:
         _write_registry(tmp_path)
         _clear_cache()
         with patch("scripts.checks._common.ROOT", tmp_path):
             assert _classify.classify_path("docs/ROADMAP-PLATFORM.yaml") == "roadmaps"
-            assert _classify.classify_path("docs/ROADMAP-PRODUCT.yaml") == "roadmaps"
+            assert _classify.classify_path("docs/ROADMAP-SEMANTO.yaml") == "roadmaps"
             reg = _classify.load_registry()
             roadmaps_row = next(r for r in reg["classes"] if r["slug"] == "roadmaps")
             assert "docs/ROADMAP-PLATFORM.yaml" in roadmaps_row["defer_to_incumbent"]
-            assert "docs/ROADMAP-PRODUCT.yaml" not in roadmaps_row["defer_to_incumbent"]
+            assert "docs/ROADMAP-SEMANTO.yaml" not in roadmaps_row["defer_to_incumbent"]
 
 
 class TestCountingRule:
@@ -165,11 +165,11 @@ class TestIterMeasuredFiles:
         _write_registry(tmp_path)
         (tmp_path / "docs").mkdir()
         (tmp_path / "docs" / "ROADMAP-PLATFORM.yaml").write_text("key: value\n", encoding="utf-8")
-        (tmp_path / "docs" / "ROADMAP-PRODUCT.yaml").write_text("key: value\n", encoding="utf-8")
+        (tmp_path / "docs" / "ROADMAP-SEMANTO.yaml").write_text("key: value\n", encoding="utf-8")
         (tmp_path / "terraform").mkdir()
         (tmp_path / "terraform" / "main.tf").write_text("resource {}\n", encoding="utf-8")
 
-        tracked = ["docs/ROADMAP-PLATFORM.yaml", "docs/ROADMAP-PRODUCT.yaml", "terraform/main.tf"]
+        tracked = ["docs/ROADMAP-PLATFORM.yaml", "docs/ROADMAP-SEMANTO.yaml", "terraform/main.tf"]
 
         def _fake_run(cmd, **kwargs):
             from unittest.mock import MagicMock
@@ -184,7 +184,7 @@ class TestIterMeasuredFiles:
             measured = dict(_classify.iter_measured_files())
 
         assert "docs/ROADMAP-PLATFORM.yaml" not in measured
-        assert measured.get("docs/ROADMAP-PRODUCT.yaml") == "roadmaps"
+        assert measured.get("docs/ROADMAP-SEMANTO.yaml") == "roadmaps"
         assert measured.get("terraform/main.tf") == "terraform"
 
     def test_excluded_and_phantom_tracked_paths_are_skipped(self, tmp_path: Path) -> None:

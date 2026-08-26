@@ -67,7 +67,7 @@ def _tally_rec_counts(
                     aging_count += 1
             except (ValueError, AttributeError, TypeError):
                 pass
-        # Reader rows carry native Python bools; rows migrated from the legacy Athena path may
+        # Reader rows carry native Python bools; rows migrated from the legacy path may
         # still serialise booleans as the strings "true"/"false" -- normalise both forms.
         raw_auto = entry.get("automatable", True)
         if isinstance(raw_auto, bool):
@@ -119,8 +119,8 @@ def _count_recommendations_reader(cache_rows: object = _common._READER_SENTINEL)
 def count_recommendations() -> tuple[int, int, int, list[dict]]:
     """Count open, aging (>30 days), and non-automatable recommendations.
 
-    Reads from the DuckLake reader first (Decision 81 cl.7 / T2.19 cutover); there is
-    no Athena fallback. On reader failure, emits a LOUD reader_unreachable warning
+    Reads from the DuckLake reader first (Decision 81 cl.7 / T2.19 cutover); it is the
+    sole backend. On reader failure, emits a LOUD reader_unreachable warning
     (Decision 55: never a silent false zero) and degrades to counting from the local
     read cache (S3 backend or logs/.recommendations-log.jsonl), which may be stale.
 

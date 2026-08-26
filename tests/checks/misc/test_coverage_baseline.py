@@ -16,9 +16,9 @@ class TestLoadBaseline:
     def test_loads_entries_rounded_to_one_decimal(self, tmp_path: Path) -> None:
         p = tmp_path / "coverage_baseline.yaml"
         p.write_text(
-            "entries:\n  scripts/ops_writer.py: 75.4601  # grandfathered dec-159 (one-time roster)\n", encoding="utf-8"
+            "entries:\n  scripts/ops_data_portal.py: 75.4601  # grandfathered dec-159 (one-time roster)\n", encoding="utf-8"
         )
-        assert coverage_baseline.load_baseline(p) == {"scripts/ops_writer.py": 75.5}
+        assert coverage_baseline.load_baseline(p) == {"scripts/ops_data_portal.py": 75.5}
 
     def test_empty_entries_key_returns_empty(self, tmp_path: Path) -> None:
         p = tmp_path / "coverage_baseline.yaml"
@@ -28,11 +28,11 @@ class TestLoadBaseline:
 
 class TestCompare:
     def test_passes_at_or_above_baseline(self) -> None:
-        assert coverage_baseline.compare(75.5, "scripts/ops_writer.py", {"scripts/ops_writer.py": 75.4})
-        assert coverage_baseline.compare(75.4, "scripts/ops_writer.py", {"scripts/ops_writer.py": 75.4})
+        assert coverage_baseline.compare(75.5, "scripts/ops_data_portal.py", {"scripts/ops_data_portal.py": 75.4})
+        assert coverage_baseline.compare(75.4, "scripts/ops_data_portal.py", {"scripts/ops_data_portal.py": 75.4})
 
     def test_fails_below_baseline(self) -> None:
-        assert not coverage_baseline.compare(75.0, "scripts/ops_writer.py", {"scripts/ops_writer.py": 75.4})
+        assert not coverage_baseline.compare(75.0, "scripts/ops_data_portal.py", {"scripts/ops_data_portal.py": 75.4})
 
     def test_unbaselined_file_requires_100(self) -> None:
         assert not coverage_baseline.compare(99.9, "scripts/unbaselined.py", {})
@@ -69,10 +69,10 @@ class TestMeasureAndCheck:
         assert errors == []
 
     def test_returns_none_for_empty_directory_target(self, tmp_path: Path) -> None:
-        source = tmp_path / "scripts" / "ops_writer.py"
+        source = tmp_path / "scripts" / "ops_data_portal.py"
         source.parent.mkdir(parents=True)
         source.write_text("x = 1\n", encoding="utf-8")
-        test_dir = tmp_path / "tests" / "ops_writer"
+        test_dir = tmp_path / "tests" / "ops_data_portal"
         test_dir.mkdir(parents=True)
 
         mock_subprocess = MagicMock()

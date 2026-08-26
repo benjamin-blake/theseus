@@ -1,9 +1,8 @@
 # Prod-class Lambda functions (T2.43 / Decision 125/126): the decoupled_build_pipeline class.
 #
-# Provisions the three functions that were ABSENT from the personal account (rec-2157/rec-2164):
-# agent-platform-scheduled-agent-dispatcher, agent-platform-findings-processor, and
-# agent-platform-ops-compaction. Ported from the retired terraform/scheduled_agents.tf (work-account
-# root, CD.21) and adapted to the personal-module idiom: var.account_id / data.aws_caller_identity
+# Provisions the two functions that were ABSENT from the personal account (rec-2157/rec-2164):
+# agent-platform-scheduled-agent-dispatcher and agent-platform-findings-processor. Ported from the
+# retired work-account root (CD.21) and adapted to the personal-module idiom: var.account_id / data.aws_caller_identity
 # interpolation (never a literal, Decision 101), the single agent-platform-data-lake bucket (this
 # module has no separate agent-logs bucket -- agents/, findings/, recommendations/, and staging/ are
 # all prefixes on aws_s3_bucket.data_lake), the default provider (agent_platform_admin), and a
@@ -33,30 +32,18 @@
 # produces clean, observable JSON output without depending on the schedule being enabled.
 
 locals {
-  prod_source_hash           = try(filemd5("${path.module}/../../lambda-packages/data-pipeline.zip"), null)
-  ops_compaction_source_hash = try(filemd5("${path.module}/../../lambda-packages/ops-compaction.zip"), null)
+  prod_source_hash = try(filemd5("${path.module}/../../lambda-packages/data-pipeline.zip"), null)
 
   scheduled_agent_dispatcher_function = "agent-platform-scheduled-agent-dispatcher"
   findings_processor_function         = "agent-platform-findings-processor"
-  ops_compaction_function             = "agent-platform-ops-compaction"
-
-  # sensitive() keeps this 12-digit ARN out of cleartext terraform plan/show output. It is
-  # AWS's OWN publicly-documented Lambda-layer-hosting account (AWS Data Wrangler's managed
-  # layer, not this project's account -- Decision 101 is unaffected), but the speculative-plan
-  # CI job's redaction self-check fails closed on ANY undelimited 12-digit run regardless of
-  # whose account it is, and this literal is unavoidable input knowledge. Marking it sensitive
-  # is the HCL-level fix: terraform renders "(sensitive value)" for the affected attribute in
-  # every plan/show/apply invocation, not just a one-off workflow-script patch.
-  aws_sdk_pandas_layer_arn = sensitive("arn:aws:lambda:${var.aws_region}:336392948345:layer:AWSSDKPandas-Python312:22")
 }
 
 # ---------------------------------------------------------------------------
 # GitHub PAT secret (dispatcher / findings-processor GitHub Models API auth). Value set out-of-band
 # via put-secret-value -- never Terraform-managed
 # (docs/contracts/secret-material-handling.yaml SECRET-VALUE-OUT-OF-BAND pattern, Decision 175 --
-# rehomed from the Decision 37 precedent; mirrors inference_credentials.tf /
-# secrets_manager_brokers.tf). No secret-version resource: key material must never enter
-# Terraform state.
+# rehomed from the Decision 37 precedent; mirrors inference_credentials.tf). No secret-version
+# resource: key material must never enter Terraform state.
 # ---------------------------------------------------------------------------
 
 resource "aws_secretsmanager_secret" "github_pat" {
@@ -71,12 +58,8 @@ resource "aws_secretsmanager_secret" "github_pat" {
 
 # ---------------------------------------------------------------------------
 # NOTE (T2.43 apply-time correction): no shared dependencies layer is attached to the
-# dispatcher/findings-processor functions. The full PROD_DEPS-based data-pipeline-deps-layer
-# (numpy/pandas/pyarrow/scikit-learn/yfinance/etc., built for the future-state fetch/feature/
-# write/discovery handlers) was found at the first real apply to exceed the Lambda 262 MB
-# unzipped-layer ceiling (PublishLayerVersion InvalidParameterValueException) -- and these two
-# functions don't need any of it regardless (verified against handler source: the only
-# third-party import is pyyaml). pyyaml is bundled directly into data-pipeline.zip via
+# dispatcher/findings-processor functions -- neither needs one (verified against handler source:
+# the only third-party import is pyyaml). pyyaml is bundled directly into data-pipeline.zip via
 # src/lambdas/data-pipeline/manifest.yaml's pip_packages instead.
 # ---------------------------------------------------------------------------
 
@@ -101,16 +84,6 @@ resource "aws_cloudwatch_log_group" "findings_processor" {
   tags = {
     Name    = "Findings Processor Logs"
     Purpose = "T2.43 findings-processor runtime"
-  }
-}
-
-resource "aws_cloudwatch_log_group" "ops_compaction" {
-  name              = "/aws/lambda/${local.ops_compaction_function}"
-  retention_in_days = 14
-
-  tags = {
-    Name    = "Ops Compaction Logs"
-    Purpose = "T2.43 ops-compaction runtime"
   }
 }
 
@@ -227,94 +200,7 @@ resource "aws_iam_role_policy" "findings_processor" {
 }
 
 # ---------------------------------------------------------------------------
-# Execution role: ops-compaction. Reads + deletes staging/ batches, writes iceberg/ + tmp/ + athena/
-# results, Glue table read/schema-evolution, Athena StartQueryExecution (wr.athena.to_iceberg).
-# DEPRECATED (T2.26 retirement pending) -- provisioned per this plan's human-confirmed disposition
-# regardless (see docs/plans/PLAN-prod-lambda-provision-deploy-channel.yaml Context).
-# ---------------------------------------------------------------------------
-
-resource "aws_iam_role" "ops_compaction" {
-  # Decision 144 (T2.48): mandatory broad-but-bounded exec-identity boundary (16/17 roles; PlatformAdmin excluded).
-  name                 = local.ops_compaction_function
-  description          = "Execution role for the ops-compaction Lambda (T2.43)"
-  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/agent-platform-github-ci-apply-boundary"
-  assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
-}
-
-resource "aws_iam_role_policy" "ops_compaction" {
-  name = "OpsCompactionRuntime"
-  role = aws_iam_role.ops_compaction.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid      = "Logs"
-        Effect   = "Allow"
-        Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
-        Resource = ["${aws_cloudwatch_log_group.ops_compaction.arn}:*"]
-      },
-      {
-        Sid      = "S3StagingReadDelete"
-        Effect   = "Allow"
-        Action   = ["s3:GetObject", "s3:DeleteObject"]
-        Resource = ["${aws_s3_bucket.data_lake.arn}/staging/*"]
-      },
-      {
-        Sid    = "S3IcebergTempAthenaReadWrite"
-        Effect = "Allow"
-        Action = ["s3:GetObject", "s3:PutObject"]
-        Resource = [
-          "${aws_s3_bucket.data_lake.arn}/iceberg/*",
-          "${aws_s3_bucket.data_lake.arn}/tmp/*",
-          "${aws_s3_bucket.data_lake.arn}/athena/*",
-        ]
-      },
-      {
-        Sid      = "S3ListDataLake"
-        Effect   = "Allow"
-        Action   = ["s3:ListBucket", "s3:GetBucketLocation"]
-        Resource = [aws_s3_bucket.data_lake.arn]
-      },
-      {
-        # wr.athena.to_iceberg / _refresh_view issue StartQueryExecution against the production
-        # workgroup; GetQueryExecution/GetQueryResults/GetWorkGroup do not support resource-level
-        # scoping for a workgroup-name constraint beyond the StartQueryExecution call itself.
-        Sid    = "AthenaCompaction"
-        Effect = "Allow"
-        Action = [
-          "athena:StartQueryExecution",
-          "athena:GetQueryExecution",
-          "athena:GetQueryResults",
-          "athena:GetWorkGroup",
-        ]
-        Resource = "*"
-      },
-      {
-        # wr.catalog.get_table_types (schema-evolution detection) + to_iceberg's own table
-        # read/create/update.
-        Sid    = "GlueCompaction"
-        Effect = "Allow"
-        Action = [
-          "glue:GetDatabase",
-          "glue:GetTable",
-          "glue:GetTables",
-          "glue:GetPartitions",
-          "glue:CreateTable",
-          "glue:UpdateTable",
-        ]
-        Resource = [
-          "arn:aws:glue:${var.aws_region}:${var.account_id}:catalog",
-          "arn:aws:glue:${var.aws_region}:${var.account_id}:database/${aws_glue_catalog_database.ops.name}",
-          "arn:aws:glue:${var.aws_region}:${var.account_id}:table/${aws_glue_catalog_database.ops.name}/*",
-        ]
-      },
-    ]
-  })
-}
-
-# ---------------------------------------------------------------------------
-# The three Lambda functions (from S3). source_code_hash try()-guarded; code is updated post-apply
+# The two Lambda functions (from S3). source_code_hash try()-guarded; code is updated post-apply
 # by the governed .github/workflows/deploy-prod-lambdas.yml channel (T2.43).
 # ---------------------------------------------------------------------------
 
@@ -393,46 +279,6 @@ resource "aws_lambda_function" "findings_processor" {
   }
 }
 
-resource "aws_lambda_function" "ops_compaction" {
-  function_name = local.ops_compaction_function
-  description   = "T2.43 ops compaction (Decision 125/126 decoupled_build_pipeline class). DEPRECATED -- serves ops_session_log/ops_execution_plans/telemetry staging only; T2.26 retirement pending."
-  role          = aws_iam_role.ops_compaction.arn
-  handler       = "src.data.handlers.ops_compaction_handler.handler"
-  runtime       = "python3.12"
-  architectures = ["x86_64"]
-  timeout       = 300
-  memory_size   = 256
-
-  s3_bucket        = aws_s3_bucket.data_lake.id
-  s3_key           = "lambda-packages/ops-compaction.zip"
-  source_code_hash = local.ops_compaction_source_hash
-
-  # Only AWSSDKPandas is needed (provides awswrangler for Iceberg writes). The data-pipeline-deps
-  # layer (yfinance/pyyaml) is omitted to keep the combined unzipped size under the 262 MB limit.
-  # local.aws_sdk_pandas_layer_arn is sensitive()-wrapped -- see its definition above.
-  layers = [local.aws_sdk_pandas_layer_arn]
-
-  environment {
-    variables = {
-      S3_LOG_BUCKET = aws_s3_bucket.data_lake.id
-    }
-  }
-
-  depends_on = [
-    aws_iam_role_policy.ops_compaction,
-    aws_cloudwatch_log_group.ops_compaction,
-  ]
-
-  lifecycle {
-    ignore_changes = [source_code_hash]
-  }
-
-  tags = {
-    Name    = "Ops Compaction"
-    Purpose = "T2.43 ops-compaction runtime - T2.26 retirement pending"
-  }
-}
-
 # ---------------------------------------------------------------------------
 # EventBridge -- hourly schedule -> dispatcher. Provisioned DISABLED (Decision 61/37/116);
 # provisioning this trigger does NOT re-enable the scheduled agents.
@@ -464,26 +310,18 @@ resource "aws_lambda_permission" "eventbridge_invoke_dispatcher" {
 }
 
 # ---------------------------------------------------------------------------
-# S3 event notifications -- agent findings -> findings-processor; staging batches -> ops-compaction.
+# S3 event notifications -- agent findings -> findings-processor.
 #
 # GOTCHA: aws_s3_bucket_notification is a SINGLETON per bucket -- only ONE such resource may target
 # aws_s3_bucket.data_lake in this module, or one apply will silently clobber the other's
-# configuration. Both triggers are declared inside this single resource; a future addition of a
-# third data_lake trigger must extend THIS resource, not add a sibling aws_s3_bucket_notification.
+# configuration. All data_lake triggers are declared inside this single resource; a future addition
+# of another data_lake trigger must extend THIS resource, not add a sibling aws_s3_bucket_notification.
 # ---------------------------------------------------------------------------
 
 resource "aws_lambda_permission" "s3_invoke_findings_processor" {
   statement_id  = "AllowS3InvokeFindingsProcessor"
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.findings_processor.function_name
-  principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.data_lake.arn
-}
-
-resource "aws_lambda_permission" "s3_invoke_ops_compaction" {
-  statement_id  = "AllowS3InvokeOpsCompaction"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.ops_compaction.function_name
   principal     = "s3.amazonaws.com"
   source_arn    = aws_s3_bucket.data_lake.arn
 }
@@ -498,16 +336,8 @@ resource "aws_s3_bucket_notification" "data_lake_prod_triggers" {
     filter_suffix       = ".jsonl"
   }
 
-  lambda_function {
-    lambda_function_arn = aws_lambda_function.ops_compaction.arn
-    events              = ["s3:ObjectCreated:*"]
-    filter_prefix       = "staging/"
-    filter_suffix       = ".jsonl"
-  }
-
   depends_on = [
     aws_lambda_permission.s3_invoke_findings_processor,
-    aws_lambda_permission.s3_invoke_ops_compaction,
   ]
 }
 
@@ -523,9 +353,4 @@ output "scheduled_agent_dispatcher_function_name" {
 output "findings_processor_function_name" {
   description = "findings-processor Lambda function name (deploy-prod-lambdas.yml target)."
   value       = aws_lambda_function.findings_processor.function_name
-}
-
-output "ops_compaction_function_name" {
-  description = "ops-compaction Lambda function name (deploy-prod-lambdas.yml target)."
-  value       = aws_lambda_function.ops_compaction.function_name
 }

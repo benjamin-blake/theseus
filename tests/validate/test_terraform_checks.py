@@ -127,8 +127,13 @@ class TestRunTerraformChecks:
         assert "skipped" in captured.out
         assert failed == []
 
-    def test_creds_free_covers_both_roots(self) -> None:
-        """run_terraform_creds_free() runs init -backend=false + validate + fmt for ALL roots, no plan."""
+    def test_creds_free_covers_every_root(self) -> None:
+        """run_terraform_creds_free() runs init -backend=false + validate + fmt for ALL roots, no plan.
+
+        Set equality, not membership: the legacy depth-1 `terraform/` root was retired (it was never
+        applied and had no backend), and a membership-only assertion would keep passing if it -- or
+        any other retired root -- were silently re-added.
+        """
         calls: list[list] = []
 
         def mock_run(cmd: list, **kwargs: object) -> MagicMock:
@@ -148,9 +153,11 @@ class TestRunTerraformChecks:
 
         chdirs = {arg for cmd in calls for arg in cmd if isinstance(arg, str) and arg.startswith("-chdir=")}
         flat = [tok for cmd in calls for tok in cmd]
-        assert "-chdir=terraform" in chdirs
-        assert "-chdir=terraform/personal" in chdirs
-        assert "-chdir=terraform/bootstrap" in chdirs
+        assert chdirs == {
+            "-chdir=terraform/personal",
+            "-chdir=terraform/github",
+            "-chdir=terraform/bootstrap",
+        }
         assert any("-backend=false" in cmd for cmd in calls)  # creds-free init
         assert all("plan" not in cmd for cmd in calls)  # no creds-needing plan here
         assert "init" in flat and "validate" in flat and "fmt" in flat

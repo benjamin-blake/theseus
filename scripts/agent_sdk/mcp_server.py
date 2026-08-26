@@ -27,7 +27,7 @@ from mcp.server.lowlevel import NotificationOptions, Server
 from mcp.server.stdio import stdio_server
 
 from scripts.agent_sdk.errors import AgentToolError, map_reader_error
-from src.common.iceberg_reader import DuckLakeReader, ReaderInvokeError, make_reader
+from src.common.ducklake_reader_client import DuckLakeReader, ReaderInvokeError, make_reader
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ def create_server(reader: DuckLakeReader | None = None) -> Server:
     partial surface -- there is no try/except around the describe() call below.
     """
     # make_reader() is annotated -> Reader (the Protocol, which deliberately does not declare
-    # describe() -- see src/common/iceberg_reader.py's Reader docstring) but only ever
+    # describe() -- see src/common/ducklake_reader_client.py's Reader docstring) but only ever
     # constructs a DuckLakeReader in practice; cast narrows the type at this one call site
     # rather than widening the Protocol by omission.
     active_reader = reader if reader is not None else cast(DuckLakeReader, make_reader())

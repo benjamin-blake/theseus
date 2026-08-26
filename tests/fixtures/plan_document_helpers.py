@@ -5,7 +5,7 @@ verbatim (module-body logic unchanged) from the former tests/test_plan_document.
 (PLAN-decompose-test-plan-document). tests/fixtures/ is an importable package exempt from the
 no-cross-test-import guard (names never start with test_) -- consumers alias on import (e.g.
 `from tests.fixtures.plan_document_helpers import _base, _base_v2, _mutate, _mutate_v2`) so every
-call site stays byte-identical to the monolith. Direct precedent: tests/fixtures/ops_writer_helpers.py
+call site stays byte-identical to the monolith.
 (rec-2709 Wave 9).
 """
 

@@ -378,8 +378,6 @@ def _gemini_call(
         if check and not content.strip():
             raise LLMResponseError("Gemini CLI returned empty response content")
 
-        _emit_telemetry("gemini", model or "gemini-auto", purpose, tokens_in, tokens_out, 0.0)
-
         return LLMResult(
             content=content,
             exit_code=0,
@@ -393,31 +391,3 @@ def _gemini_call(
         )
     except subprocess.TimeoutExpired:
         raise LLMResponseError(f"Gemini CLI timed out after {timeout}s")
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _emit_telemetry(
-    provider: str,
-    model_id: str,
-    purpose: str,
-    tokens_in: int,
-    tokens_out: int,
-    cost: float,
-) -> None:
-    """Emit telemetry via deferred import (avoids circular deps)."""
-    try:
-        from scripts.executor.telemetry import emit_model_call as _emit
-
-        _emit(
-            provider=provider,
-            model=model_id,
-            purpose=purpose,
-            tokens_input=tokens_in,
-            tokens_output=tokens_out,
-        )
-    except Exception:  # noqa: BLE001
-        logger.debug("Telemetry emit skipped (not in executor context)")

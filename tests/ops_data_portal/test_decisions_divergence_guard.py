@@ -143,7 +143,7 @@ class TestAssertNoOrphanedCurrentRows:
         fake_reader.current_state.return_value = []
 
         with (
-            patch("src.common.iceberg_reader.make_reader", return_value=fake_reader) as mock_make_reader,
+            patch("src.common.ducklake_reader_client.make_reader", return_value=fake_reader) as mock_make_reader,
             patch("scripts.decisions_md.decision_header_numbers", return_value=set()),
         ):
             _assert_no_orphaned_current_rows(profile="agent_platform")

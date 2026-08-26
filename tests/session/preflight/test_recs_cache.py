@@ -107,10 +107,6 @@ class TestNonAutomatableRecommendations:
                     "recommendations_count": 0,
                 },
             ),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
-            ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
             patch("builtins.print"),
@@ -279,7 +275,7 @@ class TestCountRecommendationsReader:
         assert non_auto_count == 1
 
     def test_reader_failure_returns_reader_unreachable_string(self) -> None:
-        """Reader raises -> returns 'reader_unreachable' string (no Athena fallback, Decision 55)."""
+        """Reader raises -> returns 'reader_unreachable' string (no silent fallback, Decision 55)."""
         with patch("scripts.preflight._common._make_reader") as MockReader:
             MockReader.return_value.named.side_effect = RuntimeError("reader down")
 
@@ -288,7 +284,7 @@ class TestCountRecommendationsReader:
         assert result == "reader_unreachable"
 
     def test_reader_failure_only_returns_reader_unreachable(self) -> None:
-        """Reader fails -> 'reader_unreachable' string, never None (T2.19: no Athena escape)."""
+        """Reader fails -> 'reader_unreachable' string, never None (T2.19: no silent escape)."""
         with patch("scripts.preflight._common._make_reader") as MockReader:
             MockReader.return_value.named.side_effect = ConnectionError("timeout")
 
@@ -334,10 +330,6 @@ class TestRecsReadStatusDegradation:
                     "strategic_review_due": False,
                     "recommendations_count": 0,
                 },
-            ),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
             ),
             patch(
                 "scripts.preflight.context_docs.check_data_quality_coverage",

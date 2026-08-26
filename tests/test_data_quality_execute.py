@@ -1,11 +1,12 @@
-from unittest.mock import MagicMock, patch
+"""Tests for scripts/data_quality_execute.py -- the DuckLake-only DQ execution path."""
+
+from unittest.mock import patch
 
 import pytest
 
 boto3 = pytest.importorskip("boto3")
 
 from scripts.data_quality_execute import (  # noqa: E402
-    _execute_check,
     _execute_check_ducklake,
     _is_reader_unavailable,
     run_checks,
@@ -13,235 +14,49 @@ from scripts.data_quality_execute import (  # noqa: E402
 from scripts.data_quality_models import Check, CheckResult, RunResult  # noqa: E402
 
 
-def test_execute_check_success():
-    client = MagicMock()
-    client.start_query_execution.return_value = {"QueryExecutionId": "q123"}
-    client.get_query_execution.return_value = {"QueryExecution": {"Status": {"State": "SUCCEEDED"}}}
-    client.get_query_results.return_value = {
-        "ResultSet": {"Rows": [{"Data": [{"VarCharValue": "violation"}]}, {"Data": [{"VarCharValue": "0"}]}]}
-    }
-
-    check = Check("t", "c", "not_null", "SELECT...", "desc", "error")
-    res = _execute_check(check, client, "wg", "db")
-    assert res.verdict == "PASS"
-
-
-def test_execute_check_failure():
-    client = MagicMock()
-    client.start_query_execution.return_value = {"QueryExecutionId": "q123"}
-    client.get_query_execution.return_value = {"QueryExecution": {"Status": {"State": "SUCCEEDED"}}}
-    client.get_query_results.return_value = {
-        "ResultSet": {"Rows": [{"Data": [{"VarCharValue": "violation"}]}, {"Data": [{"VarCharValue": "5"}]}]}
-    }
-
-    check = Check("t", "c", "not_null", "SELECT...", "desc", "error")
-    res = _execute_check(check, client, "wg", "db")
-    assert res.verdict == "FAIL"
-    assert res.violation_count == 5
-
-
-def test_execute_check_enforced_false_error_severity_returns_unenforced_fail():
-    """enforced=False + severity=error violations emit UNENFORCED_FAIL, not FAIL or WARN."""
-    client = MagicMock()
-    client.start_query_execution.return_value = {"QueryExecutionId": "q123"}
-    client.get_query_execution.return_value = {"QueryExecution": {"Status": {"State": "SUCCEEDED"}}}
-    client.get_query_results.return_value = {
-        "ResultSet": {"Rows": [{"Data": [{"VarCharValue": "violation"}]}, {"Data": [{"VarCharValue": "5"}]}]}
-    }
-
-    check = Check("t", "c", "not_null", "SELECT...", "desc", "error", enforced=False)
-    res = _execute_check(check, client, "wg", "db")
-    assert res.verdict == "UNENFORCED_FAIL"
-    assert res.violation_count == 5
-
-
-def test_execute_check_enforced_false_warn_severity_returns_warn():
-    """enforced=False + severity=warn violations remain WARN (purely informational)."""
-    client = MagicMock()
-    client.start_query_execution.return_value = {"QueryExecutionId": "q123"}
-    client.get_query_execution.return_value = {"QueryExecution": {"Status": {"State": "SUCCEEDED"}}}
-    client.get_query_results.return_value = {
-        "ResultSet": {"Rows": [{"Data": [{"VarCharValue": "violation"}]}, {"Data": [{"VarCharValue": "3"}]}]}
-    }
-
-    check = Check("t", "c", "accepted_values", "SELECT...", "desc", "warn", enforced=False)
-    res = _execute_check(check, client, "wg", "db")
-    assert res.verdict == "WARN"
-    assert res.violation_count == 3
-
-
-def test_execute_check_enforced_true_error_severity_returns_fail():
-    """enforced=True + severity=error violations emit FAIL (blocking)."""
-    client = MagicMock()
-    client.start_query_execution.return_value = {"QueryExecutionId": "q123"}
-    client.get_query_execution.return_value = {"QueryExecution": {"Status": {"State": "SUCCEEDED"}}}
-    client.get_query_results.return_value = {
-        "ResultSet": {"Rows": [{"Data": [{"VarCharValue": "violation"}]}, {"Data": [{"VarCharValue": "2"}]}]}
-    }
-
-    check = Check("t", "c", "not_null", "SELECT...", "desc", "error", enforced=True)
-    res = _execute_check(check, client, "wg", "db")
-    assert res.verdict == "FAIL"
-    assert res.violation_count == 2
-
-
-def test_execute_check_start_error():
-    client = MagicMock()
-    client.start_query_execution.side_effect = Exception("boom")
-    check = Check("t", "c", "not_null", "SELECT...", "desc", "error")
-    res = _execute_check(check, client, "wg", "db")
-    assert res.verdict == "ERROR"
-    assert "boom" in res.detail
-
-
-def test_execute_check_poll_and_succeed():
-    client = MagicMock()
-    client.start_query_execution.return_value = {"QueryExecutionId": "q123"}
-    client.get_query_execution.side_effect = [
-        {"QueryExecution": {"Status": {"State": "RUNNING"}}},
-        {"QueryExecution": {"Status": {"State": "SUCCEEDED"}}},
-    ]
-    client.get_query_results.return_value = {
-        "ResultSet": {"Rows": [{"Data": [{"VarCharValue": "v"}]}, {"Data": [{"VarCharValue": "0"}]}]}
-    }
-
-    with patch("time.sleep"):
-        check = Check("t", "c", "not_null", "SELECT...", "desc", "error")
-        res = _execute_check(check, client, "wg", "db")
-        assert res.verdict == "PASS"
-
-
-def test_execute_check_cancelled():
-    client = MagicMock()
-    client.start_query_execution.return_value = {"QueryExecutionId": "q123"}
-    client.get_query_execution.return_value = {
-        "QueryExecution": {"Status": {"State": "CANCELLED", "StateChangeReason": "user stop"}}
-    }
-
-    check = Check("t", "c", "not_null", "SELECT...", "desc", "error")
-    res = _execute_check(check, client, "wg", "db")
-    assert res.verdict == "ERROR"
-
-
-def test_execute_check_timeout():
-    client = MagicMock()
-    client.start_query_execution.return_value = {"QueryExecutionId": "q123"}
-    client.get_query_execution.return_value = {"QueryExecution": {"Status": {"State": "RUNNING"}}}
-
-    with patch("scripts.data_quality_execute._MAX_POLL", 0.1), patch("time.sleep"):
-        check = Check("t", "c", "not_null", "SELECT...", "desc", "error")
-        res = _execute_check(check, client, "wg", "db")
-        assert res.verdict == "ERROR"
-        assert "timed out" in res.detail
-
-
-def test_execute_check_poll_error():
-    """Covers lines 363-364: Poll error."""
-    client = MagicMock()
-    client.start_query_execution.return_value = {"QueryExecutionId": "q123"}
-    client.get_query_execution.side_effect = Exception("poll fail")
-    check = Check("t", "c", "not_null", "SELECT...", "desc", "error")
-    res = _execute_check(check, client, "wg", "db")
-    assert res.verdict == "ERROR"
-    assert "Poll error" in res.detail
-
-
-def test_execute_check_read_results_error():
-    """Covers lines 386-388: Read results error."""
-    client = MagicMock()
-    client.start_query_execution.return_value = {"QueryExecutionId": "q123"}
-    client.get_query_execution.return_value = {"QueryExecution": {"Status": {"State": "SUCCEEDED"}}}
-    client.get_query_results.side_effect = Exception("read fail")
-    check = Check("t", "c", "not_null", "SELECT...", "desc", "error")
-    res = _execute_check(check, client, "wg", "db")
-    assert res.verdict == "ERROR"
-    assert "Failed to read results" in res.detail
-
-
-def test_execute_check_empty_results():
-    """Covers line 386: violation_count = 0 when no data rows."""
-    client = MagicMock()
-    client.start_query_execution.return_value = {"QueryExecutionId": "q123"}
-    client.get_query_execution.return_value = {"QueryExecution": {"Status": {"State": "SUCCEEDED"}}}
-    client.get_query_results.return_value = {
-        "ResultSet": {"Rows": [{"Data": [{"VarCharValue": "violation"}]}]}  # Only header
-    }
-
-    check = Check("t", "c", "not_null", "SELECT...", "desc", "error")
-    res = _execute_check(check, client, "wg", "db")
-    assert res.verdict == "PASS"
-    assert res.violation_count == 0
-
-
 def test_run_checks_dry_run():
     checks = [Check("t", "c", "type", "sql", "desc")]
-    res = run_checks(checks, "wg", "db", dry_run=True)
+    res = run_checks(checks, dry_run=True)
     assert res.verdict == "SKIP"
 
 
 def test_run_checks_with_issues():
-    with patch("boto3.Session") as mock_session:
-        mock_athena = MagicMock()
-        mock_session.return_value.client.return_value = mock_athena
-        with patch("scripts.data_quality_execute._execute_check") as mock_exec:
-            mock_exec.side_effect = [
-                CheckResult(Check("t", "c", "type", "sql", "desc"), "PASS"),
-                CheckResult(Check("t", "c", "type", "sql", "desc"), "FAIL"),
-                CheckResult(Check("t", "c", "type", "sql", "desc"), "ERROR"),
-            ]
-            checks = [Check("t", "c", "type", "sql", "desc")] * 3
-            res = run_checks(checks, "wg", "db")
-            assert res.verdict == "FAIL"
+    with patch("scripts.data_quality_execute._execute_check_ducklake") as mock_exec:
+        mock_exec.side_effect = [
+            CheckResult(Check("t", "c", "type", "sql", "desc"), "PASS"),
+            CheckResult(Check("t", "c", "type", "sql", "desc"), "FAIL"),
+            CheckResult(Check("t", "c", "type", "sql", "desc"), "ERROR"),
+        ]
+        checks = [Check("t", "c", "type", "sql", "desc")] * 3
+        with patch("src.common.ducklake_reader_client.DuckLakeReader"):
+            res = run_checks(checks)
+    assert res.verdict == "FAIL"
 
 
-def test_run_checks_profile_arg():
-    """profile_name arg takes precedence over all env vars."""
-    with patch("boto3.Session") as mock_session:
-        mock_session.return_value.client.return_value = MagicMock()
-        with patch("scripts.data_quality_execute._execute_check") as mock_exec:
-            mock_exec.return_value = CheckResult(Check("t", "c", "type", "sql", "desc"), "PASS")
-            run_checks([Check("t", "c", "type", "sql", "desc")], "wg", "db", profile_name="my-profile")
-    mock_session.assert_called_once_with(profile_name="my-profile")
+def test_run_checks_profile_arg_reaches_the_reader():
+    """profile_name is handed straight to the DuckLake reader client."""
+    with (
+        patch("src.common.ducklake_reader_client.DuckLakeReader") as mock_reader,
+        patch("scripts.data_quality_execute._execute_check_ducklake") as mock_exec,
+    ):
+        mock_exec.return_value = CheckResult(Check("t", "c", "type", "sql", "desc"), "PASS")
+        run_checks([Check("t", "c", "type", "sql", "desc")], profile_name="my-profile")
+    mock_reader.assert_called_once_with(profile="my-profile")
 
 
-def test_run_checks_profile_aws_env(monkeypatch):
-    """Falls back to AWS_PROFILE env when profile_name is None."""
-    monkeypatch.setenv("AWS_PROFILE", "env-profile")
-    monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
-    with patch("boto3.Session") as mock_session:
-        mock_session.return_value.client.return_value = MagicMock()
-        with patch("scripts.data_quality_execute._execute_check") as mock_exec:
-            mock_exec.return_value = CheckResult(Check("t", "c", "type", "sql", "desc"), "PASS")
-            run_checks([Check("t", "c", "type", "sql", "desc")], "wg", "db")
-    mock_session.assert_called_once_with(profile_name="env-profile")
-
-
-def test_run_checks_profile_default_env(monkeypatch):
-    """Falls back to AWS_DEFAULT_PROFILE when AWS_PROFILE is unset."""
-    monkeypatch.delenv("AWS_PROFILE", raising=False)
-    monkeypatch.setenv("AWS_DEFAULT_PROFILE", "default-profile")
-    with patch("boto3.Session") as mock_session:
-        mock_session.return_value.client.return_value = MagicMock()
-        with patch("scripts.data_quality_execute._execute_check") as mock_exec:
-            mock_exec.return_value = CheckResult(Check("t", "c", "type", "sql", "desc"), "PASS")
-            run_checks([Check("t", "c", "type", "sql", "desc")], "wg", "db")
-    mock_session.assert_called_once_with(profile_name="default-profile")
-
-
-def test_run_checks_profile_hard_default(monkeypatch):
-    """Defaults to agent_platform when no env vars or arg are set."""
-    monkeypatch.delenv("AWS_PROFILE", raising=False)
-    monkeypatch.delenv("AWS_DEFAULT_PROFILE", raising=False)
-    with patch("boto3.Session") as mock_session:
-        mock_session.return_value.client.return_value = MagicMock()
-        with patch("scripts.data_quality_execute._execute_check") as mock_exec:
-            mock_exec.return_value = CheckResult(Check("t", "c", "type", "sql", "desc"), "PASS")
-            run_checks([Check("t", "c", "type", "sql", "desc")], "wg", "db")
-    mock_session.assert_called_once_with(profile_name="agent_platform")
+def test_run_checks_profile_defaults_to_none():
+    """With no profile_name, the reader resolves its own profile (None is passed through)."""
+    with (
+        patch("src.common.ducklake_reader_client.DuckLakeReader") as mock_reader,
+        patch("scripts.data_quality_execute._execute_check_ducklake") as mock_exec,
+    ):
+        mock_exec.return_value = CheckResult(Check("t", "c", "type", "sql", "desc"), "PASS")
+        run_checks([Check("t", "c", "type", "sql", "desc")])
+    mock_reader.assert_called_once_with(profile=None)
 
 
 def test_apply_backend_routing_rewrites_all_migrated_tables():
-    """All _DUCKLAKE_OPS_TABLES checks route to the reader; non-migrated tables stay on Athena."""
+    """Every _OPS_TABLES check routes to the DuckLake reader; other tables are left alone."""
     import scripts.data_quality_runner as dq
 
     recs = Check(
@@ -260,7 +75,7 @@ def test_apply_backend_routing_rewrites_all_migrated_tables():
         "dec status",
         "error",
     )
-    deferred = Check(
+    untouched = Check(
         "ops_session_log",
         "session_id",
         "not_null",
@@ -268,23 +83,21 @@ def test_apply_backend_routing_rewrites_all_migrated_tables():
         "session log id",
         "error",
     )
-    dq.apply_backend_routing([recs, decisions, deferred], "agent_platform")
+    original_sql = untouched.sql
+    dq.apply_backend_routing([recs, decisions, untouched], "agent_platform")
     assert recs.backend == "ducklake"
     assert "{tbl}" in recs.sql
     assert "ops_recommendations_current" not in recs.sql
     # ops_decisions is migrated too (Decision 84 I-1) -- routed to the reader.
     assert decisions.backend == "ducklake"
     assert "{tbl}" in decisions.sql
-    # ops_session_log stays on Athena until its T2.26 disposition.
-    assert deferred.backend == "athena"
-    assert "ops_session_log_current" in deferred.sql
+    # A non-ops table is not rewritten.
+    assert untouched.sql == original_sql
 
 
-def test_apply_backend_routing_ignores_env_flag(monkeypatch):
-    """The OPS_STORAGE_BACKEND env flag is retired: routing applies regardless of its value."""
+def test_apply_backend_routing_returns_the_mutated_list():
     import scripts.data_quality_runner as dq
 
-    monkeypatch.setenv("OPS_STORAGE_BACKEND", "iceberg")
     recs = Check(
         "ops_recommendations",
         "file",
@@ -298,18 +111,17 @@ def test_apply_backend_routing_ignores_env_flag(monkeypatch):
     assert recs in out
 
 
-def test_run_checks_no_boto3():
-    with patch.dict("sys.modules", {"boto3": None}):
+def test_run_checks_no_reader_client():
+    """An unimportable reader client degrades to SKIP rather than raising."""
+    with patch.dict("sys.modules", {"src.common.ducklake_reader_client": None}):
         checks = [Check("t", "c", "type", "sql", "desc")]
-        res = run_checks(checks, "wg", "db")
-        assert res.verdict == "SKIP"
+        res = run_checks(checks)
+    assert res.verdict == "SKIP"
 
 
 def test_run_checks_empty_list_returns_error():
     """Gap 1: run_checks with an empty check list must return verdict=ERROR, not PASS."""
-    with patch("boto3.Session") as mock_session:
-        mock_session.return_value.client.return_value = MagicMock()
-        res = run_checks([], "wg", "db")
+    res = run_checks([])
     assert res.verdict == "ERROR"
     assert len(res.results) == 0
 
@@ -319,22 +131,20 @@ def test_run_checks_enforced_false_advisory():
     enforced_check = Check("t", "c", "not_null", "sql", "desc", enforced=True)
     unenforced_check = Check("t", "c", "unique", "sql", "desc", enforced=False)
 
-    with patch("boto3.Session") as mock_session:
-        mock_session.return_value.client.return_value = MagicMock()
-        with patch("scripts.data_quality_execute._execute_check") as mock_exec:
-            mock_exec.side_effect = [
-                CheckResult(unenforced_check, "FAIL"),
-            ]
-            res = run_checks([unenforced_check], "wg", "db")
+    with (
+        patch("src.common.ducklake_reader_client.DuckLakeReader"),
+        patch("scripts.data_quality_execute._execute_check_ducklake") as mock_exec,
+    ):
+        mock_exec.side_effect = [CheckResult(unenforced_check, "FAIL")]
+        res = run_checks([unenforced_check])
     assert res.verdict == "PASS"
 
-    with patch("boto3.Session") as mock_session:
-        mock_session.return_value.client.return_value = MagicMock()
-        with patch("scripts.data_quality_execute._execute_check") as mock_exec:
-            mock_exec.side_effect = [
-                CheckResult(enforced_check, "FAIL"),
-            ]
-            res = run_checks([enforced_check], "wg", "db")
+    with (
+        patch("src.common.ducklake_reader_client.DuckLakeReader"),
+        patch("scripts.data_quality_execute._execute_check_ducklake") as mock_exec,
+    ):
+        mock_exec.side_effect = [CheckResult(enforced_check, "FAIL")]
+        res = run_checks([enforced_check])
     assert res.verdict == "FAIL"
 
 
@@ -344,16 +154,14 @@ def test_ops_backend_unconditionally_ducklake(monkeypatch):
     # Decision 84 I-1: DuckLake is the sole ops backend; the env rollback flag is retired.
     monkeypatch.delenv("OPS_STORAGE_BACKEND", raising=False)
     assert dq._ops_backend() == "ducklake"
-    monkeypatch.setenv("OPS_STORAGE_BACKEND", "iceberg")  # ignored: no env read remains
+    monkeypatch.setenv("OPS_STORAGE_BACKEND", "anything")  # ignored: no env read remains
     assert dq._ops_backend() == "ducklake"
 
 
 def test_ducklake_ops_tables_set():
     import scripts.data_quality_runner as dq
 
-    assert dq._DUCKLAKE_OPS_TABLES == frozenset(
-        {"ops_recommendations", "ops_decisions", "ops_priority_queue", "ops_execution_plans"}
-    )
+    assert dq._OPS_TABLES == frozenset({"ops_recommendations", "ops_decisions", "ops_priority_queue", "ops_execution_plans"})
 
 
 def test_verdict_for_pass_fail_unenforced_hardgate():
@@ -481,9 +289,9 @@ def test_run_checks_routes_ducklake(monkeypatch):
         def _invoke(self, payload):
             return {"rows": [{"violation": 0}]}
 
-    monkeypatch.setattr("src.common.iceberg_reader.DuckLakeReader", lambda profile=None: _Reader())
+    monkeypatch.setattr("src.common.ducklake_reader_client.DuckLakeReader", lambda profile=None: _Reader())
     check = Check("ops_recommendations", "id", "not_null", "SELECT 1 FROM {tbl}", "d", backend="ducklake")
-    result = run_checks([check], "wg", "db", dry_run=False)
+    result = run_checks([check], dry_run=False)
     assert result.verdict == "PASS"
 
 
@@ -606,9 +414,9 @@ class TestRunChecksDegradedAggregate:
             def _invoke(self, payload):
                 raise RuntimeError("failed (HTTP 503)")
 
-        monkeypatch.setattr("src.common.iceberg_reader.DuckLakeReader", lambda profile=None: _Reader())
+        monkeypatch.setattr("src.common.ducklake_reader_client.DuckLakeReader", lambda profile=None: _Reader())
         check = Check("ops_recommendations", "id", "not_null", "SELECT 1 FROM {tbl}", "d", backend="ducklake")
-        result = run_checks([check], "wg", "db", dry_run=False)
+        result = run_checks([check], dry_run=False)
         assert result.verdict == "DEGRADED"
         assert result.unavailable == 1
 
@@ -622,12 +430,12 @@ class TestRunChecksDegradedAggregate:
                     raise RuntimeError("failed (HTTP 503)")
                 return {"rows": [{"violation": 5}]}
 
-        monkeypatch.setattr("src.common.iceberg_reader.DuckLakeReader", lambda profile=None: _Reader())
+        monkeypatch.setattr("src.common.ducklake_reader_client.DuckLakeReader", lambda profile=None: _Reader())
         checks = [
             Check("ops_recommendations", "id", "not_null", "SELECT 1 FROM {tbl}", "d", backend="ducklake"),
             Check("ops_recommendations", "file", "not_null", "SELECT 1 FROM {tbl}", "d", backend="ducklake"),
         ]
-        result = run_checks(checks, "wg", "db", dry_run=False)
+        result = run_checks(checks, dry_run=False)
         assert result.verdict == "FAIL"
 
     def test_unavailable_property_counts_correctly(self):

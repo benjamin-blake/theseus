@@ -361,9 +361,6 @@ class TestImplementStepResumeSkip:
             patch("scripts.executor.step_runner.llm_call", return_value=mock_result) as mock_llm,
             patch("scripts.executor.step_runner.auto_format_test_files", return_value=True),
             patch("scripts.executor.step_runner._run_ruff_fix", return_value=True),
-            patch("scripts.executor.step_runner.emit_step"),
-            patch("scripts.executor.step_runner.emit_transcript"),
-            patch("scripts.executor.step_runner.emit_process_event"),
             patch("scripts.executor.step_runner.run_acceptance", return_value=(True, "")),
         ):
             implement_step(step, "rec-xs-001", 1, 1, resume_session_id="fake-session-id", effort="XS")
@@ -390,9 +387,6 @@ class TestImplementStepResumeSkip:
             patch("scripts.executor.step_runner.llm_call", return_value=mock_result) as mock_llm,
             patch("scripts.executor.step_runner.auto_format_test_files", return_value=True),
             patch("scripts.executor.step_runner._run_ruff_fix", return_value=True),
-            patch("scripts.executor.step_runner.emit_step"),
-            patch("scripts.executor.step_runner.emit_transcript"),
-            patch("scripts.executor.step_runner.emit_process_event"),
             patch("scripts.executor.step_runner.run_acceptance", return_value=(True, "")),
         ):
             implement_step(step, "rec-m-001", 1, 1, resume_session_id="my-session", effort="M")

@@ -139,10 +139,10 @@ class TestUpsertCacheRowExistingCacheParsing:
 
 
 class TestWarmSync:
-    """warm_sync() -- the single warm-up pass combining drain() + per-table reader pulls."""
+    """warm_sync() -- the single warm-up pass of per-table reader pulls."""
 
-    def test_warm_sync_combines_drain_and_per_table_pulls(self):
-        """warm_sync() returns drained/pulled/rows/reader_ok keyed by every _TABLE_TO_LOCAL table."""
+    def test_warm_sync_covers_every_table(self):
+        """warm_sync() returns pulled/rows/reader_ok keyed by every _TABLE_TO_LOCAL table."""
         from scripts.sync import ops as sync_ops
 
         fake_tables = {"ops_recommendations": ".recs.jsonl", "ops_decisions": ".decisions.jsonl"}
@@ -154,38 +154,31 @@ class TestWarmSync:
 
         with (
             patch("scripts.sync.ops._TABLE_TO_LOCAL", fake_tables),
-            patch("scripts.sync.ops.drain", return_value={"ops_recommendations": 1}) as mock_drain,
             patch("scripts.sync.ops._pull_single_table_with_rows", side_effect=_fake_pull) as mock_pull,
         ):
             result = sync_ops.warm_sync(profile="test-profile")
 
-        mock_drain.assert_called_once()
         assert mock_pull.call_count == 2
-        assert result["drained"] == {"ops_recommendations": 1}
+        assert "drained" not in result
         assert result["pulled"] == {"ops_recommendations": 3, "ops_decisions": 0}
         assert result["rows"]["ops_recommendations"] == [{"id": "rec-1"}, {"id": "rec-2"}, {"id": "rec-3"}]
         assert result["rows"]["ops_decisions"] is None
         assert result["reader_ok"] == {"ops_recommendations": True, "ops_decisions": False}
 
-    def test_warm_sync_drain_runs_before_pulls(self):
-        """warm_sync() calls drain() before any per-table pull."""
+    def test_warm_sync_pulls_tables_in_registration_order(self):
+        """warm_sync() issues one reader pull per table, in _TABLE_TO_LOCAL order."""
         from scripts.sync import ops as sync_ops
 
         call_order: list[str] = []
-
-        def _fake_drain():
-            call_order.append("drain")
-            return {}
 
         def _fake_pull(table, profile=None):
             call_order.append(f"pull:{table}")
             return 0, None
 
         with (
-            patch("scripts.sync.ops._TABLE_TO_LOCAL", {"ops_recommendations": ".recs.jsonl"}),
-            patch("scripts.sync.ops.drain", side_effect=_fake_drain),
+            patch("scripts.sync.ops._TABLE_TO_LOCAL", {"ops_recommendations": ".recs.jsonl", "ops_decisions": ".d.jsonl"}),
             patch("scripts.sync.ops._pull_single_table_with_rows", side_effect=_fake_pull),
         ):
             sync_ops.warm_sync()
 
-        assert call_order == ["drain", "pull:ops_recommendations"]
+        assert call_order == ["pull:ops_recommendations", "pull:ops_decisions"]

@@ -146,6 +146,15 @@ class TestTableShape:
                     assert ":" in action, (rtype, phase, action)
                     assert marker.strip(), (rtype, phase, action)
 
+    def test_no_companion_marker_is_the_bare_wildcard(self) -> None:
+        """Least-privilege mirror of the WRITE_COVERAGE marker rule: a companion obligation asserted
+        against a bare account-wide `Resource = "*"` proves nothing about the grant's scope, so a
+        companion row must never be scoped that way."""
+        for rtype, rows in LIFECYCLE_COMPANIONS.items():
+            for phase, row in rows.items():
+                for action, marker in row["companions"]:
+                    assert marker.strip('"') != "*", (rtype, phase, action)
+
     def test_delete_role_row_names_the_rec_2882_verbs(self) -> None:
         """The row that did not exist before this plan -- named explicitly so a future edit that
         drops it fails here rather than in a live gated destroy."""

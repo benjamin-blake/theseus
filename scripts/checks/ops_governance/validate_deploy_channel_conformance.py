@@ -12,8 +12,8 @@ extension; CFG-11 conversion repointed the taxonomy read from prose-paragraph re
 the typed field):
   - ducklake (terraform/personal/ducklake*.tf; build-lambda.yaml deploy_channels.ducklake_functions;
     environment-taxonomy.yaml's conformance.ducklake_class -- the ORIGINAL, unwidened check).
-  - prod (terraform/personal/prod_lambdas.tf; build-lambda.yaml deploy_channels.prod_functions /
-    .ops_compaction; environment-taxonomy.yaml's conformance.prod_class). The prod class
+  - prod (terraform/personal/prod_lambdas.tf; build-lambda.yaml deploy_channels.prod_functions;
+    environment-taxonomy.yaml's conformance.prod_class). The prod class
     additionally gets a completeness check (governed_channel + break_glass_only both populated)
     since its channel_class value ("decoupled_build_pipeline") does not use the ducklake class's
     _decoupled/_coupled suffix convention, so there is no channel_class-vs-actual comparison to
@@ -31,7 +31,7 @@ _PROD_TF_GLOB = "prod_lambdas.tf"
 _IGNORE_CHANGES_RE = re.compile(r"ignore_changes\s*=\s*\[[^\]]*source_code_hash[^\]]*\]")
 _FUNCTION_BLOCK_RE = re.compile(r'resource\s+"aws_lambda_function"\s+"(\w+)"\s*\{')
 
-_PROD_CHANNEL_KEYS = ("prod_functions", "ops_compaction")
+_PROD_CHANNEL_KEYS = ("prod_functions",)
 
 
 def _extract_function_blocks(text: str) -> dict[str, str]:
@@ -137,15 +137,15 @@ def _doc_state_from_channel_class(failed: list[str]) -> bool | None:
 
 
 def _prod_channels_complete(failed: list[str]) -> bool:
-    """Parse build-lambda.yaml's deploy_channels.prod_functions / .ops_compaction for
+    """Parse build-lambda.yaml's deploy_channels.prod_functions for
     governed_channel + break_glass_only completeness.
 
     The prod class's channel_class ("decoupled_build_pipeline") does not use the ducklake
     class's _decoupled/_coupled suffix convention, so there is no channel_class-vs-actual
     coupling comparison to make for it (unlike _doc_state_from_channel_class above) -- this
     checks field COMPLETENESS instead: both governed_channel and break_glass_only must be
-    populated for each of the two prod-class deploy_channels entries. Returns True iff both
-    entries are complete; appends a failure (and returns False) for each incomplete entry.
+    populated for each prod-class deploy_channels entry. Returns True iff every entry is
+    complete; appends a failure (and returns False) for each incomplete entry.
     """
     import yaml as _yaml  # noqa: PLC0415
 

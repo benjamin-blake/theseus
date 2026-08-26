@@ -1,6 +1,6 @@
-"""Tests for DuckLakeReader.describe() (src/common/iceberg_reader.py).
+"""Tests for DuckLakeReader.describe() (src/common/ducklake_reader_client.py).
 
-Split alongside test_ducklake_reader.py within the tests/common/iceberg_reader/ concern-split
+Split alongside test_ducklake_reader.py within the tests/common/ducklake_reader_client/ concern-split
 package (rec-2709 Wave 11 convention). Deliberately no module-level boto3/requests import: its
 sibling test_ducklake_reader.py is the declared HEAVY-DEP MARKER MODULE for this package, so this
 module stays fast-tier collectible.
@@ -12,7 +12,7 @@ import json as _json
 
 import pytest
 
-from src.common.iceberg_reader import ReaderInvokeError
+from src.common.ducklake_reader_client import ReaderInvokeError
 
 
 class _FakeResp:
@@ -27,7 +27,7 @@ class _FakeResp:
 
 def _patch_dl_invoke(monkeypatch, resp: _FakeResp, captured: dict):
     """Patch the DuckLakeReader SigV4 plumbing (boto3 + requests + profile) for a canned response."""
-    import src.common.iceberg_reader as ir
+    import src.common.ducklake_reader_client as ir
 
     monkeypatch.setenv("DUCKLAKE_READER_URL", "https://reader.example/")
 
@@ -142,8 +142,8 @@ def test_reader_invoke_error_body_none_on_non_json_text(monkeypatch):
 
 
 def test_reader_invoke_error_is_a_runtime_error(monkeypatch):
-    """ReaderInvokeError subclasses RuntimeError -- the repo-wide `except RuntimeError` reader site
-    (scripts/verifiers/athena_views.py) must not regress."""
-    from src.common.iceberg_reader import ReaderInvokeError as RIE
+    """ReaderInvokeError subclasses RuntimeError -- the repo-wide `except RuntimeError` reader sites
+    must not regress."""
+    from src.common.ducklake_reader_client import ReaderInvokeError as RIE
 
     assert issubclass(RIE, RuntimeError)

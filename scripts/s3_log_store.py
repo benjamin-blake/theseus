@@ -26,10 +26,9 @@ _REPO_ROOT = Path(__file__).parent.parent
 _LOGS_DIR = _REPO_ROOT / "logs"
 
 # ---------------------------------------------------------------------------
-# OpsWriter write-through routing (Decision 50)
-# Best-effort: failures are logged and never propagate to callers.
-# ops_decisions / ops_execution_plans write-through are the portal on the DuckLake boundary
-# (Decision 84; execution_plans migrated at T2.26 c9 via scripts/ops_portal/execution_plans.py).
+# Declarative log-key -> ops-table routing registry, mirrored from
+# docs/contracts/log-storage.yaml. Ops writes themselves transit the portal on
+# the DuckLake boundary (Decision 84); this module only reads/writes JSONL.
 # ---------------------------------------------------------------------------
 
 _OPS_TABLE_ROUTING: dict[str, str] = {
@@ -72,30 +71,13 @@ def _load_log_storage_registry() -> dict:
 
 
 def get_ops_table_routing() -> dict[str, str]:
-    """Return the OpsWriter table routing map, sourced from log-storage.yaml or in-code fallback."""
+    """Return the log-key -> ops-table routing map, sourced from log-storage.yaml or in-code fallback."""
     return _load_log_storage_registry()["ops_table_routing"]
 
 
 def get_priority_queue_key() -> str:
     """Return the canonical priority-queue S3 key, sourced from log-storage.yaml or in-code fallback."""
     return _load_log_storage_registry()["priority_queue_key"]
-
-
-_ops_writer_instance = None
-
-
-def _get_ops_writer():
-    """Return (or lazily construct) the singleton OpsWriter, or None if unavailable."""
-    global _ops_writer_instance  # noqa: PLW0603
-    if _ops_writer_instance is None:
-        try:
-            from scripts.ops_writer import OpsWriter  # noqa: PLC0415
-
-            _ops_writer_instance = OpsWriter()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("s3_log_store: OpsWriter unavailable -- write-through disabled: %s", exc)
-            return None
-    return _ops_writer_instance
 
 
 def get_backend() -> Literal["s3", "local"]:
@@ -200,22 +182,8 @@ def append_jsonl(key: str, entry: dict) -> bool:
         )
         return True
     if backend == "s3":
-        result = _append_jsonl_s3(key, entry)
-    else:
-        result = _append_jsonl_local(key, entry)
-
-    # OpsWriter write-through (best-effort, never propagates failure)
-    if result:
-        table = get_ops_table_routing().get(key)
-        if table:
-            try:
-                ops = _get_ops_writer()
-                if ops is not None:
-                    ops.write(table, entry)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("s3_log_store: ops write-through failed for %s->%s: %s", key, table, exc)
-
-    return result
+        return _append_jsonl_s3(key, entry)
+    return _append_jsonl_local(key, entry)
 
 
 def _append_jsonl_local(key: str, entry: dict) -> bool:
@@ -275,26 +243,8 @@ def overwrite_jsonl(key: str, entries: list[dict]) -> bool:
         )
         return True
     if backend == "s3":
-        result = _overwrite_jsonl_s3(key, entries)
-    else:
-        result = _overwrite_jsonl_local(key, entries)
-
-    # OpsWriter write-through for priority queue (best-effort, never propagates failure)
-    if result and key == get_priority_queue_key() and entries:
-        import uuid as _uuid  # noqa: PLC0415
-
-        queue_run_id = str(_uuid.uuid4())
-        try:
-            ops = _get_ops_writer()
-            if ops is not None:
-                for entry in entries:
-                    enriched = dict(entry)
-                    enriched.setdefault("queue_run_id", queue_run_id)
-                    ops.write("ops_priority_queue", enriched)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("s3_log_store: ops write-through failed for priority_queue: %s", exc)
-
-    return result
+        return _overwrite_jsonl_s3(key, entries)
+    return _overwrite_jsonl_local(key, entries)
 
 
 def _overwrite_jsonl_local(key: str, entries: list[dict]) -> bool:

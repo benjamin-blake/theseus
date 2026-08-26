@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build Lambda deployment packages for the data pipeline (no Docker required).
+"""Build Lambda deployment packages for the platform Lambdas (no Docker required).
 
 Thin CLI facade over three cohesion-based modules (Decision 104 pattern, realizing rec-2414 for
 this file): scripts/build_lambda_config.py (build configuration data + resolution),
@@ -11,16 +11,15 @@ import X`, `scripts.build_lambda.X`, and `patch("scripts.build_lambda.<name>")` 
 for every public and test-patched symbol now defined in the three extracted modules.
 
 Creates these zip artifacts (built by the extracted modules; see them for detail):
-  1. data-pipeline.zip                      -- application code (manifest-driven)
-  2. ops-compaction.zip                     -- minimal ops compaction handler
-  3. data-pipeline-deps-layer.zip           -- dependencies layer (yfinance, pyyaml, etc.)
-  4. ducklake-{writer,reader,maintenance,maintenance-smoke,catalog-dr}.zip -- T2.17/T2.18 DuckLake
+  1. data-pipeline.zip                      -- scheduled-agent dispatcher + findings-processor
+                                               application code (manifest-driven)
+  2. ducklake-{writer,reader,maintenance,maintenance-smoke,catalog-dr}.zip -- T2.17/T2.18 DuckLake
                                                runtime functions (--ducklake-only)
-  5. ducklake-{deps,extensions}-layer.zip   -- duckdb (pinned via config/lambda/ducklake/version.yaml)
+  3. ducklake-{deps,extensions}-layer.zip   -- duckdb (pinned via config/lambda/ducklake/version.yaml)
                                                + baked extensions (--ducklake-only)
-  6. ducklake-pgclient-layer.zip            -- pg_dump + pg_restore 16 + libpq.so (--ducklake-only, T2.18 FP-B)
+  4. ducklake-pgclient-layer.zip            -- pg_dump + pg_restore 16 + libpq.so (--ducklake-only, T2.18 FP-B)
 
-Both app zips are built from src/lambdas/<name>/manifest.yaml rather than
+Every app zip is built from src/lambdas/<name>/manifest.yaml rather than
 whole-src/whole-config copytrees (Decision 79 / CD.24).
 """
 
@@ -42,18 +41,15 @@ from scripts.build_lambda_config import (
     _DUCKLAKE_WRITER_FUNCTION,  # noqa: F401
     _LAMBDA_FUNCTION_NAMES,  # noqa: F401
     _LAMBDA_SCRIPTS,  # noqa: F401
-    _OPS_COMPACTION_FUNCTION_NAME,  # noqa: F401
-    _OPS_COMPACTION_ZIP_KEY,  # noqa: F401
     DUCKLAKE_LAYER_NAMES,  # noqa: F401
     LAMBDA_FILE_PATTERNS,  # noqa: F401
     LAMBDA_SIZE_LIMIT_BYTES,  # noqa: F401
-    LAMBDA_SIZE_WARN_BYTES,
+    LAMBDA_SIZE_WARN_BYTES,  # noqa: F401
     PINNED_DUCKDB_VERSION,  # noqa: F401
     PINNED_PG_MAJOR,  # noqa: F401
     _aws_profile_args,  # noqa: F401
     _build_ducklake_function_zip_keys,  # noqa: F401
     _build_ducklake_layer_names,  # noqa: F401
-    _build_ops_compaction,  # noqa: F401
     _build_prod_function_names,  # noqa: F401
     _build_size_limit_bytes,  # noqa: F401
 )
@@ -78,38 +74,24 @@ from scripts.build_lambda_packaging import (
     _zip_staged_dir,  # noqa: F401
     assert_within_size_limit,  # noqa: F401
     build_app_package,  # noqa: F401
-    build_deps_layer,  # noqa: F401
     build_ducklake_deps_layer,  # noqa: F401
     build_ducklake_extensions_layer,  # noqa: F401
     build_ducklake_function_package,  # noqa: F401
-    build_ops_compaction_package,  # noqa: F401
     build_pgclient_layer,  # noqa: F401
     list_bundle,  # noqa: F401
 )
 
 
 def _run_prod_build(args: argparse.Namespace) -> None:
-    """Build (+optionally upload/deploy) the data-pipeline + ops-compaction prod artifacts."""
+    """Build (+optionally upload/deploy) the data-pipeline prod artifact."""
     with tempfile.TemporaryDirectory(prefix="lambda-build-") as tmp:
         temp_dir = Path(tmp)
 
-        print("[1/4] Building application code package (data-pipeline, manifest-driven)...")
+        print("[1/3] Building application code package (data-pipeline, manifest-driven)...")
         app_zip = build_app_package(temp_dir)
         print(f"  OK data-pipeline.zip ({round(app_zip.stat().st_size / 1024 / 1024, 2)} MB)")
 
-        print("[1b/4] Building ops-compaction package (no pip dependencies, manifest-driven)...")
-        ops_zip = build_ops_compaction_package(temp_dir)
-        print(f"  OK ops-compaction.zip ({round(ops_zip.stat().st_size / 1024 / 1024, 2)} MB)")
-
-        print("[2/4] Installing dependencies for Lambda layer...")
-        layer_zip = build_deps_layer(temp_dir)
-        layer_size = round(layer_zip.stat().st_size / 1024 / 1024, 2)
-        print(f"  OK data-pipeline-deps-layer.zip ({layer_size} MB)")
-        if layer_zip.stat().st_size > LAMBDA_SIZE_WARN_BYTES:
-            print(f"  WARN Layer size {layer_size} MB exceeds 250 MB. Approaching the 262 MB hard limit.")
-
-        for artifact in (app_zip, ops_zip, layer_zip):
-            assert_within_size_limit(artifact)
+        assert_within_size_limit(app_zip)
 
         if not args.skip_upload:
             bucket = args.bucket or resolve_bucket(args.profile)
@@ -120,17 +102,16 @@ def _run_prod_build(args: argparse.Namespace) -> None:
             # thread it to every upload/deploy call site, so the upload and the immediately-following
             # deploy-consume read agree on the same per-sha key within this process.
             artifact_sha = _resolve_artifact_sha()
-            print(f"[3/4] Uploading to s3://{bucket}/lambda-packages/...")
-            for artifact in (app_zip, ops_zip, layer_zip):
-                upload_to_s3(artifact, bucket, args.profile, args.region, artifact_sha=artifact_sha)
+            print(f"[2/3] Uploading to s3://{bucket}/lambda-packages/...")
+            upload_to_s3(app_zip, bucket, args.profile, args.region, artifact_sha=artifact_sha)
             print("  OK Uploaded to S3")
             if args.deploy:
-                print("[3b/4] Updating Lambda function code...")
+                print("[2b/3] Updating Lambda function code...")
                 update_lambda_functions(bucket, args.profile, args.region, artifact_sha=artifact_sha)
                 print("  OK Lambda functions updated")
         else:
-            print("[3/4] Skipping S3 upload (--skip-upload)")
-        print("[4/4] Build complete.")
+            print("[2/3] Skipping S3 upload (--skip-upload)")
+        print("[3/3] Build complete.")
 
 
 def _run_ducklake_build(args: argparse.Namespace) -> None:
@@ -251,7 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Build/upload/deploy ONLY the DuckLake artifacts (5 zips + 3 layers + 5 "
         "functions: writer, reader, maintenance, maintenance-smoke, catalog-dr); leave "
-        "data-pipeline/ops-compaction untouched (Decision 79).",
+        "data-pipeline untouched (Decision 79).",
     )
     parser.add_argument(
         "--list-bundle",

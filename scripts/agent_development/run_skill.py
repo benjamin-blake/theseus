@@ -32,13 +32,6 @@ if str(ROOT) not in sys.path:
 
 from scripts.llm.client import llm_call  # noqa: E402
 
-try:
-    from scripts.executor.telemetry import close_phase, close_session, get_context, open_phase, open_session  # noqa: E402
-
-    _TELEMETRY_AVAILABLE = True
-except ImportError:
-    _TELEMETRY_AVAILABLE = False
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run an isolated agent skill against a target file.")
@@ -49,20 +42,6 @@ def main() -> None:
         "--context",
         nargs="*",
         help="Explicit context-injection path(s): repo-relative file(s) loaded into context (e.g. docs/PROJECT_CONTEXT.md).",
-    )
-    parser.add_argument(
-        "--session-id",
-        dest="session_id",
-        default=None,
-        help="Parent session UUID (from --open-session). If set, telemetry is attached to the parent; "
-        "session lifecycle (open/close) is skipped.",
-    )
-    parser.add_argument(
-        "--phase-order",
-        dest="phase_order",
-        type=int,
-        default=1,
-        help="Phase order number for telemetry (used with --session-id; default 1).",
     )
     args = parser.parse_args()
 
@@ -101,45 +80,17 @@ def main() -> None:
 
     print(f"Running skill '{args.skill}' against '{args.target}' in a fresh context...", file=sys.stderr)
 
-    _own_session = False
-    if _TELEMETRY_AVAILABLE:
-        if args.session_id:
-            # Attach to parent session: set the context without opening a new session
-            ctx = get_context()
-            ctx.session_id = args.session_id
-            ctx.workflow = "run_skill"
-        else:
-            open_session(workflow="run_skill", branch="agent/run_skill", model_primary=args.model or "auto")
-            _own_session = True
-        open_phase(phase="skill-execution", phase_order=args.phase_order, model_used=args.model or "auto")
-
-    try:
-        # We pass the skill content as both inline_instruction (for Gemini)
-        # and system_prompt (for Bedrock) to perfectly cover both providers.
-        result = llm_call(
-            prompt=user_prompt,
-            system_prompt=system_prompt,
-            inline_instruction=system_prompt,
-            purpose=f"skill_{args.skill}",
-            model=args.model,
-            tools=True,  # We enable tools so the agent can agentically read the workspace
-            check=False,
-        )
-
-        if _TELEMETRY_AVAILABLE:
-            _phase_outcome = "success" if result.exit_code == 0 else "failure"
-            close_phase(
-                outcome=_phase_outcome,
-                tokens_input=result.tokens_in,
-                tokens_output=result.tokens_out,
-            )
-    finally:
-        # Only close the session if this invocation owns it (no parent session_id)
-        if _TELEMETRY_AVAILABLE and _own_session:
-            _ran_ok = "result" in locals() and result.exit_code == 0
-            close_session(
-                outcome="success" if _ran_ok else "failure",
-            )
+    # We pass the skill content as both inline_instruction (for Gemini)
+    # and system_prompt (for Bedrock) to perfectly cover both providers.
+    result = llm_call(
+        prompt=user_prompt,
+        system_prompt=system_prompt,
+        inline_instruction=system_prompt,
+        purpose=f"skill_{args.skill}",
+        model=args.model,
+        tools=True,  # We enable tools so the agent can agentically read the workspace
+        check=False,
+    )
 
     if result.exit_code != 0:
         print(f"\nLLM Error (exit {result.exit_code}):\n{result.stderr or result.content}", file=sys.stderr)

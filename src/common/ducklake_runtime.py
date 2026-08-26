@@ -11,7 +11,7 @@ Design invariants (CD.33):
     de-duplicates, so a retried write never double-appends (no engine PK; the ULID is a logical
     key enforced by MERGE).
   - Schema gate + OCC exhaustion LOUD-FAIL (Decision 55): a rejected field or an exhausted
-    retry budget raises; there is never a silent drop or an Athena fallback.
+    retry budget raises; there is never a silent drop or a fallback backend.
   - Version lockstep (OQ.12): DuckDB is pinned to PINNED_DUCKDB_VERSION; a runtime assert fails
     loudly on mismatch.
 

@@ -48,7 +48,7 @@ scope:
   - file: scripts/data_quality_execute.py
     action: Create
     purpose: >-
-      Backend execution + aggregation -- the live Athena/DuckLake path: _verdict_for, _query_ops_rows,
+      Backend execution + aggregation -- the live warehouse path: _verdict_for, _query_ops_rows,
       _is_reader_unavailable, _execute_check_ducklake, _execute_check, apply_backend_routing,
       run_checks moved verbatim, plus the backend-routing/poll constants _OPS_TABLES,
       _DUCKLAKE_OPS_TABLES, _ops_backend, _POLL_INTERVAL, _MAX_POLL, _TRANSIENT_HTTP_RE. Imports the
@@ -56,7 +56,7 @@ scope:
       data_quality_compile; keeps the function-local boto3 / resolve_aws_profile / DuckLakeReader /
       requests imports. Decision 84 semantics move byte-stable: DuckLake sole ops backend for the
       migrated set, query_ops as the sanctioned I-3 exception for the DQ harness, deferred tables
-      (ops_session_log/ops_execution_plans) staying on the Athena leg -- do NOT "clean up" either leg.
+      (ops_session_log/ops_execution_plans) staying on the legacy leg -- do NOT "clean up" either leg.
       ~260 SLOC, max CC 11 -- no waiver.
   - file: tests/test_data_quality_runner.py
     action: Modify
@@ -83,7 +83,7 @@ scope:
   - file: tests/test_data_quality_execute.py
     action: Create
     purpose: >-
-      Execution-path tests moved from the runner test file (_execute_check Athena paths,
+      Execution-path tests moved from the runner test file (_execute_check legacy-engine paths,
       _execute_check_ducklake + TestExecuteCheckDucklakeUnavailable, TestIsReaderUnavailable,
       _verdict_for, apply_backend_routing routing/env-flag tests, run_checks dry-run/boto3-profile/
       DEGRADED-aggregate/ducklake-routing tests, _ops_backend, _DUCKLAKE_OPS_TABLES). REPOINT exactly
@@ -143,7 +143,7 @@ acceptance_criteria:
     because pyproject pins coverage source=["src"] -- probed at planning time).
   - >-
     `python -m scripts.data_quality_runner --dry-run` compiles and prints SQL for all checks and
-    exits 0 with no traceback; live Athena/DuckLake execution is deliberately NOT exercised
+    exits 0 with no traceback; live warehouse execution is deliberately NOT exercised
     (rec-2184: executed runs hang >150s per check from CC-web; Decision 88: avoid gratuitous Neon
     egress).
   - "`bin/venv-python -m scripts.validate --pre` exits 0."
@@ -333,7 +333,7 @@ constraints:
   - >-
     Decision 84 -- DuckLake is the sole ops backend for the migrated set; apply_backend_routing /
     _DUCKLAKE_OPS_TABLES / _OPS_TABLES / to_ducklake_sql / _query_ops_rows (query_ops sanctioned I-3
-    exception) move byte-stable, INCLUDING the retained Athena leg for the deferred tables and the
+    exception) move byte-stable, INCLUDING the retained legacy leg for the deferred tables and the
     _is_reader_unavailable + _TRANSIENT_HTTP_RE transient-outage classification (loud-failure
     semantics). Do not modernize, remove, or "clean up" either leg.
   - >-
@@ -374,7 +374,7 @@ context:
   - >-
     Root cause -- scripts/data_quality_runner.py is 835 SLOC (pinned at 835 in
     config/sloc_budgets.yaml line 10), over the 500 limit. The file already exposes a clean 4-way
-    cohesion seam via its own section headers (data structures / YAML compilation / Athena+DuckLake
+    cohesion seam via its own section headers (data structures / YAML compilation / warehouse
     execution / CLI); one-concern-per-file sibling modules whose count grows freely while each stays
     flat is the structural fix (rec-2414 umbrella -- CITED, not bundled, per the decomposition
     program's design).
@@ -418,9 +418,9 @@ context:
     test_coverage_checker.py, which sibling plans forbid.
   - >-
     Out-of-scope observation (note only): config/agent/validate/iam_runner_manifest.yaml annotates
-    source: scripts/data_quality_runner.py for athena:GetQueryResults + 3 glue:* actions, but
+    source: scripts/data_quality_runner.py for 3 glue:* actions, but
     validate_iam_runner_policy only string-matches each action against terraform/ec2_runner.tf and
-    never reads the source field -- moving the athena/glue calls into data_quality_execute.py cannot
+    never reads the source field -- moving the glue calls into data_quality_execute.py cannot
     affect that gate. The annotation was already loose (StartQueryExecution attributed to
     ops_writer.py). RELATED provenance drift: scripts/verifiers/data_quality.py's `covers` list
     names only scripts/data_quality_runner.py, so post-split the three new modules fall outside the

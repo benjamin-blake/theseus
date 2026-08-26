@@ -1,10 +1,7 @@
-"""Tests for scripts/sync/ops.py -- reject-logging, check_sso, outbox_summary, main(), and
-drain()'s outer exception-handling concern.
+"""Tests for scripts/sync/ops.py -- reject-logging, check_sso and main() concerns.
 
-PLAN-coverage-paydown-ops-writer-sync-ops: covers the remaining 31 statements --
-_write_decisions_sync_reject (7), check_sso (6), outbox_summary (3), main (3), drain (3),
-_write_sync_reject (2), plus residual scattered lines. Collision-free (existing module is
-test_sync_cli.py).
+Covers _write_decisions_sync_reject, check_sso, main() and _write_sync_reject, plus residual
+scattered lines. Collision-free (existing module is test_sync_cli.py).
 """
 
 from __future__ import annotations
@@ -97,78 +94,6 @@ class TestCheckSso:
         assert result is False
 
 
-class TestOutboxSummaryEdgeCases:
-    def test_skips_non_directory_entries(self, tmp_path):
-        """outbox_summary() skips a stray file directly under the outbox root."""
-        from scripts.sync import ops as sync_ops
-
-        (tmp_path / "stray_file.txt").write_text("not a table dir", encoding="utf-8")
-        table_dir = tmp_path / "ops_recommendations"
-        table_dir.mkdir()
-        (table_dir / "entry.jsonl").write_text("{}", encoding="utf-8")
-
-        with patch("scripts.sync.ops._OUTBOX_DIR", tmp_path):
-            result = sync_ops.outbox_summary()
-
-        assert result == {"ops_recommendations": 1}
-
-    def test_exception_is_caught_and_logged(self):
-        """outbox_summary() catches an unexpected exception and returns whatever was gathered so far."""
-        from scripts.sync import ops as sync_ops
-
-        mock_outbox = MagicMock()
-        mock_outbox.exists.return_value = True
-        mock_outbox.iterdir.side_effect = RuntimeError("disk error")
-
-        with patch("scripts.sync.ops._OUTBOX_DIR", mock_outbox):
-            result = sync_ops.outbox_summary()
-
-        assert result == {}
-
-
-class TestDrainOuterExceptionHandling:
-    def test_unexpected_exception_is_caught_and_logged(self):
-        """drain()'s outer try/except catches an unexpected failure (e.g. iterdir() raising)."""
-        from scripts.sync import ops as sync_ops
-
-        mock_outbox = MagicMock()
-        mock_outbox.exists.return_value = True
-        mock_outbox.iterdir.side_effect = RuntimeError("disk error")
-
-        with patch("scripts.sync.ops._OUTBOX_DIR", mock_outbox):
-            result = sync_ops.drain()
-
-        assert result == {}
-
-    def test_drain_skips_non_directory_entry_under_outbox(self, tmp_path):
-        """drain() skips (continue) a stray file directly under _OUTBOX_DIR that is not a directory."""
-        from scripts.sync import ops as sync_ops
-
-        (tmp_path / "stray_file.jsonl").write_text("{}", encoding="utf-8")
-        table_dir = tmp_path / "ops_session_log"
-        table_dir.mkdir()
-        entry = {"session_id": "sess-001"}
-        (table_dir / "entry.jsonl").write_text(json.dumps(entry) + "\n", encoding="utf-8")
-
-        mock_writer_instance = MagicMock()
-
-        class _FakeOpsWriter:
-            def __init__(self):
-                pass
-
-            def write(self, table, e):
-                mock_writer_instance.write(table, e)
-
-        with (
-            patch("scripts.sync.ops._OUTBOX_DIR", tmp_path),
-            patch.dict("sys.modules", {"scripts.ops_writer": MagicMock(OpsWriter=_FakeOpsWriter)}),
-        ):
-            result = sync_ops.drain()
-
-        assert result.get("ops_session_log") == 1
-        mock_writer_instance.write.assert_called_once_with("ops_session_log", entry)
-
-
 class TestPullViaReaderPriorityQueueVerb:
     def test_pull_via_reader_uses_named_priority_queue_current_verb(self):
         """_pull_via_reader() routes ops_priority_queue through reader.named('priority_queue_current')
@@ -181,7 +106,7 @@ class TestPullViaReaderPriorityQueueVerb:
 
         reader = MagicMock()
         reader.named.return_value = [{"rec_id": "rec-1", "rank": 1}]
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader) as mock_make:
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader) as mock_make:
             result = _pull_via_reader("ops_priority_queue")
 
         assert result == [{"rec_id": "rec-1", "rank": 1}]
@@ -195,7 +120,7 @@ class TestMainCli:
         """main() with the 'sync' command calls sync() and prints its result as JSON."""
         from scripts.sync import ops as sync_ops
 
-        fake_result = {"drained": {}, "pulled": {"ops_recommendations": 5}}
+        fake_result = {"pulled": {"ops_recommendations": 5}}
         old_argv = sys.argv
         sys.argv = ["sync_ops", "sync"]
         try:

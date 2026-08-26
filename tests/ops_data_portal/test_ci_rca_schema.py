@@ -36,7 +36,7 @@ _CI_RCA_FIELDS = {
 _VALID_CONTEXT_V2 = {
     "schema_version": 1,
     "proximate_cause": (
-        "validate_sloc_limits() raised: scripts/roadmap/product_roadmap.py is 810 SLOC, exceeds 500 limit "
+        "validate_sloc_limits() raised: scripts/roadmap/platform_roadmap.py is 810 SLOC, exceeds 500 limit "
         "(Decision 43, no complexity-waiver header found in first 10 lines)."
     ),
     "why_chain": [
@@ -337,8 +337,8 @@ class TestCiRcaSchemaEnforcement:
                     "--title",
                     "validate_sloc_limits missed in pre tier",
                     "--context",
-                    "validate_sloc_limits() raised on scripts/roadmap/product_roadmap.py: 810 SLOC exceeds 500 limit. "
-                    "CI step 'validate' failed; resource: scripts/roadmap/product_roadmap.py.",
+                    "validate_sloc_limits() raised on scripts/roadmap/platform_roadmap.py: 810 SLOC exceeds 500 limit. "
+                    "CI step 'validate' failed; resource: scripts/roadmap/platform_roadmap.py.",
                     "--acceptance",
                     "grep -q validate_sloc_limits scripts/validate.py && grep -q main scripts/validate.py",
                     "--context-v2-json",

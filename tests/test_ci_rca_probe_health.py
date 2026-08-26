@@ -332,7 +332,7 @@ class TestEscalate:
         def _boom(*args, **kwargs):
             raise AssertionError("escalate() must not construct a DuckLake reader")
 
-        with patch("src.common.iceberg_reader.make_reader", side_effect=_boom):
+        with patch("src.common.ducklake_reader_client.make_reader", side_effect=_boom):
             portal_caller = MagicMock(return_value="rec-9004")
             result = escalate(
                 undetermined_count=5,

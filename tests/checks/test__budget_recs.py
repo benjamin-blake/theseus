@@ -335,7 +335,7 @@ class TestBudgetBreachRecDedupe:
     """VTS-20 (audit validate-test-suite-4df4d48): a repeated fast-tier budget breach on the
     same (branch, dominant_phase) updates the existing open budget_breach rec instead of filing
     a duplicate. The dedupe lookup reads the open_recs reader boundary
-    (src.common.iceberg_reader.make_reader via _fetch_open_recs), never
+    (src.common.ducklake_reader_client.make_reader via _fetch_open_recs), never
     logs/.recommendations-log.jsonl."""
 
     @pytest.fixture(autouse=True)

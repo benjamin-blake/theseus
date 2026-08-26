@@ -58,7 +58,7 @@ from scripts.ops_portal._common import _AWS_REGION, _REPO_ROOT, _SSO_PROFILE, RO
 from scripts.ops_portal.cache import (  # noqa: F401
     _append_to_local_jsonl,
     _refresh_cache_after_write,
-    _sanitize_athena_record,
+    _sanitize_record,
     _sync_table,
 )
 from scripts.ops_portal.ci_rca_lifecycle import (  # noqa: F401
@@ -122,7 +122,6 @@ _LAZY_DECISIONS_NAMES = frozenset(
         "update_decision",
         "backfill_decisions_from_md",
         "_fetch_decision_from_reader",
-        "_fetch_decision_from_athena",
     }
 )
 
@@ -410,13 +409,13 @@ def _fetch_rec_from_reader(rec_id: str, profile: Optional[str] = None) -> Option
         raise ValueError(f"_fetch_rec_from_reader: invalid rec_id: {rec_id!r}")
 
     from scripts.sync.ops import _coerce_ops_rec_row  # noqa: PLC0415
-    from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
     rows = make_reader(profile=profile).named("rec_by_id", id=rec_id)
     if not rows:
         return None
     coerced = _coerce_ops_rec_row(dict(rows[0]))
-    return _sanitize_athena_record(coerced) if coerced is not None else None
+    return _sanitize_record(coerced) if coerced is not None else None
 
 
 _UPDATE_CONTENT_VALIDATED_FIELDS = frozenset({"context", "title", "acceptance", "file"})
@@ -425,8 +424,8 @@ _UPDATE_CONTENT_VALIDATED_FIELDS = frozenset({"context", "title", "acceptance", 
 def update_rec(rec_id: str, updates: dict, profile: Optional[str] = None) -> bool:
     """Merge update fields into an existing recommendation and write via the DuckLake closed boundary.
 
-    Reads the current record via DuckLake reader (ducklake backend) or DuckDBIcebergReader
-    (iceberg rollback). Raises RuntimeError if the warehouse is unreachable. Merges updates,
+    Reads the current record via the DuckLake reader, its sole backend. Raises
+    RuntimeError if the warehouse is unreachable. Merges updates,
     validates the merged record -- including, for any updated field in
     _UPDATE_CONTENT_VALIDATED_FIELDS, the same write-time content-quality gate file_rec applies
     (Decision 66) -- routes the write to _ducklake_write, writes through to local JSONL, then
@@ -444,7 +443,7 @@ def update_rec(rec_id: str, updates: dict, profile: Optional[str] = None) -> boo
         ValueError: If 'status' in updates is not a valid status value, or an updated
             content-validated field (context/title/acceptance/file) fails its write-time gate.
         ValidationError: If the merged record fails schema validation.
-        RuntimeError: If Athena is unreachable for the read step or compaction fails.
+        RuntimeError: If the warehouse is unreachable for the read step or the write fails.
     """
     if "status" in updates and updates["status"] not in _VALID_STATUSES:
         raise ValueError(f"Invalid status '{updates['status']}'. Must be one of: {', '.join(sorted(_VALID_STATUSES))}")

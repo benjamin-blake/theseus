@@ -112,8 +112,8 @@ are evidence. If you find the set still leans one way, say so in your Q1 prose.
 1. **"Squashed history" names two different things in this repository, and conflating them
    destroys the audit.** (a) The squash-merge POLICY: one commit on `main` per merged PR.
    (b) The SHALLOW CLONE: the Claude-Code-on-the-web container clones with limited depth
-   (`.git/shallow` is present). `docs/ROADMAP-PLATFORM.yaml:474` and
-   `audits/legacy/wave-1-outputs/A1.yaml:5` ("this clone is a single squashed snapshot commit")
+   (`.git/shallow` is present). `docs/ROADMAP-PLATFORM.yaml:474` and a since-retired audit output
+   ("this clone is a single squashed snapshot commit")
    both use squash wording where the referent is the shallow clone, not the merge policy. Q3a exists specifically to separate these two causes.
    Verify which one you are reasoning about at every step.
 2. **Decision 89's TITLE is stale; its clause 4 is not.** Decision 89 is titled "GitHub Branch
@@ -680,7 +680,7 @@ Facts below are stated neutrally and carry no verdict.
 - The newest `## [date]` entry heading in `docs/SESSION_LOG.md` was `2026-07-01` at recon. Compare
   against the date range of the commits present on `main` and draw your own conclusion.
 - Roadmap item T-1.9 "Session-log architecture audit + redesign" has status `complete`. AGENTS.md's
-  warehouse-invariant section lists `ops_session_log` as an Athena-backed table "pending T2.26
+  warehouse-invariant section lists `ops_session_log` as a legacy-warehouse table "pending T2.26
   disposition" and notes "session_log may retire per T-1.9". T2.26 status is `in_progress`.
 - Sampled squash-commit bodies on `main` carry multi-paragraph, multi-bullet narrative content
   (see for example the body of the oldest commit present in a shallow clone). Read several before

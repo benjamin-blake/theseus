@@ -121,6 +121,6 @@ class TestFindPreventiveRegressions:
             _rec("rec-100", status="closed", closed_days_ago=10, preventive_action="Promote the check to --pre tier."),
             _rec("rec-200", status="open", created_days_ago=1),
         ]
-        with patch("src.common.iceberg_reader.make_reader", side_effect=_boom):
+        with patch("src.common.ducklake_reader_client.make_reader", side_effect=_boom):
             flags = find_preventive_regressions(rows, now=NOW)
         assert len(flags) == 1

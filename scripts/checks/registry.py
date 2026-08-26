@@ -3,7 +3,7 @@ Decision 169, amending Decision 104's facade re-export mechanism).
 
 ``register()`` tags a validate_*/check_* function with its owner metadata -- UNCHANGED, and still
 the sole identity/ownership oracle (97 sites, orphan-detection AST walk target). Dispatch and
-tier-sequence derivation now come from the 18 per-domain scripts/checks/<domain>/_manifest.py
+tier-sequence derivation now come from the 17 per-domain scripts/checks/<domain>/_manifest.py
 ``Entry`` manifests (grammar: docs/contracts/check-manifest.yaml), never from a facade re-export
 block in scripts/validate.py.
 
@@ -66,7 +66,6 @@ from scripts.checks.iam_tf._manifest import ENTRIES as _IAM_TF_ENTRIES
 from scripts.checks.lambda_pkg._manifest import ENTRIES as _LAMBDA_PKG_ENTRIES
 from scripts.checks.misc._manifest import ENTRIES as _MISC_ENTRIES
 from scripts.checks.ops_governance._manifest import ENTRIES as _OPS_GOVERNANCE_ENTRIES
-from scripts.checks.product._manifest import ENTRIES as _PRODUCT_ENTRIES
 from scripts.checks.prompts._manifest import ENTRIES as _PROMPTS_ENTRIES
 from scripts.checks.prose._manifest import ENTRIES as _PROSE_ENTRIES
 from scripts.checks.roadmap._manifest import ENTRIES as _ROADMAP_ENTRIES
@@ -75,20 +74,18 @@ from scripts.checks.structural._manifest import ENTRIES as _STRUCTURAL_ENTRIES
 from scripts.checks.typing._manifest import ENTRIES as _TYPING_ENTRIES
 from scripts.checks.verification._manifest import ENTRIES as _VERIFICATION_ENTRIES
 
-_VALID_OWNERS = ("platform", "trading")
+_VALID_OWNERS = ("platform",)
 
 
 @dataclasses.dataclass(frozen=True)
 class Check:
     """A registered check's ownership metadata (separate from Step's per-tier sequence entry).
 
-    `owner` and `product_coupled` are consumer-facing metadata, not dispatch inputs --
-    pre_sequence()/full_sequence() dispatch purely by Step.name, so neither field affects
-    whether or when a check runs. Today's sole reader is
-    tests/checks/registry/test_check_metadata.py::TestOwnerMetadata (the OWNER_EXPECTATIONS
-    pinned-owner spot checks plus the platform/product_coupled=False default-floor assertion over
-    every other registered check); both fields are set once at each check's `@register(...)` call
-    site and are otherwise free for a future owner-scoped reporting/routing consumer.
+    `owner` is consumer-facing metadata, not a dispatch input -- pre_sequence()/full_sequence()
+    dispatch purely by Step.name, so it never affects whether or when a check runs. Today's sole
+    reader is tests/checks/registry/test_check_metadata.py::TestOwnerMetadata; it is set once at
+    each check's `@register(...)` call site and is otherwise free for a future owner-scoped
+    reporting/routing consumer.
     """
 
     name: str
@@ -259,7 +256,6 @@ _ALL_ENTRIES: dict[str, Entry] = {
         *_LAMBDA_PKG_ENTRIES,
         *_MISC_ENTRIES,
         *_OPS_GOVERNANCE_ENTRIES,
-        *_PRODUCT_ENTRIES,
         *_PROMPTS_ENTRIES,
         *_PROSE_ENTRIES,
         *_ROADMAP_ENTRIES,
@@ -272,7 +268,7 @@ _ALL_ENTRIES: dict[str, Entry] = {
 
 
 class UnknownCheckError(KeyError):
-    """Raised by resolve() when `name` has no manifest Entry in any of the 18 domains."""
+    """Raised by resolve() when `name` has no manifest Entry in any of the 17 domains."""
 
 
 def resolve(name: str) -> Callable[..., None]:
@@ -346,7 +342,6 @@ _FULL_SEGMENT_DOMAIN_ORDER: dict[str, tuple[str, ...]] = {
         "hygiene",
         "ops_governance",
         "executor",
-        "product",
         "misc",
         "ci_guards",
         "sloc",
@@ -407,8 +402,8 @@ def full_sequence() -> list[Step]:
     """The full (default, no-flag) tier, in the exact order main() runs them.
 
     Spans the whole main() default-scope body: run_python_checks, the terraform block,
-    validate_iam_runner_policy, run_dependency_checks + validate_requirements, the prompts block,
-    ensure_fresh_dq_results, validate_verification_harness, and the all-files precommit run.
+    run_dependency_checks + validate_requirements, the prompts block, ensure_fresh_dq_results,
+    validate_verification_harness, and the all-files precommit run.
     """
     by_domain = _entries_by_domain()
     steps: list[Step] = []

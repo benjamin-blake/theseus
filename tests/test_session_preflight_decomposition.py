@@ -5,10 +5,10 @@ Freezes the pre-refactor entry contracts so the movement-only decomposition of
 scripts/session/preflight.py into scripts/preflight/ cannot silently change behaviour:
 
 1. Report-schema freeze -- a stubbed main() run's report top-level key set equals the frozen
-   44-key list captured from the pre-refactor code (dict literal + 7 post-assignments).
+   frozen key list captured from the pre-refactor code (dict literal + post-assignments).
 2. Facade completeness -- every name on the frozen export list (every public function + every
-   test-referenced private symbol, including the back-compat _sync_ops_pull and
-   _DuckDBIcebergReader re-imports) is getattr-able on the facade AND importable via
+   test-referenced private symbol, including the back-compat _sync_ops_pull
+   re-import) is getattr-able on the facade AND importable via
    `from scripts.session.preflight import <name>`.
 3. Mock interception -- patching scripts.preflight._common._make_reader and one home-module
    function per domain intercepts through moved bodies invoked via the facade.
@@ -80,7 +80,6 @@ FROZEN_REPORT_KEYS = frozenset(
         "main_freshness",
         "creds_status",
         "s3_log_bucket_set",
-        "ops_outbox",
         "terraform_pending",
         "convergence_health",
         "last_session",
@@ -106,11 +105,9 @@ FROZEN_REPORT_KEYS = frozenset(
         "friction_patterns",
         "log_sync_result",
         "recommendation_sync",
-        "telemetry_health",
         "data_quality",
         "context",
         "platform_roadmap",
-        "product_roadmap",
         "session_start",
         # 8 post-assignments
         "provisional_contracts_due",
@@ -126,11 +123,11 @@ FROZEN_REPORT_KEYS = frozenset(
         "prose_context",
     }
 )
-assert len(FROZEN_REPORT_KEYS) == 50, "frozen report key list itself drifted -- fix the constant, not the assertion"
+assert len(FROZEN_REPORT_KEYS) == 47, "frozen report key list itself drifted -- fix the constant, not the assertion"
 
 # Frozen export list: every public function + every test-referenced private symbol from the
-# pre-refactor module (facade-resident + all 9 domain modules + _common + the two back-compat
-# dead re-imports rec-2210 requires to keep resolving).
+# pre-refactor module (facade-resident + all 9 domain modules + _common + the back-compat
+# dead re-import rec-2210 requires to keep resolving).
 FROZEN_EXPORTS = frozenset(
     {
         # _common
@@ -140,7 +137,6 @@ FROZEN_EXPORTS = frozenset(
         "RECOMMENDATIONS_FILE",
         "ROADMAP_FILE",
         "ROADMAP_PLATFORM_PATH",
-        "ROADMAP_PRODUCT_PATH",
         "DECISIONS_FILE",
         "STRATEGIC_REVIEW_LOOKBACK_DAYS",
         "PRIORITY_QUEUE_FILE",
@@ -221,9 +217,7 @@ FROZEN_EXPORTS = frozenset(
         # context_docs
         "parse_last_session",
         "read_context_files",
-        "check_telemetry_health",
         "check_data_quality_coverage",
-        "print_telemetry_health",
         "_check_endstate_drift",
         "_scan_provisional_contracts",
         # facade-resident
@@ -233,14 +227,13 @@ FROZEN_EXPORTS = frozenset(
         "open_telemetry_session",
         "PREFLIGHT_REPORT",
         "TELEMETRY_ACTIVE_SESSION_FILE",
-        # back-compat dead re-imports (rec-2210) -- must keep resolving even though nothing calls them
+        # back-compat dead re-import (rec-2210) -- must keep resolving even though nothing calls it
         "_sync_ops_pull",
-        "_DuckDBIcebergReader",
     }
 )
 
 # Symbols that MOVED into the scripts/preflight package (excludes facade-resident names and the
-# two back-compat dead re-imports, which never had a "new home" to migrate to).
+# back-compat dead re-import, which never had a "new home" to migrate to).
 _MOVED_SYMBOLS = FROZEN_EXPORTS - {
     "main",
     "_slim_roadmap_state",
@@ -248,7 +241,6 @@ _MOVED_SYMBOLS = FROZEN_EXPORTS - {
     "PREFLIGHT_REPORT",
     "TELEMETRY_ACTIVE_SESSION_FILE",
     "_sync_ops_pull",
-    "_DuckDBIcebergReader",
 }
 
 _FRESHNESS_STUB = {
@@ -262,7 +254,6 @@ _FRESHNESS_STUB = {
 
 def _warm_sync_stub() -> dict:
     return {
-        "drained": {},
         "pulled": {},
         "rows": {"ops_recommendations": [], "ops_decisions": [], "ops_priority_queue": []},
         "reader_ok": {"ops_recommendations": True, "ops_decisions": True, "ops_priority_queue": True},
@@ -375,10 +366,10 @@ def _run_stubbed_main(
 class TestReportSchemaFreeze:
     """A stubbed main() run's report top-level key set equals the frozen 49-key list."""
 
-    def test_report_key_set_matches_frozen_49(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+    def test_report_key_set_matches_frozen_keys(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
         _, report, _ = _run_stubbed_main(tmp_path, capsys)
         assert set(report.keys()) == FROZEN_REPORT_KEYS
-        assert len(report.keys()) == 50
+        assert len(report.keys()) == 47
 
 
 class TestFacadeCompleteness:

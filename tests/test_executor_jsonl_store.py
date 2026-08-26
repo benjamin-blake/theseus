@@ -505,7 +505,7 @@ class TestRecommendationSchema:
             Recommendation.model_validate(data)
 
     def test_ignores_extra_fields(self) -> None:
-        """Extra fields are silently ignored (extra='ignore') for backward compat with legacy Iceberg rows."""
+        """Extra fields are silently ignored (extra='ignore') for backward compat with legacy warehouse rows."""
         data = {
             "id": "rec-001",
             "status": "open",

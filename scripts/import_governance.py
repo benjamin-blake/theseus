@@ -91,7 +91,7 @@ def check_lockfile_sync() -> tuple[bool, str]:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        # Match both plain pins (boto3==1.x) and extras pins (pyiceberg[glue,duckdb]==0.x).
+        # Match both plain pins (boto3==1.x) and extras pins (duckdb[extra]==0.x).
         try:
             locked_requirement = Requirement(line)
         except InvalidRequirement:

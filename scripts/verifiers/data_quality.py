@@ -1,6 +1,7 @@
 """Verifier for data quality assertions.
 
-Runs the full DQ check suite directly against Athena. Never reads from a local cache file.
+Runs the full DQ check suite directly against the DuckLake closed reader. Never reads from a
+local cache file.
 """
 
 from __future__ import annotations
@@ -16,13 +17,12 @@ _DQ_DIR = _ROOT / "config" / "agent" / "data_quality"
 
 
 class DataQualityVerifier(Verifier):
-    """Runs DQ checks against Athena directly; never reads a local cache."""
+    """Runs DQ checks against the DuckLake reader directly; never reads a local cache."""
 
     covers: list[str] = [
         "config/agent/data_quality/**",
         "scripts/data_quality_runner.py",
         "scripts/ops_data_portal.py",
-        "src/data/**",
     ]
     hermeticity: Hermeticity = Hermeticity.NON_HERMETIC_BY_CONSTRUCTION  # network + live-state DQ run
 
@@ -68,27 +68,24 @@ class DataQualityVerifier(Verifier):
             )
 
         all_checks = []
-        workgroup = "agent-platform-production"
         database = "agent_platform"
         for yf in yaml_files:
             checks, metadata = load_checks(yf)
-            workgroup = metadata.get("athena_workgroup", workgroup)
             database = metadata.get("database", database)
             all_checks.extend(checks)
 
         all_checks.extend(build_tombstone_checks(load_tombstones(), database=database))
 
-        # Route migrated recs checks to the DuckLake reader (Decision 81 cl.7). Without this the recs
-        # checks query the dropped ops_recommendations_current Athena view and error TABLE_NOT_FOUND.
+        # Route every ops-table check through the DuckLake closed reader (Decision 84 I-1).
         all_checks = apply_backend_routing(all_checks, database)
 
-        result = run_checks(all_checks, workgroup, database, profile_name=profile)
+        result = run_checks(all_checks, profile_name=profile)
 
         if result.verdict == "SKIP":
             return VerifierResult(
                 name=self.name,
                 status=VerifierStatus.SKIPPED,
-                message="DQ checks skipped (boto3 unavailable or dry-run).",
+                message="DQ checks skipped (DuckLake reader unavailable or dry-run).",
             )
 
         total = len(result.results)

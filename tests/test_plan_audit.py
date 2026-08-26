@@ -162,7 +162,7 @@ class TestNormalise:
 
     def test_normalise_mixed_slashes(self) -> None:
         """Test conversion of mixed slash types."""
-        assert normalise("src\\data/feature_engine.py") == "src/data/feature_engine.py"
+        assert normalise("src\\common/ducklake_reader_client.py") == "src/common/ducklake_reader_client.py"
 
     def test_normalise_already_forward_slashes(self) -> None:
         """Test that forward slashes are unchanged."""

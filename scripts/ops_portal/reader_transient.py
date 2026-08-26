@@ -5,7 +5,7 @@ already-landed private copy at scripts/data_quality_execute.py (`_is_reader_unav
 `_TRANSIENT_HTTP_RE`), so the two consumers cannot drift.
 
 A 502/503/504 from the DuckLake reader indicates TRANSIENT unavailability -- it is NOT
-reliably a cold-resume signal. src/common/iceberg_reader.py's "retrying after cold-resume
+reliably a cold-resume signal. src/common/ducklake_reader_client.py's "retrying after cold-resume
 backoff" log line asserts the latter and is misleading; that mislabel is tracked separately
 (see the plan context for PLAN-syspath-hygiene-advisory-read-tolerance) and is not corrected
 here because it lives in a wildcard-packaged src/ file.

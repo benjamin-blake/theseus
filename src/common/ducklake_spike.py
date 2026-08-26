@@ -5,7 +5,7 @@ via the DuckDB ducklake extension + a local SQLite catalog file.
 
 Isolation contract (load-bearing constraint per plan):
 - Writes ONLY to the ducklake-spike/ S3 prefix + a dedicated catalog file.
-- Imports NOTHING from OpsWriter, outbox, or ops_data_portal.
+- Imports NOTHING from ops_data_portal.
 - Reads NO logs/ cache file.
 - RAISES RuntimeError if duckdb is unavailable -- never falls back silently.
 
@@ -14,7 +14,7 @@ bin/venv-python for the spike itself.
 
 CD.9 note: DuckLake v1.0 does not support PARTITION BY in CREATE TABLE DDL.
 The part_date column serves as a logical partition key; physical partitioning
-is an FP-A concern documented in docs/ducklake-spike-findings.md.
+is an FP-A concern.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def _require_duckdb() -> Any:
     """Return the duckdb module, raising RuntimeError if unavailable.
 
     This is the loud-fail guard: callers must not attempt silent fallback
-    when duckdb is missing (no Athena degradation in spike code paths).
+    when duckdb is missing (no silent degradation in spike code paths).
     """
     try:
         import duckdb as _duckdb  # noqa: PLC0415
@@ -59,7 +59,7 @@ def _require_duckdb() -> Any:
     except ImportError as exc:
         # Catch ImportError (parent of ModuleNotFoundError) so both a genuinely
         # absent package and a broken install (missing shared lib) fail loud here,
-        # never silently degrading to an Athena fallback.
+        # never silently degrading to a fallback path.
         raise RuntimeError(
             "DuckLake spike requires duckdb but import failed. "
             "Ensure duckdb is installed in the venv: see requirements.txt / "
@@ -82,7 +82,7 @@ def _set_s3_credentials(con: Any, *, profile: str | None = None) -> None:
     """Inject AWS credentials into the DuckDB connection via SET commands.
 
     Resolves credentials through boto3 using the same profile chain as
-    iceberg_reader.py (agent_platform profile for local/web, ambient chain
+    ducklake_reader_client.py (agent_platform profile for local/web, ambient chain
     for Lambda/CI OIDC). Credential values are passed through _sql_str_literal
     so a quote in any value cannot break out of the SET string literal.
     """

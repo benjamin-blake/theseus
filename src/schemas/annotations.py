@@ -15,7 +15,7 @@ Annotated equivalents by design -- they live in handler code (ops_data_portal.py
 
 Class-level schema decorators (separate namespace, not counted as DQ markers):
   migrating(target)  -- coexistence migration window
-  partition_by(spec) -- Iceberg PARTITIONED BY spec (T0.13, CD.9)
+  partition_by(spec) -- table PARTITIONED BY spec (T0.13, CD.9)
 """
 
 from __future__ import annotations
@@ -105,8 +105,8 @@ def migrating(target: str) -> MigratingMarker:
 def partition_by(spec: str) -> Callable[[type], type]:
     """Return a class decorator that sets cls.__partition_by__ = spec.
 
-    Use as a class decorator on Pydantic models to declare the Iceberg PARTITIONED BY
-    transform spec (e.g. 'day(last_updated_timestamp)'). Required on every Iceberg model
+    Use as a class decorator on Pydantic models to declare the PARTITIONED BY
+    transform spec (e.g. 'day(last_updated_timestamp)'). Required on every warehouse model
     per CD.9. This is a class-level schema decorator, not a DQ marker -- the closed 7-marker
     DQ vocabulary (CD.12) is unaffected.
     """

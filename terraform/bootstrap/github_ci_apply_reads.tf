@@ -159,7 +159,6 @@ locals {
         #   neon-api-key-*                              : Neon provider API key (Phase 0 out-of-band).
         #   agent-platform-terraform-personal-tfvars-* : tfvars sourcing at apply time.
         #   agent-platform-deepseek/anthropic-api-key-*: inference credential envelopes (admin-applied).
-        #   agent-platform-broker-*                    : Alpaca paper+live broker envelopes (T2.14).
         #   agent-platform-github-pat-*                : dispatcher/findings-processor PAT (T2.43).
         Sid    = "SecretsManagerValueReadEnumerated"
         Effect = "Allow"
@@ -169,7 +168,6 @@ locals {
           "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-terraform-personal-tfvars-*",
           "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-deepseek-api-key-*",
           "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-anthropic-api-key-*",
-          "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-broker-*",
           "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-github-pat-*",
         ]
       },

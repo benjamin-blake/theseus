@@ -223,12 +223,6 @@ concrete home: an entry in `question_answers[Q8].answers[]`, with `question` nam
 observation" -- there is no separate observations block; it folds into the relevant Q8 answer.
   (a) Decision 43's `.prompt.md` row (3000 lines) is LIVE and governs 12 tracked files, and no
       check appears to enforce it -- verify that claim before recording it.
-  (b) `docs/ROADMAP-PRODUCT.yaml` carries a header stating it SUPERSEDES
-      `docs/ROADMAP-PRODUCT.md`, with the markdown "retained for one transition cycle as a recovery
-      artefact". So this is a superseded transitional artifact, not a live peer -- verify the header
-      before recording it. The observation worth keeping is narrower than a format-twin
-      inconsistency: a retiring duplicate is governed differently from its successor purely by
-      extension, which is a question about how governance handles transition windows.
 That observation is the whole of markdown's presence in this audit. Do not expand it.
 
 **Exclusion outranks classification.** The exclusion list below is applied FIRST, before
@@ -768,11 +762,9 @@ is expected to move slightly with tree state; the counts are expected to reprodu
 - Of those, 48 are under `docs/plans/` and 22 under `audits/` -- roughly 81 percent of the affected
   population is workflow output. This is the single most consequential number in this map; DD-D
   exists because of it.
-- The two largest oversized files OUTSIDE `workflow_outputs` are `docs/ROADMAP-PRODUCT.yaml`
-  (about 4,707 effective lines, class `roadmaps`) and `docs/decisions-index.json` (about 2,245,
-  class `generated`). They are named here because they are where the `roadmaps` and `generated`
-  verdicts actually get decided -- `ROADMAP-PLATFORM.yaml` carries a do-not-flag carve-out and
-  `ROADMAP-PRODUCT.yaml` does not, and the provenance key stands or falls on files like the second.
+- The largest oversized file OUTSIDE `workflow_outputs` is `docs/decisions-index.json` (about
+  2,245 effective lines, class `generated`). It is named here because it is where the `generated`
+  verdict actually gets decided, and the provenance key stands or falls on files like it.
 - 5 `.tf` files exceed 500, the largest being `terraform/iceberg_tables.tf`.
 - 3 files under `config/` exceed 500, the largest being
   `config/agent/verification_registry/registry.yaml`.

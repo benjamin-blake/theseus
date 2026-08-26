@@ -284,7 +284,7 @@ def cleanup_after_merge(branch: str) -> bool:
                 logger.warning("[CLEANUP] git stash pop failed: %s", pop_result.stderr)
 
         # Legacy recommendation log commits removed.
-        # Status persistence is now handled by the portal (Athena/S3).
+        # Status persistence is now handled by the portal (DuckLake).
         # Local JSONL changes are handled as a write-through cache.
 
         if not pull_success:

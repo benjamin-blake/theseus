@@ -1,5 +1,5 @@
 """Tests for the ops pipeline consolidation / reader-cache-sync surface (Decision 69 / 84):
-_fetch_rec_from_reader, the closed-boundary no-Athena-fallback guard, and _sync_table / sync.
+_fetch_rec_from_reader and _sync_table / sync.
 
 Split out of the former tests/test_ops_data_portal.py monolith (rec-2709 Wave 3).
 """
@@ -136,7 +136,7 @@ class TestFetchRecFromReader:
         reader = MagicMock()
         reader.named.return_value = [dict(self._REC_ROW)]
 
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             from scripts.ops_data_portal import _fetch_rec_from_reader
 
             result = _fetch_rec_from_reader("rec-042")
@@ -147,11 +147,11 @@ class TestFetchRecFromReader:
         reader.named.assert_called_once_with("rec_by_id", id="rec-042")
 
     def test_reader_failure_loud_fails(self) -> None:
-        """Reader failure propagates -- no Athena fallback, no local-cache fallback (Decision 69)."""
+        """Reader failure propagates -- no local-cache fallback (Decision 69)."""
         reader = MagicMock()
         reader.named.side_effect = RuntimeError("ducklake_reader 'named_read' failed (HTTP 500)")
 
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             from scripts.ops_data_portal import _fetch_rec_from_reader
 
             with pytest.raises(RuntimeError, match="ducklake_reader"):
@@ -162,7 +162,7 @@ class TestFetchRecFromReader:
         reader = MagicMock()
         reader.named.return_value = []
 
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             from scripts.ops_data_portal import _fetch_rec_from_reader
 
             result = _fetch_rec_from_reader("rec-999")
@@ -175,25 +175,6 @@ class TestFetchRecFromReader:
 
         with pytest.raises(ValueError, match="invalid rec_id"):
             _fetch_rec_from_reader("'; DROP TABLE ops_recommendations; --")
-
-
-class TestClosedBoundaryNoAthenaFallback:
-    """A reader failure must NOT fall back to Athena (OQ.7 / Decision 84 I-1)."""
-
-    def test_fetch_rec_no_athena_fallback(self, monkeypatch) -> None:
-        import scripts.ops_data_portal as p
-
-        class _Reader:
-            def named(self, verb, **params):
-                raise RuntimeError("reader down")
-
-        monkeypatch.setattr("src.common.iceberg_reader.make_reader", lambda **kw: _Reader())
-        # boto3 must never be touched (no Athena escape hatch). Make it explode if constructed.
-        import boto3
-
-        monkeypatch.setattr(boto3, "Session", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Athena fallback used")))
-        with pytest.raises(RuntimeError, match="reader down"):
-            p._fetch_rec_from_reader("rec-1")
 
 
 class TestSyncTable:

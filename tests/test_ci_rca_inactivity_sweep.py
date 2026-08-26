@@ -130,7 +130,7 @@ class TestListOpenCiRcaRecsIntegration:
     def test_list_open_ci_rca_recs_reachable_and_mockable(self):
         reader = MagicMock()
         reader.current_state.return_value = []
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             with patch("scripts.ops_data_portal.update_rec"):
                 result = run_sweep()
         assert result["open_count"] == 0

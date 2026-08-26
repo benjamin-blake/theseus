@@ -11,11 +11,11 @@ Superseded, historical empirical, and old infrastructure decisions archived from
 **Date:** 2026-05-09
 
 **Problem:**
-Five-CLI choreography (`update_rec`, `sync_ops drain`, `ops_writer --compact`, `ops_writer --refresh-views`, `sync_ops pull`) leaked internal pipeline layers to agents, enabling silent-failure composition. Root-cause analysis in `docs/INTENT-ops-pipeline-consolidation.md`. Three architectural failures composed into the 2026-05-09 incident: (1) `update_rec` read the existing record from JSONL (destructible cache) rather than from Athena (source of truth); (2) `OpsWriter.compact` swallowed credential errors as `return 0`, making failure indistinguishable from "no staging files"; (3) `sync_ops pull` overwrote the local cache destructively, silently discarding uncommitted writes.
+Five-CLI choreography (`update_rec`, `sync_ops drain`, `ops_writer --compact`, `ops_writer --refresh-views`, `sync_ops pull`) leaked internal pipeline layers to agents, enabling silent-failure composition. Root-cause analysis in `docs/INTENT-ops-pipeline-consolidation.md`. Three architectural failures composed into the 2026-05-09 incident: (1) `update_rec` read the existing record from JSONL (destructible cache) rather than from the warehouse (source of truth); (2) `OpsWriter.compact` swallowed credential errors as `return 0`, making failure indistinguishable from "no staging files"; (3) `sync_ops pull` overwrote the local cache destructively, silently discarding uncommitted writes.
 
 **Decision:**
 Three architectural fixes, enforced at the primitive level:
-1. `update_rec` reads existing record from Athena `ops_recommendations_current` (source of truth). Raises `RuntimeError` if Athena is unreachable; write path retains outbox for offline resilience.
+1. `update_rec` reads existing record from the warehouse `ops_recommendations_current` view (source of truth). Raises `RuntimeError` if the warehouse is unreachable; write path retains outbox for offline resilience.
 2. `OpsWriter.compact` raises `RuntimeError` on infrastructure failures (credential errors, network errors, schema mismatches). Returns `int` only for the "no staging files" success case.
 3. `ops_data_portal.sync()` is the single flush primitive -- compacts, refreshes views, pulls local cache. Agents call this instead of managing the pipeline steps.
 CLI hard-removal (`--drain` from ops_data_portal, `drain` and `pull` from sync_ops) enforces the boundary at the build level. `sync_ops.pull` renamed to `_rebuild_local_cache` (private) with a staging-file guard that refuses to run when unstaged writes exist.
@@ -68,7 +68,7 @@ Replace the old timestamp/partition scheme with clear SCD Type 2 semantics:
 **Date:** 2026-04-23
 
 **Problem:** Agent sessions lose operational writes when SSO expires (`OpsWriter.write()`
-silently no-ops) and start with stale local JSONL data because nothing pulls from Athena.
+silently no-ops) and start with stale local JSONL data because nothing pulls from the warehouse.
 The self-improvement loop cannot function if the system cannot reliably read its own
 history or persist new observations.
 
@@ -76,7 +76,7 @@ history or persist new observations.
 - **Writes:** All writes go through OpsWriter.write(). On S3 failure, entries are written
   to a local outbox (`logs/.ops-outbox/{table}/{uuid}.jsonl`).
 - **Reads:** Agents always read local JSONL files. A `sync_ops.py` script pulls the latest
-  state from Athena `_current` views and overwrites local files.
+  state from the warehouse `_current` views and overwrites local files.
 - **Sync:** `sync_ops.py` runs drain-then-pull. Integrated into preflight (session start),
   postflight (session end), and executor between-rec checkpoints (drain only).
 - **Enforcement:** validate.py warns on stale outbox entries (> 24h).
@@ -84,7 +84,7 @@ history or persist new observations.
 **Rationale:** Deterministic local reads (no network dependency for reads), no data loss
 on SSO expiry (outbox persists until drain succeeds), idempotent flush (Iceberg deduplicates
 via ingested_at), and structurally-enforced freshness via hooks in every session lifecycle phase.
-Between-rec hooks call drain() only (not full sync()) to avoid 5x Athena query cost per rec.
+Between-rec hooks call drain() only (not full sync()) to avoid 5x warehouse query cost per rec.
 
 **Supersedes:** Nothing -- additive layer on top of Decision 50.
 **Related:** Decision 50 (Iceberg ops data store), `docs/contracts/ops-data-store.md`
@@ -97,10 +97,10 @@ Between-rec hooks call drain() only (not full sync()) to avoid 5x Athena query c
 **Superseded by:** Decision 78
 
 **Decision:** All operational structured logs (recommendations, execution plans, session telemetry,
-decisions, priority queue) are stored as append-only Iceberg tables in Athena. Current state is exposed
+decisions, priority queue) are stored as append-only Iceberg tables in the legacy query engine. Current state is exposed
 via ROW_NUMBER() views. Parquet + gzip, partitioned by `trade_date`. Located in
 `agent-platform-agent-logs/iceberg/`. The `OpsWriter` class in `scripts/ops_writer.py` handles
-staging uploads and Athena compaction. INSERT-only semantics (no MERGEs). Supersedes Decision 45.
+staging uploads and warehouse compaction. INSERT-only semantics (no MERGEs). Supersedes Decision 45.
 
 **Problem:**
 The dual-source JSONL+S3 pattern (Decision 45) causes: (1) merge conflicts on JSONL files when both
@@ -110,11 +110,11 @@ prior state, losing the history of priority queue runs and recommendation status
 drift across write sites with no enforcement mechanism.
 
 **Why append-only Iceberg over alternatives:**
-- **Iceberg vs Delta Lake:** Iceberg is natively supported by Athena v3 (already provisioned). Delta
-  Lake requires additional dependencies and a separate engine configuration.
-- **Iceberg vs direct Athena INSERT:** Append-only Iceberg avoids MERGE complexity and matches the
-  existing pattern of the `market_data` table. MERGE would require primary-key enforcement that Iceberg
-  does not natively provide in Athena v3.
+- **Iceberg vs Delta Lake:** Iceberg was natively supported by the then-current query engine (already
+  provisioned). Delta Lake requires additional dependencies and a separate engine configuration.
+- **Iceberg vs direct SQL INSERT:** Append-only Iceberg avoids MERGE complexity and matches the
+  existing table pattern. MERGE would require primary-key enforcement that Iceberg did not natively
+  provide on that engine.
 - **ROW_NUMBER() views vs MERGE:** Views are read-time deduplication -- zero write overhead, no
   locking, fully compatible with INSERT-only semantics. MERGE would require engine v3 MERGE DML
   which has higher failure risk and is slower.
@@ -126,7 +126,7 @@ drift across write sites with no enforcement mechanism.
 1. `s3_log_store.append_jsonl()` / `overwrite_jsonl()` complete their existing local/S3 writes
 2. Write-through to `OpsWriter.write(table, entry)` staged at `staging/{table}/trade_date=.../batch-{uuid}.jsonl`
 3. `session_postflight.run_auto()` calls `OpsWriter.compact_all()` at session close
-4. `compact_all()` reads staging files, builds DataFrame, calls `awswrangler.athena.to_iceberg(mode="append")`
+4. `compact_all()` reads staging files, builds DataFrame, calls the append-mode Iceberg writer
 5. Views (`ops_*_current`) provide always-fresh current state via ROW_NUMBER() deduplication
 
 **Constraints:**
@@ -249,7 +249,7 @@ This map is populated incrementally as rescue agents earn graduated autonomy.
 append-only Iceberg pipeline introduced in Decision 50. The `OpsWriter` class provides a single
 write gateway for all operational structured logs, replacing the implicit dual-source pattern.
 Decision 45 remains valid during the migration period -- local JSONL files continue to be written
-in parallel. Once all consumers migrate to Athena queries against `ops_*_current` views,
+in parallel. Once all consumers migrate to warehouse queries against `ops_*_current` views,
 Decision 45 is fully retired.
 
 **Decision:** S3 is the single source of truth for all cloud-produced logs. Local log files are read-only copies pulled from S3. Locally-produced logs write locally first and push to S3 on git push. Shared-mutable logs use `log_writer.py` (future) for atomic writes.
@@ -1002,7 +1002,7 @@ Session `agent/infra-haiku-batch-fixes` (2026-03-29):
 **Rationale:**
 - Append-friendly for versioning
 - Human-readable for debugging
-- Compatible with Athena, pandas, Python
+- Compatible with the query engine, pandas, Python
 - Easy partitioning for cost optimization
 
 **Status:** Approved - Implement in Phase 1
@@ -1022,32 +1022,32 @@ Session `agent/infra-haiku-batch-fixes` (2026-03-29):
 
 ---
 
-## 7. Iceberg Write Strategy (Decided)
+## 7. Legacy Warehouse Write Strategy (Decided)
 
-**Decision:** Use awswrangler `athena.to_iceberg()` with MERGE upsert, replacing PyIceberg.
+**Decision:** Use the awswrangler Iceberg writer with MERGE upsert, replacing PyIceberg.
 
 **Rationale:**
 - PyIceberg required packaging native binaries (pyarrow, etc.) as a custom Lambda layer — exceeded 262 MB limit
 - awswrangler is available via the AWSSDKPandas managed Lambda layer (zero custom binaries)
 - MERGE INTO via `merge_cols` provides atomic upsert: matched rows updated, new rows inserted
-- Single Athena query per write — more efficient than DELETE + INSERT (no full partition scan)
+- Single engine query per write — more efficient than DELETE + INSERT (no full partition scan)
 - Idempotent: re-running for the same day safely updates existing data
 
 **Trade-offs:**
-- Slightly slower than direct PyIceberg writes (goes through Athena SQL layer)
-- Depends on Athena engine v3 availability
+- Slightly slower than direct PyIceberg writes (goes through the engine SQL layer)
+- Depends on query-engine v3 availability
 - MERGE produces copy-on-write (COW) commits — small write amplification acceptable for daily pipeline
 
 **Status:** Decided - March 2026
 
 ---
 
-## 8. Iceberg Commit Mode (Decided)
+## 8. Legacy Warehouse Commit Mode (Decided)
 
-**Decision:** Copy-on-write (COW) — the only mode Athena Iceberg supports.
+**Decision:** Copy-on-write (COW) - the only mode the legacy engine's Iceberg support offered.
 
 **Rationale:**
-- Athena does not support merge-on-read (MOR) for Iceberg tables
+- The legacy engine did not support merge-on-read (MOR) for Iceberg tables
 - COW is optimal for this use case: reads outnumber writes ~1000:1
 - Each snapshot is self-contained — no reconciliation overhead at query time
 - Parquet files are clean after rewrite — scans are always efficient
@@ -1061,7 +1061,7 @@ Session `agent/infra-haiku-batch-fixes` (2026-03-29):
 
 **Decision:** Promote stable features from `features map<string,double>` to native Iceberg columns. Keep the map as a landing zone for experimental sources.
 
-**Context:** PySR formula discovery tests millions of combinations (e.g., `(feat_a / delta_b) * log(feat_c)`). Accessing a Map index for every operation is significantly slower than accessing a native column. Athena can predicate-push on native columns but not map values.
+**Context:** PySR formula discovery tests millions of combinations (e.g., `(feat_a / delta_b) * log(feat_c)`). Accessing a Map index for every operation is significantly slower than accessing a native column. The query engine can predicate-push on native columns but not map values.
 
 **Rationale:**
 - Native columns enable columnar predicate pushdown (Parquet statistics)
@@ -1140,11 +1140,11 @@ except ImportError:
 - Libraries provide runtime through managed Lambda layers (AWSSDKPandas); local dev may skip them
 - Sentinel class enables graceful degradation: code referencing the exception doesn't crash if the library is absent
 
-**Context:** Discovered during code review when `ServiceApiError` was initially missing from the except clause in `pysr_factory.py:save_results_to_athena()`. Local validation (pytest, ruff, mypy) did not catch the incomplete exception type, flagging a static analysis blind spot for optional dependencies.
+**Context:** Discovered during code review when `ServiceApiError` was initially missing from an optional-dependency except clause in a since-retired writer module. Local validation (pytest, ruff, mypy) did not catch the incomplete exception type, flagging a static analysis blind spot for optional dependencies.
 
 **Applies to:** AWS integrations (boto3, awswrangler), external API providers (requests)
 
-**Status:** Decided — March 2026, applied to `src/lab/pysr_factory.py`
+**Status:** Decided - March 2026, applied to a since-retired writer module
 
 ---
 

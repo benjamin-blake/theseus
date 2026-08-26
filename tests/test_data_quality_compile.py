@@ -11,7 +11,6 @@ def sample_yaml(tmp_path):
     f = d / "test.yaml"
     content = {
         "database": "test_db",
-        "athena_workgroup": "test_wg",
         "tables": {
             "table1": {
                 "view_suffix": "_v",
@@ -65,7 +64,6 @@ def test_load_checks_enforced_from_yaml(tmp_path):
     f = d / "test.yaml"
     content = {
         "database": "db",
-        "athena_workgroup": "wg",
         "tables": {
             "tbl": {
                 "row_count": {"min": 1, "enforced": False},
@@ -104,7 +102,6 @@ def test_load_checks_reads_exclude_before(tmp_path):
     f = d / "test.yaml"
     content = {
         "database": "db",
-        "athena_workgroup": "wg",
         "tables": {
             "tbl": {
                 "columns": {
@@ -183,7 +180,6 @@ def test_row_count_ignores_exclude_before_in_sql(tmp_path):
     f = d / "test.yaml"
     content = {
         "database": "db",
-        "athena_workgroup": "wg",
         "tables": {
             "tbl": {
                 "row_count": {"min": 1, "enforced": True, "exclude_before": "2026-01-01"},
@@ -232,13 +228,13 @@ def test_build_clause8_checks_table_filter():
     assert dq.build_clause8_checks(spec, "agent_platform", table_filter="ops_decisions") == []
 
 
-def test_tombstone_check_rewrites_to_ducklake_no_athena():
-    """A tombstone check on an ops table rewrites to {tbl} (DuckLake), not the Athena view (High #2)."""
+def test_tombstone_check_rewrites_to_ducklake_placeholder():
+    """A tombstone check on an ops table rewrites to {tbl} (DuckLake), not a qualified view (High #2)."""
     import scripts.data_quality_runner as dq
 
     checks = dq.build_tombstone_checks([{"table": "ops_recommendations", "id": "rec-9"}], database="agent_platform")
     assert checks and checks[0].test_type == "tombstone_resurrection"
     rewritten = dq.to_ducklake_sql(checks[0].sql, "ops_recommendations", "agent_platform")
     assert "{tbl}" in rewritten
-    assert "agent_platform.ops_recommendations" not in rewritten  # no Athena escape hatch
+    assert "agent_platform.ops_recommendations" not in rewritten  # no direct-view escape hatch
     assert checks[0].table in dq._OPS_TABLES  # so main() flips it to backend=ducklake

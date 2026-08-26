@@ -114,19 +114,6 @@ class TestBuildLambdaConfigScope:
             assert "config/agent" not in src, f"Agent config must not be in Lambda zip: {src}"
             assert "config/data_quality" not in src, f"DQ config must not be in Lambda zip: {src}"
 
-    def test_ops_compaction_copies_config_yaml(self, tmp_path):
-        """build_ops_compaction_package copies config.yaml (not blanket config/ tree)."""
-        copy2_calls, _ = self._run_build("build_ops_compaction_package", tmp_path)
-        copied_sources = [src for src, _ in copy2_calls]
-        assert any("config.yaml" in s and "config.yaml.example" not in s for s in copied_sources)
-
-    def test_ops_compaction_no_blanket_config_copytree(self, tmp_path):
-        """build_ops_compaction_package does NOT call shutil.copytree(ROOT/"config", ...)."""
-        _, copytree_calls = self._run_build("build_ops_compaction_package", tmp_path)
-        for src, _ in copytree_calls:
-            assert not src.endswith("/config"), f"Blanket config copytree detected: {src}"
-            assert "config/agent" not in src, f"Agent config must not be in Lambda zip: {src}"
-
     def test_build_lambda_source_has_no_hardcoded_src_or_config_copytree(self):
         """build_lambda_packaging.py source must not hardcode shutil.copytree(ROOT/"src") or ROOT/"config".
 

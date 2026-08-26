@@ -21,11 +21,11 @@ stdout is a one-line summary; Read logs/.preflight-report.json for the full cons
 
 Preflight runs `git fetch origin main` and emits `main_freshness` (status, commits_behind, commits_ahead, main_files_changed_since_branch). Do NOT manually `git pull --rebase origin main` here -- that's a destructive operation on a feature branch and should only happen via the Step 4 Main Divergence Assessment after Scope is known and the human has chosen to rebase.
 
-The report is slim by design: `platform_roadmap` and `product_roadmap` carry only `next_eligible` + `strategic_pending`, and `non_automatable_details` is dropped (Decision 73 suspends per-rec review). If you need the dropped detail, call the underlying module directly (e.g., `bin/venv-python -m scripts.roadmap.platform_roadmap`).
+The report is slim by design: `platform_roadmap` carries only `next_eligible` + `strategic_pending`, and `non_automatable_details` is dropped (Decision 73 suspends per-rec review). If you need the dropped detail, call the underlying module directly (e.g., `bin/venv-python -m scripts.roadmap.platform_roadmap`).
 
 Apply the exact condition-based responses (for `venv_ok`, `creds_status`, uncommitted changes, `main_freshness`, non-automatable recs, `data_quality`, etc.) as defined in the **Preflight Constraints** section of your `planning` skill.
 
-The report includes `telemetry_health` (pipeline operational health) and `data_quality` (declarative check coverage and last run verdict). Together these answer: is data flowing, do we have quality assertions defined, and are those assertions passing? See the planning skill for interpretation rules.
+The report includes `data_quality` (declarative check coverage and last run verdict). It answers: do we have quality assertions defined, and are those assertions passing? See the planning skill for interpretation rules.
 
 After preflight completes successfully, open a telemetry session:
 ```bash
@@ -86,7 +86,7 @@ If the result is `main`, STOP. Derive the plan slug from the task description (i
 ## Step 8: Write PLAN-{slug}.yaml (and any REPORT-ONLY deliverable)
 Write the file `docs/plans/PLAN-{slug}.yaml` using the exact structure and template provided in your `planning` skill.
 
-**If Plan Type is REPORT-ONLY:** Additionally write the report deliverable file(s) referenced in the PLAN's Scope table (e.g. `docs/INTENT-{slug}.md`, `docs/REPORT-{slug}.md`). The deliverable IS the substantive output of a REPORT-ONLY plan; the PLAN file itself is just the planning artefact that points at it. Both files land in the same initial commit.
+**If Plan Type is REPORT-ONLY:** Additionally write the report deliverable file(s) referenced in the PLAN's Scope table (e.g. `docs/REPORT-{slug}.md`). The deliverable IS the substantive output of a REPORT-ONLY plan; the PLAN file itself is just the planning artefact that points at it. Both files land in the same initial commit.
 
 After writing, commit to the branch and push immediately, so no unpushed commit spans a gate turn boundary:
 ```bash

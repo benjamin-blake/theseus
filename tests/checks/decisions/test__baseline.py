@@ -127,7 +127,7 @@ class TestBaselineReaderFnType:
         assert _baseline.BaselineReaderFn is not None
 
     def test_body_reader_type_alias_is_exported(self) -> None:
-        """BaselineBodyReaderFn is the companion seam validate_live_entry_immutability imports."""
+        """BaselineBodyReaderFn is the companion body-reader seam this module exports."""
         assert _baseline.BaselineBodyReaderFn is not None
 
 

@@ -218,7 +218,7 @@ Three properties of this specification are load-bearing and easy to miss:
 
 ### Dual-purpose intent (requester-supplied)
 
-This is the SAME machine intended to run the trading product's symbolic-regression / formula-discovery
+This is the SAME machine intended to run the platform's heavy symbolic-regression / formula-discovery
 workload (PySR). `AGENTS.md` states "PySR runs on a separate compute node"; the requester confirms
 that node and this proposed runner are one physical machine.
 

@@ -353,7 +353,7 @@ class TestDefaultDriftRecFinder:
         ]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             result = _default_drift_rec_finder(url)
         assert result == "rec-2695"
         reader.current_state.assert_called_once_with("ops_recommendations", row_filter="source = 'tf_drift'")
@@ -363,7 +363,7 @@ class TestDefaultDriftRecFinder:
 
         reader = MagicMock()
         reader.current_state.return_value = [{"id": "rec-1", "status": "open", "context": "unrelated"}]
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert _default_drift_rec_finder("https://x/runs/999") is None
 
     def test_closed_rec_with_matching_url_not_returned(self):
@@ -372,7 +372,7 @@ class TestDefaultDriftRecFinder:
         url = "https://x/runs/999"
         reader = MagicMock()
         reader.current_state.return_value = [{"id": "rec-1", "status": "closed", "context": f"run {url}"}]
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert _default_drift_rec_finder(url) is None
 
     def test_reader_unreachable_fails_open(self, caplog):
@@ -383,7 +383,7 @@ class TestDefaultDriftRecFinder:
 
         reader = MagicMock()
         reader.current_state.side_effect = RuntimeError("ducklake_reader 'read_ops_current' failed (HTTP 503): ...")
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             with caplog.at_level(logging.WARNING):
                 result = _default_drift_rec_finder("https://x/runs/999")
         assert result is None
@@ -395,7 +395,7 @@ class TestDefaultDriftRecFinder:
 
         reader = MagicMock()
         reader.current_state.side_effect = RuntimeError("boom -- unrelated to connectivity")
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             with pytest.raises(RuntimeError, match="boom"):
                 _default_drift_rec_finder("https://x/runs/999")
 
