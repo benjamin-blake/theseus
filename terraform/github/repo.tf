@@ -1,11 +1,3 @@
-# Import the existing repository so Terraform manages it without recreating it.
-# Run: terraform -chdir=terraform/github import github_repository.this agent-platform
-# Or use the import block below (Terraform 1.5+).
-import {
-  to = github_repository.this
-  id = var.repository_name
-}
-
 resource "github_repository" "this" {
   name       = var.repository_name
   visibility = "public"
@@ -109,9 +101,12 @@ resource "github_repository_ruleset" "main_protection" {
 
     required_linear_history = true
 
-    # No required_signatures: intentional -- do not add. CC-web's harness signing key is a
-    # 0-byte placeholder, so requiring signatures would wedge the Decision 76 squash-merge
-    # flow. See AGENTS.md "### Commit signing (CC-web: unsigned is expected)".
+    # No required_signatures: intentional -- do not add. main-protection is a deliberately
+    # MINIMAL rule set (required checks limited to pr-validate and terraform-validate, admin
+    # bypass always, strict = false, terraform-converged advisory) -- every additional rule
+    # needs its own justification, and none exists for required_signatures. Server-side
+    # verification is NOT the blocker: GitHub reports these commits Verified. See AGENTS.md
+    # "### Commit signing (CC-web: SSH-signed via harness signer)".
   }
 }
 

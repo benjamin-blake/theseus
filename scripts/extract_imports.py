@@ -2,6 +2,7 @@
 
 import ast
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 _DEFAULT_REPO_ROOT = Path(__file__).parent.parent
@@ -35,23 +36,34 @@ def _resolve_relative_import(
     return None
 
 
+def _walk_source(file_path: Path) -> Iterable[ast.AST] | None:
+    """Read, parse and walk file_path's AST; None when unreadable or unparseable.
+
+    Split out of extract_first_party_imports so that function's own branch count stays under
+    the Decision 43 cyclomatic limit -- the two try/except pairs live here instead.
+    """
+    try:
+        return ast.walk(ast.parse(file_path.read_text(encoding="utf-8"), filename=str(file_path)))
+    except (OSError, SyntaxError):
+        return None
+
+
 def extract_first_party_imports(
     file_path: Path,
     roots: tuple[str, ...] = ("src", "scripts"),
     _repo_root: Path | None = None,
+    _nodes: Iterable[ast.AST] | None = None,
 ) -> list[str]:
     """Return unique first-party module names imported in file_path.
 
     Covers absolute src.*/scripts.* imports AND relative imports (ImportFrom.level > 0).
     Returns [] on syntax error or missing file. Order: first appearance.
+    `_nodes` supplies an already-materialized `ast.walk()` of file_path's AST so a caller
+    running several scans over one file (scripts.dependency_graph.build_graph) reads, parses
+    and walks it once; file_path is still the anchor for relative-import resolution.
     """
-    try:
-        source = file_path.read_text(encoding="utf-8")
-    except (OSError, IOError):
-        return []
-    try:
-        tree = ast.parse(source, filename=str(file_path))
-    except SyntaxError:
+    nodes = _nodes if _nodes is not None else _walk_source(file_path)
+    if nodes is None:
         return []
 
     seen: set[str] = set()
@@ -62,7 +74,7 @@ def extract_first_party_imports(
             seen.add(mod)
             results.append(mod)
 
-    for node in ast.walk(tree):
+    for node in nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 m = alias.name

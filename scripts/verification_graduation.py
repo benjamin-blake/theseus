@@ -54,6 +54,139 @@ class GraduationError(RuntimeError):
 
 
 # ---------------------------------------------------------------------------
+# Registry loader: config/agent/verification_registry/entries/<check_id>.yaml (VF-01 re-grain)
+# ---------------------------------------------------------------------------
+#
+# The registry is a directory of one YAML mapping per check_id, keyed by filename -- never a
+# manifest or an index. entries/deprecated/ is a reserved, loader-excluded retirement subtree
+# (git mv a record there to retire it). REGISTRY_DIR_REL/LEGACY_FLAT_BASENAME are shared, public
+# path vocabulary (composed from path SEGMENTS, never joined into one literal string) so a sibling
+# module needing the pre-migration flat path -- e.g. the flat-file-resurrection leg, checking it
+# never reappears -- imports these constants instead of re-deriving the literal segment-adjacent
+# form the standing sweep (VP step 14 / registry-flat-path-no-live-refs) is built to catch.
+
+ENTRIES_DIRNAME = "entries"
+DEPRECATED_DIRNAME = "deprecated"
+LEGACY_FLAT_BASENAME = "registry.yaml"
+REGISTRY_DIR_REL = Path("config") / "agent" / "verification_registry"
+REGISTRY_ENTRIES_REL = REGISTRY_DIR_REL / ENTRIES_DIRNAME
+
+
+def shard_path_for(check_id: str, repo_root: str | Path | None = None) -> Path:
+    """The on-disk path a graduated record for `check_id` lives (or would be written) at."""
+    root = Path(repo_root) if repo_root is not None else ROOT
+    return root / REGISTRY_ENTRIES_REL / f"{check_id}.yaml"
+
+
+def load_entries(repo_root: str | Path | None = None) -> list[dict]:
+    """The live registry: every record under entries/, excluding entries/deprecated/, sorted by
+    filename for deterministic order.
+
+    Discovery is a directory glob, never a manifest or a cached count (no index to drift from the
+    filesystem). ``Path.glob("*.yaml")`` is single-level (non-recursive), so entries/deprecated/
+    is excluded structurally by the glob itself, not by a documented convention or a name filter.
+    Raises GraduationError (fail-loud, Decision 55) on a malformed or non-mapping shard -- a
+    silent skip would make a live record invisible to the differential gate without a trace.
+    """
+    root = Path(repo_root) if repo_root is not None else ROOT
+    entries_dir = root / REGISTRY_ENTRIES_REL
+    if not entries_dir.is_dir():
+        return []
+
+    import yaml as _yaml  # noqa: PLC0415
+
+    rows: list[dict] = []
+    for path in sorted(entries_dir.glob("*.yaml")):
+        try:
+            data = _yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise GraduationError(f"load_entries: malformed shard {path.relative_to(root)}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise GraduationError(f"load_entries: shard {path.relative_to(root)} is not a mapping")
+        rows.append(data)
+    return rows
+
+
+def _ref_resolves(ref: str, root: Path) -> bool:
+    result = _run_git(["rev-parse", "--verify", "-q", ref], root)
+    return result.returncode == 0
+
+
+def _shard_paths_at_ref(ref: str, root: Path) -> list[str]:
+    """Repo-relative shard file paths at `ref`, excluding entries/deprecated/. Empty when the
+    entries/ directory does not exist at `ref` (git ls-tree on an absent path prints nothing,
+    exit 0 -- distinguished from a genuine git failure by the caller checking `ref` resolved)."""
+    rel_dir = REGISTRY_ENTRIES_REL.as_posix()
+    result = _run_git(["ls-tree", "-r", "--name-only", ref, "--", rel_dir], root)
+    if result.returncode != 0:
+        return []
+    deprecated_prefix = f"{rel_dir}/{DEPRECATED_DIRNAME}/"
+    return sorted(
+        line
+        for line in result.stdout.splitlines()
+        if line.strip() and line.endswith(".yaml") and not line.startswith(deprecated_prefix)
+    )
+
+
+def entries_at_ref(ref: str, repo_root: str | Path | None = None) -> list[dict] | None:
+    """The registry baseline at git ref `ref`, spanning both the sharded and legacy-flat layouts.
+
+    Four branches (both required so a lost baseline never silently misreads every live record as
+    newly added -- differential admission costs ~7.1s/record, i.e. ~56 minutes over 476 records):
+      (i)   `ref` resolves, entries/ present at `ref`      -> the shard rows at that ref.
+      (ii)  `ref` resolves, entries/ absent, legacy flat
+            registry.yaml present at `ref`                 -> the legacy flat entries (pre-migration ref).
+      (iii) `ref` resolves, BOTH layouts absent             -> GraduationError (fail loud, Decision 55) --
+            never an empty baseline.
+      (iv)  `ref` itself does not resolve                   -> None (advisory TOLERATE; the caller prints
+            a skip reason and skips the differential leg, matching _marker_guard's
+            "SKIP: origin/main unreachable" posture).
+
+    A caller distinguishes (iv) from a genuinely empty baseline via the None/list[dict] return
+    type -- None means "could not determine", never "determined empty."
+    """
+    root = Path(repo_root) if repo_root is not None else ROOT
+    if not _ref_resolves(ref, root):
+        return None  # (iv)
+
+    import yaml as _yaml  # noqa: PLC0415
+
+    shard_paths = _shard_paths_at_ref(ref, root)
+    if shard_paths:  # (i)
+        rows: list[dict] = []
+        for rel in shard_paths:
+            shown = _run_git(["show", f"{ref}:{rel}"], root)
+            if shown.returncode != 0:
+                continue
+            try:
+                data = _yaml.safe_load(shown.stdout)
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                rows.append(data)
+        return rows
+
+    flat_rel = (REGISTRY_DIR_REL / LEGACY_FLAT_BASENAME).as_posix()
+    flat_shown = _run_git(["show", f"{ref}:{flat_rel}"], root)
+    if flat_shown.returncode == 0:  # (ii) legacy pre-migration layout
+        try:
+            data = _yaml.safe_load(flat_shown.stdout)
+        except Exception:
+            return []
+        if not isinstance(data, dict):
+            return []
+        entries = data.get("entries") or []
+        return entries if isinstance(entries, list) else []
+
+    # (iii) ref resolves but neither layout exists there -- fail loud, never an empty baseline.
+    raise GraduationError(
+        f"entries_at_ref: ref {ref!r} resolves but neither {REGISTRY_ENTRIES_REL.as_posix()}/ nor "
+        f"{flat_rel} exists there -- refusing to return an empty baseline (would misread every live "
+        "record as newly added)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Materialization: registry row (check_spec) -> a runnable kernel check
 # ---------------------------------------------------------------------------
 

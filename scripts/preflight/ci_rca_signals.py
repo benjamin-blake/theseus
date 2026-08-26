@@ -42,7 +42,9 @@ def _derive_ci_rca_dispute_open(rows: list[dict]) -> list[dict]:
 
 
 def _derive_ci_rca_undetermined_open(cache_rows: list[dict]) -> list[dict]:
-    """Return ALL open source=ci_rca recs, rca_confidence=undetermined (untruncated; CIRCA-10 moved the cap to print time)."""
+    """Return ALL open source=ci_rca recs with rca_confidence in {low, undetermined} -- a
+    self-rated-low-confidence RCA is not sound either, not just a literal abstention (untruncated;
+    CIRCA-10 moved the cap to print time)."""
     import json as _json  # noqa: PLC0415
 
     results = []
@@ -58,7 +60,7 @@ def _derive_ci_rca_undetermined_open(cache_rows: list[dict]) -> list[dict]:
             ctx = _json.loads(ctx_raw)
         except Exception:
             continue
-        if ctx.get("rca_confidence") == "undetermined":
+        if ctx.get("rca_confidence") in ("low", "undetermined"):
             results.append(row)
     return results
 
@@ -93,7 +95,7 @@ def _derive_ci_rca_since(rows: list[dict], since_ts: str) -> list[dict]:
 
 
 def _fetch_ci_rca_undetermined_recs(cache_rows: object = _common._READER_SENTINEL) -> list[dict]:
-    """Return all open ci_rca recs with rca_confidence=undetermined -- from warm cache only."""
+    """Return all open ci_rca recs with rca_confidence in {low, undetermined} -- from warm cache only."""
     if cache_rows is not _common._READER_SENTINEL:
         return [] if cache_rows is None else _derive_ci_rca_undetermined_open(cache_rows)  # type: ignore[arg-type]
     return []
@@ -101,13 +103,13 @@ def _fetch_ci_rca_undetermined_recs(cache_rows: object = _common._READER_SENTINE
 
 def print_ci_rca_undetermined_recs(recs: list[dict]) -> None:
     """Print advisory abstention-review section (CIRCA-10): displays <=5, notes overflow past 5."""
-    print("\n--- CI-RCA Abstention Review (advisory; rca_confidence=undetermined) ---")
+    print("\n--- CI-RCA Abstention Review (advisory; rca_confidence in {low, undetermined}) ---")
     if not recs:
         print("  (none)")
         print()
         return
-    print("  Evidence bundle abstained on these recs -- review the proximate cause manually.")
-    print("  Advisory only: open ci_rca recs already hard-block /plan via Decision 73 L5.")
+    print("  A self-rated low-confidence or undetermined RCA classification -- review the proximate cause manually.")
+    print("  Advisory only: open ci_rca recs are triaged under Decision 73 L5 into a hard block or a likely-resolved prompt.")
     for rec in recs[:5]:
         rec_id = rec.get("id", "unknown")
         title = rec.get("title", "")
@@ -115,7 +117,7 @@ def print_ci_rca_undetermined_recs(recs: list[dict]) -> None:
         created = rec.get("created_timestamp", "")
         print(f"  {rec_id} [{priority}] {created}: {title}")
     if len(recs) > 5:
-        print(f"  ... showing 5 of {len(recs)} open undetermined recs")
+        print(f"  ... showing 5 of {len(recs)} open low-confidence/undetermined recs")
     print()
 
 
@@ -254,6 +256,65 @@ def _check_ci_rca_liveness(creds_status: str, cache_rows: object = _common._READ
         return None
 
     return {"run_url": run.get("url", ""), "elapsed_minutes": round(elapsed_minutes, 1)}
+
+
+def _check_convergence_sensor_liveness(creds_status: str) -> dict | None:
+    """Return alert dict when the latest scheduled convergence-health.yml run did not succeed.
+
+    Modelled directly on _check_ci_rca_liveness: same creds_status guard, same subprocess `gh run
+    list` shape with a timeout, same degrade-to-None error handling. Fires on the WORKFLOW's own
+    conclusion, independent of the convergence record's colour -- this closes the exact blind spot
+    the 2026-08-17 incident exposed: the sensor step raised (an unregistered source) and exited
+    non-zero on ~20 consecutive scheduled runs over 22 hours, but the convergence RECORD stayed
+    green throughout (only a separate, unrelated writer flips it), so preflight's existing
+    convergence_health.status read reported healthy the whole time. Returns its own payload shape
+    under its own report key -- never touches _check_convergence_rca_gap's payload contract.
+
+    Returns None when credentials are unavailable, the gh call fails/times out/raises, the
+    payload is malformed, or the latest run's conclusion is success or not yet terminal (null --
+    e.g. a still-running scheduled tick, which is not evidence of anything wrong yet).
+    """
+    if creds_status != "ok":
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "run",
+                "list",
+                "--branch",
+                "main",
+                "--workflow",
+                "convergence-health.yml",
+                "--limit",
+                "1",
+                "--json",
+                "conclusion,createdAt,url",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+        runs = json.loads(result.stdout)
+        if not runs:
+            return None
+        run = runs[0]
+    except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError, IndexError):
+        return None
+
+    conclusion = run.get("conclusion")
+    if not conclusion or conclusion == "success":
+        return None
+
+    return {
+        "run_url": run.get("url", ""),
+        "conclusion": conclusion,
+        "created_at": run.get("createdAt", ""),
+    }
 
 
 _CONVERGENCE_RCA_GAP_GRACE_MINUTES = 30

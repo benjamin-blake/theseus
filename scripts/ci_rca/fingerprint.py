@@ -9,7 +9,7 @@ tests get DIFFERENT fingerprints (anti-masking, rec-2710) while one infra error 
 shared src/ helper groups across the different tests that surface it (same cause).
 
 A literal "v2" salt is folded into the hashed payload so a v2 fingerprint can never collide with
-a historical v1 fingerprint (scripts/ci_rca/evidence.py's retained legacy _compute_fingerprint) --
+a historical v1 fingerprint (scripts/ci_rca/evidence's retained legacy _compute_fingerprint) --
 no warehouse migration is required; the two keyspaces are disjoint by construction.
 
 Public API: compute_fingerprint_v2, error_signature_from_junit, error_signature_from_log_tail,
@@ -238,6 +238,29 @@ def error_signature_from_log_tail(log_text: str, tool: str) -> str:
     return f"{tool}::{normalize_message_head(representative)}"
 
 
+# --- declared-detail keying (coverage-failure-attribution) --------------------------------
+
+
+def signature_for_declared_detail(check: str, detail: list[str]) -> str:
+    """Deterministic, PATH-PRESERVING signature derived from a check's own declared
+    registry.failure_detail() (docs/contracts/check-accounting.yaml's failed_check_details,
+    scripts.checks.registry / scripts.checks.validation_result) -- never routed through
+    normalize_message_head, whose _PATH_RE would collapse any multi-segment path to the literal
+    token "<path>" and re-introduce the exact same-fingerprint collision this channel exists to
+    prevent (e.g. scripts/checks/hygiene/validate_vacuity_justified.py and
+    scripts/ci_rca/taxonomy.py both normalize to "scripts<path>").
+
+    `detail` is a check's own declared list of per-failure strings (e.g.
+    "scripts/foo.py: 95.8% line coverage (expected >= 100%)" for validate_test_coverage). Each
+    item's leading "<path>: " head is extracted verbatim (falling back to the item itself when no
+    ": " separator is present, so an unrecognized shape still contributes something
+    discriminating rather than being silently dropped); the extracted set is sorted and
+    deduplicated so the signature is deterministic and order-independent, then joined with the
+    check name so distinct checks declaring the same file never collide."""
+    paths = sorted({(item.split(": ", 1)[0] if ": " in item else item) for item in detail})
+    return f"{check}::{'::'.join(paths)}"
+
+
 # --- collection-error keying ----------------------------------------------------------------
 
 
@@ -245,6 +268,17 @@ def signature_for_collection_error(module_path: str) -> str:
     """A pytest collection error keys on the failing MODULE PATH, not a traceback frame (there
     is no test body to attribute the failure to -- the module itself failed to import/collect)."""
     return f"collection_error::{module_path}"
+
+
+# --- evidence-insufficient refusal keying (ci-rca-evidence-fidelity) -----------------------
+
+
+def signature_for_evidence_insufficient(truncation_reason: str) -> str:
+    """Degenerate deterministic signature for the evidence_insufficient refusal verdict, keyed
+    on truncation_reason only (never on wherever the byte/line cap happened to land -- that
+    would fabricate IDENTITY instead of CATEGORY). Two distinct truncated logs sharing a
+    truncation_reason dedup onto the SAME chain; differing reasons key differently."""
+    return f"evidence_insufficient::{truncation_reason}"
 
 
 # --- mass-failure collapse -------------------------------------------------------------------

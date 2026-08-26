@@ -1,9 +1,50 @@
 ---
 # Named read-time projection contract for CI-RCA identity + lifecycle (ci-rca-identity-lifecycle).
-# This file is intentionally non-ritual (no contract:/class: block) per the CD.25 gate
-# (validate.py::validate_contract_drift skips files without a top-level contract: key) --
-# mirrors docs/contracts/recommendation-relevance.yaml's shape and Decision 118/CD.25 declaration.
+# A Class D mechanism contract (migration-step-3-grandfathering, T2.56 migration step 3) as of
+# the `contract:` block below -- mirrors docs/contracts/recommendation-relevance.yaml's shape.
 # Field semantics only (Decision 86): rationale lives in the Decision, not here.
+contract:
+  id: ci-rca-lifecycle
+  class: D
+  contract_version: 1
+  status: active
+  description: >-
+    Class D mechanism-contract envelope for this file (migration-step-3-grandfathering, T2.56
+    migration step 3). The projection-field body itself is unchanged by this envelope.
+  subject: ci-rca-lifecycle
+  evaluator:
+    check: validate_ci_rca_lifecycle_projection
+
+amendment_log:
+  - date: "2026-08-22"
+    semantic_break: false
+    change_class: mechanism_narrow
+    summary: >-
+      PLAN-coverage-failure-attribution: non_pytest_fallback below now documents the
+      detail-preferred derivation. scripts.ci_rca.evidence._resolve_error_signatures prefers
+      scripts.ci_rca.fingerprint.signature_for_declared_detail(check, detail) over
+      error_signature_from_log_tail whenever the failing check declared registry.failure_detail()
+      (surfaced via scripts.ci_rca.taxonomy._load_check_details' failed_check_details read).
+      error_signature_from_log_tail remains the fallback for a detail-free check, unchanged. Fixes
+      the rec-3212 misattribution class: every non-pytest validate.py check previously collapsed
+      onto ONE constant log-tail line (validate.py's own closing summary), so every per-file
+      coverage failure in a workflow shared one fingerprint regardless of which file failed.
+  - date: "2026-08-14"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      rec-3059 enforcer build: flipped the evaluator from the routed none_grandfathered debt
+      record to {check: validate_ci_rca_lifecycle_projection}, which asserts projection_fields
+      is a subset of the live CiRcaContext, escape_class's declared enum equals the live
+      pydantic pattern alternation, and watched_workflow_set's pointers resolve. NARROWING: the
+      erased route's mechanism text said the check would "match projection_fields and
+      watched_workflow_set... the taxonomy file" -- the landed check narrows this to asserting
+      watched_workflow_set's own pointers (source_of_truth, evaluator, evaluator_module) resolve,
+      because the substantive per-workflow agreement between config/ci_rca_taxonomy.yaml and
+      .github/workflows/*.yml is already owned by validate_ci_rca_adjudication (named by this
+      contract's own watched_workflow_set.evaluator field). EvaluatorSpec is exactly-one-kind, so
+      the flip deletes the route text; this entry records the narrowing so it leaves a trace.
+
 projection_id: ci-rca-lifecycle
 version: 1
 status: active
@@ -33,9 +74,17 @@ fingerprint_v2:
       headers), never a traceback frame -- there is no test body to attribute a collection
       failure to. failure_category=collection_error (config/ci_rca_taxonomy.yaml).
     non_pytest_fallback: >-
-      error_signature_from_log_tail(log_text, tool) -- "{tool}::{normalized-representative-line}",
-      preferring a terraform-style "Error: ..." line when present (covers terraform-apply-sandbox
-      apply failures, Decision 92).
+      For a check that declared registry.failure_detail() this run (PLAN-coverage-failure-
+      attribution, surfaced via failed_check_details / scripts.ci_rca.taxonomy._load_check_
+      details), scripts.ci_rca.evidence._resolve_error_signatures prefers
+      scripts.ci_rca.fingerprint.signature_for_declared_detail(check, detail) -- a deterministic,
+      PATH-PRESERVING signature derived from the check's own declared per-failure detail (e.g.
+      validate_test_coverage's per-file coverage_errors), never routed through
+      normalize_message_head (whose _PATH_RE would collapse any multi-segment path to the literal
+      token "<path>" and re-collide two distinct failing files). Detail-free checks (and every
+      check before this plan) fall back to error_signature_from_log_tail(log_text, tool) --
+      "{tool}::{normalized-representative-line}", preferring a terraform-style "Error: ..." line
+      when present (covers terraform-apply-sandbox apply failures, Decision 92) -- unchanged.
     mass_failure_collapse: >-
       collapse_mass_failure(signatures, threshold=5) -- when a run produces more than ~5 distinct
       NEW signatures, ALL bundles collapse into ONE run-level record instead of fanning out.
@@ -103,6 +152,104 @@ escape_attribution:
       failed post-merge -- an escape --pre's channels could not explain; flagged for manual
       review, never silently assumed benign.
 
+# PLAN-ci-rca-evidence-scope-declaration: completes GAL-01's bounded retrieval envelope on the
+# SCOPE axis (which steps were shown to the agent) rather than the VOLUME axis (how much of a
+# shown step's log survived truncation) -- the two are orthogonal and both live in
+# retrieval_evidence, never conflated.
+evidence_scope:
+  scope_field: >-
+    retrieval_evidence.scope (scripts/ci_rca/log_evidence.py SCHEMA ci-rca-log-evidence/v2) is a
+    list keyed BY JOB, one entry per FAILED job: {job_id, steps: [{step_index, conclusion,
+    log_retrieved}, ...]}. It is a second per-job structure parallel to
+    failed_jobs[].failed_steps, kept separate rather than nested inside failed_jobs because
+    failed_jobs' shape is pinned by _validate_jobs and downstream consumers -- widening it would
+    move the blast radius well past this contract. `scope` lists EVERY step the job executed, not
+    just the failed ones; the validator can only enforce a superset of failed_steps (it cannot see
+    producer-side totality), so totality is a producer-side test obligation
+    (tests/test_ci_rca_fetch_logs.py::TestScopeStepTableTotality), not a validator guarantee.
+  conclusion_domain: >-
+    A scope step's conclusion admits {failure, timed_out, cancelled, success, skipped, null} --
+    strictly wider than failed_steps' closed {failure, timed_out, cancelled}. null covers a
+    not-started step, routine in a cancelled job (_failed_jobs explicitly selects cancelled jobs).
+    Copying failed_steps' narrower enum into the scope validator would reject every real
+    envelope: publish_envelope's ValueError propagates out of fetch_run_log to
+    fetch_logs.main(), which converts it to rc=1 -- the whole CI-RCA job fails and NO rec is filed.
+  log_retrieved_derivation: >-
+    Derived STRUCTURALLY in scripts/ci_rca/fetch_logs.py, never by searching `body`.
+    retrieval_path="primary" (gh run view --log-failed, which returns only failed steps' logs):
+    true exactly for steps whose conclusion is in {failure, timed_out, cancelled}.
+    retrieval_path="fallback" (gh run view --job <id> --log, which returns a queried job's WHOLE
+    log): true for every step of a job in fallback_selection.queried_job_ids, false for every step
+    of a job in unqueried_job_ids.
+  volume_orthogonality: >-
+    log_retrieved means "this step's log was within the retrieval request's scope", not "every
+    line of it is present in body". No validation rule couples log_retrieved to
+    limits.complete/truncation_reason -- a truncated body can never reject a valid envelope, and a
+    step marked log_retrieved=true can still have had its log volume-truncated; `limits` remains
+    the sole reporter of that separate axis.
+  stamp_versus_echo: >-
+    Two distinct CiRcaContext keys, never one. unobserved_steps_authoritative is portal-derived:
+    stamped in code at scripts/ops_portal/ci_rca_runtime.py (beside fingerprint/failure_category/
+    affected_nodeids/escape_class) from the VERIFIED evidence bundle's retrieval_evidence.scope,
+    computed as every {job_id, step_index} pair with log_retrieved=false. unobserved_steps is
+    agent-authored: the agent's own comprehension echo, derived (per the ci-rca.md Step 4
+    template) from the same bundle field, ideally identical to the stamp but authored
+    independently. A shared key would let the code stamp overwrite the agent's echo before the
+    cross-check compares them, making the check vacuous -- this applies ci-rca-lifecycle's
+    in-code principle (constraints, below) BY ANALOGY: an evidence-scope fact is not literally one
+    of "the fingerprint and every dedup/regression/inactivity/escape decision", so the rule did not
+    previously bind it; this contract extends that enumeration to cover it. The echo itself stays
+    agent-authored and that is correct -- its semantics are "what the agent believed it did not
+    observe", a claim about the agent that only the agent can author.
+  cross_check_5: >-
+    scripts/ops_portal/ci_rca_runtime.py's _run_ci_rca_cross_check compares unobserved_steps
+    against unobserved_steps_authoritative as SETS of {job_id, step_index} pairs (order- and
+    duplicate-insensitive). Absent, subset, superset, wrong-set, and a flat-index (non-pair) echo
+    all stamp cross_check_check_5 onto warn_mode_reject in warn mode and raise in strict mode; an
+    exact-pair-set match stamps nothing. A bundle carrying no scope block (pre-dating this plan)
+    degrades silently -- no stamp is written and check-5 does not run.
+  honesty_bounds: >-
+    Three bounds, stated rather than implied. (i) PROSE: check-5 enforces DISCLOSURE, not honesty
+    -- an agent that echoes correctly and then still narrates about those steps as if observed is
+    compliant with check-5. (ii) VOLUME: the set enumerates scope-axis blind spots only; a step
+    marked log_retrieved=true whose log was cut by `limits` truncation is a real blind spot this
+    field will never contain -- `limits` remains the sole reporter of that axis (see
+    volume_orthogonality above). (iii) MODE: CI_RCA_STRICT_MODE defaults to warn, so check-5 tags
+    rather than blocks on landing -- this is instrumentation that becomes enforcement if and when
+    strict mode is enabled, not a preventive gate today.
+  bypass_chain: >-
+    check-5's non-effective paths, named rather than left implicit. UNREACHABLE:
+    _run_ci_rca_cross_check runs only when source=='ci_rca' and context_v2_json is not None and
+    not migration_mode (ops_data_portal.py); within it, returns early when evidence_bundle_ref is
+    absent (including the rca_confidence='undetermined' branch, which returns with no stamp even
+    in strict mode) and when the bundle file is not found locally -- the bundle-absent route is
+    what the agent instructions explicitly endorse for graceful degradation, and its accepted
+    mitigation is that it already forces mandatory human review via rca_confidence='undetermined'.
+    REACHED-BUT-DISCARDED, the structurally larger case: the cross-check runs, then on an
+    open-fingerprint match the write-time dedup backstop calls bump_ci_rca_occurrence and returns
+    the existing rec id WITHOUT inserting -- the freshly computed stamp and any
+    cross_check_check_5 tag are thrown away. That is the dominant path for a RECURRING failure --
+    precisely the class this machinery exists for. Accepted consequence: check-5 is effective on
+    first occurrence only; recurrences are covered by the occurrence bump and the existing chain
+    lifecycle (status_aware_chain above), not by this check.
+  gh_json_degradation: >-
+    scripts/ci_rca/fetch_logs.py builds the step table by positional index
+    (enumerate(steps, 1)), deliberately NOT the GitHub payload's own step `number`, because the
+    existing failed_steps entries already use the positional convention and the two must agree.
+    If `steps` is absent for a job in the `gh run view --json jobs` payload, that job's scope
+    entry has an empty steps list, contributes nothing to unobserved_steps_authoritative, and
+    check-5 silently no-ops for that job -- a fixture cannot exercise this GitHub-payload-shape
+    edge, so it is recorded here as a known, accepted degradation rather than tested.
+  consumer_statement: >-
+    AC12: check-5 consumes the COMPUTED authoritative set at cross-check time, not the persisted
+    unobserved_steps_authoritative field -- if the field were never written, check-5 would behave
+    identically. Until a typed-epistemic-anchoring follow-on lands (named, not scheduled: see
+    docs/plans/PLAN-ci-rca-evidence-scope-declaration.yaml context), the persisted field is a
+    durable record for human and successor review and nothing else reads it programmatically. The
+    stamp is also FIRST-OCCURRENCE-SCOPED: bump_ci_rca_occurrence round-trips the prior context
+    unchanged, so a rec with occurrence_count > 1 retains occurrence-1's stamp while last_seen
+    advances -- a later recurrence's own unobserved-step set is never recomputed onto the rec.
+
 projection_fields:
   regression_of:
     type: "Optional[str]"
@@ -122,55 +269,80 @@ projection_fields:
     type: "Optional[str]"
     enum: [no-edge, capped, unknown-data-edge]
     home: context_v2_json (CiRcaContext)
+  unobserved_steps:
+    type: "Optional[list[{job_id: int, step_index: int}]]"
+    home: context_v2_json (CiRcaContext)
+    authored_by: agent (comprehension echo; see evidence_scope.stamp_versus_echo)
+  unobserved_steps_authoritative:
+    type: "Optional[list[{job_id: int, step_index: int}]]"
+    home: context_v2_json (CiRcaContext)
+    authored_by: portal (stamped in code from the verified evidence bundle; see evidence_scope.stamp_versus_echo)
 
 constraints:
   - "Decision 84/103/63: these fields are a context_v2_json projection only -- ops_recommendations' Class A schema is untouched."
-  - "Decision 55: the fingerprint and every dedup/regression/inactivity/escape decision is computed IN CODE, never by the LLM RCA agent."
+  - "Decision 55: the fingerprint, every dedup/regression/inactivity/escape decision, and (by analogy, see evidence_scope.stamp_versus_echo) the unobserved_steps_authoritative evidence-scope fact are computed IN CODE, never by the LLM RCA agent."
   - "All new CiRcaContext fields are Optional[...]=None -- no schema_version ceiling raise (backward-compatible additions)."
   - "The inactivity sweep reads via DuckLake reader named verbs only; never re-stages from logs/.recommendations-log.jsonl."
   - "All rec writes (fix-link stamp, regression filing, inactivity close) transit the ops portal (file_rec/update_rec) -- Decision 84 single-portal invariant."
 
-# PLAN-ci-rca-ops-plane-coverage (rec-2849): ci-rca.yml's workflow_run.workflows filter -- the
-# required-membership floor scripts/verify_ci_workflow.py's _check_ci_rca_filter guards against
-# silent removal. Growth beyond this set is governed by the per-entry adjudication requirement
-# here, not by the guard (which only asserts a floor + uniqueness).
+# PLAN-ci-rca-abstention-and-citation: the abstention-review surface (session_preflight's
+# "CI-RCA Abstention Review" section) and the probe-health gauge (scripts/ci_rca/probe_health.py)
+# both key on the SAME set, which is wider than a literal probe abstention.
+abstention_surface:
+  scope: >-
+    rca_confidence in {low, undetermined} -- not undetermined alone. A self-rated `low` RCA
+    confidence is not sound either, even though the deterministic evidence bundle did classify it
+    (undetermined is the probe's own abstention; low is the agent's own confidence rating). Both
+    the preflight abstention-review section (scripts/preflight/ci_rca_signals.py) and the
+    probe-health rate gauge (scripts/ci_rca/probe_health.py compute_abstention_rate /
+    scripts/preflight/ci_rca_gauges.py's `low_or_undetermined_count` gauge key) widen together --
+    moving one without the other relocates the one-word-two-sets defect instead of fixing it.
+  advisory_not_gating: >-
+    This surface is advisory visibility only, not a new gate. print_ci_rca_recs' SOFT/HARD open-rec
+    split (the actual /plan block) is untouched by this widening -- a rec can appear in the
+    abstention-review section while also being HARD BLOCK, SOFT, or neither, independently.
+  back_validate_reclassification: >-
+    The citation-pattern widening (_WHY_CHAIN_CITATION_RE now accepts `.yml`, not just `.yaml`) has
+    a benign second-order effect on back_validate_ci_rca (scripts/ops_portal/ci_rca_runtime.py):
+    any warn-period rec whose sole non-conformance was a `.yml` file:line citation the old pattern
+    rejected reclassifies non_conformant -> conformant the next time back-validation recomputes
+    against the current schema, since back-validation always re-checks against the schema live at
+    read time (docstring, ci_rca_runtime.py:264), never the schema live when the rec was filed.
+
+procedure:
+  correct_rec_context: >-
+    scripts.ops_portal.ci_rca_lifecycle.correct_rec_context(rec_id, context_updates,
+    row_updates=None, profile=None) -- the tested, portal-only route for correcting a
+    factually-wrong context_v2_json narrative on an OPEN ci_rca rec (never a closed head; bump_rule
+    above forbids mutating one). Shallow-merges context_updates into the FULL existing blob
+    (preserving fingerprint/evidence_bundle_ref/etc, never a partial-column overwrite), refuses to
+    write unless the read blob already carries a fingerprint, and refuses when the merged context
+    fails _validate_ci_rca_context_v2 -- both refusals raise before any write. row_updates carries
+    row-level fields (e.g. title) that update_rec content-gates in the same call. Example (rec-2923,
+    PLAN-ci-rca-abstention-and-citation step 6):
+    `bin/venv-python -c "from scripts.ops_portal.ci_rca_lifecycle import correct_rec_context;
+    correct_rec_context('rec-2923', {...}, row_updates={'title': '...'})"`.
+
+# PLAN-ci-rca-adjudication-guard: this contract used to carry a second, hand-maintained
+# watched:/excluded: enumeration in parallel with config/ci_rca_taxonomy.yaml's own exhaustive
+# per-workflow map -- the drift-by-design anti-pattern Decision 86 and AGENTS.md forbid (the
+# taxonomy file already enumerated all 19 workflows and was already gated by
+# validate_ci_rca_taxonomy). The fold below retires this as a second registry: the taxonomy file
+# is now the SOLE source of truth for per-workflow ci_rca adjudication, machine-enforced by a
+# dedicated evaluator rather than left to the honor system.
 watched_workflow_set:
-  watched:
-    CI: "The pr-validate/main-validate gate -- Decision 72 origin of the ci-rca mechanism."
-    Main Canary: >-
-      Scheduled drift canary re-running scripts.validate on main. Resolved dynamically from
-      main-canary.yml's own name field by both the guard and this contract's intent, never
-      hardcoded, so a canary rename cannot desync the two.
-    terraform-apply-sandbox: >-
-      CD.35/T2.20: sandbox apply failures and convergence-red refusals. Dedup anchors on the red
-      convergence record's commit_sha, not the refusing run's head_sha, so one underlying apply
-      failure and every later refusal collapse to one rec.
-    rec-autoclose: >-
-      ADDED (rec-2849): the 2026-07-24 ducklake-writer-errors incident's own gap. rec-autoclose is
-      an ops-plane write path (stamps fixed_by_sha, closes recs from a Resolves trailer); its
-      absence from the filter meant runs 581/585 both failed with a ducklake_writer 502 on
-      ops_decisions and filed nothing -- the outage reached a human only via an SNS email, roughly
-      four hours later. See closure_dependency below for the coupling this creates with this
-      workflow's own closure path.
-    deploy-ducklake-lambdas: >-
-      ADDED on its own merits: a build/deploy/smoke failure in the governed code-deploy CD channel
-      is genuinely invisible today and warrants a critical. Its STANDING reconcile-gate refusal (a
-      designed, self-documenting block on a reconcile-pending predicate, Decision 88 -- not a
-      defect) is excluded from filing via the designed_refusal predicate below; the refusal itself
-      is routed to the Decision 62 alarm-not-gate monitor lane instead (rec-2854), the same
-      treatment convergence-health gets.
-  excluded:
-    terraform-drift: >-
-      Decision 92 point 6 assigns drift to the ops-portal alarm-only path, which already files
-      --source tf_drift directly. Watching terraform-drift.yml here would double-record one event
-      and blur the Decision 61 source discriminator.
-    convergence-health: >-
-      A STANDING environmental red would mint a fresh L5/L6 critical on every push with no brake --
-      a rec storm plus a planning-queue wedge. Decision 62's alarm-not-gate monitor lane is the
-      correct treatment (rec-2854), not a ci-rca watch.
-    dedup-probe: >-
-      Deliberately injects synthetic source=ci_rca failures to exercise the dedup mechanism;
-      watching it would couple the probe to the mechanism it probes.
+  source_of_truth: config/ci_rca_taxonomy.yaml
+  source_of_truth_field: "workflows: (each entry: tier, ci_rca [watched|excluded], owner, rationale)"
+  evaluator: validate_ci_rca_adjudication
+  evaluator_module: scripts/checks/ci_guards/validate_ci_rca_adjudication.py
+  note: >-
+    validate_ci_rca_adjudication asserts, in both directions, that (a) the taxonomy's `workflows:`
+    key set equals .github/workflows/*.yml's display names, and (b) ci-rca.yml's
+    on.workflow_run.workflows filter equals exactly the set of entries marked `ci_rca: watched` --
+    replacing the floor-only membership test scripts/verify_ci_workflow.py's _check_ci_rca_filter
+    still separately asserts (a five-entry FLOOR that must never shrink; retained deliberately, see
+    PLAN-ci-rca-adjudication-guard's constraints -- this is not a second registry, both read the
+    same single source of truth). Every entry must also declare a non-empty owner and rationale.
 
 # The fail-closed predicate (scripts/ci_rca/designed_refusal.py) that lets deploy-ducklake-lambdas
 # be watched without the STANDING reconcile-gate refusal minting a fresh critical on every push.
@@ -204,3 +376,30 @@ closure_dependency:
     stamp_fixed_by_sha('<rec-id>', '<merge-sha>')"`. This is the closure route for a
     rec-autoclose-sourced ci_rca rec whenever rec-autoclose itself cannot be trusted to process
     the Resolves trailer.
+  rec_2923_precedent: >-
+    PLAN-ci-rca-starved-surface (Decision 162) applies this exact manual_route to close rec-2923:
+    `--status closed --resolution "<live closure proof, Decision 103>"` then
+    `stamp_fixed_by_sha('rec-2923', '<full 0726593 commit sha>')` -- the commit that actually
+    fixed the reviewer path (PR #812), NOT this plan's own merge sha. A Resolves trailer naming
+    rec-2923 is deliberately NOT used: rec-autoclose stamps context_v2_json.fixed_by_sha to the
+    MERGE sha, which would make the status_aware_chain.regression_vs_drop ancestry check lie for
+    any genuine recurrence of the reviewer defect occurring between 0726593 and this plan's merge
+    (it would be misclassified drop, not regression). bundled_recommendations therefore carries
+    only rec-2664 (the observability-gap rec this plan's own preventive action satisfies).
+
+starved_review_observability: >-
+  Decision 162 / rec-2923 preventive action. review.sh (subagent-plan-review) prints a distinct
+  greppable marker on each STARVED exit path -- "[SUBAGENT-REVIEW] STARVED: <reason>" -- mirrored
+  to $GITHUB_STEP_SUMMARY when set, using the Decision 155 marker shape (mirrors the DCG-03
+  orphan-guard skip marker). archive_transcripts.sh (a second, always-run composite step) then
+  best-effort-archives review.json / review_retry.json (whichever exist) to
+  s3://agent-platform-data-lake/ci-rca-evidence/review-transcripts/<run_id>/ -- TOTAL by
+  construction (always exits 0, so it can never change the review outcome); its own failure path
+  prints a distinct "[SUBAGENT-REVIEW] transcript archival FAILED: <reason>" marker, also mirrored
+  to $GITHUB_STEP_SUMMARY, never a bare `|| true`. On the Reconcile heal-button path specifically,
+  a starved episode additionally files a durable `source=reconcile_starved` rec (the
+  file-reconcile-starved-rec job in reconcile.yml, rec-2664) -- the routine sandbox push path has
+  no equivalent filing job because ci-rca already watches terraform-apply-sandbox.yml directly
+  (Decision 142); reconcile.yml is marked `ci_rca: excluded` in config/ci_rca_taxonomy.yaml
+  (Decision 154 point 6), so this job is Reconcile's own substitute observability path for the
+  same episode class.

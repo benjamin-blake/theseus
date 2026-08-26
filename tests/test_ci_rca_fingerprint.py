@@ -19,6 +19,8 @@ from scripts.ci_rca.fingerprint import (
     error_signature_from_log_tail,
     normalize_message_head,
     signature_for_collection_error,
+    signature_for_declared_detail,
+    signature_for_evidence_insufficient,
 )
 
 
@@ -340,6 +342,89 @@ class TestCollectionErrorSpecialCase:
         a = signature_for_collection_error("tests/test_x.py")
         b = signature_for_collection_error("tests/test_y.py")
         assert a != b
+
+
+class TestEvidenceInsufficientDegenerateSignature:
+    """ci-rca-evidence-fidelity: the refusal verdict's degenerate signature, keyed ONLY on
+    truncation_reason (never on the truncated tail content) -- recurrences with the same
+    truncation_reason dedup onto one chain per workflow."""
+
+    def test_keys_on_truncation_reason(self):
+        assert signature_for_evidence_insufficient("byte_limit") == "evidence_insufficient::byte_limit"
+
+    def test_same_truncation_reason_same_signature(self):
+        a = signature_for_evidence_insufficient("head_tail_window")
+        b = signature_for_evidence_insufficient("head_tail_window")
+        assert a == b
+
+    def test_differing_truncation_reason_differing_signature(self):
+        a = signature_for_evidence_insufficient("byte_limit")
+        b = signature_for_evidence_insufficient("drain_ceiling")
+        assert a != b
+
+    def test_same_truncation_reason_same_fingerprint(self):
+        """Two distinct truncated logs sharing a truncation_reason must dedup onto ONE chain --
+        exercised through the real compute_fingerprint_v2 grouping key, not the signature alone."""
+        sig_a = signature_for_evidence_insufficient("byte_limit")
+        sig_b = signature_for_evidence_insufficient("byte_limit")
+        fp_a = compute_fingerprint_v2("ci", "evidence_insufficient", sig_a)
+        fp_b = compute_fingerprint_v2("ci", "evidence_insufficient", sig_b)
+        assert fp_a == fp_b
+
+    def test_differing_truncation_reason_differing_fingerprint(self):
+        sig_a = signature_for_evidence_insufficient("byte_limit")
+        sig_b = signature_for_evidence_insufficient("drain_ceiling")
+        fp_a = compute_fingerprint_v2("ci", "evidence_insufficient", sig_a)
+        fp_b = compute_fingerprint_v2("ci", "evidence_insufficient", sig_b)
+        assert fp_a != fp_b
+
+
+class TestDeclaredDetailSignature:
+    """signature_for_declared_detail (coverage-failure-attribution): path-preserving, never
+    routed through normalize_message_head -- the rec-3212 misattribution class this plan fixes.
+    VP2 graduated selector target: test_declared_detail_discriminates_nested_paths."""
+
+    def test_declared_detail_discriminates_nested_paths(self):
+        """Two NESTED paths at the SAME measured percentage -- the exact fixture shape that
+        normalize_message_head would collapse to the identical "scripts<path>" token (both paths
+        carry >=2 path separators, verified live at planning time) -- must yield DIFFERENT
+        signatures via signature_for_declared_detail."""
+        a = signature_for_declared_detail(
+            "validate_test_coverage",
+            ["scripts/checks/hygiene/validate_vacuity_justified.py: 95.8% line coverage (expected >= 100%)"],
+        )
+        b = signature_for_declared_detail(
+            "validate_test_coverage",
+            ["scripts/ci_rca/taxonomy.py: 95.8% line coverage (expected >= 100%)"],
+        )
+        assert a != b
+        # Sanity: confirms these two paths are exactly the shape normalize_message_head would
+        # have collapsed together -- the reason this derivation must never route through it.
+        assert normalize_message_head(
+            "scripts/checks/hygiene/validate_vacuity_justified.py: 95.8% line coverage"
+        ) == normalize_message_head("scripts/ci_rca/taxonomy.py: 95.8% line coverage")
+
+    def test_declared_detail_never_scrubs_the_path(self):
+        sig = signature_for_declared_detail(
+            "validate_test_coverage",
+            ["scripts/checks/hygiene/validate_vacuity_justified.py: 95.8% line coverage (expected >= 100%)"],
+        )
+        assert "scripts/checks/hygiene/validate_vacuity_justified.py" in sig
+        assert "<path>" not in sig
+
+    def test_declared_detail_deterministic_and_order_independent(self):
+        a = signature_for_declared_detail("check", ["b.py: x", "a.py: y"])
+        b = signature_for_declared_detail("check", ["a.py: y", "b.py: x"])
+        assert a == b
+
+    def test_declared_detail_distinct_checks_distinct_signatures_for_same_file(self):
+        a = signature_for_declared_detail("validate_test_coverage", ["scripts/foo.py: 90%"])
+        b = signature_for_declared_detail("validate_other_check", ["scripts/foo.py: 90%"])
+        assert a != b
+
+    def test_declared_detail_falls_back_to_whole_item_when_no_colon_space(self):
+        sig = signature_for_declared_detail("check", ["no-separator-here"])
+        assert "no-separator-here" in sig
 
 
 class TestNonPytestFallback:

@@ -1,5 +1,5 @@
 ---
-applyTo: "scripts/executor/*.py,config/agent/executor/prompts/*.prompt.md,.github/prompts/develop-executor.prompt.md"
+applyTo: "scripts/executor/*.py,config/agent/executor/prompts/*.prompt.md"
 ---
 
 ## Workflow

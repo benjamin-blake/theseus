@@ -28,6 +28,16 @@ jobs:
       with:
         fetch-depth: 0
 
+    - name: Print repository identity anchor
+      # Decision 172 (OIDC immutable-subject recovery): a zero-credential, zero-AWS echo of the
+      # numeric ids GitHub's immutable OIDC subject claim pins (terraform/personal/oidc.tf,
+      # terraform/bootstrap/github_ci_apply.tf) -- keeps them falsifiable against GitHub itself
+      # on every PR, rather than only against this plan's own committed literals. Runs green
+      # during any OIDC outage: pr-validate uses no OIDC and no AWS.
+      run: |
+        echo "repository_id=${{ github.repository_id }}"
+        echo "repository_owner_id=${{ github.repository_owner_id }}"
+
     - name: Set up Python 3.12
       uses: actions/setup-python@v6
       with:
@@ -92,6 +102,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v7
+      with:
+        fetch-depth: 2
 
     - name: Configure AWS credentials (OIDC -- branch role)
       uses: aws-actions/configure-aws-credentials@v6
@@ -108,7 +120,7 @@ jobs:
       uses: actions/cache@v6
       with:
         path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt') }}
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt', 'requirements-dev.txt', 'requirements.lock') }}
         restore-keys: |
           ${{ runner.os }}-pip-
 
@@ -125,8 +137,8 @@ jobs:
       # `pre-commit run --all-files` step inside validate.py.
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install -r requirements-dev.txt
+        pip install -c requirements.lock -r requirements.txt
+        pip install -c requirements.lock -r requirements-dev.txt
 
     - name: Validate full tier (ruff, mypy, pytest, DQ runner, verifier harness)
       env:
@@ -143,6 +155,20 @@ jobs:
       with:
         name: pytest-junit
         path: logs/debug/pytest-junit.xml
+        if-no-files-found: ignore
+        retention-days: 14
+
+    - name: Upload validation-result evidence (CI-RCA attribution substrate)
+      # ci-rca-evidence-fidelity: scripts.checks.validation_result.write_completed already writes
+      # logs/debug/validation-result.json with an exact failed_checks list AND (schema_version 2)
+      # failed_check_attributions on the failure path -- upload it so ci-rca.yml can carry the
+      # real failed check instead of re-deriving it from a log-text scan. always() mirrors the
+      # pytest-junit step above so a red run still uploads.
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: validation-result
+        path: logs/debug/validation-result.json
         if-no-files-found: ignore
         retention-days: 14
 

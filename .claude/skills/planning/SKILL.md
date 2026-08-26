@@ -238,11 +238,11 @@ When a plan creates or modifies documentation artefacts, apply these rules:
 ## Infrastructure & Lambda Assessment (Workflow Step 4)
 **Infrastructure:** If `.tf` files are in scope, add an "Infrastructure Dependencies table" to the plan. Lambda handlers must accept a `force_{param}` event field. Pre-merge vs post-deploy timing must be specified.
 
-**Speculative-plan expectations (CD.35 Wave 2 / T2.21, active):** When `.tf` files under `terraform/personal/` are in scope, the plan must account for the speculative-plan pipeline: a PR-time plan is reviewed and saved, then re-applied at merge with no re-plan (Decision 77 no-TOCTOU), gated by the deterministic guard; IAM/trust/destroy diffs route to the human-gated path instead of auto-applying, and a stale saved plan recovers only via the human-reviewed acknowledge-and-retry path (never a silent re-plan-and-apply). `docs/contracts/environment-taxonomy.md` is the sole SoT for the full pipeline mechanics (guard classification, saved-plan persistence, convergence-record shape); tier_item T2.21 tracks the pipeline's own completion. Do not re-derive the mechanics here -- name the required checks and point to that contract.
+**Speculative-plan expectations (CD.35 Wave 2 / T2.21, active):** When `.tf` files under `terraform/personal/` are in scope, the plan must account for the speculative-plan pipeline: a PR-time plan is reviewed and saved, then re-applied at merge with no re-plan (Decision 77 no-TOCTOU), gated by the deterministic guard; IAM/trust/destroy diffs route to the human-gated path instead of auto-applying, and a stale saved plan recovers only via the human-reviewed acknowledge-and-retry path (never a silent re-plan-and-apply). `environment-taxonomy.yaml` is the sole SoT for the full pipeline mechanics (guard classification, saved-plan persistence, convergence-record shape); tier_item T2.21 tracks the pipeline's own completion. Do not re-derive the mechanics here -- name the required checks and point to that contract.
 
 **Lambda Deployment:** Use the manifest-derived file patterns (`bin/venv-python -m scripts.lambda_manifest --list-patterns`) to determine which scope files are Lambda-packaged, and `compute_affected_artifacts(changed_files)` to identify which active artifact(s) are affected. For each affected active artifact (status: active in its `src/lambdas/<slug>/manifest.yaml`), the plan MUST include per-Lambda build, deploy, smoke-test, and model ID validation steps (V3). Stub artifacts (status: stub) require no deploy step -- V1 suffices. Note: `config/agent/` is NOT Lambda-packaged and does NOT trigger this assessment. If `.tf` modifies IAM, terraform apply must precede Lambda deploy. (CD.16 + Decision 79)
 
-**Deploy channel by artifact class (Decision 125):** consult `docs/contracts/build-lambda.yaml`'s `deploy_channels` section (pointer-only; `docs/contracts/environment-taxonomy.md` section 5 is the sole classification SoT) to determine which channel an affected artifact deploys through:
+**Deploy channel by artifact class (Decision 125):** consult `docs/contracts/build-lambda.yaml`'s `deploy_channels` section (pointer-only; `environment-taxonomy.yaml` (conformance) is the sole classification SoT) to determine which channel an affected artifact deploys through:
 - **`terraform_personal_filemd5_coupled`** (the four `terraform/personal`-managed DuckLake Lambdas): the plan emits the governed decoupled code-deploy CD channel VP steps -- grep-only / CI-delegated per Decision 119 (name the required CI check or workflow as the authoritative verifier; no local `terraform init`/`plan` for `terraform/personal`). The bare local `bin/venv-python -m scripts.build_lambda --ducklake-only --deploy` invocation is break-glass only (Decision 125) and must never be the default VP step for this class. If the governed channel does not yet exist for the touched artifact, the plan must file a follow-on rec for it rather than defaulting to the local invocation.
 - **`decoupled_build_pipeline`** (the `data-pipeline`/`ops-compaction` targets in `src/data/handlers/`): local `bin/venv-python -m scripts.build_lambda --deploy` remains the routine deploy step -- these are not `terraform/personal`-managed, so Decision 125's channel gating does not apply to them.
 
@@ -309,17 +309,18 @@ Classify deterministically. Highest tier wins.
 - **V2 (Unit):** Python source with no external integration. Must exercise real code paths.
 - **V3 (Integration):** External systems, Terraform, Lambdas. Must tag steps as `[pre-deploy]` or `[post-deploy]`.
 
-**Provider-init egress (terraform roots only):** a terraform root using a third-party
-(github.com-hosted) provider (e.g. `kislerdm/neon` in `terraform/personal`) cannot `terraform
-init`/`validate`/`plan` from a stock CC-web session -- the outbound proxy blocks the provider's
-github.com checksum fetch. Author local terraform VP steps as grep-only, plus `terraform fmt
--check` ONLY when terraform is present (fmt needs no provider install); delegate `terraform
-validate`/`plan` to CI -- name the required `terraform-validate` check and the speculative-plan job
-as the authoritative verifiers, never a local `terraform validate`/`init`/`plan` invocation. See
-`terraform/CLAUDE.md` and Decision 119 for the constraint and CI-delegation contract.
+**Provider-init egress (terraform roots only):** CC-web cannot fetch third-party provider checksums.
+Use grep and provider-free `terraform fmt -check` locally; delegate validate/plan to CI's required
+`terraform-validate` check and the speculative-plan job as the authoritative verifiers. Never
+author a local init/validate/plan VP command. See `terraform/CLAUDE.md`, Decision 119.
 
 **VP Design Rationale:**
 When writing Verification Plan steps, ask: "If this feature had a subtle bug (wrong column name, missing permission, off-by-one filter), would this step catch it?" If no, the step is too shallow.
+
+**Test Obligation Assessment:** new IMPLEMENTATION plans are schema 4 with one `test_obligations`
+row per behavior-capable scope file (shape below); waivers are per-source, never plan-wide.
+Graduate rows reuse the linked VP step and existing registry slots; adequacy is plan-critique's
+judgement, not schema inference.
 
 **Anti-patterns to reject:** structural-only (`grep -q "def my_function" src/module.py` proves
 existence, not function); test-only ("Run pytest" proves mocked paths, not real integration);
@@ -328,13 +329,13 @@ existence-only ("Confirm the Athena view was created" doesn't confirm correct da
 apply` succeeded" -- infra existing isn't enough); prose-only (no executable command -- the
 implement agent will substitute a weaker check).
 
-**Hermetic authoring (T3.15 / VF-01, amended by Decision 148):** `hermetic: true` is the correct
-default again for `pre-deploy` feature-verification steps -- narrow, deterministic, creds-free
-commands. Steps are replayed at implement time by `validate_vp_replay`, not plan time: a
-plan-only PR defers with a printed reason (no `feat({slug})` commit -- Decision 76); the implement
-PR resolves `PLAN-{slug}.yaml` from `feat({slug})` commits on `git log origin/main..HEAD` and
-replays its hermetic steps against the complete tree. Advisory-SKIPs on unreachable `origin/main`
-or an absent plan (Decision 132 limitation B). `bin/venv-python` is now safe here -- it falls back
+**Hermetic authoring (T3.15 / VF-01, amended by Decision 148/plan-resolution-content-keyed):**
+`hermetic: true` is the correct default again for `pre-deploy` feature-verification steps --
+narrow, deterministic, creds-free commands. Steps are replayed at implement time by
+`validate_vp_replay`, not plan time: a plan-only PR defers with a printed reason
+(`implementation_declared` not newly true); the implement PR resolves plans via
+`_common.resolve_declared_plans` and replays their hermetic steps against the complete tree.
+Advisory-SKIPs on unreachable `origin/main`. `bin/venv-python` is now safe here -- it falls back
 to a sentinel-dep-importing interpreter when `.venv` is absent, resolving in venv-less CI too.
 Never mark a step hermetic if it invokes `scripts/validate.py --pre` (recursion). Steps needing
 pytest/deploys stay `hermetic: false`, excluded with a printed reason.
@@ -362,13 +363,10 @@ at plan-authoring time:
   human/LLM judgement, live infrastructure (a V3 deploy/invoke), or wall-clock/credential state.
   No extra field required.
 
-Classification is a judgement call with a known non-deterministic seam (a command's
-kernel-expressibility is not mechanically decidable in general) -- the plan-critique gate is the
-honesty check on this call, applied before the fix exists (so there is no pressure to wave
-through a finished implementation). When genuinely unsure between `graduate` and
-`not-applicable`, prefer `not-applicable` and let plan-critique push back if it disagrees --
-a false `not-applicable` is a missed regression guard; a false `graduate` becomes a mandatory
-`waive`-with-reason detour at implement time (harmless, but adds a step).
+Plan critique is the honesty check on this call, applied before the fix exists (so there is no
+pressure to wave through a finished implementation). When unsure, prefer `not-applicable`: a false
+`not-applicable` is a missed regression guard, a false `graduate` only a mandatory
+`waive`-with-reason detour at implement time.
 
 ## Decision Significance Gate (before drafting any numbered Decision -- fresh or CD ratification)
 
@@ -377,6 +375,22 @@ Check `docs/contracts/decision-entry.yaml`'s `significance:` section before draf
 architectural commitment with reversal-relevant consequences clears the bar. A CD state-flip,
 operational fact, or field-semantics change routes per that section's four rows instead (the
 batch-wave clause below, a rec/tier_item note, or a contract governance note).
+
+Three property tests gate the draft -- checkable assertions on the drafted text, never an
+open-ended "consider whether" prompt:
+1. **Envelope marker cited.** The drafted entry's fenced ```yaml metadata envelope carries a
+   `significance` field naming one of the four routing keys plus a non-empty justification
+   (`decision-entry.yaml`'s `metadata_envelope.required_fields`, Decision 167 clause 2) -- a
+   Significance claim made only in narrative prose, with no envelope field, fails this test.
+2. **Contract-first justification (rec-3015).** The envelope justification names, in one clause,
+   why not a contract: the specific `docs/contracts/*.yaml` governance-note home (or in-place
+   amendment) considered for this content and the concrete reason it was rejected in favor of a
+   fresh number. A justification that never names a rejected alternative fails this test.
+3. **amendment_forms routing alternative (rec-3016).** Before minting a number to amend exactly
+   one prior entry at a single call site, check whether `decision-entry.yaml`'s `amendment_forms`
+   (a dated in-place annotation on the amended entry) already carries the same commitment at zero
+   header cost -- draft the amendment_forms shape instead unless the content independently clears
+   the significance bar on its own terms.
 
 ## Candidate Decision Ratification (Workflow Step 5b, when the plan realizes/ratifies a CD)
 
@@ -469,55 +483,67 @@ git branch --show-current
 ```
 If the result is `main`, STOP.
 
-Derive the plan slug from the task description (independent of the branch name). The plan filename is `docs/plans/PLAN-{slug}.yaml` (schema-validated by `scripts/roadmap/plan_document.py`; the legacy `PLAN-{slug}.md` form is DEPRECATED per T1.11 / CD.22 -- never author new .md plans; tooling warns on the .md path for one release cycle, then it is removed). After writing and approving the plan, it is merged to `main` via a GitHub MCP PR so a fresh `/implement` session can read it by explicit path.
+Derive the plan slug from the task, not the branch. Author only `docs/plans/PLAN-{slug}.yaml`; legacy `.md` plans are deprecated. Merge the approved plan before implementation.
 
 ## PLAN-{slug}.yaml Template (Workflow Step 8)
 The plan is a YAML document validated against the `PlanDocument` Pydantic schema (`scripts/roadmap/plan_document.py`, enforced by `validate.py` in both tiers). Unknown keys FAIL validation (`extra="forbid"`). Use exactly this structure -- comments document field semantics:
 ```yaml
-schema_version: 1                  # int; must be 1
-slug: "{slug}"                     # must match the filename PLAN-{slug}.yaml
-intent: >-                         # 1-2 sentences: how this work contributes toward the North Star
+schema_version: 4 # required on every NEW plan; historical versions 1-3 stay valid
+handoff_policy:
+  full_validation_required_before_commit: true # exact literal; commit/PR waits for completed full exit 0
+  timeout_disposition: blocked # exact literal; resume later and rerun full from the start
+slug: "{slug}" # must match the filename PLAN-{slug}.yaml
+intent: >- # 1-2 sentences: how this work contributes toward the North Star
   ...
-plan_type: IMPLEMENTATION          # IMPLEMENTATION | STRATEGIC | REPORT-ONLY
-verification_tier: V2              # V1 | V2 | V3
-plan_path: docs/plans/PLAN-{slug}.yaml   # must equal docs/plans/PLAN-{slug}.yaml (slug consistency)
-phase: >-                          # product phase from docs/ROADMAP-PRODUCT.yaml and/or platform tier_item id
+plan_type: IMPLEMENTATION # IMPLEMENTATION | STRATEGIC | REPORT-ONLY
+verification_tier: V2 # V1 | V2 | V3
+plan_path: docs/plans/PLAN-{slug}.yaml # must match the filename slug exactly
+phase: >- # product phase from docs/ROADMAP-PRODUCT.yaml and/or platform tier_item id
   ...
-scope:                             # min 1 entry; only files listed here may be modified
+scope: # min 1 entry; only files listed here may be modified
   - file: path/to/file.py
-    action: Create                 # Create | Modify | Delete
+    action: Create # Create | Modify | Delete
     purpose: why this file changes
-bundled_recommendations: []        # included open recs (list of str), or []
-infrastructure_dependencies: []    # list of str; populate when .tf files appear in scope
-acceptance_criteria:               # min 1; each independently verifiable
+bundled_recommendations: [] # included open recs (list of str), or []
+infrastructure_dependencies: [] # list of str; populate when .tf files appear in scope
+acceptance_criteria: # min 1; each independently verifiable
   - verifiable condition 1
-verification_plan:                 # min 1 step; step ids must be unique
+verification_plan: # min 1 step; step ids must be unique
   - step: 1
-    phase: pre-deploy              # pre-deploy | post-deploy
+    phase: pre-deploy # pre-deploy | post-deploy
     action: exercise the feature
-    command: executable shell command   # REQUIRED non-empty -- prose-only VP steps fail the schema
+    command: executable shell command # REQUIRED non-empty -- prose-only VP steps fail the schema
     expected: specific expected result
     fix_if: what failure looks like
+test_obligations: # v4 IMPLEMENTATION: one row per behavior-capable scope file
+  - source: path/to/file.py # must equal a scope[].file
+    behavior: what must stay guarded
+    verification_step: 1 # an existing step id that runs the evidence
+    test_selector: tests/test_x.py::test_y # exactly one of test_selector | command
+    red_green_expectation: red before, green after # or waiver_reason (>=20 chars)
 constraints:
-  - limits from docs/PROJECT_CONTEXT.md and DECISIONS.md
+  - limits from PROJECT_CONTEXT.md, DECISIONS.md
   - No rescue agents or workaround loops (Decision 55)
 context:
   - Relevant decisions, phase dependencies, known gotchas
-  - "Decision-scout verdict + CITE list (verbatim decision ids)"                  # REQUIRED ITEM (WF-04a)
+  - "Decision-scout verdict + CITE list (verbatim decision ids)" # REQUIRED ITEM (WF-04a)
   - "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s)" # REQUIRED ITEM (WF-08)
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
-  - DECISIONS.md read
+  - only the plan-cited decision sections
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
-execution_steps:                   # REQUIRED non-empty for IMPLEMENTATION plans
+execution_steps: # REQUIRED non-empty for IMPLEMENTATION plans
   - Specific file to create/modify -- what it must do
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - 'Report: what was implemented, verification results'
-work_areas: []                     # STRATEGIC plans only (required there, forbidden otherwise);
-                                   # entry shape: {area, scope, rationale, complexity: XS|S|M|L|XL}
-rollback: optional rollback note   # optional str; omit if not applicable
+work_areas: [] # STRATEGIC plans only (required there, forbidden otherwise);
+  # entry shape: {area, scope, rationale, complexity: XS|S|M|L|XL}
+rollback: optional rollback note # optional str; omit if not applicable
+# fallback_reevaluation: OPTIONAL, only if this plan names a CD.27-gated tier item
+# (validate_fallback_reevaluation); never on an ordinary plan. 4 fields, extra=forbid:
+# {reevaluated_on, substrate_status, verdict: continue_on_current_substrate|fallback_triggered|obligation_lapsed, basis}
 ```
 
 After writing, validate before committing:

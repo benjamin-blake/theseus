@@ -12,6 +12,7 @@ import pytest
 from scripts.verify_ci_workflow import (
     _check_concurrency,
     _check_fetch_depth,
+    _check_full_tier_runtime_lock,
     _check_jobs_and_flags,
     _check_signal_green_needs,
     _check_validate_single_source,
@@ -36,7 +37,12 @@ _VALID_CI_DATA: dict[str, Any] = {
             "if": "github.event_name == 'push'",
             "runs-on": "ubuntu-latest",
             "steps": [
-                {"uses": "actions/checkout@v4"},
+                {"uses": "actions/checkout@v4", "with": {"fetch-depth": 2}},
+                {"uses": "actions/cache@v6", "with": {"key": "pip-${{ hashFiles('requirements.lock') }}"}},
+                {
+                    "run": "pip install -c requirements.lock -r requirements.txt\n"
+                    "pip install -c requirements.lock -r requirements-dev.txt"
+                },
                 {"run": "bin/venv-python -m scripts.validate"},
             ],
         },
@@ -46,6 +52,42 @@ _VALID_CI_DATA: dict[str, Any] = {
         },
     }
 }
+
+_VALID_CANARY_LOCK_DATA = {
+    "jobs": {
+        "canary": {
+            "steps": [
+                {"uses": "actions/cache@v6", "with": {"key": "pip-${{ hashFiles('requirements.lock') }}"}},
+                {
+                    "run": "pip install -c requirements.lock -r requirements.txt\n"
+                    "pip install -c requirements.lock -r requirements-dev.txt"
+                },
+            ]
+        }
+    }
+}
+
+
+class TestFullTierRuntimeLock:
+    def test_accepts_lock_constrained_jobs(self) -> None:
+        with patch("scripts.verify_ci_workflow._load") as mock_load:
+            mock_load.side_effect = [_VALID_CI_DATA, _VALID_CANARY_LOCK_DATA]
+            _check_full_tier_runtime_lock()
+
+    @pytest.mark.parametrize("missing", ["constraint", "cache"])
+    def test_rejects_missing_main_validate_lock_contract(self, missing: str) -> None:
+        import copy
+
+        ci_data = copy.deepcopy(_VALID_CI_DATA)
+        steps = ci_data["jobs"]["main-validate"]["steps"]
+        if missing == "constraint":
+            steps[2]["run"] = "pip install -r requirements.txt\npip install -c requirements.lock -r requirements-dev.txt"
+        else:
+            steps[1]["with"]["key"] = "pip-runtime"
+        with patch("scripts.verify_ci_workflow._load") as mock_load:
+            mock_load.side_effect = [ci_data, _VALID_CANARY_LOCK_DATA]
+            with pytest.raises(AssertionError, match="requirements.lock"):
+                _check_full_tier_runtime_lock()
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +133,17 @@ class TestCheckJobsAndFlagsFailPath:
             with pytest.raises(AssertionError, match="--pre"):
                 _check_jobs_and_flags()
 
+    def test_fails_when_main_validate_lock_constraint_is_missing(self) -> None:
+        import copy
+
+        data = copy.deepcopy(_VALID_CI_DATA)
+        data["jobs"]["main-validate"]["steps"][2]["run"] = (
+            "pip install -r requirements.txt\npip install -c requirements.lock -r requirements-dev.txt"
+        )
+        with patch("scripts.verify_ci_workflow._load", return_value=data):
+            with pytest.raises(AssertionError, match="requirements.lock"):
+                _check_jobs_and_flags()
+
 
 # ---------------------------------------------------------------------------
 # _check_fetch_depth
@@ -124,7 +177,28 @@ class TestCheckFetchDepthFailPath:
             with pytest.raises(AssertionError, match="fetch-depth"):
                 _check_fetch_depth()
 
-    def test_fails_when_main_validate_has_fetch_depth(self) -> None:
+    def test_fails_when_main_validate_missing_fetch_depth(self) -> None:
+        """Decision 159: main-validate must carry fetch-depth: 2 (HEAD~1 must resolve for the
+        push-context diff base) -- an absent `with` block is no longer accepted."""
+        data = {
+            "jobs": {
+                "pr-validate": _VALID_CI_DATA["jobs"]["pr-validate"],
+                "main-validate": {
+                    "if": "github.event_name == 'push'",
+                    "runs-on": "ubuntu-latest",
+                    "steps": [
+                        {"uses": "actions/checkout@v4"},
+                        {"run": "bin/venv-python -m scripts.validate"},
+                    ],
+                },
+            }
+        }
+        with patch("scripts.verify_ci_workflow._load") as mock_load:
+            mock_load.return_value = data
+            with pytest.raises(AssertionError, match="expected 2"):
+                _check_fetch_depth()
+
+    def test_fails_when_main_validate_has_wrong_fetch_depth(self) -> None:
         data = {
             "jobs": {
                 "pr-validate": _VALID_CI_DATA["jobs"]["pr-validate"],
@@ -140,7 +214,7 @@ class TestCheckFetchDepthFailPath:
         }
         with patch("scripts.verify_ci_workflow._load") as mock_load:
             mock_load.return_value = data
-            with pytest.raises(AssertionError, match="unexpected fetch-depth"):
+            with pytest.raises(AssertionError, match="expected 2"):
                 _check_fetch_depth()
 
 

@@ -77,3 +77,55 @@ def test_main_canary_rehearsal_dispatch(monkeypatch, capsys):
     )
     assert smoke.main(["--canary-rehearsal"]) == 0
     assert "CANARY_REHEARSAL OK" in capsys.readouterr().out
+
+
+def test_main_ops_read_your_write_dispatch(monkeypatch, capsys):
+    monkeypatch.setattr(smoke, "ops_read_your_write", lambda profile=None, region="eu-west-2": print("OPS_RYW OK"))
+    assert smoke.main(["--ops-read-your-write"]) == 0
+    assert "OPS_RYW OK" in capsys.readouterr().out
+
+
+def test_main_migrate_ops_recs_columns_dispatch(monkeypatch, capsys):
+    monkeypatch.setattr(
+        smoke, "migrate_ops_recs_columns", lambda profile=None, region="eu-west-2": print("MIGRATE_COLUMNS OK")
+    )
+    assert smoke.main(["--migrate-ops-recs-columns"]) == 0
+    assert "MIGRATE_COLUMNS OK" in capsys.readouterr().out
+
+
+def test_main_ops_churn_regate_dispatch(monkeypatch, capsys):
+    monkeypatch.setattr(smoke, "ops_churn_regate", lambda profile=None, region="eu-west-2": print("OPS_CHURN_REGATE OK"))
+    assert smoke.main(["--ops-churn-regate"]) == 0
+    assert "OPS_CHURN_REGATE OK" in capsys.readouterr().out
+
+
+def test_main_catalog_restore_drill_dispatch(monkeypatch, capsys):
+    monkeypatch.setattr(smoke, "catalog_restore_drill", lambda profile=None, region="eu-west-2": print("CATALOG_RESTORE OK"))
+    assert smoke.main(["--catalog-restore-drill"]) == 0
+    assert "CATALOG_RESTORE OK" in capsys.readouterr().out
+
+
+def test_main_connect_probe_dispatch(monkeypatch, capsys):
+    monkeypatch.setattr(smoke, "connect_probe", lambda profile=None, region="eu-west-2": print("CONNECT_PROBE OK"))
+    assert smoke.main(["--connect-probe"]) == 0
+    assert "CONNECT_PROBE OK" in capsys.readouterr().out
+
+
+def test_main_lambda_warm_reuse_dispatch(monkeypatch, capsys):
+    monkeypatch.setattr(
+        smoke,
+        "lambda_warm_reuse",
+        lambda profile=None, region="eu-west-2", json_output=False: print("WARM_REUSE OK"),
+    )
+    assert smoke.main(["--lambda-warm-reuse"]) == 0
+    assert "WARM_REUSE OK" in capsys.readouterr().out
+
+
+def test_main_lambda_warm_reuse_writer_dispatch(monkeypatch, capsys):
+    monkeypatch.setattr(
+        smoke,
+        "lambda_warm_reuse_writer",
+        lambda profile=None, region="eu-west-2", json_output=False: print("WARM_REUSE_WRITER OK"),
+    )
+    assert smoke.main(["--lambda-warm-reuse-writer"]) == 0
+    assert "WARM_REUSE_WRITER OK" in capsys.readouterr().out

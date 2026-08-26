@@ -79,11 +79,15 @@ Evaluate the repository across each of the following dimensions. For every issue
 
 ### 3. Testing
 
+Any finding that claims a command or validation gate fails must include the exact command, observed exit code, and final owning-validator summary. Informational child diagnostics alone are not failure evidence.
+
 - **Coverage gaps** — Which modules, classes, or functions lack test coverage?
 - **Test quality** — Testing behaviour or implementation details? Are edge cases covered?
 - **Test isolation** — Do tests depend on external services or execution order?
 - **Test naming** — Do names describe the scenario and expected outcome?
 - **Fixtures and mocking** — Are mocks used appropriately?
+- **Test obligations** — Raise High when a behavior change lacks executed obligation evidence, an
+  asserting test, or a deterministic-limit waiver.
 - **Mock Exhaustion (postflight.py)** — If `scripts/executor/postflight.py` is modified, verify that `subprocess.run` calls match the `MagicMock` side-effect counts in `tests/test_executor_postflight.py` (see Check 2 in `scripts/validate.py`).
 
 ### 4. Maintainability and Scalability
@@ -225,13 +229,3 @@ FINDINGS:
 Do not write to any file. Do not edit any file. Return the findings block to the caller and stop.
 
 **The caller MUST use `bin/venv-python -m scripts.ops_data_portal` to file each finding. Never append to `logs/.recommendations-log.jsonl` directly.** This ensures writer-allocated ids and persistence via the closed DuckLake writer boundary (Decision 84).
-
----
-
-## Closing Nudge
-
-> **Code review complete.** [X] findings returned. The invoking agent will file them via `ops_data_portal.py`.
->
-> Critical/High items should be addressed before merging. Start a new chat with `/plan` to plan fixes.
->
-> If any findings are false positives, tell me and I will add them to Code Review Exemptions in `docs/DECISIONS_ARCHIVE.md`.

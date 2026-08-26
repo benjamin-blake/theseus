@@ -30,6 +30,24 @@ structurally rather than enumerated. Surfaces two INDEX-ONLY parse_decisions_md 
 "amends" and "title_supersedes", consumed solely by scripts/decisions_index.py -- neither key
 is added to _DECISION_BACKFILL_COLS, DecisionPayload, or config/agent/data_quality (Decision
 84 warehouse-safety boundary, mirrors the intent key's index-vs-warehouse separation).
+
+Decision-entry flow governance (PLAN-decision-entry-flow-governance, Decision 167): adds
+extract_entry_envelope(), a public reader for the optional typed metadata envelope -- a fenced
+```yaml block immediately after a '## Decision N:' heading (docs/contracts/decision-entry.yaml
+metadata_envelope). parse_decisions_md() prefers envelope values for status / decided_date /
+amends / title_supersedes over the legacy bold-marker/title grammar, which remains the fallback
+for every entry with no envelope (forward-only; the historical band is untouched, since none of
+it carries one). Surfaces a new `significance` row key (the envelope's routing claim dict, or {}
+when absent) -- INDEX-ONLY like amends/title_supersedes: never added to _DECISION_BACKFILL_COLS,
+DecisionPayload, or the warehouse projection (Decision 166 point 9).
+
+Decision-corpus currency (PLAN-decision-corpus-currency, rec-3055/rec-3056): promotes
+is_compacted_stub() (formerly private to scripts.checks.decisions.
+validate_decision_entry_conformance, now a module-level alias back to it) to public status here,
+alongside its status-half bold_status()/status_is_superseded() and the new derive_currency() --
+the single derivation scripts.decisions_index projects as each live row's `currency` field and
+scripts.checks.decisions.validate_decision_currency enforces (DAF-03: one derivation, several
+consumers, never a re-derived regex).
 """
 
 from __future__ import annotations
@@ -41,6 +59,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -77,6 +97,30 @@ _SUPERSEDED_BY_RE = re.compile(
 _DECISION_MARKER_BODY = r"Decision\b[^:]*"
 
 
+# Terminator sets for typed-field extraction, named per docs/contracts/decision-entry.yaml's
+# field_grammar section (CFG-06 class fix, audits/contract-first-governance-33c8667.yaml): the
+# contract is the authoritative statement of these regexes -- tests/test_decision_field_grammar.py
+# pins both constants against it, so a future divergence fails CI instead of silently corrupting a
+# warehouse column.
+#
+# _MARKER_SECTION_TERMINATOR is the PROSE set (Problem/Intent/Rationale/Reversal conditions, via
+# _extract_by_marker_pattern and _extract_section): a following bold marker, a --- block
+# separator, or end-of-block/file. It deliberately does NOT stop at an amendment-annotation
+# opener (Decision 151 clause 3(ii)): a dated in-section accretion inside an Intent (or other
+# prose) section must remain part of the typed value, or a future clarification is silently
+# truncated out of the corpus.
+_MARKER_SECTION_TERMINATOR = r"(?=\n\*\*\w|\n---|\Z)"
+
+# _TYPED_ID_LIST_TERMINATOR is the prose set PLUS the two amendment-trailer openers -- the
+# non-blockquote "[Amendment " form and the GENERAL blockquote-bold-annotation form "\n> \*\*"
+# (never a closed list of observed openers: enumerating spellings is the anti-pattern CFG-06
+# closes -- two enumeration attempts during planning each missed a further shape). Used ONLY by
+# _extract_related_decisions, so a trailer placed after a typed id-list field never contributes
+# its cited ids to that field (Decision 146's own trailer naming Decision 160 is a live
+# regression case this closes -- rec-2990).
+_TYPED_ID_LIST_TERMINATOR = r"(?=\n\*\*\w|\n---|\n\[Amendment |\n> \*\*|\Z)"
+
+
 def _extract_by_marker_pattern(text: str, marker_body_pattern: str) -> str:
     """Extract the text following a bold marker whose inner span matches marker_body_pattern.
 
@@ -86,10 +130,10 @@ def _extract_by_marker_pattern(text: str, marker_body_pattern: str) -> str:
     form first, then the inline (marker and body on the same line) form.
     """
     full_marker = rf"\*\*{marker_body_pattern}:\*\*"
-    multi = re.search(full_marker + r"\s*\n(.*?)(?=\n\*\*\w|\n---|\.?\Z)", text, re.DOTALL)
+    multi = re.search(full_marker + r"\s*\n(.*?)" + _MARKER_SECTION_TERMINATOR, text, re.DOTALL)
     if multi:
         return multi.group(1).strip()
-    inline = re.search(full_marker + r"\s*(.+?)(?=\n\*\*\w|\n---|\.?\Z)", text, re.DOTALL)
+    inline = re.search(full_marker + r"\s*(.+?)" + _MARKER_SECTION_TERMINATOR, text, re.DOTALL)
     if inline:
         return inline.group(1).strip()
     return ""
@@ -98,7 +142,7 @@ def _extract_by_marker_pattern(text: str, marker_body_pattern: str) -> str:
 def _extract_section(text: str, *keys: str) -> str:
     for key in keys:
         single = re.search(
-            rf"\*\*{re.escape(key)}:\*\*\s*(.+?)(?=\n\*\*|\n---|\.?$)",
+            rf"\*\*{re.escape(key)}:\*\*\s*(.+?)" + _MARKER_SECTION_TERMINATOR,
             text,
             re.DOTALL,
         )
@@ -127,7 +171,7 @@ def _extract_related_decisions(text: str) -> list[int]:
     fix -- the plural form was previously invisible to the singular-only regex, e.g.
     "Decisions 69/78" in Decision 87's Related line).
     """
-    m = re.search(r"\*\*Related:\*\*(.+?)(?=\n\*\*|\n---|\Z)", text, re.DOTALL)
+    m = re.search(r"\*\*Related:\*\*(.+?)" + _TYPED_ID_LIST_TERMINATOR, text, re.DOTALL)
     if not m:
         return []
     related_text = m.group(1)
@@ -154,8 +198,14 @@ def _extract_decided_date(text: str) -> str:
     return ""
 
 
-def _extract_superseded_by(text: str) -> str:
-    """Extract a superseded-by target as 'dec-NNN', best-effort for historical prose."""
+def extract_superseded_by(text: str) -> str:
+    """Extract a superseded-by target as 'dec-NNN', best-effort for historical prose.
+
+    Public per DAF-03 consolidation (PLAN-size-gov-marker-guard): the Decision 149
+    supersession-hop authorization check in scripts/checks/_marker_guard.py reaches across a
+    module boundary for this symbol, which is exactly the case the promotion pattern (see
+    iter_decision_sections below) exists to cover instead of a private-symbol reach-across.
+    """
     m = _SUPERSEDED_BY_RE.search(text)
     if not m:
         return ""
@@ -163,28 +213,141 @@ def _extract_superseded_by(text: str) -> str:
     return f"dec-{int(n):03d}"
 
 
+# Private alias retained so existing internal callers (this module's own parse_decisions_md)
+# keep working unchanged.
+_extract_superseded_by = extract_superseded_by
+
+
+# The bold **Status:** marker regex -- promoted here from scripts.checks.decisions.
+# validate_decision_entry_conformance (PLAN-decision-corpus-currency, DAF-03) so the status
+# derivation it and scripts.checks.decisions.validate_decision_currency both need has exactly
+# one definition.
+_BOLD_STATUS_RE = re.compile(r"\*\*Status:\*\*\s*(.+)")
+
+
+def bold_status(block: str) -> str:
+    """Normalized **Status:** marker value from a heading-inclusive raw block.
+
+    The FIRST match of _BOLD_STATUS_RE, its captured group split on '--' and stripped (the
+    same normalization the pre-promotion _is_compacted_stub used). Returns "" when block carries
+    no bold Status marker.
+
+    Public (DAF-03 / PLAN-decision-corpus-currency): the single shared status-marker VALUE
+    derivation. status_is_superseded and is_compacted_stub below build on it; so does
+    scripts.checks.decisions.validate_decision_currency's invariant I4, which needs the VALUE
+    (not a boolean) to prefix-test 'Reversed'/'Deferred'. Re-implementing this regex anywhere
+    else is exactly the divergence DAF-03 closes.
+    """
+    m = _BOLD_STATUS_RE.search(block)
+    if not m:
+        return ""
+    return m.group(1).strip().split("--")[0].strip()
+
+
+def status_is_superseded(block: str) -> bool:
+    """True iff block's bold_status() value is exactly 'Superseded'.
+
+    Public (PLAN-decision-corpus-currency): imported by name in the currency derivation's
+    graduated verification step, so it must exist as a stable public symbol, not merely be
+    inlined into is_compacted_stub.
+    """
+    return bold_status(block) == "Superseded"
+
+
+def is_compacted_stub(block: str) -> bool:
+    """A Decision 149 compacted stub: '**Status:** Superseded' plus a live '**Superseded by:
+    Decision N**' pointer -- the fixed shape compaction.stub_grammar mandates.
+
+    Public (DAF-03 / PLAN-decision-corpus-currency): promoted BEHAVIOUR-VERBATIM from
+    scripts.checks.decisions.validate_decision_entry_conformance._is_compacted_stub, which is
+    now a module-level alias to this function -- one definition, two consumers (that check
+    module and scripts.decisions_index's currency derivation), never a second implementation.
+    """
+    return status_is_superseded(block) and bool(extract_superseded_by(block))
+
+
+def derive_currency(row: dict, inbound_supersedes: set[int], inbound_amends: set[int]) -> str:
+    """Derive one of the four currency tokens for a live decision row.
+
+    row is a parser row from parse_decisions_md() (needs 'raw_block', which the index
+    projection deliberately excludes). inbound_supersedes / inbound_amends are corpus-wide sets
+    -- built ONCE per scripts.decisions_index.build_index() call from its own supersedes/amends
+    maps -- never recomputed per row; a row's membership in either set is the only per-row test
+    this function performs against them.
+
+    Precedence (first match wins):
+      1. 'superseded_compacted' -- row is a compacted stub (is_compacted_stub).
+      2. 'superseded_pointer' -- row carries a victim-side superseded_by, OR its number is the
+         target of an inbound supersedes edge (title_supersedes/envelope-supersedes from
+         another entry).
+      3. 'amended' -- row's number is the target of an inbound amends edge, OR its bold status
+         marker begins with 'Amended' (the residual status-prose band, e.g. Decision 67).
+      4. 'current' -- none of the above.
+
+    Both the status_is_superseded/is_compacted_stub checks above and the 'amended' bold-marker
+    check here read the BOLD marker on raw_block, never row['status'] -- parse_decisions_md
+    prefers the metadata envelope over the bold marker, so the two can diverge on any enveloped
+    entry; the bold marker is the corpus-wide spelling and the only one the historical
+    status-prose 'amended' band carries.
+    """
+    block = row.get("raw_block", "")
+    number = row["decision_id"]
+    if is_compacted_stub(block):
+        return "superseded_compacted"
+    if row.get("superseded_by") or number in inbound_supersedes:
+        return "superseded_pointer"
+    if number in inbound_amends or bold_status(block).startswith("Amended"):
+        return "amended"
+    return "current"
+
+
 # DCG-08 (PLAN-dcg-decisions-index) title-relation extraction, shared by the public
 # extract_amends_edges() and the private _extract_title_borne_supersedes(). Whitelist-
 # continuation grammar, not a relation-keyword blocklist: after the relation word, the FIRST
 # target must be an immediately-adjacent "Decision(s) N" (_TITLE_RELATION_SEED_RE) -- so a
 # non-Decision target (CD.N, KG.N, prose like "Identity Center") never matches, with no need
-# to enumerate every non-target word. A further target is accepted ONLY as an explicit ", N"
-# (_TITLE_RELATION_COMMA_RE) / "/N" (_TITLE_RELATION_SLASH_RE) plural-list continuation, an
-# "and Decision(s) N" (_TITLE_RELATION_AND_RE) continuation, or a "+ Decision(s) N"
-# (_TITLE_RELATION_PLUS_RE) continuation (dec-153: "amends Decision 73 enforcement + Decision
-# 135") -- optionally preceded by a qualifier on the prior target
+# to enumerate every non-target word. A further target is accepted ONLY as an explicit ", N" or
+# ", Decision(s) N" (_TITLE_RELATION_COMMA_RE) / "/N" (_TITLE_RELATION_SLASH_RE) plural-list
+# continuation, an "and N" or "and Decision(s) N" (_TITLE_RELATION_AND_RE) continuation, or a
+# "+ Decision(s) N" (_TITLE_RELATION_PLUS_RE) continuation (dec-153: "amends Decision 73
+# enforcement + Decision 135") -- optionally preceded by a qualifier on the prior target
 # (_TITLE_RELATION_QUALIFIER_RE: "point P"/"cl.N"/"clause N", or a single bare descriptive word
 # like "enforcement"; a qualifier is consumed but is never itself a number source, and the bare
 # word alternative explicitly excludes "and" so it never steals that continuation's own
-# keyword). Any other following text -- a semicolon, a different relation word ("mirrors",
-# "extends", "builds on"), an ordinal like "2nd amendment" -- is not a valid continuation and
-# silently ends the scan for that anchor occurrence.
+# keyword). CFG-06 widened the comma and "and" continuations to accept BOTH the bare-number and
+# repeated-Decision-token spellings (dec-160's real title, "amends Decision 145, Decision 134
+# clause 2, and Decision 146", mixes both in one title) -- the repeated "Decision(s)" token is
+# always optional, never required, on either continuation.
+#
+# A repeated "Decision(s)" token is unambiguous evidence on its own. A BARE number is weaker
+# evidence, so CFG-06's post-merge follow-up (code-review finding, confirmed false-positive:
+# "amends Decision 116 and 2027 planning cycle" wrongly added 2027) requires the bare-number
+# branch of the comma/and continuations to be followed by a citation-list-safe boundary
+# (_BARE_NUMBER_BOUNDARY_RE: closing punctuation, another "and", or a recognized qualifier) --
+# NOT by open-ended prose. The repeated-token branch carries no such requirement. Any other
+# following text -- a semicolon with no recognized qualifier, a different relation word
+# ("mirrors", "extends", "builds on"), an ordinal like "2nd amendment", or (for a bare number)
+# unrecognized trailing prose -- is not a valid continuation and silently ends the scan for that
+# anchor occurrence.
 _TITLE_RELATION_SEED_RE = re.compile(r"\s+Decisions?\s+(\d+)\b", re.IGNORECASE)
 _TITLE_RELATION_QUALIFIER_RE = re.compile(r"\s*(?:point\s+\d+|cl\.\s*\d+|clause\s+\d+|(?!and\b)[A-Za-z]+)", re.IGNORECASE)
-_TITLE_RELATION_AND_RE = re.compile(r"\s*,?\s*and\s+Decisions?\s+(\d+)\b", re.IGNORECASE)
+_BARE_NUMBER_BOUNDARY_RE = r"(?=[),;]|\s+(?:and\b|point\s+\d+|cl\.\s*\d+|clause\s+\d+)|\Z)"
+_TITLE_RELATION_AND_RE = re.compile(
+    r"\s*,?\s*and\s+(Decisions?\s+)?(\d+)\b(?(1)|" + _BARE_NUMBER_BOUNDARY_RE + r")", re.IGNORECASE
+)
 _TITLE_RELATION_PLUS_RE = re.compile(r"\s*\+\s*Decisions?\s+(\d+)\b", re.IGNORECASE)
-_TITLE_RELATION_COMMA_RE = re.compile(r"\s*,\s*(\d+)\b")
+_TITLE_RELATION_COMMA_RE = re.compile(r"\s*,\s*(Decisions?\s+)?(\d+)\b(?(1)|" + _BARE_NUMBER_BOUNDARY_RE + r")", re.IGNORECASE)
 _TITLE_RELATION_SLASH_RE = re.compile(r"\s*/\s*(\d+)\b")
+
+# (pattern, capture-group-index-for-the-number) in match-priority order -- AND_RE/COMMA_RE carry
+# two groups (optional "Decisions?" prefix, then the digits) so their digits are group 2;
+# PLUS_RE/SLASH_RE carry a single digits-only group.
+_TITLE_RELATION_CONTINUATIONS: tuple[tuple[re.Pattern[str], int], ...] = (
+    (_TITLE_RELATION_AND_RE, 2),
+    (_TITLE_RELATION_PLUS_RE, 1),
+    (_TITLE_RELATION_COMMA_RE, 2),
+    (_TITLE_RELATION_SLASH_RE, 1),
+)
 
 
 def _extract_title_relation_targets(raw_title: str, relation_word: str) -> list[int]:
@@ -215,15 +378,16 @@ def _extract_title_relation_targets(raw_title: str, relation_word: str) -> list[
         while True:
             qual_m = _TITLE_RELATION_QUALIFIER_RE.match(raw_title, pos)
             qual_end = qual_m.end() if qual_m else pos
-            cont_m = (
-                _TITLE_RELATION_AND_RE.match(raw_title, qual_end)
-                or _TITLE_RELATION_PLUS_RE.match(raw_title, qual_end)
-                or _TITLE_RELATION_COMMA_RE.match(raw_title, qual_end)
-                or _TITLE_RELATION_SLASH_RE.match(raw_title, qual_end)
-            )
+            cont_m = None
+            group_idx = 1
+            for pattern, idx in _TITLE_RELATION_CONTINUATIONS:
+                cont_m = pattern.match(raw_title, qual_end)
+                if cont_m:
+                    group_idx = idx
+                    break
             if not cont_m:
                 break
-            _add(int(cont_m.group(1)))
+            _add(int(cont_m.group(group_idx)))
             pos = cont_m.end()
 
     return targets
@@ -287,7 +451,7 @@ def decision_header_numbers(paths: Optional[list[Path]] = None) -> set[int]:
     return numbers
 
 
-def _iter_decision_sections(content: str) -> list[tuple[re.Match[str], str]]:
+def iter_decision_sections(content: str) -> list[tuple[re.Match[str], str]]:
     """Yield (heading_match, raw_block) pairs for every '## Decision N:' heading, in file
     order, WITHOUT dedup or sort -- unlike parse_decisions_md, which dedupes by decision_id
     (first-wins) and sorts by id.
@@ -296,7 +460,11 @@ def _iter_decision_sections(content: str) -> list[tuple[re.Match[str], str]]:
     not including) the start of the next heading, or through end-of-file for the last one.
     Concatenating a file's preamble (the text before its first heading) with every raw_block
     here, in order, byte-reconstructs the source file exactly -- the invariant the
-    byte-reconstruction coverage test in tests/test_decisions_md.py asserts.
+    byte-reconstruction coverage test in tests/decisions_md/test_parse.py asserts.
+
+    Public per DAF-03 consolidation (PLAN-size-gov-marker-guard): the single shared
+    section-block parser scripts/checks/_marker_guard.py's load_decision_bodies() consumes,
+    so that module never hand-rolls a sixth '## Decision' header regex.
     """
     headings = list(_DECISION_HEADING_RE.finditer(content))
     sections: list[tuple[re.Match[str], str]] = []
@@ -304,6 +472,63 @@ def _iter_decision_sections(content: str) -> list[tuple[re.Match[str], str]]:
         end = headings[i + 1].start() if i + 1 < len(headings) else len(content)
         sections.append((m, content[m.start() : end]))
     return sections
+
+
+# Private alias retained so existing internal callers (this module's own parse_decisions_md)
+# keep working unchanged.
+_iter_decision_sections = iter_decision_sections
+
+
+# Bare ```yaml fence, immediately (modulo the conventional blank line) after the heading line --
+# never `---` (overloaded as block_separator/field-terminator already) and never a decorated
+# info string like ```yaml reversal-conditions (Decision 133's monitored stanza, matched by
+# scripts/preflight/decision_conditions.py on that exact info string).
+_ENVELOPE_FENCE_RE = re.compile(r"\A#{2,3}\s+Decision\s+\d+:[^\n]*\n+```yaml\n(.*?)\n```", re.DOTALL)
+
+
+def _envelope_has_well_formed_shape(data: dict) -> bool:
+    """Type-check the handful of envelope fields every downstream consumer assumes a shape for
+    (parse_decisions_md's list()/str() coercions, the conformance check's int(number)) -- a
+    scalar where a list is expected (e.g. 'amends: 150' instead of 'amends: [150]') or a
+    non-numeric 'number' must not crash a shared-parser caller with a raw traceback; it is
+    exactly as malformed as unparseable YAML, so it is rejected at the same layer.
+    """
+    number = data.get("number")
+    if number is not None and not (isinstance(number, int) and not isinstance(number, bool)):
+        return False
+    for list_field in ("amends", "supersedes"):
+        value = data.get(list_field)
+        if value is not None and not (
+            isinstance(value, list) and all(isinstance(n, int) and not isinstance(n, bool) for n in value)
+        ):
+            return False
+    significance = data.get("significance")
+    if significance is not None and not isinstance(significance, dict):
+        return False
+    return True
+
+
+def extract_entry_envelope(block: str) -> Optional[dict]:
+    """Parse the typed metadata envelope from a heading-inclusive raw block, or None.
+
+    Returns None when no fenced ```yaml block immediately follows the heading, the fence's
+    content is not valid YAML, it does not parse to a mapping, or a known field carries the
+    wrong shape (_envelope_has_well_formed_shape) -- a malformed or absent envelope is treated
+    identically here (silently absent), so a broken envelope never crashes a corpus-wide parse
+    or a downstream consumer's own type-shaped access; scripts.checks.decisions.
+    validate_decision_entry_conformance is the layer that turns "no well-formed envelope on a
+    new entry" into a FAIL.
+    """
+    m = _ENVELOPE_FENCE_RE.match(block)
+    if not m:
+        return None
+    try:
+        data = yaml.safe_load(m.group(1))
+    except yaml.YAMLError:
+        return None
+    if not isinstance(data, dict) or not _envelope_has_well_formed_shape(data):
+        return None
+    return data
 
 
 def parse_decisions_md(paths: Optional[list[Path]] = None) -> list[dict]:
@@ -330,12 +555,16 @@ def parse_decisions_md(paths: Optional[list[Path]] = None) -> list[dict]:
             raw_title = m.group(2).strip()
             title = re.sub(r"\s*\(.*?\)\s*$", "", raw_title).strip()
             body = full_block[m.end() - m.start() :]
-            status_m = re.search(r"\*\*Status:\*\*\s*(.+)", body)
-            if status_m:
-                status = status_m.group(1).strip().split("--")[0].strip()
+            envelope = extract_entry_envelope(full_block)
+            if envelope and envelope.get("status"):
+                status = str(envelope["status"]).strip()
             else:
-                paren_m = re.search(r"\(([^)]+)\)\s*$", raw_title)
-                status = paren_m.group(1).strip() if paren_m else ""
+                status_m = re.search(r"\*\*Status:\*\*\s*(.+)", body)
+                if status_m:
+                    status = status_m.group(1).strip().split("--")[0].strip()
+                else:
+                    paren_m = re.search(r"\(([^)]+)\)\s*$", raw_title)
+                    status = paren_m.group(1).strip() if paren_m else ""
             raw_block = full_block.strip()
             content_hash = hashlib.sha256(raw_block.encode("utf-8")).hexdigest()
             seen[decision_id] = {
@@ -346,12 +575,17 @@ def parse_decisions_md(paths: Optional[list[Path]] = None) -> list[dict]:
                 "intent": _extract_multiline_section(body, "Intent"),
                 "decision_text": _extract_decision_text(body),
                 "context": _extract_multiline_section(body, "Rationale", "Key details", "Context"),
-                "decided_date": _extract_decided_date(body),
+                "decided_date": str(envelope["decided_date"]).strip()
+                if envelope and envelope.get("decided_date")
+                else _extract_decided_date(body),
                 "related_decisions": _extract_related_decisions(body),
-                "reversal_conditions": _extract_multiline_section(body, "Reversal conditions", "Reversal condition"),
                 "superseded_by": _extract_superseded_by(body),
-                "amends": extract_amends_edges(raw_title),
-                "title_supersedes": _extract_title_borne_supersedes(raw_title),
+                "reversal_conditions": _extract_multiline_section(body, "Reversal conditions", "Reversal condition"),
+                "amends": list(envelope["amends"]) if envelope and envelope.get("amends") else extract_amends_edges(raw_title),
+                "title_supersedes": list(envelope["supersedes"])
+                if envelope and envelope.get("supersedes")
+                else _extract_title_borne_supersedes(raw_title),
+                "significance": envelope.get("significance", {}) if envelope else {},
                 "raw_block": raw_block,
                 "content_hash": content_hash,
                 "created_timestamp": now_iso,
