@@ -14,14 +14,25 @@ ignore_imports =
     # batch.py was extracted FROM execute_recommendation.py; deferred imports prevent module-load cycles
     # during the ongoing strangling migration).
     scripts.executor.batch -> scripts.execute_recommendation
+    # scripts.executor.batch_compound (execute_compound/_ensure_compound_branch, extracted FROM
+    # scripts.executor.batch) keeps the same function-local scripts.execute_recommendation imports;
+    # mirrors the batch entry above for the same Strangler Fig reason.
+    scripts.executor.batch_compound -> scripts.execute_recommendation
 
 [importlinter:contract:no-cycles-ops-data-portal-executor]
 name = scripts.ops_data_portal is above scripts.executor (no upward imports; delegation via deferred imports)
 type = layers
 layers =
     scripts.ops_data_portal
+    scripts.ops_portal
     scripts.executor
 ignore_imports =
+    # scripts.executor.plan imports scripts.ops_portal.execution_plans in a function body (save_plan):
+    # the executor's plan-revision producer delegates the ops_execution_plans write upward to the named
+    # portal producer (T2.26 c9), mirroring the jsonl_store carve-out below for the same reason -- a
+    # deferred import prevents a module-load cycle (execution_plans.py imports from scripts.ops_portal.*,
+    # which sits above scripts.executor in this layering).
+    scripts.executor.plan -> scripts.ops_portal.execution_plans
     # scripts.executor.jsonl_store imports scripts.ops_data_portal in function bodies (update_rec, file_rec,
     # find_open_postmortem_for): the jsonl_store delegates write operations upward to the authoritative portal.
     # ops_data_portal imports executor submodules at module level for type and schema access (the intended
@@ -32,7 +43,44 @@ ignore_imports =
     # executor -> execute_recommendation -> ops_data_portal that would appear to violate the
     # ops_data_portal > executor layering. Deferred imports are intentional migration scaffolding.
     scripts.executor.batch -> scripts.execute_recommendation
+    # scripts.executor.batch_compound (execute_compound/_ensure_compound_branch) creates the same
+    # transitive path as the batch entry above; mirrors it for the same reason.
+    scripts.executor.batch_compound -> scripts.execute_recommendation
     scripts.executor -> scripts.execute_recommendation
+    # Decision 124: scripts.ops_portal submodules call BACK into the facade for the handful of
+    # symbols that stay facade-resident (file_rec/update_rec/_fetch_rec_from_reader/
+    # get_ci_rca_strict_mode) via function-local imports inside the calling function, never at
+    # module level -- this is what avoids a real module-load cycle (the facade imports these
+    # submodules at module level; a module-level back-import would be circular). Import-linter's
+    # static layers check cannot distinguish a deferred call-time import from a module-level one,
+    # so each such submodule is named here, mirroring the jsonl_store carve-out above.
+    scripts.ops_portal.maintenance_ops -> scripts.ops_data_portal
+    scripts.ops_portal.ci_rca_runtime -> scripts.ops_data_portal
+    scripts.ops_portal.cli -> scripts.ops_data_portal
+    # ci-rca-identity-lifecycle (Decision 136): scripts.ops_portal.ci_rca_lifecycle's
+    # stamp_fixed_by_sha calls back into the facade for _fetch_rec_from_reader/update_rec via the
+    # same function-local pattern -- mirrors the three carve-outs immediately above.
+    scripts.ops_portal.ci_rca_lifecycle -> scripts.ops_data_portal
+    # Decision 155 (PLAN-syspath-hygiene-advisory-read-tolerance): scripts.data_quality_execute
+    # imports scripts.ops_portal.reader_transient (is_reader_unavailable), the extracted transient
+    # DuckLake-reader-outage classifier shared with the DCG-03 orphan guard. reader_transient.py is
+    # a leaf pure-logic module with zero imports of its own (no back-import into ops_data_portal or
+    # scripts.executor), so this edge carries none of the dependency-inversion risk this contract
+    # guards against -- it is flagged only because reader_transient.py's file location falls inside
+    # the scripts.ops_portal layer boundary. The edge is reachable from
+    # scripts.executor.postflight_gates via scripts.verifiers.data_quality's verifier gate, an
+    # already-intentional executor->verifiers edge carved out in the sibling
+    # no-cycles-verifiers-executor contract above; this entry breaks the same transitive path for
+    # THIS contract's static layers check without weakening either layering.
+    scripts.data_quality_execute -> scripts.ops_portal.reader_transient
+    # scripts.executor.branch_lifecycle (extracted FROM scripts.execute_recommendation, PLAN-sloc-executor-core)
+    # keeps file_hotfix_rec's and _is_poisoned_rec's lazy `from scripts.ops_data_portal import file_rec /
+    # find_open_postmortem_for` imports exactly as they were in the facade. That import previously originated
+    # from scripts.execute_recommendation.py, which sits outside the executor package and so crossed no
+    # contract; now that the same deferred import lives inside scripts.executor, it is an edge this contract's
+    # static layers check would otherwise flag. Deferred imports are intentional migration scaffolding, mirroring
+    # the jsonl_store carve-out above.
+    scripts.executor.branch_lifecycle -> scripts.ops_data_portal
 
 [importlinter:contract:no-cycles-verifiers-executor]
 name = scripts.verifiers is above scripts.executor (verifiers use executor infrastructure; not vice versa)
@@ -44,8 +92,8 @@ ignore_imports =
     # scripts.executor.postflight imports scripts.verifiers and scripts.verifiers.harness in a function body
     # (_run_verifiers_gate): executor bootstraps the verification gate without creating a module-load cycle.
     # verifiers import executor submodules at module level (the intended direction).
-    scripts.executor.postflight -> scripts.verifiers
-    scripts.executor.postflight -> scripts.verifiers.harness
+    scripts.executor.postflight_gates -> scripts.verifiers
+    scripts.executor.postflight_gates -> scripts.verifiers.harness
 
 [importlinter:contract:src-schemas-is-pure-data-layer]
 name = src.schemas is a pure data layer -- no imports from other first-party packages

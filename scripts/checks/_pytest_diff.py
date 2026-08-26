@@ -1,0 +1,663 @@
+"""Fast-tier heavy-dependency test deferral for the --pre pytest-diff step (rec-2485, Decision
+104; extracted from scripts/checks/_scaffolding.py under Decision 128's decompose-by-default SLOC
+rule -- this concern (partition/probe/re-run around requirements-fast.txt's heavy-dep exclusions)
+is fully self-contained and had no coupling to the rest of that file's scaffolding steps).
+scripts/checks/_scaffolding.py re-exports the surface this module had at extraction time, for
+facade back-compat (`from scripts.checks._scaffolding import run_pytest_diff` etc keep resolving),
+mirroring how that file already re-exports scripts/checks/_terraform.py and _budget_recs.py. That
+list is frozen -- Decision 169 forbids new facade re-exports, so names added here (the diff-
+coverage scoping surface below) are imported from this module directly.
+
+requirements-fast.txt (the pr-validate CI job) deliberately omits heavy wheels
+(torch/pandas/numpy/pyarrow/duckdb/etc, ~3GB dominant per .github/workflows/ci.yml:49-59).
+A handful of test files import one of these at module scope, so they can never be
+collected under the fast tier -- that is a structural, not a regression, signal (Google
+TAP / Bazel precedent: SKIPPED-dep-unavailable is distinct from FAILED). The classifier
+below positively identifies that ONE shape and defers it to main-validate (full tier,
+post-merge); every other collection error or test failure stays hard-red (fail-closed).
+"""
+
+from __future__ import annotations
+
+import concurrent.futures
+import importlib.util
+import json
+import re
+import tomllib
+from pathlib import Path
+
+from scripts.checks import _common
+
+# Parallelism + per-test timeout for both --pre pytest-diff invocations (primary and reactive
+# survivor re-run). Cap (60s) is comfortably above the slowest legitimate unit (~3s) and well
+# under the 300s fast-tier budget.
+#
+# rec-2653: a fixed integer --randomly-seed overrides pyproject.toml's addopts
+# "--randomly-seed=last" for these xdist-parallel invocations only, so every -n auto worker
+# resolves the same collection order on a cold .pytest_cache. "last" resolves inconsistently
+# across workers on GH-hosted runners, producing "Different tests were collected between gw1
+# and gwN". pyproject.toml itself is untouched (local-dev re-run ergonomics), and -n auto is
+# untouched (worker count is not the defect).
+_PYTEST_RANDOMLY_SEED = 20260710
+_PYTEST_FLAGS = [
+    "-n",
+    "auto",
+    "--timeout",
+    "60",
+    "--timeout-method=thread",
+    f"--randomly-seed={_PYTEST_RANDOMLY_SEED}",
+]
+
+# Concurrency cap for the reactive per-file heavy-dep probe loop (_runtime_heavy_dep_defer_reason).
+# Each probe is its own isolated pytest subprocess (see that function's docstring for why isolation
+# matters) -- running several concurrently is safe (separate processes, no shared state) and turns
+# a serial chain of per-process startup overheads into a bounded number of parallel batches.
+_REACTIVE_PROBE_MAX_WORKERS = 8
+
+# PLAN-premerge-diff-coverage-gate: coverage artifact + machine-readable deferral map emitted by
+# the ONE primary invocation below, consumed by scripts/checks/misc/validate_diff_coverage.py.
+# All three paths are gitignored (logs/debug/ -- Decision 55 debug-artifact convention, mirrors
+# scripts/checks/deps/affected_tests.py's selection-manifest.json). --cov-fail-under=0 overrides
+# the scope config's carried-over fail_under=37 for THIS invocation only -- an affected-set run
+# measuring well under 37% must never redden the fast tier on a coverage floor designed for the
+# full suite.
+COVERAGE_ARTIFACT_REL = "logs/debug/diff-coverage.json"
+DEFERRAL_MAP_REL = "logs/debug/diff-coverage-deferrals.json"
+COVERAGE_SCOPE_CONFIG_REL = "logs/debug/diff-coverage-scope.coveragerc"
+
+# Blanket `--cov=src --cov=scripts` tracing cost a measured 4.3x wall-clock multiplier on the ONE
+# primary invocation (74.6s -> 320.5s on a 694-test selection) -- on its own more than the whole
+# 300s fast-tier budget (Decision 153), spent entirely on a REPORT-ONLY check. Two levers, both
+# necessary and both measured on a 10-file / ~300-test proxy selection (mean of 3 reps):
+#   untraced 43.8s | this mechanism 44.8s (+2.4%) | --cov=src --cov=scripts 108.4s (+147.6%)
+#   sysmon core alone, still whole-tree 55.0s (+19%) | include-scoped alone, ctrace 105.5s (+104%)
+# 1. include-scoping: validate_diff_coverage only ever looks up the diff's OWN src/scripts .py
+#    files, so tracing anything else is pure waste. coverage.py's should_trace skips a file that
+#    matches no [run] include pattern. `include` is IGNORED whenever `source` is set, hence the
+#    bare `--cov` (empty source) plus a generated --cov-config below, never `--cov=<tree>`.
+# 2. core = sysmon: PEP 669 monitoring can disable per-line events for untraced code entirely,
+#    where the C tracer still pays a per-event callback. coverage falls back with a loud warning
+#    when sysmon is unusable (branch coverage, dynamic contexts, Python < 3.12) -- never an error.
+# Verified byte-identical executed/missing/excluded line sets against the blanket-traced run.
+_COVERAGE_CORE = "sysmon"
+# Scope keys of pyproject's own [tool.coverage.run] that the generated config must NOT carry
+# forward: `source` (any spelling) would make coverage ignore `include` and restore whole-tree
+# tracing; `include`/`core` are what this module is setting.
+_SUPPRESSED_RUN_KEYS = frozenset({"source", "source_pkgs", "source_dirs", "include", "core"})
+_SOURCE_PREFIXES = ("src/", "scripts/")
+
+# Deferral-map state vocabulary: STATE_OK means the coverage artifact reflects the single primary
+# invocation's real measurement (whether or not that invocation's tests all passed -- coverage.py
+# records line execution independent of assertion outcomes). STATE_OK is never a default: it is
+# recorded only once there is an artifact to read, or nothing was in scope to trace. The other
+# five are the "no usable artifact" states this plan's classifier must recognise rather than
+# silently misread:
+#   - EMPTY_AFFECTED_SET: changed_tests was empty -- no invocation was ever attempted.
+#   - ALL_DEFERRED: every changed test file deferred at collect-only (or reactive-probe) time --
+#     no primary invocation ran, so no coverage was ever collected.
+#   - TWO_INVOCATION_FAILURE: the primary invocation failed on an excluded-heavy-dep signature and
+#     a SECOND real invocation ran on the survivor subset. The primary run's coverage.json still
+#     exists on disk, but it measured a run that included files later found to need deferral (their
+#     partial, crash-truncated execution is not a reliable line-coverage signal) and does not
+#     reflect the actually-validated survivor set -- so it is not a usable diff-coverage snapshot.
+#   - TRACED_NO_ARTIFACT: the primary invocation WAS include-scoped to this diff's changed source
+#     files, but wrote no coverage JSON at all -- pytest-cov emits none when the selected tests
+#     execute none of the included files ("WARNING: Failed to generate report: No data to report.",
+#     exit 0). Reachable only since tracing became include-scoped; under blanket --cov=src
+#     --cov=scripts the artifact always existed. Recording it as OK would let the classifier read
+#     an absent artifact as an empty file map and print a vacuous COVERED=0 green over lines it
+#     never measured -- exactly the "could not examine" vs "examined nothing" confusion
+#     validate_diff_coverage's docstring declares must never happen.
+#   - SCOPE_UNRESOLVED: tracing was WANTED but could not be set up -- the changed-source derivation
+#     degraded (a failed git probe yields no path, indistinguishable from an empty diff) or the
+#     generated scope config could not be written. The primary invocation still ran, untraced
+#     (tracing never fails closed into blanket --cov, whose cost is what this mechanism exists to
+#     avoid), so nothing was measured and the classified domain is NOT known to be empty.
+STATE_OK = "ok"
+STATE_EMPTY_AFFECTED_SET = "empty_affected_set"
+STATE_ALL_DEFERRED = "all_deferred"
+STATE_TWO_INVOCATION_FAILURE = "two_invocation_failure"
+STATE_TRACED_NO_ARTIFACT = "traced_no_artifact"
+STATE_SCOPE_UNRESOLVED = "scope_unresolved"
+NO_ARTIFACT_STATES = frozenset(
+    {
+        STATE_EMPTY_AFFECTED_SET,
+        STATE_ALL_DEFERRED,
+        STATE_TWO_INVOCATION_FAILURE,
+        STATE_TRACED_NO_ARTIFACT,
+        STATE_SCOPE_UNRESOLVED,
+    }
+)
+
+
+def _write_deferral_map(state: str, file_reasons: dict[str, str], *, root: Path = _common.ROOT) -> None:
+    """Best-effort write of {"state": ..., "deferred": {test_file: reason}} (Decision 55: LOUD
+    skip on OSError, never raising -- mirrors scripts/checks/deps/affected_tests.py's
+    emit_manifest write style). `state` is one of the STATE_* constants above; `file_reasons`
+    covers BOTH the collect-only partition's deferred list and the reactive heavy-dep probe's
+    finds (previously printed and discarded, per this plan's acceptance criteria)."""
+    path = root / DEFERRAL_MAP_REL
+    payload = {"state": state, "deferred": file_reasons}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    except OSError as exc:
+        print(f"Diff-coverage deferral map: local write to {path} failed -- loud skip (Decision 55): {exc!r}")
+
+
+def _tip_diff_source_files(root: Path) -> tuple[set[str], bool]:
+    """({non-deleted src//scripts paths changed vs the TIP base}, derivation_ok).
+
+    validate_diff_coverage classifies against push_context_base(root) or "origin/main" (the TIP)
+    while get_status_aware_diff() derives from the merge-base, so on a branch behind main the two
+    disagree and a file the classifier sees but the tracer misses silently loses its added lines
+    from the report. Unioning both legs keeps the traced scope a strictly-additive superset of the
+    classified domain. `ok` is False on a failed git probe -- otherwise indistinguishable from an
+    empty diff."""
+    base = _common.push_context_base(root) or "origin/main"
+    result = _common.run(
+        ["git", "diff", "--name-status", "--no-renames", base, "--", "src", "scripts"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=root,
+    )
+    if result.returncode != 0:
+        return set(), False
+    paths: set[str] = set()
+    for line in (result.stdout or "").splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[0].strip()[:1] != "D":
+            paths.add(parts[1].strip())
+    return paths, True
+
+
+def _derive_changed_sources(root: Path | None) -> tuple[list[str], bool]:
+    """(traced scope, derivation_ok) -- the union of the merge-base and tip legs, filtered to
+    src//scripts .py. `ok` reports the tip leg only: get_status_aware_diff() swallows its own git
+    failures, but the tip leg IS what validate_diff_coverage classifies against (and its untracked
+    probe is separate), so a healthy tip leg plus an empty union is real evidence of an empty
+    classified domain."""
+    r = root if root is not None else _common.ROOT
+    merge_base_leg = {path for status, path in _common.get_status_aware_diff(root) if status != "D"}
+    tip_leg, ok = _tip_diff_source_files(r)
+    return sorted(p for p in merge_base_leg | tip_leg if p.endswith(".py") and p.startswith(_SOURCE_PREFIXES)), ok
+
+
+def changed_source_files(*, root: Path | None = None) -> list[str]:
+    """Repo-relative src//scripts .py paths this diff adds or modifies -- a superset of the domain
+    validate_diff_coverage classifies (see _derive_changed_sources for the two-leg union), and so
+    exactly what the primary invocation needs to trace. Deleted paths carry no added line to
+    classify. Derived live per run: Decision 135's KG.13-boundary paragraph keeps this derivation
+    LIVE and CACHELESS -- explicitly neither a selection nor a coverage cache -- so nothing here is
+    ever read back from a prior run."""
+    return _derive_changed_sources(root)[0]
+
+
+def _pyproject_coverage_tables(root: Path) -> dict[str, dict]:
+    """pyproject.toml's [tool.coverage.*] tables, or {} when unreadable (never raises -- a scope
+    config with only the keys this module sets is still correct, just less faithful)."""
+    try:
+        data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+    tables = (data.get("tool") or {}).get("coverage") or {}
+    return {name: dict(table) for name, table in tables.items() if isinstance(table, dict)}
+
+
+def _render_config_ini(tables: dict[str, dict]) -> str:
+    """Serialise {section: {option: value}} in coverage.py's own (RawConfigParser, no
+    interpolation) config-file grammar; a list renders as an indented continuation block, which is
+    how coverage reads multi-valued options."""
+    lines: list[str] = []
+    for section, options in tables.items():
+        lines.append(f"[{section}]")
+        for key, value in options.items():
+            if isinstance(value, bool):
+                lines.append(f"{key} = {str(value).lower()}")
+            elif isinstance(value, (list, tuple)):
+                lines.append(f"{key} =")
+                lines.extend(f"    {item}" for item in value)
+            else:
+                lines.append(f"{key} = {value}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def render_coverage_scope_config(changed_sources: list[str], *, root: Path | None = None) -> str:
+    """Render the generated coverage config for the ONE traced primary invocation.
+
+    A --cov-config REPLACES pyproject.toml wholesale for that invocation (coverage stops at the
+    first config file it can read), so every pyproject [tool.coverage.*] option that shapes the
+    executed/missing/excluded line sets validate_diff_coverage reads -- omit, exclude_also -- is
+    carried forward verbatim; only the tracing SCOPE keys are overridden (see
+    _SUPPRESSED_RUN_KEYS). Include patterns are absolute so a test or subprocess running under a
+    different cwd still matches.
+    """
+    r = root if root is not None else _common.ROOT
+    tables = _pyproject_coverage_tables(r)
+    run_options: dict = {k: v for k, v in (tables.get("run") or {}).items() if k not in _SUPPRESSED_RUN_KEYS}
+    run_options["core"] = _COVERAGE_CORE
+    run_options["include"] = [str(r / rel) for rel in changed_sources]
+    rendered: dict[str, dict] = {"run": run_options}
+    report_options = tables.get("report")
+    if report_options:
+        rendered["report"] = report_options
+    return _render_config_ini(rendered)
+
+
+def coverage_flags(config_path: Path) -> list[str]:
+    """Coverage argv for the ONE primary invocation. Bare `--cov` (no value) leaves coverage's
+    `source` empty so the generated config's `include` decides scope. The reactive survivor re-run
+    is deliberately NOT given these -- pytest-cov only activates coverage when at least one --cov
+    flag is present, and pyproject.toml's addopts carries none."""
+    return ["--cov", f"--cov-config={config_path}", "--cov-fail-under=0", f"--cov-report=json:{COVERAGE_ARTIFACT_REL}"]
+
+
+def _prepare_diff_coverage(*, root: Path | None = None) -> tuple[list[str], str | None]:
+    """Discard the previous run's coverage artifact, then return (coverage argv for the primary
+    invocation, forced deferral-map state or None).
+
+    The argv is empty -- the invocation runs UNTRACED -- when this diff touches no src//scripts .py
+    file, when the derivation degraded, or when the scope config could not be written; tracing
+    never fails closed into blanket --cov (the 4.3x cost this mechanism exists to avoid). The
+    second element is STATE_SCOPE_UNRESOLVED for exactly the two of those shapes where an untraced
+    run is NOT evidence of an empty classified domain, so validate_diff_coverage declares a skip
+    rather than reading the absent artifact as a measurement.
+
+    The discard is not hygiene: pytest-cov writes no JSON when a run collects no data, so a
+    previous run's artifact left on disk would be read as THIS run's measurement -- and its
+    absence afterwards is what _primary_coverage_state reads back to detect that no-data case.
+    """
+    r = root if root is not None else _common.ROOT
+    try:
+        (r / COVERAGE_ARTIFACT_REL).unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"Diff-coverage artifact: stale {COVERAGE_ARTIFACT_REL} not removed -- loud skip (Decision 55): {exc!r}")
+
+    changed_sources, derivation_ok = _derive_changed_sources(root)
+    if not derivation_ok:
+        print("\nDiff coverage: changed-source derivation degraded (git probe failed) -- invocation left untraced.")
+        return [], STATE_SCOPE_UNRESOLVED
+    if not changed_sources:
+        print("\nDiff coverage: no changed src/scripts .py file in either derivation -- invocation left untraced.")
+        return [], None
+    config_path = r / COVERAGE_SCOPE_CONFIG_REL
+    try:
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(render_coverage_scope_config(changed_sources, root=r), encoding="utf-8")
+    except OSError as exc:
+        print(f"Diff-coverage scope config: local write to {config_path} failed -- loud skip (Decision 55): {exc!r}")
+        return [], STATE_SCOPE_UNRESOLVED
+    print(f"\nDiff coverage: tracing {len(changed_sources)} changed source file(s) via {COVERAGE_SCOPE_CONFIG_REL}.")
+    return coverage_flags(config_path), None
+
+
+def _primary_coverage_state(cov_flags: list[str], scope_state: str | None, *, root: Path | None = None) -> str:
+    """Deferral-map state for a run whose primary invocation was the SOLE invocation: STATE_OK only
+    when there is a usable artifact to read, or nothing was in scope to trace. An include-scoped
+    run that wrote no artifact is STATE_TRACED_NO_ARTIFACT, never a green over an empty file map
+    (see the state vocabulary above)."""
+    if scope_state is not None:
+        return scope_state
+    if not cov_flags:
+        return STATE_OK
+    r = root if root is not None else _common.ROOT
+    return STATE_OK if (r / COVERAGE_ARTIFACT_REL).exists() else STATE_TRACED_NO_ARTIFACT
+
+
+# Curated dist-name -> import-name aliases for names that differ; default is
+# name.lower().replace("-", "_").
+_DIST_TO_IMPORT_ALIASES: dict[str, str] = {
+    "scikit-learn": "sklearn",
+    "psycopg2-binary": "psycopg2",
+    "beautifulsoup4": "bs4",
+    "python-ulid": "ulid",
+}
+
+_NO_MODULE_NAMED_RE = re.compile(r"No module named ['\"]([\w.]+)['\"]")
+
+
+def _parse_requirement_dist_names(path: Path) -> set[str]:
+    """Parse a requirements file into bare distribution names.
+
+    Strips comments, extras (`[...]`), environment markers (after `;`), and version specifiers.
+    """
+    names: set[str] = set()
+    if not path.exists():
+        return names
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        line = re.sub(r"\[[^\]]*\]", "", line)
+        line = line.split(";", 1)[0].strip()
+        name = re.split(r"[<>=!~]", line, maxsplit=1)[0].strip()
+        if name:
+            names.add(name)
+    return names
+
+
+def _dist_to_import_name(dist_name: str) -> str:
+    return _DIST_TO_IMPORT_ALIASES.get(dist_name, dist_name.lower().replace("-", "_"))
+
+
+def _excluded_heavy_import_names() -> set[str]:
+    """Import names deliberately excluded from the fast tier.
+
+    Derived at runtime as (requirements.txt distributions) - (requirements-fast.txt
+    distributions), no hard-coded dep list (rec-2485 acceptance).
+    """
+    full = _parse_requirement_dist_names(_common.ROOT / "requirements.txt")
+    fast = _parse_requirement_dist_names(_common.ROOT / "requirements-fast.txt")
+    return {_dist_to_import_name(dist) for dist in full - fast}
+
+
+def _excluded_and_absent(missing: str | None, excluded: set[str]) -> str | None:
+    """Return `missing`'s top-level module name if it's a deliberately-excluded, genuinely-absent
+    heavy dependency (both conditions checked); otherwise None."""
+    if not missing:
+        return None
+    top_level = missing.split(".")[0]
+    if top_level in excluded and importlib.util.find_spec(top_level) is None:
+        return top_level
+    return None
+
+
+def _runtime_heavy_dep_defer_reason(test_file: str, excluded: set[str]) -> str | None:
+    """Run a single collectible test file for real, in isolation; return the excluded heavy-dep
+    name if ANY failure in it traces to a genuinely-absent heavy dependency.
+
+    Catches the shape `--collect-only` cannot see: a dependency imported lazily inside a test or
+    the production code it exercises (function scope, not module scope), which only raises
+    ModuleNotFoundError when the specific test actually runs. Isolated (one file, one process)
+    so a mid-run ModuleNotFoundError in one test cannot leave shared fixture/mock state that
+    manifests as unrelated-looking failures in later tests within the same file -- deferring
+    the whole file on ANY such hit (not requiring every failure to match) is what makes that
+    safe: once the file is known to need a missing dependency, downstream failures in the same
+    isolated run aren't independently meaningful.
+    """
+    result = _common.run(
+        [_common.PYTHON, "-m", "pytest", test_file, "-m", "not integration", "-q"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=_common.ROOT,
+    )
+    if result.returncode == 0:
+        return None
+    combined = (result.stdout or "") + (result.stderr or "")
+    for match in _NO_MODULE_NAMED_RE.findall(combined):
+        found = _excluded_and_absent(match, excluded)
+        if found:
+            return found
+    return None
+
+
+# Decision affected-set-selection: pytest's own `ERROR collecting <path>` block header
+# (verified empirically -- one header per uncollectable file, in argv order, regardless of
+# argv position) and the `-rs` short-summary `SKIPPED [N] <path>:<line>: <reason>` line (a
+# graceful module-level pytest.importorskip, not a hard collection error). Both carry the file
+# path verbatim as passed on argv, so a straight substring/suffix match resolves it back to its
+# entry in changed_tests.
+_ERROR_COLLECTING_RE = re.compile(r"ERROR collecting (\S+)")
+_SKIPPED_LINE_RE = re.compile(r"^SKIPPED\s+\[\d+\]\s+(\S+):\d+:\s*(.+)$", re.MULTILINE)
+# VTS-04 M1: a pytest section-separator line (e.g. the "short test summary info" banner) --
+# bounds the LAST ERROR-collecting block so it stops there instead of running to end-of-output.
+_SECTION_SEPARATOR_RE = re.compile(r"^=+.+=+$", re.MULTILINE)
+# A pytest short-summary FAILED/ERROR line (e.g. "FAILED tests/foo.py::TestX::test_y - Module...").
+# Used to attribute the combined run's failures back to individual files (see
+# _attribute_failed_test_files below) so the reactive heavy-dep probe targets only the files that
+# actually failed, not every runnable file.
+_FAILED_SUMMARY_LINE_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
+
+
+def _match_changed_test_path(file_token: str, changed_tests: list[str], *, repo_root: Path = _common.ROOT) -> str | None:
+    """Resolve a path token echoed by pytest (relative-as-passed, or occasionally an
+    absolute/rootdir-relative variant) back to its exact entry in changed_tests."""
+    normalized = file_token.replace("\\", "/")
+    for f in changed_tests:
+        if normalized == f or normalized.endswith("/" + f):
+            return f
+        target = repo_root / f
+        if not target.is_dir():
+            continue
+        candidate = repo_root / normalized
+        try:
+            candidate.relative_to(target)
+        except ValueError:
+            continue
+        if candidate.is_file() and candidate.name.startswith("test_") and candidate.suffix == ".py":
+            return candidate.relative_to(repo_root).as_posix()
+    return None
+
+
+def _expand_directory_test_targets(targets: list[str]) -> list[str]:
+    """Defensively normalize any legacy directory target to individual test modules."""
+    expanded: list[str] = []
+    for target in targets:
+        path = _common.ROOT / target
+        if not path.is_dir():
+            expanded.append(target)
+            continue
+        expanded.extend(
+            test_file.relative_to(_common.ROOT).as_posix()
+            for test_file in sorted(path.rglob("test_*.py"))
+            if "__pycache__" not in test_file.parts and test_file.is_file()
+        )
+    return list(dict.fromkeys(expanded))
+
+
+def _attribute_batched_collect_errors(combined: str, changed_tests: list[str], excluded: set[str]) -> dict[str, str]:
+    """Parse ONE combined `--collect-only -rs` invocation's stdout+stderr and attribute each
+    per-file signal -- a hard collection-ERROR block, or a graceful SKIPPED line -- to its OWN
+    file, so a mixed batch (one uncollectable file among several runnable ones) defers exactly
+    the uncollectable file(s), never the whole batch.
+
+    VTS-04 M1: the LAST header's block is additionally bounded at the first pytest section
+    separator (e.g. "=== short test summary info ===") that follows it, not just the next
+    header/end-of-string -- otherwise it swallows the trailing summary section, which echoes
+    EVERY errored file's own "No module named" message, and `matches[-1]` (the last match in an
+    unbounded block) can mis-attribute an earlier file's heavy-dep message to the last file even
+    when the last file's own error is a genuine, unrelated bug."""
+    deferred: dict[str, str] = {}
+
+    headers = list(_ERROR_COLLECTING_RE.finditer(combined))
+    for i, header in enumerate(headers):
+        file_token = header.group(1)
+        next_start = headers[i + 1].start() if i + 1 < len(headers) else len(combined)
+        sep_match = _SECTION_SEPARATOR_RE.search(combined, header.end(), next_start)
+        block_end = sep_match.start() if sep_match else next_start
+        block = combined[header.end() : block_end]
+        matches = _NO_MODULE_NAMED_RE.findall(block)
+        missing = _excluded_and_absent(matches[-1], excluded) if matches else None
+        matched_file = _match_changed_test_path(file_token, changed_tests)
+        if matched_file and missing:
+            deferred[matched_file] = missing
+
+    for skip_match in _SKIPPED_LINE_RE.finditer(combined):
+        file_token, reason = skip_match.group(1), skip_match.group(2)
+        matches = _NO_MODULE_NAMED_RE.findall(reason)
+        missing = _excluded_and_absent(matches[-1], excluded) if matches else None
+        matched_file = _match_changed_test_path(file_token, changed_tests)
+        if matched_file and missing and matched_file not in deferred:
+            deferred[matched_file] = missing
+
+    return deferred
+
+
+def partition_changed_tests_by_collectability(changed_tests: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
+    """Partition changed test files into (runnable, deferred) via a SINGLE batched
+    `--collect-only` invocation covering every changed test file at once (Decision
+    affected-set-selection, ~30x fewer collect-only subprocess spawns than the prior one-call-
+    per-file loop; net-funds the affected-set derivation's added cost inside the 5-min budget).
+
+    A file defers when its OWN per-file signal (a `ERROR collecting <path>` block, or a `-rs`
+    SKIPPED line) root-causes to a deliberately-excluded heavy dependency (in requirements.txt,
+    not requirements-fast.txt) that is genuinely absent (`importlib.util.find_spec` is None) --
+    module-scope, visible without running any test body. Every other shape -- a real test
+    failure, a non-heavy collection error, or a file with no signal at all -- routes to
+    `runnable`, so the subsequent real pytest run reproduces and reddens the genuine failure
+    with full diagnostics (fail-closed). Attribution is PER FILE (see
+    _attribute_batched_collect_errors): a mixed batch of one uncollectable file and several
+    runnable ones defers only the uncollectable one -- never a whole-batch mis-defer on one bad
+    file (a near-silent under-run this batching would otherwise risk).
+
+    `-rs` (show skip reasons) is required here: a module-level `pytest.importorskip("duckdb")`
+    guard (e.g. tests/test_ops_data_portal.py) makes `--collect-only` exit 5 (NO_TESTS_COLLECTED)
+    with "collected 0 items / 1 skipped" -- a graceful skip, not a collection error -- and without
+    `-rs` the "could not import 'duckdb': No module named 'duckdb'" reason text never appears in
+    stdout, so this genuinely-absent-heavy-dep shape is invisible to the regex below and the file
+    is misrouted to `runnable`. A self-skipping file alongside at least one good file in the SAME
+    batch exits 0 overall (verified empirically) -- so per-file SKIPPED-line attribution runs
+    UNCONDITIONALLY (not gated on a nonzero returncode) to still catch it.
+
+    A heavy dependency imported LAZILY (function scope, not module scope) is invisible to
+    `--collect-only` and is no longer proactively probed here -- `run_pytest_diff` catches that
+    shape reactively, only if and after the combined run fails (see `_runtime_heavy_dep_defer_reason`).
+    """
+    if not changed_tests:
+        return [], []
+    excluded = _excluded_heavy_import_names()
+    result = _common.run(
+        [_common.PYTHON, "-m", "pytest", "--collect-only", "-q", "-rs", *changed_tests, "-m", "not integration"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=_common.ROOT,
+    )
+    combined = (result.stdout or "") + (result.stderr or "")
+    deferred_map = _attribute_batched_collect_errors(combined, changed_tests, excluded)
+    runnable = [f for f in changed_tests if f not in deferred_map]
+    deferred = [(f, deferred_map[f]) for f in changed_tests if f in deferred_map]
+    return runnable, deferred
+
+
+def _print_deferred_warning(test_file: str, missing_dep: str) -> None:
+    print(
+        f"\n=== DEFERRED TO FULL TIER (main-validate) ===\n"
+        f"{test_file}: cannot run under the fast tier -- dependency '{missing_dep}' is "
+        "deliberately excluded from requirements-fast.txt. main-validate (full tier) runs "
+        "this file post-merge; a genuine failure there files a source=ci_rca critical rec."
+    )
+
+
+def _reactive_heavy_dep_signature(combined_output: str, excluded: set[str]) -> str | None:
+    """Return the first deliberately-excluded, genuinely-absent heavy-dep name whose ModuleNotFoundError
+    signature appears in `combined_output`, or None if no such signature is present."""
+    for match in _NO_MODULE_NAMED_RE.findall(combined_output):
+        found = _excluded_and_absent(match, excluded)
+        if found:
+            return found
+    return None
+
+
+def _attribute_failed_test_files(combined: str, runnable: list[str], *, repo_root: Path = _common.ROOT) -> set[str] | None:
+    """Extract the subset of `runnable` implicated by the combined run's FAILED/ERROR short-summary
+    lines, so the reactive heavy-dep probe below targets only files that actually failed instead of
+    isolated-re-running every runnable file (rec-2871-adjacent fast-tier budget-breach fix: probing
+    the whole runnable set serially -- one pytest subprocess start per file -- dominated pytest_diff's
+    wall-clock on a diff whose affected-set widened past a few dozen files).
+
+    Returns None (never an empty set) when no FAILED/ERROR line resolves to an entry in `runnable` --
+    the caller falls back to probing the whole runnable set, fail-safe: this function only NARROWS
+    the probe target, it never causes a file that needs checking to be silently skipped.
+    """
+    files: set[str] = set()
+    for match in _FAILED_SUMMARY_LINE_RE.finditer(combined):
+        token = match.group(1).split("::", 1)[0]
+        matched = _match_changed_test_path(token, runnable, repo_root=repo_root)
+        if matched:
+            files.add(matched)
+    return files or None
+
+
+def run_pytest_diff(changed_tests: list[str], failed: list[str]) -> None:
+    """Orchestrate the --pre pytest-diff step: partition, warn, run once, and reactively fall
+    back only on failure (Decision 104 / rec-2485; single-execution reshape).
+
+    Common case: `--collect-only` partitions changed_tests into (runnable, deferred); a loud
+    un-swallowable warning is printed per deferred file; the runnable subset is run through pytest
+    EXACTLY ONCE. If that run passes (or every file deferred), the gate is done -- no proactive
+    per-file isolated probe.
+
+    Only on a non-zero return does this reactively check whether the failure signature names a
+    deliberately-excluded, genuinely-absent heavy dependency (a lazy, function-scope import
+    invisible to `--collect-only`, e.g. the rec-2572..2576 test_ops_writer.py shape). If so, it
+    falls back to per-file classification via `_runtime_heavy_dep_defer_reason` -- targeted at only
+    the files `_attribute_failed_test_files` implicates in the combined run's FAILED/ERROR lines
+    (falling back to the whole runnable set if attribution finds nothing, fail-safe), run
+    CONCURRENTLY (each is its own isolated subprocess, so parallelizing is safe) up to
+    `_REACTIVE_PROBE_MAX_WORKERS` at a time. Prints DEFERRED warnings for files that resolve to that
+    shape, and re-runs the survivors once (reddening only on a survivor failure). Any other failure
+    shape reddens immediately (fail-closed) -- no reactive re-run is spent chasing a genuine test
+    failure.
+    """
+    if not changed_tests:
+        _write_deferral_map(STATE_EMPTY_AFFECTED_SET, {})
+        return
+    runnable, deferred = partition_changed_tests_by_collectability(changed_tests)
+    runnable = _expand_directory_test_targets(runnable)
+    file_reasons: dict[str, str] = dict(deferred)
+    for test_file, missing_dep in deferred:
+        _print_deferred_warning(test_file, missing_dep)
+    if not runnable:
+        print(f"\nAll {len(deferred)} changed test file(s) deferred to the full tier -- fast-tier gate not reddened.")
+        _write_deferral_map(STATE_ALL_DEFERRED, file_reasons)
+        return
+
+    cov_flags, scope_state = _prepare_diff_coverage()
+    print("\n=== Tests (pytest -- explicit changed files) ===")
+    cmd = [_common.PYTHON, "-m", "pytest", *runnable, "-m", "not integration", "-v", *_PYTEST_FLAGS, *cov_flags]
+    result = _common.run(cmd, capture_output=True, text=True, encoding="utf-8", cwd=_common.ROOT)
+    print(result.stdout or "", end="")
+    print(result.stderr or "", end="")
+    if result.returncode == 0:
+        _write_deferral_map(_primary_coverage_state(cov_flags, scope_state), file_reasons)
+        return
+
+    excluded = _excluded_heavy_import_names()
+    combined = (result.stdout or "") + (result.stderr or "")
+    if _reactive_heavy_dep_signature(combined, excluded) is None:
+        # No excluded-heavy-dep signature in the failure output: a genuine failure, a non-heavy
+        # collection/runtime error, or an unrelated shape -- redden immediately (fail-closed).
+        # The primary invocation was still the SOLE invocation, so its coverage.json (if it wrote
+        # one -- see _primary_coverage_state) remains a usable snapshot of that one run.
+        failed.append("Tests (pytest)")
+        _write_deferral_map(_primary_coverage_state(cov_flags, scope_state), file_reasons)
+        return
+
+    probe_targets = _attribute_failed_test_files(combined, runnable)
+    if probe_targets is None:
+        probe_targets = set(runnable)
+
+    deferred_from_probe: dict[str, str] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(_REACTIVE_PROBE_MAX_WORKERS, len(probe_targets))) as pool:
+        future_to_file = {pool.submit(_runtime_heavy_dep_defer_reason, f, excluded): f for f in probe_targets}
+        for future in concurrent.futures.as_completed(future_to_file):
+            test_file = future_to_file[future]
+            runtime_missing = future.result()
+            if runtime_missing:
+                deferred_from_probe[test_file] = runtime_missing
+    for test_file in sorted(deferred_from_probe):
+        _print_deferred_warning(test_file, deferred_from_probe[test_file])
+    file_reasons.update(deferred_from_probe)
+    survivors = [f for f in runnable if f not in deferred_from_probe]
+    if not survivors:
+        print(
+            "\nAll remaining changed test file(s) deferred to the full tier on reactive "
+            "detection -- fast-tier gate not reddened."
+        )
+        _write_deferral_map(STATE_ALL_DEFERRED, file_reasons)
+        return
+
+    print("\n=== Tests (pytest -- reactive re-run on survivors) ===")
+    rerun_cmd = [_common.PYTHON, "-m", "pytest", *survivors, "-m", "not integration", "-v", *_PYTEST_FLAGS]
+    rerun_result = _common.run(rerun_cmd, cwd=_common.ROOT)
+    # Two real invocations happened (primary + this reactive re-run): the primary invocation's
+    # coverage.json is still on disk but no longer a trustworthy diff-coverage snapshot (see
+    # STATE_TWO_INVOCATION_FAILURE's docstring above) -- classify it as such regardless of this
+    # re-run's own outcome.
+    _write_deferral_map(STATE_TWO_INVOCATION_FAILURE, file_reasons)
+    if rerun_result.returncode != 0:
+        failed.append("Tests (pytest)")

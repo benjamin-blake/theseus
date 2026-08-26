@@ -18,7 +18,7 @@ from scripts.ops_data_portal import _print_ci_rca_back_validation_report, back_v
 _VALID_CONTEXT_V2 = {
     "schema_version": 1,
     "proximate_cause": (
-        "validate_sloc_limits() raised: scripts/product_roadmap.py is 810 SLOC, exceeds 500 limit "
+        "validate_sloc_limits() raised: scripts/roadmap/product_roadmap.py is 810 SLOC, exceeds 500 limit "
         "(Decision 43, no complexity-waiver header found in first 10 lines)."
     ),
     "why_chain": [
@@ -239,6 +239,14 @@ class TestRefileAudit:
         fields = mock_file_rec.call_args.args[0]
         assert "rec-nc-0" in fields["title"]
         assert "rec-nc-0" in fields["context"]
+
+        # The composed acceptance string must itself pass the file_rec write-boundary lint
+        # (require_discrimination=True) -- code-review finding: this call site's acceptance
+        # was widened to a chained assertion specifically to keep clearing that boundary.
+        from scripts.executor.acceptance_lint import lint_acceptance_command
+
+        lint_ok, lint_msg = lint_acceptance_command(fields["acceptance"], require_discrimination=True)
+        assert lint_ok, lint_msg
 
 
 class TestSourceRegistration:

@@ -6,16 +6,17 @@ Runs validation checks that mirror the GitHub Actions CI pipeline.
 Default (no flags) runs the full check suite. Use --pre for fast lint/format
 checks only during implementation.
 
-Thin CLI (Decision 104): every check lives in scripts/checks/<domain>/ and is
-tagged in the scripts/checks/registry.py check registry. This file retains
-only the argparse surface, the recursion/branch guards, the fast-tier budget
-assertion, the non-check scaffolding steps (lint, precommit, mypy, explicit
-pytest, unit-test invoke_step, dependency/terraform gates), and facade
-re-exports of every extracted check/helper so both `patch("validate.<name>")`
-and `from scripts.validate import <name>` keep resolving.
+Thin CLI (Decision 104, dispatch rewired to per-domain manifests by Decision 169): every check
+lives in scripts/checks/<domain>/ and is tagged in the scripts/checks/registry.py check registry,
+dispatched via registry.resolve(name) -- never a facade re-export in this file. This file retains
+only the argparse surface, the recursion/branch guards, the fast-tier budget assertion, the
+non-check scaffolding steps (lint, precommit, mypy, explicit pytest, unit-test invoke_step,
+dependency/terraform gates), and re-exports of the shared _common/_scaffolding primitives (back-compat
+for `patch("validate.<primitive>")` and `from scripts.validate import <primitive>`).
 """
 
 import argparse
+import fnmatch
 import os
 import shutil  # noqa: F401  (back-compat: patch("validate.shutil.which") test target; global module identity)
 import subprocess  # noqa: F401  (back-compat: patch("validate.subprocess.run") test target; global module identity)
@@ -32,13 +33,13 @@ _REPO_ROOT = _Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts.checks import _common, registry  # noqa: E402
+from scripts.checks import _common, registry, validation_result  # noqa: E402
 
 # Facade re-exports: shared primitives (back-compat for `from scripts.validate import ROOT` etc.
 # and for `patch("validate.ROOT"/"validate.run"/"validate.PYTHON"/"validate.invoke_step"/
 # "validate.get_changed_files")`). Scaffolding below uses the qualified _common.* form so that
 # scripts.checks._common is the single interception point for every caller, extracted or not.
-from scripts.checks._common import PYTHON, ROOT, get_changed_files, invoke_step, run  # noqa: F401,E402
+from scripts.checks._common import PYTHON, ROOT, get_changed_files, get_status_aware_diff, invoke_step, run  # noqa: F401,E402
 from scripts.checks._scaffolding import (  # noqa: F401,E402
     _DQ_FRESHNESS_SECONDS,
     _TERRAFORM_ROOTS,
@@ -47,6 +48,7 @@ from scripts.checks._scaffolding import (  # noqa: F401,E402
     _build_unit_test_cmd,
     _file_budget_breach_rec,
     _file_budget_bypass_rec,
+    _mirror_budget_notice_to_summary,
     _terraform_init_with_retry,
     ensure_fresh_dq_results,
     run_coverage_check,
@@ -58,180 +60,54 @@ from scripts.checks._scaffolding import (  # noqa: F401,E402
     run_terraform_creds_free,
 )
 
-# --- Facade re-exports: every extracted check (getattr + `from scripts.validate import X`) ---
-from scripts.checks.ci_guards.validate_ci_rca_taxonomy import validate_ci_rca_taxonomy  # noqa: F401,E402
-from scripts.checks.ci_guards.validate_ci_rca_trigger import validate_ci_rca_trigger  # noqa: F401,E402
-from scripts.checks.ci_guards.validate_ci_workflow_guards import validate_ci_workflow_guards  # noqa: F401,E402
-from scripts.checks.ci_guards.validate_claude_p_retry_wrapper import (  # noqa: E402
-    _check_claude_p_raw_invocations,  # noqa: F401
-    validate_claude_p_retry_wrapper,  # noqa: F401
-)
-from scripts.checks.ci_guards.validate_workflow_agent_safety import validate_workflow_agent_safety  # noqa: F401,E402
-from scripts.checks.contracts._shared import _load_prompt_compliance  # noqa: F401,E402
-from scripts.checks.contracts.validate_claude_md_pointer_invariant import (  # noqa: E402
-    check_claude_md_pointer_invariant,  # noqa: F401
-    validate_claude_md_pointer_invariant,  # noqa: F401
-)
-from scripts.checks.contracts.validate_contract_drift import validate_contract_drift  # noqa: F401,E402
-from scripts.checks.contracts.validate_instruction_architecture_layers import (  # noqa: F401,E402
-    validate_instruction_architecture_layers,
-)
-from scripts.checks.contracts.validate_intent_doc_freeze import validate_intent_doc_freeze  # noqa: F401,E402
-from scripts.checks.contracts.validate_no_underscore_instructions import (  # noqa: F401,E402
-    validate_no_underscore_instructions,
-)
-from scripts.checks.contracts.validate_portal_drift import validate_portal_drift  # noqa: F401,E402
-from scripts.checks.contracts.validate_prompt_compliance import validate_prompt_compliance  # noqa: F401,E402
-from scripts.checks.deps.validate_dependency_graph_freshness import (  # noqa: F401,E402
-    validate_dependency_graph_freshness,
-)
-from scripts.checks.deps.validate_import_contracts import validate_import_contracts  # noqa: F401,E402
-from scripts.checks.deps.validate_imports import validate_imports  # noqa: F401,E402
-from scripts.checks.deps.validate_lockfile_sync import validate_lockfile_sync  # noqa: F401,E402
-from scripts.checks.deps.validate_requirements import validate_requirements  # noqa: F401,E402
-from scripts.checks.executor.validate_executor_boundary import (  # noqa: E402
-    _EXECUTOR_BOUNDARY_PATTERNS,  # noqa: F401
-    _load_boundary_patterns,  # noqa: F401
-    validate_executor_boundary,  # noqa: F401
-)
-from scripts.checks.hygiene.validate_cli_tools_in_prompts import (  # noqa: E402
-    _KNOWN_CLI_TOOLS,  # noqa: F401
-    _OPTIONAL_CLI_TOOLS,  # noqa: F401
-    validate_cli_tools_in_prompts,  # noqa: F401
-)
-from scripts.checks.hygiene.validate_subprocess_encoding import validate_subprocess_encoding  # noqa: F401,E402
-from scripts.checks.hygiene.validate_sys_executable import validate_sys_executable  # noqa: F401,E402
-from scripts.checks.hygiene.validate_test_count_coupling import validate_test_count_coupling  # noqa: F401,E402
-from scripts.checks.iam_tf.validate_authority_budget import validate_authority_budget  # noqa: F401,E402
-from scripts.checks.iam_tf.validate_environment_taxonomy import validate_environment_taxonomy  # noqa: F401,E402
-from scripts.checks.iam_tf.validate_iam_runner_policy import validate_iam_runner_policy  # noqa: F401,E402
-from scripts.checks.iam_tf.validate_invoke_implies_resolve import (  # noqa: F401,E402
-    validate_invoke_implies_resolve,
-)
-from scripts.checks.iam_tf.validate_terraform_try import _is_inside_try, validate_terraform_try  # noqa: F401,E402
-from scripts.checks.lambda_pkg.validate_lambda_bundle_completeness import (  # noqa: F401,E402
-    validate_lambda_bundle_completeness,
-)
-from scripts.checks.lambda_pkg.validate_lambda_deploy_gating import validate_lambda_deploy_gating  # noqa: F401,E402
-from scripts.checks.lambda_pkg.validate_lambda_manifest_coverage import (  # noqa: F401,E402
-    validate_lambda_manifest_coverage,
-)
-from scripts.checks.lambda_pkg.validate_lambda_manifests import validate_lambda_manifests  # noqa: F401,E402
-from scripts.checks.misc.validate_ducklake_version_lockstep import (  # noqa: F401,E402
-    validate_ducklake_version_lockstep,
-)
-from scripts.checks.misc.validate_ghas_probe import validate_ghas_probe  # noqa: F401,E402
-from scripts.checks.misc.validate_invariants import validate_invariants  # noqa: F401,E402
-from scripts.checks.misc.validate_scheduled_agent_logs import validate_scheduled_agent_logs  # noqa: F401,E402
-from scripts.checks.misc.validate_test_coverage import _load_coverage_checker, validate_test_coverage  # noqa: F401,E402
-from scripts.checks.ops_governance.check_source_registry import check_source_registry  # noqa: F401,E402
-from scripts.checks.ops_governance.validate_decisions_local_writes import (  # noqa: F401,E402
-    validate_decisions_local_writes,
-)
-from scripts.checks.ops_governance.validate_dq_manifest_gate import validate_dq_manifest_gate  # noqa: F401,E402
-from scripts.checks.ops_governance.validate_field_semantics_drift import (  # noqa: F401,E402
-    validate_field_semantics_drift,
-)
-from scripts.checks.ops_governance.validate_outbox_staleness import validate_outbox_staleness  # noqa: F401,E402
-from scripts.checks.ops_governance.validate_pydantic_yaml_drift import (  # noqa: E402
-    _check_drift_for_table,  # noqa: F401
-    validate_pydantic_yaml_drift,  # noqa: F401
-)
-from scripts.checks.ops_governance.validate_rec_relevance_contract import (  # noqa: F401,E402
-    validate_rec_relevance_contract,
-)
-from scripts.checks.ops_governance.validate_rec_write_paths import validate_rec_write_paths  # noqa: F401,E402
-from scripts.checks.ops_governance.validate_recommendations_schema import (  # noqa: F401,E402
-    validate_recommendations_schema,
-)
-from scripts.checks.ops_governance.validate_warehouse_write_sources import (  # noqa: F401,E402
-    validate_warehouse_write_sources,
-)
-from scripts.checks.product.trading.validate_broker_env_reads import validate_broker_env_reads  # noqa: F401,E402
-from scripts.checks.prompts.validate_prompt_files import KNOWN_MODELS, validate_prompt_files  # noqa: F401,E402
-from scripts.checks.roadmap.check_graduation_guard import (  # noqa: E402
-    _check_graduation_guard,  # noqa: F401
-    _extract_enforced_map,  # noqa: F401
-)
-from scripts.checks.roadmap.validate_candidate_decision_ratification import (  # noqa: F401,E402
-    validate_candidate_decision_ratification,
-)
-from scripts.checks.roadmap.validate_plan_documents import validate_plan_documents  # noqa: F401,E402
-from scripts.checks.roadmap.validate_platform_roadmap import validate_platform_roadmap  # noqa: F401,E402
-from scripts.checks.roadmap.validate_product_roadmap import validate_product_roadmap  # noqa: F401,E402
-from scripts.checks.roadmap.validate_tier_floor import validate_tier_floor  # noqa: F401,E402
-from scripts.checks.sloc._shared import (  # noqa: E402
-    _BRANCH_TYPES,  # noqa: F401
-    _CC_LIMIT,  # noqa: F401
-    _SLOC_EXCLUDE_DIRS,  # noqa: F401
-    _SLOC_LIMIT,  # noqa: F401
-    _WAIVER_PATTERN,  # noqa: F401
-)
-from scripts.checks.sloc.cc_limits import validate_cc_limits  # noqa: F401,E402
-from scripts.checks.sloc.complexity import validate_complexity  # noqa: F401,E402
-from scripts.checks.sloc.sloc_limits import (  # noqa: E402
-    _load_sloc_budgets,  # noqa: F401
-    _update_sloc_budgets,
-    validate_sloc_limits,  # noqa: F401
-)
-from scripts.checks.verification.validate_differential_gate_baseline import (  # noqa: F401,E402
-    validate_differential_gate_baseline,
-)
-from scripts.checks.verification.validate_hermeticity_flags import (  # noqa: E402
-    _UNIT_TEST_HERMETICITY_FLAGS,  # noqa: F401
-    validate_hermeticity_flags,  # noqa: F401
-)
-from scripts.checks.verification.validate_verification_harness import validate_verification_harness  # noqa: F401,E402
-from scripts.checks.verification.validate_verification_registry import (  # noqa: F401,E402
-    validate_verification_registry,
-)
-from scripts.checks.verification.validate_verifier_hermeticity import (  # noqa: E402
-    _dotted_name_from_attr,  # noqa: F401
-    _verifier_is_non_hermetic,  # noqa: F401
-    validate_verifier_hermeticity,  # noqa: F401
-)
-from scripts.checks.verification.validate_verifier_same_pr_guard import (  # noqa: E402
-    _extract_verifier_covers,  # noqa: F401
-    validate_verifier_same_pr_guard,  # noqa: F401
-)
-from scripts.checks.verification.validate_vp_replay import validate_vp_replay  # noqa: F401,E402
-
 _FAST_TIER_BUDGET_SECONDS = 300
 
-_ROADMAP_YAML_PATHS = {"docs/ROADMAP-PLATFORM.yaml", "docs/ROADMAP-PRODUCT.yaml"}
-_ROADMAP_YAML_BASENAMES = {"ROADMAP-PLATFORM.yaml", "ROADMAP-PRODUCT.yaml"}
-
-
-def select_roadmap_guard_tests(changed_files: list[str], repo_root: _Path = ROOT) -> list[str]:
-    """Discover tests/**/*.py files that reference a roadmap YAML, so live-roadmap guard
-    tests (which pin state read directly off docs/ROADMAP-PLATFORM.yaml or
-    docs/ROADMAP-PRODUCT.yaml) run in the fast --pre tier whenever a roadmap YAML changes.
-    Returns [] when no roadmap YAML is present in changed_files -- never force-selects
-    the guard tests otherwise. Matches on the YAML basename (not the full docs/-prefixed
-    path) since guard tests typically build the path via Path(__file__).parent.parent /
-    "docs" / "ROADMAP-PLATFORM.yaml" rather than embedding the literal repo-relative string."""
-    if not any(f in _ROADMAP_YAML_PATHS for f in changed_files):
-        return []
-    guard_tests: list[str] = []
-    for path in sorted((repo_root / "tests").rglob("*.py")):
-        if "__pycache__" in path.parts:
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if any(basename in text for basename in _ROADMAP_YAML_BASENAMES):
-            guard_tests.append(path.relative_to(repo_root).as_posix())
-    return guard_tests
+# Derived guardrail, not a second tier budget (Decision 153): pr-validate's 30-min job
+# timeout (.github/workflows/ci.yml) minus a ~5-min diagnostic margin, on the fast tier's
+# own elapsed clock (job clock additionally includes checkout/pip). Re-derive if
+# timeout-minutes changes; the fast tier's sole design budget is _FAST_TIER_BUDGET_SECONDS.
+_FORCED_FULL_SUITE_CEILING_SECONDS = 1500
 
 
 def _dispatch_check(name: str, failed: list[str]) -> None:
-    """Resolve a registered check by name via this module's own namespace and call it.
+    """Resolve a registered check by name via registry.resolve() and call it.
 
-    Uses globals() (equivalent to getattr(sys.modules[__name__], name)) rather than a
-    captured function reference, so `patch("validate.<name>")` continues to intercept.
+    registry.resolve(name) imports the check's DEFINING module and does a late-bound getattr at
+    call time (Decision 169, amending Decision 104's namespace-dict dispatch) -- so
+    `patch("<the check's defining module>.<name>", ...)` continues to intercept, and the resolved
+    callable is never cached across dispatches.
     """
-    globals()[name](failed)
+    validation_result.dispatch_recording(name, failed, registry.resolve(name))
+
+
+def _pre_glob_match(path: str, glob: str) -> bool:
+    """fnmatch-based match of a single repo-relative path against a single pre_globs pattern.
+
+    fnmatch's `*` already crosses path separators (unlike pathlib/glob.glob's non-recursive
+    `*`), so a `**` segment (e.g. "docs/plans/**") matches any depth without special-casing.
+
+    A LEADING `**/` is the one case fnmatch gets wrong for this purpose: it translates to a
+    pattern requiring at least one `/`, so "**/*.py" missed repo-ROOT files like setup.py while
+    the checks gated on it (validate_cc_limits) scan the root. Retry with the leading `**/`
+    stripped so it also matches zero directories -- the recall-safe direction.
+    """
+    if fnmatch.fnmatch(path, glob):
+        return True
+    return glob.startswith("**/") and fnmatch.fnmatch(path, glob[3:])
+
+
+def _should_run_in_pre(pre_globs: tuple[str, ...] | None, changed_paths, derivation_ok: bool) -> bool:
+    """Decide whether a --pre gated check should run (VTS-09, dec-55/dec-135/dec-153 fail-closed).
+
+    True (run) when: the check is ungated (pre_globs is None), the diff derivation failed or
+    returned something unexpected (derivation_ok is False), the derived changed-path set is
+    empty (a no-diff or derivation-blind-spot branch state), or at least one changed path
+    matches one of the check's globs. False (skip) ONLY on a successful, non-empty derivation
+    with zero matches -- never silently skip on doubt.
+    """
+    if pre_globs is None or not derivation_ok or not changed_paths:
+        return True
+    return any(_pre_glob_match(path, glob) for path in changed_paths for glob in pre_globs)
 
 
 def run_python_checks(failed: list[str]) -> None:
@@ -248,12 +124,6 @@ def run_python_checks(failed: list[str]) -> None:
     def _scaffold_unit_tests() -> None:
         _common.invoke_step("Unit tests + coverage", _build_unit_test_cmd(), failed)
 
-    def _scaffold_mypy_full() -> None:
-        print("\n=== mypy (informational) ===")
-        result = _common.run([_common.PYTHON, "-m", "mypy", "src/"], cwd=_common.ROOT)
-        if result.returncode != 0:
-            print("mypy: type errors found (informational - not blocking). Fix progressively.")
-
     def _scaffold_terraform_checks() -> None:
         run_terraform_checks(failed)
 
@@ -269,7 +139,6 @@ def run_python_checks(failed: list[str]) -> None:
     scaffold_fns = {
         "lint": _scaffold_lint,
         "unit_tests": _scaffold_unit_tests,
-        "mypy_full": _scaffold_mypy_full,
         "terraform_checks": _scaffold_terraform_checks,
         "dependency_health": _scaffold_dependency_health,
         "ensure_fresh_dq": _scaffold_ensure_fresh_dq,
@@ -292,6 +161,10 @@ def main() -> None:
         sys.exit(0)
     os.environ["_VALIDATE_DEPTH"] = str(depth + 1)
 
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        print("[SKIP] validate.py invoked from within a pytest run (PYTEST_CURRENT_TEST set). Exiting.")
+        sys.exit(0)
+
     parser = argparse.ArgumentParser(description="Local CI validation. Run before every commit.")
     parser.add_argument(
         "--pre",
@@ -300,9 +173,12 @@ def main() -> None:
         "Use for per-step validation during implementation. Subject to a 5-minute wall-clock budget.",
     )
     parser.add_argument(
+        "--verifier-coverage",
         "--coverage",
+        dest="verifier_coverage",
         action="store_true",
-        help="Report scope files lacking verifier coverage (advisory; exits 0 unconditionally).",
+        help="Report scope files lacking verifier coverage (advisory; exits 0 unconditionally). "
+        "--coverage is a deprecated alias for --verifier-coverage.",
     )
     parser.add_argument(
         "--terraform-only",
@@ -325,10 +201,18 @@ def main() -> None:
     parser.add_argument(
         "--update-sloc-budgets",
         action="store_true",
-        help="Regenerate config/sloc_budgets.yaml from the current tree (downward-only ratchet). "
-        "Lowers shrunk budgets, seeds newly-oversized files, drops files now <=500. Never raises an existing budget.",
+        help="Requires a feature branch (refused on main, like every validate.py invocation). "
+        "Regenerate config/sloc_budgets.yaml from the current tree (downward-only ratchet): "
+        "lowers shrunk budgets, drops files now <=500. Never raises an existing budget and never "
+        "seeds a newly-oversized file (Decision 128) -- decompose it, or register it manually with "
+        "a `# raise-approved: dec-NNN` marker.",
     )
     args = parser.parse_args()
+
+    full_started_at: str | None = None
+    if not any((args.pre, args.verifier_coverage, args.terraform_only, args.update_sloc_budgets)):
+        full_started_at = validation_result.utc_now()
+        validation_result.clear()
 
     # CI guard: --ignore-budget is forbidden in CI environments
     if args.ignore_budget and os.environ.get("CI") == "true":
@@ -347,13 +231,19 @@ def main() -> None:
 
     failed: list[str] = []
 
-    # --coverage: advisory verifier-coverage report, then exit 0
-    if args.coverage:
+    # --verifier-coverage: advisory verifier-coverage report, then exit 0 (--coverage: deprecated alias)
+    if args.verifier_coverage:
+        if "--coverage" in sys.argv:
+            print("[DEPRECATED] --coverage is a deprecated alias; use --verifier-coverage instead.")
         run_coverage_check()
         sys.exit(0)
 
     # --update-sloc-budgets: regenerate the SLOC budget registry and exit
     if args.update_sloc_budgets:
+        # Deferred import (Decision 169): a module-level import here would make this file eagerly
+        # import a check-defining module, which the import-closure verification gate forbids.
+        from scripts.checks.sloc.sloc_limits import _update_sloc_budgets  # noqa: PLC0415
+
         _update_sloc_budgets()
         sys.exit(0)
 
@@ -369,7 +259,7 @@ def main() -> None:
             print(f"  - {f}")
         sys.exit(1)
 
-    # --pre: diff-aware lint/format/mypy/picked-pytest + prompt validation, with 5-min budget
+    # --pre: diff-aware lint/format/mypy/affected-set pytest (Decision 135) + prompt validation, with 5-min budget
     if args.pre:
         _t0 = time.monotonic()
         print("Pre mode: diff-aware lint/format/mypy/pytest and prompt validation.")
@@ -377,27 +267,32 @@ def main() -> None:
         changed = _common.get_changed_files()
         diff_manifest = list(changed)
         changed_py = [f for f in changed if f.endswith(".py")]
-        # Select changed test files from the same get_changed_files() result that drives the rest of
-        # --pre. Passing explicit paths removes the dependence on pytest-picked's independent
-        # branch-diff, which collapses to 0 tests in GitHub Actions' detached-HEAD PR checkout
-        # (PR #334, job 84147146286 -- "collected 0 items / no tests ran" yet all-passed).
-        # Decision 55 backstop: exit 5 (0 collected) while changed test files are present is a
-        # contradiction -- redden the gate loudly rather than swallowing it as the old (0,5)
-        # whitelist did.
-        # Accepted edge case: a changed test file containing ONLY integration-marked tests will
-        # trip this backstop because -m "not integration" deselects all; resolve by not gating
-        # all-integration files behind the unit tier.
-        import re as _re
+        # Live, cacheless, strictly-additive affected-set selection (Decision affected-set-
+        # selection, amends Decision 73's 2nd amendment): upgrades the edited-set (test files
+        # literally in the diff) to a per-run affected-set (tests AFFECTED by the diff), so a
+        # source-only PR -- or a test broken by a change it does not itself contain -- is
+        # caught pre-merge. Feeds the SAME pytest_diff scaffold below (preferred inline path --
+        # touches neither scripts/checks/registry.py nor the frozen pre-sequence scaffold
+        # baseline). status_entries is a SEPARATE diff surface from `changed` above (includes
+        # deletions + untracked new files, rec-2638) -- get_changed_files()'s own contract for
+        # its existing callers (lint/mypy/precommit/coverage) is unchanged. Defensively unioned
+        # with `changed` (assumed status "M") so the two independent git reads never silently
+        # diverge on which paths are in scope for selection.
+        #
+        # Deferred (function-scope) import: scripts.checks.deps.affected_tests imports networkx
+        # at its own module scope, and this is the ONLY place these two names are used --
+        # importing eagerly at validate.py's module scope would break --terraform-only, whose CI
+        # job installs only pyyaml+pydantic (see the facade-import block's comment above).
+        from scripts.checks.deps.affected_tests import derive_affected_tests, emit_manifest  # noqa: PLC0415
 
-        changed_tests = [f for f in changed if _re.match(r"tests/.*test_[^/]+\.py$", f)]
-        # tier_misplaced fix (ci-rca-cd25-ratification-tier-gap): when a roadmap YAML
-        # changed, union in the tests/ files that reference it (dynamic discovery -- no
-        # hardcoded list) so the live-roadmap guard tests run in the fast --pre tier
-        # instead of only the full post-merge tier.
-        roadmap_guard_tests = select_roadmap_guard_tests(changed)
-        for f in roadmap_guard_tests:
-            if f not in changed_tests:
-                changed_tests.append(f)
+        status_entries = _common.get_status_aware_diff()
+        _status_paths = {path for _, path in status_entries}
+        for f in changed:
+            if f not in _status_paths:
+                status_entries.append(("M", f))
+        _affected_selection = derive_affected_tests(status_entries, repo_root=_common.ROOT)
+        changed_tests = _affected_selection["selected"]
+        emit_manifest(_affected_selection["manifest"])
 
         def _scaffold_lint() -> None:
             run_lint_checks(failed, files=changed)
@@ -417,42 +312,84 @@ def main() -> None:
         def _scaffold_pytest_diff() -> None:
             run_pytest_diff(changed_tests, failed)
 
-        def _scaffold_coverage_report() -> None:
+        def _scaffold_verifier_coverage_report() -> None:
             run_coverage_check(changed)
 
         phase_times: dict[str, float] = {}
 
         def _scaffold_budget_assertion() -> None:
             elapsed = time.monotonic() - _t0
-            dominant_phase = max(phase_times, key=phase_times.get) if phase_times else None
+            dominant_phase = max(phase_times, key=lambda phase: phase_times[phase]) if phase_times else None
             if args.ignore_budget:
-                _file_budget_bypass_rec(elapsed, diff_manifest, args.ignore_budget_reason)
+                _file_budget_bypass_rec(elapsed, diff_manifest, args.ignore_budget_reason, dominant_phase)
                 print(f"\nBudget assertion skipped (--ignore-budget). Elapsed: {elapsed / 60:.1f} min.")
             elif elapsed > _FAST_TIER_BUDGET_SECONDS:
-                _file_budget_breach_rec(elapsed, diff_manifest, dominant_phase)
-                print(
-                    f"\nERROR: Fast tier exceeded budget (5 min). Elapsed: {elapsed / 60:.1f} min. "
-                    f"Dominant phase: {dominant_phase or 'unknown'}.\n"
-                    "This tier has grown beyond its design contract. Either:\n"
-                    "  1. Move the slow check to the full tier, or\n"
-                    "  2. Optimise the check, or\n"
-                    "  3. Open a planning session to revise this budget (requires Decision Record)."
-                )
-                sys.exit(1)
+                # Decision 153: a root-conftest change deterministically forces full-suite scope
+                # (Decision 135/VTS-03) and is a self-identified, already-diagnosed cause of the
+                # breach -- not drift. Narrow the hard-fail to exactly the non-forced case; a
+                # forced run is still bounded by the derived ceiling below. Fail-closed read:
+                # _empty_manifest defaults full_suite_forced to False, so any derivation-failure
+                # fallback still hard-fails.
+                forced = bool(_affected_selection["manifest"].get("full_suite_forced", False))
+                if forced and elapsed <= _FORCED_FULL_SUITE_CEILING_SECONDS:
+                    _mirror_budget_notice_to_summary(
+                        "Fast-tier budget waived (forced full-suite scope)",
+                        "budget waived: full-suite scope forced by root-conftest change. "
+                        f"Elapsed: {elapsed / 60:.1f} min (forced-run ceiling: "
+                        f"{_FORCED_FULL_SUITE_CEILING_SECONDS / 60:.0f} min). Dominant phase: "
+                        f"{dominant_phase or 'unknown'}. No breach rec filed -- this is a "
+                        "deterministic, already-diagnosed full-suite run, not drift.",
+                    )
+                elif forced:
+                    _mirror_budget_notice_to_summary(
+                        "Fast-tier forced-run ceiling breached",
+                        "ERROR: forced full-suite run exceeded the forced-run ceiling "
+                        f"({_FORCED_FULL_SUITE_CEILING_SECONDS / 60:.0f} min). Elapsed: "
+                        f"{elapsed / 60:.1f} min. Dominant phase: {dominant_phase or 'unknown'}.\n"
+                        "The forced full suite itself is now the problem, not the gate -- "
+                        "open a planning session (Decision 153 reversal condition (b)).",
+                    )
+                    sys.exit(1)
+                else:
+                    _file_budget_breach_rec(elapsed, diff_manifest, dominant_phase)
+                    print(
+                        f"\nERROR: Fast tier exceeded budget (5 min). Elapsed: {elapsed / 60:.1f} min. "
+                        f"Dominant phase: {dominant_phase or 'unknown'}.\n"
+                        "This tier has grown beyond its design contract. Either:\n"
+                        "  1. Move the slow check to the full tier, or\n"
+                        "  2. Optimise the check, or\n"
+                        "  3. Open a planning session to revise this budget (requires Decision Record)."
+                    )
+                    sys.exit(1)
 
         scaffold_fns = {
             "lint": _scaffold_lint,
             "precommit_changed": _scaffold_precommit_changed,
             "mypy_diff": _scaffold_mypy_diff,
             "pytest_diff": _scaffold_pytest_diff,
-            "coverage_report": _scaffold_coverage_report,
+            "verifier_coverage_report": _scaffold_verifier_coverage_report,
             "budget_assertion": _scaffold_budget_assertion,
         }
+
+        # pre_globs gate derivation (VTS-09): reuse the already-built status-aware diff:
+        # fail-closed on any derivation error (dec-135) -- an exception here must never
+        # silently skip a gated check, so _gate_derivation_ok flips to False and
+        # _should_run_in_pre runs everything regardless of glob match.
+        try:
+            _gate_changed_paths = {path for _, path in status_entries}
+            _gate_derivation_ok = True
+        except Exception as exc:
+            _gate_changed_paths = set()
+            _gate_derivation_ok = False
+            print(f"pre_globs: diff derivation failed ({exc}); running all gated checks (fail-closed).")
 
         for step in registry.pre_sequence():
             step_t0 = time.monotonic()
             if step.kind == "check":
-                _dispatch_check(step.name, failed)
+                if _should_run_in_pre(step.pre_globs, _gate_changed_paths, _gate_derivation_ok):
+                    _dispatch_check(step.name, failed)
+                else:
+                    print(f"skipped-by-glob: {step.name}")
             else:
                 scaffold_fns[step.name]()
             phase_times[step.name] = time.monotonic() - step_t0
@@ -479,12 +416,18 @@ def main() -> None:
     print(f"\n=== Validation Summary (scope: {scope}) ===")
     if not failed:
         print("All checks passed.")
+        validation_result.write_completed_visible(
+            started_at=full_started_at or validation_result.utc_now(), exit_code=0, failed_checks=[]
+        )
         sys.exit(0)
     else:
         print("Failed checks:")
         for f in failed:
             print(f"  - {f}")
         print("\nFix all failures before committing.")
+        validation_result.write_completed_visible(
+            started_at=full_started_at or validation_result.utc_now(), exit_code=1, failed_checks=failed
+        )
         sys.exit(1)
 
 

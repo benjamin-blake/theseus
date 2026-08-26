@@ -1,0 +1,121 @@
+"""Entry literals for the contracts domain's registered checks (Decision 169, amends Decision 104).
+
+Bare string-literal module=/attr= pairs only -- see docs/contracts/check-manifest.yaml. Aggregated
+by scripts/checks/registry.py; never imported by scripts/validate.py directly.
+"""
+
+from __future__ import annotations
+
+from scripts.checks._schema import Entry
+
+ENTRIES: tuple[Entry, ...] = (
+    Entry(
+        name="validate_prompt_compliance",
+        module="scripts.checks.contracts.validate_prompt_compliance",
+        attr="validate_prompt_compliance",
+        full_segment="full_after_dependency_health",
+    ),
+    Entry(
+        name="validate_instruction_architecture_layers",
+        module="scripts.checks.contracts.validate_instruction_architecture_layers",
+        attr="validate_instruction_architecture_layers",
+        full_segment="full_after_dependency_health",
+    ),
+    Entry(
+        name="validate_no_underscore_instructions",
+        module="scripts.checks.contracts.validate_no_underscore_instructions",
+        attr="validate_no_underscore_instructions",
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_claude_md_pointer_invariant",
+        module="scripts.checks.contracts.validate_claude_md_pointer_invariant",
+        attr="validate_claude_md_pointer_invariant",
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_intent_doc_freeze",
+        module="scripts.checks.contracts.validate_intent_doc_freeze",
+        attr="validate_intent_doc_freeze",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_contract_drift",
+        module="scripts.checks.contracts.validate_contract_drift",
+        attr="validate_contract_drift",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_data_model_standard",
+        module="scripts.checks.contracts.validate_data_model_standard",
+        attr="validate_data_model_standard",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_portal_drift",
+        module="scripts.checks.contracts.validate_portal_drift",
+        attr="validate_portal_drift",
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_read_engine_verbs",
+        module="scripts.checks.contracts.validate_read_engine_verbs",
+        attr="validate_read_engine_verbs",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_marker_grammar_exports",
+        module="scripts.checks.contracts.validate_marker_grammar_exports",
+        attr="validate_marker_grammar_exports",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_log_storage_registry",
+        module="scripts.checks.contracts.validate_log_storage_registry",
+        attr="validate_log_storage_registry",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_telemetry_lexicon_tables",
+        module="scripts.checks.contracts.validate_telemetry_lexicon_tables",
+        attr="validate_telemetry_lexicon_tables",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_ci_rca_lifecycle_projection",
+        module="scripts.checks.contracts.validate_ci_rca_lifecycle_projection",
+        attr="validate_ci_rca_lifecycle_projection",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_inference_provider_registry",
+        module="scripts.checks.contracts.validate_inference_provider_registry",
+        attr="validate_inference_provider_registry",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_composite_action_shape_rosters",
+        module="scripts.checks.contracts.validate_composite_action_shape_rosters",
+        attr="validate_composite_action_shape_rosters",
+        pre=True,
+        pre_globs=None,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_iam_simulate_fixture_shape",
+        module="scripts.checks.contracts.validate_iam_simulate_fixture_shape",
+        attr="validate_iam_simulate_fixture_shape",
+        pre=True,
+        pre_globs=None,
+        full_segment="full_after_lint",
+    ),
+)

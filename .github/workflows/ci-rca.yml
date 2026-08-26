@@ -9,7 +9,25 @@ on:
     # refusals-while-red they cause) file source=ci_rca recs. The dedup step below anchors
     # terraform-apply-sandbox failures on the red convergence record's commit so one underlying
     # apply failure + every later refusal collapse to ONE rec.
-    workflows: ["CI", "Main Canary", "terraform-apply-sandbox"]
+    # PLAN-ci-rca-ops-plane-coverage (rec-2849): rec-autoclose and deploy-ducklake-lambdas are
+    # ADDED -- the 2026-07-24 ducklake-writer-errors incident went unrecorded because rec-autoclose
+    # (an ops-plane write path) was absent from this filter. deploy-ducklake-lambdas' STANDING
+    # reconcile-gate refusal is a designed refusal, not a defect -- it is excluded from filing via
+    # the designed-refusal skip step below, never by omitting the workflow from this filter.
+    # deploy-prod-lambdas mirrors deploy-ducklake-lambdas for the prod class (Decision 126 point 1)
+    # -- ADDED to close the prod-deploy blind spot (PLAN-ci-rca-adjudication-guard).
+    # terraform-drift, convergence-health, and dedup-probe are deliberately EXCLUDED -- see
+    # config/ci_rca_taxonomy.yaml's `workflows:` map (validate_ci_rca_adjudication) for the
+    # per-entry adjudication, which is the sole source of truth for this filter.
+    workflows:
+      [
+        "CI",
+        "Main Canary",
+        "terraform-apply-sandbox",
+        "rec-autoclose",
+        "deploy-ducklake-lambdas",
+        "deploy-prod-lambdas",
+      ]
     types: [completed]
   workflow_dispatch:
     inputs:
@@ -56,9 +74,13 @@ jobs:
           # to github.sha (the dispatched ref, e.g. main) -- an empty ref would silently checkout
           # the default branch; this makes that intent explicit.
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
-          # fetch-depth: 2 is required so HEAD^ exists for git diff HEAD^ HEAD in the evidence
-          # bundle's merged-diff reconstruction (ci_rca_vacuous_pass.merged_diff_files).
-          fetch-depth: 2
+          # fetch-depth: 0 (full history) -- belt-and-suspenders alongside ci_rca_lifecycle's
+          # code-level guard-fetch (_ensure_ancestry_history). A bounded depth (formerly 2, kept
+          # only for HEAD^ in the evidence bundle's merged-diff reconstruction) left an older
+          # closed head's fixed_by_sha commit unreachable, so `git merge-base --is-ancestor`
+          # could not resolve it and classify_closed_head misfiled every stale-code rerun as a
+          # fresh REGRESSION instead of dropping it (ci-rca-identity-lifecycle post-merge fix).
+          fetch-depth: 0
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
@@ -144,31 +166,24 @@ jobs:
           echo "workflow_slug=${WORKFLOW_SLUG}" >> "$GITHUB_OUTPUT"
           echo "workflow_name=${WORKFLOW_NAME}" >> "$GITHUB_OUTPUT"
 
+      # rec-2857 forward fix: the fetch/classify/retry logic (previously an inline content grep
+      # against the merged stdout+stderr stream, which false-positived on a genuine HTTP-5xx log
+      # BODY) now lives in scripts/ci_rca/fetch_logs.py, unit-tested and structurally guarded by
+      # _check_ci_rca_fetch_classification (an allowlist over this step's run: body -- see
+      # scripts/checks/ci_guards/validate_ci_workflow_guards.py). The rec-2117 / rec-2118 /
+      # rec-2718 retry provenance lives in that module's docstring. Decision 72 is provenance
+      # for workflow_run-triggered CI-RCA failed-run log retrieval. `test -s` below is a local
+      # YAML-side fail-closed guard pinned to this default-branch-checked-out file, independent
+      # of the module's own exit status.
       - name: Fetch failed run logs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           RUN_ID="${{ steps.meta.outputs.run_id }}"
-          # Retry loop: the workflow_run log-availability race means logs may not
-          # be ready immediately after the triggering run completes (rec-2117 / rec-2118).
-          LOG_FETCHED=false
-          for ATTEMPT in 1 2 3; do
-            gh run view "$RUN_ID" --repo "${{ github.repository }}" --log-failed > /tmp/ci-rca-failed.log 2>&1 \
-              || gh run view "$RUN_ID" --repo "${{ github.repository }}" --log > /tmp/ci-rca-failed.log 2>&1 \
-              || true
-            if test -s /tmp/ci-rca-failed.log; then
-              LOG_FETCHED=true
-              break
-            fi
-            echo "Attempt ${ATTEMPT}: log empty or unavailable; waiting before retry..." >&2
-            sleep $((ATTEMPT * 10))
-          done
-          if [ "$LOG_FETCHED" != "true" ]; then
-            echo "::error::ci-rca: log file is empty after ${ATTEMPT} attempts for run ${RUN_ID}. " \
-              "The log may not be available yet or the run produced no output. Failing loudly so " \
-              "the agent is not invoked on a 0-byte log (rec-2117 / rec-2118)."
-            exit 1
-          fi
+          bin/venv-python -m scripts.ci_rca.fetch_logs --run-id "$RUN_ID" --repo "${{ github.repository }}" --out /tmp/ci-rca-log-evidence.json
+          bin/venv-python -m scripts.ci_rca.log_evidence --validate /tmp/ci-rca-log-evidence.json --extract-body /tmp/ci-rca-failed.log
+          test -s /tmp/ci-rca-log-evidence.json
+          test -s /tmp/ci-rca-failed.log
 
       - name: Fetch jobs JSON
         id: jobs_json
@@ -180,6 +195,84 @@ jobs:
           gh run view "$RUN_ID" --repo "${{ github.repository }}" --json jobs \
             > /tmp/ci-rca-jobs.json 2>/dev/null || echo '{}' > /tmp/ci-rca-jobs.json
 
+      - name: Designed-refusal check (fail-closed skip predicate)
+        # PLAN-ci-rca-ops-plane-coverage: a STANDING, self-documenting refusal (e.g.
+        # deploy-ducklake-lambdas' reconcile-gate) should not mint a fresh L5/L6 critical on every
+        # push. No network call -- consumes the jobs JSON the step above already wrote. Fails
+        # CLOSED (skip=false) on any uncertainty, so an undeclared failure always files.
+        id: designed_refusal
+        run: |
+          WORKFLOW_SLUG="${{ steps.meta.outputs.workflow_slug }}"
+          OUTPUT=$(bin/venv-python -m scripts.ci_rca.designed_refusal --jobs-json /tmp/ci-rca-jobs.json --workflow-slug "$WORKFLOW_SLUG")
+          echo "$OUTPUT"
+          SKIP=$(echo "$OUTPUT" | grep '^skip=' | cut -d= -f2)
+          echo "skip=${SKIP}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch junit report (v2 fingerprint substrate)
+        # ci-rca-identity-lifecycle: best-effort download of the failing run's own pytest-junit
+        # artifact (uploaded by ci.yml's main-validate / main-canary.yml's canary job, per
+        # scripts.checks._scaffolding._build_unit_test_cmd's --junitxml). Absent for a non-pytest
+        # failure (e.g. terraform-apply-sandbox) -- the evidence generator falls back to the
+        # log-tail signature when the file is missing, never fails the job.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        continue-on-error: true
+        run: |
+          RUN_ID="${{ steps.meta.outputs.run_id }}"
+          mkdir -p /tmp/ci-rca-junit
+          gh run download "$RUN_ID" --repo "${{ github.repository }}" --name pytest-junit --dir /tmp/ci-rca-junit \
+            || echo "No pytest-junit artifact for run ${RUN_ID} -- falling back to log-tail signature."
+
+      - name: Fetch validation-result artifact (CI-RCA attribution substrate)
+        # ci-rca-evidence-fidelity: best-effort download of the failing run's own
+        # validation-result artifact (uploaded by ci.yml's main-validate / main-canary.yml's
+        # canary job -- scripts.checks.validation_result.write_completed). Absent for a workflow
+        # that never runs `scripts.validate` (e.g. terraform-apply-sandbox) -- the evidence
+        # generator falls back to the existing log-derived classification ladder when the file is
+        # missing, never fails the job.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        continue-on-error: true
+        run: |
+          RUN_ID="${{ steps.meta.outputs.run_id }}"
+          mkdir -p /tmp/ci-rca-validation-result
+          gh run download "$RUN_ID" --repo "${{ github.repository }}" --name validation-result --dir /tmp/ci-rca-validation-result \
+            || echo "No validation-result artifact for run ${RUN_ID} -- falling back to log-derived classification."
+
+      - name: Fetch merged PR's selection-manifest (Decision 135 escape-attribution)
+        # ci-rca-identity-lifecycle: this workflow only ever fires post-merge on the default
+        # branch (see the job-level `if:` gate above), so the failing commit IS a merge onto
+        # main. Best-effort: resolve the PR that produced it, then its --pre selection-manifest
+        # artifact (uploaded by ci.yml's pr-validate job on the PR's OWN head commit). Any
+        # resolution failure degrades to no manifest -- escape_class is simply omitted.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        continue-on-error: true
+        run: |
+          ANCHOR_SHA="${{ steps.meta.outputs.anchor_sha }}"
+          mkdir -p /tmp/ci-rca-manifest
+          PR_NUMBER=$(gh api "repos/${{ github.repository }}/commits/${ANCHOR_SHA}/pulls" --jq '.[0].number' 2>/dev/null || echo "")
+          if [ -z "$PR_NUMBER" ] || [ "$PR_NUMBER" = "null" ]; then
+            echo "No merged PR resolved for commit ${ANCHOR_SHA} -- skipping selection-manifest (escape_class omitted)."
+            exit 0
+          fi
+          PR_HEAD_SHA=$(gh pr view "$PR_NUMBER" --repo "${{ github.repository }}" --json headRefOid --jq .headRefOid 2>/dev/null || echo "")
+          if [ -z "$PR_HEAD_SHA" ]; then
+            echo "Could not resolve head SHA for PR #${PR_NUMBER} -- skipping selection-manifest."
+            exit 0
+          fi
+          ARTIFACT_ID=$(gh api "repos/${{ github.repository }}/actions/artifacts" --paginate \
+            --jq ".artifacts[] | select(.name==\"selection-manifest\" and .workflow_run.head_sha==\"${PR_HEAD_SHA}\") | .id" \
+            2>/dev/null | head -1 || echo "")
+          if [ -z "$ARTIFACT_ID" ]; then
+            echo "No selection-manifest artifact found for PR #${PR_NUMBER} (head ${PR_HEAD_SHA}) -- skipping."
+            exit 0
+          fi
+          gh api "repos/${{ github.repository }}/actions/artifacts/${ARTIFACT_ID}/zip" > /tmp/ci-rca-manifest.zip \
+            && unzip -o -q /tmp/ci-rca-manifest.zip -d /tmp/ci-rca-manifest \
+            && echo "Downloaded selection-manifest for PR #${PR_NUMBER}." \
+            || echo "Selection-manifest download/unzip failed -- escape_class will be omitted."
+
       - name: Generate evidence bundle
         id: evidence
         continue-on-error: true
@@ -188,12 +281,26 @@ jobs:
         run: |
           RUN_ID="${{ steps.meta.outputs.run_id }}"
           WORKFLOW_NAME="${{ steps.meta.outputs.workflow_name }}"
-          .venv/bin/python -m scripts.ci_rca_evidence \
+          JUNIT_FLAG=""
+          if [ -f /tmp/ci-rca-junit/pytest-junit.xml ]; then
+            JUNIT_FLAG="--junit-file /tmp/ci-rca-junit/pytest-junit.xml"
+          fi
+          MANIFEST_FLAG=""
+          if [ -f /tmp/ci-rca-manifest/selection-manifest.json ]; then
+            MANIFEST_FLAG="--selection-manifest /tmp/ci-rca-manifest/selection-manifest.json"
+          fi
+          VALIDATION_RESULT_FLAG=""
+          if [ -f /tmp/ci-rca-validation-result/validation-result.json ]; then
+            VALIDATION_RESULT_FLAG="--validation-result /tmp/ci-rca-validation-result/validation-result.json"
+          fi
+          .venv/bin/python -m scripts.ci_rca.evidence \
             --log-file /tmp/ci-rca-failed.log \
+            --retrieval-envelope /tmp/ci-rca-log-evidence.json \
             --jobs-file /tmp/ci-rca-jobs.json \
             --workflow-name "$WORKFLOW_NAME" \
             --workflow-run-id "$RUN_ID" \
             --emit-dir /tmp/ci-rca-bundles \
+            ${JUNIT_FLAG} ${MANIFEST_FLAG} ${VALIDATION_RESULT_FLAG} \
             > /tmp/ci-rca-evidence-out.txt 2>/tmp/ci-rca-evidence-err.txt || true
           BUNDLE_SHA=$(grep '^BUNDLE_SHA=' /tmp/ci-rca-evidence-out.txt | head -1 | cut -d= -f2 || echo "")
           BUNDLE_S3_URI=$(grep '^BUNDLE_S3_URI=' /tmp/ci-rca-evidence-out.txt | head -1 | cut -d= -f2 || echo "")
@@ -205,7 +312,7 @@ jobs:
           if ls /tmp/ci-rca-bundles/*.json 2>/dev/null | head -1 > /dev/null; then
             CATEGORIES=$(for f in /tmp/ci-rca-bundles/*.json; do
               .venv/bin/python -c "import json,pathlib; print(json.loads(pathlib.Path('$f').read_text(encoding='utf-8'))['failure_category'])" 2>/dev/null || echo "unknown"
-            done | sort -u | paste -sd ',' -)
+            done | sort -u | paste -sd ',' -) || CATEGORIES=""
           fi
           echo "bundle_sha=${BUNDLE_SHA}" >> "$GITHUB_OUTPUT"
           echo "bundle_s3_uri=${BUNDLE_S3_URI}" >> "$GITHUB_OUTPUT"
@@ -256,6 +363,40 @@ jobs:
             fi
           fi
 
+          # Cause-aware convergence dedup (PLAN-ci-rca-convergence-dedup): a CONVERGENCE_RED
+          # refusal is a downstream SYMPTOM, not its own root cause. When the per-category check
+          # above found no direct match for convergence_refused (a brand-new category has no
+          # prior status context), consult scripts.ci_rca.convergence_dedup for a backed cause:
+          # a drift-red matches the open tf_drift rec by drift_run_url; an apply-failure-red
+          # matches a pre-existing non-convergence ci-rca commit-status already posted on the
+          # SAME commit (ANCHOR_SHA already equals the red record's commit_sha for this
+          # workflow -- see "Resolve run metadata" above). All other paths (non-sandbox
+          # workflows, force_rca, non-convergence categories) are untouched.
+          if [ "$ALREADY_FILED" != "true" ] && [ "${{ github.event.inputs.force_rca }}" != "true" ] && \
+             [ "$WORKFLOW_SLUG" = "terraform-apply-sandbox" ] && \
+             echo "$CATEGORIES" | tr ',' '\n' | grep -qx "convergence_refused"; then
+            echo "convergence_refused present with no direct per-category match; checking cause-aware convergence dedup."
+            aws s3 cp "s3://agent-platform-data-lake/convergence/personal/sandbox.json" /tmp/convergence-record.json 2>/dev/null \
+              || echo '{}' > /tmp/convergence-record.json
+            gh api "repos/${{ github.repository }}/commits/${ANCHOR_SHA}/statuses" > /tmp/commit-statuses.json 2>/dev/null \
+              || echo '[]' > /tmp/commit-statuses.json
+            CONV_OUT=$(bin/venv-python -m scripts.ci_rca.convergence_dedup \
+              --record /tmp/convergence-record.json --commit-statuses /tmp/commit-statuses.json)
+            echo "$CONV_OUT"
+            CONV_FILED=$(echo "$CONV_OUT" | grep '^already_filed=' | cut -d= -f2)
+            if [ "$CONV_FILED" = "true" ]; then
+              ALREADY_FILED="true"
+              CAUSE_REC=$(echo "$CONV_OUT" | grep '^cause_rec=' | cut -d= -f2)
+              CAUSE_KIND=$(echo "$CONV_OUT" | grep '^cause_kind=' | cut -d= -f2)
+              echo "Convergence dedup: cause-rec ${CAUSE_REC} (kind=${CAUSE_KIND}) already covers this refusal; skipping agent."
+              # Bump ONLY a source=ci_rca cause-rec (context_v2_json carrier); a tf_drift
+              # cause-rec (rec-2695-style) gets the already_filed skip with no bump.
+              if [ "$CAUSE_KIND" = "ci_rca" ]; then
+                bin/venv-python -m scripts.ops_data_portal --bump-ci-rca-occurrence "$CAUSE_REC"
+              fi
+            fi
+          fi
+
           echo "already_filed=${ALREADY_FILED}" >> "$GITHUB_OUTPUT"
 
       - name: Fingerprint dedup guard (cross-commit root-cause grouping)
@@ -264,38 +405,25 @@ jobs:
         # same-commit reruns and the terraform-apply-sandbox red-record anchor, which this
         # cross-commit layer does not). Only runs the reader lookup when the commit-status
         # layer did not already skip the agent.
+        #
+        # Per-bundle decision (not all-or-nothing): delegates to scripts.ci_rca.dedup so the
+        # decision logic is unit-tested (tests/test_ci_rca_dedup.py) rather than living in this
+        # shell. A matched-open bundle is skipped+bumped independently of any co-occurring novel
+        # bundle; a genuinely-novel fingerprint always runs the agent (Decision 55).
         if: steps.dedup.outputs.already_filed != 'true'
         run: |
-          DEDUPED="false"
+          FORCE_FLAG=""
           if [ "${{ github.event.inputs.force_rca }}" = "true" ]; then
-            echo "force_rca=true; bypassing fingerprint dedup."
-          elif ls /tmp/ci-rca-bundles/*.json > /dev/null 2>&1; then
-            DEDUPED="true"
-            for f in /tmp/ci-rca-bundles/*.json; do
-              FP=$(.venv/bin/python -c "import json,pathlib; print(json.loads(pathlib.Path('$f').read_text(encoding='utf-8')).get('fingerprint',''))" 2>/dev/null || echo "")
-              if [ -z "$FP" ]; then
-                DEDUPED="false"
-                echo "Bundle $f has no fingerprint; running agent."
-                break
-              fi
-              REC_ID=$(bin/venv-python -m scripts.ops_data_portal --find-open-ci-rca-rec --fingerprint "$FP" 2>/dev/null || echo "")
-              if [ -z "$REC_ID" ]; then
-                DEDUPED="false"
-                echo "Fingerprint ${FP} has no open match; running agent."
-                break
-              fi
-              echo "Fingerprint ${FP} matches open ${REC_ID}; bumping occurrence."
-              bin/venv-python -m scripts.ops_data_portal --bump-ci-rca-occurrence "$REC_ID" || true
-            done
-            if [ "$DEDUPED" = "true" ]; then
-              echo "Fingerprint dedup: all bundle(s) matched an open rec; skipping agent."
-            fi
+            FORCE_FLAG="--force-rca"
           fi
+          OUTPUT=$(bin/venv-python -m scripts.ci_rca.dedup --bundles-dir /tmp/ci-rca-bundles ${FORCE_FLAG})
+          echo "$OUTPUT"
+          DEDUPED=$(echo "$OUTPUT" | grep '^deduped=' | tail -1 | cut -d= -f2)
           echo "deduped=${DEDUPED}" >> "$GITHUB_OUTPUT"
 
       - name: Run ci-rca agent
         id: rca_agent
-        if: steps.dedup.outputs.already_filed != 'true' && steps.fp_dedup.outputs.deduped != 'true'
+        if: steps.dedup.outputs.already_filed != 'true' && steps.fp_dedup.outputs.deduped != 'true' && steps.designed_refusal.outputs.skip != 'true'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -342,7 +470,7 @@ jobs:
           # EARLIER bundle genuinely filed would otherwise report zero filings and skip mark_rca
           # entirely for a rec that was actually filed. --all is empty only when truly nothing
           # was filed (fail-open toward re-diagnosis, per Decision 74).
-          FILED_PAIRS=$(bin/venv-python -m scripts.ci_rca_filing --all /tmp/ci-rca-output.json || true)
+          FILED_PAIRS=$(bin/venv-python -m scripts.ci_rca.filing --all /tmp/ci-rca-output.json || true)
           if [ -z "$FILED_PAIRS" ]; then
             echo "::error::ci-rca agent filed no recommendation (no FILED: marker in output)"
             exit 1
@@ -350,7 +478,7 @@ jobs:
           # rec_id output feeds the PR-comment step, which reports a single rec id -- prefer the
           # legacy last-marker helper's value, falling back to the last --all pair when the final
           # marker was "none" but an earlier bundle filed (the case this fix addresses).
-          REC_ID=$(bin/venv-python -m scripts.ci_rca_filing /tmp/ci-rca-output.json || true)
+          REC_ID=$(bin/venv-python -m scripts.ci_rca.filing /tmp/ci-rca-output.json || true)
           if [ -z "$REC_ID" ]; then
             REC_ID=$(echo "$FILED_PAIRS" | tail -1 | cut -d, -f1)
           fi
@@ -369,7 +497,7 @@ jobs:
           ANCHOR_SHA="${{ steps.meta.outputs.anchor_sha }}"
           WORKFLOW_SLUG="${{ steps.meta.outputs.workflow_slug }}"
           if [ -n "$ANCHOR_SHA" ]; then
-            bin/venv-python -m scripts.ci_rca_filing --all /tmp/ci-rca-output.json | while IFS=',' read -r REC_ID CAT; do
+            bin/venv-python -m scripts.ci_rca.filing --all /tmp/ci-rca-output.json | while IFS=',' read -r REC_ID CAT; do
               [ -z "$REC_ID" ] && continue
               [ -z "$CAT" ] && CAT="unknown"
               CONTEXT="ci-rca/${WORKFLOW_SLUG}/${CAT}"

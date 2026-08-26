@@ -18,6 +18,13 @@
 #   1. build_lambda --ducklake-only       (upload catalog-dr zip + pgclient layer to S3)
 #   2. terraform plan -> human review -> terraform apply via agent_platform_admin
 #   3. build_lambda --ducklake-only --deploy  (update the DR function code pointer from S3)
+#
+# CODE/INFRA COUPLING (Decision 125, environment-taxonomy.yaml conformance): RESOLVED. The
+# aws_lambda_function resource below now carries a lifecycle block ignoring source_code_hash
+# changes, so code-only redeploys no longer surface as a Terraform diff on this apply path. Code
+# deploys now go via step 3 above (`build_lambda --ducklake-only --deploy`) -- knowingly-interim
+# break-glass status (Decision 125 pt 2-5) pending the governed code-deploy CD channel (rec-2646
+# residual scope).
 
 locals {
   ducklake_catalog_dr_function = "agent-platform-ducklake-catalog-dr"
@@ -112,9 +119,11 @@ resource "aws_cloudwatch_log_group" "ducklake_catalog_dr" {
 # ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "ducklake_catalog_dr" {
-  name               = "agent-platform-ducklake-catalog-dr"
-  description        = "Catalog DR Lambda: Neon DSN read, DR bucket Put/List, DuckLakeCatalogDR metrics"
-  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+  # Decision 144 (T2.48): mandatory broad-but-bounded exec-identity boundary (16/17 roles; PlatformAdmin excluded).
+  name                 = "agent-platform-ducklake-catalog-dr"
+  description          = "Catalog DR Lambda: Neon DSN read, DR bucket Put/List, DuckLakeCatalogDR metrics"
+  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/agent-platform-github-ci-apply-boundary"
+  assume_role_policy   = data.aws_iam_policy_document.lambda_assume.json
 }
 
 resource "aws_iam_role_policy" "ducklake_catalog_dr" {
@@ -179,6 +188,22 @@ resource "aws_lambda_layer_version" "ducklake_pgclient" {
   s3_bucket        = aws_s3_bucket.data_lake.id
   s3_key           = "lambda-packages/ducklake-pgclient-layer.zip"
   source_code_hash = try(filemd5("${path.module}/../../lambda-packages/ducklake-pgclient-layer.zip"), null)
+
+  # T2.42 c1 (rec-2646/rec-2654 pattern extended to layers, Decision 126 pt3/pt5, DEP-03): decouples
+  # routine rebuild churn from this IAM-gated apply path -- without this, every rebuild's
+  # non-reproducible zip bytes surface as a layer create+delete (replace) diff, which the Decision-77
+  # guard blocks as a delete action (routes to gated-apply for zero real change). s3_key stays the
+  # fixed literal (unaffected by T2.42 c3's content-addressed upload path).
+  #
+  # SILENT-FREEZE GUARD: source_code_hash is now ignored, so Terraform only publishes a new layer
+  # version when `description` changes. This description is fully static (no interpolation) -- ANY
+  # content bump (e.g. a pg_dump/libpq version bump) leaves the description unchanged, so terraform
+  # publishes NO new layer version and the function silently keeps the OLD pgclient binaries. Any
+  # such bump MUST also bump the description/marker (or go via the deploy-verb publish path) to
+  # force republish.
+  lifecycle {
+    ignore_changes = [source_code_hash]
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -221,6 +246,13 @@ resource "aws_lambda_function" "ducklake_catalog_dr" {
   tags = {
     Name    = "DuckLake Catalog DR"
     Purpose = "T2.18 FP-B catalog disaster-recovery Lambda"
+  }
+
+  # Decision 125 physical decoupling: code deploys go via build_lambda --ducklake-only --deploy
+  # (update-function-code), not terraform. Without this, every rebuild's non-reproducible zip bytes
+  # trip a Terraform diff on this IAM-gated apply path (rec-2646/rec-2654).
+  lifecycle {
+    ignore_changes = [source_code_hash]
   }
 }
 

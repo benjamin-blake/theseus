@@ -1,9 +1,6 @@
 ---
 description: "Use when: code review, quality check, review my code, check for issues, after implementing a feature. Performs a full repository code review and returns a structured findings report to the caller. The caller (.claude/commands/implement.md or the invoking agent) writes findings to logs/.recommendations-log.jsonl. Does not edit files directly."
 name: code-review
-required-context:
-  - docs/PROJECT_CONTEXT.md
-  - docs/DECISIONS.md
 ---
 
 ## Intent
@@ -15,7 +12,7 @@ Perform a full repository code review and return a structured findings report to
 ## Step 0: Load Plan Context
 
 Find and read the plan file for the current branch:
-1. Run `bin/venv-python -m scripts.find_plan` to get the plan file path.
+1. Run `bin/venv-python -m scripts.roadmap.find_plan` to get the plan file path.
 2. If the output is `NOT_FOUND`, proceed without plan context (note this in the report).
 3. Otherwise read the plan file at the output path.
 
@@ -39,10 +36,10 @@ Perform a focused code review of the current branch changes. Build the review sc
 
 ## Review Process
 
-1. **Read the anchoring docs** — the plan file (via `bin/venv-python -m scripts.find_plan`), `docs/PROJECT_CONTEXT.md`, and only the docs directly referenced by the changed files. Do not bulk-read the roadmaps or other large docs unless a changed file references them.
+1. **Read the anchoring docs** — the plan file (via `bin/venv-python -m scripts.roadmap.find_plan`), `docs/PROJECT_CONTEXT.md`, and only the docs directly referenced by the changed files. Do not bulk-read the roadmaps or other large docs unless a changed file references them.
 2. **Build the review file list** using a scoped approach — do not read the entire repository blindly:
    a. Run `git diff --name-only origin/main` to get the list of changed files.
-   b. Read the plan file (via `bin/venv-python -m scripts.find_plan`) and parse its Scope table for planned files.
+   b. Read the plan file (via `bin/venv-python -m scripts.roadmap.find_plan`) and parse its Scope table for planned files.
    c. For each Python file in the changed + planned sets, run `bin/venv-python -m scripts.extract_imports <file>` to collect `src.*` direct imports.
    d. The review scope is: **changed files + planned files + files that correspond to the direct imports collected in step (c)**. Resolve import module paths to file paths using the project file layout (e.g., `src.common.config` → `src/common/config.py`).
    e. Skip entire directories (e.g., `src/data/handlers/`) unless specific files in them appear in the scope above.
@@ -82,11 +79,15 @@ Evaluate the repository across each of the following dimensions. For every issue
 
 ### 3. Testing
 
+Any finding that claims a command or validation gate fails must include the exact command, observed exit code, and final owning-validator summary. Informational child diagnostics alone are not failure evidence.
+
 - **Coverage gaps** — Which modules, classes, or functions lack test coverage?
 - **Test quality** — Testing behaviour or implementation details? Are edge cases covered?
 - **Test isolation** — Do tests depend on external services or execution order?
 - **Test naming** — Do names describe the scenario and expected outcome?
 - **Fixtures and mocking** — Are mocks used appropriately?
+- **Test obligations** — Raise High when a behavior change lacks executed obligation evidence, an
+  asserting test, or a deterministic-limit waiver.
 - **Mock Exhaustion (postflight.py)** — If `scripts/executor/postflight.py` is modified, verify that `subprocess.run` calls match the `MagicMock` side-effect counts in `tests/test_executor_postflight.py` (see Check 2 in `scripts/validate.py`).
 
 ### 4. Maintainability and Scalability
@@ -228,13 +229,3 @@ FINDINGS:
 Do not write to any file. Do not edit any file. Return the findings block to the caller and stop.
 
 **The caller MUST use `bin/venv-python -m scripts.ops_data_portal` to file each finding. Never append to `logs/.recommendations-log.jsonl` directly.** This ensures writer-allocated ids and persistence via the closed DuckLake writer boundary (Decision 84).
-
----
-
-## Closing Nudge
-
-> **Code review complete.** [X] findings returned. The invoking agent will file them via `ops_data_portal.py`.
->
-> Critical/High items should be addressed before merging. Start a new chat with `/plan` to plan fixes.
->
-> If any findings are false positives, tell me and I will add them to Code Review Exemptions in `docs/DECISIONS_ARCHIVE.md`.
