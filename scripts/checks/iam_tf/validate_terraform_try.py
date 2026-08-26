@@ -40,6 +40,18 @@ def _is_inside_try(content: str, pos: int) -> bool:
     return False
 
 
+def _blank_comment_lines(content: str) -> str:
+    """Blank out whole-line HCL comments, preserving every character offset.
+
+    Comment prose routinely contains the very tokens this lint scans for (e.g. "the native lock
+    file (use_lockfile ...)"), which reads as an unwrapped file() call. Only WHOLE-LINE comments
+    are blanked, so a `#` or `//` inside a quoted ARN or URL on a code line can never mask a real
+    call later on that same line. Blanking (rather than deleting) keeps offsets -- and therefore
+    the reported line numbers -- exact.
+    """
+    return "\n".join(" " * len(ln) if ln.lstrip().startswith(("#", "//")) else ln for ln in content.split("\n"))
+
+
 @registry.register("validate_terraform_try", owner="platform")
 def validate_terraform_try(failed: list[str]) -> None:
     """Check that filemd5() and file() in .tf files are wrapped with try().
@@ -54,7 +66,7 @@ def validate_terraform_try(failed: list[str]) -> None:
     errors: list[str] = []
 
     for tf_file in sorted(tf_dir.rglob("*.tf")):
-        content = tf_file.read_text(encoding="utf-8")
+        content = _blank_comment_lines(tf_file.read_text(encoding="utf-8"))
         for m in re.finditer(r"\bfilemd5\s*\(|(?<![\w])file\s*\(", content):
             if not _is_inside_try(content, m.start()):
                 fn_name = "filemd5()" if "filemd5" in m.group() else "file()"

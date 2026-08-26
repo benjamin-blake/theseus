@@ -120,9 +120,6 @@ class TestOD4ScaffoldAdjacentChecksStayInTheirSegments:
         preceding_scaffolds = [step.name for step in full[:idx] if step.kind == "scaffold"]
         return preceding_scaffolds[-1]
 
-    def test_iam_runner_policy_immediately_after_terraform_checks(self) -> None:
-        assert self._segment_of("validate_iam_runner_policy") == "terraform_checks"
-
     def test_requirements_and_prompts_block_after_dependency_health(self) -> None:
         for name in (
             "validate_requirements",

@@ -156,7 +156,7 @@ class TestProbeRuntime:
 
 class TestComputeEarliestViableGate:
     def test_external_dep_returns_presubmit(self):
-        gate, rationale = compute_earliest_viable_gate("validate_iam_runner_policy", {}, "ok", 0.01)
+        gate, rationale = compute_earliest_viable_gate("validate_warehouse_write_sources", {}, "ok", 0.01)
         assert gate == "presubmit"
         assert "Decision 60" in rationale
 
