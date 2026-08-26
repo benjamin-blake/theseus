@@ -88,6 +88,70 @@ _CLOSURE_INPUTS: dict[str, tuple[str, ...]] = {
         "scripts/checks/_common.py",
         "scripts/checks/registry.py",
     ),
+    # --- promoted out of the full-only tier -------------------------------------------------
+    # The Recommendation model this validates is defined WHOLLY in scripts/executor/jsonl_store.py;
+    # that module's scripts.ops_data_portal tail is imported inside functions the check never
+    # calls (update_rec/file_rec), so the ops_portal/src.common closure is pruned, not missed.
+    "validate_recommendations_schema": (
+        "logs/.recommendations-log.jsonl",
+        "scripts/executor/jsonl_store.py",
+        "scripts/s3_log_store.py",
+        "scripts/checks/ops_governance/validate_recommendations_schema.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+    ),
+    # Scan scope IS the closure: the whitelist and the write-detection regexes live in the check's
+    # own module, and every scanned file plus every whitelisted file sits under scripts/.
+    "validate_rec_write_paths": (
+        "scripts/sync/recommendations.py",
+        "scripts/ops_data_portal.py",
+        "scripts/checks/ops_governance/validate_rec_write_paths.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+    ),
+    "validate_decisions_local_writes": (
+        "scripts/sync/ops.py",
+        "scripts/ops_data_portal.py",
+        "scripts/checks/ops_governance/validate_decisions_local_writes.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+    ),
+    # Scans scripts/ AND src/ -- the migrated-table block applies to every file in both roots.
+    "validate_warehouse_write_sources": (
+        "scripts/ops_writer.py",
+        "src/common/ducklake_writes.py",
+        "scripts/checks/ops_governance/validate_warehouse_write_sources.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+    ),
+    # Symmetric-difference of the Dq* Annotated markers against the per-column tests: BOTH sides
+    # are inputs, so a src/schemas/ marker edit alone must fire the gate.
+    "validate_pydantic_yaml_drift": (
+        "config/agent/data_quality/ops.yaml",
+        "src/schemas/rec.py",
+        "src/schemas/decision.py",
+        "src/schemas/annotations.py",
+        "scripts/checks/ops_governance/validate_pydantic_yaml_drift.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+    ),
+    # ops.yaml supplies the enforced: true rows; the per-table decisions/ shards supply the
+    # enforcement_ready states the gate matches them against.
+    "validate_dq_manifest_gate": (
+        "config/agent/data_quality/ops.yaml",
+        "config/agent/data_quality/decisions/ops_recommendations.yaml",
+        "scripts/checks/ops_governance/validate_dq_manifest_gate.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+    ),
+    # Drift gate: the contract file and the RELEVANCE_VERDICTS constant it is compared against.
+    "validate_rec_relevance_contract": (
+        "docs/contracts/recommendation-relevance.yaml",
+        "scripts/rec_relevance.py",
+        "scripts/checks/ops_governance/validate_rec_relevance_contract.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+    ),
 }
 
 

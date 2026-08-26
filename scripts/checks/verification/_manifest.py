@@ -31,12 +31,28 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_hermeticity_flags",
         module="scripts.checks.verification.validate_hermeticity_flags",
         attr="validate_hermeticity_flags",
+        pre=True,
+        pre_globs=(
+            "pyproject.toml",
+            "scripts/checks/_pytest_diff.py",
+            "scripts/checks/_scaffolding.py",
+            "scripts/checks/verification/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
         name="validate_verifier_hermeticity",
         module="scripts.checks.verification.validate_verifier_hermeticity",
         attr="validate_verifier_hermeticity",
+        pre=True,
+        pre_globs=(
+            "scripts/verifiers/**",
+            "scripts/checks/verification/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -72,6 +88,13 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_differential_gate_baseline",
         module="scripts.checks.verification.validate_differential_gate_baseline",
         attr="validate_differential_gate_baseline",
+        pre=True,
+        pre_globs=(
+            "scripts/verification_checks.py",
+            "scripts/checks/verification/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(

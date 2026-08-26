@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from fnmatch import fnmatch
 
 import pytest
 
@@ -82,3 +83,46 @@ class TestGatedEntryInputClosures:
         """_CURATED_TOKENS lives in the check's own module: adding a token retroactively makes
         existing `assert len(X) == N` sites violations, with no tests/** file in the diff."""
         assert {"tests/**", "scripts/checks/hygiene/**"} <= self._globs("validate_test_count_coupling")
+
+    def test_sys_executable_gate_covers_its_scan_scope_and_its_own_module(self) -> None:
+        """Promoted into --pre. It regex-scans scripts/**/*.py, and its own module (which holds
+        the pattern) lives under the same root -- so one glob is the whole closure."""
+        assert {"scripts/**"} <= self._globs("validate_sys_executable")
+
+
+class TestPromotedGateClosures:
+    """Each promoted check's declared closure member is asserted MATCHED by its patterns, not
+    present in them as a literal -- so widening a glob keeps the row green while a member falling
+    out of coverage reddens it.
+
+    Bare fnmatch, not scripts.validate._pre_glob_match, for the reason
+    tests/checks/ops_governance/test__manifest.py::TestClosureMembersAreCovered states: the
+    production matcher is fnmatch PLUS a leading-'**/' retry that can only ADD matches.
+    """
+
+    _CLOSURE_INPUTS: dict[str, tuple[str, ...]] = {
+        "validate_sys_executable": (
+            "scripts/checks/hygiene/validate_sys_executable.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+            "scripts/session/postflight.py",
+        ),
+    }
+
+    @staticmethod
+    def _covered(name: str, path: str) -> bool:
+        globs = next(e for e in _manifest.ENTRIES if e.name == name).pre_globs or ()
+        return any(fnmatch(path, glob) for glob in globs)
+
+    @pytest.mark.parametrize(
+        ("name", "path"),
+        [(name, path) for name, paths in _CLOSURE_INPUTS.items() for path in paths],
+        ids=[f"{name}-{path}" for name, paths in _CLOSURE_INPUTS.items() for path in paths],
+    )
+    def test_a_diff_touching_only_this_closure_member_still_matches_the_gate(self, name: str, path: str) -> None:
+        assert self._covered(name, path)
+
+    @pytest.mark.parametrize("name", sorted(_CLOSURE_INPUTS))
+    def test_an_unrelated_path_is_not_matched(self, name: str) -> None:
+        """Anti-vacuity: the rows above would also pass against a catch-all pattern."""
+        assert not self._covered(name, "README.md")

@@ -13,6 +13,8 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_invariants",
         module="scripts.checks.misc.validate_invariants",
         attr="validate_invariants",
+        pre=True,
+        pre_globs=("scripts/**", "tests/test_execute_recommendation.py"),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -32,6 +34,13 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_scheduled_agent_logs",
         module="scripts.checks.misc.validate_scheduled_agent_logs",
         attr="validate_scheduled_agent_logs",
+        pre=True,
+        pre_globs=(
+            "logs/**",
+            "scripts/checks/misc/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(

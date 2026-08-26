@@ -102,6 +102,24 @@ class TestGatedEntryInputClosures:
             "scripts/checks/decisions/**",
         } <= self._globs("validate_live_entry_immutability")
 
+    def test_supersession_annotations_covers_its_waiver_file(self) -> None:
+        """Promoted into --pre. The waiver roster is the third input alongside the two corpus
+        files: deleting a waiver turns an already-committed unannotated edge into a violation
+        with neither DECISIONS file in the diff."""
+        assert {
+            "docs/DECISIONS.md",
+            "docs/DECISIONS_ARCHIVE.md",
+            "config/decision_supersession_waivers.yaml",
+            "scripts/decisions_md.py",
+            "scripts/checks/decisions/**",
+        } <= self._globs("validate_supersession_annotations")
+
+    def test_supersession_annotations_runs_in_both_tiers(self) -> None:
+        pre_names = {step.name for step in registry.pre_sequence() if step.kind == "check"}
+        full_names = {step.name for step in registry.full_sequence() if step.kind == "check"}
+        assert "validate_supersession_annotations" in pre_names
+        assert "validate_supersession_annotations" in full_names
+
 
 # One row per gated Entry: repo-relative paths in that check's transitive first-party import
 # closure (module-scope AND the deferred imports its body always executes).
@@ -123,6 +141,19 @@ _CLOSURE_INPUTS: dict[str, tuple[str, ...]] = {
     "validate_decision_currency": (
         "docs/decisions-index.json",
         "scripts/decisions_md.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+    ),
+    # Promoted out of the full-only tier. Its module docstring ruled --pre out on "heavier
+    # both-file parse" grounds, but the sibling conformance/immutability checks already parse the
+    # SAME two files in --pre, and the measured body cost is ~0.07s -- so the stated rationale no
+    # longer holds. Third input: the waiver file that decides which unannotated edges are legal.
+    "validate_supersession_annotations": (
+        "docs/DECISIONS.md",
+        "docs/DECISIONS_ARCHIVE.md",
+        "config/decision_supersession_waivers.yaml",
+        "scripts/decisions_md.py",
+        "scripts/checks/decisions/validate_supersession_annotations.py",
         "scripts/checks/_common.py",
         "scripts/checks/registry.py",
     ),

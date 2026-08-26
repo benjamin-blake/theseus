@@ -210,9 +210,23 @@ class TestImportClosureChannelDirect:
 
     def test_nonexistent_changed_file_contributes_nothing(self, tmp_path: Path) -> None:
         _write(tmp_path, "scripts/placeholder.py", "x = 1\n")
-        direct, transitive = at._import_closure_channel(["scripts/does_not_exist.py"], tmp_path)
+        direct, transitive, distance = at._import_closure_channel(["scripts/does_not_exist.py"], tmp_path)
         assert direct == set()
         assert transitive == set()
+        assert distance == {}
+
+    def test_distance_is_the_fewest_import_hops_to_a_changed_module(self, tmp_path: Path) -> None:
+        """The residue's relevance rank: a direct importer is 1 hop, its own importer is 2."""
+        _write(tmp_path, "scripts/base.py", "def do():\n    pass\n")
+        _write(tmp_path, "scripts/mid.py", "from scripts.base import do\n\ndef mid():\n    do()\n")
+        _write(tmp_path, "tests/test_direct.py", "from scripts.base import do\n\ndef test_d():\n    do()\n")
+        _write(tmp_path, "tests/test_indirect.py", "from scripts.mid import mid\n\ndef test_i():\n    mid()\n")
+
+        direct, transitive, distance = at._import_closure_channel(["scripts/base.py"], tmp_path)
+
+        assert direct == {"tests/test_direct.py"}
+        assert transitive == {"tests/test_indirect.py"}
+        assert distance == {"tests/test_direct.py": 1, "tests/test_indirect.py": 2}
 
 
 class TestDataEdgeChannelEdgeCases:

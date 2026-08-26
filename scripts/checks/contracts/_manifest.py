@@ -13,24 +13,63 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_prompt_compliance",
         module="scripts.checks.contracts.validate_prompt_compliance",
         attr="validate_prompt_compliance",
+        pre=True,
+        pre_globs=(
+            ".claude/skills/**",
+            "docs/contracts/instruction-architecture.yaml",
+            "scripts/prompt_compliance.py",
+            "logs/.retro-lite-log.jsonl",
+            "logs/.execution-state.json",
+            "scripts/checks/contracts/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_dependency_health",
     ),
     Entry(
         name="validate_instruction_architecture_layers",
         module="scripts.checks.contracts.validate_instruction_architecture_layers",
         attr="validate_instruction_architecture_layers",
+        pre=True,
+        pre_globs=(
+            "docs/contracts/instruction-architecture.yaml",
+            "scripts/prompt_compliance.py",
+            "CLAUDE.md",
+            "**/CLAUDE.md",
+            "AGENTS.md",
+            "docs/PROJECT_CONTEXT.md",
+            ".claude/**",
+            "config/agent/executor/**",
+            "scripts/checks/contracts/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_dependency_health",
     ),
     Entry(
         name="validate_no_underscore_instructions",
         module="scripts.checks.contracts.validate_no_underscore_instructions",
         attr="validate_no_underscore_instructions",
+        pre=True,
+        pre_globs=(
+            ".github/**",
+            "scripts/checks/contracts/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
         name="validate_claude_md_pointer_invariant",
         module="scripts.checks.contracts.validate_claude_md_pointer_invariant",
         attr="validate_claude_md_pointer_invariant",
+        pre=True,
+        pre_globs=(
+            "CLAUDE.md",
+            "scripts/checks/contracts/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -58,6 +97,11 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_portal_drift",
         module="scripts.checks.contracts.validate_portal_drift",
         attr="validate_portal_drift",
+        # UNGATED deliberately: the answer_loci it resolves come OUT of EVALUATION-PROMPTS.yaml at
+        # run time and may name ANY path in the repo, so no static glob encloses the read set --
+        # gating on the three portal files would silently skip the deleted-locus case this gate
+        # exists to catch (Decision 101 public-content boundary).
+        pre=True,
         full_segment="full_after_lint",
     ),
     Entry(

@@ -62,3 +62,41 @@ class TestGatedEntryInputClosures:
             "scripts/checks/_common.py",
             "scripts/checks/_scaffolding.py",
         } <= self._globs("validate_verification_registry")
+
+    def test_hermeticity_flags_covers_both_tier_command_builders(self) -> None:
+        """Promoted into --pre -- it guards the FAST TIER'S OWN flags, so a full-only placement
+        meant the fast tier could drop --disable-socket or the fixed seed and only learn about it
+        post-merge. It reads pyproject's addopts, _build_unit_test_cmd() in _scaffolding, and
+        _PYTEST_FLAGS/_PYTEST_RANDOMLY_SEED, which are defined in _pytest_diff."""
+        assert {
+            "pyproject.toml",
+            "scripts/checks/_pytest_diff.py",
+            "scripts/checks/_scaffolding.py",
+            "scripts/checks/verification/**",
+        } <= self._globs("validate_hermeticity_flags")
+
+    def test_verifier_hermeticity_covers_its_scan_dir_and_rule_module(self) -> None:
+        """AST-scans scripts/verifiers/*.py against clock/randomness/network rosters that live in
+        the check's own module."""
+        assert {"scripts/verifiers/**", "scripts/checks/verification/**"} <= self._globs("validate_verifier_hermeticity")
+
+    def test_differential_gate_baseline_covers_the_kernel_it_self_tests(self) -> None:
+        """It imports is_admitted/CANONICAL_SLOTS from scripts/verification_checks.py and then
+        grep-counts that same file."""
+        assert {"scripts/verification_checks.py", "scripts/checks/verification/**"} <= self._globs(
+            "validate_differential_gate_baseline"
+        )
+
+
+class TestVerificationHarnessStaysFullOnly:
+    """validate_verification_harness must NOT be promoted: it runs after, and depends on, the
+    full tier's ensure_fresh_dq scaffold (AWS credentials + logs/debug/dq-latest.json). The
+    pr-validate job has no OIDC and no AWS by design, so a promoted run would be structurally
+    degraded rather than a gate. A hermetic tier_filter subset is the promotable slice, and that
+    is a change to the harness, not to this manifest."""
+
+    def test_verification_harness_is_absent_from_pre(self) -> None:
+        pre_names = {step.name for step in registry.pre_sequence() if step.kind == "check"}
+        full_names = {step.name for step in registry.full_sequence() if step.kind == "check"}
+        assert "validate_verification_harness" in full_names
+        assert "validate_verification_harness" not in pre_names

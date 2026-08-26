@@ -20,6 +20,15 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_ci_rca_trigger",
         module="scripts.checks.ci_guards.validate_ci_rca_trigger",
         attr="validate_ci_rca_trigger",
+        pre=True,
+        pre_globs=(
+            ".github/workflows/**",
+            ".claude/agents/scheduled/ci-rca.md",
+            "scripts/verify_ci_workflow.py",
+            "scripts/checks/ci_guards/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
