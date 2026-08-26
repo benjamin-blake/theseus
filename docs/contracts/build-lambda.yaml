@@ -1,10 +1,39 @@
 ---
-# Non-ritual build registry. NOT a Class A/B/C ritual contract (no contract: block with class: field).
-# The CD.25 drift gate skips files that lack a contract: mapping with a class: field.
+# Build/deploy workflow registry for scripts/build_lambda.py. A Class D mechanism contract
+# (migration-step-3-grandfathering, T2.56 migration step 3) as of the `contract:` block below.
 #
 # Purpose: machine-readable build/deploy workflow registry for scripts/build_lambda.py.
 # Authored fresh from the live script (2026-06-29); the superseded .md documented a removed
 # --handler/--output/--layer CLI and is NOT carried forward.
+contract:
+  id: build-lambda
+  class: D
+  contract_version: 1
+  status: ratified
+  ratified_via: "PLAN-build-lambda-yaml (T-1.16)"
+  description: >-
+    Class D mechanism-contract envelope for this file (migration-step-3-grandfathering, T2.56
+    migration step 3). The build/deploy registry body itself is unchanged by this envelope.
+  subject: build-lambda
+  evaluator:
+    check: validate_deploy_channel_conformance
+
+amendment_log:
+  - date: "2026-08-13"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      CFG-11 conversion: deploy_channels.ducklake_functions.see repointed from the deleted
+      deleted markdown contract's anchor to the environment-taxonomy.yaml conformance key
+      path.
+  - date: "2026-08-18"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-convergence-health-prod-drift-red: added the deploy_record field-semantics stanza
+      (shape + freshness-is-reachability + null-source_git_sha-is-stale) now that
+      scripts.convergence_health.code_drift applies a reachability oracle instead of an
+      equality comparison.
 
 version: 1
 contract_version: 1
@@ -65,6 +94,32 @@ deploy_targets:
     - ducklake-extensions-layer
     - ducklake-pgclient-layer
 
+# deploy_record field semantics (Decision 103 reachability oracle; PLAN-convergence-health-prod-
+# drift-red). The JSON blob write_deploy_record() (scripts/build_lambda_deploy.py) writes to
+# deploy-records/<channel>/<function>.json and read_deploy_record() reads back, consumed by
+# scripts.convergence_health.detect_ducklake_code_drift / detect_prod_code_drift.
+deploy_record:
+  shape:
+    function: "str -- the deployed Lambda function name"
+    code_sha256: "str -- CodeSha256 from the update-function-code response"
+    source_git_sha: "str | null -- os.environ.get(GITHUB_SHA) at deploy time; null for a break-glass local deploy (no GITHUB_SHA set)"
+    deployed_at: "str -- ISO8601 UTC timestamp of the deploy"
+  freshness_semantics: >-
+    Freshness is REACHABILITY, not equality: a deploy record is fresh iff the latest
+    watched-source commit reachable FROM its recorded source_git_sha equals the latest
+    watched-source commit on HEAD (git log -1 --format=%H <recorded_sha> -- <pathspecs>). A
+    push-triggered deploy sets source_git_sha to the exact commit that touched source; a
+    workflow_dispatch recovery deploy can set it to a LATER commit that never itself touches
+    source -- both are correctly fresh under this oracle. Bare equality (the pre-fix defect)
+    reported the latter as stale, which is what let a correct workflow_dispatch recovery deploy
+    look drifted.
+  null_source_git_sha: >-
+    A null source_git_sha (break-glass local deploy, scripts.build_lambda [--ducklake-only]
+    --deploy run outside CI with no GITHUB_SHA set) is deliberately treated as STALE, never
+    fresh -- fail closed on uncertainty. write_deploy_record's GITHUB_SHA semantics are never
+    changed to work around this; the record stays an honest statement of which commit was
+    deployed, and the sensor's comparison is what changed.
+
 # Flag DEFAULTS (--profile=company-aws-profile, --region=eu-west-2) are OUT of registry scope.
 # The equivalence test compares flag-name sets only.
 cli_flags:
@@ -75,21 +130,23 @@ cli_flags:
   - --deploy
   - --ducklake-only
   - --list-bundle
+  - --ducklake-functions
+  - --ducklake-deploy-only
   - --ducklake-publish-canary-layers
 
 verified_against:
   - "scripts/build_lambda.py (LAMBDA_SIZE_LIMIT_BYTES, _LAMBDA_FUNCTION_NAMES, _OPS_COMPACTION_FUNCTION_NAME, _OPS_COMPACTION_ZIP_KEY, _DUCKLAKE_FUNCTION_ZIP_KEYS, DUCKLAKE_LAYER_NAMES, build_parser() flags)"
 
 # Deploy CHANNEL per build-artifact class (Decision 125). Pointer-only: the authoritative
-# apply-model / guard classification lives SOLELY in docs/contracts/environment-taxonomy.md
+# apply-model / guard classification lives SOLELY in docs/contracts/environment-taxonomy.yaml
 # section 5 (Decision 92 point 5 sole-SoT) -- this section names which channel-class each
 # artifact belongs to, it does not restate the classification itself.
 deploy_channels:
   ducklake_functions:  # ducklake_function_zip_keys targets above
     root: terraform/personal
     channel_class: terraform_personal_ignore_changes_decoupled  # #544 landed the decoupling (Decision 125/126)
-    see: docs/contracts/environment-taxonomy.md#5-lambda-codeinfra-decoupling-principle-personal-account-lambdas
-    governed_channel: .github/workflows/deploy-ducklake-lambdas.yml  # T2.38: the DEFAULT channel -- push-to-main (ducklake source paths) or workflow_dispatch; assumes the merged agent-platform-github-ci-deploy role (T2.49 / DEP-12, UpdateFunctionCode-only on function:agent-platform-*), runs build_lambda --ducklake-only --deploy, gates on --lambda-attach/--lambda-reader smoke
+    see: docs/contracts/environment-taxonomy.yaml (conformance)
+    governed_channel: .github/workflows/deploy-ducklake-lambdas.yml  # T2.38 (five-job split, hotfix follow-up to the 2026-07-24 ops_decisions incident): the DEFAULT channel -- push-to-main (ducklake source paths) or workflow_dispatch; assumes the merged agent-platform-github-ci-deploy role (T2.49 / DEP-12, UpdateFunctionCode-only on function:agent-platform-*). deploy-maintenance builds+uploads ALL artifacts once and deploys maintenance + maintenance-smoke (ungated) -> maintenance-smoke + reconcile-gate (the latter invoking validate_reconcile_pending_gate --deploy-gate, refusing the serving leg while any reconcile_scope=ducklake table has a non-empty pending_reconcile) -> deploy-serving (--ducklake-deploy-only for writer/reader/catalog-dr) -> smoke (--lambda-attach/--lambda-reader)
     break_glass_only: "bin/venv-python -m scripts.build_lambda --ducklake-only --deploy"  # genuinely NON-DEFAULT now that governed_channel exists (T2.38) -- retained as a fallback for when the governed channel cannot run (mirrors the agent_platform_admin human-gated IAM-apply precedent), not the routine agent path
   prod_functions:  # data-pipeline.zip targets above
     root: terraform/personal  # T2.43: provisioned in terraform/personal/prod_lambdas.tf

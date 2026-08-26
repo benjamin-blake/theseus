@@ -315,12 +315,12 @@ class TestLogSync:
         assert result["status"] == "skipped"
 
     def test_log_sync_committed_when_only_logs_dirty(self) -> None:
-        porcelain = " M logs/.friction-analysis-log.jsonl\n"
+        porcelain = " M logs/.retro-lite-log.jsonl\n"
         mock_run = self._make_run(branch="main", porcelain=porcelain)
         with patch("session_preflight.subprocess.run", side_effect=mock_run):
             result = _preflight.run_log_sync()
         assert result["status"] == "committed"
-        assert "logs/.friction-analysis-log.jsonl" in result["files"]
+        assert "logs/.retro-lite-log.jsonl" in result["files"]
 
     def test_log_sync_skipped_when_non_log_dirty(self) -> None:
         porcelain = " M src/main.py\n"

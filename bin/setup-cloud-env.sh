@@ -58,7 +58,7 @@
 # script" field -- NOT the env-var field: a PAT is a credential and the env-var
 # field is visible to anyone using the environment. Add this next to the ~/.aws
 # block above, filling <PAT> from a fine-grained, read-only, single-repo
-# (agent-platform), short-expiry GitHub token:
+# (theseus), short-expiry GitHub token:
 #
 #     mkdir -p "$HOME/.config/gh-mcp"
 #     cat > "$HOME/.config/gh-mcp/token" <<'EOF'
@@ -73,7 +73,7 @@
 # because it puts the credential in the process environment.)
 #
 # Responsibility split (post T0.2 refactor):
-#   setup-cloud-env.sh -- snapshot-cached installs (venv, deps, AWS CLI, optional Terraform, github-mcp-server, pre-commit hook envs).
+#   setup-cloud-env.sh -- snapshot-cached installs plus Codex bootstrap parity for Claude's SessionStart checks.
 #   .claude/hooks/session_start_aws.sh -- verifies the static-key assume-role chain (every session).
 #   .claude/hooks/session_start_ensure_github_mcp.sh -- self-heals github-mcp-server on stale snapshots (every session).
 #   .claude/hooks/session_start_sync_deps.sh -- self-heals requirements.txt/requirements-dev.txt (and terraform binary) drift on stale snapshots (every session).
@@ -92,7 +92,8 @@
 #   6. Installs the github-mcp-server binary (for the .mcp.json `github-full`
 #      MCP server -- full GitHub toolset incl. Actions: workflow runs / job logs).
 #   7. Pre-builds the pre-commit hook environments into ~/.cache/pre-commit so
-#      the hooks (detect-secrets, ruff, file hygiene) run offline in later sessions.
+#      the hooks (detect-secrets, ruff, file hygiene) run offline in later sessions,
+#      then runs the remaining checkout-local SessionStart checks used by Claude.
 #
 # What it does NOT do:
 #   - Materialise ~/.aws/{credentials,config} or ~/.config/gh-mcp/token (done by
@@ -194,8 +195,14 @@ fi
 if [ "${INSTALL_TERRAFORM:-0}" = "1" ]; then
     t0=$SECONDS
     MIRROR_DIR="$HOME/.terraform-mirror"
-    RESOLVED_TFRC="$MIRROR_DIR/cc-web.tfrc"
-    if aws s3 sync "s3://agent-platform-data-lake/tf-provider-mirror/" "$MIRROR_DIR" --only-show-errors \
+    # rec-2518: RESOLVED_TFRC is a sibling FILE of $MIRROR_DIR, not a child of it -- writing the
+    # resolved tfrc inside $MIRROR_DIR would inflate the `ls -A "$MIRROR_DIR"` non-empty gate below
+    # (the tfrc itself would count as mirror content even on an otherwise-empty sync).
+    RESOLVED_TFRC="$HOME/.terraform-mirror.tfrc"
+    # rec-2519: --delete so a shrunk upstream mirror cannot leave stale provider bytes locally.
+    # COUPLED with the RESOLVED_TFRC move above -- do not add --delete while RESOLVED_TFRC still
+    # lives inside $MIRROR_DIR, or this sync would delete the live tfrc on the next run.
+    if aws s3 sync "s3://agent-platform-data-lake/tf-provider-mirror/" "$MIRROR_DIR" --only-show-errors --delete \
         && [ -n "$(ls -A "$MIRROR_DIR" 2>/dev/null)" ]; then
         sed "s|__TF_MIRROR_DIR__|${MIRROR_DIR}|g" "$REPO_ROOT/config/terraform/cc-web.tfrc" > "$RESOLVED_TFRC"
         export TF_CLI_CONFIG_FILE="$RESOLVED_TFRC"
@@ -225,9 +232,8 @@ fi
 # the hook repos (pre-commit-hooks, ruff-pre-commit, detect-secrets) into
 # ~/.cache/pre-commit now -- while setup-time network is available -- so they are
 # baked into the snapshot and run offline in later sessions, mirroring the AWS CLI
-# and github-mcp-server caching above. The per-session .git/hooks wiring (which
-# does NOT survive a fresh clone) is re-applied by
-# .claude/hooks/session_start_precommit.sh.
+# and github-mcp-server caching above. Wire the setup checkout immediately as well;
+# Claude session startup repeats this for fresh per-session clones.
 t0=$SECONDS
 if [ -x .venv/bin/pre-commit ]; then
     if .venv/bin/pre-commit install-hooks >/dev/null 2>&1; then
@@ -238,5 +244,13 @@ if [ -x .venv/bin/pre-commit ]; then
 else
     log "WARNING: .venv/bin/pre-commit missing (requirements-dev.txt not installed?); skipping hook cache."
 fi
+
+# Codex cloud invokes this tracked setup script instead of .claude/settings.json.
+# The dependency and GitHub MCP SessionStart scripts delegate to the same commands
+# already run above; invoke the remaining checkout-local checks here for parity.
+bash .claude/hooks/session_start_aws.sh
+bash .claude/hooks/session_start_github_readiness.sh
+bash .claude/hooks/session_start_precommit.sh
+bash .claude/hooks/session_start_sync_main.sh
 
 log "Done. Verify with: bin/venv-python -m scripts.session.preflight"

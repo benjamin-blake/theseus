@@ -86,7 +86,9 @@ resource "neon_database" "ducklake_ops" {
 }
 
 # ---------------------------------------------------------------------------
-# Assembled DSN for the catalog, stored in Secrets Manager (Decision 37 runtime-fetch precedent).
+# Assembled DSN for the catalog, stored in Secrets Manager
+# (docs/contracts/secret-material-handling.yaml RUNTIME-FETCH pattern, Decision 175 -- rehomed
+# from the Decision 37 precedent).
 # Uses the DIRECT (unpooled) endpoint host -- DuckLake commits are multi-statement transactions, which
 # PgBouncer transaction-mode pooling can break (the pooled endpoint is host_pooler; used only if proven
 # transaction-safe, per the T2.16b connection-churn gate). TLS enforced via sslmode=require.

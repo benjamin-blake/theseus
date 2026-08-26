@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scripts.checks._scaffolding import (
+    _excluded_and_absent,
     _excluded_heavy_import_names,
     _match_changed_test_path,
     _parse_requirement_dist_names,
@@ -89,6 +90,14 @@ class TestExcludedHeavyDeps:
         assert _parse_requirement_dist_names(tmp_path / "nonexistent-requirements.txt") == set()
 
 
+class TestExcludedAndAbsent:
+    def test_none_missing_returns_none(self) -> None:
+        assert _excluded_and_absent(None, {"torch"}) is None
+
+    def test_empty_string_missing_returns_none(self) -> None:
+        assert _excluded_and_absent("", {"torch"}) is None
+
+
 class TestMatchChangedTestPath:
     """Direct coverage of _match_changed_test_path's exact/suffix/no-match branches."""
 
@@ -100,6 +109,31 @@ class TestMatchChangedTestPath:
 
     def test_no_match_returns_none(self) -> None:
         assert _match_changed_test_path("tests/test_unrelated.py", ["tests/test_a.py"]) is None
+
+    def test_directory_target_with_token_outside_it_is_skipped(self, tmp_path: Path) -> None:
+        """Coverage-debt payoff: a `changed_tests` entry that is a DIRECTORY is probed via
+        `candidate.relative_to(target)`, which raises ValueError (caught -> continue) when the
+        echoed token resolves OUTSIDE that directory -- exercised here with a real tmp_path tree
+        so the directory-branch code actually runs, not merely the exact/suffix branches above."""
+        test_dir = tmp_path / "tests" / "some_pkg"
+        test_dir.mkdir(parents=True)
+        (test_dir / "test_inside.py").write_text("", encoding="utf-8")
+        other_dir = tmp_path / "elsewhere"
+        other_dir.mkdir()
+        outside_file = other_dir / "test_outside.py"
+        outside_file.write_text("", encoding="utf-8")
+
+        result = _match_changed_test_path(str(outside_file), ["tests/some_pkg"], repo_root=tmp_path)
+        assert result is None
+
+    def test_directory_target_with_token_inside_it_matches(self, tmp_path: Path) -> None:
+        test_dir = tmp_path / "tests" / "some_pkg"
+        test_dir.mkdir(parents=True)
+        inside_file = test_dir / "test_inside.py"
+        inside_file.write_text("", encoding="utf-8")
+
+        result = _match_changed_test_path(str(inside_file), ["tests/some_pkg"], repo_root=tmp_path)
+        assert result == "tests/some_pkg/test_inside.py"
 
 
 class TestBatchedCollectOnlyInvocation:
@@ -481,10 +515,13 @@ class TestRunPytestDiffSingleExecution:
 
         collect_only_cmds = [c for c in captured_cmds if "--collect-only" in c]
         assert len(collect_only_cmds) == 1, f"expected exactly one collect-only invocation, got: {collect_only_cmds}"
-        real_run_cmds = [c for c in captured_cmds if "--collect-only" not in c]
+        real_run_cmds = [c for c in captured_cmds if "pytest" in c and "--collect-only" not in c]
         assert len(real_run_cmds) == 1, f"expected exactly one real pytest run, got: {real_run_cmds}"
         assert "tests/test_validate.py" in real_run_cmds[0]
         assert "tests/test_iceberg_reader.py" not in real_run_cmds[0]
+        # Whole-tree tracing is gone (see tests/validate/test_pytest_diff_coverage.py for the
+        # scoped replacement); a mocked-git diff exposes no changed source file, so no --cov at all.
+        assert not any(flag.startswith("--cov") for flag in real_run_cmds[0])
         assert failed == []
 
     def test_runs_pytest_exactly_once_when_all_runnable_pass(self) -> None:
@@ -502,10 +539,13 @@ class TestRunPytestDiffSingleExecution:
         with patch("scripts.checks._common.run", side_effect=mock_run):
             run_pytest_diff(["tests/test_a.py", "tests/test_b.py"], failed)
 
-        real_run_cmds = [c for c in captured_cmds if "--collect-only" not in c]
+        real_run_cmds = [c for c in captured_cmds if "pytest" in c and "--collect-only" not in c]
         assert len(real_run_cmds) == 1, f"expected exactly one real pytest run, got: {real_run_cmds}"
         assert "tests/test_a.py" in real_run_cmds[0]
         assert "tests/test_b.py" in real_run_cmds[0]
+        # Whole-tree tracing is gone (see tests/validate/test_pytest_diff_coverage.py for the
+        # scoped replacement); a mocked-git diff exposes no changed source file, so no --cov at all.
+        assert not any(flag.startswith("--cov") for flag in real_run_cmds[0])
         assert failed == []
 
 

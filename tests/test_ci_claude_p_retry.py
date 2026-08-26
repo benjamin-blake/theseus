@@ -11,13 +11,11 @@ from __future__ import annotations
 
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(ROOT))
 
 WRAPPER = ROOT / "scripts" / "ci" / "claude_p_retry.sh"
 
@@ -154,7 +152,7 @@ class TestEnforcementCheck:
     """Test (d): validate.py enforcement flags raw `claude -p`; passes the wrapped form."""
 
     def test_raw_claude_p_is_flagged(self, tmp_path):
-        from scripts.validate import _check_claude_p_raw_invocations
+        from scripts.checks.ci_guards.validate_claude_p_retry_wrapper import _check_claude_p_raw_invocations
 
         workflows_dir = tmp_path / "workflows"
         workflows_dir.mkdir()
@@ -169,7 +167,7 @@ class TestEnforcementCheck:
         assert "claude -p" in violations[0]
 
     def test_wrapped_form_passes(self, tmp_path):
-        from scripts.validate import _check_claude_p_raw_invocations
+        from scripts.checks.ci_guards.validate_claude_p_retry_wrapper import _check_claude_p_raw_invocations
 
         workflows_dir = tmp_path / "workflows"
         workflows_dir.mkdir()
@@ -183,7 +181,7 @@ class TestEnforcementCheck:
         assert violations == []
 
     def test_command_v_check_not_flagged(self, tmp_path):
-        from scripts.validate import _check_claude_p_raw_invocations
+        from scripts.checks.ci_guards.validate_claude_p_retry_wrapper import _check_claude_p_raw_invocations
 
         workflows_dir = tmp_path / "workflows"
         workflows_dir.mkdir()
@@ -197,7 +195,7 @@ class TestEnforcementCheck:
         assert violations == []
 
     def test_comment_lines_not_flagged(self, tmp_path):
-        from scripts.validate import _check_claude_p_raw_invocations
+        from scripts.checks.ci_guards.validate_claude_p_retry_wrapper import _check_claude_p_raw_invocations
 
         workflows_dir = tmp_path / "workflows"
         workflows_dir.mkdir()
@@ -213,7 +211,7 @@ class TestEnforcementCheck:
 
     def test_real_workflows_pass(self):
         """Real .github/workflows/*.yml must pass after the wrapper migration."""
-        from scripts.validate import _check_claude_p_raw_invocations
+        from scripts.checks.ci_guards.validate_claude_p_retry_wrapper import _check_claude_p_raw_invocations
 
         violations = _check_claude_p_raw_invocations(ROOT / ".github" / "workflows")
         assert violations == [], f"Real workflows have unwrapped claude -p: {violations}"

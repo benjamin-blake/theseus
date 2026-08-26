@@ -6,13 +6,13 @@ Runs validation checks that mirror the GitHub Actions CI pipeline.
 Default (no flags) runs the full check suite. Use --pre for fast lint/format
 checks only during implementation.
 
-Thin CLI (Decision 104): every check lives in scripts/checks/<domain>/ and is
-tagged in the scripts/checks/registry.py check registry. This file retains
-only the argparse surface, the recursion/branch guards, the fast-tier budget
-assertion, the non-check scaffolding steps (lint, precommit, mypy, explicit
-pytest, unit-test invoke_step, dependency/terraform gates), and facade
-re-exports of every extracted check/helper so both `patch("validate.<name>")`
-and `from scripts.validate import <name>` keep resolving.
+Thin CLI (Decision 104, dispatch rewired to per-domain manifests by Decision 169): every check
+lives in scripts/checks/<domain>/ and is tagged in the scripts/checks/registry.py check registry,
+dispatched via registry.resolve(name) -- never a facade re-export in this file. This file retains
+only the argparse surface, the recursion/branch guards, the fast-tier budget assertion, the
+non-check scaffolding steps (lint, precommit, mypy, explicit pytest, unit-test invoke_step,
+dependency/terraform gates), and re-exports of the shared _common/_scaffolding primitives (back-compat
+for `patch("validate.<primitive>")` and `from scripts.validate import <primitive>`).
 """
 
 import argparse
@@ -33,7 +33,7 @@ _REPO_ROOT = _Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts.checks import _common, registry  # noqa: E402
+from scripts.checks import _common, registry, validation_result  # noqa: E402
 
 # Facade re-exports: shared primitives (back-compat for `from scripts.validate import ROOT` etc.
 # and for `patch("validate.ROOT"/"validate.run"/"validate.PYTHON"/"validate.invoke_step"/
@@ -60,194 +60,6 @@ from scripts.checks._scaffolding import (  # noqa: F401,E402
     run_terraform_creds_free,
 )
 
-# --- Facade re-exports: every extracted check (getattr + `from scripts.validate import X`) ---
-from scripts.checks.ci_guards.validate_ci_rca_taxonomy import validate_ci_rca_taxonomy  # noqa: F401,E402
-from scripts.checks.ci_guards.validate_ci_rca_trigger import validate_ci_rca_trigger  # noqa: F401,E402
-from scripts.checks.ci_guards.validate_ci_workflow_guards import validate_ci_workflow_guards  # noqa: F401,E402
-from scripts.checks.ci_guards.validate_claude_p_retry_wrapper import (  # noqa: E402
-    _check_claude_p_raw_invocations,  # noqa: F401
-    validate_claude_p_retry_wrapper,  # noqa: F401
-)
-from scripts.checks.ci_guards.validate_composite_action_manifests import validate_composite_action_manifests  # noqa: F401,E402
-from scripts.checks.ci_guards.validate_ops_portal_patch_targets import validate_ops_portal_patch_targets  # noqa: F401,E402
-from scripts.checks.ci_guards.validate_pr_conflict_signal import validate_pr_conflict_signal  # noqa: F401,E402
-from scripts.checks.ci_guards.validate_workflow_agent_safety import validate_workflow_agent_safety  # noqa: F401,E402
-from scripts.checks.contracts._shared import _load_prompt_compliance  # noqa: F401,E402
-from scripts.checks.contracts.validate_claude_md_pointer_invariant import (  # noqa: E402
-    check_claude_md_pointer_invariant,  # noqa: F401
-    validate_claude_md_pointer_invariant,  # noqa: F401
-)
-from scripts.checks.contracts.validate_contract_drift import validate_contract_drift  # noqa: F401,E402
-from scripts.checks.contracts.validate_data_model_standard import validate_data_model_standard  # noqa: F401,E402
-from scripts.checks.contracts.validate_instruction_architecture_layers import (  # noqa: F401,E402
-    validate_instruction_architecture_layers,
-)
-from scripts.checks.contracts.validate_intent_doc_freeze import validate_intent_doc_freeze  # noqa: F401,E402
-from scripts.checks.contracts.validate_no_underscore_instructions import (  # noqa: F401,E402
-    validate_no_underscore_instructions,
-)
-from scripts.checks.contracts.validate_portal_drift import validate_portal_drift  # noqa: F401,E402
-from scripts.checks.contracts.validate_prompt_compliance import validate_prompt_compliance  # noqa: F401,E402
-from scripts.checks.decisions.validate_decision_entry_conformance import (  # noqa: F401,E402
-    validate_decision_entry_conformance,
-)
-from scripts.checks.decisions.validate_decisions_index_freshness import (  # noqa: F401,E402
-    validate_decisions_index_freshness,
-)
-from scripts.checks.decisions.validate_decisions_size import validate_decisions_size  # noqa: F401,E402
-from scripts.checks.decisions.validate_supersession_annotations import (  # noqa: F401,E402
-    validate_supersession_annotations,
-)
-
-# scripts.checks.deps.affected_tests is DELIBERATELY NOT imported at module scope here (unlike
-# every other facade re-export above): it imports networkx at ITS OWN module scope (Decision 80's
-# import-graph oracle dependency), and the terraform-validate CI job installs only pydantic +
-# pyyaml (`pip install pyyaml pydantic`) before running `python -m scripts.validate
-# --terraform-only`, which imports this whole module. A module-level import here would make
-# --terraform-only hard-crash with ModuleNotFoundError on every PR, never reaching the terraform
-# checks. derive_affected_tests/emit_manifest are imported lazily inside main()'s --pre block
-# instead (the ONLY place they are called) -- the same deferred-import pattern
-# validate_dependency_graph_freshness already uses for its own networkx-dependent import of
-# scripts.dependency_graph.
-from scripts.checks.deps.validate_dependency_graph_freshness import (  # noqa: F401,E402
-    validate_dependency_graph_freshness,
-)
-from scripts.checks.deps.validate_import_contracts import validate_import_contracts  # noqa: F401,E402
-from scripts.checks.deps.validate_lockfile_sync import validate_lockfile_sync  # noqa: F401,E402
-from scripts.checks.deps.validate_requirements import validate_requirements  # noqa: F401,E402
-from scripts.checks.executor.validate_executor_boundary import (  # noqa: E402
-    _EXECUTOR_BOUNDARY_PATTERNS,  # noqa: F401
-    _load_boundary_patterns,  # noqa: F401
-    validate_executor_boundary,  # noqa: F401
-)
-from scripts.checks.hygiene.validate_cli_tools_in_prompts import (  # noqa: E402
-    _KNOWN_CLI_TOOLS,  # noqa: F401
-    _OPTIONAL_CLI_TOOLS,  # noqa: F401
-    validate_cli_tools_in_prompts,  # noqa: F401
-)
-from scripts.checks.hygiene.validate_no_cross_test_imports import (  # noqa: F401,E402
-    validate_no_cross_test_imports,
-)
-from scripts.checks.hygiene.validate_placement import validate_placement  # noqa: F401,E402
-from scripts.checks.hygiene.validate_prose_allowlist import validate_prose_allowlist  # noqa: F401,E402
-from scripts.checks.hygiene.validate_subprocess_encoding import validate_subprocess_encoding  # noqa: F401,E402
-from scripts.checks.hygiene.validate_sys_executable import validate_sys_executable  # noqa: F401,E402
-from scripts.checks.hygiene.validate_test_count_coupling import validate_test_count_coupling  # noqa: F401,E402
-from scripts.checks.iam_tf.validate_authority_budget import validate_authority_budget  # noqa: F401,E402
-from scripts.checks.iam_tf.validate_boundary_attached import validate_boundary_attached  # noqa: F401,E402
-from scripts.checks.iam_tf.validate_ci_refresh_read_coverage import (  # noqa: F401,E402
-    validate_ci_refresh_read_coverage,
-)
-from scripts.checks.iam_tf.validate_convergence_writer_isolation import (  # noqa: F401,E402
-    validate_convergence_writer_isolation,
-)
-from scripts.checks.iam_tf.validate_environment_taxonomy import validate_environment_taxonomy  # noqa: F401,E402
-from scripts.checks.iam_tf.validate_iam_runner_policy import validate_iam_runner_policy  # noqa: F401,E402
-from scripts.checks.iam_tf.validate_invoke_implies_resolve import (  # noqa: F401,E402
-    validate_invoke_implies_resolve,
-)
-from scripts.checks.iam_tf.validate_terraform_try import _is_inside_try, validate_terraform_try  # noqa: F401,E402
-from scripts.checks.lambda_pkg.validate_lambda_bundle_completeness import (  # noqa: F401,E402
-    validate_lambda_bundle_completeness,
-)
-from scripts.checks.lambda_pkg.validate_lambda_deploy_gating import validate_lambda_deploy_gating  # noqa: F401,E402
-from scripts.checks.lambda_pkg.validate_lambda_manifest_coverage import (  # noqa: F401,E402
-    validate_lambda_manifest_coverage,
-)
-from scripts.checks.lambda_pkg.validate_lambda_manifests import validate_lambda_manifests  # noqa: F401,E402
-from scripts.checks.misc.validate_ducklake_version_lockstep import (  # noqa: F401,E402
-    validate_ducklake_version_lockstep,
-)
-from scripts.checks.misc.validate_ghas_probe import validate_ghas_probe  # noqa: F401,E402
-from scripts.checks.misc.validate_invariants import validate_invariants  # noqa: F401,E402
-from scripts.checks.misc.validate_scheduled_agent_logs import validate_scheduled_agent_logs  # noqa: F401,E402
-from scripts.checks.misc.validate_test_coverage import _load_coverage_checker, validate_test_coverage  # noqa: F401,E402
-from scripts.checks.ops_governance.check_source_registry import check_source_registry  # noqa: F401,E402
-from scripts.checks.ops_governance.validate_decisions_local_writes import (  # noqa: F401,E402
-    validate_decisions_local_writes,
-)
-from scripts.checks.ops_governance.validate_deploy_channel_conformance import (  # noqa: F401,E402
-    validate_deploy_channel_conformance,
-)
-from scripts.checks.ops_governance.validate_dq_manifest_gate import validate_dq_manifest_gate  # noqa: F401,E402
-from scripts.checks.ops_governance.validate_field_semantics_drift import (  # noqa: F401,E402
-    validate_field_semantics_drift,
-)
-from scripts.checks.ops_governance.validate_outbox_staleness import validate_outbox_staleness  # noqa: F401,E402
-from scripts.checks.ops_governance.validate_pydantic_yaml_drift import (  # noqa: E402
-    _check_drift_for_table,  # noqa: F401
-    validate_pydantic_yaml_drift,  # noqa: F401
-)
-from scripts.checks.ops_governance.validate_rec_relevance_contract import (  # noqa: F401,E402
-    validate_rec_relevance_contract,
-)
-from scripts.checks.ops_governance.validate_rec_write_paths import validate_rec_write_paths  # noqa: F401,E402
-from scripts.checks.ops_governance.validate_recommendations_schema import (  # noqa: F401,E402
-    validate_recommendations_schema,
-)
-from scripts.checks.ops_governance.validate_reversal_stanzas import validate_reversal_stanzas  # noqa: F401,E402
-from scripts.checks.ops_governance.validate_warehouse_write_sources import (  # noqa: F401,E402
-    validate_warehouse_write_sources,
-)
-from scripts.checks.product.trading.validate_broker_env_reads import validate_broker_env_reads  # noqa: F401,E402
-from scripts.checks.prompts.validate_prompt_files import validate_prompt_files  # noqa: F401,E402
-from scripts.checks.prose.prose_budget_raises import validate_prose_budget_raises  # noqa: F401,E402
-from scripts.checks.prose.prose_limits import validate_prose_limits  # noqa: F401,E402
-from scripts.checks.roadmap.check_graduation_guard import (  # noqa: E402
-    _check_graduation_guard,  # noqa: F401
-    _extract_enforced_map,  # noqa: F401
-)
-from scripts.checks.roadmap.validate_candidate_decision_ratification import (  # noqa: F401,E402
-    validate_candidate_decision_ratification,
-)
-from scripts.checks.roadmap.validate_candidate_decision_supersession import (  # noqa: F401,E402
-    validate_candidate_decision_supersession,
-)
-from scripts.checks.roadmap.validate_plan_documents import validate_plan_documents  # noqa: F401,E402
-from scripts.checks.roadmap.validate_platform_roadmap import validate_platform_roadmap  # noqa: F401,E402
-from scripts.checks.roadmap.validate_product_roadmap import validate_product_roadmap  # noqa: F401,E402
-from scripts.checks.roadmap.validate_tier_floor import validate_tier_floor  # noqa: F401,E402
-from scripts.checks.sloc._shared import (  # noqa: E402
-    _BRANCH_TYPES,  # noqa: F401
-    _CC_LIMIT,  # noqa: F401
-    _SLOC_EXCLUDE_DIRS,  # noqa: F401
-    _SLOC_LIMIT,  # noqa: F401
-    _WAIVER_PATTERN,  # noqa: F401
-    iter_gated_py_files,  # noqa: F401
-)
-from scripts.checks.sloc.cc_limits import validate_cc_limits  # noqa: F401,E402
-from scripts.checks.sloc.complexity import validate_complexity  # noqa: F401,E402
-from scripts.checks.sloc.sloc_limits import (  # noqa: E402
-    _load_sloc_budgets,  # noqa: F401
-    _update_sloc_budgets,
-    validate_sloc_limits,  # noqa: F401
-)
-from scripts.checks.sloc.validate_sloc_budget_raises import validate_sloc_budget_raises  # noqa: F401,E402
-from scripts.checks.verification.validate_differential_gate_baseline import (  # noqa: F401,E402
-    validate_differential_gate_baseline,
-)
-from scripts.checks.verification.validate_graduation_completeness import (  # noqa: F401,E402
-    validate_graduation_completeness,
-)
-from scripts.checks.verification.validate_hermeticity_flags import (  # noqa: E402
-    _UNIT_TEST_HERMETICITY_FLAGS,  # noqa: F401
-    validate_hermeticity_flags,  # noqa: F401
-)
-from scripts.checks.verification.validate_verification_harness import validate_verification_harness  # noqa: F401,E402
-from scripts.checks.verification.validate_verification_registry import (  # noqa: F401,E402
-    validate_verification_registry,
-)
-from scripts.checks.verification.validate_verifier_hermeticity import (  # noqa: E402
-    _dotted_name_from_attr,  # noqa: F401
-    _verifier_is_non_hermetic,  # noqa: F401
-    validate_verifier_hermeticity,  # noqa: F401
-)
-from scripts.checks.verification.validate_verifier_same_pr_guard import (  # noqa: E402
-    _extract_verifier_covers,  # noqa: F401
-    validate_verifier_same_pr_guard,  # noqa: F401
-)
-from scripts.checks.verification.validate_vp_replay import validate_vp_replay  # noqa: F401,E402
-
 _FAST_TIER_BUDGET_SECONDS = 300
 
 # Derived guardrail, not a second tier budget (Decision 153): pr-validate's 30-min job
@@ -258,12 +70,14 @@ _FORCED_FULL_SUITE_CEILING_SECONDS = 1500
 
 
 def _dispatch_check(name: str, failed: list[str]) -> None:
-    """Resolve a registered check by name via this module's own namespace and call it.
+    """Resolve a registered check by name via registry.resolve() and call it.
 
-    Uses globals() (equivalent to getattr(sys.modules[__name__], name)) rather than a
-    captured function reference, so `patch("validate.<name>")` continues to intercept.
+    registry.resolve(name) imports the check's DEFINING module and does a late-bound getattr at
+    call time (Decision 169, amending Decision 104's namespace-dict dispatch) -- so
+    `patch("<the check's defining module>.<name>", ...)` continues to intercept, and the resolved
+    callable is never cached across dispatches.
     """
-    globals()[name](failed)
+    validation_result.dispatch_recording(name, failed, registry.resolve(name))
 
 
 def _pre_glob_match(path: str, glob: str) -> bool:
@@ -271,8 +85,15 @@ def _pre_glob_match(path: str, glob: str) -> bool:
 
     fnmatch's `*` already crosses path separators (unlike pathlib/glob.glob's non-recursive
     `*`), so a `**` segment (e.g. "docs/plans/**") matches any depth without special-casing.
+
+    A LEADING `**/` is the one case fnmatch gets wrong for this purpose: it translates to a
+    pattern requiring at least one `/`, so "**/*.py" missed repo-ROOT files like setup.py while
+    the checks gated on it (validate_cc_limits) scan the root. Retry with the leading `**/`
+    stripped so it also matches zero directories -- the recall-safe direction.
     """
-    return fnmatch.fnmatch(path, glob)
+    if fnmatch.fnmatch(path, glob):
+        return True
+    return glob.startswith("**/") and fnmatch.fnmatch(path, glob[3:])
 
 
 def _should_run_in_pre(pre_globs: tuple[str, ...] | None, changed_paths, derivation_ok: bool) -> bool:
@@ -303,12 +124,6 @@ def run_python_checks(failed: list[str]) -> None:
     def _scaffold_unit_tests() -> None:
         _common.invoke_step("Unit tests + coverage", _build_unit_test_cmd(), failed)
 
-    def _scaffold_mypy_full() -> None:
-        print("\n=== mypy (informational) ===")
-        result = _common.run([_common.PYTHON, "-m", "mypy", "src/"], cwd=_common.ROOT)
-        if result.returncode != 0:
-            print("mypy: type errors found (informational - not blocking). Fix progressively.")
-
     def _scaffold_terraform_checks() -> None:
         run_terraform_checks(failed)
 
@@ -324,7 +139,6 @@ def run_python_checks(failed: list[str]) -> None:
     scaffold_fns = {
         "lint": _scaffold_lint,
         "unit_tests": _scaffold_unit_tests,
-        "mypy_full": _scaffold_mypy_full,
         "terraform_checks": _scaffold_terraform_checks,
         "dependency_health": _scaffold_dependency_health,
         "ensure_fresh_dq": _scaffold_ensure_fresh_dq,
@@ -395,6 +209,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    full_started_at: str | None = None
+    if not any((args.pre, args.verifier_coverage, args.terraform_only, args.update_sloc_budgets)):
+        full_started_at = validation_result.utc_now()
+        validation_result.clear()
+
     # CI guard: --ignore-budget is forbidden in CI environments
     if args.ignore_budget and os.environ.get("CI") == "true":
         print("[ERROR] --ignore-budget cannot be used in CI. The escape hatch is for local sessions only.")
@@ -421,6 +240,10 @@ def main() -> None:
 
     # --update-sloc-budgets: regenerate the SLOC budget registry and exit
     if args.update_sloc_budgets:
+        # Deferred import (Decision 169): a module-level import here would make this file eagerly
+        # import a check-defining module, which the import-closure verification gate forbids.
+        from scripts.checks.sloc.sloc_limits import _update_sloc_budgets  # noqa: PLC0415
+
         _update_sloc_budgets()
         sys.exit(0)
 
@@ -496,9 +319,9 @@ def main() -> None:
 
         def _scaffold_budget_assertion() -> None:
             elapsed = time.monotonic() - _t0
-            dominant_phase = max(phase_times, key=phase_times.get) if phase_times else None
+            dominant_phase = max(phase_times, key=lambda phase: phase_times[phase]) if phase_times else None
             if args.ignore_budget:
-                _file_budget_bypass_rec(elapsed, diff_manifest, args.ignore_budget_reason)
+                _file_budget_bypass_rec(elapsed, diff_manifest, args.ignore_budget_reason, dominant_phase)
                 print(f"\nBudget assertion skipped (--ignore-budget). Elapsed: {elapsed / 60:.1f} min.")
             elif elapsed > _FAST_TIER_BUDGET_SECONDS:
                 # Decision 153: a root-conftest change deterministically forces full-suite scope
@@ -593,12 +416,18 @@ def main() -> None:
     print(f"\n=== Validation Summary (scope: {scope}) ===")
     if not failed:
         print("All checks passed.")
+        validation_result.write_completed_visible(
+            started_at=full_started_at or validation_result.utc_now(), exit_code=0, failed_checks=[]
+        )
         sys.exit(0)
     else:
         print("Failed checks:")
         for f in failed:
             print(f"  - {f}")
         print("\nFix all failures before committing.")
+        validation_result.write_completed_visible(
+            started_at=full_started_at or validation_result.utc_now(), exit_code=1, failed_checks=failed
+        )
         sys.exit(1)
 
 

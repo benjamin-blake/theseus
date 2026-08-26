@@ -7,7 +7,7 @@ Some rules below restate root rules for proximity. Root `CLAUDE.md` is authorita
 ## Hard rules
 - **Optional artifacts**: Always wrap `filemd5()` and `file()` calls on optional artifacts with `try()`. Bad: `source_code_hash = filemd5("build/lambda.zip")`. Good: `source_code_hash = try(filemd5("build/lambda.zip"), md5(file("module_file.tf")))`.
 - **ASCII tag values**: Plain ASCII hyphens (`-`) only in Lambda tag values. No em dashes — they fail in AWS API serialisation.
-- **Plan before apply**: Plans modifying `.tf` files must present `terraform plan` output to the human before any `terraform apply`. Apply model: see `docs/contracts/environment-taxonomy.md` Axis A + Guard classification subsection (sole SoT, Decision 77). Short form: sandbox auto-applies behind the deterministic guard; in-budget IAM inline-policy/attachment UPDATEs on managed boundary-carrying roles now auto-apply (T2.25); trust/destroy/out-of-budget IAM route to gated-apply. SIT/PROD remain human-gated and are future-state. See `planning` skill, Step 4 (Infrastructure Assessment).
+- **Plan before apply**: Plans modifying `.tf` files must present `terraform plan` output to the human before any `terraform apply`. Apply model: see `environment-taxonomy.yaml` Axis A + Guard classification subsection (sole SoT, Decision 77). Short form: sandbox auto-applies behind the deterministic guard; in-budget IAM inline-policy/attachment UPDATEs on managed boundary-carrying roles now auto-apply (T2.25); trust/destroy/out-of-budget IAM route to gated-apply. SIT/PROD remain human-gated and are future-state. See `planning` skill, Step 4 (Infrastructure Assessment).
 - **IAM precedence**: If a change modifies IAM (`*.tf` IAM resources or roles attached to Lambdas), `terraform apply` must precede any Lambda code deploy.
 
 ## AWS context
@@ -38,14 +38,15 @@ with nothing in the mirror to serve). With that mirror synced, local `terraform 
 
 This RELAXES but does NOT REMOVE the CI-delegation: routine (non-admin) `terraform validate`/`plan`/`apply`
 for `terraform/personal` remain CI-mediated and authoritative regardless of any given container's
-mirror state -- `validate` via the required `terraform-validate` job (Decision 83); `plan`/`apply` via
-the speculative-plan + apply-the-saved-plan pipeline described below (Decision 77 / Decision 92). The
-mirror-enabled local-init path exists for the ADMIN container's interactive human-gated apply loop
-(IAM/trust/destroy changes that guard-BLOCK the CD pipeline, Decision 94 escape hatch; hand-applied
-recovery) -- it is not a general invitation to bypass the CI pipeline for routine changes. See
-Decision 119 for the original constraint and Decision 120 for the realized reversal mechanism and its
-own reversal conditions (mirror sync ceasing to be maintained falls back to this section's original
-CI-delegated posture with no code change required).
+mirror state -- `validate` via the required `terraform-validate` job (Decision 83; NOT CC-web-only
+-- mirror-consuming, read-only, version-gated, fail-open, rec-2836); `plan`/`apply`
+via the speculative-plan + apply-the-saved-plan pipeline described below (Decision 77 / Decision 92).
+The mirror-enabled local-init path exists for the ADMIN container's interactive human-gated apply
+loop (IAM/trust/destroy changes that guard-BLOCK the CD pipeline, Decision 94 escape hatch) --
+not a routine-change CI bypass. See Decision 119 for the original
+constraint and Decision 120 for the realized reversal mechanism and its own reversal conditions
+(mirror sync ceasing to be maintained falls back to this section's original CI-delegated posture
+with no code change required).
 
 `terraform/personal/terraform.personal.tfvars` is **gitignored** (`.gitignore`:
 `terraform/**/terraform.personal.tfvars`), so it is NOT in the fresh clone and there is no standalone
@@ -74,7 +75,7 @@ are recoverable from the **remote Terraform state in S3**, which IS the source o
 path. Local/manual apply is operator-only break-glass, not a routine agent action -- see
 "Operator-only / break-glass" below. Full intent -> trigger -> recovery wayfinding:
 `docs/contracts/deploy-paths.yaml`. Guard classification (what auto-applies vs what blocks) is
-authoritative SOLELY in `docs/contracts/environment-taxonomy.md` Axis A + Guard classification
+authoritative SOLELY in `environment-taxonomy.yaml` Axis A + Guard classification
 (T2.25 / Decision 92 point 5) -- the table below names the channel, it does not restate that
 classification.
 
@@ -82,7 +83,7 @@ classification.
 |---|---|---|
 | Apply a guard-PASS (non-IAM or in-budget IAM) `terraform/personal` change | Open a PR; CD (`terraform-apply-sandbox.yml`) plans on the PR and applies the SAME reviewed plan.bin at merge (T2.21, no re-plan) | N/A -- this is the primary path |
 | Apply an out-of-budget IAM / trust / destroy `terraform/personal` change | Open a PR; CD routes to the `tf-gated-apply` GitHub Environment | Approve in GitHub Actions (benjamin-blake); CD applies the same reviewed plan.bin -- never from a laptop |
-| Recover from a red convergence record (failed/refused apply, or drift) | Run `terraform-apply-sandbox` via `workflow_dispatch` acknowledge-and-retry (names the red commit / open rec id) AFTER the `ci-rca` rec is reviewed (Decision 55/72) | Nothing auto-remediates; T2.37 (Reconcile, not yet landed) will be the lower-friction path |
+| Recover from a red convergence record (failed/refused apply, or drift) | guard-BLOCK: dispatch Reconcile (`reconcile.yml`, LANDED) -- re-plans, re-guards, routes to `tf-gated-apply`. guard-PASS: `terraform-apply-sandbox` `workflow_dispatch` acknowledge-and-retry. AFTER `ci-rca` rec review (Decision 55/72) | No auto-remediation |
 | Apply `terraform/` (legacy hashicorp/*-only roots) or `terraform/github` | Same PR -> CD path where a workflow exists | See "Operator-only / break-glass" below |
 | Apply `terraform/bootstrap`, or apply `terraform/personal` by hand (bootstrap, reversing a manual admin change, or a guard-BLOCKed case with no CD path yet) | Operator action only | See "Operator-only / break-glass" below |
 

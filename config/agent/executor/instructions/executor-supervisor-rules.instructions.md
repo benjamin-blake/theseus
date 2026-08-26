@@ -1,5 +1,5 @@
 ---
-applyTo: "scripts/executor/*.py,config/agent/executor/prompts/*.prompt.md,.github/prompts/develop-executor.prompt.md"
+applyTo: "scripts/executor/*.py,config/agent/executor/prompts/*.prompt.md"
 ---
 
 ## Core Rules
@@ -25,7 +25,6 @@ You may only edit these files directly:
 | Executor prompts | `config/agent/executor/prompts/*.prompt.md` |
 | Rec metadata | `logs/.recommendations-log.jsonl` |
 | Telemetry / logs | `logs/` files |
-| This prompt | `.github/prompts/develop-executor.prompt.md` |
 
 **During an executor run**, the supervisor may only edit `logs/` files and rec metadata in `.recommendations-log.jsonl`. All other fixes (executor scripts, prompts, acceptance commands) must be filed as recs and executed via `--fast`.
 

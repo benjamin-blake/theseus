@@ -1,0 +1,19 @@
+check_id: plan-document-fallback-reevaluation-schema
+primitive_slot: command_exit_zero
+guard_target: scripts/roadmap/plan_document.py
+guard_symbol: FallbackReevaluation
+plan_slug: esb-fallback-spec-carrier
+graduated_at: '2026-08-03'
+graduated_by: implement-agent
+check_spec:
+  command:
+  - bin/venv-python
+  - -c
+  - "\nimport pathlib, yaml\nfrom pydantic import ValidationError\nfrom scripts.roadmap.plan_document import PlanDocument, validate_paths\npaths = sorted(pathlib.Path('docs/plans').glob('PLAN-*.yaml'))\n\
+    fails = validate_paths(paths)\nassert not fails, f'historical plan(s) invalidated by the new field: {[(p.name, e[:60]) for p, e in fails[:3]]}'\nbase = yaml.safe_load(open('docs/plans/PLAN-esb-fallback-spec-carrier.yaml'))\n\
+    block = {'reevaluated_on': '2026-08-02', 'substrate_status': 'no API-semantics regression observed at filing', 'verdict': 'continue_on_current_substrate', 'basis': 'reviewed against the CD.27 fallback_spec\
+    \ trigger; substrate semantics unchanged'}\ngood = dict(base); good['fallback_reevaluation'] = block\ntry:\n    PlanDocument.model_validate(good)\nexcept ValidationError as exc:\n    raise AssertionError(f'PlanDocument\
+    \ REJECTED a well-formed fallback_reevaluation block -- the field is absent from the schema or misnamed: {exc}') from None\nrejects = {}\nrejects['unknown verdict'] = {**block, 'verdict': 'looks_fine'}\n\
+    rejects['empty basis'] = {**block, 'basis': '   '}\nrejects['extra key'] = {**block, 'note': 'x'}\nmissing = dict(block); missing.pop('basis'); rejects['missing basis'] = missing\nfor why, blk in rejects.items():\n\
+    \    bad = dict(base); bad['fallback_reevaluation'] = blk\n    try:\n        PlanDocument.model_validate(bad)\n        raise AssertionError(f'schema accepted a malformed block: {why}')\n    except ValidationError:\n\
+    \        pass\nPlanDocument.model_validate(base)\nprint('OK', len(paths), 'historical plans valid; block accepted;', len(rejects), 'malformed shapes rejected; field remains optional')\n"
