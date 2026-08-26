@@ -21,7 +21,10 @@ class TestPreTierRegistration:
         steps = {step.name: step for step in registry.pre_sequence() if step.kind == "check"}
         assert "validate_decision_entry_conformance" in steps
         step = steps["validate_decision_entry_conformance"]
-        assert step.pre_globs == ("docs/DECISIONS.md", "docs/DECISIONS_ARCHIVE.md")
+        # Membership floor, not an exhaustive roster: the gate legitimately widens as more of the
+        # check's input closure is covered (docs/contracts/decision-entry.yaml, the grammar
+        # modules). Narrowing it back to the two corpus files is what must redden.
+        assert {"docs/DECISIONS.md", "docs/DECISIONS_ARCHIVE.md"} <= set(step.pre_globs)
 
     def test_resolves_via_the_registry_to_its_defining_module(self) -> None:
         """Dispatch is registry.resolve(name)(failed) in scripts/validate.py (Decision 169) --

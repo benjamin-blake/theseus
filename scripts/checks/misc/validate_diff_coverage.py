@@ -27,9 +27,18 @@ exists to measure.
 
 An absent logs/debug/selection-manifest.json is a declared skip (registry.skipped()) -- the
 affected-set deferral state is unknowable, never "everything uncovered" and never a silent pass.
-The same applies when _pytest_diff.py's own deferral map records one of its three no-artifact
-states (empty affected set, all-files-deferred, the two-invocation reactive-fallback path) --
-nothing was measurably examined this run, which is "could not examine", not "examined nothing".
+The same applies to EVERY member of _pytest_diff.NO_ARTIFACT_STATES (empty affected set,
+all-files-deferred, the two-invocation reactive-fallback path, an include-scoped run that wrote no
+artifact at all, and an unresolvable trace scope) -- nothing was measurably examined this run,
+which is "could not examine", not "examined nothing". The membership test is against that
+frozenset, never an enumerated copy of it, so a state added there is a skip here by construction.
+
+A changed file that IS in a measured run's scope but has NO entry in the coverage artifact is the
+opposite case and is NOT a skip: coverage.py writes no entry for an included file no selected test
+ever imported (the generated scope config suppresses `source`, so nothing backfills its
+statements), and blanket --cov=src --cov=scripts used to report every one of its lines missing.
+classify_file keeps that loud all-lines-UNCOVERED signal rather than dropping the file from the
+report's denominator.
 
 Diff base is push_context_base(root) or "origin/main", threaded with the SAME root through every
 git probe here (Decision 159 clause 1, rec-3166 amendment) -- a hardcoded origin/main...HEAD
@@ -212,7 +221,8 @@ def classify_file(
     information, so a line covered only by an integration-marked test reads identically to a
     genuinely uncovered one). A line absent from BOTH executed_lines and missing_lines is not an
     executable line per coverage.py (blank/comment/docstring) and is silently excluded from the
-    returned mapping -- it is not part of the domain being classified.
+    returned mapping -- it is not part of the domain being classified. A file with NO entry at all
+    is different in kind (see the module docstring): every added line is UNCOVERED.
     """
     if not covering_tests:
         return {ln: DEFERRED for ln in added_lines}, REASON_UNMAPPED
@@ -222,7 +232,12 @@ def classify_file(
     if ran <= heavy_dep_deferred:
         return {ln: DEFERRED for ln in added_lines}, REASON_HEAVY_DEP
 
-    file_cov = _find_coverage_file_entry(coverage_files, rel_path) or {}
+    file_cov = _find_coverage_file_entry(coverage_files, rel_path)
+    if file_cov is None:
+        # Included in the traced scope but never imported by any selected test -- coverage.py emits
+        # no entry for it, so an executable/non-executable split is not derivable here. Report every
+        # added line UNCOVERED (the blanket-tracing signal) rather than silently dropping the file.
+        return {ln: UNCOVERED for ln in added_lines}, None
     executed = set(file_cov.get("executed_lines") or [])
     missing = set(file_cov.get("missing_lines") or [])
     result: dict[int, str] = {}

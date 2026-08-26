@@ -2,7 +2,7 @@
 """First-party import-graph oracle using ast + networkx (Decision 80).
 
 Compute-on-demand; no committed output file by default.
-Stable API: build_graph, roots, reverse_deps, forward_closure,
+Stable API: build_graph, clear_graph_cache, roots, reverse_deps, forward_closure,
 reachable_from_roots, to_export_dict, check_export_freshness.
 CLI: --reverse-deps, --forward-closure, --reachable, --granularity, --export, --blind-spots.
 """
@@ -12,6 +12,8 @@ import ast
 import json
 import re
 import sys
+from collections.abc import Iterable
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -67,9 +69,9 @@ def _file_to_module(py_file: Path, repo_root: Path = _REPO_ROOT) -> str | None:
     return None
 
 
-def _has_entry_point(tree: ast.Module) -> bool:
-    """True if the module declares if __name__ == '__main__' or def main()."""
-    for node in ast.walk(tree):
+def _has_entry_point(nodes: Iterable[ast.AST]) -> bool:
+    """True if the walked module nodes declare if __name__ == '__main__' or def main()."""
+    for node in nodes:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main":
             return True
         if isinstance(node, ast.If) and isinstance(node.test, ast.Compare):
@@ -81,11 +83,26 @@ def _has_entry_point(tree: ast.Module) -> bool:
     return False
 
 
-def _gather_roots(repo_root: Path) -> frozenset[str]:
+def _walk_file(py_file: Path) -> list[ast.AST] | None:
+    """Read, parse and walk py_file exactly once; None when unreadable or unparseable.
+
+    Every per-file pass in build_graph (imports, patch-string constants, entry points) consumes
+    this one materialized node list instead of re-reading and re-walking the file.
+    """
+    try:
+        return list(ast.walk(ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))))
+    except (OSError, SyntaxError):
+        return None
+
+
+def _gather_roots(repo_root: Path, entry_point_modules: frozenset[str]) -> frozenset[str]:
     """Assemble declared root/boundary module set (Decision 79 -- no transitive resolution).
 
     Sources: Lambda manifest handlers+includes (all statuses), modules with __main__/main(),
     pytest test files, and -m scripts.X CLI surfaces in .github/workflows + .claude/.
+    entry_point_modules is REQUIRED and supplies the __main__/main() set already computed from
+    the caller's single parse of each file (_build_graph is the sole caller) -- this function
+    never re-walks src/ and scripts/ to re-derive it.
     """
     found: set[str] = set()
 
@@ -102,21 +119,7 @@ def _gather_roots(repo_root: Path) -> frozenset[str]:
     except Exception:  # noqa: BLE001
         pass
 
-    for search_dir in ("src", "scripts"):
-        sdir = repo_root / search_dir
-        if not sdir.is_dir():
-            continue
-        for py_file in sorted(sdir.rglob("*.py")):
-            if py_file.name == "__init__.py":
-                continue
-            try:
-                tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
-            except (OSError, SyntaxError):
-                continue
-            if _has_entry_point(tree):
-                mod = _file_to_module(py_file, repo_root)
-                if mod:
-                    found.add(mod)
+    found |= entry_point_modules
 
     tests_dir = repo_root / "tests"
     if tests_dir.is_dir():
@@ -146,12 +149,12 @@ def _gather_roots(repo_root: Path) -> frozenset[str]:
     return frozenset(found)
 
 
-def _imports_for_file(py_file: Path, repo_root: Path) -> list[str]:
+def _imports_for_file(py_file: Path, repo_root: Path, nodes: list[ast.AST] | None = None) -> list[str]:
     """Return first-party import names for py_file using scripts.extract_imports."""
     try:
         from scripts.extract_imports import extract_first_party_imports  # noqa: PLC0415
 
-        return extract_first_party_imports(py_file, roots=_FIRST_PARTY_ROOTS, _repo_root=repo_root)
+        return extract_first_party_imports(py_file, roots=_FIRST_PARTY_ROOTS, _repo_root=repo_root, _nodes=nodes)
     except ImportError:
         return []
 
@@ -187,7 +190,7 @@ def _enrich_symbol_layer(graph: nx.DiGraph, py_file: Path, module: str) -> None:
                 graph.add_node(sym, kind="symbol")
 
 
-def _patch_string_module_targets(py_file: Path, graph: nx.DiGraph) -> list[str]:
+def _patch_string_module_targets(nodes: Iterable[ast.AST], graph: nx.DiGraph) -> list[str]:
     """Soundness patch (ii), Decision affected-set-selection: AST pass over ast.Constant string
     literals matching _PATCH_STRING_RE, resolved to the LONGEST existing graph-node module
     prefix of each match.
@@ -198,14 +201,11 @@ def _patch_string_module_targets(py_file: Path, graph: nx.DiGraph) -> list[str]:
     shape to its owning module without requiring the caller to know which shape a given string
     is. A candidate that resolves to no known module (e.g. an unrelated dotted string that only
     coincidentally matches the pattern) contributes no edge.
+
+    `nodes` is the caller's single materialized walk of the file's AST (see _walk_file).
     """
-    try:
-        source = py_file.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(py_file))
-    except (OSError, SyntaxError):
-        return []
     targets: list[str] = []
-    for node in ast.walk(tree):
+    for node in nodes:
         if not (isinstance(node, ast.Constant) and isinstance(node.value, str)):
             continue
         value = node.value
@@ -218,6 +218,65 @@ def _patch_string_module_targets(py_file: Path, graph: nx.DiGraph) -> list[str]:
                 targets.append(candidate)
                 break
     return targets
+
+
+def _build_graph(root: Path, granularity: str) -> nx.DiGraph:
+    """Construct the graph for an already-resolved repo root (see build_graph for semantics)."""
+    graph: nx.DiGraph = nx.DiGraph()
+
+    py_files: list[tuple[Path, str]] = []
+    for search_dir in _SEARCH_DIRS:
+        sdir = root / search_dir
+        if not sdir.is_dir():
+            continue
+        for py_file in sorted(sdir.rglob("*.py")):
+            mod = _file_to_module(py_file, root)
+            if mod:
+                graph.add_node(mod, kind="module")
+                py_files.append((py_file, mod))
+
+    entry_points: set[str] = set()
+    for py_file, mod in py_files:
+        nodes = _walk_file(py_file)
+        if nodes is None:
+            continue
+        for imported_mod in _imports_for_file(py_file, root, nodes):
+            if imported_mod in graph and imported_mod != mod:
+                graph.add_edge(mod, imported_mod)
+        # Soundness patch (ii): union string-constant module edges (mock.patch targets etc.).
+        for target in _patch_string_module_targets(nodes, graph):
+            if target != mod:
+                graph.add_edge(mod, target)
+        is_first_party = mod.partition(".")[0] in _FIRST_PARTY_ROOTS
+        if is_first_party and py_file.name != "__init__.py" and _has_entry_point(nodes):
+            entry_points.add(mod)
+
+    for mod in _gather_roots(root, frozenset(entry_points)):
+        if mod in graph:
+            graph.nodes[mod]["is_root"] = True
+
+    if granularity == "symbol":
+        for py_file, mod in py_files:
+            _enrich_symbol_layer(graph, py_file, mod)
+
+    return graph
+
+
+@lru_cache(maxsize=8)
+def _memoized_graph(root_key: str, granularity: str) -> nx.DiGraph:
+    """Single-interpreter memo of _build_graph.
+
+    Decision 135's KG.13-boundary paragraph is the governing clause: the affected-set derivation
+    must stay LIVE and CACHELESS -- "explicitly NOT a selection cache and NOT a coverage cache".
+    This memo is process-local, dies with the interpreter, and touches no disk, so it does not
+    engage that boundary.
+    """
+    return _build_graph(Path(root_key), granularity)
+
+
+def clear_graph_cache() -> None:
+    """Drop the in-process memo. Call after mutating .py files inside a live interpreter."""
+    _memoized_graph.cache_clear()
 
 
 def build_graph(
@@ -237,40 +296,14 @@ def build_graph(
     package node itself -- previously __init__.py was skipped entirely, so
     `from scripts.checks.deps import X` (importing the PACKAGE) had no node to land on and the
     edge was dropped.
+
+    Each file is parsed exactly once and the AST is shared by the import, patch-string and
+    entry-point passes. Repeat calls within one interpreter are served from an in-process memo
+    keyed on (resolved repo root, granularity) and always hand back an independent copy, so a
+    caller mutating its graph cannot corrupt another's; see clear_graph_cache().
     """
     root = repo_root if repo_root is not None else _REPO_ROOT
-    graph: nx.DiGraph = nx.DiGraph()
-
-    py_files: list[tuple[Path, str]] = []
-    for search_dir in _SEARCH_DIRS:
-        sdir = root / search_dir
-        if not sdir.is_dir():
-            continue
-        for py_file in sorted(sdir.rglob("*.py")):
-            mod = _file_to_module(py_file, root)
-            if mod:
-                graph.add_node(mod, kind="module")
-                py_files.append((py_file, mod))
-
-    for py_file, mod in py_files:
-        for imported_mod in _imports_for_file(py_file, root):
-            if imported_mod in graph and imported_mod != mod:
-                graph.add_edge(mod, imported_mod)
-        # Soundness patch (ii): union string-constant module edges (mock.patch targets etc.).
-        for target in _patch_string_module_targets(py_file, graph):
-            if target != mod:
-                graph.add_edge(mod, target)
-
-    root_set = _gather_roots(root)
-    for mod in root_set:
-        if mod in graph:
-            graph.nodes[mod]["is_root"] = True
-
-    if granularity == "symbol":
-        for py_file, mod in py_files:
-            _enrich_symbol_layer(graph, py_file, mod)
-
-    return graph
+    return _memoized_graph(str(Path(root).resolve()), granularity).copy()
 
 
 def roots(graph: nx.DiGraph) -> frozenset[str]:

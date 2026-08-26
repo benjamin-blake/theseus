@@ -89,6 +89,12 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.ci_guards.validate_ops_portal_patch_targets",
         attr="validate_ops_portal_patch_targets",
         pre=True,
+        pre_globs=(
+            "tests/**",
+            "scripts/checks/ci_guards/**",
+            "scripts/ops_data_portal.py",
+            "scripts/ops_portal/**",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(

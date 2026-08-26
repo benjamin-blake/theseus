@@ -85,8 +85,15 @@ def _pre_glob_match(path: str, glob: str) -> bool:
 
     fnmatch's `*` already crosses path separators (unlike pathlib/glob.glob's non-recursive
     `*`), so a `**` segment (e.g. "docs/plans/**") matches any depth without special-casing.
+
+    A LEADING `**/` is the one case fnmatch gets wrong for this purpose: it translates to a
+    pattern requiring at least one `/`, so "**/*.py" missed repo-ROOT files like setup.py while
+    the checks gated on it (validate_cc_limits) scan the root. Retry with the leading `**/`
+    stripped so it also matches zero directories -- the recall-safe direction.
     """
-    return fnmatch.fnmatch(path, glob)
+    if fnmatch.fnmatch(path, glob):
+        return True
+    return glob.startswith("**/") and fnmatch.fnmatch(path, glob[3:])
 
 
 def _should_run_in_pre(pre_globs: tuple[str, ...] | None, changed_paths, derivation_ok: bool) -> bool:
@@ -314,7 +321,7 @@ def main() -> None:
             elapsed = time.monotonic() - _t0
             dominant_phase = max(phase_times, key=lambda phase: phase_times[phase]) if phase_times else None
             if args.ignore_budget:
-                _file_budget_bypass_rec(elapsed, diff_manifest, args.ignore_budget_reason)
+                _file_budget_bypass_rec(elapsed, diff_manifest, args.ignore_budget_reason, dominant_phase)
                 print(f"\nBudget assertion skipped (--ignore-budget). Elapsed: {elapsed / 60:.1f} min.")
             elif elapsed > _FAST_TIER_BUDGET_SECONDS:
                 # Decision 153: a root-conftest change deterministically forces full-suite scope
