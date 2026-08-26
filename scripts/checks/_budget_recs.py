@@ -140,7 +140,12 @@ def _file_budget_breach_rec(elapsed_s: float, diff_manifest: list[str], dominant
         )
 
 
-def _file_budget_bypass_rec(elapsed_s: float | None, diff_manifest: list[str], reason: str | None) -> None:
+def _file_budget_bypass_rec(
+    elapsed_s: float | None,
+    diff_manifest: list[str],
+    reason: str | None,
+    dominant_phase: str | None = None,
+) -> None:
     manifest_summary = ", ".join(diff_manifest[:20]) + ("..." if len(diff_manifest) > 20 else "")
     elapsed_part = f"{elapsed_s / 60:.1f} min" if elapsed_s is not None else "unknown"
 
@@ -151,7 +156,8 @@ def _file_budget_bypass_rec(elapsed_s: float | None, diff_manifest: list[str], r
         # silent skip, never a buffered outbox -- Decision 84 I-4).
         print(
             f"WARNING: fast-tier budget bypass rec NOT filed (CI environment, no portal access): "
-            f"Elapsed: {elapsed_part}. Reason: {reason or 'none provided'}. "
+            f"Elapsed: {elapsed_part}. Dominant phase: {dominant_phase or 'unknown'}. "
+            f"Reason: {reason or 'none provided'}. "
             f"Diff manifest ({len(diff_manifest)} files): {manifest_summary}.",
             file=sys.stderr,
         )
@@ -166,7 +172,8 @@ def _file_budget_bypass_rec(elapsed_s: float | None, diff_manifest: list[str], r
         branch = branch_r.stdout.strip() or "unknown"
         context = (
             f"Fast-tier budget assertion bypassed via --ignore-budget on branch {branch}. "
-            f"Elapsed: {elapsed_part}. Reason: {reason or 'none provided'}. "
+            f"Elapsed: {elapsed_part}. Dominant phase: {dominant_phase or 'unknown'}. "
+            f"Reason: {reason or 'none provided'}. "
             f"Diff manifest ({len(diff_manifest)} files): {manifest_summary}. "
             f"Repeated bypass (>= 3 in 7 days) triggers a soft alert in session_preflight."
         )

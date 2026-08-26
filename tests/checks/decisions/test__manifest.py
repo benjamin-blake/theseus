@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from fnmatch import fnmatch
 
 import pytest
 
@@ -69,4 +70,91 @@ class TestRequiredEntryMembership:
 
     def test_live_entry_immutability_pre_globs_cover_both_corpus_files(self) -> None:
         entry = next(e for e in _manifest.ENTRIES if e.name == "validate_live_entry_immutability")
-        assert set(entry.pre_globs) == {"docs/DECISIONS.md", "docs/DECISIONS_ARCHIVE.md"}
+        assert {"docs/DECISIONS.md", "docs/DECISIONS_ARCHIVE.md"} <= set(entry.pre_globs)
+
+
+class TestGatedEntryInputClosures:
+    """A gated check's pre_globs must cover EVERY path its implementation reads, not just its
+    headline corpus. Under-inclusion is a recall bug: a diff that touches an uncovered input
+    silently skips the check in --pre and only reddens post-merge."""
+
+    @staticmethod
+    def _globs(name: str) -> set[str]:
+        return set(next(e for e in _manifest.ENTRIES if e.name == name).pre_globs or ())
+
+    def test_decision_entry_conformance_covers_its_contract_and_grammar_sources(self) -> None:
+        """It parses docs/contracts/decision-entry.yaml for required_markers and the significance
+        vocabulary, and imports scripts.decisions_md plus this package's _baseline helper."""
+        assert {
+            "docs/DECISIONS.md",
+            "docs/DECISIONS_ARCHIVE.md",
+            "docs/contracts/decision-entry.yaml",
+            "scripts/decisions_md.py",
+            "scripts/checks/decisions/**",
+        } <= self._globs("validate_decision_entry_conformance")
+
+    def test_live_entry_immutability_covers_its_grammar_sources(self) -> None:
+        """It imports the fence regexes from scripts.preflight.decision_conditions and the section
+        walker from scripts.decisions_md -- either edit changes what the lock enforces."""
+        assert {
+            "scripts/decisions_md.py",
+            "scripts/preflight/decision_conditions.py",
+            "scripts/checks/decisions/**",
+        } <= self._globs("validate_live_entry_immutability")
+
+
+# One row per gated Entry: repo-relative paths in that check's transitive first-party import
+# closure (module-scope AND the deferred imports its body always executes).
+_CLOSURE_INPUTS: dict[str, tuple[str, ...]] = {
+    "validate_decision_entry_conformance": (
+        "docs/contracts/decision-entry.yaml",
+        "scripts/decisions_md.py",
+        "scripts/checks/decisions/_baseline.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+    ),
+    "validate_live_entry_immutability": (
+        "scripts/decisions_md.py",
+        "scripts/preflight/decision_conditions.py",
+        "scripts/checks/decisions/_baseline.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+    ),
+    "validate_decision_currency": (
+        "docs/decisions-index.json",
+        "scripts/decisions_md.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+    ),
+}
+
+
+class TestClosureMembersAreCovered:
+    """Each closure member is asserted MATCHED by the entry's patterns, not present in them as a
+    literal -- so rewriting a glob (or moving an input behind a wider one) keeps the row green
+    while a member falling out of coverage reddens it.
+
+    Bare fnmatch, not scripts.validate._pre_glob_match: an import edge from tests/checks/** into
+    the driver widens the affected-test graph pinned by tests/checks/registry/
+    test_manifest_contracts.py. The substitution is sound in the safe direction -- the production
+    matcher is fnmatch PLUS a leading-'**/' retry that can only ADD matches, so anything green
+    here is green there too.
+    """
+
+    @staticmethod
+    def _covered(name: str, path: str) -> bool:
+        globs = next(e for e in _manifest.ENTRIES if e.name == name).pre_globs or ()
+        return any(fnmatch(path, glob) for glob in globs)
+
+    @pytest.mark.parametrize(
+        ("name", "path"),
+        [(name, path) for name, paths in _CLOSURE_INPUTS.items() for path in paths],
+        ids=[f"{name}-{path}" for name, paths in _CLOSURE_INPUTS.items() for path in paths],
+    )
+    def test_a_diff_touching_only_this_closure_member_still_matches_the_gate(self, name: str, path: str) -> None:
+        assert self._covered(name, path)
+
+    @pytest.mark.parametrize("name", sorted(_CLOSURE_INPUTS))
+    def test_an_unrelated_path_is_not_matched(self, name: str) -> None:
+        """Anti-vacuity: the rows above would also pass against a catch-all pattern."""
+        assert not self._covered(name, "README.md")

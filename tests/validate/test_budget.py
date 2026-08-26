@@ -345,6 +345,37 @@ class TestIgnoreBudgetFlag:
         reason_arg = mock_bypass.call_args[0][2]
         assert reason_arg is None
 
+    def test_bypass_rec_receives_a_real_dominant_phase(self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub) -> None:
+        """I4: the dominant phase threaded to _file_budget_bypass_rec must correctly identify
+        WHICH step dominated the elapsed wall-clock, mirroring the breach-rec attribution test
+        above -- bypass recs previously omitted dominant_phase entirely."""
+        monkeypatch.setattr(sys, "argv", ["validate", "--pre", "--ignore-budget"])
+        monkeypatch.setenv("_VALIDATE_DEPTH", "0")
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        monkeypatch.delenv("CI", raising=False)
+
+        clock = {"t": 0.0}
+
+        def fake_monotonic() -> float:
+            return clock["t"]
+
+        def slow_pytest_diff(changed_tests: list[str], failed: list[str]) -> None:
+            clock["t"] += 1000.0  # dwarfs every other (near-zero) step's duration
+
+        with (
+            patch("scripts.checks._common.get_changed_files", return_value=[]),
+            patch("scripts.checks._common.run", side_effect=_pre_mock_run),
+            patch.object(registry, "pre_sequence", return_value=pre_sequence_stub(checks=())),
+            patch("validate._file_budget_bypass_rec") as mock_bypass,
+            patch("validate.run_pytest_diff", side_effect=slow_pytest_diff),
+            patch("time.monotonic", side_effect=fake_monotonic),
+            pytest.raises(SystemExit),
+        ):
+            _validate.main()
+
+        dominant_phase_arg = mock_bypass.call_args[0][3]
+        assert dominant_phase_arg == "pytest_diff"
+
     def test_bypass_skips_budget_assertion(self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub) -> None:
         """Breach rec is NOT filed when --ignore-budget is set, even if elapsed > 300."""
         monkeypatch.setattr(sys, "argv", ["validate", "--pre", "--ignore-budget"])

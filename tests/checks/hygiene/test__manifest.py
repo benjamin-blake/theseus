@@ -68,3 +68,17 @@ class TestValidateVacuityJustifiedDispatched:
         full_names = {step.name for step in registry.full_sequence() if step.kind == "check"}
         assert "validate_vacuity_justified" in full_names
         assert "validate_vacuity_justified" not in pre_names
+
+
+class TestGatedEntryInputClosures:
+    """A gated check's pre_globs must cover EVERY path its implementation reads. Under-inclusion
+    is a recall bug: a diff that touches an uncovered input silently skips the check in --pre."""
+
+    @staticmethod
+    def _globs(name: str) -> set[str]:
+        return set(next(e for e in _manifest.ENTRIES if e.name == name).pre_globs or ())
+
+    def test_test_count_coupling_covers_its_own_curated_roster(self) -> None:
+        """_CURATED_TOKENS lives in the check's own module: adding a token retroactively makes
+        existing `assert len(X) == N` sites violations, with no tests/** file in the diff."""
+        assert {"tests/**", "scripts/checks/hygiene/**"} <= self._globs("validate_test_count_coupling")

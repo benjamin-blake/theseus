@@ -36,3 +36,23 @@ class TestCiGuardsManifest:
     def test_registry_resolve_matches_the_manifest_entry(self, entry) -> None:
         module = importlib.import_module(entry.module)
         assert registry.resolve(entry.name) is getattr(module, entry.attr)
+
+
+class TestGatedEntryInputClosures:
+    """A gated check's pre_globs must cover EVERY path its implementation reads. Under-inclusion
+    is a recall bug: a diff that touches an uncovered input silently skips the check in --pre."""
+
+    @staticmethod
+    def _globs(name: str) -> set[str]:
+        return set(next(e for e in _manifest.ENTRIES if e.name == name).pre_globs or ())
+
+    def test_ops_portal_patch_targets_is_gated_on_its_full_closure(self) -> None:
+        """It AST-scans tests/**/*.py against the _MOVED_CALLERS roster hardcoded in its own
+        module; the facade/submodule namespaces that roster names are covered too, so a caller
+        move plus roster edit can never land unscanned."""
+        assert {
+            "tests/**",
+            "scripts/checks/ci_guards/**",
+            "scripts/ops_data_portal.py",
+            "scripts/ops_portal/**",
+        } <= self._globs("validate_ops_portal_patch_targets")

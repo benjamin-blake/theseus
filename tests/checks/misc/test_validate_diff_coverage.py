@@ -13,7 +13,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.checks import registry
+from scripts.checks import _pytest_diff, registry
 from scripts.checks.misc import validate_diff_coverage as vdc
 
 
@@ -103,6 +103,25 @@ class TestDerivedDeferredClasses:
         assert reason == vdc.REASON_UNMAPPED
 
 
+class TestFileAbsentFromTheCoverageArtifact:
+    """A changed file inside a measured run's traced scope that no selected test ever imports gets
+    NO coverage entry -- coverage.py backfills statements only from `source`, which the generated
+    scope config suppresses. Blanket --cov=src --cov=scripts reported every one of its lines
+    missing; that loud all-lines-UNCOVERED signal must survive, not vanish from the report."""
+
+    def test_absent_entry_classifies_every_added_line_uncovered(self) -> None:
+        status, reason = vdc.classify_file(
+            "scripts/never_imported.py",
+            {10, 11},
+            coverage_files={"scripts/other.py": {"executed_lines": [1], "missing_lines": []}},
+            covering_tests=frozenset({"tests/test_never_imported.py"}),
+            selected={"tests/test_never_imported.py"},
+            heavy_dep_deferred=set(),
+        )
+        assert status == {10: vdc.UNCOVERED, 11: vdc.UNCOVERED}
+        assert reason is None
+
+
 class TestExpandCoveringTests:
     """A concern-split source resolves to a test PACKAGE DIRECTORY, not a single file (real
     example: scripts/checks/_pytest_diff.py -> tests/validate -- see that module's docstring on
@@ -188,19 +207,26 @@ class TestAbsentSelectionManifestSkip:
 
 
 class TestNoUsableArtifactSkip:
-    def test_no_artifact_state_declares_skipped(self, tmp_path: Path) -> None:
-        (tmp_path / "logs" / "debug").mkdir(parents=True)
-        (tmp_path / "logs" / "debug" / "selection-manifest.json").write_text('{"selected": []}', encoding="utf-8")
-        (tmp_path / "logs" / "debug" / "diff-coverage-deferrals.json").write_text(
-            '{"state": "all_deferred", "deferred": {}}', encoding="utf-8"
-        )
-        registry.pop_declaration()
-        failed: list[str] = []
-        vdc.validate_diff_coverage(failed, root=tmp_path, base="origin/main", map_source_to_test=lambda p: None)
-        declaration = registry.pop_declaration()
-        assert declaration is not None
-        assert declaration.kind == "skipped"
-        assert failed == []
+    def test_every_declared_no_artifact_state_skips_including_the_traced_no_data_one(self, tmp_path: Path) -> None:
+        """Driven off NO_ARTIFACT_STATES itself, so a state added there is a skip here by
+        construction -- notably `traced_no_artifact`, the include-scoped run that measured nothing
+        and would otherwise reach this check as an empty file map and print a vacuous green."""
+        debug = tmp_path / "logs" / "debug"
+        debug.mkdir(parents=True)
+        (debug / "selection-manifest.json").write_text('{"selected": []}', encoding="utf-8")
+        assert _pytest_diff.STATE_TRACED_NO_ARTIFACT in _pytest_diff.NO_ARTIFACT_STATES
+        for state in sorted(_pytest_diff.NO_ARTIFACT_STATES):
+            (debug / "diff-coverage-deferrals.json").write_text(json.dumps({"state": state}), encoding="utf-8")
+            registry.pop_declaration()
+            failed: list[str] = []
+            with patch(
+                "scripts.checks.misc.validate_diff_coverage.added_line_numbers_by_file",
+                return_value={"src/foo.py": {1}},
+            ):
+                vdc.validate_diff_coverage(failed, root=tmp_path, base="origin/main", map_source_to_test=lambda p: None)
+            declaration = registry.pop_declaration()
+            assert declaration is not None and declaration.kind == "skipped", state
+            assert failed == []
 
 
 class TestNeverAppendsToFailed:
@@ -518,6 +544,22 @@ class TestCurrentDiffReportIntegration:
             vdc.validate_diff_coverage([], root=tmp_path, base="origin/main", map_source_to_test=lambda p: None)
         out = capsys.readouterr().out
         assert "FINDING: DEFERRED ratio exceeds 50%" in out
+
+    def test_file_absent_from_the_artifact_reaches_the_report_as_uncovered(self, tmp_path: Path, capsys) -> None:
+        """The traced-but-never-imported file end to end: its added lines must be counted and
+        listed, not silently dropped from the report's own denominator."""
+        self._write_state(tmp_path, selected=["tests/test_foo.py"], coverage_files={})
+        test_foo = tmp_path / "tests" / "test_foo.py"
+        test_foo.parent.mkdir(parents=True)
+        test_foo.write_text("", encoding="utf-8")
+        with patch(
+            "scripts.checks.misc.validate_diff_coverage.added_line_numbers_by_file",
+            return_value={"src/foo.py": {4}},
+        ):
+            vdc.validate_diff_coverage([], root=tmp_path, base="origin/main", map_source_to_test=lambda p: test_foo)
+        out = capsys.readouterr().out
+        assert "COVERED=0 UNCOVERED=1 DEFERRED=0" in out
+        assert "src/foo.py:4" in out
 
     def test_zero_added_lines_is_vacuous(self, tmp_path: Path) -> None:
         self._write_state(tmp_path, selected=[], coverage_files={})
