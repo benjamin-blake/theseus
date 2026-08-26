@@ -18,7 +18,7 @@
 # terraform/personal apply for this change therefore routes to the MANUAL agent_platform_admin path,
 # NOT push-to-main auto-apply.
 #
-# CODE/INFRA DECOUPLING (Decision 125, environment-taxonomy.md section 5): every aws_lambda_function
+# CODE/INFRA DECOUPLING (Decision 125, environment-taxonomy.yaml conformance): every aws_lambda_function
 # below carries a lifecycle block ignoring source_code_hash changes FROM DAY ONE -- unlike the
 # DuckLake class (which coupled first and decoupled later at #544), this class is decoupled from its
 # very first apply. Code deploys go via the governed .github/workflows/deploy-prod-lambdas.yml channel
@@ -52,9 +52,11 @@ locals {
 
 # ---------------------------------------------------------------------------
 # GitHub PAT secret (dispatcher / findings-processor GitHub Models API auth). Value set out-of-band
-# via put-secret-value -- never Terraform-managed (Decision 37 out-of-band precedent, mirrors
-# inference_credentials.tf / secrets_manager_brokers.tf). No secret-version resource: key material
-# must never enter Terraform state.
+# via put-secret-value -- never Terraform-managed
+# (docs/contracts/secret-material-handling.yaml SECRET-VALUE-OUT-OF-BAND pattern, Decision 175 --
+# rehomed from the Decision 37 precedent; mirrors inference_credentials.tf /
+# secrets_manager_brokers.tf). No secret-version resource: key material must never enter
+# Terraform state.
 # ---------------------------------------------------------------------------
 
 resource "aws_secretsmanager_secret" "github_pat" {

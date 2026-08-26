@@ -40,21 +40,16 @@ def extract_definitions(file_path: Path) -> list[str]:
     return names
 
 
-# scripts/checks/registry.py and _common.py are the check-registry mechanism itself
-# (Decision 104); they're exercised directly by tests/test_checks_registry.py (frozen
-# baseline, facade completeness, mock-interception, owner metadata), not by any
-# individual check's tests in tests/test_validate.py.
-_CHECKS_REGISTRY_MECHANISM_FILES = {"_common.py", "registry.py"}
-
-# scripts/checks/_scaffolding.py and _terraform.py are orchestration-internal helper modules --
-# not themselves registered checks -- whose tests have always lived alongside the orchestrator's
-# own tests (never with the per-check mirrors). Once "test_validate.py" retires from
-# _RETIRING_GRANDFATHER_HOMES (rec-2709 Wave 1), they route to the SAME tests/validate/
-# concern-split package scripts/validate.py itself resolves to (see the
-# "scripts/validate.py" entry in _CONCERN_SPLIT_TEST_PACKAGES below), rather than falling
-# through to the generic drop-root mirror rule (which would otherwise compute
+# scripts/checks/_scaffolding.py, _terraform.py, and _pytest_diff.py (Decision 170: extracted
+# from _scaffolding.py under Decision 128 decompose-by-default, same orchestration-internal
+# concern) are orchestration-internal helper modules -- not themselves registered checks --
+# whose tests have always lived alongside the orchestrator's own tests (never with the per-check
+# mirrors). Once "test_validate.py" retires from _RETIRING_GRANDFATHER_HOMES (rec-2709 Wave 1),
+# they route to the SAME tests/validate/ concern-split package scripts/validate.py itself
+# resolves to (see the "scripts/validate.py" entry in _CONCERN_SPLIT_TEST_PACKAGES below), rather
+# than falling through to the generic drop-root mirror rule (which would otherwise compute
 # tests/checks/test__scaffolding.py -- wrong; their real home is the orchestrator package).
-_ORCHESTRATION_SCAFFOLDING_FILES = {"_scaffolding.py", "_terraform.py"}
+_ORCHESTRATION_SCAFFOLDING_FILES = {"_scaffolding.py", "_terraform.py", "_pytest_diff.py"}
 
 # The four ducklake_runtime split-out modules (PLAN-sloc-ducklake-layer) route to the
 # pre-decomposition monolith's test file, mirroring the Decision 104 scripts/checks/** precedent:
@@ -96,8 +91,12 @@ def _grandfathered_source_to_test(source_path: Path) -> Path | None:
     src/**/*.py           -> tests/test_{module}.py  (e.g. src/common/config.py -> tests/test_config.py)
     scripts/*.py          -> tests/test_{name}.py     (e.g. scripts/validate.py -> tests/test_validate.py)
     scripts/checks/**/*.py -> tests/test_validate.py  (every extracted check's tests live there,
-                              colocated with the pre-decomposition monolith's test file -- Decision 104),
-                              except registry.py/_common.py which map to tests/test_checks_registry.py.
+                              colocated with the pre-decomposition monolith's test file -- Decision 104).
+                              registry.py/_common.py are CONCERN-SPLIT (_CONCERN_SPLIT_TEST_PACKAGES
+                              below) and resolve to their own test package directories instead
+                              (Decision 169, folding the former dec-159 mechanism-files special
+                              case into the concern-split set now that the pre-decomposition
+                              monolith's test file no longer exists).
     scripts/convergence_health/*.py -> tests/test_convergence_health.py (facade decomposition of
                               the former single-file convergence_health monolith, same Decision 104
                               colocation precedent -- PLAN-convergence-health-sloc-decompose-guardrails).
@@ -142,8 +141,6 @@ def _grandfathered_source_to_test(source_path: Path) -> Path | None:
         stem = rel.stem
         return ROOT / "tests" / f"test_{stem}.py"
     elif parts[0] == "scripts" and len(parts) >= 2 and parts[1] == "checks":
-        if len(parts) >= 3 and parts[2] in _CHECKS_REGISTRY_MECHANISM_FILES:
-            return ROOT / "tests" / "test_checks_registry.py"
         return ROOT / "tests" / "test_validate.py"
     elif parts[0] == "scripts" and len(parts) == 3 and parts[1] == "convergence_health":
         return ROOT / "tests" / "test_convergence_health.py"
@@ -211,6 +208,8 @@ _RETIRING_GRANDFATHER_HOMES: set[str] = set()
 # map_source_to_test's direct membership check, which fires before the final `return home`).
 _CONCERN_SPLIT_TEST_PACKAGES: frozenset[str] = frozenset(
     {
+        "scripts/checks/registry.py",
+        "scripts/checks/_common.py",
         "scripts/ops_writer.py",
         "scripts/ops_data_portal.py",
         "scripts/s3_log_store.py",
@@ -234,6 +233,12 @@ _CONCERN_SPLIT_TEST_PACKAGES: frozenset[str] = frozenset(
         "scripts/test_coverage_checker.py",
         "scripts/sync/recommendations.py",
         "scripts/ci_rca/taxonomy.py",
+        "scripts/decisions_md.py",
+        "scripts/checks/contracts/validate_contract_drift.py",
+        "scripts/roadmap/plan_document.py",
+        "scripts/convergence_health/code_drift.py",
+        "scripts/verification_graduation.py",
+        "scripts/checks/verification/validate_graduation_completeness.py",
     }
 )
 
@@ -309,11 +314,11 @@ def map_source_to_test(source_path: Path) -> Path | None:
     (and scripts/validate.py itself) now resolves via the mirror rule instead of colocating in
     the now-deleted tests/test_validate.py.
 
-    scripts/checks/_scaffolding.py and _terraform.py are a special case within the retired
-    "test_validate.py" home: they are orchestration-internal helpers, not registered checks, so
-    once "test_validate.py" retires they route to the SAME tests/validate/ concern-split package
-    scripts/validate.py resolves to (not the generic per-file mirror target) -- see
-    _ORCHESTRATION_SCAFFOLDING_FILES.
+    scripts/checks/_scaffolding.py, _terraform.py, and _pytest_diff.py are a special case within
+    the retired "test_validate.py" home: they are orchestration-internal helpers, not registered
+    checks, so once "test_validate.py" retires they route to the SAME tests/validate/
+    concern-split package scripts/validate.py resolves to (not the generic per-file mirror
+    target) -- see _ORCHESTRATION_SCAFFOLDING_FILES.
 
     3. DIRECT CONCERN-SPLIT (independent of retirement): a source path listed in
        _CONCERN_SPLIT_TEST_PACKAGES resolves to its test PACKAGE DIRECTORY even if its

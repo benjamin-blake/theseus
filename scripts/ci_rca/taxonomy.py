@@ -36,7 +36,7 @@ def load_taxonomy(path: Path | None = None) -> dict:
         raise ValueError(f"Malformed taxonomy YAML at {p}: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"Taxonomy at {p} must be a mapping, got {type(data).__name__}")
-    required = {"function_to_category", "log_pattern_to_category", "workflow_to_tier"}
+    required = {"function_to_category", "log_pattern_to_category", "workflows"}
     missing = required - data.keys()
     if missing:
         raise ValueError(f"Taxonomy missing required keys: {sorted(missing)}")
@@ -119,6 +119,32 @@ def _load_attributions(validation_result_path: Path | None) -> list[tuple[str, s
         if isinstance(entry, dict) and isinstance(entry.get("check"), str) and isinstance(entry.get("label"), str):
             pairs.append((entry["check"], entry["label"]))
     return pairs
+
+
+def _load_check_details(validation_result_path: Path | None) -> dict[str, list[str]]:
+    """Best-effort load of the top-level failed_check_details map (schema_version 3,
+    scripts.checks.validation_result, this plan's coverage-failure-attribution channel) --
+    {check: [detail, ...]}. Never raises -- a missing, malformed, or absent artifact (or one
+    predating this field) degrades to an empty dict, which simply means no check declared detail
+    this run; mirrors _load_attributions' degrade-gracefully contract. classify_failures' own
+    return-tuple width is untouched -- detail travels on this separate channel, consumed only by
+    scripts.ci_rca.evidence's _resolve_error_signatures."""
+    if validation_result_path is None:
+        return {}
+    try:
+        data = json.loads(Path(validation_result_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    raw = data.get("failed_check_details")
+    if not isinstance(raw, dict):
+        return {}
+    result: dict[str, list[str]] = {}
+    for check, detail in raw.items():
+        if isinstance(check, str) and isinstance(detail, list) and all(isinstance(item, str) for item in detail):
+            result[check] = list(detail)
+    return result
 
 
 def _classify_via_attribution(validation_result_path: Path | None, func_map: dict[str, str]) -> list[tuple[str, str, str]]:
@@ -316,11 +342,12 @@ def classify_failures(
 def resolve_workflow_tier(workflow_name: str, path: Path | None = None) -> str:
     """Map a workflow name to its tier string. Returns 'unknown' for misses and 'not_a_gate' sentinels."""
     taxonomy = _cached_taxonomy(path)
-    tier_map: dict[str, str] = taxonomy.get("workflow_to_tier") or {}
-    tier = tier_map.get(workflow_name)
-    if tier is None:
-        logger.warning("workflow_to_tier miss: %r not in taxonomy", workflow_name)
+    workflows_map: dict[str, dict] = taxonomy.get("workflows") or {}
+    entry = workflows_map.get(workflow_name)
+    if entry is None:
+        logger.warning("workflows miss: %r not in taxonomy", workflow_name)
         return "unknown"
+    tier = entry["tier"]
     if tier == "not_a_gate":
         return "unknown"
     return tier

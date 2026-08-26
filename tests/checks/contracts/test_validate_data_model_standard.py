@@ -3,14 +3,13 @@
 Covers: a merge_key-bearing storage-substrate entry missing grain fails, a complete entry
 passes, a group entry without merge_key is skipped (no false positive), a missing/malformed
 data-modeling-standard.yaml fails, the diff gate skips when neither trigger file changed, and
-the check is wired into both presubmit tiers + the scripts.validate facade (VP step 2, -k
-wiring). Follows the tmp_path + contracts_dir/changed_files override pattern used by
+the check is wired into both presubmit tiers + resolves via scripts.checks.registry (Decision
+169, -k wiring). Follows the tmp_path + contracts_dir/changed_files override pattern used by
 test_validate_intent_doc_freeze.py / test_validate_contract_drift.py.
 """
 
 from __future__ import annotations
 
-import importlib
 from pathlib import Path
 
 import yaml
@@ -102,9 +101,14 @@ class TestStandardContractGate:
 
         assert any("not a YAML mapping" in f for f in failed)
 
-    def test_contract_bearing_key_fails(self, tmp_path: Path) -> None:
+    def test_contract_bearing_key_now_passes(self, tmp_path: Path) -> None:
+        # INVERTED (migration-step-3-grandfathering): data-modeling-standard.yaml now legitimately
+        # carries a Class D `contract:` envelope (its own evaluator is
+        # {check: validate_data_model_standard} -- this check self-hosts). The pre-migration
+        # rejection ("must stay non-ritual so the CD.25 drift gate keeps skipping it") is gone;
+        # this check now only enforces the required sections, regardless of contract: presence.
         data = dict(_COMPLETE_STANDARD)
-        data["contract"] = {"class": "A"}
+        data["contract"] = {"id": "data-modeling-standard", "class": "D", "contract_version": 1, "status": "active"}
         _write_yaml(tmp_path / "data-modeling-standard.yaml", data)
 
         failed: list[str] = []
@@ -112,7 +116,7 @@ class TestStandardContractGate:
             failed, contracts_dir=tmp_path, changed_files=["docs/contracts/data-modeling-standard.yaml"]
         )
 
-        assert any("contract:/class:" in f for f in failed)
+        assert failed == [], failed
 
     def test_missing_section_fails(self, tmp_path: Path) -> None:
         _write_yaml(tmp_path / "data-modeling-standard.yaml", {"version": 1, "rules": []})
@@ -181,8 +185,8 @@ class TestWiring:
         assert "validate_data_model_standard" in pre_names
         assert "validate_data_model_standard" in full_names
 
-    def test_wiring_resolves_on_validate_facade(self) -> None:
-        mod = importlib.import_module("scripts.validate")
+    def test_wiring_resolves_via_the_registry(self) -> None:
+        resolved = registry.resolve("validate_data_model_standard")
 
-        assert hasattr(mod, "validate_data_model_standard")
-        assert callable(mod.validate_data_model_standard)
+        assert callable(resolved)
+        assert resolved is validate_data_model_standard

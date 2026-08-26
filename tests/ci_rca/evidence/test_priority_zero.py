@@ -20,7 +20,7 @@ _ATTRIBUTION_TAXONOMY = {
         "Validate full tier (ruff, mypy, pytest, DQ runner, verifier harness)": "code_regression",
     },
     "log_pattern_to_category": [],
-    "workflow_to_tier": {"CI": "CI"},
+    "workflows": {"CI": {"tier": "CI", "ci_rca": "watched", "owner": "platform", "rationale": "test fixture"}},
 }
 
 
@@ -88,6 +88,78 @@ class TestPriorityZeroAndRefusalIntegration:
         assert len(bundles) == 1
         assert bundles[0]["failed_check"] == "validate_test_coverage"
         assert bundles[0]["failure_category"] == "code_regression"
+
+    def _validation_result_file_with_details(self, tmp_path, attributions, details, name="validation-result.json"):
+        p = tmp_path / name
+        p.write_text(
+            json.dumps(
+                {
+                    "schema_version": 3,
+                    "exit_code": 1,
+                    "failed_checks": [a["label"] for a in attributions],
+                    "failed_check_attributions": attributions,
+                    "failed_check_details": details,
+                }
+            )
+        )
+        return p
+
+    def test_coverage_detail_fingerprints_differ_by_file(self, tmp_path):
+        """rec-3212's own misattribution class (this plan's root cause): two
+        validate_test_coverage failures naming DIFFERENT files must fingerprint DIFFERENTLY once
+        the check declares failure_detail -- and a detail-free failure keeps today's log-tail
+        signature byte-identically unchanged."""
+        log_path = tmp_path / "log.txt"
+        log_path.write_text("irrelevant log\n")
+        taxonomy_path = self._taxonomy_file(tmp_path)
+
+        vr_a = self._validation_result_file_with_details(
+            tmp_path,
+            [{"check": "validate_test_coverage", "label": "Coverage below 100%"}],
+            {"validate_test_coverage": ["scripts/checks/hygiene/validate_vacuity_justified.py: 95.8% (expected 100%)"]},
+            name="vr_a.json",
+        )
+        vr_b = self._validation_result_file_with_details(
+            tmp_path,
+            [{"check": "validate_test_coverage", "label": "Coverage below 100%"}],
+            {"validate_test_coverage": ["scripts/ci_rca/taxonomy.py: 95.8% (expected 100%)"]},
+            name="vr_b.json",
+        )
+        with patch("scripts.ci_rca.tier_map.probe_runtime", return_value=("median=50ms", 0.05)):
+            with patch("scripts.ci_rca.tier_map.build_tier_membership", return_value={}):
+                bundles_a = generate_bundles(
+                    log_file=log_path,
+                    workflow_name="CI",
+                    workflow_run_id=1,
+                    taxonomy_path=taxonomy_path,
+                    validation_result_path=vr_a,
+                )
+                bundles_b = generate_bundles(
+                    log_file=log_path,
+                    workflow_name="CI",
+                    workflow_run_id=2,
+                    taxonomy_path=taxonomy_path,
+                    validation_result_path=vr_b,
+                )
+        assert bundles_a[0]["error_signature"] != bundles_b[0]["error_signature"]
+        assert bundles_a[0]["fingerprint"] != bundles_b[0]["fingerprint"]
+
+        # Detail-free failure (schema v2, no failed_check_details key at all) keeps today's
+        # log-tail signature byte-identically unchanged.
+        from scripts.ci_rca.fingerprint import error_signature_from_log_tail
+
+        vr_none = self._validation_result_file(tmp_path, [{"check": "validate_test_coverage", "label": "Coverage below 100%"}])
+        with patch("scripts.ci_rca.tier_map.probe_runtime", return_value=("median=50ms", 0.05)):
+            with patch("scripts.ci_rca.tier_map.build_tier_membership", return_value={}):
+                bundles_none = generate_bundles(
+                    log_file=log_path,
+                    workflow_name="CI",
+                    workflow_run_id=3,
+                    taxonomy_path=taxonomy_path,
+                    validation_result_path=vr_none,
+                )
+        expected_log_tail_sig = error_signature_from_log_tail(log_path.read_text(), tool="validate_test_coverage")
+        assert bundles_none[0]["error_signature"] == expected_log_tail_sig
 
     def test_n_attributions_enumerate_to_n_bundles(self, tmp_path):
         log_path = tmp_path / "log.txt"

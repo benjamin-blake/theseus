@@ -54,7 +54,9 @@ class TestRunPytestDiffReactiveDefer:
             result = MagicMock()
             result.stdout = ""
             result.stderr = ""
-            if "--collect-only" in cmd:
+            if "pytest" not in cmd:
+                result.returncode = 0  # git probe for the diff-coverage tracing scope
+            elif "--collect-only" in cmd:
                 result.returncode = 0
             else:
                 real_run_calls["n"] += 1
@@ -217,7 +219,7 @@ class TestPytestDiffParallelAndTimeout:
         with patch("scripts.checks._common.run", side_effect=mock_run):
             run_pytest_diff(["tests/test_a.py"], failed)
 
-        real_run_cmds = [c for c in captured_cmds if "--collect-only" not in c]
+        real_run_cmds = [c for c in captured_cmds if "pytest" in c and "--collect-only" not in c]
         assert len(real_run_cmds) == 1
         cmd = real_run_cmds[0]
         assert "-n" in cmd
@@ -235,7 +237,7 @@ class TestPytestDiffParallelAndTimeout:
             if "--collect-only" in cmd:
                 result.returncode = 0
                 result.stdout = ""
-            elif len([c for c in captured_cmds if "--collect-only" not in c]) == 1:
+            elif len([c for c in captured_cmds if "pytest" in c and "--collect-only" not in c]) == 1:
                 # the initial (non--collect-only) combined run: fail with a
                 # deliberately-excluded, genuinely-absent heavy-dep signature so the
                 # reactive re-run path fires
@@ -253,7 +255,7 @@ class TestPytestDiffParallelAndTimeout:
         ):
             run_pytest_diff(["tests/test_ops_writer.py"], failed)
 
-        real_run_cmds = [c for c in captured_cmds if "--collect-only" not in c]
+        real_run_cmds = [c for c in captured_cmds if "pytest" in c and "--collect-only" not in c]
         assert len(real_run_cmds) >= 2, f"expected at least primary + reactive rerun, got: {captured_cmds}"
         rerun_cmd = real_run_cmds[-1]
         assert "-n" in rerun_cmd
@@ -354,7 +356,10 @@ class TestReactiveProbeNarrowing:
         def mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
             result = MagicMock()
             result.stderr = ""
-            if "--collect-only" in cmd:
+            if "pytest" not in cmd:
+                result.returncode = 0  # git probe for the diff-coverage tracing scope
+                result.stdout = ""
+            elif "--collect-only" in cmd:
                 result.returncode = 0
                 result.stdout = ""
             elif "-q" in cmd:

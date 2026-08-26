@@ -17,11 +17,14 @@ would be exactly the kind of after-the-fact assertion ESB-02 exists to remove. A
 UNCOMMITTED plan surfaces as git status "??", not "A", and is therefore NOT in scope until
 committed.
 
-PHASE-LEG INSTANTIABILITY: a closes_criteria-only trigger is UNINSTANTIABLE today -- T4.1,
-T4.2 and T4.4 exit_criteria are bare strings (only T4.3 and T4.12 are ledger dicts), so
-validate_platform_roadmap check (iii) cannot resolve a `"T4.2:c1"`-shaped ref against them, and
-two live guards pin those criteria bare. The phase leg is therefore what makes this carrier
-reachable at all until a T4.x plan converts to ledger form.
+PHASE-LEG INSTANTIABILITY: a closes_criteria-only trigger is UNINSTANTIABLE for T4.1 and T4.4
+today -- their exit_criteria are bare strings (13 and 6 criteria respectively), so
+validate_platform_roadmap check (iii) cannot resolve a `"T4.1:c1"`-shaped ref against them, and
+one live guard pins T4.1 criteria bare (tests/esb_text_fix/test_workspace_store_criteria.py::
+test_t41_exit_criteria_remain_bare_strings). T4.2 alone converted to ledger form
+(PLAN-executor-substrate-guard-deferral), so a `"T4.2:c1"`-shaped ref is now resolvable there.
+The phase leg is therefore what still makes this carrier reachable for T4.1/T4.4-gated plans
+until a further T4.x plan converts them to ledger form.
 
 BOUNDARY-AWARE TOKEN MATCH IS MANDATORY on the phase leg -- gate `T4.1` is a string PREFIX of
 six live tier_item ids (T4.10, T4.10a, T4.11, T4.12, T4.13, T4.14). A bare substring match would
@@ -209,13 +212,16 @@ def validate_fallback_reevaluation(
 
     added = _net_new_plan_paths()
     if added is None:
+        registry.skipped("origin/main unreachable")
         print("  SKIP: origin/main unreachable (advisory locally, authoritative in CI; Decision 132 limitation A).")
         return
 
     if not added:
+        registry.examined(0, unit="net_new_plans")
         print("  PASS: no net-new docs/plans/PLAN-*.yaml in this diff.")
         return
 
+    registry.examined(len(added), unit="net_new_plans")
     gate_set = set(gates)
     gate_pattern = _gate_pattern(gates)
     issues: list[str] = []

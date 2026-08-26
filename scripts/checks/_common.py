@@ -18,11 +18,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).parent.parent.parent
 PYTHON = sys.executable  # Use same interpreter that's running this script
 
 PLAN_PATH_RE = re.compile(r"^docs/plans/PLAN-([^/]+)\.yaml$")
-_FEAT_COMMIT_RE = re.compile(r"^feat\(([^)]+)\):")
 _ZERO_SHA = "0" * 40
 
 
@@ -37,7 +38,7 @@ def invoke_step(name: str, cmd: list[str], failed: list[str], cwd: Path | None =
         failed.append(name)
 
 
-def push_context_base() -> str | None:
+def push_context_base(root: Path | None = None) -> str | None:
     """Return the diff base for a POST-MERGE (push-context) validation run, else None.
 
     Push context is GITHUB_EVENT_NAME == "push", OR (current branch == "main" AND
@@ -53,17 +54,22 @@ def push_context_base() -> str | None:
 
     Outside push context, always returns None -- each consumer then keeps its own current
     base unchanged (Decision 135 pt 3: contract unchanged for existing callers).
+
+    `root` scopes every git probe (cwd defaults to `ROOT` when None, so existing callers
+    are byte-identical); the GITHUB_EVENT_NAME / GITHUB_EVENT_BEFORE env signal stays
+    job-global regardless of `root` (Decision 159 cl.1 amendment).
     """
+    cwd = root if root is not None else ROOT
     is_push_event = os.environ.get("GITHUB_EVENT_NAME") == "push"
     on_main = False
     if not is_push_event:
-        branch_result = run(["git", "branch", "--show-current"], capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
+        branch_result = run(["git", "branch", "--show-current"], capture_output=True, text=True, encoding="utf-8", cwd=cwd)
         branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
         if branch == "main":
             merge_base_result = run(
-                ["git", "merge-base", "origin/main", "HEAD"], capture_output=True, text=True, encoding="utf-8", cwd=ROOT
+                ["git", "merge-base", "origin/main", "HEAD"], capture_output=True, text=True, encoding="utf-8", cwd=cwd
             )
-            head_result = run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
+            head_result = run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, encoding="utf-8", cwd=cwd)
             on_main = (
                 merge_base_result.returncode == 0
                 and head_result.returncode == 0
@@ -76,14 +82,12 @@ def push_context_base() -> str | None:
 
     event_before = os.environ.get("GITHUB_EVENT_BEFORE", "").strip()
     if event_before and event_before != _ZERO_SHA:
-        exists_result = run(
-            ["git", "cat-file", "-e", event_before], capture_output=True, text=True, encoding="utf-8", cwd=ROOT
-        )
+        exists_result = run(["git", "cat-file", "-e", event_before], capture_output=True, text=True, encoding="utf-8", cwd=cwd)
         if exists_result.returncode == 0:
             return event_before
 
     head_tilde_result = run(
-        ["git", "rev-parse", "--verify", "-q", "HEAD~1"], capture_output=True, text=True, encoding="utf-8", cwd=ROOT
+        ["git", "rev-parse", "--verify", "-q", "HEAD~1"], capture_output=True, text=True, encoding="utf-8", cwd=cwd
     )
     if head_tilde_result.returncode == 0 and head_tilde_result.stdout.strip():
         return head_tilde_result.stdout.strip()
@@ -96,20 +100,25 @@ def push_context_base() -> str | None:
     return None
 
 
-def get_changed_files() -> list[str]:
-    """Get files changed vs origin/main, falling back to HEAD. Excludes deleted paths."""
-    push_base = push_context_base()
+def get_changed_files(root: Path | None = None) -> list[str]:
+    """Get files changed vs origin/main, falling back to HEAD. Excludes deleted paths.
+
+    `root` scopes every git subprocess and the existence filter (cwd/base defaults to
+    `ROOT` when None, so existing callers are byte-identical).
+    """
+    cwd = root if root is not None else ROOT
+    push_base = push_context_base(root)
     base = push_base if push_base is not None else "origin/main"
-    result = run(["git", "diff", "--name-only", base], capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
+    result = run(["git", "diff", "--name-only", base], capture_output=True, text=True, encoding="utf-8", cwd=cwd)
     if result.returncode == 0:
         files = result.stdout.strip().splitlines()
     else:
-        result = run(["git", "diff", "--name-only", "HEAD"], capture_output=True, text=True, encoding="utf-8", cwd=ROOT)
+        result = run(["git", "diff", "--name-only", "HEAD"], capture_output=True, text=True, encoding="utf-8", cwd=cwd)
         files = result.stdout.strip().splitlines()
-    return [f for f in files if f and (ROOT / f).exists()]
+    return [f for f in files if f and (cwd / f).exists()]
 
 
-def get_status_aware_diff() -> list[tuple[str, str]]:
+def get_status_aware_diff(root: Path | None = None) -> list[tuple[str, str]]:
     """Status-aware diff vs the origin/main merge-base, PLUS untracked new files.
 
     A NEW primitive alongside get_changed_files() (Decision affected-set-selection,
@@ -133,15 +142,19 @@ def get_status_aware_diff() -> list[tuple[str, str]]:
     --no-renames keeps the output to the plain A/M/D three-letter vocabulary (no R100
     two-path rename records) -- this function's callers reason about single-path status
     entries only.
+
+    `root` scopes every git subprocess and the two existence filters (cwd/merge-base
+    defaults to `ROOT` when None, so existing callers are byte-identical).
     """
+    cwd = root if root is not None else ROOT
     entries: list[tuple[str, str]] = []
 
-    push_base = push_context_base()
+    push_base = push_context_base(root)
     if push_base is not None:
         base_ref = push_base
     else:
         merge_base_result = run(
-            ["git", "merge-base", "origin/main", "HEAD"], capture_output=True, text=True, encoding="utf-8", cwd=ROOT
+            ["git", "merge-base", "origin/main", "HEAD"], capture_output=True, text=True, encoding="utf-8", cwd=cwd
         )
         base_ref = (
             merge_base_result.stdout.strip()
@@ -154,7 +167,7 @@ def get_status_aware_diff() -> list[tuple[str, str]]:
         capture_output=True,
         text=True,
         encoding="utf-8",
-        cwd=ROOT,
+        cwd=cwd,
     )
     if diff_result.returncode == 0:
         for line in diff_result.stdout.strip().splitlines():
@@ -169,16 +182,16 @@ def get_status_aware_diff() -> list[tuple[str, str]]:
             status = status_raw[0]
             if status not in ("A", "M", "D"):
                 continue
-            if status == "D" or (ROOT / path).exists():
+            if status == "D" or (cwd / path).exists():
                 entries.append((status, path))
 
     untracked_result = run(
-        ["git", "ls-files", "--others", "--exclude-standard"], capture_output=True, text=True, encoding="utf-8", cwd=ROOT
+        ["git", "ls-files", "--others", "--exclude-standard"], capture_output=True, text=True, encoding="utf-8", cwd=cwd
     )
     if untracked_result.returncode == 0:
         for line in untracked_result.stdout.strip().splitlines():
             path = line.strip()
-            if path and (ROOT / path).exists():
+            if path and (cwd / path).exists():
                 entries.append(("??", path))
 
     return entries
@@ -205,25 +218,57 @@ def load_plan(rel_path: str, root: Path):
             _sys.path.remove(root_str)
 
 
-def feat_commit_slugs(root: Path) -> list[str]:
-    """Ordered, de-duplicated slugs from feat({slug}) commit subjects in origin/main..HEAD."""
-    result = run(
-        ["git", "log", "origin/main..HEAD", "--format=%s"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        cwd=root,
-    )
+def _plan_declared_at_ref(plan_rel: str, root: Path, ref: str) -> bool:
+    """Whether `implementation_declared` reads true for `plan_rel` at git ref `ref`.
+
+    Mirrors check_graduation_guard.py:98-105's `git show` + returncode-!=0-is-empty-baseline
+    rule: an unresolvable ref, a missing path at that ref, or an unparseable/non-dict payload
+    are all a legitimate "not declared at this ref" rather than an error -- never raised.
+    """
+    result = run(["git", "show", f"{ref}:{plan_rel}"], capture_output=True, text=True, encoding="utf-8", cwd=root)
     if result.returncode != 0:
-        return []
-    slugs: list[str] = []
-    seen: set[str] = set()
-    for line in result.stdout.strip().splitlines():
-        match = _FEAT_COMMIT_RE.match(line.strip())
-        if match and match.group(1) not in seen:
-            seen.add(match.group(1))
-            slugs.append(match.group(1))
-    return slugs
+        return False
+    try:
+        data = yaml.safe_load(result.stdout)
+    except yaml.YAMLError:
+        return False
+    return isinstance(data, dict) and bool(data.get("implementation_declared"))
+
+
+def resolve_declared_plans(changed_files: list[str], root: Path, base: str) -> list[str]:
+    """Content-keyed plan resolution (Decision 148 sole home; Decision 170's declaration
+    channel is the consumer, not this function).
+
+    Returns the diff-present `docs/plans/PLAN-*.yaml` paths whose `implementation_declared`
+    field is true in the WORKING TREE but was not true at `base` -- an edge-triggered
+    False->True flip (absence at `base` counts as False, so a net-new declared plan resolves
+    too), mirroring check_graduation_guard.py:111-116's flip detector.
+
+    `base` is an injected parameter, never derived here (callers default it from
+    `push_context_base() or "origin/main"` at their own call site -- this function must never
+    call push_context_base() itself, or a check running against an injected `root` would read
+    the REAL repository's base while evaluating the FIXTURE repository). The candidate set is
+    likewise derived from the injected `changed_files` via `plan_paths_from_changed` -- this
+    function never calls get_changed_files() or globs docs/plans/ itself.
+
+    A candidate absent from the working tree (deleted in this diff) is silently skipped -- that
+    is the caller's concern (each check already prints its own "deleted in diff" SKIP), not an
+    error here. A candidate PRESENT on disk is read with a raw `yaml.safe_load`, never
+    `PlanDocument` validation (schema validity is `validate_plan_documents`' concern, not this
+    resolver's) -- an `OSError` or `yaml.YAMLError` on that WORKING-TREE read propagates
+    (fail-loud, Decision 55). The baseline read never raises (see `_plan_declared_at_ref`).
+    """
+    resolved: list[str] = []
+    for plan_rel in plan_paths_from_changed(changed_files):
+        plan_path = root / plan_rel
+        if not plan_path.exists():
+            continue
+        working_data = yaml.safe_load(plan_path.read_text(encoding="utf-8"))
+        if not (isinstance(working_data, dict) and working_data.get("implementation_declared")):
+            continue
+        if not _plan_declared_at_ref(plan_rel, root, base):
+            resolved.append(plan_rel)
+    return resolved
 
 
 def origin_main_reachable(root: Path) -> bool:

@@ -1,0 +1,21 @@
+check_id: fallback-reevaluation-check-registered
+primitive_slot: command_exit_zero
+guard_target: scripts/checks/registry.py
+guard_symbol: validate_fallback_reevaluation
+plan_slug: esb-fallback-spec-carrier
+graduated_at: '2026-08-03'
+graduated_by: implement-agent
+check_spec:
+  command:
+  - bin/venv-python
+  - -c
+  - "\nfrom scripts.checks import registry\nname = 'validate_fallback_reevaluation'\npre = {s.name: s for s in registry.pre_sequence() if s.kind == 'check'}\nfull = [s.name for s in registry.full_sequence()\
+    \ if s.kind == 'check']\nmissing = [t for t, seq in (('pre', pre), ('full', full)) if name not in seq]\nassert not missing, f'{name} is not in the {missing} tier sequence(s)'\nassert name in registry.all_checks(),\
+    \ f'{name} was never registered via the register decorator'\nglobs = pre[name].pre_globs\nassert globs, f'{name} runs ungated in --pre; it parses the whole plans directory and must carry pre_globs'\n\
+    assert any('docs/plans' in g for g in globs) and any('ROADMAP' in g for g in globs), f'pre_globs misses a trigger surface: {globs}'\nassert callable(registry.resolve(name)), f'{name} does not resolve\
+    \ via registry.resolve() -- dispatch will fail'\nimport pathlib, yaml\nfrom scripts.verification_graduation import load_entries\nLB = r'(?<![\\w.])'\nLA = r'(?![\\w])'\nsrc = pathlib.Path('scripts/checks/roadmap/validate_fallback_reevaluation.py').read_text(encoding='utf-8')\n\
+    assert LB in src, 'the carrier module does not use the boundary-aware lookbehind on its phase leg -- a bare substring match makes gate T4.1 swallow T4.10/T4.12/T4.13'\nassert LA in src, 'the carrier\
+    \ module does not use the boundary-aware lookahead on its phase leg -- round 2 history: a lookahead that also excludes \".\" silently drops a legitimate sentence-final \"T4.4.\"'\nrows = load_entries()\
+    \  # config/agent/verification_registry/entries/*.yaml corpus\nrow = [r for r in rows if r['check_id'] == 'cd27-fallback-spec-and-carrier-binding']\nif row:\n    dumped = yaml.safe_dump(row[0]['check_spec'])\n\
+    \    assert LB in dumped, 'the graduated row and the carrier module have DIVERGED on the boundary-aware lookbehind'\n    assert LA in dumped, 'the graduated row and the carrier module have DIVERGED\
+    \ on the boundary-aware lookahead'\nprint('OK registered in both tiers, resolves via the registry, boundary-aware match (both halves) enforced at', 1 + len(row), 'site(s); pre_globs', globs)\n"

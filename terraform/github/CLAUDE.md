@@ -3,7 +3,7 @@
 Loaded automatically when Claude reads or edits files in this directory. Universal rules in
 repo-root `CLAUDE.md` and `terraform/CLAUDE.md` still apply.
 
-This module manages GitHub repository settings for `benjamin-blake/agent-platform` via the
+This module manages GitHub repository settings for `benjamin-blake/theseus` via the
 `integrations/github` Terraform provider: GitHub Advanced Security (secret scanning + push
 protection), the `main` branch-protection ruleset, Actions permissions, and the
 `tf-gated-apply` GitHub Environment (CD.35 Wave 3 / T2.22 / Decision 92).
@@ -12,7 +12,7 @@ protection), the `main` branch-protection ruleset, Actions permissions, and the
 
 The `terraform-apply-sandbox.yml` workflow path filter is `terraform/personal/**`. This module
 (`terraform/github/**`) matches nothing in that filter and is intentionally excluded. Adding it
-to any auto-apply workflow is FORBIDDEN (Decision 77 / `docs/contracts/environment-taxonomy.md`):
+to any auto-apply workflow is FORBIDDEN (Decision 77 / `environment-taxonomy.yaml`):
 `terraform_apply_guard.py` is AWS-IAM-only and cannot inspect `github_*` resource diffs; a
 branch-protection change applied ungated could lock out the push-to-main flow the workflow depends
 on. Apply this module locally, by hand, every time.
@@ -84,11 +84,10 @@ If the ruleset is applied with incorrect required-status-check names and merges 
 
 ## First-time import
 
-On a fresh state, Terraform will use the `import` block in `repo.tf` to import the existing
-`agent-platform` repository rather than recreating it. Verify the plan shows no replacement.
-If the import block is not supported by your Terraform version, run:
+On a fresh state, import the existing `theseus` repository rather than recreating it, and
+verify the plan shows no replacement:
 ```bash
-terraform -chdir=terraform/github import github_repository.this agent-platform
+terraform -chdir=terraform/github import github_repository.this theseus
 ```
 
 ## Ruleset check-run names

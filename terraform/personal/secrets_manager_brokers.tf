@@ -1,8 +1,10 @@
 # T2.14 -- Alpaca broker credential envelopes (paper + live).
 #
 # Secret VALUES are set out-of-band via aws secretsmanager put-secret-value -- never Terraform-managed.
-# No secret-version resources: key material must never enter Terraform state (Decision 37 out-of-band
-# precedent; mirrors inference_credentials.tf). The ARNs are exported as outputs and referenced by
+# No secret-version resources: key material must never enter Terraform state
+# (docs/contracts/secret-material-handling.yaml SECRET-VALUE-OUT-OF-BAND pattern, Decision 175 --
+# rehomed from the Decision 37 precedent; mirrors inference_credentials.tf). The ARNs are exported
+# as outputs and referenced by
 # the BrokerCredentialsRead IAM statement in platform_roles.tf, ensuring the grant is ARN-scoped (no wildcard).
 #
 # APPLY POSTURE (Decision 77 + Decision 35):

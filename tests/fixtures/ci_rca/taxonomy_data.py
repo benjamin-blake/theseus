@@ -19,7 +19,10 @@ MINIMAL_TAXONOMY = {
     "taxonomy_version": 1,
     "function_to_category": {"validate_sloc_limits": "sloc_violation"},
     "log_pattern_to_category": [{"pattern": "ImportError", "category": "dependency_gap", "check_name": "import_error"}],
-    "workflow_to_tier": {"CI": "CI", "Deploy": "not_a_gate"},
+    "workflows": {
+        "CI": {"tier": "CI", "ci_rca": "watched", "owner": "platform", "rationale": "test fixture"},
+        "Deploy": {"tier": "not_a_gate", "ci_rca": "excluded", "owner": "platform", "rationale": "test fixture"},
+    },
 }
 
 MULTI_TAXONOMY = dict(MINIMAL_TAXONOMY)
@@ -47,19 +50,31 @@ def write_taxonomy(tmp_path: Path, data: dict) -> Path:
     return p
 
 
-def write_validation_result(tmp_path: Path, attributions: list[dict]) -> Path:
+def write_validation_result(
+    tmp_path: Path,
+    attributions: list[dict],
+    *,
+    schema_version: int = 2,
+    check_outcomes: list[dict] | None = None,
+) -> Path:
+    """schema_version defaults to 2 (the incumbent shape every existing caller pins). Passing
+    schema_version=3 (Decision 170) additionally emits `check_outcomes` (empty unless overridden)
+    plus the four rollup counts, so a consumer test can prove it still resolves
+    (check, label) pairs from the v3 shape's unchanged failed_check_attributions field."""
     p = tmp_path / "validation-result.json"
-    p.write_text(
-        json.dumps(
-            {
-                "schema_version": 2,
-                "exit_code": 1,
-                "failed_checks": [a["label"] for a in attributions],
-                "failed_check_attributions": attributions,
-            }
-        ),
-        encoding="utf-8",
-    )
+    record: dict = {
+        "schema_version": schema_version,
+        "exit_code": 1,
+        "failed_checks": [a["label"] for a in attributions],
+        "failed_check_attributions": attributions,
+    }
+    if schema_version >= 3:
+        record["check_outcomes"] = check_outcomes if check_outcomes is not None else []
+        record["ran_checks"] = 0
+        record["skipped_checks"] = 0
+        record["vacuous_checks"] = 0
+        record["undeclared_checks"] = 0
+    p.write_text(json.dumps(record), encoding="utf-8")
     return p
 
 

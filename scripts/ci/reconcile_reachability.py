@@ -13,7 +13,7 @@ did), and the post-fix file reports it REACHABLE.
 DELIBERATELY NOT A STANDING GATE. This is a SECOND implementation of GitHub Actions expression
 semantics, accepted only as a one-shot artifact for this change. Do NOT register it in
 scripts/checks/registry.py or scripts/validate.py, do not wrap it in a scripts/checks/ module, and
-do not graduate it into config/agent/verification_registry/registry.yaml. The standing,
+do not graduate it into config/agent/verification_registry/entries/. The standing,
 non-reintroducible protection for this defect is the `recovery-workflow-topology` guard in
 scripts/verify_ci_workflow.py, which is registry-backed and yaml-parsed. This harness ground-truths
 that guard once, then stops. It proves REACHABILITY only -- never that the workflow runs, and never

@@ -19,6 +19,7 @@ from scripts.ci_rca.fingerprint import (
     error_signature_from_log_tail,
     normalize_message_head,
     signature_for_collection_error,
+    signature_for_declared_detail,
     signature_for_evidence_insufficient,
 )
 
@@ -376,6 +377,54 @@ class TestEvidenceInsufficientDegenerateSignature:
         fp_a = compute_fingerprint_v2("ci", "evidence_insufficient", sig_a)
         fp_b = compute_fingerprint_v2("ci", "evidence_insufficient", sig_b)
         assert fp_a != fp_b
+
+
+class TestDeclaredDetailSignature:
+    """signature_for_declared_detail (coverage-failure-attribution): path-preserving, never
+    routed through normalize_message_head -- the rec-3212 misattribution class this plan fixes.
+    VP2 graduated selector target: test_declared_detail_discriminates_nested_paths."""
+
+    def test_declared_detail_discriminates_nested_paths(self):
+        """Two NESTED paths at the SAME measured percentage -- the exact fixture shape that
+        normalize_message_head would collapse to the identical "scripts<path>" token (both paths
+        carry >=2 path separators, verified live at planning time) -- must yield DIFFERENT
+        signatures via signature_for_declared_detail."""
+        a = signature_for_declared_detail(
+            "validate_test_coverage",
+            ["scripts/checks/hygiene/validate_vacuity_justified.py: 95.8% line coverage (expected >= 100%)"],
+        )
+        b = signature_for_declared_detail(
+            "validate_test_coverage",
+            ["scripts/ci_rca/taxonomy.py: 95.8% line coverage (expected >= 100%)"],
+        )
+        assert a != b
+        # Sanity: confirms these two paths are exactly the shape normalize_message_head would
+        # have collapsed together -- the reason this derivation must never route through it.
+        assert normalize_message_head(
+            "scripts/checks/hygiene/validate_vacuity_justified.py: 95.8% line coverage"
+        ) == normalize_message_head("scripts/ci_rca/taxonomy.py: 95.8% line coverage")
+
+    def test_declared_detail_never_scrubs_the_path(self):
+        sig = signature_for_declared_detail(
+            "validate_test_coverage",
+            ["scripts/checks/hygiene/validate_vacuity_justified.py: 95.8% line coverage (expected >= 100%)"],
+        )
+        assert "scripts/checks/hygiene/validate_vacuity_justified.py" in sig
+        assert "<path>" not in sig
+
+    def test_declared_detail_deterministic_and_order_independent(self):
+        a = signature_for_declared_detail("check", ["b.py: x", "a.py: y"])
+        b = signature_for_declared_detail("check", ["a.py: y", "b.py: x"])
+        assert a == b
+
+    def test_declared_detail_distinct_checks_distinct_signatures_for_same_file(self):
+        a = signature_for_declared_detail("validate_test_coverage", ["scripts/foo.py: 90%"])
+        b = signature_for_declared_detail("validate_other_check", ["scripts/foo.py: 90%"])
+        assert a != b
+
+    def test_declared_detail_falls_back_to_whole_item_when_no_colon_space(self):
+        sig = signature_for_declared_detail("check", ["no-separator-here"])
+        assert "no-separator-here" in sig
 
 
 class TestNonPytestFallback:

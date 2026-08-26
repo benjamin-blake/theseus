@@ -6,14 +6,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from scripts.checks import validation_result
+from scripts.checks import registry, validation_result
 
 
 @pytest.fixture(autouse=True)
 def _reset_attributions():
     validation_result._ATTRIBUTIONS.clear()
+    validation_result._OUTCOMES.clear()
+    validation_result._FAILURE_DETAILS.clear()
     yield
     validation_result._ATTRIBUTIONS.clear()
+    validation_result._OUTCOMES.clear()
+    validation_result._FAILURE_DETAILS.clear()
 
 
 def test_clear_removes_stale_result(tmp_path: Path) -> None:
@@ -34,9 +38,8 @@ def test_dispatch_recording_attributes_each_newly_appended_label() -> None:
         failed.append("first problem")
         failed.append("second problem")
 
-    namespace = {"validate_two_things": _two_failures}
     failed: list[str] = []
-    validation_result.dispatch_recording("validate_two_things", failed, namespace)
+    validation_result.dispatch_recording("validate_two_things", failed, _two_failures)
     assert failed == ["first problem", "second problem"]
     assert validation_result._ATTRIBUTIONS == [
         {"check": "validate_two_things", "label": "first problem"},
@@ -44,10 +47,30 @@ def test_dispatch_recording_attributes_each_newly_appended_label() -> None:
     ]
 
 
+def test_record_scaffold_outcome_harvests_a_declared_outcome() -> None:
+    """record_scaffold_outcome() is the scaffold-side counterpart to dispatch_recording()'s
+    outcome harvest -- used by non-check scaffolds like ensure_fresh_dq_results."""
+    with registry.outcome_scope("my_scaffold", kind="scaffold"):
+        registry.examined(3, unit="items")
+    validation_result.record_scaffold_outcome("my_scaffold", 0, [])
+    row = validation_result._OUTCOMES[-1]
+    assert row.check == "my_scaffold"
+    assert row.kind == "scaffold"
+    assert row.status == "enforced"
+
+
+def test_record_scaffold_outcome_is_failed_when_failed_grew() -> None:
+    with registry.outcome_scope("failing_scaffold", kind="scaffold"):
+        registry.examined(1)
+    failed = ["already there", "new problem"]
+    validation_result.record_scaffold_outcome("failing_scaffold", before=1, failed=failed)
+    row = validation_result._OUTCOMES[-1]
+    assert row.status == "failed"
+
+
 def test_dispatch_recording_attributes_nothing_on_a_passing_check() -> None:
-    namespace = {"validate_ok": lambda failed: None}
     failed: list[str] = []
-    validation_result.dispatch_recording("validate_ok", failed, namespace)
+    validation_result.dispatch_recording("validate_ok", failed, lambda failed: None)
     assert failed == []
     assert validation_result._ATTRIBUTIONS == []
 
@@ -59,20 +82,24 @@ def test_dispatch_recording_does_not_attribute_pre_existing_entries() -> None:
     def _adds_one_more(failed: list[str]) -> None:
         failed.append("new problem")
 
-    namespace = {"validate_second": _adds_one_more}
     failed: list[str] = ["earlier problem"]
-    validation_result.dispatch_recording("validate_second", failed, namespace)
+    validation_result.dispatch_recording("validate_second", failed, _adds_one_more)
     assert failed == ["earlier problem", "new problem"]
     assert validation_result._ATTRIBUTIONS == [{"check": "validate_second", "label": "new problem"}]
 
 
-def test_dispatch_recording_intercepts_via_namespace_patch() -> None:
-    """The namespace dict is consulted at call time (not a captured reference), matching
-    validate.py's `patch("validate.<name>")` interception contract."""
-    namespace = {"validate_x": lambda failed: failed.append("original")}
-    namespace["validate_x"] = lambda failed: failed.append("patched")
+def test_dispatch_recording_calls_the_resolved_callable_at_call_time() -> None:
+    """`fn` is whatever the CALLER resolved (scripts.checks.registry.resolve(name)) and is invoked
+    directly -- late-bound by the caller, not by a namespace lookup inside this function."""
+    calls: list[str] = []
+
+    def _fn(failed: list[str]) -> None:
+        calls.append("called")
+        failed.append("patched")
+
     failed: list[str] = []
-    validation_result.dispatch_recording("validate_x", failed, namespace)
+    validation_result.dispatch_recording("validate_x", failed, _fn)
+    assert calls == ["called"]
     assert failed == ["patched"]
     assert validation_result._ATTRIBUTIONS == [{"check": "validate_x", "label": "patched"}]
 
@@ -91,7 +118,10 @@ def test_write_completed_is_bounded_atomic_and_secret_free(tmp_path: Path) -> No
     assert "secret" not in path.read_text(encoding="utf-8").lower()
 
 
-def test_write_completed_emits_schema_v2_with_failed_check_attributions(tmp_path: Path) -> None:
+def test_write_completed_emits_schema_v3_with_failed_check_attributions(tmp_path: Path) -> None:
+    """failed_checks/failed_check_attributions keep their exact schema_version 2 shape
+    byte-for-byte under the v3 bump (Decision 142 lineage -- scripts.ci_rca.taxonomy's Priority-0
+    attribution path is a live consumer)."""
     path = tmp_path / "debug" / "result.json"
     validation_result._ATTRIBUTIONS.append({"check": "validate_test_coverage", "label": "Coverage below 100%"})
     git = MagicMock(returncode=0, stdout="abc123\n")
@@ -102,11 +132,49 @@ def test_write_completed_emits_schema_v2_with_failed_check_attributions(tmp_path
             failed_checks=["validate_test_coverage"],
             path=path,
         )
-    assert record["schema_version"] == 2
+    assert record["schema_version"] == 3
     assert record["failed_check_attributions"] == [{"check": "validate_test_coverage", "label": "Coverage below 100%"}]
     on_disk = json.loads(path.read_text(encoding="utf-8"))
-    assert on_disk["schema_version"] == 2
+    assert on_disk["schema_version"] == 3
     assert on_disk["failed_check_attributions"] == record["failed_check_attributions"]
+
+
+def test_failed_check_details_emitted_additively(tmp_path: Path) -> None:
+    """failed_check_details (this plan, coverage-failure-attribution) appears under the NEW
+    top-level key only when a check actually declared detail this run; failed_checks and
+    failed_check_attributions stay byte-identical to today either way (Decision 170 clause 1 /
+    check-accounting.yaml's validation_result_schema_v3 pin)."""
+    path = tmp_path / "debug" / "result.json"
+    git = MagicMock(returncode=0, stdout="abc123\n")
+
+    def _fn(failed: list[str]) -> None:
+        registry.failure_detail(["scripts/checks/hygiene/validate_vacuity_justified.py: 95.8% (expected 100%)"])
+        failed.append("Coverage below 100%")
+
+    failed_list: list[str] = []
+    validation_result.dispatch_recording("validate_test_coverage", failed_list, _fn)
+    with patch("scripts.checks.validation_result.subprocess.run", return_value=git):
+        record = validation_result.write_completed(
+            started_at="2026-01-01T00:00:00+00:00", exit_code=1, failed_checks=failed_list, path=path
+        )
+    assert record["failed_check_details"] == {
+        "validate_test_coverage": ["scripts/checks/hygiene/validate_vacuity_justified.py: 95.8% (expected 100%)"]
+    }
+    assert record["failed_checks"] == ["Coverage below 100%"]
+    assert record["failed_check_attributions"] == [{"check": "validate_test_coverage", "label": "Coverage below 100%"}]
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["failed_check_details"] == record["failed_check_details"]
+
+    validation_result.clear(path)
+    failed_list2: list[str] = []
+    validation_result.dispatch_recording("validate_ok", failed_list2, lambda failed: None)
+    with patch("scripts.checks.validation_result.subprocess.run", return_value=git):
+        record2 = validation_result.write_completed(
+            started_at="2026-01-01T00:00:00+00:00", exit_code=0, failed_checks=failed_list2, path=path
+        )
+    assert "failed_check_details" not in record2
+    on_disk2 = json.loads(path.read_text(encoding="utf-8"))
+    assert "failed_check_details" not in on_disk2
 
 
 def test_write_completed_attributions_is_a_snapshot_not_a_live_reference(tmp_path: Path) -> None:
@@ -121,6 +189,65 @@ def test_write_completed_attributions_is_a_snapshot_not_a_live_reference(tmp_pat
         )
     validation_result.clear(path)
     assert record["failed_check_attributions"] == [{"check": "validate_x", "label": "problem"}]
+
+
+def test_write_completed_emits_check_outcomes_and_consistent_rollups(tmp_path: Path) -> None:
+    path = tmp_path / "debug" / "result.json"
+    validation_result.dispatch_recording("vacuous_check", [], lambda f: registry.examined(0))
+    validation_result.dispatch_recording("enforced_check", [], lambda f: registry.examined(4))
+    validation_result.dispatch_recording("skipped_check", [], lambda f: registry.skipped("no input"))
+    validation_result.dispatch_recording("undeclared_check", [], lambda f: None)
+    failed_list: list[str] = []
+    validation_result.dispatch_recording("failing_check", failed_list, lambda f: f.append("bad"))
+
+    git = MagicMock(returncode=0, stdout="abc123\n")
+    with patch("scripts.checks.validation_result.subprocess.run", return_value=git):
+        record = validation_result.write_completed(
+            started_at="2026-01-01T00:00:00+00:00", exit_code=1, failed_checks=failed_list, path=path
+        )
+
+    statuses = {row["check"]: row["status"] for row in record["check_outcomes"]}
+    assert statuses == {
+        "vacuous_check": "vacuous",
+        "enforced_check": "enforced",
+        "skipped_check": "skipped",
+        "undeclared_check": "undeclared",
+        "failing_check": "failed",
+    }
+    # Rollups agree with check_outcomes -- each non-"failed" status appears in exactly one bucket,
+    # and the bucket totals sum to the non-failed row count.
+    assert record["ran_checks"] == 1
+    assert record["skipped_checks"] == 1
+    assert record["vacuous_checks"] == 1
+    assert record["undeclared_checks"] == 1
+    non_failed_rows = sum(1 for status in statuses.values() if status != "failed")
+    assert record["ran_checks"] + record["skipped_checks"] + record["vacuous_checks"] + record["undeclared_checks"] == (
+        non_failed_rows
+    )
+    on_disk = json.loads(path.read_text(encoding="utf-8"))
+    assert on_disk["check_outcomes"] == record["check_outcomes"]
+
+
+def test_write_completed_check_outcomes_is_a_snapshot_not_a_live_reference(tmp_path: Path) -> None:
+    """A later clear() must not mutate an already-written record's check_outcomes list."""
+    path = tmp_path / "debug" / "result.json"
+    validation_result.dispatch_recording("check_x", [], lambda f: registry.examined(1))
+    git = MagicMock(returncode=0, stdout="abc123\n")
+    with patch("scripts.checks.validation_result.subprocess.run", return_value=git):
+        record = validation_result.write_completed(
+            started_at="2026-01-01T00:00:00+00:00", exit_code=0, failed_checks=[], path=path
+        )
+    validation_result.clear(path)
+    assert record["check_outcomes"] == [
+        {
+            "check": "check_x",
+            "kind": "check",
+            "status": "enforced",
+            "examined_count": 1,
+            "examined_unit": "items",
+            "skipped_reason": None,
+        }
+    ]
 
 
 def test_visible_writer_warns_without_raising(capsys) -> None:

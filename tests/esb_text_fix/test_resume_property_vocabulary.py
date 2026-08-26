@@ -7,7 +7,8 @@ a negative-only check there is the mechanism-free-but-property-free failure this
 catch. Mechanism vocabulary is absent from all NINE de-mechanised sites: the seven property-bound
 contract sites (c1, the four node typings, the personas point, the Fargate escape-hatch point)
 plus the two descriptive sites (CD.27's title and its narrowly_supersedes clause). c1 asserts
-workspace continuity and names no backing store. T4.2's exit criteria remain bare strings.
+workspace continuity and names no backing store. T4.2's exit criteria are ledger-form
+ExitCriterion mappings (PLAN-executor-substrate-guard-deferral).
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ def test_property_bound_sites_reference_p1_p2_p3_positively():
     cd = cd27(d)
     t41 = tier_item("T4.1", d)
     t42 = tier_item("T4.2", d)
-    c1 = t42["exit_criteria"][0]
+    c1 = t42["exit_criteria"][0]["text"]
     nodes = persona_node_lines(t41)
     personas = _personas_discipline_points(cd)
     fargate = _fargate_discipline_points(cd)
@@ -72,7 +73,7 @@ def test_nine_de_mechanised_sites_are_mechanism_free():
     cd = cd27(d)
     t41 = tier_item("T4.1", d)
     t42 = tier_item("T4.2", d)
-    c1 = t42["exit_criteria"][0]
+    c1 = t42["exit_criteria"][0]["text"]
     nodes = persona_node_lines(t41)
     personas = _personas_discipline_points(cd)
     fargate = _fargate_discipline_points(cd)
@@ -90,13 +91,15 @@ def test_nine_de_mechanised_sites_are_mechanism_free():
 
 def test_c1_asserts_workspace_continuity_and_names_no_backing_store():
     t42 = tier_item("T4.2")
-    c1 = t42["exit_criteria"][0].lower()
+    c1 = t42["exit_criteria"][0]["text"].lower()
     assert "workspace" in c1, "c1 must assert workspace continuity (ESB-01 half)"
     hits = [tok for tok in BACKING_STORE_TOKENS if tok in c1]
     assert not hits, f"c1 must name no backing store (ESB-01 defers the store choice): {hits}"
 
 
-def test_t42_criteria_remain_bare_strings():
+def test_t42_criteria_are_mappings_with_text():
     t42 = tier_item("T4.2")
     for crit in t42["exit_criteria"]:
-        assert isinstance(crit, str), f"T4.2 exit criterion became non-string (colon-hazard?): {crit!r}"
+        assert isinstance(crit, dict), f"T4.2 exit criterion is not a mapping (colon-hazard?): {crit!r}"
+        text = crit.get("text")
+        assert isinstance(text, str) and text, f"T4.2 exit criterion carries no non-empty text (colon-hazard?): {crit!r}"
