@@ -1,32 +1,96 @@
-"""Ordered per-tier check registry (Decision 104).
+"""Ordered per-tier check registry (Decision 104, dispatch rewired to per-domain manifests by
+Decision 169, amending Decision 104's facade re-export mechanism).
 
-``register()`` tags a validate_*/check_* function with its owner metadata.
-``pre_sequence()`` / ``full_sequence()`` declare the ordered list of steps
-(registered check names interleaved with the fixed non-check scaffolding
-steps: lint, precommit, mypy, explicit pytest, unit-test invoke_step,
-dependency/coverage/terraform gates, budget assertion) for each presubmit
-tier. Adding a check touches only this package, never scripts/validate.py:
-add the check's module under scripts/checks/<domain>/, decorate it with
-``@register(...)``, and insert its name at the right position in the
-sequence(s) below.
+``register()`` tags a validate_*/check_* function with its owner metadata -- UNCHANGED, and still
+the sole identity/ownership oracle (97 sites, orphan-detection AST walk target). Dispatch and
+tier-sequence derivation now come from the 18 per-domain scripts/checks/<domain>/_manifest.py
+``Entry`` manifests (grammar: docs/contracts/check-manifest.yaml), never from a facade re-export
+block in scripts/validate.py.
 
-Tier dispatch (scripts/validate.py) iterates these sequences; each "check"
-step is resolved via ``getattr(validate_module, name)(failed)`` at call time
-so mock patches on the ``validate`` namespace still intercept, and each
-"scaffold" step is resolved against a dict of closures built locally in
-main() (they close over per-run locals like the diff-aware changed-files
-list that a generic registry cannot own).
+Registering a new check touches SEVEN surfaces, not merely this package (retracts the earlier
+"touches ONLY this package" claim -- three of the seven sit outside scripts/checks entirely; plan-
+obligation-closure / docs/contracts/plan-obligations.yaml): (1) the check module under
+scripts/checks/<domain>/; (2) its ``@register(...)`` decoration; (3) an ``Entry`` literal (bare
+string-literal module=/attr=) in that domain's ``_manifest.py``; (4) a
+config/ci_rca_taxonomy.yaml ``function_to_category`` row; (5) a
+config/agent/verification_registry/entries/<check_id>.yaml shard per GRADUATED verification_plan
+step (not per check); (6) the mirror test at tests/<mirrored>/test_<module>.py; (7) an ``examined()``/
+``skipped()`` declaration on every reachable exit path of the check body itself (Decision 170,
+docs/contracts/check-accounting.yaml) -- the accounting channel below, so the check's own run
+evidence distinguishes a vacuous pass, a skip and an enforced pass instead of collapsing all
+three into "not failed". scripts/validate.py itself is still never touched. scripts/CLAUDE.md
+points at this enumeration; it does not restate it.
+
+Accounting channel (Decision 170). A registered check's body -- or a non-check scaffold wrapped
+in ``outcome_scope`` -- declares what it examined via ``examined(count, unit=)`` or that it
+skipped via ``skipped(reason)``. The declaration is held in a per-dispatch SLOT (module-level,
+reset on each ``outcome_scope`` entry -- dispatch is sequential, never concurrent, so this is not
+reentrant by design) and is harvested by the caller immediately after the scope exits via
+``pop_declaration()``. ``derive_status()``/``build_outcome()`` are the SOLE place the five
+outcome states (failed/skipped/vacuous/enforced/undeclared) are computed, so they can never drift
+apart: an append to ``failed`` always yields "failed" regardless of what was declared; absent
+that, a ``skipped(reason)`` declaration yields "skipped", an ``examined(0)`` declaration yields
+"vacuous", an ``examined(n>0)`` declaration yields "enforced", and no declaration at all yields
+"undeclared". The ROW ACCUMULATOR this feeds (one ``CheckOutcome`` per dispatched check/scaffold)
+lives in ``scripts.checks.validation_result`` -- not here -- because it resets per RUN via that
+module's own ``clear()``, mirroring the existing ``_ATTRIBUTIONS`` contract.
+
+``resolve(name)`` imports the Entry's defining module and returns ``getattr(module, entry.attr)``
+at CALL TIME. The module import may be cached (importlib's own sys.modules cache); the RESOLVED
+CALLABLE is NEVER cached, so a test's ``patch("<defining module>.<attr>", ...)`` still intercepts
+through a real dispatch pass. ``all_checks()`` imports every manifest-declared module (populating
+``_REGISTRY`` via each module's own ``@register`` decorator) before returning the registry -- the
+ONLY place this package imports check modules; doing so at THIS module's own import time would be
+a genuine circular import, since every check module does ``from scripts.checks import registry``.
+
+Tier dispatch (scripts/validate.py) iterates ``pre_sequence()``/``full_sequence()``; each "check"
+step is resolved via ``resolve(name)(failed)`` and each "scaffold" step is resolved against a dict
+of closures built locally in main() (they close over per-run locals a generic registry cannot own).
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
+import importlib
+from typing import Callable, Iterator
+
+from scripts.checks._schema import Entry
+from scripts.checks.ci_guards._manifest import ENTRIES as _CI_GUARDS_ENTRIES
+from scripts.checks.contracts._manifest import ENTRIES as _CONTRACTS_ENTRIES
+from scripts.checks.decisions._manifest import ENTRIES as _DECISIONS_ENTRIES
+from scripts.checks.deps._manifest import ENTRIES as _DEPS_ENTRIES
+from scripts.checks.executor._manifest import ENTRIES as _EXECUTOR_ENTRIES
+from scripts.checks.hygiene._manifest import ENTRIES as _HYGIENE_ENTRIES
+from scripts.checks.iam_tf._manifest import ENTRIES as _IAM_TF_ENTRIES
+from scripts.checks.lambda_pkg._manifest import ENTRIES as _LAMBDA_PKG_ENTRIES
+from scripts.checks.misc._manifest import ENTRIES as _MISC_ENTRIES
+from scripts.checks.ops_governance._manifest import ENTRIES as _OPS_GOVERNANCE_ENTRIES
+from scripts.checks.product._manifest import ENTRIES as _PRODUCT_ENTRIES
+from scripts.checks.prompts._manifest import ENTRIES as _PROMPTS_ENTRIES
+from scripts.checks.prose._manifest import ENTRIES as _PROSE_ENTRIES
+from scripts.checks.roadmap._manifest import ENTRIES as _ROADMAP_ENTRIES
+from scripts.checks.sloc._manifest import ENTRIES as _SLOC_ENTRIES
+from scripts.checks.structural._manifest import ENTRIES as _STRUCTURAL_ENTRIES
+from scripts.checks.typing._manifest import ENTRIES as _TYPING_ENTRIES
+from scripts.checks.verification._manifest import ENTRIES as _VERIFICATION_ENTRIES
 
 _VALID_OWNERS = ("platform", "trading")
 
 
 @dataclasses.dataclass(frozen=True)
 class Check:
+    """A registered check's ownership metadata (separate from Step's per-tier sequence entry).
+
+    `owner` and `product_coupled` are consumer-facing metadata, not dispatch inputs --
+    pre_sequence()/full_sequence() dispatch purely by Step.name, so neither field affects
+    whether or when a check runs. Today's sole reader is
+    tests/checks/registry/test_check_metadata.py::TestOwnerMetadata (the OWNER_EXPECTATIONS
+    pinned-owner spot checks plus the platform/product_coupled=False default-floor assertion over
+    every other registered check); both fields are set once at each check's `@register(...)` call
+    site and are otherwise free for a future owner-scoped reporting/routing consumer.
+    """
+
     name: str
     owner: str = "platform"
     product_coupled: bool = False
@@ -42,9 +106,8 @@ _REGISTRY: dict[str, Check] = {}
 def register(name: str, owner: str = "platform", product_coupled: bool = False):
     """Decorator registering a validate_*/check_* function under `name`.
 
-    `name` is the getattr-resolution key on the `validate` module (normally
-    identical to the decorated function's own __name__) and the facade
-    re-export key in scripts/validate.py.
+    `name` is the manifest Entry.name / Entry.attr key and the AST-orphan-detection identity --
+    normally identical to the decorated function's own __name__.
     """
 
     def _decorate(fn):
@@ -58,7 +121,180 @@ def get_check(name: str) -> Check:
     return _REGISTRY[name]
 
 
+# --- Accounting channel (Decision 170, docs/contracts/check-accounting.yaml) -----------------
+#
+# STATUS_VOCABULARY is the authoritative status vocabulary -- docs/contracts/check-accounting.yaml
+# derive-and-asserts against this exact constant (validate_check_accounting), never restating it.
+STATUS_VOCABULARY: frozenset[str] = frozenset({"failed", "skipped", "vacuous", "enforced", "undeclared"})
+
+
+@dataclasses.dataclass(frozen=True)
+class _Declaration:
+    """One examined()/skipped() call's payload. `kind` is "examined" or "skipped"."""
+
+    kind: str
+    count: int | None = None
+    unit: str | None = None
+    reason: str | None = None
+
+
+@dataclasses.dataclass(frozen=True)
+class CheckOutcome:
+    """One row of the per-run accounting evidence -- one per dispatched check, PLUS any scaffold
+    that opens an outcome_scope (the grain: ONE ROW PER DISPATCHED CHECK, PLUS ANY SCAFFOLD THAT
+    OPENS AN outcome_scope). `check` is the step name (matches CheckOutcome consumers keying rows
+    on `r["check"]`); `kind` is "check" or "scaffold"."""
+
+    check: str
+    kind: str
+    status: str
+    examined_count: int | None = None
+    examined_unit: str | None = None
+    skipped_reason: str | None = None
+
+
+# Per-dispatch declaration slot. Reset to None on each outcome_scope() entry; read (and left in
+# place) by pop_declaration() immediately after the scope exits. Dispatch is sequential -- never
+# concurrent -- so a single module-level slot is sufficient; this is deliberately not reentrant.
+_CURRENT_DECLARATION: _Declaration | None = None
+
+# Per-dispatch failure-detail slot (this plan, coverage-failure-attribution). A second,
+# independent declaration channel alongside _CURRENT_DECLARATION -- a check that appends to
+# `failed` may ALSO declare failure_detail(items) to hand its own per-failure identity (e.g. the
+# failing file paths) to the recorder, instead of only the constant label it appends to `failed`.
+# Same lifecycle as _CURRENT_DECLARATION: reset by outcome_scope() on entry, read-and-cleared by
+# pop_failure_detail() immediately after the scope exits.
+_CURRENT_FAILURE_DETAIL: list[str] | None = None
+
+
+def examined(count: int, *, unit: str = "items") -> None:
+    """Declare that the calling check/scaffold examined `count` items of `unit`. count == 0
+    declares an EMPTY DOMAIN (status "vacuous"); count > 0 declares a real examination (status
+    "enforced", unless the check also appends to `failed`, which always wins as "failed")."""
+    global _CURRENT_DECLARATION
+    _CURRENT_DECLARATION = _Declaration(kind="examined", count=count, unit=unit)
+
+
+def skipped(reason: str) -> None:
+    """Declare that the calling check/scaffold skipped: an unavailable input or unmet
+    precondition, never an empty domain (docs/contracts/check-accounting.yaml's discrimination
+    rule -- reserve this for "could not examine", not "examined nothing")."""
+    global _CURRENT_DECLARATION
+    _CURRENT_DECLARATION = _Declaration(kind="skipped", reason=reason)
+
+
+def failure_detail(items: list[str]) -> None:
+    """Declare the calling check's own per-failure detail (e.g. the failing file identities it
+    is about to append a constant label for) -- a structured channel alongside examined()/
+    skipped() that lets a check hand identity to the recorder instead of only a constant label
+    inside `failed`. Harvested by validation_result.dispatch_recording() onto the new top-level
+    failed_check_details key (docs/contracts/check-accounting.yaml)."""
+    global _CURRENT_FAILURE_DETAIL
+    _CURRENT_FAILURE_DETAIL = list(items)
+
+
+@contextlib.contextmanager
+def outcome_scope(name: str, kind: str = "check") -> Iterator[None]:
+    """Reset the per-dispatch declaration slot for one check/scaffold's body. `name`/`kind` are
+    accepted for call-site readability at the wrapping site; the actual CheckOutcome is built by
+    the caller (via pop_declaration() + build_outcome()) immediately after this scope exits, since
+    the row accumulator lives in scripts.checks.validation_result, not here."""
+    global _CURRENT_DECLARATION, _CURRENT_FAILURE_DETAIL
+    _CURRENT_DECLARATION = None
+    _CURRENT_FAILURE_DETAIL = None
+    yield
+
+
+def pop_declaration() -> _Declaration | None:
+    """Read and clear the current declaration slot. Called by the harvesting caller (validation_
+    result.dispatch_recording / record_scaffold_outcome) immediately after an outcome_scope exits."""
+    global _CURRENT_DECLARATION
+    declaration = _CURRENT_DECLARATION
+    _CURRENT_DECLARATION = None
+    return declaration
+
+
+def pop_failure_detail() -> list[str] | None:
+    """Read and clear the current failure-detail slot. Called by the harvesting caller
+    (validation_result.dispatch_recording) immediately after an outcome_scope exits."""
+    global _CURRENT_FAILURE_DETAIL
+    detail = _CURRENT_FAILURE_DETAIL
+    _CURRENT_FAILURE_DETAIL = None
+    return detail
+
+
+def derive_status(declaration: _Declaration | None, appended_to_failed: bool) -> str:
+    """The SOLE status-derivation function -- see module docstring's accounting-channel
+    paragraph for the five-state rule this implements."""
+    if appended_to_failed:
+        return "failed"
+    if declaration is None:
+        return "undeclared"
+    if declaration.kind == "skipped":
+        return "skipped"
+    return "vacuous" if declaration.count == 0 else "enforced"
+
+
+def build_outcome(name: str, kind: str, declaration: _Declaration | None, appended_to_failed: bool) -> CheckOutcome:
+    status = derive_status(declaration, appended_to_failed)
+    if declaration is not None and declaration.kind == "examined":
+        return CheckOutcome(
+            check=name, kind=kind, status=status, examined_count=declaration.count, examined_unit=declaration.unit
+        )
+    if declaration is not None and declaration.kind == "skipped":
+        return CheckOutcome(check=name, kind=kind, status=status, skipped_reason=declaration.reason)
+    return CheckOutcome(check=name, kind=kind, status=status)
+
+
+_ALL_ENTRIES: dict[str, Entry] = {
+    entry.name: entry
+    for entry in (
+        *_CI_GUARDS_ENTRIES,
+        *_CONTRACTS_ENTRIES,
+        *_DECISIONS_ENTRIES,
+        *_DEPS_ENTRIES,
+        *_EXECUTOR_ENTRIES,
+        *_HYGIENE_ENTRIES,
+        *_IAM_TF_ENTRIES,
+        *_LAMBDA_PKG_ENTRIES,
+        *_MISC_ENTRIES,
+        *_OPS_GOVERNANCE_ENTRIES,
+        *_PRODUCT_ENTRIES,
+        *_PROMPTS_ENTRIES,
+        *_PROSE_ENTRIES,
+        *_ROADMAP_ENTRIES,
+        *_SLOC_ENTRIES,
+        *_STRUCTURAL_ENTRIES,
+        *_TYPING_ENTRIES,
+        *_VERIFICATION_ENTRIES,
+    )
+}
+
+
+class UnknownCheckError(KeyError):
+    """Raised by resolve() when `name` has no manifest Entry in any of the 18 domains."""
+
+
+def resolve(name: str) -> Callable[..., None]:
+    """Import the Entry's defining module and return getattr(module, entry.attr) -- late-bound,
+    never caching the resolved callable. See module docstring for the interception contract this
+    preserves. Callable[..., None] (not [[list[str]], None]) because a handful of checks accept
+    additional keyword-only params beyond `failed` (e.g. validate_plan_documents' plans_dir/
+    added_plan_names, used by non-dispatch-path test callers)."""
+    entry = _ALL_ENTRIES.get(name)
+    if entry is None:
+        raise UnknownCheckError(f"no manifest Entry for check {name!r}")
+    module = importlib.import_module(entry.module)
+    return getattr(module, entry.attr)
+
+
 def all_checks() -> dict[str, Check]:
+    """Import every manifest-declared module (populating _REGISTRY via each module's own
+    @register call) and return the complete roster as a MUTABLE dict[str, Check] (never a set --
+    see AGENTS.md constraint on ci-rca-taxonomy-covers-registry). The only place this package
+    imports check modules -- see module docstring for why registry.py's own import time must not."""
+    for entry in _ALL_ENTRIES.values():
+        importlib.import_module(entry.module)
     return dict(_REGISTRY)
 
 
@@ -66,141 +302,122 @@ def all_checks() -> dict[str, Check]:
 class Step:
     kind: str  # "check" | "scaffold"
     name: str
+    pre_globs: tuple[str, ...] | None = None  # --pre only; None = ungated, always runs
 
 
-def _c(name: str) -> Step:
-    return Step(kind="check", name=name)
+def _c(name: str, pre_globs: tuple[str, ...] | None = None) -> Step:
+    return Step(kind="check", name=name, pre_globs=pre_globs)
 
 
 def _s(name: str) -> Step:
     return Step(kind="scaffold", name=name)
 
 
+# --- Derived-sequence skeleton (Decision 169) -----------------------------------------------
+#
+# Cross-domain order is DERIVED, not hand-listed per check: each segment's domain-block order is
+# pinned ONCE below as the domain's FIRST-APPEARANCE order in the pre-Decision-169 sequence
+# (OD-0) -- a compact ordering key (one short tuple per segment), not a generated per-check
+# roster. Within-domain order is whatever each domain's own scripts/checks/<domain>/_manifest.py
+# ENTRIES tuple declares (OD-1/OD-2's cc_limits/sloc_limits/sloc_budget_raises ordering lives
+# there). BYTE-PARITY of overall check order is NOT claimed or asserted -- only membership
+# (Set identity) and the OD-0..OD-6 invariants (tests/checks/registry/test_sequences.py).
+
+_PRE_DOMAIN_ORDER: tuple[str, ...] = (
+    "iam_tf",
+    "prompts",
+    "hygiene",
+    "ci_guards",
+    "roadmap",
+    "verification",
+    "decisions",
+    "sloc",
+    "structural",
+    "prose",
+    "misc",
+    "typing",
+    "contracts",
+    "ops_governance",
+    "deps",
+)
+
+_FULL_SEGMENT_DOMAIN_ORDER: dict[str, tuple[str, ...]] = {
+    "full_after_lint": (
+        "hygiene",
+        "ops_governance",
+        "executor",
+        "product",
+        "misc",
+        "ci_guards",
+        "sloc",
+        "structural",
+        "prose",
+        "roadmap",
+        "decisions",
+        "lambda_pkg",
+        "verification",
+        "typing",
+        "contracts",
+        "iam_tf",
+        "deps",
+    ),
+    "full_after_unit_tests": ("typing",),
+    "full_after_terraform_checks": ("iam_tf",),
+    "full_after_dependency_health": ("deps", "prompts", "ci_guards", "contracts"),
+    "full_after_ensure_fresh_dq": ("verification",),
+}
+
+# The six scaffold anchors (OD-3), in their frozen order, each paired with the full_segment token
+# (docs/contracts/check-manifest.yaml) of the check block immediately following it -- None for the
+# final anchor, which precedes no further checks.
+_FULL_TIER_SKELETON: tuple[tuple[str, str | None], ...] = (
+    ("lint", "full_after_lint"),
+    ("unit_tests", "full_after_unit_tests"),
+    ("terraform_checks", "full_after_terraform_checks"),
+    ("dependency_health", "full_after_dependency_health"),
+    ("ensure_fresh_dq", "full_after_ensure_fresh_dq"),
+    ("precommit_all_files", None),
+)
+
+_PRE_TIER_LEADING_SCAFFOLDS: tuple[str, ...] = ("lint", "precommit_changed", "mypy_diff", "pytest_diff")
+_PRE_TIER_TRAILING_SCAFFOLDS: tuple[str, ...] = ("verifier_coverage_report", "budget_assertion")
+
+
+def _entries_by_domain() -> dict[str, list[Entry]]:
+    by_domain: dict[str, list[Entry]] = {}
+    for entry in _ALL_ENTRIES.values():
+        domain = entry.module.split(".")[2]
+        by_domain.setdefault(domain, []).append(entry)
+    return by_domain
+
+
 def pre_sequence() -> list[Step]:
     """The --pre (fast) tier, in the exact order main() runs them."""
-    return [
-        _s("lint"),
-        _s("precommit_changed"),
-        _s("mypy_diff"),
-        _s("pytest_diff"),
-        _c("validate_iam_runner_policy"),
-        _c("validate_prompt_files"),
-        _c("validate_cli_tools_in_prompts"),
-        _c("validate_workflow_agent_safety"),
-        _c("validate_product_roadmap"),
-        _c("validate_plan_documents"),
-        _c("validate_tier_floor"),
-        _c("validate_candidate_decision_ratification"),
-        _c("validate_cc_limits"),
-        _c("validate_sloc_limits"),
-        _c("validate_subprocess_encoding"),
-        _c("validate_test_count_coupling"),
-        _c("validate_intent_doc_freeze"),
-        _c("validate_contract_drift"),
-        _c("validate_field_semantics_drift"),
-        _c("validate_ci_rca_taxonomy"),
-        _c("validate_claude_p_retry_wrapper"),
-        _c("validate_authority_budget"),
-        _c("validate_invoke_implies_resolve"),
-        _c("validate_ci_workflow_guards"),
-        _c("validate_ducklake_version_lockstep"),
-        _c("validate_import_contracts"),
-        _c("validate_lockfile_sync"),
-        _c("validate_verifier_same_pr_guard"),
-        _c("validate_verification_registry"),
-        _c("validate_vp_replay"),
-        _s("coverage_report"),
-        _s("budget_assertion"),
-    ]
+    by_domain = _entries_by_domain()
+    steps = [_s(name) for name in _PRE_TIER_LEADING_SCAFFOLDS]
+    for domain in _PRE_DOMAIN_ORDER:
+        for entry in by_domain.get(domain, []):
+            if entry.pre:
+                steps.append(_c(entry.name, pre_globs=entry.pre_globs))
+    steps.extend(_s(name) for name in _PRE_TIER_TRAILING_SCAFFOLDS)
+    return steps
 
 
 def full_sequence() -> list[Step]:
     """The full (default, no-flag) tier, in the exact order main() runs them.
 
-    Spans the whole main() default-scope body: run_python_checks, the
-    terraform block, validate_iam_runner_policy, run_dependency_checks +
-    validate_requirements, the prompts block, ensure_fresh_dq_results,
-    validate_verification_harness, and the all-files precommit run.
-    validate_cli_tools_in_prompts legitimately appears twice (once inside
-    run_python_checks, once in the prompts block) -- existing behaviour,
-    preserved verbatim.
+    Spans the whole main() default-scope body: run_python_checks, the terraform block,
+    validate_iam_runner_policy, run_dependency_checks + validate_requirements, the prompts block,
+    ensure_fresh_dq_results, validate_verification_harness, and the all-files precommit run.
     """
-    return [
-        # run_python_checks()
-        _s("lint"),
-        _c("validate_subprocess_encoding"),
-        _c("validate_test_count_coupling"),
-        _c("validate_sys_executable"),
-        _c("validate_cli_tools_in_prompts"),
-        _c("validate_imports"),
-        _c("validate_recommendations_schema"),
-        _c("validate_outbox_staleness"),
-        _c("validate_executor_boundary"),
-        _c("validate_rec_write_paths"),
-        _c("validate_decisions_local_writes"),
-        _c("validate_warehouse_write_sources"),
-        _c("validate_broker_env_reads"),
-        _c("validate_invariants"),
-        _c("validate_ci_rca_trigger"),
-        _c("validate_ci_workflow_guards"),
-        _c("validate_claude_p_retry_wrapper"),
-        _c("validate_sloc_limits"),
-        _c("check_source_registry"),
-        _c("validate_platform_roadmap"),
-        _c("validate_candidate_decision_ratification"),
-        _c("validate_lambda_manifests"),
-        _c("validate_lambda_manifest_coverage"),
-        _c("validate_lambda_bundle_completeness"),
-        _c("validate_lambda_deploy_gating"),
-        _c("validate_product_roadmap"),
-        _c("validate_plan_documents"),
-        _c("validate_tier_floor"),
-        _c("validate_pydantic_yaml_drift"),
-        _c("_check_graduation_guard"),
-        _c("validate_dq_manifest_gate"),
-        _c("validate_test_coverage"),
-        _c("validate_no_underscore_instructions"),
-        _c("validate_claude_md_pointer_invariant"),
-        _c("validate_environment_taxonomy"),
-        _c("validate_complexity"),
-        _c("validate_scheduled_agent_logs"),
-        _c("validate_ghas_probe"),
-        _c("validate_hermeticity_flags"),
-        _c("validate_verifier_hermeticity"),
-        _c("validate_verifier_same_pr_guard"),
-        _c("validate_verification_registry"),
-        _c("validate_differential_gate_baseline"),
-        _c("validate_intent_doc_freeze"),
-        _c("validate_contract_drift"),
-        _c("validate_portal_drift"),
-        _c("validate_rec_relevance_contract"),
-        _c("validate_field_semantics_drift"),
-        _c("validate_ci_rca_taxonomy"),
-        _c("validate_authority_budget"),
-        _c("validate_invoke_implies_resolve"),
-        _c("validate_ducklake_version_lockstep"),
-        _c("validate_import_contracts"),
-        _c("validate_lockfile_sync"),
-        _c("validate_dependency_graph_freshness"),
-        _s("unit_tests"),
-        _s("mypy_full"),
-        # run_terraform_checks() -- a single bundled call site (validate_terraform_try +
-        # run_terraform_creds_free + the informational drift check); it is also called and
-        # tested directly as one unit (tests/test_validate.py::TestRunTerraformChecks), so it
-        # is modelled as one scaffold step rather than split into its 3 constituent actions.
-        _s("terraform_checks"),
-        _c("validate_iam_runner_policy"),
-        # run_dependency_checks() + validate_requirements
-        _s("dependency_health"),
-        _c("validate_requirements"),
-        # prompts block
-        _c("validate_prompt_files"),
-        _c("validate_cli_tools_in_prompts"),
-        _c("validate_workflow_agent_safety"),
-        _c("validate_prompt_compliance"),
-        _c("validate_instruction_architecture_layers"),
-        # tail
-        _s("ensure_fresh_dq"),
-        _c("validate_verification_harness"),
-        _s("precommit_all_files"),
-    ]
+    by_domain = _entries_by_domain()
+    steps: list[Step] = []
+    for scaffold_name, segment in _FULL_TIER_SKELETON:
+        steps.append(_s(scaffold_name))
+        if segment is None:
+            continue
+        for domain in _FULL_SEGMENT_DOMAIN_ORDER[segment]:
+            for entry in by_domain.get(domain, []):
+                if entry.full_segment == segment:
+                    steps.append(_c(entry.name))
+    return steps

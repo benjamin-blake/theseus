@@ -2,12 +2,14 @@
 
 These implement the non-check scaffolding steps referenced by
 scripts/checks/registry.py's pre_sequence()/full_sequence() (lint, precommit,
-terraform gates, dependency health, DQ freshness, verifier-coverage report,
-budget-breach/bypass rec filing, and the unit-test command builder). They stay
-outside the check registry (no @register decorator, not a `validate_*(failed)`
-uniform check signature in every case) but outside scripts/validate.py too, so
-the CLI entrypoint stays thin. scripts/validate.py imports and re-exports all
-of these for back-compat (`patch("validate.<name>")` / `from scripts.validate
+dependency health, DQ freshness, verifier-coverage report, budget-breach/bypass
+rec filing, and the unit-test command builder); the terraform gate lives in
+scripts/checks/_terraform.py, and the pytest-diff heavy-dependency-deferral machinery lives in
+scripts/checks/_pytest_diff.py (Decision 128 decompose-by-default extraction) -- both are
+re-exported here for facade back-compat. They stay outside the check registry (no @register
+decorator, not a `validate_*(failed)` uniform check signature in every case) but outside
+scripts/validate.py too, so the CLI entrypoint stays thin. scripts/validate.py imports and
+re-exports all of these for back-compat (`patch("validate.<name>")` / `from scripts.validate
 import <name>` keep resolving).
 """
 
@@ -16,65 +18,41 @@ from __future__ import annotations
 import importlib.util
 import os
 import re
-import shutil
 import sys
 import time
 from pathlib import Path
 
-from scripts.checks import _common
-from scripts.checks.iam_tf.validate_terraform_try import validate_terraform_try
-
-# Transient terraform registry.terraform.io 5xx signatures, plus provider-download network
-# transients (connection reset / timeout / handshake / truncated stream); used by
-# _terraform_init_with_retry and by the bounded retry loop in
-# .github/workflows/terraform-apply-sandbox.yml (parity required). Parity is substring
-# (Python `in`) vs ERE (bash `grep -qE`) and therefore holds only for metacharacter-free
-# signatures.
-_TRANSIENT_INIT_SIGNATURES: tuple[str, ...] = (
-    "502",
-    "Bad Gateway",
-    "could not query provider registry",
-    "failed after ",
-    "connection reset by peer",
-    "i/o timeout",
-    "TLS handshake timeout",
-    "unexpected EOF",
+from scripts.checks import _common, registry, validation_result
+from scripts.checks._budget_recs import _file_budget_breach_rec, _file_budget_bypass_rec  # noqa: F401
+from scripts.checks._pytest_diff import (  # noqa: F401
+    _PYTEST_FLAGS,
+    _PYTEST_RANDOMLY_SEED,
+    _REACTIVE_PROBE_MAX_WORKERS,
+    _attribute_batched_collect_errors,
+    _attribute_failed_test_files,
+    _dist_to_import_name,
+    _excluded_and_absent,
+    _excluded_heavy_import_names,
+    _expand_directory_test_targets,
+    _match_changed_test_path,
+    _parse_requirement_dist_names,
+    _print_deferred_warning,
+    _reactive_heavy_dep_signature,
+    _runtime_heavy_dep_defer_reason,
+    partition_changed_tests_by_collectability,
+    run_pytest_diff,
+)
+from scripts.checks._terraform import (  # noqa: F401
+    _TERRAFORM_ROOTS,
+    _TRANSIENT_INIT_SIGNATURES,
+    _terraform_init_with_retry,
+    run_terraform_checks,
+    run_terraform_creds_free,
 )
 
 # Transient Claude API error signatures; parity with _is_transient() in scripts/ci/claude_p_retry.sh.
 # Distinct from _TRANSIENT_INIT_SIGNATURES (terraform registry 5xx). Decision 73, Decision 92.
 _TRANSIENT_CLAUDE_SIGNATURES: tuple[str, ...] = ("500", "502", "503", "API Error: 5", "Internal server error", "overloaded")
-
-# CC-web outbound proxy scopes github.com to repo-scoped API calls, so `terraform init` of a
-# root using a third-party (github.com-hosted) provider permanently 403s fetching the
-# provider's authentication checksums. This is a PERMANENT condition, never added to
-# _TRANSIENT_INIT_SIGNATURES. Detection below requires co-occurrence of all three markers
-# (never a bare "403" substring) so a non-github 403 (e.g. an S3 backend 403) is never masked.
-_PROXY_BLOCK_FORBIDDEN_MARKERS: tuple[str, ...] = ("403", "Forbidden")
-_PROXY_BLOCK_HOST_MARKERS: tuple[str, ...] = ("github.com",)
-_PROXY_BLOCK_CHECKSUM_MARKERS: tuple[str, ...] = ("failed to retrieve", "checksum", "authentication")
-
-
-def _is_proxy_blocked_init(output: str) -> bool:
-    """True iff `output` is the CC-web permanent proxy-403 on a third-party provider fetch.
-
-    Requires co-occurrence of a 403/Forbidden marker AND a github.com marker AND an
-    auth-checksum/"failed to retrieve" marker. Never a bare "403" substring check -- an
-    any()-over-tuple here would skip on ANY 403 (e.g. an S3/backend 403) and mask a genuine
-    failure (Decision 55).
-    """
-    return (
-        any(m in output for m in _PROXY_BLOCK_FORBIDDEN_MARKERS)
-        and any(m in output for m in _PROXY_BLOCK_HOST_MARKERS)
-        and any(m in output for m in _PROXY_BLOCK_CHECKSUM_MARKERS)
-    )
-
-
-# Both terraform roots are standalone (own provider + required_providers). terraform/ is
-# retained per CD.21 but no longer applied; terraform/personal/ is the applied root.
-# terraform/github/ is the isolated GitHub-settings module (human-gated local apply only -- T2.12).
-# terraform/bootstrap/ is the CI/CD bootstrap root (admin-only, NEVER auto-apply -- CD.35 Wave 4 / T2.23).
-_TERRAFORM_ROOTS = ("terraform", "terraform/personal", "terraform/github", "terraform/bootstrap")
 
 _DQ_FRESHNESS_SECONDS = 3600  # 1 hour
 
@@ -117,93 +95,39 @@ def run_precommit_checks(failed: list[str], *, all_files: bool, files: list[str]
 def run_lint_checks(failed: list[str], files: list[str] | None = None) -> None:
     if files is not None and not files:
         return
-    targets: list[str] = [f for f in files if f.endswith(".py")] if files is not None else ["src/", "tests/"]
+    targets: list[str] = [f for f in files if f.endswith(".py")] if files is not None else ["src/", "tests/", "scripts/"]
     if not targets:
         return
     _common.invoke_step("Lint (ruff check)", [_common.PYTHON, "-m", "ruff", "check"] + targets, failed)
     _common.invoke_step("Format check (ruff format)", [_common.PYTHON, "-m", "ruff", "format", "--check"] + targets, failed)
 
 
-def _file_budget_breach_rec(elapsed_s: float, diff_manifest: list[str], dominant_phase: str | None) -> None:
-    try:
-        from scripts.ops_data_portal import file_rec  # noqa: PLC0415
-
-        branch_r = _common.run(
-            ["git", "branch", "--show-current"], capture_output=True, text=True, encoding="utf-8", cwd=_common.ROOT
-        )
-        branch = branch_r.stdout.strip() or "unknown"
-        elapsed_min = elapsed_s / 60
-        manifest_summary = ", ".join(diff_manifest[:20]) + ("..." if len(diff_manifest) > 20 else "")
-        context = (
-            f"Fast-tier budget breach: {elapsed_min:.1f} min elapsed (limit 5 min). "
-            f"Branch: {branch}. Dominant phase: {dominant_phase or 'unknown'}. "
-            f"Diff manifest ({len(diff_manifest)} files): {manifest_summary}. "
-            f"Investigate which check caused the overrun and move it to the full tier or optimise it."
-        )
-        file_rec(
-            {
-                "title": f"Fast-tier budget breach ({elapsed_min:.1f} min) on {branch}",
-                "file": "scripts/validate.py",
-                "status": "open",
-                "source": "budget_breach",
-                "effort": "S",
-                "priority": "Medium",
-                "context": context,
-                "acceptance": "bin/venv-python -m scripts.validate --pre",
-                "risk": "low",
-                "automatable": False,
-            }
-        )
-    except Exception:  # noqa: BLE001
-        import traceback  # noqa: PLC0415
-
-        print(
-            f"WARNING: budget breach rec filing failed (NOT filed; no outbox -- re-file manually): {traceback.format_exc()}",
-            file=sys.stderr,
-        )
-
-
-def _file_budget_bypass_rec(elapsed_s: float | None, diff_manifest: list[str], reason: str | None) -> None:
-    try:
-        from scripts.ops_data_portal import file_rec  # noqa: PLC0415
-
-        branch_r = _common.run(
-            ["git", "branch", "--show-current"], capture_output=True, text=True, encoding="utf-8", cwd=_common.ROOT
-        )
-        branch = branch_r.stdout.strip() or "unknown"
-        manifest_summary = ", ".join(diff_manifest[:20]) + ("..." if len(diff_manifest) > 20 else "")
-        elapsed_part = f"{elapsed_s / 60:.1f} min" if elapsed_s is not None else "unknown"
-        context = (
-            f"Fast-tier budget assertion bypassed via --ignore-budget on branch {branch}. "
-            f"Elapsed: {elapsed_part}. Reason: {reason or 'none provided'}. "
-            f"Diff manifest ({len(diff_manifest)} files): {manifest_summary}. "
-            f"Repeated bypass (>= 3 in 7 days) triggers a soft alert in session_preflight."
-        )
-        file_rec(
-            {
-                "title": f"Fast-tier budget bypassed on {branch}",
-                "file": "scripts/validate.py",
-                "status": "open",
-                "source": "budget_bypass",
-                "effort": "S",
-                "priority": "Low",
-                "context": context,
-                "acceptance": "bin/venv-python -m scripts.validate --pre",
-                "risk": "low",
-                "automatable": False,
-            }
-        )
-    except Exception:  # noqa: BLE001
-        import traceback  # noqa: PLC0415
-
-        print(
-            f"WARNING: budget bypass rec filing failed (NOT filed; no outbox -- re-file manually): {traceback.format_exc()}",
-            file=sys.stderr,
-        )
+def _mirror_budget_notice_to_summary(title: str, message: str) -> None:
+    """Print a budget-gate notice and mirror it to CI's step summary (Decision 153). No rec, no exit."""
+    print(message)
+    if summary_path := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write(f"\n## {title}\n\n{message}\n")
 
 
 def _build_unit_test_cmd() -> list[str]:
-    """Return the pytest command for the 'Unit tests + coverage' step."""
+    """Return the pytest command for the 'Unit tests + coverage' step.
+
+    VTS-10/13 (audit validate-test-suite-4df4d48): full-tier parity with the fast tier's
+    _PYTEST_FLAGS -- adds -n auto (xdist parallelism) and the SAME fixed --randomly-seed in place
+    of "last" (rec-2653: a fixed integer seed overrides pyproject.toml's addopts
+    "--randomly-seed=last" so every -n auto worker resolves an identical collection order on a
+    cold .pytest_cache; validate_hermeticity_flags' widened guard and VP step 6's 5x consecutive
+    xdist-collection check both key off this same fixed seed) and --timeout/--timeout-method
+    (120s -- wider than the fast tier's 60s, since the full suite includes heavier/
+    integration-adjacent units the fast tier's requirements-fast.txt excludes). This is a
+    fast->full parity fix, not a double-add: distinct from A.1/Decision 153's
+    _mirror_budget_notice_to_summary and the budget-assertion branch, left untouched here.
+
+    --junitxml (ci-rca-identity-lifecycle): emits a junit XML report both tiers' full-suite run
+    can hand to scripts.ci_rca.evidence for v2 fingerprint cause-group parsing on a post-merge
+    failure. Additive to the hermeticity flags (validate_hermeticity_flags checks presence only).
+    """
     return [
         _common.PYTHON,
         "-m",
@@ -212,115 +136,17 @@ def _build_unit_test_cmd() -> list[str]:
         "-v",
         "-m",
         "not integration",
+        "-n",
+        "auto",
+        "--timeout",
+        "120",
+        "--timeout-method=thread",
+        f"--randomly-seed={_PYTEST_RANDOMLY_SEED}",
         "--cov=src",
         "--cov-report=term-missing",
         "--disable-socket",
-        "--randomly-seed=last",
+        "--junitxml=logs/debug/pytest-junit.xml",
     ]
-
-
-def _terraform_init_with_retry(label: str, cmd: list[str], failed: list[str]) -> str:
-    """Run a terraform init command with bounded retry on transient registry 5xx.
-
-    Returns one of four outcomes:
-    - "success": init succeeded; caller runs validate + fmt (never appends to failed).
-    - "proxy_blocked": permanent CC-web proxy-403 on a third-party provider's checksum fetch
-      (_is_proxy_blocked_init); caller must skip validate (deferred to the terraform-validate
-      CI job) but STILL run fmt-check (never appends to failed -- this is not a failure).
-    - "failed": genuine permanent failure; label is appended to failed, caller skips both.
-    - transient 5xx (_TRANSIENT_INIT_SIGNATURES): retried up to max_attempts before falling
-      through to "failed"; parity with the workflow retry loop.
-    Matches invoke_step output format for the step header.
-    """
-    print(f"\n=== {label} ===")
-    max_attempts = 3
-    for attempt in range(1, max_attempts + 1):
-        result = _common.run(cmd, capture_output=True, text=True, encoding="utf-8", cwd=_common.ROOT)
-        if result.returncode == 0:
-            print(result.stdout, end="")
-            return "success"
-        combined = result.stdout + result.stderr
-        if _is_proxy_blocked_init(combined):
-            print(combined, end="")
-            print(
-                f"SKIP: {label} -- CC-web outbound proxy blocks the third-party provider's "
-                "github.com checksum fetch (permanent, not retried). `terraform validate` for "
-                "this root is deferred to the required terraform-validate CI job; `terraform "
-                "fmt -check` still runs locally (no provider install needed)."
-            )
-            return "proxy_blocked"
-        is_transient = any(sig in combined for sig in _TRANSIENT_INIT_SIGNATURES)
-        if is_transient and attempt < max_attempts:
-            delay = 2**attempt
-            print(f"transient registry error (attempt {attempt}/{max_attempts}); retrying in {delay}s...")
-            print(combined, end="")
-            time.sleep(delay)
-            continue
-        print(combined, end="")
-        failed.append(label)
-        return "failed"
-    return "failed"  # pragma: no cover -- unreachable: loop body always returns on the final attempt
-
-
-def run_terraform_creds_free(failed: list[str], roots: tuple[str, ...] = _TERRAFORM_ROOTS) -> None:
-    """Credential-free terraform gate: init -backend=false + validate + fmt -check per root.
-
-    -backend=false skips backend initialisation (no AWS credentials required); validate and
-    fmt are offline operations. Tool-gated on terraform presence with a visible SKIP so the
-    check degrades cleanly where terraform is absent (the terraform-validate CI job enforces it).
-    This is the single source of truth for terraform validation -- both the full presubmit tier
-    and `--terraform-only` (CI) call it; there is no parallel/duplicate validation.
-    """
-    if not shutil.which("terraform"):
-        print("\n=== Terraform checks skipped (terraform not found in PATH) ===")
-        print("Terraform validate/fmt run in the terraform-validate CI job.")
-        return
-    for root in roots:
-        chdir = f"-chdir={root}"
-        outcome = _terraform_init_with_retry(
-            f"Terraform init [{root}]",
-            ["terraform", chdir, "init", "-backend=false", "-input=false", "-no-color"],
-            failed,
-        )
-        if outcome == "failed":
-            continue
-        if outcome == "success":
-            _common.invoke_step(f"Terraform validate [{root}]", ["terraform", chdir, "validate", "-no-color"], failed)
-        _common.invoke_step(f"Terraform fmt check [{root}]", ["terraform", chdir, "fmt", "-check", "-no-color"], failed)
-
-
-def run_terraform_checks(failed: list[str]) -> None:
-    """Full-presubmit terraform gate: creds-free checks on both roots, plus a creds-needing
-    drift check (plan -detailed-exitcode) on the applied terraform/personal root only."""
-    validate_terraform_try(failed)
-    run_terraform_creds_free(failed)
-    if not shutil.which("terraform"):
-        return
-    # Informational drift check on the APPLIED root only (terraform/ is no longer applied per
-    # CD.21). Creds-needing: re-init the local backend, then plan. Never blocks -- when creds or
-    # backend are unavailable the step degrades to a visible skip (Decision 60 actionable note).
-    print("\n=== Terraform changes pending check (terraform/personal, informational) ===")
-    init_res = _common.run(
-        ["terraform", "-chdir=terraform/personal", "init", "-input=false", "-no-color", "-reconfigure"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        cwd=_common.ROOT,
-    )
-    if init_res.returncode != 0:
-        print("Terraform plan skipped: backend/init unavailable (credentials missing) -- non-blocking.")
-        return
-    result = _common.run(
-        ["terraform", "-chdir=terraform/personal", "plan", "-detailed-exitcode", "-no-color", "-input=false"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        cwd=_common.ROOT,
-    )
-    if result.returncode == 2:
-        print("WARNING: Terraform changes pending in terraform/personal. Run `terraform apply` before merge.")
-    elif result.returncode not in (0, 2):
-        print("Terraform plan skipped or failed (credentials unavailable) -- non-blocking.")
 
 
 def run_dependency_checks() -> None:
@@ -339,23 +165,50 @@ def run_dependency_checks() -> None:
         print("Could not check outdated packages.")
 
 
-def ensure_fresh_dq_results(failed: list[str]) -> None:
-    """Auto-invoke data_quality_runner if logs/debug/dq-latest.json is missing or stale.
+# Named module-level credential-unavailability classifier (Decision 155/170), mirroring
+# scripts.ops_portal.reader_transient.is_reader_unavailable's isinstance-guarded-by-ImportError
+# plus message-fallback shape. botocore's credential exception TYPES are not reliably importable
+# at classify time (tests/validate/test_scaffold_gates.py stubs sys.modules["boto3"] with a bare
+# MagicMock precisely because boto3 -- and transitively botocore -- may be absent there), so the
+# isinstance tier degrades to nothing under that condition and the message-pattern tier carries
+# the discrimination instead. Deliberately narrow: this classifier decides whether ONE exception
+# means "credentials unavailable" -- it must never launder an unrelated bug (a real defect in
+# profile resolution or the STS call) into a silent skip.
+_CREDENTIAL_UNAVAILABLE_MESSAGE_RE = re.compile(
+    r"(token (has )?expired|profile.*(not found|could not be found)|unable to locate credentials|"
+    r"no credentials|unauthorized.*sso|token.*retriev|expiredtoken)",
+    re.IGNORECASE,
+)
 
-    Called during the presubmit tier so the DQ verifier sees fresh data instead
-    of SKIPPING on staleness or absence.
 
-    Decision 57: when SSO is unavailable, prints an actionable message and skips
-    rather than crashing.
-    """
-    print("\n=== Ensure fresh DQ results ===")
+def _is_credentials_unavailable(exc: BaseException) -> bool:
+    """True iff `exc` indicates AWS credentials are unavailable (expired/missing SSO token, an
+    unresolvable profile, or an STS ExpiredToken response) -- the Decision 57 auto-invoke's own
+    stated precondition, never a genuine bug elsewhere in the credential-check path."""
+    try:
+        import botocore.exceptions as _botocore_exceptions  # noqa: PLC0415
 
-    dq_file = _common.ROOT / "logs" / "debug" / "dq-latest.json"
+        if isinstance(exc, _botocore_exceptions.ClientError):
+            return exc.response.get("Error", {}).get("Code") == "ExpiredToken"
+        credential_types = (
+            _botocore_exceptions.NoCredentialsError,
+            _botocore_exceptions.ProfileNotFound,
+            _botocore_exceptions.UnauthorizedSSOTokenError,
+            _botocore_exceptions.TokenRetrievalError,
+        )
+        if isinstance(exc, credential_types):
+            return True
+    except ImportError:
+        pass
+    return bool(_CREDENTIAL_UNAVAILABLE_MESSAGE_RE.search(str(exc)))
 
+
+def _ensure_fresh_dq_body(failed: list[str], dq_file: Path) -> None:
     if dq_file.exists():
         age_seconds = time.time() - dq_file.stat().st_mtime
         if age_seconds <= _DQ_FRESHNESS_SECONDS:
             print(f"DQ cache fresh ({age_seconds / 60:.1f}m old) -- skipping data_quality_runner.")
+            registry.skipped("DQ cache fresh -- runner not needed")
             return
         print(f"DQ cache stale ({age_seconds / 3600:.1f}h old) -- re-running data_quality_runner.")
     else:
@@ -368,14 +221,39 @@ def ensure_fresh_dq_results(failed: list[str]) -> None:
 
         profile = resolve_aws_profile(default="agent_platform")
         boto3.Session(profile_name=profile).client("sts", region_name="eu-west-2").get_caller_identity()
-    except Exception:
-        print(
-            "AWS credentials not available -- skipping data_quality_runner auto-invoke. "
-            "Ensure AWS credentials are configured to enable DQ refresh (Decision 57)."
-        )
+    except Exception as exc:  # noqa: BLE001 -- discrimination is the point; see constraint 5a.
+        if _is_credentials_unavailable(exc):
+            print(
+                "AWS credentials not available -- skipping data_quality_runner auto-invoke. "
+                "Ensure AWS credentials are configured to enable DQ refresh (Decision 57)."
+            )
+            registry.skipped(f"AWS credentials unavailable: {type(exc).__name__}")
+        else:
+            print(f"FAIL: unexpected error checking AWS credentials: {type(exc).__name__}: {exc}")
+            failed.append(f"Ensure fresh DQ results: unexpected credential-check error ({type(exc).__name__}: {exc})")
         return
 
+    registry.examined(1, unit="dq_refresh_invocations")
     _common.invoke_step("Data quality runner", [_common.PYTHON, "-m", "scripts.data_quality_runner"], failed)
+
+
+def ensure_fresh_dq_results(failed: list[str]) -> None:
+    """Auto-invoke data_quality_runner if logs/debug/dq-latest.json is missing or stale.
+
+    Called during the presubmit tier so the DQ verifier sees fresh data instead
+    of SKIPPING on staleness or absence.
+
+    Decision 57: when credentials are unavailable, prints an actionable message and skips rather
+    than crashing. Decision 170: wrapped in registry.outcome_scope so this scaffold's declared
+    outcome (skip / examined / undeclared-turned-failed) is harvested into the run's accounting
+    evidence alongside every registered check's.
+    """
+    print("\n=== Ensure fresh DQ results ===")
+    dq_file = _common.ROOT / "logs" / "debug" / "dq-latest.json"
+    before = len(failed)
+    with registry.outcome_scope("ensure_fresh_dq", kind="scaffold"):
+        _ensure_fresh_dq_body(failed, dq_file)
+    validation_result.record_scaffold_outcome("ensure_fresh_dq", before, failed)
 
 
 def run_coverage_check(changed_files: list[str] | None = None) -> None:
@@ -413,168 +291,3 @@ def run_coverage_check(changed_files: list[str] | None = None) -> None:
     for f in uncovered:
         print(f"  - {f}")
     print("\n(Advisory only -- this does not fail the build.)")
-
-
-# --- Fast-tier heavy-dependency test deferral (rec-2485, Decision 104) ---
-#
-# requirements-fast.txt (the pr-validate CI job) deliberately omits heavy wheels
-# (torch/pandas/numpy/pyarrow/duckdb/etc, ~3GB dominant per .github/workflows/ci.yml:49-59).
-# A handful of test files import one of these at module scope, so they can never be
-# collected under the fast tier -- that is a structural, not a regression, signal (Google
-# TAP / Bazel precedent: SKIPPED-dep-unavailable is distinct from FAILED). The classifier
-# below positively identifies that ONE shape and defers it to main-validate (full tier,
-# post-merge); every other collection error or test failure stays hard-red (fail-closed).
-
-# Curated dist-name -> import-name aliases for names that differ; default is
-# name.lower().replace("-", "_").
-_DIST_TO_IMPORT_ALIASES: dict[str, str] = {
-    "scikit-learn": "sklearn",
-    "psycopg2-binary": "psycopg2",
-    "beautifulsoup4": "bs4",
-    "python-ulid": "ulid",
-}
-
-_NO_MODULE_NAMED_RE = re.compile(r"No module named ['\"]([\w.]+)['\"]")
-
-
-def _parse_requirement_dist_names(path: Path) -> set[str]:
-    """Parse a requirements file into bare distribution names.
-
-    Strips comments, extras (`[...]`), environment markers (after `;`), and version specifiers.
-    """
-    names: set[str] = set()
-    if not path.exists():
-        return names
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        line = re.sub(r"\[[^\]]*\]", "", line)
-        line = line.split(";", 1)[0].strip()
-        name = re.split(r"[<>=!~]", line, maxsplit=1)[0].strip()
-        if name:
-            names.add(name)
-    return names
-
-
-def _dist_to_import_name(dist_name: str) -> str:
-    return _DIST_TO_IMPORT_ALIASES.get(dist_name, dist_name.lower().replace("-", "_"))
-
-
-def _excluded_heavy_import_names() -> set[str]:
-    """Import names deliberately excluded from the fast tier.
-
-    Derived at runtime as (requirements.txt distributions) - (requirements-fast.txt
-    distributions), no hard-coded dep list (rec-2485 acceptance).
-    """
-    full = _parse_requirement_dist_names(_common.ROOT / "requirements.txt")
-    fast = _parse_requirement_dist_names(_common.ROOT / "requirements-fast.txt")
-    return {_dist_to_import_name(dist) for dist in full - fast}
-
-
-def _excluded_and_absent(missing: str | None, excluded: set[str]) -> str | None:
-    """Return `missing`'s top-level module name if it's a deliberately-excluded, genuinely-absent
-    heavy dependency (both conditions checked); otherwise None."""
-    if not missing:
-        return None
-    top_level = missing.split(".")[0]
-    if top_level in excluded and importlib.util.find_spec(top_level) is None:
-        return top_level
-    return None
-
-
-def _runtime_heavy_dep_defer_reason(test_file: str, excluded: set[str]) -> str | None:
-    """Run a single collectible test file for real, in isolation; return the excluded heavy-dep
-    name if ANY failure in it traces to a genuinely-absent heavy dependency.
-
-    Catches the shape `--collect-only` cannot see: a dependency imported lazily inside a test or
-    the production code it exercises (function scope, not module scope), which only raises
-    ModuleNotFoundError when the specific test actually runs. Isolated (one file, one process)
-    so a mid-run ModuleNotFoundError in one test cannot leave shared fixture/mock state that
-    manifests as unrelated-looking failures in later tests within the same file -- deferring
-    the whole file on ANY such hit (not requiring every failure to match) is what makes that
-    safe: once the file is known to need a missing dependency, downstream failures in the same
-    isolated run aren't independently meaningful.
-    """
-    result = _common.run(
-        [_common.PYTHON, "-m", "pytest", test_file, "-m", "not integration", "-q"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        cwd=_common.ROOT,
-    )
-    if result.returncode == 0:
-        return None
-    combined = (result.stdout or "") + (result.stderr or "")
-    for match in _NO_MODULE_NAMED_RE.findall(combined):
-        found = _excluded_and_absent(match, excluded)
-        if found:
-            return found
-    return None
-
-
-def partition_changed_tests_by_collectability(changed_tests: list[str]) -> tuple[list[str], list[tuple[str, str]]]:
-    """Partition changed test files into (runnable, deferred) (Decision 104 / rec-2485).
-
-    A file defers when EITHER: its `--collect-only` root-cause ModuleNotFoundError names a
-    deliberately-excluded heavy dependency (in requirements.txt, not requirements-fast.txt) that
-    is genuinely absent (`importlib.util.find_spec` is None); OR -- for a file that collects fine
-    -- an isolated real run of it fails with that same signature, catching a heavy dependency
-    imported lazily at runtime rather than at module scope (see `_runtime_heavy_dep_defer_reason`).
-    Every other shape -- a real test failure, a non-heavy collection/runtime error, or an error
-    with no "No module named" line at all -- routes to `runnable`, so the subsequent real pytest
-    run reproduces and reddens the genuine failure with full diagnostics (fail-closed).
-    """
-    excluded = _excluded_heavy_import_names()
-    runnable: list[str] = []
-    deferred: list[tuple[str, str]] = []
-    for test_file in changed_tests:
-        result = _common.run(
-            [_common.PYTHON, "-m", "pytest", "--collect-only", "-q", test_file, "-m", "not integration"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            cwd=_common.ROOT,
-        )
-        if result.returncode != 0:
-            combined = (result.stdout or "") + (result.stderr or "")
-            matches = _NO_MODULE_NAMED_RE.findall(combined)
-            missing = _excluded_and_absent(matches[-1], excluded) if matches else None
-            if missing:
-                deferred.append((test_file, missing))
-            else:
-                runnable.append(test_file)
-            continue
-        runtime_missing = _runtime_heavy_dep_defer_reason(test_file, excluded)
-        if runtime_missing:
-            deferred.append((test_file, runtime_missing))
-        else:
-            runnable.append(test_file)
-    return runnable, deferred
-
-
-def run_pytest_diff(changed_tests: list[str], failed: list[str]) -> None:
-    """Orchestrate the --pre pytest-diff step: partition, warn, run, and report (Decision 104).
-
-    Partitions changed_tests into (runnable, deferred); prints a loud un-swallowable warning
-    per deferred file naming the file and its missing dependency; runs pytest ONLY on the
-    runnable subset (preserving the exit-5/Decision 55 backstop on that subset); does NOT
-    redden the gate when every changed test file legitimately defers.
-    """
-    if not changed_tests:
-        return
-    runnable, deferred = partition_changed_tests_by_collectability(changed_tests)
-    for test_file, missing_dep in deferred:
-        print(
-            f"\n=== DEFERRED TO FULL TIER (main-validate) ===\n"
-            f"{test_file}: cannot run under the fast tier -- dependency '{missing_dep}' is "
-            "deliberately excluded from requirements-fast.txt. main-validate (full tier) runs "
-            "this file post-merge; a genuine failure there files a source=ci_rca critical rec."
-        )
-    if not runnable:
-        print(f"\nAll {len(deferred)} changed test file(s) deferred to the full tier -- fast-tier gate not reddened.")
-        return
-    print("\n=== Tests (pytest -- explicit changed files) ===")
-    pytest_result = _common.run([_common.PYTHON, "-m", "pytest", *runnable, "-m", "not integration", "-v"], cwd=_common.ROOT)
-    if pytest_result.returncode != 0:
-        failed.append("Tests (pytest)")

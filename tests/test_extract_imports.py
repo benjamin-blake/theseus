@@ -1,5 +1,6 @@
 """Tests for scripts/extract_imports.py — AST-based src.* import extraction."""
 
+import ast
 import importlib.util
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ sys.modules["extract_imports"] = _extract_imports  # register so patch() can fin
 extract_src_imports = _extract_imports.extract_src_imports
 extract_first_party_imports = _extract_imports.extract_first_party_imports
 _resolve_relative_import = _extract_imports._resolve_relative_import
+_walk_source = _extract_imports._walk_source
 
 
 class TestExtractSrcImports:
@@ -188,6 +190,24 @@ class TestResolveRelativeImport:
         result = _resolve_relative_import(f, level=1, module="sub", roots=("src", "scripts"), repo_root=tmp_path)
         assert result is None
 
+    def test_level_above_the_root_package_returns_none(self, tmp_path: Path) -> None:
+        """'from .. import x' in a top-level module of a root escapes the root -- no resolution.
+
+        src/mod.py sits directly under the 'src' root, so its package chain is just ['src'];
+        level=2 asks for src's own parent, which is not a first-party module.
+        """
+        (tmp_path / "src").mkdir()
+        f = tmp_path / "src" / "mod.py"
+        result = _resolve_relative_import(f, level=2, module="sibling", roots=("src",), repo_root=tmp_path)
+        assert result is None
+
+    def test_level_above_the_root_package_is_dropped_end_to_end(self, tmp_path: Path) -> None:
+        """The unresolvable relative import contributes no module name to the extraction."""
+        (tmp_path / "src").mkdir()
+        f = tmp_path / "src" / "mod.py"
+        f.write_text("from .. import sibling\nfrom src.other import thing\n", encoding="utf-8")
+        assert extract_first_party_imports(f, roots=("src",), _repo_root=tmp_path) == ["src.other"]
+
 
 class TestMain:
     """Tests for the CLI entry point."""
@@ -217,3 +237,47 @@ class TestMain:
             sys.argv = original_argv
         captured = capsys.readouterr()
         assert captured.out.strip() == "src.common.config\nsrc.data.writer"
+
+
+class TestWalkSource:
+    """_walk_source is the read+parse+walk seam split out of extract_first_party_imports so that
+    function's own branch count stays under the Decision 43 cyclomatic limit."""
+
+    def test_returns_walked_nodes_for_a_readable_file(self, tmp_path: Path) -> None:
+        """A parseable file yields its walked AST nodes."""
+        f = tmp_path / "sample.py"
+        f.write_text("import src.common.config\n", encoding="utf-8")
+        assert any(isinstance(n, ast.Import) for n in _walk_source(f))
+
+    def test_returns_none_for_a_missing_file(self, tmp_path: Path) -> None:
+        """An unreadable path is reported as None, not an empty walk."""
+        assert _walk_source(tmp_path / "ghost.py") is None
+
+    def test_returns_none_for_an_unparseable_file(self, tmp_path: Path) -> None:
+        """A syntax error is reported as None, not an empty walk."""
+        f = tmp_path / "bad.py"
+        f.write_text("def broken(:\n    pass\n", encoding="utf-8")
+        assert _walk_source(f) is None
+
+
+class TestPreWalkedNodes:
+    """The `_nodes` seam lets a caller that already read, parsed and walked the file
+    (build_graph) skip a second read+parse+walk of the same bytes."""
+
+    def test_pre_walked_nodes_are_used_instead_of_reading_the_file(self, tmp_path: Path) -> None:
+        """No file is written: the walked nodes alone drive extraction."""
+        absent = tmp_path / "never_written.py"
+        nodes = list(ast.walk(ast.parse("import src.common.config\nfrom scripts.helper import do\n")))
+        assert extract_first_party_imports(absent, _nodes=nodes) == ["src.common.config", "scripts.helper"]
+
+    def test_pre_walked_nodes_yield_the_same_result_as_reading(self, tmp_path: Path) -> None:
+        """Relative imports still resolve against file_path when the nodes are supplied."""
+        pkg = tmp_path / "src" / "pkg"
+        pkg.mkdir(parents=True)
+        f = pkg / "mod.py"
+        source = "from . import sibling\nfrom src.other import thing\n"
+        f.write_text(source, encoding="utf-8")
+        from_disk = extract_first_party_imports(f, _repo_root=tmp_path)
+        from_nodes = extract_first_party_imports(f, _repo_root=tmp_path, _nodes=list(ast.walk(ast.parse(source))))
+        assert from_nodes == from_disk
+        assert "src.pkg.sibling" in from_nodes

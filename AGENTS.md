@@ -1,7 +1,6 @@
 # AGENTS.md — ML Trading System
 
-Universal rules for Claude Code. Auto-loaded into every session.
-For full project context (AWS config, file router, recommendation schema, gotchas), see `docs/PROJECT_CONTEXT.md` — workflows load it on demand; you don't need it ambiently.
+Universal rules. For full project context, see `docs/PROJECT_CONTEXT.md` on demand.
 
 ## PUBLIC repository / confidential-data boundary
 
@@ -12,26 +11,37 @@ This repository is PUBLIC (Decisions 73, 83, 101). Public-content boundary (Deci
 - The pre-commit `never-commit` hook (shape-pattern) blocks 12-digit AWS account IDs, secret-like strings, and ExternalId patterns from reaching the repo.
 
 ## Role and environment
-You are a Lead Software Developer writing production-quality Python. The user is a sole developer building a self-improving automated trading system on AWS. Primary dev surface: Claude Code on the web (CC-web; Linux container, Ubuntu 24.04). PySR formula discovery runs on a separate compute node. Bash is the primary shell in all agent-facing contexts.
+You are a Lead Software Developer writing production-quality Python. Primary dev surface: Claude Code on the web
+(CC-web; Ubuntu 24.04). PySR runs on a separate compute node. Bash is the primary shell.
 
 ## Code style
 - Python 3.12+, type hints required, `async` for I/O.
+- Every behavior-changing code, script, workflow, hook, or configuration edit must add or update
+  an automated test that fails without the change; running an existing suite is not a substitute.
 - ruff formatting; line length 127.
-- No emojis in code, scripts, or documentation. Use plain ASCII hyphens (`-`) instead of em dashes — Windows console encoding mangles them.
+- No emojis in code, scripts, or documentation. Use plain ASCII hyphens (`-`) instead of em dashes.
 - Default to no comments. Only add a comment when the *why* is non-obvious.
 - Use Bash syntax in scripts; never emit PowerShell unless explicitly asked.
 
 ## Shell invocations
-- Always invoke `bin/venv-python` instead of `python` or `python3`. The wrapper auto-detects the platform (Linux/macOS or Windows) and resolves to the correct venv binary.
+- Always invoke `bin/venv-python` instead of `python` or `python3`.
 - Each Bash tool invocation is independent -- do not rely on `source .venv/bin/activate` or `source .venv/Scripts/activate`; use `bin/venv-python` directly instead.
 
 ## Safety
 - Never `eval()` or `exec()`. Use `sympy.sympify()` + `sympy.lambdify()` for formula evaluation.
 - Never raise exceptions during module import. Defer validation to explicit calls.
 - Always wrap `filemd5()` and `file()` Terraform calls on optional artifacts with `try()`.
-- Terraform apply model: see `docs/contracts/environment-taxonomy.md` (Axis A + Guard classification subsection) -- that file is the sole SoT. Short form: sandbox auto-applies behind the deterministic guard (Decision 77); in-budget IAM inline-policy/attachment UPDATEs on managed boundary-carrying roles now auto-apply (T2.25 / Decision 92 point 5); trust/destroy/out-of-budget IAM route to the `tf-gated-apply` Environment. Bootstrap root is admin-only out-of-band.
+- Terraform apply model: see `environment-taxonomy.yaml` (Axis A + Guard classification subsection) -- that file is the sole SoT. Short form: sandbox auto-applies behind the deterministic guard (Decision 77); in-budget IAM inline-policy/attachment UPDATEs on managed boundary-carrying roles now auto-apply (T2.25 / Decision 92 point 5); trust/destroy/out-of-budget IAM route to the `tf-gated-apply` Environment. Bootstrap root is admin-only out-of-band.
+- **Deployment model (Decision 126):** three agent intents, one trigger each -- infra = open a PR touching `terraform/**`, CI plans and applies; code = the governed code-deploy channel (Terraform not involved); red/drift = run the one-input Reconcile action. Agents never run terraform apply as a self-directed, routine action -- the sole exception is the human-gated break-glass admin tier (below/`terraform/CLAUDE.md`), where a human reviews and explicitly directs the apply before an agent executes it; operators may always invoke it directly. See `docs/contracts/deploy-paths.yaml` for the full intent -> trigger -> recovery index (it points at, and never restates, this file's apply-model/guard rules).
+- **Lambda deploy channel (Decision 125/126):** the five DuckLake Lambdas' code is decoupled from `terraform/personal` infra apply as of #544 (see `environment-taxonomy.yaml` (conformance) and `docs/contracts/build-lambda.yaml`'s `deploy_channels`) and deploy through a governed code-deploy CD channel; `bin/venv-python -m scripts.build_lambda --ducklake-only --deploy` is break-glass-only, never the routine default. See `docs/contracts/deploy-paths.yaml` for the authoritative channel status. Heuristic: when a production action (e.g. a Lambda code deploy) is auto-denied or has no obvious in-session path, check `docs/contracts/deploy-paths.yaml` first, then grep `.github/workflows/` for a governed CD path before falling back to a local permission grant.
 - Windows subprocess: pass `encoding='utf-8', errors='replace'` with `text=True`. Use `sys.executable` — not the string `'python'` or `'pip'`.
 - Only modify files explicitly in scope. Out-of-scope bugs become recommendations via `scripts/ops_data_portal.py`, not inline fixes.
+
+## SLOC governance -- decompose by default, don't raise (Decision 128, amends Decision 102)
+- The 500-SLOC-per-file limit (`config/sloc_budgets.yaml`, `validate_sloc_limits`) is load-bearing (rationale: Decision 128) -- a raise is never a frictionless edit.
+- **When a change pushes a file past its budget (or past 500 for an unregistered file), decompose it** into a facade package (Decision 80/104/124 pattern: `__init__.py` facade re-exporting the full public surface, cohesive submodules each under budget) -- this is the default response, not a raise.
+- A budget raise is a deliberate, reviewable exception: the entry line in `config/sloc_budgets.yaml` must carry an inline `# raise-approved: dec-NNN <reason>` marker naming a real `## Decision NNN:` header that AUTHORIZES the entry (Decision 165) -- `validate_sloc_budget_raises` fails the PR on any unmarked increase, new >500-SLOC registration, or unauthorized marker; decreases and removals are always unrestricted.
+- `--update-sloc-budgets` never auto-seeds a newly-oversized, unregistered file -- decompose it, or register it deliberately with the marker.
 
 ## Branching — never edit or commit on `main`
 **Hard rule: do not run `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, or any `git commit` / `git push` command while the current branch is `main`.** If you're on main, the only allowed actions are read-only commands and creating a new branch. See `## Git-ops procedure` for the full branching topology.
@@ -41,26 +51,16 @@ You are a Lead Software Developer writing production-quality Python. The user is
 - A `PreToolUse` hook at `.claude/hooks/never_on_main.py` enforces this at the harness level: it blocks `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, and `Bash(git commit/push ...)` while on `main`. Other Bash commands (e.g. `git status`, `ls`) still run.
 
 ## Temporary Operational Constraints
-<!-- REVERSAL: Delete this entire section when (a) telemetry Athena tables confirmed
-     operational end-to-end and (b) Lambda dispatcher re-enabled per the runbook below. -->
-- **STRATEGIC plans suspended:** STRATEGIC plans are decomposed by `/implement` into atomic
-  recommendations (via `file_rec`) that the autonomous executor (`scripts/execute_recommendation.py`)
-  consumes from the queue. While the executor is paused pending CD.17 reversal, those
-  recommendations have no consumer, so authoring STRATEGIC plans produces dead work. The
-  block is enforced at planning time -- `/plan`'s Step 12d, the planning skill's Complexity
-  Assessment, and the plan-critique skill all refuse STRATEGIC plan-type declarations during
-  this window. During this window all plans must be IMPLEMENTATION type. The planning skill's
-  complexity heuristic (>5 files or >8 steps) is suspended -- author the work as a single
-  larger IMPLEMENTATION plan OR split it into multiple atomic IMPLEMENTATION plans yourself.
-  Restores when CD.17 / T4.2 reverses. (Note: Decision 67's Lambda-deploy clause was lifted by Decision 79; the STRATEGIC clause survives here.)
-- **Lambda deployment -- per-Lambda gating (Decision 79, CD.16 + CD.24):** The blanket Lambda-deploy
-  freeze from Decision 67 is lifted. Plans are gated per Lambda artifact, not blanket. Use
-  `bin/venv-python -m scripts.lambda_manifest --list-patterns` to identify Lambda-packaged files and
-  `compute_affected_artifacts(changed_files)` to determine which active artifacts require build/deploy/smoke-test.
-  Active artifacts (`status: active` in `src/lambdas/<slug>/manifest.yaml`) must include per-Lambda
-  build + deploy + smoke-test steps (V3 tier). Stub artifacts (`status: stub`) need no deploy step.
-  `config/agent/` is NOT Lambda-packaged. Decision 67's STRATEGIC-plan clause is RETAINED (see above).
-- **T2.12 security gate (CD.20) -- apply landed; branch protection + Dependabot live (Decision 83):** `terraform/github/` human-gated local apply landed 2026-06-08. Confirmed live via GitHub API: `main-protection` ruleset (active, admin bypass actor, non-wedging: strict=false, required = pr-validate + terraform-validate, terraform-converged advisory) and Dependabot (5 active branches). GHAS secret-scanning, push protection, and Actions permissions: apply landed per `repo.tf` / committed `.github/`, and are continuously live-verified by the standing `ghas-probe` monitor (`.github/workflows/ghas-probe.yml`, ULF-01) -- dated evidence is recorded on Decision 83. CodeQL is verified separately via its own green `codeql.yml` runs (not covered by the ghas-probe monitor).
+- **STRATEGIC plans suspended (Decision 67):** during this window all plans must be
+  IMPLEMENTATION type -- STRATEGIC plan-type declarations are refused (enforced by /plan,
+  the planning skill, and plan-critique). The planning skill's complexity heuristic (>5 files
+  or >8 steps) is also suspended -- author the work as a single larger IMPLEMENTATION plan OR
+  split it into multiple atomic IMPLEMENTATION plans yourself. Restores when CD.17 / T4.2
+  reverses.
+- **Lambda deployment -- per-Lambda gating (Decision 79, CD.16 + CD.24):** gating is per-Lambda,
+  not blanket. Active artifacts (`status: active` in `src/lambdas/<slug>/manifest.yaml`) require
+  build + deploy + smoke-test (V3 tier); stub artifacts do not. `config/agent/` is NOT
+  Lambda-packaged. See the planning skill for the affected-artifact detection method.
 
 ## Memory policy — CLAUDE.md is canonical persistence
 Do **not** write to the auto-memory system (`~/.claude/projects/.../memory/`) in this project. The user's persistence model is git-tracked CLAUDE.md files (root + per-directory) plus structured logs (`docs/SESSION_LOG.md`, `docs/DECISIONS.md`, `logs/.recommendations-log.jsonl`).
@@ -82,16 +82,13 @@ skills, slash commands -- are optimised for agent loading efficiency, not human 
   source. This produces a second surface that agents must sync, which is drift by design.
 - When two design approaches are equally valid and one is more machine-parseable, choose
   machine-parseable.
-- Precision Context Injection: for fields requiring LLM judgment (title, context, acceptance),
-  surface the authoritative field semantics before the agent composes the value -- not as a
-  post-rejection error. Call `get_rec_write_guidance()` before `file_rec()`. Anti-pattern:
-  storing semantics only in ops.yaml without surfacing them at agent write time produces
-  structurally-valid but semantically-thin content from agents without prior context.
+- Precision Context Injection: call `get_rec_write_guidance()` before `file_rec()` so
+  LLM-judgment fields (title, context, acceptance) get authoritative field semantics before
+  composition, not as a post-rejection error (rationale: Decision 66).
 - No new standing prose-architecture docs (Decision 86): forward intent to tier_items,
   rationale to Decisions, field semantics to contracts. Creating docs/INTENT-*.md or any
   equivalent standing prose-architecture doc under docs/ is forbidden. The validate.py
-  intent-doc-freeze guard enforces this on-disk. Existing INTENT docs are grandfathered via
-  docs/intent-migration/MANIFEST.yaml and retire as extraction waves complete.
+  intent-doc-freeze guard enforces this on-disk.
 
 ## Skills and slash commands
 
@@ -102,12 +99,18 @@ Decision 90 four-tier workflow (end-goal: /orient -> /plan -> /implement -> /dev
 - `/develop-executor` — supervisor for executor (Lambda) development.
 - `/audit` — composes a self-contained audit prompt (`docs/audit-prompts/AUDIT-{slug}.md`) for a high-capability model to execute in a fresh session; deep recon + zero-context subagent verification happen in the composing session so the expensive model pays only for judgment. Performs no audit itself. Invokes the `audit-prompt` skill.
 
+`/overseer` is an orchestration meta-layer, not a fifth tier: it composes the existing `/plan`
+and `/implement` subagents to drive an entire platform roadmap item or audit to completion largely
+unattended, with the human gating intake and completion. It never bypasses the four-tier workflow
+above or the Decision 67 executor freeze -- it is interactive/human-gated, IMPLEMENTATION-only, and
+does not consume the recommendation queue. Invokes the `overseer` skill.
+
 When a slash command instructs you to "apply" or "invoke" a skill, use the `Skill` tool — do **not** manually `Read` `SKILL.md` files. The Skill tool loads them on demand.
 
 ## Operational data governance — Single Portal Invariant
 All recommendation and decision writes go through `python -m scripts.ops_data_portal`. Never `Edit` or `Write` to `logs/.recommendations-log.jsonl` or `logs/.decisions-index.jsonl` directly -- `validate.py` will fail CI. Recommendation IDs are allocated BY THE WRITER atomically with the insert (`file_ops`, Decision 84 I-2) -- never client-side; decision numbering authority is `DECISIONS.md` (callers supply `decision_id`). The local JSONL files are read-only caches.
 
-Agent surface is three functions: `file_rec`, `update_rec`, `sync`. Do not call `sync_ops`, `ops_writer`, or any drain/compact/pull CLIs directly. Portal calls require the `agent_platform` (PlatformDev) assume-role profile to reach the reader/writer Function URLs. If unreachable, confirm the chain with `aws sts get-caller-identity --profile agent_platform` (the session-start hook `.claude/hooks/session_start_aws.sh` reports this each session); locally, refresh the `agent_static` key if it has been rotated. There is no SSO login in the static-key model. A write that cannot complete FAILS LOUDLY at the call site -- there is no offline outbox (Decision 84 I-4); re-file after restoring connectivity.
+Agent surface is three functions: `file_rec`, `update_rec`, `sync`. Do not call `sync.ops`, `ops_writer`, or any drain/compact/pull CLIs directly. Portal calls require the `agent_platform` (PlatformDev) assume-role profile to reach the reader/writer Function URLs. If unreachable, confirm the chain with `aws sts get-caller-identity --profile agent_platform` (the session-start hook `.claude/hooks/session_start_aws.sh` reports this each session); locally, refresh the `agent_static` key if it has been rotated. There is no SSO login in the static-key model. A write that cannot complete FAILS LOUDLY at the call site -- there is no offline outbox (Decision 84 I-4); re-file after restoring connectivity.
 
 ## Warehouse-as-source-of-truth invariant
 This is an append-only lakehouse. The warehouse is the single source of truth for all operational data; local files are never upstream of it.
@@ -119,13 +122,44 @@ This is an append-only lakehouse. The warehouse is the single source of truth fo
 Local files have exactly two valid roles:
 
 1. **Legacy staging outbox** (`logs/.ops-outbox/`) — survives ONLY for the not-yet-migrated OpsWriter paths (telemetry, session_log, execution_plans) and retires with them. Migrated-table dirs and `*_pending` dirs are never drained (Decision 84 I-4); the recs/decisions pending outboxes are deleted.
-2. **Read cache** (`logs/.recommendations-log.jsonl`, `logs/.decisions-index.jsonl`) — derivative projection rebuilt FROM the warehouse via `sync_ops pull` (all migrated tables from the DuckLake reader). Downstream of the warehouse, never upstream.
+2. **Read cache** (`logs/.recommendations-log.jsonl`, `logs/.decisions-index.jsonl`) — derivative projection rebuilt FROM the warehouse via `sync.ops pull` (all migrated tables from the DuckLake reader). Downstream of the warehouse, never upstream.
 
-**Hard rule: a read cache is never a write source.** Reading any file in `logs/` and calling `OpsWriter.write()` (or otherwise putting data into S3 staging) is the CRUD anti-pattern in lakehouse clothing. The Iceberg-DELETE-resurrection caveat below is scoped to the still-Iceberg tables: Iceberg DELETE only removes a snapshot; if the same row is restaged from a stale local file on any clone, runner, or worktree, it is re-injected as a new append and wins the SCD2 dedupe (because `_prepare_record` refreshes `last_updated_timestamp = now`). The result is an infinite resurrection loop where deletes never stick. (`ops_recommendations` on DuckLake is not Iceberg-snapshot-based, but the same "never re-stage from a read cache" rule applies -- recs writes go only through the writer.)
+**Hard rule: a read cache is never a write source.** Reading any file in `logs/` and calling
+`OpsWriter.write()` (or otherwise putting data into S3 staging) is the CRUD anti-pattern in
+lakehouse clothing. The Iceberg-DELETE-resurrection mechanism that makes this dangerous on the
+still-Iceberg tables is recorded in Decision 84 (`ops_recommendations` on DuckLake is not
+Iceberg-snapshot-based, but the same rule applies -- recs writes go only through the writer).
 
 The legitimate write paths are: (a) `file_rec` / `update_rec` portal calls, and (b) ETL from a non-warehouse source of truth (e.g., `DECISIONS.md` -> `ops_decisions`). Anything else that ends in `OpsWriter.write()` must be reviewed for replay-from-cache violations.
 
-If a clone or runner shows stale data, an operator may rebuild that environment's local cache by running `python -m scripts.sync_ops sync` (which pulls every migrated table from the DuckLake reader and overwrites local). Never fix drift by re-staging from the local file.
+If a clone or runner shows stale data, an operator may rebuild that environment's local cache by running `python -m scripts.sync.ops sync` (which pulls every migrated table from the DuckLake reader and overwrites local). Never fix drift by re-staging from the local file.
+
+## Data-modeling default
+Before designing any table, decide **grain first** -- "one row per ___" -- then pick a write mode. This is
+not a CRUD default: never design a table as "one row per entity, mutate in place." Full rules, the
+write-mode table, and index pointers live in `docs/contracts/data-modeling-standard.yaml`; this is the
+ambient summary.
+
+- **Grain first.** Name the grain in one sentence before anything else (e.g. "one row per rec_id",
+  "one row per event_id"). If you cannot state the grain, you are not ready to pick a write mode.
+- **Write-mode branch (not "default to SCD2"):**
+  - **SCD2** (history table + Type-1 current projection) for mutable-entity ops tables -- rows that get
+    updated over their lifetime (e.g. `ops_priority_queue`, `ops_session_log`, `ops_execution_plans`).
+  - **append_only** (history-only event journal, no current projection) for event/telemetry tables --
+    insert-once rows that are never mutated (e.g. `ops_smoke_events`, the telemetry_* tables).
+  - **append_only is the design default/prior, NOT a ban** on sanctioned exceptional physical deletes
+    (Decision 70) or lifecycle-closure paths (Decision 103) -- those remain legitimate, scoped exceptions.
+- **Identity**: ULID, minted once at the write boundary (never client-side, never a natural-key PK),
+  propagated to children as FKs.
+- **Merge-on-business-key**: SCD2 merges key off the table's business key, not a surrogate row id.
+- **Partition every table** (CD.9) -- no unpartitioned table, event-time for append_only, mutation-time
+  for SCD2 current/history as appropriate.
+- **A read cache is never a write source** (see Warehouse-as-source-of-truth invariant above).
+
+At design time (planning a table, a `field_semantics` entry, or a warehouse write path), the `planning`
+skill's Data-Model Assessment walks grain -> merge_key/history-current -> identity -> join keys -> write
+mode -> partitioning -> reject-CRUD checklist -> Fable escalation for load-bearing calls. See
+`docs/contracts/data-modeling-standard.yaml`.
 
 ## Git-ops procedure
 
@@ -144,7 +178,7 @@ Canonical authority for all agent and session git-ops. All other surfaces (skill
 | Tier | When | Command | Gate |
 |---|---|---|---|
 | Fast (`--pre`) | PR / edit loop | `bin/venv-python -m scripts.validate --pre` | Authoritative pre-merge gate when run by PR CI (Decision 73); advisory only when run outside CI |
-| Full | Post-merge on `main` | `bin/venv-python -m scripts.validate` | A failure spawns a `source=ci_rca`, `priority=critical` rec (forward-fix, never auto-revert); see CI-failure / RCA-first protocol in `## Merge protocol` |
+| Full | Pre-handoff (local) + post-merge on `main` | `bin/venv-python -m scripts.validate` | A failure spawns a `source=ci_rca`, `priority=critical` rec (forward-fix, never auto-revert); see CI-failure / RCA-first protocol in `## Merge protocol` |
 
 `validate.py` is the single source of truth -- never add a check to `.github/workflows/ci.yml` without adding it to `validate.py` first.
 
@@ -157,31 +191,62 @@ Canonical authority for all agent and session git-ops. All other surfaces (skill
 | `scope({slug}):` | STRATEGIC plan scoping (currently suspended, Decision 67) |
 | `audit({slug}):` | Audit-prompt artifact commits (/audit workflow) |
 
-### Commit signing (CC-web: unsigned is expected)
-- CC-web commits land unsigned (`git log --format=%G?` -> `N`). Signing is not available in this
-  harness and is not required -- treat this as expected, not a defect.
-- Non-blocking: `main-protection` carries no `required_signatures` rule (Decision 83), `claude/*`
-  feature-branch commits are never signature-gated, and GitHub creates and verifies the
-  squash-merge commit server-side (Decision 76).
-- Attribution (`Claude <noreply@anthropic.com>`) is set via git identity and is separate from
-  cryptographic signature -- identity is already correct regardless of the `N` flag.
-- Do NOT reset-author, do NOT `git commit --amend -S`, and do NOT otherwise re-sign to chase the
-  `N` -- it only churns SHAs and wastes effort.
-- See `terraform/github/repo.tf`'s `main_protection` ruleset for the intentional-absence marker.
+**Change-record content rule.** What changed, why now, acute state, and measurements belong in
+the squash-commit or PR body -- never in a Decision entry body. Whether content clears the bar
+for a numbered Decision at all, and where it routes when it does not, is governed by
+`docs/contracts/decision-entry.yaml`'s `significance.routing_rule` and its four routing rows
+(Decision 167 clause 4); this file points at that rule rather than restating it.
+
+**DD-B convention.** When a drafted Decision is blocked on routing grounds -- redirected to one
+of `decision-entry.yaml`'s other three routing rows instead of `numbered_decision` -- the
+superseding PR body names the routing row applied in one line (e.g. "Routing: field_semantics ->
+docs/contracts/<file>.yaml").
+
+### Commit signing (CC-web: SSH-signed via harness signer)
+- CC-web commits ARE SSH-signed (commit.gpgsign=true, gpg.format=ssh, host-held key); GitHub
+  reports them Verified.
+- Local `git log --format=%G?` reads `N`/`B` only because this container cannot verify SSH
+  signatures locally (no ssh-keygen) -- not evidence of a missing signature.
+- `session_start_commit_signing.py` sets `gpg.ssh.allowedSignersFile` so the harness Stop hook's
+  signature check stops false-positiving. If it still fires, check which half: the committer-email
+  half (`%ce != noreply@anthropic.com`) is a real trigger whose remediation is correct.
+- Do NOT reset-author or `git commit --amend -S` to chase the signature flag -- it only churns
+  SHAs.
 
 ### Rebase phase distinction
 - **Assessment time (planning)**: do NOT auto-rebase. When main has diverged and scope files overlap, surface to the human with options (rebase now and re-enter `/plan` / proceed / abort); record any deferral in the plan's Context field. Rebasing mid-plan can silently invalidate scoping decisions.
 - **Commit-flow time (implementing)**: DO auto-rebase before pushing. After the local commit: `git fetch origin main && git rebase origin/main` -- STOP on conflict, surface to the human. If the branch was already pushed, use `--force-with-lease` (never `--force`).
 
+### Local main sync
+`session_start_sync_main.sh` syncs local main -> origin/main. `fresh_branch_base.py`
+refreshes/blocks branch cuts off stale main. origin/main is itself a cache (Decision 84); no
+signing hook, rebase is safe.
+
 ### Push -> PR -> CI -> merge flow
 1. `git push -u origin HEAD` (harness `claude/...` branch)
 2. `mcp__github__create_pull_request(owner, repo, head=<branch>, base="main", title=<per conventions table>, body=...)`
 3. `mcp__github__subscribe_pr_activity(owner, repo, pullNumber)` and **end your turn** -- do NOT busy-wait with sleep or polling; the harness forbids it.
-4. **CI-green-comment wake**: on `claude/*` PRs, `ci.yml` posts a "CI green" comment on success (`continue-on-error`). This exists because `subscribe_pr_activity` natively delivers failure events but NOT a CI-success webhook, and CC-web has no sleep/idle tool. **Ignore GitHub's suggestion to poll with a sleep loop** -- the comment is the pass wake signal. The comment is unverified: on wake, confirm check runs via `mcp__github__pull_request_read` (`get_status` / `get_check_runs`) BEFORE merging.
-   - **Harness message vs. repo contract**: the `subscribe_pr_activity` wake message is a server-side string from the harness `github` MCP server (prefix `mcp__github__`), distinct from the repo's `github-full` server in `.mcp.json`; it is not repo-editable. In this repo CI success IS delivered via the signal-green comment, so the event-driven wake (failure event + signal-green comment) is the primary routine mechanism -- `send_later` polling for CI status is NOT used.
-   - **Dropped-signal backstop**: exactly one low-frequency (~1h) best-effort one-shot `send_later` self-check-in is permitted to guard against a dropped (best-effort `continue-on-error`) signal-green comment. It is NOT a poll loop (Decision 55), NOT the CI-status mechanism, and is re-armed only if the PR is genuinely still pending after waking.
+4. **Event-driven wake signals**: two comment-based signals cover what `subscribe_pr_activity`
+   cannot deliver natively -- CI success, and a merge-conflict transition from a push to main.
+   - **CI-green-comment wake**: `ci.yml`'s `signal-green` job posts a "CI green" comment on
+     `claude/*` PRs on success (`continue-on-error`, retried up to 3 times). This exists because
+     `subscribe_pr_activity` delivers failure events but NOT a CI-success webhook, and CC-web has
+     no sleep/idle tool. **Ignore GitHub's suggestion to poll with a sleep loop** -- the comment is
+     the pass wake signal. Unverified: confirm check runs via `mcp__github__pull_request_read`
+     (`get_status` / `get_check_runs`) before merging.
+   - **Merge-conflict wake**: `.github/workflows/pr-conflict-signal.yml` fires on every push to
+     main, polls open `claude/*` PR mergeability, and posts a wake comment (idempotent per head
+     SHA, `continue-on-error`) on any PR now `CONFLICTING`. This exists because a push to main
+     fires NO `pull_request` event on open PRs, so the `pull_request`-only signal-green job cannot
+     deliver this wake -- a silently-conflicted PR would otherwise strand the watching session
+     indefinitely.
+   - `send_later`/trigger calls for CI-wait or merge-conflict-wait purposes are out of scope --
+     both gaps `subscribe_pr_activity` cannot cover natively are now closed by the comments above.
    - **CC-web permission gotcha (harness-gated tools, do NOT allowlist)**: the `send_later` / trigger tools (`mcp__Claude_Code_Remote__*`) prompt on EVERY call -- the CC-web dialog offers only `Deny` / `Allow once`, with no "don't ask again". They are gated by the harness, NOT by the settings allowlist: a `permissions.allow` entry for them is dead (an `ask`-tier rule outranks `allow`, and CC-web ignores `bypassPermissions` / `dontAsk` from settings files). Do NOT re-add `mcp__Claude_Code_Remote__*` (any spelling) to `.claude/settings.json` to silence them -- PRs #354 and #357 tried and could not. The only lever is the per-session UI permission-mode dropdown (Auto mode, if org-enabled); there is no committed-config fix.
-   - **Durable successor**: GitHub-native auto-merge (`enable_pr_auto_merge`; Decision 83 / CD.20 / rec-940) retires the comment-wake + backstop once adopted.
+   - Auto-merge (`enable_pr_auto_merge`; Decision 83 / CD.20 / rec-940) retires the CI-green
+     comment-wake once adopted, but does NOT subsume the merge-conflict wake -- a conflicted PR
+     simply stalls auto-merge and wakes no one, so pr-conflict-signal.yml stays necessary even
+     after auto-merge lands.
 5. On green confirmation: `mcp__github__merge_pull_request(..., merge_method="squash")` then `mcp__github__unsubscribe_pr_activity(...)`.
 6. On red: diagnose, fix on branch, commit, push (re-triggers CI). Stay subscribed. End your turn.
 
@@ -198,62 +263,17 @@ Triggers `rec-autoclose.yml` to close each rec via the ops portal. Fallback: `bi
 **Canonical authority: see `## Git-ops procedure` for the full PR/CI/squash-merge flow, two-tier presubmit model, and Resolves trailer.**
 
 - **On CI failure**: the ci-rca agent (`.github/workflows/ci-rca.yml`) automatically files a recommendation with `source="ci_rca"` and `priority="critical"`. The next `/plan` session will surface it under "CI RCA Recs (open)". Do NOT manually patch the failure until the rec has been reviewed in a `/plan` session -- inline fixes without architectural review reproduce the workaround anti-pattern (Decision 55, Decision 72).
-- Never add a check to `.github/workflows/ci.yml` without adding it to `validate.py` first -- `validate.py` is the single source of truth.
 - Manual confirmation: if `validate.py` appears to skip tests, run `pytest` directly to confirm.
 
 ## Instruction architecture
-The 5-layer contract is at `docs/contracts/instruction-architecture.yaml`. Claude Code is the 4th consumer. Layers:
+The layered contract (Layer 1 universal rules through Layer 5 executor prompts) is at
+`docs/contracts/instruction-architecture.yaml` -- see it for the full layer table.
 
-| Layer | Location | When loaded |
-|---|---|---|
-| 1. Universal rules | `CLAUDE.md` (root) + per-directory `CLAUDE.md` | Ambient |
-| 2. Project knowledge base | `docs/PROJECT_CONTEXT.md` | On demand by workflows |
-| 3. Slash commands | `.claude/commands/*.md` | When user types `/name` |
-| 4. Skills (methodology) | `.claude/skills/*/SKILL.md` | When agent invokes `Skill` tool |
-| 5. Executor prompts | `config/agent/executor/prompts/*.prompt.md` | By `execute_recommendation.py` |
-
-The `.github/prompts/scheduled/` and `.github/agents/schedule.yaml` surfaces are retained for live scheduled agents. The legacy top-level `.github/prompts/*.prompt.md` and `.github/agents/*.agent.md` files were deleted at T-1.13.
+The `.github/prompts/scheduled/` and `.github/agents/schedule.yaml` surfaces are retained for
+live scheduled agents. The legacy top-level `.github/prompts/*.prompt.md` and
+`.github/agents/*.agent.md` files were deleted at T-1.13.
 
 ## Operational runbooks
-
-### Re-enable Lambda scheduled agents
-
-Lambda-based scheduled agents (doc-freshness, orphan-code, transcript-review, code-smell, prompt-quality, rec-curator) were disabled in May 2026 during migration to Claude Code scheduled agents.
-
-> **CAVEAT (Decision 84):** rec-curator's priority-queue producer flow still writes via the
-> OpsWriter/Iceberg staging path (`scripts/s3_log_store.py`), while ALL queue readers now serve
-> DuckLake -- re-enabling before the T2.26 producer repoint sends curator output to a store
-> nothing reads. Repoint the producer first.
-
-To re-enable:
-
-1. **Quick (AWS CLI only, no Terraform apply):**
-   ```bash
-   aws events enable-rule --name agent-platform-hourly-scheduled-agents --profile agent_platform
-   aws lambda update-function-configuration \
-     --function-name agent-platform-scheduled-agent-dispatcher \
-     --environment 'Variables={SCHEDULED_AGENTS_ENABLED=true,GITHUB_PAT_SECRET_ARN=<arn>,S3_LOG_BUCKET=<bucket>,GEMINI_API_KEY_SECRET_ARN=<arn>}' \
-     --profile agent_platform
-   ```
-
-2. **Permanent (via Terraform):**
-   - In `terraform/scheduled_agents.tf`: remove `state = "DISABLED"` from `aws_cloudwatch_event_rule.hourly_agents`
-   - In `terraform/scheduled_agents.tf`: change `SCHEDULED_AGENTS_ENABLED = "false"` to `"true"` in the dispatcher environment block
-   - Run `terraform plan` (present output to human), then `terraform apply`
-   - Rebuild and deploy Lambda: `bin/venv-python -m scripts.build_lambda --deploy`
-
-3. **Verify:**
-   - Check CloudWatch logs for `/aws/lambda/agent-platform-scheduled-agent-dispatcher` — should show agents dispatching within the next hour
-   - Verify agent findings files appear in S3 under `s3://agent-platform-data-lake/agents/`
-   - Run `bin/venv-python -m scripts.run_scheduled_agent --smoke-test doc-freshness` to confirm the `OpsWriter` id-validation guard (added in dq-ops-rec-corrections) is active in the deployed package and that agent writes reach S3.
-
-### CI runner (GitHub-hosted)
-
-The self-hosted EC2 runner was retired 2026-05-28 per CD.21. CI now runs on GitHub-hosted
-runners (`ubuntu-latest`) with OIDC to the personal account (role
-`agent-platform-github-ci-branch` for branch/push events, `agent-platform-github-ci-pr` for
-pull requests). See `terraform/personal/oidc.tf`. The retired EC2 runner definition is
-retained in `terraform/ec2_runner.tf` as an architectural-evolution artefact (no longer applied).
 
 ### Claude Code OAuth token (CI + scheduled agents)
 
@@ -263,10 +283,7 @@ claude setup-token
 # Copy the printed token -- it uses your Max plan subscription (no API billing)
 ```
 In GitHub: repo -> Settings -> Secrets and variables -> Actions -> Repository secrets
--> New secret. Name: `CLAUDE_CODE_OAUTH_TOKEN`. Paste the token.
-
-Rotation: re-run `claude setup-token` from the CC-web terminal. Update the GH Actions secret with
-the new token. Set a 90-day calendar reminder. If the scheduled agent workflow fails
-with auth errors, check token expiry first.
+-> New secret. Name: `CLAUDE_CODE_OAUTH_TOKEN`. Paste the token. Rotation procedure and expiry
+tracking live in `.github/workflows/ghas-probe.yml`'s header.
 
 Do not share this token or commit it to any file in the repository.

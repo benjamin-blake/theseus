@@ -11,7 +11,41 @@
 # The account ID in ARNs comes from var.account_id (gitignored tfvars); never a committed literal.
 
 locals {
-  github_repo = "benjamin-blake/agent-platform"
+  # CONTRACTED STEADY STATE (Decision 172 / PLAN-oidc-trust-contraction-closure): the dual-slug
+  # transition (Decision 171 / PLAN-repo-rename-relicense) is over. Both pre-rename name-only
+  # entries were unmintable post-rename and have been removed with live proof -- all five CI
+  # roles verified assuming under the immutable subject before this contraction landed. Every sub
+  # site below MUST iterate this list -- never re-introduce a scalar `github_repo` local. This
+  # list MUST stay identical to terraform/bootstrap's; the two roots cannot reference each other,
+  # so agreement is enforced by tests/checks/iam_tf/test_oidc_trust_slug_invariants.py.
+  #
+  # IMMUTABLE-SUBJECT ENTRY (Decision 172): a repo SEGMENT of the form
+  # "OWNER@OWNER-ID/REPO@REPO-ID", never a full "repo:" sub prefix (every sub site below already
+  # renders "repo:${repo}:<suffix>"; a "repo:"-prefixed entry here would render "repo:repo:..."
+  # and match nothing). GitHub mints this immutable numeric-id subject for any repository renamed
+  # or transferred after 2026-07-15 -- benjamin-blake/theseus renamed at 2026-08-15T12:55:57Z and
+  # now presents ONLY this shape. The numeric ids -- not the name -- are the durable identity: a
+  # future rename changes only the NAME half, so Decision 172 point 2's pre-stage playbook adds
+  # the future name's immutable entry to this list ADDITIVELY, BEFORE the rename lands, which is
+  # what keeps a future rename from repeating this outage. Never narrow this list to zero entries,
+  # and never remove an entry without live proof of the replacement first -- the exact discipline
+  # this contraction itself followed.
+  github_repos = [
+    "benjamin-blake@217728084/theseus@1252427466",
+  ]
+
+  # T2.49 c2 hardening item 3 (single-source, DEP-12 / Decision 144): the RESERVED session-name
+  # that discriminates the planner role's fail-closed convergence-write path. Referenced at
+  # EXACTLY 4 coupled sites -- changing this value requires updating all four in the same commit:
+  #   1. github_ci_planner trust, main-sub statement: sts:RoleSessionName StringEquals
+  #      (oidc_pipeline_roles.tf)
+  #   2. github_ci_planner trust, pr-sub statement:   sts:RoleSessionName StringNotEquals
+  #      (oidc_pipeline_roles.tf)
+  #   3. github_ci_planner policy, ConvergenceRecordWrite: aws:userid StringLike "*:<this>"
+  #      (oidc_pipeline_roles.tf)
+  #   4. .github/workflows/terraform-drift.yml: configure-aws-credentials role-session-name (a
+  #      workflow literal outside Terraform's reach -- MUST equal this value verbatim)
+  convergence_writer_session_name = "tf-drift-convergence-writer"
 }
 
 resource "aws_iam_openid_connect_provider" "github_actions" {
@@ -27,8 +61,8 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
 # predecessors rec-2223/2251/2276). Every CI role that invokes the DuckLake reader/writer
 # composes ci_ssm_refresh_read via source_policy_documents rather than re-declaring the SSM
 # statements inline (validated credential-free by
-# scripts/checks/iam_tf/validate_invoke_implies_resolve.py, T2.34:c2); github_ci_plan and
-# github_ci_drift additionally compose the shared 20-statement refresh-read surface via
+# scripts/checks/iam_tf/validate_invoke_implies_resolve.py, T2.34:c2); github_ci_planner
+# additionally composes the shared 20-statement refresh-read surface via
 # ci_full_refresh_read (which itself sources ci_ssm_refresh_read). IAM read statements stay
 # enumerated with literal ARNs (Decision 35/98) -- composition relocates statements, it never
 # collapses them into a wildcard.
@@ -90,7 +124,9 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
       "s3:GetBucketCORS",
       "s3:GetBucketWebsite",
       "s3:GetBucketAcl",
-      "s3:GetBucketOwnershipControls"
+      "s3:GetBucketOwnershipControls",
+      # T2.43 gap: aws_s3_bucket_notification.data_lake_prod_triggers refresh-reads this.
+      "s3:GetBucketNotification"
     ]
     resources = [
       aws_s3_bucket.data_lake.arn,
@@ -150,10 +186,16 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
 
   statement {
     # IAM read-quartet the provider issues on each managed aws_iam_role during plan.
-    # Scoped to the four CI roles -- read-only (no PutRolePolicy / UpdateAssumeRolePolicy).
+    # Scoped to the managed CI roles -- read-only (no PutRolePolicy / UpdateAssumeRolePolicy).
     # Literal ARNs per the IAMPlatformRolesRead convention (refresh-read grants do not create
     # Terraform dependency edges onto the resources they read). Decision 35/98: enumerated,
-    # never a service or path wildcard on iam: read actions.
+    # never a service or path wildcard on iam: read actions. T2.49 / DEP-12 (Decision 144): the
+    # four retired CI roles (plan, drift, ducklake-deploy, prod-deploy) are replaced by two
+    # merged roles -- planner (plan+drift) and deploy (ducklake-deploy+prod-deploy) -- so this
+    # list shrinks by two entries (net -2, helps the rec-2793 headroom). planner/deploy are
+    # listed so github_ci_apply can refresh-read them once they enter terraform/personal state,
+    # the same class of grant the retired roles had (rec-2688; mirrors how github-ci-drift's own
+    # ARN was added here when T2.24 landed).
     sid    = "IAMCIRolesRead"
     effect = "Allow"
     actions = [
@@ -166,8 +208,8 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
       "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-branch",
       "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-pr",
       "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-apply",
-      "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-plan",
-      "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-drift"
+      "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-planner",
+      "arn:aws:iam::${var.account_id}:role/agent-platform-github-ci-deploy"
     ]
   }
 
@@ -188,7 +230,17 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
       "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-catalog-dr",
       "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-writer",
       "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-reader",
-      "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-maintenance"
+      "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-maintenance",
+      # T2.18 c9 split gap (same class as rec-2688 for ducklake-deploy): the smoke exec role must be
+      # refresh-readable by github_ci_planner once it enters terraform/personal state, or every
+      # subsequent plan against this module fails closed with AccessDenied.
+      "arn:aws:iam::${var.account_id}:role/agent-platform-ducklake-maintenance-smoke",
+      # T2.43 gap (same class as rec-2688 for ducklake-deploy): these three prod-class execution
+      # roles must be refresh-readable by github_ci_planner once they enter terraform/personal
+      # state, or every subsequent plan against this module fails closed with AccessDenied.
+      "arn:aws:iam::${var.account_id}:role/agent-platform-scheduled-agent-dispatcher",
+      "arn:aws:iam::${var.account_id}:role/agent-platform-findings-processor",
+      "arn:aws:iam::${var.account_id}:role/agent-platform-ops-compaction"
     ]
   }
 
@@ -201,7 +253,11 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
   }
 
   statement {
-    # Lambda refresh-time reads. Literal ARNs (no Terraform dependency edges).
+    # Lambda refresh-time reads. Layer ARNs stay enumerated (mixed ducklake-*/data-pipeline-*
+    # naming); function ARNs use the account-wide function:agent-platform-* prefix (Decision 129 /
+    # T2.43 rec-2702 anti-recurrence) so a future agent-platform-* function auto-covers -- keeps
+    # this role's data-plane read surface identical to github_ci_apply's (the parity the
+    # validate_ci_refresh_read_coverage verifier relies on).
     sid     = "LambdaRead"
     effect  = "Allow"
     actions = ["lambda:Get*", "lambda:List*"]
@@ -212,24 +268,20 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
       "arn:aws:lambda:${var.aws_region}:${var.account_id}:layer:ducklake-deps:*",
       "arn:aws:lambda:${var.aws_region}:${var.account_id}:layer:ducklake-extensions",
       "arn:aws:lambda:${var.aws_region}:${var.account_id}:layer:ducklake-extensions:*",
-      "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-catalog-dr",
-      "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-writer",
-      "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-reader",
-      "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-ducklake-maintenance"
+      "arn:aws:lambda:${var.aws_region}:${var.account_id}:layer:data-pipeline-deps",
+      "arn:aws:lambda:${var.aws_region}:${var.account_id}:layer:data-pipeline-deps:*",
+      "arn:aws:lambda:${var.aws_region}:${var.account_id}:function:agent-platform-*",
     ]
   }
 
   statement {
-    # EventBridge refresh-time reads. Literal ARNs.
+    # EventBridge refresh-time reads. Broadened to the account-wide rule/agent-platform-* prefix
+    # (Decision 129 / T2.43 rec-2702 anti-recurrence) -- mirrors the LambdaRead broadening above.
     sid     = "EventBridgeRead"
     effect  = "Allow"
     actions = ["events:Describe*", "events:List*"]
     resources = [
-      "arn:aws:events:${var.aws_region}:${var.account_id}:rule/agent-platform-ducklake-catalog-dr",
-      "arn:aws:events:${var.aws_region}:${var.account_id}:rule/agent-platform-ducklake-maintenance-merge",
-      "arn:aws:events:${var.aws_region}:${var.account_id}:rule/agent-platform-ducklake-maintenance-gc",
-      "arn:aws:events:${var.aws_region}:${var.account_id}:rule/agent-platform-ducklake-maintenance-hot-merge",
-      "arn:aws:events:${var.aws_region}:${var.account_id}:rule/agent-platform-ducklake-maintenance-merge-ops"
+      "arn:aws:events:${var.aws_region}:${var.account_id}:rule/agent-platform-*",
     ]
   }
 
@@ -291,6 +343,17 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
   }
 
   statement {
+    # T2.43 gap: the scheduled-agent-dispatcher / findings-processor GitHub PAT secret --
+    # read-only; the value is set out-of-band
+    # (docs/contracts/secret-material-handling.yaml, Decision 175), this apply role owns the
+    # secret's lifecycle only.
+    sid       = "SecretsManagerGithubPatRead"
+    effect    = "Allow"
+    actions   = ["secretsmanager:Describe*", "secretsmanager:Get*"]
+    resources = ["arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-github-pat-*"]
+  }
+
+  statement {
     # Inference credential envelopes (DeepSeek + Anthropic) -- plan-time refresh-read so the
     # speculative-plan / drift jobs can DescribeSecret these during the provider refresh walk.
     # Mirrors github_ci_apply's SecretsManagerInferenceCredentialsRead (inference-creds-ci-recovery);
@@ -307,7 +370,8 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
   statement {
     # Broker credential envelopes (Alpaca paper + live) -- plan-time refresh-read so the
     # speculative-plan / drift jobs can DescribeSecret these during the provider refresh walk for
-    # secrets_manager_brokers.tf (T2.14). Read-only; values are out-of-band (Decision 37).
+    # secrets_manager_brokers.tf (T2.14). Read-only; values are out-of-band
+    # (docs/contracts/secret-material-handling.yaml, Decision 175).
     sid     = "SecretsManagerBrokerCredentialsRead"
     effect  = "Allow"
     actions = ["secretsmanager:Describe*", "secretsmanager:Get*"]
@@ -315,518 +379,27 @@ data "aws_iam_policy_document" "ci_full_refresh_read" {
       "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-broker-*",
     ]
   }
-}
-
-# ---------------------------------------------------------------------------
-# Branch role (write): main + agent/* push/workflow_run context
-# ---------------------------------------------------------------------------
-
-resource "aws_iam_role" "github_ci_branch" {
-  name                 = "agent-platform-github-ci-branch"
-  description          = "GitHub Actions CI (write): main + agent/* branches via OIDC"
-  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/agent-platform-github-ci-apply-boundary"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = aws_iam_openid_connect_provider.github_actions.arn
-        }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            "token.actions.githubusercontent.com:sub" = [
-              "repo:${local.github_repo}:ref:refs/heads/main",
-              "repo:${local.github_repo}:ref:refs/heads/agent/*"
-            ]
-          }
-        }
-      }
-    ]
-  })
-}
-
-data "aws_iam_policy_document" "github_ci_branch" {
-  # DRY composition (T2.34): the shared SSM refresh-read fragment, not re-declared inline.
-  source_policy_documents = [data.aws_iam_policy_document.ci_ssm_refresh_read.json]
 
   statement {
-    sid       = "AthenaStartQuery"
-    effect    = "Allow"
-    actions   = ["athena:StartQueryExecution"]
-    resources = [aws_athena_workgroup.production.arn]
-  }
-
-  statement {
-    # GetQueryExecution/GetQueryResults/ListWorkGroups/GetWorkGroup do not support
-    # workgroup-level resource constraints in IAM.
-    sid    = "AthenaQueryStatus"
-    effect = "Allow"
-    actions = [
-      "athena:GetQueryExecution",
-      "athena:GetQueryResults",
-      "athena:ListWorkGroups",
-      "athena:GetWorkGroup"
-    ]
-    resources = ["*"]
-  }
-
-  statement {
-    sid    = "S3ReadWrite"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:PutObject",
-      "s3:DeleteObject"
-    ]
-    resources = ["${aws_s3_bucket.data_lake.arn}/*"]
-  }
-
-  statement {
-    # CD.35 / T2.20 single-writer enforcement: among CI roles the convergence record is written
-    # ONLY by the sanctioned writer set {github_ci_apply (Wave 1), github_ci_drift (T2.24 /
-    # Wave 5)}. This branch role (ci-rca, agent/* CI) MUST be able to READ the record (ci-rca
-    # anchors its refusal dedup on the red record's commit) but must NOT write or delete it --
-    # an explicit Deny makes the two-member writer-set integrity claim true at the IAM layer
-    # (explicit Deny overrides the bucket-wide S3ReadWrite Allow above; GetObject is untouched).
-    # Full privilege-tiering landed at Wave 4 / T2.23 (bootstrap root); this Deny is the Wave-1
-    # enforcement among CI roles.
-    sid    = "DenyConvergenceRecordWrite"
-    effect = "Deny"
-    actions = [
-      "s3:PutObject",
-      "s3:DeleteObject"
-    ]
-    resources = ["${aws_s3_bucket.data_lake.arn}/convergence/personal/*"]
-  }
-
-  statement {
-    sid    = "S3List"
-    effect = "Allow"
-    actions = [
-      "s3:ListBucket",
-      "s3:GetBucketLocation"
-    ]
-    resources = [aws_s3_bucket.data_lake.arn]
-  }
-
-  statement {
-    sid    = "DynamoDBCounters"
-    effect = "Allow"
-    actions = [
-      "dynamodb:GetItem",
-      "dynamodb:PutItem",
-      "dynamodb:Query",
-      "dynamodb:Scan",
-      "dynamodb:UpdateItem"
-    ]
-    resources = [aws_dynamodb_table.counters.arn]
-  }
-
-  statement {
-    sid    = "GlueRead"
-    effect = "Allow"
-    actions = [
-      "glue:GetDatabase",
-      "glue:GetTable",
-      "glue:GetPartitions"
-    ]
-    resources = ["*"]
-  }
-
-  statement {
-    # SchemaIntegrityVerifier / IcebergCompactionVerifier call these during OPTIMIZE and VACUUM.
-    # Three ARNs required: catalog, database, table.
-    sid     = "GlueTableMutations"
+    # PLANNER-SIDE MIRROR of the apply role's SecretsManagerMetadataRead
+    # (terraform/bootstrap/github_ci_apply.tf). Without it the one-PR autonomy claim fails
+    # asymmetrically: a PR adding a new agent-platform-* secret would be write- and read-covered on
+    # the apply role but NOT on this plan-capable role, so the speculative plan (and the hourly
+    # drift plan) would AccessDeny on the new secret's DescribeSecret while the merge-time apply
+    # succeeded -- the per-secret Sids above each cover exactly one existing ARN and cover nothing
+    # new. The prefix closes that gap for every future agent-platform-* secret with no further
+    # grant edit (the rec-2702 resource-axis anti-recurrence).
+    # Value-free BY CONSTRUCTION and therefore NOT a widening of Decision 129 pt 2: within Secrets
+    # Manager only GetSecretValue returns secret material (AWS named the batch form
+    # BatchGetSecretValue, outside the Get* metadata pattern), so Describe*/List*/GetResourcePolicy
+    # cannot read a value. This role's value-capable reads stay in the enumerated per-secret Sids
+    # above -- deliberately NOT restated here. hashicorp/aws v5.100.0 grounding:
+    # aws_secretsmanager_secret refreshes with DescribeSecret + GetResourcePolicy only.
+    sid     = "SecretsManagerMetadataRead"
     effect  = "Allow"
-    actions = ["glue:CreateTable", "glue:UpdateTable", "glue:DeleteTable"]
+    actions = ["secretsmanager:Describe*", "secretsmanager:List*", "secretsmanager:GetResourcePolicy"]
     resources = [
-      "arn:aws:glue:${var.aws_region}:${var.account_id}:catalog",
-      "arn:aws:glue:${var.aws_region}:${var.account_id}:database/${aws_glue_catalog_database.ops.name}",
-      "arn:aws:glue:${var.aws_region}:${var.account_id}:table/${aws_glue_catalog_database.ops.name}/*"
+      "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-*",
     ]
   }
-
-  statement {
-    # T2.19 recs cutover (rec-2111): CI/DQ reads recs over the DuckLake reader Function URL and
-    # may write recs via the writer. lambda:InvokeFunction is the action the Function-URL IAM
-    # authorizer actually checks (InvokeFunctionUrl alone is INSUFFICIENT -- live-verified).
-    # InvokeFunctionUrl retained alongside for AWS-doc alignment; not sufficient on its own.
-    # lambda:GetFunctionUrlConfig lets the runner RESOLVE the reader/writer URL via the AWS API
-    # when neither DUCKLAKE_*_URL env nor a terraform-init'd checkout is present (the CI case) --
-    # iceberg_reader / ops_data_portal fall back to get_function_url_config (post-cutover DQ).
-    sid     = "DuckLakeInvokeCI"
-    effect  = "Allow"
-    actions = ["lambda:InvokeFunction", "lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
-    resources = [
-      aws_lambda_function.ducklake_writer.arn,
-      "${aws_lambda_function.ducklake_writer.arn}:*",
-      aws_lambda_function.ducklake_reader.arn,
-      "${aws_lambda_function.ducklake_reader.arn}:*",
-    ]
-  }
-}
-
-resource "aws_iam_role_policy" "github_ci_branch" {
-  name   = "agent-platform-github-ci-branch"
-  role   = aws_iam_role.github_ci_branch.id
-  policy = data.aws_iam_policy_document.github_ci_branch.json
-}
-
-# ---------------------------------------------------------------------------
-# PR role (read-only): refs/pull/* context
-# ---------------------------------------------------------------------------
-
-resource "aws_iam_role" "github_ci_pr" {
-  name                 = "agent-platform-github-ci-pr"
-  description          = "GitHub Actions CI (read-only): PR context via OIDC"
-  permissions_boundary = "arn:aws:iam::${var.account_id}:policy/agent-platform-github-ci-apply-boundary"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = aws_iam_openid_connect_provider.github_actions.arn
-        }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            # A pull_request-triggered job presents sub = repo:OWNER/REPO:pull_request -- NOT
-            # refs/pull/* (that is the `ref` claim, not `sub`). The advisory terraform-converged
-            # status job (terraform-apply-sandbox.yml, pull_request) assumes this read-only role, so
-            # the pull_request sub MUST be trusted. refs/pull/* is retained for any ref-scoped or
-            # customized-sub consumer. This role stays read-only (athena/iceberg/convergence reads,
-            # no tfstate, no writes), so trusting the PR sub does not widen blast radius.
-            "token.actions.githubusercontent.com:sub" = [
-              "repo:${local.github_repo}:pull_request",
-              "repo:${local.github_repo}:ref:refs/pull/*"
-            ]
-          }
-        }
-      }
-    ]
-  })
-}
-
-data "aws_iam_policy_document" "github_ci_pr" {
-  # T2.34 / Decision 92 NOTE (INTENTIONAL EXPANSION): github_ci_pr gains read-only
-  # ssm:Get*/Describe*/List* on parameter/agent-platform/* via the shared fragment. This is a
-  # permission expansion on a role that runs on pull_request events -- accepted deliberately
-  # (read-only, path-scoped, mirrors the other invoking roles' DuckLake Function-URL resolution
-  # fallback) so the invoke-implies-resolve invariant (T2.34:c2) holds universally, with no
-  # exceptions, across every CI role that invokes the DuckLake reader/writer.
-  source_policy_documents = [data.aws_iam_policy_document.ci_ssm_refresh_read.json]
-
-  statement {
-    sid       = "AthenaStartQuery"
-    effect    = "Allow"
-    actions   = ["athena:StartQueryExecution"]
-    resources = [aws_athena_workgroup.production.arn]
-  }
-
-  statement {
-    sid    = "AthenaQueryStatus"
-    effect = "Allow"
-    actions = [
-      "athena:GetQueryExecution",
-      "athena:GetQueryResults",
-      "athena:ListWorkGroups",
-      "athena:GetWorkGroup"
-    ]
-    resources = ["*"]
-  }
-
-  statement {
-    # Read queries still write result sets to the athena/ results prefix only -- not to the
-    # iceberg/ table data. No DynamoDB, no Glue mutations: this role cannot mutate ops data.
-    sid    = "S3ReadResults"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:PutObject"
-    ]
-    resources = ["${aws_s3_bucket.data_lake.arn}/athena/*"]
-  }
-
-  statement {
-    sid       = "S3ReadTables"
-    effect    = "Allow"
-    actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.data_lake.arn}/iceberg/*"]
-  }
-
-  statement {
-    # CD.35 / T2.20 advisory terraform-converged PR status. The read-only PR role reads the
-    # convergence record at PR time to derive the advisory status. Granted on the record prefix
-    # ONLY (convergence/personal/*) -- NOT tfstate/: the "github_ci_pr cannot read tfstate"
-    # invariant must stay cleanly auditable, which is precisely why the record lives in its own
-    # prefix outside tfstate/. Read-only (GetObject); this role never writes the record.
-    sid       = "S3ReadConvergenceRecord"
-    effect    = "Allow"
-    actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.data_lake.arn}/convergence/personal/*"]
-  }
-
-  statement {
-    sid    = "S3List"
-    effect = "Allow"
-    actions = [
-      "s3:ListBucket",
-      "s3:GetBucketLocation"
-    ]
-    resources = [aws_s3_bucket.data_lake.arn]
-  }
-
-  statement {
-    sid    = "GlueRead"
-    effect = "Allow"
-    actions = [
-      "glue:GetDatabase",
-      "glue:GetTable",
-      "glue:GetPartitions"
-    ]
-    resources = ["*"]
-  }
-
-  statement {
-    # T2.19 recs cutover (rec-2111): PR CI reads recs over the DuckLake reader Function URL.
-    # lambda:InvokeFunction is the action the Function-URL IAM authorizer actually checks.
-    # InvokeFunctionUrl retained for AWS-doc alignment; not sufficient alone. PR CI is
-    # read-only (no rec writes) but scoped to writer ARNs for consistency / future-compat.
-    # lambda:GetFunctionUrlConfig lets the runner resolve the URL via the AWS API (no env / no
-    # terraform-init'd checkout) -- mirrors the branch role's DuckLakeInvokeCI grant.
-    sid     = "DuckLakeInvokeCI"
-    effect  = "Allow"
-    actions = ["lambda:InvokeFunction", "lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
-    resources = [
-      aws_lambda_function.ducklake_writer.arn,
-      "${aws_lambda_function.ducklake_writer.arn}:*",
-      aws_lambda_function.ducklake_reader.arn,
-      "${aws_lambda_function.ducklake_reader.arn}:*",
-    ]
-  }
-}
-
-resource "aws_iam_role_policy" "github_ci_pr" {
-  name   = "agent-platform-github-ci-pr"
-  role   = aws_iam_role.github_ci_pr.id
-  policy = data.aws_iam_policy_document.github_ci_pr.json
-}
-
-# github_ci_apply role and policy migrated to terraform/bootstrap/ (CD.35 Wave 4 / T2.23).
-# github_ci_drift added below (CD.35 Wave 5 / T2.24).
-
-# ---------------------------------------------------------------------------
-# Plan role (speculative-plan PR job, CD.35 Wave 2 / T2.21): pull_request sub.
-#
-# This role is IAM-SENSITIVE -- the deterministic guard (scripts/terraform_apply_guard.py)
-# BLOCKS its creation (exit 2) and it lands via the human-gated agent_platform_admin apply
-# (Decision 77). Auto-apply is only possible AFTER the role exists; speculative-plan jobs
-# opened before the admin apply carry continue-on-error on the assume-role step.
-#
-# Capability split vs github_ci_pr:
-#   github_ci_pr  -- athena/iceberg read, convergence record read, DuckLake invoke. NO tfstate.
-#   github_ci_plan -- tfstate READ (real plan), tfplan WRITE (persist saved plan), same refresh-
-#                     read surface as github_ci_apply during plan. No convergence write. No
-#                     tfstate write or delete. Fork-gated at the WORKFLOW JOB level (if: guard),
-#                     not the trust condition -- trust mirrors github_ci_pr (pull_request sub).
-#
-# The plan role is the ONLY PR-context tfstate-read path (fork isolation: the guard at the job
-# level + same-repo if: block fork access; github_ci_pr is explicitly denied tfstate by design).
-# ---------------------------------------------------------------------------
-
-resource "aws_iam_role" "github_ci_plan" {
-  name        = "agent-platform-github-ci-plan"
-  description = "GitHub Actions speculative-plan (CD.35 Wave 2 / T2.21): PR context, tfstate-read + tfplan-write via OIDC"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = aws_iam_openid_connect_provider.github_actions.arn
-        }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            # Trust mirrors github_ci_pr (pull_request sub). Fork gating is enforced at the
-            # workflow JOB level (speculative-plan if: head.repo.full_name == github.repository),
-            # not the trust condition -- consistent with how advisory-status is fork-gated.
-            "token.actions.githubusercontent.com:sub" = [
-              "repo:${local.github_repo}:pull_request",
-              "repo:${local.github_repo}:ref:refs/pull/*"
-            ]
-          }
-        }
-      }
-    ]
-  })
-}
-
-data "aws_iam_policy_document" "github_ci_plan" {
-  # DRY composition (T2.34): the shared 20-statement refresh-read surface, not re-declared
-  # inline. ci_full_refresh_read itself composes ci_ssm_refresh_read.
-  source_policy_documents = [data.aws_iam_policy_document.ci_full_refresh_read.json]
-
-  statement {
-    # Persist plan.bin keyed by PR head SHA for the apply-the-saved-plan merge path (T2.21).
-    # github_ci_apply's existing DataLakeObjectIO grant covers the read at merge time.
-    # No convergence/personal/* grant -- the plan role never touches the convergence record.
-    # No DeleteObject anywhere.
-    sid       = "TfplanWrite"
-    effect    = "Allow"
-    actions   = ["s3:GetObject", "s3:PutObject"]
-    resources = ["${aws_s3_bucket.data_lake.arn}/tfplan/personal/*"]
-  }
-
-  statement {
-    # rec-2512: fetch the vendored pg_dump/pg_restore bundle + pinned DuckLake extensions at
-    # build time (`scripts.build_lambda --ducklake-only`, run before `terraform plan` so
-    # filemd5() sees real content instead of resolving to null on lambda-packages/, which is
-    # gitignored). Read-only -- these are operator-seeded vendored artefacts, never written by CI.
-    sid     = "DucklakeBuildInputsRead"
-    effect  = "Allow"
-    actions = ["s3:GetObject"]
-    resources = [
-      "${aws_s3_bucket.data_lake.arn}/ducklake-pgclient/*",
-      "${aws_s3_bucket.data_lake.arn}/ducklake-extensions/*"
-    ]
-  }
-
-  statement {
-    # rec-2512: upload the seven rebuilt DuckLake zips so the reviewed plan.bin's filemd5
-    # corresponds to real S3 content, and so the apply-sandbox job's byte-identical re-upload at
-    # merge time has the PR-job artifact to compare against (Decision 77 no-TOCTOU). No
-    # DeleteObject -- mirrors the plan role's no-delete-anywhere posture.
-    sid       = "DucklakeLambdaPackagesWrite"
-    effect    = "Allow"
-    actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.data_lake.arn}/lambda-packages/*"]
-  }
-}
-
-resource "aws_iam_role_policy" "github_ci_plan" {
-  name   = "agent-platform-github-ci-plan"
-  role   = aws_iam_role.github_ci_plan.id
-  policy = data.aws_iam_policy_document.github_ci_plan.json
-}
-
-# ---------------------------------------------------------------------------
-# Drift role (alarm-only scheduled drift detection, CD.35 Wave 5 / T2.24):
-# refs/heads/main sub (scheduled + dispatch run on main, same as github_ci_branch).
-#
-# This role is IAM-SENSITIVE -- the deterministic guard (scripts/terraform_apply_guard.py)
-# BLOCKS its creation (exit 2) and it lands via the human-gated apply path (tf-gated-apply
-# GitHub Environment or agent_platform_admin, Decision 77/92). The scheduled drift workflow
-# carries continue-on-error on the assume-role step to cover the bootstrap window (no role
-# exists until the gated apply lands; pre-apply ticks no-op rather than erroring).
-#
-# Capability split vs github_ci_plan:
-#   github_ci_plan  -- tfstate READ + tfplan WRITE + same refresh-read surface. No convergence write.
-#   github_ci_drift -- tfstate READ + scoped .tflock write (native-lock coexistence) +
-#                      convergence/personal/* read+write (joins apply as sanctioned writer) +
-#                      ducklake-WRITER invoke ONLY (not the reader; Decision 84 closed boundary) +
-#                      same refresh-read surface as plan during plan. NO tfstate write (state object),
-#                      NO tfplan write, NO resource mutation, NO IAM write.
-#
-# Trust mirrors github_ci_branch: StringEquals aud + StringLike sub refs/heads/main.
-# NO environment sub (Decision 94 applies only to github_ci_apply's gated-environment invocation;
-# drift is scheduled, not gated-environment-invoked).
-# ---------------------------------------------------------------------------
-
-resource "aws_iam_role" "github_ci_drift" {
-  name        = "agent-platform-github-ci-drift"
-  description = "GitHub Actions drift detector (CD.35 Wave 5 / T2.24): scheduled alarm-only, refs/heads/main via OIDC"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = aws_iam_openid_connect_provider.github_actions.arn
-        }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            # Mirrors github_ci_branch (scheduled + dispatch jobs run on main, not in a PR context).
-            # NO environment sub: drift is not gated-environment-invoked (Decision 94).
-            "token.actions.githubusercontent.com:sub" = "repo:${local.github_repo}:ref:refs/heads/main"
-          }
-        }
-      }
-    ]
-  })
-}
-
-data "aws_iam_policy_document" "github_ci_drift" {
-  # DRY composition (T2.34): the shared 20-statement refresh-read surface, not re-declared
-  # inline. ci_full_refresh_read itself composes ci_ssm_refresh_read.
-  source_policy_documents = [data.aws_iam_policy_document.ci_full_refresh_read.json]
-
-  statement {
-    # Native S3 locking coexistence (use_lockfile): terraform plan -lock=true acquires the
-    # native lock by writing a sibling .tflock object and releases it on plan completion.
-    # Scoped to the EXACT lock object key -- NO write on the state object terraform.tfstate
-    # itself. A lock held by an in-flight apply -> plan fails to acquire -> "Error acquiring
-    # the state lock" -> skip-this-cycle (exit 0, no alarm).
-    sid     = "TfstateNativeLockFile"
-    effect  = "Allow"
-    actions = ["s3:PutObject", "s3:DeleteObject"]
-    resources = [
-      "${aws_s3_bucket.data_lake.arn}/tfstate/personal/sandbox/terraform.tfstate.tflock"
-    ]
-  }
-
-  statement {
-    # CD.35 / T2.24 convergence record write: drift joins the sanctioned writer set {apply,
-    # drift}. On a green->red transition the drift workflow merge-writes the record (preserves
-    # all fields; sets status=red + drift reason marker + run_url + detected_at). Read is
-    # needed to check prior_status before deciding whether to flip (dedup: one red = one
-    # signal). Drift NEVER writes the record green -- green is written solely by a converged
-    # apply (T2.20 anti-masking anchor). No DeleteObject on the convergence prefix.
-    sid       = "ConvergenceRecordWrite"
-    effect    = "Allow"
-    actions   = ["s3:GetObject", "s3:PutObject"]
-    resources = ["${aws_s3_bucket.data_lake.arn}/convergence/personal/*"]
-  }
-
-  statement {
-    # Decision 84 closed reader/writer boundary: drift invokes the WRITER ONLY (to file the
-    # drift rec via the ops portal). The reader is explicitly excluded -- drift never reads
-    # the ops data directly. lambda:InvokeFunction is the action the Function-URL IAM
-    # authorizer actually checks; InvokeFunctionUrl retained for AWS-doc alignment.
-    # GetFunctionUrlConfig lets the runner resolve the URL via the AWS API when
-    # DUCKLAKE_WRITER_URL env is not set (the CI case) -- mirrors the branch role pattern.
-    sid     = "DuckLakeWriterInvoke"
-    effect  = "Allow"
-    actions = ["lambda:InvokeFunction", "lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
-    resources = [
-      aws_lambda_function.ducklake_writer.arn,
-      "${aws_lambda_function.ducklake_writer.arn}:*",
-    ]
-  }
-}
-
-resource "aws_iam_role_policy" "github_ci_drift" {
-  name   = "agent-platform-github-ci-drift"
-  role   = aws_iam_role.github_ci_drift.id
-  policy = data.aws_iam_policy_document.github_ci_drift.json
 }

@@ -1,15 +1,13 @@
 ---
 name: plan-critique
 description: "Use when: critique a plan, challenge assumptions, review docs/plans/PLAN-{slug}.yaml before implementation. Mandatory gate between planning and implementation."
-required-context:
-  - docs/PROJECT_CONTEXT.md
 ---
 
 ## Intent
 
-Challenge PLAN-*.yaml from a different perspective than the model that wrote it. Evaluate strategic alignment, decision consistency, and work area scoping before implementation begins. (Plans are YAML documents validated against the `PlanDocument` schema in `scripts/plan_document.py` per T1.11 / CD.22; the legacy PLAN-*.md form is deprecated -- if handed a .md path, emit a deprecation warning in your output and critique it anyway for one release cycle.)
+Challenge plans independently; accept deprecated `.md` inputs.
 
-This is a BLOCKING gate. The critique must assess whether the plan is strategically sound, well-bounded, and aligned with the North Star. A superficial review that only checks formatting is unacceptable.
+This BLOCKING gate assesses strategic soundness, bounds, and North Star alignment; formatting-only review is insufficient.
 
 ---
 
@@ -17,15 +15,19 @@ This is a BLOCKING gate. The critique must assess whether the plan is strategica
 
 ### Phase 1: Load Context (MANDATORY - Do Not Skip)
 
+Reject a plan that invents a third validation tier, treats mapped coverage or readiness as authoritative, or permits required full validation to time out, remain incomplete, or become a warning/CI-only handoff. A schema-v3 IMPLEMENTATION plan must carry the exact blocking handoff policy and its closure steps must distinguish readiness states, parent validator evidence, structured postflight evidence, and real push/PR outcomes.
+
 1. Read the ENTIRE plan file path provided by the caller (e.g., `docs/plans/PLAN-infra-parallel-workflow.yaml`). The caller passes this path explicitly — do not default to `docs/plans/PLAN.md`. If no path was provided, search `docs/plans/` for files matching `PLAN-*.yaml` and read the most recently modified one (fall back to `PLAN-*.md` only if no .yaml exists, and note the deprecation in your output).
 
 2. Read `docs/PROJECT_CONTEXT.md` in full (for North Star and rules).
 
 3. **Targeted roadmap extraction, not a full-file read:** extract only the `tier_items[]` (from `docs/ROADMAP-PLATFORM.yaml`) and product-phase entries (from `docs/ROADMAP-PRODUCT.yaml`) the plan's `phase` and `context` fields name, via a `bin/venv-python -c` yaml.safe_load projection -- do not `Read` either file in full (ROADMAP-PLATFORM.yaml alone is >600KB).
 
-4. **Targeted decision extraction + conflict-sweep, not a full-file read:** read only the decision sections named in the plan's context `Decision-scout verdict + CITE list` (locate each via `rg "^## Decision N:" docs/DECISIONS.md`), plus a conflict-sweep: `rg` 2-3 keywords drawn from the plan's approach over `^## Decision` headers in `docs/DECISIONS.md` to catch a contradiction the scout's CITE list omitted. Do not Read the full ~230KB file -- the decision-scout gate already paid that cost minutes earlier in the same workflow.
+4. **Targeted decision extraction + conflict-sweep, not a full-file read:** read only the decision sections named in the plan's context `Decision-scout verdict + CITE list` (locate each via `rg "^## Decision N:" docs/DECISIONS.md`), plus a conflict-sweep: `rg` 2-3 keywords drawn from the plan's approach over `^## Decision` headers in `docs/DECISIONS.md` to catch a contradiction the scout's CITE list omitted. Do not Read the full file -- it is large (near its Decision 134 size ceiling) and the decision-scout gate already paid that cost minutes earlier in the same workflow.
 
 5. **For IMPLEMENTATION plans:** Read the files listed in the plan's `scope` list (the `## Scope` table in legacy .md plans) to verify the plan's accuracy. For STRATEGIC plans, this is not required — work areas are high-level and do not require file-level verification.
+
+5b. For IMPLEMENTATION plans, run `bin/venv-python -m scripts.roadmap.plan_obligations --plan <plan path>` and fold its report into the scope check above -- it names missing companion registrations mechanically, freeing this gate to judge adequacy, not arithmetic.
 
 ### Phase 2: Strategic Analysis
 
@@ -45,9 +47,17 @@ This is a BLOCKING gate. The critique must assess whether the plan is strategica
 
 12. **Check Constraints for contradictions:** Do the Constraints conflict with rules in `docs/PROJECT_CONTEXT.md` or prior decisions in `docs/DECISIONS.md`?
 
-12b. **Lambda deployment completeness (IMPLEMENTATION plans only):** Use `bin/venv-python -m scripts.lambda_manifest --list-patterns` to determine which scope files are Lambda-packaged and `compute_affected_artifacts()` to identify the affected artifact slug(s). For each affected artifact with `status: active` in its `src/lambdas/<slug>/manifest.yaml`, the Ordered Execution Steps MUST include: (a) a per-Lambda build step, (b) a per-Lambda deploy step, (c) a smoke-test step using `run_scheduled_agent.py --smoke-test`, and (d) model ID validation against `docs/contracts/inference-provider.yaml` if model IDs are changed. Blanket `build_lambda.py --deploy` (all artifacts) is acceptable only when the plan modifies all active artifacts; per-Lambda scoping is preferred. If any active-artifact deploy step is missing, recommend REVISE. Exception: stub artifacts (status: stub) require no deploy step -- V1 verification suffices. The blanket `DEFERRED: build_lambda.py --deploy` exception for Decision 67 is withdrawn; Decision 67's Lambda-deploy clause was lifted by Decision 79 (CD.16 + CD.24). Reference: Decision 47, Decision 67 (Lambda-deploy clause lifted), Decision 79, Step 4 (Lambda Deployment Assessment) of plan.prompt.md.
+12b. **Lambda deployment completeness (IMPLEMENTATION only):** Run `lambda_manifest --list-patterns`
+and `compute_affected_artifacts()`. Each active artifact needs per-Lambda build, deploy, smoke test,
+and model-ID validation when applicable; all-artifact deploy is allowed only when all are modified.
+Missing active steps => REVISE. Stubs need no deploy. Decision 79 lifted the old Decision 67 freeze.
 
 12c. **Verification Plan executable command check (IMPLEMENTATION plans only):** Every `verification_plan` entry MUST have a `command` field containing a literal executable shell command or Python one-liner (the `PlanDocument` schema rejects empty commands; your job is to judge whether the command actually exercises the feature rather than being a structural-only check). FAIL if any VP step is prose-only with no executable command. For V3 plans, every VP step's `phase` must be `pre-deploy` or `post-deploy`. If either check fails, recommend REVISE with the specific VP steps that need commands or tags added.
+
+12c-1. **Test-obligation adequacy:** For schema-version-4 IMPLEMENTATION plans, recommend REVISE
+when a behavior-changing scope file lacks a linked obligation, its test is structural-only or
+does not assert the named behavior, its red/green expectation is absent, or its waiver is thin.
+Presence/link validators are deterministic; adequacy is this fresh-context judgement.
 
 12d. **STRATEGIC plan gate:** If the plan's `## Plan Type` is `STRATEGIC` AND the executor freeze is still active per AGENTS.md Temporary Operational Constraints (pending CD.17 reversal), recommend REVISE with: "STRATEGIC plans are suspended while the executor freeze holds (CD.17): the autonomous executor has no consumer for STRATEGIC-decomposed recommendations. Convert to an IMPLEMENTATION plan, or split into multiple atomic IMPLEMENTATION plans, or wait for CD.17 reversal."
 
@@ -65,6 +75,19 @@ Trigger condition 2 -- **Surface-retiring plan**: the plan's `scope` includes a 
 12l. **closes_criteria check (follow-on plans, IMPLEMENTATION only):** If the plan's phase/context names an `in_progress` tier_item, `closes_criteria` MUST be non-empty; each ref must name a criterion carrying `status: open` in `docs/ROADMAP-PLATFORM.yaml`; and `acceptance_criteria` must map 1:1 onto the chosen open criteria. If any of these fail, recommend REVISE: "Follow-on plan omits or misdeclares closes_criteria: [specifics]." A plan targeting no in_progress tier_item is exempt from this check.
 
 12m. **Tier fitness check:** `verification_tier` must satisfy the planning skill's Verification Tier Guidelines, narrowed by an intentional refinement (Decision 48/79) so comment-only `.tf` or docstring-only Python edits are not force-escalated: a **resource-affecting** `.tf` scope file (not comment-only) OR an **active-manifest** Lambda scope file (`status: active` in its manifest -- Decision 79; `status: stub` does not trigger this) => `V3`; any Python source scope file => `>= V2`. A lower declared tier than the qualifying scope requires => recommend REVISE citing the specific scope file and the tier it demands.
+
+12n. **SLOC decompose-by-default check (Decision 128):** For each `scripts/` or `src/` scope file with `action: Modify` (or `Create`), check whether the plan's own description of the change would push the file past its `config/sloc_budgets.yaml` budget (or past 500 SLOC if currently unregistered). If so, the plan MUST include a decomposition step (a facade package, Decision 80/104/124 pattern) OR an explicit, justified budget-raise step carrying a `# raise-approved: dec-NNN` marker citation. A plan that grows a scope file past its budget with neither => recommend REVISE: "Scope file [path] crosses its SLOC budget with no decomposition step and no raise-approved Decision citation -- decompose by default (Decision 128)."
+
+12o. **Graduation-classification honesty (T3.21, VF-05 enforcement):** For every `phase: pre-deploy` `verification_plan` step, check the `graduation` field (see the planning skill's "Graduation disposition authoring" for the three-way classification). Flag each of the following as a REVISE-worthy issue:
+   - **Missing disposition:** a pre-deploy step with no `graduation` field at all (only exempt if the plan predates T3.21 and declares zero dispositions anywhere -- a plan authored under this gate must classify every pre-deploy step).
+   - **Suspect `not-applicable`:** a step whose `command` is plainly a single command_exit_zero / grep_count / file_presence / test_selector / command_output_matches / metric_under_threshold shape (see `scripts.verification_checks.CANONICAL_SLOTS`) but is marked `not-applicable` instead of `graduate` -- this is exactly the classification-gaming shape the gate exists to catch, since `not-applicable` carries no downstream registry obligation.
+   - **Thin waiver:** a `waive` disposition whose `graduation_waiver_reason` is generic or non-substantive (e.g. "not needed", "skip", "later") rather than naming a concrete reason the check can't be graduated now.
+   If any step trips one of these, recommend REVISE citing the step number and which sub-check failed. Otherwise report "graduation dispositions complete and honest."
+
+12p. **Category-consistency verdict (Decision 167 clause 2 -- fresh Decisions and CD ratifications alike):** This is the reviewer-side control that does not exist anywhere else in this gate -- Phase 2's other checks judge scope, tiers, and dispositions, never whether a drafted numbered Decision's claimed significance row actually matches its body.
+   - **Trigger detection.** Fires when EITHER the plan carries a ratification block (Workflow Step 5b above) OR the plan's `scope` includes a `docs/DECISIONS.md` row AND the plan's drafted text contains a numbered `"## Decision NNN:"` heading. A `docs/DECISIONS.md` scope row that adds ONLY a dated amendment trailer -- no drafted numbered heading -- does NOT fire this check: an amendment carries no significance envelope to adjudicate.
+   - **Verdict.** When the trigger fires, locate the drafted entry's claimed `significance.value` (envelope field or narrative Significance marker) and quote VERBATIM the body sentence that satisfies or fails `docs/contracts/decision-entry.yaml` `significance.routing_rule`'s three questions for the claimed row. A claimed-row/body mismatch is REVISE-worthy on its own -- this is a mandatory category-consistency gate, not a discretionary surface-and-defer check the human can wave through.
+   - **N/A branch.** When the trigger does not fire, the Phase-3 row emits "Category consistency: N/A -- plan drafts no numbered Decision text", so a silent omission is distinguishable from a pass.
 
 ### Phase 2b: Frame Challenge (MANDATORY)
 
@@ -125,6 +148,12 @@ Ask the following five questions against the plan's chosen approach. For each, w
 **Closure Obligation (12l, follow-on plans):** N/A (not a follow-on) / Compliant / Missing [specifics]
 
 **Tier Fitness (12m):** Compliant / REVISE -- [scope file] requires [tier] but plan declares [lower tier]
+
+**Graduation Dispositions (12o):** Complete and honest / REVISE -- [step number(s) and sub-check failed]
+
+**Category Consistency (12p, Decision 167 clause 2):** N/A -- plan drafts no numbered Decision text / PASS -- "[verbatim body quote]" supports claimed [routing row] / REVISE -- claimed [routing row] but body reads: "[verbatim quote]"
+
+**Finding-Origin Attribution:** mechanical (scripts.roadmap.plan_obligations) / critic judgement -- tag each registration-closure finding
 
 **Recommendation:** PROCEED / REVISE [with specific suggestions if REVISE]
 ```

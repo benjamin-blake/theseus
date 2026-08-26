@@ -1,10 +1,24 @@
-"""Interactive VP independent re-execution (T3.15 criterion c2, VF-01, Decision 104).
+"""Interactive VP independent re-execution (T3.15 criterion c2, VF-01, Decision 148, re-keyed
+to content resolution by the plan-resolution-content-keyed plan -- see the amendment on
+Decision 132/148 in docs/DECISIONS.md).
 
 Closes the cooperative-self-evaluation gap named in VF-01: a PLAN-*.yaml's Verification Plan
 is currently self-reported by the implementing agent. This check independently re-executes,
-in the --pre PR-gate tier, every VP step of a diff-added/modified docs/plans/PLAN-*.yaml where
-``phase == "pre-deploy"`` AND ``hermetic == True``, so a hermetic pre-deploy step that fails on
-the PR tree cannot go green on self-report alone.
+in the --pre PR-gate tier, every ``phase == "pre-deploy"`` AND ``hermetic == True`` VP step of
+a plan resolved via ``_common.resolve_declared_plans`` (content-keyed: an edge-triggered
+``implementation_declared`` False->True flip between the diff base and the working tree,
+mirrors validate_graduation_completeness's own implement-PR leg):
+
+  Plan-only leg: a diff-present docs/plans/PLAN-*.yaml whose ``implementation_declared`` did
+    NOT newly flip true in this diff DEFERS -- either the implementation is absent by
+    construction (two-PR plan/implement flow, Decision 76) or the plan simply is not being
+    implemented in this PR, so replaying feature-verification steps against it would fail every
+    hermetic step regardless of whether the eventual implementation is correct. Prints a DEFER
+    line and replays nothing for that plan.
+
+  Implement leg: for every plan path resolved by ``_common.resolve_declared_plans``, loads the
+    plan from disk and replays its hermetic pre-deploy steps against the complete
+    (implementation-bearing) tree.
 
 Matching rule (mirrored in .claude/skills/planning/SKILL.md's VP Design Rationale note):
   (a) Exit-code, always: the replayed command's returncode must be 0, else the step diverges.
@@ -15,13 +29,23 @@ Matching rule (mirrored in .claude/skills/planning/SKILL.md's VP Design Rational
   A ``subprocess.TimeoutExpired`` is always a divergence.
 
 Steps that are not (pre-deploy AND hermetic) are printed as EXCLUDED with an explicit reason
-(``not-hermetic`` or ``post-deploy``) -- never silently skipped. A diff with no PLAN-*.yaml is a
-no-op PASS. A PLAN-*.yaml that fails PlanDocument content validation (schema_version/YAML/field
-errors) is skipped with a note -- schema validity is validate_plan_documents' concern, not
-replayed here (avoids double-reporting the same defect under two check names). An ``ImportError``
-loading ``scripts.plan_document`` itself is a distinct, infrastructural failure -- it is NOT
-downgraded to a skip; it reddens this check directly (mirrors the ImportError/content-error split
-in ``validate_plan_documents.py``, Decision 55 fail-loud).
+(``not-hermetic`` or ``post-deploy``) -- never silently skipped. A PLAN-*.yaml that fails
+PlanDocument content validation (schema_version/YAML/field errors) is skipped with a note --
+schema validity is validate_plan_documents' concern, not replayed here (avoids double-reporting
+the same defect under two check names). An ``ImportError`` loading ``scripts.roadmap.plan_document``
+itself is a distinct, infrastructural failure -- it is NOT downgraded to a skip; it reddens this
+check directly (mirrors the ImportError/content-error split in ``validate_plan_documents.py``,
+Decision 55 fail-loud).
+
+Advisory SKIP (never a failure): no docs/plans/PLAN-*.yaml is present in the diff at all is a
+no-op PASS (an empty domain, not a skip -- see the accounting-declaration composition in
+``validate_vp_replay`` below); origin/main being unreachable (no fetch, detached clone, etc)
+DEFERs every diff-present plan and declares ``skipped`` (content resolution needs a reachable
+base to distinguish a flip from a pre-existing declaration).
+
+One terminal Decision 170 declaration per dispatch (docs/contracts/check-accounting.yaml):
+unreachable base -> ``skipped``; otherwise ``examined(len(resolved), unit="declared_plans")``
+(0 -> vacuous, >0 -> enforced unless a replay diverges, which always wins as failed).
 
 Bounded cost: a per-step timeout (PER_STEP_TIMEOUT_SECONDS) plus an aggregate wall-clock/step-
 count cap (MAX_AGGREGATE_SECONDS / MAX_REPLAYED_STEPS) so a pathological hermetic command cannot
@@ -46,29 +70,7 @@ PER_STEP_TIMEOUT_SECONDS = 30
 MAX_AGGREGATE_SECONDS = 120
 MAX_REPLAYED_STEPS = 20
 
-_PLAN_PATH_RE = re.compile(r"^docs/plans/PLAN-[^/]+\.yaml$")
 _BACKTICK_LITERAL_RE = re.compile(r"`([^`]+)`")
-
-
-def _plan_paths_from_changed(changed_files: list[str]) -> list[str]:
-    return sorted(f for f in changed_files if _PLAN_PATH_RE.match(f))
-
-
-def _load_plan(rel_path: str, root: Path):
-    """Load a PlanDocument via scripts.plan_document.load(), injecting repo root onto sys.path."""
-    root_str = str(root)
-    import sys as _sys  # noqa: PLC0415
-
-    injected = root_str not in _sys.path
-    if injected:
-        _sys.path.insert(0, root_str)
-    try:
-        from scripts.plan_document import load  # noqa: PLC0415
-
-        return load(root / rel_path)
-    finally:
-        if injected and root_str in _sys.path:
-            _sys.path.remove(root_str)
 
 
 def _partition_steps(verification_plan) -> tuple[list, list[tuple]]:
@@ -138,41 +140,48 @@ def _replay_step(plan_rel: str, step, root: Path, failed: list[str]) -> float:
     return elapsed
 
 
-@registry.register("validate_vp_replay", owner="platform")
-def validate_vp_replay(failed: list[str], changed_files: list[str] | None = None, root: Path | None = None) -> None:
-    """Independently re-execute hermetic pre-deploy VP steps of PLAN-*.yaml files in the diff.
-
-    changed_files / root are test/dogfood injection seams -- default to
-    _common.get_changed_files() (vs origin/main) and _common.ROOT respectively.
+def _plan_only_pr_leg(plan_files: list[str], root: Path, resolved: set[str]) -> None:
+    """Print DEFER for every diff-present plan whose `implementation_declared` did not newly
+    flip true in this diff; a resolved plan's replay happens in `_implement_pr_leg`.
     """
-    print("\n=== Interactive VP replay (T3.15 c2, VF-01) ===")
-    root = root if root is not None else _common.ROOT
-    changed = changed_files if changed_files is not None else _common.get_changed_files()
+    for plan_rel in plan_files:
+        if not (root / plan_rel).exists():
+            print(f"  SKIP: {plan_rel} (not present on disk -- deleted in this diff)")
+            continue
+        if plan_rel in resolved:
+            print(f"  PASS: {plan_rel} -- implementation_declared newly true in this diff; replayed by the implement leg.")
+        else:
+            print(
+                f"  DEFER: {plan_rel} -- implementation_declared not newly true in this diff; replay deferred until "
+                "the plan declares its implementation."
+            )
 
-    plan_files = _plan_paths_from_changed(changed)
-    if not plan_files:
-        print("  PASS: no docs/plans/PLAN-*.yaml in the diff -- no-op.")
+
+def _implement_pr_leg(root: Path, resolved: list[str], failed: list[str]) -> None:
+    """Replay every resolved plan's hermetic pre-deploy steps against the complete
+    (implementation-bearing) tree. `resolved` is the content-keyed resolution from
+    `_common.resolve_declared_plans` -- every path in it already exists on disk.
+    """
+    if not resolved:
+        print("  PASS: no plan(s) with a newly-true implementation_declared in this diff -- no-op.")
         return
 
     total_elapsed = 0.0
     replayed_count = 0
     budget_hit = False
+    plans_resolved = 0
 
-    for plan_rel in plan_files:
-        plan_path = root / plan_rel
-        if not plan_path.exists():
-            print(f"  SKIP: {plan_rel} (not present on disk -- deleted in this diff)")
-            continue
-
+    for plan_rel in resolved:
         try:
-            doc = _load_plan(plan_rel, root)
+            doc = _common.load_plan(plan_rel, root)
         except ImportError as exc:
-            failed.append(f"vp-replay {plan_rel}: could not import scripts.plan_document: {exc}")
+            failed.append(f"vp-replay {plan_rel}: could not import scripts.roadmap.plan_document: {exc}")
             continue
         except Exception as exc:  # noqa: BLE001 -- schema validity is validate_plan_documents' concern
             print(f"  SKIP: {plan_rel}: load error ({exc}) -- not double-reported here")
             continue
 
+        plans_resolved += 1
         replay_steps, excluded_steps = _partition_steps(doc.verification_plan)
 
         for step, reason in excluded_steps:
@@ -193,6 +202,44 @@ def validate_vp_replay(failed: list[str], changed_files: list[str] | None = None
             break
 
     if not any(f.startswith("vp-replay") for f in failed) and replayed_count:
-        print(f"  PASS: {replayed_count} hermetic pre-deploy step(s) replayed clean across {len(plan_files)} plan(s).")
-    elif not replayed_count and not budget_hit:
-        print(f"  PASS: {len(plan_files)} plan(s) in diff, no hermetic pre-deploy steps to replay.")
+        print(f"  PASS: {replayed_count} hermetic pre-deploy step(s) replayed clean across {plans_resolved} plan(s).")
+    elif not replayed_count and not budget_hit and plans_resolved:
+        print(f"  PASS: {plans_resolved} plan(s) resolved via implementation_declared, no hermetic step(s) to replay.")
+
+
+@registry.register("validate_vp_replay", owner="platform")
+def validate_vp_replay(failed: list[str], changed_files: list[str] | None = None, root: Path | None = None) -> None:
+    """Independently re-execute hermetic pre-deploy VP steps, resolved via content-keyed
+    resolution (plan-only defers, implement leg replays -- see module docstring).
+
+    changed_files / root are test/dogfood injection seams -- default to
+    _common.get_changed_files(root) (vs origin/main) and _common.ROOT respectively.
+
+    Composes exactly ONE terminal Decision 170 declaration (docs/contracts/check-accounting.yaml):
+    no plan present in the diff at all is an empty domain (examined(0), never skipped, since the
+    domain is provably empty without needing the base at all); a diff-present plan set with an
+    unreachable base DEFERs everything and declares skipped (content resolution needs a reachable
+    base to tell a flip from a pre-existing declaration); otherwise examined(len(resolved)).
+    """
+    print("\n=== Interactive VP replay (T3.15 c2, VF-01) ===")
+    root = root if root is not None else _common.ROOT
+    changed = changed_files if changed_files is not None else _common.get_changed_files(root)
+
+    plan_files = _common.plan_paths_from_changed(changed)
+    if not plan_files:
+        print("  PASS: no docs/plans/PLAN-*.yaml in the diff -- no-op.")
+        registry.examined(0, unit="declared_plans")
+        return
+
+    if not _common.origin_main_reachable(root):
+        print("  SKIP: origin/main unreachable (advisory locally, authoritative in CI) -- deferring every in-diff plan.")
+        for plan_rel in plan_files:
+            print(f"  DEFER: {plan_rel} -- diff base unreachable.")
+        registry.skipped("diff base unreachable")
+        return
+
+    base = _common.push_context_base(root) or "origin/main"
+    resolved = _common.resolve_declared_plans(changed, root, base)
+    _plan_only_pr_leg(plan_files, root, set(resolved))
+    _implement_pr_leg(root, resolved, failed)
+    registry.examined(len(resolved), unit="declared_plans")

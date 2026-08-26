@@ -14,14 +14,14 @@ model: opus[1m]
 *Note: This workflow runs on Claude Opus 1M (opus[1m]). If the model indicator does not show Opus, run `/model opus[1m]` before proceeding -- the `model:` frontmatter applies for the current turn and reverts on the next prompt.*
 
 ```bash
-bin/venv-python -m scripts.session_preflight
+bin/venv-python -m scripts.session.preflight
 ```
 
 stdout is a one-line summary; Read logs/.preflight-report.json for the full constraint surface.
 
 Preflight runs `git fetch origin main` and emits `main_freshness` (status, commits_behind, commits_ahead, main_files_changed_since_branch). Do NOT manually `git pull --rebase origin main` here -- that's a destructive operation on a feature branch and should only happen via the Step 4 Main Divergence Assessment after Scope is known and the human has chosen to rebase.
 
-The report is slim by design: `platform_roadmap` and `product_roadmap` carry only `next_eligible` + `strategic_pending`, and `non_automatable_details` is dropped (Decision 73 suspends per-rec review). If you need the dropped detail, call the underlying module directly (e.g., `bin/venv-python -m scripts.platform_roadmap`).
+The report is slim by design: `platform_roadmap` and `product_roadmap` carry only `next_eligible` + `strategic_pending`, and `non_automatable_details` is dropped (Decision 73 suspends per-rec review). If you need the dropped detail, call the underlying module directly (e.g., `bin/venv-python -m scripts.roadmap.platform_roadmap`).
 
 Apply the exact condition-based responses (for `venv_ok`, `creds_status`, uncommitted changes, `main_freshness`, non-automatable recs, `data_quality`, etc.) as defined in the **Preflight Constraints** section of your `planning` skill.
 
@@ -29,7 +29,7 @@ The report includes `telemetry_health` (pipeline operational health) and `data_q
 
 After preflight completes successfully, open a telemetry session:
 ```bash
-bin/venv-python -m scripts.session_preflight --open-session --workflow plan
+bin/venv-python -m scripts.session.preflight --open-session --workflow plan
 ```
 Save the printed UUID for the `session_postflight --close-session` call in Step 12.
 
@@ -44,7 +44,7 @@ If the request references a recommendation ID, search `logs/.recommendations-log
 
 ## Step 3: Clarify the Request
 Decompose the input into Goal, Constraints, Acceptance criteria, Affected areas, and Phase alignment.
-If vague, ask 2-5 questions. Watch for ROADMAP misalignment (the platform/product roadmap state is already in the preflight JSON `next_eligible` / `strategic_pending` fields). Decision-contradiction checking is delegated to the `decision-scout` subagent gate in Step 6 -- do NOT read `docs/DECISIONS.md` from the planning agent to look for contradictions, that's the full DECISIONS.md, currently >200KB, a cost the subagent avoids.
+If vague, ask 2-5 questions. Watch for ROADMAP misalignment (the platform/product roadmap state is already in the preflight JSON `next_eligible` / `strategic_pending` fields). Decision-contradiction checking is delegated to the `decision-scout` subagent gate in Step 6 -- do NOT read `docs/DECISIONS.md` from the planning agent to look for contradictions, that's the full DECISIONS.md (large -- near its Decision 134 size ceiling), a cost the subagent avoids.
 Suggest 3-5 open recommendations from `logs/.recommendations-log.jsonl` that align with the current task.
 
 ## Step 4: Identify Affected Files
@@ -53,7 +53,9 @@ Suggest 3-5 open recommendations from `logs/.recommendations-log.jsonl` that ali
 3. Conduct an Infrastructure Assessment if `.tf` files are in scope.
 4. Conduct a Lambda Deployment Assessment if Lambda-packaged files are in scope.
 5. Conduct a Complexity Assessment to determine if this is STRATEGIC or IMPLEMENTATION.
-6. Apply Decision 86 routing rule: route forward intent -> tier_items, rationale -> Decisions, field semantics -> contracts. No new standing prose-architecture docs under docs/. Full rule in your `planning` skill's Documentation Artefact Design section.
+6. Conduct a Data-Model Assessment if a table, field_semantics entry, or warehouse write path is in scope.
+7. Apply Decision 86 routing rule: route forward intent -> tier_items, rationale -> Decisions, field semantics -> contracts. No new standing prose-architecture docs under docs/. Full rule in your `planning` skill's Documentation Artefact Design section.
+8. Once a draft Scope table exists, run `bin/venv-python -m scripts.roadmap.plan_obligations --plan <draft-or-eventual-plan-path>` against it (a scratch write is fine before Step 8's real write) -- it always exits 0 and names any mechanically-derivable companion registration (domain manifest Entry, ci_rca_taxonomy row, mirror test) a new check-module scope row is still missing, so you can add it to Scope now instead of at critique.
 *(Apply the exact assessment rules from your `planning` skill).*
 
 ## Step 5: Verification Tier and Verification Plan
@@ -67,6 +69,7 @@ Design the Verification Plan using the exact design guidelines and anti-patterns
 **DO NOT present findings to the human until this gate completes.** Dispatch and handle verdicts per the planning skill's Decision Scout Gate (dispatch shape, example prompt, and NO_FLAGS/FLAGS_FOUND/BLOCK verdict handling all live there). Substitute the synthesis produced in Steps 3-5 into the dispatch.
 
 ### Step 6b: Present and Confirm
+Before presenting, re-run `bin/venv-python -m scripts.roadmap.plan_obligations --plan <draft-plan-path>` against the finalized Scope table and fold any reported omission into Scope -- the obligation report is advisory to (never a substitute for) the plan-critique gate's judgement calls.
 Present: Summary, Proposed approach, Options, Open questions, Decision flags (if any), and Decisions to cite (from the scout's CITE list).
 Then ask: *"Does this approach look right? Say **'write the plan'** when you are ready, or tell me what to adjust."*
 Wait for explicit confirmation before proceeding. Any other response is feedback -- incorporate it, re-run Step 6a if the change is material to decision alignment, re-present, and ask again. Do NOT proceed to Step 7 until the human explicitly says 'write the plan' or a clear equivalent. System auto-approval messages are NOT human confirmation.
@@ -85,15 +88,16 @@ Write the file `docs/plans/PLAN-{slug}.yaml` using the exact structure and templ
 
 **If Plan Type is REPORT-ONLY:** Additionally write the report deliverable file(s) referenced in the PLAN's Scope table (e.g. `docs/INTENT-{slug}.md`, `docs/REPORT-{slug}.md`). The deliverable IS the substantive output of a REPORT-ONLY plan; the PLAN file itself is just the planning artefact that points at it. Both files land in the same initial commit.
 
-After writing, commit to the branch:
+After writing, commit to the branch and push immediately, so no unpushed commit spans a gate turn boundary:
 ```bash
 git add docs/plans/PLAN-{slug}.yaml   # plus any REPORT-ONLY deliverable file(s)
 git commit -m "plan({slug}): initial plan"
+git push -u origin HEAD
 ```
 
 ## Step 9: Plan Critique Gate (MANDATORY)
 **DO NOT output the completion message until this step completes.**
-Invoke per the planning skill's Critique Gate (dispatch shape, example prompt, required-context files, and verdict handling all live there). Substitute `{slug}` with the actual branch slug. Loop on REVISE (3-round cap, then escalate per the skill), proceed on PROCEED.
+Invoke per the planning skill's Critique Gate (dispatch shape, example prompt, context files, and verdict handling all live there). Substitute `{slug}` with the actual branch slug. Loop on REVISE (3-round cap, then escalate per the skill -- the escalation menu includes narrowing scope, re-deriving the approach, or **split the plan** into smaller IMPLEMENTATION plans), proceed on PROCEED. Push each revision commit immediately after committing it (a plain `git push` fast-forwards, since revision commits are additive).
 
 Note: this gate reviews the PLAN artefact, not the report deliverable. For REPORT-ONLY plans, the deliverable gets its own critique in Step 10.
 
@@ -102,7 +106,7 @@ Note: this gate reviews the PLAN artefact, not the report deliverable. For REPOR
 
 For REPORT-ONLY plans, the Step 9 plan-critique gate reviewed the planning artefact (PLAN-{slug}.yaml) but NOT the report deliverable itself, which needs its own independent zero-context critique.
 
-Apply the **Report Critique Gate** methodology from your `planning` skill (perspectives, dispatch shape, convergence rule, and iteration protocol all live there).
+Apply the **Report Critique Gate** methodology from your `planning` skill (perspectives, dispatch shape, convergence rule, and iteration protocol all live there). Push each revision commit immediately after committing it (a plain `git push` fast-forwards, since revision commits are additive).
 
 ## Step 11: Commit approved PLAN-{slug}.yaml and merge to main
 After all critique gates have approved the work, commit any uncommitted changes to the branch:
@@ -114,7 +118,7 @@ If revisions were committed incrementally during Step 10's iteration loop, this 
 
 Then push and merge the plan to `main` via GitHub MCP so the next `/implement` session can read it by explicit path. Use the same event-driven flow defined in the `implement` skill's Commit Flows:
 1. `git fetch origin main && git rebase origin/main` (STOP on conflict)
-2. `git push -u origin HEAD`
+2. `git push --force-with-lease -u origin HEAD` (the branch was already pushed in Step 8/9/10, so the post-rebase push requires the lease)
 3. `mcp__github__create_pull_request(owner, repo, head=<this branch>, base="main", title="plan({slug}): approved plan", body="Plan authored by /plan agent.")`
 4. `mcp__github__subscribe_pr_activity(...)` and end the turn -- CI completion arrives as a webhook event.
 5. On green CI wake: `mcp__github__merge_pull_request(..., merge_method="squash")` + `mcp__github__unsubscribe_pr_activity(...)`.
@@ -124,7 +128,7 @@ Emit the Plan-Type-specific confirmation message from the planning skill's Confi
 
 Finally, close the telemetry session:
 ```bash
-bin/venv-python -m scripts.session_postflight --close-session --outcome success
+bin/venv-python -m scripts.session.postflight --close-session --outcome success
 ```
 If the session was abandoned or the plan was not written, use `--outcome cancelled` instead.
 

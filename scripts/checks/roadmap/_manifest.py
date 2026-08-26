@@ -1,0 +1,160 @@
+"""Entry literals for the roadmap domain's registered checks (Decision 169, amends Decision 104).
+
+Bare string-literal module=/attr= pairs only -- see docs/contracts/check-manifest.yaml. Aggregated
+by scripts/checks/registry.py; never imported by scripts/validate.py directly.
+
+Every gated Entry's pre_globs must cover the check's whole transitive first-party import closure.
+Two consequences visible below: (1) scripts/roadmap/platform_roadmap.py is a pure Decision-124
+facade -- the Pydantic models, the state machine and the gate-rule grammar live one level up in
+scripts/platform_roadmap_{models,state,gate_rules}.py, so "scripts/roadmap/**" alone does NOT
+reach the schemas these checks validate against; (2) every gated Entry carries
+scripts/checks/_common.py and scripts/checks/registry.py, which every check imports at module
+scope and calls at run time (_common.ROOT / diff helpers, registry.examined()/skipped()). The
+rest of the scripts/checks/ spine (_schema.py, sibling domains' _manifest.py, the package
+__init__) is deliberately NOT globbed: a break there fails registry -> scripts/validate.py at
+IMPORT time, so the whole --pre run crashes red before any gate is consulted.
+"""
+
+from __future__ import annotations
+
+from scripts.checks._schema import Entry
+
+ENTRIES: tuple[Entry, ...] = (
+    Entry(
+        name="validate_platform_roadmap",
+        module="scripts.checks.roadmap.validate_platform_roadmap",
+        attr="validate_platform_roadmap",
+        pre=True,
+        pre_globs=(
+            "docs/plans/**",
+            "docs/ROADMAP-*",
+            "docs/DECISIONS.md",
+            "scripts/platform_roadmap_models.py",
+            "scripts/platform_roadmap_state.py",
+            "scripts/platform_roadmap_gate_rules.py",
+            "scripts/roadmap/**",
+            "scripts/checks/roadmap/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_candidate_decision_ratification",
+        module="scripts.checks.roadmap.validate_candidate_decision_ratification",
+        attr="validate_candidate_decision_ratification",
+        pre=True,
+        pre_globs=(
+            "docs/ROADMAP-*",
+            "docs/DECISIONS.md",
+            "docs/DECISIONS_ARCHIVE.md",
+            "scripts/decisions_md.py",
+            "scripts/platform_roadmap_models.py",
+            "scripts/platform_roadmap_state.py",
+            "scripts/platform_roadmap_gate_rules.py",
+            "scripts/roadmap/**",
+            "scripts/checks/roadmap/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_candidate_decision_supersession",
+        module="scripts.checks.roadmap.validate_candidate_decision_supersession",
+        attr="validate_candidate_decision_supersession",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_product_roadmap",
+        module="scripts.checks.roadmap.validate_product_roadmap",
+        attr="validate_product_roadmap",
+        product_coupled=True,
+        pre=True,
+        pre_globs=(
+            "docs/ROADMAP-*",
+            "scripts/platform_roadmap_models.py",
+            "scripts/platform_roadmap_state.py",
+            "scripts/platform_roadmap_gate_rules.py",
+            "scripts/roadmap/**",
+            "scripts/checks/roadmap/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_plan_documents",
+        module="scripts.checks.roadmap.validate_plan_documents",
+        attr="validate_plan_documents",
+        pre=True,
+        pre_globs=(
+            "docs/plans/**",
+            "docs/ROADMAP-*",
+            "docs/DECISIONS.md",
+            "scripts/roadmap/**",
+            "scripts/checks/roadmap/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_fallback_reevaluation",
+        module="scripts.checks.roadmap.validate_fallback_reevaluation",
+        attr="validate_fallback_reevaluation",
+        pre=True,
+        pre_globs=(
+            "docs/plans/**",
+            "docs/ROADMAP-*",
+            "scripts/platform_roadmap_models.py",
+            "scripts/platform_roadmap_state.py",
+            "scripts/platform_roadmap_gate_rules.py",
+            "scripts/roadmap/**",
+            "scripts/checks/roadmap/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_tier_floor",
+        module="scripts.checks.roadmap.validate_tier_floor",
+        attr="validate_tier_floor",
+        pre=True,
+        pre_globs=(
+            "docs/plans/**",
+            "docs/ROADMAP-*",
+            "docs/DECISIONS.md",
+            "src/lambdas/**",
+            "scripts/lambda_manifest.py",
+            "scripts/roadmap/**",
+            "scripts/checks/roadmap/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_plan_scope_closure",
+        module="scripts.checks.roadmap.validate_plan_scope_closure",
+        attr="validate_plan_scope_closure",
+        pre=True,
+        pre_globs=(
+            "docs/plans/**",
+            "docs/contracts/plan-obligations.yaml",
+            "scripts/roadmap/**",
+            "scripts/checks/roadmap/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="_check_graduation_guard",
+        module="scripts.checks.roadmap.check_graduation_guard",
+        attr="_check_graduation_guard",
+        full_segment="full_after_lint",
+    ),
+)

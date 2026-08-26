@@ -7,12 +7,12 @@ from scripts.checks import registry
 
 @registry.register("validate_ci_rca_taxonomy", owner="platform")
 def validate_ci_rca_taxonomy(failed: list[str]) -> None:
-    """Fail if any .github/workflows/*.yml workflow name is absent from workflow_to_tier map.
+    """Fail if any .github/workflows/*.yml workflow name is absent from the workflows map.
 
     Pure file-glob + YAML parse (sub-100ms); --pre eligible (Decision 60).
     """
-    print("\n=== CI-RCA taxonomy coverage (workflow_to_tier map) ===")
-    from scripts.ci_rca_taxonomy import enumerate_workflow_names, load_taxonomy  # noqa: PLC0415
+    print("\n=== CI-RCA taxonomy coverage (workflows map) ===")
+    from scripts.ci_rca.taxonomy import enumerate_workflow_names, load_taxonomy  # noqa: PLC0415
 
     try:
         taxonomy = load_taxonomy()
@@ -20,14 +20,31 @@ def validate_ci_rca_taxonomy(failed: list[str]) -> None:
         failed.append(f"CI-RCA taxonomy coverage: {exc}")
         return
 
-    tier_map: dict[str, str] = taxonomy.get("workflow_to_tier") or {}
+    workflows_map: dict[str, dict] = taxonomy.get("workflows") or {}
     actual_names = enumerate_workflow_names()
-    missing = [n for n in actual_names if n not in tier_map]
+    missing = [n for n in actual_names if n not in workflows_map]
     if missing:
         for n in missing:
-            failed.append(f"CI-RCA taxonomy: workflow {n!r} absent from workflow_to_tier in config/ci_rca_taxonomy.yaml")
+            failed.append(f"CI-RCA taxonomy: workflow {n!r} absent from workflows in config/ci_rca_taxonomy.yaml")
         return
-    print(f"All {len(actual_names)} workflow name(s) present in workflow_to_tier.")
+    print(f"All {len(actual_names)} workflow name(s) present in workflows.")
+
+    # Check 1b: every REGISTERED check resolves to a category in function_to_category -- a
+    # PRECONDITION of the Priority-0 attribution path (scripts.ci_rca.taxonomy.classify_failure/
+    # classify_failures resolve an attributed check's failure_category through
+    # func_map[check_name]), not standalone hygiene. Same shape as the workflows coverage
+    # assertion above.
+    func_map: dict[str, str] = taxonomy.get("function_to_category") or {}
+    registered_checks = sorted(registry.all_checks())
+    unmapped_checks = [c for c in registered_checks if c not in func_map]
+    if unmapped_checks:
+        for c in unmapped_checks:
+            failed.append(
+                f"CI-RCA taxonomy: registered check {c!r} absent from function_to_category in "
+                f"config/ci_rca_taxonomy.yaml (Priority-0 attribution precondition)"
+            )
+        return
+    print(f"All {len(registered_checks)} registered check(s) present in function_to_category.")
 
     # Check 2: failure_categories list matches classifier's actual category set
     failure_categories = taxonomy.get("failure_categories")
@@ -40,8 +57,11 @@ def validate_ci_rca_taxonomy(failed: list[str]) -> None:
     func_map = taxonomy.get("function_to_category") or {}
     step_map = taxonomy.get("step_name_to_category") or {}
     used_cats = set(func_map.values()) | set(step_map.values())
-    # Also include "unknown" sentinel which classify_failure can return
+    # Also include code-emitted sentinels which classify_failure can return without a map entry:
+    # "unknown" (taxonomy_fallback) and "evidence_insufficient" (the refusal verdict, emitted at
+    # the classify_failure/classify_failures call sites, never via a func_map/step_map entry).
     used_cats.add("unknown")
+    used_cats.add("evidence_insufficient")
 
     # Add categories from log_pattern_to_category
     for entry in taxonomy.get("log_pattern_to_category") or []:
