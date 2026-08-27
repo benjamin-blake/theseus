@@ -7,6 +7,7 @@ import importlib
 import pytest
 
 from scripts.checks import registry
+from scripts.checks._schema import Entry
 from scripts.checks.deps import _manifest
 
 
@@ -55,3 +56,38 @@ class TestGatedEntryInputClosures:
             "docs/contracts/check-manifest.yaml",
             "scripts/dependency_graph.py",
         } <= self._globs("validate_check_manifests")
+
+    def test_pre_glob_closure_is_gated_on_its_own_closure(self) -> None:
+        """Dogfood: the closure auditor audits its own Entry, so its globs must cover its own
+        transitive first-party import closure -- the manifest roster it reads through the
+        registry, the graph oracle it traverses, and the two hub modules those pull in
+        (scripts.lambda_manifest via _gather_roots, scripts.roadmap.plan_document via
+        scripts.checks._common's function-scope import)."""
+        assert {
+            "scripts/checks/**",
+            "scripts/checks/*/_manifest.py",
+            "scripts/dependency_graph.py",
+            "scripts/extract_imports.py",
+            "scripts/lambda_manifest.py",
+            "scripts/roadmap/plan_document.py",
+        } <= self._globs("validate_pre_glob_closure")
+
+
+class TestPreGlobClosureEntry:
+    """The closure auditor's tier membership (D2-3 wave 4a)."""
+
+    @staticmethod
+    def _entry() -> Entry:
+        return next(e for e in _manifest.ENTRIES if e.name == "validate_pre_glob_closure")
+
+    def test_is_in_the_pre_tier_and_gated(self) -> None:
+        entry = self._entry()
+        assert entry.pre is True
+        assert entry.pre_globs
+
+    def test_uses_the_domain_full_segment_convention(self) -> None:
+        """Every pre=True deps Entry declares full_after_lint -- derived from the domain's own
+        roster, not restated as a literal."""
+        siblings = {e.full_segment for e in _manifest.ENTRIES if e.pre and e.name != "validate_pre_glob_closure"}
+        assert self._entry().full_segment in siblings
+        assert len(siblings) == 1

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import networkx as nx
 import pytest
 
 import scripts.extract_imports  # noqa: F401  warm the lazy import so ast.parse patches are exact
@@ -448,6 +449,114 @@ class TestPatchStringModuleEdges:
         (root / "scripts" / "consumer.py").write_text('X = "scripts.nonexistent_module.some_attr"\n', encoding="utf-8")
         graph = build_graph(repo_root=root)
         assert graph.out_degree("scripts.consumer") == 0
+
+
+class TestEdgeKinds:
+    """Every build_graph edge carries a `kind` attribute (D2-3 prerequisite): "import" for a real
+    import edge, "patch_string" for a bare-string-literal edge (Decision 169's manifest
+    driver->check edge and every mock.patch target), "call" for a symbol-granularity call edge.
+
+    The patch-string edges STAY in the graph -- only a consumer that explicitly filters
+    (import_subgraph) sees a difference, so no default traversal moves.
+    """
+
+    def _kinds(self, graph: nx.DiGraph) -> set[str]:
+        return {data.get("kind") for _u, _v, data in graph.edges(data=True)}
+
+    def test_import_edge_carries_kind_import(self, tmp_path: Path) -> None:
+        root = _make_fixture(tmp_path)
+        graph = build_graph(repo_root=root)
+        assert graph.edges["src.pkg.module_a", "scripts.helper"]["kind"] == _dg.EDGE_KIND_IMPORT
+
+    def test_patch_string_edge_carries_kind_patch_string(self, tmp_path: Path) -> None:
+        root = _make_rich_fixture(tmp_path)
+        graph = build_graph(repo_root=root)
+        assert graph.edges["tests.test_patching", "scripts.helper"]["kind"] == _dg.EDGE_KIND_PATCH_STRING
+
+    def test_both_kinds_present_on_the_rich_fixture(self, tmp_path: Path) -> None:
+        graph = build_graph(repo_root=_make_rich_fixture(tmp_path))
+        assert self._kinds(graph) == {_dg.EDGE_KIND_IMPORT, _dg.EDGE_KIND_PATCH_STRING}
+
+    def test_every_edge_has_a_kind(self, tmp_path: Path) -> None:
+        graph = build_graph(repo_root=_make_rich_fixture(tmp_path))
+        assert None not in self._kinds(graph)
+
+    def test_symbol_call_edge_carries_kind_call(self, tmp_path: Path) -> None:
+        graph = build_graph(repo_root=_make_rich_fixture(tmp_path), granularity="symbol")
+        assert graph.edges["scripts.entrypoint.main", "scripts.helper"]["kind"] == _dg.EDGE_KIND_CALL
+
+    def test_kind_counts_partition_the_edge_set(self, tmp_path: Path) -> None:
+        """Counts sane: the per-kind edge lists are disjoint and sum to the whole edge set."""
+        graph = build_graph(repo_root=_make_rich_fixture(tmp_path), granularity="symbol")
+        by_kind = [_dg.edges_of_kind(graph, k) for k in (_dg.EDGE_KIND_IMPORT, _dg.EDGE_KIND_PATCH_STRING, _dg.EDGE_KIND_CALL)]
+        flat = [edge for group in by_kind for edge in group]
+        assert all(group for group in by_kind)
+        assert len(flat) == len(set(flat)) == graph.number_of_edges()
+
+    def test_a_real_import_wins_over_a_patch_string_naming_the_same_module(self, tmp_path: Path) -> None:
+        """A module that BOTH imports X and mentions "X.attr" as a string must keep kind="import"
+        -- otherwise the string pass would silently delete a real import edge from the
+        import-only view, which is a fail-open recall bug in every consumer of that view."""
+        root = _make_fixture(tmp_path)
+        (root / "scripts" / "dual.py").write_text(
+            'from scripts.helper import do_stuff\n\nTARGET = "scripts.helper.do_stuff"\n', encoding="utf-8"
+        )
+        graph = build_graph(repo_root=root)
+        assert graph.edges["scripts.dual", "scripts.helper"]["kind"] == _dg.EDGE_KIND_IMPORT
+
+    def test_a_real_import_wins_over_a_symbol_node_colliding_with_that_module(self, tmp_path: Path) -> None:
+        """The symbol layer names a symbol f"{module}.{name}", which can COLLIDE with a real
+        module node -- here `def module_a` in src/pkg/__init__.py yields "src.pkg.module_a",
+        already a module. The call pass must leave that module's own kind="import" edge alone;
+        retagging it kind="call" would silently drop a real import from import_subgraph."""
+        root = _make_fixture(tmp_path)
+        (root / "src" / "pkg" / "__init__.py").write_text(
+            "from scripts.helper import do_stuff\n\n\ndef module_a():\n    do_stuff()\n", encoding="utf-8"
+        )
+        graph = build_graph(repo_root=root, granularity="symbol")
+        assert graph.edges["src.pkg.module_a", "scripts.helper"]["kind"] == _dg.EDGE_KIND_IMPORT
+        assert _dg.import_subgraph(graph).has_edge("src.pkg.module_a", "scripts.helper")
+
+    def test_edges_of_kind_is_sorted_and_filters(self, tmp_path: Path) -> None:
+        graph = build_graph(repo_root=_make_rich_fixture(tmp_path))
+        patch_edges = _dg.edges_of_kind(graph, _dg.EDGE_KIND_PATCH_STRING)
+        assert patch_edges == sorted(patch_edges)
+        assert patch_edges == [("tests.test_patching", "scripts.helper")]
+
+    def test_edges_of_kind_unknown_kind_is_empty(self, tmp_path: Path) -> None:
+        graph = build_graph(repo_root=_make_rich_fixture(tmp_path))
+        assert _dg.edges_of_kind(graph, "no_such_kind") == []
+
+
+class TestImportSubgraph:
+    """import_subgraph() is the kind-filtered accessor: same nodes, import edges only."""
+
+    def test_view_drops_patch_string_edges(self, tmp_path: Path) -> None:
+        graph = build_graph(repo_root=_make_rich_fixture(tmp_path))
+        view = _dg.import_subgraph(graph)
+        assert graph.has_edge("tests.test_patching", "scripts.helper")
+        assert not view.has_edge("tests.test_patching", "scripts.helper")
+
+    def test_view_keeps_import_edges_and_nodes(self, tmp_path: Path) -> None:
+        graph = build_graph(repo_root=_make_rich_fixture(tmp_path))
+        view = _dg.import_subgraph(graph)
+        assert sorted(view.nodes) == sorted(graph.nodes)
+        assert view.has_edge("src.pkg.module_a", "scripts.helper")
+
+    def test_view_edge_set_equals_the_import_kind_edges(self, tmp_path: Path) -> None:
+        graph = build_graph(repo_root=_make_rich_fixture(tmp_path))
+        assert sorted(_dg.import_subgraph(graph).edges) == _dg.edges_of_kind(graph, _dg.EDGE_KIND_IMPORT)
+
+    def test_descendants_shrink_under_the_view(self, tmp_path: Path) -> None:
+        graph = build_graph(repo_root=_make_rich_fixture(tmp_path))
+        assert "scripts.helper" in nx.descendants(graph, "tests.test_patching")
+        assert nx.descendants(_dg.import_subgraph(graph), "tests.test_patching") == set()
+
+    def test_view_does_not_mutate_the_source_graph(self, tmp_path: Path) -> None:
+        graph = build_graph(repo_root=_make_rich_fixture(tmp_path))
+        before = sorted(graph.edges)
+        _dg.import_subgraph(graph)
+        assert sorted(graph.edges) == before
 
 
 class TestCheckExportFreshness:

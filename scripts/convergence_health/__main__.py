@@ -1,8 +1,8 @@
 """CLI entry point for the convergence-health sensor (called by convergence-health.yml).
 
-Preserves `python -m scripts.convergence_health [--ducklake-drift|--prod-drift]`. Part of
-the scripts.convergence_health package -- see scripts/convergence_health/__init__.py for
-the full public surface.
+Preserves `python -m scripts.convergence_health [--ducklake-drift|--prod-drift|--budget-ingest
+[--dry-run]]`. Part of the scripts.convergence_health package -- see
+scripts/convergence_health/__init__.py for the full public surface.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ from scripts.convergence_health.approvals import (
     has_in_flight_reconcile_for_episode,
 )
 from scripts.convergence_health.assess import assess_health
+from scripts.convergence_health.budget_ingest import ingest_budget_breaches
 from scripts.convergence_health.code_drift import detect_ducklake_code_drift, detect_prod_code_drift
 from scripts.convergence_health.escalate import escalate
 from scripts.convergence_health.record import derive_red_since, read_convergence_record
@@ -98,12 +99,38 @@ def main_prod_drift(profile: Optional[str] = None) -> int:
     return 0
 
 
+def main_budget_ingest(profile: Optional[str] = None, dry_run: bool = False) -> int:
+    """Ingest the CI fast-tier budget-block population (rec-3288). Returns exit code.
+
+    Fails LOUDLY on a portal or GitHub-API failure: the exception is reported and the exit code
+    is 1, so the workflow step goes red. Nothing is buffered for later delivery (Decision 84 I-4
+    -- there is no outbox); the next hourly tick re-derives the population from the artifact
+    window, which outlives the cron interval by two weeks of retention.
+    """
+    try:
+        result = ingest_budget_breaches(profile=profile, dry_run=dry_run)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            "[convergence_health] budget_ingest FAILED (nothing buffered -- Decision 84 I-4 has no "
+            f"outbox; the next tick re-derives from the artifact window): {exc}"
+        )
+        return 1
+    print(f"[convergence_health] budget_ingest result: {result}")
+    return 0
+
+
+def _dispatch(argv: list[str]) -> int:
+    """Route a bare argv (flags only, no argparse) to the matching sensor entry point."""
+    if "--ducklake-drift" in argv:
+        return main_ducklake_drift()
+    if "--prod-drift" in argv:
+        return main_prod_drift()
+    if "--budget-ingest" in argv:
+        return main_budget_ingest(dry_run="--dry-run" in argv)
+    return main()
+
+
 if __name__ == "__main__":  # pragma: no cover
     import sys
 
-    if "--ducklake-drift" in sys.argv[1:]:
-        sys.exit(main_ducklake_drift())
-    elif "--prod-drift" in sys.argv[1:]:
-        sys.exit(main_prod_drift())
-    else:
-        sys.exit(main())
+    sys.exit(_dispatch(sys.argv[1:]))
