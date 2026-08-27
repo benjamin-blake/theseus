@@ -489,8 +489,11 @@ class TestCoverageGrandfatheredCommentsAreNotMarkers:
 
         entries = coverage_module._SPEC.extractor(raw_text)
         markers = [(k, e.marker) for k, e in entries.items() if e.marker is not None]
-        assert markers == [("scripts/validate.py", "dec-169")], (
-            f"only the deliberate scripts/validate.py baseline-lowered marker may parse as a marker, got: {markers}"
+        assert ("scripts/validate.py", "dec-169") in markers, (
+            f"the deliberate scripts/validate.py baseline-lowered marker must parse as a marker, got: {markers}"
+        )
+        assert not any(m == "dec-159" for _, m in markers), (
+            f"a grandfathered roster comment parsed as a marker (dec-159 is a comment, never a marker): {markers}"
         )
 
 

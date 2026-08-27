@@ -2,7 +2,7 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
-## Decision 178: The repository becomes platform-only -- the trading product and the retired legacy query-engine estate are deleted, with a one-time sanctioned history scrub (amends Decision 177) (Decided)
+## Decision 178: The repository becomes platform-only, with a one-time sanctioned history scrub (amends Decision 177) (Decided)
 
 ```yaml
 number: 178
@@ -21,6 +21,9 @@ significance:
 **Status:** Decided
 **Date:** 2026-08-27
 **Warehouse ID:** dec-178 (canonical; per Decision 84)
+
+**Intent:**
+Theseus is the platform only; hosted products live in their own repositories and import it.
 
 **Problem:**
 The repository carried three estates past their end of life: the first hosted product's code
@@ -105,6 +108,9 @@ significance:
 > history scrub, which its origin/main baseline cannot express by design. The append-only
 > correction dialect remains policy; re-landing the guard re-anchored to the post-cleanse corpus
 > is a sanctioned follow-up.
+
+**Intent:**
+Ratified corpus bodies stay append-only; corrections land as dated annotations, supersessions, or archive moves.
 
 **Problem:**
 A 19-agent census of all live entries (rec-3249) found confirmed drift in 55 of 126: bodies edited
