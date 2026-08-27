@@ -63,14 +63,12 @@ The repository is cleansed to platform-only, owner-directed, in one sweep:
    `scripts/checks/hygiene/validate_prose_allowlist.py`, `scripts/ci_rca/tier_map.py`,
    `scripts/data_quality_compile.py`, `scripts/data_quality_models.py`,
    `scripts/data_quality_runner.py`, `scripts/execute_recommendation.py`,
-   `scripts/llm/client.py`, `src/common/ducklake_maintenance.py`,
+   `scripts/llm/client.py`, `scripts/s3_log_store.py`, `src/common/ducklake_maintenance.py`,
    `src/common/ducklake_reader_client.py`, `src/common/ducklake_runtime.py`,
    `src/common/ducklake_spike.py`, `src/data/handlers/findings_processor_handler.py`,
-   `src/data/handlers/scheduled_agent_handler.py`, `scripts/preflight/ci_rca_gauges.py`,
-   `scripts/preflight/ci_rca_signals.py`, `scripts/preflight/context_docs.py`,
-   `scripts/preflight/recs_cache.py`, `scripts/s3_log_store.py`, `scripts/session/preflight.py`,
-   `scripts/sync/ops.py`, `scripts/test_coverage_checker.py`. Paydown follows the rec-2914
-   lane; registration here is disclosure, not precedent.
+   `src/data/handlers/scheduled_agent_handler.py`. The other cleanse-touched files measured
+   at 100 percent and carry no entry. Paydown follows the rec-2914 lane; registration here is
+   disclosure, not precedent.
 
 **Rationale:**
 The platform's value is the engineering system (Decision 101: market the engineering, not the
