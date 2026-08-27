@@ -85,25 +85,7 @@ def check_lockfile_sync() -> tuple[bool, str]:
             continue
         top_level[_normalize_pkg(requirement.name)] = requirement
 
-    lock_text = _REQUIREMENTS_LOCK.read_text(encoding="utf-8")
-    pinned: dict[str, Version] = {}
-    extras_pins: list[str] = []
-    for raw_line in lock_text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        try:
-            locked_requirement = Requirement(line)
-        except InvalidRequirement:
-            continue
-        if locked_requirement.extras:
-            extras_pins.append(str(locked_requirement))
-        exact_pins = [specifier.version for specifier in locked_requirement.specifier if specifier.operator == "=="]
-        if len(exact_pins) == 1:
-            try:
-                pinned[_normalize_pkg(locked_requirement.name)] = Version(exact_pins[0])
-            except InvalidVersion:
-                continue
+    pinned, extras_pins = _parse_lock_pins(_REQUIREMENTS_LOCK.read_text(encoding="utf-8"))
 
     # CI consumes the lock as a pip constraints file (pip install -c requirements.lock ...), and
     # pip hard-rejects constraints carrying extras ("ERROR: Constraints cannot have extras") -- a
@@ -130,6 +112,29 @@ def check_lockfile_sync() -> tuple[bool, str]:
     return True, (
         f"requirements.lock pins all {len(top_level)} top-level packages compatibly (requirements.txt: {req_identity})"
     )
+
+
+def _parse_lock_pins(lock_text: str) -> tuple[dict[str, Version], list[str]]:
+    """Parse lock lines into (exact pins by normalized name, extras-carrying pin strings)."""
+    pinned: dict[str, Version] = {}
+    extras_pins: list[str] = []
+    for raw_line in lock_text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            locked_requirement = Requirement(line)
+        except InvalidRequirement:
+            continue
+        if locked_requirement.extras:
+            extras_pins.append(str(locked_requirement))
+        exact_pins = [specifier.version for specifier in locked_requirement.specifier if specifier.operator == "=="]
+        if len(exact_pins) == 1:
+            try:
+                pinned[_normalize_pkg(locked_requirement.name)] = Version(exact_pins[0])
+            except InvalidVersion:
+                continue
+    return pinned, extras_pins
 
 
 def _normalize_pkg(name: str) -> str:
