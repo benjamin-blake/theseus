@@ -54,6 +54,40 @@ def _resolvable_submodule(package: str, name: str, repo_root: Path | None = None
     return None
 
 
+def _import_from_targets(
+    node: ast.ImportFrom,
+    file_path: Path,
+    roots: tuple[str, ...],
+    repo_root: Path | None,
+) -> list[str | None]:
+    """Candidate first-party module names for one ast.ImportFrom node, in first-appearance order.
+
+    Split out of extract_first_party_imports so that function's own branch count stays under the
+    Decision 43 cyclomatic limit -- the same seam _walk_source already carves for the two
+    try/except pairs. A None entry is a non-resolving submodule and is a no-op at the _add call
+    site, so the caller needs no extra filtering.
+    """
+    targets: list[str | None] = []
+    if node.level and node.level > 0:
+        if node.module:
+            # from .sub import X -- resolved submodule is the import target
+            targets.append(_resolve_relative_import(file_path, node.level, node.module, roots, repo_root))
+        else:
+            # from . import name1, name2 -- each name may be a first-party submodule
+            base = _resolve_relative_import(file_path, node.level, None, roots, repo_root)
+            if base:
+                for alias in node.names:
+                    targets.append(f"{base}.{alias.name}")
+    else:
+        m = node.module or ""
+        if any(m == r or m.startswith(r + ".") for r in roots):
+            targets.append(m)
+            # from <pkg> import <sub>: the package body runs too, so BOTH edges are real.
+            for alias in node.names:
+                targets.append(_resolvable_submodule(m, alias.name, repo_root))
+    return targets
+
+
 def _walk_source(file_path: Path) -> Iterable[ast.AST] | None:
     """Read, parse and walk file_path's AST; None when unreadable or unparseable.
 
@@ -103,23 +137,8 @@ def extract_first_party_imports(
                 if any(m == r or m.startswith(r + ".") for r in roots):
                     _add(m)
         elif isinstance(node, ast.ImportFrom):
-            if node.level and node.level > 0:
-                if node.module:
-                    # from .sub import X -- resolved submodule is the import target
-                    _add(_resolve_relative_import(file_path, node.level, node.module, roots, _repo_root))
-                else:
-                    # from . import name1, name2 -- each name may be a first-party submodule
-                    base = _resolve_relative_import(file_path, node.level, None, roots, _repo_root)
-                    if base:
-                        for alias in node.names:
-                            _add(f"{base}.{alias.name}")
-            else:
-                m = node.module or ""
-                if any(m == r or m.startswith(r + ".") for r in roots):
-                    _add(m)
-                    # from <pkg> import <sub>: the package body runs too, so BOTH edges are real.
-                    for alias in node.names:
-                        _add(_resolvable_submodule(m, alias.name, _repo_root))
+            for mod in _import_from_targets(node, file_path, roots, _repo_root):
+                _add(mod)
 
     return results
 
@@ -134,6 +153,10 @@ def extract_src_imports(file_path: Path) -> list[str]:
     Returns an empty list if the file has a syntax error or does not exist.
     The returned list contains unique module names, preserving order of first
     appearance.
+
+    Branch budget note: this function is the largest branch surface in the module
+    (measured 15 of the Decision 43 limit of 20). Adding another arm here wants the same
+    helper-seam treatment extract_first_party_imports got, not an inline branch.
     """
     try:
         source = file_path.read_text(encoding="utf-8")

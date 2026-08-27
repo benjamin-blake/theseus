@@ -45,11 +45,16 @@ fail loud, never silently shrink below the edited-set).
 The emitted selection-manifest.json is an OUTPUT/observability artifact ONLY -- it is NEVER read
 back as a selection input (no persisted selection cache, no coverage cache; this is what makes
 the derivation "live" and "cacheless").
+
+This module owns the derivation, the cap and the manifest. The channel implementations live in
+two siblings: scripts/checks/deps/affected_graph.py (the graph/structural channels -- import
+closure, the tests-tree direct-importer scan, the mirror map, and the candidate predicates that
+admit paths into them) and scripts/checks/deps/affected_channels.py (the text/reference
+channels).
 """
 
 from __future__ import annotations
 
-import ast
 import json
 import os
 import re
@@ -57,12 +62,17 @@ import time
 from pathlib import Path
 from typing import Any
 
-import networkx as nx
-
 from scripts.checks import _common
 from scripts.checks.deps.affected_channels import is_extra_tree_py, new_file_reference_dirs, scan_reference_channels
-from scripts.dependency_graph import _file_to_module, build_graph
-from scripts.test_coverage_checker import map_source_to_test
+from scripts.checks.deps.affected_graph import (
+    _EDITED_TEST_RE,
+    _import_closure_channel,
+    _is_changed_source_py,
+    _is_changed_tests_helper_py,
+    _mirror_map_channel,
+    _tests_tree_import_closure_channel,
+)
+from scripts.dependency_graph import _file_to_module
 
 CAP = 35
 
@@ -106,125 +116,7 @@ CHANNEL_NAMES = _PROTECTED_CHANNELS + ("import_closure_transitive",)
 # inline expression previously computed.
 DEBUG_MANIFEST_PATH: Path = _common.ROOT / "logs" / "debug" / "selection-manifest.json"
 
-# Same shape as scripts/validate.py's pre-existing edited-set regex (kept identical for
-# continuity: the edited-set baseline must not itself narrow or widen on this change).
-_EDITED_TEST_RE = re.compile(r"tests/.*test_[^/]+\.py$")
-
 _ADDED_OR_MODIFIED = ("A", "M", "??")
-
-
-def _is_changed_source_py(path: str) -> bool:
-    """A non-test .py file under src/ or scripts/ -- the import-closure/mirror-map channels'
-    candidate set."""
-    return (
-        path.endswith(".py") and (path.startswith("src/") or path.startswith("scripts/")) and not _EDITED_TEST_RE.match(path)
-    )
-
-
-def _is_changed_tests_helper_py(path: str) -> bool:
-    """VTS-01: a non-test, non-conftest .py file under tests/ (e.g. tests/fixtures/*.py shared
-    helpers, Decision 131's sanctioned shared-helper home) -- admitted into the SAME
-    import-closure/mirror-map candidate set as _is_changed_source_py so a fixtures-only edit
-    selects its direct importer tests instead of silently selecting zero. conftest.py is
-    excluded here because it already has its own dedicated channel (_conftest_subtree_channel)."""
-    return (
-        path.endswith(".py")
-        and path.startswith("tests/")
-        and not _EDITED_TEST_RE.match(path)
-        and Path(path).name != "conftest.py"
-    )
-
-
-def _module_to_test_path(module_name: str, repo_root: Path) -> str | None:
-    """Map a graph module dotted-name back to an existing tests/**/test_*.py file path, or
-    None (filters out package __init__ nodes and non-test modules automatically -- their
-    reconstructed path either doesn't exist or doesn't match the test_ basename convention)."""
-    rel = module_name.replace(".", "/") + ".py"
-    if not _EDITED_TEST_RE.match(rel):
-        return None
-    if not (repo_root / rel).exists():
-        return None
-    return rel
-
-
-def _import_closure_channel(changed_source_files: list[str], repo_root: Path) -> tuple[set[str], set[str], dict[str, int]]:
-    """Returns (direct, transitive_only, distance) for the import-closure channel.
-
-    direct: test modules that DIRECTLY import a changed module (one import hop).
-    transitive_only: every deeper reverse-reachable test module -- the "transitive residue" the
-    additive-only invariant permits deferring under the cap.
-    distance: test path -> fewest import hops to ANY changed module, the residue's relevance rank
-    (see _residue_keep_set). One BFS per changed module yields the closure AND its distances, so
-    it REPLACES the previous predecessors()+nx.ancestors() pair instead of adding a traversal.
-    """
-    if not changed_source_files:
-        return set(), set(), {}
-    graph = build_graph(repo_root=repo_root)
-    importers = graph.reverse(copy=False)
-    hops_by_module: dict[str, int] = {}
-    for f in changed_source_files:
-        mod = _file_to_module(repo_root / f, repo_root)
-        if mod is None or mod not in graph:
-            continue
-        for node, hops in nx.single_source_shortest_path_length(importers, mod).items():
-            if hops < hops_by_module.get(node, hops + 1):
-                hops_by_module[node] = hops
-    distance: dict[str, int] = {}
-    for node, hops in hops_by_module.items():
-        test_path = _module_to_test_path(node, repo_root)
-        if test_path:
-            distance[test_path] = hops
-    direct = {p for p, hops in distance.items() if hops <= 1}
-    return direct, set(distance) - direct, distance
-
-
-def _module_imports_any(tree: ast.Module, dotted_names: set[str]) -> bool:
-    """True if `tree` contains `import <dotted>` or `from <dotted> import ...` for any name in
-    dotted_names (exact match, or a submodule of a changed package). Matches absolute and
-    submodule-qualified imports only -- a relative import (`from . import x`) or a
-    `from <parent_pkg> import <submodule>` __init__-re-export style is not matched; no such
-    importer of a tests-tree helper exists in-repo today (grepped), so this is a known,
-    currently-inert follow-up gap, not an active recall hole."""
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name in dotted_names or any(alias.name.startswith(d + ".") for d in dotted_names):
-                    return True
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            if node.module in dotted_names or any(node.module.startswith(d + ".") for d in dotted_names):
-                return True
-    return False
-
-
-def _tests_tree_import_closure_channel(changed_tests_helper_files: list[str], repo_root: Path) -> set[str]:
-    """VTS-01: direct-importer scan for changed tests-tree helper modules (e.g.
-    tests/fixtures/**, Decision 131's sanctioned shared-helper home).
-
-    scripts.dependency_graph.build_graph()'s first-party import extraction
-    (extract_first_party_imports roots=("src", "scripts")) never targets "tests." modules, so a
-    tests/fixtures/x.py file IS a graph node but graph.predecessors() on it is always empty --
-    _import_closure_channel above cannot see these edges no matter how its candidate set is
-    widened. Fixing that root cause lives in scripts/dependency_graph.py, outside this plan's
-    inline-path scope, so this self-contained ast scan supplies the same "direct importer"
-    signal (channel 1's graph.predecessors() case) without touching that file: every
-    tests/**/test_*.py that imports the changed helper's dotted module name directly."""
-    tests_dir = repo_root / "tests"
-    if not changed_tests_helper_files or not tests_dir.is_dir():
-        return set()
-    dotted_names = {mod for f in changed_tests_helper_files if (mod := _file_to_module(repo_root / f, repo_root))}
-    if not dotted_names:
-        return set()
-    hits: set[str] = set()
-    for test_file in sorted(tests_dir.rglob("test_*.py")):
-        if "__pycache__" in test_file.parts:
-            continue
-        try:
-            tree = ast.parse(test_file.read_text(encoding="utf-8"), filename=str(test_file))
-        except (OSError, SyntaxError):
-            continue
-        if _module_imports_any(tree, dotted_names):
-            hits.add(test_file.relative_to(repo_root).as_posix())
-    return hits
 
 
 def _data_edge_reference_candidates(entries: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -299,28 +191,6 @@ def _data_edge_channel(entries: list[tuple[str, str]], repo_root: Path) -> tuple
         mention_basenames=[basename for basename, _relpath in candidates],
         directory_paths=directory_paths,
     )
-
-
-def _mirror_map_channel(changed_source_files: list[str], repo_root: Path) -> set[str]:
-    """Read-only use of scripts.test_coverage_checker.map_source_to_test() (channel 3).
-
-    Concern-split mappings resolve to test package directories. Expand those packages to
-    individual test modules here so the affected-set cap and downstream reactive pytest probes
-    operate on their documented one-module-per-entry grain.
-    """
-    hits: set[str] = set()
-    for f in changed_source_files:
-        result = map_source_to_test(repo_root / f)
-        if result is None:
-            continue
-        if result.suffix == ".py":
-            if result.exists():
-                hits.add(result.relative_to(repo_root).as_posix())
-        elif result.is_dir():
-            for test_file in sorted(result.rglob("test_*.py")):
-                if "__pycache__" not in test_file.parts and test_file.is_file():
-                    hits.add(test_file.relative_to(repo_root).as_posix())
-    return hits
 
 
 _AUTOUSE_RE = re.compile(r"autouse\s*=\s*True")
@@ -564,27 +434,49 @@ def _upload_manifest_best_effort(manifest: dict[str, Any]) -> None:
         print(f"Selection manifest: best-effort S3 upload failed -- loud skip (Decision 55): {exc!r}")
 
 
-def emit_manifest(manifest: dict[str, Any], *, repo_root: Path | None = None) -> Path:
-    """Print, write (gitignored path), and best-effort-upload the selection manifest.
+def write_manifest(manifest: dict[str, Any], *, repo_root: Path | None = None) -> Path:
+    """Local, best-effort write of the selection manifest (Decision 55: LOUD skip, never silent,
+    never raising) -- an observability artifact must never crash the --pre gate on a local disk
+    I/O error. Still write-only: the manifest is NEVER read back as a selection input.
 
-    The manifest is NEVER read back as a selection input -- this function is write/print-only.
-    The local write is best-effort (Decision 55: LOUD skip, never silent, never raising) --
-    an observability artifact must never crash the --pre gate on a local disk I/O error, the
-    same philosophy already applied to the S3 upload leg below.
+    Split out of emit_manifest so it can be called a SECOND time, late in a --pre run, once a
+    block only computable at the end (the `budget` block attached by scripts/validate.py's
+    trailing budget-assertion scaffold) has been added. That second call rewrites ONLY the local
+    copy, which has two consequences worth stating rather than leaving for a future ingester:
+      - emit_manifest's best-effort S3 upload runs on the FIRST write, so the uploaded copy for a
+        given SHA never carries the budget block; the local copy (which ci.yml's pr-validate job
+        uploads as the `selection-manifest` artifact at `if: always()`) is the authoritative one
+        for budget outcomes.
+      - on any early-exit path -- an abort before the budget assertion is reached -- the local
+        copy is likewise the pre-budget one, i.e. it has no `budget` key at all. That absence is
+        a distinguishable "run aborted" state, not a zero.
 
     repo_root=None (the production default) resolves the write target through the patchable
-    DEBUG_MANIFEST_PATH module constant (VTS-06), so a test fixture can redirect it without
-    touching this function. An explicit repo_root (existing callers, e.g.
-    tests/checks/deps/test_affected_tests.py) is honoured verbatim, unaffected by the constant.
+    DEBUG_MANIFEST_PATH module constant (VTS-06), read INSIDE this body on EVERY call so a test
+    fixture's redirect (tests/conftest.py's autouse _isolate_selection_manifest) covers the late
+    second write too -- binding it as a default argument would capture the constant at import
+    time and let the test suite write into the repo's tracked logs/debug/. An explicit repo_root
+    is honoured verbatim, unaffected by the constant.
     """
-    print("\n=== Affected-set selection manifest ===")
-    rendered = json.dumps(manifest, indent=2, sort_keys=True)
-    print(rendered)
     manifest_path = DEBUG_MANIFEST_PATH if repo_root is None else repo_root / "logs" / "debug" / "selection-manifest.json"
     try:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(rendered, encoding="utf-8")
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     except OSError as exc:
         print(f"Selection manifest: local write to {manifest_path} failed -- loud skip (Decision 55): {exc!r}")
+    return manifest_path
+
+
+def emit_manifest(manifest: dict[str, Any], *, repo_root: Path | None = None) -> Path:
+    """Print, write (gitignored path, via write_manifest), and best-effort-upload the manifest.
+
+    The manifest is NEVER read back as a selection input -- this function is write/print-only.
+    The print and S3 legs are emit-only: a late second write goes through write_manifest directly
+    so the console is not re-spammed and the upload is not repeated (see write_manifest's note on
+    the resulting local/S3 asymmetry).
+    """
+    print("\n=== Affected-set selection manifest ===")
+    print(json.dumps(manifest, indent=2, sort_keys=True))
+    manifest_path = write_manifest(manifest, repo_root=repo_root)
     _upload_manifest_best_effort(manifest)
     return manifest_path

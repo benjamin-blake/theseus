@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shlex
 import sys
 from datetime import datetime
@@ -352,6 +353,28 @@ class PlanDocument(BaseModel):
         return self
 
 
+CONTEXT_BLOCK_LINE_ADVISORY = 40
+_TOP_LEVEL_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*:")
+
+
+def context_block_lines(path: str | Path) -> int:
+    """Rendered line count of a plan's top-level `context:` block (0 when absent).
+
+    Measures what a reader scrolls past, not len(doc.context): a 14-entry context of long folded
+    scalars renders as 116 lines (PLAN-coverage-sidefile-gitignore.yaml). Counted from the
+    `context:` line to the next top-level key, or to EOF when context is the final key.
+    """
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    for start, line in enumerate(lines):
+        if not line.startswith("context:"):
+            continue
+        for offset in range(start + 1, len(lines)):
+            if _TOP_LEVEL_KEY_RE.match(lines[offset]):
+                return offset - start
+        return len(lines) - start
+    return 0
+
+
 def load(path: str | Path) -> PlanDocument:
     """Parse the YAML plan at path and return a validated PlanDocument.
 
@@ -400,6 +423,13 @@ def main(argv: list[str] | None = None, plans_root: Path | None = None) -> int:
             print(f"FAIL: {path}: {error}")
         else:
             print(f"PASS: {path} validates against PlanDocument schema.")
+            span = context_block_lines(path)
+            if span > CONTEXT_BLOCK_LINE_ADVISORY:
+                print(
+                    f"WARN: {path}: context block is {span} rendered lines "
+                    f"(advisory cap {CONTEXT_BLOCK_LINE_ADVISORY}) -- link evidence "
+                    f"(rec/PR/Decision ids, paths), do not restate it"
+                )
     return 1 if failures else 0
 
 

@@ -33,7 +33,7 @@ auto-seeds one (Decision 128 / B2).
 
 ## Preflight Constraints (Workflow Step 1)
 When reading `logs/.preflight-report.json`, apply these conditionals:
-- **`venv_ok: false`** -- Auto-activate venv and rerun preflight. If still false, STOP.
+- **`venv_ok: false`** -- Verify `bin/venv-python -c "import sys; print(sys.executable)"` resolves to the venv interpreter and rerun preflight. If still false, STOP.
 - **`creds_status: "unavailable"`** -- **Static-key recovery (non-fatal, Decision 60):** the static-key assume-role chain has no interactive login. Verify it with `aws sts get-caller-identity --profile agent_platform`; if the `agent_static` key was rotated, refresh `~/.aws/credentials`. Do NOT block -- continue in degraded mode (credential-dependent verifiers are skipped, emitting SKIPPED). Autonomous executors never attempt recovery.
 - **`ops_outbox` non-empty** -- Entries in migrated-table or `*_pending` dirs are ANOMALIES (Decision 84 I-4: those outboxes are retired and never drained) -- re-file via the portal and delete the files. Legacy staging dirs (telemetry/session_log/execution_plans) drain via `bin/venv-python -m scripts.sync.ops sync`. If that fails, STOP.
 - **`uncommitted_changes` non-empty** -- Ask human: resume, stash, or discard? Wait. Continue on all other conditions.
@@ -437,9 +437,8 @@ this step NEVER runs without the explicit execution-time confirmation in step 2 
    for the full dict if the slim preflight payload omits the field you need) and confirm the
    ratified CD no longer appears in `blocked_on_cd` / `completion_blocked_on_cd` for any item it
    was gating.
-7. **Run `bin/venv-python -m scripts.validate`** for the final regression -- the
-   `validate_candidate_decision_ratification` guard must pass against the newly ratified CD's
-   dec-NNN header.
+7. **Run `bin/venv-python -m scripts.validate --pre`** -- the diff selects
+   `validate_candidate_decision_ratification`, which must pass against the new dec-NNN header.
 8. **Do NOT flip any tier_item status as part of this step.** An item that fully unparks
    (every gating CD ratified AND zero open criteria) is a separate Tier_item bookkeeping
    decision (the section above) -- note in the PR body which items became unpark-eligible, if
@@ -479,7 +478,7 @@ Before filing, search for open recs targeting the same file with at least 3 keyw
 - Surface: "Found potential duplicate(s). Options: (1) supersede existing, (2) file both, (3) skip this one?" Wait for human.
 
 ## Commit Flows (Workflow Step 7 -- MANDATORY)
-**Once validation passes (Step 6), execute the appropriate commit flow autonomously. Do not stop to ask permission -- the plan was approved during /plan.**
+**Execute the commit flow autonomously once Step 6 completes -- the plan was approved during /plan.**
 
 This workflow runs on Claude Code on the web: the harness assigns this session its own branch (e.g. `claude/...`), the `gh` CLI is NOT available, and the container hibernates between turns. All GitHub operations use the GitHub MCP tools (`mcp__github__*`). Branch protection is LIVE; the squash-merge-after-CI gate transport is the GitHub MCP `merge_pull_request` tool (Decision 76). See AGENTS.md `## Git-ops procedure` as the canonical git-ops authority.
 

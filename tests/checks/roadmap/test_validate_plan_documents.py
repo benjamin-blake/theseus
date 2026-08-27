@@ -155,6 +155,52 @@ def test_newly_added_plan_at_current_schema_version_is_accepted(tmp_path: Path, 
     assert failed == []
 
 
+def _plan_with_linked_obligation() -> dict:
+    data = _plan()
+    data["test_obligations"] = [
+        {
+            "source": "scripts/example.py",
+            "behavior": "changes behavior",
+            "test_selector": "tests/test_example.py::test_behavior",
+            "verification_step": 1,
+            "red_green_expectation": "fails before the implementation and passes after it",
+        }
+    ]
+    return data
+
+
+def test_added_plan_with_oversized_context_warns_without_failing(tmp_path: Path, capsys) -> None:
+    data = _plan_with_linked_obligation()
+    data["context"] = [f"line {i}" for i in range(45)]
+    failed, output = _validate(tmp_path, data, capsys, added={_FIXTURE_NAME})
+    assert failed == []  # WARNING, not FAIL
+    assert "WARN:" in output and "context block is 46 rendered lines" in output
+
+
+def test_existing_plan_with_oversized_context_is_silent(tmp_path: Path, capsys) -> None:
+    data = _plan_with_linked_obligation()
+    data["context"] = [f"line {i}" for i in range(45)]
+    failed, output = _validate(tmp_path, data, capsys, added=set())
+    assert failed == []
+    assert "context block is" not in output
+
+
+def test_added_plan_with_exactly_40_line_context_does_not_warn(tmp_path: Path, capsys) -> None:
+    data = _plan_with_linked_obligation()
+    data["context"] = [f"line {i}" for i in range(39)]  # header + 39 entries = 40 rendered lines
+    failed, output = _validate(tmp_path, data, capsys, added={_FIXTURE_NAME})
+    assert failed == []
+    assert "context block is" not in output
+
+
+def test_added_plan_with_41_line_context_warns(tmp_path: Path, capsys) -> None:
+    data = _plan_with_linked_obligation()
+    data["context"] = [f"line {i}" for i in range(40)]  # header + 40 entries = 41 rendered lines
+    failed, output = _validate(tmp_path, data, capsys, added={_FIXTURE_NAME})
+    assert failed == []
+    assert "WARN:" in output and "context block is 41 rendered lines" in output
+
+
 def test_added_plan_names_selects_only_new_plan_files(monkeypatch) -> None:
     monkeypatch.setattr(
         module._common,
@@ -217,3 +263,20 @@ def test_import_failure_is_reported_and_sys_path_restored(tmp_path: Path, capsys
     assert failed == ["Plan document schema validation"]
     assert root_str not in __import__("sys").path
     assert "simulated" in capsys.readouterr().out
+
+
+def test_declares_examined_count_of_scanned_plans(tmp_path: Path, capsys) -> None:
+    """Check-accounting: a completed scan declares examined(n) with the plan-document count."""
+    with patch.object(module.registry, "examined") as mock_examined:
+        _validate(tmp_path, _plan(), capsys)
+    mock_examined.assert_called_once_with(1, unit="plan_documents")
+
+
+def test_declares_examined_zero_for_an_empty_plans_dir(tmp_path: Path, capsys) -> None:
+    """Check-accounting: an empty scan domain declares examined(0) -- the vacuous status."""
+    failed: list[str] = []
+    with patch.object(module.registry, "examined") as mock_examined:
+        validate_plan_documents(failed, plans_dir=tmp_path, added_plan_names=set())
+    capsys.readouterr()
+    assert failed == []
+    mock_examined.assert_called_once_with(0, unit="plan_documents")
