@@ -2,6 +2,86 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 178: The repository becomes platform-only -- the trading product and the retired legacy query-engine estate are deleted, with a one-time sanctioned history scrub (amends Decision 177) (Decided)
+
+```yaml
+number: 178
+status: Decided
+decided_date: "2026-08-27"
+amends: [177]
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable architectural commitment with repo-wide consequences: Theseus is the platform only,
+    the first hosted product is rebuilt in a separate repository that imports it, and the retired
+    legacy query engine reaches zero repo-wide mentions. Unclaimed by another routing row -- it
+    changes what the repository IS, not one change-record's what/why-now.
+```
+
+**Status:** Decided
+**Date:** 2026-08-27
+**Warehouse ID:** dec-178 (canonical; per Decision 84)
+
+**Problem:**
+The repository carried three estates past their end of life: the first hosted product's code
+(market-data pipeline, strategy lab, live execution, broker plumbing) on an AWS account no longer
+accessible; the pre-DuckLake legacy query-engine path (S3 staging outbox, ops compaction, DDL
+generators, legacy verifiers) fully superseded by the DuckLake closed boundary (Decision 84); and
+the dead weight both left behind (retired INTENT prose corpus, stale tracked logs, one-off
+migration scripts, orphaned guards). Product terms and legacy-engine tokens saturated live
+surfaces, checks, IAM policy files, and the historical logs.
+
+**Decision:**
+The repository is cleansed to platform-only, owner-directed, in one sweep:
+
+1. **Product deletion.** All product source, tests, configs, plans, audits, infra files, and the
+   product roadmaps are deleted. `docs/ROADMAP-PLATFORM.yaml` and `docs/ROADMAP-SEMANTO.yaml`
+   remain (Semanto is a separate product); product tier items retire in place.
+2. **Legacy query engine at zero.** The staging outbox, ops-compaction lambda, legacy telemetry
+   writers, DDL generators, legacy verifiers, one-time migration scripts, and every workgroup,
+   catalog-database, and IAM statement for the retired engine are removed; a repo-wide
+   case-insensitive grep for the engine's name returns zero.
+3. **One-time sanctioned history scrub (amends Decision 177).** The historical logs
+   (`docs/DECISIONS.md`, `docs/DECISIONS_ARCHIVE.md`, `docs/SESSION_LOG.md`, plans, audits) are
+   scrubbed of the engine's name without renumbering or removing any decision. This required
+   retiring Decision 177's mechanical guard (`validate_live_entry_immutability`), whose
+   origin/main baseline cannot express a sanctioned scrub by design. The append-only correction
+   dialect REMAINS policy; re-landing the guard re-anchored to the post-cleanse corpus is a
+   sanctioned follow-up.
+4. **No live infrastructure changes.** Removed `terraform/personal` resources persist in tfstate;
+   the apply-sandbox push/PR triggers and the drift cron are parked (workflow_dispatch retained)
+   until an operator reconciles state (state rm, or one explicitly approved gated apply) and
+   restores the triggers.
+5. **Verifier fleet retirement.** The V3 verifier registry empties (the last member,
+   `DataQualityVerifier`, duplicated the validate.py DQ scaffold); the harness remains for the
+   executor tier's future verifiers.
+6. **Coverage-debt registration (authorizes the baseline-lowered markers citing this entry).**
+   The cleanse edits touched long-unmeasured files, producing their first per-file coverage
+   measurements; the shortfall is registered in `config/coverage_baseline.yaml` at measured
+   values rather than papered over, for the following files: `scripts/agent_sdk/mcp_server.py`,
+   `scripts/build_lambda_packaging.py`, `scripts/checks/_budget_recs.py`,
+   `scripts/checks/hygiene/validate_prose_allowlist.py`, `scripts/ci_rca/tier_map.py`,
+   `scripts/data_quality_compile.py`, `scripts/data_quality_models.py`,
+   `scripts/data_quality_runner.py`, `scripts/execute_recommendation.py`,
+   `scripts/llm/client.py`, `src/common/ducklake_maintenance.py`,
+   `src/common/ducklake_reader_client.py`, `src/common/ducklake_runtime.py`,
+   `src/common/ducklake_spike.py`, `src/data/handlers/findings_processor_handler.py`,
+   `src/data/handlers/scheduled_agent_handler.py`, `scripts/preflight/ci_rca_gauges.py`,
+   `scripts/preflight/ci_rca_signals.py`, `scripts/preflight/context_docs.py`,
+   `scripts/preflight/recs_cache.py`, `scripts/s3_log_store.py`, `scripts/session/preflight.py`,
+   `scripts/sync/ops.py`, `scripts/test_coverage_checker.py`. Paydown follows the rec-2914
+   lane; registration here is disclosure, not precedent.
+
+**Rationale:**
+The platform's value is the engineering system (Decision 101: market the engineering, not the
+alpha); the product was rudimentary and is cheaper to rebuild against a clean platform than to
+carry. Deleting rather than deprecating honors the agent-first doctrine -- a live surface that
+lies about the system trains every future agent wrong. The history scrub is the one deliberate
+exception to Decision 177's letter, taken with its spirit intact: the scrub is itself dated,
+reviewed, and recorded here, and the guard's retirement is disclosed rather than waived around.
+
+---
+
 ## Decision 177: The decision corpus enforces append-only live-body immutability -- a waiver-free lock with a dated-annotation correction dialect (amends Decision 151) (Decided)
 
 ```yaml
@@ -21,6 +101,12 @@ significance:
 **Status:** Decided
 **Date:** 2026-08-25
 **Warehouse ID:** dec-177 (canonical; per Decision 84)
+
+> **Amended by Decision 178 (2026-08-27):** the mechanical guard
+> (`validate_live_entry_immutability`) retired with the one-time sanctioned platform-cleanse
+> history scrub, which its origin/main baseline cannot express by design. The append-only
+> correction dialect remains policy; re-landing the guard re-anchored to the post-cleanse corpus
+> is a sanctioned follow-up.
 
 **Problem:**
 A 19-agent census of all live entries (rec-3249) found confirmed drift in 55 of 126: bodies edited
