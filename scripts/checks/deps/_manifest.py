@@ -47,4 +47,24 @@ ENTRIES: tuple[Entry, ...] = (
         ),
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_pre_glob_closure",
+        module="scripts.checks.deps.validate_pre_glob_closure",
+        attr="validate_pre_glob_closure",
+        pre=True,
+        # Dogfood: these are exactly this check's own transitive first-party import closure. The
+        # last two are hubs its direct imports pull in -- scripts.lambda_manifest via
+        # dependency_graph._gather_roots, scripts.roadmap.plan_document via scripts.checks.
+        # _common's function-scope import -- and are the standing candidates for a reviewed
+        # _PRUNED_EDGES entry at the wave-4b pay-down.
+        pre_globs=(
+            "scripts/checks/**",
+            "scripts/checks/*/_manifest.py",
+            "scripts/dependency_graph.py",
+            "scripts/extract_imports.py",
+            "scripts/lambda_manifest.py",
+            "scripts/roadmap/plan_document.py",
+        ),
+        full_segment="full_after_lint",
+    ),
 )

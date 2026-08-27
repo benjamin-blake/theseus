@@ -38,6 +38,16 @@ _PHASE_TIMES_KEPT = 10
 # ("within_budget", "forced_waived", "forced_ceiling_breach") are notice-only by construction.
 _REC_FILING_OUTCOMES = ("breach", "bypass")
 
+# The title shape BOTH budget-breach writers emit, and the only part of it a live open row can be
+# judged on: _file_budget_breach_rec below writes "Fast-tier budget breach ({m} min) on {branch}"
+# and scripts/convergence_health/budget_ingest._build_ingest_rec_fields writes "Fast-tier budget
+# {outcome_label} ({m} min) on {branch}". The prefix alone is shared with the budget_BYPASS rec
+# ("Fast-tier budget bypassed on {branch}"), which the infix excludes; that rec's context is
+# independently excluded by the "Branch: {branch}." marker, which it never writes ("...on branch
+# {branch}."). Both writers are pinned against this pair by test.
+_BREACH_TITLE_PREFIX = "Fast-tier budget "
+_BREACH_TITLE_INFIX = " min) on "
+
 
 def _mirror_to_step_summary(title: str, message: str) -> None:
     """Append a titled section to the CI job's step summary, or do nothing when
@@ -117,17 +127,46 @@ def _fetch_open_recs(profile: str | None = None) -> list[dict]:
     return make_reader(profile=profile).named("open_recs") or []
 
 
+def _is_open_budget_breach_row(rec: dict) -> bool:
+    """Is *rec* an open budget_breach row, judged against the shape LIVE rows actually have?
+
+    The `open_recs` named verb projects id/title/context/created_timestamp/automatable ONLY and
+    filters `status = 'open'` SERVER-side (src/common/ducklake_scd2_schema.py NAMED_READS), so a
+    live row carries NEITHER `status` NOR `source`. Predicating on those two keys made the matcher
+    below return None for every real open rec: the local path re-filed instead of updating, and
+    scripts/convergence_health/budget_ingest's hourly tick would file a fresh duplicate (and never
+    reach its no-op-update guard) for as long as an episode stayed open.
+
+    So an ABSENT key means "the verb already guaranteed it", while an EXPLICIT value is still
+    honoured -- a caller passing a richer row (rec_by_id's SELECT *) keeps the stricter check. The
+    population itself is identified by what a live row does carry: the shared breach title shape,
+    plus the two context markers the caller matches.
+    """
+    status = rec.get("status")
+    if status is not None and status != "open":
+        return False
+    source = rec.get("source")
+    if source is not None and source != "budget_breach":
+        return False
+    title = rec.get("title")
+    if title is None:
+        return True
+    title = str(title)
+    return title.startswith(_BREACH_TITLE_PREFIX) and _BREACH_TITLE_INFIX in title
+
+
 def _find_open_budget_breach_rec(open_recs: list[dict], branch: str, dedup_phase: str) -> dict | None:
     """Return the open budget_breach rec matching (branch, dedup_phase), or None (VTS-20).
 
-    Matches on the same context substrings _file_budget_breach_rec writes into a fresh rec
+    Matches on the same context substrings both breach writers put in a fresh rec
     ("Branch: {branch}." / "Dominant phase: {dedup_phase}."), so a rec filed before this dedupe
-    landed still matches correctly on its next repeat breach.
+    landed still matches correctly on its next repeat breach. Population membership is
+    _is_open_budget_breach_row's job -- see it for why status/source are not required here.
     """
     branch_marker = f"Branch: {branch}."
     phase_marker = f"Dominant phase: {dedup_phase}."
     for rec in open_recs:
-        if rec.get("source") != "budget_breach" or rec.get("status") != "open":
+        if not _is_open_budget_breach_row(rec):
             continue
         context = rec.get("context") or ""
         if branch_marker in context and phase_marker in context:

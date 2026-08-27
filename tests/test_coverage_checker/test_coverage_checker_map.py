@@ -388,3 +388,21 @@ class TestCodeDriftConcernSplitRegistration:
         result = map_source_to_test(source)
         assert result is not None
         assert result == ROOT / "tests" / "convergence_health" / "code_drift"
+
+
+class TestBudgetIngestConcernSplitRegistration:
+    """scripts/convergence_health/budget_ingest.py (rec-3288 wave-4 fixups) is registered directly
+    in _CONCERN_SPLIT_TEST_PACKAGES for the same reason code_drift.py above is: the wave-4 review
+    fixes pushed its single flat mirror file past the 500-SLOC limit, so the tests decomposed by
+    concern into tests/convergence_health/budget_ingest/ (Decision 128 -- decompose, never raise).
+    Without this registration map_source_to_test resolves the retired flat mirror file that no
+    longer exists, dropping the module out of the coverage roster entirely."""
+
+    def test_maps_budget_ingest_to_concern_split_package_directory(self) -> None:
+        source = ROOT / "scripts" / "convergence_health" / "budget_ingest.py"
+        result = map_source_to_test(source)
+        assert result is not None
+        assert result == ROOT / "tests" / "convergence_health" / "budget_ingest"
+
+    def test_budget_ingest_pre_decomposition_single_file_module_is_gone(self) -> None:
+        assert not (ROOT / "tests" / "convergence_health" / "test_budget_ingest.py").exists()

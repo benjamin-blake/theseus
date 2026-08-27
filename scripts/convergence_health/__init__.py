@@ -19,17 +19,18 @@ This __init__.py is the facade -- it re-exports the full prior public surface
 (plus test-patched private symbols) so `from scripts.convergence_health import
 X` and existing call/patch sites keep resolving unchanged.
 
-  record.py     -- convergence-record read + time/backlog helpers.
-  approvals.py  -- GitHub-Actions stuck-approval / Reconcile signal helpers.
-  assess.py     -- HealthVerdict + assess_health.
-  escalate.py   -- idempotent tf_convergence_stale file/update/close.
-  code_drift.py -- DuckLake + prod-class code-drift alarms.
-  __main__.py   -- CLI dispatch (python -m scripts.convergence_health).
+  record.py        -- convergence-record read + time/backlog helpers.
+  approvals.py     -- GitHub-Actions stuck-approval / Reconcile signal helpers.
+  assess.py        -- HealthVerdict + assess_health.
+  escalate.py      -- idempotent tf_convergence_stale file/update/close.
+  code_drift.py    -- DuckLake + prod-class code-drift alarms.
+  budget_ingest.py -- CI fast-tier budget-block warehouse ingester (rec-3288).
+  __main__.py      -- CLI dispatch (python -m scripts.convergence_health).
 """
 
 from __future__ import annotations
 
-from scripts.convergence_health.__main__ import main, main_ducklake_drift, main_prod_drift
+from scripts.convergence_health.__main__ import main, main_budget_ingest, main_ducklake_drift, main_prod_drift
 from scripts.convergence_health.approvals import (
     STUCK_APPROVAL_THRESHOLD_HOURS,
     _make_github_caller,
@@ -45,6 +46,14 @@ from scripts.convergence_health.assess import (
     HealthVerdict,
     assess_health,
     escalation_action,
+)
+from scripts.convergence_health.budget_ingest import (
+    ARTIFACT_NAME,
+    INGESTED_OUTCOMES,
+    MANIFEST_MEMBER,
+    collect_budget_episodes,
+    extract_budget_block,
+    ingest_budget_breaches,
 )
 from scripts.convergence_health.code_drift import (
     _PROD_FUNCTION_NAMES,
@@ -79,8 +88,11 @@ from scripts.convergence_health.record import (
 )
 
 __all__ = [
+    "ARTIFACT_NAME",
     "CONVERGENCE_BUCKET",
     "CONVERGENCE_KEY",
+    "INGESTED_OUTCOMES",
+    "MANIFEST_MEMBER",
     "RED_AGE_THRESHOLD_HOURS",
     "STALE_GREEN_BACKLOG_THRESHOLD_HOURS",
     "STUCK_APPROVAL_THRESHOLD_HOURS",
@@ -98,6 +110,7 @@ __all__ = [
     "_make_github_caller",
     "_parse_utc",
     "assess_health",
+    "collect_budget_episodes",
     "count_unapplied_tf_commits",
     "derive_red_since",
     "detect_ducklake_code_drift",
@@ -105,6 +118,7 @@ __all__ = [
     "diagnose_stuck_approvals",
     "escalate",
     "escalation_action",
+    "extract_budget_block",
     "filter_stuck_runs",
     "find_open_convergence_stale_rec",
     "find_open_ducklake_drift_rec",
@@ -112,7 +126,9 @@ __all__ = [
     "find_reconcile_runs_since",
     "find_stuck_gated_approvals",
     "has_in_flight_reconcile_for_episode",
+    "ingest_budget_breaches",
     "main",
+    "main_budget_ingest",
     "main_ducklake_drift",
     "main_prod_drift",
     "read_convergence_record",

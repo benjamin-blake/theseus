@@ -428,65 +428,63 @@ class TestBuildBudgetRecord:
         assert (ci_bypass["rec_filed"], ci_bypass["rec_skipped_reason"]) == (False, "ci_no_portal_access")
 
 
+_LIVE_TITLE = "Fast-tier budget breach (8.0 min) on agent/foo"
+_LIVE_CONTEXT = "Fast-tier budget breach: 8.0 min elapsed (limit 5 min). Branch: agent/foo. Dominant phase: lint. "
+
+
+def _live_row(**overrides: object) -> dict:
+    """An open rec exactly as the `open_recs` named verb returns it: the five projected columns
+    only (src/common/ducklake_scd2_schema.py). No `status` -- the verb filters it server-side --
+    and no `source`. An override adds or replaces a key, so a richer `rec_by_id` (SELECT *) row is
+    one keyword away."""
+    row: dict = {
+        "id": "rec-1",
+        "title": _LIVE_TITLE,
+        "context": _LIVE_CONTEXT,
+        "created_timestamp": "2026-08-26T10:00:00+00:00",
+        "automatable": False,
+    }
+    row.update(overrides)
+    return row
+
+
 class TestFindOpenBudgetBreachRec:
-    """Pure matching-logic tests for _find_open_budget_breach_rec (VTS-20)."""
+    """Pure matching-logic tests for _find_open_budget_breach_rec (VTS-20).
 
-    def test_matches_on_branch_and_phase_substrings(self) -> None:
-        rows = [
-            {
-                "id": "rec-1",
-                "source": "budget_breach",
-                "status": "open",
-                "context": "Fast-tier budget breach: 8.0 min elapsed. Branch: agent/foo. Dominant phase: lint. ",
-            }
-        ]
-        result = _find_open_budget_breach_rec(rows, "agent/foo", "lint")
-        assert result is not None
-        assert result["id"] == "rec-1"
+    Rows are LIVE-shaped by default. The matcher used to require `source == "budget_breach"` and
+    `status == "open"` -- two keys no live row carries -- so it returned None for every real open
+    rec: the local path re-filed instead of updating, and the hourly budget_ingest tick would file
+    a duplicate for as long as an episode stayed open."""
 
-    def test_no_match_on_different_source(self) -> None:
-        rows = [
-            {
-                "id": "rec-1",
-                "source": "budget_bypass",
-                "status": "open",
-                "context": "Branch: agent/foo. Dominant phase: lint. ",
-            }
-        ]
-        assert _find_open_budget_breach_rec(rows, "agent/foo", "lint") is None
+    def test_matches_a_live_row_carrying_only_the_projected_columns(self) -> None:
+        row = _live_row()
+        assert "status" not in row and "source" not in row
+        assert _find_open_budget_breach_rec([row], "agent/foo", "lint") is row
 
-    def test_no_match_on_closed_status(self) -> None:
-        rows = [
-            {
-                "id": "rec-1",
-                "source": "budget_breach",
-                "status": "closed",
-                "context": "Branch: agent/foo. Dominant phase: lint. ",
-            }
-        ]
-        assert _find_open_budget_breach_rec(rows, "agent/foo", "lint") is None
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            pytest.param({"context": "Branch: agent/bar. Dominant phase: lint. "}, id="other-branch"),
+            pytest.param({"context": "Branch: agent/foo. Dominant phase: pytest_diff. "}, id="other-phase"),
+            pytest.param({"context": None}, id="no-context"),
+            pytest.param({"title": "Fast-tier budget bypassed on agent/foo"}, id="bypass-title"),
+            pytest.param({"title": "Hotfix applied during rec-9: budget"}, id="foreign-title"),
+            pytest.param({"status": "closed"}, id="explicit-closed"),
+            pytest.param({"status": "in_progress"}, id="explicit-in-progress"),
+            pytest.param({"source": "budget_bypass"}, id="explicit-foreign-source"),
+        ],
+    )
+    def test_rejects_a_row_that_is_not_this_episodes_open_breach_rec(self, overrides: dict) -> None:
+        assert _find_open_budget_breach_rec([_live_row(**overrides)], "agent/foo", "lint") is None
 
-    def test_no_match_on_different_phase(self) -> None:
-        rows = [
-            {
-                "id": "rec-1",
-                "source": "budget_breach",
-                "status": "open",
-                "context": "Branch: agent/foo. Dominant phase: pytest_diff. ",
-            }
-        ]
-        assert _find_open_budget_breach_rec(rows, "agent/foo", "lint") is None
+    def test_an_explicitly_open_budget_breach_row_still_matches(self) -> None:
+        row = _live_row(status="open", source="budget_breach")
+        assert _find_open_budget_breach_rec([row], "agent/foo", "lint") is row
 
-    def test_no_match_on_different_branch(self) -> None:
-        rows = [
-            {
-                "id": "rec-1",
-                "source": "budget_breach",
-                "status": "open",
-                "context": "Branch: agent/bar. Dominant phase: lint. ",
-            }
-        ]
-        assert _find_open_budget_breach_rec(rows, "agent/foo", "lint") is None
+    def test_a_row_without_a_title_is_judged_on_its_markers_alone(self) -> None:
+        """An absent key means the projection did not carry it; only an EXPLICIT value is judged."""
+        row = {"id": "rec-1", "context": _LIVE_CONTEXT}
+        assert _find_open_budget_breach_rec([row], "agent/foo", "lint") is row
 
     def test_empty_rows_returns_none(self) -> None:
         assert _find_open_budget_breach_rec([], "agent/foo", "lint") is None
@@ -504,85 +502,81 @@ class TestBudgetBreachRecDedupe:
         monkeypatch.delenv("CI", raising=False)
         monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
 
-    def test_repeat_breach_same_branch_and_phase_updates_existing_rec(self) -> None:
+    def _breach(self, open_recs: list | Exception, *, branch: str = "agent/test") -> MagicMock:
+        """One local breach filing with the reader stubbed to *open_recs* (rows, or an exception
+        to raise), returning the mocked scripts.ops_data_portal module."""
         mock_portal = MagicMock()
-        git_result = MagicMock(returncode=0, stdout="agent/test\n")
-        existing_rec = {
-            "id": "rec-9001",
-            "source": "budget_breach",
-            "status": "open",
-            "context": (
+        stub = {"side_effect": open_recs} if isinstance(open_recs, Exception) else {"return_value": open_recs}
+        with (
+            patch("scripts.checks._common.run", return_value=MagicMock(returncode=0, stdout=f"{branch}\n")),
+            patch.dict(sys.modules, {"scripts.ops_data_portal": mock_portal}),
+            patch("scripts.checks._budget_recs._fetch_open_recs", **stub),
+        ):
+            _file_budget_breach_rec(400.0, ["scripts/validate.py"], "pytest_diff")
+        return mock_portal
+
+    def test_repeat_breach_same_branch_and_phase_updates_existing_rec(self) -> None:
+        existing_rec = _live_row(
+            id="rec-9001",
+            source="budget_breach",
+            status="open",
+            title="Fast-tier budget breach (8.0 min) on agent/test",
+            context=(
                 "Fast-tier budget breach: 8.0 min elapsed (limit 5 min). Branch: agent/test. "
                 "Dominant phase: pytest_diff. Diff manifest (1 files): scripts/validate.py. "
             ),
-        }
-
-        with (
-            patch("scripts.checks._common.run", return_value=git_result),
-            patch.dict(sys.modules, {"scripts.ops_data_portal": mock_portal}),
-            patch("scripts.checks._budget_recs._fetch_open_recs", return_value=[existing_rec]),
-        ):
-            _file_budget_breach_rec(400.0, ["scripts/validate.py"], "pytest_diff")
-
+        )
+        mock_portal = self._breach([existing_rec])
         mock_portal.file_rec.assert_not_called()
         mock_portal.update_rec.assert_called_once()
         call_args = mock_portal.update_rec.call_args[0]
         assert call_args[0] == "rec-9001"
         assert "pytest_diff" in call_args[1]["context"]
 
+    def test_repeat_breach_updates_from_the_live_projected_row_shape(self) -> None:
+        """The reader hands the matcher only what `open_recs` projects -- no `status`, no
+        `source`. A dedupe predicated on either key matched nothing in production, so every repeat
+        breach re-filed instead of updating."""
+        live_row = _live_row(
+            id="rec-9002",
+            title="Fast-tier budget breach (6.6 min) on agent/test",
+            context=(
+                "Fast-tier budget breach: 6.6 min elapsed (limit 5 min). Branch: agent/test. Dominant phase: pytest_diff. "
+            ),
+        )
+        mock_portal = self._breach([live_row])
+        mock_portal.file_rec.assert_not_called()
+        assert mock_portal.update_rec.call_args[0][0] == "rec-9002"
+
+    def test_the_row_this_writer_files_is_matched_on_the_next_breach(self) -> None:
+        """Anti-drift pin on the LOCAL writer's half of the marker contract: whatever title and
+        context _file_budget_breach_rec writes, projected down to the columns `open_recs` returns,
+        must be found by the matcher. The ingester writer's half is pinned in
+        tests/convergence_health/budget_ingest/test_ingest.py."""
+        filed = self._breach([]).file_rec.call_args[0][0]
+        row = _live_row(title=filed["title"], context=filed["context"])
+        assert _find_open_budget_breach_rec([row], "agent/test", "pytest_diff") is row
+
     def test_new_branch_or_phase_files_new_rec(self) -> None:
-        mock_portal = MagicMock()
-        git_result = MagicMock(returncode=0, stdout="agent/other\n")
-
-        with (
-            patch("scripts.checks._common.run", return_value=git_result),
-            patch.dict(sys.modules, {"scripts.ops_data_portal": mock_portal}),
-            patch("scripts.checks._budget_recs._fetch_open_recs", return_value=[]),
-        ):
-            _file_budget_breach_rec(400.0, ["scripts/validate.py"], "pytest_diff")
-
+        mock_portal = self._breach([], branch="agent/other")
         mock_portal.file_rec.assert_called_once()
         mock_portal.update_rec.assert_not_called()
 
     def test_non_matching_existing_rec_files_new_rec_not_update(self) -> None:
         """A DIFFERENT branch/phase's open budget_breach rec must not be mistaken for a match."""
-        mock_portal = MagicMock()
-        git_result = MagicMock(returncode=0, stdout="agent/test\n")
-        other_rec = {
-            "id": "rec-1234",
-            "source": "budget_breach",
-            "status": "open",
-            "context": (
-                "Fast-tier budget breach: 6.0 min elapsed (limit 5 min). Branch: some/other-branch. Dominant phase: lint. "
-            ),
-        }
-
-        with (
-            patch("scripts.checks._common.run", return_value=git_result),
-            patch.dict(sys.modules, {"scripts.ops_data_portal": mock_portal}),
-            patch("scripts.checks._budget_recs._fetch_open_recs", return_value=[other_rec]),
-        ):
-            _file_budget_breach_rec(400.0, ["scripts/validate.py"], "pytest_diff")
-
+        other_rec = _live_row(
+            id="rec-1234",
+            title="Fast-tier budget breach (6.0 min) on some/other-branch",
+            context="Branch: some/other-branch. Dominant phase: lint. ",
+        )
+        mock_portal = self._breach([other_rec])
         mock_portal.file_rec.assert_called_once()
         mock_portal.update_rec.assert_not_called()
 
     def test_reader_unreachable_degrades_to_file_rec(self) -> None:
         """A reader exception during the dedupe lookup must not crash -- it falls through to
         filing a new rec (the breach is still recorded, Decision 55)."""
-        mock_portal = MagicMock()
-        git_result = MagicMock(returncode=0, stdout="agent/test\n")
-
-        with (
-            patch("scripts.checks._common.run", return_value=git_result),
-            patch.dict(sys.modules, {"scripts.ops_data_portal": mock_portal}),
-            patch(
-                "scripts.checks._budget_recs._fetch_open_recs",
-                side_effect=RuntimeError("reader unreachable"),
-            ),
-        ):
-            _file_budget_breach_rec(400.0, ["scripts/validate.py"], "pytest_diff")
-
+        mock_portal = self._breach(RuntimeError("reader unreachable"))
         mock_portal.file_rec.assert_called_once()
         mock_portal.update_rec.assert_not_called()
 
