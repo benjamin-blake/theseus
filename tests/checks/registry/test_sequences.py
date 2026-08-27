@@ -204,7 +204,6 @@ PROMOTED_GATED: tuple[str, ...] = (
     "validate_dq_manifest_gate",
     "validate_rec_relevance_contract",
     "validate_executor_boundary",
-    "validate_broker_env_reads",
     "validate_invariants",
     "validate_scheduled_agent_logs",
     "validate_ci_rca_trigger",
@@ -231,7 +230,7 @@ PROMOTED_UNGATED: tuple[str, ...] = (
 
 # Domains with no --pre member before this wave: `by_domain.get(domain, [])` in pre_sequence()
 # only visits DECLARED domains, so an undeclared domain's promoted entries silently never run.
-NEWLY_PRE_DOMAINS: tuple[str, ...] = ("executor", "product", "lambda_pkg")
+NEWLY_PRE_DOMAINS: tuple[str, ...] = ("executor", "lambda_pkg")
 
 
 def _pre_steps() -> dict[str, registry.Step]:

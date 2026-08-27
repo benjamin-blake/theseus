@@ -543,7 +543,7 @@ class TestPrimaryInvocationCarriesCoverageFlags:
             patch("scripts.checks._common.ROOT", tmp_path),
             patch("scripts.checks._common.get_status_aware_diff", return_value=[("M", "scripts/a.py")]),
             patch("scripts.checks._pytest_diff._write_deferral_map"),
-            patch("scripts.checks._pytest_diff._excluded_heavy_import_names", return_value={"pyarrow"}),
+            patch("scripts.checks._pytest_diff._excluded_heavy_import_names", return_value={"duckdb"}),
             patch("importlib.util.find_spec", return_value=None),
         ):
             run_pytest_diff([runnable_file], [])
