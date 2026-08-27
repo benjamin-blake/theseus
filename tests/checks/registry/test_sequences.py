@@ -5,9 +5,19 @@ OD-0 is the load-bearing one: it independently RE-DERIVES the within-segment dom
 the manifests plus registry.py's own declared order constants, and asserts the re-derivation
 equals the live pre_sequence()/full_sequence() output -- so an undetermined/algorithm-drifted
 derivation cannot ship green.
+
+The second half pins the full-only -> --pre promotion wave (Google-TAP recall posture: the
+autonomous executor runs ONLY --pre, so a full-tier-only check is structurally guaranteed to be
+discovered after merge). It lives HERE rather than in a file of its own because a fifth
+registry-importing test module is a fifth transitive-residue member competing for the CAP=35
+affected-set budget that TestAffectedSetSurvival pins in test_manifest_contracts.py.
 """
 
 from __future__ import annotations
+
+from fnmatch import fnmatch
+
+import pytest
 
 import scripts.checks.registry as registry
 
@@ -180,3 +190,118 @@ class TestMembershipFloors:
         removed = set(full_names)
         removed.discard(next(iter(removed)))
         assert not (full_names <= removed)
+
+
+# Promoted with a pre_globs input-closure gate. Per-glob closure adequacy is asserted in each
+# domain's own tests/checks/<domain>/test__manifest.py, next to the manifest it mirrors.
+PROMOTED_GATED: tuple[str, ...] = (
+    "validate_sys_executable",
+    "validate_recommendations_schema",
+    "validate_rec_write_paths",
+    "validate_decisions_local_writes",
+    "validate_warehouse_write_sources",
+    "validate_pydantic_yaml_drift",
+    "validate_dq_manifest_gate",
+    "validate_rec_relevance_contract",
+    "validate_executor_boundary",
+    "validate_broker_env_reads",
+    "validate_invariants",
+    "validate_scheduled_agent_logs",
+    "validate_ci_rca_trigger",
+    "validate_supersession_annotations",
+    "validate_lambda_manifests",
+    "validate_lambda_manifest_coverage",
+    "validate_hermeticity_flags",
+    "validate_verifier_hermeticity",
+    "validate_differential_gate_baseline",
+    "validate_no_underscore_instructions",
+    "validate_claude_md_pointer_invariant",
+    "validate_prompt_compliance",
+    "validate_instruction_architecture_layers",
+)
+
+# Promoted UNGATED (pre_globs=None, runs on every diff). Reserved for checks whose read set is
+# driven by data they parse at runtime (an answer-locus path, a diff-derived file list), so no
+# static glob can enclose it -- gating those would silently re-open the very gap the promotion
+# closes. Each costs single-digit milliseconds of body time.
+PROMOTED_UNGATED: tuple[str, ...] = (
+    "validate_portal_drift",
+    "validate_environment_taxonomy",
+)
+
+# Domains with no --pre member before this wave: `by_domain.get(domain, [])` in pre_sequence()
+# only visits DECLARED domains, so an undeclared domain's promoted entries silently never run.
+NEWLY_PRE_DOMAINS: tuple[str, ...] = ("executor", "product", "lambda_pkg")
+
+
+def _pre_steps() -> dict[str, registry.Step]:
+    return {step.name: step for step in registry.pre_sequence() if step.kind == "check"}
+
+
+class TestPromotedRosterIsDispatchedInPre:
+    @pytest.mark.parametrize("name", PROMOTED_GATED + PROMOTED_UNGATED)
+    def test_promoted_check_runs_in_the_pre_tier(self, name: str) -> None:
+        assert name in _pre_steps()
+
+    @pytest.mark.parametrize("name", PROMOTED_GATED + PROMOTED_UNGATED)
+    def test_promoted_check_still_runs_in_the_full_tier(self, name: str) -> None:
+        """Promotion is additive: the full tier keeps every promoted check."""
+        full_names = {step.name for step in registry.full_sequence() if step.kind == "check"}
+        assert name in full_names
+
+
+class TestPromotedGateShape:
+    @pytest.mark.parametrize("name", PROMOTED_GATED)
+    def test_gated_promotion_declares_globs(self, name: str) -> None:
+        assert _pre_steps()[name].pre_globs
+
+    @pytest.mark.parametrize("name", PROMOTED_UNGATED)
+    def test_ungated_promotion_declares_no_globs(self, name: str) -> None:
+        assert _pre_steps()[name].pre_globs is None
+
+    @pytest.mark.parametrize("name", PROMOTED_GATED)
+    def test_gated_promotion_covers_its_own_defining_module(self, name: str) -> None:
+        """A gated check whose own module holds its roster/allowlist/regexes must match its own
+        globs, or editing the rule alone skips the check that enforces it (the recall defect the
+        registry audit found on seven pre-existing gates).
+
+        Bare fnmatch, not scripts.validate._pre_glob_match, for the reason tests/checks/
+        ops_governance/test__manifest.py::TestClosureMembersAreCovered states: an import edge from
+        tests/checks/** into the driver widens the affected-test graph. Sound in the safe
+        direction -- the production matcher is fnmatch PLUS a leading-'**/' retry that can only
+        ADD matches, so anything green here is green there too.
+        """
+        entry = registry._ALL_ENTRIES[name]
+        own_path = entry.module.replace(".", "/") + ".py"
+        globs = _pre_steps()[name].pre_globs or ()
+        assert any(fnmatch(own_path, glob) for glob in globs), f"{name}: {own_path} unmatched by {globs}"
+
+
+class TestNewlyPreDomainsAreDeclared:
+    @pytest.mark.parametrize("domain", NEWLY_PRE_DOMAINS)
+    def test_domain_is_declared_in_pre_domain_order(self, domain: str) -> None:
+        assert domain in registry._PRE_DOMAIN_ORDER
+
+    @pytest.mark.parametrize("domain", NEWLY_PRE_DOMAINS)
+    def test_domain_actually_contributes_a_check_to_pre(self, domain: str) -> None:
+        """Declaring the domain is necessary but not sufficient -- assert the derived sequence
+        really carries a member from it, so a declaration without a promoted entry cannot pass."""
+        contributed = {
+            step.name
+            for step in registry.pre_sequence()
+            if step.kind == "check" and registry._ALL_ENTRIES[step.name].module.split(".")[2] == domain
+        }
+        assert contributed
+
+    def test_pre_domain_order_has_no_duplicates(self) -> None:
+        """Regression pin: passes unchanged before and after this diff -- guards future duplicate appends, not this wave's."""
+        assert len(registry._PRE_DOMAIN_ORDER) == len(set(registry._PRE_DOMAIN_ORDER))
+
+
+class TestNoAccidentalUngatedPromotion:
+    def test_promoted_roster_ungated_members_are_exactly_the_declared_ones(self) -> None:
+        """An ungated check runs on EVERY diff, so it is a budget decision, not a default. Any
+        promoted name that loses its globs must be moved into PROMOTED_UNGATED deliberately."""
+        steps = _pre_steps()
+        ungated = {name for name in PROMOTED_GATED + PROMOTED_UNGATED if steps[name].pre_globs is None}
+        assert ungated == set(PROMOTED_UNGATED)

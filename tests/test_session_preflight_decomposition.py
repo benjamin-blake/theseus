@@ -45,6 +45,7 @@ from scripts.preflight import (
     ci_rca_signals,
     context_docs,
     correlation,
+    dependabot,
     env_git,
     priority_queue,
     recs_cache,
@@ -68,7 +69,8 @@ _spec.loader.exec_module(_preflight)  # type: ignore[union-attr]
 # Updated deliberately for genuine new report fields since (e.g. dedup_effectiveness_gauge /
 # dedup_effectiveness_escalation, PLAN-ci-rca-dedup-fire-and-selftest WS5; decision_conditions,
 # PR #603 feat(reversal-condition-monitor) SEQ-02; prose_context, PLAN-prose-context-metric
-# ACG-05/ACG-06 slice 3; budget_breach_summary, PLAN-full-tier-engine-hardening VTS-20) -- this
+# ACG-05/ACG-06 slice 3; budget_breach_summary, PLAN-full-tier-engine-hardening VTS-20;
+# dependabot_stranded_prs, dependabot-automation-cleanup Component 3) -- this
 # constant is a drift guard against SILENT schema changes, not a permanent ban on adding fields;
 # bump it (and the count assertion below) in the same commit as a deliberate report-key addition.
 FROZEN_REPORT_KEYS = frozenset(
@@ -119,11 +121,12 @@ FROZEN_REPORT_KEYS = frozenset(
         "forward_fix_recursion_alert",
         "budget_bypass_alert",
         "budget_breach_summary",
+        "dependabot_stranded_prs",
         "endstate_drift",
         "prose_context",
     }
 )
-assert len(FROZEN_REPORT_KEYS) == 47, "frozen report key list itself drifted -- fix the constant, not the assertion"
+assert len(FROZEN_REPORT_KEYS) == 48, "frozen report key list itself drifted -- fix the constant, not the assertion"
 
 # Frozen export list: every public function + every test-referenced private symbol from the
 # pre-refactor module (facade-resident + all 9 domain modules + _common + the back-compat
@@ -292,6 +295,7 @@ def _base_stub_specs(report_path: Path) -> list[tuple[object, str, object]]:
         (ci_rca_gauges, "_derive_ci_rca_back_validation", None),
         (alerts, "_check_forward_fix_recursion", None),
         (alerts, "_check_budget_bypass_alert", None),
+        (dependabot, "check_stranded_prs", None),
         (priority_queue, "read_priority_queue", []),
         (correlation, "correlate_ci_rca_with_main", {"unresolved": [], "likely_resolved": []}),
         (context_docs, "parse_last_session", ""),
@@ -364,12 +368,12 @@ def _run_stubbed_main(
 
 
 class TestReportSchemaFreeze:
-    """A stubbed main() run's report top-level key set equals the frozen 49-key list."""
+    """A stubbed main() run's report top-level key set equals the frozen 48-key list."""
 
     def test_report_key_set_matches_frozen_keys(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
         _, report, _ = _run_stubbed_main(tmp_path, capsys)
         assert set(report.keys()) == FROZEN_REPORT_KEYS
-        assert len(report.keys()) == 47
+        assert len(report.keys()) == 48
 
 
 class TestFacadeCompleteness:
@@ -423,6 +427,7 @@ class TestMockInterceptionThroughFacade:
                 "likely_resolved": [{"marker": "correlation-intercept"}],
             },
             (context_docs, "read_context_files"): {"marker": "context-docs-intercept"},
+            (dependabot, "check_stranded_prs"): {"marker": "dependabot-intercept"},
         }
         exit_code, report, _ = _run_stubbed_main(tmp_path, capsys, overrides=overrides)
 
@@ -441,6 +446,7 @@ class TestMockInterceptionThroughFacade:
         assert report["priority_queue"] == [{"marker": "priority-queue-intercept"}]
         assert report["ci_rca_likely_resolved_recs"] == [{"marker": "correlation-intercept"}]
         assert report["context"] == {"marker": "context-docs-intercept"}
+        assert report["dependabot_stranded_prs"] == {"marker": "dependabot-intercept"}
 
 
 class TestResidualPatchSiteClosure:

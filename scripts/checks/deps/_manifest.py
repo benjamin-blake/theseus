@@ -40,6 +40,11 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.deps.validate_check_manifests",
         attr="validate_check_manifests",
         pre=True,
+        pre_globs=(
+            "scripts/checks/**",
+            "docs/contracts/check-manifest.yaml",
+            "scripts/dependency_graph.py",
+        ),
         full_segment="full_after_lint",
     ),
 )

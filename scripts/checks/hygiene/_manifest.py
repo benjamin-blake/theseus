@@ -21,7 +21,10 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.hygiene.validate_test_count_coupling",
         attr="validate_test_count_coupling",
         pre=True,
-        pre_globs=("tests/**",),
+        pre_globs=(
+            "tests/**",
+            "scripts/checks/hygiene/**",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -36,6 +39,8 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_sys_executable",
         module="scripts.checks.hygiene.validate_sys_executable",
         attr="validate_sys_executable",
+        pre=True,
+        pre_globs=("scripts/**",),
         full_segment="full_after_lint",
     ),
     Entry(

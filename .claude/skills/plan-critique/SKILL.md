@@ -47,10 +47,11 @@ Reject a plan that invents a third validation tier, treats mapped coverage or re
 
 12. **Check Constraints for contradictions:** Do the Constraints conflict with rules in `docs/PROJECT_CONTEXT.md` or prior decisions in `docs/DECISIONS.md`?
 
-12b. **Lambda deployment completeness (IMPLEMENTATION only):** Run `lambda_manifest --list-patterns`
-and `compute_affected_artifacts()`. Each active artifact needs per-Lambda build, deploy, smoke test,
-and model-ID validation when applicable; all-artifact deploy is allowed only when all are modified.
-Missing active steps => REVISE. Stubs need no deploy. Decision 79 lifted the old Decision 67 freeze.
+12b. **Lambda deployment completeness (IMPLEMENTATION only):** VERIFY, do not re-derive -- planning
+Step 4 ran this. Recompute `compute_affected_artifacts(<scope files>)` ONCE and diff it against the
+artifacts the plan's `infrastructure_dependencies`/VP steps name; a set mismatch, or an artifact
+`active` per `src/lambdas/<slug>/manifest.yaml` missing a build, deploy, smoke-test or model-ID
+step => REVISE naming it. Stubs need no deploy (Decision 79).
 
 12c. **Verification Plan executable command check (IMPLEMENTATION plans only):** Every `verification_plan` entry MUST have a `command` field containing a literal executable shell command or Python one-liner (the `PlanDocument` schema rejects empty commands; your job is to judge whether the command actually exercises the feature rather than being a structural-only check). FAIL if any VP step is prose-only with no executable command. For V3 plans, every VP step's `phase` must be `pre-deploy` or `post-deploy`. If either check fails, recommend REVISE with the specific VP steps that need commands or tags added.
 
@@ -61,14 +62,14 @@ Presence/link validators are deterministic; adequacy is this fresh-context judge
 
 12d. **STRATEGIC plan gate:** If the plan's `## Plan Type` is `STRATEGIC` AND the executor freeze is still active per AGENTS.md Temporary Operational Constraints (pending CD.17 reversal), recommend REVISE with: "STRATEGIC plans are suspended while the executor freeze holds (CD.17): the autonomous executor has no consumer for STRATEGIC-decomposed recommendations. Convert to an IMPLEMENTATION plan, or split into multiple atomic IMPLEMENTATION plans, or wait for CD.17 reversal."
 
-12k. **Closure obligation check (CONDITIONAL -- IMPLEMENTATION plans only):** This check fires ONLY when the plan meets one of the two trigger conditions below. Additive plans that do neither are explicitly exempt.
+12k. **Closure obligation check (CONDITIONAL -- IMPLEMENTATION plans only):** VERIFY the plan's own declarations against its scope and VP; do not re-derive the obligation. Additive plans that trip neither condition are exempt.
 
-Trigger condition 1 -- **Rec-resolving plan**: the plan's `intent`, `context`, `scope`, or `acceptance_criteria` explicitly names one or more open recommendation IDs as the motivation for the work (e.g. "closes rec-2187", "resolves ci_rca recs", "fixes the open rec").
-- Required: `bundled_recommendations` in the YAML must be non-empty and list the rec ids.
-- Required: at least one VP step must verify each rec closed (grep the local cache after sync, or use `ops_data_portal --sync && grep rec-NNNN logs/.recommendations-log.jsonl`).
+Trigger condition 1 -- **Rec-resolving plan**: `bundled_recommendations` is non-empty, OR the plan's `intent`, `context`, `scope`, or `acceptance_criteria` names an open rec id as the motivation.
+- Required: every named rec id also appears in `bundled_recommendations` (a named rec with an empty list is the exact miss this catches).
+- Required: at least one VP step verifies each listed rec closed (e.g. `ops_data_portal --sync && grep rec-NNNN logs/.recommendations-log.jsonl`).
 - If either is missing, recommend REVISE: "Rec-resolving plan omits closure obligation: add bundled_recommendations list and a VP step to verify each rec closed."
 
-Trigger condition 2 -- **Surface-retiring plan**: the plan's `scope` includes a row with `action: Delete` OR an explicit X->Y migration/cutover (old path deleted, Lambda retired, write path swapped, config flag removed, backend superseded).
+Trigger condition 2 -- **Surface-retiring plan**: `scope` carries an `action: Delete` row OR the plan states an X->Y migration/cutover (old path deleted, Lambda retired, write path swapped, config flag removed, backend superseded).
 - Required: at least one VP step that confirms the old surface is unreachable or deleted (grep for call sites, `test -f` for deleted files, import smoke-test, etc.).
 - If missing, recommend REVISE: "Surface-retiring plan omits stale-reference sweep VP step: add a VP step that verifies the old surface is dead."
 
@@ -145,7 +146,7 @@ Ask the following five questions against the plan's chosen approach. For each, w
 
 **VP Executable Commands:** Complete / Missing commands for VP rows [list] / Missing pre/post-deploy tags [list]
 
-**Closure Obligation (12l, follow-on plans):** N/A (not a follow-on) / Compliant / Missing [specifics]
+**Closure Obligation (12k) / closes_criteria (12l):** each N/A / Compliant / Missing [specifics]
 
 **Tier Fitness (12m):** Compliant / REVISE -- [scope file] requires [tier] but plan declares [lower tier]
 

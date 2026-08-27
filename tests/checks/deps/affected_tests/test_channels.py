@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+from scripts.checks.deps import affected_graph
 from scripts.checks.deps import affected_tests as at
 from tests.fixtures.affected_tests_helpers import write_file as _write
 
@@ -195,13 +196,18 @@ class TestConftestSubtreeChannelEdgeCases:
 
 
 class TestModuleToTestPathHelper:
-    """Direct coverage of _module_to_test_path's branches (regex-matches-but-file-absent)."""
+    """Direct coverage of _module_to_test_path's branches (regex-matches-but-file-absent).
+
+    The helper moved to scripts/checks/deps/affected_graph.py with the rest of the graph
+    channels; affected_tests.py never calls it directly, so it is NOT re-imported there and
+    these call sites address the owning module.
+    """
 
     def test_regex_matches_but_file_does_not_exist_returns_none(self, tmp_path: Path) -> None:
-        assert at._module_to_test_path("tests.foo.test_ghost", tmp_path) is None
+        assert affected_graph._module_to_test_path("tests.foo.test_ghost", tmp_path) is None
 
     def test_non_test_shaped_module_returns_none(self, tmp_path: Path) -> None:
-        assert at._module_to_test_path("tests.pkg", tmp_path) is None
+        assert affected_graph._module_to_test_path("tests.pkg", tmp_path) is None
 
 
 class TestImportClosureChannelDirect:
@@ -210,9 +216,23 @@ class TestImportClosureChannelDirect:
 
     def test_nonexistent_changed_file_contributes_nothing(self, tmp_path: Path) -> None:
         _write(tmp_path, "scripts/placeholder.py", "x = 1\n")
-        direct, transitive = at._import_closure_channel(["scripts/does_not_exist.py"], tmp_path)
+        direct, transitive, distance = at._import_closure_channel(["scripts/does_not_exist.py"], tmp_path)
         assert direct == set()
         assert transitive == set()
+        assert distance == {}
+
+    def test_distance_is_the_fewest_import_hops_to_a_changed_module(self, tmp_path: Path) -> None:
+        """The residue's relevance rank: a direct importer is 1 hop, its own importer is 2."""
+        _write(tmp_path, "scripts/base.py", "def do():\n    pass\n")
+        _write(tmp_path, "scripts/mid.py", "from scripts.base import do\n\ndef mid():\n    do()\n")
+        _write(tmp_path, "tests/test_direct.py", "from scripts.base import do\n\ndef test_d():\n    do()\n")
+        _write(tmp_path, "tests/test_indirect.py", "from scripts.mid import mid\n\ndef test_i():\n    mid()\n")
+
+        direct, transitive, distance = at._import_closure_channel(["scripts/base.py"], tmp_path)
+
+        assert direct == {"tests/test_direct.py"}
+        assert transitive == {"tests/test_indirect.py"}
+        assert distance == {"tests/test_direct.py": 1, "tests/test_indirect.py": 2}
 
 
 class TestDataEdgeChannelEdgeCases:

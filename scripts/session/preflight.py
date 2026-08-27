@@ -31,6 +31,7 @@ from scripts.preflight import (
     context_docs,
     correlation,
     decision_conditions,
+    dependabot,
     env_git,
     priority_queue,
     prose_context,
@@ -261,6 +262,7 @@ def main(roadmap_detail: str = "slim") -> int:
         fut_forward_fix = phase_b.submit(alerts._check_forward_fix_recursion, recs_rows_cache)
         fut_budget = phase_b.submit(alerts._check_budget_bypass_alert, recs_rows_cache)
         fut_budget_breach_summary = phase_b.submit(alerts._check_budget_breach_summary, recs_rows_cache)
+        fut_dependabot = phase_b.submit(dependabot.check_stranded_prs)
 
         _rec_result = fut_rec_count.result()
         ci_rca_recs = fut_ci_rca.result()
@@ -275,6 +277,7 @@ def main(roadmap_detail: str = "slim") -> int:
         forward_fix_alert = fut_forward_fix.result()
         budget_bypass_alert = fut_budget.result()
         budget_breach_summary = fut_budget_breach_summary.result()
+        dependabot_stranded_prs = fut_dependabot.result()
 
     recs_read_status: str
     if _rec_result == "reader_unreachable":
@@ -394,6 +397,8 @@ def main(roadmap_detail: str = "slim") -> int:
     summary.print_budget_bypass_alert(budget_bypass_alert)
     report["budget_breach_summary"] = budget_breach_summary
     summary.print_budget_breach_summary(budget_breach_summary)
+    report["dependabot_stranded_prs"] = dependabot_stranded_prs
+    summary.print_dependabot_stranded_alert(dependabot_stranded_prs)
 
     endstate_drift = context_docs._check_endstate_drift()
     report["endstate_drift"] = endstate_drift

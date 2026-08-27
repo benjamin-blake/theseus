@@ -13,6 +13,11 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_environment_taxonomy",
         module="scripts.checks.iam_tf.validate_environment_taxonomy",
         attr="validate_environment_taxonomy",
+        # UNGATED deliberately: the check self-scopes to _common.get_changed_files() and reads
+        # only the .md/.yaml/.yml members of that diff, so a static glob could only re-derive the
+        # diff it already computes -- and every candidate spelling ("**/*.md") drops repo-root
+        # files. Near-zero on a code-only diff (it examines nothing).
+        pre=True,
         full_segment="full_after_lint",
     ),
     Entry(

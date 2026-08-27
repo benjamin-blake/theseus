@@ -319,6 +319,13 @@ def _s(name: str) -> Step:
 # there). BYTE-PARITY of overall check order is NOT claimed or asserted -- only membership
 # (Set identity) and the OD-0..OD-6 invariants (tests/checks/registry/test_sequences.py).
 
+# The first fifteen entries keep their OD-0 first-appearance order verbatim. `executor`,
+# `product` and `lambda_pkg` had ZERO pre membership until the full-only promotion wave, so they
+# have no first-appearance position to preserve: they are APPENDED, in their relative
+# full_after_lint order, which leaves every pre-existing domain block exactly where it was.
+# An undeclared domain is not an error but a silent omission -- pre_sequence()'s
+# `by_domain.get(domain, [])` walk only visits declared domains, so a promoted entry in an
+# undeclared domain would never dispatch (pinned by tests/checks/registry/test_sequences.py).
 _PRE_DOMAIN_ORDER: tuple[str, ...] = (
     "iam_tf",
     "prompts",
@@ -335,6 +342,9 @@ _PRE_DOMAIN_ORDER: tuple[str, ...] = (
     "contracts",
     "ops_governance",
     "deps",
+    "executor",
+    "product",
+    "lambda_pkg",
 )
 
 _FULL_SEGMENT_DOMAIN_ORDER: dict[str, tuple[str, ...]] = {

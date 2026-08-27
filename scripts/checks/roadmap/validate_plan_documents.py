@@ -104,8 +104,8 @@ def validate_plan_documents(
     target_dir = plans_dir if plans_dir is not None else _common.ROOT / "docs" / "plans"
     plan_paths = sorted(target_dir.glob("PLAN-*.yaml"))
     if not plan_paths:
-        registry.examined(0, unit="plan_documents")
         print("  PASS: no PLAN-*.yaml files to validate.")
+        registry.examined(0, unit="plan_documents")
         return
 
     root_str = str(_common.ROOT)
@@ -113,11 +113,15 @@ def validate_plan_documents(
     if injected:
         sys.path.insert(0, root_str)
     try:
-        from scripts.roadmap.plan_document import load  # noqa: PLC0415
+        from scripts.roadmap.plan_document import (  # noqa: PLC0415
+            CONTEXT_BLOCK_LINE_ADVISORY,
+            context_block_lines,
+            load,
+        )
 
-        registry.examined(len(plan_paths), unit="plan_documents")
         added_names = _added_plan_names() if added_plan_names is None else added_plan_names
         errors: list[str] = []
+        advisories: list[str] = []
         for path in plan_paths:
             # One parse per plan feeds both the schema verdict and the semantic gates -- this
             # check rides the --pre tier, so a second load() per passing plan is pure waste.
@@ -128,6 +132,16 @@ def validate_plan_documents(
                 continue
             errors.extend(_new_plan_version_failures(path, doc, added_names))
             errors.extend(_test_obligation_failures(path, doc))
+            if path.name in added_names:
+                span = context_block_lines(path)
+                if span > CONTEXT_BLOCK_LINE_ADVISORY:
+                    advisories.append(
+                        f"{path.name}: context block is {span} rendered lines "
+                        f"(advisory cap {CONTEXT_BLOCK_LINE_ADVISORY}) -- link evidence, do not restate it"
+                    )
+        registry.examined(len(plan_paths), unit="plan_documents")
+        for advisory in advisories:
+            print(f"  WARN: {advisory}")
         for error in errors:
             print(f"  FAIL: {error}")
         if errors:

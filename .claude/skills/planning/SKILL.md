@@ -519,7 +519,7 @@ test_obligations: # v4 IMPLEMENTATION: one row per behavior-capable scope file
 constraints:
   - limits from PROJECT_CONTEXT.md, DECISIONS.md
   - No rescue agents or workaround loops (Decision 55)
-context:
+context: # <= 40 rendered lines; link evidence (ids/paths), never restate it
   - Relevant decisions, phase dependencies, known gotchas
   - "Decision-scout verdict + CITE list (verbatim decision ids)" # REQUIRED ITEM (WF-04a)
   - "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s)" # REQUIRED ITEM (WF-08)
@@ -546,7 +546,7 @@ After writing, validate before committing:
 bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-{slug}.yaml
 ```
 
-**Platform compatibility:** Verify shell commands are Linux/bash-compatible and use `bin/venv-python` for Python invocations.
+**Platform compatibility:** commands must be Linux/bash-compatible (AGENTS.md `## Shell invocations`).
 
 ## Related-Work Check (Workflow Step 8, when ci-rca recs are open)
 
@@ -564,7 +564,7 @@ Apply this check when writing the PLAN file. It is CONDITIONAL -- additive plans
 1. **Rec-resolving plan**: the plan's scope or intent explicitly fixes one or more open recommendations. The plan MUST declare them in `bundled_recommendations` AND include a VP step that verifies each rec closed (e.g. grep the local cache after sync).
 2. **Surface-retiring plan**: the plan's scope includes a `Delete` row OR an explicit `X -> Y` migration/cutover (file, Lambda, write path, config flag, or backend). The plan MUST include a stale-reference sweep VP step that confirms the old surface is unreachable or deleted.
 
-**Enforcement:** a plan that meets a trigger condition but omits its closure obligation fails the plan-critique gate (see `plan-critique` skill, closure-obligation criterion). Surface the violation during Step 6 presentation and require the plan author to add the missing declaration or VP step before writing is allowed.
+**Enforcement:** a plan that trips a trigger but omits its closure obligation fails plan-critique 12k. Surface it during Step 6 presentation; the missing declaration or VP step must be added before writing.
 
 ## Critique Gate (Workflow Step 9)
 **DO NOT output the completion message until this step completes.**

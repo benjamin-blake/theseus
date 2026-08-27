@@ -1,0 +1,67 @@
+name: dependabot-auto-merge
+
+# Minor/patch dependabot auto-merge (WS2). Companion to the dependabot-stranded sweep, which owns
+# majors and behind/dirty branches; this workflow owns exactly the low-risk half of the backlog.
+#
+# WHY THIS IS SAFE TO AUTOMATE, precisely:
+#   - The actual merge is still gated by the main-protection ruleset's required checks
+#     (pr-validate + terraform-validate, Decision 83). `gh pr merge --auto` only ARMS GitHub-native
+#     auto-merge; GitHub presses the button, and only once every required check is green.
+#   - validate_lockfile_sync runs ungated on every --pre run (scripts/checks/deps/_manifest.py), so
+#     a pip floor raised above the pin in requirements.lock reds pr-validate. A green minor/patch
+#     pip bump is therefore real evidence, not an untested assertion.
+#   - CODEOWNERS-protected paths (reconcile.yml, terraform-*.yml, terraform/**) keep
+#     require_code_owner_review = true, and GitHub Actions cannot supply that approval
+#     (can_approve_pull_request_reviews = false). Arming auto-merge on such a PR is still safe: it
+#     simply waits for the human code owner instead of merging.
+#
+# TRIGGER SAFETY: `pull_request`, never `pull_request_target`. pull_request_target would run this
+# workflow's elevated-permission job against the BASE repo's secrets while checking out
+# attacker-controlled head code. The checkout below additionally pins `ref` to the base SHA, so the
+# only code this job can ever execute is trusted main-side code -- the PR's own diff is never
+# checked out at all. Elevated permissions on a dependabot-triggered `pull_request` run ARE honored
+# when declared explicitly here (GitHub's documented dependabot-automation pattern).
+#
+# GATING: the job gate is the PR AUTHOR (github.event.pull_request.user.login), deliberately NOT
+# github.actor. The stranded sweep's `gh pr update-branch` fires synchronize events whose actor is
+# not dependabot, and those re-evaluations are exactly what we want; the author gate plus the
+# policy script in scripts/ci/dependabot_auto_merge.sh is the control.
+#
+# The single run: body is a one-line delegate (Decision 162 R1/R3) -- all policy lives in the
+# script, which is directly testable and registers as a 1-line body in
+# config/composite_action_body_baseline.yaml.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.repository == 'benjamin-blake/theseus'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Fetch dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Apply the minor/patch auto-merge policy
+        env:
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          DEPENDENCY_NAMES: ${{ steps.metadata.outputs.dependency-names }}
+          PACKAGE_ECOSYSTEM: ${{ steps.metadata.outputs.package-ecosystem }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/ci/dependabot_auto_merge.sh

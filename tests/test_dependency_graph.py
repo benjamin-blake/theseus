@@ -6,6 +6,10 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+import scripts.extract_imports  # noqa: F401  warm the lazy import so ast.parse patches are exact
+
 _SCRIPT_PATH = Path(__file__).parent.parent / "scripts" / "dependency_graph.py"
 _spec = importlib.util.spec_from_file_location("dependency_graph", _SCRIPT_PATH)
 _dg = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
@@ -58,6 +62,23 @@ def _make_fixture(tmp_path: Path) -> Path:
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "test_stuff.py").write_text("def test_placeholder():\n    pass\n", encoding="utf-8")
     return tmp_path
+
+
+def _make_rich_fixture(tmp_path: Path) -> Path:
+    """_make_fixture plus a package facade, a patch-string test, a __main__ entry point and an
+    unparseable file: one tree exercising every edge- and root-producing pass."""
+    root = _make_fixture(tmp_path)
+    (root / "src" / "pkg" / "impl.py").write_text("def helper():\n    pass\n", encoding="utf-8")
+    (root / "src" / "pkg" / "__init__.py").write_text("from src.pkg.impl import helper\n", encoding="utf-8")
+    (root / "src" / "broken.py").write_text("def (:\n", encoding="utf-8")
+    (root / "scripts" / "consumer.py").write_text(
+        'from src.pkg import helper\n\nif __name__ == "__main__":\n    helper()\n', encoding="utf-8"
+    )
+    (root / "tests" / "test_patching.py").write_text(
+        'from unittest.mock import patch\n\ndef test_x():\n    with patch("scripts.helper.do_stuff"):\n        pass\n',
+        encoding="utf-8",
+    )
+    return root
 
 
 class TestBuildGraph:
@@ -126,6 +147,16 @@ class TestRoots:
         root = _make_fixture(tmp_path)
         graph = build_graph(repo_root=root)
         assert "scripts.helper" not in roots(graph)
+
+    def test_gather_roots_requires_caller_supplied_entry_points(self, tmp_path: Path) -> None:
+        """The dead self-derivation branch is gone -- the sole caller (build_graph) always hands
+        over the entry points from its single walk, so the argument is required and is honoured
+        verbatim; _gather_roots never re-walks src/ and scripts/ to re-derive them."""
+        root = _make_rich_fixture(tmp_path)
+        with pytest.raises(TypeError):
+            _gather_roots(root)
+        assert {"scripts.consumer", "tests.test_stuff"} <= _gather_roots(root, frozenset({"scripts.consumer"}))
+        assert "scripts.consumer" not in _gather_roots(root, frozenset())
 
 
 class TestReverseDeps:

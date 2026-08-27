@@ -40,3 +40,23 @@ class TestIamTfManifest:
     def test_registry_resolve_matches_the_manifest_entry(self, entry) -> None:
         module = importlib.import_module(entry.module)
         assert registry.resolve(entry.name) is getattr(module, entry.attr)
+
+
+class TestEnvironmentTaxonomyPromotedUngated:
+    """Promoted into --pre WITHOUT globs, deliberately. The check reads only the .md/.yaml/.yml
+    members of _common.get_changed_files(), so it is already diff-scoped by construction: a
+    pre_globs tuple could only restate the diff it computes, and every candidate spelling
+    ("**/*.md") silently drops repo-root files. Ungated is the recall-safe direction here, and it
+    examines nothing on a code-only diff.
+    """
+
+    @staticmethod
+    def _entry():
+        return next(e for e in _manifest.ENTRIES if e.name == "validate_environment_taxonomy")
+
+    def test_is_dispatched_in_pre(self) -> None:
+        pre_names = {step.name for step in registry.pre_sequence() if step.kind == "check"}
+        assert "validate_environment_taxonomy" in pre_names
+
+    def test_declares_no_pre_globs(self) -> None:
+        assert self._entry().pre_globs is None

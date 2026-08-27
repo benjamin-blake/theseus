@@ -20,6 +20,15 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_ci_rca_trigger",
         module="scripts.checks.ci_guards.validate_ci_rca_trigger",
         attr="validate_ci_rca_trigger",
+        pre=True,
+        pre_globs=(
+            ".github/workflows/**",
+            ".claude/agents/scheduled/ci-rca.md",
+            "scripts/verify_ci_workflow.py",
+            "scripts/checks/ci_guards/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -89,6 +98,12 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.ci_guards.validate_ops_portal_patch_targets",
         attr="validate_ops_portal_patch_targets",
         pre=True,
+        pre_globs=(
+            "tests/**",
+            "scripts/checks/ci_guards/**",
+            "scripts/ops_data_portal.py",
+            "scripts/ops_portal/**",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -106,6 +121,30 @@ ENTRIES: tuple[Entry, ...] = (
         pre_globs=(
             ".github/workflows/**",
             "scripts/checks/ci_guards/validate_oidc_failopen_guards.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_dependabot_automation",
+        module="scripts.checks.ci_guards.validate_dependabot_automation",
+        attr="validate_dependabot_automation",
+        pre=True,
+        pre_globs=(
+            ".github/workflows/**",
+            "scripts/ci/**",
+            "scripts/checks/ci_guards/validate_dependabot_automation.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_branch_cleanup",
+        module="scripts.checks.ci_guards.validate_branch_cleanup",
+        attr="validate_branch_cleanup",
+        pre=True,
+        pre_globs=(
+            ".github/workflows/**",
+            "scripts/ci/**",
+            "scripts/checks/ci_guards/validate_branch_cleanup.py",
         ),
         full_segment="full_after_lint",
     ),

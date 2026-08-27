@@ -78,12 +78,30 @@ Produce the VP Compliance Table. If ANY row is FAIL, fix and re-verify. If BLOCK
 Read the findings output. You MUST implement fixes for all **Critical** and **High** priority findings before proceeding.
 Medium and Low findings should be filed as recommendations using `bin/venv-python -m scripts.ops_data_portal --file-rec ...`.
 
-## Step 6: Final Validation
-**You MUST run validation. Do not skip this step.**
+## Step 6: Bookkeeping Re-check (fast tier)
+Step 5's tier_item bookkeeping, verification-graduation, and CD-ratification walks write tracked
+files (`docs/ROADMAP-PLATFORM.yaml`, `config/agent/verification_registry/entries/*.yaml`,
+`docs/DECISIONS.md`, the plan YAML). If any of them wrote, re-check those writes with the
+diff-aware fast tier -- they are in the diff, so their guards (`validate_plan_documents`,
+`validate_plan_scope_closure`, `validate_candidate_decision_ratification`,
+`validate_verification_registry`, `validate_prose_limits`) are selected:
 ```bash
-bin/venv-python -m scripts.validate
+bin/venv-python -m scripts.validate --pre
 ```
-Must exit 0 before continuing. If it fails, fix the issues and re-run.
+Must exit 0 before continuing. If the walks wrote nothing tracked and the post-code-review `--pre`
+in Step 5 already passed, this step is a no-op -- proceed.
+
+**One-full-tier rule (do not reintroduce a second full run).** The full `scripts.validate` tier
+runs exactly ONCE per implementation session: Step 7's closure item 4, after
+`implementation_declared: true` and after every Step 5 write. That run is the only one whose scope
+is the whole tree rather than this diff, and it is the last one before the commit, so an earlier
+full-tier pass is superseded by it, never additive. (The declaration-armed checks --
+`validate_vp_replay`, `validate_graduation_completeness` -- ride the `--pre` half of that same
+closure step, not the full half.) Any tracked write landing after that PASS voids it -- rerun the
+full tier from the start, which is exactly what `logs/debug/validation-result.json`'s
+current-pre-commit-HEAD requirement encodes. Accepted trade-off: a full-tier-only regression now
+first surfaces at Step 7 item 4, with the declaration already written -- no commit has happened at
+that point, so the cost is bounded to fixing and rerunning the closure.
 
 ## Step 7: Commit, PR, and Merge
 **You MUST execute the commit flow autonomously once Step 6 passes. Do not stop to ask for permission.**

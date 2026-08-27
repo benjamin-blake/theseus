@@ -11,11 +11,30 @@ from __future__ import annotations
 import shutil
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from scripts.checks.roadmap.validate_plan_documents import validate_plan_documents
-from scripts.roadmap.plan_document import load, main, validate_paths
-from tests.fixtures.plan_document_helpers import FIXTURES
+from scripts.roadmap.plan_document import context_block_lines, load, main, validate_paths
+from tests.fixtures.plan_document_helpers import FIXTURES, _mutate
+
+
+def test_context_block_lines_counts_rendered_span(tmp_path):
+    p = tmp_path / "PLAN-zz-span.yaml"
+    p.write_text("slug: x\ncontext:\n  - a\n  - b\nphase: y\n", encoding="utf-8")
+    assert context_block_lines(p) == 3  # next-top-level-key branch
+
+
+def test_context_block_lines_to_eof(tmp_path):
+    p = tmp_path / "PLAN-zz-eof.yaml"
+    p.write_text("slug: x\ncontext:\n  - a\n  - b\n", encoding="utf-8")
+    assert context_block_lines(p) == 3  # EOF branch
+
+
+def test_context_block_lines_absent_is_zero(tmp_path):
+    p = tmp_path / "PLAN-zz-none.yaml"
+    p.write_text("slug: x\nphase: y\n", encoding="utf-8")
+    assert context_block_lines(p) == 0  # absent branch
 
 
 class TestLoader:
@@ -69,6 +88,21 @@ class TestCli:
         shutil.copy(FIXTURES / "valid.yaml", target)
         assert main([], plans_root=tmp_path) == 0
         assert "PASS" in capsys.readouterr().out
+
+    def test_cli_warns_on_oversized_context_block(self, tmp_path, capsys):
+        data = _mutate(context=[f"line {i}" for i in range(45)])
+        target = tmp_path / f"PLAN-{data['slug']}.yaml"
+        target.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        assert main([str(target)]) == 0  # still non-blocking
+        out = capsys.readouterr().out
+        assert "WARN:" in out and "context block is 46 rendered lines" in out
+
+    def test_cli_silent_on_small_context_block(self, tmp_path, capsys):
+        data = _mutate(context=[f"line {i}" for i in range(3)])
+        target = tmp_path / f"PLAN-{data['slug']}.yaml"
+        target.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+        assert main([str(target)]) == 0
+        assert "context block is" not in capsys.readouterr().out
 
 
 class TestValidateIntegration:

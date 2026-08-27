@@ -2,6 +2,15 @@
 
 Bare string-literal module=/attr= pairs only -- see docs/contracts/check-manifest.yaml. Aggregated
 by scripts/checks/registry.py; never imported by scripts/validate.py directly.
+
+Every gated Entry's pre_globs must cover the check's whole transitive first-party import closure,
+which is why each one carries scripts/checks/_common.py and scripts/checks/registry.py: both are
+module-scope imports of every check here AND are consumed at call time (_common.ROOT / diff
+helpers, registry.examined()/skipped() accounting), so a semantic change to either can redden a
+check body without any domain file in the diff. The rest of the scripts/checks/ spine
+(_schema.py, sibling domains' _manifest.py, the package __init__) is deliberately NOT globbed: a
+break there fails registry -> scripts/validate.py at IMPORT time, so the whole --pre run crashes
+red before any gate is consulted.
 """
 
 from __future__ import annotations
@@ -31,6 +40,11 @@ ENTRIES: tuple[Entry, ...] = (
         pre_globs=(
             "docs/DECISIONS.md",
             "docs/DECISIONS_ARCHIVE.md",
+            "docs/contracts/decision-entry.yaml",
+            "scripts/decisions_md.py",
+            "scripts/checks/decisions/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
         ),
         full_segment="full_after_lint",
     ),
@@ -38,6 +52,22 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_supersession_annotations",
         module="scripts.checks.decisions.validate_supersession_annotations",
         attr="validate_supersession_annotations",
+        # Promoted into --pre. Its module docstring still says "never a pre-merge --pre block"
+        # (both-file parse cost); THIS ENTRY is the authority and the sibling conformance/
+        # immutability checks already parse the same two files in --pre for ~0.04s. The stale
+        # sentence is deliberately left alone: the module is in the check-accounting grandfather
+        # baseline, whose touch-it-fix-it rule turns any edit to it into an examined()/skipped()
+        # adoption -- a separate change.
+        pre=True,
+        pre_globs=(
+            "docs/DECISIONS.md",
+            "docs/DECISIONS_ARCHIVE.md",
+            "config/decision_supersession_waivers.yaml",
+            "scripts/decisions_md.py",
+            "scripts/checks/decisions/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -51,7 +81,10 @@ ENTRIES: tuple[Entry, ...] = (
             "docs/decisions-index.json",
             "docs/contracts/decision-entry.yaml",
             ".claude/skills/decision-scout/SKILL.md",
+            "scripts/decisions_md.py",
             "scripts/checks/decisions/validate_decision_currency.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
         ),
         full_segment="full_after_lint",
     ),

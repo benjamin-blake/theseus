@@ -35,6 +35,12 @@ if str(_REPO_ROOT) not in sys.path:
 
 from scripts.checks import _common, registry, validation_result  # noqa: E402
 
+# Not a facade re-export: the pure (env-only, no-I/O) budget-record builder the fast-tier budget
+# assertion attaches to the selection manifest. _budget_recs defines no @register check, and
+# _scaffolding below already imports it, so this widens validate.py's import closure by nothing --
+# and it stays pyyaml/pydantic-free, so --terraform-only is unaffected.
+from scripts.checks._budget_recs import build_budget_record  # noqa: E402
+
 # Facade re-exports: shared primitives (back-compat for `from scripts.validate import ROOT` etc.
 # and for `patch("validate.ROOT"/"validate.run"/"validate.PYTHON"/"validate.invoke_step"/
 # "validate.get_changed_files")`). Scaffolding below uses the qualified _common.* form so that
@@ -68,6 +74,14 @@ _FAST_TIER_BUDGET_SECONDS = 300
 # timeout-minutes changes; the fast tier's sole design budget is _FAST_TIER_BUDGET_SECONDS.
 _FORCED_FULL_SUITE_CEILING_SECONDS = 1500
 
+# Which limit each budget outcome was actually judged against. The two forced-full-suite
+# outcomes are governed by the derived ceiling, not the fast-tier budget, so recording 300 for
+# them would make the manifest's elapsed_s/limit_s ratio describe a limit the run never had.
+_BUDGET_LIMIT_BY_OUTCOME = {
+    "forced_waived": _FORCED_FULL_SUITE_CEILING_SECONDS,
+    "forced_ceiling_breach": _FORCED_FULL_SUITE_CEILING_SECONDS,
+}
+
 
 def _dispatch_check(name: str, failed: list[str]) -> None:
     """Resolve a registered check by name via registry.resolve() and call it.
@@ -85,8 +99,15 @@ def _pre_glob_match(path: str, glob: str) -> bool:
 
     fnmatch's `*` already crosses path separators (unlike pathlib/glob.glob's non-recursive
     `*`), so a `**` segment (e.g. "docs/plans/**") matches any depth without special-casing.
+
+    A LEADING `**/` is the one case fnmatch gets wrong for this purpose: it translates to a
+    pattern requiring at least one `/`, so "**/*.py" missed repo-ROOT files like setup.py while
+    the checks gated on it (validate_cc_limits) scan the root. Retry with the leading `**/`
+    stripped so it also matches zero directories -- the recall-safe direction.
     """
-    return fnmatch.fnmatch(path, glob)
+    if fnmatch.fnmatch(path, glob):
+        return True
+    return glob.startswith("**/") and fnmatch.fnmatch(path, glob[3:])
 
 
 def _should_run_in_pre(pre_globs: tuple[str, ...] | None, changed_paths, derivation_ok: bool) -> bool:
@@ -276,7 +297,11 @@ def main() -> None:
         # at its own module scope, and this is the ONLY place these two names are used --
         # importing eagerly at validate.py's module scope would break --terraform-only, whose CI
         # job installs only pyyaml+pydantic (see the facade-import block's comment above).
-        from scripts.checks.deps.affected_tests import derive_affected_tests, emit_manifest  # noqa: PLC0415
+        from scripts.checks.deps.affected_tests import (  # noqa: PLC0415
+            derive_affected_tests,
+            emit_manifest,
+            write_manifest,
+        )
 
         status_entries = _common.get_status_aware_diff()
         _status_paths = {path for _, path in status_entries}
@@ -286,6 +311,18 @@ def main() -> None:
         _affected_selection = derive_affected_tests(status_entries, repo_root=_common.ROOT)
         changed_tests = _affected_selection["selected"]
         emit_manifest(_affected_selection["manifest"])
+
+        # derive_affected_tests() degrades to the edited-set on any internal error and records it
+        # as manifest['fallback']. That is loud inside the derivation but was never surfaced in
+        # the summary an operator (or the CI step log) reads, so a persistent derivation bug
+        # could hold the gate at pre-Decision-135 recall indefinitely while still exiting 0.
+        _selection_fallback = bool(_affected_selection["manifest"].get("fallback", False))
+        if _selection_fallback:
+            print(
+                "\nWARNING: AFFECTED-SET SELECTION DEGRADED -- derivation fell back to the edited-set "
+                f"({len(changed_tests)} test file(s)); tests affected by this diff but not IN it are NOT "
+                f"gated pre-merge on this run. Reason: {_affected_selection['manifest'].get('fallback_reason', 'unknown')}"
+            )
 
         def _scaffold_lint() -> None:
             run_lint_checks(failed, files=changed)
@@ -310,11 +347,43 @@ def main() -> None:
 
         phase_times: dict[str, float] = {}
 
+        def _record_budget_outcome(outcome: str, elapsed: float, dominant_phase: str | None) -> None:
+            """Attach this run's budget verdict to the selection manifest and re-write it locally.
+
+            The artifact ci.yml's pr-validate job already uploads
+            (logs/debug/selection-manifest.json, at `if: always()`) then carries a machine-readable
+            budget record alongside `timings` -- so the CI breach population becomes enumerable
+            with zero new workflow YAML and zero credential surface. The `within_budget` row is
+            what makes it a denominator rather than only an alarm.
+
+            NOT written on every --pre run: only when this trailing scaffold is REACHED. The CI
+            hard-reject of --ignore-budget above, or an abort in an earlier phase, leaves the
+            manifest with no `budget` key at all -- a distinguishable "run aborted" third state.
+            The best-effort S3 copy is uploaded on emit_manifest's first write and so never
+            carries this block; see write_manifest's docstring.
+
+            Decision 55 loud-skip: an observability write must never decide a gate's exit code, so
+            every failure here (write_manifest's own OSError leg included) is caught and printed.
+            """
+            try:
+                _affected_selection["manifest"]["budget"] = build_budget_record(
+                    outcome=outcome,
+                    elapsed_s=elapsed,
+                    limit_s=float(_BUDGET_LIMIT_BY_OUTCOME.get(outcome, _FAST_TIER_BUDGET_SECONDS)),
+                    dominant_phase=dominant_phase,
+                    diff_manifest=diff_manifest,
+                    phase_times=phase_times,
+                )
+                write_manifest(_affected_selection["manifest"])
+            except Exception as exc:  # noqa: BLE001 -- Decision 55: never alters the budget verdict
+                print(f"Selection manifest: budget-block write failed -- loud skip (Decision 55): {exc!r}")
+
         def _scaffold_budget_assertion() -> None:
             elapsed = time.monotonic() - _t0
             dominant_phase = max(phase_times, key=lambda phase: phase_times[phase]) if phase_times else None
             if args.ignore_budget:
-                _file_budget_bypass_rec(elapsed, diff_manifest, args.ignore_budget_reason)
+                _file_budget_bypass_rec(elapsed, diff_manifest, args.ignore_budget_reason, dominant_phase)
+                _record_budget_outcome("bypass", elapsed, dominant_phase)
                 print(f"\nBudget assertion skipped (--ignore-budget). Elapsed: {elapsed / 60:.1f} min.")
             elif elapsed > _FAST_TIER_BUDGET_SECONDS:
                 # Decision 153: a root-conftest change deterministically forces full-suite scope
@@ -333,6 +402,7 @@ def main() -> None:
                         f"{dominant_phase or 'unknown'}. No breach rec filed -- this is a "
                         "deterministic, already-diagnosed full-suite run, not drift.",
                     )
+                    _record_budget_outcome("forced_waived", elapsed, dominant_phase)
                 elif forced:
                     _mirror_budget_notice_to_summary(
                         "Fast-tier forced-run ceiling breached",
@@ -342,9 +412,17 @@ def main() -> None:
                         "The forced full suite itself is now the problem, not the gate -- "
                         "open a planning session (Decision 153 reversal condition (b)).",
                     )
+                    _record_budget_outcome("forced_ceiling_breach", elapsed, dominant_phase)
                     sys.exit(1)
                 else:
+                    if _selection_fallback:
+                        print(
+                            "\nNOTE: this run's affected-set derivation fell back to the edited-set, so the "
+                            "pytest scope it just ran is not the scope this diff should have run -- read the "
+                            "phase attribution below as degraded, not as ordinary drift."
+                        )
                     _file_budget_breach_rec(elapsed, diff_manifest, dominant_phase)
+                    _record_budget_outcome("breach", elapsed, dominant_phase)
                     print(
                         f"\nERROR: Fast tier exceeded budget (5 min). Elapsed: {elapsed / 60:.1f} min. "
                         f"Dominant phase: {dominant_phase or 'unknown'}.\n"
@@ -354,6 +432,8 @@ def main() -> None:
                         "  3. Open a planning session to revise this budget (requires Decision Record)."
                     )
                     sys.exit(1)
+            else:
+                _record_budget_outcome("within_budget", elapsed, dominant_phase)
 
         scaffold_fns = {
             "lint": _scaffold_lint,

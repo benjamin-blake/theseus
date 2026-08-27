@@ -83,6 +83,7 @@ function_to_category:
   validate_actions_evidence: environment
   validate_authority_budget: iam_gap
   validate_boundary_attached: iam_gap
+  validate_branch_cleanup: code_regression
   validate_candidate_decision_ratification: schema_drift
   validate_candidate_decision_supersession: schema_drift
   validate_ci_refresh_read_coverage: iam_gap
@@ -96,6 +97,7 @@ function_to_category:
   validate_decision_entry_conformance: schema_drift
   validate_decisions_index_freshness: schema_drift
   validate_decisions_size: schema_drift
+  validate_dependabot_automation: code_regression
   validate_dependency_graph_freshness: dependency_gap
   validate_deploy_channel_conformance: environment
   validate_diff_coverage: code_regression
@@ -352,3 +354,39 @@ workflows:
       required status check, continue-on-error by design so a wake failure never reds a build. A
       missed wake is self-healing since every subsequent push to main re-polls mergeability, so
       watching it here would add noise without closing a real gap.
+  dependabot-auto-merge:
+    tier: not_a_gate
+    ci_rca: excluded
+    owner: platform
+    rationale: >-
+      Arms GitHub-native auto-merge on dependabot-authored minor/patch PRs; it is never a required
+      status check and never gates a merge -- pr-validate and terraform-validate remain the only
+      required checks (Decision 83 main-protection ruleset), and they still gate every PR this
+      workflow arms. A failure here means one bump was not armed, which the dependabot-stranded
+      sweep re-surfaces on its next scheduled run, so filing a critical ci_rca rec would add noise
+      without closing a gap. It is also structurally unfilable today: ci-rca.yml only files for
+      runs whose head_branch is the default branch, and this workflow only ever runs on a
+      dependabot/* head.
+  dependabot-stranded:
+    tier: not_a_gate
+    ci_rca: excluded
+    owner: platform
+    rationale: >-
+      Weekly dependency-backlog hygiene sweep: it updates BEHIND/DIRTY dependabot branches so their
+      required checks re-run against a current base, and merges nothing itself. It gates no PR and
+      no merge -- pr-validate and terraform-validate remain the only required checks (Decision 83).
+      A failed sweep leaves the backlog exactly where it already was and self-heals on the next
+      Monday run, and the same backlog is independently surfaced to every planning session through
+      preflight's dependabot_stranded_prs signal, so an RCA rec here would file a critical
+      interrupt for a condition that is already visible and already scheduled to retry.
+  branch-cleanup:
+    tier: not_a_gate
+    ci_rca: excluded
+    owner: platform
+    rationale: >-
+      workflow_dispatch-only remote-branch hygiene, run by an operator or agent who is watching the
+      run and reading its decision table -- it exists only because ref deletion is blocked for
+      CC-web sessions at the git proxy, not because anything depends on it. It gates nothing, runs
+      on no push or PR path, and defaults to dry_run, so a failure means one manually-invoked
+      cleanup did not happen and is immediately visible to the person who invoked it. Filing a
+      critical ci_rca rec would interrupt planning over a hygiene chore that nothing blocks on.

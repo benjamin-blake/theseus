@@ -2,6 +2,17 @@
 
 Bare string-literal module=/attr= pairs only -- see docs/contracts/check-manifest.yaml. Aggregated
 by scripts/checks/registry.py; never imported by scripts/validate.py directly.
+
+Every gated Entry's pre_globs must cover the check's whole transitive first-party import closure.
+Two consequences visible below: (1) scripts/roadmap/platform_roadmap.py is a pure Decision-124
+facade -- the Pydantic models, the state machine and the gate-rule grammar live one level up in
+scripts/platform_roadmap_{models,state,gate_rules}.py, so "scripts/roadmap/**" alone does NOT
+reach the schemas these checks validate against; (2) every gated Entry carries
+scripts/checks/_common.py and scripts/checks/registry.py, which every check imports at module
+scope and calls at run time (_common.ROOT / diff helpers, registry.examined()/skipped()). The
+rest of the scripts/checks/ spine (_schema.py, sibling domains' _manifest.py, the package
+__init__) is deliberately NOT globbed: a break there fails registry -> scripts/validate.py at
+IMPORT time, so the whole --pre run crashes red before any gate is consulted.
 """
 
 from __future__ import annotations
@@ -18,6 +29,13 @@ ENTRIES: tuple[Entry, ...] = (
             "docs/plans/**",
             "docs/ROADMAP-*",
             "docs/DECISIONS.md",
+            "scripts/platform_roadmap_models.py",
+            "scripts/platform_roadmap_state.py",
+            "scripts/platform_roadmap_gate_rules.py",
+            "scripts/roadmap/**",
+            "scripts/checks/roadmap/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
         ),
         full_segment="full_after_lint",
     ),
@@ -26,6 +44,19 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.roadmap.validate_candidate_decision_ratification",
         attr="validate_candidate_decision_ratification",
         pre=True,
+        pre_globs=(
+            "docs/ROADMAP-*",
+            "docs/DECISIONS.md",
+            "docs/DECISIONS_ARCHIVE.md",
+            "scripts/decisions_md.py",
+            "scripts/platform_roadmap_models.py",
+            "scripts/platform_roadmap_state.py",
+            "scripts/platform_roadmap_gate_rules.py",
+            "scripts/roadmap/**",
+            "scripts/checks/roadmap/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -44,6 +75,10 @@ ENTRIES: tuple[Entry, ...] = (
             "docs/plans/**",
             "docs/ROADMAP-*",
             "docs/DECISIONS.md",
+            "scripts/roadmap/**",
+            "scripts/checks/roadmap/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
         ),
         full_segment="full_after_lint",
     ),
@@ -55,6 +90,13 @@ ENTRIES: tuple[Entry, ...] = (
         pre_globs=(
             "docs/plans/**",
             "docs/ROADMAP-*",
+            "scripts/platform_roadmap_models.py",
+            "scripts/platform_roadmap_state.py",
+            "scripts/platform_roadmap_gate_rules.py",
+            "scripts/roadmap/**",
+            "scripts/checks/roadmap/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
         ),
         full_segment="full_after_lint",
     ),
@@ -67,6 +109,12 @@ ENTRIES: tuple[Entry, ...] = (
             "docs/plans/**",
             "docs/ROADMAP-*",
             "docs/DECISIONS.md",
+            "src/lambdas/**",
+            "scripts/lambda_manifest.py",
+            "scripts/roadmap/**",
+            "scripts/checks/roadmap/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
         ),
         full_segment="full_after_lint",
     ),
@@ -75,7 +123,14 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.roadmap.validate_plan_scope_closure",
         attr="validate_plan_scope_closure",
         pre=True,
-        pre_globs=("docs/plans/**",),
+        pre_globs=(
+            "docs/plans/**",
+            "docs/contracts/plan-obligations.yaml",
+            "scripts/roadmap/**",
+            "scripts/checks/roadmap/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(

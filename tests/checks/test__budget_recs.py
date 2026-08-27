@@ -9,6 +9,7 @@ decompose-don't-raise). TestFindOpenBudgetBreachRec and TestBudgetBreachRecDedup
 """
 
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,7 +18,15 @@ from scripts.checks._budget_recs import (
     _file_budget_breach_rec,
     _file_budget_bypass_rec,
     _find_open_budget_breach_rec,
+    build_budget_record,
 )
+
+
+def _budget_record(**overrides: object) -> dict:
+    """build_budget_record with its invariant keyword boilerplate defaulted."""
+    kwargs: dict = {"outcome": "breach", "elapsed_s": 400.0, "limit_s": 300.0, "dominant_phase": None, "diff_manifest": []}
+    kwargs.update(overrides)
+    return build_budget_record(**kwargs)
 
 
 class TestBudgetBreachRecFiling:
@@ -100,6 +109,34 @@ class TestBudgetBreachRecFiling:
 
         fields = mock_portal.file_rec.call_args[0][0]
         assert "none provided" in fields["context"].lower()
+
+    def test_bypass_rec_context_contains_dominant_phase(self) -> None:
+        """I4: bypass recs must record the dominant phase like breach recs do (rec corpus gap --
+        all 33 pre-fix budget_bypass recs omitted it)."""
+        mock_portal = MagicMock()
+        git_result = MagicMock(returncode=0, stdout="agent/test\n")
+
+        with (
+            patch("scripts.checks._common.run", return_value=git_result),
+            patch.dict(sys.modules, {"scripts.ops_data_portal": mock_portal}),
+        ):
+            _file_budget_bypass_rec(60.0, ["scripts/validate.py"], "disk issue", "pytest_diff")
+
+        fields = mock_portal.file_rec.call_args[0][0]
+        assert "pytest_diff" in fields["context"]
+
+    def test_bypass_rec_dominant_phase_unknown_when_omitted(self) -> None:
+        mock_portal = MagicMock()
+        git_result = MagicMock(returncode=0, stdout="agent/test\n")
+
+        with (
+            patch("scripts.checks._common.run", return_value=git_result),
+            patch.dict(sys.modules, {"scripts.ops_data_portal": mock_portal}),
+        ):
+            _file_budget_bypass_rec(60.0, [], None)
+
+        fields = mock_portal.file_rec.call_args[0][0]
+        assert "dominant phase: unknown" in fields["context"].lower()
 
     def test_bypass_portal_exception_is_suppressed(self) -> None:
         mock_portal = MagicMock()
@@ -192,6 +229,13 @@ class TestBudgetRecFilingCiGuard:
     buffered outbox entry).
     """
 
+    @pytest.fixture(autouse=True)
+    def _no_step_summary(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Under real GitHub Actions GITHUB_STEP_SUMMARY points at the live job summary file.
+        Unset it so these tests never append to it; the mirror-write has its own test below,
+        which sets the variable to a tmp_path file explicitly."""
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+
     def test_breach_rec_skips_file_rec_under_ci(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CI", "true")
         mock_portal = MagicMock()
@@ -216,6 +260,38 @@ class TestBudgetRecFilingCiGuard:
         assert "pytest_diff" in captured.err
         assert "400.0" not in captured.err  # sanity: elapsed is rendered as minutes, not raw seconds
         assert "6.7" in captured.err or "6." in captured.err
+
+    def test_breach_rec_mirrors_diagnostic_to_github_step_summary(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """CI-native diagnosability (no portal, no outbox): the same loud message is APPENDED to
+        the job's step summary, so a CI reader sees the breach without digging through stderr."""
+        monkeypatch.setenv("CI", "true")
+        summary = tmp_path / "step_summary.md"
+        summary.write_text("## Earlier step\n", encoding="utf-8")
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+
+        _file_budget_breach_rec(400.0, ["scripts/validate.py"], "pytest_diff")
+
+        written = summary.read_text(encoding="utf-8")
+        assert written.startswith("## Earlier step\n"), "the summary must be appended to, never truncated"
+        assert "## Fast-tier budget breach" in written
+        assert "pytest_diff" in written
+        assert "scripts/validate.py" in written
+        assert "Rec NOT filed (CI)." in written
+
+    def test_breach_rec_writes_no_summary_when_the_variable_is_unset(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """With GITHUB_STEP_SUMMARY unset the stderr print is the only diagnostic; nothing is
+        written anywhere on disk."""
+        monkeypatch.setenv("CI", "true")
+        before = sorted(p.name for p in tmp_path.iterdir())
+
+        _file_budget_breach_rec(400.0, ["scripts/validate.py"], "pytest_diff")
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == before
+        assert "pytest_diff" in capsys.readouterr().err
 
     def test_breach_rec_calls_file_rec_when_ci_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CI", raising=False)
@@ -253,6 +329,16 @@ class TestBudgetRecFilingCiGuard:
         captured = capsys.readouterr()
         assert "disk issue" in captured.err
 
+    def test_bypass_rec_prints_dominant_phase_under_ci(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        monkeypatch.setenv("CI", "true")
+
+        _file_budget_bypass_rec(60.0, ["scripts/validate.py"], "disk issue", "pytest_diff")
+
+        captured = capsys.readouterr()
+        assert "pytest_diff" in captured.err
+
     def test_bypass_rec_calls_file_rec_when_ci_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CI", raising=False)
         mock_portal = MagicMock()
@@ -265,6 +351,81 @@ class TestBudgetRecFilingCiGuard:
             _file_budget_bypass_rec(60.0, ["scripts/validate.py"], "disk issue")
 
         mock_portal.file_rec.assert_called_once()
+
+    def test_bypass_rec_mirrors_diagnostic_to_github_step_summary(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """G2 parity: the bypass CI branch mirrors to the step summary exactly as the breach branch
+        does. It was stderr-only -- an asymmetry that is a live drift risk however unreachable."""
+        monkeypatch.setenv("CI", "true")
+        summary = tmp_path / "step_summary.md"
+        summary.write_text("## Earlier step\n", encoding="utf-8")
+        monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+
+        _file_budget_bypass_rec(60.0, ["scripts/validate.py"], "disk issue", "pytest_diff")
+
+        written = summary.read_text(encoding="utf-8")
+        assert written.startswith("## Earlier step\n"), "the summary must be appended to, never truncated"
+        assert "## Fast-tier budget bypass" in written
+        assert "pytest_diff" in written
+        assert "disk issue" in written
+
+
+class TestBuildBudgetRecord:
+    """build_budget_record: the pure, I/O-free budget record scripts/validate.py attaches to the
+    selection manifest, so the artifact ci.yml already uploads carries a machine-readable outcome.
+    Identity is GITHUB_* env vars ONLY -- a git subprocess would break the CI path's
+    mock_run.assert_not_called() contract above."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name in ("CI", "GITHUB_HEAD_REF", "GITHUB_RUN_ID", "GITHUB_REPOSITORY"):
+            monkeypatch.delenv(name, raising=False)
+
+    def test_identity_reads_github_env_and_never_shells_out_to_git(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CI", "true")
+        monkeypatch.setenv("GITHUB_HEAD_REF", "claude/some-branch")
+        monkeypatch.setenv("GITHUB_RUN_ID", "12345")
+        monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+
+        with patch("scripts.checks._common.run") as mock_run:
+            record = _budget_record(dominant_phase="pytest_diff", diff_manifest=["scripts/validate.py"])
+
+        mock_run.assert_not_called()
+        assert record["branch"] == "claude/some-branch"
+        assert record["run_id"] == "12345"
+        assert record["repository"] == "owner/repo"
+        assert record["ci"] is True
+        assert record["dominant_phase"] == "pytest_diff"
+
+    def test_absent_env_degrades_to_unknown_without_raising(self) -> None:
+        record = _budget_record(outcome="within_budget", elapsed_s=12.0)
+        assert record["branch"] == record["run_id"] == record["repository"] == "unknown"
+        assert record["ci"] is False
+        assert record["dominant_phase"] is None
+        assert record["limit_s"] == 300.0
+
+    def test_diff_manifest_truncated_at_twenty_with_the_full_count_kept(self) -> None:
+        paths = [f"src/mod_{i:02d}.py" for i in range(25)]
+        record = _budget_record(diff_manifest=paths)
+        assert record["diff_file_count"] == 25
+        assert record["diff_manifest"] == paths[:20]
+
+    def test_phase_times_keep_the_ten_slowest(self) -> None:
+        record = _budget_record(phase_times={f"phase_{i:02d}": float(i) for i in range(12)})
+        assert len(record["phase_times"]) == 10
+        assert "phase_11" in record["phase_times"]
+        assert "phase_00" not in record["phase_times"]
+
+    def test_rec_filing_fields_reflect_outcome_and_ci(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        local_breach = _budget_record()
+        assert (local_breach["rec_filed"], local_breach["rec_skipped_reason"]) == (True, None)
+        for outcome in ("within_budget", "forced_waived", "forced_ceiling_breach"):
+            record = _budget_record(outcome=outcome)
+            assert (record["rec_filed"], record["rec_skipped_reason"]) == (False, "no_rec_for_outcome")
+        monkeypatch.setenv("CI", "true")
+        ci_bypass = _budget_record(outcome="bypass")
+        assert (ci_bypass["rec_filed"], ci_bypass["rec_skipped_reason"]) == (False, "ci_no_portal_access")
 
 
 class TestFindOpenBudgetBreachRec:
@@ -341,6 +502,7 @@ class TestBudgetBreachRecDedupe:
     @pytest.fixture(autouse=True)
     def _no_ci(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("CI", raising=False)
+        monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
 
     def test_repeat_breach_same_branch_and_phase_updates_existing_rec(self) -> None:
         mock_portal = MagicMock()
