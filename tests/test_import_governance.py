@@ -129,6 +129,23 @@ class TestCheckLockfileSync:
         assert not in_sync
         assert "pytest" in message
 
+    def test_extras_pin_fails(self, tmp_path: Path) -> None:
+        """A lock pin carrying extras fails: pip rejects extras in constraints files."""
+        req_txt = tmp_path / "requirements.txt"
+        req_txt.write_text("requests>=2.0\n", encoding="utf-8")
+        req_lock = tmp_path / "requirements.lock"
+        req_lock.write_text("requests==2.31.0\npyjwt[crypto]==2.13.0\n", encoding="utf-8")
+
+        with (
+            patch("scripts.import_governance._REQUIREMENTS_TXT", req_txt),
+            patch("scripts.import_governance._REQUIREMENTS_LOCK", req_lock),
+        ):
+            in_sync, message = check_lockfile_sync()
+
+        assert not in_sync
+        assert "extras" in message
+        assert "pyjwt[crypto]==2.13.0" in message
+
     def test_missing_lock_fails(self, tmp_path: Path) -> None:
         """check_lockfile_sync fails when requirements.lock is absent."""
         req_txt = tmp_path / "requirements.txt"
@@ -168,11 +185,16 @@ class TestCheckLockfileSync:
         assert "not found" in msg or "requirements.txt" in msg
 
     def test_extras_are_normalized(self, tmp_path: Path) -> None:
-        """Packages with extras (e.g. uvicorn[standard,http2]) are found in the lockfile."""
+        """A requirements.txt entry with extras matches its stripped lock pin.
+
+        The lock side must be extras-free (pip rejects extras in constraints files; see
+        test_extras_pin_fails) -- pip-compile --strip-extras pins the bare name, and the
+        sync check matches it against the extras-carrying requirement.
+        """
         req_txt = tmp_path / "requirements.txt"
         req_txt.write_text("uvicorn[standard,http2]>=0.11.1\n", encoding="utf-8")
         req_lock = tmp_path / "requirements.lock"
-        req_lock.write_text("uvicorn[http2,standard]==0.11.1\n", encoding="utf-8")
+        req_lock.write_text("uvicorn==0.11.1\n", encoding="utf-8")
 
         with (
             patch("scripts.import_governance._REQUIREMENTS_TXT", req_txt),
