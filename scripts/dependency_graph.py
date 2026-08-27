@@ -3,8 +3,17 @@
 
 Compute-on-demand; no committed output file by default.
 Stable API: build_graph, clear_graph_cache, roots, reverse_deps, forward_closure,
-reachable_from_roots, to_export_dict, check_export_freshness.
+reachable_from_roots, to_export_dict, check_export_freshness, edges_of_kind, import_subgraph.
 CLI: --reverse-deps, --forward-closure, --reachable, --granularity, --export, --blind-spots.
+
+Every edge carries a `kind` attribute (see EDGE_KIND_*): a real `import`/`from ... import`
+statement is kind="import"; a bare string literal naming a first-party module is
+kind="patch_string" (both a mock.patch target and Decision 169's contractual manifest
+driver->check edge); a symbol-granularity call edge is kind="call". Tagging is additive -- the
+patch_string edges STAY in the graph, so every default traversal (forward_closure, reverse_deps,
+reachable_from_roots, to_export_dict) is byte-identical to the untagged behaviour. Only a
+consumer that explicitly filters -- import_subgraph(), for a code-level-only closure -- sees a
+difference.
 """
 
 import argparse
@@ -30,6 +39,13 @@ _CLI_PATTERN = re.compile(r"-m\s+(scripts(?:\.\w+)+)")
 # prefix of the match (see _patch_string_module_targets), so both a bare module-path string and
 # a module.attribute string resolve to their owning module node.
 _PATCH_STRING_RE = re.compile(r"^(src|scripts)(\.\w+)+$")
+
+# Edge-kind vocabulary (see the module docstring). An edge is tagged exactly once, at the pass
+# that first creates it, and a real import always WINS over a same-endpoint patch string -- the
+# import pass runs first for each file and the string pass never overwrites an existing edge.
+EDGE_KIND_IMPORT = "import"
+EDGE_KIND_PATCH_STRING = "patch_string"
+EDGE_KIND_CALL = "call"
 
 KNOWN_UNSOUND: list[dict[str, str]] = [
     {
@@ -182,8 +198,8 @@ def _enrich_symbol_layer(graph: nx.DiGraph, py_file: Path, module: str) -> None:
             for child in ast.walk(stmt):
                 if isinstance(child, ast.Call) and isinstance(child.func, ast.Name):
                     src_mod = imported_from.get(child.func.id)
-                    if src_mod and src_mod in graph:
-                        graph.add_edge(sym, src_mod)
+                    if src_mod and src_mod in graph and not graph.has_edge(sym, src_mod):
+                        graph.add_edge(sym, src_mod, kind=EDGE_KIND_CALL)
         elif isinstance(stmt, ast.ClassDef):
             sym = f"{module}.{stmt.name}"
             if sym not in graph:
@@ -242,11 +258,13 @@ def _build_graph(root: Path, granularity: str) -> nx.DiGraph:
             continue
         for imported_mod in _imports_for_file(py_file, root, nodes):
             if imported_mod in graph and imported_mod != mod:
-                graph.add_edge(mod, imported_mod)
+                graph.add_edge(mod, imported_mod, kind=EDGE_KIND_IMPORT)
         # Soundness patch (ii): union string-constant module edges (mock.patch targets etc.).
+        # `not has_edge` keeps an already-tagged import edge as kind="import" -- a module that
+        # both imports X and names "X.attr" in a string must not lose X from the import-only view.
         for target in _patch_string_module_targets(nodes, graph):
-            if target != mod:
-                graph.add_edge(mod, target)
+            if target != mod and not graph.has_edge(mod, target):
+                graph.add_edge(mod, target, kind=EDGE_KIND_PATCH_STRING)
         is_first_party = mod.partition(".")[0] in _FIRST_PARTY_ROOTS
         if is_first_party and py_file.name != "__init__.py" and _has_entry_point(nodes):
             entry_points.add(mod)
@@ -316,6 +334,24 @@ def reverse_deps(graph: nx.DiGraph, module: str) -> list[str]:
     if module not in graph:
         return []
     return sorted(graph.predecessors(module))
+
+
+def edges_of_kind(graph: nx.DiGraph, kind: str) -> list[tuple[str, str]]:
+    """Sorted list of the graph's edges whose `kind` attribute equals `kind` (see EDGE_KIND_*)."""
+    return sorted((u, v) for u, v, data in graph.edges(data=True) if data.get("kind") == kind)
+
+
+def import_subgraph(graph: nx.DiGraph) -> nx.DiGraph:
+    """A read-only VIEW of `graph` restricted to kind="import" edges; every node is retained.
+
+    The code-level closure accessor. Decision 169's manifest bare-string-literal driver edges are
+    deliberately in the graph -- they are what makes a manifest edit select its own check -- but
+    they collapse every registered check into one 148-module strongly-connected component, so a
+    consumer asking "what code does this module actually depend on?" must exclude them. This is a
+    networkx subgraph_view: O(1) to construct, sharing the memoized graph's storage, so a caller
+    never pays a second build_graph.
+    """
+    return nx.subgraph_view(graph, filter_edge=lambda u, v: graph.edges[u, v].get("kind") == EDGE_KIND_IMPORT)
 
 
 def forward_closure(graph: nx.DiGraph, module: str) -> list[str]:

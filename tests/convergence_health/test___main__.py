@@ -1,6 +1,7 @@
 """Unit tests for scripts.convergence_health.__main__ (rec-2709 Wave 6 package-mirror).
 
-CLI dispatch: python -m scripts.convergence_health [--ducklake-drift|--prod-drift].
+CLI dispatch: python -m scripts.convergence_health
+[--ducklake-drift|--prod-drift|--budget-ingest [--dry-run]].
 """
 
 from __future__ import annotations
@@ -17,7 +18,8 @@ from unittest.mock import patch
 import boto3  # noqa: F401
 import pytest
 
-from scripts.convergence_health import HealthVerdict, main, main_ducklake_drift, main_prod_drift
+from scripts.convergence_health import HealthVerdict, main, main_budget_ingest, main_ducklake_drift, main_prod_drift
+from scripts.convergence_health.__main__ import _dispatch
 
 
 class TestMain:
@@ -239,3 +241,66 @@ class TestMainProdDrift:
         ):
             rc = main_prod_drift()
         assert rc == 1
+
+
+class TestMainBudgetIngest:
+    """rec-3288: the CI budget-block warehouse ingester's CLI leg."""
+
+    def test_happy_path_returns_zero(self) -> None:
+        with patch(
+            "scripts.convergence_health.__main__.ingest_budget_breaches",
+            return_value={"groups": 0, "actions": []},
+        ) as ingest:
+            rc = main_budget_ingest(profile="agent_platform")
+        assert rc == 0
+        ingest.assert_called_once_with(profile="agent_platform", dry_run=False)
+
+    def test_dry_run_is_passed_through(self) -> None:
+        with patch(
+            "scripts.convergence_health.__main__.ingest_budget_breaches",
+            return_value={"groups": 0, "actions": [], "dry_run": True},
+        ) as ingest:
+            rc = main_budget_ingest(dry_run=True)
+        assert rc == 0
+        assert ingest.call_args.kwargs["dry_run"] is True
+
+    def test_portal_failure_returns_one_and_says_nothing_was_buffered(self, capsys: pytest.CaptureFixture[str]) -> None:
+        """Decision 84 I-4: the failure is loud (red step) and explicitly names the no-outbox
+        property, so nobody goes looking for a replay queue that does not exist."""
+        with patch(
+            "scripts.convergence_health.__main__.ingest_budget_breaches",
+            side_effect=RuntimeError("ducklake_writer unreachable"),
+        ):
+            rc = main_budget_ingest()
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "budget_ingest FAILED" in out
+        assert "nothing buffered" in out
+        assert "ducklake_writer unreachable" in out
+
+
+class TestDispatch:
+    def test_no_flags_runs_the_convergence_sensor(self) -> None:
+        with patch("scripts.convergence_health.__main__.main", return_value=0) as entry:
+            assert _dispatch([]) == 0
+        entry.assert_called_once_with()
+
+    def test_ducklake_flag_routes_to_the_ducklake_drift_sensor(self) -> None:
+        with patch("scripts.convergence_health.__main__.main_ducklake_drift", return_value=0) as entry:
+            assert _dispatch(["--ducklake-drift"]) == 0
+        entry.assert_called_once_with()
+
+    def test_prod_flag_routes_to_the_prod_drift_sensor(self) -> None:
+        with patch("scripts.convergence_health.__main__.main_prod_drift", return_value=0) as entry:
+            assert _dispatch(["--prod-drift"]) == 0
+        entry.assert_called_once_with()
+
+    def test_budget_ingest_flag_routes_without_dry_run_by_default(self) -> None:
+        with patch("scripts.convergence_health.__main__.main_budget_ingest", return_value=0) as entry:
+            assert _dispatch(["--budget-ingest"]) == 0
+        entry.assert_called_once_with(dry_run=False)
+
+    def test_budget_ingest_honours_the_dry_run_flag(self) -> None:
+        with patch("scripts.convergence_health.__main__.main_budget_ingest", return_value=0) as entry:
+            assert _dispatch(["--budget-ingest", "--dry-run"]) == 0
+        entry.assert_called_once_with(dry_run=True)

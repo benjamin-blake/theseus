@@ -1,6 +1,7 @@
 """Unit tests for scripts/dependency_graph.py: single-parse-per-file behavior, the in-process
-memoization boundary (Decision 135), the from-package-import-submodule edge, and the golden
-rich-fixture graph-shape pin. Split out of tests/test_dependency_graph.py (SLOC headroom)."""
+memoization boundary (Decision 135), the from-package-import-submodule edge, the golden
+rich-fixture graph-shape pin, and the edge-kind tagging no-op pins. Split out of
+tests/test_dependency_graph.py (SLOC headroom)."""
 
 import ast
 import importlib.util
@@ -19,6 +20,7 @@ sys.modules["dependency_graph"] = _dg
 build_graph = _dg.build_graph
 roots = _dg.roots
 reverse_deps = _dg.reverse_deps
+forward_closure = _dg.forward_closure
 to_export_dict = _dg.to_export_dict
 
 
@@ -107,6 +109,26 @@ class TestGraphShapeIsPinned:
         assert exported["symbol_nodes"] == _RICH_SYMBOL_NODES
         expected = sorted(_RICH_EDGES + [("scripts.entrypoint.main", "scripts.helper")])
         assert [(e["from"], e["to"]) for e in exported["edges"]] == expected
+
+
+class TestDefaultTraversalsUnchangedByEdgeKindTagging:
+    """Decision 169's contract: the manifest driver edges must remain IN the graph, so every
+    DEFAULT (unfiltered) accessor still crosses them after edge-kind tagging. Only a consumer
+    that explicitly filters (dependency_graph.import_subgraph) sees a difference."""
+
+    def test_forward_closure_still_crosses_a_patch_string_edge(self, tmp_path: Path) -> None:
+        graph = build_graph(repo_root=_make_rich_fixture(tmp_path))
+        assert "scripts.helper" in forward_closure(graph, "tests.test_patching")
+
+    def test_reverse_deps_still_report_a_patch_string_predecessor(self, tmp_path: Path) -> None:
+        graph = build_graph(repo_root=_make_rich_fixture(tmp_path))
+        assert "tests.test_patching" in reverse_deps(graph, "scripts.helper")
+
+    def test_export_dict_is_unaffected_by_edge_kinds(self, tmp_path: Path) -> None:
+        """to_export_dict emits {"from","to"} only -- tagging must not change the committed
+        export shape that check_export_freshness compares byte-for-byte."""
+        exported = to_export_dict(build_graph(repo_root=_make_rich_fixture(tmp_path)))
+        assert all(set(edge) == {"from", "to"} for edge in exported["edges"])
 
 
 def _parsed_filenames(parse_mock) -> list[str]:

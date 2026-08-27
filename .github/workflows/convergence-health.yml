@@ -34,6 +34,22 @@ name: convergence-health
 # deploy-records/prod/<function>.json against the latest main commit touching prod source
 # (scripts.convergence_health.PROD_SOURCE_PATHSPECS) and filing/updating/closing a single deduped
 # prod_code_drift rec when stale.
+#
+# Also runs the rec-3288 CI budget-block warehouse ingester on the same cron/identity: sweeps the
+# recent `selection-manifest` artifacts ci.yml's pr-validate job uploads on every run, extracts the
+# PR #968 `budget` block, and files/updates ONE deduped budget_breach rec per (branch,
+# dominant_phase) episode. This exists because pr-validate is credential-free (it also runs on fork
+# PRs), so the local filing path skips the portal write in CI, and ci-rca.yml's own manifest fetch
+# is gated on the default branch -- so a fast-tier breach, which does red pr-validate, reaches the
+# warehouse nowhere: the breach population is invisible to it, and a breach on a PR head that is
+# later fixed and merged leaves no warehouse trace at all. The step needs the job's existing
+# `actions: read` grant (artifacts listing + download) and GH_TOKEN; it never closes a rec (a
+# budget_breach rec is also filed by the local validate path, and an episode ageing out of the
+# 14-day artifact retention is not evidence it was resolved), it never re-files an episode whose
+# rec has been resolved (the trigger is an immutable artifact, so an open-recs-only dedupe would
+# resurrect a human-closed rec every hour for 14 days), and it never buffers a failed write
+# (Decision 84 I-4: no outbox -- a failure reds this step and the next tick re-derives from the
+# artifact window).
 
 on:
   schedule:
@@ -105,3 +121,10 @@ jobs:
         run: |
           set -euo pipefail
           .venv/bin/python -m scripts.convergence_health --prod-drift
+
+      - name: Ingest CI fast-tier budget breaches (rec-3288)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          .venv/bin/python -m scripts.convergence_health --budget-ingest
