@@ -122,7 +122,7 @@ class TestFetchResolvedBudgetRecs:
 
     def test_binds_the_branch_into_the_any_status_title_prefix_verb(self) -> None:
         reader = self._reader([], {})
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert bi._fetch_resolved_budget_recs("claude/slow-branch", profile="agent_platform") == []
         reader.named.assert_called_once_with("recs_by_title_prefix", title_prefix="Fast-tier budget%on claude/slow-branch")
 
@@ -134,7 +134,7 @@ class TestFetchResolvedBudgetRecs:
         ]
         full = _full_rec("rec-1", context=MARKERS)
         reader = self._reader(prefix_rows, {"rec-1": full})
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             resolved = bi._fetch_resolved_budget_recs("claude/slow-branch")
         assert resolved == [full]
         assert [call.args[0] for call in reader.named.call_args_list] == ["recs_by_title_prefix", "rec_by_id"]

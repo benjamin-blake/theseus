@@ -567,7 +567,7 @@ class TestIntentBackfillColumn:
 class TestLiveReaderParity:
     """Post-deploy anchor spot-check via the ducklake_reader boundary (VP step 11 of
     PLAN-daf-etl-parity-fidelity). Marked integration (real AWS network + credentials
-    required) per the tests/test_iceberg_reader.py::TestWarehouseParity precedent. Also
+    required) per the tests/common/ducklake_reader_client/ integration-test precedent. Also
     marked aws (rec-2484 blast-radius fix): the reader's internal assume-role credential
     refresh constructs a real STS client, which the tests/conftest.py L2 create_client
     tripwire blocks unless this class opts out -- @pytest.mark.integration alone bypasses
