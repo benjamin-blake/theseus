@@ -87,21 +87,32 @@ def check_lockfile_sync() -> tuple[bool, str]:
 
     lock_text = _REQUIREMENTS_LOCK.read_text(encoding="utf-8")
     pinned: dict[str, Version] = {}
+    extras_pins: list[str] = []
     for raw_line in lock_text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        # Match both plain pins (boto3==1.x) and extras pins (duckdb[extra]==0.x).
         try:
             locked_requirement = Requirement(line)
         except InvalidRequirement:
             continue
+        if locked_requirement.extras:
+            extras_pins.append(str(locked_requirement))
         exact_pins = [specifier.version for specifier in locked_requirement.specifier if specifier.operator == "=="]
         if len(exact_pins) == 1:
             try:
                 pinned[_normalize_pkg(locked_requirement.name)] = Version(exact_pins[0])
             except InvalidVersion:
                 continue
+
+    # CI consumes the lock as a pip constraints file (pip install -c requirements.lock ...), and
+    # pip hard-rejects constraints carrying extras ("ERROR: Constraints cannot have extras") -- a
+    # lock regenerated without pip-compile's --strip-extras breaks every lock-constrained install.
+    if extras_pins:
+        return False, (
+            f"requirements.lock pins carry extras (pip rejects extras in constraints files): "
+            f"{', '.join(extras_pins)}; regenerate with pip-compile --strip-extras"
+        )
 
     missing = [pkg for pkg in top_level if pkg not in pinned]
     req_identity = f"{len(req_text)} bytes, {len(top_level)} top-level packages across {len(requirement_files)} files"
