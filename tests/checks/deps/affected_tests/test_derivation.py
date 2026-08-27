@@ -8,6 +8,7 @@ tests/checks/deps/affected_tests/test_channels.py's per-channel derivation tests
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -165,6 +166,56 @@ class TestManifestEmission:
         assert "local write" in captured.out
         assert "loud skip" in captured.out.lower()
         assert not manifest_path.exists()
+
+
+class TestWriteManifest:
+    """write_manifest is emit_manifest's local-write leg, split out so it can be called a SECOND
+    time late in a --pre run -- once the `budget` block (only computable after the last phase) has
+    been attached by scripts/validate.py's trailing budget-assertion scaffold."""
+
+    def test_writes_to_the_same_path_emit_manifest_does(self, tmp_path: Path) -> None:
+        _write(tmp_path, "tests/test_a.py", "def test_a():\n    assert True\n")
+        result = at.derive_affected_tests([("M", "tests/test_a.py")], repo_root=tmp_path)
+        manifest_path = at.write_manifest(result["manifest"], repo_root=tmp_path)
+        assert manifest_path == tmp_path / "logs" / "debug" / "selection-manifest.json"
+        written = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert written["selected"] == result["manifest"]["selected"]
+
+    def test_second_call_rewrites_with_a_late_attached_block(self, tmp_path: Path) -> None:
+        _write(tmp_path, "tests/test_a.py", "def test_a():\n    assert True\n")
+        manifest = at.derive_affected_tests([("M", "tests/test_a.py")], repo_root=tmp_path)["manifest"]
+        at.write_manifest(manifest, repo_root=tmp_path)
+        manifest["budget"] = {"outcome": "within_budget"}
+        path = at.write_manifest(manifest, repo_root=tmp_path)
+        assert json.loads(path.read_text(encoding="utf-8"))["budget"] == {"outcome": "within_budget"}
+
+    def test_resolves_debug_manifest_path_at_call_time_not_import_time(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """repo_root=None must read DEBUG_MANIFEST_PATH INSIDE the body on every call, so
+        tests/conftest.py's autouse _isolate_selection_manifest redirect covers the late second
+        write too. A default-argument binding would capture the constant at import time and let a
+        tests/validate/ orchestrator run write into the repo's tracked logs/debug/."""
+        redirected = tmp_path / "redirected" / "selection-manifest.json"
+        monkeypatch.setattr(at, "DEBUG_MANIFEST_PATH", redirected)
+        assert at.write_manifest({"selected": []}) == redirected
+        assert redirected.exists()
+
+    def test_local_write_failure_is_loud_skip_not_raise(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        (tmp_path / "logs").write_text("not a directory", encoding="utf-8")
+        manifest_path = at.write_manifest({"selected": []}, repo_root=tmp_path)
+        captured = capsys.readouterr()
+        assert "local write" in captured.out
+        assert "loud skip" in captured.out.lower()
+        assert not manifest_path.exists()
+
+    def test_neither_prints_the_manifest_nor_re_uploads_it(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
+        """The print and best-effort S3 legs stay on emit_manifest: a late second write must not
+        re-print the whole manifest to the console or re-upload it."""
+        with patch.object(at, "_upload_manifest_best_effort") as mock_upload:
+            at.write_manifest({"selected": []}, repo_root=tmp_path)
+        mock_upload.assert_not_called()
+        assert capsys.readouterr().out == ""
 
 
 class TestS3UploadDegradesGracefully:

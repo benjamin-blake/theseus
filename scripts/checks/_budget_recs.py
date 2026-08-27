@@ -22,8 +22,87 @@ from __future__ import annotations
 
 import os
 import sys
+from typing import Any
 
 from scripts.checks import _common
+
+# Shared truncation for the diff manifest, in both the human diagnostics below and the machine
+# record build_budget_record emits -- so a reader comparing the two never sees two lengths.
+_MANIFEST_TRUNCATION = 20
+
+# The 10 slowest phases only: enough to attribute an overrun, small enough that the block stays a
+# footnote on a manifest whose `selected`/`provenance` keys dominate its size.
+_PHASE_TIMES_KEPT = 10
+
+# Outcomes whose branch attempts a recommendation write at all. The other three
+# ("within_budget", "forced_waived", "forced_ceiling_breach") are notice-only by construction.
+_REC_FILING_OUTCOMES = ("breach", "bypass")
+
+
+def _mirror_to_step_summary(title: str, message: str) -> None:
+    """Append a titled section to the CI job's step summary, or do nothing when
+    GITHUB_STEP_SUMMARY is unset (the caller's stderr print is then the only diagnostic).
+
+    CI-native diagnosability with no portal and no outbox (Decision 84 I-4). Local to this module
+    rather than reusing scripts/checks/_scaffolding.py::_mirror_budget_notice_to_summary:
+    _scaffolding imports THIS module for its facade re-exports, so importing back would cycle --
+    and that helper also prints the message, which both callers here already do themselves (to
+    stderr, deliberately, since these are warnings rather than gate notices).
+    """
+    if summary_path := os.environ.get("GITHUB_STEP_SUMMARY"):
+        with open(summary_path, "a", encoding="utf-8") as f:
+            f.write(f"\n## {title}\n\n{message}\n")
+
+
+def build_budget_record(
+    *,
+    outcome: str,
+    elapsed_s: float,
+    limit_s: float,
+    dominant_phase: str | None,
+    diff_manifest: list[str],
+    phase_times: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Build the machine-readable budget record for one fast-tier run (D2-2 stage 1).
+
+    Pure apart from reading environment variables: no portal call, no reader call, no filesystem
+    access and -- critically -- NO git subprocess. CI identity comes entirely from GITHUB_HEAD_REF
+    (the PR branch, matching the `git branch --show-current` value the local dedupe markers key
+    on), GITHUB_RUN_ID and GITHUB_REPOSITORY, because the CI path is pinned to make no subprocess
+    call at all (tests/checks/test__budget_recs.py's mock_run.assert_not_called()). Absent
+    variables degrade to "unknown"; nothing here raises.
+
+    The caller (scripts/validate.py's budget-assertion scaffold) attaches the result to the
+    selection manifest under `budget`, which the pr-validate job already uploads as an artifact --
+    so the CI breach population becomes enumerable with zero workflow YAML and zero credentials.
+
+    `rec_filed` records whether the rec-filing PATH was taken, not that a portal write succeeded:
+    filing itself is best-effort and loud-skips on failure (see _file_budget_breach_rec).
+    """
+    ci = os.environ.get("CI") == "true"
+    if outcome not in _REC_FILING_OUTCOMES:
+        rec_filed, rec_skipped_reason = False, "no_rec_for_outcome"
+    elif ci:
+        rec_filed, rec_skipped_reason = False, "ci_no_portal_access"
+    else:
+        rec_filed, rec_skipped_reason = True, None
+    slowest = sorted((phase_times or {}).items(), key=lambda item: item[1], reverse=True)[:_PHASE_TIMES_KEPT]
+    return {
+        "outcome": outcome,
+        "elapsed_s": round(elapsed_s, 3),
+        "elapsed_min": round(elapsed_s / 60, 3),
+        "limit_s": float(limit_s),
+        "dominant_phase": dominant_phase,
+        "phase_times": {name: round(seconds, 3) for name, seconds in slowest},
+        "diff_file_count": len(diff_manifest),
+        "diff_manifest": list(diff_manifest[:_MANIFEST_TRUNCATION]),
+        "branch": os.environ.get("GITHUB_HEAD_REF") or "unknown",
+        "run_id": os.environ.get("GITHUB_RUN_ID") or "unknown",
+        "repository": os.environ.get("GITHUB_REPOSITORY") or "unknown",
+        "ci": ci,
+        "rec_filed": rec_filed,
+        "rec_skipped_reason": rec_skipped_reason,
+    }
 
 
 def _fetch_open_recs(profile: str | None = None) -> list[dict]:
@@ -58,7 +137,9 @@ def _find_open_budget_breach_rec(open_recs: list[dict], branch: str, dedup_phase
 
 def _file_budget_breach_rec(elapsed_s: float, diff_manifest: list[str], dominant_phase: str | None) -> None:
     elapsed_min = elapsed_s / 60
-    manifest_summary = ", ".join(diff_manifest[:20]) + ("..." if len(diff_manifest) > 20 else "")
+    manifest_summary = ", ".join(diff_manifest[:_MANIFEST_TRUNCATION]) + (
+        "..." if len(diff_manifest) > _MANIFEST_TRUNCATION else ""
+    )
 
     if os.environ.get("CI") == "true":
         # CI-guard (Decision 84 I-4): the pr-validate CI job installs requirements-fast.txt (no
@@ -73,11 +154,7 @@ def _file_budget_breach_rec(elapsed_s: float, diff_manifest: list[str], dominant
             f"{dominant_phase or 'unknown'}, diff ({len(diff_manifest)} files): {manifest_summary}. Rec NOT filed (CI)."
         )
         print(message, file=sys.stderr)
-        # CI-native diagnosability (no portal, no outbox -- Decision 84 I-4): mirror to the job's
-        # step summary; falls back to the stderr print above if unset.
-        if summary_path := os.environ.get("GITHUB_STEP_SUMMARY"):
-            with open(summary_path, "a", encoding="utf-8") as f:
-                f.write(f"\n## Fast-tier budget breach\n\n{message}\n")
+        _mirror_to_step_summary("Fast-tier budget breach", message)
         return
 
     try:
@@ -146,21 +223,26 @@ def _file_budget_bypass_rec(
     reason: str | None,
     dominant_phase: str | None = None,
 ) -> None:
-    manifest_summary = ", ".join(diff_manifest[:20]) + ("..." if len(diff_manifest) > 20 else "")
+    manifest_summary = ", ".join(diff_manifest[:_MANIFEST_TRUNCATION]) + (
+        "..." if len(diff_manifest) > _MANIFEST_TRUNCATION else ""
+    )
     elapsed_part = f"{elapsed_s / 60:.1f} min" if elapsed_s is not None else "unknown"
 
     if os.environ.get("CI") == "true":
         # Defensive-only: validate.py's CI guard already hard-rejects --ignore-budget when
         # CI=="true" before this helper can be reached in the integrated flow. Kept for parity
         # with _file_budget_breach_rec and to cover any direct/test invocation (Decision 55: no
-        # silent skip, never a buffered outbox -- Decision 84 I-4).
-        print(
+        # silent skip, never a buffered outbox -- Decision 84 I-4). G2: the step-summary mirror
+        # is part of that parity -- this branch was stderr-only, an asymmetry with the breach
+        # branch that is a live drift risk however unreachable the branch is today.
+        message = (
             f"WARNING: fast-tier budget bypass rec NOT filed (CI environment, no portal access): "
             f"Elapsed: {elapsed_part}. Dominant phase: {dominant_phase or 'unknown'}. "
             f"Reason: {reason or 'none provided'}. "
-            f"Diff manifest ({len(diff_manifest)} files): {manifest_summary}.",
-            file=sys.stderr,
+            f"Diff manifest ({len(diff_manifest)} files): {manifest_summary}."
         )
+        print(message, file=sys.stderr)
+        _mirror_to_step_summary("Fast-tier budget bypass", message)
         return
 
     try:

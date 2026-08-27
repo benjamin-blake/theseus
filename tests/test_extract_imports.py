@@ -15,6 +15,7 @@ extract_src_imports = _extract_imports.extract_src_imports
 extract_first_party_imports = _extract_imports.extract_first_party_imports
 _resolve_relative_import = _extract_imports._resolve_relative_import
 _walk_source = _extract_imports._walk_source
+_import_from_targets = _extract_imports._import_from_targets
 
 
 class TestExtractSrcImports:
@@ -365,6 +366,70 @@ class TestWalkSource:
         f = tmp_path / "bad.py"
         f.write_text("def broken(:\n    pass\n", encoding="utf-8")
         assert _walk_source(f) is None
+
+
+class TestImportFromTargets:
+    """_import_from_targets is the whole `ast.ImportFrom` arm split out of
+    extract_first_party_imports so that function's own branch count stays under the Decision 43
+    cyclomatic limit -- the same seam _walk_source already carves for the two try/except pairs.
+
+    It returns candidate module names in first-appearance order; a None entry is a non-resolving
+    submodule and is a no-op at the caller's _add() site.
+    """
+
+    @staticmethod
+    def _pkg(tmp_path: Path) -> Path:
+        (tmp_path / "src" / "pkg").mkdir(parents=True)
+        (tmp_path / "src" / "__init__.py").write_text("", encoding="utf-8")
+        (tmp_path / "src" / "pkg" / "__init__.py").write_text("VALUE = 1\n", encoding="utf-8")
+        (tmp_path / "src" / "pkg" / "sub.py").write_text("", encoding="utf-8")
+        return tmp_path
+
+    @staticmethod
+    def _node(source: str) -> ast.ImportFrom:
+        return next(n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.ImportFrom))
+
+    def test_relative_with_module_yields_the_resolved_submodule(self, tmp_path: Path) -> None:
+        """`from .sub import X` resolves to the one submodule target."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "pkg" / "mod.py"
+        node = self._node("from .sub import X\n")
+        assert _import_from_targets(node, f, ("src",), root) == ["src.pkg.sub"]
+
+    def test_relative_bare_yields_one_target_per_imported_name(self, tmp_path: Path) -> None:
+        """`from . import a, b` yields the package-qualified name of each imported name."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "pkg" / "mod.py"
+        node = self._node("from . import a, b\n")
+        assert _import_from_targets(node, f, ("src",), root) == ["src.pkg.a", "src.pkg.b"]
+
+    def test_relative_bare_above_the_root_yields_nothing(self, tmp_path: Path) -> None:
+        """An unresolvable base (level escapes the root package) contributes no target at all."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "mod.py"
+        node = self._node("from .. import sibling\n")
+        assert _import_from_targets(node, f, ("src",), root) == []
+
+    def test_absolute_first_party_yields_package_and_submodule(self, tmp_path: Path) -> None:
+        """`from <pkg> import <sub>` yields BOTH edges -- the package body runs on the way."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "consumer.py"
+        node = self._node("from src.pkg import sub\n")
+        assert _import_from_targets(node, f, ("src",), root) == ["src.pkg", "src.pkg.sub"]
+
+    def test_absolute_third_party_yields_nothing(self, tmp_path: Path) -> None:
+        """A module matching no root contributes no target."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "consumer.py"
+        node = self._node("from os.path import join\n")
+        assert _import_from_targets(node, f, ("src",), root) == []
+
+    def test_absolute_non_resolving_submodule_is_a_none_entry(self, tmp_path: Path) -> None:
+        """A name that is a symbol, not a module on disk, is a None entry the caller drops."""
+        root = self._pkg(tmp_path)
+        f = root / "src" / "consumer.py"
+        node = self._node("from src.pkg import VALUE\n")
+        assert _import_from_targets(node, f, ("src",), root) == ["src.pkg", None]
 
 
 class TestPreWalkedNodes:
