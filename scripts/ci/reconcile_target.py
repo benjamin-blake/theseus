@@ -123,7 +123,7 @@ def _default_reader(profile: Optional[str]) -> Callable[[str], list[dict[str, An
     Deferred import: this module must remain importable (for unit tests) without the reader's
     heavier dependency chain loaded unless the live path is actually exercised.
     """
-    from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
     def _call(rec_id: str) -> list[dict[str, Any]]:
         return make_reader(profile=profile).named("rec_by_id", id=rec_id)

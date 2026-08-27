@@ -263,7 +263,6 @@ class TestRetiredSurfaces:
             "_next_id",
             "OpsWriter",
             "_ops_backend",
-            "_delete_postmortems_from_iceberg",
             "_rewrite_jsonl_excluding_postmortems",
         ):
             assert not hasattr(portal, name), f"retired symbol still present: {name}"

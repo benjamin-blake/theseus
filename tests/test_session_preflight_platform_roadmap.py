@@ -10,7 +10,6 @@ from scripts.roadmap.platform_roadmap import compute_state_dict, load
 from scripts.session.preflight import _slim_roadmap_state
 
 _LIVE_YAML = Path(__file__).parent.parent / "docs" / "ROADMAP-PLATFORM.yaml"
-_LIVE_PRODUCT_YAML = Path(__file__).parent.parent / "docs" / "ROADMAP-PRODUCT.yaml"
 
 # Keys present only in the full (/orient) projection, never in slim (/plan).
 _FULL_ONLY_KEYS = ("in_progress", "blocked", "active_tier", "blocked_on_cd", "gate_evaluations")
@@ -117,34 +116,6 @@ class TestRoadmapDetailProjection:
         full = _slim_roadmap_state(self._full_state(), full=True)
         assert "realized_but_pending_cds" in full
         assert isinstance(full["realized_but_pending_cds"], list)
-
-
-@pytest.mark.skipif(not _LIVE_PRODUCT_YAML.exists(), reason="live ROADMAP-PRODUCT.yaml not present")
-class TestProductRoadmapProjectionUnchanged:
-    """T-1.20 / Decision 93: product roadmap (no candidate_decisions/cross_tier_gates) is
-    unaffected by the new projection. _slim_roadmap_state uses .get() defaults so the
-    platform-only keys never crash and never appear spuriously."""
-
-    def _product_state(self) -> dict:
-        from scripts.roadmap import product_roadmap as product_roadmap_module
-
-        return product_roadmap_module.compute_state_dict(_LIVE_PRODUCT_YAML, platform_yaml_path=_LIVE_YAML)
-
-    def test_product_slim_only_two_keys(self) -> None:
-        slim = _slim_roadmap_state(self._product_state(), full=False)
-        assert set(slim.keys()) == {"next_eligible", "strategic_pending"}
-
-    def test_product_full_defaults_empty_platform_keys(self) -> None:
-        # product roadmap has no blocked_on_cd / gate_evaluations -> .get() defaults to [].
-        full = _slim_roadmap_state(self._product_state(), full=True)
-        assert full["blocked_on_cd"] == []
-        assert full["gate_evaluations"] == []
-
-    def test_product_full_does_not_crash(self) -> None:
-        # Regression guard: full projection over a state dict lacking the platform-only
-        # keys must not raise (Decision 93 .get() defaults).
-        full = _slim_roadmap_state(self._product_state(), full=True)
-        assert "next_eligible" in full
 
 
 @pytest.mark.skipif(not _LIVE_YAML.exists(), reason="live ROADMAP-PLATFORM.yaml not present")

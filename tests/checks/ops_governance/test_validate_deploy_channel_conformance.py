@@ -87,15 +87,6 @@ resource "aws_lambda_function" "findings_processor" {
     ignore_changes = [source_code_hash]
   }
 }
-
-resource "aws_lambda_function" "ops_compaction" {
-  function_name = "agent-platform-ops-compaction"
-  source_code_hash = try(filemd5("c.zip"), null)
-
-  lifecycle {
-    ignore_changes = [source_code_hash]
-  }
-}
 """
 
 _PROD_TF_COUPLED = """
@@ -107,11 +98,6 @@ resource "aws_lambda_function" "scheduled_agent_dispatcher" {
 resource "aws_lambda_function" "findings_processor" {
   function_name = "agent-platform-findings-processor"
   source_code_hash = try(filemd5("b.zip"), null)
-}
-
-resource "aws_lambda_function" "ops_compaction" {
-  function_name = "agent-platform-ops-compaction"
-  source_code_hash = try(filemd5("c.zip"), null)
 }
 """
 
@@ -141,11 +127,6 @@ deploy_channels:
     channel_class: decoupled_build_pipeline
     governed_channel: .github/workflows/deploy-prod-lambdas.yml
     break_glass_only: "bin/venv-python -m scripts.build_lambda --deploy"
-  ops_compaction:
-    root: terraform/personal
-    channel_class: decoupled_build_pipeline
-    governed_channel: .github/workflows/deploy-prod-lambdas.yml
-    break_glass_only: "bin/venv-python -m scripts.build_lambda --deploy"
 """
 
 _BUILD_LAMBDA_DECOUPLED = _BUILD_LAMBDA_CHANNELS_COMPLETE.format(
@@ -161,11 +142,6 @@ deploy_channels:
   prod_functions:
     root: terraform/personal
     channel_class: decoupled_build_pipeline
-  ops_compaction:
-    root: terraform/personal
-    channel_class: decoupled_build_pipeline
-    governed_channel: .github/workflows/deploy-prod-lambdas.yml
-    break_glass_only: "bin/venv-python -m scripts.build_lambda --deploy"
 """
 
 _TAXONOMY_YAML_TEMPLATE = """conformance:

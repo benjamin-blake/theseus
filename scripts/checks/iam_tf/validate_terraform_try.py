@@ -40,20 +40,41 @@ def _is_inside_try(content: str, pos: int) -> bool:
     return False
 
 
+def _blank_comment_lines(content: str) -> str:
+    """Blank out whole-line HCL comments, preserving every character offset.
+
+    Comment prose routinely contains the very tokens this lint scans for (e.g. "the native lock
+    file (use_lockfile ...)"), which reads as an unwrapped file() call. Only WHOLE-LINE comments
+    are blanked, so a `#` or `//` inside a quoted ARN or URL on a code line can never mask a real
+    call later on that same line. Blanking (rather than deleting) keeps offsets -- and therefore
+    the reported line numbers -- exact.
+    """
+    return "\n".join(" " * len(ln) if ln.lstrip().startswith(("#", "//")) else ln for ln in content.split("\n"))
+
+
 @registry.register("validate_terraform_try", owner="platform")
 def validate_terraform_try(failed: list[str]) -> None:
-    """Check that filemd5() and file() in .tf files are wrapped with try()."""
+    """Check that filemd5() and file() in .tf files are wrapped with try().
+
+    Recursive over the whole terraform tree: every root lives in a subdirectory
+    (terraform/personal, terraform/github, terraform/bootstrap), so a depth-1 glob would examine
+    nothing and pass vacuously. Findings are keyed by path relative to the repo root, since the
+    same basename (main.tf, variables.tf) recurs in several roots.
+    """
     print("\n=== Terraform try() lint ===")
     tf_dir = _common.ROOT / "terraform"
     errors: list[str] = []
 
-    for tf_file in sorted(tf_dir.glob("*.tf")):
-        content = tf_file.read_text(encoding="utf-8")
+    tf_files = sorted(tf_dir.rglob("*.tf"))
+    registry.examined(len(tf_files), unit="tf_files")
+    for tf_file in tf_files:
+        content = _blank_comment_lines(tf_file.read_text(encoding="utf-8"))
         for m in re.finditer(r"\bfilemd5\s*\(|(?<![\w])file\s*\(", content):
             if not _is_inside_try(content, m.start()):
                 fn_name = "filemd5()" if "filemd5" in m.group() else "file()"
                 line_num = content[: m.start()].count("\n") + 1
-                errors.append(f"{tf_file.name}:{line_num}: {fn_name} must be wrapped in try() for CI compatibility")
+                rel = tf_file.relative_to(_common.ROOT)
+                errors.append(f"{rel}:{line_num}: {fn_name} must be wrapped in try() for CI compatibility")
 
     if errors:
         print("Terraform try() lint errors:")

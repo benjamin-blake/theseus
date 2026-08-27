@@ -3,7 +3,7 @@ tests/test_checks_registry.py monolith (Decision 169, amends Decision 104).
 
 TestCheckValidation is the only cover of Check.__post_init__'s _VALID_OWNERS raise.
 TestOwnerMetadata is what scripts/checks/registry.py's own Check docstring names as the sole
-reader of owner/product_coupled.
+reader of owner metadata.
 """
 
 from __future__ import annotations
@@ -11,12 +11,6 @@ from __future__ import annotations
 import pytest
 
 import scripts.checks.registry as registry
-
-OWNER_EXPECTATIONS: dict[str, tuple[str, bool]] = {
-    "validate_broker_env_reads": ("trading", False),
-    "validate_product_roadmap": ("platform", True),
-    "validate_environment_taxonomy": ("platform", True),
-}
 
 
 class TestCheckValidation:
@@ -26,10 +20,13 @@ class TestCheckValidation:
         with pytest.raises(ValueError, match="owner must be one of"):
             registry.Check(name="bogus_check", owner="not-a-real-owner")
 
+    def test_platform_is_the_only_valid_owner(self) -> None:
+        assert registry._VALID_OWNERS == ("platform",)
+
 
 class TestOwnerMetadata:
-    """Owner/product_coupled metadata correctness -- populated once per check's
-    @register(...) call site, never derived from dispatch."""
+    """Owner metadata correctness -- populated once per check's @register(...) call site,
+    never derived from dispatch."""
 
     def setup_method(self) -> None:
         # registry.get_check() reads _REGISTRY, populated only after a check module has been
@@ -38,25 +35,12 @@ class TestOwnerMetadata:
         registry.all_checks()
         self.all_names = tuple(sorted(registry._ALL_ENTRIES))
 
-    @pytest.mark.parametrize("name,expected", list(OWNER_EXPECTATIONS.items()))
-    def test_pinned_owner(self, name: str, expected: tuple[str, bool]) -> None:
-        owner, product_coupled = expected
-        check = registry.get_check(name)
-        assert check.owner == owner
-        assert check.product_coupled is product_coupled
-
-    def test_default_owner_is_platform_for_every_other_check(self) -> None:
+    def test_every_registered_check_is_platform_owned(self) -> None:
         for name in self.all_names:
-            if name in OWNER_EXPECTATIONS:
-                continue
-            check = registry.get_check(name)
-            assert check.owner == "platform"
-            assert check.product_coupled is False
+            assert registry.get_check(name).owner == "platform", name
 
-    def test_exactly_three_pinned_checks(self) -> None:
-        """Sampled others=platform per the plan's ownership audit: exactly one trading check
-        and two platform/product_coupled=trading checks exist in the whole registry."""
-        trading = [n for n in self.all_names if registry.get_check(n).owner == "trading"]
-        product_coupled = [n for n in self.all_names if registry.get_check(n).product_coupled]
-        assert trading == ["validate_broker_env_reads"]
-        assert sorted(product_coupled) == ["validate_environment_taxonomy", "validate_product_roadmap"]
+    def test_owner_metadata_is_well_typed_for_every_check(self) -> None:
+        for name in self.all_names:
+            check = registry.get_check(name)
+            assert check.name == name
+            assert isinstance(check.product_coupled, bool), name

@@ -154,7 +154,7 @@ def validate_invoke_implies_resolve(failed: list[str]) -> None:
 
     Every CI role that grants lambda:InvokeFunction on the DuckLake reader/writer must also
     resolve SSM parameter reads (ssm:Get* on parameter/agent-platform/*) in its composed
-    aws_iam_policy_document -- the fallback src/common/iceberg_reader.py and
+    aws_iam_policy_document -- the fallback src/common/ducklake_reader_client.py and
     scripts/ops_data_portal.py use to resolve the DuckLake Function URL when DUCKLAKE_*_URL is
     unset. A role that invokes without SSM loses that fallback (rec-2363 and predecessors
     rec-2223/2251/2276). Parses every *.tf file under terraform/personal/ (root-wide, not a single

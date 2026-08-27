@@ -69,9 +69,9 @@ These hazards will misdirect you if you do not internalise them before reading a
   When a candidate turns on ratification status, cite which register you read. That CD.27 is still
   `pending` is a stated fact; it is NOT itself a defect to flag (the platform's whole design layer
   lives as candidate_decisions).
-- TRAP-3 (two roadmaps). `docs/ROADMAP-PLATFORM.yaml` (tier_items, infra, the T4 executor) is the
-  target axis. `docs/ROADMAP-PRODUCT.yaml` (trading phases 1-7) is OUT OF SCOPE. "Phase" is a
-  product word; "tier_item" / "T4" is a platform word.
+- TRAP-3 (roadmap axis). `docs/ROADMAP-PLATFORM.yaml` (tier_items, infra, the T4 executor) is the
+  target axis. Retired roadmaps are OUT OF SCOPE. "Phase" is a
+  retired-roadmap word; "tier_item" / "T4" is a platform word.
 - TRAP-4 (verifier harness is a dependency, not a target). The T3 verifier harness (typed checks,
   graduation registry, causal-chain verifier T3.2) is the SUBSTRATE the executor's verification
   leg (CD.38) delegates to, and T3.2 is a hard gate (G.8) and a stated dependency of T4.1/T4.2.

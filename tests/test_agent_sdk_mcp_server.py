@@ -2,8 +2,7 @@
 
 TestEndToEnd is the sole live-boundary test (it needs both @pytest.mark.integration, for the
 conftest socket-block tripwire, AND @pytest.mark.aws, for conftest's _block_unmocked_aws_client
-opt-out -- see tests/common/iceberg_reader/test_warehouse_parity.py for the same two-marker
-pattern). It deliberately carries NO credentials-skip guard: absent credentials must fail this
+opt-out). It deliberately carries NO credentials-skip guard: absent credentials must fail this
 test loudly, not silently pass it.
 """
 
@@ -17,7 +16,7 @@ from mcp import types
 
 from scripts.agent_sdk import errors as agent_errors
 from scripts.agent_sdk.mcp_server import _invoke_verb, build_tool_registry, create_server
-from src.common.iceberg_reader import ReaderInvokeError
+from src.common.ducklake_reader_client import ReaderInvokeError
 
 
 def _verb_meta(**overrides: Any) -> dict[str, Any]:

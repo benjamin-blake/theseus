@@ -5,7 +5,7 @@ monolith's module-level `_write()` helper (Decision 128 SLOC decomposition). Use
 concern-split module in the package. tests/fixtures/ is an importable package exempt from the
 no-cross-test-import guard (names never start with test_) -- consumers alias on import (e.g.
 `from tests.fixtures.affected_tests_helpers import write_file as _write`) so every call site
-stays byte-identical to the monolith. Direct precedent: tests/fixtures/ops_writer_helpers.py.
+stays byte-identical to the monolith.
 """
 
 from __future__ import annotations

@@ -63,10 +63,10 @@ class TestMapSourceToTestDirectConcernSplit:
         """Defensive branch (map_source_to_test's own relative_to(ROOT) call, made independently
         of _grandfathered_source_to_test's earlier one): fault-inject so exactly the SECOND
         Path.relative_to call in this operation raises, forcing the `except ValueError: rel_name
-        = source_path.name` fallback. scripts/ops_writer.py's mapping is unaffected either way
+        = source_path.name` fallback. scripts/ops_data_portal.py's mapping is unaffected either way
         (rel_name only gates the two special-cased homes, neither of which is
-        test_ops_writer.py), so this proves the fallback doesn't change real behavior."""
-        source = ROOT / "scripts" / "ops_writer.py"
+        test_ops_data_portal.py), so this proves the fallback doesn't change real behavior."""
+        source = ROOT / "scripts" / "ops_data_portal.py"
         original_relative_to = Path.relative_to
         call_count = {"n": 0}
 
@@ -80,7 +80,7 @@ class TestMapSourceToTestDirectConcernSplit:
         result = map_source_to_test(source)
 
         assert call_count["n"] >= 2
-        assert result == ROOT / "tests" / "ops_writer"
+        assert result == ROOT / "tests" / "ops_data_portal"
 
 
 class TestCheckTestFileExistsMissingPackageRelativeToFailure:
@@ -122,21 +122,21 @@ class TestGetChangedSourceFilesSelfInclusion:
             for p in get_changed_source_files(
                 files=[
                     "scripts/test_coverage_checker.py",
-                    "scripts/ops_writer.py",
+                    "scripts/ops_data_portal.py",
                     "tests/test_coverage_checker/test_main_cli.py",
                 ]
             )
         }
         assert "test_coverage_checker.py" in got, f"still self-excluded: {got}"
-        assert "ops_writer.py" in got, got
+        assert "ops_data_portal.py" in got, got
         assert "test_main_cli.py" not in got, f"tests/ leaked in: {got}"
 
 
 class TestGetChangedSourceFilesEdgePaths:
     def test_relative_files_argument_resolved_against_root(self) -> None:
         """A relative --files entry is joined onto ROOT (p = ROOT / p) before resolution."""
-        result = get_changed_source_files(files=["scripts/ops_writer.py"])
-        assert result == [(ROOT / "scripts" / "ops_writer.py").resolve()]
+        result = get_changed_source_files(files=["scripts/ops_data_portal.py"])
+        assert result == [(ROOT / "scripts" / "ops_data_portal.py").resolve()]
 
     def test_non_py_file_in_files_argument_is_skipped(self) -> None:
         """A non-.py path passed via --files is filtered out (suffix check)."""

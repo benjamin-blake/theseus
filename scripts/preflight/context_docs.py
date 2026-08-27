@@ -37,7 +37,7 @@ def read_context_files(open_recs_count: int | None = None) -> dict:
         Dict with keys: roadmap_phase, open_decisions_count, recent_sessions,
         recommendations_count.
     """
-    # roadmap_phase: extract current phase header from ROADMAP_FILE (docs/ROADMAP-PRODUCT.yaml).
+    # roadmap_phase: extract current phase header from ROADMAP_FILE (docs/ROADMAP-PLATFORM.yaml).
     # The YAML has no "## Phase" markdown headers, so this resolves to "unknown" in production --
     # an honest result; the phase-equivalent signal today is the platform `active_tier`.
     roadmap_phase = "unknown"
@@ -93,24 +93,10 @@ def read_context_files(open_recs_count: int | None = None) -> dict:
     }
 
 
-def check_telemetry_health() -> dict:
-    """Telemetry health stub: the Athena telemetry tables are retired, so this reports
-    not_migrated WITHOUT issuing any query. Telemetry re-lands on DuckLake in consolidation
-    Phase 4 -- see Decision 84 / tier_item T2.36 for history and status.
-
-    Returns a dict compatible with ``print_telemetry_health()``.
-    """
-    return {
-        "overall": "unknown",
-        "checks": [{"check": "telemetry-store", "value": "not migrated (Phase 4)", "severity": "unknown"}],
-        "friction_patterns": [],
-    }
-
-
 def check_data_quality_coverage() -> dict:
     """Report data quality check coverage from config/agent/data_quality/ YAML files.
 
-    This does NOT execute checks against Athena (that is slow and requires AWS).
+    This does NOT execute the checks against the warehouse (that is slow and requires AWS).
     It reports: how many checks are defined, which tables are covered, and
     whether a recent run result exists in logs/debug/dq-latest.json.
 
@@ -159,37 +145,22 @@ def check_data_quality_coverage() -> dict:
     }
 
 
-def print_telemetry_health(health: dict) -> None:
-    """Print a compact summary table of telemetry health checks."""
-    severity_markers = {
-        "ok": "  OK ",
-        "warning": " WARN",
-        "critical": " CRIT",
-    }
-    print("\n--- Telemetry Health ---")
-    print(f"{'Check':<35} {'Value':<15} {'Status':<6}")
-    print("-" * 58)
-    for c in health["checks"]:
-        marker = severity_markers.get(c["severity"], "  ?  ")
-        print(f"{c['check']:<35} {c['value']:<15} {marker}")
-    overall_marker = severity_markers.get(health["overall"], "  ?  ")
-    print("-" * 58)
-    print(f"{'Overall':<35} {'':<15} {overall_marker}")
-
-    # Data quality coverage summary
+def print_data_quality_health() -> None:
+    """Print a compact data-quality coverage summary for the ops tables."""
     dq = check_data_quality_coverage()
-    if dq["checks_defined"] > 0:
-        print(f"\n  Data quality: {dq['checks_defined']} checks across {dq['tables_covered']} tables")
-        if dq["last_run"]:
-            lr = dq["last_run"]
-            unavail_str = f"/{lr.get('unavailable', 0)}U" if lr.get("unavailable", 0) else ""
-            verdict_tag = " [DEGRADED -- backend unavailable]" if lr["verdict"] == "DEGRADED" else ""
-            print(
-                f"  Last run: {lr['verdict']}{verdict_tag} "
-                f"({lr['passed']}P/{lr['failed']}F/{lr['warned']}W{unavail_str}) at {lr['timestamp']}"
-            )
-        else:
-            print("  Last run: never (run: python -m scripts.data_quality_runner)")
+    if dq["checks_defined"] <= 0:
+        return
+    print(f"\n  Data quality: {dq['checks_defined']} checks across {dq['tables_covered']} tables")
+    if dq["last_run"]:
+        lr = dq["last_run"]
+        unavail_str = f"/{lr.get('unavailable', 0)}U" if lr.get("unavailable", 0) else ""
+        verdict_tag = " [DEGRADED -- backend unavailable]" if lr["verdict"] == "DEGRADED" else ""
+        print(
+            f"  Last run: {lr['verdict']}{verdict_tag} "
+            f"({lr['passed']}P/{lr['failed']}F/{lr['warned']}W{unavail_str}) at {lr['timestamp']}"
+        )
+    else:
+        print("  Last run: never (run: python -m scripts.data_quality_runner)")
     print()
 
 

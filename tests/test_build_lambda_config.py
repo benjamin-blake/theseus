@@ -102,7 +102,6 @@ class TestBuildLambdaContract:
         d = yaml.safe_load(bl_config._BUILD_CONTRACT_PATH.read_text(encoding="utf-8"))
         assert bl_config._build_size_limit_bytes() == d["size_limit_bytes"]
         assert set(bl_config._build_prod_function_names()) == set(d["deploy_targets"]["prod_functions"])
-        assert bl_config._build_ops_compaction() == d["deploy_targets"]["ops_compaction"]
         assert bl_config._build_ducklake_function_zip_keys() == d["deploy_targets"]["ducklake_function_zip_keys"]
         assert list(bl_config._build_ducklake_layer_names()) == list(d["deploy_targets"]["ducklake_layer_names"])
 
@@ -113,8 +112,6 @@ class TestBuildLambdaContract:
         d = yaml.safe_load(bl_config._BUILD_CONTRACT_PATH.read_text(encoding="utf-8"))
         assert bl_config.LAMBDA_SIZE_LIMIT_BYTES == d["size_limit_bytes"]
         assert set(bl_config._LAMBDA_FUNCTION_NAMES) == set(d["deploy_targets"]["prod_functions"])
-        assert bl_config._OPS_COMPACTION_FUNCTION_NAME == d["deploy_targets"]["ops_compaction"]["function"]
-        assert bl_config._OPS_COMPACTION_ZIP_KEY == d["deploy_targets"]["ops_compaction"]["zip_key"]
         assert bl_config._DUCKLAKE_FUNCTION_ZIP_KEYS == d["deploy_targets"]["ducklake_function_zip_keys"]
         assert list(bl_config.DUCKLAKE_LAYER_NAMES) == list(d["deploy_targets"]["ducklake_layer_names"])
 

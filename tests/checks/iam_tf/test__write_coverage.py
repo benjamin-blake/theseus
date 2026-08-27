@@ -77,6 +77,16 @@ class TestWriteCoverageMap:
             assert spec["write_actions"], rtype
             assert spec["resource_marker"], rtype
 
+    def test_no_write_marker_is_the_bare_wildcard(self) -> None:
+        """Least-privilege: a required write verb must be asserted against a RESOURCE-scoped marker.
+
+        A marker of `"*"` matches only a bare account-wide `Resource = "*"` grant, so the coverage
+        assertion it produces says nothing about scope -- it is satisfied by the widest grant the
+        policy can express, which is the opposite of what this gate exists to prove.
+        """
+        for rtype, spec in WRITE_COVERAGE.items():
+            assert spec["resource_marker"].strip('"') != "*", rtype
+
     def test_no_type_is_both_mapped_and_exempt(self) -> None:
         # An exemption says "this type needs no write grant"; a mapping says "here is its write
         # grant". A type in both would make the discovery loop's verdict order-dependent.

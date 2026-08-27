@@ -73,8 +73,8 @@ def _refresh_cache_after_write(
     upsert_cache_row(table, record, path=jsonl_path)
 
 
-def _sanitize_athena_record(record: dict) -> dict:
-    """Replace empty strings with None for fields that Athena serialises as '' for NULL."""
+def _sanitize_record(record: dict) -> dict:
+    """Replace empty strings with None for fields whose NULL arrives serialised as ''."""
     result = dict(record)
     for key, value in result.items():
         if value == "":

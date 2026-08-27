@@ -28,7 +28,7 @@ class TestCheckVenv:
     def test_wrong_venv_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(
             "session_preflight.sys.executable",
-            "C:/Users/user/Git Repos/da-data-athena/.venv/Scripts/python.exe",
+            "C:/Users/user/Git Repos/some-other-repo/.venv/Scripts/python.exe",
         )
         monkeypatch.setattr("scripts.preflight._common.ROOT", Path("C:/Users/user/Git Repos/agent-platform"))
         assert _preflight.check_venv() is False

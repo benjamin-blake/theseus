@@ -24,7 +24,8 @@ was explicitly descoped by operator ratification and was NOT built; this file
 remains a registered config/sloc_budgets.yaml entry (ratcheted down, not
 removed) until a future plan retires the orchestration shell.
 
-Intent document: docs/INTENT-recommendation-executor.md
+Governing decisions: Decision 55 (RCA-first, no inline workarounds) and Decision 67
+(executor development frozen; this shell is retained, not resumed).
 """
 
 import json
@@ -105,13 +106,6 @@ from scripts.executor.step_runner import (
     implement_step,
     run_acceptance,
     run_verification,
-)
-from scripts.executor.telemetry import (
-    close_phase,
-    close_session,
-    emit_process_event,
-    open_phase,
-    open_session,
 )
 from scripts.llm.utils import (
     MODEL_EXECUTION,
@@ -261,15 +255,12 @@ def _execute_recommendation_inner(
     plan: Optional["ExecutionPlan"] = None
     branch: str = f"agent/{rec_id}"
 
-    open_session(workflow="executor", rec_ids=[rec_id], branch=branch, execution_attempt=1)
-
     # ========== PHASE 1: PREFLIGHT ==========
     _phase_sep = "=" * 60
     print("\n" + _phase_sep)
     print("PHASE 1: PREFLIGHT")
     print(_phase_sep)
     logger.info("[PHASE] PREFLIGHT started -- rec_id=%s", rec_id)
-    open_phase(phase="preflight", phase_order=1)
 
     # ------ Read-only gates (no git side effects) ------
 
@@ -288,12 +279,6 @@ def _execute_recommendation_inner(
         )
         emit_failure_summary(
             rec_id=rec_id,
-            failure_phase="preflight",
-            failure_reason=f"Recommendation {rec_id} not found",
-        )
-        close_phase(outcome="failed")
-        close_session(
-            outcome="failed",
             failure_phase="preflight",
             failure_reason=f"Recommendation {rec_id} not found",
         )
@@ -320,12 +305,6 @@ def _execute_recommendation_inner(
                 failure_phase="preflight",
                 failure_reason=(f"Acceptance command lint failed: {lint_error}"),
             )
-            close_phase(outcome="failed")
-            close_session(
-                outcome="failed",
-                failure_phase="preflight",
-                failure_reason=f"Acceptance command lint failed: {lint_error}",
-            )
             return False
 
         feasibility, reason = validate_acceptance_feasibility(
@@ -349,12 +328,6 @@ def _execute_recommendation_inner(
             )
             emit_failure_summary(
                 rec_id=rec_id,
-                failure_phase="preflight",
-                failure_reason=f"acceptance_infeasible: {reason}",
-            )
-            close_phase(outcome="failed")
-            close_session(
-                outcome="failed",
                 failure_phase="preflight",
                 failure_reason=f"acceptance_infeasible: {reason}",
             )
@@ -386,12 +359,6 @@ def _execute_recommendation_inner(
             failure_phase="preflight",
             failure_reason=("Not eligible (risk=low AND automatable=true)"),
         )
-        close_phase(outcome="failed")
-        close_session(
-            outcome="failed",
-            failure_phase="preflight",
-            failure_reason="Not eligible (risk=low AND automatable=true)",
-        )
         return False
 
     if _is_poisoned_rec(rec_id):
@@ -400,8 +367,6 @@ def _execute_recommendation_inner(
         logger.warning("[PREFLIGHT] %s", _reason)
         write_run_summary(rec_id, branch, "preflight_fail", _reason, steps_completed, total_steps, plan, "preflight")
         emit_failure_summary(rec_id=rec_id, failure_phase="preflight", failure_reason=_reason)
-        close_phase(outcome="failed")
-        close_session(outcome="failed", failure_phase="preflight", failure_reason=_reason)
         return False
 
     # Checkpoint / --resume-postflight conflict handling
@@ -451,12 +416,6 @@ def _execute_recommendation_inner(
                     failure_phase="preflight",
                     failure_reason=(f"Checkpoint exists for different rec '{checkpoint.get('plan_file')}'"),
                 )
-                close_phase(outcome="failed")
-                close_session(
-                    outcome="failed",
-                    failure_phase="preflight",
-                    failure_reason=f"Checkpoint exists for different rec '{checkpoint.get('plan_file')}'",
-                )
                 return False
 
     skip_to_postflight = False
@@ -480,12 +439,6 @@ def _execute_recommendation_inner(
                 )
                 emit_failure_summary(
                     rec_id=rec_id,
-                    failure_phase="preflight",
-                    failure_reason=failure_reason,
-                )
-                close_phase(outcome="failed")
-                close_session(
-                    outcome="failed",
                     failure_phase="preflight",
                     failure_reason=failure_reason,
                 )
@@ -513,12 +466,6 @@ def _execute_recommendation_inner(
                 rec_id=rec_id,
                 failure_phase="preflight",
                 failure_reason=("resume-postflight without IMPL_COMPLETE checkpoint"),
-            )
-            close_phase(outcome="failed")
-            close_session(
-                outcome="failed",
-                failure_phase="preflight",
-                failure_reason="resume-postflight without IMPL_COMPLETE checkpoint",
             )
             return False
 
@@ -601,12 +548,6 @@ def _execute_recommendation_inner(
         )
         emit_failure_summary(
             rec_id=rec_id,
-            failure_phase="preflight",
-            failure_reason="Failed to set up feature branch",
-        )
-        close_phase(outcome="failed")
-        close_session(
-            outcome="failed",
             failure_phase="preflight",
             failure_reason="Failed to set up feature branch",
         )
@@ -721,12 +662,6 @@ def _execute_recommendation_inner(
                 failure_phase="preflight",
                 failure_reason="fast mode: no plan JSON provided",
             )
-            close_phase(outcome="failed")
-            close_session(
-                outcome="failed",
-                failure_phase="preflight",
-                failure_reason="fast mode: no plan JSON provided",
-            )
             return False
         try:
             plan_payload = json.loads(raw_json)
@@ -747,12 +682,6 @@ def _execute_recommendation_inner(
                 failure_phase="preflight",
                 failure_reason=f"fast mode: invalid JSON: {exc}",
                 failure_class="parse_error",
-            )
-            close_phase(outcome="failed")
-            close_session(
-                outcome="failed",
-                failure_phase="preflight",
-                failure_reason=f"fast mode: invalid JSON: {exc}",
             )
             return False
 
@@ -781,12 +710,6 @@ def _execute_recommendation_inner(
                 rec_id=rec_id,
                 failure_phase="preflight",
                 failure_reason=("fast mode: plan JSON has no steps"),
-            )
-            close_phase(outcome="failed")
-            close_session(
-                outcome="failed",
-                failure_phase="preflight",
-                failure_reason="fast mode: plan JSON has no steps",
             )
             return False
 
@@ -823,14 +746,12 @@ def _execute_recommendation_inner(
         # Skip Phase 2 and Phase 3 entirely — jump to Phase 4.
 
     # ========== PHASE 2: PLAN GENERATION ==========
-    close_phase(outcome="success")  # close preflight
     if not skip_to_postflight and not fast_mode:
         plan = None
         print("\n" + _phase_sep)
         print("PHASE 2: PLAN GENERATION")
         print(_phase_sep)
         logger.info("[PHASE] PLAN GENERATION started")
-        open_phase(phase="plan_generation", phase_order=2)
 
         if resume_from_step > 0:
             plan = get_latest_plan(rec_id)
@@ -874,19 +795,7 @@ def _execute_recommendation_inner(
                             _next_model or "human-intervention",
                             str(_plan_err)[:200],
                         )
-                        emit_process_event(
-                            tier="decision",
-                            category="model_escalation_plan",
-                            severity="warning",
-                            description=f"Escalating planning model to {_next_model or 'human-intervention'}",
-                        )
                         if not _next_model:
-                            emit_process_event(
-                                tier="exception",
-                                category="escalation_exhausted_plan",
-                                severity="error",
-                                description="Planning model escalation exhausted",
-                            )
                             raise LLMResponseError(
                                 f"[PLAN] Escalation exhausted for {rec_id} — human intervention required."
                             ) from _plan_err
@@ -909,12 +818,6 @@ def _execute_recommendation_inner(
                     failure_reason=_budget_reason,
                     failure_class="budget_exceeded",
                 )
-                close_phase(outcome="failed")
-                close_session(
-                    outcome="failed",
-                    failure_phase="plan_generation",
-                    failure_reason=_budget_reason,
-                )
                 return False
             if plan.status == "acceptance_challenged":
                 challenge_reason = rec.get("challenge_reason", "Acceptance command validation failed")
@@ -935,12 +838,6 @@ def _execute_recommendation_inner(
                     failure_phase="planning",
                     failure_reason=challenge_reason,
                     failure_class="acceptance_mismatch",
-                )
-                close_phase(outcome="failed")
-                close_session(
-                    outcome="failed",
-                    failure_phase="plan_generation",
-                    failure_reason=challenge_reason,
                 )
                 return False
             if plan.status == "no_changes_needed":
@@ -1037,24 +934,14 @@ def _execute_recommendation_inner(
                 plan,
                 "plan",
             )
-            emit_process_event(
-                tier="decision",
-                category="no_changes_needed",
-                severity="info",
-                description="Model determined no changes needed -- already implemented",
-            )
-            close_phase(outcome="success")
-            close_session(outcome="success")
             return True
 
     # ========== PHASE 3: CRITIQUE LOOP ==========
-    close_phase(outcome="success")  # close plan_generation
     if not skip_to_postflight and not fast_mode:
         print("\n" + _phase_sep)
         print("PHASE 3: CRITIQUE LOOP")
         print(_phase_sep)
         logger.info("[PHASE] CRITIQUE LOOP started")
-        open_phase(phase="critique", phase_order=3)
 
         if resume_from_step > 0 and plan.status == "approved":
             print("[CHECKPOINT] Skipping critique loop -- plan already approved")
@@ -1082,20 +969,8 @@ def _execute_recommendation_inner(
                 print("Plan needs revision. Suggestions:")
                 for s in critique.get("suggestions", [])[:5]:
                     print(f"  - {s[:80]}")
-                emit_process_event(
-                    tier="rework",
-                    category="critique_needs_revision",
-                    severity="info",
-                    description=f"Critique iteration {iteration + 1}: plan needs revision",
-                )
                 if _detect_critique_cycling(plan.critique_history):
                     print("[CRITIQUE-CYCLING] Cycling detected -- auto-approving plan to break loop")
-                    emit_process_event(
-                        tier="exception",
-                        category="critique_cycling_detected",
-                        severity="warning",
-                        description="Cycling detected, auto-approving",
-                    )
                     plan.status = "approved"
                     if getattr(plan, "status", "") != "no_changes_needed":
                         save_plan(plan)
@@ -1110,7 +985,6 @@ def _execute_recommendation_inner(
                 )
 
     # ========== PHASE 4: IMPLEMENTATION LOOP ==========
-    close_phase(outcome="success")  # close critique
 
     # Post-planning dirty-tree guard: planning runs with tools=True (yolo) for
     # session-chaining but is prompt-instructed not to edit files.  If the LLM
@@ -1146,7 +1020,6 @@ def _execute_recommendation_inner(
         print("PHASE 4: IMPLEMENTATION")
         print(_phase_sep)
         logger.info("[PHASE] IMPLEMENTATION started -- %d step(s) planned", len(plan.steps))
-        open_phase(phase="implementation", phase_order=4)
 
         steps = plan.steps
         if step_limit:
@@ -1261,14 +1134,6 @@ def _execute_recommendation_inner(
                     failure_phase="implementation",
                     failure_reason=failure_reason or "",
                 )
-                close_phase(outcome="failed")
-                close_session(
-                    outcome="failed",
-                    failure_phase="implementation",
-                    failure_reason=failure_reason,
-                    steps_total=total_steps,
-                    steps_completed=steps_completed,
-                )
                 return False
 
             commit_ok, diff_stat = commit_step(step, rec_id, i)
@@ -1303,12 +1168,10 @@ def _execute_recommendation_inner(
         )
 
     # ========== PHASE 5: POSTFLIGHT ==========
-    close_phase(outcome="success")  # close implementation
     print("\n" + _phase_sep)
     print("PHASE 5: POSTFLIGHT")
     print(_phase_sep)
     logger.info("[PHASE] POSTFLIGHT started -- %d step(s) completed", steps_completed)
-    open_phase(phase="postflight", phase_order=5)
 
     if plan is not None:
         unplanned = _scope_drift_check(plan.steps)
@@ -1347,23 +1210,11 @@ def _execute_recommendation_inner(
                 review_attempt + 1,
                 max_review_retries,
             )
-            emit_process_event(
-                tier="rework",
-                category="code_review_fix_attempt",
-                severity="warning",
-                description=f"{len(blocking)} blocking finding(s)",
-            )
             fixed = _fix_code_review_findings(rec_id, blocking)
             if not fixed:
                 break
             review_passed, review_cost, blocking = _code_review_gate(rec, plan, changed_files, effort=_rec_effort)
         if blocking:
-            emit_process_event(
-                tier="exception",
-                category="code_review_fail",
-                severity="error",
-                description=f"{len(blocking)} finding(s) remain",
-            )
             failure_reason = (
                 "code review gate failed: "
                 f"{len(blocking)} blocking finding(s) remain after "
@@ -1414,14 +1265,6 @@ def _execute_recommendation_inner(
                 rec_id=rec_id,
                 failure_phase="postflight",
                 failure_reason=failure_reason or "",
-            )
-            close_phase(outcome="failed")
-            close_session(
-                outcome="failed",
-                failure_phase="postflight",
-                failure_reason=failure_reason,
-                steps_total=total_steps,
-                steps_completed=steps_completed,
             )
             return False
         else:
@@ -1479,14 +1322,6 @@ def _execute_recommendation_inner(
                     failure_reason=("Full CI validation timed out (600s)"),
                     failure_class="cli_timeout",
                 )
-                close_phase(outcome="failed")
-                close_session(
-                    outcome="failed",
-                    failure_phase="postflight",
-                    failure_reason="Full CI validation timed out (600s)",
-                    steps_total=total_steps,
-                    steps_completed=steps_completed,
-                )
                 return False
         if full_val_proc.returncode != 0:
             combined_ci = (fv_stdout + "\n" + fv_stderr).strip()
@@ -1495,12 +1330,6 @@ def _execute_recommendation_inner(
                 logger.warning(
                     "[VALIDATE] Quarantining known baseline-red local validation failures: %s",
                     ", ".join(quarantined_tests),
-                )
-                emit_process_event(
-                    tier="decision",
-                    category="validation_quarantine",
-                    severity="warning",
-                    description=f"Quarantined {len(quarantined_tests)} known baseline-red test(s)",
                 )
                 _pf_validation.update(
                     {
@@ -1521,12 +1350,6 @@ def _execute_recommendation_inner(
                         "skipping validation failure. (rec-241 emergency bypass)"
                     )
                     logger.info("[VALIDATE] Full CI validation bypassed (emergency)")
-                    emit_process_event(
-                        tier="decision",
-                        category="validation_emergency_bypass",
-                        severity="warning",
-                        description="SKIP_LOCAL_VALIDATE emergency bypass activated",
-                    )
                     _pf_validation.update(
                         {
                             "result": "bypass",
@@ -1553,12 +1376,6 @@ def _execute_recommendation_inner(
                                     "[VALIDATE] doc_only: All changed files are "
                                     "non_python (no .py extension) -- fallback to "
                                     "--scope prompts validation"
-                                )
-                                emit_process_event(
-                                    tier="decision",
-                                    category="validation_doc_only_fallback",
-                                    severity="warning",
-                                    description="doc-only diff: falling back to --scope prompts validation",
                                 )
                                 quick_val_env = os.environ.copy()
                                 quick_val_env.pop("SKIP_CI_WAIT", None)
@@ -1637,14 +1454,6 @@ def _execute_recommendation_inner(
                                             failure_reason=failure_reason,
                                             failure_class="cli_timeout",
                                         )
-                                        close_phase(outcome="failed")
-                                        close_session(
-                                            outcome="failed",
-                                            failure_phase="postflight",
-                                            failure_reason=failure_reason,
-                                            steps_total=total_steps,
-                                            steps_completed=steps_completed,
-                                        )
                                         return False
 
                                 if quick_val_proc.returncode != 0:
@@ -1712,14 +1521,6 @@ def _execute_recommendation_inner(
                                         failure_reason=failure_reason,
                                         failure_class="test_failure",
                                         validation_output=(capped_quick),
-                                    )
-                                    close_phase(outcome="failed")
-                                    close_session(
-                                        outcome="failed",
-                                        failure_phase="postflight",
-                                        failure_reason=failure_reason,
-                                        steps_total=total_steps,
-                                        steps_completed=steps_completed,
                                     )
                                     return False
                                 logger.info("[VALIDATE] Quick validation passed (doc_only, non_python, scope prompts)")
@@ -1794,14 +1595,6 @@ def _execute_recommendation_inner(
                                     failure_class="test_failure",
                                     validation_output=capped_ci,
                                 )
-                                close_phase(outcome="failed")
-                                close_session(
-                                    outcome="failed",
-                                    failure_phase="postflight",
-                                    failure_reason=failure_reason,
-                                    steps_total=total_steps,
-                                    steps_completed=steps_completed,
-                                )
                                 return False
                     except Exception as e:
                         logger.warning(
@@ -1867,14 +1660,6 @@ def _execute_recommendation_inner(
                             failure_reason=failure_reason,
                             failure_class="test_failure",
                         )
-                        close_phase(outcome="failed")
-                        close_session(
-                            outcome="failed",
-                            failure_phase="postflight",
-                            failure_reason=failure_reason,
-                            steps_total=total_steps,
-                            steps_completed=steps_completed,
-                        )
                         return False
         if _pf_validation.get("result") == "pass_with_quarantine":
             logger.warning("[VALIDATE] Full CI validation passed under explicit baseline-test quarantine")
@@ -1898,14 +1683,6 @@ def _execute_recommendation_inner(
             rec_id=rec_id,
             failure_phase="validation",
             failure_reason="Could not start validate.py",
-        )
-        close_phase(outcome="failed")
-        close_session(
-            outcome="failed",
-            failure_phase="postflight",
-            failure_reason="Could not start validate.py",
-            steps_total=total_steps,
-            steps_completed=steps_completed,
         )
         return False
 
@@ -1972,14 +1749,6 @@ def _execute_recommendation_inner(
                 failure_reason=failure_reason or "",
                 failure_class="acceptance_mismatch",
                 acceptance_output=acceptance_output or "",
-            )
-            close_phase(outcome="failed")
-            close_session(
-                outcome="failed",
-                failure_phase="postflight",
-                failure_reason=failure_reason,
-                steps_total=total_steps,
-                steps_completed=steps_completed,
             )
             return False
 
@@ -2065,14 +1834,6 @@ def _execute_recommendation_inner(
             failure_phase="finalize",
             failure_reason=failure_reason,
         )
-        close_phase(outcome="failed")
-        close_session(
-            outcome="failed",
-            failure_phase="postflight",
-            failure_reason=failure_reason,
-            steps_total=total_steps,
-            steps_completed=steps_completed,
-        )
         return False
 
     print(f"SUCCESS: PR created -- {pr_url}")
@@ -2112,14 +1873,6 @@ def _execute_recommendation_inner(
         postflight_validation=_pf_validation,
     )
 
-    close_phase(outcome="success")
-    close_session(
-        outcome="success",
-        steps_total=len(plan.steps) if plan is not None else total_steps,
-        steps_completed=steps_completed,
-        pr_url=pr_url,
-        ci_outcome="success",
-    )
     return True
 
 

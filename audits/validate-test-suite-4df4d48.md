@@ -104,7 +104,7 @@ lives inside coverage-named `test_coverage_checker.py`. Rename only the verifier
 radius grepped: validate.py + one docstring + two one-line test tuples), and relocate the mirror map
 when CD.30 rewrites `test_coverage_checker.py` anyway. **"validate": leave as is** - the
 `validate.py` + `validate_*` corpus is one subsystem whose prefix is the convention; the single
-stray, `scripts/validate_telemetry.py` (zero importers, dormant Athena-era tool), takes its
+stray, `scripts/validate_telemetry.py` (zero importers, dormant legacy-engine-era tool), takes its
 disposition with the T2.36 telemetry rebuild.
 
 ## Q7 - dependency-declaration options (deliberately not chosen)

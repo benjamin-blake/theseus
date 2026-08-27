@@ -38,8 +38,8 @@
 ---
 
 <!-- PUBLIC-REPO BOUNDARY (Decision 101): Never include AWS account IDs / ARNs, IAM ExternalIds,
-     secrets / API keys, trading alpha / strategy performance data, or internal hostnames that
-     provide an attack surface. See AGENTS.md "PUBLIC repository / confidential-data boundary".
+     secrets / API keys, or internal hostnames that provide an attack surface. See AGENTS.md
+     "PUBLIC repository / confidential-data boundary".
 
      COMMIT-MESSAGE CONVENTIONS: feat({slug}), plan({slug}), roadmap({ids}), scope({slug}),
      audit({slug}). See AGENTS.md "Commit-message conventions".

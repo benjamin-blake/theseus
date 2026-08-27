@@ -157,7 +157,7 @@ class TestPostmortems:
         reader = self._reader_with_rows(rows)
 
         with (
-            patch("src.common.iceberg_reader.make_reader", return_value=reader),
+            patch("src.common.ducklake_reader_client.make_reader", return_value=reader),
             patch("scripts.ops_data_portal.update_rec") as mock_update,
         ):
             from scripts.ops_data_portal import purge_postmortems_for
@@ -187,7 +187,7 @@ class TestPostmortems:
         reader = self._reader_with_rows(rows)
 
         with (
-            patch("src.common.iceberg_reader.make_reader", return_value=reader),
+            patch("src.common.ducklake_reader_client.make_reader", return_value=reader),
             patch("scripts.ops_data_portal.update_rec") as mock_update,
         ):
             from scripts.ops_data_portal import purge_postmortems_for
@@ -220,7 +220,7 @@ class TestSelftests:
             def current_state(self, table, **kw):
                 return [{"id": "rec-1"}]
 
-        monkeypatch.setattr("src.common.iceberg_reader.make_reader", lambda **kw: _Reader())
+        monkeypatch.setattr("src.common.ducklake_reader_client.make_reader", lambda **kw: _Reader())
         out = p.selftest_read()
         assert out["backend"] == "ducklake" and out["row_count"] == 1 and out["sample_id"] == "rec-1"
 
@@ -241,7 +241,7 @@ class TestSelftests:
             def current_state(self, table, *, row_filter=None, **kw):
                 return [{"id": written["id"]}]
 
-        monkeypatch.setattr("src.common.iceberg_reader.make_reader", lambda **kw: _Reader())
+        monkeypatch.setattr("src.common.ducklake_reader_client.make_reader", lambda **kw: _Reader())
         out = p.selftest_roundtrip()
         assert out["read_back"] is True and out["backend"] == "ducklake"
         assert calls == ["write_ops", "update_ops"]
@@ -267,7 +267,7 @@ class TestSelftests:
             def current_state(self, table, *, row_filter=None, **kw):
                 return [{"id": written["id"]}]
 
-        monkeypatch.setattr("src.common.iceberg_reader.make_reader", lambda **kw: _Reader())
+        monkeypatch.setattr("src.common.ducklake_reader_client.make_reader", lambda **kw: _Reader())
         out = p.selftest_roundtrip()
 
         assert out["superseded"] is True
@@ -286,6 +286,6 @@ class TestSelftests:
             def current_state(self, table, *, row_filter=None, **kw):
                 return []
 
-        monkeypatch.setattr("src.common.iceberg_reader.make_reader", lambda **kw: _Reader())
+        monkeypatch.setattr("src.common.ducklake_reader_client.make_reader", lambda **kw: _Reader())
         with pytest.raises(RuntimeError, match="read-back"):
             p.selftest_roundtrip()

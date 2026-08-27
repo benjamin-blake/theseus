@@ -49,7 +49,6 @@ _REQUIRED_ENTRY_NAMES = frozenset(
         "validate_decisions_size",
         "validate_decisions_index_freshness",
         "validate_decision_entry_conformance",
-        "validate_live_entry_immutability",
         "validate_supersession_annotations",
         "validate_decision_currency",
     }
@@ -61,15 +60,15 @@ class TestRequiredEntryMembership:
         present = {entry.name for entry in _manifest.ENTRIES}
         assert _REQUIRED_ENTRY_NAMES <= present, f"missing from ENTRIES: {sorted(_REQUIRED_ENTRY_NAMES - present)}"
 
-    def test_live_entry_immutability_runs_in_both_tiers(self) -> None:
-        """The append-only lock is a both-tier gate: a --pre-only registration would let a
-        destructive edit reach main through any path that skips the fast tier."""
-        entry = next(e for e in _manifest.ENTRIES if e.name == "validate_live_entry_immutability")
+    def test_entry_conformance_runs_in_both_tiers(self) -> None:
+        """Corpus conformance is a both-tier gate: a --pre-only registration would let a
+        nonconforming edit reach main through any path that skips the fast tier."""
+        entry = next(e for e in _manifest.ENTRIES if e.name == "validate_decision_entry_conformance")
         assert entry.pre is True
         assert entry.full_segment == "full_after_lint"
 
-    def test_live_entry_immutability_pre_globs_cover_both_corpus_files(self) -> None:
-        entry = next(e for e in _manifest.ENTRIES if e.name == "validate_live_entry_immutability")
+    def test_entry_conformance_pre_globs_cover_both_corpus_files(self) -> None:
+        entry = next(e for e in _manifest.ENTRIES if e.name == "validate_decision_entry_conformance")
         assert {"docs/DECISIONS.md", "docs/DECISIONS_ARCHIVE.md"} <= set(entry.pre_globs)
 
 
@@ -92,15 +91,6 @@ class TestGatedEntryInputClosures:
             "scripts/decisions_md.py",
             "scripts/checks/decisions/**",
         } <= self._globs("validate_decision_entry_conformance")
-
-    def test_live_entry_immutability_covers_its_grammar_sources(self) -> None:
-        """It imports the fence regexes from scripts.preflight.decision_conditions and the section
-        walker from scripts.decisions_md -- either edit changes what the lock enforces."""
-        assert {
-            "scripts/decisions_md.py",
-            "scripts/preflight/decision_conditions.py",
-            "scripts/checks/decisions/**",
-        } <= self._globs("validate_live_entry_immutability")
 
     def test_supersession_annotations_covers_its_waiver_file(self) -> None:
         """Promoted into --pre. The waiver roster is the third input alongside the two corpus
@@ -127,13 +117,6 @@ _CLOSURE_INPUTS: dict[str, tuple[str, ...]] = {
     "validate_decision_entry_conformance": (
         "docs/contracts/decision-entry.yaml",
         "scripts/decisions_md.py",
-        "scripts/checks/decisions/_baseline.py",
-        "scripts/checks/_common.py",
-        "scripts/checks/registry.py",
-    ),
-    "validate_live_entry_immutability": (
-        "scripts/decisions_md.py",
-        "scripts/preflight/decision_conditions.py",
         "scripts/checks/decisions/_baseline.py",
         "scripts/checks/_common.py",
         "scripts/checks/registry.py",

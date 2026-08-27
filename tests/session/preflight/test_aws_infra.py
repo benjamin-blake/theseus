@@ -172,7 +172,6 @@ class TestCredentialsOrderingInMain:
         def _track_sync(profile: str = "agent_platform") -> dict:
             call_order.append("sync")
             return {
-                "drained": {},
                 "pulled": {},
                 "rows": {"ops_recommendations": [], "ops_decisions": [], "ops_priority_queue": []},
                 "reader_ok": {"ops_recommendations": True, "ops_decisions": True, "ops_priority_queue": True},
@@ -182,11 +181,6 @@ class TestCredentialsOrderingInMain:
 
         with (
             patch("scripts.preflight.env_git.check_venv", return_value=True),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"friction_patterns": [], "overall": "ok", "checks": []},
-            ),
-            patch("scripts.preflight.context_docs.print_telemetry_health"),
             patch("scripts.preflight.env_git.run_log_sync", return_value={}),
             patch("scripts.preflight.env_git.get_git_status", return_value=("agent/test", False, [])),
             patch("scripts.preflight.aws_infra.check_terraform_pending", return_value=False),
@@ -207,7 +201,10 @@ class TestCredentialsOrderingInMain:
                     "recommendations_count": 0,
                 },
             ),
-            patch("scripts.preflight.context_docs.check_data_quality_coverage", return_value={}),
+            patch(
+                "scripts.preflight.context_docs.check_data_quality_coverage",
+                return_value={"tables_covered": 0, "checks_defined": 0, "last_run": None},
+            ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
         ):

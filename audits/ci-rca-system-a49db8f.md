@@ -90,7 +90,7 @@ game.
 
 ## Q4 -- drifting, in the un-annotated places
 
-The `[STALE]` Athena/DuckLake annotations are disciplined and do not mislead. What
+The `[STALE]` legacy-engine/DuckLake annotations are disciplined and do not mislead. What
 misleads is INTENT Section 4's enforcement list: check 1 (hard reject on missing
 context_v2) is false in code, check 4 (actual_gate comparison) is unimplemented, check 5's
 presence/relevance clauses are unenforced beyond the annotated existence-lookup deferral,

@@ -181,7 +181,7 @@ class TestGetRelevantGotchas:
 
     def test_gotcha_injection_in_gather_context(self, tmp_path: Path) -> None:
         """gather_step_context injects gotchas for .tf files."""
-        target = tmp_path / "iceberg_tables.tf"
+        target = tmp_path / "ducklake_tables.tf"
         target.write_text('resource "aws_glue_catalog_table" "example" {}\n', encoding="utf-8")
         step = {"action": "modify", "file": str(target)}
         # Patch the file path used to match so relative gotcha map key is matched
@@ -189,7 +189,7 @@ class TestGetRelevantGotchas:
             gather_step_context(step, max_chars=10000)
         # For a .tf file not at terraform/ prefix, no gotcha is injected (abs path has no prefix match)
         # But if we use a relative path with terraform/ prefix, it should inject
-        step2 = {"action": "modify", "file": "terraform/iceberg_tables.tf"}
+        step2 = {"action": "modify", "file": "terraform/ducklake_tables.tf"}
         with patch("pathlib.Path.exists", return_value=False):
             result2 = gather_step_context(step2, max_chars=10000)
         # Gotchas should appear (even though file doesn't exist, gotcha is injected based on path)

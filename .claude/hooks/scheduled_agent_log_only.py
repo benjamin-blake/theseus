@@ -6,7 +6,6 @@ sessions the env var is absent and the hook exits 0 (fully inert).
 
 When active, permits mutation tools only to:
   logs/agents/{agent_name}/    -- findings output directory
-  logs/.ops-outbox/            -- telemetry outbox
 
 Bash tool calls always exit 0. The --allowedTools list at the claude -p
 invocation level enforces Bash restrictions.
@@ -60,7 +59,6 @@ def main() -> int:
     normalized = _normalize(str(file_path_str))
     permitted_prefixes = [
         f"logs/agents/{agent_name}/",
-        "logs/.ops-outbox/",
     ]
 
     for prefix in permitted_prefixes:
@@ -72,7 +70,6 @@ def main() -> int:
         f"{tool_name} to '{file_path_str}' is not permitted for agent '{agent_name}'.\n"
         f"Permitted paths:\n"
         f"  - logs/agents/{agent_name}/\n"
-        f"  - logs/.ops-outbox/\n"
     )
     return 2
 

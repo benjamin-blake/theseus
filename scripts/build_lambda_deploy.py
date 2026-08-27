@@ -21,7 +21,6 @@ from scripts.build_lambda_config import (
     _aws_profile_args,
     _build_ducklake_function_zip_keys,
     _build_ducklake_layer_names,
-    _build_ops_compaction,
     _build_prod_function_names,
 )
 
@@ -92,11 +91,8 @@ def update_lambda_functions(
 ) -> None:
     """Update Lambda function code to point at the latest S3 ZIPs.
 
-    Uses ``aws lambda update-function-code`` with --s3-bucket and
-    --s3-key.  Dispatcher and findings-processor use the full
-    ``data-pipeline.zip``.  The ops_compaction Lambda uses the minimal
-    ``ops-compaction.zip`` (no pip dependencies) to stay under the 262 MB
-    combined-with-layers size limit imposed by the attached AWSSDKPandas layer.
+    Uses ``aws lambda update-function-code`` with --s3-bucket and --s3-key. Dispatcher and
+    findings-processor both deploy from ``data-pipeline.zip``.
 
     ``only_ducklake`` scopes the deploy to the four DuckLake functions (T2.17/T2.18), leaving the
     prod functions untouched (Decision 79 affected-artifact hygiene). Both paths capture
@@ -128,8 +124,8 @@ def update_lambda_functions(
         raise ValueError("only_functions requires only_ducklake=True -- the prod branch builds a different map.")
 
     if only_ducklake:
-        # Scope the deploy to the four DuckLake functions ONLY: data-pipeline + ops-compaction are
-        # NOT redeployed by a T2.17/T2.18 deploy (Decision 79 affected-artifact hygiene).
+        # Scope the deploy to the DuckLake functions ONLY: data-pipeline is NOT redeployed by a
+        # T2.17/T2.18 deploy (Decision 79 affected-artifact hygiene).
         function_zip_map = dict(_build_ducklake_function_zip_keys())
         if only_functions is not None:
             unrecognised = only_functions - set(function_zip_map)
@@ -142,8 +138,6 @@ def update_lambda_functions(
         channel = "ducklake"
     else:
         function_zip_map = {fn: "lambda-packages/data-pipeline.zip" for fn in _build_prod_function_names()}
-        ops = _build_ops_compaction()
-        function_zip_map[ops["function"]] = ops["zip_key"]
         channel = "prod"
 
     for fn_name, fixed_s3_key in function_zip_map.items():

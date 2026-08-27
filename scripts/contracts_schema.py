@@ -1,7 +1,7 @@
 """Canonical Pydantic v2 schema for the pre-codegen contract ritual (T-1.12 subset d).
 
-Models the Class A/B/C `docs/contracts/{name}.yaml` ritual contract shape defined in
-docs/INTENT-pre-codegen-contract-ratification.md Parts 3C-3E and Part 4 Invariants 1-6.
+Models the Class A/B/C `docs/contracts/{name}.yaml` ritual contract shape governed by
+Decision 86 / Decision 127 and enforced by scripts/checks/contracts/validate_contract_drift.py.
 
 Split out from scripts/contracts.py (the loader/resolver public API) to keep each module
 under the 500-SLOC gate (Decision 43). The loader imports these models; the subset-(e) CI

@@ -207,45 +207,45 @@ class TestFetchDecisionFromReader:
         reader = MagicMock()
         reader.named.return_value = [dict(self._DEC_ROW)]
 
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
-            from scripts.ops_data_portal import _fetch_decision_from_athena
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
+            from scripts.ops_data_portal import _fetch_decision_from_reader
 
-            result = _fetch_decision_from_athena("dec-007")
+            result = _fetch_decision_from_reader("dec-007")
 
         assert result is not None
         assert result["id"] == "dec-007"
         assert result["status"] == "Decided"
         reader.named.assert_called_once_with("decision_by_id", id="dec-007")
 
-    def test_reader_failure_loud_fails_no_athena_fallback(self) -> None:
-        """Reader failure propagates -- the Athena fallback retired with the estate (Decision 84 I-1)."""
+    def test_reader_failure_fails_loud(self) -> None:
+        """Reader failure propagates -- there is no fallback read path (Decision 84 I-1)."""
         reader = MagicMock()
         reader.named.side_effect = RuntimeError("ducklake_reader 'named_read' failed (HTTP 500)")
 
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
-            from scripts.ops_data_portal import _fetch_decision_from_athena
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
+            from scripts.ops_data_portal import _fetch_decision_from_reader
 
             with pytest.raises(RuntimeError, match="ducklake_reader"):
-                _fetch_decision_from_athena("dec-007")
+                _fetch_decision_from_reader("dec-007")
 
     def test_reader_returns_none_when_decision_not_found(self) -> None:
         """Reader returns empty list -> function returns None."""
         reader = MagicMock()
         reader.named.return_value = []
 
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
-            from scripts.ops_data_portal import _fetch_decision_from_athena
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
+            from scripts.ops_data_portal import _fetch_decision_from_reader
 
-            result = _fetch_decision_from_athena("dec-999")
+            result = _fetch_decision_from_reader("dec-999")
 
         assert result is None
 
     def test_invalid_decision_id_raises_value_error(self) -> None:
         """Malformed decision_id raises ValueError before any reader call."""
-        from scripts.ops_data_portal import _fetch_decision_from_athena
+        from scripts.ops_data_portal import _fetch_decision_from_reader
 
         with pytest.raises(ValueError, match="invalid decision_id"):
-            _fetch_decision_from_athena("not-a-decision")
+            _fetch_decision_from_reader("not-a-decision")
 
 
 class TestFidelityHelpers:
@@ -567,7 +567,7 @@ class TestIntentBackfillColumn:
 class TestLiveReaderParity:
     """Post-deploy anchor spot-check via the ducklake_reader boundary (VP step 11 of
     PLAN-daf-etl-parity-fidelity). Marked integration (real AWS network + credentials
-    required) per the tests/test_iceberg_reader.py::TestWarehouseParity precedent. Also
+    required) per the tests/common/ducklake_reader_client/ integration-test precedent. Also
     marked aws (rec-2484 blast-radius fix): the reader's internal assume-role credential
     refresh constructs a real STS client, which the tests/conftest.py L2 create_client
     tripwire blocks unless this class opts out -- @pytest.mark.integration alone bypasses

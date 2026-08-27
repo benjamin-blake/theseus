@@ -5,7 +5,7 @@ Covers the classifier's full truth table (each member of the reader's transient 
 transient; a transient-status message that ALSO carries an error_type marker does NOT; a 4xx does
 NOT; a non-RuntimeError does NOT; requests.ConnectionError/Timeout DO) and the derive-the-set
 parity test that keeps the classifier's accepted set locked to
-src.common.iceberg_reader._READER_TRANSIENT_STATUS rather than an independently restated literal.
+src.common.ducklake_reader_client._READER_TRANSIENT_STATUS rather than an independently restated literal.
 
 GUARD SHAPE IS PINNED (plan-critique round 4, B2): the `requests` dependency is guarded
 FUNCTION-SCOPED, inside the two ConnectionError/Timeout test bodies only -- NEVER a module-scope
@@ -92,7 +92,7 @@ class TestTransientSetParity:
 
     def test_classifier_set_equals_reader_authority(self) -> None:
         from scripts.ops_portal.reader_transient import is_reader_unavailable
-        from src.common.iceberg_reader import _READER_TRANSIENT_STATUS
+        from src.common.ducklake_reader_client import _READER_TRANSIENT_STATUS
 
         accepted = {status for status in range(400, 600) if is_reader_unavailable(RuntimeError(f"failed (HTTP {status})"))}
         assert accepted == set(_READER_TRANSIENT_STATUS)
@@ -114,7 +114,7 @@ class TestTransientSetParity:
         lazily inside a function), so this node id is safe in a hermetic step."""
         from scripts.ops_portal.reader_transient import is_reader_unavailable
         from scripts.ops_portal.writer_transport import _WRITER_TRANSIENT_STATUS
-        from src.common.iceberg_reader import _READER_TRANSIENT_STATUS
+        from src.common.ducklake_reader_client import _READER_TRANSIENT_STATUS
 
         assert set(_WRITER_TRANSIENT_STATUS) == set(_READER_TRANSIENT_STATUS)
 

@@ -6,7 +6,7 @@ model: opus[1m]
 
 # Planning Methodology & Rules
 
-You are using this skill to augment the `/plan` workflow. Apply these deep instructions when executing the workflow steps. You must NEVER initiate modifications to source code or global instructions (docs/PROJECT_CONTEXT.md, skills) during a planning session. SOLE EXCEPTION: roadmap-bookkeeping edits to `docs/ROADMAP-PLATFORM.yaml` / `docs/ROADMAP-PRODUCT.yaml` proposed by the Tier Item Freshness Gate (status closeouts, criteria re-grounding) -- and only after explicit human confirmation; these reconcile roadmap DATA with reality, they implement nothing. The planning phase ends with the commitment of the PLAN artifact. Implementation only begins after an explicit /implement trigger with ANOTHER agent.
+You are using this skill to augment the `/plan` workflow. Apply these deep instructions when executing the workflow steps. You must NEVER initiate modifications to source code or global instructions (docs/PROJECT_CONTEXT.md, skills) during a planning session. SOLE EXCEPTION: roadmap-bookkeeping edits to `docs/ROADMAP-PLATFORM.yaml` proposed by the Tier Item Freshness Gate (status closeouts, criteria re-grounding) -- and only after explicit human confirmation; these reconcile roadmap DATA with reality, they implement nothing. The planning phase ends with the commitment of the PLAN artifact. Implementation only begins after an explicit /implement trigger with ANOTHER agent.
 
 ## Behavioural Invariants
 ```yaml
@@ -34,7 +34,6 @@ When reading `logs/.preflight-report.json`, apply these conditionals:
   the working tree, so a stale tree means a stale critique -- recommend rebasing, let the human decide.
 - **`main_freshness.commits_behind > 0`** -- Retain `main_freshness.main_files_changed_since_branch` for the Step 4 Main Divergence Assessment. Non-blocking at this step.
 - **`cron_review_fresh: false`** -- Note to human (non-blocking).
-- **`ops_outbox` non-empty** -- Entries in migrated-table or `*_pending` dirs are ANOMALIES (Decision 84 I-4: those outboxes are retired and never drained) -- re-file the content via the portal and delete the files. Legacy staging dirs (telemetry/session_log/execution_plans) drain via `bin/venv-python -m scripts.sync.ops sync`. If that fails, STOP.
 - **`open_recommendations > 0`** -- Surface counts and ask whether to address. Wait.
 - **`non_automatable_recommendations > 0`** -- Informational. Surface counts; do not require per-rec discussion. Individual review is suspended per Decision 73 until CD.17 / T4.2 reverses (Decision 67's Lambda-deploy clause was lifted by Decision 79; the STRATEGIC clause survives).
   - If `non_automatable_softcap_breached` is true (count > 250), surface as a planning context note.
@@ -50,22 +49,19 @@ When reading `logs/.preflight-report.json`, apply these conditionals:
   reasons as planning context. Repeated `--ignore-budget` use indicates fast-tier drift and likely
   warrants revisiting the budget or identifying the slow check.
 
-### What Telemetry Health Represents
+### What Data-Quality Health Represents
 
-The preflight `telemetry_health` section reports operational health of the telemetry and ops data pipelines:
+The preflight `data_quality` section reports operational health of the ops data pipeline:
 
-1. **Telemetry store status** (stub, Decision 84): the old Athena telemetry tables are retired, so the preflight reports a single `telemetry-store: not migrated (Phase 4)` check with NO queries issued. Session metrics return when telemetry re-lands on DuckLake (Decision 84 Phase 4 / tier_item T2.36). Until then, do not gate plans on session counts/staleness.
+1. **Data quality coverage** (from `config/agent/data_quality/*.yaml`): how many declarative checks (not_null, unique, accepted_values, relationships, row_count, recency) are defined across how many tables. This answers: "Do we have visibility into data correctness?"
 
-2. **Data quality coverage** (from `config/agent/data_quality/*.yaml`): how many declarative checks (not_null, unique, accepted_values, relationships, row_count, recency) are defined across how many tables. This answers: "Do we have visibility into data correctness?"
+2. **Last DQ run result** (from `logs/debug/dq-latest.json`): the verdict (PASS/FAIL), pass/fail/warn counts, and timestamp of the most recent `bin/venv-python -m scripts.data_quality_runner` execution. This answers: "When we last checked, was the data actually correct?"
 
-3. **Last DQ run result** (from `logs/debug/dq-latest.json`): the verdict (PASS/FAIL), pass/fail/warn counts, and timestamp of the most recent `bin/venv-python -m scripts.data_quality_runner` execution. This answers: "When we last checked, was the data actually correct?"
-
-Together these form a three-layer health picture:
-- **Pipeline health**: Is data flowing? (session count > 0, staleness < 72h)
+Together these form a two-layer health picture:
 - **Quality coverage**: Do we have checks defined? (checks_defined > 0)
 - **Quality state**: Are the checks passing? (last_run.verdict == PASS)
 
-If pipeline health is critical (no sessions in 7 days), the plan should prioritise pipeline fixes before adding new features. If quality coverage is zero, any plan touching data write paths should include adding YAML checks. If the last DQ run failed, the plan should note which tables are affected.
+If quality coverage is zero, any plan touching data write paths should include adding YAML checks. If the last DQ run failed, the plan should note which tables are affected.
 
 ## Follow-on /plan mode (in_progress items with open criteria)
 
@@ -152,7 +148,7 @@ plan an item. Run four checks, cheapest first:
 2. **Stale-reference check.** Verify every `files_in_scope` path exists or is marked `# new`;
    scan the item's intent/exit_criteria for surfaces or substrates that ratified decisions have
    retired (e.g. the EC2 runner per CD.21/Decision 73, Bedrock per CD.28, SSO per CD.26, direct
-   Iceberg/Athena access for tables cut over to the DuckLake closed boundary per CD.31/CD.33/
+   warehouse access for tables cut over to the DuckLake closed boundary per CD.31/CD.33/
    Decision 81). A stale reference does not block planning -- but the plan MUST include
    re-grounding the item's text as an explicit Scope row, and the implementation follows the
    CURRENT architecture, never the stale instruction.
@@ -227,13 +223,12 @@ print(verdict, '|', evidence[:120])
 When a plan creates or modifies documentation artefacts, apply these rules:
 
 - Canonical field documentation pattern: ops.yaml extended contract. Add `description`
-  and `semantics` metadata fields directly to the column entry in ops.yaml or
-  telemetry.yaml. These fields are ignored by the DQ runner and consumed by agents.
+  and `semantics` metadata fields directly to the column entry in ops.yaml. These fields are
+  ignored by the DQ runner and consumed by agents.
   Do not create a separate briefing doc for the same information.
 - Decision 86 routing rule -- no new standing prose-architecture docs under docs/: route forward
   intent to tier_items, rationale to Decisions, field semantics to contracts. A new
-  docs/INTENT-*.md or equivalent is forbidden; validate.py's intent-doc-freeze guard enforces this
-  on-disk. Existing INTENT docs are grandfathered via docs/intent-migration/MANIFEST.yaml.
+  docs/INTENT-*.md or equivalent is forbidden.
 
 ## Infrastructure & Lambda Assessment (Workflow Step 4)
 **Infrastructure:** If `.tf` files are in scope, add an "Infrastructure Dependencies table" to the plan. Lambda handlers must accept a `force_{param}` event field. Pre-merge vs post-deploy timing must be specified.
@@ -244,7 +239,7 @@ When a plan creates or modifies documentation artefacts, apply these rules:
 
 **Deploy channel by artifact class (Decision 125):** consult `docs/contracts/build-lambda.yaml`'s `deploy_channels` section (pointer-only; `environment-taxonomy.yaml` (conformance) is the sole classification SoT) to determine which channel an affected artifact deploys through:
 - **`terraform_personal_filemd5_coupled`** (the four `terraform/personal`-managed DuckLake Lambdas): the plan emits the governed decoupled code-deploy CD channel VP steps -- grep-only / CI-delegated per Decision 119 (name the required CI check or workflow as the authoritative verifier; no local `terraform init`/`plan` for `terraform/personal`). The bare local `bin/venv-python -m scripts.build_lambda --ducklake-only --deploy` invocation is break-glass only (Decision 125) and must never be the default VP step for this class. If the governed channel does not yet exist for the touched artifact, the plan must file a follow-on rec for it rather than defaulting to the local invocation.
-- **`decoupled_build_pipeline`** (the `data-pipeline`/`ops-compaction` targets in `src/data/handlers/`): local `bin/venv-python -m scripts.build_lambda --deploy` remains the routine deploy step -- these are not `terraform/personal`-managed, so Decision 125's channel gating does not apply to them.
+- **`decoupled_build_pipeline`** (the `data-pipeline` target in `src/data/handlers/`): local `bin/venv-python -m scripts.build_lambda --deploy` remains the routine deploy step -- it is not `terraform/personal`-managed, so Decision 125's channel gating does not apply to it.
 
 ## Complexity Assessment (Workflow Step 4)
 - **Scope files > 5** OR **estimated steps > 8** --> suggests classifying as **STRATEGIC**.
@@ -324,7 +319,7 @@ judgement, not schema inference.
 
 **Anti-patterns to reject:** structural-only (`grep -q "def my_function" src/module.py` proves
 existence, not function); test-only ("Run pytest" proves mocked paths, not real integration);
-existence-only ("Confirm the Athena view was created" doesn't confirm correct data); import-only
+existence-only ("Confirm the table was created" doesn't confirm correct data); import-only
 ("Confirm `import module` succeeds" isn't verification); terraform-only ("Confirm `terraform
 apply` succeeded" -- infra existing isn't enough); prose-only (no executable command -- the
 implement agent will substitute a weaker check).
@@ -498,7 +493,7 @@ intent: >- # 1-2 sentences: how this work contributes toward the North Star
 plan_type: IMPLEMENTATION # IMPLEMENTATION | STRATEGIC | REPORT-ONLY
 verification_tier: V2 # V1 | V2 | V3
 plan_path: docs/plans/PLAN-{slug}.yaml # must match the filename slug exactly
-phase: >- # product phase from docs/ROADMAP-PRODUCT.yaml and/or platform tier_item id
+phase: >- # platform tier_item id from docs/ROADMAP-PLATFORM.yaml
   ...
 scope: # min 1 entry; only files listed here may be modified
   - file: path/to/file.py
@@ -586,13 +581,13 @@ Launch a zero-context Claude subagent via the `Agent` tool to run the `plan-crit
 - `prompt:` self-contained, mentions:
   - The absolute path to `docs/plans/PLAN-{slug}.yaml` (a `.md` path is deprecated -- surface a deprecation warning and proceed)
   - Instruction to invoke the `plan-critique` skill via the `Skill` tool against that path
-  - Context files to load explicitly: `docs/PROJECT_CONTEXT.md` (full read) plus targeted (not full-file) projections of the roadmap items and decision sections the plan names from `docs/ROADMAP-PRODUCT.yaml` / `docs/ROADMAP-PLATFORM.yaml` / `docs/DECISIONS.md` -- see the `plan-critique` skill's Phase 1
+  - Context files to load explicitly: `docs/PROJECT_CONTEXT.md` (full read) plus targeted (not full-file) projections of the roadmap items and decision sections the plan names from `docs/ROADMAP-PLATFORM.yaml` / `docs/DECISIONS.md` -- see the `plan-critique` skill's Phase 1
   - For IMPLEMENTATION plans: instruction to also read every file in the plan's Scope table
   - Requirement to return the skill's structured output verbatim, including the final `Recommendation: PROCEED / REVISE` line
   - Forbid file edits
 
 **Example prompt body:**
-> "You are running the plan-critique gate in a fresh context window. **First, run `git fetch origin main --quiet`** so the local `origin/main` ref is current. Then invoke the `plan-critique` skill via the Skill tool to critique `/abs/path/to/docs/plans/PLAN-{slug}.yaml`. Read `docs/PROJECT_CONTEXT.md` in full; extract only the roadmap items and decision sections the plan names per the skill's Phase 1 (do not load full ROADMAP-PLATFORM.yaml/ROADMAP-PRODUCT.yaml/DECISIONS.md). For IMPLEMENTATION plans, also read every file in the plan's Scope table. If `git diff origin/main -- docs/DECISIONS.md docs/ROADMAP-PLATFORM.yaml` shows divergence, note that the critique evaluates against the branch's (possibly stale) view of these docs. Return the skill's structured critique output verbatim, including the final `Recommendation:` verdict line. Do not edit any files."
+> "You are running the plan-critique gate in a fresh context window. **First, run `git fetch origin main --quiet`** so the local `origin/main` ref is current. Then invoke the `plan-critique` skill via the Skill tool to critique `/abs/path/to/docs/plans/PLAN-{slug}.yaml`. Read `docs/PROJECT_CONTEXT.md` in full; extract only the roadmap items and decision sections the plan names per the skill's Phase 1 (do not load full ROADMAP-PLATFORM.yaml/DECISIONS.md). For IMPLEMENTATION plans, also read every file in the plan's Scope table. If `git diff origin/main -- docs/DECISIONS.md docs/ROADMAP-PLATFORM.yaml` shows divergence, note that the critique evaluates against the branch's (possibly stale) view of these docs. Return the skill's structured critique output verbatim, including the final `Recommendation:` verdict line. Do not edit any files."
 
 Read the critique output returned by the subagent.
 If it suggests revisions, update the plan with these fixes and re-launch the same subagent invocation against the revised plan. Each Agent call is a fresh window, so the re-launch genuinely re-evaluates.
@@ -607,11 +602,11 @@ This gate reviews the PLAN artefact, not the report deliverable. For REPORT-ONLY
 
 **Applies only when Plan Type is REPORT-ONLY.** For IMPLEMENTATION and STRATEGIC plans, Step 10 is a no-op; skip to Step 11.
 
-**Why this gate exists:** the Step 9 `plan-critique` skill reviews the planning artefact (`PLAN-{slug}.yaml`) -- it checks that the PLAN is well-formed, has executable verification steps, aligns with decisions, etc. But for REPORT-ONLY plans, the substantive deliverable is a SEPARATE document (e.g. `docs/INTENT-{slug}.md`, `docs/REPORT-{slug}.md`) referenced from the PLAN's Scope table. That deliverable carries its own correctness burden -- design soundness, internal consistency, alignment with live repo state, blast radius of any proposed changes -- and needs independent fresh-context critique before the planning agent's mission completes.
+**Why this gate exists:** the Step 9 `plan-critique` skill reviews the planning artefact (`PLAN-{slug}.yaml`) -- it checks that the PLAN is well-formed, has executable verification steps, aligns with decisions, etc. But for REPORT-ONLY plans, the substantive deliverable is a SEPARATE document (e.g. `docs/REPORT-{slug}.md`) referenced from the PLAN's Scope table. That deliverable carries its own correctness burden -- design soundness, internal consistency, alignment with live repo state, blast radius of any proposed changes -- and needs independent fresh-context critique before the planning agent's mission completes.
 
 **Methodology:**
 
-1. **Identify the deliverable.** From the PLAN's Scope table, find the report file(s) created in Step 8. Typically one file like `docs/INTENT-{slug}.md`, occasionally more.
+1. **Identify the deliverable.** From the PLAN's Scope table, find the report file(s) created in Step 8. Typically one file like `docs/REPORT-{slug}.md`, occasionally more.
 
 2. **Launch AT LEAST 2 zero-context subagents in parallel via the `Agent` tool**, each with a distinct perspective. Standard pairing for technical/architectural reports:
    - **Senior domain architect** -- design correctness, schema/contract soundness, dependency cleanliness, internal consistency, coverage gaps a careful peer reviewer would flag

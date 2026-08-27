@@ -402,7 +402,7 @@ class TestLiveDuckLakeCiRcaOpenFile:
             pytest.skip("set RUN_LIVE_DUCKLAKE=1 to run live DuckLake roundtrip")
 
         import scripts.ops_data_portal as p
-        from src.common.iceberg_reader import make_reader
+        from src.common.ducklake_reader_client import make_reader
 
         marker_file = "scripts/ci_rca/tier_map.py"
         rec_id = p.file_rec(

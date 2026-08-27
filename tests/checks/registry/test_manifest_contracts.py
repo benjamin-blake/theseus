@@ -86,7 +86,6 @@ class TestBijection:
         from scripts.checks.lambda_pkg._manifest import ENTRIES as lambda_pkg
         from scripts.checks.misc._manifest import ENTRIES as misc
         from scripts.checks.ops_governance._manifest import ENTRIES as ops_governance
-        from scripts.checks.product._manifest import ENTRIES as product
         from scripts.checks.prompts._manifest import ENTRIES as prompts
         from scripts.checks.prose._manifest import ENTRIES as prose
         from scripts.checks.roadmap._manifest import ENTRIES as roadmap
@@ -106,7 +105,6 @@ class TestBijection:
             *lambda_pkg,
             *misc,
             *ops_governance,
-            *product,
             *prompts,
             *prose,
             *roadmap,

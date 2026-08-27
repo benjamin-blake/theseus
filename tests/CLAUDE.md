@@ -14,12 +14,12 @@ instead resolves via the MIRROR convention:
   the test `test_<stem>.py` in that mirrored directory. Examples:
   - `scripts/checks/hygiene/validate_prose_allowlist.py` -> `tests/checks/hygiene/test_validate_prose_allowlist.py`
   - `scripts/executor/step_runner.py` -> `tests/executor/test_step_runner.py`
-  - `src/common/config.py` -> `tests/common/test_config.py`
+  - `src/common/ducklake/runtime.py` -> `tests/common/ducklake/test_runtime.py`
 - A declared concern-split monolith (a single-file source with no per-submodule source to mirror
   1:1) instead resolves to a test PACKAGE DIRECTORY, not a single file -- e.g.
-  `scripts/ops_writer.py` -> `tests/ops_writer/` (concern-split `test_*.py` modules inside), which
-  `check_test_file_exists` accepts once it exists with >=1 `test_*.py` -- also pre-retirement
-  (`scripts/test_coverage_checker.py` -> `tests/test_coverage_checker/`).
+  `scripts/ops_data_portal.py` -> `tests/ops_data_portal/` (concern-split `test_*.py` modules
+  inside), which `check_test_file_exists` accepts once it exists with >=1 `test_*.py` -- also
+  pre-retirement (`scripts/test_coverage_checker.py` -> `tests/test_coverage_checker/`).
 - A wave retires a home by deleting exactly its one basename line from `_RETIRING_GRANDFATHER_HOMES`
   -- a low-conflict, one-line edit -- then creates the mirror test file(s)/package and deletes the
   home's `config/sloc_budgets.yaml` entry.
@@ -27,8 +27,7 @@ instead resolves via the MIRROR convention:
 Every mirror test directory carries an `__init__.py` (prepend import mode; fully-qualified,
 collision-free module paths). Shared helpers live in `tests/fixtures/` (an importable package,
 exempt from the cross-test-import guard because its names never start with `test_`) or in conftest
-fixtures -- never imported from another `test_*` module. The existing `tests/test_verifiers/` lacks
-its `__init__.py` and will be normalized by its own wave, not this one.
+fixtures -- never imported from another `test_*` module.
 
 **Later-wave hand-offs (read before decomposing a roster home):**
 (a) Three roster homes -- `test_executor_step_runner.py`, `test_executor_plan.py`,
@@ -47,9 +46,6 @@ A test module must never import from another `test_*` module -- each mirror pack
 self-contained. Shared helpers live in `conftest.py` fixtures or `tests/fixtures/` (an importable
 package whose names never start with `test_`, so both are exempt by construction). Enforced by
 `scripts/checks/hygiene/validate_no_cross_test_imports.py` (both `--pre` and full presubmit tiers).
-The one pre-existing violation at foundation time, `tests/test_verifier_harness.py` (a re-export
-shim of `tests/test_verifiers/test_harness.py`), is grandfathered in a documented
-`_GRANDFATHERED_CROSS_TEST_IMPORTS` allowlist until a later wave removes the shim.
 
 ## Per-package conftest hierarchy
 The global recursion guards (`_VALIDATE_DEPTH`, `_COVERAGE_SUBPROCESS`, the `PYTEST_CURRENT_TEST`
@@ -71,7 +67,7 @@ sub-conftest per-wave, alongside that package's test-file decomposition -- not a
 Every source file modified on a branch must have a corresponding test file with 100% coverage of the new code. Plan test stub creation when modifying pre-existing scripts that lack test files. Enforced by `scripts/test_coverage_checker.py`.
 
 ## Mock exhaustion (postflight.py)
-When `scripts/executor/postflight.py` adds a new `subprocess.run` call inside any function (e.g., `cleanup_after_merge()`, `finalize()`), count the total call sequence and update the mock `side_effect` counts in `tests/test_execute_recommendation.py`. Missing mock entries cause silent `StopIteration` failures that only surface in CI. See rec-117, rec-325.
+When `scripts/executor/postflight.py` adds a new `subprocess.run` call inside any function (e.g., `cleanup_after_merge()`, `finalize()`), count the total call sequence and update the mock `side_effect` counts in `tests/execute_recommendation/`. Missing mock entries cause silent `StopIteration` failures that only surface in CI. See rec-117, rec-325.
 
 ## After editing tests
 - After **removing** a test class: run `ruff check --fix` to catch unused imports (F401).

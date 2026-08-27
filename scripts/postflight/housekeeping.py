@@ -20,10 +20,9 @@ def close_telemetry_session(
     lines_added: int = 0,
     lines_removed: int = 0,
 ) -> None:
-    """Finalise the active telemetry session opened by ``--open-session``.
+    """Finalise the active session opened by ``--open-session``.
 
-    Reads ``logs/.telemetry-active-session.json`` to retrieve the session_id.
-    Calls ``scripts.executor.telemetry.close_session()`` to emit the record,
+    Reads ``logs/.telemetry-active-session.json`` to retrieve the session_id,
     then removes the state file.  If the state file is missing a warning is
     logged and the function returns without error so session close is never
     blocked.
@@ -37,33 +36,13 @@ def close_telemetry_session(
         return
 
     try:
-        state = json.loads(_common.TELEMETRY_ACTIVE_SESSION_FILE.read_text(encoding="utf-8"))
+        json.loads(_common.TELEMETRY_ACTIVE_SESSION_FILE.read_text(encoding="utf-8"))
     except Exception as exc:  # noqa: BLE001
         print(
             f"WARNING: close_telemetry_session: could not read state file: {exc}",
             file=sys.stderr,
         )
         return
-
-    try:
-        from scripts.executor.telemetry import close_session, get_context  # noqa: PLC0415
-
-        ctx = get_context()
-        # Restore session_id so close_session emits with the correct ID
-        ctx.session_id = state.get("session_id")
-        ctx.workflow = state.get("workflow", "manual")
-        ctx.branch = state.get("branch", "")
-        close_session(
-            outcome=outcome,
-            files_changed=files_changed,
-            lines_added=lines_added,
-            lines_removed=lines_removed,
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(
-            f"WARNING: close_telemetry_session: telemetry.close_session failed: {exc}",
-            file=sys.stderr,
-        )
 
     try:
         _common.TELEMETRY_ACTIVE_SESSION_FILE.unlink(missing_ok=True)

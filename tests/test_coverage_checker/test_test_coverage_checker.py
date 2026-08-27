@@ -127,16 +127,16 @@ class TestCheckPerFileCoverageBaselineAware:
         assert errors and "expected 100%" in errors[0]
 
     def test_baselined_file_passes_below_100_when_meets_entry(self, tmp_path: Path) -> None:
-        source = tmp_path / "scripts" / "ops_writer.py"
+        source = tmp_path / "scripts" / "ops_data_portal.py"
         source.parent.mkdir(parents=True)
         source.write_text("x = 1\n", encoding="utf-8")
-        test_dir = tmp_path / "tests" / "ops_writer"
+        test_dir = tmp_path / "tests" / "ops_data_portal"
         test_dir.mkdir(parents=True)
         (test_dir / "test_write_paths.py").write_text("# test", encoding="utf-8")
 
         coverage_json = tmp_path / ".coverage.json"
         coverage_json.write_text(
-            '{"files": {"scripts/ops_writer.py": {"summary": {"percent_covered": 75.5}}}}', encoding="utf-8"
+            '{"files": {"scripts/ops_data_portal.py": {"summary": {"percent_covered": 75.5}}}}', encoding="utf-8"
         )
 
         proc = MagicMock()
@@ -148,23 +148,23 @@ class TestCheckPerFileCoverageBaselineAware:
             patch("test_coverage_checker.ROOT", tmp_path),
             patch("test_coverage_checker.map_source_to_test", return_value=test_dir),
             patch("test_coverage_checker.subprocess.Popen", return_value=proc),
-            patch("scripts.checks.misc.coverage_baseline.load_baseline", return_value={"scripts/ops_writer.py": 75.4}),
+            patch("scripts.checks.misc.coverage_baseline.load_baseline", return_value={"scripts/ops_data_portal.py": 75.4}),
         ):
             errors = check_per_file_coverage([source])
 
         assert errors == []
 
     def test_baselined_file_fails_when_below_entry(self, tmp_path: Path) -> None:
-        source = tmp_path / "scripts" / "ops_writer.py"
+        source = tmp_path / "scripts" / "ops_data_portal.py"
         source.parent.mkdir(parents=True)
         source.write_text("x = 1\n", encoding="utf-8")
-        test_dir = tmp_path / "tests" / "ops_writer"
+        test_dir = tmp_path / "tests" / "ops_data_portal"
         test_dir.mkdir(parents=True)
         (test_dir / "test_write_paths.py").write_text("# test", encoding="utf-8")
 
         coverage_json = tmp_path / ".coverage.json"
         coverage_json.write_text(
-            '{"files": {"scripts/ops_writer.py": {"summary": {"percent_covered": 70.0}}}}', encoding="utf-8"
+            '{"files": {"scripts/ops_data_portal.py": {"summary": {"percent_covered": 70.0}}}}', encoding="utf-8"
         )
 
         proc = MagicMock()
@@ -176,7 +176,7 @@ class TestCheckPerFileCoverageBaselineAware:
             patch("test_coverage_checker.ROOT", tmp_path),
             patch("test_coverage_checker.map_source_to_test", return_value=test_dir),
             patch("test_coverage_checker.subprocess.Popen", return_value=proc),
-            patch("scripts.checks.misc.coverage_baseline.load_baseline", return_value={"scripts/ops_writer.py": 75.4}),
+            patch("scripts.checks.misc.coverage_baseline.load_baseline", return_value={"scripts/ops_data_portal.py": 75.4}),
         ):
             errors = check_per_file_coverage([source])
 

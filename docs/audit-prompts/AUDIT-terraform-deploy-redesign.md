@@ -130,8 +130,8 @@ trace, or you will burn cognition on the wrong object.
   the active `docs/DECISIONS.md` that section 13's dedup greps) does NOT govern the personal account
   -- do not flag the personal-account static-key IAM user as a "no IAM users" violation; the
   static-key model is a live, decided choice (Decision 113, do-not-flag item 4).
-- Two roadmaps exist: `docs/ROADMAP-PLATFORM.yaml` (this audit) and `docs/ROADMAP-PRODUCT.yaml`
-  (out of scope). "T-prefixed" tier items live in the platform roadmap.
+- `docs/ROADMAP-PLATFORM.yaml` is this audit's roadmap; any sibling roadmap is out of scope.
+  "T-prefixed" tier items live in the platform roadmap.
 
 ---
 

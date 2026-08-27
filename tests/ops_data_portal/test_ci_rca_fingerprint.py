@@ -35,7 +35,7 @@ class TestCiRcaFingerprintDedup:
 
     The former per-class _guard_live_reader autouse fixture (rec-2707 backstop-reader guard)
     is retired: the global L1/L2 hermetic-AWS guard in the root tests/conftest.py (rec-2484)
-    now blocks any un-mocked src.common.iceberg_reader.make_reader() -> boto3 client path
+    now blocks any un-mocked src.common.ducklake_reader_client.make_reader() -> boto3 client path
     class-wide, so the per-class duplicate is redundant. Its own behavior test lives in
     tests/test_conftest_hermeticity.py, not here.
     """
@@ -94,7 +94,7 @@ class TestCiRcaFingerprintDedup:
         ]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             result = p.find_open_ci_rca_rec_by_fingerprint(self._FINGERPRINT)
         assert result == "rec-2"
         reader.current_state.assert_called_once_with("ops_recommendations", row_filter="source = 'ci_rca'")
@@ -106,7 +106,7 @@ class TestCiRcaFingerprintDedup:
         reader.current_state.return_value = [
             {"id": "rec-3", "status": "open", "context_v2_json": json.dumps({"fingerprint": "b" * 64})}
         ]
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert p.find_open_ci_rca_rec_by_fingerprint(self._FINGERPRINT) is None
 
     def test_no_rows_returns_none(self):
@@ -114,7 +114,7 @@ class TestCiRcaFingerprintDedup:
 
         reader = MagicMock()
         reader.current_state.return_value = []
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert p.find_open_ci_rca_rec_by_fingerprint(self._FINGERPRINT) is None
 
     def test_reader_unreachable_fails_open(self, caplog):
@@ -122,7 +122,7 @@ class TestCiRcaFingerprintDedup:
 
         reader = MagicMock()
         reader.current_state.side_effect = RuntimeError("ducklake_reader 'read_ops_current' failed (HTTP 503): ...")
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             with caplog.at_level(logging.WARNING):
                 result = p.find_open_ci_rca_rec_by_fingerprint(self._FINGERPRINT)
         assert result is None
@@ -133,7 +133,7 @@ class TestCiRcaFingerprintDedup:
 
         reader = MagicMock()
         reader.current_state.side_effect = RuntimeError("boom -- unrelated to connectivity")
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             with pytest.raises(RuntimeError, match="boom"):
                 p.find_open_ci_rca_rec_by_fingerprint(self._FINGERPRINT)
 
@@ -142,7 +142,7 @@ class TestCiRcaFingerprintDedup:
 
         reader = MagicMock()
         reader.current_state.side_effect = ValueError("bad row_filter")
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             with pytest.raises(ValueError, match="bad row_filter"):
                 p.find_open_ci_rca_rec_by_fingerprint(self._FINGERPRINT)
 
@@ -154,7 +154,7 @@ class TestCiRcaFingerprintDedup:
             {"id": "rec-4", "status": "open", "context_v2_json": "not-json"},
             {"id": "rec-5", "status": "open", "context_v2_json": json.dumps({"fingerprint": self._FINGERPRINT})},
         ]
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert p.find_open_ci_rca_rec_by_fingerprint(self._FINGERPRINT) == "rec-5"
 
     # -- bundle-derived stamp in _run_ci_rca_cross_check --------------------------------------

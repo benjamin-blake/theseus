@@ -13,7 +13,6 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_environment_taxonomy",
         module="scripts.checks.iam_tf.validate_environment_taxonomy",
         attr="validate_environment_taxonomy",
-        product_coupled=True,
         # UNGATED deliberately: the check self-scopes to _common.get_changed_files() and reads
         # only the .md/.yaml/.yml members of that diff, so a static glob could only re-derive the
         # diff it already computes -- and every candidate spelling ("**/*.md") drops repo-root
@@ -62,13 +61,6 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_convergence_writer_isolation",
         pre=True,
         full_segment="full_after_lint",
-    ),
-    Entry(
-        name="validate_iam_runner_policy",
-        module="scripts.checks.iam_tf.validate_iam_runner_policy",
-        attr="validate_iam_runner_policy",
-        pre=True,
-        full_segment="full_after_terraform_checks",
     ),
     Entry(
         name="validate_terraform_try",

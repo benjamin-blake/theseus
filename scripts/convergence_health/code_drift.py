@@ -247,8 +247,8 @@ def detect_ducklake_code_drift(
 # ---------------------------------------------------------------------------
 # Prod-class code-drift alarm (T2.43 / Decision 125/126)
 #
-# Mirrors detect_ducklake_code_drift exactly, scoped to the three prod-class functions
-# (scheduled-agent-dispatcher, findings-processor, ops-compaction) and their
+# Mirrors detect_ducklake_code_drift exactly, scoped to the prod-class functions
+# (scheduled-agent-dispatcher, findings-processor) and their
 # deploy-records/prod/<function>.json records (read_deploy_record channel="prod"). ANY stale
 # function triggers exactly ONE deduped prod_code_drift rec (never one per function). Never
 # writes a deploy record; never redeploys; never runs build_lambda. Alarm-not-gate (priority
@@ -264,20 +264,15 @@ PROD_SOURCE_PATHSPECS: tuple[str, ...] = (
     "scripts/llm/github_models_client.py",
     "scripts/llm/client.py",
     "scripts/llm/utils.py",
-    "scripts/ops_writer.py",
     "scripts/run_scheduled_agent.py",
     "scripts/s3_log_store.py",
-    "scripts/telemetry_schemas.py",
     "scripts/tool_runtime.py",
-    "src/common/outbox_retirement.py",
     "config/lambda/data-pipeline",
-    "config/lambda/ops-compaction",
 )
 
 _PROD_FUNCTION_NAMES: tuple[str, ...] = (
     "agent-platform-scheduled-agent-dispatcher",
     "agent-platform-findings-processor",
-    "agent-platform-ops-compaction",
 )
 
 

@@ -38,13 +38,6 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
-        name="validate_outbox_staleness",
-        module="scripts.checks.ops_governance.validate_outbox_staleness",
-        attr="validate_outbox_staleness",
-        pre=True,
-        full_segment="full_after_lint",
-    ),
-    Entry(
         name="validate_rec_write_paths",
         module="scripts.checks.ops_governance.validate_rec_write_paths",
         attr="validate_rec_write_paths",

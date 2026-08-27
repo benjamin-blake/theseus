@@ -3,7 +3,7 @@ exercised through the officially-mapped tests/session/preflight/ package (only t
 separate tests/test_session_preflight_decomposition.py equivalence suite, which
 scripts.test_coverage_checker's map_source_to_test does not include in preflight.py's coverage
 run): the wrong-venv CRITICAL branch, the log-sync-committed uncommitted-flag clear, the
-terraform_pending tuple-unpack branch, the outbox non-empty/exception paths, the warm_sync
+terraform_pending tuple-unpack branch, the warm_sync
 exception path, and the PYTEST_CURRENT_TEST-absent S3_LOG_BUCKET default. New in
 PLAN-convergence-health-prod-drift-red -- touching scripts/session/preflight.py for the
 convergence-sensor-liveness wiring pushed the file's coverage measurement into failing territory,
@@ -51,19 +51,13 @@ class TestPytestCurrentTestAbsent:
                 patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
                 patch("scripts.preflight.recs_cache._count_recommendations_reader", return_value=(0, 0, 0, [])),
                 patch("scripts.preflight.context_docs.read_context_files", return_value={}),
-                patch(
-                    "scripts.preflight.context_docs.check_telemetry_health",
-                    return_value={"overall": "ok", "checks": [], "friction_patterns": []},
-                ),
                 patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
                 patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
-                patch("scripts.sync.ops.outbox_summary", return_value={}),
                 # Real compute_state_dict() calls (~7-10s each, unmocked in most of this package's
                 # sibling main()-level tests -- a pre-existing, repo-wide cost filed as a
                 # recommendation) are irrelevant to what this test asserts; mocking them keeps this
                 # new file from inheriting that cost for behavior it doesn't exercise.
                 patch("session_preflight.platform_roadmap.compute_state_dict", return_value={}),
-                patch("session_preflight.product_roadmap_module.compute_state_dict", return_value={}),
                 patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
                 patch("builtins.print"),
             ):
@@ -90,19 +84,13 @@ class TestWrongVenvCriticalBranch:
             patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
             patch("scripts.preflight.recs_cache._count_recommendations_reader", return_value=(0, 0, 0, [])),
             patch("scripts.preflight.context_docs.read_context_files", return_value={}),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
-            ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
-            patch("scripts.sync.ops.outbox_summary", return_value={}),
             # Real compute_state_dict() calls (~7-10s each, unmocked in most of this package's
             # sibling main()-level tests -- a pre-existing, repo-wide cost filed as a
             # recommendation) are irrelevant to what this test asserts; mocking them keeps this
             # new file from inheriting that cost for behavior it doesn't exercise.
             patch("session_preflight.platform_roadmap.compute_state_dict", return_value={}),
-            patch("session_preflight.product_roadmap_module.compute_state_dict", return_value={}),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
             patch("builtins.print", side_effect=_capture),
         ):
@@ -128,19 +116,13 @@ class TestLogSyncCommittedClearsUncommitted:
             patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
             patch("scripts.preflight.recs_cache._count_recommendations_reader", return_value=(0, 0, 0, [])),
             patch("scripts.preflight.context_docs.read_context_files", return_value={}),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
-            ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
-            patch("scripts.sync.ops.outbox_summary", return_value={}),
             # Real compute_state_dict() calls (~7-10s each, unmocked in most of this package's
             # sibling main()-level tests -- a pre-existing, repo-wide cost filed as a
             # recommendation) are irrelevant to what this test asserts; mocking them keeps this
             # new file from inheriting that cost for behavior it doesn't exercise.
             patch("session_preflight.platform_roadmap.compute_state_dict", return_value={}),
-            patch("session_preflight.product_roadmap_module.compute_state_dict", return_value={}),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
             patch("builtins.print"),
         ):
@@ -166,19 +148,13 @@ class TestTerraformPendingTupleUnpack:
             patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
             patch("scripts.preflight.recs_cache._count_recommendations_reader", return_value=(0, 0, 0, [])),
             patch("scripts.preflight.context_docs.read_context_files", return_value={}),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
-            ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
-            patch("scripts.sync.ops.outbox_summary", return_value={}),
             # Real compute_state_dict() calls (~7-10s each, unmocked in most of this package's
             # sibling main()-level tests -- a pre-existing, repo-wide cost filed as a
             # recommendation) are irrelevant to what this test asserts; mocking them keeps this
             # new file from inheriting that cost for behavior it doesn't exercise.
             patch("session_preflight.platform_roadmap.compute_state_dict", return_value={}),
-            patch("session_preflight.product_roadmap_module.compute_state_dict", return_value={}),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
             patch("builtins.print"),
         ):
@@ -186,52 +162,6 @@ class TestTerraformPendingTupleUnpack:
         report = json.loads(preflight_report.read_text(encoding="utf-8"))
         assert report["terraform_pending"] is True
         assert report["convergence_health"] == convergence_health
-
-
-class TestOpsOutboxPaths:
-    def _run(self, tmp_path: Path, outbox_summary_kwargs: dict) -> tuple[dict, list[str]]:
-        preflight_report = tmp_path / ".preflight-report.json"
-        printed: list[str] = []
-
-        def _capture(*args: object, **kwargs: object) -> None:
-            printed.append(" ".join(str(a) for a in args))
-
-        with (
-            patch("scripts.preflight.env_git.check_venv", return_value=True),
-            patch("scripts.preflight.env_git.get_git_status", return_value=("claude/test", False, [])),
-            patch("scripts.preflight.aws_infra.check_terraform_pending", return_value=False),
-            patch("scripts.preflight.aws_infra.check_credentials", return_value="unavailable"),
-            patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
-            patch("scripts.preflight.recs_cache._count_recommendations_reader", return_value=(0, 0, 0, [])),
-            patch("scripts.preflight.context_docs.read_context_files", return_value={}),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
-            ),
-            patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
-            patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
-            patch("scripts.sync.ops.outbox_summary", **outbox_summary_kwargs),
-            # Real compute_state_dict() calls (~7-10s each, unmocked in most of this package's
-            # sibling main()-level tests -- a pre-existing, repo-wide cost filed as a
-            # recommendation) are irrelevant to what this test asserts; mocking them keeps this
-            # new file from inheriting that cost for behavior it doesn't exercise.
-            patch("session_preflight.platform_roadmap.compute_state_dict", return_value={}),
-            patch("session_preflight.product_roadmap_module.compute_state_dict", return_value={}),
-            patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
-            patch("builtins.print", side_effect=_capture),
-        ):
-            _preflight.main()
-        report = json.loads(preflight_report.read_text(encoding="utf-8"))
-        return report, printed
-
-    def test_non_empty_outbox_prints_pending_entries(self, tmp_path: Path) -> None:
-        report, printed = self._run(tmp_path, {"return_value": {"ops_recommendations_pending": 3}})
-        assert report["ops_outbox"] == {"ops_recommendations_pending": 3}
-        assert any("Ops outbox: 3 pending entries" in line for line in printed)
-
-    def test_outbox_summary_exception_degrades_to_empty(self, tmp_path: Path) -> None:
-        report, _ = self._run(tmp_path, {"side_effect": RuntimeError("outbox unreachable")})
-        assert report["ops_outbox"] == {}
 
 
 class TestWarmSyncExceptionWhenCredsOk:
@@ -247,20 +177,14 @@ class TestWarmSyncExceptionWhenCredsOk:
             patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
             patch("scripts.preflight.recs_cache._count_recommendations_reader", return_value=(0, 0, 0, [])),
             patch("scripts.preflight.context_docs.read_context_files", return_value={}),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
-            ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
-            patch("scripts.sync.ops.outbox_summary", return_value={}),
             patch("scripts.sync.ops.warm_sync", side_effect=RuntimeError("neon unreachable")),
             # Real compute_state_dict() calls (~7-10s each, unmocked in most of this package's
             # sibling main()-level tests -- a pre-existing, repo-wide cost filed as a
             # recommendation) are irrelevant to what this test asserts; mocking them keeps this
             # new file from inheriting that cost for behavior it doesn't exercise.
             patch("session_preflight.platform_roadmap.compute_state_dict", return_value={}),
-            patch("session_preflight.product_roadmap_module.compute_state_dict", return_value={}),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
             patch("builtins.print"),
         ):
@@ -288,20 +212,14 @@ class TestProvisionalContractsEmpty:
             patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
             patch("scripts.preflight.recs_cache._count_recommendations_reader", return_value=(0, 0, 0, [])),
             patch("scripts.preflight.context_docs.read_context_files", return_value={}),
-            patch(
-                "scripts.preflight.context_docs.check_telemetry_health",
-                return_value={"overall": "ok", "checks": [], "friction_patterns": []},
-            ),
             patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
             patch("scripts.preflight.ci_rca_signals._check_convergence_sensor_liveness", return_value=None),
-            patch("scripts.sync.ops.outbox_summary", return_value={}),
             patch("scripts.preflight.context_docs._scan_provisional_contracts", return_value=[]),
             # Real compute_state_dict() calls (~7-10s each, unmocked in most of this package's
             # sibling main()-level tests -- a pre-existing, repo-wide cost filed as a
             # recommendation) are irrelevant to what this test asserts; mocking them keeps this
             # new file from inheriting that cost for behavior it doesn't exercise.
             patch("session_preflight.platform_roadmap.compute_state_dict", return_value={}),
-            patch("session_preflight.product_roadmap_module.compute_state_dict", return_value={}),
             patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
             patch("builtins.print", side_effect=_capture),
         ):
@@ -311,18 +229,15 @@ class TestProvisionalContractsEmpty:
         assert "  (none)" in printed
 
 
-class TestOpenTelemetrySessionFallback:
-    def test_open_session_exception_falls_back_to_local_uuid(self, tmp_path: Path) -> None:
-        """open_telemetry_session() must never raise -- a telemetry backend failure degrades to
-        a locally-generated UUID so the calling workflow (e.g. /implement Step 1) can proceed."""
+class TestOpenTelemetrySessionId:
+    def test_open_session_generates_local_uuid(self, tmp_path: Path) -> None:
+        """open_telemetry_session() must never raise -- it mints a local UUID so the calling
+        workflow (e.g. /implement Step 1) can always proceed."""
         active_session_file = tmp_path / ".telemetry-active-session.json"
-        with (
-            patch("scripts.executor.telemetry.open_session", side_effect=RuntimeError("telemetry backend down")),
-            patch("session_preflight.TELEMETRY_ACTIVE_SESSION_FILE", active_session_file),
-        ):
+        with patch("session_preflight.TELEMETRY_ACTIVE_SESSION_FILE", active_session_file):
             session_id = _preflight.open_telemetry_session(workflow="implement", branch="claude/test")
         assert session_id
-        # A valid UUID4 string (36 chars, hyphenated) -- the fallback path's own generated id.
+        # A valid UUID4 string (36 chars, hyphenated).
         assert len(session_id) == 36
         assert session_id.count("-") == 4
         assert json.loads(active_session_file.read_text(encoding="utf-8"))["session_id"] == session_id

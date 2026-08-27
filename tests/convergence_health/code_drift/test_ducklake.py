@@ -347,7 +347,7 @@ class TestAcceptanceLint:
         from scripts.convergence_health.code_drift import _build_prod_drift_rec_fields
 
         fields = _build_prod_drift_rec_fields(
-            ["agent-platform-findings-processor", "agent-platform-ops-compaction"],
+            ["agent-platform-findings-processor", "agent-platform-scheduled-agent-dispatcher"],
             "abc123def456",  # pragma: allowlist secret -- fake sha fixture, not a real credential
         )
         assert fields["acceptance"].count(" && git merge-base --is-ancestor ") == 2

@@ -314,13 +314,13 @@ class TestValidatePlacementRootAllowlists:
             "src/lambdas/handler.py",
             "scripts/STRAY.py",
         }
-        strays = self.scripts_root_stray_files(tracked, {"validate.py"}, ["ops_data_portal.py", "ops_writer.py"])
+        strays = self.scripts_root_stray_files(tracked, {"validate.py"}, ["ops_data_portal.py"])
         assert strays == ["scripts/STRAY.py"]
 
     def test_scripts_root_stray_files_all_covered_returns_empty(self) -> None:
         """When every depth-1 scripts/ file is allowlisted or grandfathered, no strays."""
         tracked = {"scripts/validate.py", "scripts/ops_data_portal.py", "scripts/llm/client.py"}
-        strays = self.scripts_root_stray_files(tracked, {"validate.py"}, ["ops_data_portal.py", "ops_writer.py"])
+        strays = self.scripts_root_stray_files(tracked, {"validate.py"}, ["ops_data_portal.py"])
         assert strays == []
 
     # -- Scripts-root allowlist (RS-01 completion) -- integration via validate_placement() ---------
@@ -336,9 +336,9 @@ class TestValidatePlacementRootAllowlists:
             "    targets: [scripts/validate.py]\n"
             "scripts_root_allowlist:\n"
             "  allowed_files: [validate.py]\n"
-            "  grandfathered_globs: ['ops_data_portal.py', 'ops_writer.py']\n",
+            "  grandfathered_globs: ['ops_data_portal.py']\n",
         )
-        tracked = ["scripts/validate.py", "scripts/ops_data_portal.py", "scripts/ops_writer.py", "scripts/llm/client.py"]
+        tracked = ["scripts/validate.py", "scripts/ops_data_portal.py", "scripts/llm/client.py"]
         with patch("scripts.checks._common.run", side_effect=self._mock_ls_files(tracked)):
             failed: list[str] = []
             self.validate_placement(failed, router_path=router)

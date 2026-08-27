@@ -14,10 +14,9 @@ existing `scripts/checks/`, `scripts/executor/`, `scripts/verifiers/` packages p
 - Nested homes so far (RS-01 / rec-164): `scripts/ci_rca/` (evidence, filing, taxonomy, tier_map,
   probe_health, back_validation, vacuous_pass), `scripts/session/` (preflight, postflight,
   metrics), `scripts/sync/` (ops, recommendations, ducklake_version), `scripts/roadmap/`
-  (platform_roadmap, product_roadmap(_schema), plan_document, plan_audit, find_plan -- names
-  kept), `scripts/llm/` (client, utils -- prefix stripped; model_registry,
-  github_models_client -- names kept). Pending: `scripts/ops/` (ops_data_portal, ops_writer;
-  T-1.24; highest fan-out, deliberately deferred).
+  (platform_roadmap, plan_document, plan_audit, find_plan -- names kept), `scripts/llm/`
+  (client, utils -- prefix stripped; model_registry, github_models_client -- names kept).
+  Pending: `scripts/ops/` (ops_data_portal; T-1.24; highest fan-out, deliberately deferred).
 - The `scripts_root_allowlist` key in `docs/contracts/file-router.yaml` (enforced by
   `validate_placement`) now makes "scripts/ root = entry points + declared singles" machine-checked:
   every depth-1 `scripts/` file must be allowlisted or match a grandfathered glob (currently just

@@ -73,13 +73,6 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
-        name="validate_intent_doc_freeze",
-        module="scripts.checks.contracts.validate_intent_doc_freeze",
-        attr="validate_intent_doc_freeze",
-        pre=True,
-        full_segment="full_after_lint",
-    ),
-    Entry(
         name="validate_contract_drift",
         module="scripts.checks.contracts.validate_contract_drift",
         attr="validate_contract_drift",

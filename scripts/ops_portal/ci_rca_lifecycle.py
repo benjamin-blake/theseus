@@ -48,7 +48,7 @@ def _all_ci_rca_rows(profile: Optional[str] = None) -> list[dict]:
     """Named-verb read (Decision 84 I-3 / Decision 88): every source=ci_rca row (any status),
     context_v2_json parsed into "_ctx". No ad-hoc warehouse re-fetch, no caller SQL beyond the
     single structural source='ci_rca' row_filter."""
-    from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
     rows = make_reader(profile=profile).current_state("ops_recommendations", row_filter="source = 'ci_rca'") or []
     parsed: list[dict] = []

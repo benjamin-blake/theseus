@@ -168,11 +168,11 @@ class TestCheckLockfileSync:
         assert "not found" in msg or "requirements.txt" in msg
 
     def test_extras_are_normalized(self, tmp_path: Path) -> None:
-        """Packages with extras (e.g. pyiceberg[glue,duckdb]) are found in the lockfile."""
+        """Packages with extras (e.g. uvicorn[standard,http2]) are found in the lockfile."""
         req_txt = tmp_path / "requirements.txt"
-        req_txt.write_text("pyiceberg[glue,duckdb]>=0.11.1\n", encoding="utf-8")
+        req_txt.write_text("uvicorn[standard,http2]>=0.11.1\n", encoding="utf-8")
         req_lock = tmp_path / "requirements.lock"
-        req_lock.write_text("pyiceberg[duckdb,glue]==0.11.1\n", encoding="utf-8")
+        req_lock.write_text("uvicorn[http2,standard]==0.11.1\n", encoding="utf-8")
 
         with (
             patch("scripts.import_governance._REQUIREMENTS_TXT", req_txt),

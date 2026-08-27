@@ -64,7 +64,7 @@ collision itself should be reconciled. Keep those two roles distinct.
   coverage-named surfaces genuinely collide and which are benign domain qualifiers.
 - "validate" names FOUR things. (1) `scripts/validate.py` -- the presubmit gate, IN SCOPE. (2) the
   `validate_*` / `check_*` modules under `scripts/checks/**` -- the checks, IN SCOPE. (3)
-  `scripts/validate_telemetry.py` -- a standalone Athena telemetry-schema script, NOT wired into
+  `scripts/validate_telemetry.py` -- a standalone legacy telemetry-schema script, NOT wired into
   the presubmit gate. (4) `scripts/verifiers/` -- the exit-code verifier harness, a SEPARATE
   subsystem; a prior audit owns its internals (see DEDUP DISCIPLINE), so treat it as context, not
   an audit target.
@@ -424,8 +424,6 @@ Prior audits that own adjacent territory (read their summaries; dedup against th
 - `audits/verification-system-review-f80508b.yaml` -- owns the verifier-harness internals
   (`scripts/verifiers/`, VP-replay, graduation). You assess only how the verification CHECKS sit in
   the tiers, not the harness design.
-- `audits/legacy/AUDIT-test-hermeticity.yaml` -- the T3.6 hermeticity audit. Hermeticity findings
-  are covered here; treat Q5(e) as a re-confirmation against current state, not a fresh discovery.
 - `audits/ci-rca-system-a49db8f.yaml` -- owns the CI-RCA subsystem (out of scope here).
 
 DELIBERATE CONSTRAINTS -- do NOT flag as novel defects (name the id if you touch them):

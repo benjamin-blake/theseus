@@ -2,7 +2,7 @@
 
 Mirrors tests/test_checks_registry.py's role for the Decision 104 validate.py decomposition:
 (1) facade completeness -- every required public + private symbol, the 6 imported-name traps,
-and the _fetch_decision_from_athena alias are reachable both as scripts.ops_data_portal.<name>
+are reachable both as scripts.ops_data_portal.<name>
 (getattr) and via `from scripts.ops_data_portal import <name>`; (2) patch-interception --
 patch("scripts.ops_data_portal._ducklake_write") still intercepts a file_rec() write through the
 moved writer_transport.py body; (3) no scripts/ops_portal module recomputes the repo root (all
@@ -31,7 +31,6 @@ _LAZY_DECISIONS_NAMES = [
     "update_decision",
     "backfill_decisions_from_md",
     "_fetch_decision_from_reader",
-    "_fetch_decision_from_athena",
 ]
 
 # Public symbols originally defined at scripts/ops_data_portal.py module scope (23).
@@ -82,7 +81,7 @@ _REQUIRED_PRIVATE = [
     "_classify_schema_deficiency",
     "_sync_table",
     "_refresh_cache_after_write",
-    "_sanitize_athena_record",
+    "_sanitize_record",
     "_append_to_local_jsonl",
     "_fetch_rec_from_reader",
     "_fetch_decision_from_reader",
@@ -101,10 +100,7 @@ _IMPORTED_NAME_TRAPS = [
     "validate_source",
 ]
 
-# Back-compat alias named explicitly by read-engine.yaml's single_portal_invariant.
-_BACK_COMPAT_ALIAS = ["_fetch_decision_from_athena"]
-
-_ALL_REQUIRED = _REQUIRED_PUBLIC + _REQUIRED_PRIVATE + _IMPORTED_NAME_TRAPS + _BACK_COMPAT_ALIAS
+_ALL_REQUIRED = _REQUIRED_PUBLIC + _REQUIRED_PRIVATE + _IMPORTED_NAME_TRAPS
 
 
 class TestFacadeCompleteness:

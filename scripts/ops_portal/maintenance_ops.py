@@ -29,7 +29,7 @@ def selftest_read(table: str = "ops_recommendations", profile: Optional[str] = N
     Proves the DuckLake read path serves rows (the boundary is the sole backend, Decision 84).
     Returns {"backend": ..., "table": ..., "row_count": ..., "sample_id": ...}.
     """
-    from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
     backend = "ducklake"
     rows = make_reader(profile=profile).current_state(table) or []
@@ -44,7 +44,7 @@ def selftest_roundtrip(profile: Optional[str] = None) -> dict:
     live counter is untouched) so the proof does not consume a production ID. On DuckLake the write
     transits the writer Function URL and the read transits the reader -- the closed-boundary proof.
     """
-    from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
     backend = "ducklake"
     probe_id = f"test-roundtrip-{uuid.uuid4().hex[:12]}"
@@ -192,7 +192,7 @@ def purge_postmortems_for(failed_rec_id: str, dry_run: bool = False, profile: Op
     if not re.fullmatch(r"rec-\d+", failed_rec_id):
         raise ValueError(f"Invalid rec ID for purge: {failed_rec_id!r}. Must match rec-\\d+.")
 
-    from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
     title_prefix = f"Investigate executor failure for {failed_rec_id}"
     rows = make_reader(profile=profile).named("recs_by_title_prefix", title_prefix=f"{title_prefix}%")

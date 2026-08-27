@@ -8,8 +8,8 @@ degraded path you need is pinned below. Execute it verbatim.
 
 Audit the **platform-first sequencing frame**: the operating directive that all of one
 developer-agent's build capacity goes to closing the platform's autonomous loop **before** any
-trading-product-plane work begins. The platform roadmap is active; the product roadmap
-(`docs/ROADMAP-PRODUCT.yaml`) is dormant (`status: draft`).
+trading-product-plane work begins. The platform roadmap is active; the product roadmap was dormant
+(`status: draft`) and has since been retired from the repository.
 
 This is a **premise / governance audit, not a code audit**. You will read decision records,
 roadmap artifacts, framing docs, and the controls that operate around them, and you will judge
@@ -66,7 +66,7 @@ anything else.
 
 2. **Two distinct "MVP"s.** *Platform-MVP* (Decision 93: the loop closes with no human in the
    critical path) is different from the product *"minimum viable trading system v1"* (the pivot
-   transcript's Part C; the `MVP.*` items in `docs/ROADMAP-PRODUCT.yaml`). This audit is about
+   transcript's Part C; the `MVP.*` items in the retired product roadmap). This audit is about
    sequencing *between the two planes*, NOT about the internal definition of either MVP.
 
 3. **The executor freeze (Decision 67 / CD.17) is NOT the sequencing frame.** The freeze is a
@@ -83,9 +83,9 @@ anything else.
    baseline it checks *against*. Reach your own conclusion; do not assume either way.
 
 5. **The pivot "transcript" is an audit-prompt file.** The pivot-era product rationale lives
-   embedded in `docs/AUDIT-PROMPT-product-roadmap-yaml.md` Section 11 (referenced throughout
-   `docs/ROADMAP-PRODUCT.yaml` as "PIVOT Part A..G"). Parts B/D/F are noted as "user questions
-   only" (`docs/ROADMAP-PRODUCT.yaml:113`). There is no clean standalone "pivot decision" doc.
+   embedded in a since-retired audit-prompt file's Section 11 (referenced throughout
+   the retired product roadmap as "PIVOT Part A..G"). Parts B/D/F were noted as "user questions
+   only". There is no clean standalone "pivot decision" doc.
    **You must check whether Section 11 weighs platform-vs-product timing at all** -- if it does,
    that materially changes Q1's provenance answer. Do not presume the sequencing rationale is
    absent there without reading it.
@@ -97,7 +97,7 @@ anything else.
 | Surface id | What it is | State |
 |---|---|---|
 | `sequencing-frame` | The governance object: is platform-before-product a conscious, reversible decision? | Built-as-text (Decisions, framing docs) |
-| `product-loop-feasibility` | The dormant product plane's readiness to host an interleaved minimal loop | Designed-unbuilt (ROADMAP-PRODUCT + scaffold code) |
+| `product-loop-feasibility` | The dormant product plane's readiness to host an interleaved minimal loop | Designed-unbuilt (retired product roadmap + scaffold code) |
 
 **Vocabulary (pinned):**
 - *The frame / the sequencing frame* = strict platform-before-product sequencing of one agent's
@@ -108,7 +108,7 @@ anything else.
 - *Platform-MVP boundary* (Decision 93) = one autonomous-loop iteration closes with no human in
   the critical path.
 - *The planes*: **platform plane** = infra/governance/automation substrate (ROADMAP-PLATFORM);
-  **product / trading plane** = the four-layer trading model (ROADMAP-PRODUCT).
+  **product / trading plane** = the four-layer trading model (retired product roadmap).
 - *Four layers*: L1 Alpha / L2 Portfolio-Construction / L3 Execution / L4 Operations-Telemetry.
 - *frame-lock* (Decision 75) = a named architectural-planning failure mode: an inherited frame
   from an earlier era silently constrains every subsequent choice; nobody re-asks the framing
@@ -302,13 +302,13 @@ time; **re-verify each before relying on it** (trust-nothing clause) and record 
   roadmap is named the "sibling product axis" (`:319`). No sequencing rationale is stated.
 
 **The dormant product plane:**
-- `docs/ROADMAP-PRODUCT.yaml:20` -- `status: draft`; `:21` `filed_via: pending_log_decision_lambda`.
+- The retired product roadmap -- `status: draft`; `:21` `filed_via: pending_log_decision_lambda`.
   (Note: the file's own header comment at `:11-15` says validation is "deferred ... not
   Pydantic-validated", but that comment is stale -- `scripts/product_roadmap.py` DOES exist and
   `scripts/checks/roadmap/validate_product_roadmap.py` Pydantic-validates this file in
   `validate.py`'s `--pre` tier (`validate.py:200`, `_ROADMAP_YAML_PATHS`). The product roadmap is
   dormant by `status`, not by lack of validation. Re-verify this on disk.)
-- `docs/ROADMAP-PRODUCT.yaml:347-393` -- `current_state`: "Data plane is production-grade; trading
+- The retired product roadmap's `current_state`: "Data plane is production-grade; trading
   plane is mostly scaffold or absent." `layer_rollup` (`:388-393`): L1 scaffold, **L2 absent
   (entirely)**, L3 latency-penalty sizer (no broker; no order lifecycle), L4 agent_telemetry
   only, risk sublayer absent.
@@ -322,7 +322,7 @@ time; **re-verify each before relying on it** (trust-nothing clause) and record 
   PIVOT TRANSCRIPT", begins ~`:3139`; Parts A/C/E/G document data architecture, the four-layer
   model, identifiability/execution/funnel, hedging/environments). "Concurrent paper trading
   alongside live" appears as a design element both in the summary body (~`:288`, Section 3.3) and
-  within the transcript itself (~`:3670`). `docs/ROADMAP-PRODUCT.yaml:113` records Parts B/D/F as
+  within the transcript itself (~`:3670`). the retired product roadmap recorded Parts B/D/F as
   "user questions only". (Re-derive all these line pointers; the file is large and anchors rot.)
 
 **The state of the bet (from the adjacent, in-frame audits -- context, not to be re-derived):**
@@ -381,7 +381,7 @@ discovery. A finding without a recorded negative search is a `HYPOTHESIS`, not `
 
 Ownership surfaces:
 - `docs/DECISIONS.md` (`rg "^## Decision"` for headers; full-text for premise citations).
-- `docs/ROADMAP-PLATFORM.yaml` and `docs/ROADMAP-PRODUCT.yaml` `tier_items[]`.
+- `docs/ROADMAP-PLATFORM.yaml` `tier_items[]`.
 - `logs/.recommendations-log.jsonl` (open recs).
 - `audits/` (adjacent audits already own MVP-reachability and telemetry-binding -- do not
   re-derive their content; cite them).

@@ -30,7 +30,7 @@ Status flips remain the verification-earned closing step owned by `/implement` t
 | Realized-but-pending CDs | `logs/.preflight-report.json` (`platform_roadmap.realized_but_pending_cds`) | Read preflight cache |
 | Realization candidates | `logs/.preflight-report.json` (`platform_roadmap.realization_candidates`) | Read preflight cache |
 | Gate evaluations | `logs/.preflight-report.json` (`platform_roadmap.gate_evaluations`) | Read preflight cache |
-| Best-Practices signals | `logs/.preflight-report.json` (`convergence_health`, `telemetry_health`, `data_quality`, `non_automatable_softcap_breached`, `terraform_pending`) | Read preflight cache |
+| Best-Practices signals | `logs/.preflight-report.json` (`convergence_health`, `data_quality`, `non_automatable_softcap_breached`, `terraform_pending`) | Read preflight cache |
 | Roadmap detail (`files_in_scope`, `depends_on`) | `docs/ROADMAP-PLATFORM.yaml` | Typed-loader projection: `scripts.roadmap.platform_roadmap.load()` (pure-local, no warehouse I/O -- distinct from the banned `-m scripts.roadmap.platform_roadmap` module entrypoint), returning both a candidate-scoped projection (filtered to the ids already surfaced by the preflight cache) and a roadmap-wide `depends_index` (`{id: depends_on}`, cheap) for reverse-dependency lookups; see the orient command Step 2 for the literal runnable form. Full-file Read only as an error fallback if the extraction fails. |
 | Recent main activity | `logs/.preflight-report.json` (`recent_main_commits`) | Read preflight cache |
 | Decision reversal-conditions monitor | `logs/.preflight-report.json` (`decision_conditions`: `monitored[]`, `surfaced[]`, `malformed[]`) | Read preflight cache (`scripts.preflight.decision_conditions.preflight_bucket()`, SEQ-02) |
@@ -163,7 +163,6 @@ Render as a table: practice -> preflight signal -> PASS/WATCH/GAP.
 | Practice | Preflight signal | PASS/WATCH/GAP threshold |
 |---|---|---|
 | Terraform converged | `convergence_health.status` | PASS if `green`; WATCH if `red` and `red_age_hours` < 6; GAP if `red` and `red_age_hours` >= 6 or `stuck_approvals` > 0 |
-| Telemetry healthy | `telemetry_health` | PASS if `ok`; WATCH if `degraded`; GAP if `dead` or field absent |
 | Data quality coverage | `data_quality.last_verdict` | PASS if `pass`; WATCH if `warn`; GAP if `fail` or field absent |
 | CI-RCA liveness | `ci_rca_unresolved_recs` empty AND `ci_rca_liveness_alert` null | PASS if both clear; GAP if either non-empty or non-null |
 | Rec backlog (soft cap) | `non_automatable_softcap_breached` | PASS if false; GAP if true |

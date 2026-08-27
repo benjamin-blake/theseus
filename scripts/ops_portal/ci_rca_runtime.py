@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 # CIRCA-03(b)/(c): markers that classify a DuckLakeReader failure as a genuine connectivity
 # outage (Neon scale-to-zero exhausting retries, or the Function URL itself unresolvable) --
-# see src.common.iceberg_reader.DuckLakeReader._reader_url/_invoke, the only raise sites this
+# see src.common.ducklake_reader_client.DuckLakeReader._reader_url/_invoke, the only raise sites this
 # helper's try/except can observe. Any OTHER exception (bad row_filter, unexpected shape, a
 # non-connectivity RuntimeError) is NOT reader-unreachable and must propagate (Decision 55).
 _READER_UNREACHABLE_MARKERS = (
@@ -66,7 +66,7 @@ def find_open_ci_rca_rec_by_fingerprint(fingerprint: str, profile: Optional[str]
     SAME in-process reader path used by both the workflow's pre-agent skip (CIRCA-03(b)) and
     the write-time backstop (CIRCA-03(c)); a read cache is never a dedup source (CLAUDE.md).
     """
-    from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
     try:
         rows = make_reader(profile=profile).current_state("ops_recommendations", row_filter="source = 'ci_rca'") or []

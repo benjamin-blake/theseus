@@ -5,7 +5,7 @@ CLI: python -m scripts.ci_rca.evidence \\
        [--junit-file JUNIT] [--print-bundle]
 
 Reads pre-fetched CI run logs (NO gh dependency at runtime -- CC-web has no gh CLI).
-Assembles one evidence_bundle.json per distinct CAUSE per INTENT-ci-rca-methodology Section 3.3,
+Assembles one evidence_bundle.json per distinct CAUSE per docs/contracts/ci-rca-lifecycle.yaml,
 uploads to the configured s3_agent_logs_bucket, falls back to logs/.ci-rca-evidence-pending/
 on upload failure (loud signal, upload_status=upload_failed).
 

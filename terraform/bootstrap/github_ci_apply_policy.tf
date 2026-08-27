@@ -21,7 +21,7 @@ locals {
         Resource = ["arn:aws:s3:::agent-platform-data-lake/tfstate/personal/*"]
       },
       {
-        # Data-plane object IO the module's resources require during apply (Athena results, Iceberg).
+        # Data-plane object IO the module's resources require during apply.
         Sid    = "DataLakeObjectIO"
         Effect = "Allow"
         Action = [
@@ -82,70 +82,6 @@ locals {
         Resource = [
           "arn:aws:s3:::agent-platform-data-lake",
           "arn:aws:s3:::agent-platform-ducklake-catalog-dr",
-        ]
-      },
-      {
-        # athena:ListTagsForResource is the canonical (provider 5.x) refresh-time tag-read on
-        # aws_athena_workgroup; without it `terraform plan` fails AccessDenied before the guard runs.
-        # Do not prune as "unused" -- apply does not exercise it but plan does.
-        Sid    = "AthenaWorkgroup"
-        Effect = "Allow"
-        Action = [
-          "athena:StartQueryExecution",
-          "athena:GetQueryExecution",
-          "athena:GetQueryResults",
-          "athena:GetWorkGroup",
-          "athena:ListWorkGroups",
-          "athena:CreateWorkGroup",
-          "athena:UpdateWorkGroup",
-          "athena:TagResource",
-          "athena:GetTags",
-          "athena:ListTagsForResource",
-          "athena:UntagResource"
-        ]
-        Resource = "*"
-      },
-      {
-        # P2 destroy symmetry (gap sweep): the provider's aws_athena_workgroup destroy calls
-        # athena:DeleteWorkGroup, which the AthenaWorkgroup Sid above never granted -- a guard-gated
-        # workgroup retirement AccessDenies AFTER human approval. Deliberately a SEPARATE narrow Sid
-        # rather than another action in AthenaWorkgroup: that Sid's Resource is "*" (its refresh reads
-        # genuinely need it), so folding the delete verb in would grant deletion of ANY workgroup in
-        # the account, including `primary`. Narrowing AthenaWorkgroup's own "*" is a pre-existing
-        # Decision 143 candidate this plan deliberately does not touch (filed as a follow-on rec).
-        Sid      = "AthenaWorkgroupDelete"
-        Effect   = "Allow"
-        Action   = ["athena:DeleteWorkGroup"]
-        Resource = ["arn:aws:athena:${var.aws_region}:${var.account_id}:workgroup/agent-platform-production"]
-      },
-      {
-        # glue:GetTags is a refresh-time read the provider issues on aws_glue_catalog_database every
-        # plan; without it `terraform plan` fails AccessDenied before the guard runs. Do not prune.
-        Sid    = "GlueCatalog"
-        Effect = "Allow"
-        Action = [
-          "glue:GetDatabase",
-          "glue:GetDatabases",
-          "glue:CreateDatabase",
-          "glue:UpdateDatabase",
-          "glue:GetTable",
-          "glue:GetTables",
-          "glue:GetPartitions",
-          "glue:CreateTable",
-          "glue:UpdateTable",
-          "glue:DeleteTable",
-          # P2 destroy symmetry (gap sweep): the provider's aws_glue_catalog_database destroy calls
-          # glue:DeleteDatabase. CreateDatabase/UpdateDatabase were granted without their delete
-          # counterpart, so a guard-gated database retirement AccessDenies AFTER human approval --
-          # the same create-without-destroy asymmetry as the rec-2882 class. Scoped to the existing
-          # enumerated database ARN (no widening).
-          "glue:DeleteDatabase",
-          "glue:GetTags"
-        ]
-        Resource = [
-          "arn:aws:glue:${var.aws_region}:${var.account_id}:catalog",
-          "arn:aws:glue:${var.aws_region}:${var.account_id}:database/agent_platform",
-          "arn:aws:glue:${var.aws_region}:${var.account_id}:table/agent_platform/*"
         ]
       },
       {
@@ -333,7 +269,7 @@ locals {
         # (Decision 143): Resource is the execution-role prefix role/agent-platform-* (never role/*
         # or PlatformAdmin/PlatformDev), AND Condition requires iam:PassedToService=lambda.amazonaws.com
         # (this identity may pass an agent-platform-* role ONLY to the lambda service, never to ecs,
-        # glue, or any other principal). Passing a PRIVILEGED agent-platform-* role (e.g. this apply
+        # or any other principal). Passing a PRIVILEGED agent-platform-* role (e.g. this apply
         # role itself, or the planner role) to lambda is ALLOWED by this prefix grant BY DESIGN
         # (Decision 143) -- containment is that the apply role holds no broad lambda:InvokeFunction,
         # so it cannot create-then-invoke such a lambda to escalate in-session (verified via the
@@ -395,7 +331,7 @@ locals {
         # Secrets Manager secret holding the assembled Neon DSN (neon_ducklake_catalog.tf). NOTE the
         # "-*" suffix -- Secrets Manager appends a random 6-char suffix to every secret ARN.
         # DescribeSecret / GetResourcePolicy are refresh-time reads the AWS provider issues on every
-        # plan -- do not prune them as "unused" (glue:GetTags / dynamodb:Describe* convention).
+        # plan -- do not prune them as "unused" (dynamodb:Describe* refresh-read convention).
         Sid    = "SecretsManagerDuckLakeNeonDSN"
         Effect = "Allow"
         Action = [
@@ -457,11 +393,11 @@ locals {
         # Decision 143 clause 1. Critically there is NO boundary intersection available to narrow it:
         # the boundary DataPlaneAllow already carries secretsmanager:*, so this identity statement is
         # the SOLE control -- a secret:agent-platform-* prefix here would be fully effective over the
-        # anthropic + deepseek API keys, the GitHub PAT, BOTH Alpaca broker envelopes AND every
-        # future agent-platform-* secret, with no review. It is therefore held to exactly the five
+        # anthropic + deepseek API keys, the GitHub PAT AND every
+        # future agent-platform-* secret, with no review. It is therefore held to exactly the
         # aws_secretsmanager_secret resources terraform/personal actually declares (the DuckLake Neon
         # DSN keeps its own SecretsManagerDuckLakeNeonDSN Sid above). A NEW secret must be added here
-        # deliberately. Accepted residual: UpdateSecret can still overwrite a value on these five --
+        # deliberately. Accepted residual: UpdateSecret can still overwrite a value on these --
         # marginal rather than a new capability class, since SecretsManagerValueReadEnumerated
         # already grants GetSecretValue on them -- and it is now bounded to a named, reviewable five.
         Sid    = "SecretsManagerUpdateEnumerated"
@@ -471,8 +407,6 @@ locals {
           "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-deepseek-api-key-*",
           "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-anthropic-api-key-*",
           "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-github-pat-*",
-          "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-broker-alpaca-paper-*",
-          "arn:aws:secretsmanager:${var.aws_region}:${var.account_id}:secret:agent-platform-broker-alpaca-live-*",
         ]
       },
       {

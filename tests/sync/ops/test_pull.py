@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 class TestPull:
     def test_pull_reader_unreachable_returns_zero_for_every_table(self):
-        """When the DuckLake reader is unreachable every table reports 0 (no Athena fallback).
+        """When the DuckLake reader is unreachable every table reports 0 -- it is the sole backend.
 
         Decision 84 I-1: _rebuild_local_cache() loops _TABLE_TO_LOCAL via the reader-only
         _pull_single_table; a failure warns loudly and leaves the cache untouched.
@@ -233,7 +233,7 @@ class TestPull:
         """_pull_via_reader() returns None when the DuckLake reader raises."""
         reader = MagicMock()
         reader.current_state.side_effect = RuntimeError("reader down")
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             from scripts.sync.ops import _pull_via_reader
 
             result = _pull_via_reader("ops_recommendations")
@@ -243,7 +243,7 @@ class TestPull:
         """_pull_via_reader() routes through make_reader().current_state for every table."""
         reader = MagicMock()
         reader.current_state.return_value = [{"id": "rec-1"}]
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader) as mock_make:
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader) as mock_make:
             from scripts.sync.ops import _pull_via_reader
 
             result = _pull_via_reader("ops_decisions")

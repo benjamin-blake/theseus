@@ -24,8 +24,8 @@ Read from the preflight cache (`logs/.preflight-report.json`): `platform_roadmap
 `strategic_pending`, `in_progress` (field semantics in the skill's Inputs > In_progress entry
 fields), `blocked_on_cd`, `gate_evaluations`, `ratifiable_cds`, `realized_but_pending_cds`; `ci_rca_unresolved_recs`,
 `ci_rca_likely_resolved_recs`, `ci_rca_liveness_alert`, `forward_fix_recursion_alert`,
-`recent_main_commits`; and the Best-Practices signals `convergence_health`, `telemetry_health`,
-`data_quality`, `non_automatable_softcap_breached`, `terraform_pending`, `dependabot_stranded_prs`
+`recent_main_commits`; and the Best-Practices signals `convergence_health`, `data_quality`,
+`non_automatable_softcap_breached`, `terraform_pending`, `dependabot_stranded_prs`
 (rendered from the cache only -- orient never shells out to `gh` to recompute it).
 
 For `files_in_scope` (overlap matrix) and `depends_on` (keystone computation), use the typed-loader

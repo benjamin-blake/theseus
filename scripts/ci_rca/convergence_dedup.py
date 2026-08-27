@@ -103,7 +103,7 @@ def _default_drift_rec_finder(drift_run_url: str, profile: Optional[str] = None)
     the whole ci-rca.yml Dedup guard step. Any other exception raises (Decision 55).
     """
     from scripts.ops_portal.ci_rca_runtime import _is_reader_unreachable_error  # noqa: PLC0415
-    from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
     try:
         rows = make_reader(profile=profile).current_state("ops_recommendations", row_filter="source = 'tf_drift'") or []

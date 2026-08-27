@@ -5,7 +5,7 @@ The reader Lambda (src/lambdas/ducklake_reader/handler.py) returns three distinc
   HTTP 500 {"ok": false, "error_type": "version_mismatch", ...} -- rt.VersionMismatchError.
   HTTP 500 {"ok": false, "error_type": "runtime", ...}          -- rt.DuckLakeRuntimeError (unknown
                                                                     verb, bad params, unknown table).
-src.common.iceberg_reader.DuckLakeReader raises ReaderInvokeError (carrying the HTTP status and the
+src.common.ducklake_reader_client.DuckLakeReader raises ReaderInvokeError (carrying the HTTP status and the
 parsed JSON body) for any of these; map_reader_error() below maps that onto one of the types here,
 derived from what the handler actually returns -- not the writer's envelope shape. A shape this
 mapping does not recognise maps to ReaderBoundaryError, a loud generic, rather than being swallowed.
@@ -13,7 +13,7 @@ mapping does not recognise maps to ReaderBoundaryError, a loud generic, rather t
 
 from __future__ import annotations
 
-from src.common.iceberg_reader import ReaderInvokeError
+from src.common.ducklake_reader_client import ReaderInvokeError
 
 
 class AgentToolError(RuntimeError):

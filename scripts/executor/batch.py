@@ -224,13 +224,6 @@ def execute_batch(
             failed += 1
             print(f"[BATCH] {rec_id}: FAILED -- continuing to next eligible rec")
 
-        try:
-            from scripts.sync.ops import drain as drain_outbox  # noqa: PLC0415
-
-            drain_outbox()
-        except Exception:  # noqa: BLE001
-            pass  # drain is best-effort; full sync runs at preflight/postflight only
-
     final_eligible = get_eligible_recs()
     skipped = max(0, len([r for r in final_eligible if r["id"] not in processed_ids]))
     summary = {

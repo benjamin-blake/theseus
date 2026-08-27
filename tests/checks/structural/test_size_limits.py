@@ -226,13 +226,13 @@ _SYNTHETIC_REGISTRY: dict = {
         {"slug": "exempt", "include": [], "governed": False, "limit": "n/a", "max_line_chars": "n/a"},
         {"slug": "residual", "include": [], "governed": True, "limit": 500, "max_line_chars": 2000},
     ],
-    "budgets": {"docs/ROADMAP-PRODUCT.yaml": 4707},
+    "budgets": {"docs/ROADMAP-SEMANTO.yaml": 4707},
     "budget_notes": {
-        "docs/ROADMAP-PRODUCT.yaml": {"frozen": True, "rationale": "operator freeze", "retires_when": "the migration"}
+        "docs/ROADMAP-SEMANTO.yaml": {"frozen": True, "rationale": "operator freeze", "retires_when": "the migration"}
     },
 }
 
-_PRODUCT = "docs/ROADMAP-PRODUCT.yaml"
+_SEMANTO = "docs/ROADMAP-SEMANTO.yaml"
 _PLATFORM = "docs/ROADMAP-PLATFORM.yaml"
 
 
@@ -256,7 +256,7 @@ def _probe(tmp_path: Path, mutate=None, *, leg: str = "", authorizes: str = _PLA
     different leg."""
     docs = tmp_path / "docs"
     docs.mkdir(exist_ok=True)
-    for name in ("ROADMAP-PLATFORM.yaml", "ROADMAP-PRODUCT.yaml"):
+    for name in ("ROADMAP-PLATFORM.yaml", "ROADMAP-SEMANTO.yaml"):
         (docs / name).write_text("key: value\n", encoding="utf-8")
     (docs / "DECISIONS.md").write_text(
         f"## Decision 166: Structural size (Decided)\n\n**Decision:** Authorizes {authorizes}.\n", encoding="utf-8"
@@ -380,7 +380,7 @@ class TestEscapeLegE4FrozenNoteIntegrity:
         assert any("annotates no" in x for x in v)
 
     def test_frozen_note_whose_budgets_entry_was_removed_reports_e4(self, tmp_path: Path) -> None:
-        assert _probe(tmp_path, lambda r: r["budgets"].pop(_PRODUCT), leg="E4")
+        assert _probe(tmp_path, lambda r: r["budgets"].pop(_SEMANTO), leg="E4")
 
     def test_missing_frozen_path_reports_e4_never_filenotfounderror(self, tmp_path: Path) -> None:
         """The planned END STATE, not a hypothetical: retires_when names the migration that
@@ -388,25 +388,25 @@ class TestEscapeLegE4FrozenNoteIntegrity:
 
         def _add_gone(reg: dict) -> None:
             reg["budgets"]["docs/GONE-AFTER-MIGRATION.yaml"] = 100
-            reg["budget_notes"]["docs/GONE-AFTER-MIGRATION.yaml"] = dict(reg["budget_notes"][_PRODUCT])
+            reg["budget_notes"]["docs/GONE-AFTER-MIGRATION.yaml"] = dict(reg["budget_notes"][_SEMANTO])
 
         assert any("no longer exists on disk" in x for x in _probe(tmp_path, _add_gone, leg="E4"))
 
     def test_frozen_and_deferred_is_mutually_exclusive(self, tmp_path: Path) -> None:
         """Measured bypass: deferring a frozen path to a size-less incumbent drops it from
         the measured set entirely and the engine then reports green."""
-        entry = {"incumbent": "validate_product_roadmap", "authorized_by": "dec-166"}
-        v = _probe(tmp_path, lambda r: _deferrals(r).__setitem__(_PRODUCT, entry), leg="E4")
+        entry = {"incumbent": "validate_platform_roadmap", "authorized_by": "dec-166"}
+        v = _probe(tmp_path, lambda r: _deferrals(r).__setitem__(_SEMANTO, entry), leg="E4")
         assert any("mutually" in x for x in v)
 
     def test_non_mapping_note_and_non_mapping_budget_notes_each_report_e4(self, tmp_path: Path) -> None:
-        assert _probe(tmp_path, lambda r: r["budget_notes"].__setitem__(_PRODUCT, "frozen"), leg="E4")
+        assert _probe(tmp_path, lambda r: r["budget_notes"].__setitem__(_SEMANTO, "frozen"), leg="E4")
         assert _probe(tmp_path, lambda r: r.__setitem__("budget_notes", "frozen"), leg="E4")
 
     def test_unfrozen_note_skips_the_existence_and_deferral_legs(self, tmp_path: Path) -> None:
         """Only a FROZEN note carries the existence and mutual-exclusion legs; an ordinary
         annotation on a live entry stays clean."""
-        assert _probe(tmp_path, lambda r: r["budget_notes"][_PRODUCT].__setitem__("frozen", False)) == []
+        assert _probe(tmp_path, lambda r: r["budget_notes"][_SEMANTO].__setitem__("frozen", False)) == []
 
     def test_every_message_carries_a_leg_label(self, tmp_path: Path) -> None:
         """Leg labels are a correctness requirement: a verification step must never be
@@ -426,12 +426,13 @@ class TestEscapeLegE4FrozenNoteIntegrity:
 class TestLiveTreeFreezeState:
     """Asserts the SHIPPED config's own state -- deliberately not injected-root."""
 
-    def test_product_is_recorded_frozen_at_its_measured_pin(self) -> None:
+    def test_frozen_entries_are_recorded_at_their_measured_pin(self) -> None:
         reg = _classify.load_registry()
-        note = reg["budget_notes"][_PRODUCT]
-        assert note["frozen"] is True
-        assert note["rationale"] and note["retires_when"]
-        assert reg["budgets"][_PRODUCT] == 4707
+        frozen = {k: v for k, v in (reg.get("budget_notes") or {}).items() if isinstance(v, dict) and v.get("frozen")}
+        assert frozen
+        for path, note in frozen.items():
+            assert note["rationale"] and note["retires_when"]
+            assert isinstance(reg["budgets"][path], int)
 
     def test_live_registry_is_escape_clean(self) -> None:
         assert escape_violations(_classify.load_registry()) == []
@@ -449,7 +450,7 @@ class TestLiveTreeFreezeState:
 
 class TestBudgetsEntryCapsOverClassCeiling:
     def test_budgets_entry_caps_its_path_even_under_a_higher_class_ceiling(self, tmp_path: Path) -> None:
-        """This -- not E2-strict -- is the mechanism the PRODUCT freeze actually depends on:
+        """This -- not E2-strict -- is the mechanism a frozen budgets entry actually depends on:
         a budgets entry is the effective cap regardless of how high its class row goes."""
         config_dir = tmp_path / "config"
         config_dir.mkdir(exist_ok=True)
@@ -496,10 +497,10 @@ class TestRegressionGuardsThatPassOnTheUnmodifiedTree:
     """Declared regression guards: both assertions below already hold on origin/main. They
     are unit-suite guards against this plan's own reshape, not proof of new behaviour."""
 
-    def test_platform_stays_unmeasured_product_stays_measured(self) -> None:
+    def test_platform_stays_unmeasured_other_roadmap_stays_measured(self) -> None:
         measured = {rel for rel, _slug in _classify.iter_measured_files()}
         assert "docs/ROADMAP-PLATFORM.yaml" not in measured
-        assert "docs/ROADMAP-PRODUCT.yaml" in measured
+        assert "docs/ROADMAP-SEMANTO.yaml" in measured
 
     def test_long_line_companion_fires_on_a_roadmaps_class_file(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "config"

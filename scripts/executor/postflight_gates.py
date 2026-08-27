@@ -87,13 +87,6 @@ def _scope_drift_check(plan_steps: list[dict]) -> list[str]:
         and p not in _EXCLUDED_NAMES
         and not any(p.endswith(ext) for ext in _EXCLUDED_EXTENSIONS)
     ]
-    if unplanned:
-        _pf.emit_process_event(
-            tier="decision",
-            category="scope_drift_detected",
-            severity="warning",
-            description=f"{len(unplanned)} unplanned file(s): {', '.join(unplanned[:5])}",
-        )
     return unplanned
 
 
@@ -196,12 +189,6 @@ def _code_review_gate(
             logger.error("[REVIEW]   %s", f)
     else:
         logger.info("[REVIEW] No CRITICAL or HIGH findings — gate passed")
-        _pf.emit_process_event(
-            tier="decision",
-            category="code_review_pass",
-            severity="info",
-            description="Code review passed",
-        )
 
     return gate_passed and not blocking, cost, blocking
 
@@ -349,5 +336,4 @@ def _run_verifiers_gate(rec_id: str) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001
         logger.error("[VERIFY] Verifier harness threw unexpectedly: %s", exc)
-        _pf.emit_process_event("verification_gate_error", {"error": str(exc)})
         return False

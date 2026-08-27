@@ -2,7 +2,7 @@
 
 Unit tests (always run, creds-free):
   TestDuckLakeGuard      -- forced-missing duckdb raises, no silent fallback.
-  TestDuckLakeIsolation  -- module imports no OpsWriter/outbox symbols and
+  TestDuckLakeIsolation  -- module imports no outbox or ops-portal symbols and
                             references only the spike prefix + dedicated catalog.
 
 Integration tests (require AWS credentials + extension-download network):
@@ -167,12 +167,6 @@ class TestDuckLakeIsolation:
             if line.strip().startswith(("import ", "from ")) and not line.strip().startswith("#")
         ]
 
-    def test_no_opswriter_import(self) -> None:
-        """ducklake_spike must not have any import of OpsWriter."""
-        import_lines = self._get_import_lines()
-        violations = [ln for ln in import_lines if "OpsWriter" in ln or "ops_writer" in ln.lower()]
-        assert not violations, f"ducklake_spike imports OpsWriter: {violations}"
-
     def test_no_outbox_import(self) -> None:
         """ducklake_spike must not import any outbox module."""
         import_lines = self._get_import_lines()
@@ -298,7 +292,7 @@ class TestDuckLakeSpikeE2E:
             bucket = "agent-platform-data-lake"
 
             # Verify no production prefix contaminated
-            for bad_prefix in ("iceberg/ops_recommendations", "iceberg/ops_decisions", "agents/"):
+            for bad_prefix in ("ops/ops_recommendations", "ops/ops_decisions", "agents/"):
                 resp = s3.list_objects_v2(Bucket=bucket, Prefix=bad_prefix, MaxKeys=1)
                 new_keys = [o["Key"] for o in resp.get("Contents", []) if "ducklake" in o["Key"]]
                 assert not new_keys, f"Spike write leaked into {bad_prefix}: {new_keys}"

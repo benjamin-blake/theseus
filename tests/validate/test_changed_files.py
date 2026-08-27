@@ -105,7 +105,7 @@ class TestGetChangedFilesDeletedPaths:
         def mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
             result = MagicMock()
             result.returncode = 0
-            result.stdout = "scripts/migrate_ops_iceberg_to_ducklake.py\ntests/test_migrate_ops_iceberg_to_ducklake.py\n"
+            result.stdout = "scripts/gone_module.py\ntests/test_gone_module.py\n"
             return result
 
         with (

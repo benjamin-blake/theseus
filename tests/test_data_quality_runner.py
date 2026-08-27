@@ -58,7 +58,7 @@ def test_save_latest_result(tmp_path):
 @patch("scripts.data_quality_runner.run_checks")
 def test_main_full(mock_run, mock_load, mock_dq_dir):
     mock_dq_dir.glob.return_value = [Path("test.yaml")]
-    mock_load.return_value = ([Check("t", "c", "type", "sql", "desc")], {"database": "db", "athena_workgroup": "wg"})
+    mock_load.return_value = ([Check("t", "c", "type", "sql", "desc")], {"database": "db"})
     mock_run.return_value = RunResult(verdict="PASS")
     # Stub routing: it reads _DQ_DIR/"ops.yaml" which is a MagicMock here; routing has dedicated tests.
     with (
@@ -84,7 +84,7 @@ def test_main_severity_error(mock_load, mock_dq_dir, _mock_tombstones):
         Check("t", "c", "type", "sql", "desc", "error"),
         Check("t", "c", "type", "sql", "desc", "warn"),
     ]
-    mock_load.return_value = (checks, {"database": "db", "athena_workgroup": "wg"})
+    mock_load.return_value = (checks, {"database": "db"})
     with (
         patch("sys.argv", ["runner.py", "--severity", "error", "--dry-run"]),
         patch("scripts.data_quality_runner.apply_backend_routing", side_effect=lambda c, d, **k: c),
@@ -103,7 +103,7 @@ def test_main_severity_warn(mock_load, mock_dq_dir):
         Check("t", "c", "type", "sql", "desc", "error"),
         Check("t", "c", "type", "sql", "desc", "warn"),
     ]
-    mock_load.return_value = (checks, {"database": "db", "athena_workgroup": "wg"})
+    mock_load.return_value = (checks, {"database": "db"})
     with (
         patch("sys.argv", ["runner.py", "--severity", "warn", "--dry-run"]),
         patch("scripts.data_quality_runner.apply_backend_routing", side_effect=lambda c, d, **k: c),
@@ -117,7 +117,7 @@ def test_main_severity_warn(mock_load, mock_dq_dir):
 @patch("scripts.data_quality_runner.load_checks")
 def test_main_json(mock_load, mock_dq_dir):
     mock_dq_dir.glob.return_value = [Path("test.yaml")]
-    mock_load.return_value = ([Check("t", "c", "type", "sql", "desc")], {"database": "db", "athena_workgroup": "wg"})
+    mock_load.return_value = ([Check("t", "c", "type", "sql", "desc")], {"database": "db"})
     with patch("scripts.data_quality_runner.run_checks") as mock_run:
         mock_run.return_value = RunResult(verdict="PASS")
         with (
@@ -179,8 +179,8 @@ def test_save_latest_result_checks_array(tmp_path):
 def test_main_conflicting_workgroup_returns_1(mock_load, mock_dq_dir):
     mock_dq_dir.glob.return_value = [Path("a.yaml"), Path("b.yaml")]
     mock_load.side_effect = [
-        ([Check("t", "c", "type", "sql", "desc")], {"database": "db", "athena_workgroup": "wg-a"}),
-        ([Check("t", "c", "type", "sql", "desc")], {"database": "db", "athena_workgroup": "wg-b"}),
+        ([Check("t", "c", "type", "sql", "desc")], {"database": "db"}),
+        ([Check("t", "c", "type", "sql", "desc")], {"database": "db"}),
     ]
     with patch("sys.argv", ["runner.py"]):
         assert main() == 1
@@ -239,7 +239,7 @@ class TestMainExitCodeDegraded:
     @patch("scripts.data_quality_runner.run_checks")
     def test_main_exits_0_on_degraded(self, mock_run, mock_load, mock_dq_dir):
         mock_dq_dir.glob.return_value = [Path("test.yaml")]
-        mock_load.return_value = ([Check("t", "c", "type", "sql", "desc")], {"database": "db", "athena_workgroup": "wg"})
+        mock_load.return_value = ([Check("t", "c", "type", "sql", "desc")], {"database": "db"})
         mock_run.return_value = RunResult(verdict="DEGRADED")
         with (
             patch("sys.argv", ["runner.py"]),
@@ -252,7 +252,7 @@ class TestMainExitCodeDegraded:
     @patch("scripts.data_quality_runner.run_checks")
     def test_main_exits_1_on_fail(self, mock_run, mock_load, mock_dq_dir):
         mock_dq_dir.glob.return_value = [Path("test.yaml")]
-        mock_load.return_value = ([Check("t", "c", "type", "sql", "desc")], {"database": "db", "athena_workgroup": "wg"})
+        mock_load.return_value = ([Check("t", "c", "type", "sql", "desc")], {"database": "db"})
         mock_run.return_value = RunResult(verdict="FAIL")
         with (
             patch("sys.argv", ["runner.py"]),
@@ -265,7 +265,7 @@ class TestMainExitCodeDegraded:
     @patch("scripts.data_quality_runner.run_checks")
     def test_main_exits_1_on_hard_gate(self, mock_run, mock_load, mock_dq_dir):
         mock_dq_dir.glob.return_value = [Path("test.yaml")]
-        mock_load.return_value = ([Check("t", "c", "type", "sql", "desc")], {"database": "db", "athena_workgroup": "wg"})
+        mock_load.return_value = ([Check("t", "c", "type", "sql", "desc")], {"database": "db"})
         mock_run.return_value = RunResult(verdict="HARD_GATE")
         with (
             patch("sys.argv", ["runner.py"]),

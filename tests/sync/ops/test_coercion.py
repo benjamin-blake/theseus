@@ -1,8 +1,8 @@
-"""Athena/reader row-coercion helpers concern: tests/sync/ops/test_coercion.py (rec-2709 Wave 10).
+"""Reader row-coercion helpers concern: tests/sync/ops/test_coercion.py (rec-2709 Wave 10).
 
-Split from the former tests/test_sync_ops.py monolith: TestCoerceOpsRecRow, TestCoerceAthenaArray,
+Split from the former tests/test_sync_ops.py monolith: TestCoerceOpsRecRow, TestCoerceArray,
 TestCoerceOpsPriorityQueueRow, TestCoerceOpsDecisionsRow, TestCoerceOpsSessionLogRow, and the
-module-level test_coerce_athena_array_handles_native_list.
+module-level test_coerce_array_handles_native_list.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 class TestCoerceOpsRecRow:
     def test_coerces_bracket_array_fields_to_list(self):
-        """Athena bracket-array strings are split into Python lists."""
+        """Reader bracket-array strings are split into Python lists."""
         from scripts.sync.ops import _coerce_ops_rec_row
 
         row = {"id": "rec-001", "dependencies": "[dep-001, dep-002]", "tags": "[alpha, beta]", "execution_steps": "3"}
@@ -69,7 +69,7 @@ class TestCoerceOpsRecRow:
         assert result["execution_steps"] is None
 
     def test_coerces_automatable_empty_string_to_none(self):
-        """Athena NULL for automatable arrives as '' and must become None."""
+        """A reader NULL for automatable arrives as '' and must become None."""
         from scripts.sync.ops import _coerce_ops_rec_row
 
         row = {"id": "rec-001", "automatable": ""}
@@ -77,7 +77,7 @@ class TestCoerceOpsRecRow:
         assert result["automatable"] is None
 
     def test_coerces_automatable_true_string_to_bool(self):
-        """Athena boolean strings 'true'/'false' become Python booleans."""
+        """Reader boolean strings 'true'/'false' become Python booleans."""
         from scripts.sync.ops import _coerce_ops_rec_row
 
         assert _coerce_ops_rec_row({"id": "rec-001", "automatable": "true"})["automatable"] is True
@@ -92,58 +92,58 @@ class TestCoerceOpsRecRow:
 
 
 # ---------------------------------------------------------------------------
-# _coerce_athena_array() tests
+# _coerce_array() tests
 # ---------------------------------------------------------------------------
 
 
-class TestCoerceAthenaArray:
+class TestCoerceArray:
     def test_bracket_string_parses_to_list(self):
         """'[a, b]' parses to ['a', 'b']."""
-        from scripts.sync.ops import _coerce_athena_array
+        from scripts.sync.ops import _coerce_array
 
-        assert _coerce_athena_array("[a, b]") == ["a", "b"]
+        assert _coerce_array("[a, b]") == ["a", "b"]
 
     def test_empty_bracket_returns_empty_list(self):
         """'[]' returns []."""
-        from scripts.sync.ops import _coerce_athena_array
+        from scripts.sync.ops import _coerce_array
 
-        assert _coerce_athena_array("[]") == []
+        assert _coerce_array("[]") == []
 
     def test_empty_string_returns_empty_list(self):
-        """Athena NULL ('')  returns []."""
-        from scripts.sync.ops import _coerce_athena_array
+        """A reader NULL ('') returns []."""
+        from scripts.sync.ops import _coerce_array
 
-        assert _coerce_athena_array("") == []
+        assert _coerce_array("") == []
 
     def test_none_value_returns_empty_list(self):
         """None input returns []."""
-        from scripts.sync.ops import _coerce_athena_array
+        from scripts.sync.ops import _coerce_array
 
-        assert _coerce_athena_array(None) == []
+        assert _coerce_array(None) == []
 
     def test_scalar_string_wraps_in_list(self):
         """A plain string without brackets becomes a one-element list."""
-        from scripts.sync.ops import _coerce_athena_array
+        from scripts.sync.ops import _coerce_array
 
-        assert _coerce_athena_array("rec-001") == ["rec-001"]
+        assert _coerce_array("rec-001") == ["rec-001"]
 
     def test_int_elem_type_coerces_elements(self):
         """elem_type=int converts each element."""
-        from scripts.sync.ops import _coerce_athena_array
+        from scripts.sync.ops import _coerce_array
 
-        assert _coerce_athena_array("[1, 2, 3]", elem_type=int) == [1, 2, 3]
+        assert _coerce_array("[1, 2, 3]", elem_type=int) == [1, 2, 3]
 
     def test_int_elem_type_invalid_element_skipped(self):
         """Invalid elements for the given elem_type are silently skipped."""
-        from scripts.sync.ops import _coerce_athena_array
+        from scripts.sync.ops import _coerce_array
 
-        assert _coerce_athena_array("[1, notanint, 3]", elem_type=int) == [1, 3]
+        assert _coerce_array("[1, notanint, 3]", elem_type=int) == [1, 3]
 
     def test_scalar_int_elem_type_wraps(self):
         """A plain '5' with elem_type=int returns [5]."""
-        from scripts.sync.ops import _coerce_athena_array
+        from scripts.sync.ops import _coerce_array
 
-        assert _coerce_athena_array("5", elem_type=int) == [5]
+        assert _coerce_array("5", elem_type=int) == [5]
 
 
 # ---------------------------------------------------------------------------
@@ -270,12 +270,12 @@ class TestCoerceOpsSessionLogRow:
         assert result["recs_closed"] == []
 
 
-def test_coerce_athena_array_handles_native_list():
+def test_coerce_array_handles_native_list():
     """DuckLake reader returns native lists; the coercion returns them element-typed (not re-parsed)."""
-    from scripts.sync.ops import _coerce_athena_array
+    from scripts.sync.ops import _coerce_array
 
-    assert _coerce_athena_array(["rec-1", "rec-2"]) == ["rec-1", "rec-2"]
-    assert _coerce_athena_array([1, 2, 3], elem_type=int) == [1, 2, 3]
-    assert _coerce_athena_array([None, "x"]) == ["x"]
-    # Athena string form still parses
-    assert _coerce_athena_array("[a, b]") == ["a", "b"]
+    assert _coerce_array(["rec-1", "rec-2"]) == ["rec-1", "rec-2"]
+    assert _coerce_array([1, 2, 3], elem_type=int) == [1, 2, 3]
+    assert _coerce_array([None, "x"]) == ["x"]
+    # The bracket-string form still parses
+    assert _coerce_array("[a, b]") == ["a", "b"]

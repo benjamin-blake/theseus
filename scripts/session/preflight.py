@@ -51,7 +51,6 @@ from scripts.preflight._common import (  # noqa: F401
     RECOMMENDATIONS_FILE,
     ROADMAP_FILE,
     ROADMAP_PLATFORM_PATH,
-    ROADMAP_PRODUCT_PATH,
     ROOT,
     SESSION_LOG_FILE,
     STRATEGIC_REVIEW_LOOKBACK_DAYS,
@@ -116,9 +115,8 @@ from scripts.preflight.context_docs import (  # noqa: F401
     _check_endstate_drift,
     _scan_provisional_contracts,
     check_data_quality_coverage,
-    check_telemetry_health,
     parse_last_session,
-    print_telemetry_health,
+    print_data_quality_health,
     read_context_files,
 )
 from scripts.preflight.correlation import (  # noqa: F401
@@ -156,9 +154,7 @@ from scripts.preflight.recs_cache import (  # noqa: F401
 )
 from scripts.preflight.summary import _format_preflight_summary  # noqa: F401
 from scripts.roadmap import platform_roadmap
-from scripts.roadmap import product_roadmap as product_roadmap_module
 from scripts.sync.ops import _rebuild_local_cache as _sync_ops_pull  # noqa: F401  (kept for back-compat test patch targets)
-from src.common.iceberg_reader import DuckDBIcebergReader as _DuckDBIcebergReader  # noqa: F401  (kept for back-compat refs)
 
 PREFLIGHT_REPORT = _common.ROOT / "logs" / ".preflight-report.json"
 TELEMETRY_ACTIVE_SESSION_FILE = _common.ROOT / "logs" / ".telemetry-active-session.json"
@@ -167,9 +163,7 @@ TELEMETRY_ACTIVE_SESSION_FILE = _common.ROOT / "logs" / ".telemetry-active-sessi
 def main(roadmap_detail: str = "slim") -> int:
     session_start = datetime.now(timezone.utc).isoformat()
 
-    # Telemetry health runs early so it appears in output
-    telemetry_health = context_docs.check_telemetry_health()
-    context_docs.print_telemetry_health(telemetry_health)
+    context_docs.print_data_quality_health()
 
     if not os.environ.get("PYTEST_CURRENT_TEST"):
         os.environ.setdefault("S3_LOG_BUCKET", "agent-platform-data-lake")
@@ -213,26 +207,16 @@ def main(roadmap_detail: str = "slim") -> int:
     # then hits the Lambda URL directly rather than re-resolving SSM on each call.
     aws_infra._prime_reader_url(creds_status)
 
-    # Single warm-up sync: drain outbox then pull every migrated ops table ONCE, holding the rows
+    # Single warm-up sync: pull every migrated ops table ONCE, holding the rows
     # in-memory. This is the one serial reader touch that absorbs the Neon cold-resume before the
     # Phase B work; every Phase-B signal is then DERIVED from these rows -- ZERO additional reader
     # calls (neon-egress-reduction D4: catalog egress was self-inflicted by a ~9-10-call fan-out).
     # (The cold-resume warm-up is NOT attributable to Decision 82 -- that Decision concerns the
     # DIRECT-vs-pooled endpoint basis and the EC8 churn-gate N=8->4 frame, audit F-033; the warm
     # connection reuse / egress-budget rationale is the neon-egress-reduction Decision.)
-    outbox: dict = {}
     recommendation_sync: dict = {}
     warm_rows: dict[str, list[dict] | None] = {}
     warm_reader_ok: dict[str, bool] = {}
-    try:
-        from scripts.sync.ops import outbox_summary  # noqa: PLC0415
-
-        outbox = outbox_summary()
-        if outbox:
-            total = sum(outbox.values())
-            print(f"Ops outbox: {total} pending entries ({outbox})", file=sys.stderr)
-    except Exception:  # noqa: BLE001
-        outbox = {}
 
     if creds_status == "ok":
         try:
@@ -242,13 +226,9 @@ def main(roadmap_detail: str = "slim") -> int:
             recommendation_sync = warm.get("pulled", {})  # type: ignore[assignment]
             warm_rows = warm.get("rows", {})  # type: ignore[assignment]
             warm_reader_ok = warm.get("reader_ok", {})  # type: ignore[assignment]
-            drained = sum((warm.get("drained") or {}).values())  # type: ignore[union-attr]
             pulled = sum((warm.get("pulled") or {}).values())  # type: ignore[union-attr]
-            if drained or pulled:
-                print(
-                    f"Ops sync: drained {drained} outbox entries, pulled {pulled} rows from the warehouse",
-                    file=sys.stderr,
-                )
+            if pulled:
+                print(f"Ops sync: pulled {pulled} rows from the warehouse", file=sys.stderr)
         except Exception:  # noqa: BLE001
             pass  # sync is best-effort
 
@@ -364,11 +344,6 @@ def main(roadmap_detail: str = "slim") -> int:
     platform_roadmap_state = platform_roadmap.compute_state_dict(
         _common.ROADMAP_PLATFORM_PATH, latest_decision_ts=latest_decision_ts
     )
-    product_roadmap_state = product_roadmap_module.compute_state_dict(
-        _common.ROADMAP_PRODUCT_PATH,
-        platform_yaml_path=_common.ROADMAP_PLATFORM_PATH,
-        latest_decision_ts=latest_decision_ts,
-    )
 
     report: dict = {
         "venv_ok": venv_ok,
@@ -378,7 +353,6 @@ def main(roadmap_detail: str = "slim") -> int:
         "main_freshness": main_freshness,
         "creds_status": creds_status,
         "s3_log_bucket_set": s3_log_bucket_set,
-        "ops_outbox": outbox,
         "terraform_pending": terraform_pending,
         "convergence_health": convergence_health_data,
         "last_session": last_session,
@@ -401,14 +375,12 @@ def main(roadmap_detail: str = "slim") -> int:
         "dedup_effectiveness_gauge": dedup_effectiveness_gauge,
         "dedup_effectiveness_escalation": dedup_effectiveness_escalation,
         "recent_main_commits": recent_main_commits,
-        "friction_patterns": telemetry_health.get("friction_patterns", []),
+        "friction_patterns": [],
         "log_sync_result": log_sync_result,
         "recommendation_sync": recommendation_sync,
-        "telemetry_health": telemetry_health,
         "data_quality": context_docs.check_data_quality_coverage(),
         "context": context,
         "platform_roadmap": _slim_roadmap_state(platform_roadmap_state, full=(roadmap_detail == "full")),
-        "product_roadmap": _slim_roadmap_state(product_roadmap_state),
         "session_start": session_start,
     }
 
@@ -452,8 +424,8 @@ def _slim_roadmap_state(state: dict, full: bool = False) -> dict:
     Keeps the planning agent's payload lean; blocked_on_cd and gate_evaluations are absent.
 
     full (full=True -- used by /orient): entire computed state including in_progress, blocked,
-    active_tier, blocked_on_cd, ratifiable_cds, and gate_evaluations. Uses .get() defaults so
-    product_roadmap (no candidate_decisions / cross_tier_gates) is unaffected (Decision 93).
+    active_tier, blocked_on_cd, ratifiable_cds, and gate_evaluations. Uses .get() defaults so a
+    roadmap state without candidate_decisions / cross_tier_gates is unaffected (Decision 93).
     """
     if full:
         return {
@@ -474,23 +446,14 @@ def _slim_roadmap_state(state: dict, full: bool = False) -> dict:
 
 
 def open_telemetry_session(workflow: str, branch: str) -> str:
-    """Open a telemetry session and record state to the active-session file.
+    """Open a session and record its state to the active-session file.
 
     Writes ``logs/.telemetry-active-session.json`` containing the session_id,
     workflow, branch, and started_at timestamp.  Returns the session_id UUID.
-
-    On any error the function logs a warning and returns a generated UUID so
-    that callers can still proceed; the telemetry record will simply be partial.
     """
-    try:
-        from scripts.executor.telemetry import open_session  # noqa: PLC0415
+    import uuid  # noqa: PLC0415
 
-        session_id = open_session(workflow=workflow, branch=branch, model_primary="manual")
-    except Exception as exc:  # noqa: BLE001
-        import uuid  # noqa: PLC0415
-
-        session_id = str(uuid.uuid4())
-        print(f"WARNING: telemetry.open_session failed ({exc}); using local UUID", file=sys.stderr)
+    session_id = str(uuid.uuid4())
 
     state = {
         "session_id": session_id,
@@ -542,9 +505,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.health:
-        health = context_docs.check_telemetry_health()
-        context_docs.print_telemetry_health(health)
-        sys.exit(1 if health["overall"] == "critical" else 0)
+        context_docs.print_data_quality_health()
+        sys.exit(0)
 
     if args.open_session:
         branch = args.branch

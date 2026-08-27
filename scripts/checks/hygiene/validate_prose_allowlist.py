@@ -3,16 +3,12 @@
 Every git-tracked .md file must classify as either a permanent agent-instruction prose
 class (`prose_allowlist.allowed_globs` in docs/contracts/file-router.yaml) or a day-one
 grandfathered file (`prose_allowlist.grandfathered_globs`, ratchet-only -- may only shrink
-in later plans, never grow). Scope is repo-wide over ALL tracked .md files, distinct from
-validate_intent_doc_freeze (docs/INTENT-*.md existence, gated by the intent-migration
-MANIFEST.yaml disposition state). The two guards may overlap on the docs/INTENT-*.md
-subset -- that overlap is redundant, not conflicting; validate_intent_doc_freeze is the
-primary owner for whether a given INTENT doc may still exist at all, while this guard only
-asks whether a currently-tracked .md file (INTENT or otherwise) is in a sanctioned class.
+in later plans, never grow). Scope is repo-wide over ALL tracked .md files: this guard asks
+only whether a currently-tracked .md file is in a sanctioned class, never whether a given
+document should exist at all.
 
 Fail-open (warning, no failure) if the `prose_allowlist` key is absent or unreadable, mirroring
-the docs_root_allowlist / intent-doc-freeze precedent -- an unconfigured guard must never block
-the build.
+the docs_root_allowlist precedent -- an unconfigured guard must never block the build.
 """
 
 from __future__ import annotations
@@ -118,14 +114,18 @@ def validate_prose_allowlist(failed: list[str], router_path: Path | None = None)
     allowed, grandfathered, fail_open, error = _load_prose_allowlist(path)
     if fail_open:
         suffix = f" ({error})" if error else " (no prose_allowlist key configured)"
+        registry.skipped(f"prose_allowlist unavailable{suffix}")
         print(f"  SKIP: prose_allowlist unavailable{suffix} -- fail-open.")
         return
     if error is not None:
+        registry.skipped(f"prose_allowlist malformed: {error}")
         failed.append(f"Prose allowlist: {error}")
         return
 
     all_globs = allowed + grandfathered
-    unmatched = [p for p in sorted(_tracked_md_files()) if not path_allowed(p, all_globs)]
+    tracked = sorted(_tracked_md_files())
+    registry.examined(len(tracked), unit="tracked_md_files")
+    unmatched = [p for p in tracked if not path_allowed(p, all_globs)]
 
     if unmatched:
         failed.append(

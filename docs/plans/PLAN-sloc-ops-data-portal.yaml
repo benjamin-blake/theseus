@@ -29,11 +29,11 @@ scope:
       _compute_risk_score, _derive_computed_fields, _load_write_time_validators, _validate_file_path,
       _validate_context_length, _check_not_null, _run_ci_rca_cross_check, find_open_ci_rca_rec_by_fingerprint,
       _validate_ci_rca_context_v2, _validate_ci_rca_dispute, _stamp_warn_mode_reject, _classify_schema_deficiency,
-      _sync_table, _refresh_cache_after_write, _sanitize_athena_record, _append_to_local_jsonl) so those
+      _sync_table, _refresh_cache_after_write, _append_to_local_jsonl) so those
       facade-resident callers resolve them as facade globals and `patch("scripts.ops_data_portal.<sym>")`
       still intercepts. RE-EXPORTS every public symbol + the 6 imported-into-namespace names a functions-only
       facade would miss (subprocess, xml.etree.ElementTree as ET, DECISIONS_JSONL, RECS_JSONL, Recommendation,
-      validate_source) + the _fetch_decision_from_athena alias. Delegates the CLI via `from scripts.ops_portal.cli
+      validate_source). Delegates the CLI via `from scripts.ops_portal.cli
       import main` and keeps `if __name__ == "__main__": sys.exit(main())`.
   - file: scripts/ops_portal/__init__.py
     action: Create
@@ -86,14 +86,14 @@ scope:
     action: Create
     purpose: >-
       owner-concern: local READ-cache refresh (downstream of the writer; NEVER a write source, Decision 88 /
-      warehouse-as-SoT). _sync_table, _refresh_cache_after_write, _sanitize_athena_record, _append_to_local_jsonl.
+      warehouse-as-SoT). _sync_table, _refresh_cache_after_write, _append_to_local_jsonl.
       Uses generic `path.open("a", ...)` -- introduces NO literal that matches the validate_rec_write_paths /
       validate_decisions_local_writes regexes. Est ~61 SLOC.
   - file: scripts/ops_portal/decisions.py
     action: Create
     purpose: >-
       owner-concern: ops_decisions CRUD + DECISIONS.md ETL. file_decision, _fetch_decision_from_reader,
-      the _fetch_decision_from_athena back-compat alias, update_decision, backfill_decisions_from_md +
+      update_decision, backfill_decisions_from_md +
       _DECISION_BACKFILL_COLS. Preserves Decision 91 verb routing (file_decision -> write_ops). Est ~112 SLOC.
   - file: scripts/ops_portal/maintenance_ops.py
     action: Create
@@ -179,7 +179,7 @@ scope:
     purpose: >-
       New guard suite (a test, not a doc -- Decision 86 compliant), mirroring test_checks_registry.py: (1)
       facade completeness -- every one of the 38 required symbols + the 6 imported-name traps (subprocess, ET,
-      DECISIONS_JSONL, RECS_JSONL, Recommendation, validate_source) + the _fetch_decision_from_athena alias is
+      DECISIONS_JSONL, RECS_JSONL, Recommendation, validate_source) is
       getattr-able on scripts.ops_data_portal AND importable via `from scripts.ops_data_portal import <name>`;
       (2) patch-interception -- `patch("scripts.ops_data_portal._ducklake_write")` intercepts a file_rec call
       through the moved transport body; (3) no scripts/ops_portal module recomputes ROOT (all use _common.ROOT);
@@ -201,7 +201,7 @@ bundled_recommendations: []
 infrastructure_dependencies: []
 acceptance_criteria:
   - The existing tests/test_ops_data_portal.py, tests/test_ops_data_portal_decisions.py, tests/test_ops_data_portal_validators.py suites plus the migrated CI-RCA/cache suites plus the external importer suites (test_cost_reconciliation, test_executor_jsonl_store, test_session_postflight, test_execute_recommendation, test_convergence_health, test_classify_risk, test_migrate_ops_data) pass with UNCHANGED assertion semantics.
-  - "Facade completeness: every one of the 38 required symbols (23 public + 15 private) is reachable both as `scripts.ops_data_portal.<name>` (getattr) and via `from scripts.ops_data_portal import <name>`; AND the 6 imported-into-namespace names (subprocess, ET, DECISIONS_JSONL, RECS_JSONL, Recommendation, validate_source) and the _fetch_decision_from_athena alias are attributes of the facade (a functions-only re-export would miss them)."
+  - "Facade completeness: every one of the 38 required symbols (23 public + 15 private) is reachable both as `scripts.ops_data_portal.<name>` (getattr) and via `from scripts.ops_data_portal import <name>`; AND the 6 imported-into-namespace names (subprocess, ET, DECISIONS_JSONL, RECS_JSONL, Recommendation, validate_source) are attributes of the facade (a functions-only re-export would miss them)."
   - "Patch interception preserved: `patch(\"scripts.ops_data_portal._ducklake_write\")` still intercepts a file_rec write; AND for every private symbol whose defining/calling function MOVED to a package module, ZERO residual `patch(\"scripts.ops_data_portal.<moved-sym>\")` sites remain in the affected subsystem test file (grep-count closure)."
   - "Single Portal CLI contract byte-stable: `python -m scripts.ops_data_portal --help` exposes the identical action + field flag set, and --file-rec/--update-rec/--file-decision/--update-decision/--backfill-decisions-md/--enqueue-findings/--guidance/--sync/--selftest-read/--selftest-roundtrip/--back-validate/--find-open-ci-rca-rec/--bump-ci-rca-occurrence/--purge-postmortems-for keep identical exit-code semantics; .github/workflows/ci.yml is unmodified."
   - scripts/ops_data_portal.py drops below the 500-SLOC limit (target <=450); no scripts/ops_portal/**.py module exceeds 500 SLOC or CC 20 without carrying the decision-43 waiver (cli.py and ci_rca_runtime.py carry it); config/sloc_budgets.yaml loses its scripts/ops_data_portal.py entry and gains NO scripts/ops_portal/*.py entry (diff-verified, this file's entries only).
@@ -308,7 +308,7 @@ verification_plan:
 constraints:
   - "Behaviour preservation is ABSOLUTE: no feature work, no bug fixes, no signature changes beyond movement. Every function/class body moves VERBATIM. rec-2114 (selftest probe leak) and rec-2116 (duplicated _resolve_function_url_via_api) are OUT OF SCOPE -- move the affected code unchanged; do NOT fix (context notes only)."
   - "Single Portal Invariant (Decision 84/69, CLAUDE.md): `python -m scripts.ops_data_portal` and every CLI flag/exit code, plus the file_rec/update_rec/sync Python API and the CLI verbs (--backfill-decisions-md, --guidance, find_open_ci_rca_rec_by_fingerprint, bump_ci_rca_occurrence), are a HARD public contract -- byte-stable. The facade is the sole entry module; other agents call it."
-  - "Import stability (tests/CLAUDE.md): the facade re-exports every public symbol AND every test-patched private symbol AND the 6 imported-into-namespace names (subprocess, ET, DECISIONS_JSONL, RECS_JSONL, Recommendation, validate_source) AND the _fetch_decision_from_athena alias. Where a moved caller's patch target must migrate, bulk-repoint EVERY such site in the SAME change and prove closure by grep -- never leave a silent no-op mock."
+  - "Import stability (tests/CLAUDE.md): the facade re-exports every public symbol AND every test-patched private symbol AND the 6 imported-into-namespace names (subprocess, ET, DECISIONS_JSONL, RECS_JSONL, Recommendation, validate_source). Where a moved caller's patch target must migrate, bulk-repoint EVERY such site in the SAME change and prove closure by grep -- never leave a silent no-op mock."
   - "Decision 102: budgets ratchet DOWN only; re-point EXCLUSIVELY via `validate --update-sloc-budgets` as the LAST step, never a hand-raise; diff the yaml to catch a silently-seeded >500 module. No new >500-SLOC module (Decision 43 cap applies to every new module)."
   - "Decision 43: CC<=20 per function; the decision-43 complexity-waiver header travels into cli.py (main) and ci_rca_runtime.py (_run_ci_rca_cross_check) in the FIRST 10 lines; the facade keeps its own waiver (file_rec). Do NOT strip any waiver comment before checking validate_cc_limits (Decision 102)."
   - "Multi-plan coordination: this is one of ~15 SLOC-decomposition plans on the shared branch claude/sloc-violations-refactor-p5svnl. Touch ONLY the scope files, the new scripts/ops_portal/ modules, and the listed tests. config/sloc_budgets.yaml is REGENERATED, never hand-edited; assert only THIS plan's entries changed (siblings share the file). Do NOT edit any sibling's scope files."
@@ -406,7 +406,7 @@ context:
     ops_session_log retire-or-migrate (T3.20 / unratified CD.40); the progress_note states "OpsWriter survives for
     telemetry until Phase 4". It is AT budget (571/571), not over -- not failing CI, and rarely touched (telemetry
     schema lives in scripts/telemetry_schemas.py). Two V3 deploy cycles + two manifest edits + class-split risk on a
-    live Iceberg/S3/Athena write path, for a ~71-SLOC win on a module marked for deletion, is a poor trade. The
+    live Iceberg/S3 warehouse write path, for a ~71-SLOC win on a module marked for deletion, is a poor trade. The
     registry entry `scripts/ops_writer.py: 571` should be cleared by DELETION at T2.26's final atomic plan, not by
     decompose-then-delete now. Decisions 79 + 84 both support SKIP (scout-confirmed).
   - "Branch 0 commits behind origin/main at planning time; main_files_changed_since_branch = [] (no scope-file divergence). Sibling SLOC planners work on OTHER files on this same branch concurrently. Additive/mechanical plan: resolves no recs and retires no surface (facade stays; no Delete row) -> Closure Obligation exempt. ci_rca_unresolved_recs empty -> no HARD BLOCK / Related-Work constraint."
@@ -421,7 +421,7 @@ execution_steps:
   - "Capture baseline FIRST -- run `scripts.ops_data_portal --help` and record the argument set + a representative action-flag exit-code table (no-action rc, --file-rec-missing rc). Freeze in tests/test_ops_portal_facade.py as the CLI equivalence oracle. Precedes any code movement."
   - "Create scripts/ops_portal/__init__.py and scripts/ops_portal/_common.py (ROOT/_REPO_ROOT, _SSO_PROFILE, _AWS_REGION). No submodule may recompute ROOT."
   - "Extract each cohesive subsystem into its scripts/ops_portal/<module>.py per the Scope table, moving every body VERBATIM: ci_rca_schema, ci_rca_runtime (carry the decision-43 waiver in first 10 lines), writer_transport, risk_scoring, write_validators, cache, decisions, maintenance_ops, cli (carry the waiver). Constants used only inside a moved function travel WITH it. Cross-module calls to facade-resident functions (file_rec/update_rec/_fetch_rec_from_reader/get_ci_rca_strict_mode) use function-local imports from scripts.ops_data_portal to avoid a load cycle."
-  - "Collapse scripts/ops_data_portal.py to the facade: keep file_rec/update_rec/propose_or_close_rec/_fetch_rec_from_reader/sync/get_ci_rca_strict_mode (+ _FEATURE_FLAGS_YAML + strict-mode cache) DEFINED here; import every test-patched private dep into this namespace; re-export all public symbols + the 6 imported-name traps + the _fetch_decision_from_athena alias; delegate `from scripts.ops_portal.cli import main`; keep the __main__ block."
+  - "Collapse scripts/ops_data_portal.py to the facade: keep file_rec/update_rec/propose_or_close_rec/_fetch_rec_from_reader/sync/get_ci_rca_strict_mode (+ _FEATURE_FLAGS_YAML + strict-mode cache) DEFINED here; import every test-patched private dep into this namespace; re-export all public symbols + the 6 imported-name traps; delegate `from scripts.ops_portal.cli import main`; keep the __main__ block."
   - "Bulk-migrate the SUBSYSTEM-LOCAL patch targets to their new module namespaces (tests/CLAUDE.md): tests/test_ops_data_portal_decisions.py (_ducklake_write/_sync_table/_fetch_decision_from_reader -> scripts.ops_portal.decisions.*), tests/test_ops_data_portal_validators.py (_write_time_validators_cache/_COVERAGE_XML -> write_validators/risk_scoring), tests/test_ci_rca_back_validate.py + tests/test_ops_portal_incremental_cache.py (moved-caller sites only). Leave every facade-driven patch site UNCHANGED. Prove closure by grep (VP step 5)."
   - "Write tests/test_ops_portal_facade.py: facade completeness (38 symbols + 6 traps + alias, getattr + import), patch-interception (patch facade _ducklake_write -> intercept a file_rec write), no-local-ROOT, and the frozen CLI --help/exit-code baseline."
   - "Extend scripts/checks/ops_governance/check_source_registry.py to scan scripts/ops_portal/*.py in addition to scripts/ops_data_portal.py (the two moved source literals stay validated)."

@@ -102,8 +102,8 @@ class TestGrandfatherRetiringTable:
         )
         assert map_source_to_test(source) == colocated
 
-    def test_roster_is_the_24_known_basenames(self) -> None:
-        """The fixed rec-2709 roster matches the 24 dec-130 config/sloc_budgets.yaml entries
+    def test_roster_is_the_23_known_basenames(self) -> None:
+        """The fixed rec-2709 roster matches the 23 dec-130 config/sloc_budgets.yaml entries
         (frozen membership -- retiring a home deletes it from _RETIRING_GRANDFATHER_HOMES only,
         never from this frozenset)."""
         expected = {
@@ -119,10 +119,9 @@ class TestGrandfatherRetiringTable:
             "test_executor_plan.py",
             "test_executor_postflight.py",
             "test_executor_step_runner.py",
-            "test_iceberg_reader.py",
+            "test_ducklake_reader_client.py",
             "test_lambda_manifest.py",
             "test_ops_data_portal.py",
-            "test_ops_writer.py",
             "test_platform_roadmap_state.py",
             "test_s3_log_store.py",
             "test_scheduled_agent_handler.py",
@@ -134,15 +133,15 @@ class TestGrandfatherRetiringTable:
         }
         assert _ALL_MIRROR_TARGET_HOMES == expected
         assert (
-            len(_ALL_MIRROR_TARGET_HOMES) == 24
-        )  # count-coupling-ok: fixed historical roster of the 24 rec-2709 targets, not a growing collection
+            len(_ALL_MIRROR_TARGET_HOMES) == 23
+        )  # count-coupling-ok: fixed historical roster of the 23 rec-2709 targets, not a growing collection
 
 
 class TestCheckTestFileExistsDirectoryTarget:
     """Tests for check_test_file_exists() with a concern-split test PACKAGE DIRECTORY target."""
 
     def test_directory_target_passes_when_populated(self, tmp_path: Path) -> None:
-        test_dir = tmp_path / "tests" / "ops_writer"
+        test_dir = tmp_path / "tests" / "ops_data_portal"
         test_dir.mkdir(parents=True)
         (test_dir / "test_write_paths.py").write_text("# tests", encoding="utf-8")
 
@@ -150,32 +149,32 @@ class TestCheckTestFileExistsDirectoryTarget:
             patch("test_coverage_checker.map_source_to_test", return_value=test_dir),
             patch("test_coverage_checker.ROOT", tmp_path),
         ):
-            ok, msg = check_test_file_exists(tmp_path / "scripts" / "ops_writer.py")
+            ok, msg = check_test_file_exists(tmp_path / "scripts" / "ops_data_portal.py")
 
         assert ok is True
         assert "package" in msg
 
     def test_directory_target_fails_when_empty(self, tmp_path: Path) -> None:
-        test_dir = tmp_path / "tests" / "ops_writer"
+        test_dir = tmp_path / "tests" / "ops_data_portal"
         test_dir.mkdir(parents=True)  # exists, but no test_*.py yet
 
         with (
             patch("test_coverage_checker.map_source_to_test", return_value=test_dir),
             patch("test_coverage_checker.ROOT", tmp_path),
         ):
-            ok, msg = check_test_file_exists(tmp_path / "scripts" / "ops_writer.py")
+            ok, msg = check_test_file_exists(tmp_path / "scripts" / "ops_data_portal.py")
 
         assert ok is False
         assert "missing test package" in msg
 
     def test_directory_target_fails_when_absent(self, tmp_path: Path) -> None:
-        test_dir = tmp_path / "tests" / "ops_writer"  # never created
+        test_dir = tmp_path / "tests" / "ops_data_portal"  # never created
 
         with (
             patch("test_coverage_checker.map_source_to_test", return_value=test_dir),
             patch("test_coverage_checker.ROOT", tmp_path),
         ):
-            ok, msg = check_test_file_exists(tmp_path / "scripts" / "ops_writer.py")
+            ok, msg = check_test_file_exists(tmp_path / "scripts" / "ops_data_portal.py")
 
         assert ok is False
         assert "missing test package" in msg
@@ -187,11 +186,11 @@ class TestCheckPerFileCoverageDirectoryTarget:
     pytest against that directory rather than a single file. subprocess is mocked throughout."""
 
     def test_runs_pytest_against_directory_target(self, tmp_path: Path) -> None:
-        source = tmp_path / "scripts" / "ops_writer.py"
+        source = tmp_path / "scripts" / "ops_data_portal.py"
         source.parent.mkdir(parents=True)
         source.write_text("# source", encoding="utf-8")
 
-        test_dir = tmp_path / "tests" / "ops_writer"
+        test_dir = tmp_path / "tests" / "ops_data_portal"
         test_dir.mkdir(parents=True)
         (test_dir / "test_write_paths.py").write_text("# tests", encoding="utf-8")
 
@@ -208,14 +207,14 @@ class TestCheckPerFileCoverageDirectoryTarget:
 
         assert errors == []
         called_cmd = mock_popen.call_args.args[0]
-        assert "tests/ops_writer" in called_cmd
+        assert "tests/ops_data_portal" in called_cmd
 
     def test_skips_directory_target_with_no_test_files(self, tmp_path: Path) -> None:
-        source = tmp_path / "scripts" / "ops_writer.py"
+        source = tmp_path / "scripts" / "ops_data_portal.py"
         source.parent.mkdir(parents=True)
         source.write_text("# source", encoding="utf-8")
 
-        test_dir = tmp_path / "tests" / "ops_writer"
+        test_dir = tmp_path / "tests" / "ops_data_portal"
         test_dir.mkdir(parents=True)  # empty -- no test_*.py yet
 
         with (

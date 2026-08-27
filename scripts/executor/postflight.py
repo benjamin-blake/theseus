@@ -49,7 +49,6 @@ from scripts.executor.postflight_gitops import (
     cleanup_after_merge,
     merge_pr,
 )
-from scripts.executor.telemetry import emit_process_event
 from scripts.llm import model_registry  # noqa: F401
 from scripts.llm.client import llm_call  # noqa: F401
 from scripts.llm.utils import MODEL_EXECUTION, build_context_path, kill_process_tree  # noqa: F401
@@ -262,20 +261,6 @@ def finalize(rec_id: str, no_merge: bool = False) -> Optional[str]:
                     _create_postmortem_recommendation(rec_id, branch, max_fix_retries)
 
             if not ci_passed:
-                if ci_reason in ("timeout", "checks_unavailable"):
-                    emit_process_event(
-                        tier="exception",
-                        category="ci_timeout",
-                        severity="error",
-                        description=f"CI checks unavailable or timed out: {ci_reason}",
-                    )
-                else:
-                    emit_process_event(
-                        tier="rework",
-                        category="ci_failure",
-                        severity="warning",
-                        description=f"CI failed: {ci_reason}",
-                    )
                 if ci_reason == "checks_unavailable":
                     logger.error("[FINALIZE] CI checks unavailable — escalating to agent")
                     max_recovery_retries = int(os.getenv("MERGE_RECOVERY_RETRIES", "2"))
@@ -301,12 +286,6 @@ def finalize(rec_id: str, no_merge: bool = False) -> Optional[str]:
                 )
                 return None
 
-        emit_process_event(
-            tier="decision",
-            category="ci_pass",
-            severity="info",
-            description="CI passed",
-        )
         if no_merge:
             logger.info("[FINALIZE] --no-merge flag set, CI passed, stopping before merge: %s", pr_url)
             return pr_url
@@ -319,12 +298,6 @@ def finalize(rec_id: str, no_merge: bool = False) -> Optional[str]:
         max_recovery_retries = int(os.getenv("MERGE_RECOVERY_RETRIES", "2"))
         merged, merge_err = merge_pr(branch)
         if merged:
-            emit_process_event(
-                tier="decision",
-                category="merge_success",
-                severity="info",
-                description=f"PR merged: {pr_url or branch}",
-            )
             cleanup_after_merge(branch)
             return pr_url
 
@@ -350,12 +323,6 @@ def finalize(rec_id: str, no_merge: bool = False) -> Optional[str]:
             merge_err = recovery_result
 
         logger.error("[FINALIZE] Merge still failing after %d agent recovery attempt(s)", max_recovery_retries)
-        emit_process_event(
-            tier="exception",
-            category="merge_fail",
-            severity="error",
-            description=f"Merge failed after {max_recovery_retries} recovery attempt(s)",
-        )
         _create_postmortem_recommendation(rec_id, branch, max_recovery_retries)
         return None
 

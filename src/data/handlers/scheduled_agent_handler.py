@@ -101,62 +101,6 @@ class RetiredProviderError(RuntimeError):
     """Raised when an agent's schedule.yaml ``provider`` field names a retired provider."""
 
 
-def _query_athena_to_json(query: str) -> list[dict]:
-    """Execute an Athena query and return results as a list of dicts.
-
-    Uses the ``agent-platform-production`` workgroup (engine v3).
-    Polls until the query completes or fails.  Returns an empty list on
-    any error so the caller can fall back gracefully.
-    """
-    import time
-
-    import boto3
-
-    athena = boto3.client("athena", region_name="eu-west-2")
-    workgroup = "agent-platform-production"
-
-    try:
-        start = athena.start_query_execution(
-            QueryString=query,
-            WorkGroup=workgroup,
-        )
-        qid = start["QueryExecutionId"]
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Athena start_query_execution failed: %s", exc)
-        return []
-
-    # Poll for completion (max ~120 s)
-    for _ in range(60):
-        status = athena.get_query_execution(QueryExecutionId=qid)
-        state = status["QueryExecution"]["Status"]["State"]
-        if state in ("SUCCEEDED",):
-            break
-        if state in ("FAILED", "CANCELLED"):
-            reason = status["QueryExecution"]["Status"].get("StateChangeReason", "")
-            logger.warning("Athena query %s: %s -- %s", state, qid, reason)
-            return []
-        time.sleep(2)
-    else:
-        logger.warning("Athena query timed out: %s", qid)
-        return []
-
-    # Paginate results
-    rows: list[dict] = []
-    paginator = athena.get_paginator("get_query_results")
-    header: list[str] = []
-    for page in paginator.paginate(QueryExecutionId=qid):
-        columns = page["ResultSet"].get("ResultSetMetadata", {}).get("ColumnInfo", [])
-        if not header and columns:
-            header = [c["Name"] for c in columns]
-        for i, row in enumerate(page["ResultSet"]["Rows"]):
-            vals = [d.get("VarCharValue", "") for d in row["Data"]]
-            # First row of first page is the header
-            if not rows and i == 0 and vals == header:
-                continue
-            rows.append(dict(zip(header, vals)))
-    return rows
-
-
 def _preload_rec_curator_context(prompt_text: str) -> str:
     """Inject recommendation and retro data into the rec-curator prompt.
 
@@ -164,16 +108,15 @@ def _preload_rec_curator_context(prompt_text: str) -> str:
     T2.19 cutover): make_reader().current_state("ops_recommendations", ...).
     On reader failure, degrades gracefully to an empty list with a loud warning.
 
-    Retro entries are still read from S3 (no Iceberg table for retro data).
+    Retro entries are still read from S3 (no warehouse table for retro data).
 
     Files/views injected:
       - DuckLake reader (open recs via closed boundary)
       - logs/.retro-lite-log.jsonl        (S3 or local via s3_log_store)
-      - docs/ROADMAP-PRODUCT.md           (product phases -- Lambda filesystem at /var/task or repo root)
       - docs/ROADMAP-PLATFORM.yaml        (platform tier items -- Lambda filesystem at /var/task or repo root)
     """
     from scripts.s3_log_store import read_jsonl  # noqa: PLC0415
-    from src.common.iceberg_reader import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
 
     open_recs: list = []
     try:
@@ -184,7 +127,7 @@ def _preload_rec_curator_context(prompt_text: str) -> str:
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "rec-curator context: DuckLake reader unreachable (%s); degrading to empty recs list "
-            "(Decision 81 cl.7 -- no Athena fallback)",
+            "(Decision 81 cl.7 -- no fallback backend)",
             exc,
         )
 
@@ -198,7 +141,6 @@ def _preload_rec_curator_context(prompt_text: str) -> str:
         logger.warning("%s not found; rec-curator will run without it", filename)
         return f"({filename} not available)"
 
-    roadmap_product_text = _read_roadmap("ROADMAP-PRODUCT.md")
     roadmap_platform_text = _read_roadmap("ROADMAP-PLATFORM.yaml")
 
     recs_text = "\n".join(json.dumps(r, ensure_ascii=False) for r in open_recs) or "(empty)"
@@ -215,10 +157,6 @@ def _preload_rec_curator_context(prompt_text: str) -> str:
         "### logs/.retro-lite-log.jsonl\n"
         "```\n"
         f"{retro_text}\n"
-        "```\n\n"
-        "### docs/ROADMAP-PRODUCT.md (product phases)\n"
-        "```\n"
-        f"{roadmap_product_text}\n"
         "```\n\n"
         "### docs/ROADMAP-PLATFORM.yaml (platform tier items)\n"
         "```\n"
@@ -317,19 +255,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             provider,
         )
 
-        from src.data.handlers.agent_telemetry import (
-            close_invocation as _close_invocation,
-        )
-        from src.data.handlers.agent_telemetry import (
-            open_invocation as _open_invocation,
-        )
-        from src.data.handlers.agent_telemetry import (
-            record_model_call as _record_model_call,
-        )
-
-        trigger = "manual" if force_agent else "eventbridge"
-        _open_invocation(agent_name=name, trigger=trigger, model=model, provider=provider)
-
         prompt_text = _load_prompt(prompt_path)
         if not prompt_text:
             logger.error(
@@ -338,7 +263,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 prompt_path,
             )
             agents_failed += 1
-            _close_invocation(outcome="failed", error="prompt not found")
             continue
 
         if provider in ("copilot-sdk", "gemini"):
@@ -350,10 +274,7 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             except RetiredProviderError as exc:
                 logger.error("Skipping agent '%s': %s", name, exc)
                 agents_failed += 1
-                _close_invocation(outcome="failed", error=str(exc))
                 continue
-
-        import time as _time
 
         if not pat_checked:
             pat = _get_github_pat()
@@ -361,27 +282,12 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         if not pat:
             logger.error("Skipping agent '%s': GitHub PAT not available", name)
             agents_failed += 1
-            _close_invocation(outcome="failed", error="PAT not available")
             continue
-        _t0 = _time.monotonic()
         output, has_error, err_msg = _invoke_github_models(prompt_text, model, pat)
-        _call_dur = int(_time.monotonic() - _t0)
-        _record_model_call(
-            provider=provider,
-            model=model,
-            purpose="findings",
-            error=err_msg if has_error else None,
-            duration_seconds=_call_dur,
-        )
 
         if has_error:
             logger.error("Agent '%s' API call failed: %s", name, err_msg)
             agents_failed += 1
-            _close_invocation(
-                outcome="failed",
-                error=err_msg,
-                lambda_request_id=getattr(context, "aws_request_id", None),
-            )
             continue
 
         findings = parse_findings(output)
@@ -400,20 +306,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 len(findings),
                 key,
             )
-            _close_invocation(
-                outcome="success",
-                findings_count=len(findings),
-                lambda_request_id=getattr(context, "aws_request_id", None),
-            )
         else:
             logger.error("Agent '%s': failed to write findings to S3", name)
             agents_failed += 1
-            _close_invocation(
-                outcome="failed",
-                findings_count=len(findings),
-                error="S3 write failed",
-                lambda_request_id=getattr(context, "aws_request_id", None),
-            )
 
     summary = {
         "agents_run": agents_run,

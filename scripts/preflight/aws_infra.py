@@ -54,7 +54,7 @@ def _handle_credentials_startup(creds_status: str) -> str:
             f"       Verify the chain: aws sts get-caller-identity --profile {profile}\n"
             "       There is no interactive login to recover; if the agent_static\n"
             "       key was rotated, refresh ~/.aws/credentials. Continuing in DEGRADED mode:\n"
-            "       warehouse reads (DuckLake reader for recs; Iceberg/Athena for deferred tables)\n"
+            "       warehouse reads via the DuckLake reader\n"
             "       fall back to the local cache or empty results.",
             file=sys.stderr,
         )

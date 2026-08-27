@@ -20,8 +20,6 @@ locals {
         Effect = "Allow"
         Action = [
           "s3:*",
-          "athena:*",
-          "glue:*",
           "dynamodb:*",
           "lambda:*",
           "logs:*",

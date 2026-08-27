@@ -386,7 +386,7 @@ def _fetch_resolved_budget_recs(branch: str, profile: Optional[str] = None) -> l
     The LIKE pattern is a bound param, never interpolated SQL, and an over-broad match (a `_` in a
     branch name is a LIKE wildcard) is harmless -- the caller re-filters on the exact markers.
     """
-    from src.common.iceberg_reader import DuckLakeReader, make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
 
     # make_reader() is annotated -> Reader (the Protocol, which deliberately does not declare
     # named()) but only ever constructs a DuckLakeReader; cast narrows the type here rather than

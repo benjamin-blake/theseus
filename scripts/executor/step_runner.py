@@ -28,7 +28,6 @@ from pathlib import Path
 from typing import Optional
 
 from scripts.executor.plan import load_prompt
-from scripts.executor.telemetry import emit_process_event, emit_step, emit_transcript
 from scripts.llm.client import llm_call
 from scripts.llm.utils import build_context_path, kill_process_tree
 from scripts.s3_log_store import append_jsonl, get_backend
@@ -332,14 +331,6 @@ def implement_step(
     else:
         logger.warning("[STEP %d/%d] acceptance=(EMPTY — step result will not be verified)", step_n, total_steps)
 
-    _step_started_iso = datetime.now(timezone.utc).isoformat()
-    _tel_step: dict = {
-        "outcome": StepOutcome.CLI_ERROR.value,
-        "reqs": 0.0,
-        "hash": impl_prompt_hash,
-        "transcript": transcript_path,
-    }
-
     try:
         context_file_path = build_context_path("impl", rec_id, step_n)
         inline_instruction = (
@@ -401,7 +392,6 @@ def implement_step(
             if hasattr(result, "stderr") and result.stderr:
                 logger.error("[IMPL] stderr: %s", result.stderr[:500])
             step_reqs = result.cost_usd
-            _tel_step.update({"outcome": StepOutcome.CLI_ERROR.value, "reqs": step_reqs})
             return StepOutcome.CLI_ERROR, step_reqs, impl_prompt_hash, ""
 
         step_reqs = result.cost_usd
@@ -420,7 +410,6 @@ def implement_step(
                     "[GHOST-STEP] Step %d made no new edits, but acceptance already passes; treating it as complete",
                     step_n,
                 )
-                _tel_step.update({"outcome": StepOutcome.SUCCESS.value, "reqs": step_reqs})
                 return StepOutcome.SUCCESS, step_reqs, impl_prompt_hash, result.session_id or ""
 
             if meaningful_changes:
@@ -429,12 +418,10 @@ def implement_step(
                     ", ".join(meaningful_changes[:5]),
                 )
             logger.error("[GHOST-STEP] Failing step %d due to ghost step detection", step_n)
-            _tel_step.update({"outcome": StepOutcome.GHOST_STEP.value, "reqs": step_reqs})
             return StepOutcome.GHOST_STEP, step_reqs, impl_prompt_hash, ""
 
         if not auto_format_test_files(step.get("file", "")):
             logger.error("[FORMAT] Auto-format failed for step %d", step_n)
-            _tel_step.update({"outcome": StepOutcome.FORMAT_ERROR.value, "reqs": step_reqs})
             return StepOutcome.FORMAT_ERROR, step_reqs, impl_prompt_hash, ""
 
         # Auto-fix trivially fixable lint issues (I001, F401, etc.)
@@ -442,11 +429,9 @@ def implement_step(
         ruff_targets = [step_file] if step_file else []
         if not _run_ruff_fix(ruff_targets):
             logger.error("[RUFF] Auto-fix failed for step %d", step_n)
-            _tel_step.update({"outcome": StepOutcome.RUFF_ERROR.value, "reqs": step_reqs})
             return StepOutcome.RUFF_ERROR, step_reqs, impl_prompt_hash, ""
         if not _run_ruff_format(ruff_targets):
             logger.error("[FORMAT] Post-fix format failed for step %d", step_n)
-            _tel_step.update({"outcome": StepOutcome.FORMAT_ERROR.value, "reqs": step_reqs})
             return StepOutcome.FORMAT_ERROR, step_reqs, impl_prompt_hash, ""
 
         logger.info("[VALIDATE] Running validate.py after step %d...", step_n)
@@ -464,7 +449,6 @@ def implement_step(
                 kill_process_tree(val_proc.pid)
                 val_proc.wait()
                 logger.error("[VALIDATE] Timeout (120s) after step %d", step_n)
-                _tel_step.update({"outcome": StepOutcome.VALIDATE_TIMEOUT.value, "reqs": step_reqs})
                 return StepOutcome.VALIDATE_TIMEOUT, step_reqs, impl_prompt_hash, ""
         if val_proc.returncode != 0:
             combined = (val_stdout + "\n" + val_stderr).strip()
@@ -482,74 +466,21 @@ def implement_step(
                 logger.info("[VALIDATE] Full output saved: %s", _debug_path)
             except OSError as _e:
                 logger.warning("[VALIDATE] Could not save debug output: %s", _e)
-            _tel_step.update({"outcome": StepOutcome.VALIDATE_FAILED.value, "reqs": step_reqs})
             return StepOutcome.VALIDATE_FAILED, step_reqs, impl_prompt_hash, ""
         logger.info("[VALIDATE] Passed after step %d", step_n)
 
         if not run_acceptance(step.get("acceptance", "")):
             logger.error("[ACCEPTANCE] Failed for step %d", step_n)
-            _tel_step.update({"outcome": StepOutcome.ACCEPTANCE_FAILED.value, "reqs": step_reqs})
             return StepOutcome.ACCEPTANCE_FAILED, step_reqs, impl_prompt_hash, ""
 
-        _tel_step.update({"outcome": StepOutcome.SUCCESS.value, "reqs": step_reqs})
         return StepOutcome.SUCCESS, step_reqs, impl_prompt_hash, result.session_id or ""
 
     except subprocess.TimeoutExpired:
         logger.error("[IMPL] Step %d timeout", step_n)
-        _tel_step["outcome"] = StepOutcome.VALIDATE_TIMEOUT.value
         return StepOutcome.VALIDATE_TIMEOUT, 0.0, impl_prompt_hash, ""
     except Exception as e:
         logger.error("[IMPL] Step %d error: %s", step_n, e)
-        _tel_step["outcome"] = StepOutcome.CLI_ERROR.value
         return StepOutcome.CLI_ERROR, 0.0, impl_prompt_hash, ""
-    finally:
-        _step_ended_iso = datetime.now(timezone.utc).isoformat()
-        try:
-            emit_step(
-                step_number=step_n,
-                total_steps=total_steps,
-                title=step.get("title", f"Step {step_n}"),
-                outcome=_tel_step["outcome"],
-                started_at=_step_started_iso,
-                ended_at=_step_ended_iso,
-                target_file=step.get("file") or None,
-                action=step.get("action") or None,
-                acceptance_command=acceptance_cmd or None,
-                prompt_hash=_tel_step["hash"],
-                transcript_path=(_tel_step["transcript"] if Path(_tel_step["transcript"]).exists() else None),
-            )
-            _final_outcome = _tel_step["outcome"]
-            if _final_outcome == StepOutcome.GHOST_STEP.value:
-                emit_process_event(
-                    tier="decision",
-                    category="ghost_step",
-                    severity="info",
-                    description=f"Step {step_n} produced no changes",
-                )
-            elif _final_outcome == StepOutcome.VALIDATE_FAILED.value:
-                emit_process_event(
-                    tier="rework",
-                    category="validate_failed",
-                    severity="warning",
-                    description=f"Step {step_n} validation failed",
-                )
-            elif _final_outcome == StepOutcome.ACCEPTANCE_FAILED.value:
-                emit_process_event(
-                    tier="rework",
-                    category="acceptance_failed",
-                    severity="warning",
-                    description=f"Step {step_n} acceptance failed",
-                )
-            _transcript_file = _tel_step["transcript"]
-            if Path(_transcript_file).exists():
-                emit_transcript(
-                    purpose="implementation",
-                    local_path=_transcript_file,
-                    size_bytes=Path(_transcript_file).stat().st_size,
-                    rec_id=rec_id,
-                )
-        except Exception:
-            pass  # telemetry must never break the step path
 
 
 # ---------------------------------------------------------------------------

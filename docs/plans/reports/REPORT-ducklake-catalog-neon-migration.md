@@ -86,7 +86,7 @@ built around an RDS-in-a-VPC posture.
 PG12+/SQL-92/PK-OCC catalog contract) and DuckLake-on-Neon is documented externally, but the only in-repo
 DuckLake ATTACH proof-of-concept uses a *local SQLite catalog file*; the Postgres/Neon ATTACH is gated on a
 T2.16b smoke test. **Timing is optimal** -- nothing consumes the catalog yet (T2.17-T2.19 `not_started`;
-live ops are still Iceberg/Athena), so the blast radius of switching *now* is zero. The change is
+live ops are still on the legacy warehouse), so the blast radius of switching *now* is zero. The change is
 **governance-clean** because Neon, like RDS, is "a small managed cloud state-store" -- the NS.3 framing
 Decision 78 used to justify the catalog -- so this re-prices an instantiation, not reverses a decision.
 
@@ -128,7 +128,7 @@ unrecoverable. This dominates the risk section.
   architecture (writer/reader/maintenance split, OCC retry, `current` projection, SCD2 keys, guarded GC).
 - T2.17 / T2.18 / T2.19 -- `not_started`. T2.17's design assumes a private VPC the Lambdas attach to to
   reach the RDS catalog.
-- **Nothing reads or writes the catalog yet.** Live ops remain Iceberg/Athena until the T2.19 cutover (FP-B).
+- **Nothing reads or writes the catalog yet.** Live ops remain on the legacy warehouse until the T2.19 cutover (FP-B).
 
 ---
 
@@ -269,7 +269,7 @@ Inserted between T2.16 and T2.17 (the migration must precede the Lambda runtime)
   - rec disposition: closes rec-2062/2068/2069 by file deletion; **rec-2063's RDS-side action is explicitly
     dispositioned** (not just "transferred") -- its recommendation to flip `delete_automated_backups=false`
     before cutover is **accepted-as-WONTFIX for this retirement** because the catalog is provably unused at
-    T2.16b (no ops data has been written; live ops are still Iceberg/Athena), so single-final-snapshot
+    T2.16b (no ops data has been written; live ops are still on the legacy warehouse), so single-final-snapshot
     recovery loses nothing; the flip applies only if retirement is ever deferred past the T2.19 cutover. Its
     durability *concept* is carried by the Neon 6h-PITR + daily-dump posture. **rec-2064** (engine-minor
     drift) is dispositioned by noting the catalog backup is a logical `pg_dump`, which tolerates Neon

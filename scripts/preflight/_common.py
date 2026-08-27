@@ -11,15 +11,14 @@ from pathlib import Path
 
 from scripts.aws_profile import resolve_aws_profile  # noqa: F401
 from scripts.s3_log_store import get_backend, read_jsonl  # noqa: F401
-from src.common.iceberg_reader import make_reader as _make_reader  # noqa: F401
+from src.common.ducklake_reader_client import make_reader as _make_reader  # noqa: F401
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 TERRAFORM_DIR = ROOT / "terraform"
 SESSION_LOG_FILE = ROOT / "docs" / "SESSION_LOG.md"
 RECOMMENDATIONS_FILE = ROOT / "logs" / ".recommendations-log.jsonl"
-ROADMAP_FILE = ROOT / "docs" / "ROADMAP-PRODUCT.yaml"
+ROADMAP_FILE = ROOT / "docs" / "ROADMAP-PLATFORM.yaml"
 ROADMAP_PLATFORM_PATH = ROOT / "docs" / "ROADMAP-PLATFORM.yaml"
-ROADMAP_PRODUCT_PATH = ROOT / "docs" / "ROADMAP-PRODUCT.yaml"
 DECISIONS_FILE = ROOT / "docs" / "DECISIONS.md"
 STRATEGIC_REVIEW_LOOKBACK_DAYS = 30
 PRIORITY_QUEUE_FILE = ROOT / "logs" / "priority-queue" / ".priority-queue.jsonl"

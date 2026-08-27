@@ -107,7 +107,7 @@ audit:
         circular (observed); (2) rec acceptance oracles are overwhelmingly `grep -q` structural
         checks (observed across the 10-rec sample, including High-priority rec-940), which
         survive fail-on-revert while proving only text presence (VF-11); (3) a HARD_GATE verifier
-        passes vacuously in production: AthenaViewsVerifier reports "Views are fresh. Found 45
+        passes vacuously in production: the legacy views verifier reports "Views are fresh. Found 45
         decisions" against the frozen pre-Decision-84 Iceberg copy while main carries 74 decision
         headers and dec-114 exists (VF-03, observed live).
       set_completeness: >-
@@ -124,7 +124,7 @@ audit:
         - "V3 post-deploy self-attestation: agent performs live run, transcribes evidence, VP command greps its own transcription (PLAN-close-audit-ulf-01 step 9, observed)"
         - "Structural acceptance oracle on a rec: grep -q passes fail-on-revert yet proves only string presence; becomes the executor's merge oracle at unfreeze (VF-11)"
         - "Uncovered changed surface: a file outside every verifier's covers merges with no signal, because the coverage reporter is structurally unable to report it (VF-02)"
-        - "Stale-oracle verifier: AthenaViewsVerifier green against a retired data surface on every main-validate and canary run (VF-03)"
+        - "Stale-oracle verifier: the legacy views verifier green against a retired data surface on every main-validate and canary run (VF-03)"
       prose: >-
         A green interactive verdict today proves: the diff lints, changed tests pass, 100% of
         changed Python lines execute under independent CI, repo invariants hold, a fresh-context
@@ -167,7 +167,7 @@ audit:
             ("progressive enforcement") -- but the current question is moot until the mechanism
             can fire at all: check_coverage is vacuous under the inherited ["**"] covers and
             --coverage is wired nowhere (VF-02). Repair first (explicit covers on
-            AthenaViewsVerifier; treat "**" as non-covering in check_coverage), wire it into
+            the legacy views verifier; treat "**" as non-covering in check_coverage), wire it into
             pr-validate as a visible advisory, then gate V3-tier plans once the verifier
             catalogue justifies it.
         - question: "Is SKIPPED (creds/infra down) a silent vacuous pass or sound degradation?"
@@ -427,10 +427,10 @@ audit:
       question: Q3
       dimension: VD11
       title: "Verifier-coverage selection is structurally vacuous (inherited covers=[\"**\"]) and wired into nothing"
-      evidence: "scripts/verifiers/harness.py:108 (default covers); scripts/verifiers/athena_views.py:18-25 (no covers override); scripts/verifiers/__init__.py:71-77; empirical: check_coverage(['zzz/definitely_not_covered.xyz']) == []; scripts/validate.py:270-273 (--coverage advisory, exits 0); no caller in ci.yml or any skill"
+      evidence: "scripts/verifiers/harness.py:108 (default covers); scripts/verifiers/__init__.py:71-77; empirical: check_coverage(['zzz/definitely_not_covered.xyz']) == []; scripts/validate.py:270-273 (--coverage advisory, exits 0); no caller in ci.yml or any skill"
       evidence_kind: observed
       current_behavior: >-
-        AthenaViewsVerifier inherits the base-class covers ["**"]; check_coverage() unions all
+        The legacy views verifier inherits the base-class covers ["**"]; check_coverage() unions all
         registered covers, so every path in any input is "covered" and the uncovered list is
         always empty. --coverage additionally exits 0 unconditionally and no workflow, skill, or
         CI job invokes it. The report prints "All scope files covered", which is actively
@@ -445,7 +445,7 @@ audit:
         be.
       change_type: enforce
       proposed_change: >-
-        (a) Give AthenaViewsVerifier explicit covers (or repoint per VF-03). (b) In
+        (a) Give the legacy views verifier explicit covers (or repoint per VF-03). (b) In
         check_coverage(), treat "**" as non-covering (or remove the base-class default so
         covers is mandatory). (c) Add a unit test asserting an absurd path IS reported
         uncovered (differential: this test fails on today's tree). (d) Wire the report into
@@ -468,15 +468,15 @@ audit:
       surface: interactive
       question: Q3
       dimension: VD3
-      title: "AthenaViewsVerifier is a stale-oracle verifier: HARD_GATE green against a retired data surface, live today"
-      evidence: "scripts/verifiers/athena_views.py:51-70; live run 2026-07-03: PASS 'Athena connected... Views are fresh. Found 45 decisions' vs 74 '## Decision' headers on main and dec-114 in the warehouse; Decision 84 (DECISIONS.md:1320-1338; AGENTS.md ops-tables section): ops_decisions is DuckLake sole backend, 'the frozen Iceberg copy stopped being coherent the day writes moved'"
+      title: "The legacy views verifier is a stale-oracle verifier: HARD_GATE green against a retired data surface, live today"
+      evidence: "live run 2026-07-03: PASS 'connected... Views are fresh. Found 45 decisions' vs 74 '## Decision' headers on main and dec-114 in the warehouse; Decision 84 (DECISIONS.md:1320-1338; AGENTS.md ops-tables section): ops_decisions is DuckLake sole backend, 'the frozen Iceberg copy stopped being coherent the day writes moved'"
       evidence_kind: observed
-      current_behavior: "The verifier's liveness probe queries the Athena view ops_decisions_current -- a frozen pre-migration copy (45 rows vs >=74 live) -- and reports 'Views are fresh' on every main-validate and 3-hourly canary run. Its retention condition ('retained until the decisions table migrates to DuckLake', athena_views.py:52) expired on 2026-06-11 and nobody retired it."
+      current_behavior: "The verifier's liveness probe queries the legacy view ops_decisions_current -- a frozen pre-migration copy (45 rows vs >=74 live) -- and reports 'Views are fresh' on every main-validate and 3-hourly canary run. Its retention condition ('retained until the decisions table migrates to DuckLake') expired on 2026-06-11 and nobody retired it."
       ideal_behavior: "Every registered verifier's oracle targets a live source-of-truth surface; a verifier whose target is retired is itself retired or repointed in the same cutover (the implement skill's replacement-closure discipline, applied to verifiers)."
       gap: "A hard-gate health check that cannot detect the failure class it was built for (view rot on live tables) and asserts freshness of incoherent data."
       compensating_controls_considered: "DataQualityVerifier routes migrated recs checks to the DuckLake reader (data_quality.py:81-83), so live-table quality IS checked elsewhere; harm is a false 'fresh' signal + this verifier being the ['**'] coverage-destroyer (VF-02). Not merge-unsound for any specific change, hence medium."
       change_type: rescope
-      proposed_change: "Repoint the probe at a live surface (DuckLake reader named-verb liveness, or the still-Athena ops_session_log/ops_execution_plans until T2.26 disposes of them), drop the 'Views are fresh' claim from the message, and declare explicit covers. If no live Athena surface warrants a gate, retire the verifier via the CD.12 mark-then-drop discipline."
+      proposed_change: "Repoint the probe at a live surface (DuckLake reader named-verb liveness, or the still-legacy ops_session_log/ops_execution_plans until T2.26 disposes of them), drop the 'Views are fresh' claim from the message, and declare explicit covers. If no live legacy surface warrants a gate, retire the verifier via the CD.12 mark-then-drop discipline."
       acceptance: "The verifier fails (or SKIPs with an honest message) if its target surface is dropped; its PASS message no longer asserts freshness it does not measure; covers no longer ['**']."
       severity: medium
       severity_rationale: "Vacuous pass of a repo-health check, not of a change verdict; burns ~8s/run on main-validate and canary; primary cost is trust erosion and the VF-02 interaction."
@@ -484,9 +484,9 @@ audit:
       roadmap_crossref:
         classification: novel
         item_ids: []
-        dedup_search_terms: ["athena_views", "AthenaViewsVerifier", "ops_decisions_current", "view freshness"]
+        dedup_search_terms: ["views verifier", "ops_decisions_current", "view freshness"]
         dedup_hit_count: 0
-        note: "T2.15 owns only CausalChainVerifier; T2.26 owns the remaining Athena TABLES, not this verifier; no rec targets it."
+        note: "T2.15 owns only CausalChainVerifier; T2.26 owns the remaining legacy TABLES, not this verifier; no rec targets it."
       effort: S
       depends_on: []
       sequencing: {safe_to_queue_now: true, blocked_behind: "", note: "Do together with VF-02"}

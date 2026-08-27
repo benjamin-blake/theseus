@@ -75,7 +75,7 @@ def _capture_executor_telemetry(
     total_steps: int,
     plan: object = None,
 ) -> None:
-    """No-op stub -- telemetry now written by scripts/executor/telemetry.py (Phase B).
+    """No-op stub -- the executor telemetry emitter is retired.
 
     The 10+ call sites are retained to avoid a large cascading refactor; they
     now call a harmless no-op.  Full removal is tracked as a follow-up refactor.

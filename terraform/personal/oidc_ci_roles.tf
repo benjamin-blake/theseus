@@ -44,27 +44,6 @@ data "aws_iam_policy_document" "github_ci_branch" {
   source_policy_documents = [data.aws_iam_policy_document.ci_ssm_refresh_read.json]
 
   statement {
-    sid       = "AthenaStartQuery"
-    effect    = "Allow"
-    actions   = ["athena:StartQueryExecution"]
-    resources = [aws_athena_workgroup.production.arn]
-  }
-
-  statement {
-    # GetQueryExecution/GetQueryResults/ListWorkGroups/GetWorkGroup do not support
-    # workgroup-level resource constraints in IAM.
-    sid    = "AthenaQueryStatus"
-    effect = "Allow"
-    actions = [
-      "athena:GetQueryExecution",
-      "athena:GetQueryResults",
-      "athena:ListWorkGroups",
-      "athena:GetWorkGroup"
-    ]
-    resources = ["*"]
-  }
-
-  statement {
     sid    = "S3ReadWrite"
     effect = "Allow"
     actions = [
@@ -118,37 +97,13 @@ data "aws_iam_policy_document" "github_ci_branch" {
   }
 
   statement {
-    sid    = "GlueRead"
-    effect = "Allow"
-    actions = [
-      "glue:GetDatabase",
-      "glue:GetTable",
-      "glue:GetPartitions"
-    ]
-    resources = ["*"]
-  }
-
-  statement {
-    # SchemaIntegrityVerifier / IcebergCompactionVerifier call these during OPTIMIZE and VACUUM.
-    # Three ARNs required: catalog, database, table.
-    sid     = "GlueTableMutations"
-    effect  = "Allow"
-    actions = ["glue:CreateTable", "glue:UpdateTable", "glue:DeleteTable"]
-    resources = [
-      "arn:aws:glue:${var.aws_region}:${var.account_id}:catalog",
-      "arn:aws:glue:${var.aws_region}:${var.account_id}:database/${aws_glue_catalog_database.ops.name}",
-      "arn:aws:glue:${var.aws_region}:${var.account_id}:table/${aws_glue_catalog_database.ops.name}/*"
-    ]
-  }
-
-  statement {
     # T2.19 recs cutover (rec-2111): CI/DQ reads recs over the DuckLake reader Function URL and
     # may write recs via the writer. lambda:InvokeFunction is the action the Function-URL IAM
     # authorizer actually checks (InvokeFunctionUrl alone is INSUFFICIENT -- live-verified).
     # InvokeFunctionUrl retained alongside for AWS-doc alignment; not sufficient on its own.
     # lambda:GetFunctionUrlConfig lets the runner RESOLVE the reader/writer URL via the AWS API
     # when neither DUCKLAKE_*_URL env nor a terraform-init'd checkout is present (the CI case) --
-    # iceberg_reader / ops_data_portal fall back to get_function_url_config (post-cutover DQ).
+    # ducklake_reader_client / ops_data_portal fall back to get_function_url_config (post-cutover DQ).
     sid     = "DuckLakeInvokeCI"
     effect  = "Allow"
     actions = ["lambda:InvokeFunction", "lambda:InvokeFunctionUrl", "lambda:GetFunctionUrlConfig"]
@@ -187,7 +142,6 @@ data "aws_iam_policy_document" "github_ci_branch" {
     resources = [
       aws_lambda_function.scheduled_agent_dispatcher.arn,
       aws_lambda_function.findings_processor.arn,
-      aws_lambda_function.ops_compaction.arn,
     ]
   }
 }
@@ -225,8 +179,8 @@ resource "aws_iam_role" "github_ci_pr" {
             # refs/pull/* (that is the `ref` claim, not `sub`). The advisory terraform-converged
             # status job (terraform-apply-sandbox.yml, pull_request) assumes this read-only role, so
             # the pull_request sub MUST be trusted. refs/pull/* is retained for any ref-scoped or
-            # customized-sub consumer. This role stays read-only (athena/iceberg/convergence reads,
-            # no tfstate, no writes), so trusting the PR sub does not widen blast radius.
+            # customized-sub consumer. This role stays read-only (convergence-record and mirror
+            # reads, no tfstate, no writes), so trusting the PR sub does not widen blast radius.
             # Dual-slug transition (Decision 171): flatten over local.github_repos so both the
             # pre- and post-rename slugs are trusted for each PR-context sub pattern.
             "token.actions.githubusercontent.com:sub" = flatten([
@@ -250,44 +204,6 @@ data "aws_iam_policy_document" "github_ci_pr" {
   # fallback) so the invoke-implies-resolve invariant (T2.34:c2) holds universally, with no
   # exceptions, across every CI role that invokes the DuckLake reader/writer.
   source_policy_documents = [data.aws_iam_policy_document.ci_ssm_refresh_read.json]
-
-  statement {
-    sid       = "AthenaStartQuery"
-    effect    = "Allow"
-    actions   = ["athena:StartQueryExecution"]
-    resources = [aws_athena_workgroup.production.arn]
-  }
-
-  statement {
-    sid    = "AthenaQueryStatus"
-    effect = "Allow"
-    actions = [
-      "athena:GetQueryExecution",
-      "athena:GetQueryResults",
-      "athena:ListWorkGroups",
-      "athena:GetWorkGroup"
-    ]
-    resources = ["*"]
-  }
-
-  statement {
-    # Read queries still write result sets to the athena/ results prefix only -- not to the
-    # iceberg/ table data. No DynamoDB, no Glue mutations: this role cannot mutate ops data.
-    sid    = "S3ReadResults"
-    effect = "Allow"
-    actions = [
-      "s3:GetObject",
-      "s3:PutObject"
-    ]
-    resources = ["${aws_s3_bucket.data_lake.arn}/athena/*"]
-  }
-
-  statement {
-    sid       = "S3ReadTables"
-    effect    = "Allow"
-    actions   = ["s3:GetObject"]
-    resources = ["${aws_s3_bucket.data_lake.arn}/iceberg/*"]
-  }
 
   statement {
     # CD.35 / T2.20 advisory terraform-converged PR status. The read-only PR role reads the
@@ -321,17 +237,6 @@ data "aws_iam_policy_document" "github_ci_pr" {
       "s3:GetBucketLocation"
     ]
     resources = [aws_s3_bucket.data_lake.arn]
-  }
-
-  statement {
-    sid    = "GlueRead"
-    effect = "Allow"
-    actions = [
-      "glue:GetDatabase",
-      "glue:GetTable",
-      "glue:GetPartitions"
-    ]
-    resources = ["*"]
   }
 
   statement {

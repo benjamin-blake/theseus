@@ -117,23 +117,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """
     from scripts.llm.github_models_client import chat_completion
     from scripts.s3_log_store import append_jsonl, overwrite_jsonl, read_all_agent_findings, read_jsonl
-    from src.data.handlers.agent_telemetry import (
-        close_invocation as _close_invocation,
-    )
-    from src.data.handlers.agent_telemetry import (
-        open_invocation as _open_invocation,
-    )
-    from src.data.handlers.agent_telemetry import (
-        record_model_call as _record_model_call,
-    )
-
-    model = os.environ.get("SCHEDULED_AGENT_MODEL", "gpt-4.1-mini")
-    _open_invocation(
-        agent_name="findings-processor",
-        trigger="s3_event",
-        model=model,
-        provider="github-models",
-    )
 
     # ----------------------------------------------------------------
     # Step 1: Union all agent findings into findings/unified.jsonl
@@ -187,11 +170,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     pat = _get_github_pat()
     if not pat:
         logger.warning("No PAT available; skipping recommendation comparison")
-        _close_invocation(
-            outcome="success",
-            findings_count=len(all_findings),
-            queue_entries_written=len(queue_entries),
-        )
         return {
             "unified_count": len(all_findings),
             "new_rec_count": 0,
@@ -203,11 +181,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     compare_prompt_template = _load_compare_prompt()
     if not compare_prompt_template:
         logger.error("Compare prompt template missing; skipping comparison")
-        _close_invocation(
-            outcome="success",
-            findings_count=len(all_findings),
-            queue_entries_written=len(queue_entries),
-        )
         return {
             "unified_count": len(all_findings),
             "new_rec_count": 0,
@@ -227,26 +200,9 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         f"### existing_recommendations\n```json\n{json.dumps(existing_agent_recs, indent=2)}\n```\n"
     )
 
-    import time as _time
-
-    _t0 = _time.monotonic()
     response = chat_completion(prompt=prompt, model=model, api_key=pat)
-    _call_dur = int(_time.monotonic() - _t0)
-    _record_model_call(
-        provider="github-models",
-        model=model,
-        purpose="comparison",
-        error=response.get("message") if response.get("error") else None,
-        duration_seconds=_call_dur,
-    )
     if response.get("error"):
         logger.error("Comparison API call failed: %s", response.get("message"))
-        _close_invocation(
-            outcome="failed",
-            findings_count=len(all_findings),
-            queue_entries_written=len(queue_entries),
-            error=response.get("message"),
-        )
         return {
             "unified_count": len(all_findings),
             "new_rec_count": 0,
@@ -260,12 +216,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         output = response["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         logger.error("Comparison response missing content: %s", exc)
-        _close_invocation(
-            outcome="failed",
-            findings_count=len(all_findings),
-            queue_entries_written=len(queue_entries),
-            error=str(exc),
-        )
         return {
             "unified_count": len(all_findings),
             "new_rec_count": 0,
@@ -286,12 +236,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             comparison = json.loads(clean)
         except (json.JSONDecodeError, ValueError) as exc:
             logger.error("Could not parse comparison JSON: %s", exc)
-            _close_invocation(
-                outcome="failed",
-                findings_count=len(all_findings),
-                queue_entries_written=len(queue_entries),
-                error="Malformed comparison response",
-            )
             return {
                 "unified_count": len(all_findings),
                 "new_rec_count": 0,
@@ -331,12 +275,6 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "Step 2 complete: %d new recs, %d duplicates skipped",
         appended,
         len(duplicate_ids),
-    )
-    _close_invocation(
-        outcome="success",
-        findings_count=len(all_findings),
-        recs_created=appended,
-        queue_entries_written=len(queue_entries),
     )
     return {
         "unified_count": len(all_findings),

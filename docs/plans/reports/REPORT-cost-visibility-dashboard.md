@@ -28,7 +28,7 @@ today). Using the platform's own `cost_projection` envelope in `docs/ROADMAP-PLA
 
 | Slice | Today (variable) | Grows with | Long-run |
 |---|---|---|---|
-| AWS operational (CloudWatch logs, Secrets Manager, Athena, DynamoDB, small S3) | dominant share of a small bill | flat-ish until data volume climbs | steady |
+| AWS operational (CloudWatch logs, Secrets Manager, query engine, DynamoDB, small S3) | dominant share of a small bill | flat-ish until data volume climbs | steady |
 | **S3 storage** | `<$1` today | **data volume** | **~$800-1500/mo at the 100TB target (~85% of the projected bill)** |
 | **LLM inference** (DeepSeek + Anthropic escape-hatch) | a few dollars | **agent/executor activity** | `$15-80+/mo` as the executor unfreezes / OAuth->API |
 | Neon (catalog) | small, newly paid (post free-tier breach, Decision 88) | egress / query patterns | small if invariants held |

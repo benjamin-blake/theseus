@@ -10,7 +10,7 @@ from scripts.agent_sdk.errors import (
     VersionMismatchError,
     map_reader_error,
 )
-from src.common.iceberg_reader import ReaderInvokeError
+from src.common.ducklake_reader_client import ReaderInvokeError
 
 
 def _invoke_error(status: int | None, body: dict | None, action: str = "describe") -> ReaderInvokeError:

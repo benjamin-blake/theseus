@@ -6,14 +6,14 @@ Source stamp: ROADMAP-PLATFORM.yaml @ working tree; roadmap_tier_id_set sha256: 
 
 ## Operating contract
 
-- Repository visibility: public. Never commit credentials, API keys, AWS account IDs, IAM ExternalIds, account-specific ARNs, internal hostnames, trading alpha, strategy performance, or confidential market research. Safe content is platform engineering, infrastructure patterns, CI/CD design, tooling, and general LLM-agent architecture.
+- Repository visibility: public. Never commit credentials, API keys, AWS account IDs, IAM ExternalIds, account-specific ARNs, internal hostnames, or any confidential operational data belonging to a hosted product. Safe content is platform engineering, infrastructure patterns, CI/CD design, tooling, and general LLM-agent architecture.
 - Runtime surface: Ubuntu 24.04 / bash / Python 3.12+. Invoke Python with `bin/venv-python`, never `python` or `python3`. Do not rely on `source .venv/bin/activate` between shell calls.
 - Branching: never edit or commit on `main`. Routine handoff is commit -> PR -> CI -> merge.
 - Terraform and Lambda deploys: agents do not routinely run `terraform apply` or local Lambda deploy commands. Use `docs/contracts/deploy-paths.yaml` and `docs/contracts/build-lambda.yaml` to choose the governed path. Local apply/deploy is break-glass only after explicit human direction.
 
 ## Platform thesis
 
-This repository is primarily an agentic software-engineering platform. Its purpose is to let LLM agents plan, build, verify, deploy, monitor, and improve software safely and reliably with minimal human oversight. Trading is an initial hosted product and proving ground, not the identity or commercial boundary of the platform.
+This repository is an agentic software-engineering platform. Its purpose is to let LLM agents plan, build, verify, deploy, monitor, and improve software safely and reliably with minimal human oversight. Hosted products are consumers of the platform, not its identity or commercial boundary, and none is sequenced in this repository.
 
 The platform is the governed harness around model intelligence. Models, compute providers, tools, and hosted products are replaceable. The durable product is the control plane that gives agents bounded authority, typed capabilities, reliable state, independent verification, deployment controls, operational memory, and evidence-backed feedback loops.
 
@@ -47,7 +47,7 @@ observe development and runtime behavior
   -> retain evidence and improve the next iteration
 ```
 
-Telemetry provides learning signals about the whole engineering system: agent behavior, planning quality, review churn, tool failures, context quality, model cost and latency, CI performance, deployment outcomes, monitoring gaps, incidents, and hosted-product behavior. Analysis agents convert those signals into bounded recommendations that may improve:
+Telemetry provides learning signals about the whole engineering system: agent behavior, planning quality, review churn, tool failures, context quality, model cost and latency, CI performance, deployment outcomes, monitoring gaps, and incidents. Analysis agents convert those signals into bounded recommendations that may improve:
 
 - tests, invariants, monitors, and verification gates;
 - prompts, personas, context selection, and model routing;
@@ -66,16 +66,14 @@ The primary category is agentic software-engineering infrastructure, adjacent to
 
 The core value proposition is not an agent that writes code. It is the harness that makes code-writing and operations agents governable, inspectable, testable, portable, and safe enough for production-adjacent work. It provides traceability from work selection and authority through agent action, independent verification, deployment, observed outcome, and the next improvement.
 
-Hosted products consume but do not define the platform. Trading exercises high-consequence data, operations, and verification. Other products reuse the substrate without inheriting trading logic. Product-specific IP, data, and risk controls stay behind their product boundary.
+Hosted products consume but do not define the platform. A product exercises the substrate's high-consequence data, operations, and verification without the platform inheriting that product's domain logic. Product-specific IP, data, and risk controls stay behind their product boundary, in their own repository.
 
 ## Roadmap sources
 
-- Platform roadmap: `docs/ROADMAP-PLATFORM.yaml` for platform sequencing, governance, data, telemetry, and executor work.
-- Hosted-product roadmap: `docs/ROADMAP-PRODUCT.yaml` for the initial trading product. It is a consumer and proving ground.
+- Platform roadmap: `docs/ROADMAP-PLATFORM.yaml` for platform sequencing, governance, data, telemetry, and executor work. It is the sole roadmap source for engineering work here.
+- Marketing/comms roadmap: `docs/ROADMAP-SEMANTO.yaml` for the external brand surface. Every item is parked `deferred_post_mvp`.
 - Decision rationale: `docs/DECISIONS.md` plus `docs/DECISIONS_ARCHIVE.md`. Pending candidate decisions in the roadmap are binding until ratified or superseded.
 - Contracts: `docs/contracts/*.yaml` and selected `.md` contracts are the preferred source for machine semantics. Do not duplicate contract truth in prose.
-
-Use PLATFORM for the harness and PRODUCT for hosted-domain capabilities; use both only when product intent requires platform machinery.
 
 ## Platform roadmap end-state map
 
@@ -180,7 +178,7 @@ Authority increases only when evidence supports it. The end-state minimises rout
 
 ## Scheduled analysis and CI-RCA
 
-Scheduled agents are currently disabled. T4.3 first repoints rec-curator/priority-queue writes to DuckLake so generated work is visible to the executor. T4.12 then re-enables or repoints doc-freshness, orphan-code, transcript-review, code-smell, prompt-quality, and rec-curator surfaces.
+Scheduled agents are currently disabled. T4.3 first repoints rec-curator/priority-queue writes to DuckLake so generated work is visible to the executor. T4.12 then re-enables or repoints doc-freshness, orphan-code, code-smell, prompt-quality, and rec-curator surfaces.
 
 CI-RCA is one failure-to-work bridge. Red main workflows generate evidence, deduplicate, analyze the failure, and file recommendations through the ops portal. More generally, telemetry analysis should turn recurring friction and outcome evidence into prioritised work rather than only reacting to CI failures. `/orient` surfaces CI-RCA items; `/plan` treats unresolved CI-RCA as a hard planning constraint.
 

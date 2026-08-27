@@ -44,8 +44,8 @@ During a rec run, **only `logs/` file changes may be committed directly to main*
 scripts, prompts, acceptance commands) must be filed as a new rec and executed via `--fast`. Do not create hotfix
 branches.
 
-Between rec runs (i.e. you are on `main`, no executor is in flight), only `logs/` files and session artifacts
-(`docs/CHANGELOG.md`, `docs/SESSION_LOG.md`) may be committed directly to main. All code and prompt fixes must be
+Between rec runs (i.e. you are on `main`, no executor is in flight), only `logs/` files and the session artifact
+(`docs/SESSION_LOG.md`) may be committed directly to main. All code and prompt fixes must be
 filed as a new rec and executed via `--fast`.
 
 **Pre-commit check:** Always run `git diff --cached --name-only` before committing. If any file outside `logs/` and `docs/` is staged, unstage it (`git reset HEAD <file>`) -- it is likely executor residue from a failed run.

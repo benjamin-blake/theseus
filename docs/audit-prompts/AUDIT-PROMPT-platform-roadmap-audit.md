@@ -58,7 +58,7 @@ summary, the originals are authoritative.
   or any AWS write. `aws sts get-caller-identity --profile agent_platform`
   is permitted if you need to confirm why a read fails.
 - **Zero edits to audit targets**: `docs/ROADMAP-PLATFORM.yaml`,
-  `docs/ROADMAP-PRODUCT.yaml`, `scripts/platform_roadmap.py`,
+  `scripts/platform_roadmap.py`,
   `scripts/validate.py`, `scripts/session_preflight.py` must be untouched.
   At the end, `git status` may show ONLY new files under
   `docs/audit-reports/`.
@@ -97,7 +97,7 @@ them and to run Wave 1.5 yourself.
 5. `docs/PROJECT_CONTEXT.md` - skim for platform vocabulary only.
 
 Defer to subagents: `docs/DECISIONS.md` (~25k tokens), `docs/SESSION_LOG.md`,
-`docs/ROADMAP-PRODUCT.yaml` content, `docs/plans/*`. Do not bulk-read these
+`docs/plans/*`. Do not bulk-read these
 yourself.
 
 ---
@@ -226,14 +226,14 @@ criteria appear ALREADY met (silent completion - stale status).
 
 ### D5 - cross-roadmap coherence (Wave 1, subagent E)
 Edge RESOLUTION is CI-enforced; audit the semantics instead:
-- Inventory `PLATFORM:` references in `docs/ROADMAP-PRODUCT.yaml`
-  (`rg -o "PLATFORM:[A-Za-z0-9._-]+" docs/ROADMAP-PRODUCT.yaml | sort -u`).
-- Platform items that product depends on but that are `reserved`, gated by
+- Inventory `PLATFORM:` references in the sibling product roadmap
+  (`rg -o "PLATFORM:[A-Za-z0-9._-]+" docs/ROADMAP-SEMANTO.yaml | sort -u`).
+- Platform items that a sibling roadmap depends on but that are `reserved`, gated by
   a pending CD with no bootstrap exemption, or sequenced behind long
   dependency chains - i.e. resolvable but practically blocked.
-- Sibling framing holds: platform header/prose claims about the product
+- Sibling framing holds: platform header/prose claims about the sibling
   roadmap (filenames, source-of-truth statements) match current repo state.
-- Platform items whose intent/notes claim a product consumer that no
+- Platform items whose intent/notes claim a sibling consumer that no
   longer references them (reverse-direction drift).
 
 ### D6 - consumer-contract fitness (Wave 0 + Wave 1.5, auditor)
@@ -549,7 +549,7 @@ discarded at synthesis, not downgraded.
 
 - Editing either roadmap or any consumer script, even for "obvious" fixes.
 - Filing recommendations or decisions via the portal.
-- Auditing `docs/ROADMAP-PRODUCT.yaml` content quality (separate audit) -
+- Auditing sibling-roadmap content quality (separate audit) -
   only the D5 cross-roadmap surface.
 - Re-deciding ratified decisions or pivot-era architecture commitments.
 - Full `pytest` sweeps or full `scripts.validate` presubmit runs - targeted

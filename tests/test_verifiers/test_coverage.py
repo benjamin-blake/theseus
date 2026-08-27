@@ -15,7 +15,7 @@ from scripts.verifiers.harness import Verifier, VerifierResult, VerifierStatus
 class _MockOpsVerifier(Verifier):
     covers: list[str] = [
         "scripts/ops_data_portal.py",
-        "scripts/ops_writer.py",
+        "scripts/ops_portal/**",
     ]
 
     async def verify(self) -> VerifierResult:
@@ -25,7 +25,7 @@ class _MockOpsVerifier(Verifier):
 class _MockDqVerifier(Verifier):
     covers: list[str] = [
         "config/agent/data_quality/**",
-        "src/data/**",
+        "src/common/**",
     ]
 
     async def verify(self) -> VerifierResult:
@@ -61,7 +61,7 @@ class TestCheckCoverage:
 
     def test_check_coverage_nested_glob_is_covered(self, isolated_registry):
         """Deeply nested file under a `**` glob is still covered."""
-        uncovered = check_coverage(["src/data/handlers/fetch_handler.py"])
+        uncovered = check_coverage(["src/common/ducklake/runtime.py"])
         assert uncovered == []
 
     def test_check_coverage_unmatched_file_is_uncovered(self, isolated_registry):
@@ -74,7 +74,7 @@ class TestCheckCoverage:
         scope = [
             "scripts/ops_data_portal.py",
             "docs/foo.md",
-            "config/agent/data_quality/telemetry.yaml",
+            "config/agent/data_quality/ops.yaml",
             "scripts/unrelated_script.py",
         ]
         uncovered = check_coverage(scope)
@@ -102,8 +102,7 @@ class TestCheckCoverage:
 
     def test_check_coverage_differential_against_real_registry(self):
         """(T3.16:c1) Against the REAL REGISTRY (no isolated_registry fixture): an absurd path is
-        reported uncovered -- this FAILS on the pre-change tree where a "**"/"*" verifier glob
-        makes coverage structurally vacuous -- while a genuinely-covered path still returns []."""
+        reported uncovered -- this FAILS on a tree where a "**"/"*" verifier glob makes coverage
+        structurally vacuous. The registry is empty post-cleanse, so every path is uncovered."""
         uncovered = check_coverage(["zzz/definitely_not_covered.xyz"])
         assert uncovered == ["zzz/definitely_not_covered.xyz"]
-        assert check_coverage(["config/agent/data_quality/ops.yaml"]) == []

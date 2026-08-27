@@ -1,9 +1,8 @@
-"""Data quality execution + aggregation: Athena/DuckLake backend dispatch and check runner."""
+"""Data quality execution + aggregation over the DuckLake closed reader."""
 
 from __future__ import annotations
 
 import logging
-import os
 import time
 from typing import Any
 
@@ -15,19 +14,9 @@ from scripts.ops_portal.reader_transient import is_reader_unavailable as _is_rea
 
 logger = logging.getLogger(__name__)
 
-_POLL_INTERVAL = 2  # seconds between Athena status checks
-_MAX_POLL = 60  # max seconds to wait for a single query
-
-# Ops governance tables (the full set; telemetry_* stays on Athena per Decision 78 cl.2).
-_OPS_TABLES: frozenset[str] = frozenset(
-    {"ops_recommendations", "ops_decisions", "ops_priority_queue", "ops_session_log", "ops_execution_plans"}
-)
-# Tables on the DuckLake closed boundary (Decision 84 I-1): their checks route to the reader.
-# ops_session_log is the only ops table remaining on Athena/Iceberg, pending its own T2.26
-# disposition (CD.40/T3.20-gated); ops_execution_plans migrated at T2.26 (c9).
-_DUCKLAKE_OPS_TABLES: frozenset[str] = frozenset(
-    {"ops_recommendations", "ops_decisions", "ops_priority_queue", "ops_execution_plans"}
-)
+# Ops governance tables on the DuckLake closed boundary (Decision 84 I-1): their checks route
+# to the reader, which is the sole backend.
+_OPS_TABLES: frozenset[str] = frozenset({"ops_recommendations", "ops_decisions", "ops_priority_queue", "ops_execution_plans"})
 
 
 def _ops_backend() -> str:
@@ -35,13 +24,8 @@ def _ops_backend() -> str:
     return "ducklake"
 
 
-# ---------------------------------------------------------------------------
-# Athena execution
-# ---------------------------------------------------------------------------
-
-
 def _verdict_for(check: Check, violation_count: int, duration: float) -> CheckResult:
-    """Map a violation count to a verdict (shared by the Athena + DuckLake execution paths)."""
+    """Map a violation count to a verdict."""
     if violation_count == 0:
         return CheckResult(check=check, verdict="PASS", violation_count=0, duration_seconds=duration)
     # Tombstone resurrection is always HARD_GATE regardless of severity.
@@ -95,7 +79,7 @@ def _execute_check_ducklake(check: Check, reader: Any) -> CheckResult:
         )
     table = check.table
     is_history = check.test_type == "ulid_history_unique"
-    sql = check.sql if check.backend == "ducklake" else to_ducklake_sql(check.sql, table, "agent_platform")
+    sql = to_ducklake_sql(check.sql, table, "agent_platform")
     if "{hist}" in sql:
         from src.common.ducklake_runtime import resolve_table_spec  # noqa: PLC0415
 
@@ -121,97 +105,15 @@ def _execute_check_ducklake(check: Check, reader: Any) -> CheckResult:
     return _verdict_for(check, violation_count, time.time() - start)
 
 
-def _execute_check(
-    check: Check,
-    athena_client: Any,
-    workgroup: str,
-    database: str,
-) -> CheckResult:
-    """Execute a single check against Athena and return the result."""
-    start = time.time()
-    try:
-        response = athena_client.start_query_execution(
-            QueryString=check.sql,
-            WorkGroup=workgroup,
-            QueryExecutionContext={"Database": database},
-        )
-        query_id = response["QueryExecutionId"]
-    except Exception as e:
-        return CheckResult(
-            check=check,
-            verdict="ERROR",
-            detail=f"Failed to start query: {e}",
-            duration_seconds=time.time() - start,
-        )
-
-    # Poll for completion
-    elapsed = 0.0
-    while elapsed < _MAX_POLL:
-        time.sleep(_POLL_INTERVAL)
-        elapsed = time.time() - start
-        try:
-            status = athena_client.get_query_execution(
-                QueryExecutionId=query_id,
-            )["QueryExecution"]["Status"]
-            state = status["State"]
-            if state == "SUCCEEDED":
-                break
-            if state in ("FAILED", "CANCELLED"):
-                reason = status.get("StateChangeReason", "unknown")
-                return CheckResult(
-                    check=check,
-                    verdict="ERROR",
-                    detail=f"Query {state}: {reason}",
-                    duration_seconds=time.time() - start,
-                )
-        except Exception as e:
-            return CheckResult(
-                check=check,
-                verdict="ERROR",
-                detail=f"Poll error: {e}",
-                duration_seconds=time.time() - start,
-            )
-    else:
-        return CheckResult(
-            check=check,
-            verdict="ERROR",
-            detail=f"Query timed out after {_MAX_POLL}s",
-            duration_seconds=time.time() - start,
-        )
-
-    # Read result
-    try:
-        result = athena_client.get_query_results(QueryExecutionId=query_id)
-        rows = result["ResultSet"]["Rows"]
-        # First row is header, second row is data
-        if len(rows) >= 2:
-            violation_count = int(rows[1]["Data"][0]["VarCharValue"])
-        else:
-            violation_count = 0
-    except Exception as e:
-        return CheckResult(
-            check=check,
-            verdict="ERROR",
-            detail=f"Failed to read results: {e}",
-            duration_seconds=time.time() - start,
-        )
-
-    return _verdict_for(check, violation_count, time.time() - start)
-
-
 def apply_backend_routing(all_checks: list[Check], database: str, *, table_filter: str | None = None) -> list[Check]:
-    """Route the migrated-table checks to the DuckLake reader (sole backend, Decision 84 I-1).
+    """Rewrite the ops-table checks for the DuckLake reader (sole backend, Decision 84 I-1).
 
-    Rewrite every check on a migrated
-    recs table to the DuckLake closed reader (DuckDB dialect over the `current` TABLE) and append
-    the CD.33 clause-8 checks. iceberg (rollback) leaves all checks on the Athena views.
-
-    Shared by main() AND DataQualityVerifier so the verifier harness routes recs through the
-    reader -- NOT the dropped ops_recommendations_current Athena view (which would TABLE_NOT_FOUND).
-    Mutates and returns *all_checks*.
+    Translates each ops-table check's SQL to the DuckDB dialect over the `current` TABLE and appends
+    the CD.33 clause-8 checks. Shared by main() and the DQ scaffold route so both go through the
+    closed reader. Mutates and returns *all_checks*.
     """
     for c in all_checks:
-        if c.table in _DUCKLAKE_OPS_TABLES:
+        if c.table in _OPS_TABLES:
             c.sql = to_ducklake_sql(c.sql, c.table, database)
             c.backend = "ducklake"
     ops_spec_yaml = yaml.safe_load((_DQ_DIR / "ops.yaml").read_text(encoding="utf-8")) or {}
@@ -221,12 +123,11 @@ def apply_backend_routing(all_checks: list[Check], database: str, *, table_filte
 
 def run_checks(
     checks: list[Check],
-    workgroup: str,
-    database: str,
+    *,
     dry_run: bool = False,
     profile_name: str | None = None,
 ) -> RunResult:
-    """Execute all checks and return aggregate result."""
+    """Execute all checks against the DuckLake reader and return the aggregate result."""
     run_start = time.time()
 
     if dry_run:
@@ -237,39 +138,23 @@ def run_checks(
             duration_seconds=time.time() - run_start,
         )
 
-    # DuckLake checks route through the closed reader; Athena checks need the boto3 client. Build
-    # each lazily so a pure-DuckLake run does not require boto3 and vice versa.
-    needs_athena = any(c.backend != "ducklake" for c in checks)
-    needs_ducklake = any(c.backend == "ducklake" for c in checks)
-
-    athena = None
-    if needs_athena:
+    reader = None
+    if checks:
         try:
-            import boto3
+            from src.common.ducklake_reader_client import DuckLakeReader  # noqa: PLC0415
+
+            reader = DuckLakeReader(profile=profile_name)
         except ImportError:
-            logger.error("boto3 not available")
+            logger.error("DuckLake reader client unavailable")
             return RunResult(
-                results=[CheckResult(check=c, verdict="SKIP", detail="boto3 unavailable") for c in checks],
+                results=[CheckResult(check=c, verdict="SKIP", detail="ducklake reader unavailable") for c in checks],
                 verdict="SKIP",
                 duration_seconds=0.0,
             )
-        from scripts.aws_profile import resolve_aws_profile
-
-        _profile = resolve_aws_profile(profile_name, default=os.environ.get("AWS_DEFAULT_PROFILE") or "agent_platform")
-        athena = boto3.Session(profile_name=_profile).client("athena", region_name="eu-west-2")
-
-    reader = None
-    if needs_ducklake:
-        from src.common.iceberg_reader import DuckLakeReader  # noqa: PLC0415
-
-        reader = DuckLakeReader(profile=profile_name)
 
     results: list[CheckResult] = []
     for check in checks:
-        if check.backend == "ducklake":
-            result = _execute_check_ducklake(check, reader)
-        else:
-            result = _execute_check(check, athena, workgroup, database)
+        result = _execute_check_ducklake(check, reader)
         results.append(result)
         # Log as we go
         symbol = {

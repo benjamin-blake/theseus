@@ -11,11 +11,10 @@ The DuckLake Lambdas here (`ducklake_writer`, `ducklake_reader`, `ducklake_maint
 authoritative channel status. Local `bin/venv-python -m
 scripts.build_lambda --ducklake-only --deploy` is break-glass only, not the routine channel.
 
-No standing rationale here (Decision 86) — see `environment-taxonomy.yaml` (conformance)
-for the classification SoT, `docs/contracts/build-lambda.yaml`'s `deploy_channels` for the
-artifact->channel mapping, and Decision 125 for the ratification rationale.
+No standing rationale here (Decision 86) — see `environment-taxonomy.yaml` for the
+classification SoT and `docs/contracts/build-lambda.yaml`'s `deploy_channels` for the
+artifact->channel mapping.
 
-`data-pipeline` and `ops-compaction` here are ALSO `terraform/personal`-managed as of T2.43
-(`terraform/personal/prod_lambdas.tf`, the `decoupled_build_pipeline` class) and decoupled from
-day one; their governed code-deploy channel is `.github/workflows/deploy-prod-lambdas.yml` — see
-`src/data/handlers/CLAUDE.md`.
+`data-pipeline` (dispatcher + findings-processor) is also `terraform/personal`-managed
+(T2.43, `decoupled_build_pipeline` class), decoupled from day one; its code-deploy channel is
+`.github/workflows/deploy-prod-lambdas.yml` — see `src/data/handlers/CLAUDE.md`.

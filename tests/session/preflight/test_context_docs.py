@@ -1,6 +1,6 @@
 """context_docs-surface tests: roadmap-state slimming, context-file reading (roadmap phase,
-decisions, sessions, recs count), telemetry-health stub, retired-Athena-estate assertions,
-endstate-drift detection (rec-2709 Wave 4).
+decisions, sessions, recs count), telemetry-health stub and endstate-drift detection
+(rec-2709 Wave 4).
 """
 
 from __future__ import annotations
@@ -8,7 +8,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -141,44 +140,14 @@ class TestReadContextFiles:
         assert result["recommendations_count"] == 0
 
 
-class TestTelemetryHealth:
-    """Tests for the check_telemetry_health() stub (telemetry re-lands on DuckLake in Phase 4)."""
-
-    def test_stub_returns_not_migrated_shape(self) -> None:
-        """The stub reports the fixed not-migrated payload compatible with print_telemetry_health()."""
-        result = _preflight.check_telemetry_health()
-        assert result == {
-            "overall": "unknown",
-            "checks": [{"check": "telemetry-store", "value": "not migrated (Phase 4)", "severity": "unknown"}],
-            "friction_patterns": [],
-        }
-
-    def test_stub_makes_no_aws_calls(self) -> None:
-        """The stub must not touch boto3 or shell out -- the Athena polling loop is retired."""
-        import boto3
-
-        with (
-            patch.object(boto3, "Session", side_effect=AssertionError("stub must not construct a boto3 Session")),
-            patch("session_preflight.subprocess.run", side_effect=AssertionError("stub must not shell out")),
-        ):
-            result = _preflight.check_telemetry_health()
-        assert result["overall"] == "unknown"
+class TestOpenTelemetrySession:
+    """open_telemetry_session() writes the active-session state file."""
 
     def test_open_session_creates_state_file(self, tmp_path: Path) -> None:
         """open_telemetry_session writes state file with correct schema."""
         state_file = tmp_path / ".telemetry-active-session.json"
-        mock_tel = MagicMock()
-        mock_tel.open_session.return_value = "fake-uuid"
-        original = sys.modules.get("scripts.executor.telemetry")
-        sys.modules["scripts.executor.telemetry"] = mock_tel
-        try:
-            with patch("session_preflight.TELEMETRY_ACTIVE_SESSION_FILE", state_file):
-                _preflight.open_telemetry_session(workflow="plan", branch="agent/test")
-        finally:
-            if original is not None:
-                sys.modules["scripts.executor.telemetry"] = original
-            else:
-                sys.modules.pop("scripts.executor.telemetry", None)
+        with patch("session_preflight.TELEMETRY_ACTIVE_SESSION_FILE", state_file):
+            _preflight.open_telemetry_session(workflow="plan", branch="agent/test")
 
         assert state_file.exists()
         data = json.loads(state_file.read_text(encoding="utf-8"))
@@ -186,73 +155,6 @@ class TestTelemetryHealth:
         assert data["workflow"] == "plan"
         assert data["branch"] == "agent/test"
         assert "started_at" in data
-
-    def test_main_includes_telemetry_health(self, tmp_path: Path) -> None:
-        """main() includes telemetry_health key in report."""
-        preflight_report = tmp_path / ".preflight-report.json"
-        mock_health = {"overall": "ok", "checks": [], "friction_patterns": []}
-
-        with (
-            patch("scripts.preflight.context_docs.check_telemetry_health", return_value=mock_health),
-            patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
-            patch("scripts.preflight.env_git.check_venv", return_value=True),
-            patch("scripts.preflight.env_git.get_git_status", return_value=("main", False, [])),
-            patch("scripts.preflight.aws_infra.check_terraform_pending", return_value=False),
-            patch("scripts.preflight.aws_infra.check_credentials", return_value="ok"),
-            patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
-            patch("scripts.preflight.recs_cache.count_recommendations", return_value=(0, 0, 0, [])),
-            patch("session_preflight._sync_ops_pull", return_value={}),
-            patch(
-                "scripts.preflight.context_docs.read_context_files",
-                return_value={
-                    "roadmap_phase": "Phase 1.5",
-                    "open_decisions_count": 0,
-                    "recent_sessions": [],
-                    "strategic_review_due": False,
-                    "recommendations_count": 0,
-                },
-            ),
-            patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
-            patch("builtins.print"),
-        ):
-            _preflight.main()
-
-        data = json.loads(preflight_report.read_text(encoding="utf-8"))
-        assert "telemetry_health" in data
-        assert data["telemetry_health"]["overall"] == "ok"
-
-    def test_health_flag_exits_zero_on_ok(self) -> None:
-        """--health flag exits 0 when overall is ok."""
-        mock_health = {"overall": "ok", "checks": []}
-        with patch("scripts.preflight.context_docs.check_telemetry_health", return_value=mock_health):
-            exit_code = 1 if mock_health["overall"] == "critical" else 0
-        assert exit_code == 0
-
-    def test_health_flag_exits_nonzero_on_critical(self) -> None:
-        """--health flag exits 1 when overall is critical."""
-        mock_health = {"overall": "critical", "checks": []}
-        with patch("scripts.preflight.context_docs.check_telemetry_health", return_value=mock_health):
-            exit_code = 1 if mock_health["overall"] == "critical" else 0
-        assert exit_code == 1
-
-    def test_health_flag_exits_zero_on_warning(self) -> None:
-        """--health flag exits 0 when overall is warning (not critical)."""
-        mock_health = {"overall": "warning", "checks": []}
-        with patch("scripts.preflight.context_docs.check_telemetry_health", return_value=mock_health):
-            exit_code = 1 if mock_health["overall"] == "critical" else 0
-        assert exit_code == 0
-
-    def test_print_telemetry_health_runs(self) -> None:
-        """print_telemetry_health does not crash."""
-        health = {
-            "overall": "warning",
-            "checks": [
-                {"check": "sessions-7d", "value": "5", "severity": "ok"},
-                {"check": "success-rate-7d", "value": "40%", "severity": "warning"},
-            ],
-        }
-        with patch("builtins.print"):
-            _preflight.print_telemetry_health(health)
 
 
 class TestReadContextFilesRecsCount:
@@ -284,18 +186,12 @@ class TestReadContextFilesRecsCount:
         assert result["recommendations_count"] == 0
 
 
-class TestRetiredAthenaEstate:
-    """Decision 84: the Athena query helpers and the outbox drain are gone from preflight."""
-
-    def test_athena_helpers_deleted(self) -> None:
-        for name in ("_run_athena_query", "_athena_run_query"):
-            assert not hasattr(_preflight, name), f"retired symbol still present: {name}"
-        athena_constants = [n for n in dir(_preflight) if n.startswith("_ATHENA")]
-        assert athena_constants == [], f"retired Athena constants still present: {athena_constants}"
+class TestRetiredStagingEstate:
+    """Decision 84: the legacy staging drain is gone from preflight."""
 
     def test_main_no_longer_drains_pending(self) -> None:
         source = _MODULE_PATH.read_text(encoding="utf-8")
-        assert "drain_pending" not in source, "preflight must not reference the retired outbox drain"
+        assert "drain_pending" not in source, "preflight must not reference the retired staging drain"
 
 
 class TestEndstateDrift:

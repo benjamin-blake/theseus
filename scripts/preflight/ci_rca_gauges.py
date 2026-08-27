@@ -92,8 +92,8 @@ def _compute_ci_rca_telemetry(
 ) -> dict | None:
     """Compute the CI-RCA Section 7 telemetry gauge from the warm cache (T1.13 c1/c3).
 
-    Re-grounded from the stale Athena ops_ci_rca_telemetry table / ci_rca_health view (INTENT
-    Section 7.1/7.3) to warm-cache-derived surfacing: recurrence-class distribution, the
+    Re-grounded from the stale ops_ci_rca_telemetry table / ci_rca_health view onto
+    warm-cache-derived surfacing: recurrence-class distribution, the
     warn-mode reject rate (c3's load-bearing metric, from context_v2_json.warn_mode_reject
     markers), dispute-path traffic, bundle-upload backlog, and why_chain_terminus_override
     usage -- all parsed off already-loaded recs_cache rows (Decision 88, zero new reader

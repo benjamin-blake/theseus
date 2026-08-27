@@ -35,7 +35,6 @@ auto-seeds one (Decision 128 / B2).
 When reading `logs/.preflight-report.json`, apply these conditionals:
 - **`venv_ok: false`** -- Verify `bin/venv-python -c "import sys; print(sys.executable)"` resolves to the venv interpreter and rerun preflight. If still false, STOP.
 - **`creds_status: "unavailable"`** -- **Static-key recovery (non-fatal, Decision 60):** the static-key assume-role chain has no interactive login. Verify it with `aws sts get-caller-identity --profile agent_platform`; if the `agent_static` key was rotated, refresh `~/.aws/credentials`. Do NOT block -- continue in degraded mode (credential-dependent verifiers are skipped, emitting SKIPPED). Autonomous executors never attempt recovery.
-- **`ops_outbox` non-empty** -- Entries in migrated-table or `*_pending` dirs are ANOMALIES (Decision 84 I-4: those outboxes are retired and never drained) -- re-file via the portal and delete the files. Legacy staging dirs (telemetry/session_log/execution_plans) drain via `bin/venv-python -m scripts.sync.ops sync`. If that fails, STOP.
 - **`uncommitted_changes` non-empty** -- Ask human: resume, stash, or discard? Wait. Continue on all other conditions.
 - **`main_freshness.status == "fetch_failed"`** -- Informational: surface the fetch error and note
   that Step 5 code-review will diff against the stale local main ref and the Scope-overlap check
@@ -94,7 +93,7 @@ After code changes are complete and unit tests pass, the implementing agent MUST
 
 ### Why This Exists (Rationale)
 Acceptance commands prove the code landed (`grep`/`pytest`). Verification commands prove the feature works end-to-end. Examples of bugs only verification catches:
-- Athena view created successfully but returns 0 rows due to a bad filter
+- A warehouse view is created successfully but returns 0 rows due to a bad filter
 - Lambda deployed successfully but times out on invocation
 - CLI script passes unit tests with mocks but crashes with real input
 
@@ -288,7 +287,7 @@ replacement is CLOSED only when the old path is dead -- "new path works" is not 
    repo-wide retirement sweep.
 2. **Verify the old path is dead or designed-rollback-only.** Run the greps/commands that prove
    the old surface is deleted, fails closed, or is reachable ONLY behind the documented rollback
-   flag. An unconditional fallback to the old backend (e.g. an Athena fallback on a table cut
+   flag. An unconditional fallback to a retired backend (e.g. a direct-SQL fallback on a table cut
    over to the DuckLake closed boundary) is a FAIL: do not count the cutover criterion as
    passing; surface the fallback as a finding and add its closure to the plan or stage a
    criterion for it on the open item.

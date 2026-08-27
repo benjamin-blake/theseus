@@ -151,7 +151,7 @@ class TestMapSourceToTest:
         assert result is None
 
     def test_maps_src_flat_to_test(self) -> None:
-        """src/data/pipeline.py maps to tests/test_pipeline.py."""
+        """src/common/ducklake_runtime.py maps to tests/test_ducklake_runtime.py."""
         source = ROOT / "src" / "data" / "pipeline.py"
         result = map_source_to_test(source)
         assert result is not None
@@ -337,24 +337,25 @@ class TestMirrorRule:
     def test_concern_split_monolith_resolves_to_test_package_directory_once_retired(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        retired = _ALL_MIRROR_TARGET_HOMES - {"test_ops_writer.py"}
+        retired = _ALL_MIRROR_TARGET_HOMES - {"test_ops_data_portal.py"}
         monkeypatch.setattr(_checker, "_RETIRING_GRANDFATHER_HOMES", retired)
 
-        source = ROOT / "scripts" / "ops_writer.py"
+        source = ROOT / "scripts" / "ops_data_portal.py"
         result = map_source_to_test(source)
 
-        assert result == ROOT / "tests" / "ops_writer"
+        assert result == ROOT / "tests" / "ops_data_portal"
 
     def test_nested_concern_split_monolith_keeps_subdir_once_retired(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """src/common/iceberg_reader.py (nested under common/) mirrors to tests/common/iceberg_reader/,
-        not tests/iceberg_reader/ -- the mirror-subpath is preserved for non-root sources."""
-        retired = _ALL_MIRROR_TARGET_HOMES - {"test_iceberg_reader.py"}
+        """src/common/ducklake_reader_client.py (nested under common/) mirrors to
+        tests/common/ducklake_reader_client/, not tests/ducklake_reader_client/ -- the
+        mirror-subpath is preserved for non-root sources."""
+        retired = _ALL_MIRROR_TARGET_HOMES - {"test_ducklake_reader_client.py"}
         monkeypatch.setattr(_checker, "_RETIRING_GRANDFATHER_HOMES", retired)
 
-        source = ROOT / "src" / "common" / "iceberg_reader.py"
+        source = ROOT / "src" / "common" / "ducklake_reader_client.py"
         result = map_source_to_test(source)
 
-        assert result == ROOT / "tests" / "common" / "iceberg_reader"
+        assert result == ROOT / "tests" / "common" / "ducklake_reader_client"
 
 
 class TestContractDriftConcernSplitRegistration:

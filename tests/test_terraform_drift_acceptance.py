@@ -18,6 +18,7 @@ from scripts.executor.acceptance_lint import lint_acceptance_command
 
 WORKFLOWS_DIR = Path(".github/workflows")
 DRIFT_WORKFLOW = WORKFLOWS_DIR / "terraform-drift.yml"
+APPLY_SANDBOX_WORKFLOW = WORKFLOWS_DIR / "terraform-apply-sandbox.yml"
 INIT_RETRY_ACTION = Path(".github/actions/terraform-init-retry/action.yml")
 
 _PORTAL_PATTERN = re.compile(r"scripts\.ops_data_portal|\.venv/bin/python\s+-m\s+scripts\.ops_data_portal")
@@ -67,6 +68,32 @@ def test_portal_acceptance_passes_lint(workflow_name: str, acceptance_value: str
     """Every ops portal --acceptance argument embedded in a workflow must pass lint_acceptance_command."""
     ok, msg = lint_acceptance_command(acceptance_value)
     assert ok, f"{workflow_name}: --acceptance value fails lint_acceptance_command: {acceptance_value!r} -> {msg}"
+
+
+def _triggers(workflow: Path) -> dict[str, object]:
+    """The workflow's trigger mapping.
+
+    PyYAML resolves the bare key `on` to the boolean True (YAML 1.1), so the lookup has to try
+    both spellings rather than assuming the string key survives the parse.
+    """
+    doc = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    on = doc.get("on", doc.get(True))
+    assert isinstance(on, dict), f"{workflow.name}: expected a trigger mapping, got {on!r}"
+    return on
+
+
+def test_drift_workflow_is_workflow_dispatch_only() -> None:
+    """The scheduled cron is REMOVED while the personal module's retired resources await operator
+    tfstate reconciliation: every tick would flag the deliberate state-vs-code delta and flip the
+    convergence record red, wedging the deploy channel. workflow_dispatch is the only entry point."""
+    assert set(_triggers(DRIFT_WORKFLOW)) == {"workflow_dispatch"}
+
+
+def test_apply_sandbox_workflow_is_workflow_dispatch_only() -> None:
+    """The push and pull_request triggers are REMOVED for the same reason: an automatic plan against
+    the divergent state would produce destroy plans, and nothing may apply until an operator
+    reconciles (terraform state rm, or an explicitly approved gated apply)."""
+    assert set(_triggers(APPLY_SANDBOX_WORKFLOW)) == {"workflow_dispatch"}
 
 
 def test_drift_workflow_has_no_terraform_apply() -> None:

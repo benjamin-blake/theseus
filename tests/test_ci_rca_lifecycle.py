@@ -54,7 +54,7 @@ class TestResolveChain:
         ]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             chain = resolve_chain(_FINGERPRINT)
         assert [r.rec_id for r in chain] == ["rec-2", "rec-1"]
 
@@ -65,7 +65,7 @@ class TestResolveChain:
         ]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             chain = resolve_chain(_FINGERPRINT)
         assert chain[0].rec_id == "rec-2"
 
@@ -73,28 +73,28 @@ class TestResolveChain:
         rows = [_row("rec-1", "open", fingerprint="b" * 64)]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert resolve_chain(_FINGERPRINT) == []
 
     def test_no_context_v2_json_excluded(self):
         rows = [{"id": "rec-1", "status": "open", "context_v2_json": None}]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert resolve_chain(_FINGERPRINT) == []
 
     def test_malformed_context_v2_json_excluded_not_raised(self):
         rows = [{"id": "rec-1", "status": "open", "context_v2_json": "not-json"}]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert resolve_chain(_FINGERPRINT) == []
 
     def test_fixed_by_sha_carried_into_chain_record(self):
         rows = [_row("rec-1", "closed", fixed_by_sha="deadbeef")]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             chain = resolve_chain(_FINGERPRINT)
         assert chain[0].fixed_by_sha == "deadbeef"
 
@@ -109,7 +109,7 @@ class TestNewestOpenInChain:
         ]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert newest_open_in_chain(_FINGERPRINT) == "rec-new"
 
     def test_closed_head_not_bumped_returns_none(self):
@@ -121,13 +121,13 @@ class TestNewestOpenInChain:
         ]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert newest_open_in_chain(_FINGERPRINT) is None
 
     def test_empty_chain_returns_none(self):
         reader = MagicMock()
         reader.current_state.return_value = []
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert newest_open_in_chain(_FINGERPRINT) is None
 
 
@@ -136,7 +136,7 @@ class TestClosedHeadOfChain:
         rows = [_row("rec-1", "closed")]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             head = closed_head_of_chain(_FINGERPRINT)
         assert head is not None
         assert head.rec_id == "rec-1"
@@ -145,7 +145,7 @@ class TestClosedHeadOfChain:
         rows = [_row("rec-1", "open")]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert closed_head_of_chain(_FINGERPRINT) is None
 
 
@@ -374,21 +374,21 @@ class TestFlakeEscalation:
         rows = [_row(f"rec-{i}", "closed") for i in range(3)]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert check_flake_escalation(_FINGERPRINT) is True
 
     def test_flaky_escalation_chain_of_two_not_flaky(self):
         rows = [_row(f"rec-{i}", "closed") for i in range(2)]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert check_flake_escalation(_FINGERPRINT) is False
 
     def test_flaky_escalation_chain_exceeding_three_is_flaky(self):
         rows = [_row(f"rec-{i}", "closed") for i in range(5)]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert check_flake_escalation(_FINGERPRINT) is True
 
 
@@ -437,14 +437,14 @@ class TestListOpenCiRcaRecs:
         rows = [_row("rec-1", "open"), _row("rec-2", "closed")]
         reader = MagicMock()
         reader.current_state.return_value = rows
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             open_recs = list_open_ci_rca_recs()
         assert [r["id"] for r in open_recs] == ["rec-1"]
 
     def test_empty_when_no_rows(self):
         reader = MagicMock()
         reader.current_state.return_value = []
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             assert list_open_ci_rca_recs() == []
 
 

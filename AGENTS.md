@@ -1,18 +1,18 @@
-# AGENTS.md — ML Trading System
+# AGENTS.md — Theseus Platform
 
 Universal rules. For full project context, see `docs/PROJECT_CONTEXT.md` on demand.
 
 ## PUBLIC repository / confidential-data boundary
 
 This repository is PUBLIC (Decisions 73, 83, 101). Public-content boundary (Decision 101):
-- NEVER publish: AWS account IDs or ARNs, IAM ExternalIds, credentials or API keys, trading alpha / strategy performance, or any internal hostname that provides an attack surface.
-- SAFE to publish: platform engineering, infrastructure patterns, tooling, CI/CD design, and general LLM-agent architecture -- market the engineering, not the alpha.
+- NEVER publish: AWS account IDs or ARNs, IAM ExternalIds, credentials or API keys, private operational data, or any internal hostname that provides an attack surface.
+- SAFE to publish: platform engineering, infrastructure patterns, tooling, CI/CD design, and general LLM-agent architecture -- publish the engineering, never the operational secrets.
 - Confidential data lives ONLY in: the personal AWS account (Secrets Manager, gitignored tfvars, S3 private prefixes), and gitignored local files (e.g. `terraform/personal/terraform.personal.tfvars`, `~/.aws/credentials`). Nothing confidential is ever committed.
 - The pre-commit `never-commit` hook (shape-pattern) blocks 12-digit AWS account IDs, secret-like strings, and ExternalId patterns from reaching the repo.
 
 ## Role and environment
 You are a Lead Software Developer writing production-quality Python. Primary dev surface: Claude Code on the web
-(CC-web; Ubuntu 24.04). PySR runs on a separate compute node. Bash is the primary shell.
+(CC-web; Ubuntu 24.04). Bash is the primary shell.
 
 ## Code style
 - Python 3.12+, type hints required, `async` for I/O.
@@ -28,7 +28,7 @@ You are a Lead Software Developer writing production-quality Python. Primary dev
 - Each Bash tool invocation is independent -- do not rely on `source .venv/bin/activate` or `source .venv/Scripts/activate`; use `bin/venv-python` directly instead.
 
 ## Safety
-- Never `eval()` or `exec()`. Use `sympy.sympify()` + `sympy.lambdify()` for formula evaluation.
+- Never `eval()` or `exec()`. Parse untrusted expressions with a restricted, purpose-built parser instead.
 - Never raise exceptions during module import. Defer validation to explicit calls.
 - Always wrap `filemd5()` and `file()` Terraform calls on optional artifacts with `try()`.
 - Terraform apply model: see `environment-taxonomy.yaml` (Axis A + Guard classification subsection) -- that file is the sole SoT. Short form: sandbox auto-applies behind the deterministic guard (Decision 77); in-budget IAM inline-policy/attachment UPDATEs on managed boundary-carrying roles now auto-apply (T2.25 / Decision 92 point 5); trust/destroy/out-of-budget IAM route to the `tf-gated-apply` Environment. Bootstrap root is admin-only out-of-band.
@@ -87,8 +87,7 @@ skills, slash commands -- are optimised for agent loading efficiency, not human 
   composition, not as a post-rejection error (rationale: Decision 66).
 - No new standing prose-architecture docs (Decision 86): forward intent to tier_items,
   rationale to Decisions, field semantics to contracts. Creating docs/INTENT-*.md or any
-  equivalent standing prose-architecture doc under docs/ is forbidden. The validate.py
-  intent-doc-freeze guard enforces this on-disk.
+  equivalent standing prose-architecture doc under docs/ is forbidden.
 
 ## Skills and slash commands
 
@@ -110,29 +109,25 @@ When a slash command instructs you to "apply" or "invoke" a skill, use the `Skil
 ## Operational data governance — Single Portal Invariant
 All recommendation and decision writes go through `python -m scripts.ops_data_portal`. Never `Edit` or `Write` to `logs/.recommendations-log.jsonl` or `logs/.decisions-index.jsonl` directly -- `validate.py` will fail CI. Recommendation IDs are allocated BY THE WRITER atomically with the insert (`file_ops`, Decision 84 I-2) -- never client-side; decision numbering authority is `DECISIONS.md` (callers supply `decision_id`). The local JSONL files are read-only caches.
 
-Agent surface is three functions: `file_rec`, `update_rec`, `sync`. Do not call `sync.ops`, `ops_writer`, or any drain/compact/pull CLIs directly. Portal calls require the `agent_platform` (PlatformDev) assume-role profile to reach the reader/writer Function URLs. If unreachable, confirm the chain with `aws sts get-caller-identity --profile agent_platform` (the session-start hook `.claude/hooks/session_start_aws.sh` reports this each session); locally, refresh the `agent_static` key if it has been rotated. There is no SSO login in the static-key model. A write that cannot complete FAILS LOUDLY at the call site -- there is no offline outbox (Decision 84 I-4); re-file after restoring connectivity.
+Agent surface is three functions: `file_rec`, `update_rec`, `sync`. Do not call `sync.ops` or any pull CLI directly. Portal calls require the `agent_platform` (PlatformDev) assume-role profile to reach the reader/writer Function URLs. If unreachable, confirm the chain with `aws sts get-caller-identity --profile agent_platform` (the session-start hook `.claude/hooks/session_start_aws.sh` reports this each session); locally, refresh the `agent_static` key if it has been rotated. There is no SSO login in the static-key model. A write that cannot complete FAILS LOUDLY at the call site -- there is no offline outbox (Decision 84 I-4); re-file after restoring connectivity.
 
 ## Warehouse-as-source-of-truth invariant
 This is an append-only lakehouse. The warehouse is the single source of truth for all operational data; local files are never upstream of it.
 
 **Source-of-truth by table (Decision 84 consolidation, 2026-06-11):**
-- **`ops_recommendations`, `ops_decisions`, `ops_priority_queue` = DuckLake-on-Neon, SOLE backend.** Reads transit the closed `ducklake_reader` boundary via NAMED VERBS (Decision 84 I-3; no caller SQL); writes transit `ducklake_writer` (`file_ops` allocates rec ids in-transaction). There is NO Athena path and NO rollback flag (`OPS_STORAGE_BACKEND` retired -- the frozen Iceberg copy stopped being coherent the day writes moved). `ops_decisions` rebuilds from `DECISIONS.md` via `ops_data_portal --backfill-decisions-md`.
-- **`ops_session_log`, `ops_execution_plans` = Athena (over Iceberg), pending T2.26 disposition** (session_log may retire per T-1.9). `ops_compaction` stays live for these only. Telemetry stays on its (dead, to-be-rebuilt) path until consolidation Phase 4 (Decision 84 Phase 4 / tier_item T2.36).
+- **`ops_recommendations`, `ops_decisions`, `ops_priority_queue` = DuckLake-on-Neon, SOLE backend.** Reads transit the closed `ducklake_reader` boundary via NAMED VERBS (Decision 84 I-3; no caller SQL); writes transit `ducklake_writer` (`file_ops` allocates rec ids in-transaction). There is exactly one backend and NO rollback flag (`OPS_STORAGE_BACKEND` retired -- the frozen legacy copy stopped being coherent the day writes moved). `ops_decisions` rebuilds from `DECISIONS.md` via `ops_data_portal --backfill-decisions-md`.
 
-Local files have exactly two valid roles:
+Local files have exactly one valid role:
 
-1. **Legacy staging outbox** (`logs/.ops-outbox/`) — survives ONLY for the not-yet-migrated OpsWriter paths (telemetry, session_log, execution_plans) and retires with them. Migrated-table dirs and `*_pending` dirs are never drained (Decision 84 I-4); the recs/decisions pending outboxes are deleted.
-2. **Read cache** (`logs/.recommendations-log.jsonl`, `logs/.decisions-index.jsonl`) — derivative projection rebuilt FROM the warehouse via `sync.ops pull` (all migrated tables from the DuckLake reader). Downstream of the warehouse, never upstream.
+1. **Read cache** (`logs/.recommendations-log.jsonl`, `logs/.decisions-index.jsonl`) — derivative projection rebuilt FROM the warehouse via `sync.ops pull` (all tables from the DuckLake reader). Downstream of the warehouse, never upstream. There is no staging outbox: a write that cannot reach the warehouse fails loudly (Decision 84 I-4).
 
-**Hard rule: a read cache is never a write source.** Reading any file in `logs/` and calling
-`OpsWriter.write()` (or otherwise putting data into S3 staging) is the CRUD anti-pattern in
-lakehouse clothing. The Iceberg-DELETE-resurrection mechanism that makes this dangerous on the
-still-Iceberg tables is recorded in Decision 84 (`ops_recommendations` on DuckLake is not
-Iceberg-snapshot-based, but the same rule applies -- recs writes go only through the writer).
+**Hard rule: a read cache is never a write source.** Reading any file in `logs/` and replaying it
+back into the warehouse is the CRUD anti-pattern in lakehouse clothing, and the row-resurrection
+failure mode it produces is recorded in Decision 84 -- recs writes go only through the writer.
 
-The legitimate write paths are: (a) `file_rec` / `update_rec` portal calls, and (b) ETL from a non-warehouse source of truth (e.g., `DECISIONS.md` -> `ops_decisions`). Anything else that ends in `OpsWriter.write()` must be reviewed for replay-from-cache violations.
+The legitimate write paths are: (a) `file_rec` / `update_rec` portal calls, and (b) ETL from a non-warehouse source of truth (e.g., `DECISIONS.md` -> `ops_decisions`). Anything else that writes warehouse rows must be reviewed for replay-from-cache violations.
 
-If a clone or runner shows stale data, an operator may rebuild that environment's local cache by running `python -m scripts.sync.ops sync` (which pulls every migrated table from the DuckLake reader and overwrites local). Never fix drift by re-staging from the local file.
+If a clone or runner shows stale data, an operator may rebuild that environment's local cache by running `python -m scripts.sync.ops sync` (which pulls every table from the DuckLake reader and overwrites local). Never fix drift by replaying the local file back upstream.
 
 ## Data-modeling default
 Before designing any table, decide **grain first** -- "one row per ___" -- then pick a write mode. This is
@@ -144,9 +139,9 @@ ambient summary.
   "one row per event_id"). If you cannot state the grain, you are not ready to pick a write mode.
 - **Write-mode branch (not "default to SCD2"):**
   - **SCD2** (history table + Type-1 current projection) for mutable-entity ops tables -- rows that get
-    updated over their lifetime (e.g. `ops_priority_queue`, `ops_session_log`, `ops_execution_plans`).
-  - **append_only** (history-only event journal, no current projection) for event/telemetry tables --
-    insert-once rows that are never mutated (e.g. `ops_smoke_events`, the telemetry_* tables).
+    updated over their lifetime (e.g. `ops_recommendations`, `ops_priority_queue`, `ops_execution_plans`).
+  - **append_only** (history-only event journal, no current projection) for event tables --
+    insert-once rows that are never mutated (e.g. `ops_smoke_events`).
   - **append_only is the design default/prior, NOT a ban** on sanctioned exceptional physical deletes
     (Decision 70) or lifecycle-closure paths (Decision 103) -- those remain legitimate, scoped exceptions.
 - **Identity**: ULID, minted once at the write boundary (never client-side, never a natural-key PK),

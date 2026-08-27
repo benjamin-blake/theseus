@@ -28,10 +28,10 @@ class TestExtractSrcImports:
         assert extract_src_imports(f) == ["src.common.config"]
 
     def test_from_src_import(self, tmp_path: Path) -> None:
-        """``from src.data.pipeline import DataPipeline`` yields ``src.data.pipeline``."""
+        """``from src.common.ducklake import DuckLakeRuntime`` yields ``src.common.ducklake``."""
         f = tmp_path / "sample.py"
-        f.write_text("from src.data.pipeline import DataPipeline\n", encoding="utf-8")
-        assert extract_src_imports(f) == ["src.data.pipeline"]
+        f.write_text("from src.common.ducklake import DuckLakeRuntime\n", encoding="utf-8")
+        assert extract_src_imports(f) == ["src.common.ducklake"]
 
     def test_no_src_imports_returns_empty(self, tmp_path: Path) -> None:
         """A file with no src.* imports returns an empty list."""
@@ -60,19 +60,19 @@ class TestExtractSrcImports:
         """Multiple distinct src.* imports are all returned."""
         f = tmp_path / "sample.py"
         f.write_text(
-            "import src.common.config\nfrom src.data.pipeline import DataPipeline\n",
+            "import src.common.config\nfrom src.common.ducklake import DuckLakeRuntime\n",
             encoding="utf-8",
         )
-        assert extract_src_imports(f) == ["src.common.config", "src.data.pipeline"]
+        assert extract_src_imports(f) == ["src.common.config", "src.common.ducklake"]
 
     def test_non_src_import_ignored(self, tmp_path: Path) -> None:
         """Imports not starting with ``src`` are not returned."""
         f = tmp_path / "sample.py"
         f.write_text(
-            "import pandas\nfrom collections import defaultdict\nimport src.execution\n",
+            "import pandas\nfrom collections import defaultdict\nimport src.schemas\n",
             encoding="utf-8",
         )
-        assert extract_src_imports(f) == ["src.execution"]
+        assert extract_src_imports(f) == ["src.schemas"]
 
 
 class TestExtractFirstPartyImports:
@@ -334,7 +334,7 @@ class TestMain:
         """main() prints one import per line for each file argument."""
         f = tmp_path / "sample.py"
         f.write_text(
-            "import src.common.config\nfrom src.data.writer import Writer\n",
+            "import src.common.config\nfrom src.schemas.rec import Rec\n",
             encoding="utf-8",
         )
         original_argv = sys.argv[:]
@@ -344,7 +344,7 @@ class TestMain:
         finally:
             sys.argv = original_argv
         captured = capsys.readouterr()
-        assert captured.out.strip() == "src.common.config\nsrc.data.writer"
+        assert captured.out.strip() == "src.common.config\nsrc.schemas.rec"
 
 
 class TestWalkSource:

@@ -46,10 +46,10 @@ class TestComputeStepScope:
         }
 
     def test_src_module_scope(self) -> None:
-        scope = _compute_step_scope({"file": "src/data/pipeline.py"})
+        scope = _compute_step_scope({"file": "src/common/config.py"})
         assert scope == {
-            "src/data/pipeline.py",
-            "tests/test_pipeline.py",
+            "src/common/config.py",
+            "tests/test_config.py",
         }
 
     def test_other_path_scope(self) -> None:

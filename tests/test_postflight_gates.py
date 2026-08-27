@@ -68,9 +68,7 @@ def test_run_verifiers_gate_exception_returns_false(mock_load_plan):
     """Gap 5: an unexpected exception in the verifier harness must return False (fail-closed)."""
     mock_load_plan.side_effect = Exception("no plan on disk")
     with patch("asyncio.run", side_effect=RuntimeError("harness exploded")):
-        with patch("scripts.executor.postflight.emit_process_event") as mock_emit:
-            assert _run_verifiers_gate("rec-123") is False
-            mock_emit.assert_called_once_with("verification_gate_error", {"error": "harness exploded"})
+        assert _run_verifiers_gate("rec-123") is False
 
 
 @patch("scripts.executor.postflight._run_verifiers_gate")

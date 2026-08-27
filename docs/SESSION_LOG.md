@@ -91,7 +91,7 @@ Completed the recs-first DuckLake cutover (PLAN-ducklake-ops-finalize, resuming 
 - VP9/10 IAM: confirmed PlatformDev `lambda:InvokeFunction` live (#109); added `lambda:InvokeFunction` + `lambda:GetFunctionUrlConfig` to the `github_ci` branch+pr OIDC roles (human-gated apply, 2 in-place policy updates). The GetFunctionUrlConfig grant + a boto3 URL-resolution fallback in `iceberg_reader`/`ops_data_portal` let the post-flip CI DQ resolve+reach the reader URL (no env / no terraform in CI).
 - VP11 deploy: 4 DuckLake functions (writer/reader/maintenance/catalog_dr) + data-pipeline/ops-compaction rebuilt/deployed; per-function smoke (writer attach, reader closed-path, catalog-dr DR dump, maintenance catalog_reinit). NOTE: maintenance merge/gc gate is blocked post-cutover (writer->prod / maintenance->smoke catalogs no longer shared) and restore_drill is the documented pg_restore deferral -- both filed as rec-2115.
 - VP12 DQ-over-DuckLake: initially FAIL on 2 rows (stale rec-001 + a leaked `test-ryw` smoke probe); RCA showed DuckLake was a stale seed. Re-seeded from current Iceberg current-state (parity 812/812) -> DQ PASS (37 checks). The 7 "context_short" rows were a red herring (created<2026-05-01, correctly excluded by the D64 anchor).
-- VP13 rollback: DuckLake read 812 + Iceberg read 812 via Athena. The `iceberg` `--selftest-read` direct-pyarrow path is ACCESS_DENIED under PlatformDev from CC-web (pre-existing; Athena is the working rollback read) -- filed as rec-2115.
+- VP13 rollback: DuckLake read 812 + Iceberg read 812 via the legacy query engine. The `iceberg` `--selftest-read` direct-pyarrow path is ACCESS_DENIED under PlatformDev from CC-web (pre-existing; the legacy engine is the working rollback read) -- filed as rec-2115.
 - VP14 sign-off: outbox empty -> flipped `_DEFAULT_OPS_STORAGE_BACKEND` iceberg->ducklake in all 3 sites (`ops_data_portal.py`, `iceberg_reader.py`, `data_quality_runner.py`) -> `--selftest-roundtrip` GREEN. The roundtrip leaves a `test-roundtrip-*` probe (automatable unset -> fails DQ); purged via a second re-seed (bumped maintenance timeout 300->900s for the 812-row seed, restored after). Docs (AGENTS.md / PROJECT_CONTEXT / runbook Section 6) flipped atomically.
 - VP15 closed boundary: removed `seed_ops_recommendations` (+ helpers + tests) from the maintenance handler, redeployed (live Lambda now returns "unknown action"); made `drain_pending` backend-aware; confirmed every `OpsWriter().write("ops_recommendations")` is behind the `iceberg` rollback branch.
 
@@ -210,7 +210,7 @@ it is now dead/superseded by the maintenance seed -- a planning item to remove i
    `OPS_STORAGE_BACKEND=ducklake ... --selftest-read` (needs (1)).
 5. **VP16 SIGN-OFF**: flip `_DEFAULT_OPS_STORAGE_BACKEND` "iceberg"->"ducklake" in scripts/ops_data_portal.py
    + src/common/iceberg_reader.py + scripts/data_quality_runner.py; `--selftest-roundtrip`; ATOMIC
-   AGENTS.md + docs/PROJECT_CONTEXT.md source-of-truth update (recs->DuckLake; decisions/others->Athena;
+   AGENTS.md + docs/PROJECT_CONTEXT.md source-of-truth update (recs->DuckLake; decisions/others->the legacy query engine;
    only-write-surface=portal; recs break-glass=Neon+S3). DO NOT flip until (1)+(4) green.
 6. **VP17 post-sign-off**: remove `seed_ops_recommendations` from the maintenance handler + redeploy;
    confirm no recs bypass write path remains.
@@ -251,10 +251,10 @@ egress from CC-web).
   `restore_drill` operational actions, invoked over 443 via `aws lambda invoke` (NOT agent surfaces);
   connectionless dispatch; manifest gains `catalog_dr` + the `field_semantics.yaml` asset.
 - Portal/readers: recs-only DuckLake routing; ops_decisions + the deferred ops_* tables STAY on
-  Iceberg/Athena (`make_reader(table=...)` table-aware); `sync`/`_sync_table` recs-aware.
-- DQ: recs-only clause-8 + DuckLake dispatch (`_DUCKLAKE_OPS_TABLES`); decisions stay on Athena.
+  the legacy warehouse (`make_reader(table=...)` table-aware); `sync`/`_sync_table` recs-aware.
+- DQ: recs-only clause-8 + DuckLake dispatch (`_DUCKLAKE_OPS_TABLES`); decisions stay on the legacy query engine.
 - Smoke harness: `ducklake_smoke` meta-schema; `catalog_restore_drill` now invokes the maintenance
-  action (no local pg_dump -> Neon 5432); `--emit-recs-seed-payload` reads recs from Iceberg/Athena.
+  action (no local pg_dump -> Neon 5432); `--emit-recs-seed-payload` reads recs from the legacy warehouse.
 - Terraform: maintenance S3 prod prefix + meta-schema/field-semantics env + pgclient layer; DailyOps
   `InvokeFunctionUrl` on writer/reader so the runtime portal (PlatformDev) can reach the closed boundary.
 - Tests: 546 green; `validate --pre` green.
@@ -280,7 +280,7 @@ recs-first Lambda-mediated rewrite.
 ## [2026-06-08] - implement: ducklake-ops-cutover (T2.19 -- DuckLake ops persistence cutover, pre-deploy)
 
 **Mode:** Implementation (PLAN-ducklake-ops-cutover.md, V3 tier). Big-bang cutover + documented rollback.
-**Goal:** Cut the live ops persistence layer from Iceberg/Athena to the closed DuckLake-on-Neon
+**Goal:** Cut the live ops persistence layer from the legacy warehouse to the closed DuckLake-on-Neon
 writer/reader boundary (T2.19), Single-Portal caller surface unchanged. Closes the T2.18 tail.
 
 **What shipped this session (pre-deploy, all flag-gated `OPS_STORAGE_BACKEND`, default `iceberg` --
@@ -301,11 +301,11 @@ zero live-behaviour change until the human-gated cutover):**
   outbox-drain/compact retires on ducklake); `--sync`/`--selftest-read`/`--selftest-roundtrip` CLI.
 - `src/common/iceberg_reader.py`: `DuckLakeReader` (Reader protocol over the reader URL) + `make_reader`
   factory; `DuckDBIcebergReader` retained as rollback target. `sync_ops`/`session_preflight` route via
-  the factory; `_coerce_athena_array` is now backend-agnostic (native lists).
+  the factory.
 - `scripts/migrate_ops_iceberg_to_ducklake.py` (new): one-time backfill, parity verify (row count +
   content hash, excl. Decision-70 tombstones), idempotent by DROP+recreate (resurrection-loop guard).
 - `config/agent/data_quality/ops.yaml` + `scripts/data_quality_runner.py`: dual-backend dispatch
-  (ops checks -> DuckLake DuckDB dialect when flag=ducklake; Athena retained for iceberg/telemetry);
+  (ops checks -> DuckLake DuckDB dialect when flag=ducklake; the legacy engine retained for iceberg/telemetry);
   clause-8 checks (ULID-history + current merge-key uniqueness); Decision-64 anchor preserved.
 - `src/common/catalog_dr.py`: `build_pg_restore_cmd`/`run_pg_restore` (custom-format restore drill).
 - `scripts/ducklake_neon_smoke_test.py`: `--ops-read-your-write`, `--ops-churn-regate`,
@@ -462,7 +462,7 @@ Budget VALUES unchanged: `COMMIT_LATENCY_BUDGET_MS = 2000.0`, `OCC_COLLISION_RAT
 **Goal:** Land the structural fix for rec-2061 (CRLF/LF line-ending drift in null_resource.create_ops_tables/views trigger md5) and verify VP-10 (clean-green post-merge sandbox-apply push run) without a manual workflow_dispatch.
 **Outcome:** SUCCESS - VP-10 PASS on push run 27031330988 (merge SHA dfcbf84) for PR #83; the T2.16b Phase 2 retirement (PR #82, merge SHA 5bc1adb) is now fully in its desired terminal state (RDS gone, IAM pruned, state stable, push pipeline auto-applies cleanly).
 **Key actions:**
-- Diagnosed VP-10 failure on PR #82's post-merge push run 27030322681 as line-ending drift: terraform/personal/main.tf used `triggers = { query_hash = md5(each.value) }` where `each.value` is a heredoc Athena DDL. The earlier same-day Phase 2 terraform applies ran from Windows (this implementer's local) and wrote CRLF-md5 hashes to S3 state; the post-merge CI run on Linux read LF-stripped heredocs from the checkout, recomputed LF-md5, saw 6 phantom null_resource replacements, and the Decision-77 fail-closed guard correctly blocked.
+- Diagnosed VP-10 failure on PR #82's post-merge push run 27030322681 as line-ending drift: terraform/personal/main.tf used `triggers = { query_hash = md5(each.value) }` where `each.value` is a heredoc warehouse DDL. The earlier same-day Phase 2 terraform applies ran from Windows (this implementer's local) and wrote CRLF-md5 hashes to S3 state; the post-merge CI run on Linux read LF-stripped heredocs from the checkout, recomputed LF-md5, saw 6 phantom null_resource replacements, and the Decision-77 fail-closed guard correctly blocked.
 - Drafted precise instructions for a CC-web Linux agent to (a) wrap each `md5(each.value)` with `replace(each.value, "\r\n", "\n")` in both null_resource blocks and (b) apply manually from CC-web Linux under agent_platform_admin so the new normalized hashes write to state from the Linux side. The agent did exactly that: PR #83 opened from branch agent/ducklake-line-ending-fix @ 86fdab6, merge SHA dfcbf84. Pre-merge plan: 6 to add, 0 to change, 6 to destroy (no scope creep); apply 6 added, 6 destroyed; post-apply re-plan exit 0 ("No changes"); post-merge push run 27031330988 conclusion success (guard step that BLOCKED on run 27030322681 for SHA 5bc1adb is now green).
 - One side-incident worth noting (per the CC-web agent's report): the agent's first plan attempt used `benjaminblake94@gmail.com` for var.owner_email, which produced 11 spurious tag-change side-effects vs the GitHub no-reply identity in state (`217728084+benjamin-blake@users.noreply.github.com`). They corrected the tfvars to match state and the second plan was clean. Lesson worth surfacing for the retrospective Follow-on: owner_email is a load-bearing tag for the personal module; the gitignored tfvars file is the authoritative source and any agent provisioning a fresh CC-web checkout MUST mirror the state's value.
 - No new commits filed against `docs/plans/PLAN-ducklake-rds-retirement.md` -- the plan was already complete on main; this close-out is recorded ONLY here (SESSION_LOG) so the plan stays a snapshot of the original IMPLEMENTATION intent. The structural fix is recorded as part of PR #83's own commit history (`fix(personal-tf): CRLF-stable trigger md5...`) and is durable.
@@ -638,7 +638,7 @@ Budget VALUES unchanged: `COMMIT_LATENCY_BUDGET_MS = 2000.0`, `OCC_COLLISION_RAT
 ## [2026-04-21] - implement: agent/platform-ops-pipeline-fix (PR #246) - MERGED
 
 **Mode:** Implement (workflow)
-**Goal:** Complete ops data pipeline so all five ops Iceberg tables in Athena receive data (rec-500 → rec-507).
+**Goal:** Complete ops data pipeline so all five legacy ops warehouse tables receive data (rec-500 → rec-507).
 **Outcome:** SUCCESS — terraform applied, Lambdas adjusted (split package), backfill completed; mandatory ops tables populated and tests/validate passed. Commits: 0c0b119, 0e6183d; PR #246 merged.
 **Key actions:**
 - **Terraform:** plan (3 add, 9 change), apply — approved by human.

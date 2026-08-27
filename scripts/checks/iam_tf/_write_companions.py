@@ -36,7 +36,6 @@ from scripts.checks.iam_tf._read_coverage import (
 )
 from scripts.checks.iam_tf._write_coverage import (
     _ALARM_PREFIX,
-    _ANY_RESOURCE,
     _COUNTERS_TABLE_ARN,
     _DATA_LAKE_BUCKET_ARN,
     _FUNCTION_PREFIX,
@@ -275,22 +274,6 @@ LIFECYCLE_COMPANIONS: dict[str, dict[str, dict]] = {
             (),
             "destroying an aws_secretsmanager_secret_version issues NO AWS call in provider 5.100 -- the version is "
             "retained until the owning secret is deleted, which the secret's own row covers",
-        ),
-    },
-    "aws_athena_workgroup": {
-        "create": _row("athena:CreateWorkGroup", _at(_ANY_RESOURCE, "athena:TagResource"), _DEFAULT_TAGS_WHY),
-        "update": _row("athena:UpdateWorkGroup", _at(_ANY_RESOURCE, *_tag_pair("athena")), _TAG_DIFF_WHY),
-        "delete": _row("athena:DeleteWorkGroup", (), f"{_SINGLE_CALL}, scoped to the one production workgroup"),
-    },
-    "aws_glue_catalog_database": {
-        "create": _row(
-            "glue:CreateDatabase", (), f"aws_glue_catalog_database accepts no tags in provider 5.100, so {_NO_TAG_CALL}"
-        ),
-        "update": _row("glue:UpdateDatabase", (), f"{_SINGLE_CALL}; still untagged"),
-        "delete": _row(
-            "glue:DeleteDatabase",
-            (),
-            f"{_SINGLE_CALL} -- the database's tables are written by DuckLake, not terraform, so no cascade is issued",
         ),
     },
     "aws_dynamodb_table": {

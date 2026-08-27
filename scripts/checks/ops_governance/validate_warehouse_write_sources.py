@@ -12,19 +12,18 @@ from scripts.checks import _common, registry
 def validate_warehouse_write_sources(failed: list[str]) -> None:
     """Enforce the warehouse-as-source-of-truth invariant.
 
-    Every call to OpsWriter().write("ops_*", ...) must originate from a
-    whitelisted file. The whitelist captures the four legitimate write paths:
-    1. Portal calls (file_rec/update_rec/file_decision/update_decision)
-    2. Canonical ETL from a non-warehouse source of truth (DECISIONS.md -> ops_decisions)
-    3. Outbox drain (write-once transient buffer, never replayable)
-    4. Fresh in-memory writes (e.g. priority queue enrichment, execution plan save)
+    Every write into an ops_* table must originate from a whitelisted file. The whitelist
+    captures the two legitimate write paths (Decision 84 I-1/I-4):
+    1. Portal calls (file_rec/update_rec/file_decision/update_decision) through the
+       DuckLake writer transport.
+    2. Canonical ETL from a non-warehouse source of truth (DECISIONS.md -> ops_decisions).
 
     Any new file that writes to an ops_* table must be reviewed against the
-    warehouse-as-source invariant in CLAUDE.md before being added to the
-    whitelist. Replaying a read cache (e.g. logs/.recommendations-log.jsonl) into
-    the warehouse is the resurrection anti-pattern that creates infinite
-    re-injection loops -- Iceberg DELETE removes the snapshot, the next replay
-    re-injects, SCD2 dedupe surfaces the resurrection as the current row.
+    warehouse-as-source invariant in AGENTS.md before being added to the whitelist.
+    Replaying a read cache (e.g. logs/.recommendations-log.jsonl) into the warehouse is the
+    resurrection anti-pattern: the cache is downstream of the warehouse, so re-staging it
+    re-inserts rows a closure already retired and the SCD2 current projection then surfaces
+    the resurrected row as current.
     """
     print("\n=== Warehouse write-source whitelist ===")
     scripts_dir = _common.ROOT / "scripts"
@@ -35,30 +34,22 @@ def validate_warehouse_write_sources(failed: list[str]) -> None:
         scripts_dir / "ops_data_portal.py",
         scripts_dir / "session" / "postflight.py",
         scripts_dir / "sync" / "ops.py",
-        scripts_dir / "ops_writer.py",
-        scripts_dir / "s3_log_store.py",
         _self_path,  # this module's own docstring demonstrates the write call and matches the rule
     }
 
     _PATTERNS = [
-        re.compile(r'OpsWriter\(\)\.write\(\s*["\']ops_'),
         re.compile(r'\b(?:writer|ops|_writer)\.write\(\s*["\']ops_'),
     ]
 
-    # Table-specific block: the DuckLake-migrated tables (recs, decisions, priority_queue) must
-    # NEVER route to OpsWriter/Iceberg after Decision 84 I-1 -- readers serve DuckLake, so an
-    # Iceberg write is a silent split-brain. Catches any site, including whitelisted files.
+    # Table-specific block: the DuckLake ops tables must NEVER be written by anything but the
+    # portal's writer transport (Decision 84 I-1) -- readers serve DuckLake, so any other sink
+    # is a silent split-brain. Catches any site, including whitelisted files.
     # Self-excluded: this module's docstring demonstrates the write call and would otherwise self-flag.
-    # Tracked exemption: scripts/s3_log_store.py's dormant queue producer (T2.26 repoint; the
-    # scheduled-agent Lambdas that drive it are disabled -- see T4.12 / Decision 84).
-    _MIGRATED = r"ops_(?:recommendations|decisions|priority_queue)"
+    _MIGRATED = r"ops_(?:recommendations|decisions|priority_queue|execution_plans)"
     _MIGRATED_BLOCK_PATTERNS = [
-        re.compile(r'OpsWriter\(\)\.write\(\s*["\']' + _MIGRATED),
-        re.compile(r'OpsWriter\(\)\.compact\(\s*["\']' + _MIGRATED),
         re.compile(r'\b(?:writer|ops|_writer)\.write\(\s*["\']' + _MIGRATED),
         re.compile(r'\b(?:writer|ops|_writer)\.compact\(\s*["\']' + _MIGRATED),
     ]
-    _MIGRATED_BLOCK_EXEMPT = {scripts_dir / "s3_log_store.py"}  # dormant queue producer, T2.26
 
     errors: list[str] = []
     file_count = 0
@@ -72,15 +63,15 @@ def validate_warehouse_write_sources(failed: list[str]) -> None:
             except OSError:
                 continue
 
-            # Table-specific migrated-tables block (applies to ALL files, including whitelist).
-            if py_file != _self_path and py_file not in _MIGRATED_BLOCK_EXEMPT:
+            # Table-specific block (applies to ALL files, including the whitelist).
+            if py_file != _self_path:
                 for recs_pat in _MIGRATED_BLOCK_PATTERNS:
                     if recs_pat.search(content):
                         rel = py_file.relative_to(_common.ROOT)
                         errors.append(
-                            f"{rel}: writes/compacts a DuckLake-migrated table via OpsWriter -- "
-                            "recs/decisions/priority_queue transit the closed boundary (Decision 84 I-1). "
-                            "Use the ops_data_portal surface."
+                            f"{rel}: writes/compacts a DuckLake ops table outside the portal -- "
+                            "recs/decisions/priority_queue/execution_plans transit the closed boundary "
+                            "(Decision 84 I-1). Use the ops_data_portal surface."
                         )
                         break
 

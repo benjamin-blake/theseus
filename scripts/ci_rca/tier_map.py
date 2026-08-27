@@ -1,7 +1,7 @@
 """Deterministic gate analysis for CI-RCA evidence bundles.
 
 AST-walks scripts/validate.py to produce tier_membership: {func_name: [tier, ...]}.
-Handles four control-flow cases per INTENT-ci-rca-methodology Section 3.2 step 3.
+Handles four control-flow cases per docs/contracts/ci-rca-lifecycle.yaml.
 Provides runtime probe (N=5, drop-extremes) and earliest_viable_gate decision tree.
 
 AST_WALKER_VERSION is pinned by tests/test_ci_rca_evidence_ast.py.
@@ -21,8 +21,6 @@ _FAST_TIER_BUDGET_SECONDS = 300
 
 _KNOWN_EXTERNAL_DEP_CHECKS: frozenset[str] = frozenset(
     {
-        "validate_iam_runner_policy",
-        "validate_outbox_staleness",
         "validate_warehouse_write_sources",
         "validate_dq_manifest_gate",
         "validate_test_coverage",
@@ -245,7 +243,7 @@ def compute_earliest_viable_gate(
 ) -> tuple[str, str]:
     """Compute earliest_viable_gate. Returns (gate_or_None, rationale_str).
 
-    Decision tree per INTENT-ci-rca-methodology Section 3.2 step 4.
+    Decision tree per docs/contracts/ci-rca-lifecycle.yaml.
     """
     if check_name in _KNOWN_EXTERNAL_DEP_CHECKS:
         return ("presubmit", f"{check_name} has external AWS/network deps; --pre is offline-tolerant (Decision 60).")

@@ -134,24 +134,19 @@ class TestRunBuilds:
             with pytest.raises(SystemExit):
                 bl._run_ducklake_build(_args(deploy=False, ducklake_deploy_only=True))
 
-    def test_run_prod_build_skip_upload_warns_on_large_layer(self):
-        big = _FakePath(size=260 * 1024 * 1024, name="deps.zip")  # > 250 MB WARN, < 262 MB hard
+    def test_run_prod_build_skip_upload_does_not_upload(self):
         with (
             patch("scripts.build_lambda.build_app_package", return_value=_FakePath(name="dp.zip")),
-            patch("scripts.build_lambda.build_ops_compaction_package", return_value=_FakePath(name="ops.zip")),
-            patch("scripts.build_lambda.build_deps_layer", return_value=big),
             patch("scripts.build_lambda.assert_within_size_limit") as mock_assert,
             patch("scripts.build_lambda.upload_to_s3") as mock_upload,
         ):
             bl._run_prod_build(_args(skip_upload=True))
-        assert mock_assert.call_count == 3
+        assert mock_assert.call_count == 1
         assert mock_upload.call_count == 0
 
     def test_run_prod_build_bucket_missing_exits(self):
         with (
             patch("scripts.build_lambda.build_app_package", return_value=_FakePath(name="dp.zip")),
-            patch("scripts.build_lambda.build_ops_compaction_package", return_value=_FakePath(name="ops.zip")),
-            patch("scripts.build_lambda.build_deps_layer", return_value=_FakePath(name="deps.zip")),
             patch("scripts.build_lambda.assert_within_size_limit"),
             patch("scripts.build_lambda.resolve_bucket", return_value="bk"),
             patch("scripts.build_lambda.validate_bucket_exists", return_value=False),
@@ -162,8 +157,6 @@ class TestRunBuilds:
     def test_run_prod_build_upload_and_deploy(self):
         with (
             patch("scripts.build_lambda.build_app_package", return_value=_FakePath(name="dp.zip")),
-            patch("scripts.build_lambda.build_ops_compaction_package", return_value=_FakePath(name="ops.zip")),
-            patch("scripts.build_lambda.build_deps_layer", return_value=_FakePath(name="deps.zip")),
             patch("scripts.build_lambda.assert_within_size_limit"),
             patch("scripts.build_lambda.resolve_bucket", return_value="bk"),
             patch("scripts.build_lambda.validate_bucket_exists", return_value=True),
@@ -171,7 +164,7 @@ class TestRunBuilds:
             patch("scripts.build_lambda.update_lambda_functions") as mock_update,
         ):
             bl._run_prod_build(_args(skip_upload=False, deploy=True))
-        assert mock_upload.call_count == 3
+        assert mock_upload.call_count == 1
         mock_update.assert_called_once()
 
 
@@ -242,12 +235,9 @@ def test_facade_reexports_complete():
         "_DUCKLAKE_WRITER_FUNCTION": bl_config,
         "_LAMBDA_FUNCTION_NAMES": bl_config,
         "_LAMBDA_SCRIPTS": bl_config,
-        "_OPS_COMPACTION_FUNCTION_NAME": bl_config,
-        "_OPS_COMPACTION_ZIP_KEY": bl_config,
         "_aws_profile_args": bl_config,
         "_build_ducklake_function_zip_keys": bl_config,
         "_build_ducklake_layer_names": bl_config,
-        "_build_ops_compaction": bl_config,
         "_build_prod_function_names": bl_config,
         "_build_size_limit_bytes": bl_config,
         "DUCKLAKE_LAYER_NAMES": bl_config,
@@ -264,11 +254,9 @@ def test_facade_reexports_complete():
         "_zip_staged_dir": bm,
         "assert_within_size_limit": bm,
         "build_app_package": bm,
-        "build_deps_layer": bm,
         "build_ducklake_deps_layer": bm,
         "build_ducklake_extensions_layer": bm,
         "build_ducklake_function_package": bm,
-        "build_ops_compaction_package": bm,
         "build_pgclient_layer": bm,
         "list_bundle": bm,
         "_resolve_ducklake_profile": bd,

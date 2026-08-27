@@ -86,7 +86,7 @@ class TestDeferralMapStateClassification:
         def mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
             result = MagicMock()
             result.returncode = 2
-            result.stdout = _collect_error_block(test_file, "pyarrow")
+            result.stdout = _collect_error_block(test_file, "duckdb")
             result.stderr = ""
             return result
 
@@ -96,7 +96,7 @@ class TestDeferralMapStateClassification:
             patch("importlib.util.find_spec", return_value=None),
         ):
             run_pytest_diff([test_file], [])
-        mock_write.assert_called_once_with(STATE_ALL_DEFERRED, {test_file: "pyarrow"})
+        mock_write.assert_called_once_with(STATE_ALL_DEFERRED, {test_file: "duckdb"})
 
     def test_clean_pass_writes_ok_state(self) -> None:
         def mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
@@ -157,7 +157,7 @@ class TestDeferralMapStateClassification:
                 result.returncode = 1
                 result.stdout = (
                     f"FAILED {runnable_file}::test_x - ModuleNotFoundError\n"
-                    "E   ModuleNotFoundError: No module named 'pyarrow'\n"
+                    "E   ModuleNotFoundError: No module named 'duckdb'\n"
                 )
                 result.stderr = ""
             else:
@@ -530,7 +530,7 @@ class TestPrimaryInvocationCarriesCoverageFlags:
                 result.stderr = ""
             elif "--cov" in cmd:
                 result.returncode = 1
-                result.stdout = f"FAILED {runnable_file}::test_x\nE   ModuleNotFoundError: No module named 'pyarrow'\n"
+                result.stdout = f"FAILED {runnable_file}::test_x\nE   ModuleNotFoundError: No module named 'duckdb'\n"
                 result.stderr = ""
             else:
                 result.returncode = 0
@@ -543,7 +543,7 @@ class TestPrimaryInvocationCarriesCoverageFlags:
             patch("scripts.checks._common.ROOT", tmp_path),
             patch("scripts.checks._common.get_status_aware_diff", return_value=[("M", "scripts/a.py")]),
             patch("scripts.checks._pytest_diff._write_deferral_map"),
-            patch("scripts.checks._pytest_diff._excluded_heavy_import_names", return_value={"pyarrow"}),
+            patch("scripts.checks._pytest_diff._excluded_heavy_import_names", return_value={"duckdb"}),
             patch("importlib.util.find_spec", return_value=None),
         ):
             run_pytest_diff([runnable_file], [])

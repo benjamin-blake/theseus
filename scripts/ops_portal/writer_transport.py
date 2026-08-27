@@ -32,7 +32,7 @@ _DUCKLAKE_WRITER_SSM_PATH = "/agent-platform/ducklake/writer_url"
 _PORTAL_TABLE_NAMES = ("ops_recommendations", "ops_decisions")
 
 # Writer 5xx statuses retried once the request is idempotent (Neon scale-to-zero cold resume --
-# same rationale as the reader's transient retry, src/common/iceberg_reader.py).
+# same rationale as the reader's transient retry, src/common/ducklake_reader_client.py).
 _WRITER_TRANSIENT_STATUS = (502, 503, 504)
 _WRITER_MAX_ATTEMPTS = 3
 _WRITER_RETRY_BACKOFF_S = (2.0, 5.0)
@@ -49,10 +49,10 @@ def _resolve_writer_url(profile: Optional[str] = None) -> str:
 
     Loud-fail if all four are unavailable.
     """
-    from src.common.iceberg_reader import (  # noqa: PLC0415
+    from src.common.ducklake_reader_client import (  # noqa: PLC0415
         _resolve_function_url_via_api as _api_resolver,
     )
-    from src.common.iceberg_reader import (
+    from src.common.ducklake_reader_client import (
         _resolve_function_url_via_ssm as _ssm_resolver,
     )
 

@@ -1,7 +1,7 @@
 ---
 # Engine-choice contract for the ops-store read layer.
 # Authoritative reference for the Decision 84 single-backend topology (supersedes the CD.15
-# Athena escape-hatch and the T2.19 per-backend split for ops tables).
+# escape-hatch clause and the T2.19 per-backend split for ops tables).
 # Consumed by: agents, planning sessions, T0.7c query Lambda implementors.
 # A Class D mechanism contract (migration-step-3-grandfathering, T2.56 migration step 3) as of
 # the `contract:` block below.
@@ -18,6 +18,18 @@ contract:
     check: validate_read_engine_verbs
 
 amendment_log:
+  - date: "2026-08-26"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      Platform cleanse: references to the removed trading-product surfaces and the retired
+      pre-DuckLake query-engine estate were removed or reworded.
+    migration_story: >-
+      The repository became platform-only. Product surfaces (broker credentials, the product
+      roadmap, the market-data pipeline) and the retired legacy query-engine path (staging
+      outbox, ops compaction, legacy workgroup IAM) were deleted, and this contract's
+      references to them were removed in the same change. No live DuckLake field or verb
+      semantics changed.
   - date: "2026-08-14"
     semantic_break: false
     change_class: field_add
@@ -39,11 +51,11 @@ single_backend:
   backend: DuckLake-on-Neon (catalog) + S3 Parquet (data), fronted by the closed
     ducklake_reader / ducklake_writer Function-URL boundary (AWS_IAM, SigV4).
   tables_on_boundary: [ops_recommendations, ops_decisions, ops_priority_queue]
-  tables_pending: [ops_session_log, ops_execution_plans]   # T2.26 disposition (session_log may retire per T-1.9)
-  rollback_flag: RETIRED (OPS_STORAGE_BACKEND deleted; the frozen Iceberg copy stopped being a
+  tables_pending: [ops_execution_plans]   # T2.26 disposition
+  rollback_flag: RETIRED (OPS_STORAGE_BACKEND deleted; the legacy frozen copy stopped being a
     coherent rollback target the day writes moved to DuckLake)
-  athena_escape_hatch: NONE for boundary tables (CD.15 scope now empty for ops; market-data
-    engine choice unaffected and out of scope)
+  escape_hatch: NONE -- the closed ducklake_reader boundary is the only ops read path (CD.15
+    scope is empty for ops)
 
 read_surface:
   named_verbs:
@@ -99,7 +111,7 @@ single_portal_invariant:
   decision: Decision-69 (unchanged)
   rule: >
     ops_data_portal fetch-before-update reads use the rec_by_id / decision_by_id verbs.
-    On reader failure RuntimeError is raised -- no local JSONL fallback, no Athena fallback.
+    On reader failure RuntimeError is raised -- no local JSONL fallback, no second read path.
 
 failure_semantics:
   policy: Decision 55 / Decision 84 I-4
@@ -109,10 +121,9 @@ failure_semantics:
     Reader failures surface as degraded signals (recs_read_status), never silent zeros.
     Writer Lambda errors alarm via CloudWatch (ducklake-writer-errors).
 
-legacy_iceberg_reader:
-  class: DuckDBIcebergReader (src/common/iceberg_reader.py)
+reader_client:
+  class: DuckLakeReader (src/common/ducklake_reader_client.py)
   status: >
-    No longer reachable via make_reader(). Importable for non-ops Iceberg surfaces
-    (schema-integrity drift checks against the retained estate) until the Phase-3 demolition
-    apply lands; ops_session_log / ops_execution_plans reads stay on their existing paths
-    pending T2.26.
+    The sole in-repo reader client. make_reader() returns it; it speaks only to the closed
+    ducklake_reader Function URL. The legacy direct-file reader half was deleted with the
+    retired query-engine estate.

@@ -15,7 +15,7 @@ Actions:
 
 PRODUCTION OPS PATH (T2.19 / Decision 81): the reader is the SOLE read authority for the ops_*
 governance tables -- the closed boundary. The read role is S3 GetObject only, so a write attempt is
-denied at IAM/S3. Every ops read transits this URL; there is no Athena escape hatch.
+denied at IAM/S3. Every ops read transits this URL; there is no escape hatch.
 """
 
 from __future__ import annotations

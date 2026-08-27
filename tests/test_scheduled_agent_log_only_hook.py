@@ -33,7 +33,7 @@ class TestScheduledAgentLogOnlyHook:
 
     def test_no_agent_env_var_allows_any_tool(self) -> None:
         """Hook is fully inert when CC_SCHEDULED_AGENT_NAME is not set."""
-        payload = {"tool_name": "Write", "tool_input": {"file_path": "src/data/pipeline.py", "content": "x"}}
+        payload = {"tool_name": "Write", "tool_input": {"file_path": "src/common/config.py", "content": "x"}}
         result = _run(payload, agent_name=None)
         assert result == 0
 
@@ -49,23 +49,37 @@ class TestScheduledAgentLogOnlyHook:
         result = _run(payload)
         assert result == 0
 
-    def test_write_to_ops_outbox_exits_0(self) -> None:
-        """Write to logs/.ops-outbox/ is permitted."""
+    def test_write_to_other_logs_subtree_exits_2(self) -> None:
+        """Only the agent findings dir is permitted -- any other logs/ subtree is blocked."""
         payload = {
             "tool_name": "Write",
             "tool_input": {
-                "file_path": "logs/.ops-outbox/telemetry_agent_invocations/abc.jsonl",
+                "file_path": "logs/.staging/telemetry_agent_invocations/abc.jsonl",
                 "content": "{}",
             },
         }
         result = _run(payload)
-        assert result == 0
+        assert result == 2
+
+    def test_block_message_lists_exactly_one_permitted_path(self, capsys) -> None:
+        """The agent findings dir is the SOLE permitted prefix -- the legacy staging prefix is gone.
+
+        Fails against the pre-retirement hook, which permitted a second (staging) prefix and
+        therefore listed two paths in its block message.
+        """
+        payload = {
+            "tool_name": "Write",
+            "tool_input": {"file_path": "logs/.staging/abc.jsonl", "content": "{}"},
+        }
+        assert _run(payload) == 2
+        permitted_lines = [line for line in capsys.readouterr().err.splitlines() if line.strip().startswith("- ")]
+        assert permitted_lines == ["  - logs/agents/rec-curator/"]
 
     def test_write_to_src_exits_2(self) -> None:
         """Write to src/ is blocked when agent env var is set."""
         payload = {
             "tool_name": "Write",
-            "tool_input": {"file_path": "src/data/pipeline.py", "content": "x"},
+            "tool_input": {"file_path": "src/common/config.py", "content": "x"},
         }
         result = _run(payload)
         assert result == 2
@@ -85,7 +99,7 @@ class TestScheduledAgentLogOnlyHook:
 
     def test_read_tool_always_exits_0(self) -> None:
         """Non-mutating tools exit 0 regardless of path."""
-        payload = {"tool_name": "Read", "tool_input": {"file_path": "src/data/pipeline.py"}}
+        payload = {"tool_name": "Read", "tool_input": {"file_path": "scripts/validate.py"}}
         result = _run(payload)
         assert result == 0
 
@@ -99,7 +113,7 @@ class TestScheduledAgentLogOnlyHook:
         """CC_HOOK_AGENT_OVERRIDE=1 bypasses the hook for test environments."""
         payload = {
             "tool_name": "Write",
-            "tool_input": {"file_path": "src/data/pipeline.py", "content": "x"},
+            "tool_input": {"file_path": "src/common/config.py", "content": "x"},
         }
         result = _run(payload, override=True)
         assert result == 0

@@ -157,7 +157,7 @@ def _grandfathered_source_to_test(source_path: Path) -> Path | None:
     return None
 
 
-# The fixed rec-2709 roster: the 24 tests/ basenames grandfathered whole-repo by Decision 130
+# The fixed rec-2709 roster: the 23 tests/ basenames grandfathered whole-repo by Decision 130
 # (config/sloc_budgets.yaml). A frozenset -- membership only, never mutated.
 _ALL_MIRROR_TARGET_HOMES: frozenset[str] = frozenset(
     {
@@ -173,10 +173,9 @@ _ALL_MIRROR_TARGET_HOMES: frozenset[str] = frozenset(
         "test_executor_plan.py",
         "test_executor_postflight.py",
         "test_executor_step_runner.py",
-        "test_iceberg_reader.py",
+        "test_ducklake_reader_client.py",
         "test_lambda_manifest.py",
         "test_ops_data_portal.py",
-        "test_ops_writer.py",
         "test_platform_roadmap_state.py",
         "test_s3_log_store.py",
         "test_scheduled_agent_handler.py",
@@ -210,7 +209,6 @@ _CONCERN_SPLIT_TEST_PACKAGES: frozenset[str] = frozenset(
     {
         "scripts/checks/registry.py",
         "scripts/checks/_common.py",
-        "scripts/ops_writer.py",
         "scripts/ops_data_portal.py",
         "scripts/s3_log_store.py",
         "scripts/verify_ci_workflow.py",
@@ -219,7 +217,7 @@ _CONCERN_SPLIT_TEST_PACKAGES: frozenset[str] = frozenset(
         "scripts/build_lambda_deploy.py",
         "scripts/lambda_manifest.py",
         "scripts/ducklake_neon_smoke_test.py",
-        "src/common/iceberg_reader.py",
+        "src/common/ducklake_reader_client.py",
         "src/lambdas/ducklake_maintenance/handler.py",
         "src/lambdas/ducklake_writer/handler.py",
         "src/data/handlers/scheduled_agent_handler.py",
@@ -256,8 +254,8 @@ def _mirror_source_to_test(source_path: Path) -> Path | None:
     identical to the flat rule, so retiring a root-script home is a no-op unless the source is
     a declared concern-split monolith. A declared concern-split monolith
     (_CONCERN_SPLIT_TEST_PACKAGES) instead resolves to its test PACKAGE DIRECTORY (no test_
-    prefix, no .py suffix) -- e.g. scripts/ops_writer.py -> tests/ops_writer/;
-    src/common/iceberg_reader.py -> tests/common/iceberg_reader/.
+    prefix, no .py suffix) -- e.g. scripts/sync/ops.py -> tests/sync/ops/;
+    src/common/ducklake_reader_client.py -> tests/common/ducklake_reader_client/.
     """
     try:
         rel = source_path.resolve().relative_to(ROOT)
@@ -291,12 +289,12 @@ def map_source_to_test(source_path: Path) -> Path | None:
        test PACKAGE DIRECTORY <mirror-subpath>/<stem>/). Examples: scripts/checks/hygiene/
        validate_prose_allowlist.py -> tests/checks/hygiene/test_validate_prose_allowlist.py;
        scripts/executor/step_runner.py -> tests/executor/test_step_runner.py;
-       src/common/config.py -> tests/common/test_config.py; scripts/ops_writer.py (concern-split)
-       -> tests/ops_writer/.
+       src/common/config.py -> tests/common/test_config.py; scripts/sync/ops.py (concern-split)
+       -> tests/sync/ops/.
 
     WHY drop-root is safe/chosen: it matches established repo precedent (tests/checks/,
     tests/test_verifiers/) and standard pytest tree-mirroring, and is collision-free for the
-    fixed 24-home roster because no scripts/<x>/ vs src/<x>/ subdirectory-name overlap exists.
+    fixed 23-home roster because no scripts/<x>/ vs src/<x>/ subdirectory-name overlap exists.
     KNOWN BOUNDARY: a future scripts/<x>/ vs src/<x>/ collision would need a preserve-root
     exception for that pair -- out of scope now, flagged for the map's maintainer.
 

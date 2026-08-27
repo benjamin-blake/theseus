@@ -67,7 +67,6 @@ class TestGatedEntryInputClosures:
         [
             "validate_platform_roadmap",
             "validate_candidate_decision_ratification",
-            "validate_product_roadmap",
             "validate_fallback_reevaluation",
         ],
     )
@@ -94,13 +93,6 @@ class TestGatedEntryInputClosures:
             "scripts/lambda_manifest.py",
             "scripts/checks/roadmap/**",
         } <= self._globs("validate_tier_floor")
-
-    def test_product_roadmap_is_gated_on_its_full_closure(self) -> None:
-        assert {
-            "docs/ROADMAP-*",
-            "scripts/roadmap/**",
-            "scripts/checks/roadmap/**",
-        } <= self._globs("validate_product_roadmap")
 
     def test_candidate_decision_ratification_is_gated_on_its_full_closure(self) -> None:
         assert {
@@ -130,15 +122,6 @@ _CLOSURE_INPUTS: dict[str, tuple[str, ...]] = {
     "validate_candidate_decision_ratification": (
         "scripts/decisions_md.py",
         "scripts/roadmap/platform_roadmap.py",
-        "scripts/platform_roadmap_models.py",
-        "scripts/platform_roadmap_state.py",
-        "scripts/platform_roadmap_gate_rules.py",
-        "scripts/checks/_common.py",
-        "scripts/checks/registry.py",
-    ),
-    "validate_product_roadmap": (
-        "scripts/roadmap/product_roadmap.py",
-        "scripts/roadmap/product_roadmap_schema.py",
         "scripts/platform_roadmap_models.py",
         "scripts/platform_roadmap_state.py",
         "scripts/platform_roadmap_gate_rules.py",

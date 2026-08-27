@@ -133,7 +133,7 @@ class TestUpdateDecision:
         reader = MagicMock()
         reader.named.return_value = [dict(self._EXISTING)]
 
-        with patch("src.common.iceberg_reader.make_reader", return_value=reader):
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
             from scripts.ops_data_portal import _fetch_decision_from_reader
 
             result = _fetch_decision_from_reader("dec-042")
@@ -148,12 +148,6 @@ class TestUpdateDecision:
 
         with pytest.raises(ValueError, match="invalid decision_id"):
             _fetch_decision_from_reader("rec-042")
-
-    def test_fetch_decision_athena_alias_retained(self) -> None:
-        """The historical _fetch_decision_from_athena symbol aliases the reader fetch (read-engine.yaml)."""
-        from scripts.ops_data_portal import _fetch_decision_from_athena, _fetch_decision_from_reader
-
-        assert _fetch_decision_from_athena is _fetch_decision_from_reader
 
 
 class TestBackfillDecisionsFromMd:

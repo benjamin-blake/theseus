@@ -233,7 +233,7 @@ def test_main_no_rec_id_reads_convergence_directly(monkeypatch: pytest.MonkeyPat
 # ---------------------------------------------------------------------------
 # Invocation-path regression guard (code-review High finding, 2026-07-12).
 #
-# The optional --rec-id path does a deferred `from src.common.iceberg_reader import make_reader`,
+# The optional --rec-id path does a deferred `from src.common.ducklake_reader_client import make_reader`,
 # which only resolves when the REPO ROOT is on sys.path. Invoking the helper as a FILE PATH
 # (`python3 scripts/ci/reconcile_target.py`) puts scripts/ci/ on sys.path[0] instead, so `src`
 # fails to import and every rec-id dispatch fails closed -- which the pure unit tests above never

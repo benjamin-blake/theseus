@@ -93,10 +93,9 @@ Internalise these before reading anything else; each will misdirect you if you d
   living in `docs/DECISIONS.md`. A `CD.N` in `state: pending` is NOT a ratified `Decision`; a
   ratified `CD.N` carries `ratified_as: dec-NNN`. Never conflate the two. CAT-B concerns `CD.N`
   and other roadmap constructs; CAT-C concerns `Decision N` premises.
-- TRAP-2 (two roadmaps). `docs/ROADMAP-PLATFORM.yaml` (tier_items, infra, governance) is IN
-  SCOPE. `docs/ROADMAP-PRODUCT.yaml` (trading phases, market features) is CONTEXT-ONLY: do not
-  mine it for candidates unless you trace a specific, grounded premise tension into it, and if you
-  do, say why in the finding.
+- TRAP-2 (roadmap scope). `docs/ROADMAP-PLATFORM.yaml` (tier_items, infra, governance) is IN
+  SCOPE. Retired roadmaps are not: do not mine them for candidates unless you trace a specific,
+  grounded premise tension into one, and if you do, say why in the finding.
 - TRAP-3 (framelock vs "decided"). A framelock (Decision 75) is a choice pinned to an UNEXAMINED
   frame -- an assumption that was never surfaced, such that alternatives outside the frame were
   never considered. It is NOT the same as "this was decided." Most decided choices are not
@@ -134,7 +133,7 @@ in this prompt; re-derive from the repo and record any non-resolving anchor in
 
 Out of scope (one line each): running or modifying any audited system; filing recommendations or
 decisions; editing the roadmap or any decision; performing the deep audits you recommend;
-`docs/ROADMAP-PRODUCT.yaml` beyond TRAP-2's narrow exception.
+retired roadmaps beyond TRAP-2's narrow exception.
 
 Vocabulary: a "candidate" is a proposed audit target. A candidate "clears the bar" when it
 satisfies the NORTH STAR test (Section 6). "Owned" means an open tier_item, open recommendation,

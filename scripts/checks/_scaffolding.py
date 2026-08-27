@@ -259,7 +259,7 @@ def ensure_fresh_dq_results(failed: list[str]) -> None:
 def run_coverage_check(changed_files: list[str] | None = None) -> None:
     """Print scope files not covered by any registered verifier (advisory only).
 
-    Wave 1 of INTENT-verification-system.md: surfaces V3 verifier coverage gaps.
+    Surfaces V3 verifier coverage gaps (Decision 48).
     Never appends to the failed list -- exit 0 unconditionally.
 
     changed_files: reuse an already-computed diff (e.g. the --pre closure's `changed`) to
