@@ -230,6 +230,34 @@ class TestCheckLockfileSync:
         assert Version("1.28.1") in Requirement(declaration).specifier
         assert Version("2.0.0") not in Requirement(declaration).specifier
 
+    def test_pytz_is_a_direct_requirement_not_a_transitive_survivor(self) -> None:
+        """pytz must be declared in requirements.txt and pinned in the lock as a DIRECT dependency.
+
+        duckdb soft-imports pytz when it converts tz-aware timestamps (the DuckLake read path
+        scripts/session/preflight.py serves from cache), but declares no hard dependency on it --
+        the same soft-import scripts/build_lambda_config.py's DUCKLAKE_DEPS already pins for the
+        Lambda layer. While pytz survived in the lock only as another package's transitive pin, the
+        repo cleanse that removed that parent silently deleted pytz too, and every `pip install -c
+        requirements.lock` CI install lost the module (red main-validate on c19328d). Asserting the
+        `-r requirements.txt` provenance -- not merely the pin's presence -- is what stops pytz from
+        regressing back to a transitive survivor.
+        """
+        from packaging.requirements import Requirement
+        from packaging.version import Version
+
+        declaration = next(
+            line for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines() if line.startswith("pytz")
+        )
+        specifier = Requirement(declaration.split("#")[0].strip()).specifier
+
+        lock_lines = (ROOT / "requirements.lock").read_text(encoding="utf-8").splitlines()
+        pin_index = next(i for i, line in enumerate(lock_lines) if line.startswith("pytz=="))
+        pinned = Version(lock_lines[pin_index].split("==")[1].strip())
+        assert pinned in specifier, f"lock pin {pinned} does not satisfy requirements.txt {specifier}"
+        assert lock_lines[pin_index + 1].strip() == "# via -r requirements.txt", (
+            f"pytz must be pinned as a direct requirement, not a transitive survivor: got {lock_lines[pin_index + 1]!r}"
+        )
+
     def test_comments_and_blanks_skipped(self, tmp_path: Path) -> None:
         """Comments and blank lines in requirements.txt are ignored."""
         req_txt = tmp_path / "requirements.txt"
