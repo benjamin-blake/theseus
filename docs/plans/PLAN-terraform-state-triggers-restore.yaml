@@ -1,0 +1,302 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "terraform-state-triggers-restore"
+intent: >-
+  Discharge Decision 178 clause 4: destroy the 14 retired terraform/personal resources still held in
+  tfstate through the human-gated CD channel, restore the parked apply-sandbox and drift triggers, and
+  reconcile the bootstrap root -- returning the governed provision path to its designed shape.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-terraform-state-triggers-restore.yaml
+phase: T2.24
+
+scope:
+  - file: .github/workflows/terraform-apply-sandbox.yml
+    action: Modify
+    purpose: >-
+      Phase 1. Restore the push (branches [main], paths terraform/personal/**) and pull_request (same
+      paths) triggers removed by 7b67e21d; delete the TRIGGERS DISABLED parking comment. Restoring
+      these is the PREREQUISITE for reconciliation, not a follow-on -- see context.
+  - file: terraform/personal/main.tf
+    action: Modify
+    purpose: >-
+      Phase 1. Add a ONE-LINE pointer comment naming Decision 178 clause 4. Load-bearing role is as
+      the path-filter carrier: both restored triggers filter on terraform/personal/**, so a
+      workflows-only PR fires neither. Deliberately a pointer, not a change record (Decision 86 spirit
+      flag; the record lives in the PR body and the Decision 178 annotation).
+  - file: tests/test_terraform_drift_acceptance.py
+    action: Modify
+    purpose: >-
+      Phases 1 and 2. Invert the two parked-shape pins into restored-shape assertions:
+      test_apply_sandbox_workflow_is_workflow_dispatch_only ->
+      test_apply_sandbox_workflow_triggers_are_restored (asserts push + pull_request + workflow_dispatch
+      and the terraform/personal/** path filter on both), and
+      test_drift_workflow_is_workflow_dispatch_only -> test_drift_workflow_cron_is_restored (asserts
+      schedule cron '17 * * * *' + workflow_dispatch). Update both docstrings.
+  - file: .github/workflows/terraform-drift.yml
+    action: Modify
+    purpose: >-
+      Phase 2. Restore schedule cron '17 * * * *'; delete the CRON DISABLED parking comment. Deferred
+      to phase 2 so no tick can land between the phase 1 merge and the pending_gated stamp.
+  - file: docs/contracts/iam-simulate-fixture.yaml
+    action: Modify
+    purpose: >-
+      Phase 2. Remove the p2-glue-delete-database row (verb glue:DeleteDatabase, expected_decision
+      allowed). The cleanse removed that grant from both the identity policy and the boundary but left
+      the row, so after the phase 3 apply the mandated post-apply gate would report a mismatch.
+  - file: docs/contracts/deploy-paths.yaml
+    action: Modify
+    purpose: >-
+      Phase 2, and the structural half of the fix. Append a PRE-APPLY step to
+      admin_out_of_band.procedure.steps, symmetric with the existing POST-APPLY simulate step at
+      steps[5]. Phrased generically and token-free. This exists because the hazard is ALREADY LIVE
+      outside this plan -- see context.
+  - file: tests/test_deploy_paths_admin_procedure.py
+    action: Create
+    purpose: >-
+      Enforcement counterpart of the deploy-paths edit (AGENTS.md collocation rule). Asserts
+      admin_out_of_band.procedure.steps carries a PRE-APPLY ordering step naming the grant-surface
+      precondition, alongside the existing POST-APPLY step. Fails if either is dropped.
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      Phase 2. Append a dated annotation to Decision 178 recording clause 4 discharged, using the
+      PINNED amendment_forms spelling "> **Update (DATE):**" as its OWN source-cited line. Never
+      spliced into clause 4 (Decision 177 append-only dialect, retained as policy by Decision 178
+      clause 3; its mechanical guard retired, so nothing catches a splice). NOT a new numbered entry
+      (Decision 167 clause 4 routing).
+
+bundled_recommendations: [rec-3294, rec-3295, rec-3296, rec-3297, rec-3299]
+
+infrastructure_dependencies:
+  - "terraform/personal destroy of 14 addresses -- guard exits 2 (destroy), routes to the tf-gated-apply GitHub Environment; a human reviewer approves before the apply runs."
+  - "terraform/bootstrap apply (phase 3) -- admin tier, agent_platform_admin, ADMIN container; never auto-applied (terraform/bootstrap/CLAUDE.md). Agent presents the plan; human approves; agent applies (rec-3298 adjudication)."
+  - "HARD ORDERING: phase 3 removes athena:*/glue:* from the apply role's boundary and identity policy -- the very grants phase 1's destroy consumes. Phase 3 must not run until phase 1 has fully drained."
+  - "Regenerated gitignored terraform/bootstrap/terraform.bootstrap.tfvars (account_id, owner_email). Never committed, never pasted into chat or a PR."
+
+acceptance_criteria:
+  - "terraform-apply-sandbox.yml declares push (branches [main], paths terraform/personal/**), pull_request (paths terraform/personal/**) and workflow_dispatch; terraform-drift.yml declares schedule cron '17 * * * *' and workflow_dispatch."
+  - "All 14 retired addresses are absent from terraform/personal state, destroyed via one human-approved tf-gated-apply run (never terraform state rm, never an unreviewed apply)."
+  - "The sandbox convergence record is green with unapplied_backlog 0, no pending_gated marker and no infra_error marker, and rec-3294/3295/3296/3297/3299 are closed."
+  - "docs/contracts/deploy-paths.yaml's admin_out_of_band.procedure carries a PRE-APPLY grant-surface ordering step, guarded by tests/test_deploy_paths_admin_procedure.py."
+  - "After the phase 3 bootstrap apply, scripts.ci.iam_simulate exits 0 with zero mismatches, terraform plan -detailed-exitcode on terraform/personal exits 0, and one CI-identity plan cycle (dispatched terraform-drift.yml) completes clean."
+  - ".github/workflows/terraform-apply-sandbox.yml stays within its registered 529 effective-line budget with no raise marker added."
+
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: "Assert both workflows carry their restored triggers, via the inverted pins."
+    command: "bin/venv-python -m pytest tests/test_terraform_drift_acceptance.py -q"
+    expected: "All tests pass, including test_apply_sandbox_workflow_triggers_are_restored and test_drift_workflow_cron_is_restored."
+    fix_if: "A failure means a trigger key or path filter is missing/misspelled. Note PyYAML resolves the bare `on` key to boolean True (YAML 1.1) -- the existing _triggers() helper already handles both spellings; reuse it, do not re-derive."
+    graduation: graduate
+    graduation_check_id: tf-workflow-triggers-restored
+  - step: 2
+    phase: pre-deploy
+    action: "Prove the inverted pins are red against the parked shape (they must fail without the workflow change, not merely pass with it)."
+    command: "git stash push -- .github/workflows/terraform-apply-sandbox.yml .github/workflows/terraform-drift.yml && bin/venv-python -m pytest tests/test_terraform_drift_acceptance.py -q -k 'restored or cron_is_restored'; echo \"EXIT=$?\"; git stash pop"
+    expected: "EXIT is non-zero (both inverted tests fail against the parked workflows), then the stash pop restores the change."
+    fix_if: "EXIT=0 means the assertions do not actually discriminate the parked shape from the restored one -- tighten them to assert the trigger keys AND the path filters, not just key presence."
+    graduation: waive
+    graduation_waiver_reason: "Depends on this session's transient working-tree state (a stash round-trip of uncommitted edits); as a standing registry check it would have nothing to stash and would silently pass. The behaviour it proves is already graduated by step 1."
+  - step: 3
+    phase: pre-deploy
+    action: "Assert the deploy-paths PRE-APPLY ordering step exists alongside the POST-APPLY simulate step."
+    command: "bin/venv-python -m pytest tests/test_deploy_paths_admin_procedure.py -q"
+    expected: "Pass: admin_out_of_band.procedure.steps contains both a PRE-APPLY grant-surface ordering step and the existing POST-APPLY simulate step."
+    fix_if: "A failure means the contract edit was dropped or reworded past the assertion. Fix the contract, not the test -- the step is the enforcement surface a plan document cannot provide."
+    graduation: graduate
+    graduation_check_id: deploy-paths-preapply-ordering-step-present
+  - step: 4
+    phase: pre-deploy
+    action: "Assert terraform-apply-sandbox.yml stays inside its registered structural budget after the trigger restoration."
+    command: "bin/venv-python -c \"from scripts.checks.structural._classify import effective_lines; from pathlib import Path; n=effective_lines(Path('.github/workflows/terraform-apply-sandbox.yml').read_text(encoding='utf-8')); print(n); assert n <= 529, f'{n} > 529 budget'\""
+    expected: "Prints a value <= 529 (measured 519 before the change; the restored trigger block is ~7 effective lines -> ~526)."
+    fix_if: "Over 529: shrink the restored on: block to its minimal spelling. Do NOT raise the budget -- Decision 128 requires decomposition by default and Decision 165 requires an authorizing marker, which Decision 178 does not supply for structural-size entries."
+    graduation: graduate
+    graduation_check_id: apply-sandbox-effective-lines-within-budget
+  - step: 5
+    phase: pre-deploy
+    action: "Assert the stale fixture row is gone and the fixture still passes its standing shape check."
+    command: "bin/venv-python -c \"import yaml; d=yaml.safe_load(open('docs/contracts/iam-simulate-fixture.yaml')); ids=[r['id'] for r in d['triples']]; assert 'p2-glue-delete-database' not in ids, 'stale row still present'; print(len(ids))\" && bin/venv-python -c \"from scripts.checks.contracts.validate_iam_simulate_fixture_shape import validate_iam_simulate_fixture_shape as v; f=[]; v(f); assert not f, f\""
+    expected: "Row absent; shape check passes (60 triples, one fewer than the 61 measured before the change)."
+    fix_if: "If the triples key differs from the assumed name, read the fixture and adjust the accessor -- do not weaken the assertion to a substring grep."
+    graduation: graduate
+    graduation_check_id: iam-simulate-fixture-glue-row-absent
+  - step: 6
+    phase: pre-deploy
+    action: "Assert the Decision 178 annotation landed as its own dated line and did NOT splice clause 4."
+    command: "bin/venv-python -c \"import re,pathlib; t=pathlib.Path('docs/DECISIONS.md').read_text(encoding='utf-8'); b=t.split('## Decision 178:')[1].split('\\n## Decision ')[0]; assert re.search(r'^> \\\\*\\\\*Update \\\\(', b, re.M), 'no dated Update annotation on Decision 178'; assert 'until an operator reconciles state' in b, 'clause 4 original wording was spliced/edited'; print('ok')\""
+    expected: "Prints ok -- the annotation exists as its own line AND clause 4's original wording is byte-intact."
+    fix_if: "A failure on the second assertion means clause 4 was edited in place. Revert that edit and re-add the content as a separate annotation line -- Decision 177's post-lock dialect retired the mid-line splice, and Decision 178 clause 3 retired the mechanical guard, so nothing else catches this."
+    graduation: waive
+    graduation_waiver_reason: "Asserts the body of one specific Decision entry at one point in time; as a standing registry check it would pin a snapshot of a single entry rather than guard a reusable behaviour. The general append-only dialect is Decision 177's concern, not this plan's."
+  - step: 7
+    phase: pre-deploy
+    action: "Confirm the terraform/personal edit is comment-only and well-formed, without a provider-fetching init (Decision 119)."
+    command: "terraform fmt -check -recursive terraform/personal && git diff origin/main -- terraform/personal/main.tf | grep -E '^[+-]' | grep -vE '^[+-]{3}' | grep -qvE '^[+-]\\s*#' ; echo \"NON_COMMENT_LINES_EXIT=$?\""
+    expected: "fmt -check exits 0, and NON_COMMENT_LINES_EXIT=1 (grep found no non-comment changed line), proving the edit adds no HCL."
+    fix_if: "fmt failure: run terraform fmt. NON_COMMENT_LINES_EXIT=0 means real HCL changed -- that would alter the saved plan and is out of scope; revert it. Never author a local terraform init/validate/plan for this root (Decision 119) -- the required terraform-validate CI job is the authoritative verifier."
+    graduation: not-applicable
+  - step: 8
+    phase: pre-deploy
+    action: "Full-tier validation before handoff (Decision 163)."
+    command: "bin/venv-python -m scripts.validate"
+    expected: "Exit 0, run to completion."
+    fix_if: "Any failure blocks commit per handoff_policy. A timeout is dispositioned `blocked` -- resume later and rerun full from the start; do not partially accept."
+    graduation: not-applicable
+  - step: 9
+    phase: pre-deploy
+    action: "PHASE 1 PREFLIGHT (ADMIN container). Prove the apply identity is authorized for every destroy verb the 14 addresses need, BEFORE the merge that dispatches the destroy -- so an AccessDenied cannot half-run the apply and latch the record red."
+    command: "bin/venv-python -m scripts.ci.iam_simulate --fixture \"$SCRATCH/destroy-preflight-fixture.yaml\" --profile agent_platform_admin"
+    expected: "Exit 0, zero mismatches, covering the delete verb the provider issues for every one of the 14 addresses -- the IAM role and its role policy, the Lambda function and its permission, the CloudWatch log group, the two broker credential envelopes, the Glue database and the Athena workgroup."
+    fix_if: "The fixture is a THROWAWAY written to the scratchpad, never committed -- it must declare principal.arn_template for agent-platform-github-ci-apply, since iam_simulate resolves the simulated identity from the fixture itself (scripts/ci/iam_simulate.py:138). A mismatch means the destroy would AccessDeny after human approval: stop, widen the grant in bootstrap HCL, and apply that through the phase 3 gate FIRST. Do not dispatch phase 1 on a mismatch."
+    graduation: not-applicable
+  - step: 10
+    phase: post-deploy
+    action: "PHASE 1. On the PR, read the speculative-plan comment and confirm the plan is exactly the expected delta."
+    command: "gh pr view --json comments --jq '.comments[].body' | grep -E 'to destroy|to add|to change'"
+    expected: "14 resources to destroy, 0 to add. Any create or replace is unexpected and must be explained before merge."
+    fix_if: "If a create/replace appears, or the count differs from 14, STOP and diagnose -- the saved plan.bin is what merge applies verbatim (Decision 77 no-TOCTOU), so an unexplained plan must never be merged."
+  - step: 11
+    phase: post-deploy
+    action: "PHASE 1. After merge, confirm the guard routed and the gated-apply job is awaiting approval, then obtain the human approval and confirm the apply succeeded."
+    command: "gh run list --workflow=terraform-apply-sandbox.yml --limit 1 --json databaseId,conclusion,status && gh run view --json jobs --jq '.jobs[] | {name, status, conclusion}'"
+    expected: "apply-sandbox concludes success with routed=true; gated-apply enters status waiting; after the human approves in the tf-gated-apply Environment, gated-apply concludes success."
+    fix_if: "If gated-apply shows skipped rather than waiting, the push trigger did not fire (the merge touched no terraform/personal/** path) -- that is the rec-3135 silent-success shape. If the apply fails and latches the record red, recovery is reconcile.yml (Decision 158 route (ii), gated-apply-reconcile behind the same Environment): a red record makes Reconcile reachable where the current green one does not. Never weaken the gate to get past this."
+  - step: 12
+    phase: post-deploy
+    action: "PHASE 2/3 GATE. Read the convergence verdict through the sensor's own tested assessment, without triggering escalation."
+    command: "bin/venv-python -c \"import boto3, json; from scripts.convergence_health.record import read_convergence_record; from scripts.convergence_health.assess import assess_health; s3=boto3.Session(profile_name='agent_platform').client('s3'); v=assess_health(read_convergence_record(s3)); print(json.dumps({'status':v.status,'backlog':v.unapplied_backlog,'pending_gated':v.pending_gated,'infra_error':v.infra_error,'severity':v.severity}))\""
+    expected: "status green, backlog 0, pending_gated null, infra_error null, severity none."
+    fix_if: "Call assess_health directly as shown -- do NOT run `python -m scripts.convergence_health`, which has no read-only mode and files a rec on every invocation (this is how rec-3299 came to exist). A non-clean verdict BLOCKS phases 2 and 3: heal the channel, never weaken the gate. The gate is deliberately stronger than minimal -- an unrelated red also blocks."
+  - step: 13
+    phase: post-deploy
+    action: "PHASE 3 GATE (ADMIN container, immediately before the bootstrap apply to keep the TOCTOU window at minutes). Confirm all 14 addresses are gone from state."
+    command: "terraform -chdir=terraform/personal state list | grep -E 'aws_glue_catalog_database\\.ops|aws_athena_workgroup\\.production|null_resource\\.(create_ops_tables|create_ops_views|drop_ops_recommendations_view|drop_ops_decisions_view|drop_ops_priority_queue_view)|aws_cloudwatch_log_group\\.ops_compaction|aws_iam_role\\.ops_compaction|aws_iam_role_policy\\.ops_compaction|aws_lambda_function\\.ops_compaction|aws_lambda_permission\\.s3_invoke_ops_compaction|aws_secretsmanager_secret\\.alpaca_(paper|live)'; echo \"MATCH_EXIT=$?\""
+    expected: "MATCH_EXIT=1 (grep matched nothing -- every address is gone). This runs in ADMIN because PlatformDev is denied s3:GetObject on tfstate/personal/* by the DenyStateRead statement."
+    fix_if: "Any match means phase 1 did not fully drain. STOP -- do not apply phase 3. Applying the grant narrowing while these resources remain in state is Decision 156 point 2's failure shape: every subsequent CD plan AccessDenies BEFORE the guard runs, including the reconcile path, locking the CD channel out of its own remedy."
+  - step: 14
+    phase: post-deploy
+    action: "PHASE 3. Plan the bootstrap root, assert the apply role is not destroyed or replaced, present the plan to the human, and apply only on explicit approval."
+    command: "terraform -chdir=terraform/bootstrap plan -var-file=terraform.bootstrap.tfvars -out=bootstrap.plan && terraform -chdir=terraform/bootstrap show -json bootstrap.plan | bin/venv-python -c \"import json,sys; p=json.load(sys.stdin); bad=[c['address'] for c in p.get('resource_changes',[]) if c['address'] in ('aws_iam_role.github_ci_apply','aws_iam_role_policy.github_ci_apply') and ('delete' in c['change']['actions'])]; assert not bad, f'STOP: destroy/replace on {bad}'; print('apply-role safe')\""
+    expected: "Prints 'apply-role safe'; the plan shows IAM policy UPDATES only and zero resource removals. Present the plan output; the human approves or requests adjustments; then apply."
+    fix_if: "A destroy/replace on the apply role is the module's own STOP condition (terraform/bootstrap/CLAUDE.md) -- it would break every in-flight CI job. Do not apply. Regenerate the gitignored tfvars (account_id, owner_email) if absent; never commit it and never paste its values into chat or a PR. Agent-executed apply after human plan approval is the adjudicated semantics -- see rec-3298."
+  - step: 15
+    phase: post-deploy
+    action: "PHASE 3 EXIT (a). Run the contract-mandated post-apply grant-surface gate."
+    command: "bin/venv-python -m scripts.ci.iam_simulate --profile agent_platform_admin --fixture docs/contracts/iam-simulate-fixture.yaml"
+    expected: "Exit 0, zero mismatches."
+    fix_if: "A mismatch on a newly granted verb is a wrong boundary ceiling or resource scope -- fix in HCL and re-apply through the same human gate. A mismatch on a by_design denial is a GRANT LEAK, i.e. a security regression, not a fixture error."
+  - step: 16
+    phase: post-deploy
+    action: "PHASE 3 EXIT (b). Verify global convergence locally (Decision 98 point 4(c))."
+    command: "terraform -chdir=terraform/personal plan -detailed-exitcode -var-file=terraform.personal.tfvars; echo \"EXIT=$?\""
+    expected: "EXIT=0 (no changes)."
+    fix_if: "EXIT=2 means a residual delta; EXIT=1 is an error. Neither is acceptable as a completion state -- diagnose before declaring phase 3 done."
+  - step: 17
+    phase: post-deploy
+    action: "PHASE 3 EXIT (c). Prove the CI identity's own refresh surface still works -- the identity where the Decision 156 lockout actually lives, which step 16's admin-profile plan cannot exercise."
+    command: "gh workflow run terraform-drift.yml && sleep 60 && gh run list --workflow=terraform-drift.yml --limit 1 --json conclusion,url"
+    expected: "The dispatched drift cycle concludes success with no drift (plan exit 0) and files no tf_drift rec -- proving the planner role can still refresh-read every managed resource under the narrowed grant surface."
+    fix_if: "An AccessDenied here is the lockout arriving: the narrowing removed a refresh-read the CI roles still need. Re-widen the specific grant in bootstrap HCL and re-apply through the phase 3 human gate. Do not leave the channel in this state."
+  - step: 18
+    phase: post-deploy
+    action: "Confirm the bundled staleness recs closed once the backlog drained."
+    command: "bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c \"import json; rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl')]; cur={}; [cur.__setitem__(r['id'], r) for r in rows]; open_ids=[i for i in ('rec-3294','rec-3295','rec-3296','rec-3297','rec-3299') if cur.get(i,{}).get('status')=='open']; print('still open:', open_ids); assert not open_ids\""
+    expected: "still open: [] -- all five auto-closed on the sensor tick after the backlog drained."
+    fix_if: "If any remain open after a full sensor cycle, close them via the Resolves: trailer or an explicit update_rec call. Never edit logs/.recommendations-log.jsonl directly -- it is a read cache, never a write source."
+
+test_obligations:
+  - source: .github/workflows/terraform-apply-sandbox.yml
+    behavior: "The push and pull_request triggers on terraform/personal/** stay declared, so a merge to main dispatches the CD apply path."
+    verification_step: 1
+    test_selector: "tests/test_terraform_drift_acceptance.py::test_apply_sandbox_workflow_triggers_are_restored"
+    red_green_expectation: "Red before (the parked workflow declares workflow_dispatch only), green after. Step 2 proves the red half explicitly."
+  - source: .github/workflows/terraform-drift.yml
+    behavior: "The hourly schedule cron stays declared, so drift detection runs unattended."
+    verification_step: 1
+    test_selector: "tests/test_terraform_drift_acceptance.py::test_drift_workflow_cron_is_restored"
+    red_green_expectation: "Red before (the parked workflow declares workflow_dispatch only), green after. Step 2 proves the red half explicitly."
+  - source: docs/contracts/deploy-paths.yaml
+    behavior: "The admin procedure keeps a PRE-APPLY grant-surface ordering step, so an operator applying an unrelated bootstrap change cannot silently strip grants a pending destroy still needs."
+    verification_step: 3
+    test_selector: "tests/test_deploy_paths_admin_procedure.py::test_admin_procedure_has_preapply_grant_surface_step"
+    red_green_expectation: "Red before (the procedure has 6 steps, none PRE-APPLY), green after."
+  - source: terraform/personal/main.tf
+    behavior: "None -- the edit adds one comment line and no HCL."
+    verification_step: 7
+    command: "terraform fmt -check -recursive terraform/personal"
+    waiver_reason: "Comment-only edit that changes no behaviour; its load-bearing role is as the path-filter carrier, which is proven end-to-end by VP steps 10-11 (the CD run actually firing on the merge), not by a unit test. Step 7 additionally asserts no non-comment line changed."
+  - source: docs/contracts/iam-simulate-fixture.yaml
+    behavior: "The fixture no longer asserts a grant the apply role will not hold after phase 3."
+    verification_step: 5
+    command: "bin/venv-python -c \"import yaml; d=yaml.safe_load(open('docs/contracts/iam-simulate-fixture.yaml')); ids=[r['id'] for r in d['triples']]; assert 'p2-glue-delete-database' not in ids, 'stale row still present'; print(len(ids))\""
+    waiver_reason: "The behavioural proof is the live simulate against real IAM at VP step 15 (zero mismatches under the narrowed grant surface), which a unit test structurally cannot reproduce -- static text cannot see condition-key evaluation or the identity/boundary intersection. A unit test asserting one row's absence would pin a snapshot, not a behaviour; the token-free structural tripwire is deliberately deferred to a follow-on rec."
+  - source: docs/DECISIONS.md
+    behavior: "None -- an append-only annotation recording that Decision 178 clause 4's follow-up is discharged."
+    verification_step: 6
+    command: "bin/venv-python -c \"import re,pathlib; t=pathlib.Path('docs/DECISIONS.md').read_text(encoding='utf-8'); b=t.split('## Decision 178:')[1].split('\\n## Decision ')[0]; assert re.search(r'^> \\\\*\\\\*Update \\\\(', b, re.M), 'no dated Update annotation on Decision 178'; assert 'until an operator reconciles state' in b, 'clause 4 original wording was spliced/edited'; print('ok')\""
+    waiver_reason: "Documentation-only append with no executable behaviour. Step 6 asserts both halves that matter -- the annotation exists as its own dated line, and clause 4's original wording is byte-intact (no splice)."
+
+constraints:
+  - "No rescue agents or workaround loops (Decision 55). A failed apply latches red and routes to reconcile.yml; nothing auto-remediates."
+  - "Never terraform state rm any of the 14 addresses. Decision 178 clause 4 permits it, but the chosen route is the gated destroy -- state rm would orphan live, still-billing, unmanaged resources, and PlatformDev is denied tfstate read anyway."
+  - "Never author a local terraform init/validate/plan for terraform/personal (Decision 119). The required terraform-validate CI job and the speculative-plan job are the authoritative verifiers. terraform fmt -check is provider-free and permitted."
+  - "Phase 3 must never run while any of the 14 addresses remain in state (VP step 13). Applying the narrowing early is Decision 156 point 2's lockout."
+  - "Never add terraform/bootstrap to any auto-apply workflow or to the guard path (terraform/bootstrap/CLAUDE.md)."
+  - "Never commit terraform.bootstrap.tfvars or terraform.personal.tfvars, and never paste account_id, owner_email or either ExternalId into chat, a PR, or any committed file (Decision 101 / public repo)."
+  - "Do not raise the 529 structural budget for terraform-apply-sandbox.yml (Decision 128 decompose-by-default; Decision 165 marker authorization)."
+  - "Do not run `python -m scripts.convergence_health` as a read: it has no read-only mode and files a rec every invocation. Call assess_health directly (VP step 12)."
+  - "Scope discipline: rec-3135's dispatch-silence defect and the token-free fixture tripwire are OUT of scope; file follow-on recs rather than widening this plan."
+
+context:
+  - "Decision-scout verdict + CITE list: FLAGS_FOUND (2 rounds). CITE: 178 (clause 4 is the authority), 77, 92, 94, 98, 119, 120, 126, 127, 129, 132, 143, 144, 154, 156, 157, 158, 163, 167, 172, 177, 55, 35."
+  - "gates: decision-scout=FLAGS_FOUND after 2 round(s); plan-critique=<verdict> after <N> round(s)"
+  - "ORDER INVERSION (the central finding). The originating note said reconcile then restore triggers. That order is not executable: terraform-apply-sandbox.yml's gated-apply job is gated `github.event_name == 'push'` (:748-754), so a workflow_dispatch run plans, guard-routes on the destroys, skips its apply and skips gated-apply -- concluding green having applied nothing (open rec-3135). reconcile.yml is a deliberate no-op on a green record. Restoring the triggers is the PREREQUISITE."
+  - "Live state at planning time: convergence record green, commit_sha 1dfa0ae4, 2026-08-24T23:27:59Z, no pending_gated, no infra_error; unapplied_backlog 1 (the #969 merge)."
+  - "The 14 addresses and their provenance are in commit 7b67e21d's terraform/personal diff; VP step 13 enumerates them. Verified: 0 destroy-time provisioners, and force_destroy=true on the workgroup (RecursiveDeleteOption)."
+  - "Irreversibility: the Athena workgroup (query history), the Glue database (catalog metadata only, not S3 objects) and the log group are permanent. The two broker secrets land in AWS's 7-30 day recovery window (Decision 157, ForceDeleteWithoutRecovery=false). Owner confirmed all removals 2026-08-28."
+  - "WHY deploy-paths.yaml is in scope: the narrowing is ALREADY MERGED in bootstrap HCL, so an operator running the routine Ongoing apply runbook for an unrelated bootstrap change today would apply it early. A plan document cannot reach that actor; the procedure step can. Fable advice-consult 2026-08-28, adopted."
+  - "Phase 3 is agent-executed after the human approves the presented plan. Decision 126's admin-tier clause reads as forbidding this while its next sentence carves it out and clause 2 names 'Decision 77 bootstrap -- none of that is revoked'; deploy-paths.yaml's procedure steps[0] already encodes the agent-applies semantics. Owner adjudicated 2026-08-28; wording fix tracked by rec-3298."
+  - "Fable advice-consult reconciliation: ADOPT the deploy-paths step, the phase 1 destroy-verb preflight, the CI-identity exit criterion (step 17) and fixture-row removal; ADAPT the convergence gate (call assess_health, not the escalating CLI); REJECT-for-now a mechanized preflight script and the token-free tripwire (follow-on recs)."
+  - "Calibration: a premature phase 3 is a costly detour, not a bricking -- admin-tier grants do not transit the narrowed boundary, so recovery is an admin re-widen plus dispatch-ack."
+  - "rec-3299 was filed accidentally during planning by invoking `python -m scripts.convergence_health` expecting --help. It is a legitimate duplicate of the rec-3294..3297 signal and drains with them."
+  - "Branch was 0 commits behind origin/main at planning time; no scope-file overlap."
+
+pre_implementation_checklist:
+  - "Branch confirmed not on main"
+  - "docs/PROJECT_CONTEXT.md read"
+  - "Only the plan-cited decision sections read (not full DECISIONS.md)"
+  - "terraform/CLAUDE.md and terraform/bootstrap/CLAUDE.md read before touching either root"
+  - "docs/contracts/deploy-paths.yaml admin_out_of_band.procedure read in full"
+  - "All files in scope located and readable"
+  - "Acceptance criteria understood and verifiable"
+  - "ADMIN container availability confirmed with the human before phases 1-preflight and 3"
+
+execution_steps:
+  - "PHASE 1 PR. Restore terraform-apply-sandbox.yml's push (branches [main], paths terraform/personal/**) and pull_request (paths terraform/personal/**) triggers; delete the TRIGGERS DISABLED comment. Invert test_apply_sandbox_workflow_is_workflow_dispatch_only into test_apply_sandbox_workflow_triggers_are_restored. Add the one-line Decision 178 pointer comment to terraform/personal/main.tf."
+  - "Run VP steps 1, 2, 4, 7, 8. Commit, push, open the PR, subscribe to PR activity, end the turn."
+  - "On the PR: run VP step 10 against the speculative-plan comment. Before merging, run VP step 9 (ADMIN destroy-verb preflight) and require zero mismatches."
+  - "Merge. Run VP step 11: confirm gated-apply reaches waiting, obtain the human approval in the tf-gated-apply Environment, confirm the apply succeeded. Hold the PR subscription through apply (implement skill, Hold subscription through apply)."
+  - "Run VP step 12. Do not start phase 2 until the verdict is clean."
+  - "PHASE 2 PR. Restore terraform-drift.yml's schedule cron '17 * * * *' and delete the CRON DISABLED comment; invert test_drift_workflow_is_workflow_dispatch_only into test_drift_workflow_cron_is_restored. Remove the p2-glue-delete-database row from docs/contracts/iam-simulate-fixture.yaml. Append the PRE-APPLY grant-surface ordering step to docs/contracts/deploy-paths.yaml's admin_out_of_band.procedure.steps, phrased token-free. Create tests/test_deploy_paths_admin_procedure.py. Append the dated Decision 178 annotation using the pinned '> **Update (DATE):**' form as its own line."
+  - "Run VP steps 1, 3, 5, 6, 8. Commit, push, open the PR, merge on green."
+  - "PHASE 3 (ADMIN container). Run VP step 12, then VP step 13 -- both must be clean before anything else. Regenerate the gitignored terraform.bootstrap.tfvars. Run VP step 14: plan, assert the apply role is safe, PRESENT the plan to the human, apply only on explicit approval."
+  - "Run VP steps 15, 16, 17 as the phase 3 exit criteria -- all three must pass."
+  - "Run VP step 18. File follow-on recs: (a) mechanized bootstrap-vs-state preflight script, (b) token-free fixture tripwire replacing the removed row, (c) a read-only verdict path for scripts.convergence_health, (d) note the green-record/guard-BLOCK topology gap on rec-3135."
+  - "Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)."
+  - "Report: what was implemented, verification results, and the state of the convergence record at handoff."
+
+work_areas: []
+
+rollback: >-
+  Phases 1-2 (repo) revert by reverting their PRs; the parked-trigger shape is restored by re-adding
+  the workflow_dispatch-only on: blocks. The phase 1 DESTROY is not revertible: the Athena workgroup,
+  Glue database and CloudWatch log group are permanently gone (the two broker secrets are recoverable
+  within AWS's 7-30 day window). Phase 3 IS reversible -- re-widen the grant in bootstrap HCL and
+  re-apply through the same human gate; admin-tier grants do not transit the narrowed boundary, so the
+  admin identity retains the authority to undo it. If phase 1 latches the record red, do not roll back:
+  recover forward via reconcile.yml (Decision 158 route (ii)).
