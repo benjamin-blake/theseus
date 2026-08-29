@@ -74,8 +74,10 @@ scope:
       surfaced: the step-4 STOP condition lists only aws_iam_role.github_ci_apply and
       aws_iam_role_policy.github_ci_apply, which predates the Decision 156 policy split and misses
       the reads policy plus its attachment (the pair Decision 156 point 2 names as the lockout);
-      and both runbook commands spell -var-file=terraform/bootstrap/terraform.bootstrap.tfvars,
-      which is wrong under -chdir (paths resolve relative to the chdir directory).
+      and -var-file=terraform/bootstrap/terraform.bootstrap.tfvars appears FOUR times (lines 81 and
+      91 in One-time provisioning steps 4/5, and 121 and 125 in the Ongoing apply runbook) -- all
+      four are wrong under -chdir, where paths resolve relative to the chdir directory. Mark the
+      ordering caveat with the literal token PRE-APPLY so VP step 3 can assert it landed.
   - file: tests/test_deploy_paths_admin_procedure.py
     action: Create
     purpose: >-
@@ -129,8 +131,8 @@ verification_plan:
   - step: 3
     phase: pre-deploy
     action: "Assert the deploy-paths PRE-APPLY ordering step exists alongside the POST-APPLY simulate step."
-    command: "bin/venv-python -m pytest 'tests/test_deploy_paths_admin_procedure.py::test_admin_procedure_has_preapply_grant_surface_step' -q"
-    expected: "Pass: admin_out_of_band.procedure.steps contains both a PRE-APPLY grant-surface ordering step and the existing POST-APPLY simulate step, in that order."
+    command: "bin/venv-python -m pytest 'tests/test_deploy_paths_admin_procedure.py::test_admin_procedure_has_preapply_grant_surface_step' -q && bin/venv-python -c \"import pathlib; t=pathlib.Path('terraform/bootstrap/CLAUDE.md').read_text(encoding='utf-8'); assert 'PRE-APPLY' in t, 'ambient runbook has no PRE-APPLY ordering caveat -- the quarantined contract alone does not reach the operator'; assert 'github_ci_apply_reads' in t, 'STOP condition still omits the reads policy and its attachment (the Decision 156 lockout pair)'; assert '-var-file=terraform/bootstrap/' not in t, 'runbook still spells -var-file repo-relative, which is wrong under -chdir'; print('bootstrap runbook: caveat present, STOP list current, var-file paths correct')\""
+    expected: "Both halves pass: admin_out_of_band.procedure.steps contains a PRE-APPLY grant-surface ordering step before the existing POST-APPLY simulate step, AND terraform/bootstrap/CLAUDE.md carries the ambient caveat, a STOP list covering the reads policy, and no repo-relative -var-file path (all four occurrences fixed)."
     fix_if: "Pin the node id, not just the file: running the whole file passes on any same-session-authored file containing one trivially-true test, which is exactly the failure mode a self-authored guard invites. Note an ABSENT file exits 4 (usage error), not 1 -- so 'the test file was never created' and 'the assertion failed' are different exit codes; both are failures here. A failure means the contract edit was dropped or reworded past the assertion. Fix the contract, not the test -- this step is the enforcement surface a plan document cannot provide."
     graduation: graduate
     graduation_check_id: deploy-paths-preapply-ordering-step-present
@@ -184,7 +186,7 @@ verification_plan:
     action: "PHASE 1 PREFLIGHT (ADMIN container), after step 9 and BEFORE the merge that dispatches the destroy. Prove the apply identity is authorized for every destroy verb the 14 addresses need, so an AccessDenied cannot half-run the apply and latch the record red."
     command: "mkdir -p /tmp/tf-reconcile && bin/venv-python -c \"import yaml; d=yaml.safe_load(open('/tmp/tf-reconcile/preflight-fixture.yaml')); t=d.get('triples') or []; assert len(t)>=14, 'fixture must cover all 14 addresses, not a token subset'; svc={x['verb'].split(':')[0] for x in t}; need={'iam','lambda','logs','glue','athena','secretsmanager'}; assert need <= svc, f'fixture misses services: {sorted(need-svc)}'; assert (d.get('principal') or {}).get('arn_template'), 'fixture must declare principal.arn_template (iam_simulate resolves the simulated identity from it)'; print(len(t), 'triples covering', sorted(svc))\" && bin/venv-python -m scripts.ci.iam_simulate --fixture /tmp/tf-reconcile/preflight-fixture.yaml --profile agent_platform_admin"
     expected: "Exit 0, zero mismatches, covering the delete verb the provider issues for every one of the 14 addresses -- the IAM role and its role policy, the Lambda function and its permission, the CloudWatch log group, the two broker credential envelopes, the Glue database and the Athena workgroup."
-    fix_if: "The coverage assert is REQUIRED before the simulate: iam_simulate only refuses an empty triples list (scripts/ci/iam_simulate.py:77) and otherwise exits 0 on 'zero mismatches' for whatever it was given, so a one-triple fixture would report a clean preflight with 13 destroy verbs unproven. The fixture is a THROWAWAY written to /tmp, never committed. It must declare principal.arn_template for agent-platform-github-ci-apply, since iam_simulate resolves the simulated identity from the fixture itself (scripts/ci/iam_simulate.py:138), and EACH row requires id, verb, target_arn_template, expected_decision and why (scripts/ci/iam_simulate.py:94-98), with a wildcard-free target ARN. A mismatch means the destroy would AccessDeny after human approval: stop, widen the grant in bootstrap HCL, and apply that through the phase 3 gate FIRST. Do not dispatch phase 1 on a mismatch."
+    fix_if: "The coverage assert is REQUIRED before the simulate: iam_simulate only refuses an empty triples list (scripts/ci/iam_simulate.py:77) and otherwise exits 0 on 'zero mismatches' for whatever it was given, so a one-triple fixture would report a clean preflight with 13 destroy verbs unproven. The fixture is a THROWAWAY written to /tmp, never committed. It must declare principal.arn_template for agent-platform-github-ci-apply, since iam_simulate resolves the simulated identity from the fixture itself (scripts/ci/iam_simulate.py:138), and EACH row requires id, verb, target_arn_template, expected_decision and why (scripts/ci/iam_simulate.py:97), with a wildcard-free target ARN. A mismatch means the destroy would AccessDeny after human approval: stop, widen the grant in bootstrap HCL, and apply that through the phase 3 gate FIRST. Do not dispatch phase 1 on a mismatch."
     graduation: not-applicable
   - step: 11
     phase: post-deploy
