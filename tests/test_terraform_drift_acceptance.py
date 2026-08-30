@@ -89,11 +89,22 @@ def test_drift_workflow_is_workflow_dispatch_only() -> None:
     assert set(_triggers(DRIFT_WORKFLOW)) == {"workflow_dispatch"}
 
 
-def test_apply_sandbox_workflow_is_workflow_dispatch_only() -> None:
-    """The push and pull_request triggers are REMOVED for the same reason: an automatic plan against
-    the divergent state would produce destroy plans, and nothing may apply until an operator
-    reconciles (terraform state rm, or an explicitly approved gated apply)."""
-    assert set(_triggers(APPLY_SANDBOX_WORKFLOW)) == {"workflow_dispatch"}
+def test_apply_sandbox_workflow_triggers_are_restored() -> None:
+    """Decision 178 clause 4: the push and pull_request triggers are RESTORED because restoring them
+    is the PREREQUISITE for reconciling the personal module's retired resources -- a workflow_dispatch
+    run guard-routes on the destroys but skips gated-apply, so nothing can apply until these fire.
+    Both restored triggers filter on terraform/personal/** -- a workflows-only PR fires neither."""
+    on = _triggers(APPLY_SANDBOX_WORKFLOW)
+    assert set(on) == {"push", "pull_request", "workflow_dispatch"}
+    push = on["push"]
+    assert isinstance(push, dict), f"expected a push trigger mapping, got {push!r}"
+    assert push.get("branches") == ["main"], f"push trigger must filter branches: [main], got {push!r}"
+    assert push.get("paths") == ["terraform/personal/**"], f"push trigger must filter paths, got {push!r}"
+    pull_request = on["pull_request"]
+    assert isinstance(pull_request, dict), f"expected a pull_request trigger mapping, got {pull_request!r}"
+    assert pull_request.get("paths") == ["terraform/personal/**"], (
+        f"pull_request trigger must filter paths, got {pull_request!r}"
+    )
 
 
 def test_drift_workflow_has_no_terraform_apply() -> None:

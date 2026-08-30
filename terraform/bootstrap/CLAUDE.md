@@ -74,28 +74,30 @@ owner_email = "<owner-email>"
 
 The `import {}` blocks in `github_ci_apply.tf` adopt the live role and inline policy without
 recreating them. Before applying, verify the plan shows no `replace` or `destroy` for
-`aws_iam_role.github_ci_apply` or `aws_iam_role_policy.github_ci_apply`:
+`aws_iam_role.github_ci_apply`, `aws_iam_role_policy.github_ci_apply`,
+`aws_iam_policy.github_ci_apply_reads` or `aws_iam_role_policy_attachment.github_ci_apply_reads`:
 
 ```bash
 terraform -chdir=terraform/bootstrap plan \
-  -var-file=terraform/bootstrap/terraform.bootstrap.tfvars
+  -var-file=terraform.bootstrap.tfvars
 ```
 
-STOP if the plan shows any `destroy` or `replace` for the apply role or its policy. The live
-CD apply role must NOT be destroyed -- doing so would break all in-flight CI jobs.
+STOP on any `destroy`/`replace` for those four. Destroying the role breaks all in-flight CI jobs;
+dropping the reads policy or its attachment strips the role's whole refresh-read surface, so every
+later CD plan -- reconcile included -- AccessDenies before the guard runs (Decision 156 point 2).
 
 ### 5. Apply
 
 ```bash
 terraform -chdir=terraform/bootstrap apply \
-  -var-file=terraform/bootstrap/terraform.bootstrap.tfvars
+  -var-file=terraform.bootstrap.tfvars
 ```
 
 ## State-migration ordering (one-time, after first bootstrap apply)
 
-The `aws_iam_role.github_ci_apply` and `aws_iam_role_policy.github_ci_apply` resources currently
-live in `terraform/personal/` state. After the bootstrap apply adopts them (the import succeeds),
-remove them from the personal state to avoid dual-management:
+Already done for this account -- `terraform/personal` no longer declares the pair. Retained for a
+from-scratch re-bootstrap: once the import succeeds, release them from personal state to avoid
+dual-management, and do it BEFORE the `oidc.tf` removal reaches CD (otherwise CD plans a destroy).
 
 ```bash
 # Run AFTER bootstrap apply confirms the import succeeded (no replace/destroy):
@@ -103,26 +105,22 @@ terraform -chdir=terraform/personal state rm aws_iam_role.github_ci_apply
 terraform -chdir=terraform/personal state rm aws_iam_role_policy.github_ci_apply
 ```
 
-IMPORTANT: run `state rm` BEFORE the `oidc.tf` removal auto-applies. If `terraform/personal`
-still tracks these resources when the `oidc.tf` removal lands in CD, Terraform will plan a destroy.
-The ordering is:
-1. Bootstrap apply (import succeeds, bootstrap state owns the resources).
-2. `terraform state rm` from personal (personal state releases them).
-3. `oidc.tf` removal PR merged (CD applies with no destroy, because personal no longer tracks them).
-
 ## Ongoing apply runbook
 
 Any change to `github_ci_apply.tf` (e.g. adding a new IAM action to the inline policy or
 adjusting the permissions boundary) must be applied manually under `agent_platform_admin`:
 
+PRE-APPLY: if this apply NARROWS the grant surface, first drain any dependent in-flight
+terraform/personal destroy or gated apply (`deploy-paths.yaml#admin_out_of_band.procedure`).
+
 ```bash
 # 1. Plan -- review all IAM diffs carefully.
 terraform -chdir=terraform/bootstrap plan \
-  -var-file=terraform/bootstrap/terraform.bootstrap.tfvars
+  -var-file=terraform.bootstrap.tfvars
 
 # 2. Apply -- only after plan is confirmed safe.
 terraform -chdir=terraform/bootstrap apply \
-  -var-file=terraform/bootstrap/terraform.bootstrap.tfvars
+  -var-file=terraform.bootstrap.tfvars
 ```
 
 Never add this module to `terraform-apply-sandbox.yml` or any other auto-apply workflow.

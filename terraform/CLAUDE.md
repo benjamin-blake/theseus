@@ -131,7 +131,7 @@ SAME reviewed plan.bin is applied -- not a re-plan.
 - Runs `terraform plan -lock=false` (read-only; the plan role cannot take the S3 native lock).
 - Runs the unmodified guard to capture the **PREDICTED** verdict (advisory; the merge-time verdict is authoritative).
 - Persists `plan.bin` to `s3://agent-platform-data-lake/tfplan/personal/<pr-head-sha>.bin`.
-- Scrubs account_id + ExternalIds from the comment; self-fails if any 12-digit sequence survives (public-repo safety).
+- Scrubs account_id, both ExternalIds and owner_email from the comment via `scripts/ci/redaction_check.py`; self-fails if a 12-digit sequence survives the *plan text* or any secret literal survives the body (public-repo safety).
 - Posts the redacted plan diff + predicted verdict as a PR comment.
 - Does NOT add a required status check (Decision 83 / CD.20 -- a required check wedges autonomous fix-merges).
 
