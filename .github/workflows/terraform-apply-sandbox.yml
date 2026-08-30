@@ -586,9 +586,11 @@ jobs:
           echo "Posted terraform-plan-digest commit status for ${HEAD_SHA}: sha256:${DIGEST}"
 
       - name: Build and post PR comment (redacted plan + predicted verdict)
-        # Post the speculative-plan diff + guard verdict as a PR comment. Scrub account_id and
-        # ExternalIds (same rec-2285-fixed parsing used in the mask step). Self-check fails the
-        # job if any 12-digit account-number sequence survives redaction (public-repo safety).
+        # Post the speculative-plan diff + guard verdict as a PR comment. Scrub account_id, both
+        # ExternalIds and owner_email (same rec-2285-fixed parsing used in the mask step;
+        # owner_email rides default_tags onto every resource). scripts/ci/redaction_check.py runs
+        # the 12-digit account shape check on the plan text and asserts no secret literal survives
+        # in the body (public-repo safety, Decision 101).
         if: always() && steps.spec_plan.outcome != 'skipped'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -604,6 +606,7 @@ jobs:
           ACCOUNT_ID_VAL=""
           DEV_EXT_ID=""
           ADM_EXT_ID=""
+          OWNER_EMAIL_VAL=""
           while IFS= read -r line; do
             key=${line%%=*}
             value=${line#*=}
@@ -613,15 +616,17 @@ jobs:
               account_id)                  ACCOUNT_ID_VAL="$value" ;;
               platform_dev_external_id)    DEV_EXT_ID="$value" ;;
               platform_admin_external_id)  ADM_EXT_ID="$value" ;;
+              owner_email)                 OWNER_EMAIL_VAL="$value" ;;
             esac
           done < terraform.personal.tfvars
 
-          # Build redacted plan text. Use Python str.replace (not sed) to avoid sed-injection:
-          # ExternalId trust secrets may contain '/' or '&' which break sed s/// delimiters.
+          # Redact via scripts/ci/redaction_check.py (Python str.replace, not sed: ExternalId trust
+          # secrets may contain '/' or '&' which break sed s/// delimiters). The 12-digit
+          # account-shape check runs THERE, on the untrusted plan text only -- never over the whole
+          # comment, which embeds hex digests whose digit runs false-positive it (rec-3322).
           PLAN_TEXT=$(terraform show -no-color plan.bin 2>/dev/null || echo "(plan output unavailable)")
-          PLAN_REDACTED=$(printf '%s' "$PLAN_TEXT" \
-            | _ACCT="$ACCOUNT_ID_VAL" _DEV="$DEV_EXT_ID" _ADM="$ADM_EXT_ID" \
-              python3 -c "import sys,os;s=sys.stdin.read();a=os.environ.get('_ACCT','');d=os.environ.get('_DEV','');m=os.environ.get('_ADM','');s=(s.replace(a,'[ACCOUNT_ID]') if a else s);s=(s.replace(d,'[ExternalId]') if d else s);s=(s.replace(m,'[ExternalId]') if m else s);sys.stdout.write(s)")
+          PLAN_REDACTED=$(printf '%s' "$PLAN_TEXT" | _ACCT="$ACCOUNT_ID_VAL" _DEV="$DEV_EXT_ID" \
+            _ADM="$ADM_EXT_ID" _OWNER="$OWNER_EMAIL_VAL" python3 "$GITHUB_WORKSPACE/scripts/ci/redaction_check.py" redact)
 
           # Build the PR comment using concatenation (YAML block-scalar constraint: continuation
           # lines of a bare bash string drop to column 0, which the YAML scanner treats as an
@@ -635,12 +640,10 @@ jobs:
           COMMENT+="${_NL}<details>${_NL}<summary>Terraform plan output (sensitive values redacted)</summary>${_NL}"
           COMMENT+="${_NL}\`\`\`${_NL}${PLAN_REDACTED}${_NL}\`\`\`${_NL}</details>"
 
-          # Redaction self-check: fail the job if any 12-digit sequence (account number) survives.
-          if printf '%s' "$COMMENT" | grep -qP '(?<!\d)\d{12}(?!\d)' 2>/dev/null || \
-             printf '%s' "$COMMENT" | python3 -c "import re,sys; s=sys.stdin.read(); sys.exit(1 if not re.search(r'(?<!\d)\d{12}(?!\d)',s) else 0)"; then
-            echo "::error::REDACTION_FAIL: comment body contains a 12-digit account number; failing job to prevent account-id leak." >&2
-            exit 1
-          fi
+          # Redaction self-check: fail the job if any secret LITERAL survives in the body. Literal
+          # assertion, not a shape heuristic -- errexit fails the step on a non-zero exit.
+          printf '%s' "$COMMENT" | _ACCT="$ACCOUNT_ID_VAL" _DEV="$DEV_EXT_ID" \
+            _ADM="$ADM_EXT_ID" _OWNER="$OWNER_EMAIL_VAL" python3 "$GITHUB_WORKSPACE/scripts/ci/redaction_check.py" assert-clean
 
           gh pr comment "$PR_NUM" --repo "$REPO" --body "$COMMENT" || true
 
