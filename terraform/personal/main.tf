@@ -9,6 +9,7 @@
 # permissionless agent_platform (PlatformDev) runtime role cannot. Runtime stays agent_platform.
 # The account ID is supplied at apply time via the gitignored terraform.personal.tfvars; it is
 # never a committed literal (PLAN Step 11b parameterisation invariant).
+# Retired-resource state reconciliation for this root is governed by Decision 178 clause 4 (docs/DECISIONS.md).
 
 terraform {
   # use_lockfile (native S3 state locking, no DynamoDB lock table) requires Terraform 1.10+.
