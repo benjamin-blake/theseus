@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts.ci.redaction_check import ACCOUNT_ID_SHAPE, main, redact, secret_pairs, surviving_literals
+from scripts.ci.redaction_check import ACCOUNT_ID_SHAPE, main, redact, scrub_pairs, unscrubbed_labels
 
 WORKFLOW = Path(".github/workflows/terraform-apply-sandbox.yml")
 STEP_NAME = "Build and post PR comment (redacted plan + predicted verdict)"
@@ -95,7 +95,12 @@ def test_assert_clean_fails_when_any_secret_literal_survives(
 ) -> None:
     env()
     assert _run(monkeypatch, "assert-clean", f"plan output mentioning {secret} inline") == 1
-    assert "REDACTION_FAIL" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "REDACTION_FAIL" in out
+    # The failure diagnostic must NAME the class without ECHOING the value -- otherwise the leak
+    # guard becomes the leak. _placeholder_label makes this true by construction (labels are
+    # literals reached by control flow), not by convention.
+    assert secret not in out, "the diagnostic echoed the very value it was reporting as unscrubbed"
 
 
 def test_redact_replaces_every_secret_including_sed_hostile_externalids(
@@ -137,10 +142,10 @@ def test_unknown_mode_is_rejected(env, monkeypatch: pytest.MonkeyPatch) -> None:
 def test_helpers_ignore_unset_secrets(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("_ACCT", "_DEV", "_ADM", "_OWNER"):
         monkeypatch.delenv(name, raising=False)
-    pairs = secret_pairs()
+    pairs = scrub_pairs()
     assert [value for value, _ in pairs] == ["", "", "", ""]
     assert redact("untouched", pairs) == "untouched"
-    assert surviving_literals("untouched", pairs) == []
+    assert unscrubbed_labels("untouched", pairs) == []
 
 
 def _step_body() -> str:
