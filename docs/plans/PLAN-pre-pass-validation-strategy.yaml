@@ -20,7 +20,9 @@ scope:
     purpose: >-
       Checks-API client resolving the merge-base commit's full-tier (main-validate / Main Canary)
       conclusion into green|red|unknown. Own module per Decision 128 (env_git.py is 302 SLOC with
-      no sloc_budgets.yaml entry -- decompose, never raise).
+      no sloc_budgets.yaml entry -- decompose, never raise). Network timeout defaults to 5s,
+      chosen deliberately: check_main_freshness runs in preflight.py's Phase-A pool (:190), which
+      must complete before Phase B starts (:187), so this sits on every session's critical path.
   - file: scripts/preflight/_common.py
     action: Modify
     purpose: >-
@@ -69,12 +71,18 @@ scope:
   - file: .claude/commands/implement.md
     action: Modify
     purpose: >-
-      Step 1's --pre run becomes CONDITIONAL on main_freshness.commits_ahead > 0 rather than
-      deleted outright, and its dependent go/no-go prose at :30 moves inside that guard. Deleting
-      it unconditionally would widen the pre-PR window for a branch that already carries commits
-      (resumed session, second /implement pass, co-present plan commit) -- a state the merge-base
-      verdict does not describe and pr-validate does not reach until a PR exists. Step 6's
-      bookkeeping --pre run at :89 is untouched.
+      Step 1's --pre run becomes CONDITIONAL rather than deleted outright, and its dependent
+      go/no-go prose at :30 moves inside that guard. Deleting it unconditionally would widen the
+      pre-PR window for a branch that already carries work -- a state the merge-base verdict does
+      not describe and pr-validate does not reach until a PR exists. Step 6's bookkeeping --pre run
+      at :89 is untouched. The predicate is
+      `main_freshness.commits_ahead > 0 OR uncommitted_changes` -- BOTH axes, because a resumed
+      session whose residue is uncommitted has commits_ahead == 0 and would otherwise skip --pre
+      over an unvalidated working tree, which is the very case the gate is kept for
+      (preflight.py:351 already emits uncommitted_changes beside commits_ahead). FAIL-OPEN: all
+      three of check_main_freshness's early returns set commits_ahead to None, and SKILL.md:39-41
+      routes fetch_failed to "Continue", so an agent WILL reach this guard with None -- when
+      commits_ahead is not a non-negative integer, RUN --pre.
   - file: .claude/skills/implement/SKILL.md
     action: Modify
     purpose: >-
@@ -82,6 +90,16 @@ scope:
       blockers on the branch" with the commits_ahead condition, a branch_point_ci entry (red ->
       attribution context, blocks nothing; unknown -> informational), and an explicit precedence
       line naming ci_rca_unresolved_recs as the governing block.
+  - file: scripts/checks/hygiene/validate_licence_consistency.py
+    action: Modify
+    purpose: >-
+      Relocating the api.github.com repo URL vacates this guard's subject. Its _CLASS_A_PATTERNS
+      map keys "scripts/session/github_readiness.py" -> /benjamin-blake\\/agent-platform/ because
+      that file carries the repo URL (:31); after the move the entry guards a file with no repo
+      reference (a vacuous pass -- the exact class Decision 170 exists to expose) while the new
+      home goes unguarded. Register "scripts/preflight/_common.py" with the same old-slug pattern,
+      and drop or retain the github_readiness.py entry according to whether that file still carries
+      a repo reference once the move lands.
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-
@@ -96,7 +114,8 @@ acceptance_criteria:
   - a 401/403/404 surfaces an explicit degraded_reason and is never laundered into a bare "unknown"
   - the preflight/session surface constructs its authenticated GitHub request in exactly one place
   - the --pre lint leg flags a non-gitignored untracked .py file that ruff format rejects
-  - implement.md Step 1's --pre run is guarded by commits_ahead > 0, and Step 6's run is untouched
+  - implement.md Step 1's --pre run is guarded by (commits_ahead > 0 OR uncommitted_changes), runs fail-open when commits_ahead is None, and Step 6's run is untouched
+  - "rec-3037 is closed ('Resolves:' trailer on the implementation merge, or portal fallback)"
   - full-tier validate exits 0
 verification_plan:
   - step: 1
@@ -128,20 +147,29 @@ verification_plan:
     phase: pre-deploy
     hermetic: true
     action: a red verdict blocks nothing, and all three early returns still emit the key
-    command: bin/venv-python -m pytest tests/session/preflight/test_env_git.py -q
-    expected: pass, including red-verdict-still-exits-0 and the two fetch_failed plus one diff_failed paths
-    fix_if: a red verdict raises or changes an exit code, or an early return omits branch_point_ci
+    command: bin/venv-python -m pytest tests/session/preflight/test_env_git.py tests/session/preflight/test_main_report.py -q
+    expected: >-
+      pass, including red-verdict-still-exits-0, the two fetch_failed plus one diff_failed paths,
+      and the summary.py mirror emitting on red/unknown while staying quiet on green
+    fix_if: >-
+      a red verdict raises or changes an exit code, an early return omits branch_point_ci, or the
+      stdout summary mirror is unasserted
     graduation: graduate
     graduation_check_id: branch-point-ci-never-blocks
   - step: 4
     phase: pre-deploy
     hermetic: true
-    action: the preflight/session surface has exactly one authenticated GitHub request constructor
-    command: bin/venv-python -m pytest tests/session/preflight/test_github_read.py -q -k single_home
-    expected: pass -- an AST assertion, not a hostname grep
+    action: >-
+      the preflight/session surface has exactly one authenticated GitHub request constructor, and
+      the old-slug licence guard followed the repo URL to its new home
+    command: bin/venv-python -m pytest tests/session/preflight/test_github_read.py tests/checks/hygiene/test_validate_licence_consistency.py -q
+    expected: >-
+      pass -- an AST assertion on the single constructor (not a hostname grep), plus
+      _CLASS_A_PATTERNS covering scripts/preflight/_common.py
     fix_if: >-
-      github_readiness.py kept its inline urllib.request.Request construction, or
-      branch_point_ci.py built its own instead of importing the shared helper
+      github_readiness.py kept its inline urllib.request.Request construction; branch_point_ci.py
+      built its own instead of importing the shared helper; or _CLASS_A_PATTERNS still guards only
+      the file the URL left
     graduation: graduate
     graduation_check_id: preflight-github-read-single-home
   - step: 5
@@ -172,9 +200,10 @@ verification_plan:
     action: the instruction-file surface matches the new contract
     command: bin/venv-python -m pytest tests/session/preflight/test_branch_point_ci.py -q -k instruction_surface
     expected: >-
-      pass -- implement.md still holds exactly TWO scripts.validate --pre invocations (the
-      commits_ahead-guarded Step 1 and the untouched Step 6 at :89), Step 1 carries the guard, and
-      SKILL.md no longer claims "pre-existing blockers on the branch" and does name branch_point_ci
+      pass -- implement.md still holds exactly TWO scripts.validate --pre invocations (the guarded
+      Step 1 and the untouched Step 6 at :89); Step 1's guard names BOTH commits_ahead and
+      uncommitted_changes and runs --pre when commits_ahead is None; and SKILL.md no longer claims
+      "pre-existing blockers on the branch" and does name branch_point_ci
     fix_if: >-
       a bare `! grep -q "scripts.validate --pre"` was used instead -- that asserts zero
       occurrences, fails on correct work, and would drive deletion of Step 6's legitimate run
@@ -202,6 +231,14 @@ verification_plan:
       Same as step 8 -- this runs the full presubmit tier itself. Every assertion this plan adds
       already lands as a permanent test in steps 1-7; a graduation entry here would double-count
       those guards rather than register a new one.
+  - step: 10
+    phase: post-deploy
+    action: confirm rec-3037 is closed in the warehouse after the resolving merge
+    command: "bin/venv-python -m scripts.ops_data_portal --sync >/dev/null 2>&1; grep '\"id\": \"rec-3037\"' logs/.recommendations-log.jsonl | grep -q '\"status\": \"closed\"' && echo CLOSED"
+    expected: "prints CLOSED -- rec-3037 auto-closed by the 'Resolves:' trailer via rec-autoclose.yml"
+    fix_if: >-
+      not closed -- fall back to bin/venv-python -m scripts.ops_data_portal --update-rec rec-3037
+      --status closed --resolution "fast-tier lint leg now sees untracked new files"
 test_obligations:
   - source: scripts/preflight/branch_point_ci.py
     behavior: >-
@@ -229,7 +266,7 @@ test_obligations:
   - source: scripts/preflight/summary.py
     behavior: a red or unknown verdict reaches the one-line stdout summary; green stays quiet
     verification_step: 3
-    test_selector: tests/session/preflight/test_env_git.py
+    test_selector: tests/session/preflight/test_main_report.py
     red_green_expectation: red before, green after
   - source: scripts/session/github_readiness.py
     behavior: >-
@@ -242,6 +279,13 @@ test_obligations:
     behavior: the branch-point probe is fired exactly once per session, with no second call site
     verification_step: 1
     test_selector: tests/session/preflight/test_branch_point_ci.py
+    red_green_expectation: red before, green after
+  - source: scripts/checks/hygiene/validate_licence_consistency.py
+    behavior: >-
+      the old-slug guard follows the api.github.com repo URL to its new home instead of passing
+      vacuously on a file that no longer carries one
+    verification_step: 4
+    test_selector: tests/checks/hygiene/test_validate_licence_consistency.py
     red_green_expectation: red before, green after
   - source: scripts/validate.py
     behavior: >-
@@ -262,18 +306,16 @@ constraints:
   - Do not add a ci.yml push trigger in this plan -- see context follow-on
   - No emojis; ASCII hyphens only; line length 127; bin/venv-python never bare python
 context:
-  - "Decision-scout verdict + CITE list (verbatim decision ids): dec-170, dec-169, dec-168, dec-60, dec-73, dec-163, dec-132, dec-119, dec-159, dec-135, dec-167, dec-83, dec-148, dec-104, dec-48, dec-131, dec-128, dec-155, dec-153, dec-88"
-  - "gates: decision-scout=FLAGS_FOUND (2 rounds, all flags resolved by pivot); plan-critique=REVISE then PROCEED after 1 round"
-  - "Measured: pre_sequence 108 steps, full_sequence 115; 99 shared, 16 full-only, 9 pre-only. The Step-1 defect is NOT vacuity -- ~99 shared tree-scoped checks do run on an empty diff. It is that unit_tests is full-only and the diff-scoped legs (lint/precommit/mypy/pytest_diff/coverage) select nothing, so the run is REDUNDANT with the branch-point full-tier verdict for a clean tree at the merge-base. commits_ahead > 0 is exactly the residue that redundancy does not cover, which is why Step 1 is conditioned rather than deleted."
-  - "Decision 60 ratified --pre as the edit-loop tier 'called per-step during implementation'; the unconditional one-shot is undocumented drift with no ratifying Decision. Conditioning it routes to operational_fact per decision-entry.yaml significance.routing_rule -- name that row in the PR body (AGENTS.md DD-B convention). The standing precedence rule DOES need the numbered Decision."
-  - "DECISION ENTRY TO DRAFT (Decision 167 clause 2 reviewability). Header: 'The branch-point full-tier CI verdict is preflight attribution context, never an /implement gate'. Body: preflight emits main_freshness.branch_point_ci; ci_rca_unresolved_recs remains the sole governing red-main block (Decision 73 clause 4) and L6 owns PR auto-merge; branch_point_ci gates nothing because Decision 73 clause 3's forward-fix loop requires /implement to run while main is red. Significance: clears the Decision 150 bar -- durable, reversal-relevant, unclaimed by any existing row. Reversal conditions: (a) the field proves noise (no red verdict changes an implementing agent's behaviour in a stated window) -- drop field, summary line and Decision together; (b) an agent is shown to have shipped a regression it would have caught had the field blocked -- revisit the non-blocking commitment, never by adding a prose-only obligation (Decision 163)."
-  - "Decision 119 permits the Checks-API read (CC-web proxy scopes github.com to repo-scoped API calls); scripts/session/github_readiness.py:31 already makes an authenticated api.github.com call from this surface. Off the Decision 88 Neon budget, but its fan-out discipline applies: ONE call per session, short-circuited on the early-return paths."
-  - "Cache-resident alternative considered and rejected: scripts/preflight/correlation.py:141 correlate_ci_rca_with_main already yields a commit-anchored main-health signal at zero network cost, but it is Jaccard-fuzzy, whereas a check-run conclusion at a SHA is exact. Attribution needs the exact form."
-  - "rec-3037 justification is tier NESTING, not untracked-file coverage: the full tier's bare run_lint_checks(failed) walks src/, tests/, scripts/ wholesale (_scaffolding.py:98) and is git-status-blind, so it ALREADY lints untracked files. get_status_aware_diff uses --exclude-standard, so gitignored scratch files stay excluded."
-  - "rec-2917 deliberately NOT bundled: PLAN-validate-vacuous-pass-accounting (merged 8e179847, PR #901) measured its empty-set premise invalidated by dec-159's push_context_base() (get_changed_files returned 5 files under simulated push context) and prepares a close-as-superseded. Its surviving scope_kind fragment belongs on the dec-169 Entry/manifest surface, not registry.py, and dec-170 explicitly deferred fail-closed vacuity enforcement pending a path-aware declaring-coverage threshold."
-  - "FOLLOW-ON (not scoped): ci.yml push trigger for BOTH claude/** and agent/** prefixes to close the pre-PR window. pr-validate is gated `if: github.event_name == 'pull_request'`, so --pre already runs on every push to an OPEN PR. Adds a third trigger/role -- adjudicate against Decision 153 clause 4 first. AGENTS.md's branch rule currently forbids agent/ branches on CC-web, so that leg is forward-cover for the post-Decision-67 hybrid executor."
-  - "FOLLOW-ON (not scoped): Decision 73 clause 3's L6 'pauses PR auto-merge until a forward-fix lands' is UNBUILT for agent PRs -- only dependabot-auto-merge.yml exists, author-gated to dependabot. Decision 73's Consequences assigns L6 to the ci-workflow-restructure carrying plan."
-  - "FOLLOW-ON (not scoped): run the prepared rec-2917 close-as-superseded and file the successor rec; and consolidate the four api.github.com call sites."
+  - "Decision-scout verdict + CITE list (verbatim decision ids): dec-170, dec-169, dec-168, dec-167, dec-163, dec-159, dec-155, dec-153, dec-150, dec-148, dec-135, dec-132, dec-128, dec-119, dec-104, dec-88, dec-83, dec-73, dec-60, dec-55, dec-48"
+  - "gates: decision-scout=FLAGS_FOUND (2 rounds); plan-critique=REVISE (r1), REVISE (r2) -- final verdict recorded on the approving commit, never pre-declared"
+  - "Measured: pre_sequence 108, full_sequence 115; 99 shared, 16 full-only, 9 pre-only. The Step-1 defect is NOT vacuity -- ~99 shared tree-scoped checks do run on an empty diff. unit_tests is full-only and the diff-scoped legs select nothing, so the run is REDUNDANT with the branch-point verdict for a clean tree at the merge-base; commits_ahead/uncommitted_changes is the residue it misses, hence conditioned not deleted."
+  - "dec-60 ratified --pre as the edit-loop tier called per-step during implementation; the unconditional one-shot is drift. Conditioning routes to operational_fact (decision-entry.yaml significance.routing_rule) -- name that row in the PR body per AGENTS.md DD-B."
+  - "DECISION TO DRAFT: 'The branch-point full-tier CI verdict is preflight attribution context, never an /implement gate'. NEW-in-diff, so it needs the dec-167 envelope per docs/contracts/decision-entry.yaml (metadata_envelope + required_markers + block_separator); significance.value MUST be numbered_decision -- operational_fact is rejected by routing and belongs only to the sibling claim above."
+  - "Decision body: ci_rca_unresolved_recs stays the sole governing red-main block (dec-73 cl.4), L6 owns PR auto-merge, branch_point_ci gates nothing because dec-73 cl.3's forward-fix loop needs /implement to run while main is red. Reversal: (a) no red verdict changes agent behaviour in a stated window -> drop field, summary and Decision together; (b) a regression ships that blocking would have caught -> revisit, never via prose-only obligation (dec-163)."
+  - "dec-119 permits the Checks-API read (proxy scopes github.com to repo-scoped calls); github_readiness.py:31 already makes one here. Off the dec-88 Neon budget, but its fan-out discipline applies: ONE call per session. Alternative rejected: correlation.py:141 is Jaccard-fuzzy; attribution needs an exact conclusion at a SHA."
+  - "rec-3037 justification is tier NESTING, not untracked coverage: the full tier's bare run_lint_checks(failed) walks src/, tests/, scripts/ wholesale (_scaffolding.py:98), git-status-blind, so it ALREADY lints untracked files. get_status_aware_diff uses --exclude-standard, so gitignored scratch files stay excluded."
+  - "rec-2917 NOT bundled: PLAN-validate-vacuous-pass-accounting (merged 8e179847, PR #901) measured its empty-set premise invalidated by dec-159 push_context_base() and prepares a close-as-superseded. Its surviving scope_kind fragment belongs on the dec-169 Entry/manifest surface, not registry.py; dec-170 deferred fail-closed vacuity enforcement."
+  - "FOLLOW-ONS (none scoped): ci.yml push trigger for BOTH claude/** and agent/** to close the pre-PR window (pr-validate is pull_request-gated, so --pre already runs on every push to an OPEN PR; adjudicate against dec-153 cl.4 first -- AGENTS.md forbids agent/ branches today, so that leg is forward-cover for the post-dec-67 hybrid executor); dec-73 cl.3's L6 auto-merge pause, UNBUILT for agent PRs and assigned to ci-workflow-restructure; the prepared rec-2917 close + successor rec; consolidating the four api.github.com call sites."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -289,6 +331,7 @@ execution_steps:
   - Condition implement.md Step 1's --pre run on main_freshness.commits_ahead > 0, moving its go/no-go prose inside the guard and leaving Step 6's run untouched; reword the SKILL.md Preflight Constraints entry and add the branch_point_ci entry plus the ci_rca precedence line
   - Author the numbered Decision in docs/DECISIONS.md from the drafted text in context, then ETL via bin/venv-python -m scripts.ops_data_portal --backfill-decisions-md
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)
+  - "Include `Resolves: rec-3037` in the squash-merge commit body so rec-autoclose.yml closes it (AGENTS.md `### Resolves: trailer`); VP step 10 verifies the close"
   - 'Report: what was implemented, verification results'
 work_areas: []
 rollback: >-
