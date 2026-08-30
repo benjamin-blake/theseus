@@ -1,0 +1,213 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "pre-pass-validation-strategy"
+intent: >-
+  Stop the /implement pre-implementation gate from claiming an attribution authority it does not
+  hold, and source that attribution instead from the branch-point commit's already-computed
+  full-tier CI verdict -- so an agent can tell its own regressions from a tree that was already
+  red when it started.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-pre-pass-validation-strategy.yaml
+phase: >-
+  Platform hygiene / verification-system integrity. Not a tier_item slice -- user-initiated from
+  a /plan question about what the Step 1 --pre pass actually establishes.
+scope:
+  - file: scripts/preflight/branch_point_ci.py
+    action: Create
+    purpose: >-
+      Checks-API client resolving the merge-base commit's full-tier (main-validate / Main Canary)
+      conclusion into green|red|unknown. Own module per Decision 128 (env_git.py is ~302 SLOC with
+      no sloc_budgets.yaml entry -- decompose, never raise).
+  - file: scripts/preflight/env_git.py
+    action: Modify
+    purpose: >-
+      check_main_freshness() gains a branch_point_ci sub-object (verdict, head_sha, failing_checks,
+      run_url, checked_at, degraded_reason). Blocks nothing.
+  - file: scripts/checks/_common.py
+    action: Modify
+    purpose: >-
+      Sole home for the authenticated GitHub read helper (Decision 104/148) -- token read, urllib
+      request, deterministic status classification. One home, not two.
+  - file: scripts/session/github_readiness.py
+    action: Modify
+    purpose: >-
+      Consume the extracted helper instead of its own inline copy; preserve its existing
+      pass/fail/unknown return contract exactly.
+  - file: scripts/session/preflight.py
+    action: Modify
+    purpose: >-
+      Fire the branch-point probe inside the existing Phase-A thread pool with a declared cost
+      basis and a short-circuit when main_freshness.status != "ok" (Decision 88 fan-out discipline).
+  - file: scripts/validate.py
+    action: Modify
+    purpose: >-
+      rec-3037 -- the --pre lint/format leg switches from get_changed_files() (tracked-only) to the
+      untracked-aware get_status_aware_diff() "??" leg already called at the affected-set site, so
+      the fast tier stops passing files the full tier reds.
+  - file: .claude/commands/implement.md
+    action: Modify
+    purpose: >-
+      Delete the Step 1 one-shot `scripts.validate --pre` run. Decision 60 ratified --pre as the
+      edit-loop tier "called per-step during implementation"; the empty-diff one-shot is drift.
+  - file: .claude/skills/implement/SKILL.md
+    action: Modify
+    purpose: >-
+      Replace the Preflight Constraints entry claiming the gate "has detected pre-existing blockers
+      on the branch" with a branch_point_ci entry (red -> attribution context, blocks nothing;
+      unknown -> informational) and an explicit precedence line against the ci_rca channel.
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      One numbered Decision: the branch_point_ci precedence rule, and the Decision 155 clause 3
+      obligation to NAME this new call site rather than merely importing the classifier shape.
+bundled_recommendations: ["rec-3037"]
+infrastructure_dependencies: []
+acceptance_criteria:
+  - preflight emits main_freshness.branch_point_ci with verdict in {green, red, unknown}
+  - a red or unknown branch-point verdict changes no exit code and blocks no workflow step
+  - a 401/403/404 yields an explicit degraded_reason, never a silent "unknown"
+  - the authenticated GitHub read exists at exactly one call site in the repo
+  - the --pre lint leg flags a non-gitignored untracked .py file that ruff format rejects
+  - .claude/commands/implement.md contains no Step 1 scripts.validate --pre invocation
+  - full-tier validate exits 0
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: branch-point verdict classification, every degrade path, and the extracted shared read helper are unit-covered
+    command: bin/venv-python -m pytest tests/session/preflight/test_branch_point_ci.py tests/checks/_common/test_github_read.py -q
+    expected: all pass, covering green, red, absent-token, OSError/URLError, 5xx, 401/403/404
+    fix_if: a status maps to the wrong verdict, or a 401/403 is laundered into unknown
+  - step: 2
+    phase: pre-deploy
+    action: preflight emits the new field
+    command: bin/venv-python -m scripts.session.preflight && bin/venv-python -c "import json;d=json.load(open('logs/.preflight-report.json'));b=d['main_freshness']['branch_point_ci'];assert b['verdict'] in ('green','red','unknown'),b;print('OK',b['verdict'])"
+    expected: prints OK followed by the verdict
+    fix_if: KeyError on branch_point_ci, or a verdict outside the three-value set
+  - step: 3
+    phase: pre-deploy
+    action: a red verdict blocks nothing -- preflight still exits 0
+    command: bin/venv-python -m pytest tests/session/preflight/test_env_git.py -q
+    expected: pass, including the red-verdict-still-exits-0 case
+    fix_if: a red verdict raises, sets a non-zero exit, or mutates any other report field
+  - step: 4
+    phase: pre-deploy
+    action: sole-home discipline holds -- one authenticated GitHub read call site
+    command: test "$(grep -rln 'api.github.com' scripts/ --include=*.py | wc -l)" -eq 1
+    expected: exactly 1
+    fix_if: >-
+      more than one file issues the call -- github_readiness.py still has its inline copy, or
+      branch_point_ci.py re-implemented it instead of importing from scripts/checks/_common.py
+  - step: 5
+    phase: pre-deploy
+    action: rec-3037 -- the fast-tier lint leg sees untracked new files
+    command: bin/venv-python -m pytest tests/validate/test_lint_targets.py::test_pre_lint_targets_include_untracked_files -q
+    expected: pass
+    fix_if: the leg still calls get_changed_files() for lint targets
+  - step: 6
+    phase: pre-deploy
+    action: github_readiness's own contract is unregressed by the extraction
+    command: bin/venv-python -m pytest tests/test_session_github_readiness.py -q
+    expected: all pass, pass/fail/unknown returns unchanged
+    fix_if: the extraction changed a return value or swallowed a status it used to surface
+  - step: 7
+    phase: pre-deploy
+    action: the Step 1 one-shot --pre run is gone and the reworded constraint is present
+    command: bash -c '! grep -q "scripts.validate --pre" .claude/commands/implement.md && grep -q "branch_point_ci" .claude/skills/implement/SKILL.md'
+    expected: exit 0
+    fix_if: the run survives in implement.md, or SKILL.md never gained the branch_point_ci entry
+  - step: 8
+    phase: pre-deploy
+    action: fast tier stays inside its budget with the widened lint leg
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0, no budget-breach notice (Decision 153, 300s)
+    fix_if: budget breach -- measure the lint delta and narrow the untracked leg to .py under src/, tests/, scripts/
+  - step: 9
+    phase: pre-deploy
+    action: full tier green
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0, Validation Summary (scope, all) PASS
+    fix_if: any failed check -- fix forward, never skip or quarantine (Decision 55)
+test_obligations:
+  - source: scripts/preflight/branch_point_ci.py
+    behavior: >-
+      verdict classification is deterministic; absent/empty token, OSError/URLError and 5xx degrade
+      to unknown with a greppable marker, 401/403/404 surface an explicit degraded_reason, and
+      unexpected exception classes propagate (Decision 155 clause 2)
+    verification_step: 1
+    test_selector: tests/session/preflight/test_branch_point_ci.py
+    red_green_expectation: red before, green after
+  - source: scripts/preflight/env_git.py
+    behavior: >-
+      check_main_freshness emits branch_point_ci without altering any existing key, and a red
+      verdict never changes control flow
+    verification_step: 3
+    test_selector: tests/session/preflight/test_env_git.py
+    red_green_expectation: red before, green after
+  - source: scripts/checks/_common.py
+    behavior: the extracted authenticated GitHub read helper classifies status deterministically
+    verification_step: 1
+    test_selector: tests/checks/_common/test_github_read.py
+    red_green_expectation: red before, green after
+  - source: scripts/session/github_readiness.py
+    behavior: its pass/fail/unknown probe contract is byte-identical after consuming the shared helper
+    verification_step: 6
+    test_selector: tests/test_session_github_readiness.py
+    red_green_expectation: red before, green after
+  - source: scripts/session/preflight.py
+    behavior: >-
+      the branch-point probe is fired once per session inside the Phase-A pool and short-circuits
+      when main_freshness.status is not "ok"
+    verification_step: 1
+    test_selector: tests/session/preflight/test_branch_point_ci.py
+    red_green_expectation: red before, green after
+  - source: scripts/validate.py
+    behavior: >-
+      the --pre lint/format leg targets untracked, non-gitignored .py files so the fast tier
+      predicts the full tier
+    verification_step: 5
+    test_selector: tests/validate/test_lint_targets.py::test_pre_lint_targets_include_untracked_files
+    red_green_expectation: red before, green after
+constraints:
+  - No rescue agents or workaround loops (Decision 55); a red branch point routes to the existing ci_rca rec, never an inline fix in the implement session
+  - branch_point_ci BLOCKS NOTHING -- Decision 73 clause 3's forward-fix model requires /implement to run while main is red, or the forward-fix rec's own session deadlocks
+  - ci_rca_unresolved_recs stays the governing block for /plan (Decision 73 clause 4); branch_point_ci is commit-anchored attribution context only
+  - The authenticated GitHub read gets exactly ONE home (Decision 104/148) -- import it, never re-implement the shape
+  - Fail-open must be deterministic, never a blanket except (Decision 155 clause 2); the new call site is NAMED in the Decision entry, not merely inheriting the classifier (clause 3)
+  - Do not touch scripts/checks/registry.py or add a scope_kind concept -- that is rec-2917 territory, out of scope (see context)
+  - Do not add a ci.yml push trigger in this plan -- see context follow-on
+  - No emojis; ASCII hyphens only; line length 127; bin/venv-python never bare python
+context:
+  - "Decision-scout verdict + CITE list (verbatim decision ids): dec-170, dec-169, dec-168, dec-60, dec-73, dec-163, dec-119, dec-159, dec-135, dec-167, dec-83, dec-148, dec-104, dec-48, dec-131, dec-128, dec-155, dec-153, dec-88"
+  - "gates: decision-scout=FLAGS_FOUND (2 rounds, all flags resolved by pivot); plan-critique=<verdict> after <N> round(s)"
+  - "Measured tier delta: pre_sequence 108 steps, full_sequence 115; 99 shared, 16 full-only, 9 pre-only. unit_tests is full-only, so the empty-diff Step 1 run executed ~zero tests -- the defect this plan removes."
+  - "Decision 60 ratified --pre as the edit-loop tier 'called per-step during implementation'; the Step 1 one-shot is undocumented drift with no ratifying Decision. Deleting it routes to operational_fact per decision-entry.yaml significance.routing_rule -- name that row in the PR body (AGENTS.md DD-B convention). The precedence rule DOES need a numbered Decision."
+  - "Decision 119 permits the Checks-API read (CC-web proxy scopes github.com to repo-scoped API calls); scripts/session/github_readiness.py:31 already makes an authenticated api.github.com call from this surface. Off the Decision 88 Neon budget, but its fan-out discipline still applies."
+  - "rec-3037 justification is tier NESTING, not untracked-file coverage: the full tier's bare run_lint_checks(failed) walks src/, tests/, scripts/ wholesale (_scaffolding.py:98) and is git-status-blind, so it ALREADY lints untracked files. get_status_aware_diff uses --exclude-standard, so gitignored scratch files stay excluded."
+  - "rec-2917 is deliberately NOT bundled: PLAN-validate-vacuous-pass-accounting (merged 8e179847, PR #901) measured its empty-set premise invalidated by dec-159's push_context_base() (get_changed_files returned 5 files under simulated push context) and prepares a close-as-superseded. Its surviving scope_kind fragment belongs on the dec-169 Entry/manifest surface, not registry.py, and dec-170 explicitly deferred fail-closed vacuity enforcement pending a path-aware declaring-coverage threshold."
+  - "FOLLOW-ON (not scoped): add a ci.yml push trigger for BOTH claude/** and agent/** branch prefixes to close the pre-PR window. pr-validate is gated `if: github.event_name == 'pull_request'`, so --pre already runs on every push to an OPEN PR; only pre-PR pushes are uncovered. Adds a third trigger/role -- must be adjudicated against Decision 153 clause 4 first. Note AGENTS.md's branch rule currently forbids agent/ branches on CC-web, so that leg is forward-cover for the post-Decision-67 hybrid executor."
+  - "FOLLOW-ON (not scoped): Decision 73 clause 3's L6 'pauses PR auto-merge until a forward-fix lands' is UNBUILT for agent PRs -- only dependabot-auto-merge.yml exists, author-gated to dependabot. Decision 73's Consequences already assigns L6 to the ci-workflow-restructure carrying plan."
+  - "FOLLOW-ON (not scoped): run the prepared rec-2917 close-as-superseded and file the successor rec for the tree-scoped/change-scoped classification."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read (never full DECISIONS.md)
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - Extract the authenticated GitHub read helper into scripts/checks/_common.py as the single home; repoint scripts/session/github_readiness.py at it with its return contract unchanged
+  - Create scripts/preflight/branch_point_ci.py -- resolve the merge-base SHA, query the Checks API for the full-tier conclusion, classify deterministically per Decision 155 clause 2
+  - Wire the probe into scripts/session/preflight.py's Phase-A pool with a short-circuit when main_freshness.status is not "ok"
+  - Emit branch_point_ci from check_main_freshness in scripts/preflight/env_git.py without altering any existing key
+  - Switch the --pre lint/format leg in scripts/validate.py to the untracked-aware get_status_aware_diff() "??" leg (rec-3037)
+  - Delete the Step 1 --pre run from .claude/commands/implement.md and reword the Preflight Constraints entry in .claude/skills/implement/SKILL.md, adding the branch_point_ci entry and the ci_rca precedence line
+  - Author the numbered Decision in docs/DECISIONS.md (precedence rule + Decision 155 clause 3 call-site naming), then ETL via bin/venv-python -m scripts.ops_data_portal --backfill-decisions-md
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Each leg reverts independently. The branch_point_ci field is purely additive and blocks nothing,
+  so reverting it restores the prior report shape with no behavioural coupling. The rec-3037 lint
+  switch reverts as a one-line caller change. The instruction-file edits revert as prose.
