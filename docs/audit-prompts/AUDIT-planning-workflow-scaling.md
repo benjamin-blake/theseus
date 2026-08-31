@@ -55,6 +55,9 @@ list: nothing in it is a candidate merely by appearing there.
   defect files no finding; a REJECT that nonetheless exposed a real gap files one.
 - `diagnosis_verdicts` and `proposal_adjudication` are systems-of-record, not finding sources:
   they are never counted into `total_findings`.
+- A proposal's REJECT or DUPLICATE verdict lives ONLY in `proposal_adjudication`; do not mirror
+  it into `rejected_candidates`. That list carries REFUTED diagnosis claims and dismissed
+  GROUNDING MAP facts, nothing else.
 
 A proposal verdict is a separate axis from a finding: a proposal may be REJECTED without any
 finding, and a finding may exist with no proposal attached to it. Every finding carrying a
@@ -86,7 +89,12 @@ audit.
    `convergence_rca_gap_alert` / `convergence_sensor_liveness_alert` in
    `logs/.preflight-report.json` are TERRAFORM apply/drift signals. Critique-round convergence
    is unrelated and has no preflight key.
-5. **Plan persistence differs by path.** `ops_execution_plans` (DuckLake, SCD2) holds
+5. **Two enum values are overloaded across different fields.** `CONFIRMED` is both a diagnosis
+   verdict (`diagnosis_verdicts[].verdict`) and a confidence level (`confidence`), and both sit
+   on the same row -- a claim can be `verdict: PARTIAL, confidence: CONFIRMED`, which is
+   coherent and not a contradiction. `strong` is both a rubric rating and a maturity value.
+   Read each against its own field's enum, never across fields.
+6. **Plan persistence differs by path.** `ops_execution_plans` (DuckLake, SCD2) holds
    EXECUTOR-authored plans and carries a registered `critique_history` column. Interactive
    `docs/plans/PLAN-{slug}.yaml` remains git-authoritative (Decision 87 cl.2/cl.3), with
    `ops_execution_plans` scoped as a downstream read-projection until a T4.x authority flip.
@@ -156,7 +164,8 @@ which DEDUP DISCIPLINE requires.
 
 **Degraded paths -- never abort, never improvise:**
 
-- IF preflight fails on credentials or egress: do NOT abort. Set `meta.degraded_dedup: true`,
+- IF preflight fails for ANY reason -- credentials, egress, import error, or a PARTIAL success
+  where the report is written but the recommendations sync did not complete: do NOT abort. Set `meta.degraded_dedup: true`,
   set every `findings[].confidence` and every `proposal_adjudication[].confidence` to
   HYPOTHESIS (this OVERRIDES the file:line CONFIRMED rule for the duration of a degraded run),
   set every `dedup_hit_count` to null,
@@ -345,7 +354,9 @@ enum: `sequenced | partially-sequenced | not-sequenceable`.
 **Q4 -- Weak-executor prerequisite vs interactive quality-of-life.** "Adopted", used identically
 by Q3, Q4 and DD-D, means: every proposal verdicted ADOPT-NOW or ADOPT-MODIFIED, every adopted
 P2 sub-rule, every Q5-originated item, and every finding carrying a non-empty `proposed_change`.
-ROADMAP-verdict items are sequenced by Q3 at their position but are NOT ranked by Q4. Findings
+ROADMAP-verdict items -- including any Q5-originated item you verdict ROADMAP -- are sequenced
+by Q3 at their position but are NOT ranked by Q4; the ROADMAP verdict wins over the
+originated-here flag. Findings
 carry `executor_prerequisite`, `executor_rank` and `qol_rank` for this purpose, same shape as
 proposals. Rank the adopted items into two ordered lists: those that are load-bearing prerequisites for a weak-model autonomous
 executor (NS-F), and those that are quality-of-life for interactive frontier-model sessions.
@@ -380,7 +391,14 @@ you must answer explicitly:
    (see GUARDRAILS). Say whether that omission materially weakened the audit.
 6. Is `plan-critique` the right place for judgement at all, given what `/implement` re-derives
    downstream?
-7. What post-gate outcome signal exists -- that is, can anyone determine whether plans that
+7. What does a `/plan` run cost TODAY, and what would each adopted item add to it? This review
+   is framed as a scaling review, yet every other cost question here is about adoption
+   maintenance, not per-run cost. Estimate the current per-run load (surfaces loaded per gate,
+   subagent dispatches, critique rounds) and, for every adopted item that adds a dispatch, a
+   lane, or a loaded surface -- P3, P7, P9, P10, P13 above all do -- state what it adds. An item
+   that reduces judgement load while multiplying per-run cost is a different trade than one that
+   reduces both; say which each is.
+8. What post-gate outcome signal exists -- that is, can anyone determine whether plans that
    PASSED the Step 9 gate subsequently failed or stalled in `/implement`? Determine what such a
    signal would require and whether any surface carries it today. If none does, say so plainly:
    an absent outcome measure means the gate's own effectiveness is unmeasured, which bears
@@ -481,15 +499,20 @@ but anchors rot: **verify each before relying on it**, and record non-resolvers 
   finding`. Note the scope of the trailing clause when assessing D2's claim that this field
   "already tags the split."
 - `:26` instructs a targeted decision extraction rather than a full read, justified as "it is
-  large (near its Decision 134 size ceiling)". The same phrase appears at
-  `.claude/skills/planning/SKILL.md:432` and `.claude/commands/plan.md:47`.
+  large (near its Decision 134 size ceiling)". The two companion anchors,
+  `.claude/skills/planning/SKILL.md:432` and `.claude/commands/plan.md:47`, share the FRAGMENT
+  "near its Decision 134 size ceiling" but word it differently ("the full DECISIONS.md (large --
+  near its Decision 134 size ceiling)"). All three justify a bounded read by a ceiling Decision
+  179 has since retired.
 
 **Decision 179 (2026-08-31, on the audited tree)** retired three decision-corpus stock ceilings:
 the live-header ceiling, the combined-bytes ceiling, and the committed-index ceiling; it amends
 Decisions 134, 160 and 166. Its stated premise is that "no consumer loads the live corpus
 wholesale." What survives is Decision 167 clause 3's per-entry authoring cap of 6,144 bytes
 (heading-to-next-heading), hard-failing in `--pre` via
-`scripts/checks/decisions/validate_decisions_size.py`. Its reversal condition (a) reads "retune
+`scripts/checks/decisions/validate_decisions_size.py`. **Decision 167's** reversal condition (a)
+-- not Decision 179's, which carries a fenced `reversal-conditions` stanza with named ids and no
+lettered clauses -- reads "retune
 the cap value or abort the norm, never raise it silently to fit a single entry"; the
 reversal-conditions block then CLOSES with a separate sentence -- "the response to cap pressure is
 compaction or trimming Related pointer blocks, never a raise to fit" -- which belongs to the block
@@ -524,8 +547,13 @@ as a whole, not to clause (a). Quote whichever you rely on accurately.
 - Checks gating `docs/plans/**`, all registered under `scripts/checks/roadmap/_manifest.py` or
   `scripts/checks/verification/_manifest.py`: `validate_plan_documents` (schema),
   `validate_plan_scope_closure` (registration closure, delegating to
-  `scripts/roadmap/plan_obligations.py`), `validate_tier_floor` (deterministic V-tier floor for
-  schema_version >= 2 plans, VF-04/T3.17), `validate_fallback_reevaluation` (CD.27 substrate
+  `scripts/roadmap/plan_obligations.py`), `validate_tier_floor` (deterministic V-tier floor, VF-04/T3.17) -- but read its
+  predicate before relying on it: `scripts/checks/roadmap/validate_tier_floor.py:83` skips every
+  plan whose `schema_version` is not EXACTLY 2, so it is inert on schema v3 and v4 plans. Derive
+  the corpus distribution yourself
+  (`rg -o --no-filename "^schema_version: *[0-9]+" docs/plans/*.yaml | sort | uniq -c`) and
+  establish how many plans the check actually reaches before judging whether seed rule P2e
+  (tier fitness, check 12m) duplicates it, `validate_fallback_reevaluation` (CD.27 substrate
   re-evaluation carrier), `_check_graduation_guard` (that leading underscore is the registered
   name; `check_graduation_guard` is only the module path), `validate_graduation_completeness`
   (graduation-disposition presence on every pre-deploy VP step; its docstring states it performs
@@ -655,6 +683,12 @@ Per sampled plan, apply the counterfactual test: **would this plan's recorded ga
 table, or VP steps look any different if the gate that is supposed to produce them had been
 skipped entirely?** If not, the control is not discriminating on that plan; record it.
 
+Record the sample in `meta.empirical_sample`: every plan path sampled, how many carried no
+`plan-critique=` line, how many recorded 4 or 5 rounds, whether the composition rule was
+truncated by the cap, and the ids of any plans where the counterfactual came back
+non-discriminating. Without that record nothing downstream can tell a performed sample from a
+skipped one.
+
 Tag every finding with `evidence_kind: static | observed`. `static` = derived from reading a
 surface. `observed` = derived from a sampled artifact or an executed command. At equal severity,
 an `observed` finding outranks a `static` one in `top_improvements` ordering.
@@ -734,6 +768,8 @@ audit:
          degraded_dedup: false, contract_notes: "",
          stale_anchors: [],   # element shape: {anchor: "file:line", expected: "<what this
                               # prompt claimed>", found: "<what is actually there>"}
+         empirical_sample: {plans: [], no_gate_line_count: <int>, four_five_round_count: <int>,
+                            truncated: false, counterfactual_nondiscriminating: []},
          self_verification: {rounds: <int>, degraded: false,
                              final_verdicts: {R1: PROCEED|REVISE, R2: ..., R3: ..., R4: ...},
                              unresolved_findings: []}}
@@ -745,18 +781,22 @@ audit:
     - {q: Q5, verdict: originated|none-originated, basis: [], prose: ""}
     - {q: Q6, answers: [{question, answer, basis: [<finding ids>]}]}   # different shape
   diagnosis_verdicts:            # Q1's system of record
-    - {claim: D1, verdict: CONFIRMED|PARTIAL|REFUTED, mechanism_holds: true|false,
-       consequence_holds: true|false|n/a, evidence: "", rederived_values: "",
+    - {claim: D1, verdict: CONFIRMED|PARTIAL|REFUTED,
+       mechanism_holds: true|false|n-a,   # n-a for D1/D3/D5, which assert no separable
+                                          # mechanism; only D2 and D4 split the two
+       consequence_holds: true|false|n-a, evidence: "", rederived_values: "",
        confidence: CONFIRMED|HYPOTHESIS}
     # one entry per D1..D5
   proposal_adjudication:         # Q2/Q3/Q4/Q5's system of record
     <P1..P14, Alt-1, Alt-2, and any originated N1, N2, ...>:
       {verdict: ADOPT-NOW|ADOPT-MODIFIED|ROADMAP|REJECT|DUPLICATE,
        originated_here: false,    # true only on N-prefixed items originated under Q5
-       group_placement_rederived: A|B|neither|n-a,  # read by Q2's prose. A|B = the originating
-                                  # analysis placed it there and you agree; neither = you place
-                                  # it in neither group; n-a = no original placement existed
-                                  # (every N-item, and Alt-1/Alt-2)
+       group_placement_rederived: A|B|neither|n-a,  # THE GROUP YOU PLACE IT IN after
+                                  # re-derivation, independent of where the originating analysis
+                                  # put it. neither = belongs in neither group; n-a = no original
+                                  # placement existed to re-derive (every N-item, Alt-1, Alt-2)
+       placement_survived: true|false|n-a,  # false = you moved it; n-a where the field above is
+                                  # n-a. Together these two are Q2's prose basis.
        modification: "",          # required iff ADOPT-MODIFIED
        vehicle: implementation_plan|rec|tier_item|candidate_decision|contract_amendment|none,
        sequence_position: <int|null>, depends_on: [<proposal or finding ids>],
@@ -793,7 +833,12 @@ audit:
        vehicle: implementation_plan|rec|tier_item|candidate_decision|contract_amendment|none,
        sequence_position: <int|null>,   # non-null iff proposed_change is non-empty
        executor_prerequisite: true|false, executor_rank: <int|null>, qol_rank: <int|null>,
+       # A finding with an EMPTY proposed_change carries effort: XS, vehicle: none,
+       # sequence_position: null, executor_prerequisite: false, and both ranks null --
+       # it reports a defect without proposing a change, which is legitimate.
        sequencing: {safe_to_queue_now: true|false, blocked_behind: [], note: ""}}
+       # depends_on = other FINDINGS whose fix this one builds on. blocked_behind = external
+       # blockers (roadmap ids, Decisions, in-flight work) outside this audit's control.
   rejected_candidates:
     - {candidate,                   # a D/P/Alt/N id, OR a free-text anchor naming the GROUNDING
                                     # MAP fact dismissed (a file:line where one exists, else the
@@ -805,7 +850,8 @@ audit:
        decision_or_item_id}         # format: "Decision 179" | "T4.5" | "rec-2672" | "WF-08" |
                                     # null when nothing owns it
   summary: {total_findings, novel_count, planned_insufficient_count, planned_unbuilt_count,
-            top_improvements: [<finding ids>, 3 to 5 entries, or [] if findings is empty],
+            top_improvements: [<finding ids>: 3 to 5 entries; ALL findings when fewer than 3
+                               exist; [] when findings is empty],
             highest_leverage_change: <finding id | proposal id | N-item id | null>,
             adopt_now_count, adopt_modified_count, roadmap_count, reject_count,
             duplicate_count, originated_count, maturity_S1: <value>, maturity_S2: <value>,
@@ -820,7 +866,8 @@ audit:
 planned_unbuilt_count`. Fully-covered candidates live in `rejected_candidates`, never in
 `findings`. `rubric_ratings`, `question_answers`, `diagnosis_verdicts` and
 `proposal_adjudication` are systems-of-record referenced FROM findings, never re-counted into
-`total_findings`. `top_improvements` entries MUST be finding ids (3-5 of them, or `[]`).
+`total_findings`. `top_improvements` entries MUST be finding ids: 3 to 5 of them, or every
+finding when fewer than 3 exist, or `[]` when `findings` is empty.
 `highest_leverage_change` may be a finding id, a proposal id, or a Q5-originated `N`-item id --
 Q5 exists to let the answer lie outside the sixteen, so the field must be able to say so.
 
@@ -834,8 +881,8 @@ when an answer rests on re-derived facts rather than on a filed finding. Do not 
 to populate a field.
 
 `sequence_position` values are unique consecutive integers starting at 1 across ALL sequenced
-items taken together (adopted proposals, originated items, and findings carrying a
-`proposed_change`); unsequenced items carry `null`. `effort` is sized by DD-D's surface count:
+items taken together -- adopted proposals, adopted P2 sub-rules, ROADMAP-verdict items,
+Q5-originated items, and findings carrying a `proposed_change`; unsequenced items carry `null`. `effort` is sized by DD-D's surface count:
 `XS` = 1 surface, `S` = 2-3, `M` = 4-6, `L` = 7 or more.
 
 `control_property_match` is REQUIRED whenever a compensating control is the reason for
@@ -907,16 +954,19 @@ round said.** That biases the read and destroys the gate's value.
   every place the two files disagree. Check the counting invariant arithmetic yourself."
   **Paste into R1's dispatch text, inline and verbatim: the COUNTING INVARIANT (both paragraphs,
   including the sum-to-16 rule and the empty/null legality rule) and EVERY pinned enum the schema
-  uses** -- the proposal verdict enum, the diagnosis per-claim enum, all six per-question verdict
-  enums, `vehicle`, `change_type`, `evidence_kind`, `effort`, `classification`, the rubric rating
-  enum, `severity`, `confidence`, `maturity`, and `group_placement_rederived`. R1 stays repo-blind -- that is the test -- but it
+  uses** -- the proposal verdict enum, the diagnosis per-claim enum, the five per-question verdict enums (Q1-Q5) plus Q6's answer-object
+  shape, `vehicle`, `change_type`, `evidence_kind`, `effort`, `classification`, the rubric rating
+  enum, `severity`, `confidence`, `maturity`, and `group_placement_rederived`. Paste the MATURITY LADDER and the
+  `sequence_position` uniqueness/consecutiveness rule too -- a mis-derived `maturity_Sn` or a
+  duplicated sequence index is invisible to every other lane. R1 stays repo-blind -- that is the test -- but it
   cannot police a contract it was never handed. **R1 also owns COVERAGE.** Its dispatch must
   additionally instruct: "Verify completeness against these counts and report every shortfall as
   blocking: exactly 5 entries in `diagnosis_verdicts` (D1-D5); exactly 16 non-originated entries
   in `proposal_adjudication` (P1-P14, Alt-1, Alt-2), each with a verdict from the enum; 8
   `sub_verdicts` entries under P2; 6 answered questions (Q1-Q6); 49 `rubric_ratings` cells (7
   surfaces x 7 dimensions), every one carrying a rating from the enum; 7 `per_surface_assessment`
-  entries. A silently truncated audit must not pass." Pass those counts to R1 verbatim -- it
+  entries; and a non-empty `meta.empirical_sample.plans` of at most 25 entries, consistent with
+  the sampling rule. A silently truncated audit must not pass." Pass those counts to R1 verbatim -- it
   cannot derive them from the deliverables alone.
 - **R2 -- Fact auditor (grounding).** Full repository read access. Task: "Independently verify
   every factual claim, file:line anchor, quoted identifier (Decision, tier_item, rec, contract
@@ -994,9 +1044,11 @@ the gate terminated.
 
 ## COMMIT / PR MECHANICS
 
-1. Derive the base ONCE: `git fetch origin main`, then `git rev-parse --short origin/main`. That
-   sha IS the audited tree. Use it in both filenames, in the branch name, and in
-   `meta.audited_commit`.
+1. REUSE the sha you derived in SETUP -- do NOT re-fetch and do NOT re-derive. That sha is the
+   tree you actually read and the tree your branch was cut from, so it is the audited tree even
+   if `origin/main` has advanced since. It goes in both filenames, the branch name, and
+   `meta.audited_commit`. If you want to confirm it is still reachable, `git rev-parse --short
+   <that sha>` is safe; `git fetch` followed by a fresh `rev-parse origin/main` is not.
 2. You are ALREADY on `audit/planning-workflow-scaling-<sha>`, cut in SETUP -- do not re-run
    `git switch -c`, which fails with "a branch named ... already exists". Confirm with
    `git branch --show-current`, and only if you are somehow not on it, `git switch` to it (or
