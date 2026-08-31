@@ -38,11 +38,24 @@ scope:
   purpose: Drop size_governance.live_max_h2_headers, .combined_max_bytes, .index_max_bytes and the whole
     lever_by_ceiling_matrix (its accrual_rate row is subsumed by per_entry_size_norm, which stays); append
     the Class D amendment_log[] entry required by check_amendment_log_for_class_d.
+- file: config/prose_budgets.yaml
+  action: Modify
+  purpose: Lines 9-11 justify excluding docs/DECISIONS.md because "they are governed by validate_decisions_size
+    (Decision 134/145), not this registry (two guards on one surface would be redundant)" -- materially
+    false once that check governs only per-entry size. Re-ground the comment to cite Decision 179 and
+    the per-entry cap. Add NO budget entry for DECISIONS.md (the registry is ratchet-down-only and zero-headroom,
+    so seeding it would wedge immediately).
+- file: scripts/decisions_index.py
+  action: Modify
+  purpose: Its module docstring states the 112,000-byte pin as the live design rationale for excluding
+    significance from the projection and for live-only skeleton scoping. Re-ground that prose to cite
+    Decision 179. VP step 1 cannot see this file -- it contains "112,000", none of the grep tokens.
 - file: docs/DECISIONS.md
   action: Modify
-  purpose: Add the single ratifying entry Decision 179 (drafted verbatim in execution step 8; 6,099 bytes
-    measured, under the 6,144 cap). Consumes live header slot 132, the last under the ceiling it retires,
-    so it MUST land in the same PR as the guard change.
+  purpose: Add the single ratifying entry Decision 179 (drafted verbatim in execution step 8; 6,124 bytes
+    measured, under the 6,144 cap). It takes live header slot 132, which PASSES the 132-header ceiling
+    (the guard fires on > 132) -- the same-PR forcing constraint is the index pin, not this ceiling; see
+    constraints.
 - file: docs/decisions-index.json
   action: Modify
   purpose: Regenerate after Decision 179 lands so validate_decisions_index_freshness passes.
@@ -96,14 +109,17 @@ verification_plan:
   phase: pre-deploy
   action: Assert every retired stock-ceiling symbol is gone from the guard module and that no enforcing
     surface still references the retired index pin or the retired contract keys.
-  command: 'bin/venv-python -c "import subprocess,sys; import scripts.checks.decisions.validate_decisions_size
+  command: 'bin/venv-python -c "import subprocess; import scripts.checks.decisions.validate_decisions_size
     as m; gone=[''_DECISIONS_LIVE_MAX_H2'',''_DECISIONS_COMBINED_MAX_BYTES'',''_decisions_size_issues'',''_LIVE_H2_RE'',''_RELIEF_VALVES''];
-    live=[a for a in gone if hasattr(m,a)]; assert not live, live; r=subprocess.run([''git'',''grep'',''-lE'',''_COMMITTED_INDEX_MAX_BYTES|lever_by_ceiling_matrix|live_max_h2_headers|combined_max_bytes|index_max_bytes'',''--'',''tests/'',''scripts/'',''config/'',''docs/contracts/''],capture_output=True,text=True);
+    live=[a for a in gone if hasattr(m,a)]; assert not live, live; r=subprocess.run([''git'',''grep'',''-lE'',''_COMMITTED_INDEX_MAX_BYTES|lever_by_ceiling_matrix|live_max_h2_headers|combined_max_bytes|index_max_bytes'',''--'',''tests/'',''scripts/'',''config/'',''docs/contracts/'','':!config/agent/verification_registry/entries/deprecated/''],capture_output=True,text=True);
     assert r.returncode==1, ''residual refs: ''+r.stdout; print(''all stock ceilings retired, no residual
-    refs'')"'
-  expected: 'Exit 0, prints: all stock ceilings retired, no residual refs'
-  fix_if: A named symbol survives, or git grep still finds an enforcing reference -- delete the surviving
-    symbol/reference. This is also the Closure Obligation stale-reference sweep for the Delete rows.
+    refs on the live surface'')"'
+  expected: 'Exit 0, prints: all stock ceilings retired, no residual refs on the live surface'
+  fix_if: 'A named symbol survives, or git grep still finds a reference on the LIVE surface -- delete
+    it. The entries/deprecated/ subtree is excluded by pathspec on purpose: retired registry shards keep
+    their bodies verbatim (Decision 176 point 5), so their retired-constant strings are expected and must
+    not fail this sweep. This step is also the Closure Obligation stale-reference sweep for the Delete
+    rows.'
   hermetic: true
   graduation: graduate
   graduation_check_id: decisions-stock-ceilings-retired
@@ -124,17 +140,23 @@ verification_plan:
     graduated once, via step 1's check_id.
 - step: 3
   phase: pre-deploy
-  action: Run the registered check against the REAL tree with Decision 179 landed and assert it reports
-    no failure at 132 live headers -- the state that would have breached the retired ceiling.
+  action: 'Run the registered check against the REAL tree with Decision 179 landed and assert it reports
+    no failure. NOTE: this is a corpus-regression check, NOT a retirement check -- at 132 headers and
+    767,703 combined bytes it passes identically whether the ceilings are retired or intact. Step 1 is
+    the only step with discriminating power over the retirement.'
   command: bin/venv-python -c "import re,pathlib; from scripts.checks.decisions.validate_decisions_size
     import validate_decisions_size; live=pathlib.Path('docs/DECISIONS.md').read_text(encoding='utf-8');
     h=len(re.findall(r'^## Decision \\d+:',live,re.M)); assert h==132, h; f=[]; validate_decisions_size(f);
     assert f==[], f; print('real corpus passes at',h,'live headers')"
   expected: 'Exit 0, prints: real corpus passes at 132 live headers'
-  fix_if: A failure is appended -- read the printed FAIL line. A stock-ceiling FAIL means a constant survived;
-    a per-entry FAIL means Decision 179 is over 6,144 bytes and must be trimmed.
+  fix_if: A failure is appended -- read the printed FAIL line. A per-entry FAIL means Decision 179 is
+    over 6,144 bytes and must be trimmed. A stock-ceiling FAIL here would mean a constant survived AND
+    the corpus grew past it between planning and implementation.
   hermetic: false
-  graduation: not-applicable
+  graduation: waive
+  graduation_waiver_reason: Pins a point-in-time corpus header count (132) that goes stale the moment
+    Decision 180 lands -- the same staleness reason step 4 is waived for. It also needs an origin/main
+    diff base for the baseline read. The durable retirement claim is graduated once, via step 1's check_id.
 - step: 4
   phase: pre-deploy
   action: Assert Decision 179 is under the per-entry cap, carries the required envelope fields, and is
@@ -174,19 +196,25 @@ verification_plan:
   phase: pre-deploy
   action: Assert the contract dropped every ceiling key and the matrix, kept per_entry_size_norm, and
     grew exactly one amendment_log[] entry (Class D obligation).
-  command: bin/venv-python -c "import yaml,pathlib,subprocess; head=yaml.safe_load(pathlib.Path('docs/contracts/decision-entry.yaml').read_text());
-    sg=head['size_governance']; assert not ({'live_max_h2_headers','combined_max_bytes','index_max_bytes','lever_by_ceiling_matrix'}
+  command: bin/venv-python -c "import yaml,pathlib,subprocess; from scripts.contracts_schema import ChangeClass;
+    head=yaml.safe_load(pathlib.Path('docs/contracts/decision-entry.yaml').read_text()); sg=head['size_governance'];
+    assert not ({'live_max_h2_headers','combined_max_bytes','index_max_bytes','lever_by_ceiling_matrix'}
     & set(sg)), sorted(sg); assert 'per_entry_size_norm' in sg, sorted(sg); base=yaml.safe_load(subprocess.run(['git','show','origin/main:docs/contracts/decision-entry.yaml'],capture_output=True,text=True).stdout);
-    assert len(head['amendment_log'])==len(base['amendment_log'])+1, (len(head['amendment_log']),len(base['amendment_log']));
-    print('contract ok:',sorted(sg))"
-  expected: Exit 0, printing the surviving size_governance keys (per_entry_size_norm only).
-  fix_if: A ceiling key survives -- remove it. amendment_log unchanged -- append the Class D entry, or
-    check_amendment_log_for_class_d will fail the PR.
+    hl,bl=head['amendment_log'],base['amendment_log']; assert len(hl)==len(bl)+1, (len(hl),len(bl)); valid={c.value
+    for c in ChangeClass}; assert hl[-1]['change_class'] in valid, (hl[-1]['change_class'], sorted(valid));
+    print('contract ok:',sorted(sg),hl[-1]['change_class'])"
+  expected: Exit 0, printing the surviving size_governance keys (per_entry_size_norm only) and the new
+    amendment's change_class.
+  fix_if: A ceiling key survives -- remove it. amendment_log unchanged -- append the Class D entry. change_class
+    rejected -- it is outside scripts.contracts_schema.ChangeClass's closed 8-value vocabulary; Class
+    D contracts are NOT schema-validated on amendment_log, so nothing else in CI would catch it.
   hermetic: false
   graduation: waive
-  graduation_waiver_reason: Its durable half (the ceiling keys stay absent) is already carried by step
-    1's graduated git-grep leg; the amendment_log delta is a one-shot migration assertion that cannot
-    be a standing guard.
+  graduation_waiver_reason: Its durable half -- the ceiling keys stay absent from the contract -- is carried
+    by the graduated TestStockCeilingsRetired class itself (execution step 2 authors the contract-key
+    and residual-reference assertions INTO that class, not just module-attribute checks). The amendment_log
+    delta and the change_class vocabulary check are one-shot migration assertions that cannot be standing
+    guards.
 - step: 7
   phase: pre-deploy
   action: Assert the three ceiling registry entries left the live loader, landed under entries/deprecated/,
@@ -215,7 +243,10 @@ verification_plan:
   fix_if: ImportError or NameError on a deleted symbol -- remove the orphaned import or assertion in the
     module the traceback names.
   hermetic: false
-  graduation: not-applicable
+  graduation: waive
+  graduation_waiver_reason: A whole-module pytest sweep over three files, run to catch orphaned imports
+    and dead classes left by the deletions -- a one-shot migration concern, not a standing regression
+    claim. The behaviours worth guarding are already graduated (step 1's check_id) or pre-existing (decisions-per-entry-cap-hard-fails).
 - step: 9
   phase: pre-deploy
   action: Run the authoritative fast tier end to end.
@@ -228,9 +259,11 @@ verification_plan:
   graduation: not-applicable
 test_obligations:
 - source: scripts/checks/decisions/validate_decisions_size.py
-  behavior: The three stock ceilings stay retired (no constant, no _decisions_size_issues, no FAIL branch)
-    while the Decision 167 per-entry cap continues to hard-fail a new-in-diff entry over 6,144 bytes and
-    the Decision 170 one-declaration-per-exit-path contract holds.
+  behavior: 'The three stock ceilings stay retired: no _DECISIONS_LIVE_MAX_H2, _DECISIONS_COMBINED_MAX_BYTES,
+    _decisions_size_issues, _LIVE_H2_RE or _RELIEF_VALVES on the module; no ceiling keys or lever_by_ceiling_matrix
+    in docs/contracts/decision-entry.yaml; no retired-constant references on the live surface. (The Decision
+    167 per-entry cap and the Decision 170 declaration contract are pre-existing behaviours with their
+    own retained tests, exercised by VP step 2.)'
   verification_step: 2
   test_selector: tests/checks/decisions/test_validate_decisions_size.py::TestStockCeilingsRetired
   red_green_expectation: Red before (the constants exist, so the absence assertions fail), green after;
@@ -268,7 +301,7 @@ context:
   vs a 358 B smallest live row -- the pin retirement is arithmetically forced into this PR).'
 - 'Stock levers exhausted: archival wave recorded EMPTY 2026-08-24 (audits/contract-first-governance-33c8667.yaml);
   one compaction-eligible entry left (Decision 80, ~3,241 B).'
-- Decision 179 drafted at 6,099 bytes including the required trailing --- separator; 45 B under the cap.
+- Decision 179 drafted at 6,124 bytes including the required trailing --- separator; 20 B under the cap.
   Full text in execution step 8.
 - Next free decision number is 179 (max live+archive is 178). Re-check at implement time -- numbers are
   not reserved (planning skill numbering-race note).
@@ -302,130 +335,135 @@ execution_steps:
   per-entry-cap-only check and cite Decision 179. Preserve exactly one registry declaration on every reachable
   exit path (Decision 170): the two missing-file skipped() branches stay (the per-entry sweep still reads
   both files), as do the cost-gated examined(0), the unreachable-baseline skipped(), and the fall-through
-  examined(N).'
-- Modify tests/checks/decisions/test_validate_decisions_size.py -- delete TestDecisionsSizeIssuesLiveH2,
+  examined(N). Also delete the now-dead `live_text`/`archive_text` reads (currently lines 179-180) and
+  the `else:` PASS branch that printed "DECISIONS.md / DECISIONS_ARCHIVE.md size within ceiling" (currently
+  188-189); ruff F841 catches the former at VP step 9 but not the latter.'
+- 'Modify tests/checks/decisions/test_validate_decisions_size.py -- delete TestDecisionsSizeIssuesLiveH2,
   TestDecisionsSizeIssuesCombined, TestDecisionsSizeIssuesReliefValveMessage, TestBridgeCeilingValues
   and TestLiveByteCeilingRetired; delete the stock-ceiling legs test_fail_case_combined_breach, test_fail_case_header_count_breach
   and test_pass_case_live_file_above_old_500000_byte_value from TestValidateDecisionsSizeRegisteredCheck;
   rework TestPerEntryCapThroughRegisteredCheck::test_stock_ceiling_breach_and_per_entry_failure_can_coexist
   into a per-entry-only case. Drop the now-unused imports. Add TestStockCeilingsRetired asserting every
   retired symbol is absent from the module (superseding the deleted TestLiveByteCeilingRetired, whose
-  _DECISIONS_LIVE_MAX_BYTES claim it subsumes).
+  _DECISIONS_LIVE_MAX_BYTES claim it subsumes). Rework TestPerEntryCapThroughRegisteredCheck::test_unreachable_baseline_advisory_skips_per_entry_cap
+  (currently lines 352-357): its docstring asserts "the two stock ceilings still ran above (unaffected)",
+  false after this change. TestStockCeilingsRetired MUST assert three things, not just module attributes,
+  because it is the node the graduated registry entry points at and is therefore the only standing guard
+  over this retirement: (i) none of _DECISIONS_LIVE_MAX_H2, _DECISIONS_COMBINED_MAX_BYTES, _decisions_size_issues,
+  _LIVE_H2_RE, _RELIEF_VALVES is an attribute of the module; (ii) docs/contracts/decision-entry.yaml''s
+  size_governance carries none of live_max_h2_headers, combined_max_bytes, index_max_bytes and no lever_by_ceiling_matrix,
+  while retaining per_entry_size_norm; (iii) a git grep for the retired tokens over tests/, scripts/,
+  config/ and docs/contracts/, excluding config/agent/verification_registry/entries/deprecated/, returns
+  no match. Read the contract with yaml.safe_load and shell out for the grep -- do NOT import from tests/
+  (Decision 131''s cross-test-import guard).'
 - Modify tests/test_decisions_index.py -- delete TestCommittedIndexSizePin in full, including the _COMMITTED_INDEX_MAX_BYTES
-  constant and its docstring derivation.
-- Modify tests/checks/decisions/test_validate_decisions_index_freshness.py -- delete TestIndexMaxBytesContractPin
+  constant and its docstring derivation. Then drop the `_EXPORT_PATH` import (currently line 21) if the
+  deletion leaves it unused -- its only non-string use is inside the deleted class.
+- 'Modify tests/checks/decisions/test_validate_decisions_index_freshness.py -- delete TestIndexMaxBytesContractPin
   in full (both tests) and any imports left unused by the deletion. Leave every freshness test untouched.
+  Explicitly check `_REPO_ROOT` (currently line 23): it is used only by the deleted class''s lines, and
+  as a module-level assignment ruff will NOT flag it, so it survives as silent dead code unless removed
+  by hand.'
 - Modify docs/contracts/decision-entry.yaml -- delete size_governance.live_max_h2_headers, .combined_max_bytes,
   .index_max_bytes and the entire lever_by_ceiling_matrix block; keep per_entry_size_norm. Append one
-  amendment_log[] entry dated 2026-08-31 with change_class field_remove, semantic_break false, and a summary
-  naming Decision 179 and this plan slug. Do not touch the significance, currency, compaction or metadata_envelope
-  blocks.
+  amendment_log[] entry dated 2026-08-31 with change_class `accepted_values_narrow` and semantic_break
+  false -- NOT `field_remove`, which is outside scripts.contracts_schema.ChangeClass's closed 8-value
+  vocabulary; accepted_values_narrow is this corpus's established removal class (docs/contracts/file-router.yaml
+  uses it for four prior key/route removals, all semantic_break false). decision-entry.yaml is Class D,
+  so its amendment_log is NOT schema-validated and an invalid value would pass CI silently -- VP step
+  6 is what catches it. The summary must name Decision 179 and this plan slug. Do not touch the significance,
+  currency, compaction or metadata_envelope blocks.
 - Retire the three registry entries with git mv into config/agent/verification_registry/entries/deprecated/
   -- decisions-index-pin-112000-fresh-and-under, decision-entry-index-ceiling-homed, decisions-live-ceiling-retired-others-intact.
   Do not edit their bodies; no status column, no version key (Decision 176 point 5).
-- Create config/agent/verification_registry/entries/decisions-stock-ceilings-retired.yaml with check_id
+- 'Create config/agent/verification_registry/entries/decisions-stock-ceilings-retired.yaml with check_id
   decisions-stock-ceilings-retired (filename must equal check_id), primitive_slot test_selector, guard_target
   scripts/checks/decisions/validate_decisions_size.py, guard_symbol _DECISIONS_LIVE_MAX_H2, plan_slug
   decision-corpus-stock-ceiling-retirement, graduated_at 2026-08-31, graduated_by implement-agent, and
   check_spec.node_id pointing at tests/checks/decisions/test_validate_decisions_size.py::TestStockCeilingsRetired.
-  Its added-entry differential must FAIL on origin/main, which it does because the constants exist there.
-- |-
-  Author Decision 179 in docs/DECISIONS.md, appending it after the current final live entry and preserving the file's separator convention. FIRST re-check the highest '## Decision NNN:' header across docs/DECISIONS.md and docs/DECISIONS_ARCHIVE.md and use the next free number if a concurrent PR claimed 179, updating the envelope `number:` and every self-reference to match (planning skill numbering-race note). The entry text is EXACTLY the following block, which measures 6,099 bytes including its required trailing '---' separator, 45 bytes under the 6,144 per-entry cap -- land it verbatim; any edit must be re-measured against the cap before committing:
-
-  ## Decision 179: Retire the decision-corpus stock ceilings now that retrieval replaced ambient loading (elects Decision 166 condition (g) ahead of trigger; amends Decision 134, 160, 166) (Decided)
-
-  ```yaml
-  number: 179
-  status: Decided
-  decided_date: "2026-08-31"
-  amends: [134, 160, 166]
-  significance:
-    value: numbered_decision
-    justification: >-
-      Durable architectural commitment with reversal-relevant consequences: removes the corpus's last
-      three mechanical stock guards and re-homes stock discipline onto convention. A decision-entry.yaml
-      governance note was considered and rejected -- that contract MIRRORS these ceilings under
-      size_governance but does not author them, so a note could retire neither the constants nor Decision
-      166 point 9's standing position, nor carry the reversal conditions below.
-  ```
-
-  **Status:** Decided
-  **Date:** 2026-08-31
-
-  **Problem:**
-  docs/DECISIONS.md sits at 131/132 live headers and docs/decisions-index.json at 111,707/112,000 bytes
-  -- 293 bytes of headroom against a smallest live index row of 358, so THIS entry's own row breaches the
-  pin: the retirement must land in the same PR (Decision 159/160/166 acute-landing precedent). Every stock lever is spent, measured: migration step 6's operator-disposed
-  archival wave under Decision 146 executed and was recorded EMPTY (2026-08-24 amendment ledger,
-  audits/contract-first-governance-33c8667.yaml); the currency projection leaves one compaction-eligible live
-  entry (Decision 80, ~3,241 B, ~1.9 days); archival cannot relieve combined bytes at all (Decision 160
-  point 5). Decision 160 point 4 retained these ceilings to bound a corpus
-  still read ambiently. That premise is gone -- bounded decision-scout retrieval, the skeleton index, the
-  currency projection and Decision 167's per-entry cap mean no consumer loads the live corpus wholesale,
-  the condition T2.56 c2 names.
-
-  **Decision:**
-
-  1. **Retire all three stock ceilings.** `_DECISIONS_LIVE_MAX_H2` (132) and
-     `_DECISIONS_COMBINED_MAX_BYTES` (780,000) leave scripts/checks/decisions/validate_decisions_size.py;
-     `_COMMITTED_INDEX_MAX_BYTES` (112,000) leaves tests/test_decisions_index.py. Constants,
-     `_decisions_size_issues()`, `_RELIEF_VALVES` and their FAIL branches are removed, not raised or
-     lowered -- Decision 160 point 1's retire-don't-raise surgery. The check survives as the per-entry cap
-     enforcer; size_governance's three ceiling keys and lever_by_ceiling_matrix go with them.
-
-  2. **Decision 166 reversal condition (g), elected ahead of its trigger.** (g) permits a third bump only
-     if "T1.5 c1 has by then retired the surface entirely," and Decision 166's standing "THE PIN IS NEVER
-     RAISED" enumerates only two responses when the pin binds -- archival, or collapsing entries into
-     contracts. Retirement is a third, unenumerated response, so this entry authorizes it explicitly
-     rather than reading it as permitted. T1.5 c1 has NOT landed; T2.56 c2 is the substituting retiring
-     authority. Decision 176 used this exact form on Decision 166.
-
-  3. **The 780,000 value was never ratified.** Decision 160 point 4 ratified 700,000;
-     PLAN-decision-ceiling-bridge set 780,000 with no Decision behind it. Retiring it ends an unratified
-     constant rather than perpetuating one -- what Decision 145 demanded when it warned "a second stopgap
-     raise is itself a signal that the structural fix is overdue."
-
-  4. **What still governs, named precisely.** Decision 167 clause 3's 6,144-byte per-entry cap bends
-     bytes-per-NEW-entry and nothing else -- not entry count, index size, or triage cost. **Decision 150's
-     significance bar is the retained lever on entry COUNT and triage quality**, the purpose Decision 134
-     clause 2 ratified the header ceiling to serve. Decision 160 point 2 discharged the read-cost purpose
-     via bounded retrieval; triage quality is discharged here by that bar plus the index's mechanical
-     category_tags shortlisting -- never by the per-entry cap.
-
-  5. **Two residuals, recorded not implied (Decision 163).** (i) docs/decisions-index.json stays a
-     read-in-full-every-/plan surface and now carries no bound, direct or indirect: the reassessment
-     Decision 160 point 9 asked a future owner to perform is performed HERE and resolved as ACCEPTED,
-     owned by T2.56 c1 and T1.5 c1 (111,707 B, ~518 B/day, ~28k tokens per /plan). (ii) In-place
-     amendments are exempt from the cap's forward-only scope and were 42% of measured inflow; rec-3243
-     owns metering them. Stock discipline is deliberately convention-only until those land -- a recorded
-     downgrade, not a silent one.
-
-  6. **Retirement mechanism.** Three now-false or broken graduated registry entries retire by `git mv` to
-     config/agent/verification_registry/entries/deprecated/ (Decision 176 point 5: no status column, no
-     version key), replaced by one consolidated `decisions-stock-ceilings-retired` guard. Decision 177 is
-     honored -- no live body of Decision 134/160/166 is edited; the amendment is stated only here.
-
-  **Reversal conditions:** Revisit if the index's every-/plan read becomes a measured context-budget
-  problem before T2.56 c1 or T1.5 c1 lands -- bound that read (paging or a queried projection), never
-  re-mint a stock ceiling. Revisit if inflow rises materially with no stock guard
-  present, which would mean the ceilings did load-bearing restraint this entry attributes to the
-  significance bar -- the response is rec-3243's amendment metering plus a stricter bar, a re-minted
-  ceiling only if both fail. Revisit when T1.5 c1's portal read supersedes the index mechanism.
-
-  **Related:** Decision 134 clause 2 amended (4); Decision 160 point 4 amended, point 9 resolved (1, 5);
-  Decision 166 point 9 amended, condition (g) elected (2); Decision 176 precedent and mechanism (2, 6);
-  Decision 167 cap retained (4); Decision 150 significance bar, retained count lever (4); Decision 145
-  warning discharged (3); Decisions 146/149 levers exhausted (Problem); Decision 163 recorded downgrade
-  (5); Decision 177 no live-body edits (6); Decision 128 loud, never frictionless.
-  Refs: T2.56 c2/c1, T1.5 c1, rec-3243.
-
-  ---
+  Its added-entry differential must FAIL on origin/main and will -- but note the actual mechanism: make_worktree_revert_runner
+  builds a FULL origin/main worktree where TestStockCeilingsRetired does not exist, so pytest exits 4
+  (no collectors) and TestSelectorCheck reports FAIL on any non-zero exit. Admission is granted on a collection
+  error, not on the constants existing. This is a systemic property of test_selector graduation (the incumbent
+  decisions-live-ceiling-retired-others-intact graduated the same way), not a defect to fix here.'
+- "Author Decision 179 in docs/DECISIONS.md, appending it after the current final live entry and preserving\
+  \ the file's separator convention. FIRST re-check the highest '## Decision NNN:' header across docs/DECISIONS.md\
+  \ and docs/DECISIONS_ARCHIVE.md and use the next free number if a concurrent PR claimed 179, updating\
+  \ the envelope `number:` and every self-reference to match (planning skill numbering-race note). The\
+  \ entry text is EXACTLY the following block, which measures 6,124 bytes including its required trailing\
+  \ '---' separator, 20 bytes under the 6,144 per-entry cap -- land it verbatim; any edit must be re-measured\
+  \ against the cap before committing:\n\n## Decision 179: Retire the decision-corpus stock ceilings now\
+  \ that retrieval replaced ambient loading (elects Decision 166 condition (g) ahead of trigger; amends\
+  \ Decision 134, 160, 166) (Decided)\n\n```yaml\nnumber: 179\nstatus: Decided\ndecided_date: \"2026-08-31\"\
+  \namends: [134, 160, 166]\nsignificance:\n  value: numbered_decision\n  justification: >-\n    Durable\
+  \ architectural commitment with reversal-relevant consequences: removes the corpus's last\n    three\
+  \ mechanical stock guards and re-homes stock discipline onto convention. A decision-\n    entry.yaml\
+  \ governance note was considered and rejected -- that contract MIRRORS these ceilings\n    under size_governance\
+  \ but does not author them, so a note could retire neither the constants\n    nor Decision 166 point\
+  \ 9, nor carry reversal conditions.\n```\n\n**Status:** Decided\n**Date:** 2026-08-31\n\n**Problem:**\n\
+  docs/DECISIONS.md sits at 131/132 live headers and docs/decisions-index.json at 111,707/112,000 bytes\
+  \ --\n293 bytes of headroom against a smallest live index row of 354, so THIS entry's own row breaches\
+  \ the pin\nso the retirement must land in the same PR (Decision 159/160/166 acute-landing precedent).\
+  \ Every stock lever is spent, measured: Decision 146's operator-disposed archival wave (migration step\n\
+  6) ran and was recorded EMPTY (2026-08-24, audits/contract-first-governance-33c8667.yaml); the currency\
+  \ projection leaves one compaction-eligible live\nentry (Decision 80, ~3,241 B, ~1.9 days); archival\
+  \ cannot relieve combined bytes at all (Decision 160\npoint 5). Decision 160 point 4 retained these\
+  \ ceilings to bound a corpus\nstill read ambiently. That premise is gone -- bounded decision-scout retrieval,\
+  \ the skeleton index, the\ncurrency projection and Decision 167's cap mean no consumer loads the live\
+  \ corpus wholesale -- the\ncondition T2.56 c2 names.\n\n**Decision:**\n\n1. **Retire all three stock\
+  \ ceilings.** `_DECISIONS_LIVE_MAX_H2` (132) and\n   `_DECISIONS_COMBINED_MAX_BYTES` (780,000) leave\
+  \ scripts/checks/decisions/validate_decisions_size.py;\n   `_COMMITTED_INDEX_MAX_BYTES` (112,000) leaves\
+  \ tests/test_decisions_index.py. Constants, `_decisions_size_issues()`, `_RELIEF_VALVES` and their FAIL\
+  \ branches go -- not raised or\n   lowered, Decision 160 point 1's retire-don't-raise surgery. The check\
+  \ survives as the per-entry\n   cap enforcer; size_governance's three ceiling keys and lever_by_ceiling_matrix\
+  \ retire too.\n\n2. **Decision 166 reversal condition (g), elected ahead of its trigger.** (g) permits\
+  \ a third bump only\n   if \"T1.5 c1 has by then retired the surface entirely\" -- never \"a third bump\
+  \ on faith\". The \"THE PIN\n   IS NEVER RAISED\" position is the operator's, recorded in decision-entry.yaml\
+  \ rather than in D166's\n   body, and enumerates two responses when the pin binds: archival, or collapsing\
+  \ into contracts.\n   Retirement is a third, unenumerated one, authorized explicitly here. T1.5 c1 has\
+  \ NOT landed;\n   T2.56 c2 substitutes as retiring authority. Decision 176 used this exact form on Decision\
+  \ 166.\n\n3. **The 780,000 value was never ratified.** Decision 160 point 4 ratified 700,000;\n   PLAN-decision-ceiling-bridge\
+  \ set 780,000 with no Decision behind it. Retiring it ends an unratified\n   constant rather than perpetuating\
+  \ one -- what Decision 145 demanded in warning that \"a second stopgap\n   raise is itself a signal\
+  \ that the structural fix is overdue.\"\n\n4. **What still governs, named precisely.** Decision 167\
+  \ clause 3's 6,144-byte cap bends bytes-per-NEW-entry and nothing else -- not entry\n   count, index\
+  \ size, or triage cost. **Decision 150's significance bar is the retained lever on\n   entry COUNT and\
+  \ triage quality**, the purpose Decision 134 clause 2 ratified the header ceiling\n   to serve; this\
+  \ overturns Decision 160 point 4's \"COMPLEMENTARY ... not a substitute for either\"\n   clause, since\
+  \ with the guards gone the bar necessarily becomes the substitute. Decision 160 point\n   2 discharged\
+  \ the read-cost purpose via bounded retrieval; triage quality is discharged here by\n   that bar plus\
+  \ the index's category_tags shortlisting -- never by the cap.\n\n5. **Two residuals, recorded not implied\
+  \ (Decision 163).** (i) docs/decisions-index.json stays a read-in-full-every-/plan surface and now carries\
+  \ no bound,\n   direct or indirect: the reassessment Decision 160 point 9 invited is performed again\
+  \ here\n   (Decision 166 point 9 was the first) and resolved as ACCEPTED, owned by T2.56 c1 and T1.5\
+  \ c1 (~518 B/day, ~28k tok/plan). (ii) In-place\n   amendments are exempt from the cap's forward-only\
+  \ scope and were 42% of measured inflow; rec-3243\n   owns metering them. Stock discipline is convention-only\
+  \ until those land -- a recorded downgrade,\n   not a silent one.\n\n6. **Retirement mechanism.** Three\
+  \ now-false or broken graduated registry entries retire by `git mv` to\n   entries/deprecated/ (Decision\
+  \ 176 point 5: no status column, no version key), replaced by one\n   consolidated `decisions-stock-ceilings-retired`\
+  \ guard. Decision 177 is honored: no live body of 134/160/166 is edited; the amendment is stated only\
+  \ here.\n\n**Reversal conditions:** Revisit if the index's every-/plan read becomes a measured context-budget\n\
+  problem before T2.56 c1 or T1.5 c1 lands -- bound that read (paging or a queried projection), never\n\
+  re-mint a ceiling. Revisit if inflow rises materially with no stock guard, meaning the ceilings did\
+  \ restraint this\nentry credits to the significance bar -- the response is rec-3243's\nmetering plus\
+  \ a stricter bar, a re-minted ceiling only if both fail. Revisit when T1.5 c1's portal\nread supersedes\
+  \ the index mechanism.\n\n**Related:** Decision 134 cl.2 amended (4); Decision 160 pt.4 amended, pt.9\
+  \ resolved (1, 5); Decision 166\npt.9 amended, condition (g) elected (2); Decision 176 precedent and\
+  \ mechanism (2, 6); Decision 167 cap\nretained (4); Decision 150 significance bar, retained count lever\
+  \ (4); Decision 145 warning discharged (3);\nDecision 114 parity ended here, its roadmap guard untouched;\
+  \ Decisions 146/149 levers exhausted (Problem);\nDecision 163 recorded downgrade (5); Decision 177 no\
+  \ live-body edits (6); Decision 128 loud, never\nfrictionless. Refs: T2.56 c2/c1, T1.5 c1, rec-3243.\n\
+  \n---"
 - Regenerate docs/decisions-index.json with the repo's generator so it is byte-equal to build_index().
 - Execute the Verification Plan -- run each step in order; loop until pass. Steps 1 and 3 are the load-bearing
   ones; on an unrecoverable failure stop and RCA rather than weakening a guard (Decision 55).
-- Roadmap bookkeeping (only after a verified VP pass) -- flip docs/ROADMAP-PLATFORM.yaml T2.56 exit criterion
-  c2 to met with an evidence note citing Decision 179 and this plan. Leave c1 open and leave the item
-  status as the bookkeeping walk computes it.
+- 'Roadmap bookkeeping (only after a verified VP pass) -- flip docs/ROADMAP-PLATFORM.yaml T2.56 exit criterion
+  c2 to met. c2 has TWO conjuncts: (i) DECISIONS.md operates as a retrieved-by-id ADR log rather than
+  an ambiently-loaded corpus, and (ii) the ceiling and pin are retired. This plan discharges (ii) in full
+  and (i) for DECISIONS.md itself, but the DERIVED index is still read in full every /plan. The evidence
+  note must therefore state that residual explicitly -- not merely cite Decision 179 -- naming T2.56 c1
+  and T1.5 c1 as its owners, per the operator''s ruling that c2 closes WITH the residual stated. Leave
+  c1 open and leave the item status as the bookkeeping walk computes it.'
 - Post-merge -- run bin/venv-python -m scripts.ops_data_portal --backfill-decisions-md so ops_decisions
   carries dec-179 (Decision 84 ETL; DECISIONS.md remains the sole source).
 - 'Report: what was implemented, verification results, and the final measured corpus figures.'
