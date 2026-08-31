@@ -45,9 +45,11 @@ The candidates:
 - C1 (declaration gap). No surface obliges a standing loop -- a cron sensor workflow, a
   scheduled agent, a validation tier -- to declare its objective, constraints, backstop, and
   stop conditions in one auditable place. The loop-governing invariants that do exist are
-  enforced piecewise in separate checks.
+  enforced piecewise in separate checks. (Weigh `config/ci_rca_taxonomy.yaml`'s `workflows:`
+  map -- a per-workflow adjudication register, anchored in the grounding map -- as a partial
+  counter-surface.)
 - C2 (discrimination gap for the check fleet). Proof that each check in the glob-gated `--pre`
-  fleet (order 46-48 entries at compose time; re-derive) still DETECTS its target defect class sits between three built/planned mechanisms that
+  fleet (46 entries at compose time; re-derive) still DETECTS its target defect class sits between three built/planned mechanisms that
   each exercise a different property: Decision 170 accounting proves a check EXAMINED something
   (activity), `validate_pre_glob_closure` proves a diff REACHES the check (selection), and
   T3.7 mutation targets GRADUATED registry shards' guard lines (a different population). The
@@ -59,14 +61,18 @@ The candidates:
 - C4 (backstop asymmetry). The interactive validation loop has a slower ground-truth oracle with
   attributed escapes (full tier + ci-rca `escape_class`); the hypothesis is that some standing
   non-validation loops (S7) have no declared backstop, escape detector, or ratchet route.
+  (Same counter-surface as C1: the `workflows:` adjudication map declares, per workflow, whether
+  CI-RCA watches it and why -- adjudicate against it, not past it.)
 - C5 (anti-proposal candidate). The loop-spec contract may be net-negative: the population gate
   requires a resolving evaluator at landing, census ratchet pins constrain `docs/contracts/`
   growth, and existing surfaces (check-manifest, verification-registry, ci_rca_taxonomy,
   check-accounting) already carry much of the declaration; extending them may beat a new
-  contract. Take this candidate as seriously as the others. Disposition routing for C5: a
-  confirmed C5 is expressed through `technique_verdicts` (defer/reject rationales) and
-  `rejected_candidates` rows -- never as a `findings[]` row; findings record repository
-  defects only.
+  contract. Take this candidate as seriously as the others. Disposition routing for C5, both
+  directions: CONFIRMED (the proposal is net-negative, wholly or partly) is expressed ONLY
+  through `technique_verdicts` (defer/reject rationales) -- never a `findings[]` row and never
+  a `rejected_candidates` row; DISMISSED (a new surface is justified) is a normal
+  `rejected_candidates` row whose `why_dismissed` argues why extending existing surfaces loses
+  to a new one. `findings[]` records repository defects only.
 - C6 (stop-condition governance). Iteration caps and stop conditions for agentic loops appear
   ad hoc per surface (e.g. a `--max-turns 30` literal in one workflow and a `MAX_TURNS=5`
   literal in a composite action consumed by two others -- both anchored in the grounding map)
@@ -152,8 +158,9 @@ Surfaces:
   differential admission, T3.7 meta-validation (designed).
 - S7 (built, heterogeneous): standing non-validation loops -- the schedule-bearing workflow
   fleet, dispatch- and event-triggered standing automation, and the inert scheduled-agent
-  fleet. Automated loops only: the interactive human-gated
-  workflows (/orient, /plan, /implement, overseer) are context, not rated surfaces.
+  fleet. The interactive human-gated workflows (/orient, /plan, /implement, overseer) are
+  unrated as surfaces but ARE in-population as EVIDENCE for Q4 property 9 and candidate C6
+  (two anchors sit in the grounding map's S7 block).
 - S8 (designed-unbuilt): the P1-P5 proposal itself.
 
 Out of scope, one line each: the terraform apply/guard model (environment-taxonomy Axis A) except
@@ -176,7 +183,8 @@ Run, in order; on failure take the named degraded path -- never abort, never imp
 2. `git switch -c audit/loop-spec-adoption-<sha> origin/main` (mechanics rationale in section
    16). Degraded (branch name already taken): append `-2`.
 3. `bin/venv-python --version` -- the repo's mandatory interpreter wrapper. Degraded (missing or
-   broken venv): note in `meta.contract_notes`, skip step 4 via the hatch below.
+   broken venv): note in `meta.contract_notes`, skip step 4 and take step 4's degraded-dedup
+   hatch (`meta.degraded_dedup=true`).
 4. Cache generation for dedup: `bin/venv-python -m scripts.session.preflight --roadmap-detail
    full` (populates `logs/.preflight-report.json` and `logs/.recommendations-log.jsonl`; its
    stdout also carries the budget-breach/bypass telemetry lines S3 samples). IF cache-gen fails
@@ -217,10 +225,14 @@ Judgment-bearing bars, not absolutes: argue each surface against them; do not pa
   recs -> planning), does the built system deliver the four loop-engineering guarantees --
   (a) goal-as-predicate, (b) optimizer/oracle separation with gated loosening, (c) backstop
   with attributed escapes, (d) permanent ratchet? Address each sub-guarantee in prose; verdict
-  pinned: `sufficient | partial | insufficient`.
+  pinned: `sufficient | partial | insufficient` -- sufficient = all four hold (minor caveats
+  allowed); partial = exactly one materially reduced; insufficient = two or more materially
+  reduced, or any one absent.
 - Q2. Do the standing non-validation loops (S7) carry declared equivalents -- objective,
   constraints, backstop, ratchet, stop conditions? Rate the population, naming the loops you
-  examined. Verdict: `sufficient | partial | insufficient`.
+  examined. Verdict: `sufficient | partial | insufficient` -- sufficient = every examined loop
+  declares objective, backstop, and stop conditions somewhere findable; partial = some do;
+  insufficient = none or almost none do.
 - Q3. For each technique P1-P5: adopt, adopt amended, defer, or reject? Answer via the
   `technique_verdicts` block (OUTPUT); this question's `prose` field summarizes and points
   there. The block's verdict enum: `adopt | adopt-amended | defer | reject`. Definitions:
@@ -287,7 +299,7 @@ maturity; its disposition lives in `technique_verdicts`.
   planned mechanism exercising the same property (grounding map section 10 lists the known
   ones; verify and extend). Apply the counterfactual: name a concrete defect class the
   technique would catch that the existing mechanisms, as built and as planned, provably would
-  not. No such class -> the technique's verdict cannot be `adopt` unamended.
+  not. No such class -> only `defer` or `reject` are available (Q3's rule).
 - DD-B (monotonicity walk; feeds Q1, Q2, VD2, and candidate C3). Trace each of these ten
   weakening moves as a hypothetical diff: which gate, marker, ratchet, or post-hoc detector
   fires, if any? Classify each: `gated-at-merge | detected-post-hoc | undetected`. Do NOT
@@ -308,8 +320,10 @@ maturity; its disposition lives in `technique_verdicts`.
 - DD-C (escape-ratchet traces; feeds Q1, VD4, VD5, candidate C7). For up to three real escapes
   (fast tier green, ground truth red), trace end to end: detection, attribution
   (`escape_class`/category), the filed rec, the fix, and the permanent artifact (test, fixture,
-  closure rule) that now prevents recurrence -- or the absence of one. Source escapes from the
-  regenerated recs cache (CI-RCA categories such as gate_escape) after SETUP; degraded path
+  closure rule) that now prevents recurrence -- or the absence of one. Qualifying escapes,
+  exactly: a rec whose failure category is `gate_escape`, or whose context carries an
+  `escape_class` value; nothing else counts. Source them from the regenerated recs cache after
+  SETUP; degraded path
   (cache absent, OR regenerated but holding no escape-classified recs): use the two incidents
   recorded inside Decision 135's Problem statement and trace their fixes; name which path you
   took in `meta.contract_notes`.
@@ -346,7 +360,7 @@ S2 ground truth + escape loop:
 - `.github/workflows/ci-rca.yml:22-30` -- the `workflows:` trigger filter; a comment at
   `:19-21` names `config/ci_rca_taxonomy.yaml`'s workflows map, enforced by
   `validate_ci_rca_adjudication`, as "the sole source of truth for this filter".
-- `ci-rca.yml:242-274` -- on a main failure, the job fetches the merged PR's own `--pre`
+- `ci-rca.yml:242-276` -- on a main failure, the job fetches the merged PR's own `--pre`
   selection-manifest artifact ("Decision 135 escape-attribution"); resolution failure degrades
   to omitting `escape_class`.
 - `ci-rca.yml` step "Run ci-rca agent" -- the agent is invoked with `--max-turns 30` and an
@@ -366,6 +380,10 @@ S2 ground truth + escape loop:
   agent iteration cap, consumed by the reconcile and terraform-apply-sandbox workflows.
 - `config/ci_rca_taxonomy.yaml:4-18` -- `failure_categories` includes `gate_escape` and
   `test_collection_empty`.
+- `config/ci_rca_taxonomy.yaml:184` onward -- a `workflows:` map adjudicating EVERY workflow
+  with `ci_rca: watched|excluded`, an `owner`, and a `rationale`: a declared, per-workflow
+  backstop-coverage register (convergence-health, dedup-probe, and terraform-drift carry
+  deliberate `excluded` rows). The strongest existing counter-surface to C1 and C4.
 
 S3 budget governance:
 - `scripts/convergence_health/budget_ingest.py:1-44` -- pr-validate is credential-free, so a CI
@@ -388,8 +406,8 @@ S4 selection-soundness stack:
 - `scripts/checks/deps/validate_pre_glob_closure.py:1-31` -- ADVISORY auditor (wave 4a): does
   each glob-gated pre check's `pre_globs` cover its own import closure; motivated by rec-3289;
   "Waves 1 and 2 found 12 such defective globs BY HAND"; wave 4c "flips it to blocking once the
-  backlog is zero"; `_PRUNED_EDGES` is declared empty at `:55` ("INTENTIONALLY EMPTY at
-  introduction" per its comment).
+  backlog is zero"; `_PRUNED_EDGES` is declared empty at `:55` (its "INTENTIONALLY EMPTY at
+  introduction" comment sits at `:49`).
 - Closed rec-3289's title reports 33 of 46 glob-gated pre checks under-declared their closure
   at measurement.
 - `docs/contracts/check-manifest.yaml:39-51` -- `declared_segment_tokens` must equal
@@ -436,7 +454,14 @@ S7 standing loops:
   branch-cleanup, and reconcile are workflow_dispatch-only -- branch-cleanup's header states
   "DISPATCH-ONLY, DELIBERATELY", while terraform-drift's own header comment still claims a
   cron schedule (repo-internal staleness: treat `on:` trigger blocks as truth, never header
-  prose).
+  prose). terraform-drift's LOOP properties (trigger, backstop, ratchet) are in scope; the
+  sandbox apply/guard model it monitors stays out of scope per section 13.
+- `.claude/skills/implement/SKILL.md:110-112` -- the interactive fix loop is bounded: a
+  3-fix-attempt budget, a genuine fix requires a non-empty diff plus two consecutive passes,
+  and a detected-nondeterministic re-run is stop-and-surface (Decision 55). Evidence for Q4
+  property 9 and C6; the skill surface itself stays unrated.
+- `.claude/skills/overseer/SKILL.md:100` and `:158` -- exactly one safety-net watchdog trigger
+  is created at gate G0 and deleted at G3. Same evidentiary role.
 - `.github/agents/schedule.yaml:1-30` -- scheduled-agent manifest; "The fleet is currently
   inert: every entry is enabled:false" pending T4.12.
 - `scripts/verifiers/__init__.py` -- `REGISTRY: list[type[Verifier]] = []`, commented: legacy
@@ -454,8 +479,10 @@ Hard bounds -- do NOT exceed any of them:
 
 - DD-B: exactly the 10 listed moves, static tracing only.
 - DD-C: <= 3 escape traces.
-- Graduation shards: <= 5 shards sampled, drawn from non-deprecated depth-1 entries only. Per
-  shard, apply the counterfactual as an operation:
+- Graduation shards: <= 5 shards sampled, drawn from non-deprecated depth-1 entries only.
+  Selection rule: cover as many distinct `primitive_slot` values as possible, one shard per
+  slot, taking the most recent `graduated_at` within each slot. Per shard, apply the
+  counterfactual as an operation:
   read `guard_target`/`guard_symbol` and the `check_spec` test; answer "if the guarded symbol
   were deleted or its behavior inverted, would this recorded check fail?" -- a NO is evidence
   for Q4.3/VD3.
@@ -564,7 +591,8 @@ audit:
        roadmap_crossref: {classification: novel|planned-insufficient|planned-unbuilt,
                           item_ids: [], dedup_search_terms: [], dedup_hit_count: 0, note: ""},
        effort: XS|S|M|L, depends_on: [<finding ids>],
-       sequencing: {safe_to_queue_now: true|false, blocked_behind: [], note: ""}}
+       sequencing: {safe_to_queue_now: true|false, blocked_behind: [], note: ""},
+       note: ""}
   rejected_candidates:
     - {candidate: "", why_dismissed: "", compensating_control: "",
        control_property_match: "", decision_or_item_id: ""}
@@ -575,7 +603,8 @@ audit:
             maturity_S5: "", maturity_S6: "", maturity_S7: ""}
 ```
 
-COUNTING INVARIANT, stated verbatim in your report: `findings[]` is the SOLE enumerated list;
+COUNTING INVARIANT (restate it in your report; a one-sentence paraphrase is fine -- this
+section holds the binding copy): `findings[]` is the SOLE enumerated list;
 `total_findings = len(findings) = novel + planned_insufficient + planned_unbuilt`;
 fully-covered candidates live in `rejected_candidates`, NOT findings; `rubric_ratings`,
 `question_answers`, and `technique_verdicts` are systems-of-record referenced FROM findings,
@@ -591,7 +620,12 @@ Field notes: `dedup_hit_count` is an integer, and null (not 0) on every finding 
 cited> -- <what resolves there now>". `summary.maturity_*` rows mirror
 `per_surface_assessment[].maturity`; on divergence, `per_surface_assessment` is authoritative.
 Findings with `surface: shared` appear in `findings[]` and the summary counts but never demote
-a per-surface maturity (section 15).
+a per-surface maturity (section 15). The finding-level `note` holds the strongest rejected
+counter-reading (section 17). Size anchors for `cost`/`effort`: XS = a single small edit;
+S = one focused PR; M = a multi-file PR or short series; L = sustained multi-PR work.
+`top_improvements` carries 3-5 finding ids -- fewer when fewer findings exist, `[]` at zero
+findings, and `highest_leverage_change: null` at zero findings. In `rubric_ratings`, an `n/a`
+rating may leave `evidence` empty.
 
 The companion `audits/loop-spec-adoption-{sha}.md` (<= 1500 words) is the executive layer:
 lead with the five technique verdicts and the highest-leverage change, then Q1/Q2/Q4 in brief,
@@ -642,13 +676,20 @@ findings is a valid result -- state it; do not pad.
    `bin/venv-python -c "import yaml,sys; yaml.safe_load(open('audits/loop-spec-adoption-<sha>.yaml'))"`).
    This is your pre-push gate. Do not run the repo's validation tiers; a pre-existing,
    unrelated failure is recorded in `meta.contract_notes`, never fixed.
-3. Commit with `git -c user.name=Claude -c user.email=noreply@anthropic.com commit`. Include no
-   model identifier beyond the pinned `meta.model` string (which deliberately withholds the
-   exact id) -- none in the commit message, the PR title or body, or anywhere else in either
-   deliverable. Message: `audit(loop-spec-adoption): adoption review of loop-spec techniques
-   P1-P5`.
+3. Stage ONLY the two deliverables by explicit path
+   (`git add audits/loop-spec-adoption-<sha>.yaml audits/loop-spec-adoption-<sha>.md`,
+   never `git add -A`), so a dirty tree cannot widen the diff. Commit with `git -c user.name=Claude -c
+   user.email=noreply@anthropic.com commit`. Include no model identifier beyond the pinned
+   `meta.model` string (which deliberately withholds the exact id) -- none in the commit
+   message, the PR title or body, or anywhere else in either deliverable; trailers your
+   harness appends to commit messages mechanically (e.g. Co-Authored-By) are outside your
+   authorship and exempt -- do not fight your harness. Message:
+   `audit(loop-spec-adoption): adoption review of loop-spec techniques P1-P5`.
 4. `git push -u origin HEAD` (on network failure retry up to 4 times with 2s/4s/8s/16s
-   backoff).
+   backoff). Degraded (push still failing after the retries, or step 5's PR tool unavailable
+   or unauthorized): stop retrying, leave the branch committed locally, and end your turn
+   with a final message carrying the PR title, the full PR body, and both deliverable paths
+   -- a human completes the handoff.
 5. Open the PR ready-for-review via `mcp__github__create_pull_request`: owner
    `benjamin-blake`, repo `theseus`, base `main`, title
    `audit: loop-spec adoption review (validation + standing loops)`, body = the `summary:`
@@ -669,5 +710,10 @@ findings is a valid result -- state it; do not pad.
   classifications once per finding (the strongest rejected counter-reading goes in the
   finding's `note` or `compensating_controls_considered`).
 - Budget: "budget" means the section 11 sampling bounds and the 1500-word report cap -- respect
-  every one; within them, pace yourself. No repo-wide sweeps beyond the grounding map and the
-  dedup greps.
+  every one; within them, pace yourself. A "sweep" is repo-wide content search over the tree
+  at large, and is forbidden. Bounded enumeration is NOT a sweep: listing
+  `.github/workflows/*.yml` and reading their `on:` blocks and headers, reading
+  `.github/agents/schedule.yaml`, listing `.claude/commands/` and `.claude/skills/` entry
+  files, following anchors this prompt hands you, and the section 13 dedup greps over the
+  named ownership surfaces are all in bounds -- DD-A's "verify and extend" and P3's
+  enumeration reach exactly that far.
