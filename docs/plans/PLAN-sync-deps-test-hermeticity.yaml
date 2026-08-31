@@ -1,0 +1,437 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: sync-deps-test-hermeticity
+intent: >-
+  Make tests/test_sync_deps.py hermetic and repair three real defects in bin/sync-deps.sh so the
+  full validate tier stops intermittently redding on ambient container state rather than on the
+  code under test.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-sync-deps-test-hermeticity.yaml
+phase: >-
+  Test-suite hermeticity repair. ad_hoc_rec soft-warn exception category (rec-2687/3133/3316), so
+  the Tier Item Freshness Gate is skipped and no tier_item is claimed. T3.6 (test-suite
+  hermeticity audit) is status complete; this defends its precondition, it does not reopen it.
+scope:
+  - file: bin/sync-deps.sh
+    action: Modify
+    purpose: >-
+      Resolve TERRAFORM_VERSION once and fail loudly on a missing/unreadable/empty
+      config/terraform-version under INSTALL_TERRAFORM=1 (exit 2 in --check; loud-but-non-fatal in
+      install mode); replace the SIGPIPE-racy piped version comparison with a pipe-free capture;
+      drop the duplicated cat in the install branch.
+  - file: tests/test_sync_deps.py
+    action: Modify
+    purpose: >-
+      Stop inheriting the ambient environment in _run_sync, seed config/terraform-version in
+      _make_fake_repo, add the regression tests for all three defects, move the real-network
+      install to the integration lane, and add a hermetic stub-uv replacement for it.
+bundled_recommendations:
+  - rec-2687
+  - rec-3133
+  - rec-3316
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    Under INSTALL_TERRAFORM=1 with config/terraform-version missing, unreadable or whitespace-only,
+    bin/sync-deps.sh --check exits 2 with an ERROR naming the file -- never "in sync".
+  - >-
+    In install mode the same condition is loud but non-fatal: ERROR logged, python dependency sync
+    still runs, the "fingerprint NOT updated" path is taken, exit 0, and the "in sync, nothing to
+    do" early-exit does not fire.
+  - >-
+    bin/sync-deps.sh's terraform version comparison contains no pipeline, so an early pipe close
+    can no longer make pipefail report spurious drift.
+  - >-
+    tests/test_sync_deps.py::_run_sync never passes env=None; every subprocess runs under a pinned
+    env with no INSTALL_TERRAFORM and a tmp HOME.
+  - >-
+    _make_fake_repo seeds config/terraform-version by default, with an explicit opt-out for the
+    missing-file regression tests.
+  - >-
+    TestRealInstallAndIdempotency is marked @pytest.mark.integration and is deselected by both
+    validate tiers' -m "not integration" selector, while the rest of the file still collects.
+  - >-
+    A stub-uv test covers the install path -- uv invocation arguments, fingerprint write,
+    idempotency and drift-on-mutation -- with no package-index access, because the stub uv on the
+    pinned PATH serves the install (pytest's --disable-socket does not reach a subprocess).
+  - >-
+    tests/test_sync_deps.py -m "not integration" passes 5 consecutive full-file runs in the admin
+    container with INSTALL_TERRAFORM=1 and terraform on PATH.
+  - rec-2687, rec-3133 and rec-3316 acceptance commands all pass, and all three recs reach status closed.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: rec-3133 acceptance -- the named missing-version-file regression test passes.
+    command: bin/venv-python -m pytest tests/test_sync_deps.py::TestTerraformDriftDetection::test_missing_terraform_version_file_fails_loudly -q
+    expected: the selected test passes
+    fix_if: Test absent or failing -- the loud-failure branch is not implemented, or --check exits 0/1 instead of 2.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: sync-deps-missing-tf-version-fails-loudly
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Exercise the shipped script directly (not through pytest) -- a throwaway repo with no
+      config/terraform-version under INSTALL_TERRAFORM=1 must exit 2 and name the file.
+    command: >-
+      d=$(mktemp -d) && mkdir -p "$d/bin" && cp bin/sync-deps.sh "$d/bin/" && printf 'six==1.16.0\n' > "$d/requirements.txt" && printf 'typing-extensions==4.12.2\n' > "$d/requirements-dev.txt" && (cd "$d" && env PATH=/usr/bin:/bin HOME="$d/home" INSTALL_TERRAFORM=1 bash bin/sync-deps.sh --check > "$d/out" 2>&1; echo "exit=$?" >> "$d/out") && grep -q 'exit=2' "$d/out" && grep -q 'config/terraform-version' "$d/out" && grep -q 'ERROR' "$d/out" && echo VERIFIED && rm -rf "$d"
+    expected: VERIFIED
+    fix_if: >-
+      Any exit other than 2. The pre-fix script exits 1 here (this step pins PATH=/usr/bin:/bin, so
+      `command -v terraform` fails and the empty-version degradation reports drift rather than "in
+      sync"); exit 1 after the change means the config error was conflated with ordinary drift
+      instead of getting its own code.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates the standing regression guard graduated at step 1; this step's distinct value is
+      exercising the shipped script directly rather than through pytest, and its inline
+      throwaway-repo construction is transient session state, not a stable registry command.
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Decision 154 guard, no-python-drift arm -- a config error in INSTALL mode must be loud but
+      non-fatal, must NOT claim "in sync, nothing to do", and must NOT reach the terraform
+      download block.
+    command: >-
+      d=$(mktemp -d) && mkdir -p "$d/bin" "$d/.venv" && cp bin/sync-deps.sh "$d/bin/" && printf 'six==1.16.0\n' > "$d/requirements.txt" && printf 'typing-extensions==4.12.2\n' > "$d/requirements-dev.txt" && (cd "$d" && sha256sum requirements.txt requirements-dev.txt | sha256sum | awk '{print $1}' | tr -d '\n' > .venv/.requirements-fingerprint) && (cd "$d" && env PATH=/usr/bin:/bin HOME="$d/home" INSTALL_TERRAFORM=1 bash bin/sync-deps.sh > "$d/out" 2>&1; echo "exit=$?" >> "$d/out") && grep -q 'exit=0' "$d/out" && grep -q 'ERROR' "$d/out" && grep -q 'fingerprint NOT updated' "$d/out" && ! grep -q 'in sync, nothing to do' "$d/out" && ! grep -q 'installing terraform' "$d/out" && echo VERIFIED && rm -rf "$d"
+    expected: VERIFIED
+    fix_if: >-
+      A non-zero exit means exit 2 leaked into the install path and would abort
+      bin/setup-cloud-env.sh's snapshot build under set -e. An "in sync, nothing to do" line means
+      the install-path early-exit is not guarded on the config-error flag. An "installing terraform"
+      line means tf_drift was set on a config error, so the script would curl an unresolved version
+      URL -- an unbounded outbound call (curl at bin/sync-deps.sh:122 has no --max-time) inside a
+      step this plan marks hermetic.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      This arm's contract -- a config error must suppress the "in sync, nothing to do" early exit when
+      py_drift is 0 -- is covered by the step 5 selector's arm (b), which execution step 6 requires; the
+      registry row belongs to that durable selector, not to this session-local mktemp scaffold. Without
+      arm (b) this waiver would be false and the step would need graduating instead.
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Decision 154 guard, python-drift arm -- proves a terraform config error does NOT suppress the
+      python dependency sync (the ordering execution step 2 calls load-bearing). Stub uv serves the
+      install, so no package index is contacted.
+    command: >-
+      d=$(mktemp -d) && mkdir -p "$d/bin" "$d/stub" "$d/.venv/bin" && cp bin/sync-deps.sh "$d/bin/" && printf 'six==1.16.0\n' > "$d/requirements.txt" && printf 'typing-extensions==4.12.2\n' > "$d/requirements-dev.txt" && printf '#!/usr/bin/env bash\nexit 0\n' > "$d/stub/uv" && chmod +x "$d/stub/uv" && printf '#!/usr/bin/env bash\nexit 0\n' > "$d/.venv/bin/python" && chmod +x "$d/.venv/bin/python" && (cd "$d" && env PATH="$d/stub:/usr/bin:/bin" HOME="$d/home" INSTALL_TERRAFORM=1 bash bin/sync-deps.sh > "$d/out" 2>&1; echo "exit=$?" >> "$d/out") && grep -q 'exit=0' "$d/out" && grep -q 'ERROR' "$d/out" && grep -q 'installing requirements.txt via uv' "$d/out" && grep -q 'fingerprint NOT updated' "$d/out" && ! grep -q 'installing terraform' "$d/out" && ! test -f "$d/.venv/.requirements-fingerprint" && echo VERIFIED && rm -rf "$d"
+    expected: VERIFIED
+    fix_if: >-
+      A missing "installing requirements.txt via uv" line means fail=1 was set BEFORE the
+      python-install block, so a terraform config error now also breaks the venv self-heal every
+      session -- move the assignment after that block.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Same inline throwaway-repo scaffold as steps 2 and 3, duplicating the contract graduated as a
+      pytest guard at step 5; its stub-uv construction is session-local and not a stable registry command.
+  - step: 5
+    phase: pre-deploy
+    action: Install-mode non-fatal contract, as a standing pytest regression guard.
+    command: bin/venv-python -m pytest tests/test_sync_deps.py::TestTerraformDriftDetection::test_missing_terraform_version_file_install_mode_is_non_fatal -q
+    expected: the selected test passes
+    fix_if: >-
+      Test absent or failing -- the install path either exits non-zero on a config error, still
+      writes the fingerprint, suppresses the python sync, or reaches the terraform download block.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: sync-deps-install-mode-config-error-non-fatal-test
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      Real-consumer proof -- run the actual SessionStart hook against a checkout with
+      config/terraform-version removed; it must still exit 0, surface the ERROR, and not download.
+    command: >-
+      d=$(mktemp -d) && mkdir -p "$d/bin" "$d/.venv" "$d/.claude/hooks" && cp bin/sync-deps.sh "$d/bin/" && cp .claude/hooks/session_start_sync_deps.sh "$d/.claude/hooks/" && printf 'six==1.16.0\n' > "$d/requirements.txt" && printf 'typing-extensions==4.12.2\n' > "$d/requirements-dev.txt" && (cd "$d" && sha256sum requirements.txt requirements-dev.txt | sha256sum | awk '{print $1}' | tr -d '\n' > .venv/.requirements-fingerprint) && (cd "$d" && env PATH=/usr/bin:/bin HOME="$d/home" INSTALL_TERRAFORM=1 bash .claude/hooks/session_start_sync_deps.sh > "$d/out" 2>&1; echo "hook_exit=$?" >> "$d/out") && grep -q 'hook_exit=0' "$d/out" && grep -q 'ERROR' "$d/out" && grep -q 'config/terraform-version' "$d/out" && ! grep -q 'installing terraform' "$d/out" && echo VERIFIED && rm -rf "$d"
+    expected: VERIFIED
+    fix_if: >-
+      A non-zero hook exit means the new exit code broke the hook's always-exit-0 contract; a missing
+      ERROR line means the message goes somewhere the hook does not capture; an "installing terraform"
+      line means the download block is reachable on a config error.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: sync-deps-session-start-hook-stays-exit-zero
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      SIGPIPE regression -- a stub terraform emitting the version line plus >64KB of trailing output
+      makes the old piped shape fail deterministically (exit 141) and the fixed shape pass.
+    command: bin/venv-python -m pytest tests/test_sync_deps.py::TestTerraformDriftDetection::test_terraform_version_check_survives_early_pipe_close -q
+    expected: the selected test passes
+    fix_if: >-
+      Failure means the comparison still pipes terraform version into head/grep under pipefail;
+      replace the pipeline with a full-output capture plus a case match.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: sync-deps-tf-version-check-no-sigpipe
+  - step: 8
+    phase: pre-deploy
+    action: Prove no pipeline remains on the terraform version comparison line.
+    command: bash -c 'grep -n "terraform version" bin/sync-deps.sh | grep -qE "terraform version[^|]*\| *(head|grep)" && { echo "PIPELINE STILL PRESENT"; exit 1; }; echo VERIFIED'
+    expected: VERIFIED
+    fix_if: A pipe into head or grep survives on the terraform version line -- the SIGPIPE race is still reachable.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: sync-deps-tf-version-comparison-pipe-free
+  - step: 9
+    phase: pre-deploy
+    action: rec-2687 acceptance -- _make_fake_repo seeds config/terraform-version (or pins PATH).
+    command: bash -c "grep -q 'def _make_fake_repo' tests/test_sync_deps.py && grep -A14 'def _make_fake_repo' tests/test_sync_deps.py | grep -qE 'terraform-version|PATH='"
+    expected: exit 0
+    fix_if: >-
+      The seeding landed further than 14 lines below the def line -- move it up so the rec's own
+      acceptance grep window covers it.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      A rec-supplied structural grep pinned to a 14-line window below one def, not a behavioural
+      invariant; steps 11 and 12 are the behavioural guards for the same hermeticity property.
+  - step: 10
+    phase: pre-deploy
+    action: rec-3316 acceptance -- the real-network install class is marked integration.
+    command: bash -c "grep -B3 'class TestRealInstallAndIdempotency' tests/test_sync_deps.py | grep -q 'pytest.mark.integration'"
+    expected: exit 0
+    fix_if: The decorator is absent or more than 3 lines above the class statement.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: sync-deps-real-install-marked-integration
+  - step: 11
+    phase: pre-deploy
+    action: >-
+      Ambient-poisoning probe -- reproduce the exact container condition that flakes the file today
+      (INSTALL_TERRAFORM=1 with terraform absent from PATH) and prove the pinned subprocess env
+      immunizes every test against it.
+    command: env INSTALL_TERRAFORM=1 PATH=/usr/bin:/bin bin/venv-python -m pytest tests/test_sync_deps.py -m "not integration" -q
+    expected: all selected tests pass, 0 failed
+    fix_if: >-
+      Any failure means ambient state still reaches the script under test -- find the remaining
+      subprocess call site that does not pass the pinned env.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: sync-deps-tests-immune-to-ambient-install-terraform
+  - step: 12
+    phase: pre-deploy
+    action: >-
+      Stub-uv replacement covers the install path the integration marker removed from the default lane.
+    command: bin/venv-python -m pytest tests/test_sync_deps.py::TestHermeticInstall -q
+    expected: every collected TestHermeticInstall test passes (a python3.12-absent skip on the venv-creation test is declared, not a failure)
+    fix_if: >-
+      A failure means the stub-uv fake repo does not reach the install branch -- check the stub uv is
+      first on PATH. A skip on the venv-creation test means python3.12 did not resolve; that is the
+      declared reason, not a silent pass.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: sync-deps-hermetic-stub-uv-install
+  - step: 13
+    phase: pre-deploy
+    action: >-
+      Confirm both validate tiers deselect the integration-marked class while the rest of the file
+      still collects (no vacuous pass per scripts/ci_rca/vacuous_pass.py).
+    command: bash -c 'bin/venv-python -m pytest tests/test_sync_deps.py -m "not integration" --collect-only -q 2>&1 | grep -q "TestRealInstallAndIdempotency" && { echo "STILL SELECTED"; exit 1; }; bin/venv-python -m pytest tests/test_sync_deps.py -m "not integration" --collect-only -q 2>&1 | grep -qE "[1-9][0-9]* tests? collected" || { echo "VACUOUS -- nothing collected"; exit 1; }; echo VERIFIED'
+    expected: VERIFIED
+    fix_if: >-
+      STILL SELECTED means the marker is not applied; VACUOUS means every test in the file got marked,
+      which the vacuous-pass detector treats as an expected-zero deselection and would hide real breakage.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: sync-deps-integration-deselect-not-vacuous
+  - step: 14
+    phase: pre-deploy
+    action: >-
+      Whole-file stability in the default (non-integration) lane under the exact ambient condition
+      that flakes today -- 5 consecutive runs with INSTALL_TERRAFORM=1 and terraform on PATH.
+    command: bash -c 'for i in 1 2 3 4 5; do env INSTALL_TERRAFORM=1 bin/venv-python -m pytest tests/test_sync_deps.py -m "not integration" -q || { echo "RUN $i FAILED"; exit 1; }; done; echo VERIFIED'
+    expected: VERIFIED
+    fix_if: Any run red means a residual non-hermetic path survives; do not re-run to green, find it.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      A 5x repetition loop is a flake-hunt whose cost scales with the suite, and its signal is already
+      carried deterministically by the graduated steps 1, 7 and 11; graduating a repeated whole-file
+      pytest run would add minutes to every tier for no additional discrimination.
+  - step: 15
+    phase: pre-deploy
+    action: Full presubmit gate before commit per handoff_policy (Decision 163).
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: Any check red -- fix forward, never bypass (Decision 55).
+    hermetic: false
+    graduation: not-applicable
+  - step: 16
+    phase: post-deploy
+    action: Closure obligation -- confirm all three bundled recs actually reached status closed.
+    command: >-
+      bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json,pathlib; rows=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text(encoding='utf-8').splitlines() if l.strip()]; by={r['id']: r for r in rows}; ids=('rec-2687','rec-3133','rec-3316'); [print(i, by[i]['status']) for i in ids]; assert all(by[i]['status']=='closed' for i in ids)"
+    expected: All three print "closed" and the assertion passes.
+    fix_if: >-
+      rec-autoclose.yml did not fire or the Resolves trailer was malformed; fall back to the explicit
+      `--update-rec <id> --status closed --resolution "..."` portal call per Decision 70.
+test_obligations:
+  - source: bin/sync-deps.sh
+    behavior: >-
+      Under INSTALL_TERRAFORM=1, a missing, unreadable or whitespace-only config/terraform-version
+      makes --check fail loudly with exit 2 and an ERROR naming the file.
+    verification_step: 1
+    test_selector: tests/test_sync_deps.py::TestTerraformDriftDetection::test_missing_terraform_version_file_fails_loudly
+    red_green_expectation: >-
+      Red before -- the pre-fix script never exits 2 here: with terraform on PATH the empty
+      TERRAFORM_VERSION degrades grep to match-anything and it exits 0 "in sync"; with terraform
+      absent it exits 1 as ordinary drift. Green after.
+  - source: bin/sync-deps.sh
+    behavior: >-
+      The same config error in INSTALL mode stays non-fatal -- ERROR logged, fingerprint withheld,
+      exit 0, the "in sync, nothing to do" early-exit suppressed when py_drift is 0, the python
+      dependency sync still run when py_drift is 1, and the terraform download block never entered -- so bin/setup-cloud-env.sh's bare call
+      under set -euo pipefail cannot abort the snapshot build.
+    verification_step: 5
+    test_selector: tests/test_sync_deps.py::TestTerraformDriftDetection::test_missing_terraform_version_file_install_mode_is_non_fatal
+    red_green_expectation: >-
+      Red before (no such branch exists; the pre-fix script reports "in sync, nothing to do" or
+      curls a 404 URL built from the empty version), green after.
+  - source: bin/sync-deps.sh
+    behavior: >-
+      The terraform version comparison uses no pipeline, so an early pipe close cannot make
+      pipefail report spurious drift.
+    verification_step: 7
+    test_selector: tests/test_sync_deps.py::TestTerraformDriftDetection::test_terraform_version_check_survives_early_pipe_close
+    red_green_expectation: >-
+      Red before -- a stub terraform emitting the version line plus >64KB of trailing output makes
+      the piped shape take SIGPIPE (141) deterministically, measured 5/5. Green after, 0/60.
+constraints:
+  - >-
+    Only bin/sync-deps.sh and tests/test_sync_deps.py may be modified, PLUS the implement-time
+    bookkeeping surfaces this plan itself owes: one
+    config/agent/verification_registry/entries/<check_id>.yaml shard per `graduate` disposition
+    (9 of them, each carrying plan_slug: sync-deps-test-hermeticity), and this plan's own
+    implementation_declared flip to true. validate_graduation_completeness's implement leg reds
+    without those shards.
+  - No rescue agents or workaround loops (Decision 55) -- fix the script, never skip or xfail the test.
+  - >-
+    Exit 2 is scoped to --check ONLY. bin/setup-cloud-env.sh:163 calls this script bare under
+    set -euo pipefail, so a non-zero exit from the install path would abort the snapshot build; the
+    install path keeps its documented "warn, withhold the fingerprint, still exit 0" contract
+    (Decision 154 spirit flag).
+  - A terraform config error must not suppress the python dependency sync -- it blocks only the fingerprint write.
+  - >-
+    New pytest assertions must read stderr (or combined output) -- log() writes to stdout and every
+    existing assertion reads result.stdout, but the new ERROR goes to stderr, so a stdout-only
+    assertion would silently never match.
+  - >-
+    No hardcoded exact-count assertions in the new tests (tests/CLAUDE.md test-count coupling) --
+    assert on behaviour and on the presence of the integration marker, never on a collected test count.
+  - >-
+    New tests must not import from another test_* module (tests/CLAUDE.md no-cross-test-imports); the
+    stub helpers stay module-local to tests/test_sync_deps.py.
+  - >-
+    tests/test_sync_deps.py is 185 lines (~145 SLOC) and unregistered in config/sloc_budgets.yaml; keep it under 500
+    by decomposition if needed -- never add a budget-raise entry (Decision 128/130).
+  - Commands must be Linux/bash-compatible; invoke bin/venv-python, never python/python3.
+  - rec-2904 is already status=superseded -- do not reopen or re-bundle it.
+context:
+  - >-
+    Decision-scout FLAGS_FOUND (131 of 131 triaged), no CONTRADICT. CITE: Decision 55, 73, 103, 128,
+    130, 132, 148, 163. RELATED: Decision 133, 135, 142, 153, 166.
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 4 round(s)"
+  - >-
+    Scout SPIRIT flags resolved: Decision 154 pivoted (exit 2 scoped to --check; VP steps 3-5);
+    Decision 48 pivoted (VP step 6 runs the real hook); Decision 162 accepted-as-is -- set -e is not
+    inherited by a `bash script.sh` child, which reads its own set -uo pipefail at bin/sync-deps.sh:20.
+  - >-
+    Three defects, all reproduced this session: D1 tests/test_sync_deps.py:51-53 (env=None);
+    D2 bin/sync-deps.sh:52 (empty TERRAFORM_VERSION degrades grep to match-anything);
+    D3 bin/sync-deps.sh:53 (pipefail + head SIGPIPE). D3 is in NO rec and is a PRODUCTION defect --
+    it reaches the SessionStart hook and bin/setup-cloud-env.sh, not just tests. Measurements go in
+    the implement PR body.
+  - >-
+    Both affected tests are FLAKY, not deterministically failing -- D3 fires at roughly 4-8% per
+    pipeline invocation. Do not carry a "fails today" claim into the PR body.
+  - >-
+    rec-3316's signature (returncode 0 + missing fingerprint) is reproduced by the terraform 404
+    path, so it shares rec-3133's root cause; its real-PyPI exposure is independently real, which is
+    why the integration marker stays in scope.
+  - >-
+    Open adjacency, do NOT bundle (bin/setup-cloud-env.sh out of scope): rec-2535 would gate
+    setup-cloud-env.sh on `--check`, which composed naively with exit 2 aborts a snapshot build.
+    Blast radius today is contained: no workflow, script or hook invokes --check.
+  - >-
+    Known shift: a pinned tmp HOME drops ~/.local/bin from the PATH bin/sync-deps.sh:88 exports, so
+    the integration-lane test takes the pip fallback (:101-109), not uv. Deliberate --
+    TestHermeticInstall's stub covers the uv branch.
+  - >-
+    -m "not integration" is applied at scripts/checks/_scaffolding.py:138 (full) and
+    scripts/checks/_pytest_diff.py:611 (fast); no integration lane runs anywhere, so step 12 is what
+    preserves install coverage. tests/conftest.py:193 re-enables sockets for the marker.
+  - >-
+    ci-rca HARD BLOCK deferred on explicit human authorization: rec-3328 owned by in-flight
+    PLAN-ci-convergence-fixes (same file); rec-3293/rec-3292 read as already fixed on main but still
+    open (pytz at requirements.txt:11; no extras in requirements.lock). Also meets Related-Work
+    condition 3 (pytest regression).
+  - "Squash-merge body must carry: Resolves: rec-2687, rec-3133, rec-3316 (VP step 16 is the Decision 103 closure proof)."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    bin/sync-deps.sh -- hoist TERRAFORM_VERSION resolution above the drift branch, reading
+    config/terraform-version only when readable and stripping whitespace; on empty/missing under
+    INSTALL_TERRAFORM=1 log an ERROR to stderr naming the file and set a tf_config_error flag.
+  - >-
+    bin/sync-deps.sh -- in --check mode exit 2 on tf_config_error before the drift/in-sync report; in
+    install mode set fail=1 AFTER the python-install block (so a terraform config error never suppresses
+    the python dependency sync) and guard the "in sync, nothing to do" early-exit on tf_config_error too,
+    otherwise a config error with no python drift still reports in sync. INVARIANT: a config error must
+    leave tf_drift at 0, so the terraform download block at :118-132 is never entered with an unresolved
+    version -- never set tf_drift=1 as a way of signalling the error. curl at :122 carries no --max-time,
+    so an unguarded entry is an unbounded outbound call inside steps this plan marks hermetic.
+  - >-
+    bin/sync-deps.sh -- replace 'terraform version | head -1 | grep -q' with a pipe-free
+    "$(terraform version 2>/dev/null)" capture plus a case match on the first line; drop the now-duplicate
+    cat in the install branch and reuse the resolved TERRAFORM_VERSION; update the header usage block to
+    document exit 2.
+  - >-
+    tests/test_sync_deps.py -- give _run_sync a pinned default env (PATH plus a tmp HOME, no
+    INSTALL_TERRAFORM) so env=None can never reach subprocess.run; keep the explicit-env parameter the
+    terraform tests already use.
+  - >-
+    tests/test_sync_deps.py -- add a terraform_version parameter to _make_fake_repo that seeds
+    config/terraform-version by default and accepts None to omit it, placed within 14 lines of the def so
+    rec-2687's acceptance grep window covers it; make TestTerraformDriftDetection._in_sync_repo tolerate
+    the pre-created config directory (its bare (repo / "config").mkdir() at :98 will otherwise raise
+    FileExistsError).
+  - >-
+    tests/test_sync_deps.py -- add TestTerraformDriftDetection::test_missing_terraform_version_file_fails_loudly
+    (--check exits 2, ERROR on stderr names the file), a whitespace-only-file sibling,
+    test_missing_terraform_version_file_install_mode_is_non_fatal, which must invoke _run_sync TWICE
+    because the two install-mode arms are mutually exclusive: (a) no fingerprint (py_drift=1, stub uv on
+    the pinned PATH) asserting exit 0, ERROR, the uv install line, fingerprint withheld, and no
+    "installing terraform"; and (b) fingerprint seeded to match (py_drift=0) asserting exit 0, ERROR, and
+    NO "in sync, nothing to do". Arm (b) is load-bearing and must not be dropped: under py_drift=1 the
+    early exit at bin/sync-deps.sh:69 is unreachable regardless of the guard, so asserting that string's
+    absence in arm (a) alone passes vacuously against an unfixed script, and test_terraform_version_check_survives_early_pipe_close
+    using a stub terraform that emits the version line plus >64KB of trailing output.
+  - tests/test_sync_deps.py -- mark TestRealInstallAndIdempotency @pytest.mark.integration directly above the class statement.
+  - >-
+    tests/test_sync_deps.py -- add TestHermeticInstall covering the install path with a stub uv on a pinned
+    PATH, zero network. The always-running test pre-seeds an executable stub at .venv/bin/python (the script
+    only tests -x and hands the path to the stub uv, never executes it), which skips the venv-creation branch
+    and removes any dependency on python3.12 resolving under the pinned PATH: it asserts the uv argument list
+    for both requirements files, the fingerprint value, an idempotent second --check, drift after mutating
+    requirements-dev.txt, and a correct fingerprint after resync. A second test covers the venv-creation branch
+    itself, prepending the parent directory of shutil.which('python3.12') to the pinned PATH and skipping with
+    a named reason when python3.12 is absent -- ubuntu-latest ships /usr/bin/python3.12 today, so a bare
+    /usr/bin:/bin pin would silently rot if the runner image moves.
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)
+  - "Report: what was implemented, verification results"
+work_areas: []
+rollback: >-
+  Both scope files are self-contained; git revert of the single squash commit restores the prior
+  behaviour. No infrastructure, no data migration, no deployed artifact.
