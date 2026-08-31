@@ -49,13 +49,21 @@ scope:
   action: Modify
   purpose: Its module docstring states the 112,000-byte pin as the live design rationale for excluding
     significance from the projection and for live-only skeleton scoping. Re-ground that prose to cite
-    Decision 179. VP step 1 cannot see this file -- it contains "112,000", none of the grep tokens.
+    Decision 179. VP step 2 cannot see this file via its token sweep -- it contains "112,000", none of
+    the grep tokens.
 - file: docs/DECISIONS.md
   action: Modify
   purpose: Add the single ratifying entry Decision 179 (drafted verbatim in execution step 8; 6,123 bytes
     measured, under the 6,144 cap). It takes live header slot 132, which PASSES the 132-header ceiling
     (the guard fires on > 132) -- the same-PR forcing constraint is the index pin, not this ceiling; see
     constraints.
+- file: config/decision_supersession_waivers.yaml
+  action: Modify
+  purpose: 'Add three waiver entries (179->134, 179->160, 179->166). Decision 179''s envelope declares
+    amends: [134, 160, 166], and validate_supersession_annotations -- registered pre=True over docs/DECISIONS.md
+    -- HARD-FAILS each edge whose victim block carries no forward pointer and no waiver. All three are
+    clause/point-level amends whose victim core still stands, which is the waiver case the file''s own
+    header defines; 160->134 is direct precedent for this exact shape.'
 - file: docs/decisions-index.json
   action: Modify
   purpose: Regenerate after Decision 179 lands so validate_decisions_index_freshness passes.
@@ -140,7 +148,9 @@ verification_plan:
     assert r.returncode in (0,1), ''git error rc=%d: %s'' % (r.returncode, r.stderr); assert r.returncode==1,
     ''residual refs: ''+r.stdout; import pathlib; missing=[f for f in (''config/prose_budgets.yaml'',''scripts/decisions_index.py'')
     if ''Decision 179'' not in pathlib.Path(f).read_text()]; assert not missing, ''prose re-grounding
-    missing in: ''+repr(missing); print(''no residual references; both prose surfaces re-grounded'')"'
+    missing in: ''+repr(missing); assert ''112,000'' not in pathlib.Path(''scripts/decisions_index.py'').read_text(),
+    ''stale 112,000 pin prose survives in scripts/decisions_index.py''; print(''no residual references;
+    both prose surfaces re-grounded'')"'
   expected: 'Exit 0, prints: no residual references; both prose surfaces re-grounded'
   fix_if: Named files still carry a retired token. On the pre-change tree this sweep flags exactly five
     files -- validate_decisions_size.py, test_decisions_index.py, test_validate_decisions_index_freshness.py
@@ -179,7 +189,9 @@ verification_plan:
   expected: 'Exit 0, prints: real corpus passes at 132 live headers'
   fix_if: A failure is appended -- read the printed FAIL line. A per-entry FAIL means Decision 179 is
     over 6,144 bytes and must be trimmed. A stock-ceiling FAIL here would mean a constant survived AND
-    the corpus grew past it between planning and implementation.
+    the corpus grew past it between planning and implementation. If the h==132 assert itself fails, a
+    concurrent PR landed a decision first -- re-check the next free number, renumber the entry and its
+    waiver rows, and re-run; do not relax the assert.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: Pins a point-in-time corpus header count (132) that goes stale the moment
@@ -229,7 +241,9 @@ verification_plan:
     assert not ({'live_max_h2_headers','combined_max_bytes','index_max_bytes','lever_by_ceiling_matrix'}
     & set(sg)), sorted(sg); assert 'per_entry_size_norm' in sg, sorted(sg); base=yaml.safe_load(subprocess.run(['git','show','origin/main:docs/contracts/decision-entry.yaml'],capture_output=True,text=True).stdout);
     hl,bl=head['amendment_log'],base['amendment_log']; assert len(hl)==len(bl)+1, (len(hl),len(bl)); valid={c.value
-    for c in ChangeClass}; assert hl[-1]['change_class'] in valid, (hl[-1]['change_class'], sorted(valid));
+    for c in ChangeClass}; e=hl[-1]; assert e['change_class']=='accepted_values_narrow', e['change_class'];
+    assert e['change_class'] in valid; assert e['semantic_break'] is False, e['semantic_break']; assert
+    'Decision 179' in e['summary'] and 'decision-corpus-stock-ceiling-retirement' in e['summary'], e['summary'];
     print('contract ok:',sorted(sg),hl[-1]['change_class'])"
   expected: Exit 0, printing the surviving size_governance keys (per_entry_size_norm only) and the new
     amendment's change_class.
@@ -315,7 +329,9 @@ test_obligations:
     assert not ({'live_max_h2_headers','combined_max_bytes','index_max_bytes','lever_by_ceiling_matrix'}
     & set(sg)), sorted(sg); assert 'per_entry_size_norm' in sg, sorted(sg); base=yaml.safe_load(subprocess.run(['git','show','origin/main:docs/contracts/decision-entry.yaml'],capture_output=True,text=True).stdout);
     hl,bl=head['amendment_log'],base['amendment_log']; assert len(hl)==len(bl)+1, (len(hl),len(bl)); valid={c.value
-    for c in ChangeClass}; assert hl[-1]['change_class'] in valid, (hl[-1]['change_class'], sorted(valid));
+    for c in ChangeClass}; e=hl[-1]; assert e['change_class']=='accepted_values_narrow', e['change_class'];
+    assert e['change_class'] in valid; assert e['semantic_break'] is False, e['semantic_break']; assert
+    'Decision 179' in e['summary'] and 'decision-corpus-stock-ceiling-retirement' in e['summary'], e['summary'];
     print('contract ok:',sorted(sg),hl[-1]['change_class'])"
   red_green_expectation: Red before (all four keys present, amendment_log unchanged), green after.
 - source: docs/decisions-index.json
@@ -382,7 +398,9 @@ test_obligations:
     assert r.returncode in (0,1), ''git error rc=%d: %s'' % (r.returncode, r.stderr); assert r.returncode==1,
     ''residual refs: ''+r.stdout; import pathlib; missing=[f for f in (''config/prose_budgets.yaml'',''scripts/decisions_index.py'')
     if ''Decision 179'' not in pathlib.Path(f).read_text()]; assert not missing, ''prose re-grounding
-    missing in: ''+repr(missing); print(''no residual references; both prose surfaces re-grounded'')"'
+    missing in: ''+repr(missing); assert ''112,000'' not in pathlib.Path(''scripts/decisions_index.py'').read_text(),
+    ''stale 112,000 pin prose survives in scripts/decisions_index.py''; print(''no residual references;
+    both prose surfaces re-grounded'')"'
   waiver_reason: Comment-only re-grounding of a registry this change deliberately adds no entry to --
     there is no behavior to guard. VP step 2 asserts the citation landed; a dedicated test would assert
     prose.
@@ -394,7 +412,9 @@ test_obligations:
     assert r.returncode in (0,1), ''git error rc=%d: %s'' % (r.returncode, r.stderr); assert r.returncode==1,
     ''residual refs: ''+r.stdout; import pathlib; missing=[f for f in (''config/prose_budgets.yaml'',''scripts/decisions_index.py'')
     if ''Decision 179'' not in pathlib.Path(f).read_text()]; assert not missing, ''prose re-grounding
-    missing in: ''+repr(missing); print(''no residual references; both prose surfaces re-grounded'')"'
+    missing in: ''+repr(missing); assert ''112,000'' not in pathlib.Path(''scripts/decisions_index.py'').read_text(),
+    ''stale 112,000 pin prose survives in scripts/decisions_index.py''; print(''no residual references;
+    both prose surfaces re-grounded'')"'
   waiver_reason: Docstring-only re-grounding; build_index()'s behavior is unchanged by this plan and is
     already guarded by tests/test_decisions_index.py. VP step 2 asserts the citation landed.
 - source: docs/ROADMAP-PLATFORM.yaml
@@ -405,14 +425,25 @@ test_obligations:
   waiver_reason: Roadmap bookkeeping performed by /implement's own criterion-flip walk on a verified VP
     pass, guarded by validate_platform_roadmap's referential integrity over closes_criteria -- not behavior
     this plan authors a test for.
+- source: config/decision_supersession_waivers.yaml
+  behavior: validate_supersession_annotations reports no failure for the three edges Decision 179's envelope
+    declares (179->134, 179->160, 179->166).
+  verification_step: 10
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: 'Red before (three FAILs: no forward pointer and no waiver on any of the three
+    victims), green after the waiver entries land.'
 constraints:
 - EXACTLY ONE numbered Decision (179). Decision 167 reversal condition (b) forbids landing two or more
   entries in one PR to evade the per-entry cap -- VP step 5 enforces the count mechanically.
 - Decision 179 and the guard retirement MUST land in the SAME commit and PR. The entry's own index row
   is 883 bytes against 293 bytes of pin headroom, so splitting them red-lines CI on whichever lands first
   (Decision 159/160/166 acute-landing precedent).
-- 'Decision 177 append-only: do NOT edit the live bodies of Decisions 134, 160 or 166. The amendment is
-  stated only in Decision 179, per the forward-direction convention (Decision 126/143).'
+- 'Decision 177 is a waiver-free append-only lock with a DATED-ANNOTATION correction dialect -- a dated
+  annotation is a legal APPEND, not a forbidden edit (Decision 178 appended one to 177; Decision 167 to
+  160). This plan nonetheless does NOT annotate Decisions 134/160/166: all three are clause-level amends
+  whose core still stands, which config/decision_supersession_waivers.yaml''s header reserves for waivers
+  (''annotate the victim instead'' applies only to a genuinely-new FULL supersession). Use the waiver
+  route; do not rewrite any ratified body.'
 - The per-entry authoring cap (6,144 bytes, hard-fail) is RETAINED and must not be weakened.
 - T2.56 c1 (ambient prose shrink) is OUT OF SCOPE. Do not touch AGENTS.md, CLAUDE.md or the skills layer;
   do not flip c1.
@@ -453,6 +484,11 @@ context:
 - 'Rebased onto origin/main fd8ea8c0: main''s only DECISIONS.md change was an in-place AMENDMENT (+666
   B, no new header), so headers 131/132, next-free 179 and the 293 B pin headroom all hold -- itself an
   instance of the unmetered channel point 5(ii) records against rec-3243.'
+- 'Residuals recorded, deliberately NOT in scope: config/structural_size_budgets.yaml:74 says ''the corpus
+  ceilings bound decisions-index.json at its source'' (false after this change), and three ambient skills-layer
+  surfaces (.claude/commands/plan.md:47, plan-critique/SKILL.md:26, planning/SKILL.md:432) justify not
+  loading DECISIONS.md by ''near its Decision 134 size ceiling''. The skills layer is T2.56 c1''s, which
+  this plan ring-fences.'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -470,15 +506,15 @@ execution_steps:
   both files), as do the cost-gated examined(0), the unreachable-baseline skipped(), and the fall-through
   examined(N). Also delete the now-dead `live_text`/`archive_text` reads (currently lines 179-180) and
   the `else:` PASS branch that printed "DECISIONS.md / DECISIONS_ARCHIVE.md size within ceiling" (currently
-  188-189); ruff F841 catches the former at VP step 9 but not the latter. Deleting _LIVE_H2_RE also orphans
-  `import re` (currently line 28, its only consumer) -- remove it; ruff F401 would catch it at the final
-  tier but only after a wasted cycle. When rewriting the module docstring, do NOT reintroduce the retired
-  token names (the current line 139 uses "combined_max_bytes"); describe the surviving per-entry cap in
-  its own terms.'
+  188-189); ruff F841 catches the former at VP step 10 (--pre runs ruff) but not the latter. Deleting
+  _LIVE_H2_RE also orphans `import re` (currently line 28, its only consumer) -- remove it; ruff F401
+  would catch it at VP step 10 but only after a wasted cycle. When rewriting the module docstring, do
+  NOT reintroduce the retired token names (the current line 139 uses "combined_max_bytes"); describe the
+  surviving per-entry cap in its own terms.'
 - 'Modify tests/checks/decisions/test_validate_decisions_size.py -- delete TestLiveByteCeilingRetired
   (its claim moves into TestStockCeilingsRetired assertion (i)), TestDecisionsSizeIssuesLiveH2, TestDecisionsSizeIssuesCombined,
-  TestDecisionsSizeIssuesReliefValveMessage, TestBridgeCeilingValues and TestLiveByteCeilingRetired; delete
-  the stock-ceiling legs test_fail_case_combined_breach, test_fail_case_header_count_breach and test_pass_case_live_file_above_old_500000_byte_value
+  TestDecisionsSizeIssuesReliefValveMessage and TestBridgeCeilingValues; delete the stock-ceiling legs
+  test_fail_case_combined_breach, test_fail_case_header_count_breach and test_pass_case_live_file_above_old_500000_byte_value
   from TestValidateDecisionsSizeRegisteredCheck; rework TestPerEntryCapThroughRegisteredCheck::test_stock_ceiling_breach_and_per_entry_failure_can_coexist
   into a per-entry-only case. Drop the now-unused imports. Add TestStockCeilingsRetired asserting every
   retired symbol is absent from the module (superseding the deleted TestLiveByteCeilingRetired, whose
@@ -508,15 +544,18 @@ execution_steps:
   Explicitly check `_REPO_ROOT` (currently line 23): it is used only by the deleted class''s lines, and
   as a module-level assignment ruff will NOT flag it, so it survives as silent dead code unless removed
   by hand.'
-- Modify docs/contracts/decision-entry.yaml -- delete size_governance.live_max_h2_headers, .combined_max_bytes,
+- 'Modify docs/contracts/decision-entry.yaml -- delete size_governance.live_max_h2_headers, .combined_max_bytes,
   .index_max_bytes and the entire lever_by_ceiling_matrix block; keep per_entry_size_norm. Append one
   amendment_log[] entry dated 2026-08-31 with change_class `accepted_values_narrow` and semantic_break
-  false -- NOT `field_remove`, which is outside scripts.contracts_schema.ChangeClass's closed 8-value
-  vocabulary; accepted_values_narrow is this corpus's established removal class (docs/contracts/file-router.yaml
+  false -- NOT `field_remove`, which is outside scripts.contracts_schema.ChangeClass''s closed 8-value
+  vocabulary; accepted_values_narrow is this corpus''s established removal class (docs/contracts/file-router.yaml
   uses it for three prior key/route removals, all semantic_break false). decision-entry.yaml is Class
   D, so its amendment_log is NOT schema-validated and an invalid value would pass CI silently -- VP step
-  6 is what catches it. The summary must name Decision 179 and this plan slug. Do not touch the significance,
-  currency, compaction or metadata_envelope blocks.
+  7 is what catches it. The summary must name Decision 179 and this plan slug. Do not touch the significance,
+  currency, compaction or metadata_envelope blocks. ALSO delete the ~28 lines of attached comment prose
+  (currently 581-608) that describe all three ceilings and name TestCommittedIndexSizePin / _COMMITTED_INDEX_MAX_BYTES
+  -- a class this plan deletes. Nothing can catch this: VP steps 1 and 7 parse with yaml.safe_load, check_amendment_log_for_class_d
+  explicitly no-ops on comment-only edits, and VP step 2''s sweep excludes this file entirely.'
 - Retire the three registry entries with git mv into config/agent/verification_registry/entries/deprecated/
   -- decisions-index-pin-112000-fresh-and-under, decision-entry-index-ceiling-homed, decisions-live-ceiling-retired-others-intact.
   Do not edit their bodies; no status column, no version key (Decision 176 point 5).
@@ -600,7 +639,12 @@ execution_steps:
   \ ended here,\nroadmap guard untouched; Decisions 146/149 levers exhausted; Decision 163 recorded downgrade;\n\
   Decision 177 no live-body edits; Decision 128 loud, not frictionless. Refs: T2.56 c2/c1, T1.5 c1,\n\
   rec-3243.\n\n---"
-- Regenerate docs/decisions-index.json with the repo's generator so it is byte-equal to build_index().
+- Modify config/decision_supersession_waivers.yaml -- append three entries under `waivers:` for (179,134),
+  (179,160) and (179,166), each with a `reason` naming which clause/point is amended and why the victim's
+  core still stands. Without them validate_supersession_annotations HARD-FAILS all three edges in the
+  --pre tier. If Decision 179 took a different number, use that number in all three entries.
+- Regenerate docs/decisions-index.json with `bin/venv-python -m scripts.decisions_index --write` so it
+  is byte-equal to build_index().
 - Execute the Verification Plan -- run each step in order; loop until pass. Steps 1 and 3 are the load-bearing
   ones; on an unrecoverable failure stop and RCA rather than weakening a guard (Decision 55).
 - 'Roadmap bookkeeping (only after a verified VP pass) -- flip docs/ROADMAP-PLATFORM.yaml T2.56 exit criterion
