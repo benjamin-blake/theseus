@@ -109,9 +109,10 @@ verification_plan:
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
-      Same shape and same reason as step 2 -- an inline throwaway-repo construction that duplicates
-      the behavioural contract graduated as a pytest guard at step 5; the registry row belongs to
-      the durable selector, not to this session-local scaffold.
+      This arm's contract -- a config error must suppress the "in sync, nothing to do" early exit when
+      py_drift is 0 -- is covered by the step 5 selector's arm (b), which execution step 6 requires; the
+      registry row belongs to that durable selector, not to this session-local mktemp scaffold. Without
+      arm (b) this waiver would be false and the step would need graduating instead.
   - step: 4
     phase: pre-deploy
     action: >-
@@ -245,7 +246,7 @@ verification_plan:
     action: >-
       Whole-file stability in the default (non-integration) lane under the exact ambient condition
       that flakes today -- 5 consecutive runs with INSTALL_TERRAFORM=1 and terraform on PATH.
-    command: bash -c 'for i in 1 2 3 4 5; do bin/venv-python -m pytest tests/test_sync_deps.py -m "not integration" -q || { echo "RUN $i FAILED"; exit 1; }; done; echo VERIFIED'
+    command: bash -c 'for i in 1 2 3 4 5; do env INSTALL_TERRAFORM=1 bin/venv-python -m pytest tests/test_sync_deps.py -m "not integration" -q || { echo "RUN $i FAILED"; exit 1; }; done; echo VERIFIED'
     expected: VERIFIED
     fix_if: Any run red means a residual non-hermetic path survives; do not re-run to green, find it.
     hermetic: false
@@ -285,8 +286,8 @@ test_obligations:
   - source: bin/sync-deps.sh
     behavior: >-
       The same config error in INSTALL mode stays non-fatal -- ERROR logged, fingerprint withheld,
-      exit 0, the "in sync, nothing to do" early-exit suppressed, the python dependency sync still
-      run, and the terraform download block never entered -- so bin/setup-cloud-env.sh's bare call
+      exit 0, the "in sync, nothing to do" early-exit suppressed when py_drift is 0, the python
+      dependency sync still run when py_drift is 1, and the terraform download block never entered -- so bin/setup-cloud-env.sh's bare call
       under set -euo pipefail cannot abort the snapshot build.
     verification_step: 5
     test_selector: tests/test_sync_deps.py::TestTerraformDriftDetection::test_missing_terraform_version_file_install_mode_is_non_fatal
@@ -339,7 +340,7 @@ context:
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
   - >-
     Scout SPIRIT flags resolved: Decision 154 pivoted (exit 2 scoped to --check; VP steps 3-5);
-    Decision 48 pivoted (VP step 5 runs the real hook); Decision 162 accepted-as-is -- set -e is not
+    Decision 48 pivoted (VP step 6 runs the real hook); Decision 162 accepted-as-is -- set -e is not
     inherited by a `bash script.sh` child, which reads its own set -uo pipefail at bin/sync-deps.sh:20.
   - >-
     Three defects, all reproduced this session: D1 tests/test_sync_deps.py:51-53 (env=None);
@@ -371,7 +372,7 @@ context:
     PLAN-ci-convergence-fixes (same file); rec-3293/rec-3292 read as already fixed on main but still
     open (pytz at requirements.txt:11; no extras in requirements.lock). Also meets Related-Work
     condition 3 (pytest regression).
-  - "Squash-merge body must carry: Resolves: rec-2687, rec-3133, rec-3316 (VP step 15 is the Decision 103 closure proof)."
+  - "Squash-merge body must carry: Resolves: rec-2687, rec-3133, rec-3316 (VP step 16 is the Decision 103 closure proof)."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -409,9 +410,13 @@ execution_steps:
   - >-
     tests/test_sync_deps.py -- add TestTerraformDriftDetection::test_missing_terraform_version_file_fails_loudly
     (--check exits 2, ERROR on stderr names the file), a whitespace-only-file sibling,
-    test_missing_terraform_version_file_install_mode_is_non_fatal (exit 0, ERROR logged, fingerprint
-    absent, no "in sync, nothing to do", python install line present via a stub uv, and no "installing
-    terraform" line), and test_terraform_version_check_survives_early_pipe_close
+    test_missing_terraform_version_file_install_mode_is_non_fatal, which must invoke _run_sync TWICE
+    because the two install-mode arms are mutually exclusive: (a) no fingerprint (py_drift=1, stub uv on
+    the pinned PATH) asserting exit 0, ERROR, the uv install line, fingerprint withheld, and no
+    "installing terraform"; and (b) fingerprint seeded to match (py_drift=0) asserting exit 0, ERROR, and
+    NO "in sync, nothing to do". Arm (b) is load-bearing and must not be dropped: under py_drift=1 the
+    early exit at bin/sync-deps.sh:69 is unreachable regardless of the guard, so asserting that string's
+    absence in arm (a) alone passes vacuously against an unfixed script, and test_terraform_version_check_survives_early_pipe_close
     using a stub terraform that emits the version line plus >64KB of trailing output.
   - tests/test_sync_deps.py -- mark TestRealInstallAndIdempotency @pytest.mark.integration directly above the class statement.
   - >-
