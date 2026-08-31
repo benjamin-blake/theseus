@@ -37,8 +37,16 @@ Per-candidate adjudication enum, with its mapping to the output contract pinned:
 - planned and fully covered by the owning item -> `rejected_candidates[]`
 - not-a-defect -> `rejected_candidates[]`, naming the compensating control
 
+**The candidate set is exactly 21 items**, and nothing else: the five diagnosis claims D1-D5
+(stated under Q1) and the sixteen proposals P1-P14, Alt-1, Alt-2 (stated under Q2). Those are
+"the candidates below". `rejected_candidates[].candidate` holds one of those 21 ids, or -- for an
+observation you considered and dismissed without it rising to a finding -- the GROUNDING MAP fact
+you dismissed, identified by its `file:line`. The GROUNDING MAP is evidence, not an accusation
+list: nothing in it is a candidate merely by appearing there.
+
 A proposal verdict is a separate axis from a finding: a proposal may be REJECTED without any
-finding, and a finding may exist with no proposal attached to it.
+finding, and a finding may exist with no proposal attached to it. Every finding carrying a
+`proposed_change` is sequenced by Q3 alongside the adopted proposals.
 
 ## READ FIRST -- DISAMBIGUATION TRAPS
 
@@ -117,6 +125,18 @@ git rev-parse --short origin/main          # this sha IS the audited tree; use i
 bin/venv-python -m scripts.session.preflight --roadmap-detail full
 ```
 
+Then cut the audit branch IMMEDIATELY, before drafting anything:
+
+```
+git switch -c audit/planning-workflow-scaling-<sha> origin/main
+git branch --show-current                  # must NOT print "main"
+```
+
+This ordering is mandatory, not stylistic: a `PreToolUse` hook
+(`.claude/hooks/never_on_main.py`) blocks every file write while the current branch is `main`, so
+drafting first and branching later fails at the first write. IF the branch already exists,
+`git switch` to it instead. IF you are ever on `main` later, stop and re-cut before writing.
+
 The preflight call populates `logs/.preflight-report.json` and `logs/.recommendations-log.jsonl`,
 which DEDUP DISCIPLINE requires.
 
@@ -169,7 +189,9 @@ Each question gets its own first-class answer slot in the output.
 evidence. PARTIAL is the right verdict when the claim's mechanism holds but its stated scope,
 magnitude, or causal inference does not; say precisely which half fails. Record per-claim
 verdicts in the `diagnosis_verdicts` block. Q1's own verdict enum:
-`all-confirmed | mixed | all-refuted`.
+`all-confirmed | mixed | all-refuted`, computed MECHANICALLY: `all-confirmed` iff every one of
+D1-D5 is CONFIRMED; `all-refuted` iff every one is REFUTED; `mixed` in every other case,
+including any run containing a single PARTIAL.
 
 The five claims, as asserted by the originating analysis:
 
@@ -181,7 +203,8 @@ The five claims, as asserted by the originating analysis:
 - **D2 (mechanical mass).** plan-critique Phase 2 (checks 6 through 12p) is majority mechanical
   or semi-mechanical; genuine judgement (Phase 2b frame challenge Q1-Q5, adequacy calls) is a
   small fraction of the skill's total obligations. The output template's `Finding-Origin
-  Attribution` field already tags the split.
+  Attribution` field already tags the split. (The claim's "Q1-Q5" are the SKILL's frame-challenge
+  checks 12e-12i -- not this prompt's Q1-Q6. Never conflate the two numbering schemes.)
 - **D3 (discarded telemetry).** Critique finding CONTENT is discarded with the subagent
   transcript; only verdict and round count persist. No artifact or table stores findings.
 - **D4 (reviewer roulette).** Each REVISE round re-launches a fresh full re-evaluation, so new
@@ -201,8 +224,10 @@ claim that needs evidence beyond the mechanism's existence.
 and for ADOPT-MODIFIED the specific modification. DUPLICATE requires naming the existing check,
 rec, tier_item, Decision, or in-flight work that already owns it, AND a property-match argument
 (see SEVERITY). Dedup BEFORE assigning a verdict. Record per-item verdicts in the
-`proposal_adjudication` block. Q2's own verdict enum:
-`adjudicated | partially-adjudicated | not-adjudicable`.
+`proposal_adjudication` block. Q2's prose MUST also state, in one sentence, whether the
+originating analysis's Group A / Group B placement survived your re-derivation -- the per-item
+`group_placement_rederived` field is that sentence's basis and exists to be read there. Q2's own
+verdict enum: `adjudicated | partially-adjudicated | not-adjudicable`.
 
 *Group A, assumed by the originating analysis to be immediately implementable:*
 
@@ -217,8 +242,12 @@ rec, tier_item, Decision, or in-flight work that already owns it, AND a property
   intent/context but absent from `bundled_recommendations` (12k trigger 1); suspect
   `not-applicable` graduation where the command matches a `CANONICAL_SLOTS` shape (12o); an SLOC
   headroom table for scope files (current SLOC vs `config/sloc_budgets.yaml` budget) so
-  decomposition is planned up front (Decision 128). Adjudicate the DOMAIN proposal and each of
-  the eight seed rules separately -- they do not share a fate.
+  decomposition is planned up front (Decision 128). **Adjudicate the DOMAIN proposal and each seed
+  rule separately -- they do not share a fate.** The seed rules carry these pinned ids: `P2a` gh
+  CLI, `P2b` bare python, `P2c` local terraform, `P2d` pre/post-deploy tags on V3, `P2e` tier
+  fitness, `P2f` rec-id vs bundled_recommendations, `P2g` suspect not-applicable, `P2h` SLOC
+  headroom. P2's own entry carries the DOMAIN verdict; the eight rule verdicts go in its
+  `sub_verdicts` map and are excluded from the sum-to-16 count.
 - **P3 Run the same lint at three surfaces:** plan-authoring time (self-lint before critique
   dispatch), critique time (lint report attached; critic judges only judgement rows), executor.
 - **P4 Provenance rule.** Absence of a Decision means UNDECIDED, not decided. Agents must never
@@ -275,9 +304,11 @@ rec, tier_item, Decision, or in-flight work that already owns it, AND a property
   Rejected as losing rejected-alternative knowledge and manufacturing oscillation; the analysis
   replaced it with P6 + P8.
 
-**Q3 -- Adoption sequence and vehicle.** For everything adopted (ADOPT-NOW or ADOPT-MODIFIED, and
-each ROADMAP item at its position), give a dependency-ordered sequence and, per item, the
-concrete expression vehicle. Vehicle enum, pinned:
+**Q3 -- Adoption sequence and vehicle.** For everything adopted (ADOPT-NOW or ADOPT-MODIFIED, each
+ROADMAP item at its position, each `originated_here` item from Q5, AND every finding in
+`findings[]` carrying a non-empty `proposed_change`), give a dependency-ordered sequence and, per
+item, the concrete expression vehicle. A novel finding must not exit this audit without a
+governed expression path. Vehicle enum, pinned:
 `implementation_plan | rec | tier_item | candidate_decision | contract_amendment | none`.
 Constraints that bind every vehicle choice: Decision 67 permits IMPLEMENTATION plans only (no
 STRATEGIC decomposition) while the freeze holds; Decision 86 forbids new standing prose-
@@ -292,7 +323,16 @@ Justify each placement by naming the specific judgement load the item removes or
 remove. An item may appear in both lists only if you argue the two roles separately. Q4's
 verdict enum: `ranked | partially-ranked | not-rankable`.
 
-**Q5 -- What the requester did not think to ask.** Answer AND extend these. Seeds, each of which
+**Q5 -- Changes the originating analysis did not propose.** P1-P14 and Alt-1/Alt-2 are a closed
+set authored by a single conversation, and this audit's premise is that the conversation is not
+authoritative. If the highest-leverage change available to this workflow is NOT among those
+sixteen, say so and specify it. Record each such item in `proposal_adjudication` under an id of
+the form `N1`, `N2`, ..., carrying `originated_here: true` and the same field shape as the other
+entries; these are EXCLUDED from the sum-to-16 invariant. Originating nothing is a legitimate
+answer and must be stated explicitly, not left blank. Q5's verdict enum:
+`originated | none-originated`.
+
+**Q6 -- What the requester did not think to ask.** Answer AND extend these. Seeds, each of which
 you must answer explicitly:
 
 1. The prose-budget registry is ratchet-down-only and seeded at zero headroom. Does that change
@@ -311,7 +351,7 @@ you must answer explicitly:
 6. Is `plan-critique` the right place for judgement at all, given what `/implement` re-derives
    downstream?
 
-Q5's shape differs from the others: `{q: Q5, answers: [{question, answer, basis: [finding ids]}]}`.
+Q6's shape differs from the others: `{q: Q6, answers: [{question, answer, basis: [finding ids]}]}`.
 
 ## RUBRIC
 
@@ -321,9 +361,10 @@ manufacture a rating or a finding to fill a cell. These ratings establish the ba
 proposals act on; a proposal's value depends on the rating of the surface it targets.
 
 - **VD1 Evidence grounding** -- are the surface's own claims and rationales traceable to live
-  repo state, or do they cite retired or superseded premises? (serves Q1, Q5)
+  repo state, or do they cite retired or superseded premises? (serves Q1, Q6)
 - **VD2 Dedup integrity** -- does the surface duplicate an obligation another surface already
-  enforces, or leave one unowned? (serves Q2)
+  enforces, or leave one unowned? An unowned obligation is where a Q5-originated proposal comes
+  from. (serves Q2, Q5)
 - **VD3 Mechanization fitness** -- is anything decidable left to judgement, and is any judgement
   call being decided mechanically? (serves Q1/D2, Q2 for P2/P3/P6)
 - **VD4 Weak-model operability** -- could a materially weaker model execute this surface's
@@ -386,10 +427,13 @@ but anchors rot: **verify each before relying on it**, and record non-resolvers 
 - `.claude/skills/planning/SKILL.md:525` makes the context line a REQUIRED plan-template item:
   `"gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s)"`, annotated
   `# REQUIRED ITEM (WF-08)`. `:524` is the companion `# REQUIRED ITEM (WF-04a)` scout-CITE item.
-- `.claude/commands/plan.md:99` is Step 9; `:105` is Step 10, the REPORT-ONLY multi-perspective
-  gate (parallel dispatch, orthogonal-lens rule, re-critique-after-revision rule, 3-round cap,
-  and an explicit anti-pattern list including "single critique agent" and "auto-accepting PROCEED
-  on round 1").
+- `.claude/commands/plan.md:99` is Step 9; `:105` is Step 10's HEADING ONLY -- its body delegates
+  ("Apply the Report Critique Gate methodology from your `planning` skill"). The gate's substance
+  lives in `.claude/skills/planning/SKILL.md` under `## Report Critique Gate (Workflow Step 10,
+  REPORT-ONLY only)` beginning at `:601`: parallel dispatch of at least two zero-context
+  subagents, an orthogonal-lens rule, a re-critique-after-revision rule, a 3-round convergence
+  cap, and an anti-pattern list including "single critique agent" and "auto-accepting PROCEED on
+  round 1". Check the SKILL, not the command file, when testing trap 3.
 
 **plan-critique structure**
 - `.claude/skills/plan-critique/SKILL.md:32` opens Phase 2; `:93` opens Phase 2b (Frame
@@ -408,8 +452,11 @@ the live-header ceiling, the combined-bytes ceiling, and the committed-index cei
 Decisions 134, 160 and 166. Its stated premise is that "no consumer loads the live corpus
 wholesale." What survives is Decision 167 clause 3's per-entry authoring cap of 6,144 bytes
 (heading-to-next-heading), hard-failing in `--pre` via
-`scripts/checks/decisions/validate_decisions_size.py`, whose reversal condition (a) states the
-response to cap pressure is compaction or trimming, "never a raise to fit."
+`scripts/checks/decisions/validate_decisions_size.py`. Its reversal condition (a) reads "retune
+the cap value or abort the norm, never raise it silently to fit a single entry"; the
+reversal-conditions block then CLOSES with a separate sentence -- "the response to cap pressure is
+compaction or trimming Related pointer blocks, never a raise to fit" -- which belongs to the block
+as a whole, not to clause (a). Quote whichever you rely on accurately.
 
 **Provenance surface**
 - `docs/contracts/decision-entry.yaml:87` `required_markers: [Status, Date, Decision]`. `:94`
@@ -440,7 +487,8 @@ response to cap pressure is compaction or trimming, "never a raise to fit."
   `validate_plan_scope_closure` (registration closure, delegating to
   `scripts/roadmap/plan_obligations.py`), `validate_tier_floor` (deterministic V-tier floor for
   schema_version >= 2 plans, VF-04/T3.17), `validate_fallback_reevaluation` (CD.27 substrate
-  re-evaluation carrier), `check_graduation_guard`, `validate_graduation_completeness`
+  re-evaluation carrier), `_check_graduation_guard` (that leading underscore is the registered
+  name; `check_graduation_guard` is only the module path), `validate_graduation_completeness`
   (graduation-disposition presence on every pre-deploy VP step; its docstring states it performs
   "field presence only, no kernel-expressibility inference (that classification judgement is the
   fresh-context plan-critique gate's job, at plan time)"), and `validate_vp_replay` (independently
@@ -455,19 +503,29 @@ response to cap pressure is compaction or trimming, "never a raise to fit."
 - `scripts/checks/registry.py`'s module docstring states that registering a new check touches
   SEVEN surfaces, three of them outside `scripts/checks/`.
 - No registered check scans VP `command` strings for `gh`, bare `python`/`python3`, or local
-  `terraform init/validate/plan`. `scripts/checks/hygiene/validate_cli_tools_in_prompts.py`
+  `terraform init/validate/plan`. Scanning VP command strings is NOT itself unprecedented,
+  however: `scripts/checks/verification/validate_handoff_full_tier.py:56` splits each
+  `step.command` on shell separators to require a full-tier invocation, and `validate_vp_replay`
+  executes them. Judge P2's seed rules against the mechanism's real novelty, which is the rule
+  content, not the scanning. `scripts/checks/hygiene/validate_cli_tools_in_prompts.py`
   scans only `.github/prompts/scheduled/` and lists `gh` in `_OPTIONAL_CLI_TOOLS` (a skip, not a
   failure). `scripts/checks/hygiene/validate_sys_executable.py` matches
   `subprocess.run(["python"...])` under `scripts/` only.
 - Decision 119 states: "Plan authors write local terraform VP steps as grep-only ... never a
-  local terraform validate/init/plan for third-party-provider roots."
+  local terraform validate/init/plan for third-party-provider roots." **Decision 120 (Decided
+  2026-07-04) then states it "RELAXES, but does not REMOVE, the CI-delegation Decision 119
+  established"** -- an S3 provider mirror makes `terraform init` of `terraform/personal` succeed
+  locally on the ADMIN container. Seed rule P2c must be adjudicated against both decisions; a flat
+  mechanical lint on that pattern would false-positive on the Decision 120 path.
 
 **The multi-surface lint precedent**
-- `scripts/executor/acceptance_lint.py`'s `lint_acceptance_command` is called from four places:
+- `scripts/executor/acceptance_lint.py`'s `lint_acceptance_command` is called from five places:
   `scripts/ops_data_portal.py:357` (portal write boundary, `require_discrimination=True`),
   `scripts/checks/ops_governance/validate_acceptance_literals.py:73` (repo-wide static CI check),
-  `scripts/execute_recommendation.py:290` (executor runtime), and
-  `scripts/cost_reconciliation.py:389`.
+  `scripts/execute_recommendation.py:290` (executor runtime),
+  `scripts/cost_reconciliation.py:389`, and `scripts/ops_portal/write_validators.py:96` (the
+  `acceptance_lint` column validator on the write boundary). Re-derive the call-site set yourself
+  before relying on this count.
 
 **Executor planning path**
 - `scripts/executor/plan_generation.py`: `critique_plan()` is a single LLM round-trip parsing
@@ -492,9 +550,15 @@ response to cap pressure is compaction or trimming, "never a raise to fit."
   `.claude/skills/planning/SKILL.md` and `.claude/skills/plan-critique/SKILL.md`, both already
   carrying `raise-approved` markers, plus `.claude/skills/decision-scout/SKILL.md`. Re-derive
   each surface's current bytes and its budget; the headroom figures are small and are the point.
-- Roadmap `T2.56` (`in_progress`) c1: "AGENTS.md / CLAUDE.md / the skills layer are measurably
-  shrunk to machine-enforced norms plus pointers -- prose rationale and field semantics move to
-  contracts." c2 concerns `docs/DECISIONS.md` operating as a retrieved-by-id ADR log.
+- Roadmap `T2.56` (`in_progress`) c1, VERBATIM: "AGENTS.md / CLAUDE.md / the skills layer are
+  measurably shrunk to machine-enforced norms plus pointers -- prose rationale and field semantics
+  currently embedded ambiently are relocated to contracts and Decisions respectively, retrievable
+  by pointer rather than loaded ambiently on every session." Note a tension you must adjudicate
+  rather than silently resolve: read strictly, "respectively" maps prose rationale -> contracts
+  and field semantics -> Decisions, which is the INVERSE of the routing Decision 86 established
+  (rationale -> Decisions, field semantics -> contracts). Decide which reading governs, say which
+  you used, and record it in `meta.contract_notes`. c2 concerns `docs/DECISIONS.md` operating as a
+  retrieved-by-id ADR log.
 
 **Precedents cited by proposals**
 - P7 cites `.claude/skills/audit-prompt/SKILL.md`'s zero-context verification gate (three
@@ -536,9 +600,12 @@ response to cap pressure is compaction or trimming, "never a raise to fit."
 
 The plan corpus is the only sampled artifact class. Bounds, hard:
 
-- Sample **at most 25** plan files from `docs/plans/`. **Do NOT exceed 25.** Choose them to span
+- Sample **at most 25** plan files from `docs/plans/`. **Do NOT exceed 25.**   Choose them to span
   the round-count distribution (include every plan recording 4 or 5 rounds, plus a spread of 1-,
-  2- and 3-round plans), not the most recent 25.
+  2- and 3-round plans), not the most recent 25. **The cap of 25 always binds over the
+  composition rule**: if plans recording 4 or 5 rounds alone exceed 20, take the 20 most recently
+  modified of them, record the truncation in `meta.contract_notes`, and fill the remaining slots
+  with a spread of 1-, 2- and 3-round plans.
 - Corpus-wide `rg` counts over all plans are NOT sampling and are unbounded -- use them freely
   for distribution claims.
 
@@ -554,19 +621,24 @@ an `observed` finding outranks a `static` one in `top_improvements` ordering.
 
 Phases, in order. Synthesis and maturity are computed LAST.
 
-- **P1 Read.** SETUP, then `docs/PROJECT_CONTEXT.md`, then every S1-S6 surface named in SCOPE.
-- **P2 Trace.** Re-derive every GROUNDING MAP anchor. Record non-resolvers in
+Phases are numbered M1-M11. **`M<n>` is a phase; `P<n>` is always a proposal.** Never conflate
+the two schemes.
+
+- **M1 Read.** SETUP (including the branch cut), then `docs/PROJECT_CONTEXT.md`, then every S1-S6
+  surface named in SCOPE.
+- **M2 Trace.** Re-derive every GROUNDING MAP anchor. Record non-resolvers in
   `meta.stale_anchors`.
-- **P3 Diagnose.** Verify D1-D5. Separate each claim's mechanism from its consequence.
-- **P4 Deep-dive.** DD-A through DD-D.
-- **P5 Empirical.** The bounded corpus pass above.
-- **P6 Rate.** Fill `rubric_ratings` for S1-S7 across VD1-VD7.
-- **P7 Dedup.** Per DEDUP DISCIPLINE, before any finding or proposal verdict is fixed.
-- **P8 Adjudicate.** Assign every proposal verdict, then sequence (Q3), then rank (Q4).
-- **P9 Synthesize.** Write both deliverables. Compute maturity last.
-- **P10 Self-verify.** Run the SELF-VERIFICATION GATE. Revise and re-run until it passes or the
+- **M3 Diagnose.** Verify D1-D5. Separate each claim's mechanism from its consequence.
+- **M4 Deep-dive.** DD-A through DD-D.
+- **M5 Empirical.** The bounded corpus pass above.
+- **M6 Rate.** Fill `rubric_ratings` for S1-S7 across VD1-VD7.
+- **M7 Dedup.** Per DEDUP DISCIPLINE, before any finding or proposal verdict is fixed.
+- **M8 Adjudicate.** Assign every proposal verdict, originate any Q5 items, then sequence (Q3),
+  then rank (Q4).
+- **M9 Synthesize.** Write both deliverables. Compute maturity last.
+- **M10 Self-verify.** Run the SELF-VERIFICATION GATE. Revise and re-run until it passes or the
   round cap binds.
-- **P11 Ship.** COMMIT / PR MECHANICS, then end the turn.
+- **M11 Ship.** COMMIT / PR MECHANICS, then end the turn.
 
 ## DEDUP DISCIPLINE
 
@@ -623,47 +695,56 @@ audit:
     - {q: Q2, verdict: adjudicated|partially-adjudicated|not-adjudicable, basis: [], prose: ""}
     - {q: Q3, verdict: sequenced|partially-sequenced|not-sequenceable, basis: [], prose: ""}
     - {q: Q4, verdict: ranked|partially-ranked|not-rankable, basis: [], prose: ""}
-    - {q: Q5, answers: [{question, answer, basis: [<finding ids>]}]}   # different shape
+    - {q: Q5, verdict: originated|none-originated, basis: [], prose: ""}
+    - {q: Q6, answers: [{question, answer, basis: [<finding ids>]}]}   # different shape
   diagnosis_verdicts:            # Q1's system of record
     - {claim: D1, verdict: CONFIRMED|PARTIAL|REFUTED, mechanism_holds: true|false,
        consequence_holds: true|false|n/a, evidence: "", rederived_values: "",
        confidence: CONFIRMED|HYPOTHESIS}
     # one entry per D1..D5
-  proposal_adjudication:         # Q2/Q3/Q4's system of record
-    <P1..P14, Alt-1, Alt-2>:
+  proposal_adjudication:         # Q2/Q3/Q4/Q5's system of record
+    <P1..P14, Alt-1, Alt-2, and any originated N1, N2, ...>:
       {verdict: ADOPT-NOW|ADOPT-MODIFIED|ROADMAP|REJECT|DUPLICATE,
-       group_placement_rederived: A|B|neither,
+       originated_here: false,    # true only on N-prefixed items originated under Q5
+       group_placement_rederived: A|B|neither,   # read by Q2's prose; n/a on N-items
        modification: "",          # required iff ADOPT-MODIFIED
        vehicle: implementation_plan|rec|tier_item|candidate_decision|contract_amendment|none,
-       sequence_position: <int|null>, depends_on: [<proposal ids>],
+       sequence_position: <int|null>, depends_on: [<proposal or finding ids>],
        executor_prerequisite: true|false, executor_rank: <int|null>,
        qol_rank: <int|null>, carrying_cost: "", rationale: "",
-       owning_items: [], confidence: CONFIRMED|HYPOTHESIS}
+       owning_items: [], confidence: CONFIRMED|HYPOTHESIS,
+       sub_verdicts: {}}          # P2 ONLY: {P2a..P2h: {verdict: <same enum>, rationale: ""}};
+                                  # {} elsewhere. Excluded from the sum-to-16 count.
   per_surface_assessment:
     - {surface: S1..S7, maturity: <derived>, strengths: "", top_gaps: [<finding ids>]}
   rubric_ratings:
     - {surface: S1..S7, dimension: VD1..VD7, rating: strong|adequate|weak|absent|n/a,
        evidence: "file:line|item-id", note: ""}
   findings:
-    - {id: PWS-01, surface: <S1..S7|shared>, question: Q1..Q5, dimension: VD1..VD7,
+    - {id: PWS-01, surface: <S1..S7|shared>, question: Q1..Q6, dimension: VD1..VD7,
        title, evidence: "file:line|item-id", evidence_kind: static|observed,
        current_behavior, ideal_behavior, gap, compensating_controls_considered: "",
        change_type: add|rescope|enforce|unify|persist|clarify|retune_gate,
        proposed_change: "", acceptance: "", severity: critical|high|medium|low,
        severity_rationale, confidence: CONFIRMED|HYPOTHESIS,
        roadmap_crossref: {classification: novel|planned-insufficient|planned-unbuilt,
-                          item_ids: [], dedup_search_terms: [], dedup_hit_count: 0, note: ""},
+                          item_ids: [], dedup_search_terms: [], dedup_hit_count: <int|null>,
+                          note: ""},
        effort: XS|S|M|L, depends_on: [<finding ids>],
+       vehicle: implementation_plan|rec|tier_item|candidate_decision|contract_amendment|none,
+       sequence_position: <int|null>,   # non-null iff proposed_change is non-empty
        sequencing: {safe_to_queue_now: true|false, blocked_behind: [], note: ""}}
   rejected_candidates:
     - {candidate, why_dismissed, compensating_control, control_property_match,
        decision_or_item_id}
   summary: {total_findings, novel_count, planned_insufficient_count, planned_unbuilt_count,
-            top_improvements: [<finding ids>], highest_leverage_change: <finding id>,
+            top_improvements: [<finding ids>], highest_leverage_change: <finding id|null>,
             adopt_now_count, adopt_modified_count, roadmap_count, reject_count,
-            duplicate_count, maturity_S1: <value>, maturity_S2: <value>,
+            duplicate_count, originated_count, maturity_S1: <value>, maturity_S2: <value>,
             maturity_S3: <value>, maturity_S4: <value>, maturity_S5: <value>,
             maturity_S6: <value>, maturity_S7: <value>}
+            # each maturity_Sn MUST equal the matching per_surface_assessment.maturity --
+            # a convenience projection, never an independently derived value.
 ```
 
 **COUNTING INVARIANT.** `findings[]` is the SOLE enumerated list.
@@ -671,8 +752,21 @@ audit:
 planned_unbuilt_count`. Fully-covered candidates live in `rejected_candidates`, never in
 `findings`. `rubric_ratings`, `question_answers`, `diagnosis_verdicts` and
 `proposal_adjudication` are systems-of-record referenced FROM findings, never re-counted into
-`total_findings`. `top_improvements` and `highest_leverage_change` MUST be finding ids. The five
-proposal-verdict counts MUST sum to 16.
+`total_findings`. `top_improvements` and `highest_leverage_change` MUST be finding ids.
+
+The five proposal-verdict counts MUST sum to exactly 16, counting only P1-P14, Alt-1 and Alt-2.
+P2's eight `sub_verdicts` and any Q5-originated `N`-prefixed items are EXCLUDED from that sum;
+originated items are counted separately in `originated_count`.
+
+Empty and null are legal where the run warrants: `findings` may be `[]`, in which case
+`top_improvements` is `[]` and `highest_leverage_change` is `null`; a `basis` list may be `[]`
+when an answer rests on re-derived facts rather than on a filed finding. Do not invent a finding
+to populate a field.
+
+`sequence_position` values are unique consecutive integers starting at 1 across ALL sequenced
+items taken together (adopted proposals, originated items, and findings carrying a
+`proposed_change`); unsequenced items carry `null`. `effort` is sized by DD-D's surface count:
+`XS` = 1 surface, `S` = 2-3, `M` = 4-6, `L` = 7 or more.
 
 `control_property_match` is REQUIRED whenever a compensating control is the reason for
 dismissal: name the property the control exercises, cite where it operates (mechanism or
@@ -703,9 +797,11 @@ dismissal ONLY if it exercises the same property AND would fail if the defect we
 the counterfactual to the control itself. A control that cannot catch the break neither lowers
 severity nor justifies dismissal -- say so explicitly rather than gesturing at adjacency.
 
-**Maturity**, computed LAST, per surface, top-down, first match wins:
+**Maturity**, computed LAST, per surface, top-down, first match wins. A finding whose `surface`
+is `shared` counts against every surface its `evidence` names. Findings carry no open/closed
+state -- every filed finding counts.
 
-- `frontier` = 0 open critical AND 0 open high findings on that surface
+- `frontier` = 0 critical AND 0 high findings on that surface
 - `strong` = 0 critical AND <= 1 high
 - `solid` = <= 1 critical
 - `nascent` = otherwise
@@ -735,6 +831,10 @@ round said.** That biases the read and destroys the gate's value.
   basis is not stated, every reference to an id that does not appear elsewhere in these files,
   every enum value outside its declared set, every verdict with no supporting rationale, and
   every place the two files disagree. Check the counting invariant arithmetic yourself."
+  **Paste into R1's dispatch text, inline and verbatim: the COUNTING INVARIANT paragraph, the
+  five proposal-verdict enum values, the per-claim diagnosis enum, the rubric rating enum, the
+  severity enum, and the confidence enum.** R1 stays repo-blind -- that is the test -- but it
+  cannot police a contract it was never handed.
 - **R2 -- Fact auditor (grounding).** Full repository read access. Task: "Independently verify
   every factual claim, file:line anchor, quoted identifier (Decision, tier_item, rec, contract
   key, schema field, check name), and re-derived count in this audit against the repository at
@@ -780,7 +880,10 @@ subagents.
 **Round-1 quality check.** Before accepting a unanimous round-1 PROCEED, read each verifier's
 output. Any verifier that returned zero findings AND fewer than ~10 lines of substantive output
 was dispatched too generically -- re-dispatch that one ONCE with a sharpened perspective. One
-re-dispatch maximum; its verdict is final.
+sharpening re-dispatch maximum per verifier. "Its verdict is final" means you do not sharpen that
+verifier again -- it does NOT mean you skip revision: if the sharpened re-dispatch returns REVISE,
+that REVISE stands, and you revise and re-dispatch all four fresh exactly as for any other
+REVISE. A sharpening re-dispatch does NOT increment `rounds`.
 
 **Round cap and degraded paths.** You have no human to escalate to; you must terminate.
 
