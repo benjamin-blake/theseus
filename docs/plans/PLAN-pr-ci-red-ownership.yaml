@@ -1,0 +1,189 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "pr-ci-red-ownership"
+intent: >-
+  Resolve the AGENTS.md self-contradiction that leaves implementing agents waiting for a ci-rca
+  diagnosis that never arrives on a PR-branch --pre failure, so a red pre-merge gate has one
+  unambiguous owner and one unambiguous procedure.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-pr-ci-red-ownership.yaml
+phase: >-
+  Agent-instruction doc-truth follow-through on T1.13 c6 (met -- ci-rca.yml gates on
+  head_branch==default_branch). Not a tier_item slice; closes no criterion.
+scope:
+  - file: docs/contracts/ci-rca-lifecycle.yaml
+    action: Modify
+    purpose: add trigger_scope -- the branch gate, its Decision 73 point 3 authority, and the per-branch disposition
+  - file: AGENTS.md
+    action: Modify
+    purpose: resolve the line 246 / line 260 contradiction by branch-scoping the Merge protocol; trim the duplicated Full row Gate cell to stay inside S1
+  - file: .claude/skills/implement/SKILL.md
+    action: Modify
+    purpose: PR-CI-red branch cites the scope and no-weakening rules and names executor-rca out of scope; byte-neutral within S4
+  - file: scripts/verify_ci_workflow.py
+    action: Modify
+    purpose: extend _check_ci_rca_filter so AGENTS.md and the contract cannot drift from the live if-gate
+  - file: scripts/checks/ci_guards/_manifest.py
+    action: Modify
+    purpose: widen validate_ci_rca_trigger pre_globs to the three guarded surfaces so the gate is not vacuous
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: dated annotation clarifying Decision 72 refers to the post-merge main gate (Decision 177 dialect)
+  - file: tests/verify_ci_workflow/test_ci_rca_and_canary.py
+    action: Modify
+    purpose: red/green coverage for the new coupling assertions
+  - file: tests/test_pr_ci_red_protocol_contract.py
+    action: Create
+    purpose: content contract for the PR-CI-red guidance plus the pre_globs selection guard
+bundled_recommendations: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - AGENTS.md no longer contradicts itself -- the Merge protocol RCA-first rule is scoped to post-merge default-branch full-tier failure and no longer conflicts with the step 6 on-red instruction
+  - AGENTS.md states that a PR-branch --pre red files no ci_rca rec and gates nothing, and routes the fix to the existing in-scope rule rather than restating it
+  - ci-rca-lifecycle.yaml trigger_scope declares the default-branch gate, names Decision 73 point 3 as the narrowing authority, and records that PR-branch failures are uncovered by construction
+  - implement SKILL.md red-CI branch cites AGENTS.md line 38 and the plan-schema scope rule for location, forbids weakening a criterion, VP step, assertion or budget to obtain green, and names executor-rca as out of scope for PR CI red
+  - _check_ci_rca_filter fails when AGENTS.md loses the branch qualifier or the contract loses trigger_scope
+  - validate_ci_rca_trigger pre_globs select the check for a diff touching only AGENTS.md, the implement skill, or ci-rca-lifecycle.yaml
+  - Decision 72 carries a dated annotation scoping it to main and naming the two-tier Google TAP flow, with no new Decision header minted
+  - The existing 3-fix-attempt STOP rule and VF-08 nondeterminism rule are cited, not restated, and no auto-file path is added (T3.19 stays deferred)
+  - validate_prose_limits, the contracts structural-size budget and the DECISIONS ceilings all pass with no budget raise
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: extended ci-rca trigger gate passes on the edited tree
+    command: bin/venv-python -m scripts.verify_ci_workflow ci-rca-filter
+    expected: exits 0
+    fix_if: nonzero exit names the missing AGENTS.md or contract assertion
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ci-rca-trigger-scope-doc-coupled
+  - step: 2
+    phase: pre-deploy
+    action: the gate is not vacuous -- pre_globs cover every surface it asserts on
+    command: bin/venv-python -c "from scripts.checks.ci_guards._manifest import ENTRIES; e=next(x for x in ENTRIES if x.name=='validate_ci_rca_trigger'); need=('AGENTS.md','.claude/skills/implement/SKILL.md','docs/contracts/ci-rca-lifecycle.yaml'); raise SystemExit(1 if [p for p in need if p not in e.pre_globs] else 0)"
+    expected: exits 0
+    fix_if: a guarded surface is absent from pre_globs, so a doc-only PR skips the check entirely
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ci-rca-trigger-pre-globs-cover-guarded-surfaces
+  - step: 3
+    phase: pre-deploy
+    action: red/green coverage for the coupling and the content contract
+    command: bin/venv-python -m pytest tests/verify_ci_workflow/test_ci_rca_and_canary.py tests/test_pr_ci_red_protocol_contract.py -q
+    expected: all pass, including the cases asserting the guard FAILS on a drifted AGENTS.md or contract fixture
+    fix_if: a red case passes, meaning the new assertion is vacuous
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: pr-ci-red-protocol-contract-tests
+  - step: 4
+    phase: pre-deploy
+    action: AGENTS.md no longer contradicts itself and keeps its Decision 163 load-bearing cell
+    command: bash -c '! grep -q "On CI failure" AGENTS.md && grep -q "post-merge" AGENTS.md && grep -q "Pre-handoff (local) + post-merge on .main." AGENTS.md'
+    expected: exits 0
+    fix_if: the old unscoped bullet survives, or the Decision 163 point 3 When cell was trimmed instead of the Gate cell
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: agents-md-ci-failure-branch-scoped
+  - step: 5
+    phase: pre-deploy
+    action: zero-headroom prose budgets still hold with no raise marker added
+    command: bin/venv-python -c "from scripts.checks.prose.prose_limits import validate_prose_limits as v; f=[]; v(f); raise SystemExit(1 if f else 0)"
+    expected: exits 0
+    fix_if: S1 or the implement S4 entry is over budget -- recover bytes from redundancy, never add a raise-approved marker
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: prose-budgets-within-limit
+  - step: 6
+    phase: pre-deploy
+    action: contract structural-size and DECISIONS ceilings hold
+    command: bin/venv-python -c "from scripts.checks.structural.size_limits import validate_structural_size_limits as s; from scripts.checks.decisions.validate_decisions_size import validate_decisions_size as d; f=[]; s(f); d(f); raise SystemExit(1 if f else 0)"
+    expected: exits 0
+    fix_if: ci-rca-lifecycle.yaml past 500 effective lines -- apply the contracts relief valve (compact amendment history, defer detail), never a raise
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: contract-and-decisions-size-ceilings
+  - step: 7
+    phase: pre-deploy
+    action: no new Decision header was minted by the Decision 72 annotation
+    command: bash -c '[ "$(grep -c "^## Decision [0-9]*:" docs/DECISIONS.md)" -eq 131 ]'
+    expected: exits 0
+    fix_if: the header count moved, meaning a numbered Decision was written instead of a dated annotation
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: decisions-header-count-unchanged
+  - step: 8
+    phase: pre-deploy
+    action: fast tier green
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exits 0
+    fix_if: the named check fails
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/verify_ci_workflow.py
+    behavior: _check_ci_rca_filter rejects a tree whose AGENTS.md or contract drifts from the live branch gate
+    verification_step: 3
+    test_selector: tests/verify_ci_workflow/test_ci_rca_and_canary.py
+    red_green_expectation: red before, green after
+  - source: scripts/checks/ci_guards/_manifest.py
+    behavior: validate_ci_rca_trigger pre_globs cover every surface the guard asserts on
+    verification_step: 3
+    test_selector: tests/test_pr_ci_red_protocol_contract.py
+    red_green_expectation: red before, green after
+  - source: AGENTS.md
+    behavior: the Merge protocol scopes RCA-first to post-merge main and does not contradict the step 6 on-red instruction
+    verification_step: 3
+    test_selector: tests/test_pr_ci_red_protocol_contract.py
+    red_green_expectation: red before, green after
+  - source: .claude/skills/implement/SKILL.md
+    behavior: the red-CI branch cites the scope and no-weakening rules and excludes executor-rca
+    verification_step: 3
+    test_selector: tests/test_pr_ci_red_protocol_contract.py
+    red_green_expectation: red before, green after
+  - source: docs/contracts/ci-rca-lifecycle.yaml
+    behavior: trigger_scope declares the default-branch gate and its Decision 73 point 3 authority
+    verification_step: 3
+    test_selector: tests/test_pr_ci_red_protocol_contract.py
+    red_green_expectation: red before, green after
+  - source: docs/DECISIONS.md
+    behavior: Decision 72 carries the dated scope annotation and the live header count is unchanged
+    verification_step: 3
+    test_selector: tests/test_pr_ci_red_protocol_contract.py
+    red_green_expectation: red before, green after
+constraints:
+  - No rescue agents or workaround loops (Decision 55)
+  - Cite, never restate -- AGENTS.md line 38, planning SKILL.md line 498, implement SKILL.md lines 105 and 108-115 already carry the scope and repeated-failure rules (Decision 86)
+  - Add no auto-file-a-rec path on repeated failure -- VF-08 defers it to T3.19 with an explicit do-not-implement-now instruction
+  - S1 (25933) and the implement S4 entry (47830) are zero-headroom -- recover bytes, never add a raise marker
+  - ci-rca-lifecycle.yaml has 136 effective-line headroom (364/500, Decision 166) -- relief valve, never a raise
+  - DECISIONS.md live headers are 131/132 -- append a dated annotation only, mint no new Decision
+  - Do not edit scripts/checks/ci_guards/validate_ci_rca_trigger.py -- touching it triggers Decision 170 check-accounting adoption
+  - Do not trim the AGENTS.md Full row When cell -- Decision 163 point 3 made it load-bearing
+context:
+  - "Root cause: AGENTS.md contradicts itself -- :246 says 'On red: diagnose, fix on branch, commit, push' while :260 says 'Do NOT manually patch'. ci-rca.yml gates on head_branch==default_branch (T1.13 c6), so :260 is true only post-merge."
+  - "Decision 73 point 3 is the narrowing authority -- it already scopes ci_rca filing to full-tier failure on main, so this is a clarification, not a new narrowing."
+  - "Decision 72 is not wrong, only unscoped: its Problem line describes the pre-existing gap and one Consequences sentence about workflow_run checkout is now unreachable. Annotate, do not retire."
+  - "The inline-fix boundary already exists twice in prose (AGENTS.md:38; planning SKILL.md:498 'only files listed here may be modified') and is enforced nowhere -- this plan cites it and defers enforcement."
+  - "Follow-on (execution step 7): the inline-vs-defer derivation rows, the Fable advice-consult deviation trigger, and a diff-vs-scope check. Deferred deliberately -- validate_plan_scope_closure is registration-closure only, so that check does not exist and has real design surface."
+  - "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND; CITE dec-73, dec-142, dec-127, dec-86, dec-128, dec-165, dec-60, dec-163, dec-48; flags resolved against dec-166, dec-135, dec-55, dec-177; related dec-170, dec-131, dec-168, dec-90"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - Add trigger_scope plus an amendment_log entry to docs/contracts/ci-rca-lifecycle.yaml, citing Decision 73 point 3 and recording that PR-branch failures are uncovered by construction
+  - Rewrite the AGENTS.md Merge protocol into two branch-scoped bullets that agree with step 6 at line 246, and trim only the Full row Gate cell to recover bytes
+  - Rewrite the implement skill Wait-for-CI red branch to cite AGENTS.md line 38 and the plan-schema scope rule, forbid weakening a criterion or budget to obtain green, and exclude executor-rca -- recovering the added bytes from local redundancy
+  - Append the dated scope annotation to Decision 72 naming the two-tier Google TAP flow
+  - Extend _check_ci_rca_filter with the AGENTS.md and contract assertions, and widen validate_ci_rca_trigger pre_globs in _manifest.py
+  - Write the red/green tests, including a case proving each new assertion fails on a drifted fixture
+  - "File the follow-on rec via bin/venv-python -m scripts.ops_data_portal --file-rec: inline-vs-defer derivation rows, the Fable deviation trigger, and a diff-vs-plan-scope enforcement check"
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)
+  - 'Report: what was implemented, verification results'
+work_areas: []
