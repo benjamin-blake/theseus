@@ -251,8 +251,9 @@ verification_plan:
       assert 'p2-glue-delete-database' not in n, 'stale glue row still present';
       print('pre',len(o),'post',len(n),'dropped',sorted(dropped))"
     expected: >-
-      pre 61, post 66, dropped subset of ['p2-glue-delete-database'] -- empty if the sibling plan's
-      phase 2 already removed that row, which is equally correct
+      dropped is a subset of ['p2-glue-delete-database'] and that row is absent from the result.
+      This-plan-first: pre 61, post 66, dropped that one id. Sibling-first: pre 60, post 66, dropped
+      empty -- equally correct, since the row is already gone.
     fix_if: >-
       an id OTHER than p2-glue-delete-database appears in the dropped set -- compaction deleted a
       row rather than the defaulted required_context_keys field; restore it. Never "restore"
@@ -292,11 +293,12 @@ verification_plan:
       b=t.split(f'## Decision {n}:')[1].split('\n## Decision ')[0];
       req=['significance:','PlatformAdmin','PlatformDev','129','157','144','UpdateRole'];
       miss=[r for r in req if r not in b]; assert not miss, f'Decision {n} missing: {miss}';
-      assert len(b.encode()) <= 6144, f'entry is {len(b.encode())}B over the 6144B cap';
+      full=f'## Decision {n}:'+b;
+      assert len(full.encode()) <= 6144, f'entry is {len(full.encode())}B over the 6144B cap';
       old=subprocess.run(['git','show','origin/main:docs/DECISIONS.md'],capture_output=True,text=True,
       check=True).stdout.split('## Decision 144:')[1].split('\n## Decision ')[0];
       assert old.strip() in t, 'Decision 144 body was spliced, not left intact';
-      print('Decision',n,len(b.encode()),'bytes')"
+      print('Decision',n,len(full.encode()),'bytes')"
     expected: prints the new Decision number and its byte size, at or under 6144
     fix_if: >-
       a missing token means the drafted body omitted a required element -- 157 is the discriminating
@@ -450,43 +452,45 @@ constraints:
     the verification registry file and was superseded by Decision 176.
 context:
   - >-
-    Decision-scout verdict: FLAGS_FOUND (131 of 131 triaged). CITE: 178, 144, 143, 156, 157, 129, 126, 113,
-    169, 170, 142, 168, 119, 120, 131, 101, 55, 72, 128, 176, 86, 150, 167, 92, 77.
+    Decision-scout verdict: FLAGS_FOUND (131 of 131 triaged). CITE: 178, 144, 143, 156, 157, 129, 126, 113, 169, 170,
+    142, 168, 119, 120, 131, 101, 55, 72, 128, 176, 86, 150, 167, 92, 77.
   - >-
     gates: decision-scout=FLAGS_FOUND after 1 round; plan-critique=<verdict> after <N> round(s)
   - >-
-    Root cause: cleanse 7b67e21d (PR #969) made three HCL edits invisible while Decision 178 clause 4 parked
-    the triggers; PR #975 restored them and run 33323201848 hit all three. Parent rec-3328 stays open and
-    unbundled (see infrastructure_dependencies).
+    Root cause: cleanse 7b67e21d (PR #969) made three HCL edits invisible while Decision 178 clause 4 parked the
+    triggers; PR #975 restored them and run 33323201848 hit all three. Parent rec-3328 stays open and unbundled (see
+    infrastructure_dependencies).
   - >-
-    rec-3326's own wording keeps the commas, so it does not fix the bug; it stays bundled because the merge
-    cannot apply while the record is red, so splitting buys only a second review cycle. rec-3327's premise is
-    imprecise: UpdateRoleDescription IS granted (github_ci_apply_policy.tf:161); the gap is that Sid's
-    Resource. Both verified.
+    rec-3326's own wording keeps the commas, so it does not fix the bug; it stays bundled because the merge cannot
+    apply while the record is red, so splitting buys only a second review cycle. rec-3327's premise is imprecise:
+    UpdateRoleDescription IS granted (github_ci_apply_policy.tf:161); the gap is that Sid's Resource. Both verified.
   - >-
-    Why widen, not only reconcile: authority_budget.json lists no aws_iam_role in in_budget_resource_types, so
-    every role modify already routes to tf-gated-apply -- this changes execution capability, not routing.
-    Boundary DataPlaneAllow carries both verbs at Resource ["*"].
+    Why widen, not only reconcile: authority_budget.json lists no aws_iam_role in in_budget_resource_types, so every
+    role modify already routes to tf-gated-apply -- this changes execution capability, not routing. Boundary
+    DataPlaneAllow carries all four verbs at Resource ["*"], and no boundary Deny intersects them.
   - >-
-    Fable advice-consult: adopted widen + negative pins; rejected renaming roles or profiles -- the two
-    unprefixed roles need OPPOSITE treatments, which no naming scheme encodes.
+    Fable advice-consult: adopted widen + negative pins; rejected renaming roles or profiles -- the two unprefixed
+    roles need OPPOSITE treatments, which no naming scheme encodes.
   - >-
-    GLUE ADJUDICATION (answers rec-3325's open question). Removing p2-glue-delete-database is correct:
-    post-cleanse the repo declares no glue grant, so the row pinned live drift and passed for the wrong reason
-    (live grants database/<db>; the denial was at userDefinedFunction/<db>/*). The lesson lands as the
-    multi_resource_type_verbs map plus the shape-check leg, not as rows.
+    GLUE ADJUDICATION (answers rec-3325's open question). Removing p2-glue-delete-database is correct: post-cleanse
+    the repo declares no glue grant, so the row pinned live drift and passed for the wrong reason (live grants
+    database/<db>; the denial was at userDefinedFunction/<db>/*). The lesson lands as the multi_resource_type_verbs
+    map plus the shape-check leg, not as rows. rec-3325's asked-for sweep of the other 60 triples was DONE this
+    session: glue:DeleteDatabase is the only genuinely multi-resource-type verb in the corpus, so the map is
+    armed-but-inert at merge by a finished audit, not an unexamined gap.
   - >-
-    Fixture arithmetic: 599 -55 -5 +10 +20 +16 +10 = 595, budget lowered to 600 (VP step 7 gates). Overrun
-    lever: drop a PlatformAdmin row -- step 4 pins all four verbs statically.
+    Fixture arithmetic: 599 -55 -5 +10 +20 +16 +10 = 595 against a budget lowered to 600 (VP step 7 gates it).
+    Overrun lever: drop a PlatformAdmin row -- step 4 pins all four verbs statically.
   - >-
     DECISION ROUTING: numbered_decision. routing_rule returns yes/yes/yes -- the content INVERTS Decision 144's
-    inherited Decision 129 re-narrow trigger, a re-decision not an annotation; Decision 157 made the same move
-    and was minted. amendment_forms rejected per property test 3: routing on capacity grounds would bypass
-    Decision 167 clause 2. Ceiling: 131 vs 132 (enforced >), so 132 passes and Plan B needs a Decision 146
-    archival wave before minting its own.
+    inherited Decision 129 re-narrow trigger, a re-decision not an annotation; Decision 157 made the same move and
+    was minted. amendment_forms rejected per property test 3: routing on capacity grounds would bypass Decision 167
+    clause 2. Ceilings: 131 live headers vs live_max_h2_headers 132 (enforced >), so 132 passes; combined_max_bytes
+    has ~18.4 KB headroom and this entry draws <=6144 B. Plan B needs a Decision 146 archival wave (which relieves
+    the header axis only -- compaction is the byte-axis lever) before minting its own.
   - >-
-    Class recurrence: rec-2842, rec-2882, now rec-3327; Plan B ends it structurally. Inline policy is ~8.3 KB
-    against the 10,240 B precondition -- one Resource ARN fits, a new Sid may not.
+    Class recurrence: rec-2842, rec-2882, now rec-3327; Plan B ends it structurally. Inline policy is ~8.1 KB against
+    the 10,240 B precondition -- one Resource ARN fits, a new Sid may not.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -537,8 +541,12 @@ execution_steps:
     justification -- a durable, reversal-relevant commitment that INVERTS Decision 144's inherited
     Decision 129 re-narrow trigger for one risk class, so it is a re-decision rather than an
     annotation. Contract-first alternative rejected: docs/contracts/iam-authority-standard.yaml does
-    not exist yet (Plan B), and authority_budget.json mirrors the guard budget, not the identity
-    policy's Resource scope, which lives only in HCL and this log. amendment_forms rejected per
+    not exist yet (Plan B); authority_budget.json mirrors the guard budget (its in_budget_resource_types
+    is aws_iam_role_policy/aws_iam_role_policy_attachment only), not the identity policy's Resource
+    scope; and docs/contracts/iam-simulate-fixture.yaml -- the Class D contract this same plan amends,
+    and the likeliest reviewer proposal -- records EXPECTED DECISIONS, so it can pin the consequence
+    but cannot re-decide Decision 144 clause 2's inherited trigger. The scope rule lives only in HCL
+    and this log. amendment_forms rejected per
     property test 3: routing on capacity grounds would bypass Decision 167 clause 2's
     category-consistency gate. Body clauses:
     (1) The metadata risk class is role/agent-platform-* PLUS enumerated boundary-carrying
