@@ -1,0 +1,471 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "ci-convergence-fixes"
+intent: >-
+  Clear the code-side blockers that red the sandbox apply and the durable convergence record, and
+  install the standing guards that would have caught each before merge -- so the governed
+  terraform pipeline converges without an agent widening grants inline to unblock itself.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-ci-convergence-fixes.yaml
+phase: >-
+  Platform CI/CD convergence repair. ci_rca soft-warn exception category (rec-3328), so the Tier
+  Item Freshness Gate is skipped and no tier_item is claimed. Adjacent to T2.48 (realizes Decision
+  144) but does not close any of its criteria.
+scope:
+  - file: terraform/personal/main.tf
+    action: Modify
+    purpose: >-
+      rec-3326. Reword aws_s3_bucket.data_lake's Purpose tag into the S3 TagValue charset. The
+      committed value has parentheses AND commas; both are outside the set.
+  - file: scripts/checks/iam_tf/validate_terraform_tag_charset.py
+    action: Create
+    purpose: >-
+      New registered check scanning literal terraform tag values against the S3 TagValue charset.
+      The anti-recurrence half of rec-3326 and rec-3328's preventive_action.
+  - file: scripts/checks/iam_tf/_manifest.py
+    action: Modify
+    purpose: register the new check (bare string literals, Decision 169 grammar)
+  - file: tests/checks/iam_tf/test_validate_terraform_tag_charset.py
+    action: Create
+    purpose: mirror test -- red on the pre-fix value, green after, plus accounting assertions
+  - file: config/ci_rca_taxonomy.yaml
+    action: Modify
+    purpose: function_to_category row for the new check (Decision 142; validate_ci_rca_taxonomy)
+  - file: terraform/CLAUDE.md
+    action: Modify
+    purpose: >-
+      Replace the em-dash-only Lambda-tag invariant with the actual S3 TagValue charset rule and
+      point it at the new check (collocate semantics with enforcement).
+  - file: terraform/bootstrap/github_ci_apply_policy.tf
+    action: Modify
+    purpose: >-
+      rec-3327. Add role/PlatformDev to IAMRoleMetadataWrite's Resource. Never role/PlatformAdmin.
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      Numbered Decision amending Decision 144 clause 2 -- establishes the metadata-write scope
+      class "role/agent-platform-* plus enumerated boundary-carrying non-prefixed managed roles,
+      today exactly {PlatformDev}; PlatformAdmin never".
+  - file: tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py
+    action: Create
+    purpose: >-
+      Standing pin on the new scope class -- PlatformDev present, PlatformAdmin absent from every
+      CI-writable Resource pattern. Mirrors test_iam_role_reconcile_trust_scope.py.
+  - file: docs/contracts/iam-simulate-fixture.yaml
+    action: Modify
+    purpose: >-
+      rec-3325 + rec-3327 proof. Compact the vacuous required_context_keys lines; add glue
+      multi-resource companion rows, PlatformDev metadata allowed rows, PlatformAdmin by_design
+      implicitDeny negative pins, and the multi_resource_type_verbs map.
+  - file: scripts/checks/contracts/validate_iam_simulate_fixture_shape.py
+    action: Modify
+    purpose: new structural leg failing a mapped multi-resource verb whose row lacks companions
+  - file: tests/checks/contracts/test_validate_iam_simulate_fixture_shape.py
+    action: Modify
+    purpose: red/green coverage for the new leg
+  - file: config/structural_size_budgets.yaml
+    action: Modify
+    purpose: lower the fixture budget after compaction (decreases are unrestricted)
+bundled_recommendations:
+  - rec-3325
+  - rec-3326
+  - rec-3327
+infrastructure_dependencies:
+  - >-
+    terraform/personal speculative-plan pipeline (CD.35 Wave 2 / T2.21). This PR touches
+    terraform/personal/main.tf, so the PR-time plan job runs and the merge triggers
+    terraform-apply-sandbox. The convergence record is RED at authoring time, so the apply
+    read-precondition REFUSES with CONVERGENCE_RED and applies nothing. That is expected, not a
+    failure of this plan. Mechanics: environment-taxonomy.yaml is the sole SoT.
+  - >-
+    terraform/bootstrap apply -- admin tier, agent_platform_admin, ADMIN container; never
+    auto-applied. The IAMRoleMetadataWrite widening lands in HCL with this PR and is applied later
+    by an operator. HARD ORDERING: bootstrap HCL already carries PLAN-terraform-state-triggers-
+    restore's merged phase-3 narrowing (glue/athena removed), so a bootstrap apply NOW would apply
+    that narrowing early -- the Decision 156 point 2 lockout. deploy-paths.yaml's PRE-APPLY
+    grant-surface ordering step governs this: let the in-flight destroy drain first.
+  - >-
+    One-time operator reconcile (agent_platform_admin, out-of-band, NOT this plan's code):
+    aws iam update-role-description --role-name PlatformDev matching the platform_roles.tf value.
+    This clears the CURRENT diff without waiting on the bootstrap apply, so the in-flight destroy
+    is not blocked by the description leg. The widening is the durable fix for the NEXT one; the
+    reconcile and the widening are complements, not alternatives.
+acceptance_criteria:
+  - >-
+    aws_s3_bucket.data_lake's Purpose tag value matches ^[A-Za-z0-9 +\-=._:/@]*$ (the S3 TagValue
+    charset) -- no parentheses, no commas.
+  - >-
+    validate_terraform_tag_charset is registered, runs in --pre, fails on a tag value outside the
+    charset, passes on the fixed tree, and declares examined()/skipped() on every exit path.
+  - >-
+    IAMRoleMetadataWrite's Resource contains role/agent-platform-* and role/PlatformDev, and no
+    CI-writable Resource pattern in github_ci_apply_policy.tf matches PlatformAdmin.
+  - >-
+    The new Decision entry exists with a significance envelope, cites Decision 144 clause 2 as the
+    amended entry, and names PlatformAdmin's permanent exclusion as a reversal-relevant clause.
+  - >-
+    The fixture carries glue companion rows on every resource type its verb authorizes against,
+    PlatformDev metadata allowed rows, PlatformAdmin by_design implicitDeny rows, and passes
+    validate_iam_simulate_fixture_shape including the new multi-resource leg.
+  - >-
+    docs/contracts/iam-simulate-fixture.yaml's effective line count is at or below its registered
+    structural budget with no raise marker added.
+  - bin/venv-python -m scripts.validate --pre exits 0.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Prove the new check discriminates -- red on the pre-fix tag value, green on the fixed one.
+      Not a "does the function exist" probe: it feeds both values through the real check.
+    command: >-
+      bin/venv-python -m pytest tests/checks/iam_tf/test_validate_terraform_tag_charset.py -q
+    expected: all tests pass, including the red-path case asserting a non-empty failure list
+    fix_if: >-
+      check passes on the parenthesised value (charset regex too permissive) or fails on the fixed
+      value (too strict -- the set is letters, digits, whitespace and + - = . _ : / @)
+    graduation: graduate
+    graduation_check_id: terraform-tag-values-s3-charset-clean
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Assert the live tree's tag value is genuinely S3-legal, independent of the check under test
+      (a bug in the check cannot mask a bad value).
+    command: >-
+      bin/venv-python -c "import re,pathlib; t=pathlib.Path('terraform/personal/main.tf').read_text();
+      m=re.search(r'Purpose\s*=\s*\"([^\"]*)\"', t); assert m, 'no Purpose tag found';
+      v=m.group(1); assert re.match(r'^[A-Za-z0-9 +\-=._:/@]*$', v), f'S3-invalid TagValue: {v!r}';
+      print('ok:', v)"
+    expected: prints the reworded value; no parentheses or commas
+    fix_if: >-
+      still contains ( ) or , -- note rec-3326's own suggested wording keeps the commas and does
+      NOT fix the bug
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates step 1's graduated registry check on the same invariant; graduating both would
+      register two slots asserting one fact. Kept as a VP step because it is the independent
+      cross-check that does not route through the code under test.
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Assert the check is registered, reachable in the --pre tier, and carries a taxonomy row.
+    command: >-
+      bin/venv-python -c "from scripts.checks import registry;
+      e={x.name for x in registry.all_entries()}; assert 'validate_terraform_tag_charset' in e, e;
+      import yaml; t=yaml.safe_load(open('config/ci_rca_taxonomy.yaml'));
+      assert 'validate_terraform_tag_charset' in t['function_to_category']; print('registered')"
+    expected: prints registered
+    fix_if: manifest Entry missing/misspelled, or the taxonomy row absent (validate_ci_rca_taxonomy reds)
+    graduation: not-applicable
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Pin the rec-3327 scope class from both directions -- PlatformDev reachable, PlatformAdmin
+      unreachable by ANY CI-writable Resource pattern in the policy.
+    command: >-
+      bin/venv-python -m pytest tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py -q
+    expected: all tests pass
+    fix_if: >-
+      PlatformDev absent from IAMRoleMetadataWrite, or PlatformAdmin matched by any write Sid --
+      the latter is a grant leak, not a test bug
+    graduation: graduate
+    graduation_check_id: platform-admin-absent-from-ci-write-patterns
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      Prove the fixture's multi-resource leg discriminates on a synthetic fixture, and that the
+      real fixture passes the full shape check.
+    command: >-
+      bin/venv-python -m pytest tests/checks/contracts/test_validate_iam_simulate_fixture_shape.py -q
+    expected: all tests pass, including a red case where a mapped verb has no companion rows
+    fix_if: >-
+      the red case passes (leg not wired) or the real fixture fails (companion rows missing, or a
+      target ARN carries a wildcard -- build_triples rejects those)
+    graduation: graduate
+    graduation_check_id: iam-simulate-fixture-multi-resource-companions
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      Assert the fixture still loads through iam_simulate's pure layer after compaction, and that
+      the compaction did not drop a row or a non-empty context-key mapping.
+    command: >-
+      bin/venv-python -c "from pathlib import Path; from scripts.ci.iam_simulate import load_fixture,
+      build_triples; d=load_fixture(Path('docs/contracts/iam-simulate-fixture.yaml'));
+      t=build_triples(d,'account-id-placeholder','region-placeholder');
+      ids={x.id if hasattr(x,'id') else x['id'] for x in t} if t else set();
+      assert len(t)>=64, f'row count regressed to {len(t)}'; print('triples:', len(t))"
+    expected: triple count at or above the pre-change count of 64
+    fix_if: count dropped -- compaction removed a row, not just a defaulted field
+    graduation: waive
+    graduation_waiver_reason: >-
+      Guards this session's specific compaction edit against row loss. Once merged the row count is
+      a moving target as the fixture legitimately grows, so a frozen threshold would become a
+      false-failure generator rather than a regression guard.
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      Assert the fixture is within its structural budget with no raise marker added.
+    command: >-
+      bin/venv-python -c "import yaml,pathlib; from scripts.checks.structural._classify import
+      effective_lines; b=yaml.safe_load(open('config/structural_size_budgets.yaml'));
+      n=effective_lines(pathlib.Path('docs/contracts/iam-simulate-fixture.yaml').read_text());
+      lim=b['docs/contracts/iam-simulate-fixture.yaml'];
+      assert n<=lim, f'{n} effective lines exceeds budget {lim}'; print(n,'<=',lim)"
+    expected: effective lines at or below the registered budget
+    fix_if: >-
+      over budget -- compact further (Decision 166 clause 6), never add a raise marker to fit
+    graduation: not-applicable
+  - step: 8
+    phase: pre-deploy
+    action: >-
+      Assert the Decision entry exists, carries its significance envelope, and names the
+      PlatformAdmin exclusion.
+    command: >-
+      bin/venv-python -c "import re,pathlib; t=pathlib.Path('docs/DECISIONS.md').read_text();
+      ns=[int(m) for m in re.findall(r'^## Decision (\d+):', t, re.M)]; n=max(ns);
+      b=t.split(f'## Decision {n}:')[1]; assert 'significance:' in b, 'no significance envelope';
+      assert 'PlatformAdmin' in b, 'does not name the PlatformAdmin exclusion';
+      assert '144' in b, 'does not cite Decision 144'; print('Decision', n, 'ok')"
+    expected: prints the new Decision number
+    fix_if: envelope, citation or exclusion clause missing
+    graduation: not-applicable
+  - step: 9
+    phase: pre-deploy
+    action: Full fast-tier gate over the whole change.
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: >-
+      address the named check; never add a budget raise or a skip to get green (Decision 55)
+    graduation: not-applicable
+  - step: 10
+    phase: post-deploy
+    action: >-
+      Confirm the PR-time speculative plan concluded and that the merge did NOT apply -- the red
+      convergence record must refuse with CONVERGENCE_RED. A silent apply here would mean the
+      anti-masking anchor is not holding.
+    command: >-
+      Inspect the terraform-apply-sandbox run for the merge commit via
+      mcp__github__pull_request_read (get_status / get_check_runs) and confirm the apply step
+      records the CONVERGENCE_RED refusal marker rather than an applied plan.
+    expected: >-
+      plan job concluded; apply refused with CONVERGENCE_RED; convergence record still red and NOT
+      overwritten by this merge
+    fix_if: >-
+      an apply ran while the record was red -- stop and RCA the read-precondition (Decision 55); do
+      not retry
+    graduation: not-applicable
+  - step: 11
+    phase: post-deploy
+    action: >-
+      OPERATOR, after the in-flight destroy drains and the bootstrap apply lands: run the standing
+      live-simulate gate. This is the only step that proves the widening actually took effect
+      through the identity/boundary intersection, and that PlatformAdmin did not leak.
+    command: >-
+      bin/venv-python -m scripts.ci.iam_simulate --profile agent_platform_admin --fixture
+      docs/contracts/iam-simulate-fixture.yaml
+    expected: exit 0, zero mismatches
+    fix_if: >-
+      a mismatch on a PlatformDev metadata verb means a wrong resource scope or ceiling -- fix in
+      HCL and re-apply through the same human gate. A mismatch on a PlatformAdmin by_design row is
+      a GRANT LEAK: treat as a security regression, not a fixture error.
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/checks/iam_tf/validate_terraform_tag_charset.py
+    behavior: >-
+      flags literal terraform tag values outside the S3 TagValue charset, and declares
+      examined()/skipped() on every reachable exit path
+    verification_step: 1
+    test_selector: tests/checks/iam_tf/test_validate_terraform_tag_charset.py
+    red_green_expectation: >-
+      red before (the parenthesised value in main.tf produces a non-empty failure list), green
+      after the reword
+  - source: scripts/checks/contracts/validate_iam_simulate_fixture_shape.py
+    behavior: >-
+      fails a fixture whose declared multi-resource-type verb has a row without sibling companion
+      rows covering the other resource types
+    verification_step: 5
+    test_selector: tests/checks/contracts/test_validate_iam_simulate_fixture_shape.py
+    red_green_expectation: >-
+      red before on a synthetic single-ARN glue row, green once companions are present
+  - source: terraform/bootstrap/github_ci_apply_policy.tf
+    behavior: >-
+      IAMRoleMetadataWrite reaches role/PlatformDev; no CI-writable Resource pattern reaches
+      PlatformAdmin
+    verification_step: 4
+    test_selector: tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py
+    red_green_expectation: >-
+      red before (PlatformDev absent from the Resource list), green after; the PlatformAdmin leg is
+      red if any write Sid is ever widened to match it
+  - source: terraform/personal/main.tf
+    behavior: the data_lake Purpose tag value stays inside the S3 TagValue charset
+    verification_step: 1
+    test_selector: tests/checks/iam_tf/test_validate_terraform_tag_charset.py
+    red_green_expectation: red before, green after
+  - source: scripts/checks/iam_tf/_manifest.py
+    behavior: the new check is discoverable through the registry and runs in the --pre tier
+    verification_step: 1
+    test_selector: tests/checks/iam_tf/test_validate_terraform_tag_charset.py
+    red_green_expectation: >-
+      red before the Entry is added (the mirror test's registration case fails), green after
+  - source: docs/contracts/iam-simulate-fixture.yaml
+    behavior: >-
+      loads through iam_simulate's pure layer with no wildcard targets, and carries companion rows
+      for every declared multi-resource verb
+    verification_step: 5
+    test_selector: tests/checks/contracts/test_validate_iam_simulate_fixture_shape.py
+    red_green_expectation: >-
+      red before on the single-ARN glue row, green once companions and the verb map are present
+constraints:
+  - No rescue agents or workaround loops (Decision 55). A failed apply latches red and routes to reconcile.yml.
+  - >-
+    NEVER add role/PlatformAdmin to any write Sid, and never rename it into the agent-platform-*
+    prefix. IAMRoleDeleteBounded and IAMRoleMetadataWrite carry NO boundary Condition, so a
+    prefixed PlatformAdmin becomes CI-deletable and CI-mutable. Verified this session.
+  - >-
+    Do NOT widen IAMRoleReconcile (trust) or IAMRoleWriteBounded (inline policy) to PlatformDev.
+    Decision 143 clause 1 keeps worst-verbs narrow; PlatformDev's DEP-13 Denies live in DailyOps.
+    This plan widens the metadata risk class only.
+  - >-
+    Do not apply terraform/bootstrap until the in-flight terraform/personal destroy has drained --
+    deploy-paths.yaml's PRE-APPLY grant-surface ordering step (Decision 156 point 2 lockout).
+  - >-
+    ROUTINE FLOW ONLY: never author a local terraform init/validate/plan for terraform/personal
+    (Decision 119). terraform fmt -check is provider-free and permitted.
+  - >-
+    Scope discipline: the glue:DeleteDatabase grant and the destroy of the 14 retired addresses
+    belong to merged PLAN-terraform-state-triggers-restore. Do not re-plan or execute them here.
+  - >-
+    The IAM authority standard, role registry, AGENTS.md ambient rule and per-instance write
+    coverage are Plan B (a separate follow-on plan). Do not pull them in.
+  - >-
+    Never commit account_id, ExternalIds or real ARNs. Fixture targets stay ${account_id}/${region}
+    placeholders (Decision 101).
+  - Do not raise any structural or SLOC budget to fit. Compact instead (Decision 128 / 166 clause 6).
+context:
+  - >-
+    Decision-scout verdict: FLAGS_FOUND (131 of 131 triaged). CITE: 178, 144, 126, 143, 113, 169,
+    170, 142, 168, 119, 120, 131, 101, 55, 72, 166, 86, 150, 92, 77, 129, 156.
+  - "gates: decision-scout=FLAGS_FOUND after 1 round; plan-critique=<verdict> after <N> round(s)"
+  - >-
+    Root cause: cleanse 7b67e21d (PR #969) made three HCL edits whose apply-time effects were
+    invisible while Decision 178 clause 4 parked the triggers. PR #975 restored them; run
+    33323201848 hit all three at once. ci-rca rec-3328 is the parent.
+  - >-
+    rec-3326's OWN suggested wording keeps the commas and does not fix the bug; its grep acceptance
+    false-passes on it. Verified this session -- use a comma-free value.
+  - >-
+    rec-3327's premise is imprecise: iam:UpdateRoleDescription IS granted
+    (github_ci_apply_policy.tf:161). The gap is that Sid's Resource, which excludes role/PlatformDev.
+  - >-
+    Why widen rather than only reconcile: authority_budget.json has no aws_iam_role in
+    in_budget_resource_types, so every role modify already routes to tf-gated-apply. The widening
+    changes execution capability only, not routing -- the human gate is unchanged. The boundary
+    DataPlaneAllow carries UpdateRole/UpdateRoleDescription at Resource ["*"], so the intersection
+    permits it. Both verified this session.
+  - >-
+    Fable advice-consult (this session): adopted Q1(a) widen + negative pins, and the numbered
+    Decision as the governance vehicle. Rejected renaming roles or profiles -- the two unprefixed
+    roles need OPPOSITE treatments, which no naming scheme can encode.
+  - >-
+    build_triples REJECTS wildcards in target_arn_template. Companion rows must use concrete
+    probe-style ARNs (e.g. userDefinedFunction/agent_platform/agent-platform-simulate-probe), per
+    the fixture's own representative-ARN convention.
+  - >-
+    Fixture budget headroom is 6 effective lines (599/605). Compaction funds the additions: 55 rows
+    carry a vacuous required_context_keys, which the loader already defaults. State the default in
+    the fixture header so its absence stays discoverable.
+  - >-
+    This class has recurred three times: rec-2842, rec-2882, now rec-3327. Plan B ends it
+    structurally; this plan fixes the instance and pins the scope class.
+  - >-
+    Inline policy is ~8.3 KB against the 10,240 B precondition, so one Resource ARN fits. A new Sid
+    might not -- add the ARN to the existing Sid, do not create one.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read (144 clause 2/3, 143 clause 1, 178 clause 2/4, 156 point 2)
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    terraform/personal/main.tf -- reword the data_lake Purpose tag to a comma-free, parenthesis-free
+    value inside the S3 TagValue charset, e.g. "Platform object storage - tfstate / plans /
+    convergence records / logs".
+  - >-
+    scripts/checks/iam_tf/validate_terraform_tag_charset.py -- new registered check. Parse literal
+    tag assignments in terraform/**/*.tf (blank whole-line HCL comments first, as
+    validate_terraform_try does, so comment prose cannot false-positive); flag any value outside
+    ^[A-Za-z0-9 +\-=._:/@]*$. Variable-sourced values (Owner = var.owner_email) are out of reach --
+    say so in the docstring rather than pretending coverage. Declare registry.examined(n,
+    unit="tag_values") / registry.skipped(reason) on EVERY reachable exit path (Decision 170
+    surface 7, docs/contracts/check-accounting.yaml).
+  - >-
+    scripts/checks/iam_tf/_manifest.py -- add the Entry (pre=True, pre_globs=("terraform/**/*.tf",),
+    full_segment="full_after_lint"), bare string literals only.
+  - >-
+    config/ci_rca_taxonomy.yaml -- add validate_terraform_tag_charset to function_to_category;
+    category "environment" (matching validate_terraform_try).
+  - >-
+    tests/checks/iam_tf/test_validate_terraform_tag_charset.py -- mirror test: red path on a
+    synthetic .tf carrying the pre-fix parenthesised value, green path on the fixed value, a
+    comment-prose false-positive case, an accounting assertion per exit path, and a registration
+    case asserting the manifest Entry is discoverable through the registry in the --pre tier.
+  - >-
+    terraform/CLAUDE.md -- replace the "ASCII tag values" bullet with the S3 TagValue charset rule
+    (letters, digits, whitespace and + - = . _ : / @), noting S3 is stricter than other services and
+    naming the new check. Keep the file within its prose budget (~1.3 KB headroom) and use ASCII
+    hyphens, not em dashes.
+  - >-
+    terraform/bootstrap/github_ci_apply_policy.tf -- add
+    "arn:aws:iam::${var.account_id}:role/PlatformDev" to IAMRoleMetadataWrite's Resource list.
+    Rewrite that Sid's comment to state the new scope class and cite the new Decision. Do NOT create
+    a new Sid (size precondition) and do NOT touch any other Sid.
+  - >-
+    docs/DECISIONS.md -- append the next free numbered Decision amending Decision 144 clause 2.
+    Re-check the current max header at execution time (numbers are not reserved). Include the yaml
+    significance envelope with a contract-first justification, the scope class, the reversal-relevant
+    clause that PlatformAdmin is permanently excluded and why (no boundary; controls the boundary),
+    and record the rejected alternative of relocating platform_roles.tf into the bootstrap module so
+    it stays citable.
+  - >-
+    tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py -- pin both directions. Parse
+    github_ci_apply_policy.tf; assert IAMRoleMetadataWrite's Resource set is exactly
+    {role/agent-platform-*, role/PlatformDev}; and assert NO Allow Sid's Resource pattern fnmatches
+    a concrete PlatformAdmin ARN. Mirror test_iam_role_reconcile_trust_scope.py's structure and
+    write failure messages that say a re-widening must be a reviewed edit to the assertion.
+  - >-
+    docs/contracts/iam-simulate-fixture.yaml -- (a) drop required_context_keys from the 55 rows
+    where it is an empty mapping, and document in the header that it defaults to {} when absent;
+    (b) add a multi_resource_type_verbs map keyed by verb, listing the resource types the verb
+    authorizes against, seeded with glue:DeleteDatabase; (c) add glue companion rows sharing the
+    p2-glue-delete-database id prefix, with concrete probe-style ARNs, no wildcards; (d) add
+    PlatformDev allowed rows for the four IAMRoleMetadataWrite verbs; (e) add PlatformAdmin
+    by_design implicitDeny rows for the same verbs, with by_design text naming the grant-leak
+    meaning of a mismatch; (f) add an amendment_log entry.
+  - >-
+    scripts/checks/contracts/validate_iam_simulate_fixture_shape.py -- new leg reading
+    multi_resource_type_verbs FROM the fixture (Decision 86 routing: the map is contract data, not
+    evaluator data) and failing any row whose verb is mapped but whose sibling rows do not cover
+    every listed resource type. Keep the module's AWS-free scope boundary; do not make it live.
+  - >-
+    tests/checks/contracts/test_validate_iam_simulate_fixture_shape.py -- add the red case (mapped
+    verb, single row, no companions) and the green case, using the file's existing synthetic-fixture
+    style.
+  - >-
+    config/structural_size_budgets.yaml -- lower the iam-simulate-fixture budget to the post-change
+    effective count plus a small margin. A decrease needs no marker; never raise.
+  - >-
+    Execute the Verification Plan -- run each step, loop until pass. Steps 10 and 11 are post-merge
+    and operator-gated; do not attempt them locally. On unrecoverable V3 failure stop and RCA
+    (Decision 55).
+  - >-
+    Report: what was implemented, verification results, and the exact operator handoff -- the
+    one-time PlatformDev description reconcile, and the bootstrap apply ordering constraint.
+rollback: >-
+  Every code change is revertible by reverting the PR; nothing here applies infrastructure. The
+  IAMRoleMetadataWrite widening lands in HCL only and has no live effect until an operator applies
+  the bootstrap root, so a revert before that apply is a no-op against AWS. If the widening is
+  applied and later judged wrong, remove the role/PlatformDev ARN and re-apply through the same
+  human gate, then re-run the live-simulate gate to confirm the narrower scope took effect.
