@@ -25,7 +25,7 @@ CI_RCA_LIFECYCLE_PATH = REPO_ROOT / "docs" / "contracts" / "ci-rca-lifecycle.yam
 DECISIONS_PATH = REPO_ROOT / "docs" / "DECISIONS.md"
 
 RETIRED_UNSCOPED_BULLET = (
-    '- **On CI failure**: the ci-rca agent (`.github/workflows/ci-rca.yml`) automatically files '
+    "- **On CI failure**: the ci-rca agent (`.github/workflows/ci-rca.yml`) automatically files "
     'a recommendation with `source="ci_rca"` and `priority="critical"`.'
 )
 
@@ -44,7 +44,8 @@ def _assert_agents_md_contract(text: str) -> None:
     assert "PR-branch" in text, "the PR-branch case must be positively named"
     assert "no rec is filed" in text, "the PR-branch disposition must be stated, not just implied"
     assert "trigger_scope" in text, "the PR-branch disposition must route to trigger_scope, not restate it"
-    assert 'Pre-handoff (local) + post-merge on `main`' in text, "the Full row When cell is load-bearing (Decision 163 point 3) and must not be trimmed"
+    when_cell = "Pre-handoff (local) + post-merge on `main`"
+    assert when_cell in text, "the Full row When cell is load-bearing (Decision 163 point 3)"
 
 
 def _assert_implement_skill_contract(text: str) -> None:
@@ -133,8 +134,7 @@ def test_implement_skill_contract_positive() -> None:
 def test_implement_skill_contract_negative_missing_no_weakening_clause() -> None:
     text = IMPLEMENT_SKILL_PATH.read_text(encoding="utf-8")
     clause = (
-        "Never weaken a criterion, VP step (`### Tier-Specific Guidance` Anti-Patterns), "
-        "assertion, or budget to obtain green."
+        "Never weaken a criterion, VP step (`### Tier-Specific Guidance` Anti-Patterns), assertion, or budget to obtain green."
     )
     assert clause in text
     mutated = text.replace(clause, "")
