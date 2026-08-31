@@ -189,6 +189,119 @@ class TestMalformedYaml:
         assert any("failed the pure validation layer" in f for f in failed)
 
 
+class TestMultiResourceTypeVerbs:
+    """rec-3325: multi_resource_type_verbs is fixture DATA (Decision 86 routing), read here."""
+
+    def test_mapped_verb_single_row_no_companions_fails(self, tmp_path: Path) -> None:
+        body = (
+            "schema_version: 1\n"
+            'principal:\n  arn_template: "arn:aws:iam::${account_id}:role/agent-platform-github-ci-apply"\n'
+            "expected_decision_values:\n  - allowed\n  - implicitDeny\n  - explicitDeny\n"
+            'placeholders:\n  account_id: "resolved at run time"\n  region: "resolved at run time"\n'
+            "multi_resource_type_verbs:\n  glue:DeleteDatabase:\n    - database\n    - userDefinedFunction\n"
+            "triples:\n"
+            "  - id: glue-delete-database-only\n"
+            '    verb: "glue:DeleteDatabase"\n'
+            '    target_arn_template: "arn:aws:glue:${region}:${account_id}:database/agent_platform"\n'
+            "    expected_decision: allowed\n    required_context_keys: {}\n"
+            '    why: "single row, no userDefinedFunction companion"\n'
+        )
+        (tmp_path / _CONTRACT_NAME).write_text(body, encoding="utf-8")
+
+        failed: list[str] = []
+        validate_iam_simulate_fixture_shape(failed, contracts_dir=tmp_path)
+
+        assert any("glue:DeleteDatabase" in f and "missing companion row" in f for f in failed)
+
+    def test_mapped_verb_with_companions_passes(self, tmp_path: Path) -> None:
+        body = (
+            "schema_version: 1\n"
+            'principal:\n  arn_template: "arn:aws:iam::${account_id}:role/agent-platform-github-ci-apply"\n'
+            "expected_decision_values:\n  - allowed\n  - implicitDeny\n  - explicitDeny\n"
+            'placeholders:\n  account_id: "resolved at run time"\n  region: "resolved at run time"\n'
+            "multi_resource_type_verbs:\n  glue:DeleteDatabase:\n    - database\n    - userDefinedFunction\n"
+            "triples:\n"
+            "  - id: glue-delete-database\n"
+            '    verb: "glue:DeleteDatabase"\n'
+            '    target_arn_template: "arn:aws:glue:${region}:${account_id}:database/agent_platform"\n'
+            "    expected_decision: allowed\n    required_context_keys: {}\n"
+            '    why: "database axis"\n'
+            "  - id: glue-delete-database-udf\n"
+            '    verb: "glue:DeleteDatabase"\n'
+            '    target_arn_template: "arn:aws:glue:${region}:${account_id}:userDefinedFunction/agent_platform/probe-fn"\n'
+            "    expected_decision: allowed\n    required_context_keys: {}\n"
+            '    why: "userDefinedFunction axis, the companion"\n'
+        )
+        (tmp_path / _CONTRACT_NAME).write_text(body, encoding="utf-8")
+
+        failed: list[str] = []
+        validate_iam_simulate_fixture_shape(failed, contracts_dir=tmp_path)
+
+        assert failed == []
+
+    def test_mapped_verb_with_zero_rows_is_armed_but_inert_not_a_failure(self, tmp_path: Path) -> None:
+        """No fixture row grants glue:DeleteDatabase at all -- deliberately not a failure (the
+        map is seeded for if the grant returns, per the GLUE ADJUDICATION)."""
+        body = (
+            f"schema_version: 1\n"
+            'principal:\n  arn_template: "arn:aws:iam::${account_id}:role/agent-platform-github-ci-apply"\n'
+            "expected_decision_values:\n  - allowed\n  - implicitDeny\n  - explicitDeny\n"
+            'placeholders:\n  account_id: "resolved at run time"\n  region: "resolved at run time"\n'
+            "multi_resource_type_verbs:\n  glue:DeleteDatabase:\n    - database\n    - userDefinedFunction\n"
+            f"triples:{_VALID_TRIPLES}"
+        )
+        (tmp_path / _CONTRACT_NAME).write_text(body, encoding="utf-8")
+
+        failed: list[str] = []
+        validate_iam_simulate_fixture_shape(failed, contracts_dir=tmp_path)
+
+        assert failed == []
+
+    def test_real_fixture_passes_the_multi_resource_type_leg(self) -> None:
+        failed: list[str] = []
+        validate_iam_simulate_fixture_shape(failed)
+        assert failed == []
+
+    def test_non_dict_multi_resource_type_verbs_fails(self, tmp_path: Path) -> None:
+        body = (
+            f"schema_version: 1\n"
+            'principal:\n  arn_template: "arn:aws:iam::${account_id}:role/agent-platform-github-ci-apply"\n'
+            "expected_decision_values:\n  - allowed\n  - implicitDeny\n  - explicitDeny\n"
+            'placeholders:\n  account_id: "resolved at run time"\n  region: "resolved at run time"\n'
+            "multi_resource_type_verbs:\n  - not-a-mapping\n"
+            f"triples:{_VALID_TRIPLES}"
+        )
+        (tmp_path / _CONTRACT_NAME).write_text(body, encoding="utf-8")
+
+        failed: list[str] = []
+        validate_iam_simulate_fixture_shape(failed, contracts_dir=tmp_path)
+
+        assert any("multi_resource_type_verbs must be a mapping" in f for f in failed)
+
+    def test_empty_declared_types_list_fails(self, tmp_path: Path) -> None:
+        body = (
+            f"schema_version: 1\n"
+            'principal:\n  arn_template: "arn:aws:iam::${account_id}:role/agent-platform-github-ci-apply"\n'
+            "expected_decision_values:\n  - allowed\n  - implicitDeny\n  - explicitDeny\n"
+            'placeholders:\n  account_id: "resolved at run time"\n  region: "resolved at run time"\n'
+            "multi_resource_type_verbs:\n  glue:DeleteDatabase: []\n"
+            f"triples:{_VALID_TRIPLES}"
+        )
+        (tmp_path / _CONTRACT_NAME).write_text(body, encoding="utf-8")
+
+        failed: list[str] = []
+        validate_iam_simulate_fixture_shape(failed, contracts_dir=tmp_path)
+
+        assert any("must be a non-empty list" in f for f in failed)
+
+
+class TestResourceType:
+    def test_malformed_arn_with_too_few_segments_returns_empty_string(self) -> None:
+        from scripts.checks.contracts.validate_iam_simulate_fixture_shape import _resource_type
+
+        assert _resource_type("arn:aws:iam") == ""
+
+
 class TestWiring:
     def test_wiring_registered_in_pre_and_full(self) -> None:
         pre_names = {step.name for step in registry.pre_sequence() if step.kind == "check"}

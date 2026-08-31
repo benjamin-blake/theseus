@@ -2,6 +2,76 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 180: Metadata-write scope class -- enumerated boundary-carrying non-prefixed managed roles (amends Decision 144 clause 2) (Decided)
+
+```yaml
+number: 180
+status: Decided
+decided_date: "2026-08-31"
+amends: [144]
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant commitment that INVERTS Decision 144's inherited Decision 129
+    re-narrow trigger for one risk class, so it is a re-decision, not an annotation; Decision 157
+    made the identical move (Secrets Manager metadata-vs-value split) and was minted as a
+    numbered Decision, not routed to a lesser form.
+```
+
+**Status:** Decided
+**Date:** 2026-08-31
+**Warehouse ID:** dec-180
+
+**Problem:**
+rec-3327: `github_ci_apply`'s `IAMRoleMetadataWrite` Sid grants `iam:UpdateRoleDescription` only at
+`role/agent-platform-*`, so a description reconcile on `PlatformDev` (an in-scope, terraform-managed,
+non-prefixed role since CD.35 Wave 4) AccessDenies. Contract-first routing rejected: no owning
+contract exists yet to carry this as field_semantics -- `docs/contracts/iam-authority-standard.yaml`
+is unbuilt (Plan B); `authority_budget.json` mirrors only the guard's `in_budget_resource_types`
+(`aws_iam_role_policy`/`_attachment`), not the identity policy's Resource scope; and
+`docs/contracts/iam-simulate-fixture.yaml` records EXPECTED DECISIONS -- it can pin the consequence
+but cannot itself re-decide Decision 144 clause 2's inherited Decision 129 trigger. `amendment_forms`
+is also rejected: routing this on capacity grounds would bypass Decision 167 clause 2's
+category-consistency gate. The scope rule therefore lives only in HCL and this entry.
+
+**Decision:**
+1. The metadata risk class is `role/agent-platform-*` PLUS enumerated boundary-carrying
+   non-prefixed managed roles -- today exactly `{PlatformDev}`.
+2. This makes FOUR verbs reachable on PlatformDev: `iam:TagRole`, `iam:UntagRole`,
+   `iam:UpdateRole`, `iam:UpdateRoleDescription` -- not only the verb rec-3327 names. None is
+   trust, inline-policy, or boundary-modifying, and PlatformDev carries the mandatory boundary
+   (Decision 144 clause 3), so the ceiling still constrains.
+3. PlatformAdmin is PERMANENTLY excluded from every CI-writable Resource pattern in this policy.
+   It carries no boundary by design -- it must remain able to amend the boundary -- and
+   `IAMRoleMetadataWrite`/`IAMRoleDeleteBounded` carry no boundary Condition, so a prefixed or
+   enumerated PlatformAdmin would become CI-mutable and CI-deletable. Reversal-relevant: reversing
+   this clause requires re-deciding Decision 113's two-principal split.
+4. Decision 129's re-narrow-on-a-non-agent-platform-* trigger, inherited by Decision 144 clause 2,
+   is confronted deliberately: the trigger assumed name implies coverage. CD.35 Wave 4 pulled
+   PlatformDev under terraform management, breaking that assumption -- coverage is decided by the
+   boundary, not the name; enumeration is the interim expression until Plan B's role registry
+   computes it.
+5. Precedent: Decision 157 re-grounded a prefix-scoped grant by capability class rather than
+   enumeration; this entry follows that reasoning while retaining an enumeration, since no
+   machine-readable classifier exists yet.
+6. Rejected alternative, recorded so it stays citable: relocating `terraform/personal/
+   platform_roles.tf` into the admin-tier bootstrap module so the CD-applied root never manages
+   what CD cannot write. Rejected for now under Decision 144 clause 3's managed-fleet framing.
+
+**Reversal conditions:** re-narrow `IAMRoleMetadataWrite`'s Resource back to `role/agent-platform-*`
+only if (a) PlatformDev leaves terraform management, or (b) Plan B's role registry supersedes the
+enumeration with a computed classifier. Reversing clause 3 (PlatformAdmin's exclusion) additionally
+requires re-deciding Decision 113's two-principal split -- never a standalone HCL edit.
+
+**Related:** Decision 144 (clause 2 amended, clause 3's mandatory-boundary framing retained),
+Decision 129 (the re-narrow trigger confronted by name), Decision 157 (the capability-class-over-
+enumeration precedent), Decision 143 (clause 1 worst-verb scoping, unaffected by this metadata-class
+grant), Decision 113 (the two-principal split clause 3's exclusion depends on), Decision 167 clause 2
+(the category-consistency gate `amendment_forms` was rejected against). Refs: rec-3327,
+docs/contracts/iam-simulate-fixture.yaml (the PlatformDev/PlatformAdmin rows this Decision licenses).
+
+---
+
 ## Decision 179: Retire the decision-corpus stock ceilings now that retrieval replaced ambient loading (amends Decision 134, 160, 166) (Decided)
 
 ```yaml
