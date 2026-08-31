@@ -20,10 +20,17 @@ expected_decision_values: build_triples() already rejects any value outside VALI
 the expected_decision_values-equals-VALID_DECISIONS leg above pins the declared list TO
 VALID_DECISIONS -- a third leg re-asserting the same fact per-triple would be tautological, never
 able to fail independently of the first two.
+
+A fourth leg (rec-3325) reads the fixture's own `multi_resource_type_verbs:` map -- Decision 86
+routing: the map is contract DATA the fixture declares, not evaluator logic, so it lives here, not
+in scripts/ci/iam_simulate.py -- and fails any mapped verb whose PRESENT fixture rows do not cover
+every declared resource type. A mapped verb with ZERO rows is not a failure: that is the deliberate
+armed-but-inert shape for a verb the live policy does not currently grant.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -42,6 +49,49 @@ _DUMMY_REGION = "region-placeholder"
 # (`${account_id}`, `${region}`) -- the fixture's own `placeholders:` block is documentation, not
 # a data source the runner reads, so this check independently pins what the runner actually does.
 _SUBSTITUTED_TOKENS = frozenset({"account_id", "region"})
+
+# An ARN's resource segment is everything after the fifth ':' (arn:partition:service:region:
+# account:resource); the resource TYPE is whatever precedes the first '/' or ':' inside that
+# segment (e.g. "database" in "database/agent_platform", "role" in "role/PlatformDev").
+_RESOURCE_TYPE_RE = re.compile(r"^[^/:]*")
+
+
+def _resource_type(target_arn_template: str) -> str:
+    parts = target_arn_template.split(":", 5)
+    if len(parts) < 6:
+        return ""
+    match = _RESOURCE_TYPE_RE.match(parts[5])
+    return match.group(0) if match else ""
+
+
+def _check_multi_resource_type_verbs(data: dict, failed: list[str]) -> None:
+    """rec-3325 leg: every verb declared in the fixture's own `multi_resource_type_verbs:` map
+    must have its full declared resource-type set covered by PRESENT fixture rows -- a mapped verb
+    with ZERO rows is armed-but-inert (not currently granted), never a failure."""
+    multi_resource_type_verbs = data.get("multi_resource_type_verbs") or {}
+    if not isinstance(multi_resource_type_verbs, dict):
+        failed.append(f"iam-simulate-fixture shape: {_CONTRACT_NAME} multi_resource_type_verbs must be a mapping")
+        return
+
+    resource_types_by_verb: dict[str, set[str]] = {}
+    for row in data.get("triples") or []:
+        if isinstance(row, dict) and "verb" in row and "target_arn_template" in row:
+            resource_types_by_verb.setdefault(str(row["verb"]), set()).add(_resource_type(str(row["target_arn_template"])))
+
+    for verb, declared_types in multi_resource_type_verbs.items():
+        if not isinstance(declared_types, list) or not declared_types:
+            failed.append(f"iam-simulate-fixture shape: multi_resource_type_verbs[{verb!r}] must be a non-empty list")
+            continue
+        present_types = resource_types_by_verb.get(str(verb), set())
+        if not present_types:
+            continue
+        missing_types = {str(t) for t in declared_types} - present_types
+        if missing_types:
+            failed.append(
+                f"iam-simulate-fixture shape: verb {verb!r} is declared multi-resource-type "
+                f"({sorted(str(t) for t in declared_types)}) but its fixture row(s) cover only "
+                f"{sorted(present_types)} -- missing companion row(s) for {sorted(missing_types)}"
+            )
 
 
 @registry.register("validate_iam_simulate_fixture_shape", owner="platform")
@@ -92,6 +142,8 @@ def validate_iam_simulate_fixture_shape(failed: list[str], *, contracts_dir: Pat
             f"iam-simulate-fixture shape: {_CONTRACT_NAME} placeholders keys {sorted(declared_placeholders)} "
             f"does not equal the runner's substituted token set {sorted(_SUBSTITUTED_TOKENS)}"
         )
+
+    _check_multi_resource_type_verbs(data, failed)
 
     registry.examined(len(triples), unit="triples")
 

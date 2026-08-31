@@ -62,7 +62,7 @@ resource "aws_s3_bucket" "data_lake" {
 
   tags = {
     Name    = "Platform Data Lake"
-    Purpose = "Platform object storage (tfstate, plans, convergence records, logs)"
+    Purpose = "Platform object storage - tfstate / plans / convergence records / logs"
   }
 }
 

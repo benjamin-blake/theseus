@@ -152,6 +152,14 @@ locals {
         # boundary-modifying -- they carry no escalation risk equivalent to IAMRoleReconcile's trust
         # verb, so the prefix-scoped grant is safe (Decision 143: only worst-verb-scoped verbs like
         # iam:UpdateAssumeRolePolicy / iam:PassRole / the boundary-edit verbs stay individually narrow).
+        # rec-3327 / Decision 180: the metadata risk class is role/agent-platform-* PLUS enumerated
+        # boundary-carrying non-prefixed managed roles, today exactly {PlatformDev} -- added below so
+        # the same four verbs reach PlatformDev's own description/tag/lifecycle metadata (PlatformDev
+        # carries the mandatory boundary, Decision 144 clause 3, so the ceiling still constrains).
+        # PlatformAdmin is PERMANENTLY excluded from this Resource list and from every other
+        # CI-writable Resource pattern in this policy (Decision 180 clause 3): it carries no boundary
+        # by design, and this Sid has no boundary Condition, so a matched PlatformAdmin would become
+        # CI-mutable.
         Sid    = "IAMRoleMetadataWrite"
         Effect = "Allow"
         Action = [
@@ -160,7 +168,10 @@ locals {
           "iam:UpdateRole",
           "iam:UpdateRoleDescription"
         ]
-        Resource = ["arn:aws:iam::${var.account_id}:role/agent-platform-*"]
+        Resource = [
+          "arn:aws:iam::${var.account_id}:role/agent-platform-*",
+          "arn:aws:iam::${var.account_id}:role/PlatformDev",
+        ]
       },
       {
         # In-budget CreateRole: the pipeline may only create roles that carry the authority budget

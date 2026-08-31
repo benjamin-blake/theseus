@@ -74,4 +74,12 @@ ENTRIES: tuple[Entry, ...] = (
         pre=True,
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_terraform_tag_charset",
+        module="scripts.checks.iam_tf.validate_terraform_tag_charset",
+        attr="validate_terraform_tag_charset",
+        pre=True,
+        pre_globs=("terraform/**/*.tf",),
+        full_segment="full_after_lint",
+    ),
 )
