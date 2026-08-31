@@ -210,6 +210,21 @@ test_obligations:
   verification_step: 4
   test_selector: tests/verification_graduation/test_provisioning.py::TestWorktreeProvisioning
   waiver_reason: 'No pre-fix red state exists for the teardown half: before this change no symlink is created, so there is nothing for teardown to follow and the canary trivially survives. The test is a forward guard against a future teardown that does follow it (a 432MB destructive failure mode), not a red/green on this diff. The conditional-provisioning half IS red before (no symlink is ever created today).'
+- source: docs/contracts/ci-rca-lifecycle.yaml
+  behavior: trigger_scope.pr_branch_disposition states the real mechanism (a PR CI run DOES emit workflow_run; the head_branch gate rejects it) and the Class D amendment_log[] entry is present.
+  verification_step: 9
+  command: bin/venv-python -c "import yaml,pathlib; d=yaml.safe_load(pathlib.Path('docs/contracts/ci-rca-lifecycle.yaml').read_text(encoding='utf-8')); v=d['trigger_scope']['pr_branch_disposition']; assert 'no workflow_run event exists' not in v, 'false claim still present in the parsed value'; assert any('verification-graduation-gate-fix' in (e.get('summary') or '') for e in (d.get('amendment_log') or [])), 'no amendment_log entry naming this plan'; print('OK')"
+  red_green_expectation: 'Red before -- verified today: the parsed pr_branch_disposition still contains ''no workflow_run event exists'' and no amendment_log entry names this plan. Green after both edits.'
+- source: config/agent/verification_registry/entries/ci-rca-lifecycle-records-watched-set.yaml
+  behavior: The shard's check_spec asserts something TRUE of live state -- it is an executable guard, not documentation, and it currently asserts a falsehood.
+  verification_step: 7
+  command: bin/venv-python -c "import yaml,subprocess,pathlib; r=yaml.safe_load(pathlib.Path('config/agent/verification_registry/entries/ci-rca-lifecycle-records-watched-set.yaml').read_text(encoding='utf-8')); p=subprocess.run(r['check_spec']['command'],capture_output=True,text=True); print(p.returncode, p.stderr[-200:]); raise SystemExit(p.returncode)"
+  red_green_expectation: Red before -- the shard exits 1 today with AssertionError on "'contract' not in d", false since eaff8043 seeded the Class D envelope. Green after the repair.
+- source: docs/contracts/verification-registry.yaml
+  behavior: The contract records the admission-rule change and the shard re-authoring, and its contract_version tracks them -- this file is the admission rule's documented home, so drift here misleads every later reader.
+  verification_step: 15
+  command: bin/venv-python -c "import yaml,pathlib; d=yaml.safe_load(pathlib.Path('docs/contracts/verification-registry.yaml').read_text(encoding='utf-8')); assert d['contract']['contract_version']==6, d['contract']['contract_version']; assert any('verification-graduation-gate-fix' in (e.get('summary') or '') for e in (d.get('amendment_log') or [])), 'no amendment_log entry naming this plan'; g=d.get('governance_notes') or ''; assert 'ci-rca-lifecycle-records-watched-set' in g, 're-authoring not recorded in governance_notes'; print('OK')"
+  red_green_expectation: 'Red before -- verified today: contract_version is 5, no amendment_log entry names this plan, and governance_notes does not mention ci-rca-lifecycle-records-watched-set. Green after all four edits.'
 constraints:
 - No rescue agents or workaround loops (Decision 55) -- an environment failure is surfaced, never guessed at.
 - Do NOT weaken the differential gate to make any check admissible; a tautological rejection is the gate working.
