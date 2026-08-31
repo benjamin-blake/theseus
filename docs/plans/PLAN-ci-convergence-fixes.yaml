@@ -315,6 +315,19 @@ verification_plan:
       address the named check; never add a budget raise or a skip to get green (Decision 55)
     graduation: not-applicable
   - step: 10
+    phase: pre-deploy
+    action: >-
+      Pre-handoff full-tier gate. handoff_policy.full_validation_required_before_commit is declared,
+      so the commit waits on a completed full run exiting 0 -- the fast tier in step 9 does not
+      discharge it (AGENTS.md two-tier table, Full row: pre-handoff local + post-merge on main).
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: >-
+      address the named check. A timeout is handoff_policy.timeout_disposition = blocked: resume
+      later and rerun the full tier from the start, never commit on a partial run. Budget for it --
+      validate_test_coverage alone measured ~3m17s (Decision 166 clause 3).
+    graduation: not-applicable
+  - step: 11
     phase: post-deploy
     action: >-
       Closure obligation -- confirm the three bundled recs actually closed via the Resolves trailer
@@ -330,7 +343,7 @@ verification_plan:
       any still open -- the Resolves trailer was malformed or rec-autoclose.yml did not fire; close
       via bin/venv-python -m scripts.ops_data_portal --update-rec rec-NNNN --status closed
     graduation: not-applicable
-  - step: 11
+  - step: 12
     phase: post-deploy
     action: >-
       Confirm the merge did NOT apply -- the red convergence record must refuse with
@@ -352,7 +365,7 @@ verification_plan:
       an apply ran while the record was red -- stop and RCA the read-precondition (Decision 55); do
       not retry
     graduation: not-applicable
-  - step: 12
+  - step: 13
     phase: post-deploy
     action: >-
       OPERATOR, after the glue-grant gap is resolved, the in-flight destroy drains and the bootstrap
@@ -408,6 +421,28 @@ test_obligations:
     test_selector: tests/checks/iam_tf/test_validate_terraform_tag_charset.py
     red_green_expectation: >-
       red before the Entry is added (the mirror test's registration case fails), green after
+  - source: config/ci_rca_taxonomy.yaml
+    behavior: >-
+      every registered check name resolves to a failure category, so a new check cannot ship
+      uncategorised (validate_ci_rca_taxonomy Check 1b)
+    verification_step: 3
+    command: "assert n in t['function_to_category']"
+    red_green_expectation: >-
+      red before the row is added -- validate_ci_rca_taxonomy fails a registered check with no
+      category -- green after
+  - source: config/structural_size_budgets.yaml
+    behavior: >-
+      the iam-simulate-fixture budget ratchets DOWN to 600 and never up, so the compaction gain
+      cannot be silently spent by a later edit
+    verification_step: 7
+    command: "assert n<=lim"
+    waiver_reason: >-
+      No red/green is honest here: post-change effective lines are 595, which already passes the
+      pre-change 605 budget, so step 7 is green either way and the decrease cannot be red-before.
+      A budget DECREASE is a ratchet tightening rather than a behavior change -- it can only make a
+      future edit fail earlier, never make a bad state pass. The behavior that could regress (the
+      file exceeding whatever budget is registered) is exactly what step 7 asserts, and
+      validate_structural_size_limits enforces it standingly.
   - source: docs/contracts/iam-simulate-fixture.yaml
     behavior: >-
       loads through iam_simulate's pure layer with no wildcard targets, and carries companion rows
