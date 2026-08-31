@@ -46,8 +46,8 @@ The candidates:
   scheduled agent, a validation tier -- to declare its objective, constraints, backstop, and
   stop conditions in one auditable place. The loop-governing invariants that do exist are
   enforced piecewise in separate checks.
-- C2 (discrimination gap for the check fleet). Proof that each of the ~46+ glob-gated `--pre`
-  checks still DETECTS its target defect class sits between three built/planned mechanisms that
+- C2 (discrimination gap for the check fleet). Proof that each check in the glob-gated `--pre`
+  fleet (order 46-48 entries at compose time; re-derive) still DETECTS its target defect class sits between three built/planned mechanisms that
   each exercise a different property: Decision 170 accounting proves a check EXAMINED something
   (activity), `validate_pre_glob_closure` proves a diff REACHES the check (selection), and
   T3.7 mutation targets GRADUATED registry shards' guard lines (a different population). The
@@ -63,10 +63,14 @@ The candidates:
   requires a resolving evaluator at landing, census ratchet pins constrain `docs/contracts/`
   growth, and existing surfaces (check-manifest, verification-registry, ci_rca_taxonomy,
   check-accounting) already carry much of the declaration; extending them may beat a new
-  contract. Take this candidate as seriously as the others.
+  contract. Take this candidate as seriously as the others. Disposition routing for C5: a
+  confirmed C5 is expressed through `technique_verdicts` (defer/reject rationales) and
+  `rejected_candidates` rows -- never as a `findings[]` row; findings record repository
+  defects only.
 - C6 (stop-condition governance). Iteration caps and stop conditions for agentic loops appear
-  ad hoc per surface (e.g. a `--max-turns 30` literal in one workflow) rather than declared and
-  reviewed anywhere.
+  ad hoc per surface (e.g. a `--max-turns 30` literal in one workflow and a `MAX_TURNS=5`
+  literal in a composite action consumed by two others -- both anchored in the grounding map)
+  rather than declared and reviewed anywhere.
 - C7 (escape-to-fixture conversion). A confirmed escape produces a REC (a work item) and a fix,
   but no mechanism converts the escape into a permanent machine fixture that must keep failing
   under the fast tier; permanence relies on the fix author's test-writing convention.
@@ -96,8 +100,8 @@ The candidates:
   registry to per-check_id shards) and the shard population is now large. Re-derive current
   state; do not inherit the audit's observations.
 - `docs/contracts/verification-registry.yaml` says `ratified_via: "dec-102: PLAN-t3-1-verifier-
-  harness merge to main"`, while the `## Decision 102:` header in `docs/DECISIONS.md` is the
-  SLOC Waiver Ratchet. Do not resolve graduation-registry provenance through the DECISIONS.md
+  harness merge to main (T3.1 CD.25 ritual)"`, while the `## Decision 102:` header in
+  `docs/DECISIONS.md` is the SLOC Waiver Ratchet. Do not resolve graduation-registry provenance through the DECISIONS.md
   number alone; if the mismatch matters to a finding, record it in `meta.stale_anchors` and move
   on -- decision-log citation integrity at large is another audit's territory.
 - The strings "D2-2b" and "D2-3" appear in two module docstrings as provenance labels and
@@ -146,8 +150,9 @@ Surfaces:
 - S5 (built): verifier change control -- marker guards, contract population ratchets.
 - S6 (built + designed): graduation and discrimination machinery -- T3.1 registry and shards,
   differential admission, T3.7 meta-validation (designed).
-- S7 (built, heterogeneous): standing non-validation loops -- the cron sensor workflow fleet
-  and the inert scheduled-agent fleet. Automated loops only: the interactive human-gated
+- S7 (built, heterogeneous): standing non-validation loops -- the schedule-bearing workflow
+  fleet, dispatch- and event-triggered standing automation, and the inert scheduled-agent
+  fleet. Automated loops only: the interactive human-gated
   workflows (/orient, /plan, /implement, overseer) are context, not rated surfaces.
 - S8 (designed-unbuilt): the P1-P5 proposal itself.
 
@@ -166,21 +171,25 @@ Run, in order; on failure take the named degraded path -- never abort, never imp
 
 1. `git fetch origin main` then `git rev-parse --short origin/main` -- this base IS the audited
    tree; record it once and use it everywhere (filenames, branch, `meta.audited_commit`).
-   Degraded (fetch fails): audit the checkout's HEAD, note it in `meta.contract_notes`.
+   Degraded (fetch fails): audit the checkout's HEAD, cut step 2's branch from HEAD instead of
+   origin/main, and note it in `meta.contract_notes`.
 2. `git switch -c audit/loop-spec-adoption-<sha> origin/main` (mechanics rationale in section
-   16).
+   16). Degraded (branch name already taken): append `-2`.
 3. `bin/venv-python --version` -- the repo's mandatory interpreter wrapper. Degraded (missing or
    broken venv): note in `meta.contract_notes`, skip step 4 via the hatch below.
 4. Cache generation for dedup: `bin/venv-python -m scripts.session.preflight --roadmap-detail
    full` (populates `logs/.preflight-report.json` and `logs/.recommendations-log.jsonl`; its
    stdout also carries the budget-breach/bypass telemetry lines S3 samples). IF cache-gen fails
-   (creds/egress down): do NOT abort -- set meta.degraded_dedup=true, mark every
-   roadmap_crossref confidence=HYPOTHESIS and dedup_hit_count=null, proceed. (Reader of
-   `degraded_dedup`: the dedup-discipline rule in section 13 and the human disposer.)
+   (creds/egress down): do NOT abort -- set meta.degraded_dedup=true and proceed: every
+   finding's `roadmap_crossref` then carries `dedup_hit_count: null` and a `note` beginning
+   "degraded dedup: <the terms you would have searched>", and its `classification` is read as
+   provisional. Finding-level `confidence` is untouched -- it follows section 14's trace rule.
+   (Readers of `degraded_dedup`: the dedup rule in section 13 and the human disposer.)
 5. Do NOT run `scripts.validate` or any tier as part of this audit; repo-wide validation is
    advisory outside CI here, and an unrelated failure would burn your budget. A clean YAML
    parse of your two deliverables is the real pre-push gate. If you nonetheless observe a
-   pre-existing red anywhere, record it in `meta.contract_notes`; fix nothing.
+   pre-existing red anywhere, record it in `meta.contract_notes`; fix nothing. (Readers of
+   `contract_notes`: the human disposer at merge time.)
 
 ## 6. NORTH STAR
 
@@ -214,11 +223,17 @@ Judgment-bearing bars, not absolutes: argue each surface against them; do not pa
   examined. Verdict: `sufficient | partial | insufficient`.
 - Q3. For each technique P1-P5: adopt, adopt amended, defer, or reject? Answer via the
   `technique_verdicts` block (OUTPUT); this question's `prose` field summarizes and points
-  there. The block's verdict enum: `adopt | adopt-amended | defer | reject`.
+  there. The block's verdict enum: `adopt | adopt-amended | defer | reject`. Definitions:
+  adopt = build as specified; adopt-amended = build with the amendments you name in the
+  block's `mechanism`/`what_changes`; defer = do not build now, revisit at the named
+  `sequencing` trigger; reject = do not build. Both `adopt` AND `adopt-amended` require a
+  DD-A-surviving defect class named in `rationale`; a technique with no surviving class can
+  only be `defer` or `reject`.
 - Q4. Rate the repository's loop/verifier governance against this EXTERNAL CHECKLIST,
   property by property (`met | partial | missed`; `partial` requires an argued property-matched
   compensating control in the evidence). This checklist is the SOLE source the maturity top
-  tier reads:
+  tier reads. Q4's own verdict derives from the rows: sufficient = 0 properties missed;
+  partial = 1-2 missed; insufficient = 3 or more missed:
   1. presubmit/postsubmit tier split with escape attribution;
   2. test-impact-analysis soundness (additive selection, fail-closed skips, closure auditing);
   3. mutation or fault-injection evidence of verifier discrimination;
@@ -240,6 +255,10 @@ Judgment-bearing bars, not absolutes: argue each surface against them; do not pa
   4. Where should agentic loops' iteration caps and stop conditions live, if anywhere?
   5. Is 300s still the right fast-tier objective given the observed breach/bypass rate, and
      which surface owns re-deriving it?
+  6. Do P2 and P4, as NEW verifiers, owe NS3 discrimination evidence for themselves before
+     becoming authoritative -- and what would their own known-bad fixtures be?
+  7. When a loop-spec entry and the loop's live definition diverge, which side is truth, and
+     what detects the divergence?
 
 ## 8. RUBRIC
 
@@ -257,9 +276,10 @@ dimension; every dimension feeds at least one question or deep-dive.
 - VD6 stop and feasibility governance (budgets, caps, breach handling) -- Q2, Q4.5, Q4.9.
 - VD7 cost and duplication economy (NS6; new surface vs extension) -- Q3, DD-A.
 
-S8 takes rubric ratings where dimensions apply to its DESIGN (VD7 always applies) and
-`maturity: n/a` -- a proposal has no operational maturity; its disposition lives in
-`technique_verdicts`.
+Emit all seven dimensions for each of S1-S7 (`n/a` where a dimension does not apply). S8 takes
+rubric ratings only where dimensions apply to its DESIGN -- emit VD7 always, plus any other
+applicable dimension, and omit the rest -- and `maturity: n/a`: a proposal has no operational
+maturity; its disposition lives in `technique_verdicts`.
 
 ## 9. DEEP-DIVES
 
@@ -278,17 +298,21 @@ S8 takes rubric ratings where dimensions apply to its DESIGN (VD7 always applies
   4. Raise the `_FAST_TIER_BUDGET_SECONDS` literal.
   5. Delete a check's mirror test file under `tests/checks/`.
   6. Remove one workflow name from the CI-RCA `workflows:` trigger filter.
-  7. Comment out a cron sensor workflow's `schedule:` block.
+  7. Comment out the `schedule:` block of one schedule-bearing sensor workflow (e.g.
+     convergence-health).
   8. Edit a graduation-registry shard's `check_spec.node_id` to point at a trivial test.
   9. Add an entry to `validate_pre_glob_closure`'s `_PRUNED_EDGES`.
-  10. Raise a SLOC budget without a marker (positive control -- expected `gated-at-merge`).
+  10. Raise a SLOC budget without a marker (positive control -- expected `gated-at-merge`; if
+      your trace contradicts that expectation, the contradiction is itself a finding, and say
+      so when classifying the other nine).
 - DD-C (escape-ratchet traces; feeds Q1, VD4, VD5, candidate C7). For up to three real escapes
   (fast tier green, ground truth red), trace end to end: detection, attribution
   (`escape_class`/category), the filed rec, the fix, and the permanent artifact (test, fixture,
   closure rule) that now prevents recurrence -- or the absence of one. Source escapes from the
   regenerated recs cache (CI-RCA categories such as gate_escape) after SETUP; degraded path
-  (cache absent): use the two incidents recorded inside Decision 135's Problem statement and
-  trace their fixes.
+  (cache absent, OR regenerated but holding no escape-classified recs): use the two incidents
+  recorded inside Decision 135's Problem statement and trace their fixes; name which path you
+  took in `meta.contract_notes`.
 
 ## 10. GROUNDING MAP
 
@@ -316,7 +340,7 @@ S1 fast tier:
   is the single source of truth; new checks enter it first.
 
 S2 ground truth + escape loop:
-- `ci.yml:95-146` -- main-validate runs the full suite on push; uploads `pytest-junit` and
+- `ci.yml:95-173` -- main-validate runs the full suite on push; uploads `pytest-junit` and
   `validation-result` artifacts. A separate Main Canary workflow exists
   (`.github/workflows/main-canary.yml`).
 - `.github/workflows/ci-rca.yml:22-30` -- the `workflows:` trigger filter; a comment at
@@ -332,6 +356,14 @@ S2 ground truth + escape loop:
 - `scripts/ci_rca/back_validation.py:1-18` -- flags a CLOSED ci_rca rec whose
   `preventive_action` did not hold (new open rec on the same file); "CANDIDATES only"; cites
   Decisions 55 and 57.
+- `scripts/ops_portal/ci_rca_lifecycle.py:31` and `:280-281` -- a fingerprint chain reaching
+  the flake-escalation length is "a recurring flake, not a fresh incident"; "the caller should
+  tag flaky + quarantine instead of filing another fresh critical".
+- `scripts/execute_recommendation.py:122-142` -- `_POSTFLIGHT_VALIDATION_QUARANTINE`: named
+  baseline-red tests already reproduced outside the rec branch are quarantined in the local
+  postflight path and recorded in the run summary.
+- `.github/actions/subagent-plan-review/review.sh:68` -- `MAX_TURNS=5`, a second hardcoded
+  agent iteration cap, consumed by the reconcile and terraform-apply-sandbox workflows.
 - `config/ci_rca_taxonomy.yaml:4-18` -- `failure_categories` includes `gate_escape` and
   `test_collection_empty`.
 
@@ -356,7 +388,8 @@ S4 selection-soundness stack:
 - `scripts/checks/deps/validate_pre_glob_closure.py:1-31` -- ADVISORY auditor (wave 4a): does
   each glob-gated pre check's `pre_globs` cover its own import closure; motivated by rec-3289;
   "Waves 1 and 2 found 12 such defective globs BY HAND"; wave 4c "flips it to blocking once the
-  backlog is zero"; `_PRUNED_EDGES` is intentionally empty at introduction.
+  backlog is zero"; `_PRUNED_EDGES` is declared empty at `:55` ("INTENTIONALLY EMPTY at
+  introduction" per its comment).
 - Closed rec-3289's title reports 33 of 46 glob-gated pre checks under-declared their closure
   at measurement.
 - `docs/contracts/check-manifest.yaml:39-51` -- `declared_segment_tokens` must equal
@@ -370,8 +403,9 @@ S5 verifier change control:
   reversal conditions name a considered-and-deferred `Governs:` declared-marker design.
 - `docs/contracts/contract-population.yaml:135-141` -- a NEW depth-1 `docs/contracts/*.yaml`
   must carry a valid contract block; Class D requires a non-empty RESOLVING evaluator;
-  `:76-115` -- the `none_grandfathered` evaluator kind is retired and unrepresentable; ratchet
-  pins `grandfathered_max` 17 and `status_active_max` 16.
+  `:76-115` -- the `none_grandfathered` evaluator kind is retired and unrepresentable. The
+  ratchet pins `grandfathered_max: 17` and `status_active_max: 16` are declared under the
+  file's `ratchet:` key near its end (narrated in the amendment log).
 - `AGENTS.md` SLOC section -- raises need `# raise-approved: dec-NNN`; "decreases and removals
   are always unrestricted".
 
@@ -379,8 +413,9 @@ S6 graduation and discrimination:
 - `docs/contracts/verification-registry.yaml:1-23` -- Class A contract; six primitive slots;
   `guard_target` + `guard_symbol` indexing "so downstream orphan detection (T3.7) is
   deterministic"; data files are per-check_id shards (Decision 176).
-- `config/agent/verification_registry/` contains only `entries/`; 471 shard files at compose
-  time; sample shard `affected-set-retains-driver-tests-under-synthetic-diff.yaml`:
+- `config/agent/verification_registry/` holds `entries/` and no monolithic registry file; 472
+  depth-1 shard files at compose time, plus an `entries/deprecated/` subdirectory holding 3
+  retired shards; sample shard `affected-set-retains-driver-tests-under-synthetic-diff.yaml`:
   `primitive_slot: test_selector`, `guard_target: scripts/checks/deps/affected_tests.py`,
   `graduated_at: '2026-08-11'`, `check_spec.node_id` naming a pytest node.
 - `docs/ROADMAP-PLATFORM.yaml` item `id: T3.7` -- "Validation-suite meta-validation": scheduled
@@ -394,10 +429,14 @@ S6 graduation and discrimination:
   "explicitly NOT on the CD.17 reversal path".
 
 S7 standing loops:
-- `.github/workflows/` held 22 workflow files at compose time, including cron-scheduled
-  sensors: convergence-health, terraform-drift, main-canary, dedup-probe, ghas-probe,
-  cost-reconciliation, ci-rca-inactivity-sweep, dependabot-stranded, branch-cleanup,
-  rec-autoclose, reconcile.
+- `.github/workflows/` held 22 workflow files at compose time. Eight carry `schedule:`
+  triggers: ci-rca-inactivity-sweep, codeql, convergence-health, cost-reconciliation,
+  dedup-probe, dependabot-stranded, ghas-probe, main-canary. Further standing automation is
+  event- or dispatch-triggered: rec-autoclose fires on push to main; terraform-drift,
+  branch-cleanup, and reconcile are workflow_dispatch-only -- branch-cleanup's header states
+  "DISPATCH-ONLY, DELIBERATELY", while terraform-drift's own header comment still claims a
+  cron schedule (repo-internal staleness: treat `on:` trigger blocks as truth, never header
+  prose).
 - `.github/agents/schedule.yaml:1-30` -- scheduled-agent manifest; "The fleet is currently
   inert: every entry is enabled:false" pending T4.12.
 - `scripts/verifiers/__init__.py` -- `REGISTRY: list[type[Verifier]] = []`, commented: legacy
@@ -415,7 +454,8 @@ Hard bounds -- do NOT exceed any of them:
 
 - DD-B: exactly the 10 listed moves, static tracing only.
 - DD-C: <= 3 escape traces.
-- Graduation shards: <= 5 shards sampled. Per shard, apply the counterfactual as an operation:
+- Graduation shards: <= 5 shards sampled, drawn from non-deprecated depth-1 entries only. Per
+  shard, apply the counterfactual as an operation:
   read `guard_target`/`guard_symbol` and the `check_spec` test; answer "if the guarded symbol
   were deleted or its behavior inverted, would this recorded check fail?" -- a NO is evidence
   for Q4.3/VD3.
@@ -476,17 +516,31 @@ audit:
          scope_surfaces: [S1, S2, S3, S4, S5, S6, S7, S8],
          degraded_dedup: false, contract_notes: "", stale_anchors: []}
   question_answers:
-    - {q: Q1, verdict: sufficient|partial|insufficient, basis: [<finding ids>], prose: ""}
-    - {q: Q2, verdict: sufficient|partial|insufficient, basis: [<finding ids>], prose: ""}
-    - {q: Q3, verdict: see-technique_verdicts, basis: [<finding ids>],
-       prose: "<one-paragraph synthesis pointing at technique_verdicts>"}
-    - {q: Q4, verdict: sufficient|partial|insufficient, basis: [<finding ids>], prose: "",
-       external_checklist:
-         - {property: "<one of the nine, verbatim>", rating: met|partial|missed, evidence: ""}
-         # exactly nine rows, in section-7 order; partial requires an argued
-         # property-matched compensating control in evidence
-    - {q: Q5, answers: [{question: "", answer: "", basis: [<finding ids>]}]}
-      # the five seeds first, then >= 2 of your own
+    - q: Q1
+      verdict: sufficient|partial|insufficient
+      basis: [<finding ids>]
+      prose: ""
+    - q: Q2
+      verdict: sufficient|partial|insufficient
+      basis: [<finding ids>]
+      prose: ""
+    - q: Q3
+      verdict: see-technique_verdicts
+      basis: [<finding ids>]
+      prose: "<one-paragraph synthesis pointing at technique_verdicts>"
+    - q: Q4
+      verdict: sufficient|partial|insufficient
+      basis: [<finding ids>]
+      prose: ""
+      external_checklist:
+        # exactly nine rows, in section-7 order; partial requires an argued
+        # property-matched compensating control in evidence
+        - {property: "<one of the nine, verbatim>", rating: met|partial|missed, evidence: ""}
+    - q: Q5
+      # deliberately no verdict/prose keys: Q5's shape is this answers list,
+      # the seven seeds first, then >= 2 of your own
+      answers:
+        - {question: "", answer: "", basis: [<finding ids>]}
   technique_verdicts:
     P1: {verdict: adopt|adopt-amended|defer|reject, mechanism: "", what_changes: "",
          cost: XS|S|M|L, rationale: "", confidence: CONFIRMED|HYPOTHESIS,
@@ -494,7 +548,7 @@ audit:
                       blocked_behind: [<finding or roadmap ids>], note: ""}}
     P2: {...}  # same shape for P2-P5
   per_surface_assessment:
-    - {surface: S1..S8, maturity: <per section 15; n/a for S8>, strengths: "",
+    - {surface: S1..S8, maturity: frontier|strong|solid|nascent|n/a, strengths: "",
        top_gaps: [<finding ids>]}
   rubric_ratings:
     - {surface: S1..S8, dimension: VD1..VD7, rating: strong|adequate|weak|absent|n/a,
@@ -532,6 +586,13 @@ dismissal: name the property the control exercises, cite where it operates (file
 mechanism), and state why the control would FAIL if the defect were real. CONFIRMED requires
 the behavior traced to file:line or an observed sampled artifact; anything less is HYPOTHESIS.
 
+Field notes: `dedup_hit_count` is an integer, and null (not 0) on every finding exactly when
+`meta.degraded_dedup=true`. `stale_anchors` entries are strings of the form "<anchor as
+cited> -- <what resolves there now>". `summary.maturity_*` rows mirror
+`per_surface_assessment[].maturity`; on divergence, `per_surface_assessment` is authoritative.
+Findings with `surface: shared` appear in `findings[]` and the summary counts but never demote
+a per-surface maturity (section 15).
+
 The companion `audits/loop-spec-adoption-{sha}.md` (<= 1500 words) is the executive layer:
 lead with the five technique verdicts and the highest-leverage change, then Q1/Q2/Q4 in brief,
 then notable findings and rejected candidates. Prose, no new claims absent from the YAML.
@@ -550,10 +611,17 @@ framing:
   declaration surface).
 - low: clarity or wording.
 
-Maturity: compute LAST, per surface S1-S7 (S8 is n/a), top-down, first match wins:
+Maturity: compute LAST, per surface S1-S7 (S8 is n/a), enum
+`frontier | strong | solid | nascent`, top-down, first match wins. Only findings whose
+`surface` field names that S-id count toward its maturity; `surface: shared` findings never
+demote a surface -- call out any critical or high shared finding beside the maturity table in
+the report instead. The Q4 checklist gates `frontier` per surface through this ownership map,
+a property gating only the surfaces it names: 1 -> S1,S2; 2 -> S1,S4; 3 -> S6; 4 -> S4;
+5 -> S3; 6 -> S2; 7 -> S2,S4; 8 -> S5; 9 -> S7. (Q4's question-level verdict stays
+repository-wide.)
 
-- frontier: 0 open critical or high findings on the surface AND every Q4 external-checklist
-  property rated met or partial -- never missed.
+- frontier: 0 open critical or high findings on the surface AND no `missed` rating among the
+  checklist properties mapped to that surface.
 - strong: 0 critical AND <= 1 high.
 - solid: <= 1 critical.
 - nascent: otherwise.
@@ -575,11 +643,14 @@ findings is a valid result -- state it; do not pad.
    This is your pre-push gate. Do not run the repo's validation tiers; a pre-existing,
    unrelated failure is recorded in `meta.contract_notes`, never fixed.
 3. Commit with `git -c user.name=Claude -c user.email=noreply@anthropic.com commit`. Include no
-   model identifier in the commit message, the PR title or body, or either deliverable.
-   Message: `audit(loop-spec-adoption): adoption review of loop-spec techniques P1-P5`.
+   model identifier beyond the pinned `meta.model` string (which deliberately withholds the
+   exact id) -- none in the commit message, the PR title or body, or anywhere else in either
+   deliverable. Message: `audit(loop-spec-adoption): adoption review of loop-spec techniques
+   P1-P5`.
 4. `git push -u origin HEAD` (on network failure retry up to 4 times with 2s/4s/8s/16s
    backoff).
-5. Open the PR ready-for-review via `mcp__github__create_pull_request`: base `main`, title
+5. Open the PR ready-for-review via `mcp__github__create_pull_request`: owner
+   `benjamin-blake`, repo `theseus`, base `main`, title
    `audit: loop-spec adoption review (validation + standing loops)`, body = the `summary:`
    block in a yaml fence plus a 2-3 sentence lede. Then END THE TURN -- do not poll, do not
    merge, do not subscribe, do not self-approve.
@@ -597,5 +668,6 @@ findings is a valid result -- state it; do not pad.
   than ~4 surviving findings is a valid result -- state it; do not pad. Argue against your own
   classifications once per finding (the strongest rejected counter-reading goes in the
   finding's `note` or `compensating_controls_considered`).
-- Budget: respect every sampling bound in section 11; no repo-wide sweeps beyond the grounding
-  map and the dedup greps.
+- Budget: "budget" means the section 11 sampling bounds and the 1500-word report cap -- respect
+  every one; within them, pace yourself. No repo-wide sweeps beyond the grounding map and the
+  dedup greps.
