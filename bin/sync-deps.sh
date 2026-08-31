@@ -16,7 +16,12 @@
 #
 # Usage: bin/sync-deps.sh [--check]
 #   --check: report drift status only; never installs, never writes the
-#            fingerprint. Exit 0 = in sync, exit 1 = drift detected.
+#            fingerprint. Exit 0 = in sync, exit 1 = drift detected, exit 2 =
+#            INSTALL_TERRAFORM=1 but config/terraform-version is missing,
+#            unreadable or empty (TERRAFORM_VERSION could not be resolved).
+#            In install mode the same config error is loud but non-fatal: an
+#            ERROR is logged, the python dependency sync still runs, the
+#            fingerprint is withheld, and the script still exits 0.
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -47,17 +52,43 @@ if [ -z "$stored_fp" ] || [ "$current_fp" != "$stored_fp" ]; then
     py_drift=1
 fi
 
-tf_drift=0
+# Resolve TERRAFORM_VERSION once, above the drift check, so an empty/unreadable
+# config/terraform-version can never degrade the version comparison below into a
+# match-anything grep -- it is instead flagged as a config error and handled
+# explicitly (loud in --check, loud-but-non-fatal in install mode).
+tf_config_error=0
+TERRAFORM_VERSION=""
 if [ "${INSTALL_TERRAFORM:-0}" = "1" ]; then
-    TERRAFORM_VERSION="$(cat "$REPO_ROOT/config/terraform-version")"
-    if command -v terraform >/dev/null 2>&1 && terraform version | head -1 | grep -q "v${TERRAFORM_VERSION}"; then
-        tf_drift=0
-    else
-        tf_drift=1
+    if [ -r "$REPO_ROOT/config/terraform-version" ]; then
+        TERRAFORM_VERSION="$(tr -d '[:space:]' < "$REPO_ROOT/config/terraform-version")"
+    fi
+    if [ -z "$TERRAFORM_VERSION" ]; then
+        log "ERROR: config/terraform-version is missing, unreadable, or empty -- cannot resolve TERRAFORM_VERSION" >&2
+        tf_config_error=1
     fi
 fi
 
+tf_drift=0
+if [ "${INSTALL_TERRAFORM:-0}" = "1" ] && [ "$tf_config_error" = "0" ]; then
+    # Pipe-free: piping this command's output into head/grep can take SIGPIPE
+    # (and, under pipefail, report spurious drift) if terraform emits enough
+    # output that the downstream reader closes the pipe before terraform
+    # finishes writing. Capturing via command substitution has no early-closing
+    # reader.
+    tf_version_output=""
+    if command -v terraform >/dev/null 2>&1; then
+        tf_version_output="$(terraform version 2>/dev/null)"
+    fi
+    case "${tf_version_output%%$'\n'*}" in
+        *"v${TERRAFORM_VERSION}"*) tf_drift=0 ;;
+        *) tf_drift=1 ;;
+    esac
+fi
+
 if [ "$CHECK_ONLY" = "1" ]; then
+    if [ "$tf_config_error" = "1" ]; then
+        exit 2
+    fi
     if [ "$py_drift" = "1" ] || [ "$tf_drift" = "1" ]; then
         log "drift detected (python=$py_drift terraform=$tf_drift)"
         exit 1
@@ -66,7 +97,7 @@ if [ "$CHECK_ONLY" = "1" ]; then
     exit 0
 fi
 
-if [ "$py_drift" = "0" ] && [ "$tf_drift" = "0" ]; then
+if [ "$tf_config_error" = "0" ] && [ "$py_drift" = "0" ] && [ "$tf_drift" = "0" ]; then
     log "in sync, nothing to do"
     exit 0
 fi
@@ -116,7 +147,6 @@ if [ "$py_drift" = "1" ]; then
 fi
 
 if [ "$tf_drift" = "1" ]; then
-    TERRAFORM_VERSION="$(cat "$REPO_ROOT/config/terraform-version")"
     log "installing terraform ${TERRAFORM_VERSION} (drift detected)"
     tmpdir="$(mktemp -d)"
     if curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" -o "$tmpdir/terraform.zip" \
@@ -129,6 +159,15 @@ if [ "$tf_drift" = "1" ]; then
         fail=1
     fi
     rm -rf "$tmpdir"
+fi
+
+# A terraform config error is loud but never fatal to the install path (it must
+# not suppress the python dependency sync above), and tf_drift is never set to 1
+# on a config error, so the terraform download block above is never reached with
+# an unresolved version. Flag it after both install blocks so it only ever
+# withholds the fingerprint, never the python sync.
+if [ "$tf_config_error" = "1" ]; then
+    fail=1
 fi
 
 if [ "$fail" = "0" ]; then
