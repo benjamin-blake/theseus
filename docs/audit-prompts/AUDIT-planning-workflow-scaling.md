@@ -44,6 +44,18 @@ observation you considered and dismissed without it rising to a finding -- the G
 you dismissed, identified by its `file:line`. The GROUNDING MAP is evidence, not an accusation
 list: nothing in it is a candidate merely by appearing there.
 
+**How each candidate reaches the output, pinned so `total_findings` is not a matter of taste:**
+
+- A diagnosis claim verdicted CONFIRMED or PARTIAL files EXACTLY ONE `findings[]` row (the
+  defect the claim names, at whatever severity you judge). A claim verdicted REFUTED files NO
+  finding and instead gets one `rejected_candidates[]` row. Five claims therefore contribute
+  between 0 and 5 findings, never more.
+- A proposal contributes a finding ONLY when your adjudication surfaced a defect in the current
+  workflow -- never merely because the proposal was adopted. An ADOPT-NOW with no underlying
+  defect files no finding; a REJECT that nonetheless exposed a real gap files one.
+- `diagnosis_verdicts` and `proposal_adjudication` are systems-of-record, not finding sources:
+  they are never counted into `total_findings`.
+
 A proposal verdict is a separate axis from a finding: a proposal may be REJECTED without any
 finding, and a finding may exist with no proposal attached to it. Every finding carrying a
 `proposed_change` is sequenced by Q3 alongside the adopted proposals.
@@ -132,10 +144,12 @@ git switch -c audit/planning-workflow-scaling-<sha> origin/main
 git branch --show-current                  # must NOT print "main"
 ```
 
-This ordering is mandatory, not stylistic: a `PreToolUse` hook
-(`.claude/hooks/never_on_main.py`) blocks every file write while the current branch is `main`, so
-drafting first and branching later fails at the first write. IF the branch already exists,
-`git switch` to it instead. IF you are ever on `main` later, stop and re-cut before writing.
+Branch first because a `PreToolUse` hook (`.claude/hooks/never_on_main.py`) blocks the
+`Edit`/`Write`/`MultiEdit`/`NotebookEdit` TOOLS, and any Bash command containing `git commit` or
+`git push`, while the current branch is `main`. It does NOT block Bash-mediated writes, so the
+preflight command above runs fine on `main`; drafting a deliverable with `Write` would not. IF
+the branch already exists, `git switch` to it instead. IF you are ever on `main` later, stop and
+re-cut before writing.
 
 The preflight call populates `logs/.preflight-report.json` and `logs/.recommendations-log.jsonl`,
 which DEDUP DISCIPLINE requires.
@@ -143,7 +157,9 @@ which DEDUP DISCIPLINE requires.
 **Degraded paths -- never abort, never improvise:**
 
 - IF preflight fails on credentials or egress: do NOT abort. Set `meta.degraded_dedup: true`,
-  mark every `roadmap_crossref.confidence` as HYPOTHESIS, set every `dedup_hit_count` to null,
+  set every `findings[].confidence` and every `proposal_adjudication[].confidence` to
+  HYPOTHESIS (this OVERRIDES the file:line CONFIRMED rule for the duration of a degraded run),
+  set every `dedup_hit_count` to null,
   and proceed. Dedup then runs against the git-tracked sources only
   (`docs/ROADMAP-PLATFORM.yaml`, `docs/DECISIONS.md`, `audits/*.yaml`).
 - IF `logs/.recommendations-log.jsonl` is absent or empty: same flag, same downgrade.
@@ -218,6 +234,16 @@ The five claims, as asserted by the originating analysis:
 D2 and D4 each contain a mechanism claim and a consequence claim. Verify them separately. For
 D4 specifically: the re-dispatch mechanism is one thing; that it *inflates the tail* is a causal
 claim that needs evidence beyond the mechanism's existence.
+
+**Tolerance, pinned so two auditors re-deriving identical numbers reach identical verdicts.** For
+a claim carrying figures (D1): CONFIRMED if every stated figure is within 20% RELATIVE of what
+you re-derive; PARTIAL if some are and some are not, or if the figures hold but the claim's scope
+does not; REFUTED if the figures are outside that band. For D2, the denominator is DEFINED as the
+plan-critique skill's Phase 2 checks (6, 7, 8, 9, 10, 11, 12, 12b, 12c, 12c-1, 12d, 12k, 12l,
+12m, 12n, 12o, 12p) plus Phase 2b (12e-12j) -- Phase 1 loading steps and the Phase 3 output
+template are NOT obligations for this purpose. "Majority" means strictly more than half of that
+denominator. For claims carrying no figures (D3, D5), CONFIRMED requires the claim to hold across
+every surface it asserts, PARTIAL where it holds for some and not others -- name which.
 
 **Q2 -- Proposal adjudication.** For each of P1-P14, Alt-1, and Alt-2, exactly one of:
 `ADOPT-NOW | ADOPT-MODIFIED | ROADMAP | REJECT | DUPLICATE`, with a one-paragraph rationale,
@@ -316,8 +342,12 @@ architecture docs, so anything that would become one routes to a contract, a tie
 Decision -- say which. State the dependency basis for each edge, not just the order. Q3's verdict
 enum: `sequenced | partially-sequenced | not-sequenceable`.
 
-**Q4 -- Weak-executor prerequisite vs interactive quality-of-life.** Rank the adopted items into
-two ordered lists: those that are load-bearing prerequisites for a weak-model autonomous
+**Q4 -- Weak-executor prerequisite vs interactive quality-of-life.** "Adopted", used identically
+by Q3, Q4 and DD-D, means: every proposal verdicted ADOPT-NOW or ADOPT-MODIFIED, every adopted
+P2 sub-rule, every Q5-originated item, and every finding carrying a non-empty `proposed_change`.
+ROADMAP-verdict items are sequenced by Q3 at their position but are NOT ranked by Q4. Findings
+carry `executor_prerequisite`, `executor_rank` and `qol_rank` for this purpose, same shape as
+proposals. Rank the adopted items into two ordered lists: those that are load-bearing prerequisites for a weak-model autonomous
 executor (NS-F), and those that are quality-of-life for interactive frontier-model sessions.
 Justify each placement by naming the specific judgement load the item removes or fails to
 remove. An item may appear in both lists only if you argue the two roles separately. Q4's
@@ -350,6 +380,11 @@ you must answer explicitly:
    (see GUARDRAILS). Say whether that omission materially weakened the audit.
 6. Is `plan-critique` the right place for judgement at all, given what `/implement` re-derives
    downstream?
+7. What post-gate outcome signal exists -- that is, can anyone determine whether plans that
+   PASSED the Step 9 gate subsequently failed or stalled in `/implement`? Determine what such a
+   signal would require and whether any surface carries it today. If none does, say so plainly:
+   an absent outcome measure means the gate's own effectiveness is unmeasured, which bears
+   directly on P1, P9 and P14, and on seed 4 above, which cannot be answered without it.
 
 Q6's shape differs from the others: `{q: Q6, answers: [{question, answer, basis: [finding ids]}]}`.
 
@@ -423,7 +458,9 @@ but anchors rot: **verify each before relying on it**, and record non-resolvers 
 - `.claude/skills/planning/SKILL.md:569` opens the Critique Gate section. `:593` reads "re-launch
   the same subagent invocation against the revised plan. Each Agent call is a fresh window, so
   the re-launch genuinely re-evaluates." `:594` "Loop if REVISE. Proceed if PROCEED." `:597`
-  "Convergence rule: after 3 REVISE rounds, escalate to the human."
+  "Convergence rule: after 3 REVISE rounds, escalate to the human with the unresolved findings
+  and options (accept-with-deferral / re-scope / abandon), mirroring the Step 6a decision-scout
+  convergence rule."
 - `.claude/skills/planning/SKILL.md:525` makes the context line a REQUIRED plan-template item:
   `"gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s)"`, annotated
   `# REQUIRED ITEM (WF-08)`. `:524` is the companion `# REQUIRED ITEM (WF-04a)` scout-CITE item.
@@ -459,9 +496,11 @@ compaction or trimming Related pointer blocks, never a raise to fit" -- which be
 as a whole, not to clause (a). Quote whichever you rely on accurately.
 
 **Provenance surface**
-- `docs/contracts/decision-entry.yaml:87` `required_markers: [Status, Date, Decision]`. `:94`
-  `optional_markers_fixed_spelling: [Problem, Intent, Rationale, Reversal conditions, Related,
-  Warehouse ID]`.
+- `docs/contracts/decision-entry.yaml:87` is the `required_markers:` key; its three values are a
+  block sequence on the following lines: Status, Date, Decision. `:94` is the
+  `optional_markers_fixed_spelling:` key; its six values follow as a comment-interleaved block
+  sequence: Problem, Intent, Rationale, Reversal conditions, Related, Warehouse ID. Neither is a
+  flow list at the cited line -- read the key and its sequence, not one line.
 - `:364`-`:365` record that a claim is carried "as a `required_fields` entry, NEVER as a fifth
   top-level required_markers bold marker ... 'not as a fifth bold marker'". `:378`-`:379` give
   the YAML envelope's `required_fields: [number, significance]` and
@@ -602,7 +641,10 @@ The plan corpus is the only sampled artifact class. Bounds, hard:
 
 - Sample **at most 25** plan files from `docs/plans/`. **Do NOT exceed 25.**   Choose them to span
   the round-count distribution (include every plan recording 4 or 5 rounds, plus a spread of 1-,
-  2- and 3-round plans), not the most recent 25. **The cap of 25 always binds over the
+  2- and 3-round plans), and reserve AT LEAST 5 of the 25 slots for plans that record NO
+  `plan-critique=` line at all -- D1's own coverage gap makes those the most informative plans
+  for the counterfactual test, and a sample drawn only from plans with a gate line cannot see
+  them. Do not simply take the most recent 25. **The cap of 25 always binds over the
   composition rule**: if plans recording 4 or 5 rounds alone exceed 20, take the 20 most recently
   modified of them, record the truncation in `meta.contract_notes`, and fill the remaining slots
   with a spread of 1-, 2- and 3-round plans.
@@ -624,8 +666,9 @@ Phases, in order. Synthesis and maturity are computed LAST.
 Phases are numbered M1-M11. **`M<n>` is a phase; `P<n>` is always a proposal.** Never conflate
 the two schemes.
 
-- **M1 Read.** SETUP (including the branch cut), then `docs/PROJECT_CONTEXT.md`, then every S1-S6
-  surface named in SCOPE.
+- **M1 Read.** SETUP (including the branch cut), then `docs/PROJECT_CONTEXT.md`, then every
+  S1-S6 surface named in SCOPE. S7 (the plan corpus) is read at M5 by sampling, never in full,
+  but it is rated like every other surface.
 - **M2 Trace.** Re-derive every GROUNDING MAP anchor. Record non-resolvers in
   `meta.stale_anchors`.
 - **M3 Diagnose.** Verify D1-D5. Separate each claim's mechanism from its consequence.
@@ -651,8 +694,10 @@ Ownership surfaces, all four: `docs/ROADMAP-PLATFORM.yaml` (`tier_items[]` and
 (open recs); and `audits/*.yaml` (prior audit findings -- `workflow-review-d107b4a.yaml` above
 all, plus `decision-log-premise-integrity-*`, `decisions-authoring-format-*`, `unclosed-loops-*`).
 
-Record on every finding: `dedup_search_terms` (the actual terms used), `dedup_hit_count`, and
-`item_ids`. **A hit means sufficiency-assessment or rejection, never a fresh discovery.** A
+Record on every finding (inside `roadmap_crossref`) AND on every proposal-adjudication entry:
+`dedup_search_terms` (the actual terms used), `dedup_hit_count`, and `item_ids` / `owning_items`.
+A DUPLICATE verdict is fixed on a proposal, so the proposal entry carries its own dedup record --
+without it, a DUPLICATE claim is `confidence: HYPOTHESIS` exactly as an unsearched finding is. **A hit means sufficiency-assessment or rejection, never a fresh discovery.** A
 finding filed without a recorded negative search is `confidence: HYPOTHESIS`, not CONFIRMED.
 
 **Deliberate constraints -- do NOT flag these as defects.** Each is a settled ruling:
@@ -686,7 +731,9 @@ audit:
          model: <your self-reported model name, free text>,
          methodology_version: 1,
          scope_surfaces: [S1, S2, S3, S4, S5, S6, S7],
-         degraded_dedup: false, contract_notes: "", stale_anchors: [],
+         degraded_dedup: false, contract_notes: "",
+         stale_anchors: [],   # element shape: {anchor: "file:line", expected: "<what this
+                              # prompt claimed>", found: "<what is actually there>"}
          self_verification: {rounds: <int>, degraded: false,
                              final_verdicts: {R1: PROCEED|REVISE, R2: ..., R3: ..., R4: ...},
                              unresolved_findings: []}}
@@ -706,22 +753,34 @@ audit:
     <P1..P14, Alt-1, Alt-2, and any originated N1, N2, ...>:
       {verdict: ADOPT-NOW|ADOPT-MODIFIED|ROADMAP|REJECT|DUPLICATE,
        originated_here: false,    # true only on N-prefixed items originated under Q5
-       group_placement_rederived: A|B|neither,   # read by Q2's prose; n/a on N-items
+       group_placement_rederived: A|B|neither|n-a,  # read by Q2's prose. A|B = the originating
+                                  # analysis placed it there and you agree; neither = you place
+                                  # it in neither group; n-a = no original placement existed
+                                  # (every N-item, and Alt-1/Alt-2)
        modification: "",          # required iff ADOPT-MODIFIED
        vehicle: implementation_plan|rec|tier_item|candidate_decision|contract_amendment|none,
        sequence_position: <int|null>, depends_on: [<proposal or finding ids>],
        executor_prerequisite: true|false, executor_rank: <int|null>,
        qol_rank: <int|null>, carrying_cost: "", rationale: "",
        owning_items: [], confidence: CONFIRMED|HYPOTHESIS,
-       sub_verdicts: {}}          # P2 ONLY: {P2a..P2h: {verdict: <same enum>, rationale: ""}};
-                                  # {} elsewhere. Excluded from the sum-to-16 count.
+       dedup_search_terms: [], dedup_hit_count: <int|null>,
+       sub_verdicts: {}}          # P2 ONLY; {} elsewhere. Shape per rule:
+                                  # {P2a..P2h: {verdict: <same enum>, rationale: "",
+                                  #  vehicle: <same enum>, carrying_cost: "",
+                                  #  sequence_position: <int|null>}}
+                                  # Excluded from the sum-to-16 count, but an ADOPTED sub-rule IS
+                                  # sequenced by Q3, ranked by Q4, and costed by DD-D like any
+                                  # other adopted item.
   per_surface_assessment:
     - {surface: S1..S7, maturity: <derived>, strengths: "", top_gaps: [<finding ids>]}
   rubric_ratings:
     - {surface: S1..S7, dimension: VD1..VD7, rating: strong|adequate|weak|absent|n/a,
        evidence: "file:line|item-id", note: ""}
   findings:
-    - {id: PWS-01, surface: <S1..S7|shared>, question: Q1..Q6, dimension: VD1..VD7,
+    - {id: PWS-01, surface: <S1..S7|shared>, surfaces: [],   # REQUIRED and non-empty iff
+                                                            # surface == shared; the S-ids it
+                                                            # counts against for maturity
+       question: Q1..Q6, dimension: VD1..VD7,
        title, evidence: "file:line|item-id", evidence_kind: static|observed,
        current_behavior, ideal_behavior, gap, compensating_controls_considered: "",
        change_type: add|rescope|enforce|unify|persist|clarify|retune_gate,
@@ -733,12 +792,21 @@ audit:
        effort: XS|S|M|L, depends_on: [<finding ids>],
        vehicle: implementation_plan|rec|tier_item|candidate_decision|contract_amendment|none,
        sequence_position: <int|null>,   # non-null iff proposed_change is non-empty
+       executor_prerequisite: true|false, executor_rank: <int|null>, qol_rank: <int|null>,
        sequencing: {safe_to_queue_now: true|false, blocked_behind: [], note: ""}}
   rejected_candidates:
-    - {candidate, why_dismissed, compensating_control, control_property_match,
-       decision_or_item_id}
+    - {candidate,                   # a D/P/Alt/N id, OR a free-text anchor naming the GROUNDING
+                                    # MAP fact dismissed (a file:line where one exists, else the
+                                    # fact's own words)
+       why_dismissed,
+       compensating_control: "",    # "" is correct for a first-principles dismissal with no
+       control_property_match: "",  # control; both REQUIRED and non-empty only when a control
+                                    # IS the reason for dismissal
+       decision_or_item_id}         # format: "Decision 179" | "T4.5" | "rec-2672" | "WF-08" |
+                                    # null when nothing owns it
   summary: {total_findings, novel_count, planned_insufficient_count, planned_unbuilt_count,
-            top_improvements: [<finding ids>], highest_leverage_change: <finding id|null>,
+            top_improvements: [<finding ids>, 3 to 5 entries, or [] if findings is empty],
+            highest_leverage_change: <finding id | proposal id | N-item id | null>,
             adopt_now_count, adopt_modified_count, roadmap_count, reject_count,
             duplicate_count, originated_count, maturity_S1: <value>, maturity_S2: <value>,
             maturity_S3: <value>, maturity_S4: <value>, maturity_S5: <value>,
@@ -752,7 +820,9 @@ audit:
 planned_unbuilt_count`. Fully-covered candidates live in `rejected_candidates`, never in
 `findings`. `rubric_ratings`, `question_answers`, `diagnosis_verdicts` and
 `proposal_adjudication` are systems-of-record referenced FROM findings, never re-counted into
-`total_findings`. `top_improvements` and `highest_leverage_change` MUST be finding ids.
+`total_findings`. `top_improvements` entries MUST be finding ids (3-5 of them, or `[]`).
+`highest_leverage_change` may be a finding id, a proposal id, or a Q5-originated `N`-item id --
+Q5 exists to let the answer lie outside the sixteen, so the field must be able to say so.
 
 The five proposal-verdict counts MUST sum to exactly 16, counting only P1-P14, Alt-1 and Alt-2.
 P2's eight `sub_verdicts` and any Q5-originated `N`-prefixed items are EXCLUDED from that sum;
@@ -798,13 +868,17 @@ the counterfactual to the control itself. A control that cannot catch the break 
 severity nor justifies dismissal -- say so explicitly rather than gesturing at adjacency.
 
 **Maturity**, computed LAST, per surface, top-down, first match wins. A finding whose `surface`
-is `shared` counts against every surface its `evidence` names. Findings carry no open/closed
+is `shared` counts against exactly the surfaces listed in its own `surfaces` field, which is
+required and non-empty for such findings -- never inferred from `evidence`. Findings carry no open/closed
 state -- every filed finding counts.
 
 - `frontier` = 0 critical AND 0 high findings on that surface
 - `strong` = 0 critical AND <= 1 high
 - `solid` = <= 1 critical
 - `nascent` = otherwise
+
+The asymmetry below `strong` is DELIBERATE, not a transcription slip: criticals dominate the
+ladder, so a surface with zero criticals and many highs still rates `solid`. Do not "correct" it.
 
 The top rating stays reachable where you argued a property-matched compensating control. This
 framing does not foreclose it.
@@ -831,10 +905,19 @@ round said.** That biases the read and destroys the gate's value.
   basis is not stated, every reference to an id that does not appear elsewhere in these files,
   every enum value outside its declared set, every verdict with no supporting rationale, and
   every place the two files disagree. Check the counting invariant arithmetic yourself."
-  **Paste into R1's dispatch text, inline and verbatim: the COUNTING INVARIANT paragraph, the
-  five proposal-verdict enum values, the per-claim diagnosis enum, the rubric rating enum, the
-  severity enum, and the confidence enum.** R1 stays repo-blind -- that is the test -- but it
-  cannot police a contract it was never handed.
+  **Paste into R1's dispatch text, inline and verbatim: the COUNTING INVARIANT (both paragraphs,
+  including the sum-to-16 rule and the empty/null legality rule) and EVERY pinned enum the schema
+  uses** -- the proposal verdict enum, the diagnosis per-claim enum, all six per-question verdict
+  enums, `vehicle`, `change_type`, `evidence_kind`, `effort`, `classification`, the rubric rating
+  enum, `severity`, `confidence`, `maturity`, and `group_placement_rederived`. R1 stays repo-blind -- that is the test -- but it
+  cannot police a contract it was never handed. **R1 also owns COVERAGE.** Its dispatch must
+  additionally instruct: "Verify completeness against these counts and report every shortfall as
+  blocking: exactly 5 entries in `diagnosis_verdicts` (D1-D5); exactly 16 non-originated entries
+  in `proposal_adjudication` (P1-P14, Alt-1, Alt-2), each with a verdict from the enum; 8
+  `sub_verdicts` entries under P2; 6 answered questions (Q1-Q6); 49 `rubric_ratings` cells (7
+  surfaces x 7 dimensions), every one carrying a rating from the enum; 7 `per_surface_assessment`
+  entries. A silently truncated audit must not pass." Pass those counts to R1 verbatim -- it
+  cannot derive them from the deliverables alone.
 - **R2 -- Fact auditor (grounding).** Full repository read access. Task: "Independently verify
   every factual claim, file:line anchor, quoted identifier (Decision, tier_item, rec, contract
   key, schema field, check name), and re-derived count in this audit against the repository at
@@ -843,8 +926,9 @@ round said.** That biases the read and destroys the gate's value.
 - **R3 -- Adversarial adjudication challenger (anti-deference).** Full repository read access.
   Task: "Contest the VERDICTS, not the facts. For each ADOPT verdict: is the audit agreeing
   because the proposal is right, or because it was stated confidently? For each REJECT: is it
-  argued or asserted? For each DUPLICATE: does the named owner actually exercise the same
-  property, and would it fail if the gap were real? For each ROADMAP: is the deferral reasoned or
+  argued or asserted? For each DUPLICATE: is the dismissal REASONED -- does the audit argue the
+  property match, or merely assert adjacency? (Whether the named owner is the RIGHT owner is
+  R4's job, not yours; judge the quality of the argument, not the ownership fact.) For each ROADMAP: is the deferral reasoned or
   is it a way to avoid deciding? Then challenge the sequence: does every dependency edge have a
   stated basis, or is the order aesthetic? Name any verdict you would reverse and why."
 - **R4 -- Dedup and ownership auditor.** Full repository read access. Task: "For every finding
@@ -867,9 +951,13 @@ Findings:
 Verdict: PROCEED
 ```
 
-`REVISE` iff any `blocking` finding, or 3 or more `degrading` findings. R2 and R4 return `REVISE`
-on ANY finding of their own kind -- a wrong fact and a wrong ownership call both ship a false
-conclusion.
+`REVISE` iff any `blocking` finding, or 3 or more `degrading` findings. R2 and R4 grade on the
+same three-level scale: a fact or ownership error that would change a verdict, a severity, a
+count, or a reader's conclusion is `blocking`; one that is real but changes nothing material (a
+truncated quotation, an anchor off by a line, a redundant `owning_items` entry) is `cosmetic`.
+This grading matters: without it, every trivial mismatch forces a full re-dispatch and the gate
+stops distinguishing a sound audit from a nearly-sound one. Grade honestly in both directions --
+do not downgrade a real error to avoid another round.
 
 **Verdict handling.** The gate passes only when ALL FOUR return `PROCEED` in the SAME round. On
 any `REVISE`: synthesize (consensus findings across verifiers first), revise the deliverables,
@@ -900,16 +988,21 @@ REVISE. A sharpening re-dispatch does NOT increment `rounds`.
 - IF a verifier errors or returns output with no `Verdict:` line: it has NOT completed.
   Re-dispatch that one. Never count an incomplete verifier as PROCEED.
 
-Record the outcome in `meta.self_verification` regardless of how the gate terminated.
+`rounds` counts REVISE rounds completed, not dispatches: a gate that passes on its first
+dispatch records `rounds: 0`. Record the outcome in `meta.self_verification` regardless of how
+the gate terminated.
 
 ## COMMIT / PR MECHANICS
 
 1. Derive the base ONCE: `git fetch origin main`, then `git rev-parse --short origin/main`. That
    sha IS the audited tree. Use it in both filenames, in the branch name, and in
    `meta.audited_commit`.
-2. `git switch -c audit/planning-workflow-scaling-<sha> origin/main` so the PR diff is exactly
-   your two files. This is a deliberate, documented exception to the repository's `claude/*`
-   session-branch rule: this session needs a clean two-file diff off the audited base.
+2. You are ALREADY on `audit/planning-workflow-scaling-<sha>`, cut in SETUP -- do not re-run
+   `git switch -c`, which fails with "a branch named ... already exists". Confirm with
+   `git branch --show-current`, and only if you are somehow not on it, `git switch` to it (or
+   `git switch -c ... origin/main` if it does not exist). Branching off `origin/main` rather than
+   a `claude/*` session branch is a deliberate, documented exception: this session needs a clean
+   two-file diff off the audited base.
 3. Verify both deliverables parse: `bin/venv-python -c "import yaml,sys;
    yaml.safe_load(open(sys.argv[1]))" audits/planning-workflow-scaling-<sha>.yaml`. That clean
    parse is the real pre-push gate. Repo-wide validation is advisory outside CI here; an
@@ -920,6 +1013,9 @@ Record the outcome in `meta.self_verification` regardless of how the gate termin
 6. Open the PR via `mcp__github__create_pull_request` (base `main`, ready for review, NOT a
    draft). Title: `audit: planning-workflow scaling review (plan pipeline, critique gate,
    executor planning path)`. Body: a 2-3 sentence lede plus the `summary` block in a yaml fence.
+   IF the PR tool is unavailable or errors: do NOT retry in a loop and do NOT abort. The pushed
+   branch is the deliverable of record. Note the failure and the exact branch name in
+   `meta.contract_notes`, state it in your final message so the human can open the PR, and stop.
 7. **END THE TURN.** Do not poll. Do not merge. Do not subscribe to PR activity. Do not
    self-approve. The human disposes of the PR.
 
