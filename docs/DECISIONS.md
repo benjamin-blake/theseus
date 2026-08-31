@@ -2,6 +2,103 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 179: Retire the decision-corpus stock ceilings now that retrieval replaced ambient loading (amends Decision 134, 160, 166) (Decided)
+
+```yaml
+number: 179
+status: Decided
+decided_date: "2026-08-31"
+amends: [134, 160, 166]
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable architectural commitment with reversal-relevant consequences: removes the corpus's last
+    three mechanical stock guards and re-homes stock discipline onto convention. A decision-
+    entry.yaml governance note was rejected -- that contract MIRRORS these ceilings but does not
+    author them, so a note could retire neither the constants nor Decision 166 point 9, nor carry
+    reversal conditions.
+```
+
+**Status:** Decided
+**Date:** 2026-08-31
+**Warehouse ID:** dec-179
+
+**Problem:**
+docs/DECISIONS.md sits at 131/132 live headers and docs/decisions-index.json at 111,707/112,000 bytes --
+293 bytes of headroom. Regenerating the index with THIS entry costs 882 bytes (112,589 -- a 589-byte breach), so the
+retirement must land in the same PR (Decision 159/160/166 acute-landing precedent). Every stock lever is spent, measured: Decision 146's archival wave (step 6) ran and was recorded EMPTY (2026-08-24, audits/contract-first-
+governance-33c8667.yaml); the currency projection leaves one compaction-eligible live entry
+(Decision 80, 4,206 B, yielding ~3,241 B against a stub -- ~1.9 days); archival cannot relieve
+combined bytes (Decision 160 point 5). Decision 160 point 4 retained these as the backstop for a read model it had just bounded. That premise is gone -- bounded retrieval, the skeleton index, the currency
+projection and Decision 167's cap mean no consumer loads the live corpus wholesale, the condition
+T2.56 c2 names.
+
+**Decision:**
+
+1. **Retire all three stock ceilings.** `_DECISIONS_LIVE_MAX_H2` (132) and
+   `_DECISIONS_COMBINED_MAX_BYTES` (780,000) leave scripts/checks/decisions/validate_decisions_size.py;
+   `_COMMITTED_INDEX_MAX_BYTES` (112,000) leaves tests/test_decisions_index.py. Constants, `_decisions_size_issues()`, `_RELIEF_VALVES` and their FAIL branches go -- not raised or
+   lowered: Decision 160 point 1's surgery. The check survives as the per-entry cap enforcer; size_governance's ceiling keys and
+   lever_by_ceiling_matrix retire too.
+
+2. **Decision 166 reversal condition (g), elected ahead of its trigger.** (g) permits a third bump only
+   if "T1.5 c1 has by then retired the surface entirely" -- never "a third bump on faith". "THE PIN IS NEVER RAISED" is the operator's position, not D166 body text; both its homes vanish in
+   this PR, so it is RESTATED here -- when the pin binds: archival, or collapsing into contracts,
+   never a raise. Retirement is a third, unenumerated response, authorized here. Both responses (g) enumerates are spent: rec-3012's skeletonization HAS landed (step 5) and T1.5 c1
+   has not, so T2.56 c2 substitutes as retiring authority.
+   Decision 176 elected sibling condition (f) on this same Decision -- though (f)'s own enumerated
+   response, unlike here.
+
+3. **The 780,000 value was never ratified.** Decision 160 point 4 restated the ratified 700,000; PLAN-decision-ceiling-bridge set 780,000 -- and the 132-header ceiling -- with no Decision behind
+   either. Retiring it ends an unratified
+   constant rather than perpetuating one -- what Decision 145 demanded in warning that "a SECOND stopgap raise on top of this one is itself a
+   signal that the structural fix is overdue."
+
+4. **What still governs, named precisely.** Decision 167 clause 3's cap bends bytes-per-NEW-entry only -- not entry count, index size, or triage
+   cost. **Decision 150's significance bar is the retained lever on entry COUNT and triage
+   quality**, the purpose Decision 134 clause 2 ratified the header ceiling to serve; this overturns
+   Decision 160 point 4's "COMPLEMENTARY ... not a substitute for either" clause. Decision 160 point
+   2 discharged the read-cost purpose; triage quality is discharged here by that bar plus
+   category_tags shortlisting.
+
+5. **Two residuals, recorded not implied (Decision 163).** (i) docs/decisions-index.json stays a read-in-full-every-/plan surface with no bound: the
+   reassessment Decision 160 point 9 invited is performed again here (Decision 166 point 9 was
+   first) and resolved ACCEPTED, owned by T2.56 c1 and T1.5 c1 (~518 B/day, ~28k tok/plan). (ii) In-
+   place amendments are exempt from the cap's forward-only scope and were 42% of inflow; rec-3243
+   owns metering them. Stock discipline is convention-only until those land -- a recorded downgrade,
+   not a silent one.
+
+6. **Retirement mechanism.** Three now-false or broken registry entries retire by `git mv` to entries/deprecated/ (Decision 176
+   point 5), replaced by one consolidated `decisions-stock-ceilings-retired` guard. No live body of
+   134/160/166 is edited (Decision 177); the amendment is stated here and waived in
+   config/decision_supersession_waivers.yaml.
+
+**Reversal conditions:** in the fenced stanza below -- monitored each session by
+scripts/preflight/decision_conditions.py, surfaced from its review date; not prose-only.
+
+```yaml reversal-conditions
+decision: 179
+review_by: 2026-12-01
+on_trigger: "re-decide via /plan: bound the index read, or re-mint a stock guard"
+conditions:
+  - id: index-read-context-cost
+    kind: manual
+    description: "The every-/plan index read becomes a measured context-budget problem before T2.56 c1 or T1.5 c1 lands."
+  - id: inflow-unguarded
+    kind: manual
+    description: "Inflow rises materially with no stock guard -- rec-3243 metering and a stricter significance bar first."
+  - id: t15-portal-read
+    kind: manual
+    description: "T1.5 c1 portal/verb read supersedes the index mechanism entirely."
+```
+
+**Related:** Decision 134 cl.2 and Decision 160 pt.4 amended, pt.9 resolved; Decision 166 pt.9
+amended, (g) elected; Decision 176 precedent/mechanism; Decisions 167/150 retained levers; Decision
+145 warning discharged; Decision 114 parity ended here; Decisions 146/149 levers exhausted; Decision
+163 recorded downgrade. Refs: T2.56 c2/c1, T1.5 c1, rec-3243.
+
+---
+
 ## Decision 178: The repository becomes platform-only, with a one-time sanctioned history scrub (amends Decision 177) (Decided)
 
 ```yaml
