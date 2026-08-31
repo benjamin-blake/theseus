@@ -18,6 +18,17 @@ contract:
 amendment_log:
   - date: "2026-08-31"
     semantic_break: false
+    change_class: mechanism_narrow
+    summary: >-
+      PLAN-verification-graduation-gate-fix: corrected trigger_scope.pr_branch_disposition's
+      false "no workflow_run event exists" claim, and tightened the sibling gate field's loose
+      sentence claiming the trigger fires ONLY for default-branch runs. A PR run of the watched
+      "CI" workflow DOES emit workflow_run:completed; the job-level if: (head_branch ==
+      github.event.repository.default_branch) is what rejects it, not the trigger itself. The
+      DISPOSITION is unchanged -- still no rec filed, still no planning-queue hard-block on a
+      PR-branch failure -- only the mechanism description changes.
+  - date: "2026-08-31"
+    semantic_break: false
     change_class: field_add
     summary: >-
       PLAN-pr-ci-red-ownership: added trigger_scope, the single home for the per-branch CI-red
@@ -72,10 +83,12 @@ description: >-
 trigger_scope:
   gate: >-
     ci-rca.yml's job-level `if:` requires github.event.workflow_run.head_branch ==
-    github.event.repository.default_branch (alongside the failure and same-repo conditions) --
-    the workflow_run trigger fires ONLY when the failing run's head branch is the repository
-    default branch. No PR/feature-branch run satisfies this condition regardless of its
-    conclusion (T1.13 c6, already met).
+    github.event.repository.default_branch (alongside the failure and same-repo conditions).
+    Every completed run of a watched workflow (config/ci_rca_taxonomy.yaml's `workflows:` filter,
+    e.g. "CI") emits a workflow_run event regardless of what triggered that run underneath --
+    push or pull_request alike -- and it is THIS job-level condition, not the workflow_run
+    trigger itself, that rejects a PR/feature-branch run's completion. No PR/feature-branch run's
+    completion satisfies this condition regardless of its conclusion (T1.13 c6, already met).
   narrowing_authority: >-
     Decision 73 point 3 is the authority behind the gate, not the gate alone: "On full-tier
     failure on `main`, `ci-rca` files a `priority="critical"`, `source="ci_rca"` rec; the rec
@@ -89,13 +102,18 @@ trigger_scope:
     lands (Decision 55 RCA-first -- never auto-revert, never an inline workaround ahead of
     review).
   pr_branch_disposition: >-
-    A PR-branch `--pre` (fast-tier) failure is UNCOVERED BY CONSTRUCTION, not by omission:
-    `--pre` runs on the `pull_request` trigger, which ci-rca.yml never subscribes to, so no
-    workflow_run event exists for the gate above to admit or reject regardless of head_branch.
-    No ci-rca rec is filed and the planning-queue hard-block never engages. The implementing
-    agent diagnoses and fixes on the PR branch directly (the existing 3-fix-attempt STOP and
-    VF-08 nondeterminism rules in the implement skill govern that loop), then re-pushes to
-    re-trigger PR CI -- never a wait on a rec that structurally cannot arrive.
+    A PR-branch `--pre` (fast-tier) failure is UNCOVERED BY CONSTRUCTION, not by omission --
+    though a workflow_run event IS emitted for it. ci-rca.yml subscribes to workflow_run on the
+    "CI" workflow; ci.yml is `name: CI` and runs on both `push` (main) and `pull_request` (main), so a
+    PR's CI run DOES emit workflow_run:completed when it finishes. The job-level `if:` (the gate
+    field above) then REJECTS that event because head_branch is the PR branch, not the repository
+    default branch -- the sibling head_repository.full_name fork check on that same `if:` exists
+    precisely because PR runs reach it and must be filtered there, not upstream. So no ci-rca rec
+    is filed and the planning-queue hard-block never engages, but the reason is the job-level
+    condition, not an absent event. The implementing agent diagnoses and fixes on the PR branch
+    directly (the existing 3-fix-attempt STOP and VF-08 nondeterminism rules in the implement
+    skill govern that loop), then re-pushes to re-trigger PR CI -- never a wait on a rec that
+    structurally cannot arrive.
 
 fingerprint_v2:
   formula: >-

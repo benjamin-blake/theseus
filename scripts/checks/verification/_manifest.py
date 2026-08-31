@@ -91,6 +91,7 @@ ENTRIES: tuple[Entry, ...] = (
         pre=True,
         pre_globs=(
             "scripts/verification_checks.py",
+            "scripts/verification_graduation.py",
             "scripts/checks/verification/**",
             "scripts/checks/_common.py",
             "scripts/checks/registry.py",
