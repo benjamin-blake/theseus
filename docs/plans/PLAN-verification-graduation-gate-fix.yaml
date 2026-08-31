@@ -23,7 +23,7 @@ scope:
   purpose: New module for provisioning/control-leg/teardown-safety tests -- test_differential.py is 413/500 SLOC, so this is a decomposition, never a budget raise (Decision 128).
 - file: docs/contracts/verification-registry.yaml
   action: Modify
-  purpose: governance_note_add + contract_version bump recording that admission now requires the revert-leg FAIL be proven content-derived (Decision 86 field-semantics routing).
+  purpose: 'Four edits: (i) a governance_notes paragraph recording the admission-rule change (a revert-leg FAIL must now be proven runnable before it counts as discrimination); (ii) a governance_notes paragraph recording the ci-rca-lifecycle-records-watched-set RE-AUTHORING and justifying check_id retention against this file''s own ''changing a check implementation requires a new check_id'' clause (line 33), since item (b) is claim-CHANGING not claim-PRESERVING; (iii) contract_version 5 -> 6; (iv) the paired amendment_log[] entry all four prior bumps carried.'
 - file: config/agent/verification_registry/entries/ci-rca-lifecycle-records-watched-set.yaml
   action: Modify
   purpose: Repair the stale check_spec whose "'contract' not in d" assertion has been false since T2.56 added the Class D envelope; re-key it on the corrected trigger_scope text.
@@ -36,7 +36,7 @@ bundled_recommendations:
 infrastructure_dependencies: []
 acceptance_criteria:
 - A tautological check_spec whose command invokes bin/venv-python is REJECTED by run_differential (it is admitted=True today).
-- A check that passes in the live tree but fails in a HEAD worktree raises GraduationError instead of returning admitted=True.
+- When the revert leg FAILs, the gate proves the scratch worktree could execute the check's command head at all; if it could not, run_differential raises GraduationError instead of returning admitted=True.
 - git_worktree symlinks .venv into the worktree only when repo_root has one; worktree teardown never deletes the real .venv.
 - validate_differential_gate_baseline exercises a real git worktree via run_differential and contains no hardcoded-FAIL revert_runner.
 - validate_differential_gate_baseline's pre_globs include scripts/verification_graduation.py.
@@ -65,13 +65,13 @@ verification_plan:
   graduation_check_id: graduation-taut-venv-python-check-rejected
 - step: 3
   phase: pre-deploy
-  action: The control leg turns an environment-derived FAIL into a loud error, never an admission.
-  command: bin/venv-python -m pytest tests/verification_graduation/test_provisioning.py::TestControlLeg::test_environment_failure_raises_not_admits -q
-  expected: 1 passed -- a check passing live but failing in a HEAD worktree raises GraduationError; the test asserts admitted=True is never returned.
-  fix_if: If admitted=True is returned instead, the control leg is not gating the admission path; ensure it runs whenever the revert leg FAILs.
+  action: The environment probe turns an unrunnable-command FAIL into a loud error, never an admission.
+  command: bin/venv-python -m pytest tests/verification_graduation/test_provisioning.py::TestEnvironmentProbe -q
+  expected: All pass -- when the revert worktree cannot execute the command head, run_differential raises GraduationError; the test asserts admitted=True is never returned on that path.
+  fix_if: If admitted=True comes back, the probe is not gating the admission path. It must run whenever the revert leg FAILs, before the FAIL is attributed to content.
   hermetic: false
   graduation: graduate
-  graduation_check_id: graduation-env-failure-raises-not-admits
+  graduation_check_id: graduation-unrunnable-command-raises-not-admits
 - step: 4
   phase: pre-deploy
   action: Provisioning is conditional, and teardown never destroys the real .venv.
@@ -120,12 +120,12 @@ verification_plan:
 - step: 9
   phase: pre-deploy
   action: The contract correction and its Class D amendment_log entry are both present.
-  command: bin/venv-python -c "import yaml,pathlib; raw=pathlib.Path('docs/contracts/ci-rca-lifecycle.yaml').read_text(encoding='utf-8'); d=yaml.safe_load(raw); assert 'no workflow_run event exists' not in raw, 'false claim still present'; base=len([e for e in (d.get('amendment_log') or []) if e.get('date')=='2026-08-31']); assert base>=2, f'no new amendment_log entry (found {base} dated 2026-08-31)'; print('OK')"
-  expected: Prints OK -- the false claim is gone and a second 2026-08-31 amendment_log entry exists.
+  command: bin/venv-python -c "import yaml,pathlib; raw=pathlib.Path('docs/contracts/ci-rca-lifecycle.yaml').read_text(encoding='utf-8'); d=yaml.safe_load(raw); assert 'no workflow_run event exists' not in raw, 'false claim still present'; assert any('verification-graduation-gate-fix' in (e.get('summary') or '') for e in (d.get('amendment_log') or [])), 'no amendment_log entry naming this plan'; print('OK')"
+  expected: Prints OK -- the false claim is gone and an amendment_log entry naming this plan exists.
   fix_if: 'Missing amendment entry: check_amendment_log_for_class_d fails any top-level key change without one. Add it using the file''s live grammar (date, semantic_break, change_class, summary).'
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: Duplicates the repaired ci-rca-lifecycle-records-watched-set shard, which already guards the corrected trigger_scope text as its standing regression guard.
+  graduation_waiver_reason: The trigger_scope half duplicates the repaired ci-rca-lifecycle-records-watched-set shard, which is the standing guard for that text. The amendment_log half is a one-shot provenance assertion about this PR's own entry and is vacuous on every later commit, so neither half is graduatable here.
 - step: 10
   phase: pre-deploy
   action: No SLOC budget regression -- decomposition held, no raise was taken.
@@ -133,17 +133,17 @@ verification_plan:
   expected: Prints OK -- every touched module is <= 500 SLOC and config/sloc_budgets.yaml is unchanged versus origin/main.
   fix_if: 'Over budget: split the new code into a further module (facade pattern, Decision 80/104/124). Do NOT add a budget entry or a raise-approved marker.'
   hermetic: true
-  graduation: graduate
-  graduation_check_id: graduation-modules-within-sloc-no-raise
+  graduation: waive
+  graduation_waiver_reason: Un-graduatable on two independent grounds. (1) The assertion is diff-relative -- verified rc=0 when run in a provisioned origin/main worktree -- so a registry row carrying it would be rejected as tautological by the very gate this plan repairs. (2) As a standing guard, 'sloc_budgets.yaml never differs from origin/main' would red every future marker-authorized budget raise, which Decisions 128 and 165 explicitly sanction.
 - step: 11
   phase: pre-deploy
-  action: Corpus regression sweep -- provisioning does not break any existing graduated check.
-  command: bin/venv-python -c "import subprocess,tempfile,shutil,pathlib,yaml; from scripts import verification_graduation as vg; from scripts.verification_checks import CheckStatus; R=pathlib.Path('.').resolve(); t=tempfile.mkdtemp(); w=pathlib.Path(t)/'wt'; subprocess.run(['git','worktree','add','--detach',str(w),'origin/main'],cwd=R,capture_output=True); (w/'.venv').symlink_to(R/'.venv') if (R/'.venv').exists() else None; E=R/'config/agent/verification_registry/entries'; f=[p.stem for p in sorted(E.glob('*.yaml')) if vg.materialize_check_in_tree(yaml.safe_load(p.read_text(encoding='utf-8')), w).run().status!=CheckStatus.PASS]; subprocess.run(['git','worktree','remove','--force',str(w)],cwd=R,capture_output=True); shutil.rmtree(t,ignore_errors=True); subprocess.run(['git','worktree','prune'],cwd=R,capture_output=True); print(len(f),'failing:',f); raise SystemExit(0 if len(f)<=19 else 1)"
-  expected: Exit 0 -- at most 19 entries fail in a provisioned origin/main worktree, matching the pre-fix baseline measured at planning time (no new breakage introduced by provisioning).
-  fix_if: 'More than 19: provisioning changed an existing check''s outcome. Diff the failing set against the 19 recorded in this plan''s commit body and investigate the newcomers before proceeding.'
+  action: Cohort regression sweep -- drives the REAL vg.git_worktree so it observes the provisioning code (137 fail before the fix, at most 8 after).
+  command: 'bin/venv-python -c "import contextlib, json, pathlib, yaml, concurrent.futures as cf; from scripts import verification_graduation as vg; from scripts.verification_checks import CheckStatus; R=pathlib.Path(''.'').resolve(); E=R/''config/agent/verification_registry/entries''; rows=[yaml.safe_load(q.read_text(encoding=''utf-8'')) for q in sorted(E.glob(''*.yaml''))]; cohort=[r for r in rows if ''bin/venv-python'' in json.dumps(r.get(''check_spec'') or {})]; st=contextlib.ExitStack(); w=st.enter_context(vg.git_worktree(''origin/main'', repo_root=R)); ex=st.enter_context(cf.ThreadPoolExecutor(max_workers=8)); res=list(ex.map(lambda r: (r[''check_id''], vg.materialize_check_in_tree(r, w).run().status), cohort)); st.close(); f=sorted(c for c,s in res if s!=CheckStatus.PASS); print(len(cohort),''cohort,'',len(f),''failing:'',f); raise SystemExit(0 if len(f)<=8 else 1)"'
+  expected: Exit 0 -- of the 137 bin/venv-python entries, at most 8 fail inside a vg.git_worktree worktree (the provisioned baseline measured at planning time). Before the fix this same command reports 137 failing and exits 1, so the step is a genuine red/green on the provisioning code, not a tautology.
+  fix_if: 'Still ~137 failing: git_worktree is not provisioning -- the symlink is missing or keyed off the module-level ROOT instead of the repo_root argument. Between 9 and 136: provisioning works but changed some check''s outcome; diff the printed list against the 8 in this plan''s commit body and investigate the newcomers.'
   hermetic: false
   graduation: waive
-  graduation_waiver_reason: The threshold is a snapshot of transient corpus state (19 rotted shards on 2026-08-31) and moves as entries land or are retired; a standing guard pinned to it would drift into a false alarm. The durable follow-on is the staleness sweep filed as a rec, not this literal count.
+  graduation_waiver_reason: The <=8 threshold is a snapshot of transient corpus state (2026-08-31) that moves as entries land or retire, so a standing guard pinned to it would drift into a false alarm. The durable follow-on is the staleness sweep carried by rec-3286, not this literal count.
 - step: 12
   phase: pre-deploy
   action: Closure obligation -- both bundled recs are closed after the merge sync.
@@ -162,10 +162,15 @@ verification_plan:
   graduation: not-applicable
 test_obligations:
 - source: scripts/verification_graduation.py
-  behavior: A tautological check_spec invoking bin/venv-python is rejected, and an environment-derived revert-leg FAIL raises GraduationError rather than returning admitted=True.
+  behavior: A tautological check_spec invoking bin/venv-python is rejected once the worktree is provisioned.
   verification_step: 2
   test_selector: tests/verification_graduation/test_provisioning.py::TestProvisionedDifferential::test_tautological_venv_python_check_is_rejected
   red_green_expectation: Red before (run_differential returns admitted=True for the tautology, reproduced at planning time), green after the provisioning + control-leg change.
+- source: scripts/verification_graduation.py
+  behavior: A revert-leg FAIL whose command head cannot execute in the scratch worktree raises GraduationError rather than being attributed to content and admitted.
+  verification_step: 3
+  test_selector: tests/verification_graduation/test_provisioning.py::TestEnvironmentProbe::test_unrunnable_command_head_raises_not_admits
+  red_green_expectation: Red before (an unrunnable command head yields admitted=True, reproduced at planning time), green after the environment probe lands.
 - source: scripts/checks/verification/validate_differential_gate_baseline.py
   behavior: The canary exercises a real git-worktree differential and asserts worktree/live interpreter parity, instead of passing is_admitted a hardcoded-FAIL revert_runner.
   verification_step: 5
@@ -187,22 +192,22 @@ constraints:
 context:
 - 'Decision-scout verdict FLAGS_FOUND (131 of 131 triaged). CITE: Decision 55, 73, 132, 170, 176, 128, 48. RELATED: Decision 118, 103, 142, 165.'
 - 'gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)'
-- 'DEFERRED REDNESS -- read before blaming your own diff: after this lands, modifying ANY existing registry entry gets a correct differential and is usually rejected as ''not admitted -- tautological'' (455/475 assertions already hold on main). THAT IS THE FIX WORKING. The wall already applied to the other 338 entries (rec-3286); the venv bug exempted 137 from it. Sanctioned paths: change the guard target in the same PR (items b+c), or retire to entries/deprecated/. Do NOT weaken the gate; do NOT revert this plan.'
+- 'DEFERRED REDNESS -- read before blaming your own diff. TWO new post-merge failure shapes, both the fix working: (1) modifying ANY existing registry entry is usually rejected ''not admitted -- tautological'' (455/475 assertions already hold on main); the wall already applied to the other 338 entries (rec-3286), the venv bug exempted 137. Sanctioned paths: change the guard target in the same PR (items b+c), or retire to entries/deprecated/. (2) GraduationError ''command head not runnable in the revert worktree'' on a check whose interpreter depends on untracked/gitignored state; sanctioned path: make the check''s environment reproducible in a worktree, or re-slot it. Do NOT weaken the gate and do NOT revert this plan for either shape.'
 - 'Root cause is two-layered: the missing venv, AND CheckStatus being two-valued (verification_checks.py:22-24) so is_admitted (:318-336) reads any revert-leg FAIL as discrimination.'
 - The gate's own canary was tautological -- validate_differential_gate_baseline.py:50-53 passes a hardcoded-FAIL revert_runner, contradicting verification_graduation.py:3-5 (a REAL worktree, never simulated).
 - 'Defect is LOCAL-ONLY: ci.yml creates no .venv and runs `python -m scripts.validate`, so CI''s differential is honest. It corrupts the local advisory signal agents act on when choosing graduate vs waive.'
 - 'Flag D168 accepted: ci-rca-lifecycle.yaml is Class D; check_amendment_log_for_class_d (_population.py:374 via validate_contract_drift.py:343) fails any top-level key change without an amendment_log[] entry. VP step 9.'
 - 'Flag D86 accepted: verification-registry.yaml (Class A, v5) is the admission rule''s home; now in scope. Class A does not trip the Class D amendment gate.'
-- 'Flag D148 (spirit) rebutted: the revert leg runs origin/main''s bin/venv-python, so a wrapper-fallback fix cannot take effect there until merged, nor ever for older refs. Every version probes $REPO_ROOT/.venv/bin/python -- symlink provisioning is the only version-agnostic layer.'
-- 'Flag D176 (spirit) rebutted + compensating control: .venv is gitignored (.gitignore:26); the pre-fix state IS the violation (legs differed in env AND content); CI has no .venv so provisioning is a no-op there; the control leg makes residual non-hermeticity loud.'
+- 'Flag D148 (spirit) rebutted: the revert leg runs origin/main''s bin/venv-python, so a wrapper fallback fix cannot reach it until merged, nor ever for older refs. Symlink provisioning is the only version-agnostic layer.'
+- 'Flag D176 (spirit) rebutted + compensating control: .venv is gitignored (.gitignore:26); the pre-fix state IS the violation (legs differed in env AND content); CI has no .venv so provisioning is a no-op there.'
 - 'Flag D176 (note) resolved: precedent retires when no revertable counter-example remains, re-authors when one exists. Item (c) supplies a real one. Human chose re-author.'
-- 'Planning measurements (2026-08-31, HEAD==origin/main fd8ea8c; full tables in the commit body): 475 entries, 137 reference bin/venv-python; seeded random sample of 30 replayed at their own landing-commit parents = 30/30 HONEST (0 vacuous, 95% UCB ~10%); 19 of 475 assert something FALSE against main today while main is green.'
+- 'Planning measurements (2026-08-31, HEAD==origin/main fd8ea8c; full tables in the commit body): 475 entries, 137 reference bin/venv-python (8 of them stale); sample of 30 replayed at their landing parents = 30/30 HONEST (0 vacuous, 95% UCB ~10%); 19 of 475 assert something FALSE against main today while main is green.'
 - 'Why the 19 rot undetected: run_differential''s only caller is diff-gated on _added_entries + _modified_entries (validate_verification_registry.py:194-198); graduated checks never re-run as a standing suite.'
-- 'Costs: worktree add 0.467s, symlink 0.3ms, control leg ~+0.5s per candidate on the admission path only. Fast-tier budget 300s (validate.py:69), already breached pre-existing (rec-3288).'
+- 'Costs: worktree add 0.467s, symlink 0.3ms, probe ~1 subprocess on the admission path only (a PASSing revert leg self-proves the environment). Fast-tier budget 300s (validate.py:69).'
 - 'Baseline: `validate --pre` is EXIT=0 on this branch before any change.'
-- 'ci-rca HARD BLOCK deferral (human-accepted): rec-3328/3293/3292 unresolved, no Related-Work condition met. Deferred because this plan is a PREREQUISITE for resolving them correctly -- a forward-fix graduating a guard would get a false-admission verdict from the broken gate. rec-3293/3292 appear already fixed in-tree.'
+- 'ci-rca HARD BLOCK deferral (human-accepted): rec-3328/3293/3292 unresolved, none Related-Work. Deferred as this plan is a PREREQUISITE -- a forward-fix graduating a guard would get a false-admission verdict.'
 - rec-3317 (High) + rec-3333 (Medium) are one defect, both close here. rec-3332 and rec-3286 stay OPEN.
-- 'Follow-on recs to file at implement time: (1) sweep + disposition the 19 stale shards; (2) standing execution of the graduated corpus. Both name this plan as prerequisite.'
+- 'Follow-on at implement time: update_rec on OPEN rec-3286 with the corrected count (19, not 3) rather than a duplicate rec (Decision 103); plus a new rec for standing execution of the graduated corpus.'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
