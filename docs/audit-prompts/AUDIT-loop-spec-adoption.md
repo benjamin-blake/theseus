@@ -115,6 +115,10 @@ The candidates:
 - "Loop" appears in unrelated names: the `/loop` harness skill, `docs/plans/PLAN-closure-
   loop.yaml`, and the prior audit `audits/unclosed-loops-44ef5c6.yaml` (governance-state
   bookkeeping loops). This audit's subject is OPTIMIZATION loops as defined in SCOPE.
+- "Verifier" names two populations. Checks named `validate_verifier_*` (in
+  `scripts/checks/verification/`) scan the RETIRED `scripts/verifiers/` harness fleet, not the
+  live `scripts/checks/` fleet this audit calls the check fleet. Do not read a
+  `verifier`-named guard as covering the live fleet without tracing what it actually scans.
 
 ## 4. SCOPE
 
@@ -187,7 +191,9 @@ Run, in order; on failure take the named degraded path -- never abort, never imp
    hatch (`meta.degraded_dedup=true`).
 4. Cache generation for dedup: `bin/venv-python -m scripts.session.preflight --roadmap-detail
    full` (populates `logs/.preflight-report.json` and `logs/.recommendations-log.jsonl`; its
-   stdout also carries the budget-breach/bypass telemetry lines S3 samples). IF cache-gen fails
+   STDERR carries the budget-breach/bypass telemetry lines S3 samples, and the same values
+   land structurally in the report's `budget_bypass_alert` / `budget_breach_summary` keys --
+   read the report keys, not a stream). IF cache-gen fails
    (creds/egress down): do NOT abort -- set meta.degraded_dedup=true and proceed: every
    finding's `roadmap_crossref` then carries `dedup_hit_count: null` and a `note` beginning
    "degraded dedup: <the terms you would have searched>", and its `classification` is read as
@@ -231,8 +237,10 @@ Judgment-bearing bars, not absolutes: argue each surface against them; do not pa
 - Q2. Do the standing non-validation loops (S7) carry declared equivalents -- objective,
   constraints, backstop, ratchet, stop conditions? Rate the population, naming the loops you
   examined. Verdict: `sufficient | partial | insufficient` -- sufficient = every examined loop
-  declares objective, backstop, and stop conditions somewhere findable; partial = some do;
-  insufficient = none or almost none do.
+  declares objective, backstop, and stop conditions somewhere findable; insufficient = fewer
+  than a quarter of examined loops do; partial = everything between. Also state, in Q2's
+  prose, whether the population you rated could be enumerated MECHANICALLY (P3's feasibility
+  premise) or required judgment calls, and name the judgment calls.
 - Q3. For each technique P1-P5: adopt, adopt amended, defer, or reject? Answer via the
   `technique_verdicts` block (OUTPUT); this question's `prose` field summarizes and points
   there. The block's verdict enum: `adopt | adopt-amended | defer | reject`. Definitions:
@@ -271,6 +279,9 @@ Judgment-bearing bars, not absolutes: argue each surface against them; do not pa
      becoming authoritative -- and what would their own known-bad fixtures be?
   7. When a loop-spec entry and the loop's live definition diverge, which side is truth, and
      what detects the divergence?
+  8. What would P2, P3, and P4 themselves cost the 300s fast-tier objective -- which tier
+     would each run in, and is that compatible with the observed breach/bypass pressure on
+     that budget?
 
 ## 8. RUBRIC
 
@@ -302,8 +313,10 @@ maturity; its disposition lives in `technique_verdicts`.
   not. No such class -> only `defer` or `reject` are available (Q3's rule).
 - DD-B (monotonicity walk; feeds Q1, Q2, VD2, and candidate C3). Trace each of these ten
   weakening moves as a hypothetical diff: which gate, marker, ratchet, or post-hoc detector
-  fires, if any? Classify each: `gated-at-merge | detected-post-hoc | undetected`. Do NOT
-  execute the moves; static tracing only.
+  fires, if any? Classify each: `gated-at-merge | detected-post-hoc | advisory-at-pr |
+  undetected` (advisory-at-pr = a check flags it at PR time but cannot red the build, e.g. a
+  wave-4a advisory finding). Do NOT execute the moves; static tracing only. Record the ten
+  classifications in the output's `deep_dives.dd_b_moves` block.
   1. Narrow or delete one `pre_globs` pattern on a check's manifest Entry.
   2. Flip a check's Entry from `pre=True` to `pre=False`.
   3. Remove a check's `full_segment` so it runs in no tier.
@@ -383,16 +396,19 @@ S2 ground truth + escape loop:
 - `config/ci_rca_taxonomy.yaml:184` onward -- a `workflows:` map adjudicating EVERY workflow
   with `ci_rca: watched|excluded`, an `owner`, and a `rationale`: a declared, per-workflow
   backstop-coverage register (convergence-health, dedup-probe, and terraform-drift carry
-  deliberate `excluded` rows). The strongest existing counter-surface to C1 and C4.
+  deliberate `excluded` rows). The strongest existing counter-surface to C1 and C4, and prior
+  art for P3's coverage-enumeration function.
 
 S3 budget governance:
 - `scripts/convergence_health/budget_ingest.py:1-44` -- pr-validate is credential-free, so a CI
   breach cannot file a warehouse rec from the job; this cron module ingests the manifest's
   budget block instead; episode grain `(branch, dominant_phase)`; "A RESOLVED REC IS NEVER
   RESURRECTED".
-- Compose-time preflight stdout reported 8 fast-tier budget breaches and 8 `--ignore-budget`
-  invocations in the prior 7 days (dominant phase `pytest_diff`); re-derive from YOUR preflight
-  run before treating as observed evidence.
+- Compose-time preflight reported 8 fast-tier budget breaches and 8 `--ignore-budget`
+  invocations in the prior 7 days (dominant phase `pytest_diff`). These lines print to STDERR;
+  the robust read is `logs/.preflight-report.json`'s `budget_bypass_alert` and
+  `budget_breach_summary` keys. Re-derive from YOUR preflight run before treating as observed
+  evidence.
 - Compose-time open recs (re-derive from the regenerated cache): rec-3117 and rec-3253
   (fast-tier breach episodes), rec-2875 (a named cost-attribution defect in the differential
   gate's budget accounting).
@@ -426,6 +442,13 @@ S5 verifier change control:
   file's `ratchet:` key near its end (narrated in the amendment log).
 - `AGENTS.md` SLOC section -- raises need `# raise-approved: dec-NNN`; "decreases and removals
   are always unrestricted".
+- `scripts/checks/verification/` -- a ten-check domain including
+  `validate_verifier_same_pr_guard.py` (AST-extracts `covers` lists from `Verifier` classes
+  under `scripts/verifiers/`, a population currently holding no concrete verifier classes),
+  `validate_verifier_hermeticity.py`, `validate_verification_harness.py`, and
+  `validate_verification_registry.py` (the differential admission gate; rec-2875 names a cost
+  defect in its budget accounting). State of coverage vs the live `scripts/checks/` fleet is
+  yours to establish -- it bears directly on C3, Q4 property 8, and six DD-B moves.
 
 S6 graduation and discrimination:
 - `docs/contracts/verification-registry.yaml:1-23` -- Class A contract; six primitive slots;
@@ -479,10 +502,11 @@ Hard bounds -- do NOT exceed any of them:
 
 - DD-B: exactly the 10 listed moves, static tracing only.
 - DD-C: <= 3 escape traces.
-- Graduation shards: <= 5 shards sampled, drawn from non-deprecated depth-1 entries only.
-  Selection rule: cover as many distinct `primitive_slot` values as possible, one shard per
-  slot, taking the most recent `graduated_at` within each slot. Per shard, apply the
-  counterfactual as an operation:
+- Graduation shards: <= 6 shards sampled, drawn from non-deprecated depth-1 entries only.
+  Selection rule: one shard per distinct `primitive_slot` (the contract declares six), taking
+  the most recent `graduated_at` within each slot; break date ties by lexicographically first
+  `check_id`. Record rows in `deep_dives.shard_samples`. Per shard, apply the counterfactual
+  as an operation:
   read `guard_target`/`guard_symbol` and the `check_spec` test; answer "if the guarded symbol
   were deleted or its behavior inverted, would this recorded check fail?" -- a NO is evidence
   for Q4.3/VD3.
@@ -522,11 +546,13 @@ Deliberate constraints -- do NOT flag these as findings:
 - Decision 153: the forced-full-suite budget waiver is designed behavior.
 - CD.12 / T3.7: mutation testing as ALARM-NOT-GATE -- mutation as a merge gate was considered
   and rejected.
-- Wave-4a advisory staging of `validate_pre_glob_closure` (the staging itself; the tail's
-  ownership is fair game).
+- Wave-4a advisory staging of `validate_pre_glob_closure` (rec-3289's staged remediation
+  path; the staging itself is decided -- the tail's ownership is fair game).
 - Decision 86: no standing prose-architecture docs (any adopted artifact must be a
   machine-readable contract).
-- The empty `scripts/verifiers` REGISTRY (deliberate retirement).
+- The empty `scripts/verifiers` REGISTRY list itself (deliberate retirement, recorded in that
+  module's own docstring). This immunizes ONLY the empty list -- the coverage and current
+  usefulness of any check that scans that population stays fully in scope.
 - Decision 84: warehouse as source of truth; no offline outbox.
 - Decisions 77/92: the sandbox auto-apply guard model (out of scope entirely).
 
@@ -571,7 +597,7 @@ audit:
   technique_verdicts:
     P1: {verdict: adopt|adopt-amended|defer|reject, mechanism: "", what_changes: "",
          cost: XS|S|M|L, rationale: "", confidence: CONFIRMED|HYPOTHESIS,
-         sequencing: {when: now|after-wave-4c|after-unfreeze|never,
+         sequencing: {when: now|after-wave-4c|after-t3.7|after-unfreeze|never,
                       blocked_behind: [<finding or roadmap ids>], note: ""}}
     P2: {...}  # same shape for P2-P5
   per_surface_assessment:
@@ -582,6 +608,7 @@ audit:
        evidence: "file:line|item-id", note: ""}
   findings:
     - {id: LSA-01, surface: S1..S8|shared, question: Q1..Q5, dimension: VD1..VD7,
+       candidate: C1..C7|none,
        title: "", evidence: "file:line|item-id", evidence_kind: static|observed,
        current_behavior: "", ideal_behavior: "", gap: "",
        compensating_controls_considered: "",
@@ -596,6 +623,22 @@ audit:
   rejected_candidates:
     - {candidate: "", why_dismissed: "", compensating_control: "",
        control_property_match: "", decision_or_item_id: ""}
+  deep_dives:
+    dd_a_overlap_matrix:
+      - {technique: P1..P5, existing_mechanisms: [<file:line or item-id>],
+         surviving_defect_class: "<named class, or null>", note: ""}
+    dd_b_moves:
+      # exactly ten rows, in section-9 order
+      - {move: 1..10, outcome: gated-at-merge|detected-post-hoc|advisory-at-pr|undetected,
+         stopper: "<file:line, mechanism, or none>", note: ""}
+    dd_c_traces:
+      # <= 3 rows
+      - {escape: "<rec id or incident name>", detection: "", attribution: "", fix: "",
+         permanent_artifact: "<artifact, or none>", loop_closed_mechanically: true|false}
+    shard_samples:
+      # <= 6 rows
+      - {check_id: "", primitive_slot: "", would_fail_if_guard_broken: yes|no|unclear,
+         evidence: ""}
   summary: {total_findings: 0, novel_count: 0, planned_insufficient_count: 0,
             planned_unbuilt_count: 0, top_improvements: [<finding ids>],
             highest_leverage_change: <finding id>,
@@ -607,8 +650,11 @@ COUNTING INVARIANT (restate it in your report; a one-sentence paraphrase is fine
 section holds the binding copy): `findings[]` is the SOLE enumerated list;
 `total_findings = len(findings) = novel + planned_insufficient + planned_unbuilt`;
 fully-covered candidates live in `rejected_candidates`, NOT findings; `rubric_ratings`,
-`question_answers`, and `technique_verdicts` are systems-of-record referenced FROM findings,
-never re-counted; `top_improvements` and `highest_leverage_change` MUST be finding ids.
+`question_answers`, `technique_verdicts`, and `deep_dives` are systems-of-record referenced
+FROM findings, never re-counted; `top_improvements` and `highest_leverage_change` MUST be
+finding ids. Candidate bookkeeping: every one of C1-C7 must appear exactly once across
+`findings[].candidate`, `rejected_candidates[].candidate`, or (C5 confirmed only) the
+`technique_verdicts` rationales -- a reader can then verify all seven were adjudicated.
 
 `control_property_match` is REQUIRED whenever a compensating control is the reason for
 dismissal: name the property the control exercises, cite where it operates (file:line or
@@ -623,13 +669,22 @@ Findings with `surface: shared` appear in `findings[]` and the summary counts bu
 a per-surface maturity (section 15). The finding-level `note` holds the strongest rejected
 counter-reading (section 17). Size anchors for `cost`/`effort`: XS = a single small edit;
 S = one focused PR; M = a multi-file PR or short series; L = sustained multi-PR work.
+In `technique_verdicts`, CONFIRMED means every load-bearing claim in that verdict's
+`rationale` is anchored (file:line or a verified item id); HYPOTHESIS otherwise.
 `top_improvements` carries 3-5 finding ids -- fewer when fewer findings exist, `[]` at zero
 findings, and `highest_leverage_change: null` at zero findings. In `rubric_ratings`, an `n/a`
-rating may leave `evidence` empty.
+rating may leave `evidence` empty. A finding serving several questions or dimensions names
+the PRIMARY one in its fields and the others in `note` -- never split one defect into two
+findings. In the Q4 checklist, `property` verbatim means the clause text without its list
+number and trailing semicolon. `contract_notes` is a single string of "; "-separated entries,
+each prefixed by its source (e.g. "SETUP-1: ...", "DD-C: ..."). `depends_on`, `change_type`,
+and `effort` are read by the human disposer when sequencing follow-up plans.
 
 The companion `audits/loop-spec-adoption-{sha}.md` (<= 1500 words) is the executive layer:
 lead with the five technique verdicts and the highest-leverage change, then Q1/Q2/Q4 in brief,
-then notable findings and rejected candidates. Prose, no new claims absent from the YAML.
+then the deep-dive outcomes in a few lines, then notable findings and rejected candidates.
+Prose, no new claims absent from the YAML (the `deep_dives` block is part of the YAML for
+this purpose).
 
 ## 15. SEVERITY + MATURITY
 
@@ -660,6 +715,9 @@ repository-wide.)
 - solid: <= 1 critical.
 - nascent: otherwise.
 
+The high-count asymmetry below `strong` is deliberate: criticals dominate the scale, so a
+0-critical/many-high surface lands on `solid` by design.
+
 The top rating remains reachable when you argued a property-matched compensating control for a
 checklist property -- this prompt's framing must not foreclose it. Fewer than ~4 surviving
 findings is a valid result -- state it; do not pad.
@@ -671,20 +729,25 @@ findings is a valid result -- state it; do not pad.
    only the two deliverables. This branch name is a deliberate, documented exception to the
    AGENTS.md `claude/*` session-branch rule: the audit needs a clean two-file diff off the
    audited base. The CI signal-green comment wake fires only on `claude/*` PRs -- irrelevant
-   here, because you end your turn without merging; the human disposes of the PR.
+   here, because you end your turn without merging; the human disposes of the PR. If your
+   harness refuses a non-claude/* branch or its push, take step 4's degraded path.
 2. Verify both deliverables parse as YAML/read cleanly (e.g.
    `bin/venv-python -c "import yaml,sys; yaml.safe_load(open('audits/loop-spec-adoption-<sha>.yaml'))"`).
-   This is your pre-push gate. Do not run the repo's validation tiers; a pre-existing,
-   unrelated failure is recorded in `meta.contract_notes`, never fixed.
+   This is your pre-push gate. Degraded (bin/venv-python broken, per SETUP step 3): run the
+   same one-liner with plain `python3`; if pyyaml is unavailable there too, note it in
+   `meta.contract_notes` and push anyway. Do not run the repo's validation tiers; a
+   pre-existing, unrelated failure is recorded in `meta.contract_notes`, never fixed.
 3. Stage ONLY the two deliverables by explicit path
    (`git add audits/loop-spec-adoption-<sha>.yaml audits/loop-spec-adoption-<sha>.md`,
-   never `git add -A`), so a dirty tree cannot widen the diff. Commit with `git -c user.name=Claude -c
-   user.email=noreply@anthropic.com commit`. Include no model identifier beyond the pinned
-   `meta.model` string (which deliberately withholds the exact id) -- none in the commit
-   message, the PR title or body, or anywhere else in either deliverable; trailers your
-   harness appends to commit messages mechanically (e.g. Co-Authored-By) are outside your
-   authorship and exempt -- do not fight your harness. Message:
-   `audit(loop-spec-adoption): adoption review of loop-spec techniques P1-P5`.
+   never `git add -A`), so a dirty tree cannot widen the diff. Then commit:
+   `git -c user.name=Claude -c user.email=noreply@anthropic.com commit -m
+   "audit(loop-spec-adoption): adoption review of loop-spec techniques P1-P5"`
+   (the `-m` matters: this environment's editor is a no-op, so an editor-based commit
+   aborts empty). Include no model identifier beyond the pinned `meta.model` string (which
+   deliberately withholds the exact id) -- none in the commit message, the PR title or body,
+   or anywhere else in either deliverable; trailers your harness appends to commit messages
+   mechanically (e.g. Co-Authored-By) are outside your authorship and exempt -- do not fight
+   your harness.
 4. `git push -u origin HEAD` (on network failure retry up to 4 times with 2s/4s/8s/16s
    backoff). Degraded (push still failing after the retries, or step 5's PR tool unavailable
    or unauthorized): stop retrying, leave the branch committed locally, and end your turn
@@ -714,6 +777,7 @@ findings is a valid result -- state it; do not pad.
   at large, and is forbidden. Bounded enumeration is NOT a sweep: listing
   `.github/workflows/*.yml` and reading their `on:` blocks and headers, reading
   `.github/agents/schedule.yaml`, listing `.claude/commands/` and `.claude/skills/` entry
-  files, following anchors this prompt hands you, and the section 13 dedup greps over the
-  named ownership surfaces are all in bounds -- DD-A's "verify and extend" and P3's
-  enumeration reach exactly that far.
+  files, reading the 17 `scripts/checks/<domain>/_manifest.py` files (the check-fleet census),
+  following anchors this prompt hands you, and the section 13 dedup greps over the named
+  ownership surfaces are all in bounds -- DD-A's "verify and extend" and P3's enumeration
+  reach exactly that far.
