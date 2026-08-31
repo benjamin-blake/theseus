@@ -34,15 +34,19 @@ Per-candidate adjudication enum, with its mapping to the output contract pinned:
 - CONFIRMED-defect -> `findings[]`, `roadmap_crossref.classification: novel`
 - planned, but the owning item's remedy is insufficient or unbuilt -> `findings[]`,
   classification `planned-insufficient` or `planned-unbuilt`
-- planned and fully covered by the owning item -> `rejected_candidates[]`
-- not-a-defect -> `rejected_candidates[]`, naming the compensating control
+- planned and fully covered by the owning item -> `rejected_candidates[]` (diagnosis claims and
+  GROUNDING MAP facts only; a proposal's coverage is recorded as its DUPLICATE verdict instead)
+- not-a-defect -> `rejected_candidates[]`, naming the compensating control (same restriction)
 
 **The candidate set is exactly 21 items**, and nothing else: the five diagnosis claims D1-D5
 (stated under Q1) and the sixteen proposals P1-P14, Alt-1, Alt-2 (stated under Q2). Those are
-"the candidates below". `rejected_candidates[].candidate` holds one of those 21 ids, or -- for an
-observation you considered and dismissed without it rising to a finding -- the GROUNDING MAP fact
-you dismissed, identified by its `file:line`. The GROUNDING MAP is evidence, not an accusation
-list: nothing in it is a candidate merely by appearing there.
+"the candidates below". The GROUNDING MAP is evidence, not an accusation list: nothing in it is a
+candidate merely by appearing there.
+
+`rejected_candidates[]` is NOT the disposition list for all 21. It holds exactly two things: a
+diagnosis claim verdicted REFUTED, and a GROUNDING MAP observation you considered and dismissed
+without it rising to a finding. Every proposal's disposition -- REJECT and DUPLICATE included --
+lives in `proposal_adjudication` and is never mirrored here.
 
 **How each candidate reaches the output, pinned so `total_findings` is not a matter of taste:**
 
@@ -65,7 +69,7 @@ finding, and a finding may exist with no proposal attached to it. Every finding 
 
 ## READ FIRST -- DISAMBIGUATION TRAPS
 
-Five hazards where one name denotes two things. Misreading any of these will produce a wrong
+Six hazards where one name denotes two things. Misreading any of these will produce a wrong
 audit.
 
 1. **`WF-08`, `WF-17`, `WF-05`, `WF-06` are finding ids from a PRIOR AUDIT of these same files**
@@ -166,7 +170,8 @@ which DEDUP DISCIPLINE requires.
 
 - IF preflight fails for ANY reason -- credentials, egress, import error, or a PARTIAL success
   where the report is written but the recommendations sync did not complete: do NOT abort. Set `meta.degraded_dedup: true`,
-  set every `findings[].confidence` and every `proposal_adjudication[].confidence` to
+  set every `findings[].confidence`, `proposal_adjudication[].confidence` and
+  `diagnosis_verdicts[].confidence` to
   HYPOTHESIS (this OVERRIDES the file:line CONFIRMED rule for the duration of a degraded run),
   set every `dedup_hit_count` to null,
   and proceed. Dedup then runs against the git-tracked sources only
@@ -358,7 +363,10 @@ ROADMAP-verdict items -- including any Q5-originated item you verdict ROADMAP --
 by Q3 at their position but are NOT ranked by Q4; the ROADMAP verdict wins over the
 originated-here flag. Findings
 carry `executor_prerequisite`, `executor_rank` and `qol_rank` for this purpose, same shape as
-proposals. Rank the adopted items into two ordered lists: those that are load-bearing prerequisites for a weak-model autonomous
+proposals. `executor_rank` and `qol_rank` are unique consecutive integers starting at 1 WITHIN
+their own list, independent of each other and of `sequence_position`. Every non-adopted entry --
+ROADMAP, REJECT and DUPLICATE verdicts alike -- carries `executor_prerequisite: false` and both
+ranks `null`. Rank the adopted items into two ordered lists: those that are load-bearing prerequisites for a weak-model autonomous
 executor (NS-F), and those that are quality-of-life for interactive frontier-model sessions.
 Justify each placement by naming the specific judgement load the item removes or fails to
 remove. An item may appear in both lists only if you argue the two roles separately. Q4's
@@ -367,7 +375,10 @@ verdict enum: `ranked | partially-ranked | not-rankable`.
 **Q5 -- Changes the originating analysis did not propose.** P1-P14 and Alt-1/Alt-2 are a closed
 set authored by a single conversation, and this audit's premise is that the conversation is not
 authoritative. If the highest-leverage change available to this workflow is NOT among those
-sixteen, say so and specify it. Record each such item in `proposal_adjudication` under an id of
+sixteen, say so and specify it. Note that all sixteen ADD machinery: **removing** something -- a
+gate, a check, an obligation, a block of skill prose, a rubric row -- is an equally legitimate
+originated item, and given T2.56 c1's shrink commitment may be the higher-leverage direction. Do
+not treat "what should we add" as the only available answer. Record each such item in `proposal_adjudication` under an id of
 the form `N1`, `N2`, ..., carrying `originated_here: true` and the same field shape as the other
 entries; these are EXCLUDED from the sum-to-16 invariant. Originating nothing is a legitimate
 answer and must be stated explicitly, not left blank. Q5's verdict enum:
@@ -408,7 +419,11 @@ Q6's shape differs from the others: `{q: Q6, answers: [{question, answer, basis:
 
 ## RUBRIC
 
-Rate each surface S1-S7 on each dimension. Pinned enum: `strong | adequate | weak | absent | n/a`.
+Rate each surface S1-S7 on each dimension. Pinned enum: `strong | adequate | weak | absent | n/a`,
+with these boundaries: **strong** = a mechanism serves the dimension and you can point to it;
+**adequate** = a mechanism serves it with a gap you can name that does not defeat it; **weak** =
+a mechanism nominally exists but does not reliably deliver the property; **absent** = no
+mechanism serves it; **n/a** = the dimension does not structurally apply to that surface.
 `n/a` is correct and costless where a dimension does not structurally apply to a surface -- never
 manufacture a rating or a finding to fill a cell. These ratings establish the baseline the
 proposals act on; a proposal's value depends on the rating of the surface it targets.
@@ -459,11 +474,16 @@ each add versus duplicate, and for P5 specifically, adjudicate the SHAPE questio
 `decision-entry.yaml` records about which of those two homes new decision metadata belongs in.
 Feeds Q1(D5), Q2(P4/P5/P10/P11), VD7.
 
-**DD-D -- Carrying-cost accounting.** For every item you adopt (ADOPT-NOW or ADOPT-MODIFIED),
-enumerate the concrete surfaces its adoption must touch: registration surfaces for a new check;
-prose bytes plus the Decision-cited raise marker for skill prose; contract fields plus any
-re-ratification trigger tripped; schema version bump plus corpus compatibility for a plan-schema
-field. An item whose carrying cost you cannot enumerate is not ready for ADOPT-NOW -- say so and
+**DD-D -- Carrying-cost accounting.** For every ADOPTED item (the shared definition under Q4:
+ADOPT-NOW and ADOPT-MODIFIED proposals, adopted P2 sub-rules, Q5-originated items, and findings
+carrying a `proposed_change`), enumerate the concrete surfaces its adoption must touch:
+registration surfaces for a new check; prose bytes plus the Decision-cited raise marker for skill
+prose; contract fields plus any re-ratification trigger tripped; schema version bump plus corpus
+compatibility for a plan-schema field; and -- for anything that writes warehouse rows, which P1
+and P14 both do -- the full data-modeling obligation set: declared grain, write mode, partition,
+`config/lambda/ducklake/field_semantics.yaml` column registration, a named read verb at the
+closed reader boundary (Decision 84 I-3), and the portal write path. Omitting the warehouse class
+systematically understates the cost of exactly the proposals most likely to look cheap. An item whose carrying cost you cannot enumerate is not ready for ADOPT-NOW -- say so and
 move it. Feeds Q2, Q3, VD6.
 
 ## GROUNDING MAP
@@ -549,7 +569,8 @@ as a whole, not to clause (a). Quote whichever you rely on accurately.
   `validate_plan_scope_closure` (registration closure, delegating to
   `scripts/roadmap/plan_obligations.py`), `validate_tier_floor` (deterministic V-tier floor, VF-04/T3.17) -- but read its
   predicate before relying on it: `scripts/checks/roadmap/validate_tier_floor.py:83` skips every
-  plan whose `schema_version` is not EXACTLY 2, so it is inert on schema v3 and v4 plans. Derive
+  plan whose `schema_version` is not EXACTLY 2, so it is inert on the schema v1 band AND on
+  schema v3 and v4 plans -- i.e. on everything except the v2 band. Derive
   the corpus distribution yourself
   (`rg -o --no-filename "^schema_version: *[0-9]+" docs/plans/*.yaml | sort | uniq -c`) and
   establish how many plans the check actually reaches before judging whether seed rule P2e
@@ -558,8 +579,11 @@ as a whole, not to clause (a). Quote whichever you rely on accurately.
   name; `check_graduation_guard` is only the module path), `validate_graduation_completeness`
   (graduation-disposition presence on every pre-deploy VP step; its docstring states it performs
   "field presence only, no kernel-expressibility inference (that classification judgement is the
-  fresh-context plan-critique gate's job, at plan time)"), and `validate_vp_replay` (independently
-  re-executes every `phase == "pre-deploy"` AND `hermetic == True` VP step in the `--pre` tier).
+  fresh-context plan-critique gate's job, at plan time)"), `validate_vp_replay` (independently
+  re-executes every `phase == "pre-deploy"` AND `hermetic == True` VP step in the `--pre` tier),
+  and `validate_handoff_full_tier` (requires at least one VP step of a `handoff_policy`-declaring
+  plan to invoke the full validation tier) -- eight checks, not seven. Re-derive the set from the
+  two `_manifest.py` files rather than trusting this list.
 - `docs/contracts/plan-obligations.yaml` is a Class D contract at `status: provisional_v0`
   holding a data-driven `registration_surfaces` map with exactly one rule today
   (`new_check_module`), a `re_ratification_trigger` of
@@ -582,8 +606,8 @@ as a whole, not to clause (a). Quote whichever you rely on accurately.
   local terraform validate/init/plan for third-party-provider roots." **Decision 120 (Decided
   2026-07-04) then states it "RELAXES, but does not REMOVE, the CI-delegation Decision 119
   established"** -- an S3 provider mirror makes `terraform init` of `terraform/personal` succeed
-  locally on the ADMIN container. Seed rule P2c must be adjudicated against both decisions; a flat
-  mechanical lint on that pattern would false-positive on the Decision 120 path.
+  locally on the ADMIN container. Seed rule P2c must be adjudicated against both decisions; determine yourself what a
+  mechanical lint on that pattern would do on the Decision 120 path.
 
 **The multi-surface lint precedent**
 - `scripts/executor/acceptance_lint.py`'s `lint_acceptance_command` is called from five places:
@@ -616,7 +640,7 @@ as a whole, not to clause (a). Quote whichever you rely on accurately.
   splitting a surface into fragments is explicitly forbidden. Current entries include
   `.claude/skills/planning/SKILL.md` and `.claude/skills/plan-critique/SKILL.md`, both already
   carrying `raise-approved` markers, plus `.claude/skills/decision-scout/SKILL.md`. Re-derive
-  each surface's current bytes and its budget; the headroom figures are small and are the point.
+  each surface's current bytes and its budget, and judge what the resulting headroom implies.
 - Roadmap `T2.56` (`in_progress`) c1, VERBATIM: "AGENTS.md / CLAUDE.md / the skills layer are
   measurably shrunk to machine-enforced norms plus pointers -- prose rationale and field semantics
   currently embedded ambiently are relocated to contracts and Decisions respectively, retrievable
@@ -675,7 +699,8 @@ The plan corpus is the only sampled artifact class. Bounds, hard:
   them. Do not simply take the most recent 25. **The cap of 25 always binds over the
   composition rule**: if plans recording 4 or 5 rounds alone exceed 20, take the 20 most recently
   modified of them, record the truncation in `meta.contract_notes`, and fill the remaining slots
-  with a spread of 1-, 2- and 3-round plans.
+  with a spread of 1-, 2- and 3-round plans. The 5 no-gate-line slots survive truncation: if the
+  reserve and the 4/5-round take would together exceed 25, the 4/5-round take yields first.
 - Corpus-wide `rg` counts over all plans are NOT sampling and are unbounded -- use them freely
   for distribution claims.
 
@@ -807,7 +832,9 @@ audit:
        sub_verdicts: {}}          # P2 ONLY; {} elsewhere. Shape per rule:
                                   # {P2a..P2h: {verdict: <same enum>, rationale: "",
                                   #  vehicle: <same enum>, carrying_cost: "",
-                                  #  sequence_position: <int|null>}}
+                                  #  sequence_position: <int|null>,
+                                  #  executor_prerequisite: true|false,
+                                  #  executor_rank: <int|null>, qol_rank: <int|null>}}
                                   # Excluded from the sum-to-16 count, but an ADOPTED sub-rule IS
                                   # sequenced by Q3, ranked by Q4, and costed by DD-D like any
                                   # other adopted item.
@@ -824,7 +851,13 @@ audit:
        title, evidence: "file:line|item-id", evidence_kind: static|observed,
        current_behavior, ideal_behavior, gap, compensating_controls_considered: "",
        change_type: add|rescope|enforce|unify|persist|clarify|retune_gate,
-       proposed_change: "", acceptance: "", severity: critical|high|medium|low,
+                    # add = new obligation/mechanism; rescope = existing one's scope changes;
+                    # enforce = an existing obligation gains a mechanism; unify = two surfaces
+                    # collapse; persist = something ephemeral gains durable storage;
+                    # clarify = wording only; retune_gate = an existing gate's threshold moves
+       proposed_change: "",
+       acceptance: "",              # what would prove proposed_change landed, as a checkable
+                                    # condition; "" iff proposed_change is "" severity: critical|high|medium|low,
        severity_rationale, confidence: CONFIRMED|HYPOTHESIS,
        roadmap_crossref: {classification: novel|planned-insufficient|planned-unbuilt,
                           item_ids: [], dedup_search_terms: [], dedup_hit_count: <int|null>,
@@ -840,9 +873,9 @@ audit:
        # depends_on = other FINDINGS whose fix this one builds on. blocked_behind = external
        # blockers (roadmap ids, Decisions, in-flight work) outside this audit's control.
   rejected_candidates:
-    - {candidate,                   # a D/P/Alt/N id, OR a free-text anchor naming the GROUNDING
-                                    # MAP fact dismissed (a file:line where one exists, else the
-                                    # fact's own words)
+    - {candidate,                   # a D1-D5 id, OR a free-text anchor naming the GROUNDING MAP
+                                    # fact dismissed (a file:line where one exists, else the
+                                    # fact's own words). NEVER a proposal id.
        why_dismissed,
        compensating_control: "",    # "" is correct for a first-principles dismissal with no
        control_property_match: "",  # control; both REQUIRED and non-empty only when a control
@@ -972,7 +1005,11 @@ round said.** That biases the read and destroys the gate's value.
   every factual claim, file:line anchor, quoted identifier (Decision, tier_item, rec, contract
   key, schema field, check name), and re-derived count in this audit against the repository at
   the audited commit. Re-run any counting command the audit reports. A single wrong fact poisons
-  the conclusions -- treat every mismatch as a finding." Tag each: `wrong | stale | unverifiable`.
+  the conclusions -- treat every mismatch as a finding.
+  Additionally, verify `meta.empirical_sample`: every sampled plan path exists, the list holds at
+  most 25 entries, and the composition reserves were honoured (at least 5 plans carrying no
+  `plan-critique=` line, and every 4-or-5-round plan included unless `truncated` is true)."
+  Tag each: `wrong | stale | unverifiable`. R1 cannot check this -- it is repo-blind.
 - **R3 -- Adversarial adjudication challenger (anti-deference).** Full repository read access.
   Task: "Contest the VERDICTS, not the facts. For each ADOPT verdict: is the audit agreeing
   because the proposal is right, or because it was stated confidently? For each REJECT: is it
@@ -987,7 +1024,9 @@ round said.** That biases the read and destroys the gate's value.
   `logs/.recommendations-log.jsonl`, `audits/*.yaml`) and judge whether the audit's
   `roadmap_crossref.classification` and `owning_items` are correct. Report every item the audit
   classified `novel` that an existing item already owns, and every item it called DUPLICATE that
-  the named owner does not actually cover."
+  the named owner does not actually cover." **If `meta.degraded_dedup` is true, say so in R4's
+  dispatch and tell it `logs/.recommendations-log.jsonl` is absent by design**: R4 must then judge
+  ownership from the git-tracked surfaces only and must NOT file findings for the missing cache.
 
 **Output shape, required of all four:**
 
@@ -1036,7 +1075,10 @@ REVISE. A sharpening re-dispatch does NOT increment `rounds`.
   framing alone, and record `rounds` as normal. Say plainly in the `.md` that the gate ran
   degraded -- a same-context self-review is weaker evidence than four cold reads.
 - IF a verifier errors or returns output with no `Verdict:` line: it has NOT completed.
-  Re-dispatch that one. Never count an incomplete verifier as PROCEED.
+  Re-dispatch that one, at most TWICE. If it still returns no verdict, record it in
+  `meta.self_verification.unresolved_findings` as an incomplete lane, treat that lane as REVISE
+  for the round, and continue -- never count an incomplete verifier as PROCEED, and never loop
+  on it indefinitely.
 
 `rounds` counts REVISE rounds completed, not dispatches: a gate that passes on its first
 dispatch records `rounds: 0`. Record the outcome in `meta.self_verification` regardless of how
@@ -1059,7 +1101,10 @@ the gate terminated.
    yaml.safe_load(open(sys.argv[1]))" audits/planning-workflow-scaling-<sha>.yaml`. That clean
    parse is the real pre-push gate. Repo-wide validation is advisory outside CI here; an
    unrelated failure goes in `meta.contract_notes` and is never fixed.
-4. Commit with `user.name=Claude`, `user.email=noreply@anthropic.com`. Message:
+4. Stage ONLY the two deliverables by explicit path --
+   `git add audits/planning-workflow-scaling-<sha>.yaml audits/planning-workflow-scaling-<sha>.md`
+   -- never `git add -A` or `git commit -a`, which would sweep in the caches SETUP regenerated.
+   Commit with `user.name=Claude`, `user.email=noreply@anthropic.com`. Message:
    `audit(planning-workflow-scaling): planning-workflow scaling review`.
 5. `git push -u origin HEAD`.
 6. Open the PR via `mcp__github__create_pull_request` (base `main`, ready for review, NOT a
