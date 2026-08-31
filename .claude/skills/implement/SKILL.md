@@ -21,15 +21,8 @@ review_as_scope: true            # Critical/High findings from code-review MUST 
 auto_review_and_commit: true     # Proactively trigger review and commit once VP passes -- do not wait for human
 ```
 
-## SLOC decompose-by-default (Decision 128, amends Decision 102)
-When an implementation step pushes a scripts/ or src/ file past its `config/sloc_budgets.yaml`
-budget (or past 500 SLOC if unregistered), decompose the file into a facade package (Decision
-80/104/124 pattern -- `__init__.py` facade re-exporting the full public surface, cohesive
-submodules each under budget) rather than raising the budget. A raise is a deliberate,
-Decision-cited exception (an inline `# raise-approved: dec-NNN <reason>` marker, enforced by
-`validate_sloc_budget_raises` in `--pre`) -- not the default response to hitting the ceiling. Do
-not reach for `--update-sloc-budgets` to silently register a new oversized file; it no longer
-auto-seeds one (Decision 128 / B2).
+## SLOC decompose-by-default
+See AGENTS.md `## SLOC governance` -- decompose by default, never raise without a Decision-cited marker.
 
 ## Preflight Constraints (Workflow Step 1)
 When reading `logs/.preflight-report.json`, apply these conditionals:
@@ -496,7 +489,7 @@ Wait for the PR-tier CI (fast `--pre` tier; Decision 73) via subscription, never
 
 **On wake**, always confirm check runs via `mcp__github__pull_request_read` (`get_status` / `get_check_runs`) BEFORE merging, then branch on status:
    - **All green** -> `mcp__github__merge_pull_request(owner, repo, pullNumber, merge_method="squash")`, then `mcp__github__unsubscribe_pr_activity(...)`. Report the merge. **Carve-out:** for a PR touching `terraform/personal/**`, do NOT unsubscribe here -- defer to the "Hold subscription through apply" section below (the real outcome is the post-merge apply, not the merge).
-   - **Any red** -> diagnose, fix on this branch, commit, push (re-triggers PR CI). Stay subscribed and end the turn. Do NOT inline-patch around a structural failure (Decision 55); if it is a recurring gap, run RCA (Step 8).
+   - **Any red** -> diagnose, fix on this branch, commit, push (re-triggers PR CI). Stay subscribed and end the turn. Per `docs/contracts/ci-rca-lifecycle.yaml` trigger_scope, this failure is uncovered by ci-rca by construction -- no rec is filed, nothing gates; the existing 3-fix-attempt STOP and VF-08 rules above govern the loop (Decision 55). Never weaken a criterion, VP step (`### Tier-Specific Guidance` Anti-Patterns), assertion, or budget to obtain green. `executor-rca` is out of scope here -- Step 8's RCA-First Protocol is separate, session-end friction capture.
    - **Still running** -> end the turn; a later event wakes you.
 
 ### Hold subscription through apply (terraform/personal PRs -- CD.35 / T2.20)

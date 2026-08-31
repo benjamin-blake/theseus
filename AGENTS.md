@@ -173,7 +173,7 @@ Canonical authority for all agent and session git-ops. All other surfaces (skill
 | Tier | When | Command | Gate |
 |---|---|---|---|
 | Fast (`--pre`) | PR / edit loop | `bin/venv-python -m scripts.validate --pre` | Authoritative pre-merge gate when run by PR CI (Decision 73); advisory only when run outside CI |
-| Full | Pre-handoff (local) + post-merge on `main` | `bin/venv-python -m scripts.validate` | A failure spawns a `source=ci_rca`, `priority=critical` rec (forward-fix, never auto-revert); see CI-failure / RCA-first protocol in `## Merge protocol` |
+| Full | Pre-handoff (local) + post-merge on `main` | `bin/venv-python -m scripts.validate` | See `## Merge protocol` (post-merge disposition). |
 
 `validate.py` is the single source of truth -- never add a check to `.github/workflows/ci.yml` without adding it to `validate.py` first.
 
@@ -257,7 +257,8 @@ Triggers `rec-autoclose.yml` to close each rec via the ops portal. Fallback: `bi
 ## Merge protocol
 **Canonical authority: see `## Git-ops procedure` for the full PR/CI/squash-merge flow, two-tier presubmit model, and Resolves trailer.**
 
-- **On CI failure**: the ci-rca agent (`.github/workflows/ci-rca.yml`) automatically files a recommendation with `source="ci_rca"` and `priority="critical"`. The next `/plan` session will surface it under "CI RCA Recs (open)". Do NOT manually patch the failure until the rec has been reviewed in a `/plan` session -- inline fixes without architectural review reproduce the workaround anti-pattern (Decision 55, Decision 72).
+- **Post-merge full-tier failure on `main`**: ci-rca automatically files a `source=ci_rca`, `priority=critical` rec (forward-fix, never auto-revert). Do NOT manually patch until the rec is reviewed in `/plan` -- inline fixes reproduce the workaround anti-pattern (Decision 55, Decision 72).
+- **PR-branch `--pre` failure**: per `docs/contracts/ci-rca-lifecycle.yaml` trigger_scope, no rec is filed and nothing gates -- ci-rca watches `main` only; diagnose and fix on the branch (Git-ops step 6).
 - Manual confirmation: if `validate.py` appears to skip tests, run `pytest` directly to confirm.
 
 ## Instruction architecture

@@ -5716,6 +5716,15 @@ Reuses the cc-scheduled-agents infrastructure (Decision 71) with a `workflow_run
 
 **Related:** Decision 50 (Iceberg ops store, superseded by Decision 78), Decision 51 (local-first outbox, superseded by Decision 78), Decision 55 (RCA-first executor), Decision 60 (two-tier validation), Decision 61 (source discriminator), Decision 68 (self-hosted runner), Decision 71 (cc-scheduled-agents pattern)
 
+> **Update (2026-08-31):** Scoped to the post-merge full-tier gate on `main`, per Decision 73's
+> two-tier Google-TAP-style CI split (`--pre` gates PR branches; the full tier gates post-merge
+> `main` and the L8 drift canary, Decision 73 points 1-2). The `workflow_run` trigger this
+> Decision's mechanism depends on fires ONLY for `head_branch == default_branch` (T1.13 c6) -- a
+> PR-branch `--pre` failure never reaches it, is uncovered by construction per
+> `docs/contracts/ci-rca-lifecycle.yaml` trigger_scope, and is diagnosed and fixed by the
+> implementing agent directly (AGENTS.md `## Git-ops procedure` step 6), not via this Decision's
+> rec-filing path.
+
 ---
 
 ## Decision 70: Physical Deletion of Bootstrap Records from ops_recommendations (Decided)
