@@ -46,10 +46,11 @@ scope:
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-
-      Dated [Amendment ...] trailer on Decision 144 (NOT a new numbered entry -- see context).
-      Establishes the metadata-write scope class "role/agent-platform-* plus enumerated
-      boundary-carrying non-prefixed managed roles, today exactly {PlatformDev}; PlatformAdmin
-      never", confronts Decision 129's reversal trigger by name, and cites Decision 157.
+      New numbered Decision amending Decision 144 clause 2 (routing re-argued -- see context).
+      Establishes the metadata-write scope class, confronts Decision 129's inherited reversal
+      trigger by name, cites Decision 157, and names PlatformAdmin's permanent exclusion as a
+      reversal-relevant clause. Drafted verbatim in execution_steps so Decision 167 clause 2
+      category-consistency can adjudicate it at this gate.
   - file: tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py
     action: Create
     purpose: >-
@@ -85,9 +86,11 @@ infrastructure_dependencies:
   - >-
     terraform/bootstrap apply -- admin tier, agent_platform_admin, ADMIN container; never
     auto-applied. The IAMRoleMetadataWrite widening lands in HCL with this PR and is applied later
-    by an operator. HARD ORDERING: bootstrap HCL already carries PLAN-terraform-state-triggers-
-    restore's merged phase-3 narrowing (glue/athena removed), so a bootstrap apply NOW would apply
-    that narrowing early -- the Decision 156 point 2 lockout. deploy-paths.yaml's PRE-APPLY
+    by an operator. HARD ORDERING: bootstrap HCL already carries the grant narrowing -- the
+    glue/athena statements were removed by the CLEANSE (7b67e21d, PR #969; verified via git log -S),
+    NOT by the sibling plan, whose phase 3 is an admin APPLY step and not a code change. So a
+    bootstrap apply NOW pushes that already-merged narrowing live early -- the Decision 156 point 2
+    lockout. deploy-paths.yaml's PRE-APPLY
     grant-surface ordering step governs this: let the in-flight destroy drain first.
   - >-
     SIBLING COLLISION -- sequencing required. PLAN-terraform-state-triggers-restore's UNMERGED
@@ -107,6 +110,13 @@ infrastructure_dependencies:
     here -- its acceptance needs a glue grant this plan does not add. File a follow-on rec for the
     glue restore-and-widen before relying on VP step 12.
   - >-
+    CONSEQUENCE, stated plainly: because VP step 12 is gated on three things this plan does not own,
+    the rec-3327 widening merges verified ONLY by static HCL parse (VP step 4). That is the exact
+    evidence class github_ci_apply_policy.tf:243-256 records as insufficient -- "EVERY STATIC CHECK
+    PASSED on the inert shape ... 'the verb is in the policy' is never evidence that it can
+    authorize". rec-3327's closing resolution must name the deferred live proof and point at the
+    follow-on glue rec that unblocks it, rather than reading as a fully-verified fix.
+  - >-
     One-time operator reconcile (agent_platform_admin, out-of-band, NOT this plan's code):
     aws iam update-role-description --role-name PlatformDev matching the platform_roles.tf value.
     This clears the CURRENT diff without waiting on the bootstrap apply, so the in-flight destroy
@@ -125,10 +135,11 @@ acceptance_criteria:
     iam:UpdateRoleDescription -- not only the one rec-3327 names. No CI-writable Resource pattern in
     github_ci_apply_policy.tf matches PlatformAdmin.
   - >-
-    Decision 144 carries a dated [Amendment ...] trailer stating the scope class, naming
-    PlatformAdmin's permanent exclusion and why (no boundary; it controls the boundary), confronting
-    Decision 129's non-agent-platform-* reversal trigger by name, and citing Decision 157 as the
-    metadata-vs-value-capability precedent. Decision 144's original body is byte-intact.
+    A new numbered Decision exists carrying a significance envelope with a contract-first
+    justification, the scope class, the four-verb consequence, PlatformAdmin's permanent exclusion
+    and why, Decision 129's reversal trigger confronted by name, and a Decision 157 citation. Its
+    body is at or under decision-entry.yaml's 6144-byte per-entry cap, and Decision 144's existing
+    body is byte-intact.
   - >-
     The fixture no longer carries p2-glue-delete-database; it carries a multi_resource_type_verbs
     map, four PlatformDev metadata rows (expected_decision allowed), two PlatformAdmin by_design
@@ -178,17 +189,24 @@ verification_plan:
     action: >-
       Assert the check is registered, reachable in the --pre tier, and carries a taxonomy row.
     command: >-
-      bin/venv-python -c "from scripts.checks import registry;
-      e={x.name for x in registry.all_entries()}; assert 'validate_terraform_tag_charset' in e, e;
+      bin/venv-python -c "from scripts.checks import registry; n='validate_terraform_tag_charset';
+      pre={s.name for s in registry.pre_sequence() if getattr(s,'kind','check')=='check'};
+      full={s.name for s in registry.full_sequence() if getattr(s,'kind','check')=='check'};
+      assert n in pre, f'{n} not in the --pre tier (Entry missing pre=True?)';
+      assert n in full, f'{n} not in the full tier';
       import yaml; t=yaml.safe_load(open('config/ci_rca_taxonomy.yaml'));
-      assert 'validate_terraform_tag_charset' in t['function_to_category']; print('registered')"
-    expected: prints registered
-    fix_if: manifest Entry missing/misspelled, or the taxonomy row absent (validate_ci_rca_taxonomy reds)
+      assert n in t['function_to_category']; print('registered in pre + full')"
+    expected: prints registered in pre + full
+    fix_if: >-
+      NOT in pre_sequence means the Entry omitted pre=True -- registry.all_checks() membership does
+      NOT prove tier membership (validate_terraform_try is in all_checks and not in pre_sequence,
+      which is exactly this failure shape). Taxonomy miss reds validate_ci_rca_taxonomy.
     graduation: waive
     graduation_waiver_reason: >-
-      Kernel-expressible as command_exit_zero, but the standing checks validate_check_manifests and
-      validate_ci_rca_taxonomy already enforce both halves on every run; a graduated slot would
-      duplicate them and could only fail when they already had.
+      Kernel-expressible as command_exit_zero, but validate_ci_rca_taxonomy Check 1b already
+      enforces the taxonomy half on every run and validate_check_manifests enforces Entry grammar.
+      Only the pre/full tier-membership third is uncovered by a standing check, and it is a
+      one-time registration fact for this plan rather than a durable regression surface.
   - step: 4
     phase: pre-deploy
     action: >-
@@ -228,13 +246,17 @@ verification_plan:
       o={r['id'] for r in old['triples']};
       n={t.id for t in build_triples(load_fixture(Path('docs/contracts/iam-simulate-fixture.yaml')),
       'account-id-placeholder','region-placeholder')};
-      dropped=o-n; assert dropped=={'p2-glue-delete-database'}, f'unexpected drops: {sorted(dropped)}';
+      dropped=o-n; extra=dropped-{'p2-glue-delete-database'};
+      assert not extra, f'compaction dropped rows it should not have: {sorted(extra)}';
+      assert 'p2-glue-delete-database' not in n, 'stale glue row still present';
       print('pre',len(o),'post',len(n),'dropped',sorted(dropped))"
     expected: >-
-      pre 61, post 66, dropped exactly ['p2-glue-delete-database'] -- the one deliberate removal
+      pre 61, post 66, dropped subset of ['p2-glue-delete-database'] -- empty if the sibling plan's
+      phase 2 already removed that row, which is equally correct
     fix_if: >-
-      any other id in the dropped set means compaction deleted a row, not just the defaulted
-      required_context_keys field; restore it
+      an id OTHER than p2-glue-delete-database appears in the dropped set -- compaction deleted a
+      row rather than the defaulted required_context_keys field; restore it. Never "restore"
+      p2-glue-delete-database: this plan removes it deliberately.
     graduation: waive
     graduation_waiver_reason: >-
       Guards this session's specific compaction edit by diffing against origin/main. Once merged
@@ -246,7 +268,7 @@ verification_plan:
       Assert the fixture is within its structural budget with no raise marker added.
     command: >-
       bin/venv-python -c "import yaml,pathlib; from scripts.checks.structural._classify import
-      effective_lines; b=yaml.safe_load(open('config/structural_size_budgets.yaml'));
+      effective_lines; b=yaml.safe_load(open('config/structural_size_budgets.yaml'))['budgets'];
       n=effective_lines(pathlib.Path('docs/contracts/iam-simulate-fixture.yaml').read_text());
       lim=b['docs/contracts/iam-simulate-fixture.yaml'];
       assert n<=lim, f'{n} effective lines exceeds budget {lim}'; print(n,'<=',lim)"
@@ -262,21 +284,26 @@ verification_plan:
   - step: 8
     phase: pre-deploy
     action: >-
-      Assert the Decision 144 amendment trailer exists, is dated, names the PlatformAdmin
-      exclusion, and confronts Decision 129's reversal trigger.
+      Assert the new Decision entry exists with every substantive element AC 4 requires, is under
+      the per-entry byte cap, and that Decision 144's existing body was not spliced.
     command: >-
-      bin/venv-python -c "import re,pathlib; t=pathlib.Path('docs/DECISIONS.md').read_text();
-      b=t.split('## Decision 144:')[1].split('\n## Decision ')[0];
-      m=re.search(r'^\[Amendment (\d{4}-\d{2}-\d{2}):', b, re.M); assert m, 'no dated amendment trailer';
-      assert 'PlatformAdmin' in b, 'trailer does not name the PlatformAdmin exclusion';
-      assert '129' in b, 'trailer does not confront the Decision 129 reversal trigger';
-      assert 'broad-but-bounded' in b, 'clause 1 wording was spliced'; print('trailer', m.group(1))"
-    expected: prints the amendment date
+      bin/venv-python -c "import re,subprocess,pathlib; t=pathlib.Path('docs/DECISIONS.md').read_text();
+      ns=sorted(int(m) for m in re.findall(r'^## Decision (\d+):', t, re.M)); n=ns[-1];
+      b=t.split(f'## Decision {n}:')[1].split('\n## Decision ')[0];
+      req=['significance:','PlatformAdmin','PlatformDev','129','157','144','UpdateRole'];
+      miss=[r for r in req if r not in b]; assert not miss, f'Decision {n} missing: {miss}';
+      assert len(b.encode()) <= 6144, f'entry is {len(b.encode())}B over the 6144B cap';
+      old=subprocess.run(['git','show','origin/main:docs/DECISIONS.md'],capture_output=True,text=True,
+      check=True).stdout.split('## Decision 144:')[1].split('\n## Decision ')[0];
+      assert old.strip() in t, 'Decision 144 body was spliced, not left intact';
+      print('Decision',n,len(b.encode()),'bytes')"
+    expected: prints the new Decision number and its byte size, at or under 6144
     fix_if: >-
-      trailer missing, undated, or Decision 144's original body was edited rather than appended to
-      (the append-only correction dialect, Decision 177)
+      a missing token means the drafted body omitted a required element -- 157 is the discriminating
+      one, absent from Decision 144 pre-change. A splice failure means Decision 144's body was
+      edited rather than left alone (append-only dialect, Decision 177).
     graduation: graduate
-    graduation_check_id: dec-144-platformdev-amendment-trailer-present
+    graduation_check_id: platformdev-scope-class-decision-present
   - step: 9
     phase: pre-deploy
     action: Full fast-tier gate over the whole change.
@@ -423,45 +450,43 @@ constraints:
     the verification registry file and was superseded by Decision 176.
 context:
   - >-
-    Decision-scout verdict: FLAGS_FOUND (131 of 131 triaged). CITE: 178, 144, 143, 156, 157, 129,
-    126, 113, 169, 170, 142, 168, 119, 120, 131, 101, 55, 72, 128, 176, 86, 150, 167, 92, 77.
-  - "gates: decision-scout=FLAGS_FOUND after 1 round; plan-critique=<verdict> after <N> round(s)"
+    Decision-scout verdict: FLAGS_FOUND (131 of 131 triaged). CITE: 178, 144, 143, 156, 157, 129, 126, 113,
+    169, 170, 142, 168, 119, 120, 131, 101, 55, 72, 128, 176, 86, 150, 167, 92, 77.
   - >-
-    Root cause: cleanse 7b67e21d (PR #969) made three HCL edits invisible while Decision 178 clause
-    4 parked the triggers; PR #975 restored them and run 33323201848 hit all three. Parent rec-3328
-    stays open and unbundled -- see infrastructure_dependencies.
+    gates: decision-scout=FLAGS_FOUND after 1 round; plan-critique=<verdict> after <N> round(s)
   - >-
-    rec-3326's own wording keeps the commas, so it does not fix the bug and its grep acceptance
-    false-passes. rec-3327's premise is imprecise: UpdateRoleDescription IS granted
-    (github_ci_apply_policy.tf:161); the gap is that Sid's Resource. Both verified.
+    Root cause: cleanse 7b67e21d (PR #969) made three HCL edits invisible while Decision 178 clause 4 parked
+    the triggers; PR #975 restored them and run 33323201848 hit all three. Parent rec-3328 stays open and
+    unbundled (see infrastructure_dependencies).
   - >-
-    Why widen, not only reconcile: authority_budget.json lists no aws_iam_role in
-    in_budget_resource_types, so every role modify already routes to tf-gated-apply -- this changes
-    execution capability, not routing. Boundary DataPlaneAllow carries both verbs at Resource ["*"],
-    so the intersection permits it. Verified.
+    rec-3326's own wording keeps the commas, so it does not fix the bug; it stays bundled because the merge
+    cannot apply while the record is red, so splitting buys only a second review cycle. rec-3327's premise is
+    imprecise: UpdateRoleDescription IS granted (github_ci_apply_policy.tf:161); the gap is that Sid's
+    Resource. Both verified.
   - >-
-    Fable advice-consult (this session): adopted widen + negative pins; rejected renaming roles or
-    profiles -- the two unprefixed roles need OPPOSITE treatments, which no naming scheme encodes.
+    Why widen, not only reconcile: authority_budget.json lists no aws_iam_role in in_budget_resource_types, so
+    every role modify already routes to tf-gated-apply -- this changes execution capability, not routing.
+    Boundary DataPlaneAllow carries both verbs at Resource ["*"].
   - >-
-    GLUE ADJUDICATION (answers rec-3325's open question). Removing p2-glue-delete-database is
-    correct: post-cleanse the repo declares no glue grant, so the row pinned live drift, not repo
-    intent, and passed for the wrong reason (live grants database/<db>; the denial was at
-    userDefinedFunction/<db>/*). The ARN-coverage lesson lands as the multi_resource_type_verbs map
-    plus the shape-check leg, armed for if the grant returns -- not as resurrected rows.
+    Fable advice-consult: adopted widen + negative pins; rejected renaming roles or profiles -- the two
+    unprefixed roles need OPPOSITE treatments, which no naming scheme encodes.
   - >-
-    Fixture arithmetic: 599 -55 compaction -5 glue row +10 map +20 PlatformDev +16 PlatformAdmin
-    +10 amendment_log = 595, budget lowered to 600. Overrun lever: drop a PlatformAdmin negative row
-    (step 4 pins all four verbs statically). Never the why: prose -- that is the contract's evidence.
+    GLUE ADJUDICATION (answers rec-3325's open question). Removing p2-glue-delete-database is correct:
+    post-cleanse the repo declares no glue grant, so the row pinned live drift and passed for the wrong reason
+    (live grants database/<db>; the denial was at userDefinedFunction/<db>/*). The lesson lands as the
+    multi_resource_type_verbs map plus the shape-check leg, not as rows.
   - >-
-    DECISION ROUTING (DD-B): a dated [Amendment ...] trailer on Decision 144, NOT a new number.
-    DECISIONS.md is at 131 live headers against decision-entry.yaml live_max_h2_headers: 132, so a
-    number here spends the last slot on instance repair while the structural fix that earns one is
-    Plan B. The sibling plan declined a number for this same episode too. Routing row:
-    amendment_forms. Name it in the PR body.
+    Fixture arithmetic: 599 -55 -5 +10 +20 +16 +10 = 595, budget lowered to 600 (VP step 7 gates). Overrun
+    lever: drop a PlatformAdmin row -- step 4 pins all four verbs statically.
   - >-
-    Class recurrence: rec-2842, rec-2882, now rec-3327. Plan B ends it structurally; this plan fixes
-    the instance and pins the scope class. Inline policy is ~8.3 KB against the 10,240 B
-    precondition, so one Resource ARN fits but a new Sid may not -- extend the existing Sid.
+    DECISION ROUTING: numbered_decision. routing_rule returns yes/yes/yes -- the content INVERTS Decision 144's
+    inherited Decision 129 re-narrow trigger, a re-decision not an annotation; Decision 157 made the same move
+    and was minted. amendment_forms rejected per property test 3: routing on capacity grounds would bypass
+    Decision 167 clause 2. Ceiling: 131 vs 132 (enforced >), so 132 passes and Plan B needs a Decision 146
+    archival wave before minting its own.
+  - >-
+    Class recurrence: rec-2842, rec-2882, now rec-3327; Plan B ends it structurally. Inline policy is ~8.3 KB
+    against the 10,240 B precondition -- one Resource ARN fits, a new Sid may not.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -503,18 +528,41 @@ execution_steps:
     Rewrite that Sid's comment to state the new scope class and cite the new Decision. Do NOT create
     a new Sid (size precondition) and do NOT touch any other Sid.
   - >-
-    docs/DECISIONS.md -- append a dated [Amendment YYYY-MM-DD: ...] trailer to Decision 144's body,
-    in the form Decision 166's own trailers use. Do NOT mint a new numbered entry (see DECISION
-    ROUTING in context) and do NOT edit Decision 144's existing text -- append only (Decision 177
-    dialect). The trailer states: the metadata-write scope class (role/agent-platform-* plus
-    enumerated boundary-carrying non-prefixed managed roles, today exactly {PlatformDev}); that all
-    four IAMRoleMetadataWrite verbs become reachable on PlatformDev, not just UpdateRoleDescription;
-    that PlatformAdmin is permanently excluded and why (no boundary, and it controls the boundary --
-    IAMRoleMetadataWrite and IAMRoleDeleteBounded carry no boundary Condition); that Decision 129's
-    non-agent-platform-* reversal trigger is confronted deliberately rather than routed around;
-    Decision 157's metadata-vs-value-capability split as the in-house precedent; and the rejected
-    alternative of relocating platform_roles.tf into the bootstrap module, recorded so it stays
-    citable.
+    docs/DECISIONS.md -- append the next free numbered Decision (re-check the current max header at
+    execution time; numbers are not reserved). Do NOT edit Decision 144's existing text -- append
+    only (Decision 177 dialect). Keep the body at or under 6144 bytes. DRAFT (adjust the number and
+    date; the substance is fixed):
+    "## Decision NNN: Metadata-write scope class -- enumerated boundary-carrying non-prefixed
+    managed roles (amends Decision 144 clause 2)". Significance envelope: value numbered_decision;
+    justification -- a durable, reversal-relevant commitment that INVERTS Decision 144's inherited
+    Decision 129 re-narrow trigger for one risk class, so it is a re-decision rather than an
+    annotation. Contract-first alternative rejected: docs/contracts/iam-authority-standard.yaml does
+    not exist yet (Plan B), and authority_budget.json mirrors the guard budget, not the identity
+    policy's Resource scope, which lives only in HCL and this log. amendment_forms rejected per
+    property test 3: routing on capacity grounds would bypass Decision 167 clause 2's
+    category-consistency gate. Body clauses:
+    (1) The metadata risk class is role/agent-platform-* PLUS enumerated boundary-carrying
+    non-prefixed managed roles, today exactly {PlatformDev}.
+    (2) This makes FOUR verbs reachable on PlatformDev -- TagRole, UntagRole, UpdateRole,
+    UpdateRoleDescription -- not only the verb rec-3327 names. None is trust, inline-policy or
+    boundary-modifying, and PlatformDev carries the mandatory boundary (Decision 144 clause 3), so
+    the ceiling still constrains.
+    (3) PlatformAdmin is PERMANENTLY excluded from every CI-writable Resource pattern. It carries no
+    boundary by design because it must remain able to amend the boundary, and IAMRoleMetadataWrite /
+    IAMRoleDeleteBounded carry no boundary Condition -- so a prefixed or enumerated PlatformAdmin
+    would become CI-mutable and CI-deletable. Reversal-relevant: reversing clause 3 requires
+    re-deciding Decision 113's two-principal split.
+    (4) Decision 129's re-narrow-on-a-non-agent-platform-* trigger, inherited by Decision 144 clause
+    2, is confronted deliberately: the trigger assumes name implies coverage. CD.35 Wave 4 pulled
+    PlatformDev under terraform management, breaking that assumption. Coverage is decided by the
+    boundary, not the name; the enumeration is the interim expression until Plan B's role registry
+    computes it.
+    (5) Precedent: Decision 157 re-grounded a prefix-scoped grant by capability class rather than
+    enumeration. This entry follows its reasoning while retaining an enumeration, because no
+    machine-readable classifier exists yet -- Plan B replaces the enumeration with the registry.
+    (6) Rejected alternative, recorded so it stays citable: relocating terraform/personal/
+    platform_roles.tf into the admin-tier bootstrap module so the CD-applied root never manages what
+    CD cannot write. Rejected for now under Decision 144 clause 3's managed-fleet framing.
   - >-
     tests/checks/iam_tf/test_platform_role_metadata_admin_scope.py -- pin both directions. Parse
     github_ci_apply_policy.tf; assert IAMRoleMetadataWrite's Resource set is exactly
@@ -551,6 +599,15 @@ execution_steps:
     Execute the Verification Plan -- run each step, loop until pass. Steps 10 and 11 are post-merge
     and operator-gated; do not attempt them locally. On unrecoverable V3 failure stop and RCA
     (Decision 55).
+  - >-
+    Close the bundled recs with explicit resolutions rather than relying on rec-autoclose.yml's
+    generic text, because two of them close on grounds their own acceptance strings do not describe:
+    rec-3325 -- "--status closed --resolution" naming the GLUE ADJUDICATION (its recorded acceptance
+    greps for userDefinedFunction and database/agent_platform in the fixture; this plan removes the
+    only row carrying either, deliberately, and lands the lesson as the verb map plus shape-check
+    leg); rec-3327 -- a resolution naming the DEFERRED LIVE PROOF (merged on static HCL evidence
+    only; VP step 12 is gated on the unowned glue grant) and pointing at the follow-on glue rec.
+    rec-3326 may close via the trailer. Also file the follow-on rec for the glue restore-and-widen.
   - >-
     Report: what was implemented, verification results, and the exact operator handoff -- the
     one-time PlatformDev description reconcile, and the bootstrap apply ordering constraint.
