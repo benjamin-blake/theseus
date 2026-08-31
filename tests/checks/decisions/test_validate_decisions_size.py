@@ -3,126 +3,26 @@ scripts/checks/decisions/validate_decisions_size.py (Decision 134 / Decision 114
 PLAN-decision-entry-flow-governance / Decision 167 adds the per-entry authoring cap, hard-fail
 tier flipped by migration-step-3-grandfathering / T2.56 migration step 3).
 
-The live-byte-only ceiling (_DECISIONS_LIVE_MAX_BYTES, Decision 145's stopgap raise to 500_000)
-was RETIRED by PLAN-decision-scout-bounded-retrieval -- the decision-scout gate no longer reads
-the live file wholesale, so the ceiling that guard existed to size no longer has a referent. Only
-_DECISIONS_LIVE_MAX_H2 (132) and _DECISIONS_COMBINED_MAX_BYTES (780_000) survive as hard-fail
-ceilings; this file covers their boundaries plus a case proving a live file ABOVE the old 500_000
-value now passes on its own while a combined breach still FAILs -- plus the
-_PER_ENTRY_CAP_BYTES (6_144) hard-fail per-NEW-entry cap below (Decision 167 clause 3, fired by
-migration step 3)."""
+Decision 179 retires the module's three mechanical stock ceilings (the live '## Decision' header
+count, the live-byte-only ceiling, and the live+archive combined byte ceiling) -- bounded
+decision-scout retrieval means no consumer reads the live corpus wholesale anymore, so the guards
+that sized that read no longer have a referent. This file now covers only the surviving
+_PER_ENTRY_CAP_BYTES (6_144) hard-fail per-NEW-entry cap (Decision 167 clause 3, fired by
+migration step 3) and TestStockCeilingsRetired's standing guard against the retired ceilings'
+return."""
 
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from scripts.checks import registry
 from scripts.checks.decisions.validate_decisions_size import (
-    _DECISIONS_COMBINED_MAX_BYTES,
-    _DECISIONS_LIVE_MAX_H2,
     _PER_ENTRY_CAP_BYTES,
-    _decisions_size_issues,
     _new_entries_examined_count,
     _per_entry_cap_failures,
     validate_decisions_size,
 )
-
-
-def _live_header_block(count: int) -> str:
-    """Build `count` synthetic '## Decision N:' live-file-shaped headers with a small body."""
-    return "".join(f"## Decision {i}: Test entry {i}\n\nBody text.\n\n---\n\n" for i in range(1, count + 1))
-
-
-class TestDecisionsSizeIssuesLiveH2:
-    """_decisions_size_issues() live-header-count boundary cases (_DECISIONS_LIVE_MAX_H2)."""
-
-    def test_below_ceiling_returns_empty(self) -> None:
-        live = _live_header_block(_DECISIONS_LIVE_MAX_H2 - 1)
-        assert _decisions_size_issues(live, "") == []
-
-    def test_at_ceiling_returns_empty(self) -> None:
-        live = _live_header_block(_DECISIONS_LIVE_MAX_H2)
-        assert _decisions_size_issues(live, "") == []
-
-    def test_above_ceiling_fails(self) -> None:
-        live = _live_header_block(_DECISIONS_LIVE_MAX_H2 + 1)
-        issues = _decisions_size_issues(live, "")
-        assert len(issues) == 1
-        assert "live '## Decision' headers" in issues[0]
-        assert str(_DECISIONS_LIVE_MAX_H2 + 1) in issues[0]
-
-
-class TestDecisionsSizeIssuesCombined:
-    """_decisions_size_issues() combined live+archive-byte-ceiling boundary cases
-    (_DECISIONS_COMBINED_MAX_BYTES), with the live-H2 ceiling not breached."""
-
-    _LIVE_SIZE = 350_000  # comfortably under _DECISIONS_COMBINED_MAX_BYTES (780_000) on its own
-
-    def test_below_ceiling_returns_empty(self) -> None:
-        live = "x" * self._LIVE_SIZE
-        archive = "x" * (_DECISIONS_COMBINED_MAX_BYTES - self._LIVE_SIZE - 1)
-        assert _decisions_size_issues(live, archive) == []
-
-    def test_at_ceiling_returns_empty(self) -> None:
-        live = "x" * self._LIVE_SIZE
-        archive = "x" * (_DECISIONS_COMBINED_MAX_BYTES - self._LIVE_SIZE)
-        assert _decisions_size_issues(live, archive) == []
-
-    def test_above_ceiling_fails(self) -> None:
-        live = "x" * self._LIVE_SIZE
-        archive = "x" * (_DECISIONS_COMBINED_MAX_BYTES - self._LIVE_SIZE + 1)
-        issues = _decisions_size_issues(live, archive)
-        assert len(issues) == 1
-        assert "combined" in issues[0]
-        assert str(_DECISIONS_COMBINED_MAX_BYTES) in issues[0]
-
-    def test_archive_bytes_count_toward_combined_ceiling(self) -> None:
-        """DECISIONS_ARCHIVE.md bytes alone trip the combined ceiling even with a tiny live file --
-        proves the archive file is genuinely covered by the guard, not just accepted and ignored."""
-        live = "tiny live file, well under every live ceiling"
-        archive = "x" * (_DECISIONS_COMBINED_MAX_BYTES + 1)
-        issues = _decisions_size_issues(live, archive)
-        assert any("combined" in issue for issue in issues)
-
-    def test_live_file_above_old_500000_ceiling_now_passes_alone(self) -> None:
-        """The retired live-byte ceiling was 500_000 -- a live file bigger than that must now
-        pass on its own (no live-byte check left), as long as it stays under the header count and
-        the combined ceiling still has room for it."""
-        live = "x" * 550_000
-        archive = "x" * 1_000  # combined well under 700_000
-        assert _decisions_size_issues(live, archive) == []
-
-    def test_live_file_above_old_500000_ceiling_still_fails_via_combined(self) -> None:
-        """Same oversized live file, but now paired with enough archive bytes to breach the
-        surviving combined ceiling -- proves the combined ceiling is a real backstop, not a
-        no-op, for exactly the live-byte case the retired ceiling used to catch."""
-        live = "x" * 550_000
-        archive = "x" * (_DECISIONS_COMBINED_MAX_BYTES - 550_000 + 1)
-        issues = _decisions_size_issues(live, archive)
-        assert any("combined" in issue for issue in issues)
-
-
-class TestDecisionsSizeIssuesReliefValveMessage:
-    """The COMBINED-breach message names relief valves that actually reduce combined bytes --
-    never claims archival (which only moves bytes between the two counted files) still helps."""
-
-    def test_message_names_effective_relief_valves(self) -> None:
-        live = "x" * 350_000
-        archive = "x" * (_DECISIONS_COMBINED_MAX_BYTES - 350_000 + 1)
-        issues = _decisions_size_issues(live, archive)
-        assert len(issues) == 1
-        assert "compact" in issues[0].lower()
-        assert "149" in issues[0]
-        assert "per-entry" in issues[0].lower()
-
-    def test_message_states_archival_does_not_relieve_combined_ceiling(self) -> None:
-        """Archival must be named as INERT against the combined ceiling, not as a working valve
-        -- the plan's finding is that moving bytes between the two counted files is a no-op."""
-        live = "x" * 350_000
-        archive = "x" * (_DECISIONS_COMBINED_MAX_BYTES - 350_000 + 1)
-        issues = _decisions_size_issues(live, archive)
-        message = issues[0].lower()
-        assert "does not relieve" in message
-        assert "moves bytes between the two counted files" in message
 
 
 class TestValidateDecisionsSizeRegisteredCheck:
@@ -146,30 +46,6 @@ class TestValidateDecisionsSizeRegisteredCheck:
             validate_decisions_size(failed)
         assert failed == []
 
-    def test_pass_case_live_file_above_old_500000_byte_value(self, tmp_path: Path) -> None:
-        """End-to-end (through the registered check, not just the pure helper): a live file
-        bigger than the retired 500_000-byte ceiling passes when header count and combined bytes
-        both stay within their surviving ceilings."""
-        self._write_docs(tmp_path, "x" * 550_000, "x" * 1_000)
-        failed: list[str] = []
-        with patch("scripts.checks._common.ROOT", tmp_path):
-            validate_decisions_size(failed)
-        assert failed == []
-
-    def test_fail_case_combined_breach(self, tmp_path: Path) -> None:
-        self._write_docs(tmp_path, "x" * 350_000, "x" * (_DECISIONS_COMBINED_MAX_BYTES - 350_000 + 1))
-        failed: list[str] = []
-        with patch("scripts.checks._common.ROOT", tmp_path):
-            validate_decisions_size(failed)
-        assert "DECISIONS size governance" in failed
-
-    def test_fail_case_header_count_breach(self, tmp_path: Path) -> None:
-        self._write_docs(tmp_path, _live_header_block(_DECISIONS_LIVE_MAX_H2 + 1), "")
-        failed: list[str] = []
-        with patch("scripts.checks._common.ROOT", tmp_path):
-            validate_decisions_size(failed)
-        assert "DECISIONS size governance" in failed
-
     def test_missing_live_file_fails(self, tmp_path: Path) -> None:
         docs_dir = tmp_path / "docs"
         docs_dir.mkdir(parents=True, exist_ok=True)
@@ -189,60 +65,38 @@ class TestValidateDecisionsSizeRegisteredCheck:
         assert "DECISIONS size governance" in failed
 
 
-class TestLiveByteCeilingRetired:
-    """VP step 6 / graduation candidate 'decisions-live-ceiling-retired-others-intact':
-    _DECISIONS_LIVE_MAX_BYTES (Decision 145's stopgap) no longer exists as a module attribute --
-    a standing regression guard against reintroducing the retired ceiling."""
+class TestStockCeilingsRetired:
+    """VP step 1 / graduated check_id 'decisions-stock-ceilings-retired' (Decision 179): the
+    module's retired stock-ceiling symbols stay absent, and the contract's parsed
+    size_governance carries none of the four retired keys while retaining per_entry_size_norm.
+    _DECISIONS_LIVE_MAX_BYTES is included in assertion (i) so this class subsumes the deleted
+    TestLiveByteCeilingRetired's Decision 145/160 regression guard. Deliberately structural, not
+    free-text grep -- this class must name the retired tokens to assert their absence, so it
+    lives inside VP step 2's residual-sweep pathspec exclusion rather than duplicating that
+    sweep."""
 
-    def test_live_max_bytes_constant_does_not_exist(self) -> None:
+    def test_retired_symbols_absent_from_module(self) -> None:
         import scripts.checks.decisions.validate_decisions_size as m
 
-        assert not hasattr(m, "_DECISIONS_LIVE_MAX_BYTES")
+        gone = (
+            "_DECISIONS_LIVE_MAX_H2",
+            "_DECISIONS_COMBINED_MAX_BYTES",
+            "_DECISIONS_LIVE_MAX_BYTES",
+            "_decisions_size_issues",
+            "_LIVE_H2_RE",
+            "_RELIEF_VALVES",
+        )
+        still = [name for name in gone if hasattr(m, name)]
+        assert still == [], still
 
-
-class TestBridgeCeilingValues:
-    """Deliberate bridge values (docs/plans/PLAN-decision-ceiling-bridge.yaml) pending the
-    contract-first governance rebuild on claude/contract-first-audit-p5f0tu: the live '## Decision'
-    header ceiling moves 120 -> 132 and the combined byte ceiling moves 700_000 -> 780_000. Every
-    pre-existing boundary test in this module expresses its assertions RELATIVE to the constants
-    (_DECISIONS_LIVE_MAX_H2 - 1, + 1, and so on) and so passes identically before and after the
-    raise -- these absolute-literal assertions are what actually distinguishes the two."""
-
-    def test_132_headers_returns_no_issues(self) -> None:
-        live = _live_header_block(132)
-        assert _decisions_size_issues(live, "") == []
-
-    def test_133_headers_returns_exactly_one_header_issue(self) -> None:
-        live = _live_header_block(133)
-        issues = _decisions_size_issues(live, "")
-        assert len(issues) == 1
-        assert "live '## Decision' headers" in issues[0]
-
-    def test_combined_780000_bytes_returns_no_issues(self) -> None:
-        live = "x" * 780_000
-        assert _decisions_size_issues(live, "") == []
-
-    def test_combined_780001_bytes_returns_exactly_one_byte_issue(self) -> None:
-        live = "x" * 780_001
-        issues = _decisions_size_issues(live, "")
-        assert len(issues) == 1
-        assert "combined" in issues[0]
-
-    def test_live_max_h2_pinned_to_132(self) -> None:
-        assert _DECISIONS_LIVE_MAX_H2 == 132
-
-    def test_combined_max_bytes_pinned_to_780000(self) -> None:
-        assert _DECISIONS_COMBINED_MAX_BYTES == 780_000
-
-    def test_header_breach_message_omits_134(self) -> None:
-        live = _live_header_block(133)
-        issues = _decisions_size_issues(live, "")
-        assert all("134" not in issue for issue in issues)
-
-    def test_combined_breach_message_omits_134(self) -> None:
-        live = "x" * 780_001
-        issues = _decisions_size_issues(live, "")
-        assert all("134" not in issue for issue in issues)
+    def test_contract_size_governance_drops_retired_keys(self) -> None:
+        repo_root = Path(__file__).resolve().parents[3]
+        contract_path = repo_root / "docs" / "contracts" / "decision-entry.yaml"
+        contract = yaml.safe_load(contract_path.read_text(encoding="utf-8"))
+        size_governance = contract["size_governance"]
+        stale = {"live_max_h2_headers", "combined_max_bytes", "index_max_bytes", "lever_by_ceiling_matrix"}
+        assert not (stale & set(size_governance)), sorted(size_governance)
+        assert "per_entry_size_norm" in size_governance
 
 
 def _make_block(number: int, target_bytes: int) -> str:
@@ -351,32 +205,32 @@ class TestPerEntryCapThroughRegisteredCheck:
 
     def test_unreachable_baseline_advisory_skips_per_entry_cap(self, tmp_path: Path, capsys) -> None:
         """A non-default root with NO injected baseline_reader and no .git directory -- the
-        default reader's own reachability check returns the None sentinel; the two stock
-        ceilings still ran above (unaffected). Re-anchored: also asserts the SKIP message
-        printed, so this proves the skip path fired rather than merely that no over-cap entry
-        happened to be measured."""
+        default reader's own reachability check returns the None sentinel, so the per-entry cap
+        sub-check never runs. Also asserts the SKIP message printed, so this proves the skip
+        path fired rather than merely that no over-cap entry happened to be measured."""
         _write_docs(tmp_path, _make_block(5, _PER_ENTRY_CAP_BYTES + 1))
         failed: list[str] = []
         validate_decisions_size(failed, root=tmp_path)
         assert failed == []
         assert "SKIP" in capsys.readouterr().out
 
-    def test_stock_ceiling_breach_and_per_entry_failure_can_coexist(self, tmp_path: Path, capsys) -> None:
-        """INVERTED from the pre-flip test_stock_ceiling_breach_and_per_entry_warning_can_coexist
-        -- a combined-bytes breach and the per-entry hard-fail on the same entry both contribute
-        to `failed` (the label is appended twice; membership is what matters), and both surfaces
-        print their own FAIL line."""
+    def test_multiple_per_entry_cap_failures_all_reported(self, tmp_path: Path, capsys) -> None:
+        """Reworked from the pre-retirement test_stock_ceiling_breach_and_per_entry_failure_can_coexist
+        (which paired a combined-ceiling breach with a per-entry failure) -- that ceiling is gone,
+        so the per-entry-only analogue is two independent new over-cap entries, one live and one
+        archived: both fail and both print their own FAIL line; `failed` carries the check's label
+        (membership is what matters, not count)."""
         _write_docs(
             tmp_path,
             _make_block(5, _PER_ENTRY_CAP_BYTES + 1),
-            archive_text="x" * (_DECISIONS_COMBINED_MAX_BYTES + 1),
+            archive_text=_make_block(9, _PER_ENTRY_CAP_BYTES + 1),
         )
         failed: list[str] = []
         validate_decisions_size(failed, root=tmp_path, baseline_reader=lambda r: set())
         assert "DECISIONS size governance" in failed
         out = capsys.readouterr().out
-        assert "combined" in out
         assert "Decision 5" in out
+        assert "Decision 9" in out
 
 
 class TestDeclarationAdoption:
