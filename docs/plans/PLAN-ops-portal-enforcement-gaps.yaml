@@ -59,8 +59,9 @@ scope:
     action: Modify
     purpose: >-
       append a dated amendment_log row for the update_rec discrimination boundary (rec-3306); add
-      the dependencies element-format dq_intent (rec-3307); reconcile the context 50-vs-80
-      contradiction to 80; correct title semantics; net-zero by compacting the oldest rows
+      structured dq_intent entries for both newly-enforced fields, dependencies element-format
+      (rec-3307) and title min_length (rec-3310); reconcile the context 50-vs-80 contradiction to
+      80; net-zero by compacting the two oldest amendment_log rows
 bundled_recommendations:
   - rec-3306
   - rec-3307
@@ -116,16 +117,21 @@ verification_plan:
   - step: 3
     phase: pre-deploy
     action: Warehouse check coverage is unchanged -- the skip regressed nothing
-    command: bin/venv-python -c "from pathlib import Path; from scripts.data_quality_compile import load_checks; r=load_checks(Path('config/agent/data_quality/ops.yaml')); c=r[0] if isinstance(r,tuple) else r; print(len(c))"
-    expected: prints 43, the pre-change count measured 2026-08-31
+    command: bin/venv-python -c "from pathlib import Path; from scripts.data_quality_compile import load_checks; r=load_checks(Path('config/agent/data_quality/ops.yaml')); c=r[0] if isinstance(r,tuple) else r; assert len(c) == 43, len(c); print(len(c))"
+    expected: exit 0 printing 43, the pre-change count measured 2026-08-31
     fix_if: >-
       Raises instead of printing -- a write-time-only type added later (array_element_format,
       min_length) was not added to the compiler's declared write-time-only set, so load_checks now
-      loud-fails on it. Add it to the set. A different number instead means the skip set changed
-      which checks compile.
+      loud-fails on it. Add it to the set. An AssertionError naming a different count instead means
+      the skip set changed which checks compile.
     hermetic: true
-    graduation: graduate
-    graduation_check_id: dq-compiled-check-count-eq-43
+    graduation: waive
+    graduation_waiver_reason: >-
+      Invariant-preservation guard: the count must be 43 both before and after, so the check passes
+      on origin/main by construction and run_differential returns "not admitted -- revert did not
+      produce FAIL (tautological)". Graduating it would fail validate_verification_registry. The
+      discriminating half of this concern -- that the compiler loud-fails on a genuinely unknown
+      type -- is graduated at step 1.
   - step: 4
     phase: pre-deploy
     action: Unrecognised write_time test name loud-fails in the portal loader
@@ -206,8 +212,10 @@ verification_plan:
       context twice at the same 80 bound and would not touch title at all.
     command: bin/venv-python -m pytest tests/test_ops_data_portal_validators.py::test_expression_write_time_yields_no_validator -q
     expected: >-
-      passes; a column whose only write_time test is an expression yields no validator from
-      _load_write_time_validators
+      passes; a column whose only write_time test is an expression CARRYING A python: KEY yields no
+      validator from _load_write_time_validators. The python: key is mandatory in the fixture --
+      the retired branch is gated on isinstance(params.get("python"), str), so an expression without
+      it yields nothing even when the branch survives, and the test would pass vacuously.
     fix_if: >-
       a validator is yielded -- the hardcoded expression write-time branch survived the migration
       and is still binding _validate_context_length to arbitrary columns
@@ -223,21 +231,30 @@ verification_plan:
       FAIL naming ops_recommendations.dependencies -- the manifest is still NO_TEST_NEEDED rather
       than READY_NOW
     hermetic: true
-    graduation: graduate
-    graduation_check_id: dq-manifest-gate-dependencies
+    graduation: waive
+    graduation_waiver_reason: >-
+      Passes on origin/main by construction: there, dependencies carries no enforced test in
+      ops.yaml, so the gate's loop never reaches its manifest state. The revert leg cannot FAIL, so
+      run_differential would reject the shard as tautological. The gate itself is already a
+      registered standing check (validate_dq_manifest_gate, Decision 104); this step confirms this
+      plan's diff satisfies it, which is a one-shot property of the diff.
   - step: 12
     phase: pre-deploy
     action: Both structural-size-budgeted scope files stay at or under budget with no raise marker
     command: bin/venv-python -c "from scripts.checks.structural.size_limits import validate_structural_size_limits as s; from scripts.checks.structural.budget_raises import validate_structural_size_budget_raises as b; f=[]; s(f); b(f); print(f); raise SystemExit(1 if f else 0)"
     expected: exit 0 -- net-zero achieved by compacting the oldest amendment_log rows, no budget raised
     fix_if: >-
-      over budget -- reclaim more from the rec-609 blocker prose in the dependencies manifest entry
-      and by compacting further OLDER amendment_log rows in the contract. Never reclaim by
-      rewriting a dated row that records a different date's fact, and never add a raise marker
-      (Decision 165 -- no authorizing Decision is drafted here).
+      over budget -- reclaim more from the rec-609 blocker prose in the dependencies manifest entry,
+      and by compacting the contract's 2026-06-20 acceptance amendment row and its 2026-06-21
+      top-level row. Never reclaim by re-pointing a dated row at a later date's fact, and never add
+      a raise marker (Decision 165 -- no authorizing Decision is drafted here).
     hermetic: true
-    graduation: graduate
-    graduation_check_id: enforcement-gaps-structural-size-net-zero
+    graduation: waive
+    graduation_waiver_reason: >-
+      Both files are at budget on origin/main and net-zero keeps them there, so the check passes on
+      both legs and run_differential would reject the shard as tautological. The standing invariant
+      is already covered by the registered validate_structural_size_limits and
+      validate_structural_size_budget_raises checks; this step gates only this plan's own diff.
   - step: 13
     phase: pre-deploy
     action: Full fast tier green before handoff
@@ -317,9 +334,11 @@ constraints:
   - >-
     Net-zero line count on the two structural-size-budgeted scope files. Decision 165 forbids
     reusing the dec-166 census grandfather to authorise forward growth, so no budget raise. Reclaim
-    only by compacting the OLDEST amendment_log rows and the stale rec-609 blocker prose -- never by
-    rewriting a dated row that records a different date's fact (Decision 177 reached the same
-    conclusion for the decision corpus).
+    by compacting the OLDEST amendment_log rows and the stale rec-609 blocker prose. Compaction --
+    tightening a row's wording while preserving the fact it records for its own date -- is the
+    contracts class's own first-named relief valve and is sanctioned. What is forbidden is
+    RE-POINTING: editing a dated row so it describes a later date's change instead of its own
+    (Decision 177 reached the same conclusion for the decision corpus).
   - >-
     Never eval/exec the declared python expression; min_length takes an integer parameter and a
     restricted comparison, per AGENTS.md Safety.
@@ -398,7 +417,11 @@ execution_steps:
     to match :278-280 and the code. (b) Correct the title semantics. (c) Add an element-format entry
     to the dependencies dq_intent block at :351-362, which today records only not_null enforced
     false -- without it the Class A contract stays silent on the one field this plan newly enforces,
-    which is the same config-vs-runtime divergence this plan exists to close, merely inverted.
+    which is the same config-vs-runtime divergence this plan exists to close, merely inverted. Give
+    title the same structural treatment: it gains a newly-enforced min_length 10 and today carries
+    only dq_intent.not_null, so record the bound in dq_intent (or FieldSpec write_time_validation)
+    rather than prose alone -- the two newly-enforced fields get the same treatment, or the
+    asymmetry is itself the drift this plan is closing.
     (d) APPEND a new dated amendment_log row (date 2026-09-01, semantic_break true, change_class
     accepted_values_narrow) recording that the discrimination rule now binds at the update_rec
     boundary and remains not retroactive. Do NOT rewrite the 2026-08-21 row: it records a fact about
