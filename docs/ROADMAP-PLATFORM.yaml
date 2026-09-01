@@ -5494,21 +5494,29 @@ tier_items:
     exit_criteria:
       - id: c1
         text: >-
-          aws_lambda_layer_version resources have a documented replace policy (a guard
-          allowlist for create-before-destroy given the zips are now deterministic and
-          byte-asserted), OR layer publishing is folded into the T2.38 deploy verb so it no
-          longer needs a terraform apply at all
-        status: open
+          aws_lambda_layer_version resources (ducklake_deps, ducklake_extensions,
+          ducklake_pgclient) carry lifecycle { ignore_changes = [source_code_hash] },
+          decoupling routine rebuild churn from terraform's view entirely -- realized
+          DIFFERENTLY than either option this criterion originally named (a guard
+          allowlist for create-before-destroy, or folding layer publishing into the
+          T2.38 deploy verb): ignore_changes reuses the proven rec-2646/rec-2654
+          function-level pattern, produces ZERO diffs (stronger than a permitted
+          delete), and avoids weakening the guard's delete-block rule (see
+          PLAN-terraform-t2-42-path-hardening.yaml context for the full rationale).
+        status: met
+        met_by: terraform-t2-42-path-hardening
       - id: c2
         text: >-
           terraform/personal/.terraform.lock.hcl is committed (un-ignored) so the apply runner
           pins provider versions to a reviewed lock, per environment-taxonomy.yaml lockfile
-        status: open
+        status: met
+        met_by: terraform-t2-42-path-hardening
       - id: c3
         text: >-
           Uploaded Lambda zips are content-addressed (per-PR/sha key) rather than a fixed S3
           key, closing the stale-artifact-overwrite class
-        status: open
+        status: met
+        met_by: terraform-t2-42-path-hardening
       - id: c4
         text: >-
           Workflow bash for the build step is extracted to tested scripts and the duplicate
@@ -5519,7 +5527,7 @@ tier_items:
     effort: M
     strategic: false
     status: in_progress
-    progress_note: "2026-07-21: carries audit finding DEP-03 (spurious layer-replace diffs route to gated-apply on every rebuild recurrence -- destroy classification on non-content-addressed zips); c1 (layer replace policy / fold into the T2.38 deploy verb) and c3 (content-addressed zips) are DEP-03's remedy. Cross-ref Decision 144 and audits/terraform-deploy-redesign-b67955b.yaml. No new tier_item is needed for DEP-03.\n- 2026-07-22: c4 shipped (PLAN-terraform-apply-chain-consolidation, slice D2) -- the DuckLake build byte-identity-assert + dual-write bash is extracted to the tested scripts/ci/ducklake_artifacts.py and its duplicate invocations across terraform-apply-sandbox.yml and reconcile.yml are collapsed to the build-ducklake-artifacts composite action. c1-c3 remain open."
+    progress_note: "2026-07-21: carries audit finding DEP-03 (spurious layer-replace diffs route to gated-apply on every rebuild recurrence -- destroy classification on non-content-addressed zips); c1 (layer replace policy / fold into the T2.38 deploy verb) and c3 (content-addressed zips) are DEP-03's remedy. Cross-ref Decision 144 and audits/terraform-deploy-redesign-b67955b.yaml. No new tier_item is needed for DEP-03.\n- 2026-07-22: c4 shipped (PLAN-terraform-apply-chain-consolidation, slice D2) -- the DuckLake build byte-identity-assert + dual-write bash is extracted to the tested scripts/ci/ducklake_artifacts.py and its duplicate invocations across terraform-apply-sandbox.yml and reconcile.yml are collapsed to the build-ducklake-artifacts composite action. c1-c3 remain open.\n- 2026-09-01: bookkeeping correction (re-entry of PLAN-terraform-t2-42-path-hardening.yaml via /implement). c1/c2/c3 were already fully implemented and merged same-day via commit abc4f58a (#678, 2026-07-22, Resolves: rec-2755) but the roadmap ledger was never flipped -- re-verified all three still hold on current main (VP steps 1/3/4/6/7/8/9 pass live; VP step 5's literal reconcile.yml grep is superseded by c4's build-ducklake-artifacts composite action, confirmed behaviourally equivalent via its artifact-sha-keyed fetch mode at both reconcile.yml call sites -- the stale check_spec this surfaced in config/agent/verification_registry/entries/cd-zip-key-content-addressed.yaml is filed as rec-3367, not fixed inline here). c1's criterion text is rewritten above (realized-differently rule) to the actual ignore_changes mechanism. All four criteria are now met or rehomed -- T2.42 QUALIFIES for status: complete (Status-Trusted-Never-Inferred: left in_progress pending explicit operator confirmation, not auto-flipped)."
 
   - id: T2.43
     tier: T2
