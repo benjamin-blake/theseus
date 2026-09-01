@@ -6,10 +6,13 @@ import logging
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from scripts.ops_data_portal import (
+    _load_write_time_validators,
     _validate_context_length,
     _validate_file_path,
+    _write_time_validators_cache,
     compute_automatable,
     file_rec,
 )
@@ -143,3 +146,164 @@ def test_automatable_override_warning(caplog):
     assert any("automatable" in str(m) for m in warning_msgs), (
         f"Expected automatable override WARNING in logs; got: {warning_msgs}"
     )
+
+
+# ---------------------------------------------------------------------------
+# _load_write_time_validators: unrecognised names loud-fail (rec-3308 sibling gap)
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_write_time_test_raises(tmp_path):
+    """A write_time test name outside the recognised set raises, instead of the pre-fix elif
+    chain falling through with no error and no log."""
+    fixture_yaml = tmp_path / "ops.yaml"
+    fixture_yaml.write_text(
+        yaml.safe_dump(
+            {
+                "tables": {
+                    "ops_recommendations": {
+                        "columns": {
+                            "mystery": {
+                                "tests": [{"bogus_test": {"write_time": True, "enforced": True}}],
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    )
+    with (
+        patch("scripts.ops_portal.write_validators._OPS_YAML_PATH", fixture_yaml),
+        patch("scripts.ops_portal.write_validators._write_time_validators_cache", {}),
+    ):
+        with pytest.raises(ValueError, match="bogus_test"):
+            _load_write_time_validators("ops_recommendations")
+
+
+# ---------------------------------------------------------------------------
+# array_element_format (rec-3307 dependencies)
+# ---------------------------------------------------------------------------
+
+
+def test_array_element_format_rejects_malformed_element():
+    """array_element_format rejects a malformed dependencies element and accepts a valid list and
+    None -- via the bare validator against the real ops.yaml, and through file_rec's write-time
+    gate too (acceptance criterion 4 claims both write paths; test_update_rec_content_validation.py
+    covers the update_rec half)."""
+    _write_time_validators_cache.clear()
+    dep_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "dependencies"]
+    assert dep_validators, "expected a write_time validator for the dependencies column"
+    validate = dep_validators[0]
+
+    with pytest.raises(ValueError, match="dependencies"):
+        validate(["rec-1", "nonsense"], "dependencies")
+    validate(["rec-1", "rec-2"], "dependencies")  # must not raise
+    validate(None, "dependencies")  # must not raise
+
+    long_context = "This recommendation exists because the system needs improvement to handle edge cases well."
+    fields = {
+        "title": "Test recommendation title for dependency format",
+        "file": "scripts/some_module.py",
+        "context": long_context,
+        "acceptance": "grep -q ops_data_portal scripts/ops_data_portal.py && grep -q file_rec scripts/ops_data_portal.py",
+        "effort": "S",
+        "priority": "Low",
+        "source": "manual",
+        "status": "open",
+        "dependencies": ["rec-1", "nonsense"],
+    }
+    with patch("scripts.ops_data_portal.validate_source"):
+        with pytest.raises(ValueError, match="dependencies"):
+            file_rec(fields)
+
+
+# ---------------------------------------------------------------------------
+# min_length (rec-3310 disarmed landmine)
+# ---------------------------------------------------------------------------
+
+
+def test_min_length_reports_its_own_column_and_bound():
+    """min_length honours its declared parameter per column: a 9-char title is rejected naming
+    title and the bound 10, and a 47-char title is accepted -- under the old hardcoded
+    _validate_context_length branch a 47-char value would have been rejected for failing
+    context's 80-char rule regardless of which column it was bound to."""
+    _write_time_validators_cache.clear()
+    title_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "title"]
+    assert len(title_validators) >= 2, "expected both not_null and min_length write_time validators for title"
+
+    short_title = "123456789"  # 9 stripped chars
+    raised = []
+    for fn in title_validators:
+        try:
+            fn(short_title, "title")
+        except ValueError as exc:
+            raised.append(str(exc))
+    assert raised, "expected at least one title validator to reject a 9-char title"
+    assert any("title" in msg and "10" in msg for msg in raised), raised
+    assert not any("context" in msg for msg in raised), (
+        f"min_length must name its own column (title), not the old hardcoded context rule: {raised}"
+    )
+
+    ok_title = "x" * 47  # under context's old hardcoded 80-char rule; title's bound is 10
+    for fn in title_validators:
+        fn(ok_title, "title")  # must not raise
+
+
+def test_loader_yields_context_min_length_80():
+    """Context enforcement is unchanged at 80 THROUGH THE YAML LOADER after migrating off the
+    expression branch -- file_rec calls _validate_context_length directly regardless of the
+    loader, so this must exercise _load_write_time_validators itself, not the direct function."""
+    _write_time_validators_cache.clear()
+    context_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "context"]
+    assert context_validators, "expected at least one write_time validator for the context column"
+
+    short = "x" * 79
+    long_ = "x" * 80
+    raised = []
+    for fn in context_validators:
+        try:
+            fn(short, "context")
+        except ValueError as exc:
+            raised.append(str(exc))
+    assert raised, "expected a context validator to reject 79 stripped chars"
+    for fn in context_validators:
+        fn(long_, "context")  # must not raise
+
+
+def test_expression_write_time_yields_no_validator(tmp_path):
+    """The retired hardcoded expression write-time branch is unreachable: a column whose only
+    write_time test is an expression carrying a python: key yields no validator from
+    _load_write_time_validators. The python: key is mandatory in the fixture -- the retired
+    branch was gated on isinstance(params.get("python"), str), so an expression without it would
+    yield nothing even if the branch had survived, making the test pass vacuously."""
+    fixture_yaml = tmp_path / "ops.yaml"
+    fixture_yaml.write_text(
+        yaml.safe_dump(
+            {
+                "tables": {
+                    "ops_recommendations": {
+                        "columns": {
+                            "some_expr_col": {
+                                "tests": [
+                                    {
+                                        "expression": {
+                                            "sql": "LENGTH(TRIM(some_expr_col)) >= 80",
+                                            "write_time": True,
+                                            "enforced": True,
+                                            "python": "len(value.strip()) >= 80",
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    )
+    with (
+        patch("scripts.ops_portal.write_validators._OPS_YAML_PATH", fixture_yaml),
+        patch("scripts.ops_portal.write_validators._write_time_validators_cache", {}),
+    ):
+        validators = _load_write_time_validators("ops_recommendations")
+    assert validators == [], f"expected no validator for the retired expression write-time branch, got: {validators}"

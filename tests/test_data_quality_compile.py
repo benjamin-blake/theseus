@@ -52,9 +52,34 @@ def test_load_checks_with_filter(sample_yaml):
     assert len(checks) == 0
 
 
-def test_compile_column_test_invalid():
-    assert _compile_column_test("db.t", "t", "c", "unknown") is None
-    assert _compile_column_test("db.t", "t", "c", {"unknown": {}}) is None
+def test_unrecognised_test_type_raises():
+    """An unrecognised test type is neither SQL-compilable nor declared write-time-only -- it must
+    raise rather than silently compiling to nothing (rec-3308, Decision 55 silent-drop class)."""
+    with pytest.raises(ValueError, match="unknown"):
+        _compile_column_test("db.t", "t", "c", "unknown")
+    with pytest.raises(ValueError, match="unknown"):
+        _compile_column_test("db.t", "t", "c", {"unknown": {}})
+
+
+def test_write_time_only_types_skip_without_raising():
+    """path_syntax and acceptance_lint are declared write-time-only -- recognised and skipped by
+    design (they are not SQL-compilable), never a silent drop of an unrecognised type."""
+    assert _compile_column_test("db.t", "t", "c", {"path_syntax": {"write_time": True}}) is None
+    assert _compile_column_test("db.t", "t", "c", {"acceptance_lint": {"write_time": True}}) is None
+
+
+def test_write_time_only_string_form_also_skips():
+    """The bare-string test-name branch also recognises the declared write-time-only set (not
+    just the dict-test branch) -- config never uses string form for these types today, but the
+    compiler's own defensive symmetry between the two branches is worth its own assertion."""
+    assert _compile_column_test("db.t", "t", "c", "path_syntax") is None
+
+
+def test_compile_column_test_non_str_non_dict_returns_none():
+    """A test entry that is neither a string nor a dict (malformed YAML) falls through to None
+    rather than raising -- distinct from the loud-fail path, which only fires for a recognised
+    shape (str or dict) carrying an unrecognised name."""
+    assert _compile_column_test("db.t", "t", "c", 123) is None
 
 
 def test_load_checks_enforced_from_yaml(tmp_path):

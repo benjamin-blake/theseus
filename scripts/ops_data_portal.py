@@ -45,7 +45,6 @@ from typing import Optional
 
 import yaml
 
-from scripts.executor.acceptance_lint import lint_acceptance_command
 from scripts.executor.jsonl_store import (
     _VALID_STATUSES,
     DECISIONS_JSONL,  # noqa: F401 -- imported-name trap; read by decisions.py, re-exported here
@@ -193,11 +192,12 @@ def file_rec(
         _skip_sync: PRIVATE. When True, suppress the per-row _sync_table() flush so
             a bulk import can call sync() exactly once at the end. Migration-only.
         _migration_mode: PRIVATE. When True, bypass the write-time CONTENT-quality
-            validation surface (the three explicit calls _validate_file_path /
-            _validate_context_length / lint_acceptance_command AND the YAML-loaded
-            _load_write_time_validators loop) so historical rows that predate later
-            content-rule tightening still import. validate_source and the
-            Recommendation schema (model_validate) remain enforced. Migration-only.
+            validation surface (the two explicit calls _validate_file_path /
+            _validate_context_length AND the YAML-loaded _load_write_time_validators loop,
+            which alone now carries acceptance-lint discrimination -- see update_rec)
+            so historical rows that predate later content-rule tightening still import.
+            validate_source and the Recommendation schema (model_validate) remain
+            enforced. Migration-only.
         context_v2_json: Optional structured CiRcaContext dict for source=ci_rca recs.
             When provided: validated against CiRcaContext in warn mode (deficiencies log
             a structured warning but do NOT raise); a >=80-char human summary is written
@@ -354,9 +354,10 @@ def file_rec(
     if not _migration_mode:
         _validate_file_path(fields["file"])
         _validate_context_length(fields["context"])
-        lint_ok, lint_msg = lint_acceptance_command(fields["acceptance"], require_discrimination=True)
-        if not lint_ok:
-            raise ValueError(lint_msg)
+        # Acceptance-lint discrimination is enforced above via the write_time loop
+        # (write_validators.py::_check_acceptance, require_discrimination=True, rec-3306) --
+        # a redundant explicit call here is unreachable dead code (the loop always raises first
+        # for the identical input) and was removed rather than duplicated.
 
     merged = dict(fields)
     if context_v2_json is not None:
@@ -418,7 +419,7 @@ def _fetch_rec_from_reader(rec_id: str, profile: Optional[str] = None) -> Option
     return _sanitize_record(coerced) if coerced is not None else None
 
 
-_UPDATE_CONTENT_VALIDATED_FIELDS = frozenset({"context", "title", "acceptance", "file"})
+_UPDATE_CONTENT_VALIDATED_FIELDS = frozenset({"context", "title", "acceptance", "file", "dependencies"})
 
 
 def update_rec(rec_id: str, updates: dict, profile: Optional[str] = None) -> bool:
@@ -441,7 +442,8 @@ def update_rec(rec_id: str, updates: dict, profile: Optional[str] = None) -> boo
 
     Raises:
         ValueError: If 'status' in updates is not a valid status value, or an updated
-            content-validated field (context/title/acceptance/file) fails its write-time gate.
+            content-validated field (context/title/acceptance/file/dependencies) fails its
+            write-time gate.
         ValidationError: If the merged record fails schema validation.
         RuntimeError: If the warehouse is unreachable for the read step or the write fails.
     """

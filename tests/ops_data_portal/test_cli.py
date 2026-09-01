@@ -240,9 +240,9 @@ class TestCLI:
                     "--update-rec",
                     "rec-042",
                     "--title",
-                    "NEW TITLE",
+                    "NEW UPDATED TITLE",
                     "--acceptance",
-                    "grep -q NEW scripts/ops_data_portal.py",
+                    "grep -q NEW scripts/ops_data_portal.py && grep -q ops_data_portal scripts/ops_data_portal.py",
                     "--priority",
                     "Critical",
                     "--verification",
@@ -252,8 +252,11 @@ class TestCLI:
 
         assert rc == 0
         _, call_rec = mock_dl_write.call_args[0]
-        assert call_rec["title"] == "NEW TITLE"
-        assert call_rec["acceptance"] == "grep -q NEW scripts/ops_data_portal.py"
+        assert call_rec["title"] == "NEW UPDATED TITLE"
+        assert (
+            call_rec["acceptance"]
+            == "grep -q NEW scripts/ops_data_portal.py && grep -q ops_data_portal scripts/ops_data_portal.py"
+        )
         assert call_rec["priority"] == "Critical"
         assert call_rec["verification"] == "bin/venv-python -m pytest tests/ops_data_portal/test_cli.py -q"
 
