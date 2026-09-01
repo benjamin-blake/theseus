@@ -109,7 +109,7 @@ acceptance_criteria:
     get_status_aware_diff carries "D" rows, so the seam choice decides whether a deletion is even
     visible. Its green counterpart is
     exercised in the FIXTURE only -- a fixture whose base already declares the path passes --
-    because in the live flow an undeclared path is a STOP, never a scope edit (see AC 11).
+    because in the live flow an undeclared path is a STOP, never a scope edit (see AC 10).
   - >-
     All seven registration surfaces from scripts/checks/registry.py's enumeration are satisfied,
     including surface (7): the check declares examined()/skipped() on every reachable exit path
@@ -198,7 +198,10 @@ verification_plan:
       deviation trigger carries all three branches plus the Fable pointer, the contract declares
       both invariants and the CONTENT enforcement-coverage map with its named residual, and the
       file-router route topic equals the subject. Runs the pre-existing implement-skill contract
-      test in the same invocation, since it is the other half of the relocation assertion.
+      test in the same invocation, since it is the other half of the relocation assertion. It also
+      asserts AC 10's tri-surface identity -- that the STOP disposition reads the same in the
+      contract row, the check module's failure guidance, and deviation-trigger branch (b) -- and
+      that the contract carries a known_residuals note distinct from the CONTENT coverage map.
     command: bin/venv-python -m pytest tests/test_scope_boundary_contract.py tests/test_pr_ci_red_protocol_contract.py -q
     expected: all tests pass, exit 0
     fix_if: >-
@@ -219,14 +222,17 @@ verification_plan:
       bin/venv-python -c "import
       yaml,pathlib,re;d=yaml.safe_load(pathlib.Path('docs/contracts/implement-scope-boundary.yaml').read_text());rows=d['invariants']['content']['enforcement_coverage'];assert
       rows,'no coverage rows';res=[r for r in rows if r.get('status')!='mechanical'];assert
+      len(res)==1,'CONTENT map must carry exactly ONE residual row (the R6 residual belongs in
+      known_residuals): '+str(len(res));assert
       all(r.get('enforced_by') for r in rows if r.get('status')=='mechanical'),'mechanical row
       without an enforcer';assert all(re.match(r'^rec-\d+$',str(r.get('residual_owner','')))
       for r in res),'residual row without an owning rec id:
       '+str(res);print('coverage rows:',len(rows),'residual:',len(res))"
     expected: 'prints a non-zero coverage-row count and a residual count, and exits 0'
     fix_if: >-
-      A mechanical row with no enforcer, or a residual row with no owning rec id -- file the rec
-      first, then name it. Never delete a residual row to make this pass; that re-hides the gap.
+      More than one residual row means the R6 residual leaked into the CONTENT coverage map --
+      move it to known_residuals. A mechanical row with no enforcer, or a residual row with no
+      owning rec id -- file the rec first, then name it. Never delete a residual row to make this pass; that re-hides the gap.
   - step: 5
     phase: pre-deploy
     hermetic: true
@@ -267,19 +273,25 @@ verification_plan:
       Self-hosting run: dispatch validate_scope_boundary against this PR's real diff and confirm
       it is green -- this plan's own scope table must satisfy the boundary it installs. The
       dispatch MUST pass an explicit plan_paths override (the validate_plan_scope_closure
-      precedent) plus an explicit changed_files list: the Live Verification Protocol is Workflow
-      Step 4 and `implementation_declared` is not set until Commit Flows Step 7, so an ambient
-      dispatch here resolves no plan, takes the DEFER leg, and prints a green it cannot fail. Row
-      (c) is genuinely exercised here (docs/decisions-index.json already exists); row (a)'s seven
-      graduated shards are written by the graduation walk AFTER this gate, so they are exercised
-      at the commit-flow `validate --pre`, not here.
+      precedent) plus a changed_files list built from _common.get_status_aware_diff(): the Live
+      Verification Protocol is Workflow Step 4, so `implementation_declared` is not set (an ambient
+      dispatch resolves no plan and takes the DEFER leg) AND nothing is committed yet, so every
+      commit-to-commit `git diff` form -- two-dot or three-dot -- sees only the plan file and
+      prints a green for a reason unrelated to scope completeness. get_status_aware_diff's
+      `git ls-files --others --exclude-standard` leg is the ONLY primitive that sees the four
+      untracked Create rows at this point. Neither row (a)'s seven graduated shards (written by the
+      graduation walk AFTER this gate) nor row (c)'s docs/decisions-index.json regeneration is
+      exercised here; both land at the commit-flow `validate --pre`. What this step proves is that
+      the eleven declared rows cover the tracked-plus-untracked working tree.
     command: >-
-      bin/venv-python -c "import subprocess;from pathlib import Path;from scripts.checks import
-      registry;cf=subprocess.run(['git','diff','--name-only','origin/main...HEAD'],capture_output=True,text=True).stdout.split();f=[];registry.resolve('validate_scope_boundary')(f,plan_paths=[Path('docs/plans/PLAN-inline-defer-boundary-contract.yaml')],changed_files=cf);print('FAILURES:',f);raise
+      bin/venv-python -c "from scripts.checks import _common,
+      registry;cf=[q for _s,q in _common.get_status_aware_diff()];f=[];registry.resolve('validate_scope_boundary')(f,plan_paths=['docs/plans/PLAN-inline-defer-boundary-contract.yaml'],changed_files=cf);print('touched',len(cf),'FAILURES:',f);raise
       SystemExit(1 if f else 0)"
-    expected: 'prints `FAILURES: []` and exits 0'
+    expected: 'prints a touched count of at least 5 and `FAILURES: []`, and exits 0'
     fix_if: >-
-      A named path means the plan under-declared. Do NOT add a scope row -- that is a prohibited
+      A touched count of 1 means the seam is wrong (a commit-to-commit diff, which cannot see the
+      untracked Create rows) -- fix the seam, never accept the green. A named path means the plan
+      under-declared. Do NOT add a scope row -- that is a prohibited
       plan-field edit, and a check an agent can silence by editing the artefact it audits is not a
       check. STOP per deviation-trigger branch (b) and surface it; the human either directs a plan
       amendment as its own reviewed act, or (if the path is an implement-time derived companion
@@ -348,9 +360,10 @@ verification_plan:
     expected: 'prints `auto-file tokens in section: []` and exits 0'
     fix_if: >-
       A token appears -- branch (c) has grown an auto-file path. Delete it; cite the existing
-      VF-08 forward-note instead. The window is bounded at the next heading of ANY depth, so a
+      VF-08 forward-note instead. The window is bounded at the next H2 or H3 heading, so a
       neighbouring H3 (e.g. the VF-08 forward-note, which legitimately names
-      scripts.ops_data_portal) is never swallowed.
+      scripts.ops_data_portal) is never swallowed. The skill has no H4s today; if one is
+      introduced inside this section the bound must widen with it.
   - step: 10
     phase: pre-deploy
     hermetic: true
@@ -392,9 +405,8 @@ verification_plan:
       153) is evidence-backed rather than asserted. Uses the same explicit override as step 6 --
       an ambient dispatch would time the no-op DEFER leg, not the enforcing path.
     command: >-
-      bin/venv-python -c "import time,subprocess;from pathlib import Path;from scripts.checks
-      import
-      registry;cf=subprocess.run(['git','diff','--name-only','origin/main...HEAD'],capture_output=True,text=True).stdout.split();s=time.perf_counter();f=[];registry.resolve('validate_scope_boundary')(f,plan_paths=[Path('docs/plans/PLAN-inline-defer-boundary-contract.yaml')],changed_files=cf);e=time.perf_counter()-s;print('elapsed_s=%.2f'
+      bin/venv-python -c "import time;from scripts.checks import _common,
+      registry;cf=[q for _s,q in _common.get_status_aware_diff()];s=time.perf_counter();f=[];registry.resolve('validate_scope_boundary')(f,plan_paths=['docs/plans/PLAN-inline-defer-boundary-contract.yaml'],changed_files=cf);e=time.perf_counter()-s;print('elapsed_s=%.2f'
       % e);raise SystemExit(0 if e < 5 else 1)"
     expected: 'prints an elapsed_s under 5 seconds and exits 0'
     fix_if: >-
@@ -541,11 +553,13 @@ constraints:
     The check reads its row map from the contract at check time and holds no second copy
     (plan_obligations.py precedent); it derives plans one hop off the diff and never globs
     docs/plans/. The seam is CHOSEN HERE, not deferred to implement time: use
-    _common.get_status_aware_diff (MERGE-BASE, and the only primitive carrying "D" rows).
-    get_changed_files compares against the origin/main TIP, which on this branch today reports 5
-    files against the merge-base's 1 -- the 4 extra are main-side changes that would each be
-    reported as an undeclared path and, per AC 11, STOP the agent. Name the seam in the module
-    docstring. A row whose sanction_kind the check does not implement must FAIL loudly.
+    _common.get_status_aware_diff. The decisive property is its `git ls-files --others
+    --exclude-standard` leg -- the ONLY primitive that sees untracked new files, which every
+    Create scope row is until the commit flow runs; it also carries "D" rows, which no other
+    primitive does. Measured on this branch: get_status_aware_diff and get_changed_files each
+    report 1 path, while a raw two-dot `git diff --name-only origin/main` reports 6 (the 5 extra
+    are main-side changes that would each be reported as an undeclared path and, per AC 10, STOP
+    the agent). Name the seam in the module docstring. A row whose sanction_kind the check does not implement must FAIL loudly.
   - Do not weaken a check to pass differential admission (#994 repaired the false-admission defect).
   - No rescue agents or workaround loops (Decision 55).
   - No new standing prose-architecture doc under docs/ (Decision 86).
@@ -591,7 +605,9 @@ execution_steps:
     an `unmodelled_companions:` note naming .secrets.baseline and
     config/composite_action_body_baseline.yaml as regenerated companions deliberately left without
     a row (each appeared in 1 of the measured implement commits) -- they are a deliberate STOP, not
-    an oversight; and a `deviation_trigger:` table with the three branches. Each row carries purpose / trigger /
+    an oversight; a `known_residuals:` note carrying the R6 split's own residual (only the PRESENCE
+    of Decision 181's pointer is pinnable), deliberately OUTSIDE the CONTENT coverage map; and a
+    `deviation_trigger:` table with the three branches. Each row carries purpose / trigger /
     sanctions / prohibited -- never a Class A/B descriptor key.
   - >-
     Register the route in docs/contracts/file-router.yaml with topic == the contract's subject,
@@ -621,9 +637,15 @@ execution_steps:
     Exception-contained throughout: a malformed contract or plan is a reported finding, never a
     raise; an unimplemented sanction_kind is a loud failure, never a silent pass. Carry the
     `@register("validate_scope_boundary", owner="platform")` decoration (registration surface 2),
-    and expose `changed_files` and `root` as injected parameters with real-dispatch defaults --
-    those seams are what make step 2's fixture red/green cases writable without touching the real
-    repository, mirroring resolve_declared_plans' own never-derive-the-base discipline.
+    and expose THREE injected parameters with real-dispatch defaults -- `plan_paths` (list[str] of
+    repo-relative plan paths, normalised to the same str form resolve_declared_plans returns, so
+    row (b)'s plan-path comparison matches), `changed_files` (list[str] of touched paths INCLUDING
+    deleted entries AND untracked `??` rows, the shape get_status_aware_diff yields once its status
+    tuple is unpacked -- verified: an untracked file surfaces as ('??', path), which is what every
+    Create scope row is until the commit flow runs) and `root`. All three are accepted UNFILTERED, the validate_plan_scope_closure precedent. Those
+    seams are what make step 2's fixture red/green cases writable without touching the real
+    repository, and what let steps 6 and 11 dispatch the enforcing leg before anything is
+    committed, mirroring resolve_declared_plans' own never-derive-the-base discipline.
   - >-
     Add the Entry to scripts/checks/verification/_manifest.py (bare string-literal module/attr,
     pre=True, full_after_lint) and the function_to_category row to config/ci_rca_taxonomy.yaml.
