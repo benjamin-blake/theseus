@@ -121,8 +121,9 @@ acceptance_criteria:
   - >-
     No live surface still names exit-criteria-ledger.yaml as the non-seedable exception, in
     EITHER the key form (`non_seedable_exception`) or the prose form ("non-seedable exception").
-    Five live locations at plan time: contract-population.yaml :13, :40, :127, :230, :286 and
-    test_real_population.py :16. Surviving amendment_log history is exempt by design.
+    Six locations at plan time: contract-population.yaml :13, :40, :127, :230, :286 and
+    test_real_population.py :16 -- of which :40 is an amendment_log entry and is EXEMPT (history
+    stays), leaving five to sweep.
   - Both bundled recs (rec-3243, rec-3213) reach status closed after merge.
   - No numbered Decision is added to docs/DECISIONS.md or docs/DECISIONS_ARCHIVE.md.
 verification_plan:
@@ -279,7 +280,7 @@ verification_plan:
       BOTH the key form and the prose form. amendment_log history is deliberately exempt: the
       retired exception may survive as dated history, never as a live rule -- so the prose sweep
       excludes the amendment_log block rather than the whole file.
-    command: "! grep -rqw ops_plans docs/contracts/exit-criteria-ledger.yaml && grep -q 'ops_execution_plans' docs/contracts/exit-criteria-ledger.yaml && ! grep -rq 'non_seedable_exception' docs/contracts/ scripts/ tests/ && bin/venv-python -c \"import yaml,pathlib,re; t=pathlib.Path('docs/contracts/contract-population.yaml').read_text(); d=yaml.safe_load(t); live={k:v for k,v in d.items() if k!='amendment_log'}; s=yaml.safe_dump(live); assert 'non-seedable exception' not in s, 'prose form survives in a LIVE (non-amendment_log) section'; assert 'non-seedable' not in pathlib.Path('tests/checks/contracts/validate_contract_drift/test_real_population.py').read_text(), 'stale roster comment survives'; print('REC-3213 + STALE-REF SWEEP OK')\""
+    command: "! grep -rqw ops_plans docs/contracts/exit-criteria-ledger.yaml && grep -q 'ops_execution_plans' docs/contracts/exit-criteria-ledger.yaml && ! grep -rq 'non_seedable_exception' scripts/ tests/ && bin/venv-python -c \"import pathlib,re\nt=pathlib.Path('docs/contracts/contract-population.yaml').read_text()\nout=[];skip=False\nfor l in t.splitlines():\n    if re.match(r'^amendment_log:',l): skip=True; continue\n    if skip and l and not l[0].isspace() and not l.startswith('#'): skip=False\n    if not skip: out.append(l)\nlive=chr(10).join(out)\nassert 'non_seedable_exception' not in live, 'key form survives in a LIVE section'\nassert 'non-seedable' not in live, 'prose form survives in a LIVE (non-amendment_log) section'\nassert 'non-seedable' not in pathlib.Path('tests/checks/contracts/validate_contract_drift/test_real_population.py').read_text(), 'stale roster comment survives'\nprint('REC-3213 + STALE-REF SWEEP OK')\""
     expected: "Prints REC-3213 + STALE-REF SWEEP OK."
     fix_if: >-
       A whole-word ops_plans survived the Class A restructure, or a live (non-amendment_log)
@@ -382,7 +383,11 @@ verification_plan:
     fix_if: >-
       A missing row means a `graduate` step has no registry shard; a wrong plan_slug means the
       implement-PR leg will not match the declared-graduate step to its row and will fail the PR.
-    graduation: not-applicable
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates validate_graduation_completeness's implement-PR leg, which enforces this exact
+      (plan_slug, check_id) linkage repo-wide; a registry row guarding the registry's own
+      linkage would be a second surface for one property.
 test_obligations:
   - source: config/agent/verification_registry/entries/decisions-size-warn-never-fails.yaml
     behavior: >-
@@ -506,7 +511,7 @@ context:
   - "scripts/checks/decisions/_baseline.py::baseline_decision_bodies has ZERO consumers today -- (a) is its first. Deliberately NOT in scope: reached via a new baseline_body_reader parameter. Cost: 2 extra `git show` calls, paid only when a DECISIONS file changed. Preflight records 4 recent --ignore-budget bypasses; do not add another."
   - "CI-RCA DEFERRAL (required by the /plan hard block): rec-3292 and rec-3293 are open Critical ci-rca recs unrelated to this scope. Both verified satisfied in-tree at plan time (0 extras in requirements.lock; pytz>=2026.2 at requirements.txt:11; TestVerbEquivalence 7 passed). Deliberately NOT closed here -- another agent is verifying further criteria before closure. Do not file, close, or amend them in this plan."
   - "CFG-05 sweep scope: 41 governed contracts, contract-vs-contract axis ONLY. The Decision-body-vs-contract instance CFG-05 also names (D162's body vs composite-action-shape.yaml's R1/R2/R3) is SCOPED OUT and the sweep record must say so, or it reads as recall the sweep did not have. Adjacent clusters: decision-entry/marker-grammar; check-accounting/check-manifest; deploy-paths/build-lambda/environment-taxonomy; storage-substrate/log-storage; read-engine/ducklake_reader; data-modeling-standard/_joins; plan-obligations/verification-registry/overseer-dispatch; recommendation-relevance/ci-rca-lifecycle; contract-population/file-router; telemetry-lexicon/telemetry_* Class A; secret-material-handling/iam-simulate-fixture; the five Class C identity keys."
-  - "Branch 0 commits behind origin/main at plan time; plan_obligations reports no unmet registrations; baseline green (120 passed across both affected suites)."
+  - "Branch 0 commits behind origin/main at plan time; plan_obligations reports no unmet registrations; baseline green (29 passed across the two named test files; 291 across both directories)."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -538,15 +543,17 @@ execution_steps:
     tests/checks/decisions/test_validate_decisions_size.py -- add TestAmendmentDeltaCap (name
     exact: rec-3243's acceptance selector) covering changed-past-cap WARNs, changed-but-under-cap
     silence, unchanged-baseline silence, SHRUNK-over-cap WARNs (the delta != 0 case), and the
-    None-baseline advisory skip; plus new-in-diff entries still HARD-FAILING. Add a
-    warn_never_fails case asserting `failed == []` while WARN text is on stdout, and a
-    standing_pressure case asserting exactly one aggregate line. Drive the module through the
+    None-baseline advisory skip; plus new-in-diff entries still HARD-FAILING. Add TestWarnNeverFails
+    (asserting `failed == []` while WARN text is on stdout) and TestStandingPressure (asserting
+    exactly one aggregate line) as NAMED classes -- the graduated shards need precise node ids. Drive the module through the
     injected baseline_body_reader seam with tmp_path, never real git.
   - >-
     docs/contracts/decision-entry.yaml -- FIRST compact the amendment_log (single-line summaries
     on as many of the four entries as needed; up to 17 effective lines available, ~7-12 needed),
     THEN add size_governance.accretion_signal (tier, both legs, and flips_to_hard_fail_when per
-    Decision 163) and a new dated amendment_log entry. Do NOT touch intent_accretion_note
+    Decision 163). Its prose MUST state the scope boundary against intent_accretion_note in the
+    same file: this signal meters WHOLE-ENTRY bytes, not Intent-section clarifications, so the
+    two coexist rather than contradict and a new dated amendment_log entry. Do NOT touch intent_accretion_note
     (constraint 4). Measure effective lines and confirm <=508 BEFORE committing; leave the 508
     pin and its frozen budget_notes entry in config/structural_size_budgets.yaml alone.
   - >-
@@ -569,7 +576,9 @@ execution_steps:
     subject_uniqueness_is_precision_not_recall with the sweep outcome (date, contracts compared,
     rec ids or EMPTY, and the scoped-out Decision-body axis). Add the amendment_log entry with a
     NEW date, and make it cover the contract.description change at :13 (check_amendment_for_diff
-    category 6). Do NOT touch status_active_max.
+    category 6). Write that summary using the HYPHENATED prose form ('the non-seedable
+    exception'), never the underscore key name -- VP step 9's key-form leg sweeps scripts/ and
+    tests/ and its live-section leg would otherwise trip on your own amendment entry. Do NOT touch status_active_max.
   - >-
     tests/checks/contracts/validate_contract_drift/test_real_population.py -- add
     TestExitCriteriaLedgerIsClassA asserting contract.class == A, zero
@@ -578,8 +587,14 @@ execution_steps:
   - >-
     config/agent/verification_registry/entries/ -- create the three graduated rows, one shard
     per check_id (Decision 176), with check_id matching each step's graduation_check_id verbatim
-    and plan_slug cfg-migration-closeout. Narrow exit-criteria-ledger-is-class-a's check_spec to
-    VP step 5's `python -c` leg, not the compound pytest && python command.
+    and plan_slug cfg-migration-closeout. CHECK_SPEC PRECISION IS LOAD-BEARING:
+    validate_verification_registry runs a real admission differential (must FAIL on an
+    origin/main revert, PASS on HEAD) and refuses a tautological outcome. A whole-FILE
+    test_selector node id PASSES on base -- the reverted file's tests all pass today -- so the
+    two decisions-size-* shards must use either a precise node id naming
+    TestWarnNeverFails / TestStandingPressure, or command_exit_zero carrying the `-k` command
+    (which exits 5 on base). Narrow exit-criteria-ledger-is-class-a's check_spec to VP step 5's
+    `python -c` leg, not the compound pytest && python command.
   - >-
     CFG-05 recall sweep -- enumerate every governed contract's subject (Class D) and id (ritual),
     then adjudicate the adjacent clusters listed in Context pairwise for genuine parallel or
@@ -592,7 +607,7 @@ execution_steps:
     three residuals closed, naming CFG-05 (citing its ideal_behavior review lane, not its
     already-shipped acceptance), the contract count compared, and the rec ids or EMPTY.
   - >-
-    Execute Verification Plan -- run steps 1-11 and 13-14 pre-merge; loop until pass; on
+    Execute Verification Plan -- run steps 1-11 and 13-15 pre-merge; loop until pass; on
     unrecoverable failure stop and RCA (Decision 55). Step 12 is post-deploy: run it after merge.
   - >-
     Commit flow -- the squash-merge commit body MUST carry the trailer `Resolves: rec-3243,
