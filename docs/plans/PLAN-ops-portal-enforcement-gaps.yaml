@@ -61,7 +61,8 @@ scope:
       append a dated amendment_log row for the update_rec discrimination boundary (rec-3306); add
       structured dq_intent entries for both newly-enforced fields, dependencies element-format
       (rec-3307) and title min_length (rec-3310); reconcile the context 50-vs-80 contradiction to
-      80; net-zero by compacting the two oldest amendment_log rows
+      80 WITH the per-field amendment_log entries context and title each then require; net-zero by
+      compacting the two oldest amendment rows plus governance_notes and populated_by
 bundled_recommendations:
   - rec-3306
   - rec-3307
@@ -93,7 +94,9 @@ acceptance_criteria:
     unchanged, after its write_time flag moves from expression onto min_length.
   - >-
     validate_dq_manifest_gate passes with dependencies enforced, and both structural-size-budgeted
-    scope files are at or under their existing budget with no raise marker added.
+    scope files are at or under their existing budget with no raise marker added -- achieved on the
+    contract by compacting the two oldest amendment_log rows AND the governance_notes and
+    populated_by bodies, since the amendment rows alone do not cover the roughly 18 lines added.
   - All four bundled recs are closed after merge.
 verification_plan:
   - step: 1
@@ -145,7 +148,10 @@ verification_plan:
     phase: pre-deploy
     action: array_element_format rejects a malformed dependencies element and accepts a valid list
     command: bin/venv-python -m pytest tests/test_ops_data_portal_validators.py::test_array_element_format_rejects_malformed_element -q
-    expected: passes; ['rec-1','nonsense'] rejected, ['rec-1','rec-2'] and None accepted
+    expected: >-
+      passes; ['rec-1','nonsense'] rejected, ['rec-1','rec-2'] and None accepted. Must assert
+      through file_rec as well as the bare validator -- acceptance criterion 4 claims both write
+      paths, and step 6 covers only the update_rec half.
     fix_if: the regex is applied to the joined string rather than per element
     hermetic: true
     graduation: graduate
@@ -244,10 +250,12 @@ verification_plan:
     command: bin/venv-python -c "from scripts.checks.structural.size_limits import validate_structural_size_limits as s; from scripts.checks.structural.budget_raises import validate_structural_size_budget_raises as b; f=[]; s(f); b(f); print(f); raise SystemExit(1 if f else 0)"
     expected: exit 0 -- net-zero achieved by compacting the oldest amendment_log rows, no budget raised
     fix_if: >-
-      over budget -- reclaim more from the rec-609 blocker prose in the dependencies manifest entry,
-      and by compacting the contract's 2026-06-20 acceptance amendment row and its 2026-06-21
-      top-level row. Never reclaim by re-pointing a dated row at a later date's fact, and never add
-      a raise marker (Decision 165 -- no authorizing Decision is drafted here).
+      over budget -- work constraint 3's reclaim list in order: the two oldest contract
+      amendment_log rows, then governance_notes, then the populated_by bodies, plus the rec-609
+      blocker prose in the dependencies manifest entry. Never compact a description or semantics
+      body (re-triggers the category-6 gate), never re-point a dated row at a later date's fact, and
+      never add a raise marker (Decision 165). If all four sources are exhausted and it is still
+      over, STOP and surface it rather than raising.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -257,13 +265,26 @@ verification_plan:
       validate_structural_size_budget_raises checks; this step gates only this plan's own diff.
   - step: 13
     phase: pre-deploy
-    action: Full fast tier green before handoff
+    action: Fast tier green
     command: bin/venv-python -m scripts.validate --pre
     expected: exit 0
     fix_if: read the named failing check and fix its cause; never skip or quarantine a test
     hermetic: false
     graduation: not-applicable
   - step: 14
+    phase: pre-deploy
+    action: >-
+      Full tier green before handoff, as handoff_policy.full_validation_required_before_commit
+      declares (Decision 163 / validate_handoff_full_tier, which is registered in both tiers and
+      fails any plan declaring that policy without this step)
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0 on a completed run; commit and PR wait for it
+    fix_if: >-
+      read the named failing check and fix its cause. On timeout the disposition is blocked
+      (handoff_policy) -- resume later and rerun full from the start, never partially.
+    hermetic: false
+    graduation: not-applicable
+  - step: 15
     phase: post-deploy
     action: All four bundled recs are closed after the Resolves trailer runs (closure obligation)
     command: bin/venv-python -m scripts.sync.ops pull && bin/venv-python -c "import json; rows={r['id']:r.get('status') for r in (json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip())}; t=['rec-3306','rec-3307','rec-3308','rec-3310']; print({k:rows.get(k) for k in t}); assert all(rows.get(k)=='closed' for k in t)"
@@ -317,8 +338,8 @@ test_obligations:
     behavior: >-
       documents the update_rec discrimination boundary, the dependencies element-format dq_intent,
       and a single self-consistent context minimum
-    verification_step: 13
-    command: bin/venv-python -m scripts.validate --pre
+    verification_step: 14
+    command: bin/venv-python -m scripts.validate
     waiver_reason: >-
       Prose contract with no runtime consumer -- nothing imports or parses these description and
       semantics strings at write time, so no test can bind them red-green. The behavioural claims
@@ -333,12 +354,21 @@ constraints:
   - No rescue agents or workaround loops (Decision 55).
   - >-
     Net-zero line count on the two structural-size-budgeted scope files. Decision 165 forbids
-    reusing the dec-166 census grandfather to authorise forward growth, so no budget raise. Reclaim
-    by compacting the OLDEST amendment_log rows and the stale rec-609 blocker prose. Compaction --
-    tightening a row's wording while preserving the fact it records for its own date -- is the
-    contracts class's own first-named relief valve and is sanctioned. What is forbidden is
+    reusing the dec-166 census grandfather to authorise forward growth, so no budget raise.
+    Compaction -- tightening wording while preserving the fact a row records for its own date -- is
+    the contracts class's own first-named relief valve and is sanctioned. What is forbidden is
     RE-POINTING: editing a dated row so it describes a later date's change instead of its own
-    (Decision 177 reached the same conclusion for the decision corpus).
+    (Decision 177 reached the same conclusion for the decision corpus). Reclaim sources on the
+    contract, in order: the two oldest amendment_log rows (2026-06-20 acceptance, 2026-06-21
+    top-level), then the governance_notes block, then the populated_by folded bodies. The
+    amendment rows alone are NOT sufficient -- measured, this change adds roughly 18 lines against
+    at most 14 of reclaim there, so the last two sources are load-bearing, not optional.
+    TRAP: never compact a description or semantics body to reclaim lines. Doing so re-triggers the
+    category-6 per-field amendment gate and costs more than it saves. governance_notes and
+    populated_by are not category-6 gated, which is why they are the safe sources.
+    If measurement still exceeds budget after all four sources are exhausted, STOP and surface it --
+    do not add a raise marker. The repo's precedent for that bind is a cited Decision authorising
+    the raise (decision-entry.yaml / Decision 175), which is out of scope here.
   - >-
     Never eval/exec the declared python expression; min_length takes an integer parameter and a
     restricted comparison, per AGENTS.md Safety.
@@ -355,20 +385,21 @@ context:
   - "Decision-scout verdict: FLAGS_FOUND (131 of 131 triaged). CITE: 66, 65, 55, 62, 103, 48."
   - "Also cited: 104 (manifest gate), 124 (facade submodule), 128/165/166 (size), 131 (mirror), 170 (silent-drop spirit); related 121, 64."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
-  - "Anchors moved since filing: write_validators.py -> scripts/ops_portal/, acceptance_lint.py and rec_write_guidance.py -> scripts/executor/. Line numbers unchanged."
+  - "Anchors moved since filing: write_validators.py -> scripts/ops_portal/; acceptance_lint.py and rec_write_guidance.py -> scripts/executor/. Line numbers unchanged."
+  - "title min_length blast radius: it newly binds title through update_rec on two live auto-filing paths (scripts/checks/_budget_recs.py:233, scripts/convergence_health/budget_ingest.py:547). Both verified to emit long titles; no sub-10-char title literal reaches the ops_recommendations write-time loop."
   - "rec-3308 scope correction: the compiler loud-fail fires on TWO existing entries, path_syntax and acceptance_lint, not one. Measured 2026-08-31: 43 checks compile, neither is among them."
-  - "acceptance_lint is not faithfully SQL-compilable (lint_acceptance_command does a filesystem check), so declared-skip, not a fake SQL branch. Rationale in the plan commit body."
+  - "acceptance_lint is not SQL-compilable (it does a filesystem check), hence declared-skip not a fake branch. Rationale in the commit body."
   - "rec-3310 landmine: the expression write-time branch ignores its declared python: key and applies hardcoded _validate_context_length to any column. Exactly one entry (context) declares a write_time expression, so the migration to min_length is surgical."
   - "rec-3306 blast radius: AST scan of 38 update_rec sites -- only the --update-rec CLI passes acceptance; rec-autoclose writes status/resolution only. The loop filters on _col in updates, so the tightening is per-update, not per-record."
   - "Structural size: both budgeted scope files sit at exactly their budget (522/522 and 556/556). Reclaim from the stale rec-609 blocker prose in the dependencies manifest entry and by compacting the OLDEST contract amendment_log rows -- not by rewriting the dated 2026-08-21 row."
   - "load_checks applies no write_time filter -- every test entry reaches _compile_column_test. Each new write-time-only type (array_element_format, min_length) MUST join the compiler's declared skip set or the rec-3308 loud-fail fires on this plan's own config."
-  - "Decision 131: map_source_to_test(scripts/ops_data_portal.py) -> tests/ops_data_portal/; scripts/ops_portal/** returns None under the Decision 124 carve-out. Hence the new mirror file, and steps to repoint rec-3306/rec-3307 acceptance."
+  - "Decision 131: ops_data_portal.py mirrors to tests/ops_data_portal/; scripts/ops_portal/** returns None (Decision 124 carve-out). Hence the new mirror file and the acceptance-repoint step."
   - "Known breakage: tests/test_data_quality_compile.py::test_compile_column_test_invalid asserts unknown types return None. The loud-fail inverts that contract; rewrite it, do not delete it."
   - "T2.29 5th-criterion overlap (positional shorthand; its exit_criteria are plain strings with no flippable ids). Its extra exclude_before grandfathering clause cites ~889 short-title rows; measured ONE (rec-002, superseded), and exclude_before is never read at write time. Re-ground, build nothing."
   - "Branch was behind origin/main at critique (Decision 179/180, a T2.56 flip; none touches this subject). Rebase before implementing."
   - "ci-rca deferral: rec-3328 (terraform apply IAM/S3 failure) is unresolved and shares no file, Decision or failure category with this plan. Owned by docs/plans/PLAN-pr-ci-red-ownership.yaml per human direction 2026-08-31."
   - "Root-cause sibling filed this session: rec-3355 (rec_relevance conflates moved vs retired targets; stale-target rot has no sweep). Not bundled here."
-  - "Adjacent, deliberately out of scope: the tags field carries the identical blocked-on-rec-609 shape in the same manifest. File a rec rather than widening."
+  - "Out of scope: tags carries the identical blocked-on-rec-609 shape. File a rec, do not widen."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -422,12 +453,18 @@ execution_steps:
     only dq_intent.not_null, so record the bound in dq_intent (or FieldSpec write_time_validation)
     rather than prose alone -- the two newly-enforced fields get the same treatment, or the
     asymmetry is itself the drift this plan is closing.
-    (d) APPEND a new dated amendment_log row (date 2026-09-01, semantic_break true, change_class
-    accepted_values_narrow) recording that the discrimination rule now binds at the update_rec
-    boundary and remains not retroactive. Do NOT rewrite the 2026-08-21 row: it records a fact about
-    that date, and a second semantic break at a new boundary earns its own row. Reclaim the lines by
-    compacting the OLDEST amendment_log rows -- the contracts class's own first-named relief valve,
-    and the sequence docs/contracts/decision-entry.yaml's roster comment records.
+    (d) APPEND a new dated amendment_log row on the acceptance field (date 2026-09-01,
+    semantic_break true, change_class accepted_values_narrow) recording that the discrimination rule
+    now binds at the update_rec boundary and remains not retroactive. Do NOT rewrite the 2026-08-21
+    row: it records a fact about that date, and a second semantic break at a new boundary earns its
+    own row.
+    (e) MANDATORY, easily missed: validate_contract_drift's category-6 gate is PER FIELD --
+    contracts_enforcement.check_amendment_for_diff loops fields and requires a new entry in the
+    CHANGED FIELD'S OWN amendment_log[]. Edits (a) and (b) change context.description and
+    title.semantics, and NEITHER field has an amendment_log block today. Create one on each, with
+    change_class prose_improvement and semantic_break false -- _amendment_entry_consistent requires
+    prose_improvement XOR semantic_break, and each edit corrects a statement to match already-
+    shipped code rather than changing behaviour. An entry on another field does not satisfy the gate.
   - >-
     Create tests/ops_data_portal/test_update_rec_content_validation.py as the Decision 131 mirror
     for the ops_data_portal.py change, following the local-fixture and no-duckdb-importorskip
