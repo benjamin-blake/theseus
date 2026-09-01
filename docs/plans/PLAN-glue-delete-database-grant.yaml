@@ -43,7 +43,7 @@ scope:
   - file: tests/checks/iam_tf/test__write_companions.py
     action: Modify
     purpose: >-
-      Add both-direction coverage for the generalized leg AND rewrite the two incumbents the
+      Add both-direction coverage for the generalized leg AND rewrite the one incumbent the
       generalization invalidates (see execution_steps) -- this row is NOT purely additive.
   - file: tests/checks/iam_tf/test_glue_catalog_grant_scope.py
     action: Create
@@ -67,10 +67,12 @@ infrastructure_dependencies:
     terraform-apply-sandbox: that workflow's push/PR path filter is terraform/personal/** and
     terraform/bootstrap/** is deliberately excluded (terraform/bootstrap/CLAUDE.md).
   - >-
-    Decision 156 byte ceiling: the rendered inline policy must stay under 10,240 B. The narrow restore
-    projects ~8,211-8,683 B depending on rendering (two independent measurements, both safe) and is
-    SMALLER than today's live Sid -- dropping four verbs outweighs adding one ARN. The authoritative
-    assertion is the HCL lifecycle precondition, which evaluates at admin plan time (VP step 7).
+    Decision 156 byte ceilings -- this diff touches BOTH. Inline identity policy: under 10,240 B; the
+    narrow restore projects ~8,211-8,683 B depending on rendering (two independent measurements, both
+    safe) and is SMALLER than today's live Sid, since dropping four verbs outweighs adding one ARN.
+    Managed boundary policy: under 6,144 B, measured 1,548 B, so the ~11 B glue addition is trivially
+    safe. Both authoritative assertions are HCL lifecycle preconditions evaluating at admin plan time
+    (VP step 7).
   - >-
     The bootstrap root has unapplied drift accumulated since the 7b67e21d cleanse, so VP step 7's
     apply lands MORE than this plan's diff. The operator reviews the full plan output, not only the
@@ -78,7 +80,9 @@ infrastructure_dependencies:
   - >-
     The convergence record is red at e8332e9f (run 33323201848). A red record is the sole hard block
     and no push clears it; the only clear path is workflow_dispatch acknowledge_red_commit naming the
-    red SHA or an open rec id (rec-3348 qualifies).
+    red SHA or an open rec id (rec-3348 qualifies). That run failed on THREE legs; the other two (S3
+    InvalidTag, iam:UpdateRoleDescription) were resolved on main by validate_terraform_tag_charset and
+    Decision 180 respectively, which is what makes acceptance criterion 5 reachable once glue lands.
 acceptance_criteria:
   - >-
     GlueCatalog grants glue:DeleteDatabase on all four ARNs including
@@ -113,8 +117,9 @@ verification_plan:
       generalization invalidates were rewritten rather than deleted.
     command: bin/venv-python -m pytest tests/checks/iam_tf/test__write_companions.py -q
     expected: >-
-      exit 0, including the new both-direction cases AND the rewritten
-      test_no_iam_actions_short_circuits_no_file_read / test_collects_allow_iam_actions_only.
+      exit 0, including the new both-direction cases and the rewritten
+      test_no_iam_actions_short_circuits_no_file_read. test_collects_allow_iam_actions_only stays
+      UNCHANGED and green -- the sibling-collector design keeps the iam-only helper's contract intact.
     fix_if: >-
       If only the positive case passes the check is vacuous -- assert the negative case fails loud
       naming the uncovered action. If an incumbent was deleted rather than rewritten, restore it.
@@ -185,12 +190,12 @@ verification_plan:
       FULL diff -- the root carries unapplied drift since the cleanse, so this lands more than this
       plan's changes. The Decision 156 lifecycle precondition evaluates here and is the byte gate.
     command: >-
-      AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap init && AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap plan -var-file=terraform.bootstrap.tfvars -out=/tmp/bootstrap.tfplan && AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap show -no-color /tmp/bootstrap.tfplan | grep -E 'will be destroyed|must be replaced' ; echo "--- review the full plan above before applying ---" && AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap apply /tmp/bootstrap.tfplan
+      AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap init && AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap plan -var-file=terraform.bootstrap.tfvars -out=/tmp/bootstrap.tfplan && AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap show -no-color /tmp/bootstrap.tfplan | tee /tmp/bootstrap.plan.txt && if grep -qE 'will be destroyed|must be replaced' /tmp/bootstrap.plan.txt; then echo "STOP - destroy or replace present, review before applying"; exit 1; fi && AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap apply /tmp/bootstrap.tfplan
     expected: >-
-      The grep prints NOTHING for aws_iam_role.github_ci_apply, aws_iam_role_policy.github_ci_apply,
-      aws_iam_policy.github_ci_apply_reads or aws_iam_role_policy_attachment.github_ci_apply_reads;
-      the plan adds the GlueCatalog Sid and glue to the boundary DataPlaneAllow; the byte precondition
-      passes; apply succeeds.
+      tee prints the FULL plan for operator review; the destroy/replace guard finds nothing and so
+      does not exit 1 (a hit halts before apply); the plan adds the GlueCatalog Sid and glue to the
+      boundary DataPlaneAllow; both byte preconditions pass; apply succeeds. terraform apply on a
+      SAVED plan does not prompt, so the guard -- not an interactive yes -- is what stops a bad apply.
     fix_if: >-
       STOP on any destroy/replace of the four protected resources (Decision 156 point 2 -- destroying
       the role breaks in-flight CI; dropping the reads policy strips the refresh-read surface). If the
@@ -216,13 +221,17 @@ verification_plan:
     expected: >-
       The run logs a CONVERGENCE_ACK notice (not CONVERGENCE_RED), the destroy of
       aws_glue_catalog_database.ops succeeds, the record reads status=green, and get-database returns
-      EntityNotFoundException.
+      EntityNotFoundException. NOTE: the step therefore exits NON-ZERO by design -- the final
+      get-database is expected to fail. Read the record status, not the exit code.
     fix_if: >-
       A CONVERGENCE_RED refusal means the input matched neither the red SHA nor the rec-NNNN shape. A
       denial on a NEW glue ARN for the same verb is a Resource-axis gap -- widen the Resource list. A
       denial naming a DIFFERENT action (rec-3328's corrective_action anticipates
       glue:DeleteUserDefinedFunction) is a new verb, so it is a Decision 143 worst-verb re-scoping
-      judgement -- add it deliberately with its own justification, do not reflexively widen.
+      judgement -- add it deliberately with its own justification, do not reflexively widen. A
+      NON-glue failure (run 33323201848 also carried an S3 InvalidTag on PutBucketTagging and an
+      iam:UpdateRoleDescription denial) means one of the sibling legs regressed -- both were resolved
+      on main, so re-check those before touching glue.
   - step: 10
     phase: post-deploy
     action: >-
@@ -295,6 +304,13 @@ constraints:
     tests/checks/iam_tf/test__write_companions.py at 475/500 (25 headroom). If either crosses,
     decompose -- the existing sibling tests/checks/iam_tf/test__write_companions_split_root.py is the
     precedent for the test file.
+  - >-
+    In-array comment rule (the boundary file's own rec-2882 note, which "cost a real debugging
+    round"): a comment INSIDE the DataPlaneAllow Action array must contain NO square bracket of
+    either kind and must not quote a bare star -- the checks parse the array with a non-greedy
+    Field-equals-bracket regex, so one stray bracket truncates the parsed ceiling, and a truncated
+    list ending in a wildcard makes EVERY boundary assertion pass vacuously. Put the
+    intersection-hazard prose ABOVE the Sid line instead.
   - Restore glue only. athena stays deleted at both layers (Decision 178 clause 2).
 context:
   - "Decision-scout verdict: FLAGS_FOUND (133 of 133 triaged). CITE: dec-156, dec-144, dec-177, dec-167, dec-180, dec-157, dec-132."
@@ -311,7 +327,7 @@ context:
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
-  - Only the plan-cited decision sections read (178, 177, 167, 156, 144, 143, 131, 129, 168, 132, 119)
+  - Only the plan-cited decision sections read (178, 180, 177, 167, 168, 157, 156, 144, 143, 132, 131, 129, 128, 119)
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
 execution_steps:
@@ -323,8 +339,9 @@ execution_steps:
     is present (AWS authorizes DeleteDatabase against the database's child ARNs) and that the grant
     is time-boxed to the drain.
   - >-
-    terraform/bootstrap/github_ci_apply_boundary.tf -- add "glue:*" back to DataPlaneAllow with a
-    comment naming the intersection hazard and the generalized check that now enforces it.
+    terraform/bootstrap/github_ci_apply_boundary.tf -- add "glue:*" back to DataPlaneAllow. Put the
+    intersection-hazard prose ABOVE the Sid line, never inside the Action array (see the in-array
+    comment rule in constraints -- a bracket or bare star there silently voids every boundary assertion).
   - >-
     docs/contracts/iam-simulate-fixture.yaml -- add two allowed triples (database/agent_platform and
     a wildcard-free userDefinedFunction/agent_platform/<probe> ARN; build_triples rejects a literal
@@ -338,10 +355,11 @@ execution_steps:
     the cleanse.
   - >-
     tests/checks/iam_tf/test__write_companions.py -- add both-direction cases for the generalized leg,
-    and REWRITE the two incumbents the generalization invalidates:
+    and REWRITE the one incumbent the generalization invalidates:
     test_no_iam_actions_short_circuits_no_file_read (its s3:GetObject statement now reaches
-    _load_boundary_actions against a monkeypatched empty ROOT and inverts to a failure) and
-    test_collects_allow_iam_actions_only (keep it pinning the iam-only helper, not the new leg).
+    _load_boundary_actions against a monkeypatched empty ROOT and inverts to a failure). Leave
+    test_collects_allow_iam_actions_only untouched -- it pins the iam-only helper, which the
+    sibling-collector design does not modify. Measured blast radius: exactly one failing incumbent.
   - >-
     tests/checks/iam_tf/test_glue_catalog_grant_scope.py -- create the per-Sid resource-axis pin
     (mirror the _statement_blocks structure of test_platform_role_metadata_admin_scope.py), including
@@ -359,7 +377,9 @@ execution_steps:
     RCA (Decision 55).
   - >-
     Commit with the Resolves trailer naming rec-3348 and rec-3328, then follow AGENTS.md Git-ops
-    push -> PR -> CI -> merge. Hold the subscription through the operator apply (Decision 76 / CD.35).
+    push -> PR -> CI -> merge. The PR body carries the DD-B routing line (AGENTS.md): "Routing:
+    operational_fact -> time-boxed grant + removal rec; annotation on Decision 178, no new number."
+    Hold the subscription through the operator apply (Decision 76 / CD.35).
   - 'Report: what was implemented, verification results, and the operator runbook for steps 7-9.'
 rollback: >-
   The HCL change is additive and reversible by reverting the PR; nothing is applied at merge (this
