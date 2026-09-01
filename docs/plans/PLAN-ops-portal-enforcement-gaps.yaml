@@ -13,9 +13,9 @@ plan_path: docs/plans/PLAN-ops-portal-enforcement-gaps.yaml
 phase: >-
   Ad-hoc recommendation-driven forward fix on the ops-portal write surface (soft-warn exception
   category ad_hoc_rec). Claims no tier_item alignment and closes no criteria. Boundary: rec-3310
-  overlaps T2.29:c5, which additionally requires exclude_before write-time grandfathering; that
-  half stays with T2.29 (dependency-blocked on T2.19, in_progress). See context for the c5
-  re-grounding proposal.
+  overlaps T2.29's 5th exit criterion (positional shorthand -- those criteria are plain strings
+  with no flippable ids), which additionally requires exclude_before write-time grandfathering;
+  that half stays with T2.29 (dependency-blocked on T2.19, in_progress). See context.
 scope:
   - file: scripts/data_quality_compile.py
     action: Modify
@@ -58,8 +58,9 @@ scope:
   - file: docs/contracts/ops_recommendations.yaml
     action: Modify
     purpose: >-
-      amend the 2026-08-21 acceptance entry in place for the update_rec boundary (rec-3306);
-      reconcile the context 50-vs-80 contradiction to 80; correct title semantics; net-zero
+      append a dated amendment_log row for the update_rec discrimination boundary (rec-3306); add
+      the dependencies element-format dq_intent (rec-3307); reconcile the context 50-vs-80
+      contradiction to 80; correct title semantics; net-zero by compacting the oldest rows
 bundled_recommendations:
   - rec-3306
   - rec-3307
@@ -117,7 +118,11 @@ verification_plan:
     action: Warehouse check coverage is unchanged -- the skip regressed nothing
     command: bin/venv-python -c "from pathlib import Path; from scripts.data_quality_compile import load_checks; r=load_checks(Path('config/agent/data_quality/ops.yaml')); c=r[0] if isinstance(r,tuple) else r; print(len(c))"
     expected: prints 43, the pre-change count measured 2026-08-31
-    fix_if: a different number -- the loud-fail or the skip set changed which checks compile
+    fix_if: >-
+      Raises instead of printing -- a write-time-only type added later (array_element_format,
+      min_length) was not added to the compiler's declared write-time-only set, so load_checks now
+      loud-fails on it. Add it to the set. A different number instead means the skip set changed
+      which checks compile.
     hermetic: true
     graduation: graduate
     graduation_check_id: dq-compiled-check-count-eq-43
@@ -178,17 +183,41 @@ verification_plan:
     graduation_check_id: min-length-honours-declared-column
   - step: 9
     phase: pre-deploy
-    action: Context enforcement is unchanged at 80 after migrating off the expression branch
-    command: bin/venv-python -m pytest tests/test_ops_data_portal_validators.py -k "context_length" -q
-    expected: passes; under-80 rejected, exactly-80 accepted, same as before the migration
-    fix_if: the boundary moved -- min_length's value for context is not 80
+    action: >-
+      Context enforcement is unchanged at 80 THROUGH THE YAML LOADER after migrating off the
+      expression branch. Must exercise the loader, not _validate_context_length directly -- file_rec
+      calls that function unconditionally outside the loop, so a direct unit call stays green
+      whether or not the migration worked.
+    command: bin/venv-python -m pytest tests/test_ops_data_portal_validators.py::test_loader_yields_context_min_length_80 -q
+    expected: >-
+      passes; _load_write_time_validators("ops_recommendations") yields a context validator that
+      rejects 79 stripped chars and accepts 80
+    fix_if: >-
+      no context validator is yielded (the write_time flag did not move onto min_length), or the
+      boundary is not 80 (wrong value declared)
     hermetic: true
     graduation: graduate
-    graduation_check_id: context-min-length-still-80
+    graduation_check_id: loader-context-min-length-80
   - step: 10
     phase: pre-deploy
+    action: >-
+      The retired expression write-time branch is unreachable (closure obligation, surface-retiring
+      trigger). Neither step 8 nor step 9 can detect a leftover: a surviving branch would check
+      context twice at the same 80 bound and would not touch title at all.
+    command: bin/venv-python -m pytest tests/test_ops_data_portal_validators.py::test_expression_write_time_yields_no_validator -q
+    expected: >-
+      passes; a column whose only write_time test is an expression yields no validator from
+      _load_write_time_validators
+    fix_if: >-
+      a validator is yielded -- the hardcoded expression write-time branch survived the migration
+      and is still binding _validate_context_length to arbitrary columns
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: expression-write-time-branch-retired
+  - step: 11
+    phase: pre-deploy
     action: DQ manifest gate accepts dependencies as enforced
-    command: bin/venv-python -m scripts.validate --pre --only validate_dq_manifest_gate
+    command: bin/venv-python -c "from scripts.checks.ops_governance.validate_dq_manifest_gate import validate_dq_manifest_gate as g; f=[]; g(f); print(f); raise SystemExit(1 if f else 0)"
     expected: exit 0; "all enforced checks have allowed enforcement_ready states"
     fix_if: >-
       FAIL naming ops_recommendations.dependencies -- the manifest is still NO_TEST_NEEDED rather
@@ -196,18 +225,20 @@ verification_plan:
     hermetic: true
     graduation: graduate
     graduation_check_id: dq-manifest-gate-dependencies
-  - step: 11
+  - step: 12
     phase: pre-deploy
     action: Both structural-size-budgeted scope files stay at or under budget with no raise marker
-    command: bin/venv-python -m scripts.validate --pre --only validate_structural_size_limits,validate_structural_size_budget_raises
-    expected: exit 0 -- net-zero achieved by retiring stale prose, no budget raised
+    command: bin/venv-python -c "from scripts.checks.structural.size_limits import validate_structural_size_limits as s; from scripts.checks.structural.budget_raises import validate_structural_size_budget_raises as b; f=[]; s(f); b(f); print(f); raise SystemExit(1 if f else 0)"
+    expected: exit 0 -- net-zero achieved by compacting the oldest amendment_log rows, no budget raised
     fix_if: >-
-      over budget -- reclaim more from the rec-609 blocker prose in the dependencies entry and by
-      amending the 2026-08-21 contract entry in place rather than adding a new one
+      over budget -- reclaim more from the rec-609 blocker prose in the dependencies manifest entry
+      and by compacting further OLDER amendment_log rows in the contract. Never reclaim by
+      rewriting a dated row that records a different date's fact, and never add a raise marker
+      (Decision 165 -- no authorizing Decision is drafted here).
     hermetic: true
     graduation: graduate
     graduation_check_id: enforcement-gaps-structural-size-net-zero
-  - step: 12
+  - step: 13
     phase: pre-deploy
     action: Full fast tier green before handoff
     command: bin/venv-python -m scripts.validate --pre
@@ -215,7 +246,7 @@ verification_plan:
     fix_if: read the named failing check and fix its cause; never skip or quarantine a test
     hermetic: false
     graduation: not-applicable
-  - step: 13
+  - step: 14
     phase: post-deploy
     action: All four bundled recs are closed after the Resolves trailer runs (closure obligation)
     command: bin/venv-python -m scripts.sync.ops pull && bin/venv-python -c "import json; rows={r['id']:r.get('status') for r in (json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip())}; t=['rec-3306','rec-3307','rec-3308','rec-3310']; print({k:rows.get(k) for k in t}); assert all(rows.get(k)=='closed' for k in t)"
@@ -261,26 +292,34 @@ test_obligations:
       80-char rule for any column), green after
   - source: config/agent/data_quality/decisions/ops_recommendations.yaml
     behavior: dependencies is promoted to an enforcement_ready state the manifest gate allows
-    verification_step: 10
-    command: bin/venv-python -m scripts.validate --pre --only validate_dq_manifest_gate
+    verification_step: 11
+    command: bin/venv-python -c "from scripts.checks.ops_governance.validate_dq_manifest_gate import validate_dq_manifest_gate as g; f=[]; g(f); print(f); raise SystemExit(1 if f else 0)"
     red_green_expectation: >-
       red before (enforced dependencies against NO_TEST_NEEDED fails the gate), green after
   - source: docs/contracts/ops_recommendations.yaml
     behavior: >-
-      documents the update_rec discrimination boundary and a single self-consistent context
-      minimum
-    verification_step: 12
+      documents the update_rec discrimination boundary, the dependencies element-format dq_intent,
+      and a single self-consistent context minimum
+    verification_step: 13
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: >-
       Prose contract with no runtime consumer -- nothing imports or parses these description and
       semantics strings at write time, so no test can bind them red-green. The behavioural claims
       the text makes are each covered by steps 7 and 9 against the code that implements them.
 constraints:
-  - Only the files in scope may be modified; out-of-scope bugs are filed as recs, not fixed inline.
+  - >-
+    Only the files in scope may be modified, EXCEPT the mechanically-obligated companion
+    registrations this plan's own dispositions require -- the
+    config/agent/verification_registry/entries/<check_id>.yaml shard per graduate step, which
+    validate_graduation_completeness demands at implement time. Out-of-scope bugs are filed as recs,
+    not fixed inline.
   - No rescue agents or workaround loops (Decision 55).
   - >-
     Net-zero line count on the two structural-size-budgeted scope files. Decision 165 forbids
-    reusing the dec-166 census grandfather to authorise forward growth, so no budget raise.
+    reusing the dec-166 census grandfather to authorise forward growth, so no budget raise. Reclaim
+    only by compacting the OLDEST amendment_log rows and the stale rec-609 blocker prose -- never by
+    rewriting a dated row that records a different date's fact (Decision 177 reached the same
+    conclusion for the decision corpus).
   - >-
     Never eval/exec the declared python expression; min_length takes an integer parameter and a
     restricted comparison, per AGENTS.md Safety.
@@ -299,13 +338,15 @@ context:
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
   - "Anchors moved since filing: write_validators.py -> scripts/ops_portal/, acceptance_lint.py and rec_write_guidance.py -> scripts/executor/. Line numbers unchanged."
   - "rec-3308 scope correction: the compiler loud-fail fires on TWO existing entries, path_syntax and acceptance_lint, not one. Measured 2026-08-31: 43 checks compile, neither is among them."
-  - "acceptance_lint is not faithfully SQL-compilable (lint_acceptance_command does a filesystem-existence check), so a SQL approximation under the same name would recreate the defect being fixed. Hence declared-skip, not a fake branch."
+  - "acceptance_lint is not faithfully SQL-compilable (lint_acceptance_command does a filesystem check), so declared-skip, not a fake SQL branch. Rationale in the plan commit body."
   - "rec-3310 landmine: the expression write-time branch ignores its declared python: key and applies hardcoded _validate_context_length to any column. Exactly one entry (context) declares a write_time expression, so the migration to min_length is surgical."
-  - "rec-3306 blast radius: AST scan of 37 update_rec call sites found no in-repo caller passing acceptance except the --update-rec CLI; rec-autoclose writes only status/resolution. The loop filters on _col in updates, so the tightening is per-update, not per-record -- legacy acceptances on ~800 open recs still close."
-  - "Structural size: both budgeted scope files sit at exactly their budget (522/522 and 556/556). Reclaim from the stale rec-609 blocker prose in the dependencies manifest entry, and amend the contract's 2026-08-21 entry in place rather than appending a new one."
+  - "rec-3306 blast radius: AST scan of 38 update_rec sites -- only the --update-rec CLI passes acceptance; rec-autoclose writes status/resolution only. The loop filters on _col in updates, so the tightening is per-update, not per-record."
+  - "Structural size: both budgeted scope files sit at exactly their budget (522/522 and 556/556). Reclaim from the stale rec-609 blocker prose in the dependencies manifest entry and by compacting the OLDEST contract amendment_log rows -- not by rewriting the dated 2026-08-21 row."
+  - "load_checks applies no write_time filter -- every test entry reaches _compile_column_test. Each new write-time-only type (array_element_format, min_length) MUST join the compiler's declared skip set or the rec-3308 loud-fail fires on this plan's own config."
   - "Decision 131: map_source_to_test(scripts/ops_data_portal.py) -> tests/ops_data_portal/; scripts/ops_portal/** returns None under the Decision 124 carve-out. Hence the new mirror file, and steps to repoint rec-3306/rec-3307 acceptance."
   - "Known breakage: tests/test_data_quality_compile.py::test_compile_column_test_invalid asserts unknown types return None. The loud-fail inverts that contract; rewrite it, do not delete it."
-  - "T2.29:c5 overlap -- its extra requirement is exclude_before write-time grandfathering for a stated ~889 short-title rows. Measured: the current projection holds ONE (rec-002, superseded), and exclude_before is never read at write time. Propose re-grounding c5's figure as roadmap bookkeeping; do not build the mechanism here."
+  - "T2.29 5th-criterion overlap (positional shorthand; its exit_criteria are plain strings with no flippable ids). Its extra exclude_before grandfathering clause cites ~889 short-title rows; measured ONE (rec-002, superseded), and exclude_before is never read at write time. Re-ground, build nothing."
+  - "Branch was behind origin/main at critique (Decision 179/180, a T2.56 flip; none touches this subject). Rebase before implementing."
   - "ci-rca deferral: rec-3328 (terraform apply IAM/S3 failure) is unresolved and shares no file, Decision or failure category with this plan. Owned by docs/plans/PLAN-pr-ci-red-ownership.yaml per human direction 2026-08-31."
   - "Root-cause sibling filed this session: rec-3355 (rec_relevance conflates moved vs retired targets; stale-target rot has no sweep). Not bundled here."
   - "Adjacent, deliberately out of scope: the tags field carries the identical blocked-on-rec-609 shape in the same manifest. File a rec rather than widening."
@@ -333,24 +374,37 @@ execution_steps:
   - >-
     rec-3307 second. Add the array_element_format branch to the loader (per-element regex over a
     native list, null and empty list valid). Add the dependencies column to ops.yaml with the
-    ^rec-[0-9]+$ element rule from the manifest's decided_action. Promote the manifest's
-    dependencies entry to enforcement_ready READY_NOW, rewriting the decided_action and notes to
-    drop the now-false rec-609 blocker prose -- net-negative on line count. Add dependencies to
-    _UPDATE_CONTENT_VALIDATED_FIELDS in scripts/ops_data_portal.py.
+    ^rec-[0-9]+$ element rule from the manifest's decided_action. CRITICAL: also add
+    array_element_format to the compiler's declared write-time-only set from execution step 1 --
+    load_checks passes EVERY test entry to _compile_column_test with no write_time filter, so a new
+    write-time-only type that is not in that set makes load_checks raise the moment the rec-3308
+    loud-fail lands. Promote the manifest's dependencies entry to enforcement_ready READY_NOW,
+    rewriting the decided_action and notes to drop the now-false rec-609 blocker prose --
+    net-negative on line count. Add dependencies to _UPDATE_CONTENT_VALIDATED_FIELDS in
+    scripts/ops_data_portal.py.
   - >-
     rec-3306 third. Pass require_discrimination=True at the lint_acceptance_command call inside
     _check_acceptance. This is the one-line keystone; steps 4 to 7 of the VP guard it.
   - >-
     rec-3310 fourth. Add a parameterised min_length branch honouring its declared integer bound and
-    naming its own column in the error. Move context's write_time flag from its expression entry
-    onto min_length with value 80, keeping the expression entry for the warehouse SQL check; add
-    title min_length 10. Delete the now-unreachable hardcoded expression write-time branch. Correct
-    the title semantics string in ops.yaml to describe the rule that now exists.
+    naming its own column in the error. Add min_length to the compiler's declared write-time-only
+    set, for the same reason as array_element_format above. Move context's write_time flag from its
+    expression entry onto min_length with value 80, keeping the expression entry (without
+    write_time) for the warehouse SQL check; add title min_length 10. Delete the now-unreachable
+    hardcoded expression write-time branch. Correct the title semantics string in ops.yaml to
+    describe the rule that now exists.
   - >-
-    Reconcile docs/contracts/ops_recommendations.yaml: set the context description minimum to 80 to
-    match :278-280 and the code, correct the title semantics, and amend the 2026-08-21 acceptance
-    amendment_log entry in place to record that the discrimination rule now binds at the update_rec
-    boundary too and remains not retroactive. Keep the file at or under 556 lines.
+    Reconcile docs/contracts/ops_recommendations.yaml. (a) Set the context description minimum to 80
+    to match :278-280 and the code. (b) Correct the title semantics. (c) Add an element-format entry
+    to the dependencies dq_intent block at :351-362, which today records only not_null enforced
+    false -- without it the Class A contract stays silent on the one field this plan newly enforces,
+    which is the same config-vs-runtime divergence this plan exists to close, merely inverted.
+    (d) APPEND a new dated amendment_log row (date 2026-09-01, semantic_break true, change_class
+    accepted_values_narrow) recording that the discrimination rule now binds at the update_rec
+    boundary and remains not retroactive. Do NOT rewrite the 2026-08-21 row: it records a fact about
+    that date, and a second semantic break at a new boundary earns its own row. Reclaim the lines by
+    compacting the OLDEST amendment_log rows -- the contracts class's own first-named relief valve,
+    and the sequence docs/contracts/decision-entry.yaml's roster comment records.
   - >-
     Create tests/ops_data_portal/test_update_rec_content_validation.py as the Decision 131 mirror
     for the ops_data_portal.py change, following the local-fixture and no-duckdb-importorskip
@@ -363,8 +417,11 @@ execution_steps:
     update rec-3306 and rec-3307 acceptance through the portal to the step 6 and step 7 node ids.
     Both replacements are discriminating, so they exercise the rec-3306 tightening on first use.
   - >-
-    Propose, do not apply, a roadmap bookkeeping edit re-grounding T2.29:c5's "~889 existing
-    short-title rows" to the measured count, and surface it to the human.
+    Propose, do not apply, a roadmap bookkeeping edit against T2.29's 5th exit criterion: re-ground
+    its "~889 existing short-title rows" to the measured count (one, superseded, zero open) AND
+    annotate which of its clauses this plan discharged -- the min_length handler, title enforcement
+    and the corrected ops.yaml claim -- leaving the exclude_before grandfathering clause open.
+    Surface it to the human; never flip criterion status from a plan session.
   - 'Report: what was implemented, verification results'
 work_areas: []
 rollback: >-
