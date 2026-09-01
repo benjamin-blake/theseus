@@ -44,6 +44,9 @@ _RECONCILE_WORKFLOW_REL = ".github/workflows/reconcile.yml"
 _AUTHORITY_BUDGET_REL = "terraform/bootstrap/authority_budget.json"
 _RECONCILE_DISPATCH_FILE = "reconcile.yml"
 _APPLY_SANDBOX_DISPATCH_FILE = "terraform-apply-sandbox.yml"
+_APPLY_SANDBOX_JOB_NAME = "apply-sandbox"
+_REVIEW_STEP_NAME = "Subagent plan review (digest-fed, JSON-classified)"
+_PLAN_STEP_NAME = "Terraform plan (workflow_dispatch -- fresh plan)"
 _REMOVAL_REC_TITLE = "Remove the time-boxed glue drain grant now that aws_glue_catalog_database.ops has left state"
 # The three _REMOVAL_REC_* constants are the ONE sanctioned exemption from the no-hardcoded-fluent
 # source scan (TestWorkflowInvariants::test_module_source_carries_no_hardcoded_fluent): they are
@@ -341,6 +344,7 @@ def phase_close(
     s3_client: Any,
     rec_reader: Callable[[str], list[dict[str, Any]]],
     file_rec: Callable[..., str],
+    get_rec_write_guidance: Callable[..., Any],
     profile: Optional[str] = None,
 ) -> PhaseOutcome:
     """Re-derives both bundled recs' status from the warehouse (never the local JSONL read cache),
@@ -363,6 +367,9 @@ def phase_close(
             "(a removal obligation for a grant still in use is the exact fail-open this restructure prevents)",
         )
 
+    # Decision 66 Precision Context Injection (AGENTS.md, VP step 12): field semantics reach
+    # context BEFORE composition, never as a post-rejection error.
+    get_rec_write_guidance(source="manual")
     rec_id = file_rec(
         {
             "title": _REMOVAL_REC_TITLE,
@@ -392,22 +399,34 @@ def _gh_json(args: list[str]) -> Any:
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
-def _live_run_lister() -> list[dict[str, Any]]:
-    rows = _gh_json(
-        [
-            "run",
-            "list",
-            "--workflow",
-            _RECONCILE_DISPATCH_FILE,
-            "--event",
-            "workflow_dispatch",
-            "--limit",
-            "20",
-            "--json",
-            "databaseId,status,conclusion,createdAt",
-        ]
-    )
-    return rows or []
+def _live_run_lister_for(workflow_file: str) -> Callable[[], list[dict[str, Any]]]:
+    """Bounded `gh run list` correlator scoped to ONE workflow file.
+
+    Each phase must correlate against the workflow it ACTUALLY dispatched: remove dispatches
+    reconcile.yml, converge dispatches terraform-apply-sandbox.yml. A shared default silently
+    made the converge phase poll Reconcile for an apply-sandbox run, so it could never correlate
+    and its four-fact oracle was unreachable -- hence the workflow is a parameter, never a
+    module-level default, and tests/ops/test_drain_glue_orphan.py pins the per-phase pairing.
+    """
+
+    def _lister() -> list[dict[str, Any]]:
+        rows = _gh_json(
+            [
+                "run",
+                "list",
+                "--workflow",
+                workflow_file,
+                "--event",
+                "workflow_dispatch",
+                "--limit",
+                "20",
+                "--json",
+                "databaseId,status,conclusion,createdAt",
+            ]
+        )
+        return rows or []
+
+    return _lister
 
 
 def _live_run_viewer(run_id: str) -> dict[str, Any]:
@@ -436,10 +455,21 @@ def _live_converge_run_viewer(run_id: str) -> dict[str, Any]:
     if row.get("status") != "completed":
         return row
     jobs_payload = _gh_json(["run", "view", run_id, "--json", "jobs"]) or {}
-    job: dict[str, Any] = next((j for j in jobs_payload.get("jobs", []) if j.get("name") == "apply-sandbox"), {})
+    job: dict[str, Any] = next((j for j in jobs_payload.get("jobs", []) if j.get("name") == _APPLY_SANDBOX_JOB_NAME), {})
     steps = {s.get("name"): s for s in job.get("steps", [])}
-    review_step = steps.get("Subagent plan review (digest-fed, JSON-classified)") or {}
-    plan_step = steps.get("Terraform plan (workflow_dispatch -- fresh plan)")
+    review_step = steps.get(_REVIEW_STEP_NAME)
+    if review_step is None:
+        # FAIL CLOSED. guard_routed is derived from this step being SKIPPED (it is gated
+        # `if: steps.guard.outputs.routed != 'true'`), so a renamed or removed step would read as
+        # "not skipped" -> guard passed -- fail-open on the authoritative safety oracle. A step
+        # this module cannot find means the workflow topology moved, which is exactly the
+        # condition the rest of this module refuses to proceed past.
+        raise WorldMovedError(
+            f"world has moved -- re-assess: apply-sandbox run {run_id} carries no step named "
+            f"{_REVIEW_STEP_NAME!r}; the guard/review verdicts cannot be read, and inferring them "
+            "from its absence would fail open"
+        )
+    plan_step = steps.get(_PLAN_STEP_NAME)
     plan_log = ""
     if plan_step is not None and job.get("databaseId"):
         job_log = subprocess.run(
@@ -492,7 +522,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 s3_client=s3_client,
                 rec_reader=rec_reader,
                 dispatcher=_live_dispatch_reconcile,
-                run_lister=_live_run_lister,
+                run_lister=_live_run_lister_for(_RECONCILE_DISPATCH_FILE),
                 run_viewer=_live_run_viewer,
                 clock=_live_clock,
             )
@@ -500,14 +530,21 @@ def main(argv: Optional[list[str]] = None) -> int:
             outcome = phase_converge(
                 s3_client=s3_client,
                 dispatcher=_live_dispatch_apply_sandbox,
-                run_lister=_live_run_lister,
+                run_lister=_live_run_lister_for(_APPLY_SANDBOX_DISPATCH_FILE),
                 run_viewer=_live_converge_run_viewer,
                 clock=_live_clock,
             )
         else:
+            from scripts.executor.rec_write_guidance import get_rec_write_guidance  # noqa: PLC0415
             from scripts.ops_data_portal import file_rec  # noqa: PLC0415
 
-            outcome = phase_close(s3_client=s3_client, rec_reader=rec_reader, file_rec=file_rec, profile=args.profile)
+            outcome = phase_close(
+                s3_client=s3_client,
+                rec_reader=rec_reader,
+                file_rec=file_rec,
+                get_rec_write_guidance=get_rec_write_guidance,
+                profile=args.profile,
+            )
     except WorldMovedError as exc:
         print(f"drain_glue_orphan[world_moved]: {exc}", file=sys.stderr)
         return 1

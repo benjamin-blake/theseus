@@ -106,6 +106,42 @@ class _ProgressiveS3Client:
         return {"Body": _FakeBody(json.dumps(body).encode("utf-8"))}
 
 
+def _appears_after_dispatch(dispatched: list[str], run: dict[str, Any]) -> Callable[[], list[dict[str, Any]]]:
+    """Reports `run` only after a dispatch fires -- the pre/post asymmetry correlate_dispatch
+    needs to tell a run THIS phase started from one already on record."""
+    return lambda: [run] if dispatched else []
+
+
+def _remove(**overrides: Any) -> PhaseOutcome:
+    """phase_remove with the fresh-world defaults; each test overrides only its branch's seam."""
+    kwargs: dict[str, Any] = {
+        "s3_client": _s3(_RED_RECORD, orphan_present=True),
+        "rec_reader": _reader_returning("open"),
+        "dispatcher": lambda: None,
+        "run_lister": lambda: [],
+        "run_viewer": lambda run_id: {"status": "completed"},
+        "clock": lambda: "2026-09-01T00:00:00Z",
+        "sleeper": lambda s: None,
+    }
+    kwargs.update(overrides)
+    return phase_remove(**kwargs)
+
+
+def _converge(dispatched: list[str], **overrides: Any) -> PhaseOutcome:
+    """_remove's twin: the ONE progressive client is shared with the dispatcher, so the post-apply
+    read turns green only after a dispatch actually fired."""
+    kwargs: dict[str, Any] = {
+        "s3_client": _ProgressiveS3Client(tfstate_orphan_present=False, dispatched=dispatched),
+        "dispatcher": dispatched.append,
+        "run_lister": lambda: [],
+        "run_viewer": lambda run_id: {"status": "in_progress"},
+        "clock": lambda: "2026-09-01T00:00:00Z",
+        "sleeper": lambda s: None,
+    }
+    kwargs.update(overrides)
+    return phase_converge(**kwargs)
+
+
 class TestPhasePreconditions:
     def test_fresh_world_derives_and_gates_cleanly(self) -> None:
         state = derive_remove_state(_s3(_RED_RECORD, orphan_present=True), _reader_returning("open"))
@@ -141,14 +177,7 @@ class TestPhasePreconditions:
         orphan in state) -- exactly why a blind re-run would double-spend the one human approval."""
         dispatched: list[str] = []
         in_flight_run = {"databaseId": 999, "status": "in_progress", "createdAt": "2026-09-01T00:00:00Z"}
-        outcome = phase_remove(
-            s3_client=_s3(_RED_RECORD, orphan_present=True),
-            rec_reader=_reader_returning("open"),
-            dispatcher=lambda: dispatched.append("fired"),
-            run_lister=lambda: [in_flight_run],
-            run_viewer=lambda run_id: {"status": "completed", "log": ""},
-            clock=lambda: "2026-09-01T00:00:00Z",
-        )
+        outcome = _remove(dispatcher=lambda: dispatched.append("fired"), run_lister=lambda: [in_flight_run])
         assert dispatched == [], "must not dispatch a second Reconcile run while one is in flight"
         assert outcome.status == "already_dispatched"
         assert outcome.fluents["run_id"] == 999
@@ -165,16 +194,10 @@ class TestPhasePreconditions:
             "log": "aws_glue_catalog_database.ops: Destruction complete",
         }
 
-        def _lister() -> list[dict[str, Any]]:
-            return [stale_terminal_run, fresh_correlated_run] if dispatched else [stale_terminal_run]
-
-        outcome = phase_remove(
-            s3_client=_s3(_RED_RECORD, orphan_present=True),
-            rec_reader=_reader_returning("open"),
+        outcome = _remove(
             dispatcher=lambda: dispatched.append("fired"),
-            run_lister=_lister,
+            run_lister=lambda: [stale_terminal_run, fresh_correlated_run] if dispatched else [stale_terminal_run],
             run_viewer=lambda run_id: fresh_correlated_run,
-            clock=lambda: "2026-09-01T00:00:00Z",
         )
         assert dispatched == ["fired"]
         assert outcome.status == "drained"
@@ -215,64 +238,36 @@ class TestWaitForTerminal:
 
 class TestPhaseRemoveBranches:
     def test_dispatched_but_not_correlated(self) -> None:
-        outcome = phase_remove(
-            s3_client=_s3(_RED_RECORD, orphan_present=True),
-            rec_reader=_reader_returning("open"),
-            dispatcher=lambda: None,
-            run_lister=lambda: [],
-            run_viewer=lambda run_id: {"status": "completed"},
-            clock=lambda: "2026-09-01T00:00:00Z",
-            sleeper=lambda s: None,
-        )
-        assert outcome.status == "dispatched_but_not_correlated"
+        assert _remove().status == "dispatched_but_not_correlated"
 
     def test_awaiting_approval(self) -> None:
         dispatched: list[str] = []
         run = {"databaseId": 5, "status": "in_progress", "createdAt": "2026-09-01T00:00:01Z"}
-
-        def _lister() -> list[dict[str, Any]]:
-            return [run] if dispatched else []
-
-        outcome = phase_remove(
-            s3_client=_s3(_RED_RECORD, orphan_present=True),
-            rec_reader=_reader_returning("open"),
+        outcome = _remove(
             dispatcher=lambda: dispatched.append("x"),
-            run_lister=_lister,
+            run_lister=_appears_after_dispatch(dispatched, run),
             run_viewer=lambda run_id: {"status": "in_progress"},
-            clock=lambda: "2026-09-01T00:00:00Z",
-            sleeper=lambda s: None,
         )
         assert outcome.status == "awaiting_approval"
 
     def test_terminal_without_destruction_line(self) -> None:
         dispatched: list[str] = []
         run = {"databaseId": 7, "status": "completed", "createdAt": "2026-09-01T00:00:01Z", "log": "some other output"}
-
-        def _lister() -> list[dict[str, Any]]:
-            return [run] if dispatched else []
-
-        outcome = phase_remove(
-            s3_client=_s3(_RED_RECORD, orphan_present=True),
-            rec_reader=_reader_returning("open"),
+        outcome = _remove(
             dispatcher=lambda: dispatched.append("x"),
-            run_lister=_lister,
+            run_lister=_appears_after_dispatch(dispatched, run),
             run_viewer=lambda run_id: run,
-            clock=lambda: "2026-09-01T00:00:00Z",
-            sleeper=lambda s: None,
         )
         assert outcome.status == "terminal_without_destruction"
         assert outcome.fluents["drained"] is False
 
 
 class TestPhaseConverge:
-    _RUN_ID = 10
-    _CREATED_AT = "2026-09-01T00:00:01Z"
-
     def _run(self, **overrides: Any) -> dict[str, Any]:
         base = {
-            "databaseId": self._RUN_ID,
+            "databaseId": 10,
             "status": "completed",
-            "createdAt": self._CREATED_AT,
+            "createdAt": "2026-09-01T00:00:01Z",
             "plan_log": "",
             "guard_routed": False,
             "review_approving": True,
@@ -283,94 +278,66 @@ class TestPhaseConverge:
     def test_converged_when_all_four_facts_hold(self) -> None:
         dispatched: list[str] = []
         run = self._run()
-
-        def _lister() -> list[dict[str, Any]]:
-            return [run] if dispatched else []
-
-        outcome = phase_converge(
-            s3_client=_ProgressiveS3Client(tfstate_orphan_present=False, dispatched=dispatched),
-            dispatcher=dispatched.append,
-            run_lister=_lister,
-            run_viewer=lambda run_id: run,
-            clock=lambda: "2026-09-01T00:00:00Z",
-            sleeper=lambda s: None,
-        )
+        outcome = _converge(dispatched, run_lister=_appears_after_dispatch(dispatched, run), run_viewer=lambda run_id: run)
         assert outcome.status == "converged"
         assert dispatched == [_RED_RECORD["commit_sha"]]
 
     def test_not_converged_when_review_is_not_approving(self) -> None:
         dispatched: list[str] = []
         run = self._run(review_approving=False)
-
-        def _lister() -> list[dict[str, Any]]:
-            return [run] if dispatched else []
-
-        outcome = phase_converge(
-            s3_client=_ProgressiveS3Client(tfstate_orphan_present=False, dispatched=dispatched),
-            dispatcher=dispatched.append,
-            run_lister=_lister,
-            run_viewer=lambda run_id: run,
-            clock=lambda: "2026-09-01T00:00:00Z",
-            sleeper=lambda s: None,
-        )
+        outcome = _converge(dispatched, run_lister=_appears_after_dispatch(dispatched, run), run_viewer=lambda run_id: run)
         assert outcome.status == "not_converged"
         assert outcome.fluents["review_approving"] is False
 
     def test_dispatched_but_not_correlated(self) -> None:
-        outcome = phase_converge(
-            s3_client=_ProgressiveS3Client(tfstate_orphan_present=False, dispatched=[]),
-            dispatcher=lambda sha: None,
-            run_lister=lambda: [],
-            run_viewer=lambda run_id: self._run(),
-            clock=lambda: "2026-09-01T00:00:00Z",
-            sleeper=lambda s: None,
-        )
-        assert outcome.status == "dispatched_but_not_correlated"
+        assert _converge([], dispatcher=lambda sha: None).status == "dispatched_but_not_correlated"
 
     def test_awaiting_terminal(self) -> None:
         dispatched: list[str] = []
         run = {"databaseId": 11, "status": "in_progress", "createdAt": "2026-09-01T00:00:01Z"}
-
-        def _lister() -> list[dict[str, Any]]:
-            return [run] if dispatched else []
-
-        outcome = phase_converge(
-            s3_client=_ProgressiveS3Client(tfstate_orphan_present=False, dispatched=dispatched),
-            dispatcher=dispatched.append,
-            run_lister=_lister,
-            run_viewer=lambda run_id: {"status": "in_progress"},
-            clock=lambda: "2026-09-01T00:00:00Z",
-            sleeper=lambda s: None,
-        )
+        outcome = _converge(dispatched, run_lister=_appears_after_dispatch(dispatched, run))
         assert outcome.status == "awaiting_terminal"
 
 
 class TestPhaseClose:
     def test_recs_still_open_refuses_to_file(self) -> None:
         outcome = phase_close(
-            s3_client=_s3(None, orphan_present=False), rec_reader=_reader_returning("open"), file_rec=_unreachable_file_rec
+            s3_client=_s3(None, orphan_present=False),
+            rec_reader=_reader_returning("open"),
+            file_rec=_unreachable_file_rec,
+            get_rec_write_guidance=lambda **kw: {},
         )
         assert outcome.status == "recs_still_open"
 
     def test_orphan_still_in_state_refuses_to_file(self) -> None:
         outcome = phase_close(
-            s3_client=_s3(None, orphan_present=True), rec_reader=_reader_returning("closed"), file_rec=_unreachable_file_rec
+            s3_client=_s3(None, orphan_present=True),
+            rec_reader=_reader_returning("closed"),
+            file_rec=_unreachable_file_rec,
+            get_rec_write_guidance=lambda **kw: {},
         )
         assert outcome.status == "orphan_still_in_state"
 
     def test_files_removal_rec_once_both_preconditions_confirmed(self) -> None:
         filed: dict[str, Any] = {}
+        calls: list[str] = []
 
-        def _file_rec(fields: dict[str, Any], profile: str | None = None) -> str:
+        def _tracked_file_rec(fields: dict[str, Any], profile: str | None = None) -> str:
+            calls.append("file_rec")
             filed.update(fields)
             return "rec-9999"
 
         outcome = phase_close(
-            s3_client=_s3(None, orphan_present=False), rec_reader=_reader_returning("closed"), file_rec=_file_rec
+            s3_client=_s3(None, orphan_present=False),
+            rec_reader=_reader_returning("closed"),
+            file_rec=_tracked_file_rec,
+            get_rec_write_guidance=lambda **kw: calls.append("guidance"),
         )
         assert outcome.status == "filed"
         assert outcome.fluents["removal_rec_id"] == "rec-9999"
         assert filed["priority"] == "High" and filed["effort"] == "XS" and filed["source"] == "manual"
+        # Decision 66 Precision Context Injection: guidance reaches context BEFORE composition.
+        assert calls == ["guidance", "file_rec"], calls
 
 
 class _FakeCompletedProcess:
@@ -399,12 +366,22 @@ class TestLiveWiring:
             return [{"databaseId": 1}]
 
         monkeypatch.setattr(drain_module, "_gh_json", _fake_gh_json)
-        assert drain_module._live_run_lister() == [{"databaseId": 1}]
+        assert drain_module._live_run_lister_for("reconcile.yml")() == [{"databaseId": 1}]
         assert "reconcile.yml" in captured["args"]
 
     def test_live_run_lister_none_becomes_empty_list(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(drain_module, "_gh_json", lambda args: None)
-        assert drain_module._live_run_lister() == []
+        assert drain_module._live_run_lister_for("reconcile.yml")() == []
+
+    def test_live_run_lister_scopes_to_the_workflow_it_is_given(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each phase correlates against the workflow it DISPATCHED. A shared reconcile-only
+        lister made the converge phase poll Reconcile for an apply-sandbox run, so it could never
+        correlate and its four-fact oracle was unreachable."""
+        captured: dict[str, Any] = {}
+        monkeypatch.setattr(drain_module, "_gh_json", lambda args: captured.setdefault("args", args) and [])
+        drain_module._live_run_lister_for("terraform-apply-sandbox.yml")()
+        assert "terraform-apply-sandbox.yml" in captured["args"]
+        assert "reconcile.yml" not in captured["args"]
 
     def test_live_run_viewer_fetches_log_when_completed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(drain_module, "_gh_json", lambda args: {"status": "completed"})
@@ -426,6 +403,23 @@ class TestLiveWiring:
         monkeypatch.setattr(drain_module.subprocess, "run", lambda args, **k: calls.append(args) or _FakeCompletedProcess())
         drain_module._live_dispatch_apply_sandbox("some-ack-value")
         assert "acknowledge_red_commit=some-ack-value" in calls[0]
+
+    def test_live_converge_run_viewer_fails_closed_when_the_review_step_is_missing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """H3 fail-closed: guard_routed is derived from the review step being SKIPPED, so a
+        renamed or removed step would read as 'not skipped' -> guard passed. That is fail-open on
+        an authoritative safety oracle, so a step this module cannot find is a moved world."""
+
+        def _fake_gh_json(args: list[str]) -> Any:
+            if "jobs" in args:
+                return self._jobs_payload([{"name": "Some Renamed Step", "conclusion": "success"}])
+            return {"status": "completed"}
+
+        monkeypatch.setattr(drain_module, "_gh_json", _fake_gh_json)
+        monkeypatch.setattr(drain_module.subprocess, "run", lambda *a, **k: _FakeCompletedProcess(stdout="log"))
+        with pytest.raises(WorldMovedError, match="carries no step named"):
+            drain_module._live_converge_run_viewer("1")
 
     def test_live_clock_returns_a_z_suffixed_timestamp(self) -> None:
         assert drain_module._live_clock().endswith("Z")
@@ -494,6 +488,18 @@ class TestMain:
         monkeypatch.setattr(reconcile_target, "_default_reader", lambda profile: _reader_returning("open"))
         assert main(["--phase", "remove"]) == 1
         assert "world_moved" in capsys.readouterr().err
+
+    def test_main_pairs_each_phase_with_the_workflow_it_dispatches(self) -> None:
+        """C2 regression pin: the converge phase dispatches terraform-apply-sandbox.yml, so it must
+        correlate against that workflow -- not reconcile.yml, which only the remove phase
+        dispatches. A shared lister made the converge oracle structurally unreachable."""
+        import inspect
+
+        source = inspect.getsource(drain_module.main)
+        remove_block = source.split('args.phase == "remove"')[1].split("elif")[0]
+        converge_block = source.split('args.phase == "converge"')[1].split("else:")[0]
+        assert "_RECONCILE_DISPATCH_FILE" in remove_block and "_APPLY_SANDBOX_DISPATCH_FILE" not in remove_block
+        assert "_APPLY_SANDBOX_DISPATCH_FILE" in converge_block and "_RECONCILE_DISPATCH_FILE" not in converge_block
 
     def test_main_converge_phase_dispatches_and_gates(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setitem(sys.modules, "boto3", self._fake_boto3(_s3({"status": "green"}, orphan_present=True)))
