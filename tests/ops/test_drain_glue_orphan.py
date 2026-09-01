@@ -1,8 +1,10 @@
 """Tests for scripts/ops/drain_glue_orphan.py (the executable Decision 178 clause 4 drain runbook).
 
-Self-contained (no cross-test imports): its own S3/reader/gh-shaped fakes -- no network, no
-warehouse write. TestPhasePreconditions proves fresh-world-proceeds / moved-world-fails-closed
-(naming the fluent) and the already-dispatched re-entrancy gate in BOTH directions.
+No cross-test imports: the S3/reader/gh-shaped fakes live in tests/fixtures/drain_glue_orphan.py,
+an importable package exempt from the guard by construction -- no network, no warehouse write.
+TestPhasePreconditions proves fresh-world-proceeds / moved-world-fails-closed (naming the fluent),
+the already-dispatched re-entrancy gate in BOTH directions, and the CROSS-PHASE rec lifecycle:
+remove and close must be satisfiable by one rec state, or remove is unreachable in its own sequence.
 TestWorkflowInvariants proves each of the FOUR routing invariants passes against real committed
 source AND fails against a mutated copy, plus the no-hardcoded-fluent source scan.
 """
@@ -24,8 +26,6 @@ import scripts.ops.drain_glue_orphan as drain_module
 from scripts.ci import reconcile_target
 from scripts.ops.drain_glue_orphan import (
     _ROOT,
-    _TFSTATE_BUCKET,
-    _TFSTATE_KEY,
     PhaseOutcome,
     WorldMovedError,
     assert_workflow_invariants,
@@ -39,71 +39,16 @@ from scripts.ops.drain_glue_orphan import (
     phase_remove,
     wait_for_terminal,
 )
+from tests.fixtures.drain_glue_orphan import (
+    RED_RECORD,
+    FakeCompletedProcess,
+    ProgressiveS3Client,
+    make_s3,
+    reader_returning,
+    unreachable_file_rec,
+)
 
 _MODULE_PATH = _ROOT / "scripts" / "ops" / "drain_glue_orphan.py"
-_RED_RECORD = {"status": "red", "commit_sha": "fake-red-commit-sha"}
-
-
-def _unreachable_file_rec(fields: dict[str, Any], profile: str | None = None) -> str:
-    raise AssertionError("file_rec must not be called")
-
-
-class _FakeBody:
-    def __init__(self, data: bytes) -> None:
-        self._data = data
-
-    def read(self) -> bytes:
-        return self._data
-
-
-class _MultiKeyS3Client:
-    """Dispatches get_object by (Bucket, Key) -- the convergence record and the tfstate object
-    live at different keys but share the ONE injected client, mirroring the live wiring."""
-
-    def __init__(self, objects: dict[tuple[str, str], Any]) -> None:
-        self._objects = objects
-
-    def get_object(self, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
-        obj = self._objects.get((Bucket, Key))
-        if obj is None:
-            raise RuntimeError(f"NoSuchKey: {Bucket}/{Key}")
-        return {"Body": _FakeBody(json.dumps(obj).encode("utf-8"))}
-
-
-def _s3(record: dict[str, Any] | None, orphan_present: bool) -> _MultiKeyS3Client:
-    resources = [{"type": "aws_glue_catalog_database", "name": "ops"}] if orphan_present else []
-    objects: dict[tuple[str, str], Any] = {(_TFSTATE_BUCKET, _TFSTATE_KEY): {"resources": resources}}
-    if record is not None:
-        objects[(reconcile_target.CONVERGENCE_BUCKET, reconcile_target.CONVERGENCE_KEY)] = record
-    return _MultiKeyS3Client(objects)
-
-
-def _reader_returning(status: str | None) -> Callable[[str], list[dict[str, Any]]]:
-    def _r(rec_id: str) -> list[dict[str, Any]]:
-        return [] if status is None else [{"status": status}]
-
-    return _r
-
-
-class _ProgressiveS3Client:
-    """phase_converge reads the convergence record TWICE: red before dispatch (precondition), then
-    again after the run lands (the post-apply fact). `dispatched` is the SAME list the test's fake
-    dispatcher appends to, so the second read only turns green once a dispatch actually fired --
-    mirrors a live apply landing between the two reads."""
-
-    def __init__(self, tfstate_orphan_present: bool, dispatched: list[str]) -> None:
-        self._tfstate_orphan_present = tfstate_orphan_present
-        self._dispatched = dispatched
-
-    def get_object(self, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
-        if (Bucket, Key) == (_TFSTATE_BUCKET, _TFSTATE_KEY):
-            resources = [{"type": "aws_glue_catalog_database", "name": "ops"}] if self._tfstate_orphan_present else []
-            body = {"resources": resources}
-        elif (Bucket, Key) == (reconcile_target.CONVERGENCE_BUCKET, reconcile_target.CONVERGENCE_KEY):
-            body = {"status": "green"} if self._dispatched else _RED_RECORD
-        else:
-            raise RuntimeError(f"NoSuchKey: {Bucket}/{Key}")
-        return {"Body": _FakeBody(json.dumps(body).encode("utf-8"))}
 
 
 def _appears_after_dispatch(dispatched: list[str], run: dict[str, Any]) -> Callable[[], list[dict[str, Any]]]:
@@ -115,8 +60,8 @@ def _appears_after_dispatch(dispatched: list[str], run: dict[str, Any]) -> Calla
 def _remove(**overrides: Any) -> PhaseOutcome:
     """phase_remove with the fresh-world defaults; each test overrides only its branch's seam."""
     kwargs: dict[str, Any] = {
-        "s3_client": _s3(_RED_RECORD, orphan_present=True),
-        "rec_reader": _reader_returning("open"),
+        "s3_client": make_s3(RED_RECORD, orphan_present=True),
+        "rec_reader": reader_returning("closed"),
         "dispatcher": lambda: None,
         "run_lister": lambda: [],
         "run_viewer": lambda run_id: {"status": "completed"},
@@ -131,7 +76,7 @@ def _converge(dispatched: list[str], **overrides: Any) -> PhaseOutcome:
     """_remove's twin: the ONE progressive client is shared with the dispatcher, so the post-apply
     read turns green only after a dispatch actually fired."""
     kwargs: dict[str, Any] = {
-        "s3_client": _ProgressiveS3Client(tfstate_orphan_present=False, dispatched=dispatched),
+        "s3_client": ProgressiveS3Client(tfstate_orphan_present=False, dispatched=dispatched),
         "dispatcher": dispatched.append,
         "run_lister": lambda: [],
         "run_viewer": lambda run_id: {"status": "in_progress"},
@@ -144,24 +89,54 @@ def _converge(dispatched: list[str], **overrides: Any) -> PhaseOutcome:
 
 class TestPhasePreconditions:
     def test_fresh_world_derives_and_gates_cleanly(self) -> None:
-        state = derive_remove_state(_s3(_RED_RECORD, orphan_present=True), _reader_returning("open"))
+        state = derive_remove_state(make_s3(RED_RECORD, orphan_present=True), reader_returning("closed"))
         gate_remove_preconditions(state)  # must not raise
 
     def test_moved_world_fails_closed(self) -> None:
         """Record turned green mid-run -- named explicitly, never a bare exit-status failure."""
-        state = derive_remove_state(_s3({"status": "green"}, orphan_present=True), _reader_returning("open"))
+        state = derive_remove_state(make_s3({"status": "green"}, orphan_present=True), reader_returning("closed"))
         with pytest.raises(WorldMovedError, match="not reconcilable"):
             gate_remove_preconditions(state)
 
     def test_moved_world_orphan_already_drained_fails_closed(self) -> None:
-        state = derive_remove_state(_s3(_RED_RECORD, orphan_present=False), _reader_returning("open"))
+        state = derive_remove_state(make_s3(RED_RECORD, orphan_present=False), reader_returning("closed"))
         with pytest.raises(WorldMovedError, match="no longer in tfstate"):
             gate_remove_preconditions(state)
 
-    def test_moved_world_bundled_rec_closed_fails_closed(self) -> None:
-        state = derive_remove_state(_s3(_RED_RECORD, orphan_present=True), _reader_returning("closed"))
-        with pytest.raises(WorldMovedError, match="no longer open"):
+    def test_moved_world_bundled_rec_still_open_fails_closed(self) -> None:
+        """An OPEN bundled rec means the enabling PR has not merged, so the restored grant is not in
+        HCL yet and the destroy would AccessDeny exactly as run 33323201848 did."""
+        state = derive_remove_state(make_s3(RED_RECORD, orphan_present=True), reader_returning("open"))
+        with pytest.raises(WorldMovedError, match="still open"):
             gate_remove_preconditions(state)
+
+    def test_one_rec_state_satisfies_both_remove_and_close(self) -> None:
+        """Cross-phase lifecycle pin. remove once required the bundled recs OPEN while close required
+        them CLOSED, and rec-autoclose.yml flips them at the merge the drain itself depends on -- so
+        NO single world satisfied both and phase_remove was unreachable in its own sequence. Each
+        phase's own tests feed it a hand-picked rec state, so only walking ONE state through both
+        gates can see the contradiction."""
+        reader = reader_returning("closed")
+        gate_remove_preconditions(derive_remove_state(make_s3(RED_RECORD, orphan_present=True), reader))
+        outcome = phase_close(
+            s3_client=make_s3(None, orphan_present=False),
+            rec_reader=reader,
+            file_rec=lambda fields, profile=None: "rec-9999",
+            get_rec_write_guidance=lambda **kw: None,
+        )
+        assert outcome.status != "recs_still_open", outcome
+
+    def test_pre_merge_open_rec_state_satisfies_neither_phase(self) -> None:
+        reader = reader_returning("open")
+        with pytest.raises(WorldMovedError, match="still open"):
+            gate_remove_preconditions(derive_remove_state(make_s3(RED_RECORD, orphan_present=True), reader))
+        outcome = phase_close(
+            s3_client=make_s3(None, orphan_present=False),
+            rec_reader=reader,
+            file_rec=unreachable_file_rec,
+            get_rec_write_guidance=lambda **kw: None,
+        )
+        assert outcome.status == "recs_still_open"
 
     def test_converge_moved_world_record_not_red_fails_closed(self) -> None:
         with pytest.raises(WorldMovedError, match="not CONVERGENCE_RED"):
@@ -169,7 +144,7 @@ class TestPhasePreconditions:
 
     def test_converge_moved_world_orphan_still_present_fails_closed(self) -> None:
         with pytest.raises(WorldMovedError, match="still in tfstate"):
-            gate_converge_preconditions(_RED_RECORD, orphan_in_state=True)
+            gate_converge_preconditions(RED_RECORD, orphan_in_state=True)
 
     def test_remove_refuses_second_dispatch_while_run_in_flight(self) -> None:
         """ALREADY-DISPATCHED: a non-terminal run exists -- must NOT dispatch again, and must
@@ -280,7 +255,7 @@ class TestPhaseConverge:
         run = self._run()
         outcome = _converge(dispatched, run_lister=_appears_after_dispatch(dispatched, run), run_viewer=lambda run_id: run)
         assert outcome.status == "converged"
-        assert dispatched == [_RED_RECORD["commit_sha"]]
+        assert dispatched == [RED_RECORD["commit_sha"]]
 
     def test_not_converged_when_review_is_not_approving(self) -> None:
         dispatched: list[str] = []
@@ -302,18 +277,18 @@ class TestPhaseConverge:
 class TestPhaseClose:
     def test_recs_still_open_refuses_to_file(self) -> None:
         outcome = phase_close(
-            s3_client=_s3(None, orphan_present=False),
-            rec_reader=_reader_returning("open"),
-            file_rec=_unreachable_file_rec,
+            s3_client=make_s3(None, orphan_present=False),
+            rec_reader=reader_returning("open"),
+            file_rec=unreachable_file_rec,
             get_rec_write_guidance=lambda **kw: {},
         )
         assert outcome.status == "recs_still_open"
 
     def test_orphan_still_in_state_refuses_to_file(self) -> None:
         outcome = phase_close(
-            s3_client=_s3(None, orphan_present=True),
-            rec_reader=_reader_returning("closed"),
-            file_rec=_unreachable_file_rec,
+            s3_client=make_s3(None, orphan_present=True),
+            rec_reader=reader_returning("closed"),
+            file_rec=unreachable_file_rec,
             get_rec_write_guidance=lambda **kw: {},
         )
         assert outcome.status == "orphan_still_in_state"
@@ -328,8 +303,8 @@ class TestPhaseClose:
             return "rec-9999"
 
         outcome = phase_close(
-            s3_client=_s3(None, orphan_present=False),
-            rec_reader=_reader_returning("closed"),
+            s3_client=make_s3(None, orphan_present=False),
+            rec_reader=reader_returning("closed"),
             file_rec=_tracked_file_rec,
             get_rec_write_guidance=lambda **kw: calls.append("guidance"),
         )
@@ -340,22 +315,16 @@ class TestPhaseClose:
         assert calls == ["guidance", "file_rec"], calls
 
 
-class _FakeCompletedProcess:
-    def __init__(self, stdout: str = "", returncode: int = 0) -> None:
-        self.stdout = stdout
-        self.returncode = returncode
-
-
 class TestLiveWiring:
     """Thin gh-CLI/boto3 wiring -- monkeypatches subprocess.run and sys.modules['boto3'] the same
     way tests/test_reconcile_target.py's main() tests do, so no live process or network fires."""
 
     def test_gh_json_parses_stdout(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(drain_module.subprocess, "run", lambda *a, **k: _FakeCompletedProcess(stdout='{"a": 1}'))
+        monkeypatch.setattr(drain_module.subprocess, "run", lambda *a, **k: FakeCompletedProcess(stdout='{"a": 1}'))
         assert drain_module._gh_json(["run", "list"]) == {"a": 1}
 
     def test_gh_json_empty_stdout_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(drain_module.subprocess, "run", lambda *a, **k: _FakeCompletedProcess(stdout=""))
+        monkeypatch.setattr(drain_module.subprocess, "run", lambda *a, **k: FakeCompletedProcess(stdout=""))
         assert drain_module._gh_json(["run", "list"]) is None
 
     def test_live_run_lister_wraps_gh_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -385,7 +354,7 @@ class TestLiveWiring:
 
     def test_live_run_viewer_fetches_log_when_completed(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(drain_module, "_gh_json", lambda args: {"status": "completed"})
-        monkeypatch.setattr(drain_module.subprocess, "run", lambda *a, **k: _FakeCompletedProcess(stdout="LOG TEXT"))
+        monkeypatch.setattr(drain_module.subprocess, "run", lambda *a, **k: FakeCompletedProcess(stdout="LOG TEXT"))
         assert drain_module._live_run_viewer("123")["log"] == "LOG TEXT"
 
     def test_live_run_viewer_skips_log_when_not_completed(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -394,13 +363,13 @@ class TestLiveWiring:
 
     def test_live_dispatch_reconcile_invokes_gh(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[list[str]] = []
-        monkeypatch.setattr(drain_module.subprocess, "run", lambda args, **k: calls.append(args) or _FakeCompletedProcess())
+        monkeypatch.setattr(drain_module.subprocess, "run", lambda args, **k: calls.append(args) or FakeCompletedProcess())
         drain_module._live_dispatch_reconcile()
         assert calls[0] == ["gh", "workflow", "run", "reconcile.yml"]
 
     def test_live_dispatch_apply_sandbox_passes_ack_input(self, monkeypatch: pytest.MonkeyPatch) -> None:
         calls: list[list[str]] = []
-        monkeypatch.setattr(drain_module.subprocess, "run", lambda args, **k: calls.append(args) or _FakeCompletedProcess())
+        monkeypatch.setattr(drain_module.subprocess, "run", lambda args, **k: calls.append(args) or FakeCompletedProcess())
         drain_module._live_dispatch_apply_sandbox("some-ack-value")
         assert "acknowledge_red_commit=some-ack-value" in calls[0]
 
@@ -417,7 +386,7 @@ class TestLiveWiring:
             return {"status": "completed"}
 
         monkeypatch.setattr(drain_module, "_gh_json", _fake_gh_json)
-        monkeypatch.setattr(drain_module.subprocess, "run", lambda *a, **k: _FakeCompletedProcess(stdout="log"))
+        monkeypatch.setattr(drain_module.subprocess, "run", lambda *a, **k: FakeCompletedProcess(stdout="log"))
         with pytest.raises(WorldMovedError, match="carries no step named"):
             drain_module._live_converge_run_viewer("1")
 
@@ -441,7 +410,7 @@ class TestLiveWiring:
         monkeypatch.setattr(
             drain_module, "_gh_json", lambda args: self._jobs_payload(steps) if "jobs" in args else {"status": "completed"}
         )
-        monkeypatch.setattr(drain_module.subprocess, "run", lambda *a, **k: _FakeCompletedProcess(stdout="plan text"))
+        monkeypatch.setattr(drain_module.subprocess, "run", lambda *a, **k: FakeCompletedProcess(stdout="plan text"))
         row = drain_module._live_converge_run_viewer("1")
         assert row["guard_routed"] is False
         assert row["review_approving"] is True
@@ -452,7 +421,7 @@ class TestLiveWiring:
         monkeypatch.setattr(
             drain_module, "_gh_json", lambda args: self._jobs_payload(steps) if "jobs" in args else {"status": "completed"}
         )
-        monkeypatch.setattr(drain_module.subprocess, "run", lambda *a, **k: _FakeCompletedProcess(stdout="full run log"))
+        monkeypatch.setattr(drain_module.subprocess, "run", lambda *a, **k: FakeCompletedProcess(stdout="full run log"))
         row = drain_module._live_converge_run_viewer("1")
         assert row["guard_routed"] is True
         assert row["review_approving"] is False
@@ -474,8 +443,8 @@ class TestMain:
         return _FakeBoto3Module()
 
     def test_main_close_phase_end_to_end(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setitem(sys.modules, "boto3", self._fake_boto3(_s3(None, orphan_present=False)))
-        monkeypatch.setattr(reconcile_target, "_default_reader", lambda profile: _reader_returning("closed"))
+        monkeypatch.setitem(sys.modules, "boto3", self._fake_boto3(make_s3(None, orphan_present=False)))
+        monkeypatch.setattr(reconcile_target, "_default_reader", lambda profile: reader_returning("closed"))
         import scripts.ops_data_portal as portal_module
 
         monkeypatch.setattr(portal_module, "file_rec", lambda fields, profile=None: "rec-1234")
@@ -484,8 +453,8 @@ class TestMain:
     def test_main_reports_world_moved_as_exit_one(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
-        monkeypatch.setitem(sys.modules, "boto3", self._fake_boto3(_s3({"status": "green"}, orphan_present=True)))
-        monkeypatch.setattr(reconcile_target, "_default_reader", lambda profile: _reader_returning("open"))
+        monkeypatch.setitem(sys.modules, "boto3", self._fake_boto3(make_s3({"status": "green"}, orphan_present=True)))
+        monkeypatch.setattr(reconcile_target, "_default_reader", lambda profile: reader_returning("open"))
         assert main(["--phase", "remove"]) == 1
         assert "world_moved" in capsys.readouterr().err
 
@@ -502,8 +471,8 @@ class TestMain:
         assert "_APPLY_SANDBOX_DISPATCH_FILE" in converge_block and "_RECONCILE_DISPATCH_FILE" not in converge_block
 
     def test_main_converge_phase_dispatches_and_gates(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setitem(sys.modules, "boto3", self._fake_boto3(_s3({"status": "green"}, orphan_present=True)))
-        monkeypatch.setattr(reconcile_target, "_default_reader", lambda profile: _reader_returning("open"))
+        monkeypatch.setitem(sys.modules, "boto3", self._fake_boto3(make_s3({"status": "green"}, orphan_present=True)))
+        monkeypatch.setattr(reconcile_target, "_default_reader", lambda profile: reader_returning("open"))
         assert main(["--phase", "converge"]) == 1  # record not red -- fails closed, still exercises the converge branch
 
 

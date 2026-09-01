@@ -145,9 +145,17 @@ def gate_remove_preconditions(state: RemoveState) -> None:
         raise WorldMovedError(f"world has moved -- re-assess: convergence record is not reconcilable ({state.target.reason})")
     if not state.orphan_in_state:
         raise WorldMovedError(f"world has moved -- re-assess: {_ORPHAN_TYPE}.{_ORPHAN_NAME} is no longer in tfstate")
-    not_open = sorted(rec_id for rec_id, is_open in state.rec_open.items() if not is_open)
-    if not_open:
-        raise WorldMovedError(f"world has moved -- re-assess: bundled rec(s) no longer open: {not_open}")
+    # Both this gate and phase_close require the bundled recs CLOSED, and that is not a copy-paste
+    # slip: rec-autoclose.yml flips them open -> closed at the merge of the PR that puts the restored
+    # grant in HCL, and that merge is the precondition for the drain existing at all. Gating remove on
+    # "still open" made this phase unreachable in its own intended sequence -- it could only run before
+    # the merge that makes the destroy authorizable.
+    still_open = sorted(rec_id for rec_id, is_open in state.rec_open.items() if is_open)
+    if still_open:
+        raise WorldMovedError(
+            f"world has moved -- re-assess: bundled rec(s) still open: {still_open} -- the enabling PR has not "
+            "merged, so the restored grant is not in HCL and the destroy would AccessDeny as the original apply did"
+        )
 
 
 def gate_converge_preconditions(record: Optional[dict], orphan_in_state: bool) -> None:
