@@ -123,8 +123,8 @@ verification_plan:
     hermetic: true
   - step: 3
     phase: pre-deploy
-    action: Prove no named repo path was lost relocating the AGENTS.md git-ops body.
-    command: 'bin/venv-python -c "import re,subprocess,pathlib; o=subprocess.run([''git'',''show'',''origin/main:AGENTS.md''],capture_output=True,text=True).stdout; s=o.split(chr(10)+''## Git-ops procedure''+chr(10))[1].split(chr(10)+''## Instruction architecture''+chr(10))[0]; want=set(re.findall(r''[A-Za-z0-9_./-]+\.(?:tfvars|tfstate|yaml|yml|hcl|json|tfrc|py|md|sh|tf)(?![A-Za-z0-9])'',s)); got=pathlib.Path(''docs/contracts/git-ops.yaml'').read_text()+pathlib.Path(''AGENTS.md'').read_text(); lost=sorted(x for x in want if x not in got); print(''LOST:'',lost); raise SystemExit(1 if lost else 0)"'
+    action: Prove no named repo path was lost relocating the AGENTS.md git-ops body, merge protocol and operational-runbooks ranges.
+    command: 'bin/venv-python -c "import re,subprocess,pathlib; o=subprocess.run([''git'',''show'',''origin/main:AGENTS.md''],capture_output=True,text=True).stdout; s=o.split(chr(10)+''## Git-ops procedure''+chr(10))[1]; want=set(re.findall(r''[A-Za-z0-9_./-]+\.(?:tfvars|tfstate|yaml|yml|hcl|json|tfrc|py|md|sh|tf)(?![A-Za-z0-9])'',s)); got=pathlib.Path(''docs/contracts/git-ops.yaml'').read_text()+pathlib.Path(''AGENTS.md'').read_text(); lost=sorted(x for x in want if x not in got); print(''LOST:'',lost); raise SystemExit(1 if lost else 0)"'
     expected: 'Prints LOST: [] and exits 0.'
     fix_if: A non-empty list names paths dropped in transit - add them to the contract.
     graduation: graduate
@@ -142,8 +142,8 @@ verification_plan:
   - step: 5
     phase: pre-deploy
     action: Prove no live surface still points at the retired AGENTS.md section (append-only and historical surfaces excluded).
-    command: "! grep -rn 'AGENTS.md .## Git-ops procedure\\|AGENTS.md ..Git-ops procedure' --include='*.md' --include='*.py' --include='*.yaml' .claude docs/contracts scripts terraform config"
-    expected: No matches; exits 0. docs/DECISIONS.md, DECISIONS_ARCHIVE.md, audits/ and docs/plans/ are deliberately out of scope - live decision bodies are append-only immutable and historical artefacts are frozen.
+    command: 'bin/venv-python -c "import pathlib,re; roots=[''.claude'',''docs/contracts'',''scripts'',''terraform'',''config'']; strip={ord(c):None for c in chr(96)+chr(39)+chr(34)}; pat=re.compile(r''AGENTS\.md\s*(?:##\s*)?Git-ops procedure''); hits=[str(f) for r in roots for f in pathlib.Path(r).rglob(''*'') if f.is_file() and f.suffix in (''.md'',''.py'',''.yaml'',''.yml'') and pat.search(f.read_text(errors=''replace'').translate(strip))]; print(hits); raise SystemExit(1 if hits else 0)"'
+    expected: Prints [] and exits 0. Backticks and quotes are stripped and the pattern spans newlines, so it catches both the wrapped form (.claude/commands/audit.md:15-16) and the no-hash quoted form the two hooks use. docs/DECISIONS.md, DECISIONS_ARCHIVE.md, audits/, docs/audit-prompts/ and docs/plans/ are out of scope by root selection - live decision bodies are append-only immutable and the rest are frozen composed artefacts.
     fix_if: A match names a live surface still pointing at the retired section - repoint it to docs/contracts/git-ops.yaml.
     graduation: graduate
     graduation_check_id: no-live-pointer-to-retired-git-ops-section
@@ -181,8 +181,8 @@ verification_plan:
   - step: 9
     phase: pre-deploy
     action: Confirm the prose ratchet is green at the re-seeded budgets and that AGENTS.md keeps its machine-enforced norms.
-    command: 'bin/venv-python -c "from scripts.checks.prose.prose_limits import validate_prose_limits as v; f=[]; v(f); print(f); raise SystemExit(1 if f else 0)" && grep -q ''never edit or commit on `main`'' AGENTS.md && grep -q ''claude/'' AGENTS.md && grep -q ''ci-rca'' AGENTS.md && grep -q ''docs/contracts/git-ops.yaml'' AGENTS.md && grep -q ''docs/contracts/ci-rca-lifecycle.yaml'' AGENTS.md && grep -q ''docs/contracts/decision-entry.yaml'' AGENTS.md'
-    expected: Ratchet passes at the new budgets and all six norm/pointer greps hit; exits 0.
+    command: 'bin/venv-python -c "from scripts.checks.prose.prose_limits import validate_prose_limits as v; f=[]; v(f); print(f); raise SystemExit(1 if f else 0)" && grep -q ''never edit or commit on `main`'' AGENTS.md && grep -q ''claude/'' AGENTS.md && grep -q ''ci-rca'' AGENTS.md && grep -q ''docs/contracts/git-ops.yaml'' AGENTS.md && grep -q ''docs/contracts/ci-rca-lifecycle.yaml'' AGENTS.md && grep -q ''docs/contracts/decision-entry.yaml'' AGENTS.md && grep -q -- ''--pre'' AGENTS.md && grep -qi ''squash'' AGENTS.md && grep -q ''subscribe_pr_activity'' AGENTS.md && grep -q ''Resolves:'' AGENTS.md'
+    expected: Ratchet passes at the new budgets and all ten norm/pointer/trigger greps hit; exits 0 - covering each of AC #2's five Decision 139 ambient triggers plus the two retained contract pointers.
     fix_if: The ratchet fails (budgets not re-seeded) or a grep misses - a machine-enforced norm, or a contract pointer that exists ONLY in the relocated range, was removed instead of retained.
     graduation: graduate
     graduation_check_id: agents-md-retains-enforced-norms-and-pointer
@@ -190,9 +190,9 @@ verification_plan:
   - step: 10
     phase: pre-deploy
     action: Run each bundled recommendation's own acceptance command.
-    command: '(grep -q "^## Operational runbooks" AGENTS.md && exit 1 || exit 0) && sed -n "/## Shell invocations/,/## Safety/p" AGENTS.md | grep -q "gh CLI" && sed -n "/## Shell invocations/,/## Safety/p" AGENTS.md | grep -q "mcp__github" && ! grep -qE "(^|[^-])python -m scripts\.sync\.ops" AGENTS.md'
+    command: '(grep -q "^## Operational runbooks" AGENTS.md && exit 1 || exit 0) && sed -n "/## Shell invocations/,/## Safety/p" AGENTS.md | grep -q "gh CLI" && sed -n "/## Shell invocations/,/## Safety/p" AGENTS.md | grep -q "mcp__github" && ! grep -qE "(^|[^-])python -m scripts\.sync\.ops" AGENTS.md && grep -q "bin/venv-python -m scripts.sync.ops" AGENTS.md'
     expected: All three acceptance conditions hold; exits 0.
-    fix_if: A clause fails - the corresponding rec (rec-2984 / rec-3301 / rec-2345) is not actually satisfied.
+    fix_if: A clause fails - the corresponding rec (rec-2984 / rec-3301 / rec-2345) is not actually satisfied. rec-2345's SECOND conjunct is load-bearing because without it the step passes when AGENTS.md:130 is deleted rather than fixed, and rec-autoclose would close the rec on false evidence.
     graduation: graduate
     graduation_check_id: bundled-recs-acceptance-agents-md
     hermetic: true
@@ -207,13 +207,22 @@ verification_plan:
     hermetic: true
   - step: 12
     phase: pre-deploy
+    action: Prove the surviving terraform/CLAUDE.md stub serves the routine terraform loop unaided and says when to read the contract.
+    command: 'grep -q "^## Hard rules" terraform/CLAUDE.md && grep -q "^## AWS context" terraform/CLAUDE.md && grep -q "^## Lambda interaction" terraform/CLAUDE.md && grep -q "Agents never run terraform apply" terraform/CLAUDE.md && grep -q "tf-gated-apply" terraform/CLAUDE.md && grep -q "terraform-apply-sandbox" terraform/CLAUDE.md && grep -q "docs/contracts/terraform-cc-web-operations.yaml" terraform/CLAUDE.md && grep -qiE "read .{0,60}terraform-cc-web-operations" terraform/CLAUDE.md'
+    expected: All eight greps hit; exits 0. The stub keeps the routine-path content (hard rules, AWS context, Lambda interaction, the never-self-directed-apply norm, both apply channels) AND carries an explicit read-the-contract-when trigger.
+    fix_if: A grep misses - either routine-path content was relocated (forcing two-file reassembly, Decision 114) or the stub points at the contract without saying when it must be read.
+    graduation: graduate
+    graduation_check_id: terraform-stub-serves-routine-loop
+    hermetic: true
+  - step: 13
+    phase: pre-deploy
     action: Run the authoritative pre-merge gate.
     command: bin/venv-python -m scripts.validate --pre
     expected: Exits 0.
     fix_if: Any check fails - fix on the branch before pushing.
     graduation: not-applicable
     hermetic: false
-  - step: 13
+  - step: 14
     phase: post-deploy
     action: Confirm the three bundled recs closed via the Resolves trailer.
     command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib; r={json.loads(l)['id']:json.loads(l)['status'] for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()}; bad=[k for k in ('rec-2984','rec-3301','rec-2345') if r.get(k)!='closed']; print(bad); raise SystemExit(1 if bad else 0)"
@@ -264,6 +273,8 @@ constraints:
   - Both new check modules must declare examined()/skipped() (docs/contracts/check-accounting.yaml); the baseline roster is shrink-only and admits no new names.
   - Each new contract declares status ratified with ratified_via naming this plan slug (Decision 168 requires ratified_via on a ratified Class D contract); a file-router route's topic must EQUAL the contract's declared subject, and each subject must be unique against all declared subjects and ritual ids.
   - git-ops.yaml's declared subject must explicitly cover CI credential provisioning, or the relocated OAuth-token procedure sits outside the subject the contract names (Decision 127 points 2-3).
+  - terraform-cc-web-operations.yaml declares a unique subject and must NOT restate environment-taxonomy.yaml's apply-model / guard classification (sole SoT) nor duplicate deploy-paths.yaml's admin_out_of_band.procedure (the ratified T2.41 quarantine destination, which declares itself never a second source of truth).
+  - docs/audit-prompts/ is out of scope alongside audits/ and docs/plans/ - AUDIT-*.md are frozen composed handoff artefacts whose line-number anchors are already historical; do not repoint them.
   - Retain the docs/contracts/ci-rca-lifecycle.yaml and docs/contracts/decision-entry.yaml pointers in AGENTS.md - each is one line and today exists ONLY inside a relocated range (Decision 181).
   - deploy-paths.yaml declares evaluator agent_surface AGENTS.md and resolves off the '## Safety' section, which this plan keeps untouched - do not relocate that section.
   - Keep a one-line ambient trigger per git-ops flow step so a non-Claude harness reading AGENTS.md alone still inherits the universal rules (Decision 139 portability hedge).
@@ -280,6 +291,7 @@ context:
   - "ci-rca deferral (operator-directed 2026-09-01): rec-3328 (terraform apply IAM/S3), rec-3293 (pytz), rec-3292 (requirements.lock extras) are unresolved. None shares a scope file, Decision Record, or failure category with this plan (prose relocation / contract registration), so no Related-Work condition is satisfied. The operator directed deferral on the basis that a separate agent is verifying all three are already resolved; if that verification lands a re-open instead, this plan does not block it."
   - "Main divergence at planning time: branch was 5 commits behind origin/main; docs/ROADMAP-PLATFORM.yaml overlaps Scope, but T2.56 is byte-identical on both refs (the five commits are unrelated T2.18/T1.13/T2.42 bookkeeping). Rebase deferred to commit-flow time per the rebase phase distinction."
   - "Decision-significance routing: this plan mints NO numbered Decision - it executes the already-ratified Decision 86/127 routing rule and adds mechanism, which routes to the contract governance-note row, not numbered_decision (decision-entry.yaml significance.routing_rule). PR body carries the DD-B routing line."
+  - "Lambda gating disposition: compute_affected_artifacts flags data-pipeline solely because docs/ROADMAP-PLATFORM.yaml is a packaged asset in its manifest. The edit is bookkeeping prose with no handler or runtime change and the schedule stays disabled, so no build/deploy/smoke step is required and infrastructure_dependencies stays empty."
   - "Decision 139 deferral: relocating the flow to a contract weakens the non-Claude-harness portability hedge; mitigated by retaining a one-line ambient trigger per flow step rather than a bare pointer."
   - "rec-3216 already satisfied on current main (its acceptance passes); rec-2852 is substantively satisfied but its acceptance probe over-specifies. Both surfaced for closure, neither bundled."
 pre_implementation_checklist:
