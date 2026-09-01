@@ -1,0 +1,491 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "ops-portal-enforcement-gaps"
+intent: >-
+  Close four write-time enforcement gaps where ops-portal config asserts a validation rule the
+  runtime never applies, so the portal's declared coverage becomes its real coverage and agents
+  filing recs are told the truth about what is enforced.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-ops-portal-enforcement-gaps.yaml
+phase: >-
+  Ad-hoc recommendation-driven forward fix on the ops-portal write surface (soft-warn exception
+  category ad_hoc_rec). Claims no tier_item alignment and closes no criteria. Boundary: rec-3310
+  overlaps T2.29's 5th exit criterion (positional shorthand -- those criteria are plain strings
+  with no flippable ids), which additionally requires exclude_before write-time grandfathering;
+  that half stays with T2.29 (dependency-blocked on T2.19, in_progress). See context.
+scope:
+  - file: scripts/data_quality_compile.py
+    action: Modify
+    purpose: >-
+      _compile_column_test loud-fails on an unrecognised test type; declare path_syntax and
+      acceptance_lint as write-time-only types that are recognised and skipped by design (rec-3308)
+  - file: tests/test_data_quality_compile.py
+    action: Modify
+    purpose: >-
+      add the loud-fail and write-time-only-skip tests; rewrite test_compile_column_test_invalid,
+      whose current returns-None contract the loud-fail inverts (rec-3308)
+  - file: scripts/ops_portal/write_validators.py
+    action: Modify
+    purpose: >-
+      loud-fail on an unrecognised write_time test; add array_element_format (rec-3307); add
+      parameterised min_length and delete the hardcoded expression write-time branch (rec-3310);
+      pass require_discrimination=True at the acceptance_lint call site (rec-3306)
+  - file: config/agent/data_quality/ops.yaml
+    action: Modify
+    purpose: >-
+      add the dependencies column with array_element_format (rec-3307); move context's write_time
+      flag from expression onto min_length and add title min_length; correct the false title
+      semantics string (rec-3310)
+  - file: config/agent/data_quality/decisions/ops_recommendations.yaml
+    action: Modify
+    purpose: >-
+      promote dependencies off enforcement_ready NO_TEST_NEEDED to READY_NOW and retire the stale
+      rec-609 blocker prose; net-zero line count (rec-3307)
+  - file: scripts/ops_data_portal.py
+    action: Modify
+    purpose: add dependencies to _UPDATE_CONTENT_VALIDATED_FIELDS (rec-3307)
+  - file: tests/test_ops_data_portal_validators.py
+    action: Modify
+    purpose: unit tests for the min_length and array_element_format validator functions
+  - file: tests/ops_data_portal/test_update_rec_content_validation.py
+    action: Create
+    purpose: >-
+      Decision 131 mirror home for the scripts/ops_data_portal.py change -- update_rec
+      discrimination and dependencies-field boundary tests
+  - file: docs/contracts/ops_recommendations.yaml
+    action: Modify
+    purpose: >-
+      append a dated amendment_log row for the update_rec discrimination boundary (rec-3306); add
+      structured dq_intent entries for both newly-enforced fields, dependencies element-format
+      (rec-3307) and title min_length (rec-3310); reconcile the context 50-vs-80 contradiction to
+      80 WITH the per-field amendment_log entries context and title each then require; net-zero by
+      compacting the two oldest amendment rows plus governance_notes and populated_by
+bundled_recommendations:
+  - rec-3306
+  - rec-3307
+  - rec-3308
+  - rec-3310
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    _compile_column_test raises on a test type that is neither SQL-compilable nor declared
+    write-time-only; path_syntax and acceptance_lint are recognised and skipped by design.
+  - >-
+    load_checks still compiles exactly the 43 checks it compiled before the change -- the
+    write-time-only skip is not a silent regression in warehouse coverage.
+  - >-
+    _load_write_time_validators raises on a write_time test name it does not recognise, instead
+    of falling through its branch chain with no error and no log.
+  - >-
+    A dependencies value containing an element that does not match ^rec-[0-9]+$ is rejected at
+    write time through both file_rec and update_rec.
+  - >-
+    An acceptance command updated through update_rec is rejected when it is non-discriminating,
+    matching the rule file_rec already applies; a discriminating one is still accepted.
+  - >-
+    A title under 10 stripped characters is rejected at write time, and the rejection message
+    names title -- not context -- proving the min_length validator honours its declared parameter
+    rather than the hardcoded 80-char context rule.
+  - >-
+    Context validation still rejects under 80 and accepts 80-or-more stripped characters,
+    unchanged, after its write_time flag moves from expression onto min_length.
+  - >-
+    validate_dq_manifest_gate passes with dependencies enforced, and both structural-size-budgeted
+    scope files are at or under their existing budget with no raise marker added -- achieved on the
+    contract by compacting the two oldest amendment_log rows AND the governance_notes and
+    populated_by bodies, since the amendment rows alone do not cover the roughly 18 lines added.
+  - All four bundled recs are closed after merge.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Unrecognised test type loud-fails in the compiler instead of returning None
+    command: bin/venv-python -m pytest tests/test_data_quality_compile.py::test_unrecognised_test_type_raises -q
+    expected: passes; a ValueError naming the unknown test type is raised
+    fix_if: still returns None -- the elif chain still falls through for unknown names
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: dq-compiler-unknown-test-type-raises
+  - step: 2
+    phase: pre-deploy
+    action: write-time-only types are recognised and skipped by design, not silently dropped
+    command: bin/venv-python -m pytest tests/test_data_quality_compile.py::test_write_time_only_types_skip_without_raising -q
+    expected: passes; path_syntax and acceptance_lint return None without raising
+    fix_if: raises -- the declared write-time-only set is missing or misspelt
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: dq-compiler-write-time-only-skip
+  - step: 3
+    phase: pre-deploy
+    action: Warehouse check coverage is unchanged -- the skip regressed nothing
+    command: bin/venv-python -c "from pathlib import Path; from scripts.data_quality_compile import load_checks; r=load_checks(Path('config/agent/data_quality/ops.yaml')); c=r[0] if isinstance(r,tuple) else r; assert len(c) == 43, len(c); print(len(c))"
+    expected: exit 0 printing 43, the pre-change count measured 2026-08-31
+    fix_if: >-
+      Raises instead of printing -- a write-time-only type added later (array_element_format,
+      min_length) was not added to the compiler's declared write-time-only set, so load_checks now
+      loud-fails on it. Add it to the set. An AssertionError naming a different count instead means
+      the skip set changed which checks compile.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Invariant-preservation guard: the count must be 43 both before and after, so the check passes
+      on origin/main by construction and run_differential returns "not admitted -- revert did not
+      produce FAIL (tautological)". Graduating it would fail validate_verification_registry. The
+      discriminating half of this concern -- that the compiler loud-fails on a genuinely unknown
+      type -- is graduated at step 1.
+  - step: 4
+    phase: pre-deploy
+    action: Unrecognised write_time test name loud-fails in the portal loader
+    command: bin/venv-python -m pytest tests/test_ops_data_portal_validators.py::test_unknown_write_time_test_raises -q
+    expected: passes; a ValueError naming the unknown write_time test type is raised
+    fix_if: silently returns a validator list omitting the unknown entry
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: write-time-unknown-test-raises
+  - step: 5
+    phase: pre-deploy
+    action: array_element_format rejects a malformed dependencies element and accepts a valid list
+    command: bin/venv-python -m pytest tests/test_ops_data_portal_validators.py::test_array_element_format_rejects_malformed_element -q
+    expected: >-
+      passes; ['rec-1','nonsense'] rejected, ['rec-1','rec-2'] and None accepted. Must assert
+      through file_rec as well as the bare validator -- acceptance criterion 4 claims both write
+      paths, and step 6 covers only the update_rec half.
+    fix_if: the regex is applied to the joined string rather than per element
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: dependencies-array-element-format
+  - step: 6
+    phase: pre-deploy
+    action: dependencies is wired through the update_rec content-validation boundary
+    command: bin/venv-python -m pytest tests/ops_data_portal/test_update_rec_content_validation.py::test_dependencies_reject_malformed_element -q
+    expected: passes; update_rec with a malformed dependencies element raises ValueError
+    fix_if: update passes -- dependencies missing from _UPDATE_CONTENT_VALIDATED_FIELDS
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: update-rec-dependencies-validated
+  - step: 7
+    phase: pre-deploy
+    action: update_rec rejects a non-discriminating acceptance, matching file_rec (rec-3306 core)
+    command: bin/venv-python -m pytest tests/ops_data_portal/test_update_rec_content_validation.py::test_update_rec_acceptance_requires_discrimination -q
+    expected: >-
+      passes; a lone literal grep and a bare existing-pytest-path are both rejected through
+      update_rec, and a chained/::node_id probe is still accepted
+    fix_if: >-
+      the non-discriminating value is accepted -- require_discrimination not threaded to the
+      YAML-loaded validator; or the discriminating value is rejected, meaning over-rejection
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: update-rec-acceptance-discrimination
+  - step: 8
+    phase: pre-deploy
+    action: >-
+      min_length honours its declared parameter per column -- the disarmed landmine. A short title
+      is rejected naming title, not context.
+    command: bin/venv-python -m pytest tests/test_ops_data_portal_validators.py::test_min_length_reports_its_own_column_and_bound -q
+    expected: >-
+      passes; a 9-char title raises naming title and the bound 10, and a 47-char title is accepted
+      (under the old hardcoded branch it would have been rejected for failing context's 80)
+    fix_if: >-
+      the message says "context must be at least 80" for a title -- the hardcoded
+      _validate_context_length branch is still bound to the expression type
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: min-length-honours-declared-column
+  - step: 9
+    phase: pre-deploy
+    action: >-
+      Context enforcement is unchanged at 80 THROUGH THE YAML LOADER after migrating off the
+      expression branch. Must exercise the loader, not _validate_context_length directly -- file_rec
+      calls that function unconditionally outside the loop, so a direct unit call stays green
+      whether or not the migration worked.
+    command: bin/venv-python -m pytest tests/test_ops_data_portal_validators.py::test_loader_yields_context_min_length_80 -q
+    expected: >-
+      passes; _load_write_time_validators("ops_recommendations") yields a context validator that
+      rejects 79 stripped chars and accepts 80
+    fix_if: >-
+      no context validator is yielded (the write_time flag did not move onto min_length), or the
+      boundary is not 80 (wrong value declared)
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: loader-context-min-length-80
+  - step: 10
+    phase: pre-deploy
+    action: >-
+      The retired expression write-time branch is unreachable (closure obligation, surface-retiring
+      trigger). Neither step 8 nor step 9 can detect a leftover: a surviving branch would check
+      context twice at the same 80 bound and would not touch title at all.
+    command: bin/venv-python -m pytest tests/test_ops_data_portal_validators.py::test_expression_write_time_yields_no_validator -q
+    expected: >-
+      passes; a column whose only write_time test is an expression CARRYING A python: KEY yields no
+      validator from _load_write_time_validators. The python: key is mandatory in the fixture --
+      the retired branch is gated on isinstance(params.get("python"), str), so an expression without
+      it yields nothing even when the branch survives, and the test would pass vacuously.
+    fix_if: >-
+      a validator is yielded -- the hardcoded expression write-time branch survived the migration
+      and is still binding _validate_context_length to arbitrary columns
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: expression-write-time-branch-retired
+  - step: 11
+    phase: pre-deploy
+    action: DQ manifest gate accepts dependencies as enforced
+    command: bin/venv-python -c "from scripts.checks.ops_governance.validate_dq_manifest_gate import validate_dq_manifest_gate as g; f=[]; g(f); print(f); raise SystemExit(1 if f else 0)"
+    expected: exit 0; "all enforced checks have allowed enforcement_ready states"
+    fix_if: >-
+      FAIL naming ops_recommendations.dependencies -- the manifest is still NO_TEST_NEEDED rather
+      than READY_NOW
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Passes on origin/main by construction: there, dependencies carries no enforced test in
+      ops.yaml, so the gate's loop never reaches its manifest state. The revert leg cannot FAIL, so
+      run_differential would reject the shard as tautological. The gate itself is already a
+      registered standing check (validate_dq_manifest_gate, Decision 104); this step confirms this
+      plan's diff satisfies it, which is a one-shot property of the diff.
+  - step: 12
+    phase: pre-deploy
+    action: Both structural-size-budgeted scope files stay at or under budget with no raise marker
+    command: bin/venv-python -c "from scripts.checks.structural.size_limits import validate_structural_size_limits as s; from scripts.checks.structural.budget_raises import validate_structural_size_budget_raises as b; f=[]; s(f); b(f); print(f); raise SystemExit(1 if f else 0)"
+    expected: exit 0 -- net-zero achieved by compacting the oldest amendment_log rows, no budget raised
+    fix_if: >-
+      over budget -- work constraint 3's reclaim list in order: the two oldest contract
+      amendment_log rows, then governance_notes, then the populated_by bodies, plus the rec-609
+      blocker prose in the dependencies manifest entry. Never compact a description or semantics
+      body (re-triggers the category-6 gate), never re-point a dated row at a later date's fact, and
+      never add a raise marker (Decision 165). If all four sources are exhausted and it is still
+      over, STOP and surface it rather than raising.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Both files are at budget on origin/main and net-zero keeps them there, so the check passes on
+      both legs and run_differential would reject the shard as tautological. The standing invariant
+      is already covered by the registered validate_structural_size_limits and
+      validate_structural_size_budget_raises checks; this step gates only this plan's own diff.
+  - step: 13
+    phase: pre-deploy
+    action: Fast tier green
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: read the named failing check and fix its cause; never skip or quarantine a test
+    hermetic: false
+    graduation: not-applicable
+  - step: 14
+    phase: pre-deploy
+    action: >-
+      Full tier green before handoff, as handoff_policy.full_validation_required_before_commit
+      declares (Decision 163 / validate_handoff_full_tier, which is registered in both tiers and
+      fails any plan declaring that policy without this step)
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0 on a completed run; commit and PR wait for it
+    fix_if: >-
+      read the named failing check and fix its cause. On timeout the disposition is blocked
+      (handoff_policy) -- resume later and rerun full from the start, never partially.
+    hermetic: false
+    graduation: not-applicable
+  - step: 15
+    phase: post-deploy
+    action: All four bundled recs are closed after the Resolves trailer runs (closure obligation)
+    command: bin/venv-python -m scripts.sync.ops pull && bin/venv-python -c "import json; rows={r['id']:r.get('status') for r in (json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip())}; t=['rec-3306','rec-3307','rec-3308','rec-3310']; print({k:rows.get(k) for k in t}); assert all(rows.get(k)=='closed' for k in t)"
+    expected: all four report closed
+    fix_if: >-
+      any still open -- the Resolves trailer was missing from the squash body; close via the
+      documented --update-rec fallback
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/data_quality_compile.py
+    behavior: >-
+      an unrecognised column test type raises rather than compiling to nothing, and the two
+      declared write-time-only types are skipped without raising
+    verification_step: 1
+    test_selector: tests/test_data_quality_compile.py::test_unrecognised_test_type_raises
+    red_green_expectation: >-
+      red before (today the function returns None for an unknown type, so the raise assertion
+      fails), green after
+  - source: scripts/ops_portal/write_validators.py
+    behavior: >-
+      unknown write_time names loud-fail; array_element_format and min_length are honoured per
+      declared parameter; acceptance lint runs with require_discrimination
+    verification_step: 7
+    test_selector: tests/ops_data_portal/test_update_rec_content_validation.py::test_update_rec_acceptance_requires_discrimination
+    red_green_expectation: >-
+      red before (a lone literal grep is accepted through update_rec today), green after
+  - source: scripts/ops_data_portal.py
+    behavior: dependencies joins the update_rec content-validated field set
+    verification_step: 6
+    test_selector: tests/ops_data_portal/test_update_rec_content_validation.py::test_dependencies_reject_malformed_element
+    red_green_expectation: >-
+      red before (dependencies is absent from _UPDATE_CONTENT_VALIDATED_FIELDS so the update
+      passes), green after
+  - source: config/agent/data_quality/ops.yaml
+    behavior: >-
+      declares the dependencies element-format rule and the title/context min_length rules that
+      the loader now actually enforces
+    verification_step: 8
+    test_selector: tests/test_ops_data_portal_validators.py::test_min_length_reports_its_own_column_and_bound
+    red_green_expectation: >-
+      red before (no min_length declaration exists and the expression branch reports context's
+      80-char rule for any column), green after
+  - source: config/agent/data_quality/decisions/ops_recommendations.yaml
+    behavior: dependencies is promoted to an enforcement_ready state the manifest gate allows
+    verification_step: 11
+    command: bin/venv-python -c "from scripts.checks.ops_governance.validate_dq_manifest_gate import validate_dq_manifest_gate as g; f=[]; g(f); print(f); raise SystemExit(1 if f else 0)"
+    red_green_expectation: >-
+      red before (enforced dependencies against NO_TEST_NEEDED fails the gate), green after
+  - source: docs/contracts/ops_recommendations.yaml
+    behavior: >-
+      documents the update_rec discrimination boundary, the dependencies element-format dq_intent,
+      and a single self-consistent context minimum
+    verification_step: 14
+    command: bin/venv-python -m scripts.validate
+    waiver_reason: >-
+      Prose contract with no runtime consumer -- nothing imports or parses these description and
+      semantics strings at write time, so no test can bind them red-green. The behavioural claims
+      the text makes are each covered by steps 7 and 9 against the code that implements them.
+constraints:
+  - >-
+    Only the files in scope may be modified, EXCEPT the mechanically-obligated companion
+    registrations this plan's own dispositions require -- the
+    config/agent/verification_registry/entries/<check_id>.yaml shard per graduate step, which
+    validate_graduation_completeness demands at implement time. Out-of-scope bugs are filed as recs,
+    not fixed inline.
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    Net-zero line count on the two structural-size-budgeted scope files. Decision 165 forbids
+    reusing the dec-166 census grandfather to authorise forward growth, so no budget raise.
+    Compaction -- tightening wording while preserving the fact a row records for its own date -- is
+    the contracts class's own first-named relief valve and is sanctioned. What is forbidden is
+    RE-POINTING: editing a dated row so it describes a later date's change instead of its own
+    (Decision 177 reached the same conclusion for the decision corpus). Reclaim sources on the
+    contract, in order: the two oldest amendment_log rows (2026-06-20 acceptance, 2026-06-21
+    top-level), then the governance_notes block, then the populated_by folded bodies. The
+    amendment rows alone are NOT sufficient -- measured, this change adds roughly 18 lines against
+    at most 14 of reclaim there, so the last two sources are load-bearing, not optional.
+    TRAP: never compact a description or semantics body to reclaim lines. Doing so re-triggers the
+    category-6 per-field amendment gate and costs more than it saves. governance_notes and
+    populated_by are not category-6 gated, which is why they are the safe sources.
+    If measurement still exceeds budget after all four sources are exhausted, STOP and surface it --
+    do not add a raise marker. The repo's precedent for that bind is a cited Decision authorising
+    the raise (decision-entry.yaml / Decision 175), which is out of scope here.
+  - >-
+    Never eval/exec the declared python expression; min_length takes an integer parameter and a
+    restricted comparison, per AGENTS.md Safety.
+  - >-
+    Order is load-bearing: 3308 (both branches + loud-fail) then 3307 (new type) then 3306 then
+    3310. Each later type must be guarded by the earlier loud-fail, never silently dropped.
+  - >-
+    _write_time_validators_cache is module-level and never invalidated; any test that edits ops.yaml
+    must clear it explicitly or patch the loader.
+  - >-
+    Do not claim T2.29 criterion closure; criterion flips happen only in /implement bookkeeping for
+    explicitly declared closes_criteria, and this plan declares none.
+context:
+  - "Decision-scout verdict: FLAGS_FOUND (131 of 131 triaged). CITE: 66, 65, 55, 62, 103, 48."
+  - "Also cited: 104 (manifest gate), 124 (facade submodule), 128/165/166 (size), 131 (mirror), 170 (silent-drop spirit); related 121, 64."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "Anchors moved since filing: write_validators.py -> scripts/ops_portal/; acceptance_lint.py and rec_write_guidance.py -> scripts/executor/. Line numbers unchanged."
+  - "title min_length blast radius: it newly binds title through update_rec on two live auto-filing paths (scripts/checks/_budget_recs.py:233, scripts/convergence_health/budget_ingest.py:547). Both verified to emit long titles; no sub-10-char title literal reaches the ops_recommendations write-time loop."
+  - "rec-3308 scope correction: the compiler loud-fail fires on TWO existing entries, path_syntax and acceptance_lint, not one. Measured 2026-08-31: 43 checks compile, neither is among them."
+  - "acceptance_lint is not SQL-compilable (it does a filesystem check), hence declared-skip not a fake branch. Rationale in the commit body."
+  - "rec-3310 landmine: the expression write-time branch ignores its declared python: key and applies hardcoded _validate_context_length to any column. Exactly one entry (context) declares a write_time expression, so the migration to min_length is surgical."
+  - "rec-3306 blast radius: AST scan of 38 update_rec sites -- only the --update-rec CLI passes acceptance; rec-autoclose writes status/resolution only. The loop filters on _col in updates, so the tightening is per-update, not per-record."
+  - "Structural size: both budgeted scope files sit at exactly their budget (522/522 and 556/556). Reclaim from the stale rec-609 blocker prose in the dependencies manifest entry and by compacting the OLDEST contract amendment_log rows -- not by rewriting the dated 2026-08-21 row."
+  - "load_checks applies no write_time filter -- every test entry reaches _compile_column_test. Each new write-time-only type (array_element_format, min_length) MUST join the compiler's declared skip set or the rec-3308 loud-fail fires on this plan's own config."
+  - "Decision 131: ops_data_portal.py mirrors to tests/ops_data_portal/; scripts/ops_portal/** returns None (Decision 124 carve-out). Hence the new mirror file and the acceptance-repoint step."
+  - "Known breakage: tests/test_data_quality_compile.py::test_compile_column_test_invalid asserts unknown types return None. The loud-fail inverts that contract; rewrite it, do not delete it."
+  - "T2.29 5th-criterion overlap (positional shorthand; its exit_criteria are plain strings with no flippable ids). Its extra exclude_before grandfathering clause cites ~889 short-title rows; measured ONE (rec-002, superseded), and exclude_before is never read at write time. Re-ground, build nothing."
+  - "Branch was behind origin/main at critique (Decision 179/180, a T2.56 flip; none touches this subject). Rebase before implementing."
+  - "ci-rca deferral: rec-3328 (terraform apply IAM/S3 failure) is unresolved and shares no file, Decision or failure category with this plan. Owned by docs/plans/PLAN-pr-ci-red-ownership.yaml per human direction 2026-08-31."
+  - "Root-cause sibling filed this session: rec-3355 (rec_relevance conflates moved vs retired targets; stale-target rot has no sweep). Not bundled here."
+  - "Out of scope: tags carries the identical blocked-on-rec-609 shape. File a rec, do not widen."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - Baseline recorded before editing -- compiled check count is 43 and both budgeted files are at budget
+execution_steps:
+  - >-
+    rec-3308 first. In scripts/data_quality_compile.py, add a module-level declared set of
+    write-time-only test types (path_syntax, acceptance_lint) that _compile_column_test recognises
+    and returns None for, documented as deliberately not SQL-compilable; then raise ValueError for
+    any test type in neither that set nor the compilable set. Malformed params of a RECOGNISED type
+    keep returning None -- do not change those two existing tests.
+  - >-
+    In scripts/ops_portal/write_validators.py, make _load_write_time_validators raise on a
+    write_time test name it does not recognise. Verify against ops.yaml first that every existing
+    write_time name is recognised, so the raise cannot fire on current config.
+  - >-
+    Rewrite tests/test_data_quality_compile.py::test_compile_column_test_invalid for the new raise
+    contract and add the step 1 and step 2 nodes.
+  - >-
+    rec-3307 second. Add the array_element_format branch to the loader (per-element regex over a
+    native list, null and empty list valid). Add the dependencies column to ops.yaml with the
+    ^rec-[0-9]+$ element rule from the manifest's decided_action. CRITICAL: also add
+    array_element_format to the compiler's declared write-time-only set from execution step 1 --
+    load_checks passes EVERY test entry to _compile_column_test with no write_time filter, so a new
+    write-time-only type that is not in that set makes load_checks raise the moment the rec-3308
+    loud-fail lands. Promote the manifest's dependencies entry to enforcement_ready READY_NOW,
+    rewriting the decided_action and notes to drop the now-false rec-609 blocker prose --
+    net-negative on line count. Add dependencies to _UPDATE_CONTENT_VALIDATED_FIELDS in
+    scripts/ops_data_portal.py.
+  - >-
+    rec-3306 third. Pass require_discrimination=True at the lint_acceptance_command call inside
+    _check_acceptance. This is the one-line keystone; steps 4 to 7 of the VP guard it.
+  - >-
+    rec-3310 fourth. Add a parameterised min_length branch honouring its declared integer bound and
+    naming its own column in the error. Add min_length to the compiler's declared write-time-only
+    set, for the same reason as array_element_format above. Move context's write_time flag from its
+    expression entry onto min_length with value 80, keeping the expression entry (without
+    write_time) for the warehouse SQL check; add title min_length 10. Delete the now-unreachable
+    hardcoded expression write-time branch. Correct the title semantics string in ops.yaml to
+    describe the rule that now exists.
+  - >-
+    Reconcile docs/contracts/ops_recommendations.yaml. (a) Set the context description minimum to 80
+    to match :278-280 and the code. (b) Correct the title semantics. (c) Add an element-format entry
+    to the dependencies dq_intent block at :351-362, which today records only not_null enforced
+    false -- without it the Class A contract stays silent on the one field this plan newly enforces,
+    which is the same config-vs-runtime divergence this plan exists to close, merely inverted. Give
+    title the same structural treatment: it gains a newly-enforced min_length 10 and today carries
+    only dq_intent.not_null, so record the bound in dq_intent (or FieldSpec write_time_validation)
+    rather than prose alone -- the two newly-enforced fields get the same treatment, or the
+    asymmetry is itself the drift this plan is closing.
+    (d) APPEND a new dated amendment_log row on the acceptance field (date 2026-09-01,
+    semantic_break true, change_class accepted_values_narrow) recording that the discrimination rule
+    now binds at the update_rec boundary and remains not retroactive. Do NOT rewrite the 2026-08-21
+    row: it records a fact about that date, and a second semantic break at a new boundary earns its
+    own row.
+    (e) MANDATORY, easily missed: validate_contract_drift's category-6 gate is PER FIELD --
+    contracts_enforcement.check_amendment_for_diff loops fields and requires a new entry in the
+    CHANGED FIELD'S OWN amendment_log[]. Edits (a) and (b) change context.description and
+    title.semantics, and NEITHER field has an amendment_log block today. Create one on each, with
+    change_class prose_improvement and semantic_break false -- _amendment_entry_consistent requires
+    prose_improvement XOR semantic_break, and each edit corrects a statement to match already-
+    shipped code rather than changing behaviour. An entry on another field does not satisfy the gate.
+  - >-
+    Create tests/ops_data_portal/test_update_rec_content_validation.py as the Decision 131 mirror
+    for the ops_data_portal.py change, following the local-fixture and no-duckdb-importorskip
+    precedent documented in tests/ops_data_portal/test_acceptance_discrimination.py.
+  - >-
+    Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop
+    and RCA (Decision 55).
+  - >-
+    After merge, repoint the two recs whose filed acceptance names a pre-Decision-131 location:
+    update rec-3306 and rec-3307 acceptance through the portal to the step 6 and step 7 node ids.
+    Both replacements are discriminating, so they exercise the rec-3306 tightening on first use.
+  - >-
+    Propose, do not apply, a roadmap bookkeeping edit against T2.29's 5th exit criterion: re-ground
+    its "~889 existing short-title rows" to the measured count (one, superseded, zero open) AND
+    annotate which of its clauses this plan discharged -- the min_length handler, title enforcement
+    and the corrected ops.yaml claim -- leaving the exclude_before grandfathering clause open.
+    Surface it to the human; never flip criterion status from a plan session.
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Every change is additive validation or config. To revert, restore the require_discrimination
+  default at the single call site, drop the min_length and array_element_format branches with their
+  ops.yaml declarations, and return _compile_column_test and _load_write_time_validators to
+  fall-through. No data migration, no deploy, nothing to unwind in the warehouse.
