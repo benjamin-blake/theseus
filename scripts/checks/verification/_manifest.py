@@ -104,4 +104,11 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_vp_replay",
         pre=True,
     ),
+    Entry(
+        name="validate_scope_boundary",
+        module="scripts.checks.verification.validate_scope_boundary",
+        attr="validate_scope_boundary",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
 )

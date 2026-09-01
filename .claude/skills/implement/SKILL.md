@@ -107,6 +107,17 @@ Track Attempts per step (see VP Compliance Gate below). This rule governs what a
 - **Forward-note (T3.19):** when the executor goes live (CD.17 reversal), this alarm flips to auto-file a rec via `scripts.ops_data_portal` (Decision 84), the executor-era quarantine-that-files-a-rec pattern (CD.29). Tracked as tier_item T3.19 (`deferred_post_mvp`) -- do not implement the auto-file path now.
 - **Distinguish from declared non-determinism:** a VP step's DETECTED nondeterminism (this rule -- an agent-observed flaky re-run) is not the same thing as a verifier's DECLARED `Hermeticity.NON_HERMETIC_BY_CONSTRUCTION` property (a typed, audited characteristic of the verifier itself). Never silently relabel a detected-flaky VP step as "expected non-hermetic behavior" to justify passing it -- the two are orthogonal, and only the latter is a designed exemption.
 
+### Deviation trigger
+Three branches for a decision point hit during implementation (full detail:
+`docs/contracts/implement-scope-boundary.yaml` `deviation_trigger`):
+(a) in-scope under-specification -- decide inline; consult `model:"fable"` per
+`.claude/skills/overseer/SKILL.md` "## Fable Advice-Consult Protocol" when load-bearing or novel,
+recorded either way.
+(b) scope or contract deviation, or any always-ask surface -- STOP; no consult proceeds past this
+branch.
+(c) repeated failure -- defer to the 3-fix-attempt STOP and VF-08 rules above (cited, not
+restated); T3.19's auto-file-a-rec path stays deferred.
+
 ### Tier-Specific Guidance
 - **V1:** Parse configs, check doc links, confirm formatting. Quick but mandatory.
 - **V2:** Run the changed code path with real (non-mocked) input. Confirm the feature works outside the test harness.
@@ -489,7 +500,7 @@ Wait for the PR-tier CI (fast `--pre` tier; Decision 73) via subscription, never
 
 **On wake**, always confirm check runs via `mcp__github__pull_request_read` (`get_status` / `get_check_runs`) BEFORE merging, then branch on status:
    - **All green** -> `mcp__github__merge_pull_request(owner, repo, pullNumber, merge_method="squash")`, then `mcp__github__unsubscribe_pr_activity(...)`. Report the merge. **Carve-out:** for a PR touching `terraform/personal/**`, do NOT unsubscribe here -- defer to the "Hold subscription through apply" section below (the real outcome is the post-merge apply, not the merge).
-   - **Any red** -> diagnose, fix on this branch, commit, push (re-triggers PR CI). Stay subscribed and end the turn. Per `docs/contracts/ci-rca-lifecycle.yaml` trigger_scope, this failure is uncovered by ci-rca by construction -- no rec is filed, nothing gates; the existing 3-fix-attempt STOP and VF-08 rules above govern the loop (Decision 55). Never weaken a criterion, VP step (`### Tier-Specific Guidance` Anti-Patterns), assertion, or budget to obtain green. `executor-rca` is out of scope here -- Step 8's RCA-First Protocol is separate, session-end friction capture.
+   - **Any red** -> diagnose, fix on this branch, commit, push (re-triggers PR CI). Stay subscribed and end the turn. Per `docs/contracts/ci-rca-lifecycle.yaml` trigger_scope, this failure is uncovered by ci-rca by construction -- no rec is filed, nothing gates; the existing 3-fix-attempt STOP and VF-08 rules above govern the loop (Decision 55). Never weaken a check to obtain green -- `docs/contracts/implement-scope-boundary.yaml`'s CONTENT invariant is canonical; cited here, not restated. `executor-rca` is out of scope here -- Step 8's RCA-First Protocol is separate, session-end friction capture.
    - **Still running** -> end the turn; a later event wakes you.
 
 ### Hold subscription through apply (terraform/personal PRs -- CD.35 / T2.20)
@@ -517,15 +528,10 @@ record. The authoritative baseline is still the next planning session's converge
 wake). The gated apply gates the JOB, never from a laptop.
 
 ### Pre-Push Rebase (applies to both flows)
-**Rebase phase distinction** -- two rules, not one:
-- **Assessment time (planning / Main Divergence Check)**: do NOT auto-rebase. Surface the divergence to the human; wait for their choice (rebase now / proceed / abort). This is because rebasing mid-plan can silently invalidate scoping decisions made against the old tree.
-- **Commit-flow time (here, after all code changes are done)**: DO rebase automatically before pushing. After the local commit, before pushing, refresh and rebase so the PR opens against current main:
-
-```bash
-git fetch origin main
-git rebase origin/main   # STOP on conflict; do not auto-resolve -- surface to the human
-```
-If the branch was pushed earlier in the session, the post-rebase push uses `--force-with-lease` (never `--force`).
+See AGENTS.md `### Rebase phase distinction` for the full rule. Commit-flow time applies here:
+after the local commit, before pushing, `git fetch origin main && git rebase origin/main` (STOP
+on conflict, surface to the human); a branch already pushed this session uses
+`--force-with-lease` (never `--force`).
 
 ### IMPLEMENTATION Commit Flow
 ```bash

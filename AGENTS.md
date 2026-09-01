@@ -35,7 +35,7 @@ You are a Lead Software Developer writing production-quality Python. Primary dev
 - **Deployment model (Decision 126):** three agent intents, one trigger each -- infra = open a PR touching `terraform/**`, CI plans and applies; code = the governed code-deploy channel (Terraform not involved); red/drift = run the one-input Reconcile action. Agents never run terraform apply as a self-directed, routine action -- the sole exception is the human-gated break-glass admin tier (below/`terraform/CLAUDE.md`), where a human reviews and explicitly directs the apply before an agent executes it; operators may always invoke it directly. See `docs/contracts/deploy-paths.yaml` for the full intent -> trigger -> recovery index (it points at, and never restates, this file's apply-model/guard rules).
 - **Lambda deploy channel (Decision 125/126):** the five DuckLake Lambdas' code is decoupled from `terraform/personal` infra apply as of #544 (see `environment-taxonomy.yaml` (conformance) and `docs/contracts/build-lambda.yaml`'s `deploy_channels`) and deploy through a governed code-deploy CD channel; `bin/venv-python -m scripts.build_lambda --ducklake-only --deploy` is break-glass-only, never the routine default. See `docs/contracts/deploy-paths.yaml` for the authoritative channel status. Heuristic: when a production action (e.g. a Lambda code deploy) is auto-denied or has no obvious in-session path, check `docs/contracts/deploy-paths.yaml` first, then grep `.github/workflows/` for a governed CD path before falling back to a local permission grant.
 - Windows subprocess: pass `encoding='utf-8', errors='replace'` with `text=True`. Use `sys.executable` — not the string `'python'` or `'pip'`.
-- Only modify files explicitly in scope. Out-of-scope bugs become recommendations via `scripts/ops_data_portal.py`, not inline fixes.
+- Scope boundary (LOCATION touched-files + CONTENT never-weaken invariants, evaluator `validate_scope_boundary`) is `docs/contracts/implement-scope-boundary.yaml` (Decision 59); out-of-scope bugs become recommendations via `scripts/ops_data_portal.py`, not inline fixes.
 
 ## SLOC governance -- decompose by default, don't raise (Decision 128, amends Decision 102)
 - The 500-SLOC-per-file limit (`config/sloc_budgets.yaml`, `validate_sloc_limits`) is load-bearing (rationale: Decision 128) -- a raise is never a frictionless edit.
@@ -266,8 +266,7 @@ The layered contract (Layer 1 universal rules through Layer 5 executor prompts) 
 `docs/contracts/instruction-architecture.yaml` -- see it for the full layer table.
 
 The `.github/prompts/scheduled/` and `.github/agents/schedule.yaml` surfaces are retained for
-live scheduled agents. The legacy top-level `.github/prompts/*.prompt.md` and
-`.github/agents/*.agent.md` files were deleted at T-1.13.
+live scheduled agents.
 
 ## Operational runbooks
 
