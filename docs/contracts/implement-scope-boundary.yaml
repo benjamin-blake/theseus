@@ -1,0 +1,206 @@
+# Class D contract discharging Decision 59 ("scope guard becomes a deterministic diff-vs-plan
+# check") -- rec-3332 items 2-4. Canonical home for BOTH scope-boundary invariants an implementing
+# agent operates under: LOCATION (which files may be touched) and CONTENT (never weaken a check to
+# obtain green). scripts/checks/verification/validate_scope_boundary.py reads this file's
+# `sanction_rows:` map at check time and holds no second copy of it (plan_obligations.py
+# precedent) -- editing a row here changes enforcement without a code edit.
+contract:
+  id: implement-scope-boundary
+  class: D
+  contract_version: 1
+  status: provisional_v0
+  description: >-
+    The scope-boundary rule an implementing agent operates under during /implement: LOCATION
+    (touched files subset of the resolved plan's declared scope union derived companions) and
+    CONTENT (never weaken a check to obtain green). Both invariants were previously stated only as
+    prose (AGENTS.md `## Safety`, the implement skill's `Any red` bullet) with no executable
+    diff-vs-plan check -- this file is the machine-parseable home Decision 59 already promised,
+    and its evaluator is that check.
+  subject: implement-scope-boundary
+  evaluator:
+    check: validate_scope_boundary
+  provisional_v0:
+    authored_at: "2026-09-01"
+    authored_via: "PLAN-inline-defer-boundary-contract"
+    rationale: >-
+      The sanction_rows map is evidence-derived from 11 measured implement commits, not yet
+      exercised against a full release's worth of real plan traffic -- a new-domain check module
+      (a fourth sanction row) or a companion regeneration pattern not yet observed would need a
+      shape change the map hasn't been tested against. provisional_v0 lets the row grammar settle
+      before it is treated as stable, mirroring plan-obligations.yaml's own precedent.
+    re_ratification_trigger:
+      first_of:
+        - "sanction_rows entry count >= 6"
+        - "days_since_authored_at >= 90"
+    re_ratification_owner: "human + plan-critique gate"
+
+amendment_log:
+  - date: "2026-09-01"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      Initial authoring (PLAN-inline-defer-boundary-contract, rec-3332 items 2-4): both
+      invariants, the CONTENT enforcement-coverage map, three evidence-derived sanction rows, the
+      unmodelled-companions and known-residuals notes, and the three-branch deviation trigger.
+
+invariants:
+  location:
+    statement: >-
+      Every path touched by an implement-leg diff (a diff whose resolved plan's
+      `implementation_declared` newly flipped true) must be a member of EITHER the resolved
+      plan's declared `scope[].file` union, OR a path a `sanction_rows` entry derives for that
+      plan because the row's trigger fired. A touched path outside both is never resolved by
+      editing the plan's own `scope:` list to add it after the fact -- see
+      sanction_rows.implementing_plan_bookkeeping.disposition_on_violation below.
+    enforcement:
+      check: validate_scope_boundary
+      tiers: [pre, full]
+    authority: >-
+      Decision 59 (2026-05-01): "scope guard becomes a deterministic diff-vs-plan check." This
+      contract discharges that commitment; it does not invent the rule.
+    known_gaps:
+      - >-
+        Deleted paths: `_common.get_changed_files` existence-filters a deleted path out of its
+        result entirely, so a check seeded from that primitive would never see a deletion at
+        all; only `_common.get_status_aware_diff`'s "D" rows carry a deleted path. The seam
+        choice therefore decides whether a deletion is even visible to this invariant --
+        validate_scope_boundary is seeded from get_status_aware_diff specifically so a deletion
+        outside declared scope is caught, not silently invisible.
+  content:
+    statement: >-
+      No acceptance criterion, VP step, assertion, or budget is weakened to obtain green.
+      Weakening is never resolved inline by softening the check, the test, or the plan describing
+      it -- it routes to a recommendation via the ops portal, whatever file it happens to live in.
+    authority: >-
+      Decision 181 (standing prohibition, this plan). Decision 163 point 2 names the
+      declared-vs-executed failure mode this coverage map exists to avoid repeating: a universal
+      obligation stated only as prose, with nothing executable asserting it held.
+    enforcement_coverage:
+      - surface: "plan-field edit (scope / acceptance_criteria / verification_plan command+expected)"
+        status: mechanical
+        enforced_by: validate_scope_boundary
+        note: >-
+          sanction_rows.implementing_plan_bookkeeping.prohibited_field_edits below -- a diff
+          touching one of those fields on a resolved plan fails this check directly.
+      - surface: "VP-step substitution (an easier command silently swapped in for a plan's declared step)"
+        status: mechanical
+        enforced_by: validate_scope_boundary
+        note: >-
+          Same prohibited_field_edits row as the plan-field arm above (verification_plan[].command
+          / verification_plan[].expected) -- attribution is exact: validate_vp_replay replays only
+          a plan's CURRENT steps and holds no base-version comparison, so it cannot catch a step
+          that was quietly weakened before replay; its real contribution is catching a
+          self-reported-but-false PASS against whatever text is currently declared. This check,
+          not validate_vp_replay, is what catches the softening itself.
+      - surface: "prose / SLOC / structural-size budget raise"
+        status: mechanical
+        enforced_by: "validate_prose_budget_raises, validate_sloc_budget_raises, validate_structural_size_budget_raises"
+        note: "The three raise-gate guards (Decision 128/165) -- an unmarked budget increase fails the PR."
+      - surface: "an assertion or numeric tolerance weakened inside an in-scope source or test file"
+        status: residual_agent_obligation
+        residual_owner: "rec-3357"
+        note: >-
+          The DOMINANT form of weakening in practice, not one coverage row among peers. No
+          mechanical check today distinguishes a genuinely-corrected assertion or tolerance from a
+          quietly-loosened one -- this stays an agent (and code-review) obligation until a future
+          check closes it. This is the SOLE residual row in this map.
+    known_residuals:
+      - >-
+        The R6 split's own residual: only the PRESENCE of Decision 181's pointer to this
+        contract's CONTENT clause is pinnable (tests/test_scope_boundary_contract.py). A
+        paraphrase re-inlined into Decision 181's own body, instead of citing this contract,
+        stays an agent obligation -- deliberately OUTSIDE the CONTENT enforcement-coverage map
+        above, since Decision-181-paraphrase drift is not one of CONTENT's own surfaces.
+
+# Evidence-derived (11 measured implement commits: diff files vs each commit's own declared
+# scope). Dominant out-of-scope category was config/agent/verification_registry/entries/*.yaml
+# graduated shards, then docs/decisions-index.json; the long tail was genuine undeclared
+# deviation. Conditional trigger -> derived-path(+prohibited) rows -- never a flat path allowlist.
+# `trigger.kind` is the sanction_kind validate_scope_boundary.py dispatches on; a row naming a
+# kind the check does not implement FAILS loudly (never a silent pass).
+sanction_rows:
+  graduated_registry_shard:
+    purpose: >-
+      A GRADUATED verification_plan step (graduation: graduate) owes its own
+      config/agent/verification_registry/entries/<graduation_check_id>.yaml shard, written by the
+      Verification Graduation walk AFTER the VP Compliance Gate -- necessarily untracked/new at
+      the point the plan itself declared the step, so it can never be a pre-declared scope row.
+    trigger:
+      kind: graduation_check_id_per_step
+      description: >-
+        Fires once per resolved plan's verification_plan step whose graduation == "graduate" and
+        graduation_check_id is non-empty.
+    sanctions:
+      path_template: "config/agent/verification_registry/entries/{graduation_check_id}.yaml"
+    prohibited_field_edits: []
+  implementing_plan_bookkeeping:
+    purpose: >-
+      The resolved plan's own path is always touched (implementation_declared flips true in the
+      same diff) plus whatever bookkeeping the implement workflow stages on it -- sanctioned, but
+      only for a bounded field set.
+    trigger:
+      kind: resolved_plan_path
+      description: "Fires once per resolved plan, sanctioning that plan's own path."
+    sanctions:
+      description: "The resolved plan's own repo-relative path."
+    permitted_field_edits:
+      - implementation_declared
+      - "verification_plan[].graduation"
+      - "verification_plan[].graduation_check_id"
+      - "verification_plan[].graduation_waiver_reason"
+      - closes_criteria
+    prohibited_field_edits:
+      - acceptance_criteria
+      - scope
+      - "verification_plan[].command"
+      - "verification_plan[].expected"
+    disposition_on_violation: >-
+      STOP: an undeclared touched path is never resolved by editing the plan's own scope -- the
+      escape is a human-directed plan amendment landed as its own reviewed act, never a unilateral
+      append. A prohibited_field_edits hit is reported the same way: the field changed, not
+      silently accepted because the diff happened to land on the plan file itself.
+  decisions_index_regeneration:
+    purpose: >-
+      docs/decisions-index.json is a generated projection of docs/DECISIONS.md
+      (scripts.decisions_index); any plan whose declared scope includes DECISIONS.md
+      mechanically regenerates this companion, which can never be pre-declared as its own scope
+      row without the plan author hand-tracking a derived artefact.
+    trigger:
+      kind: scope_contains_file
+      file: docs/DECISIONS.md
+      description: "Fires when the resolved plan's declared scope includes docs/DECISIONS.md."
+    sanctions:
+      path_template: "docs/decisions-index.json"
+    prohibited_field_edits: []
+
+# Companions this file deliberately does NOT model as a sanction row -- each appeared in only 1 of
+# the 11 measured commits, below the evidence bar for a trigger rule. A STOP on either today is
+# deliberate, not an oversight; widen sanction_rows in a reviewed edit if traffic grows.
+unmodelled_companions:
+  - path: .secrets.baseline
+    reason: "Regenerated by the secrets-detection tooling on a genuine new-secret-shaped literal; too rare (1/11) to derive a trigger from yet."
+  - path: config/composite_action_body_baseline.yaml
+    reason: "Regenerated by the R3 ratchet (Decision 162) when an inline composite-action body's line count baseline shifts; too rare (1/11) to derive a trigger from yet."
+
+deviation_trigger:
+  branches:
+    - id: a
+      name: in_scope_under_specification
+      description: >-
+        The plan's scope is right but a detail is under-specified. Decide inline; consult
+        model:"fable" per .claude/skills/overseer/SKILL.md's Fable Advice-Consult Protocol when
+        the call is load-bearing or novel. Record the decision either way.
+    - id: b
+      name: scope_or_contract_deviation
+      description: >-
+        A touched path is outside the declared scope union sanctioned companions, or any other
+        always-ask surface is implicated. STOP: an undeclared touched path is never resolved by
+        editing the plan's own scope -- the escape is a human-directed plan amendment landed as
+        its own reviewed act, never a unilateral append. No Fable consult proceeds past this
+        branch.
+    - id: c
+      name: repeated_failure
+      description: >-
+        A VP step has failed repeatedly. Defer to the existing 3-fix-attempt STOP and VF-08
+        nondeterminism rules in .claude/skills/implement/SKILL.md -- cited, not restated here.
+        T3.19's auto-file-a-rec path stays deferred; this branch adds no such path.

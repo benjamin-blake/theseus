@@ -50,14 +50,22 @@ def _assert_agents_md_contract(text: str) -> None:
 
 def _assert_implement_skill_contract(text: str) -> None:
     assert "trigger_scope" in text, "the red-CI branch must point at trigger_scope"
-    assert "Never weaken a criterion" in text, "the no-weakening rule is new prose that must be present"
-    assert "VP step" in text, "the no-weakening rule must cover VP steps"
-    assert "budget" in text, "the no-weakening rule must cover budgets"
     assert "executor-rca" in text and "out of scope" in text, "executor-rca must be named out of scope for PR CI red"
 
     i = text.index("**Any red**")
     j = text.index("- **Still running**", i)
     segment = text[i:j]
+    # The no-weakening rule relocated to docs/contracts/implement-scope-boundary.yaml (Decision
+    # 181 / PLAN-inline-defer-boundary-contract) -- this bullet now CITES it rather than restating
+    # the rule inline, so these three asserts are scoped to `segment` (not `text`) precisely so
+    # they stay discriminating: "implement-scope-boundary.yaml" and "CONTENT invariant" both also
+    # appear in the skill's unrelated Deviation trigger section, so an unscoped `in text` check
+    # would pass even if THIS bullet's pointer were deleted.
+    assert "Never weaken a check to obtain green" in segment, "the relocated no-weakening pointer sentence must be present"
+    assert "implement-scope-boundary.yaml" in segment, (
+        "the no-weakening rule must point at the contract, not restate VP-step/budget coverage inline"
+    )
+    assert "CONTENT invariant" in segment, "the pointer must name the CONTENT invariant it cites"
     assert "file_rec" not in segment, "the red-CI branch must add no rec-filing call (VF-08 T3.19 stays deferred)"
     assert "ops_data_portal" not in segment, "the red-CI branch must add no rec-filing call (VF-08 T3.19 stays deferred)"
 
@@ -134,7 +142,8 @@ def test_implement_skill_contract_positive() -> None:
 def test_implement_skill_contract_negative_missing_no_weakening_clause() -> None:
     text = IMPLEMENT_SKILL_PATH.read_text(encoding="utf-8")
     clause = (
-        "Never weaken a criterion, VP step (`### Tier-Specific Guidance` Anti-Patterns), assertion, or budget to obtain green."
+        "Never weaken a check to obtain green -- `docs/contracts/implement-scope-boundary.yaml`'s "
+        "CONTENT invariant is canonical; cited here, not restated."
     )
     assert clause in text
     mutated = text.replace(clause, "")

@@ -2,6 +2,91 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 181: The scope-boundary CONTENT invariant is a standing prohibition, declared with per-surface enforcement coverage rather than asserted as an unqualified rule (Decided)
+
+```yaml
+number: 181
+status: Decided
+decided_date: "2026-09-01"
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable, repo-wide authoring commitment (never weaken a check to obtain green) with
+    reversal-relevant consequences, rejecting two lighter alternatives: routing to
+    docs/contracts/implement-scope-boundary.yaml alone (mechanism, not a standing prohibition on
+    every implementing agent -- Decision 167's routing_rule question 3 asks whether an existing
+    row already owns the content, and field_semantics owns the contract's OWN clause shape, not a
+    repo-wide behavioral prohibition binding every future session), and a dated amendment_forms
+    annotation on Decision 163 (rejected: Decision 163 already states the enforcement-shape
+    PRINCIPLE; this is a new, separately-reversible instance of it -- the declare-your-coverage
+    discipline -- not a gloss on 163's existing text).
+```
+
+**Status:** Decided
+**Date:** 2026-09-01
+**Warehouse ID:** dec-181
+
+**Problem:**
+rec-3332 items 2-4 (deferred half of PLAN-pr-ci-red-ownership): the "never weaken a check to
+obtain green" rule existed only as prose duplicated across AGENTS.md and the implement skill, with
+no machine-parseable home and no declared enforcement coverage -- Decision 163 point 2 already
+named this exact failure mode (a universal obligation stated only as prose degrades to
+optional-by-habit) but the rule itself was never structurally checked. Decision 59 (2026-05-01)
+had already committed to a deterministic diff-vs-plan scope check for the sibling LOCATION
+invariant; that commitment stayed undischarged.
+
+**Decision:**
+1. The CONTENT invariant -- no acceptance criterion, VP step, assertion, or budget is ever
+   weakened to obtain green; weakening routes to a recommendation via the ops portal, whatever
+   file it lives in -- is a standing prohibition on every implementing agent, not a mechanism
+   detail. Its canonical clause lives at `docs/contracts/implement-scope-boundary.yaml`'s
+   `invariants.content` (the Decision 162 / composite-action-shape.yaml pattern: this entry cites
+   the clause, it does not restate it).
+2. Declare-your-coverage discipline: a governance invariant of this shape must publish, per
+   surface, either the check that mechanically enforces it or the fact that the surface is an
+   unenforced residual carrying an owning recommendation id. An unqualified binary claim behind a
+   location-only evaluator is insufficient -- this is Decision 163 point 2's principle, applied to
+   a second obligation.
+3. The residual arm (an assertion or numeric tolerance weakened inside an in-scope source or test
+   file) is the DOMINANT form of weakening in practice, not one coverage row among peers -- the
+   map's row count must never be read as implying parity between the mechanical and residual arms.
+   Its continued existence is itself a reversal condition below.
+
+**Rationale:**
+Decision 59 already ratified the LOCATION mechanism; discharging it exposed that its sibling
+CONTENT rule had the identical prose-only shape Decision 163 point 2 already diagnosed. Rather
+than silently repeating the fix, this entry names the general discipline once (declare coverage or
+declare residual) so the next universal obligation of this shape defaults to it, mirroring how
+Decision 163 itself generalized rec-2965's specific fix.
+
+**Reversal conditions:** (a) a mechanical check is built that closes the residual arm -- the map's
+sole residual row is removed and the map's `known_residuals` note is re-verified, not this entry
+itself; (b) the declare-your-coverage discipline is shown to produce coverage rows that game the
+requirement (e.g. a check registered as "enforcing" a surface it does not actually reach) more
+than once, indicating the discipline needs a stronger evaluator-resolution check, not abandonment;
+(c) a full, deliberate audit decides per-surface coverage declaration should not generalize beyond
+this one obligation -- revert path is deleting `validate_scope_boundary`'s registration in
+`scripts/checks/registry.py` and reverting the AGENTS.md / implement-skill pointers to inline
+prose.
+
+**Significance:** clears the Decision 150 significance bar -- a durable, repo-wide authoring
+commitment (a standing prohibition plus a coverage-declaration discipline for future universal
+obligations), with reversal-relevant consequences and explicit reversal conditions; not a CD state
+flip, operational fact, or field-semantics change.
+
+**Related:** Decision 59 (the LOCATION invariant's authority, discharged by the same contract this
+entry's CONTENT clause lives in), Decision 163 (the declared-vs-executed failure mode this entry's
+point 2 generalizes a second time), Decision 55 (RCA-first / no rescue loops -- the reason
+weakening routes to a rec rather than being patched inline), Decision 86 (machine-readable contract
+routing -- the reason this entry cites `docs/contracts/implement-scope-boundary.yaml` rather than
+restating its clause), Decision 128 / Decision 165 (the three budget-raise guards the CONTENT map's
+mechanical budget row names), Decision 167 (the Significance routing rule this entry applies),
+Decision 150 (the significance bar this entry clears). Roadmap refs (not DECISIONS.md entries):
+rec-3332 (closed by this entry's carrying merge via the Resolves trailer).
+
+---
+
+
 ## Decision 180: Metadata-write scope class -- enumerated boundary-carrying non-prefixed managed roles (amends Decision 144 clause 2) (Decided)
 
 ```yaml
