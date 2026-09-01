@@ -57,6 +57,19 @@ scope:
       Append a blockquote_update annotation to Decision 178 recording that clause 4's reconcile was
       taken via the gated-apply branch rather than state rm, and why (append-only per Decision 177
       clause 1; no numbered Decision -- see context for the routing adjudication).
+  - file: scripts/ops/drain_glue_orphan.py
+    action: Create
+    purpose: >-
+      The executable drain runbook (VP steps 10-12). Derives every fluent at runtime, asserts the
+      routing invariants by parsing committed source, precondition-gates each phase, and fails
+      closed to the operator when the world has moved rather than proceeding on a stale assumption.
+      Namespace package, no __init__.py -- scripts/ci/ carries none either.
+  - file: tests/ops/test_drain_glue_orphan.py
+    action: Create
+    purpose: >-
+      Unit coverage for the precondition logic and the workflow-invariant assertions, so a workflow
+      or budget-json edit that would silently break the drain reds a test instead of surviving to
+      critique. Create tests/ops/__init__.py alongside it -- every other tests/ subpackage has one.
 bundled_recommendations:
   - rec-3348
   - rec-3328
@@ -72,9 +85,9 @@ infrastructure_dependencies:
     safe) and is SMALLER than today's live Sid, since dropping four verbs outweighs adding one ARN.
     Managed boundary policy: under 6,144 B, measured 1,548 B, so the ~11 B glue addition is trivially
     safe. Both authoritative assertions are HCL lifecycle preconditions evaluating at admin plan time
-    (VP step 7).
+    (VP step 8).
   - >-
-    The bootstrap root has unapplied drift accumulated since the 7b67e21d cleanse, so VP step 7's
+    The bootstrap root has unapplied drift accumulated since the 7b67e21d cleanse, so VP step 8's
     apply lands MORE than this plan's diff. The operator reviews the full plan output, not only the
     two expected changes.
   - >-
@@ -87,7 +100,7 @@ infrastructure_dependencies:
     fix, so its apply still fails on the bad Purpose tag and the record stays red -- expected, not a
     regression. (2) The apply-sandbox acknowledge-and-retry dispatch then writes green, because it
     re-plans FRESH at the dispatch ref (main tip: tag fixed, no delete left), so the guard PASSes.
-    Of run 33323201848's three legs, iam:UpdateRoleDescription is cleared by VP step 7 (identity-side,
+    Of run 33323201848's three legs, iam:UpdateRoleDescription is cleared by VP step 8 (identity-side,
     ref-independent) and the S3 tag only by trigger (2)'s main-tip replan.
 acceptance_criteria:
   - >-
@@ -102,11 +115,19 @@ acceptance_criteria:
     ceiling (not just iam: actions), and reports zero gaps on the post-change tree.
   - >-
     Live simulate returns zero mismatches, and Reconcile's gated-apply-reconcile job -- after the
-    tf-gated-apply human approval -- removes aws_glue_catalog_database.ops, so glue get-database
-    returns EntityNotFoundException.
+    tf-gated-apply human approval -- removes aws_glue_catalog_database.ops, evidenced by
+    "aws_glue_catalog_database.ops: Destruction complete" in that run's own Terraform log. NOT by
+    aws glue get-database, which this runbook's own apply disarms as an oracle (see context).
   - >-
     With the resource out of state, the terraform-apply-sandbox acknowledge-and-retry dispatch
-    re-plans fresh at main tip, the guard PASSes, and the convergence record is written green.
+    re-plans FRESH at main tip, and all four of these are asserted rather than inferred: the plan
+    carries NO remaining aws_glue_catalog_database delete, the deterministic guard PASSes, the
+    subagent plan reviewer neither returns REVISE nor stays STARVED, and the convergence record
+    reads status=green.
+  - >-
+    scripts/ops/drain_glue_orphan.py derives every fluent it acts on at runtime, asserts the three
+    routing invariants against committed source, and refuses a phase whose preconditions no longer
+    hold instead of proceeding -- proven by tests/ops/test_drain_glue_orphan.py, not by review.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -195,6 +216,27 @@ verification_plan:
     hermetic: false
     graduation: not-applicable
   - step: 7
+    phase: pre-deploy
+    action: >-
+      Exercise the drain script's own unit coverage: each phase precondition-gates on
+      runtime-derived world state and fails closed on a moved world, and the three routing
+      invariants are ASSERTED against committed source rather than restated in prose.
+    command: bin/venv-python -m pytest tests/ops/test_drain_glue_orphan.py -q
+    expected: >-
+      exit 0. The invariant cases must go RED if terraform-apply-sandbox.yml's gated-apply job loses
+      its push condition, if reconcile.yml's gated-apply-reconcile gains one, or if
+      terraform/bootstrap/authority_budget.json's in_budget_resource_types starts listing
+      aws_iam_role -- that is the whole point of the restructure: a change that would silently break
+      the drain becomes a failing test instead of a critique finding nobody re-runs.
+    fix_if: >-
+      An invariant case that still passes against a deliberately mutated copy of the workflow or the
+      budget json is vacuous -- assert the negative direction too. A precondition case that lets a
+      phase proceed on a stale fluent is the exact failure mode this restructure exists to remove.
+      Step 6's full tier also collects this file; this focused run is what hosts the obligation.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: drain-glue-orphan-preconditions
+  - step: 8
     phase: post-deploy
     action: >-
       OPERATOR, after merge: plan and apply terraform/bootstrap by hand per terraform/bootstrap/CLAUDE.md
@@ -214,7 +256,7 @@ verification_plan:
       the role breaks in-flight CI; dropping the reads policy strips the refresh-read surface). If the
       precondition trips the 10,240 B ceiling, relocate a read-only Sid to the github_ci_apply_reads
       managed policy (Decision 156 clause 1) -- never drop the UDF ARN.
-  - step: 8
+  - step: 9
     phase: post-deploy
     action: >-
       OPERATOR: prove the two-layer intersection LIVE. This is the only step that shows the widening
@@ -224,76 +266,100 @@ verification_plan:
     fix_if: >-
       The userDefinedFunction triple returning implicitDeny while the database triple is allowed means
       the ceiling half did not apply; re-check the boundary policy's default version.
-  - step: 9
-    phase: post-deploy
-    action: >-
-      OPERATOR, drain step 1 of 2 -- remove the resource. Dispatch Reconcile, NOT
-      terraform-apply-sandbox: the destroy is a guard-routed delete and apply-sandbox's gated-apply
-      job requires github.event_name == 'push', so a dispatch there applies nothing.
-      gated-apply-reconcile carries no push condition and subsumes exactly this case (Decision 158,
-      T2.37 c3). Pass NO rec_id -- reconcile_target.validate_rec_id_open fails the dispatch on a
-      CLOSED rec and this plan's own Resolves trailer closes rec-3348 at merge; Reconcile reads the
-      red SHA from the record itself. APPROVE gated-apply-reconcile when it requests tf-gated-apply.
-      EXPECT the apply to fail and the record to stay RED: Reconcile re-plans at RED_SHA (e8332e9f),
-      which predates 29dd24bd's S3 InvalidTag fix, so its plan still carries the bad Purpose tag.
-      This step's success condition is the DATABASE being gone, never the record being green.
-    command: >-
-      gh workflow run reconcile.yml && sleep 20 && RID=$(gh run list --workflow=reconcile.yml --event=workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId') && echo "approve gated-apply-reconcile in the Actions UI when it requests tf-gated-apply" && gh run watch "$RID" ; aws glue get-database --name agent_platform --profile agent_platform_admin 2>&1 | grep -q EntityNotFoundException && echo "glue database drained"
-    expected: >-
-      prints glue database drained. The Reconcile run may itself report failure and the convergence
-      record may still read red -- both are the EXPECTED outcome here, because the S3 tag leg cannot
-      pass at RED_SHA. Step 10 is what turns the record green.
-    fix_if: >-
-      If get-database still resolves, the apply aborted BEFORE reaching the destroy rather than
-      failing after it. Fall back to the human-gated break-glass admin apply of terraform/personal at
-      main tip (terraform/CLAUDE.md), or to Decision 178 clause 4's other branch, terraform state rm
-      aws_glue_catalog_database.ops. A denial on a NEW glue ARN for the same verb is a Resource-axis
-      gap -- widen the Resource list. A denial naming a DIFFERENT action (rec-3328's
-      corrective_action anticipates glue:DeleteUserDefinedFunction) is a new verb and therefore a
-      Decision 143 worst-verb re-scoping judgement -- add it deliberately, do not reflexively widen.
   - step: 10
     phase: post-deploy
     action: >-
-      OPERATOR, drain step 2 of 2 -- write the record green. With the resource out of state, dispatch
-      terraform-apply-sandbox's acknowledge-and-retry. Unlike Reconcile it re-plans FRESH at the
-      DISPATCH ref (its checkout pins no ref, and the fresh-plan step is gated on event_name ==
-      'workflow_dispatch'), i.e. main tip -- where 29dd24bd's tag fix is present and no glue delete
-      remains. The guard therefore PASSes, the apply runs inside apply-sandbox itself, and the
-      push-only gated-apply job is never needed. This is the ONLY point at which falling back to this
-      workflow is correct: never instead of Reconcile, and never before the destroy has drained.
-    command: >-
-      ACK=$(aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json - --profile agent_platform_admin | bin/venv-python -c "import json,sys; print(json.load(sys.stdin)['commit_sha'])") && gh workflow run terraform-apply-sandbox.yml -f acknowledge_red_commit="$ACK" && sleep 20 && RID=$(gh run list --workflow=terraform-apply-sandbox.yml --event=workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId') && gh run watch "$RID" --exit-status && aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json /tmp/conv.json --profile agent_platform_admin && bin/venv-python -c "import json; d=json.load(open('/tmp/conv.json')); assert d.get('status')=='green', d; print('convergence record GREEN')"
+      OPERATOR, drain phase 1 of 2 -- remove the resource. Run the script's remove phase. It derives
+      the red SHA and record status from the convergence record, confirms the orphan is still in
+      tfstate, confirms rec-3348/rec-3328's open/closed state (it passes NO rec_id -- Reconcile's
+      reconcile_target.validate_rec_id_open fails the dispatch on a CLOSED rec and this plan's own
+      Resolves trailer closes rec-3348 at merge), asserts the three routing invariants against
+      committed source, dispatches Reconcile, and captures the run id from that dispatch rather than
+      guessing at gh run list. The ONE thing it cannot own: APPROVE gated-apply-reconcile in the
+      GitHub Actions UI when it requests the tf-gated-apply Environment. Reconcile is dispatched,
+      never terraform-apply-sandbox -- the destroy is a guard-routed delete and apply-sandbox's
+      gated-apply job is push-only, so a dispatch there applies nothing, while
+      gated-apply-reconcile carries no push condition and subsumes exactly this case (Decision 158,
+      T2.37 c3). EXPECT the run to FAIL and the record to stay RED: Reconcile re-plans at RED_SHA
+      (e8332e9f), which predates 29dd24bd's S3 InvalidTag fix, so its apply still trips the bad
+      Purpose tag. That is the EXPECTED outcome, not a regression -- this phase's success condition
+      is the DESTROY, never a green record.
+    command: bin/venv-python -m scripts.ops.drain_glue_orphan --phase remove
     expected: >-
-      The precondition logs CONVERGENCE_ACK (not CONVERGENCE_RED), the fresh plan carries neither the
-      glue delete nor the invalid tag, the guard PASSes, the apply succeeds, and the record reads
-      status=green.
+      The script prints every derived fluent before acting, then confirms the destroy from the
+      Reconcile run's own Terraform log line "aws_glue_catalog_database.ops: Destruction complete"
+      (gh run view "$RID" --log). The run may report failure and the record may still read red --
+      both expected; step 11 is what turns the record green.
     fix_if: >-
-      A CONVERGENCE_RED refusal means ACK did not match the record's commit_sha. If the guard ROUTES
-      again the fresh plan still carries a delete or an out-of-budget IAM diff -- read the plan output
-      and identify it rather than re-running for a different verdict. If the apply fails on the S3
-      tag, main does not carry 29dd24bd -- check with git show origin/main:terraform/personal/main.tf.
+      A "world has moved -- re-assess" refusal means a derived fluent no longer matches (record
+      already green, orphan already out of state, a different red SHA, a rec in the unexpected
+      state). Re-assess from the printed fluents; never re-run for a different verdict. NO
+      Destruction-complete line means the apply aborted BEFORE reaching the destroy rather than
+      failing after it: fall back to the human-gated break-glass admin apply of terraform/personal
+      at main tip (terraform/CLAUDE.md), or to Decision 178 clause 4's other branch, terraform state
+      rm aws_glue_catalog_database.ops -- which leaves the record red and needs that same
+      break-glass path to clear it. A denial on a NEW glue ARN for the same verb is a Resource-axis
+      gap -- widen the Resource list. A denial naming a DIFFERENT action (rec-3328's
+      corrective_action anticipates glue:DeleteUserDefinedFunction) is a new verb and therefore a
+      Decision 143 worst-verb re-scoping judgement -- add it deliberately, do not reflexively widen.
+      Do NOT reach for aws glue get-database to settle any of this (see context).
   - step: 11
     phase: post-deploy
     action: >-
-      Closure obligation -- confirm both bundled recs actually closed via the Resolves trailer and
-      rec-autoclose.yml rather than assuming the trailer fired.
-    command: >-
-      bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json; rows={json.loads(l)['id']: json.loads(l).get('status') for l in open('logs/.recommendations-log.jsonl') if l.strip()}; bad={r: rows.get(r) for r in ('rec-3348','rec-3328') if rows.get(r)!='closed'}; assert not bad, f'still open -> {bad}'; print('both closed')"
-    expected: prints both closed
+      OPERATOR, drain phase 2 of 2 -- write the record green. Run the converge phase. It re-reads
+      the record for the acknowledge SHA (never a hardcoded one), confirms the orphan has actually
+      left state, then dispatches terraform-apply-sandbox's acknowledge-and-retry. Unlike Reconcile
+      it re-plans FRESH at the DISPATCH ref (its checkout pins no ref, and the fresh-plan step is
+      gated on event_name == 'workflow_dispatch'), i.e. main tip -- where 29dd24bd's tag fix is
+      present and no glue delete remains -- so the guard PASSes and the apply runs inside
+      apply-sandbox itself, never needing its push-only gated-apply job. This is the ONLY point at
+      which falling back to this workflow is correct: never instead of Reconcile, and never before
+      the destroy has drained. TWO caveats the script surfaces rather than assumes. (a) The guard
+      PASS is CONDITIONAL on phase 1's partial apply having landed the pending
+      aws_iam_role.platform_dev description diff; if it has not, the guard ROUTES, and a routed
+      DISPATCH is terminal because gated-apply is push-only -- the only recovery is the human-gated
+      break-glass admin apply at main tip. (b) Between guard PASS and apply,
+      terraform-apply-sandbox.yml lines 301-321 run a subagent plan review: a REVISE verdict fails
+      closed and REDS the record, while a still-STARVED reviewer after its one same-budget retry
+      BLOCKS the apply and SKIPS the record write (Decision 55 anti-masking), leaving the record
+      untouched and needing a re-dispatch. Neither is a guard failure and neither is a drain failure.
+    command: bin/venv-python -m scripts.ops.drain_glue_orphan --phase converge
+    expected: >-
+      The precondition logs CONVERGENCE_ACK (not CONVERGENCE_RED); the fresh plan carries neither
+      the glue delete nor the invalid tag; the guard PASSes; the reviewer returns an approving
+      verdict; the apply succeeds. The script then asserts the AUTHORITATIVE oracle explicitly
+      rather than leaving it implicit: the fresh main-tip plan shows NO remaining
+      aws_glue_catalog_database delete, the guard verdict is PASS, and the record reads
+      status=green. All three, or the phase fails.
     fix_if: >-
-      Close manually via ops_data_portal --update-rec with a resolution naming the merge SHA
-      (Decision 70 fallback).
+      CONVERGENCE_RED means the acknowledge SHA no longer matches the record -- the script derives
+      it fresh, so this means the record moved mid-run; re-assess. Guard ROUTED means the fresh plan
+      still carries a delete or an out-of-budget IAM diff -- read the plan output and identify it
+      rather than re-running for a different verdict, and recover via the break-glass admin apply,
+      not another dispatch. REVISE means reading the reviewer's stated reason and fixing its cause,
+      never re-dispatching for a friendlier reviewer. STARVED after the retry: re-dispatch, the
+      record is untouched. An apply failing on the S3 tag means main does not carry 29dd24bd --
+      check with git show origin/main:terraform/personal/main.tf.
   - step: 12
     phase: post-deploy
     action: >-
-      Time-box the grant: file the removal-obligation rec so the drain grant does not become standing
-      unused authority once the resource leaves state.
-    command: >-
-      bin/venv-python -m scripts.ops_data_portal --guidance && bin/venv-python -m scripts.ops_data_portal --file-rec --title "Remove the time-boxed glue drain grant now that aws_glue_catalog_database.ops has left state" --file terraform/bootstrap/github_ci_apply_policy.tf --priority High --effort XS --risk low --source manual --context "The GlueCatalog Sid and the boundary glue ceiling entry were restored by PLAN-glue-delete-database-grant solely to drain the orphaned aws_glue_catalog_database.ops left in tfstate by the 7b67e21d cleanse (Decision 178 clause 4 reconcile). Once that destroy has drained and the resource is out of state, no remaining HCL can reach any glue verb, so both entries become standing unused authority on a public-repo CI identity -- remove them at both layers." --acceptance "! grep -q GlueCatalog terraform/bootstrap/github_ci_apply_policy.tf && ! grep -q glue: terraform/bootstrap/github_ci_apply_boundary.tf"
-    expected: a rec id is printed and the rec is queryable
+      OPERATOR, closure phase. The script re-derives both bundled recs' status from the warehouse
+      via the portal (never by reading logs/.recommendations-log.jsonl as a write source), so the
+      Resolves trailer and rec-autoclose.yml are CONFIRMED to have fired rather than assumed; then,
+      and only once the orphan is confirmed out of state, it files the time-boxed
+      removal-obligation rec so the drain grant does not become standing unused authority. It calls
+      get_rec_write_guidance before file_rec (Decision 66 Precision Context Injection).
+    command: bin/venv-python -m scripts.ops.drain_glue_orphan --phase close
+    expected: >-
+      prints rec-3348 and rec-3328 closed, then the new removal rec's id. That rec's acceptance
+      oracle is the grant's own deletion at BOTH layers.
     fix_if: >-
-      A portal write that cannot reach the warehouse FAILS LOUD (Decision 84 I-4) -- re-file after
-      restoring connectivity; never stage it in a local file.
+      A rec still open means the trailer did not fire -- close it manually via ops_data_portal
+      --update-rec with a resolution naming the merge SHA (Decision 70 fallback). A portal write
+      that cannot reach the warehouse FAILS LOUD (Decision 84 I-4) -- re-file after restoring
+      connectivity, never stage it in a local file. The phase REFUSING to file the removal rec while
+      the orphan is still in state is a fail-closed precondition, not a bug: a removal obligation
+      for a grant still in use is exactly the fail-open this restructure exists to prevent.
 test_obligations:
   - source: terraform/bootstrap/github_ci_apply_policy.tf
     behavior: >-
@@ -325,6 +391,17 @@ test_obligations:
     test_selector: tests/checks/iam_tf/test__write_companions.py::TestCheckIdentityIamActionsSubsetOfBoundary::test_non_iam_action_absent_from_ceiling_fails
     red_green_expectation: >-
       Red before the generalization (the iam-scoped check ignores a missing non-iam action), green after.
+  - source: scripts/ops/drain_glue_orphan.py
+    behavior: >-
+      Each drain phase precondition-gates on runtime-derived world state and fails closed naming the
+      fluent that moved, and the three routing invariants are asserted by parsing committed source
+      (apply-sandbox gated-apply is push-only; reconcile's gated-apply-reconcile is not;
+      authority_budget.json omits aws_iam_role) rather than restated in prose.
+    verification_step: 7
+    test_selector: tests/ops/test_drain_glue_orphan.py::TestPhasePreconditions::test_moved_world_fails_closed
+    red_green_expectation: >-
+      Red before the script exists (the import fails), green after; and red again against a mutated
+      workflow copy, which is what makes the invariant assertions non-vacuous.
 constraints:
   - No rescue agents or workaround loops (Decision 55) -- forward-fix only.
   - >-
@@ -335,15 +412,22 @@ constraints:
     decision-entry.yaml's amendment_forms. Per AGENTS.md's Change-record content rule the annotation
     carries ONLY the clause-completion fact -- never the run id, byte measurements, or red-record state.
   - >-
-    Decision 119: no local terraform init/plan for terraform/personal. Only terraform/bootstrap is
-    planned locally, and only by the operator at VP step 7.
+    Decision 119 as amended by its 2026-08-25 Update: no local terraform init/plan for
+    terraform/personal on the ROUTINE flow -- validate/plan/apply there stay CI-mediated.
+    terraform/bootstrap is planned locally by the operator at VP step 8, and the human-gated
+    break-glass ADMIN tier (terraform/CLAUDE.md; the sole exception Decision 126 carves out of
+    "agents never run terraform apply as a routine action") retains local init/plan/apply on
+    terraform/personal at main tip. That carve-out is load-bearing here: it is the recovery path
+    both the routed-dispatch branch (VP step 11) and the state rm branch depend on.
   - >-
     Decision 128 decompose-by-default. NEITHER scope Python file is registered in
     config/sloc_budgets.yaml, so both sit under the hard 500 default with no budget to raise:
     scripts/checks/iam_tf/_write_companions.py is at 454/500 (46 headroom) and
     tests/checks/iam_tf/test__write_companions.py at 475/500 (25 headroom). If either crosses,
     decompose -- the existing sibling tests/checks/iam_tf/test__write_companions_split_root.py is the
-    precedent for the test file.
+    precedent for the test file. The two NEW files (scripts/ops/drain_glue_orphan.py,
+    tests/ops/test_drain_glue_orphan.py) are likewise unregistered and bind at the same hard 500
+    default -- decompose rather than register, and never seed a budget row for them.
   - >-
     In-array comment rule (the boundary file's own rec-2882 note, which "cost a real debugging
     round"). It binds EVERY bracketed array parsed by a non-greedy Field-equals-bracket regex --
@@ -365,8 +449,10 @@ context:
   - "aws_glue_catalog_database.ops is in tfstate at serial 195 holding three retired ops_* catalog entries. SoT for those tables is DuckLake-on-Neon, so the cascade delete is the intended outcome, not data loss."
   - "FALLBACK (operator-directed) if CI terraform provisioning is blocked: Decision 178 clause 4's other branch, terraform state rm aws_glue_catalog_database.ops. Three consequences established at planning: (a) PlatformAdmin simulates implicitDeny on glue:DeleteDatabase at both ARNs, so deleting the live database needs a separate operator-authorized PlatformAdmin grant; (b) without that, the live database and its three table entries persist unmanaged; (c) state rm does NOT itself write the record, and a Reconcile run afterwards would still fail --
     it re-plans at RED_SHA, which carries the pre-29dd24bd S3 tag. On this branch too the record is
-    turned green by VP step 10's apply-sandbox dispatch, which replans at main tip. Neither rec's acceptance oracle is satisfied on this branch -- close both as superseded."
+    turned green by VP step 11's apply-sandbox dispatch, which replans at main tip. Neither rec's acceptance oracle is satisfied on this branch -- close both as superseded."
   - "rec-3351 (filed this session, not bundled): terraform-apply-sandbox's acknowledge_red_commit input still claims to be the ONLY path to clear red -- false for any guard-routed replan since Reconcile subsumed that case. rec-3350 was filed earlier against deploy-paths.yaml on a mistaken premise and is declined: that contract named the right primitive all along."
+  - "Oracle correction (the change that made the runbook safe): `aws glue get-database` is NOT a drain oracle. PlatformAdmin's glue:GetDatabase comes from a GlueCatalog Sid in its LIVE PlatformDataLakeProvisioning inline policy that is absent from HCL -- terraform/personal/platform_roles.tf:458 manages aws_iam_role_policy.platform_admin_datalake and `grep -c -i glue` on that file returns 0 -- so the terraform/personal apply this runbook performs strips it as drift. The resulting AccessDeniedException is indistinguishable from `not drained`, a false alarm that would push the operator into the state rm fallback on a false premise. Oracles are control-plane instead, and the apply cannot revoke them: immediate = `aws_glue_catalog_database.ops: Destruction complete` in the Reconcile run log; authoritative = the fresh main-tip plan showing no glue delete remaining + guard PASS + record green."
+  - "Runbook form (advice consult, human-blessed): the post-deploy half is a SPECIFICATION for scripts/ops/drain_glue_orphan.py, not prose. Prose steps hardcode fluents -- facts about a live, drifting world -- and are only ever executed by a fallible reader at critique time; five critique rounds produced ~8 blocking findings and three rewrites, every one of them in this half, while the code half survived untouched because tests execute it. The script derives fluents at runtime, asserts workflow invariants by PARSING committed source (so a workflow edit reds a test instead of silently voiding the runbook), and precondition-gates each phase, failing closed with `world has moved -- re-assess`. In-repo precedent for the gate shape: .github/workflows/reconcile.yml lines 267-282."
   - "ci-rca deferral: rec-3292 (requirements.lock extras) and rec-3293 (pytz missing) are open ci_rca recs sharing no file, Decision, or failure category with this plan. Deferred deliberately -- both are dependency-manifest failures on main, unrelated to the IAM surface here."
 pre_implementation_checklist:
   - Branch confirmed not on main
@@ -416,12 +502,60 @@ execution_steps:
     (mirror the _statement_blocks structure of test_platform_role_metadata_admin_scope.py), including
     the athena-absent-at-both-layers assertion.
   - >-
+    scripts/ops/drain_glue_orphan.py -- the executable drain runbook. THREE phases, one operator
+    invocation each: --phase remove (Reconcile dispatch), --phase converge (apply-sandbox
+    acknowledge-and-retry), --phase close (bundled-rec closure plus the removal rec). Every phase
+    does the same three things IN ORDER -- derive, assert, gate.
+    DERIVE at runtime, never hardcode: the red commit SHA and record status, read from the
+    convergence record at s3://agent-platform-data-lake/convergence/personal/sandbox.json; whether
+    aws_glue_catalog_database.ops is still in tfstate; whether rec-3348 and rec-3328 are open or
+    closed (that fluent decides BOTH that no rec_id may be passed to Reconcile --
+    reconcile_target.validate_rec_id_open fails the dispatch on a CLOSED rec, and this plan's own
+    Resolves trailer closes rec-3348 at merge -- and the close phase's verdict); and the id of the
+    workflow run it just dispatched, captured from that dispatch rather than guessed from gh run
+    list. Nothing the script acts on is a literal in its source.
+    ASSERT by PARSING committed source, never by restating it, so each becomes a unit test instead
+    of a critique finding: (a) .github/workflows/terraform-apply-sandbox.yml's gated-apply job
+    carries github.event_name == 'push' and therefore cannot serve a routed destroy from a
+    dispatch; (b) .github/workflows/reconcile.yml's gated-apply-reconcile carries no such
+    condition (Decision 158, T2.37 c3); (c) terraform/bootstrap/authority_budget.json's
+    in_budget_resource_types omits aws_iam_role, so a pending role diff ROUTES rather than
+    auto-applying.
+    GATE: refuse the phase and fail closed with a loud "world has moved -- re-assess" NAMING the
+    fluent that moved, rather than proceeding on a stale assumption. In-repo precedent for the
+    shape: .github/workflows/reconcile.yml lines 267-282 (its "no longer red -- clean no-op"
+    recheck, which converts a moved world into a hard gate on every later step).
+    Profiles differ by operation and must not be conflated: the S3 record read takes --profile
+    (default agent_platform_admin); the close phase's portal calls use the agent_platform
+    (PlatformDev) assume-role profile the portal itself requires. Under 500 SLOC or decompose
+    (Decision 128) -- unregistered, so no budget exists to raise.
+  - >-
+    The removal-obligation rec that --phase close files carries the text the prose runbook used to
+    hold inline: title "Remove the time-boxed glue drain grant now that
+    aws_glue_catalog_database.ops has left state", file
+    terraform/bootstrap/github_ci_apply_policy.tf, priority High, effort XS, risk low, source
+    manual; context = both entries were restored SOLELY to drain the orphan the 7b67e21d cleanse
+    left in tfstate (Decision 178 clause 4 reconcile), and once the resource is out of state no
+    remaining HCL can reach any glue verb, so both become standing unused authority on a
+    public-repo CI identity; acceptance = the grant's own deletion at BOTH layers,
+    "! grep -q GlueCatalog terraform/bootstrap/github_ci_apply_policy.tf && ! grep -q glue:
+    terraform/bootstrap/github_ci_apply_boundary.tf".
+  - >-
+    tests/ops/test_drain_glue_orphan.py (plus tests/ops/__init__.py -- every other tests/
+    subpackage carries one) -- two classes. TestPhasePreconditions: each phase proceeds on a fresh
+    world and fails closed on a moved one (record already green, orphan already out of state, a
+    different red SHA, a bundled rec in the unexpected state), asserting on the NAMED fluent in the
+    refusal rather than on exit status alone. TestWorkflowInvariants: each of the three assertions
+    passes against the real committed file AND fails against a mutated copy -- a one-direction case
+    is vacuous and is the failure mode step 7's fix_if calls out. No network and no warehouse write:
+    stub the S3 read, the gh dispatch, and the portal call.
+  - >-
     docs/DECISIONS.md -- append a blockquote_update annotation to Decision 178 recording that clause
     4's reconcile was taken via the gated-apply branch rather than state rm, and why.
   - >-
-    Graduation bookkeeping (VP steps 1-2 are graduate): write
-    config/agent/verification_registry/entries/glue-catalog-grant-udf-resource-axis.yaml and
-    identity-action-ceiling-coverage.yaml at implement time. Not a scope row -- plan-obligations
+    Graduation bookkeeping (VP steps 1, 2 and 7 are graduate): write
+    config/agent/verification_registry/entries/glue-catalog-grant-udf-resource-axis.yaml,
+    identity-action-ceiling-coverage.yaml and drain-glue-orphan-preconditions.yaml at implement time. Not a scope row -- plan-obligations
     cannot express it -- but validate_graduation_completeness's implement-PR leg enforces it.
   - >-
     Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and
@@ -431,7 +565,7 @@ execution_steps:
     push -> PR -> CI -> merge. The PR body carries the DD-B routing line (AGENTS.md): "Routing:
     operational_fact -> time-boxed grant + removal rec; annotation on Decision 178, no new number."
     Hold the subscription through the operator apply (Decision 76 / CD.35).
-  - 'Report: what was implemented, verification results, and the operator runbook for steps 7-9.'
+  - 'Report: what was implemented, verification results, and the operator runbook for VP steps 8-12.'
 rollback: >-
   The HCL change is additive and reversible by reverting the PR; nothing is applied at merge (this
   diff touches only terraform/bootstrap/**, which is outside terraform-apply-sandbox's
