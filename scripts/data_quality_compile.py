@@ -10,6 +10,13 @@ import yaml
 
 from scripts.data_quality_models import _TOMBSTONES_PATH, Check
 
+# Test types that are enforced only at write time (scripts/ops_portal/write_validators.py) and
+# are deliberately not SQL-compilable -- e.g. acceptance_lint runs a filesystem/shell-syntax
+# check, not a column predicate. _compile_column_test recognises and skips these by design
+# rather than loud-failing; any OTHER unrecognised test type is a silent-drop bug (Decision 55)
+# and raises instead (rec-3308).
+_WRITE_TIME_ONLY_TEST_TYPES = frozenset({"path_syntax", "acceptance_lint", "array_element_format", "min_length"})
+
 # ---------------------------------------------------------------------------
 # Tombstone resurrection checks
 # ---------------------------------------------------------------------------
@@ -180,7 +187,11 @@ def _compile_column_test(
                 ),
                 description=f"{table_name}.{col_name}: must be unique",
             )
-        return None
+        if test in _WRITE_TIME_ONLY_TEST_TYPES:
+            return None
+        raise ValueError(
+            f"{table_name}.{col_name}: unrecognised test type {test!r} (neither SQL-compilable nor declared write-time-only)"
+        )
 
     # Dict tests: accepted_values, relationships, expression
     if isinstance(test, dict):
@@ -308,6 +319,13 @@ def _compile_column_test(
                 enforced=enforced,
                 exclude_before=eb,
             )
+
+        if test_type in _WRITE_TIME_ONLY_TEST_TYPES:
+            return None
+        raise ValueError(
+            f"{table_name}.{col_name}: unrecognised test type {test_type!r} "
+            "(neither SQL-compilable nor declared write-time-only)"
+        )
 
     return None
 

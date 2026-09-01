@@ -54,12 +54,16 @@ tables:
           # Uniqueness is enforced at the _current view level.
       title:
         description: "Concise one-line description of the recommendation"
-        semantics: "Minimum 10 characters enforced at write time in ops_data_portal. Near-duplicate titles across different file targets are legitimate."
+        semantics: "Minimum 10 stripped characters enforced at write time via the min_length write_time test below (write_validators.py's YAML-driven loader). Near-duplicate titles across different file targets are legitimate."
         tests:
           - not_null:
               enforced: true
               exclude_before: '2026-05-01'
               write_time: true
+          - min_length:
+              value: 10
+              write_time: true
+              enforced: true
       source:
         description: "Agent type that filed this recommendation; harness-injected AGENT_TYPE identifier"
         semantics: "Lineage key: analytically equivalent to session_id for cross-table joins to telemetry on agent type. Never set by agents -- injected from AGENT_TYPE env var by the invocation harness. Validated against config/agent/data_quality/source_registry.yaml at write time in ops_data_portal -- unregistered values are rejected before reaching the warehouse. Human-initiated portal calls use source=manual."
@@ -136,8 +140,12 @@ tables:
               description: "context must be at least 80 stripped characters"
               enforced: true
               exclude_before: '2026-05-01'
-              write_time: true
               python: "len(value.strip()) >= 80"
+          - min_length:
+              value: 80
+              write_time: true
+              enforced: true
+              exclude_before: '2026-05-01'
       acceptance:
         description: "Verifiable shell command that proves the recommendation is implemented"
         semantics: "Must pass lint_acceptance_command() from scripts/executor/acceptance_lint.py with require_discrimination=True. Prefer grep/pytest commands over prose descriptions. Banned patterns: python -c one-liners, absolute paths, line-number greps, fenced blocks. The probe must discriminate the pre-fix tree from the post-fix tree: a lone grep/rg for a plain literal with no negation, count assertion or chained second assertion is rejected, as is a bare pytest path with no ::node_id against an already-existing test file. Fix by adding a ::node_id, asserting a negation or count, chaining a second assertion, or pointing at a not-yet-created test file."
@@ -147,6 +155,14 @@ tables:
               exclude_before: '2026-05-01'
               write_time: true
           - acceptance_lint:
+              write_time: true
+              enforced: true
+      dependencies:
+        description: "List of rec-IDs that must complete before this recommendation is eligible"
+        semantics: "Nullable array<string>. Each element must match ^rec-[0-9]+$ at write time through both file_rec and update_rec; null or empty list means no dependencies."
+        tests:
+          - array_element_format:
+              pattern: '^rec-[0-9]+$'
               write_time: true
               enforced: true
       risk:
