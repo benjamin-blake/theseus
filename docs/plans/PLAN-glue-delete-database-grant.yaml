@@ -80,9 +80,12 @@ infrastructure_dependencies:
   - >-
     The convergence record is red at e8332e9f (run 33323201848). A red record is the sole hard block
     and no push clears it; the only clear path is workflow_dispatch acknowledge_red_commit naming the
-    red SHA or an open rec id (rec-3348 qualifies). That run failed on THREE legs; the other two (S3
-    InvalidTag, iam:UpdateRoleDescription) were resolved on main by validate_terraform_tag_charset and
-    Decision 180 respectively, which is what makes acceptance criterion 5 reachable once glue lands.
+    red SHA or an open rec id. BUT that dispatch cannot drain THIS episode: the destroy is a
+    guard-routed delete and apply-sandbox's gated-apply job requires event_name == 'push', so a
+    dispatch produces a green no-op. Reconcile is the correct trigger -- its gated-apply-reconcile job
+    has no push condition and explicitly subsumes this case (T2.37 c3). That run failed on THREE legs;
+    the other two (S3 InvalidTag, iam:UpdateRoleDescription) were resolved on main by
+    validate_terraform_tag_charset and Decision 180, which is what makes criterion 5 reachable.
 acceptance_criteria:
   - >-
     GlueCatalog grants glue:DeleteDatabase on all four ARNs including
@@ -94,7 +97,9 @@ acceptance_criteria:
   - >-
     check_identity_iam_actions_subset_of_boundary flags ANY identity Allow action absent from the
     ceiling (not just iam: actions), and reports zero gaps on the post-change tree.
-  - Live simulate returns zero mismatches and the in-flight destroy drains, flipping the record green.
+  - >-
+    Live simulate returns zero mismatches, and Reconcile's gated-apply-reconcile job -- after the
+    tf-gated-apply human approval -- drains the destroy and writes the convergence record green.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -190,9 +195,10 @@ verification_plan:
       FULL diff -- the root carries unapplied drift since the cleanse, so this lands more than this
       plan's changes. The Decision 156 lifecycle precondition evaluates here and is the byte gate.
     command: >-
-      AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap init && AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap plan -var-file=terraform.bootstrap.tfvars -out=/tmp/bootstrap.tfplan && AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap show -no-color /tmp/bootstrap.tfplan | tee /tmp/bootstrap.plan.txt && if grep -qE 'will be destroyed|must be replaced' /tmp/bootstrap.plan.txt; then echo "STOP - destroy or replace present, review before applying"; exit 1; fi && AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap apply /tmp/bootstrap.tfplan
+      set -o pipefail && AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap init && AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap plan -var-file=terraform.bootstrap.tfvars -out=/tmp/bootstrap.tfplan && AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap show -no-color /tmp/bootstrap.tfplan | tee /tmp/bootstrap.plan.txt && if grep -qE 'will be destroyed|must be replaced' /tmp/bootstrap.plan.txt; then echo "STOP - destroy or replace present, review before applying"; exit 1; fi && AWS_PROFILE=agent_platform_admin terraform -chdir=terraform/bootstrap apply /tmp/bootstrap.tfplan
     expected: >-
-      tee prints the FULL plan for operator review; the destroy/replace guard finds nothing and so
+      set -o pipefail makes a failed terraform show fail the chain rather than feeding the guard an
+      empty file; tee prints the FULL plan for operator review; the guard finds nothing and so
       does not exit 1 (a hit halts before apply); the plan adds the GlueCatalog Sid and glue to the
       boundary DataPlaneAllow; both byte preconditions pass; apply succeeds. terraform apply on a
       SAVED plan does not prompt, so the guard -- not an interactive yes -- is what stops a bad apply.
@@ -214,24 +220,32 @@ verification_plan:
   - step: 9
     phase: post-deploy
     action: >-
-      OPERATOR: unlatch and drain. Dispatch the acknowledge-and-retry run, WAIT for it to finish, then
-      confirm the record flipped green and the glue database is gone.
+      OPERATOR: drain via the Reconcile action -- NOT terraform-apply-sandbox's
+      acknowledge_red_commit dispatch. The destroy is a guard-routed delete, and apply-sandbox's
+      gated-apply job requires github.event_name == 'push', so a dispatch there yields a GREEN run
+      that applies nothing and leaves the record red. Reconcile's gated-apply-reconcile job carries
+      no push condition and subsumes exactly this case (reconcile.yml, rec-2647/rec-2523 deadlock,
+      T2.37 c3). APPROVE the gated-apply-reconcile job when it requests the tf-gated-apply
+      Environment approval, then assert on the RECORD, never on the run's exit code.
     command: >-
-      gh workflow run terraform-apply-sandbox.yml -f acknowledge_red_commit=rec-3348 && sleep 15 && RID=$(gh run list --workflow=terraform-apply-sandbox.yml --limit 1 --json databaseId --jq '.[0].databaseId') && gh run watch "$RID" --exit-status ; aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json - --profile agent_platform_admin && aws glue get-database --name agent_platform --profile agent_platform_admin
+      gh workflow run reconcile.yml -f rec_id=rec-3348 && sleep 15 && RID=$(gh run list --workflow=reconcile.yml --limit 1 --json databaseId --jq '.[0].databaseId') && echo "approve gated-apply-reconcile in the Actions UI when it requests tf-gated-apply" && gh run watch "$RID" ; aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json /tmp/conv.json --profile agent_platform_admin && bin/venv-python -c "import json; d=json.load(open('/tmp/conv.json')); assert d.get('status')=='green', d; print('convergence record GREEN')" && ! aws glue get-database --name agent_platform --profile agent_platform_admin
     expected: >-
-      The run logs a CONVERGENCE_ACK notice (not CONVERGENCE_RED), the destroy of
-      aws_glue_catalog_database.ops succeeds, the record reads status=green, and get-database returns
-      EntityNotFoundException. NOTE: the step therefore exits NON-ZERO by design -- the final
-      get-database is expected to fail. Read the record status, not the exit code.
+      Reconcile resolves the red commit itself, the guard routes the delete, gated-apply-reconcile
+      requests approval, and after approval the destroy runs and the record is written status=green.
+      The command asserts the record is green AND that get-database now fails
+      (EntityNotFoundException), so a passing step means both. A green run with a still-red record
+      means nothing was applied -- see fix_if.
     fix_if: >-
-      A CONVERGENCE_RED refusal means the input matched neither the red SHA nor the rec-NNNN shape. A
-      denial on a NEW glue ARN for the same verb is a Resource-axis gap -- widen the Resource list. A
-      denial naming a DIFFERENT action (rec-3328's corrective_action anticipates
-      glue:DeleteUserDefinedFunction) is a new verb, so it is a Decision 143 worst-verb re-scoping
-      judgement -- add it deliberately with its own justification, do not reflexively widen. A
-      NON-glue failure (run 33323201848 also carried an S3 InvalidTag on PutBucketTagging and an
-      iam:UpdateRoleDescription denial) means one of the sibling legs regressed -- both were resolved
-      on main, so re-check those before touching glue.
+      GREEN RUN + STILL-RED RECORD = nothing was applied. Check apply-reconcile's routed output: if
+      routed=true and no gated-apply-reconcile job appeared, approval was never requested; if it
+      appeared unapproved, approve it. Do NOT fall back to terraform-apply-sandbox with
+      acknowledge_red_commit -- that path cannot execute a routed delete at all. A denial on a NEW
+      glue ARN for the same verb is a Resource-axis gap -- widen the Resource list. A denial naming a
+      DIFFERENT action (rec-3328's corrective_action anticipates glue:DeleteUserDefinedFunction) is a
+      new verb, so it is a Decision 143 worst-verb re-scoping judgement -- add it deliberately, do not
+      reflexively widen. A NON-glue failure (run 33323201848 also carried an S3 InvalidTag on
+      PutBucketTagging and an iam:UpdateRoleDescription denial) means a sibling leg regressed -- both
+      were resolved on main, so re-check those before touching glue.
   - step: 10
     phase: post-deploy
     action: >-
@@ -321,13 +335,15 @@ context:
   - "Live state at planning: identity policy grants DeleteDatabase on catalog+database+table/* but NOT userDefinedFunction/*; boundary is still v6 WITH glue:* (bootstrap unapplied since the cleanse). Applying bootstrap as-is would revoke BOTH layers."
   - "Scope-creep check on row 4: the generalized check would NOT have caught 7b67e21d (that sweep removed both layers together, leaving no uncovered identity action, and the live grant was never in HCL). It guards the next-step risk this plan creates -- restoring one layer without the other -- and per-action beats service-prefix: a ceiling carrying only glue:GetDatabase would still flag glue:DeleteDatabase."
   - "aws_glue_catalog_database.ops is in tfstate at serial 195 holding three retired ops_* catalog entries. SoT for those tables is DuckLake-on-Neon, so the cascade delete is the intended outcome, not data loss."
-  - "FALLBACK (operator-directed) if CI terraform provisioning is blocked: Decision 178 clause 4's other branch, terraform state rm aws_glue_catalog_database.ops. Three consequences established at planning: (a) PlatformAdmin simulates implicitDeny on glue:DeleteDatabase at both ARNs, so deleting the live database needs a separate operator-authorized PlatformAdmin grant; (b) without that, the live database and its three table entries persist unmanaged; (c) state rm does NOT clear the record, so the acknowledge_red_commit unlatch is still required. Neither rec's acceptance oracle is satisfied on this branch -- close both as superseded."
-  - "rec-3350 (filed during this planning session, not bundled): deploy-paths.yaml's red/drift row names only the input-free Reconcile action and omits the acknowledge_red_commit unlatch VP step 9 depends on."
+  - "FALLBACK (operator-directed) if CI terraform provisioning is blocked: Decision 178 clause 4's other branch, terraform state rm aws_glue_catalog_database.ops. Three consequences established at planning: (a) PlatformAdmin simulates implicitDeny on glue:DeleteDatabase at both ARNs, so deleting the live database needs a separate operator-authorized PlatformAdmin grant; (b) without that, the live database and its three table entries persist unmanaged; (c) state rm does NOT itself write the record, so a Reconcile run is still needed afterwards -- but
+    with the resource gone its replan carries no delete, so the guard PASSES and Reconcile auto-applies
+    to green without a gated approval. Neither rec's acceptance oracle is satisfied on this branch -- close both as superseded."
+  - "rec-3351 (filed this session, not bundled): terraform-apply-sandbox's acknowledge_red_commit input still claims to be the ONLY path to clear red -- false for any guard-routed replan since Reconcile subsumed that case. rec-3350 was filed earlier against deploy-paths.yaml on a mistaken premise and is declined: that contract named the right primitive all along."
   - "ci-rca deferral: rec-3292 (requirements.lock extras) and rec-3293 (pytz missing) are open ci_rca recs sharing no file, Decision, or failure category with this plan. Deferred deliberately -- both are dependency-manifest failures on main, unrelated to the IAM surface here."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
-  - Only the plan-cited decision sections read (178, 180, 177, 167, 168, 157, 156, 144, 143, 132, 131, 129, 128, 119)
+  - Only the plan-cited decision sections read (178, 180, 177, 167, 168, 157, 156, 144, 143, 132, 131, 129, 128, 119, 103, 92, 84, 77, 76, 70, 55, 48)
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
 execution_steps:
@@ -350,9 +366,11 @@ execution_steps:
     scripts/checks/iam_tf/_write_companions.py -- drop the iam:-only filter from
     check_identity_iam_actions_subset_of_boundary so every identity Allow action is ceiling-checked
     per-action. Do NOT repurpose the _identity_allow_iam_actions helper -- its iam-only contract is
-    pinned by test_collects_allow_iam_actions_only; add a sibling collector instead. Update the
-    docstring: the iam-only scoping premise (every other service is a ceiling wildcard) was broken by
-    the cleanse.
+    pinned by test_collects_allow_iam_actions_only; add a sibling collector that DELEGATES to it for
+    the iam: subset, so the helper keeps a production caller rather than becoming an orphan. Update the
+    docstring honestly: the iam-only premise holds today and still holds after this plan (glue enters
+    as a wildcard); the generalization is per-action defence against a FUTURE one-layer restore, NOT a
+    repair of a premise the cleanse broke.
   - >-
     tests/checks/iam_tf/test__write_companions.py -- add both-direction cases for the generalized leg,
     and REWRITE the one incumbent the generalization invalidates:
@@ -360,6 +378,11 @@ execution_steps:
     _load_boundary_actions against a monkeypatched empty ROOT and inverts to a failure). Leave
     test_collects_allow_iam_actions_only untouched -- it pins the iam-only helper, which the
     sibling-collector design does not modify. Measured blast radius: exactly one failing incumbent.
+  - >-
+    tests/checks/iam_tf/test__write_companions.py SLOC: at 475/500 with two new cases plus a rewrite,
+    crossing 500 is the LIKELY outcome, not a contingency. Plan the split up front onto the existing
+    sibling tests/checks/iam_tf/test__write_companions_split_root.py (Decision 128 -- decompose;
+    neither file is registered, so no budget can be raised).
   - >-
     tests/checks/iam_tf/test_glue_catalog_grant_scope.py -- create the per-Sid resource-axis pin
     (mirror the _statement_blocks structure of test_platform_role_metadata_admin_scope.py), including
