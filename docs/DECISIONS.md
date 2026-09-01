@@ -333,6 +333,14 @@ lies about the system trains every future agent wrong. The history scrub is the 
 exception to Decision 177's letter, taken with its spirit intact: the scrub is itself dated,
 reviewed, and recorded here, and the guard's retirement is disclosed rather than waived around.
 
+> **Update (2026-09-01):** Clause 4's reconcile for `aws_glue_catalog_database.ops` proceeds via
+> the gated-apply branch (PLAN-glue-delete-database-grant), not `terraform state rm`: the
+> GlueCatalog grant is restored at both IAM layers, narrowed to the destroy path (Decision 143),
+> so `github_ci_apply` itself can execute the destroy through Reconcile's guard-routed delete --
+> the state-rm branch would instead require a separate operator-authorized PlatformAdmin grant,
+> since PlatformAdmin carries no live glue:DeleteDatabase authority of its own. See rec-3348 /
+> rec-3328 for the time-boxed removal-obligation tracking the grant's own retirement.
+
 ---
 
 ## Decision 177: The decision corpus enforces append-only live-body immutability -- a waiver-free lock with a dated-annotation correction dialect (amends Decision 151) (Decided)

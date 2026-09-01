@@ -16,10 +16,19 @@ locals {
         # breaks the pipeline; verified via simulate-principal-policy VP11 "dataplane: allowed").
         # Includes IAM read/OIDC/tag actions and the bounded IAM write actions; DenyIAMEscalation
         # below narrows the write actions at the call site.
+        #
+        # glue:* restored (PLAN-glue-delete-database-grant, Decision 178 clause 4 drain): the
+        # GlueCatalog identity Sid in github_ci_apply_policy.tf grants glue:DeleteDatabase and its
+        # destroy-path siblings, narrowed to the destroy path only (Decision 143). Without glue:* on
+        # THIS ceiling the identity grant is silently denied by the identity/boundary intersection
+        # (Decision 144 clause 1 / rec-2831 class) -- a boundary omission is invisible until the
+        # denied call. athena:* is deliberately NOT restored alongside it: no athena resource remains
+        # in state (Decision 178 clause 2).
         Sid    = "DataPlaneAllow"
         Effect = "Allow"
         Action = [
           "s3:*",
+          "glue:*",
           "dynamodb:*",
           "lambda:*",
           "logs:*",
