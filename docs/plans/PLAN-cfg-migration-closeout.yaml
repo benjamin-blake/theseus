@@ -24,9 +24,10 @@ scope:
   - file: docs/contracts/decision-entry.yaml
     action: Modify
     purpose: >-
-      size_governance gains the accretion_signal block (tier, both legs, flip-to-hard-fail
-      trigger); plus the Class D amendment_log entry its own change_detection rule requires.
-      Must land UNDER 500 effective lines (see execution_steps compaction step).
+      size_governance gains the accretion_signal block; intent_accretion_note's now-false
+      "no validator, no stored guard" sentence is corrected; plus the Class D amendment_log
+      entry its own change_detection rule requires. Must land at or under 500 effective lines,
+      paid for by amendment_log compaction (see execution_steps -- the arithmetic is load-bearing).
   - file: docs/contracts/exit-criteria-ledger.yaml
     action: Modify
     purpose: >-
@@ -42,13 +43,14 @@ scope:
     action: Modify
     purpose: >-
       Retire the docs/contracts/decision-entry.yaml budgets entry AND its frozen budget_notes
-      entry together, once the file lands under 500 effective lines (the note's own
-      retires_when branch). Removal only -- gated_direction is "up", so this is unrestricted.
+      entry together, once the file lands at or under 500 effective lines. Removal only --
+      frozen_base_violations names this exact pairing "the prescribed retirement".
   - file: audits/contract-first-governance-33c8667.yaml
     action: Modify
     purpose: >-
-      Dated amendment_2026-09-01 key on audit.migration recording all three residuals closed
-      and the recall sweep's outcome, mirroring the amendment_2026-08-24 empty-wave form.
+      Append a dated `amendment_YYYY-MM-DD:` line INSIDE the audit.meta.contract_notes block
+      scalar (there is no audit.migration key -- see context), recording all three residuals
+      closed and the CFG-05 sweep outcome, mirroring the amendment_2026-08-24 line's form.
   - file: tests/checks/decisions/test_validate_decisions_size.py
     action: Modify
     purpose: >-
@@ -62,38 +64,48 @@ scope:
 bundled_recommendations:
   - rec-3243
   - rec-3213
+closes_criteria: []
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
     validate_decisions_size emits a WARN naming the byte delta and new span for a BASELINE
-    decision entry whose body grew in the diff and whose new span exceeds 6,144 bytes, and
-    NEVER appends to `failed` for any accretion condition.
+    decision entry whose body CHANGED SIZE in the diff (delta != 0, not delta > 0 -- see the
+    Decision 178 note in context) and whose new span exceeds 6,144 bytes, and NEVER appends to
+    `failed` for any accretion condition.
   - >-
-    validate_decisions_size emits exactly one aggregate standing-pressure line counting
-    baseline entries currently over 6,144 x 1.2 bytes (24 against the tree at plan time).
+    validate_decisions_size emits exactly one aggregate standing-pressure line counting entries
+    over 6,144 x 1.2 bytes. Measured at plan time: 23 live + 1 archive = 24 across both corpus
+    files (the separate "35 over the plain cap" figure is LIVE-ONLY -- do not conflate the bases).
   - >-
     The module's five terminal registry.examined()/registry.skipped() declarations are
     unchanged in count and placement, and the examined() unit still counts only NEW entries.
   - >-
-    docs/contracts/exit-criteria-ledger.yaml declares contract.class A, loads through
-    load_contract + resolve_refs, and passes check_required_inline_fields and
-    check_re_ratification_trigger with zero errors.
+    docs/contracts/exit-criteria-ledger.yaml declares contract.class A and passes the three
+    DISCRIMINATING ritual legs: load_contract, resolve_refs, check_required_inline_fields.
+    (check_re_ratification_trigger also runs but is vacuous at status: ratified -- it returns []
+    unless status is provisional_v0, so it is not evidence of anything.)
   - >-
-    validate_contract_drift passes against the real population with census grandfathered=16
-    and ritual=16, and contract-population.yaml's ratchet.grandfathered_max equals 16.
+    validate_contract_drift passes against the real population with census grandfathered=16,
+    ritual=16 and skipped=0, and contract-population.yaml's ratchet.grandfathered_max equals 16.
   - >-
-    docs/contracts/decision-entry.yaml measures under 500 effective lines, and both its
-    config/structural_size_budgets.yaml budgets entry and its frozen budget_notes entry are gone.
+    docs/contracts/decision-entry.yaml measures AT OR UNDER 500 effective lines (the gate is
+    `if eff > limit`), and both its config/structural_size_budgets.yaml budgets entry and its
+    frozen budget_notes entry are gone.
   - >-
-    Both edited Class D contracts (decision-entry.yaml, contract-population.yaml) carry a new
-    dated amendment_log entry, satisfying check_amendment_log_for_class_d.
+    Both edited Class D contracts (decision-entry.yaml, contract-population.yaml) carry a
+    genuinely NEW dated amendment_log entry -- a date absent from the origin/main version, not
+    merely an edited existing entry.
   - >-
     The CFG-05 recall sweep is executed over all governed contracts; every real overlap is
-    filed as a recommendation through the ops portal (never fixed inline), and the outcome --
-    including an empty outcome -- is recorded in BOTH the audit ledger and contract-population.yaml.
+    filed as a recommendation through the ops portal (never fixed inline), and the outcome is
+    recorded in BOTH homes naming the sweep date, the number of contracts compared, and either
+    the filed rec ids or an explicit EMPTY token.
   - >-
     rec-3213's acceptance holds: exit-criteria-ledger.yaml contains no whole-word ops_plans
     and does contain ops_execution_plans.
+  - >-
+    No live surface still names exit-criteria-ledger.yaml as the non-seedable exception
+    (stale-reference sweep for the retired surface).
   - No numbered Decision is added to docs/DECISIONS.md or docs/DECISIONS_ARCHIVE.md.
 verification_plan:
   - step: 1
@@ -103,7 +115,9 @@ verification_plan:
       Prove the WARN tier never gates: an accretion condition severe enough to warn must leave
       `failed` empty. This is the load-bearing safety property of the whole (a) leg.
     command: "bin/venv-python -m pytest tests/checks/decisions/test_validate_decisions_size.py -q -k 'warn_never_fails or WarnNeverFails'"
-    expected: "Tests pass; the accretion legs assert `failed == []` while WARN text is present on stdout."
+    expected: >-
+      Tests pass; the accretion legs assert `failed == []` while WARN text is present on stdout.
+      (A zero-match -k exits 5, so this step cannot pass vacuously.)
     fix_if: >-
       A failure here means the WARN leg appended to `failed` -- it is a gate, not telemetry.
       Remove the append; the legs must only print.
@@ -114,39 +128,36 @@ verification_plan:
     hermetic: true
     action: >-
       Exercise the amendment-delta leg end to end via the injected baseline_body_reader seam:
-      a baseline entry grown past the cap WARNs and names both the delta and the new span; a
-      baseline entry grown but still under the cap stays silent; a new-in-diff entry still
-      HARD-FAILS through the existing per-entry cap (no regression).
+      a baseline entry whose span CHANGED and now exceeds the cap WARNs and names both delta
+      and new span; a changed-but-under-cap entry stays silent; an unchanged baseline entry
+      stays silent; a SHRUNK over-cap entry still WARNs (delta != 0, per the Decision 178 note);
+      a new-in-diff entry still HARD-FAILS through the existing per-entry cap (no regression).
     command: "bin/venv-python -m pytest tests/checks/decisions/test_validate_decisions_size.py::TestAmendmentDeltaCap -q"
     expected: >-
       All TestAmendmentDeltaCap cases pass. This selector is rec-3243's acceptance command
       verbatim -- the class name must match exactly.
     fix_if: >-
-      Silent on a grown-past-cap entry means the leg compares the wrong span or the body reader
-      returned None; a WARN on an ungrown entry means the delta comparison is absent and it is
-      really a static over-cap rule.
+      Silence on a changed-past-cap entry means the leg compares the wrong span or the body
+      reader returned None; a WARN on an unchanged entry means the delta comparison is absent
+      and it is really a static over-cap rule.
     graduation: waive
     graduation_waiver_reason: >-
       The named pytest class IS rec-3243's standing acceptance selector and is already a
-      permanent repo test; graduating it into the verification registry would create a second
-      identity for the same guard, and the registry row would then have to be kept in lockstep
-      with a selector the rec already pins.
+      permanent repo test; graduating it would create a second identity for the same guard, and
+      the registry row would then need keeping in lockstep with a selector the rec already pins.
   - step: 3
     phase: pre-deploy
     hermetic: true
     action: >-
       Verify the standing-pressure aggregate is exactly ONE line (not one per entry), so the
-      audit's literal >20%-over-cap ask lands as telemetry rather than a 24-line noise floor.
+      operator brief's >20%-over-cap ask lands as telemetry rather than a 24-line noise floor.
     command: "bin/venv-python -m pytest tests/checks/decisions/test_validate_decisions_size.py -q -k 'standing_pressure'"
     expected: "Tests pass; the aggregate leg emits a single line carrying a count and the largest offender."
     fix_if: >-
       More than one line means the aggregate leg is iterating per entry -- collapse it to a
       single summary line.
-    graduation: waive
-    graduation_waiver_reason: >-
-      Output-shape assertions (one line, not N) are not one of the six canonical primitive
-      slots -- the property is "cardinality of printed lines", which no slot expresses without
-      a bespoke command; it is covered permanently by the repo test instead.
+    graduation: graduate
+    graduation_check_id: decisions-size-standing-pressure-single-line
   - step: 4
     phase: pre-deploy
     hermetic: true
@@ -166,12 +177,13 @@ verification_plan:
     phase: pre-deploy
     hermetic: true
     action: >-
-      Prove the converted ledger is a genuine Class A ritual contract by driving it through all
-      four drift-gate Class A legs, not merely by grepping for a contract: block.
-    command: "bin/venv-python -m pytest tests/checks/contracts/validate_contract_drift/test_real_population.py -q && bin/venv-python -c \"import pathlib; from scripts.contracts import load_contract, resolve_refs; from scripts.contracts_enforcement import check_required_inline_fields, check_re_ratification_trigger; p=pathlib.Path('docs/contracts/exit-criteria-ledger.yaml'); d=load_contract(p); resolve_refs(d, p.parent); e=check_required_inline_fields(d)+check_re_ratification_trigger(d); assert d.contract.class_.value=='A', d.contract.class_; assert not e, e; assert d.contract.ratified_via, 'ratified_via must name a real ratification event'; print('CLASS A OK', d.contract.id, d.contract.ratified_via, sorted(d.fields))\""
+      Prove the converted ledger is a genuine Class A ritual contract by driving it through the
+      three DISCRIMINATING Class A legs (load_contract, resolve_refs, check_required_inline_fields),
+      not by grepping for a contract: block.
+    command: "bin/venv-python -c \"import pathlib; from scripts.contracts import load_contract, resolve_refs; from scripts.contracts_enforcement import check_required_inline_fields; p=pathlib.Path('docs/contracts/exit-criteria-ledger.yaml'); d=load_contract(p); resolve_refs(d, p.parent); e=check_required_inline_fields(d); assert d.contract.class_.value=='A', d.contract.class_; assert not e, e; assert d.contract.ratified_via and 'dec-136' in d.contract.ratified_via, d.contract.ratified_via; print('CLASS A OK', d.contract.id, sorted(d.fields))\""
     expected: >-
-      Prints CLASS A OK with contract id exit-criteria-ledger, ratified_via naming dec-136, and
-      the field roster. Zero enforcement errors.
+      Prints CLASS A OK with contract id exit-criteria-ledger and the field roster; zero
+      check_required_inline_fields errors; ratified_via names dec-136.
     fix_if: >-
       check_required_inline_fields errors name a field missing description/semantics/populated_by/
       dq_intent -- every inline Class A field needs all four. A ContractDocument extra="forbid"
@@ -183,86 +195,104 @@ verification_plan:
     hermetic: true
     action: >-
       Run the real-population drift gate and assert the census moved exactly as predicted, with
-      the equality-bound pin moved in the same change (the landmine: the pin is bound by
-      EQUALITY in both directions, so a stale 17 fails just as hard as a wrong census).
-    command: "bin/venv-python -m pytest tests/checks/contracts/validate_contract_drift/test_real_population.py -q && bin/venv-python -c \"import re,pathlib; from scripts.checks.contracts.validate_contract_drift import validate_contract_drift; import io,contextlib; f=[]; buf=io.StringIO(); ctx=contextlib.redirect_stdout(buf); ctx.__enter__(); validate_contract_drift(f, contracts_dir=pathlib.Path('docs/contracts')); ctx.__exit__(None,None,None); out=buf.getvalue(); print(out); assert f==[], f; c=dict(p.split('=') for p in re.search(r'Census:(.*)', out).group(1).split()); assert c['grandfathered']=='16', c; assert c['ritual']=='16', c; assert c['skipped']=='0', c; y=pathlib.Path('docs/contracts/contract-population.yaml').read_text(); assert re.search(r'grandfathered_max:\\s*16', y), 'pin not lowered to 16'; print('CENSUS+PIN OK')\""
+      the equality-bound pin moved in the same change. skipped==0 is load-bearing: the pin
+      binding is SUPPRESSED when skipped>0, so a malformed conversion could otherwise pass
+      the pin check silently.
+    command: "bin/venv-python -m pytest tests/checks/contracts/validate_contract_drift/test_real_population.py -q && bin/venv-python -c \"import re,pathlib,io,contextlib; from scripts.checks.contracts.validate_contract_drift import validate_contract_drift; f=[]; buf=io.StringIO(); ctx=contextlib.redirect_stdout(buf); ctx.__enter__(); validate_contract_drift(f, contracts_dir=pathlib.Path('docs/contracts')); ctx.__exit__(None,None,None); out=buf.getvalue(); print(out); assert f==[], f; c=dict(p.split('=') for p in re.search(r'Census:(.*)', out).group(1).split()); assert c['grandfathered']=='16', c; assert c['ritual']=='16', c; assert c['skipped']=='0', c; y=pathlib.Path('docs/contracts/contract-population.yaml').read_text(); assert re.search(r'grandfathered_max:\\s*16', y), 'pin not lowered to 16'; print('CENSUS+PIN OK')\""
     expected: "Gate passes with failed == []; census grandfathered=16 ritual=16 skipped=0; pin reads 16."
     fix_if: >-
       A pin-vs-census inequality error means the pin and the conversion did not land together --
       fix the pin, never the census. A smuggling error means the file was given a Class D
-      envelope instead of Class A.
+      envelope instead of Class A. skipped>0 means the converted file failed to load at all.
     graduation: waive
     graduation_waiver_reason: >-
       validate_contract_drift already fails CI on any pin-vs-census inequality via its own
-      pin_binding rule, and the census values are a point-in-time population fact that will
-      legitimately change with the next contract landing; a pinned registry row asserting 16
-      would become a false regression the moment a new contract lands.
+      pin_binding rule, and the census values are a point-in-time population fact that changes
+      with the next contract landing; a registry row asserting 16 would become a false
+      regression the moment a new contract lands.
   - step: 7
     phase: pre-deploy
     hermetic: true
     action: >-
-      Verify the size-budget resolution (Option A): decision-entry.yaml is under 500 effective
-      lines AND both its budgets entry and its frozen budget_notes entry are retired together,
-      as that note's own retires_when branch requires.
-    command: "bin/venv-python -c \"import pathlib,yaml; from scripts.checks.structural._classify import effective_lines; t=pathlib.Path('docs/contracts/decision-entry.yaml').read_text(); d=yaml.safe_load(t); s=d['size_governance']; b=pathlib.Path('config/structural_size_budgets.yaml').read_text(); n=effective_lines(t); assert 'accretion_signal' in s, list(s); assert 'flips_to_hard_fail_when' in s['accretion_signal'], list(s['accretion_signal']); assert n<500, n; assert 'docs/contracts/decision-entry.yaml' not in b, 'budgets entry and/or frozen note still present'; print('CONTRACT+SIZE+BUDGET OK', n)\""
-    expected: "Prints SIZE OK with a line count under 500; no decision-entry.yaml reference remains in the budgets file."
+      Verify the size-budget resolution: decision-entry.yaml declares the accretion_signal with
+      its flip trigger, measures at or under 500 effective lines, and both its budgets entry and
+      its frozen budget_notes entry are retired together.
+    command: "bin/venv-python -c \"import pathlib,yaml; from scripts.checks.structural._classify import effective_lines; t=pathlib.Path('docs/contracts/decision-entry.yaml').read_text(); d=yaml.safe_load(t); s=d['size_governance']; b=pathlib.Path('config/structural_size_budgets.yaml').read_text(); n=effective_lines(t); assert 'accretion_signal' in s, list(s); assert 'flips_to_hard_fail_when' in s['accretion_signal'], list(s['accretion_signal']); assert n<=500, n; assert 'docs/contracts/decision-entry.yaml' not in b, 'budgets entry and/or frozen note still present'; print('CONTRACT+SIZE+BUDGET OK', n)\""
+    expected: "Prints CONTRACT+SIZE+BUDGET OK with a line count at or under 500; no decision-entry.yaml reference remains in the budgets file."
     fix_if: >-
-      Over 500 means the compaction did not offset the additions -- compact the two newest
-      amendment_log summaries further rather than raising the pin (a raise is unavailable:
-      Decision 165 needs a Decision body naming this entry, and none may be minted).
+      Over 500 means compaction did not offset the additions. Do NOT reach for a raise: the
+      operative bar is budget_raises.frozen_base_violations LEG 1 -- an entry frozen in BASE
+      whose value increased fails "regardless of any marker", and legs 2 and 3 close the
+      unfreeze-then-raise and deferral bypasses. (A `# raise-approved: dec-175` marker WOULD
+      satisfy Decision 165's authorization test; the freeze is a separate, direction-only rule
+      that overrides it.) Compact further within the amendment_log, or defer detail per the
+      contracts-class relief_valve; splitting the file is forbidden by collocation doctrine.
     graduation: waive
     graduation_waiver_reason: >-
       A one-shot migration assertion, not a standing invariant: once the entry is retired the
-      check is vacuously true forever, and pinning "<500" as a permanent guard would silently
-      re-impose a budget the retirement deliberately removed.
+      budget half is vacuously true forever, and pinning "<=500" as a permanent guard would
+      silently re-impose a budget the retirement deliberately removes.
   - step: 8
     phase: pre-deploy
     hermetic: true
     action: >-
-      Prove the Class D amendment_log obligation is met for BOTH edited Class D contracts by
-      running the gate's own rule against each head document, not by eyeballing the YAML.
-    command: "bin/venv-python -c \"import yaml,pathlib; from scripts.checks.contracts._population import check_amendment_log_for_class_d as chk; ok=True;\nimport subprocess\nfor rel in ('docs/contracts/decision-entry.yaml','docs/contracts/contract-population.yaml'):\n    head=yaml.safe_load(pathlib.Path(rel).read_text())\n    base=yaml.safe_load(subprocess.run(['git','show',f'origin/main:{rel}'],capture_output=True,text=True).stdout)\n    err=chk(base,head)\n    print(rel,'->',err or 'amendment_log OK')\n    ok = ok and not err\nassert ok, 'a Class D contract changed with no new amendment_log entry'\""
-    expected: "Both files print amendment_log OK."
+      Prove BOTH edited Class D contracts carry a genuinely NEW dated amendment_log entry. The
+      gate's own rule is insufficient here: it compares entry objects, so COMPACTING an existing
+      entry already makes it "not in base_log" and passes -- and this plan compacts entries by
+      design. Assert a new DATE, not merely a new object.
+    command: "bin/venv-python -c \"import yaml,pathlib,subprocess; ok=True\nfor rel in ('docs/contracts/decision-entry.yaml','docs/contracts/contract-population.yaml'):\n    head=yaml.safe_load(pathlib.Path(rel).read_text())\n    base=yaml.safe_load(subprocess.run(['git','show','origin/main:'+rel],capture_output=True,text=True).stdout)\n    hd={e['date'] for e in (head.get('amendment_log') or [])}\n    bd={e['date'] for e in (base.get('amendment_log') or [])}\n    new=hd-bd\n    print(rel,'-> new amendment dates:',sorted(new) or 'NONE')\n    ok = ok and bool(new)\nassert ok, 'a Class D contract changed with no NEW-dated amendment_log entry'\nprint('AMENDMENT_LOG OK')\""
+    expected: "Both files print at least one new amendment date, then AMENDMENT_LOG OK."
     fix_if: >-
-      An error naming a file means its parsed content changed with no new amendment_log[] entry
-      -- add one with a date, semantic_break, change_class from the closed 8-value vocabulary,
+      NONE for a file means its amendment_log was only edited, not extended -- add an entry with
+      a genuinely new date, semantic_break, a change_class from the closed 8-value vocabulary,
       and a summary.
     graduation: waive
     graduation_waiver_reason: >-
-      Exactly duplicates validate_contract_drift's own Pass 2 amendment_log rule, which already
-      runs on every PR touching a Class D contract; a registry row would guard nothing new.
+      The new-DATE property is specific to this plan's compact-and-extend edit; the standing
+      guard is validate_contract_drift's own amendment_log rule, which runs on every Class D
+      PR. A permanent registry row asserting a new date would false-positive on any future PR
+      that legitimately touches neither contract.
   - step: 9
     phase: pre-deploy
     hermetic: true
     action: >-
-      Verify rec-3213's bundled closure literally, using its own acceptance command.
-    command: "! grep -rqw ops_plans docs/contracts/exit-criteria-ledger.yaml && grep -q 'ops_execution_plans' docs/contracts/exit-criteria-ledger.yaml && echo 'REC-3213 OK'"
-    expected: "Prints REC-3213 OK -- no whole-word ops_plans remains, ops_execution_plans is present."
+      Verify rec-3213's bundled closure using its own acceptance command, and sweep the retired
+      non_seedable_exception surface in the same step (no live surface may still name the ledger
+      as the non-seedable exception).
+    command: "! grep -rqw ops_plans docs/contracts/exit-criteria-ledger.yaml && grep -q 'ops_execution_plans' docs/contracts/exit-criteria-ledger.yaml && ! grep -rq 'non_seedable_exception' docs/contracts/ scripts/ tests/ && echo 'REC-3213 + STALE-REF SWEEP OK'"
+    expected: "Prints REC-3213 + STALE-REF SWEEP OK."
     fix_if: >-
-      A whole-word ops_plans survived the Class A restructure; the retired two-table split must
-      not be carried into the new fields: mapping.
+      A whole-word ops_plans survived the Class A restructure, or a live surface still names
+      non_seedable_exception. Both must be swept; the retired exception may survive only as
+      amendment history, never as a live rule.
     graduation: waive
     graduation_waiver_reason: >-
-      This is rec-3213's own acceptance literal and closes with the rec; once the reference is
-      swept the assertion is permanently vacuous, so a standing registry row guards nothing.
+      Both halves are one-shot retirement assertions that close with rec-3213 and the surface
+      retirement; once swept they are permanently vacuous, so a standing registry row guards
+      nothing.
   - step: 10
     phase: pre-deploy
     hermetic: false
     action: >-
-      Execute the CFG-05 recall sweep and prove it was actually run rather than asserted: the
-      sweep must enumerate every governed contract's subject/id, adjudicate the semantically
-      adjacent clusters pairwise, and record the outcome in BOTH homes. Any real overlap is
-      filed through the ops portal (get_rec_write_guidance() before file_rec, Decision 66) --
-      never fixed inline. An empty outcome is recorded identically.
-    command: "bin/venv-python -c \"import pathlib,yaml; a=pathlib.Path('audits/contract-first-governance-33c8667.yaml').read_text(); c=pathlib.Path('docs/contracts/contract-population.yaml').read_text(); assert 'amendment_2026-09-01' in a, 'audit ledger carries no dated sweep record'; assert 'CFG-05' in a, 'sweep record does not name CFG-05'; p=yaml.safe_load(c)['honesty_clauses']['subject_uniqueness_is_precision_not_recall']; assert 'sweep' in p.lower(), 'honesty clause not updated with the sweep outcome'; print('SWEEP RECORDED'); print(p[:400])\""
+      Prove the CFG-05 sweep was performed AND recorded in both homes, discriminating a real
+      record from a pasted string: a genuinely NEW dated amendment line inside
+      audit.meta.contract_notes (diffed against origin/main, so it cannot pass on the existing
+      2026-08-24 line) that names CFG-05, the contract count compared, and either filed rec ids
+      or an explicit EMPTY token -- with the same evidence mirrored in the honesty clause.
+    command: "bin/venv-python -c \"import yaml,pathlib,subprocess,re; rel='audits/contract-first-governance-33c8667.yaml'; head=yaml.safe_load(pathlib.Path(rel).read_text())['audit']['meta']['contract_notes']; base=yaml.safe_load(subprocess.run(['git','show','origin/main:'+rel],capture_output=True,text=True).stdout)['audit']['meta']['contract_notes']; hl=[l.strip() for l in head.splitlines() if l.strip().startswith('amendment_')]; bl=[l.strip() for l in base.splitlines() if l.strip().startswith('amendment_')]; new=[l for l in hl if l not in bl]; assert len(new)==1, ('expected exactly one new amendment line inside audit.meta.contract_notes, got', new); r=new[0]; assert 'CFG-05' in r, 'sweep record does not name CFG-05'; assert re.search(r'[0-9]+ contracts', r), 'sweep record names no contract count'; assert re.search(r'rec-[0-9]+', r) or 'EMPTY' in r, 'record names neither filed rec ids nor an explicit EMPTY'; h=yaml.safe_load(pathlib.Path('docs/contracts/contract-population.yaml').read_text())['honesty_clauses']['subject_uniqueness_is_precision_not_recall']; assert re.search(r'20[0-9][0-9]-[0-9]{2}-[0-9]{2}', h), 'honesty clause carries no sweep date'; assert re.search(r'rec-[0-9]+', h) or 'EMPTY' in h, 'honesty clause records no outcome'; print('SWEEP RECORDED OK'); print(r[:200])\""
     expected: >-
-      Prints SWEEP RECORDED and the amended honesty clause, which must state the sweep date, the
-      number of contracts compared, and either the filed rec ids or an explicit empty result.
+      Prints SWEEP RECORDED OK and the new ledger line, which names CFG-05, an N-contracts
+      count, and either rec ids or EMPTY; the honesty clause carries a date and the same outcome.
     fix_if: >-
-      A missing dated key or an unamended honesty clause means the sweep was performed but not
-      recorded -- an unrecorded sweep is indistinguishable from one never run, which is the
-      precise failure CFG-05 exists to close.
-    graduation: not-applicable
+      "expected exactly one new amendment line" means the record went somewhere other than
+      audit.meta.contract_notes (there is NO audit.migration key -- see context) or was written
+      twice. A missing count or outcome token means the record is unfalsifiable prose; an
+      unrecorded sweep is indistinguishable from one never run, which is what CFG-05 exists to close.
+    graduation: waive
+    graduation_waiver_reason: >-
+      A one-time sweep record: once landed, "exactly one new amendment line vs origin/main"
+      becomes false on the very next audit-ledger amendment, so a standing registry row would
+      false-positive on unrelated future work.
   - step: 11
     phase: pre-deploy
     hermetic: false
@@ -270,11 +300,15 @@ verification_plan:
       Confirm no numbered Decision was minted (the operator's hard constraint) by comparing the
       live decision-header set against origin/main.
     command: "bin/venv-python -c \"import subprocess; from scripts.decisions_md import iter_decision_headings; live=open('docs/DECISIONS.md',encoding='utf-8').read(); base=subprocess.run(['git','show','origin/main:docs/DECISIONS.md'],capture_output=True,text=True).stdout; a={int(m.group(1)) for m in iter_decision_headings(live)}; b={int(m.group(1)) for m in iter_decision_headings(base)}; assert a==b, f'new decision headers minted: {sorted(a-b)}'; print('NO NEW DECISION OK', len(a), 'headers unchanged')\""
-    expected: "Prints NO NEW DECISION OK with an unchanged header count."
+    expected: "Prints NO NEW DECISION OK with an unchanged header count (133 at plan time)."
     fix_if: >-
       A new header means content was routed to a numbered Decision instead of the contract
       governance note / rec home that decision-entry.yaml's significance.routing prescribes.
-    graduation: not-applicable
+    graduation: waive
+    graduation_waiver_reason: >-
+      Scoped to THIS plan's no-mint constraint, not a repo invariant: minting Decisions is the
+      normal, sanctioned path, so a standing "no new decision headers vs origin/main" registry
+      row would false-positive on every legitimate future Decision.
   - step: 12
     phase: pre-deploy
     hermetic: false
@@ -286,11 +320,25 @@ verification_plan:
       Diagnose and fix on the branch. Do NOT use --ignore-budget to get past a wall-clock
       breach; the preflight already records 4 recent bypasses.
     graduation: not-applicable
+  - step: 13
+    phase: pre-deploy
+    hermetic: false
+    action: >-
+      Run the FULL validation tier before commit/PR, as
+      handoff_policy.full_validation_required_before_commit declares. Required by
+      validate_handoff_full_tier (registered in BOTH tiers per Decision 163): a plan declaring
+      the policy with no full-tier VP step fails the gate.
+    command: "bin/venv-python -m scripts.validate"
+    expected: "Completed full-tier run exits 0."
+    fix_if: >-
+      On timeout, handoff_policy.timeout_disposition is `blocked` -- resume later and rerun the
+      full tier from the start; do not commit on a partial run.
+    graduation: not-applicable
 test_obligations:
   - source: scripts/checks/decisions/validate_decisions_size.py
     behavior: >-
-      The accretion signal WARNs on a baseline entry grown past the cap and stays silent
-      otherwise, and NEVER appends to `failed` under any accretion condition.
+      The accretion signal WARNs on a baseline entry whose span changed and now exceeds the cap,
+      stays silent otherwise, and NEVER appends to `failed` under any accretion condition.
     verification_step: 2
     test_selector: tests/checks/decisions/test_validate_decisions_size.py::TestAmendmentDeltaCap
     red_green_expectation: >-
@@ -299,54 +347,71 @@ test_obligations:
   - source: docs/contracts/exit-criteria-ledger.yaml
     behavior: >-
       The file is a loadable Class A ritual contract whose every inline field carries the four
-      required descriptor keys, and whose ratified_via names a real ratification event.
-    verification_step: 5
-    test_selector: tests/checks/contracts/validate_contract_drift/test_real_population.py::TestRealPopulationRegression
+      required descriptor keys, and whose ratified_via names dec-136.
+    verification_step: 6
+    test_selector: tests/checks/contracts/validate_contract_drift/test_real_population.py::TestRealPopulationRegression::test_real_population_passes_with_baseline_legs_enabled
     red_green_expectation: >-
-      Red before (the file is unshaped: load_contract raises, and the census reports
-      grandfathered=17); green after, with grandfathered=16 and ritual=16.
+      Red before (the file is unshaped and the census reports grandfathered=17, so with the pin
+      at 16 the run fails; with the pin left at 17 the conversion makes it fail the other way);
+      green only when conversion and pin land together.
   - source: docs/contracts/contract-population.yaml
     behavior: >-
       The equality-bound grandfathered_max pin tracks the live census after the conversion, and
       the retired non_seedable_exception no longer claims an evaluator that does not exist.
     verification_step: 6
-    test_selector: tests/checks/contracts/validate_contract_drift/test_real_population.py::TestContractPopulationSelfHosting
+    test_selector: tests/checks/contracts/validate_contract_drift/test_real_population.py::TestRealPopulationRegression::test_real_population_passes_with_baseline_legs_enabled
     red_green_expectation: >-
-      Red before if the pin is left at 17 after the conversion (pin_binding fails on inequality
-      in EITHER direction); green once the pin moves to 16 in the same change.
+      Red before if the pin is left at 17 after the conversion -- pin_binding fails on inequality
+      in EITHER direction, and this selector asserts `failed == []`. NOTE: TestContractPopulationSelfHosting
+      canNOT go red here; the pin error string carries no filename, so it never matches that
+      test's substring assertion.
   - source: docs/contracts/decision-entry.yaml
     behavior: >-
       size_governance declares the WARN tier and its flip-to-hard-fail trigger, and the file
-      stays under 500 effective lines with its budget entry retired.
+      stays at or under 500 effective lines with its budget entry retired.
     verification_step: 7
-    command: "bin/venv-python -c \"import pathlib,yaml; from scripts.checks.structural._classify import effective_lines; t=pathlib.Path('docs/contracts/decision-entry.yaml').read_text(); d=yaml.safe_load(t); s=d['size_governance']; b=pathlib.Path('config/structural_size_budgets.yaml').read_text(); n=effective_lines(t); assert 'accretion_signal' in s, list(s); assert 'flips_to_hard_fail_when' in s['accretion_signal'], list(s['accretion_signal']); assert n<500, n; assert 'docs/contracts/decision-entry.yaml' not in b, 'budgets entry and/or frozen note still present'; print('CONTRACT+SIZE+BUDGET OK', n)\""
+    command: "bin/venv-python -c \"import pathlib,yaml; from scripts.checks.structural._classify import effective_lines; t=pathlib.Path('docs/contracts/decision-entry.yaml').read_text(); d=yaml.safe_load(t); s=d['size_governance']; b=pathlib.Path('config/structural_size_budgets.yaml').read_text(); n=effective_lines(t); assert 'accretion_signal' in s, list(s); assert 'flips_to_hard_fail_when' in s['accretion_signal'], list(s['accretion_signal']); assert n<=500, n; assert 'docs/contracts/decision-entry.yaml' not in b, 'budgets entry and/or frozen note still present'; print('CONTRACT+SIZE+BUDGET OK', n)\""
     red_green_expectation: >-
-      Red before (no accretion_signal key exists and the file measures exactly 500); green after.
+      Red before (no accretion_signal key exists and the file measures exactly 500 with its
+      budgets entry present); green after.
   - source: config/structural_size_budgets.yaml
     behavior: >-
       The decision-entry.yaml budgets entry and its frozen budget_notes entry are retired
-      together, never separately (a note outliving its entry, or vice versa, is drift).
+      together, never separately (a note outliving its entry, or vice versa, is drift that
+      _e4_frozen_note_integrity fails).
     verification_step: 7
-    command: "bin/venv-python -c \"import pathlib,yaml; from scripts.checks.structural._classify import effective_lines; t=pathlib.Path('docs/contracts/decision-entry.yaml').read_text(); d=yaml.safe_load(t); s=d['size_governance']; b=pathlib.Path('config/structural_size_budgets.yaml').read_text(); n=effective_lines(t); assert 'accretion_signal' in s, list(s); assert 'flips_to_hard_fail_when' in s['accretion_signal'], list(s['accretion_signal']); assert n<500, n; assert 'docs/contracts/decision-entry.yaml' not in b, 'budgets entry and/or frozen note still present'; print('CONTRACT+SIZE+BUDGET OK', n)\""
+    command: "bin/venv-python -c \"import pathlib,yaml; from scripts.checks.structural._classify import effective_lines; t=pathlib.Path('docs/contracts/decision-entry.yaml').read_text(); d=yaml.safe_load(t); s=d['size_governance']; b=pathlib.Path('config/structural_size_budgets.yaml').read_text(); n=effective_lines(t); assert 'accretion_signal' in s, list(s); assert 'flips_to_hard_fail_when' in s['accretion_signal'], list(s['accretion_signal']); assert n<=500, n; assert 'docs/contracts/decision-entry.yaml' not in b, 'budgets entry and/or frozen note still present'; print('CONTRACT+SIZE+BUDGET OK', n)\""
     red_green_expectation: "Red before (two references present: the budgets pin and the frozen note); green after."
+  - source: audits/contract-first-governance-33c8667.yaml
+    behavior: >-
+      Carries exactly one NEW dated amendment line inside audit.meta.contract_notes naming
+      CFG-05, the contract count compared, and either filed rec ids or an explicit EMPTY token.
+    verification_step: 10
+    command: "bin/venv-python -c \"import yaml,pathlib,subprocess,re; rel='audits/contract-first-governance-33c8667.yaml'; head=yaml.safe_load(pathlib.Path(rel).read_text())['audit']['meta']['contract_notes']; base=yaml.safe_load(subprocess.run(['git','show','origin/main:'+rel],capture_output=True,text=True).stdout)['audit']['meta']['contract_notes']; hl=[l.strip() for l in head.splitlines() if l.strip().startswith('amendment_')]; bl=[l.strip() for l in base.splitlines() if l.strip().startswith('amendment_')]; new=[l for l in hl if l not in bl]; assert len(new)==1, ('expected exactly one new amendment line inside audit.meta.contract_notes, got', new); r=new[0]; assert 'CFG-05' in r, 'sweep record does not name CFG-05'; assert re.search(r'[0-9]+ contracts', r), 'sweep record names no contract count'; assert re.search(r'rec-[0-9]+', r) or 'EMPTY' in r, 'record names neither filed rec ids nor an explicit EMPTY'; h=yaml.safe_load(pathlib.Path('docs/contracts/contract-population.yaml').read_text())['honesty_clauses']['subject_uniqueness_is_precision_not_recall']; assert re.search(r'20[0-9][0-9]-[0-9]{2}-[0-9]{2}', h), 'honesty clause carries no sweep date'; assert re.search(r'rec-[0-9]+', h) or 'EMPTY' in h, 'honesty clause records no outcome'; print('SWEEP RECORDED OK'); print(r[:200])\""
+    red_green_expectation: >-
+      Red before (zero new amendment lines vs origin/main, and the honesty clause carries no
+      date or outcome); green only once the sweep is genuinely performed and recorded.
 constraints:
   - >-
     NO numbered Decision (operator constraint, and independently correct): decision-entry.yaml's
     significance.routing sends (a) and (b) to field_semantics governance notes in the owning
     contracts and (c) to operational_fact recs -- all three say "Never a numbered Decision".
+    Decision 179 pt 5(ii) already made (a)'s durable commitment and names rec-3243 as its owner.
     Precedent on point: contract-population.yaml retirement_notes.*.no_decision_minted.
   - >-
     The accretion signal is WARN-tier ONLY -- it must never append to `failed`. Annotations are
-    sanctioned (Decision 177), so this is telemetry. Per Decision 163 it must nonetheless carry a
-    named flip-to-hard-fail trigger so it is a staged lever, not an open-ended advisory.
+    sanctioned, so this is telemetry. Per Decision 163 it must nonetheless carry a named
+    flips_to_hard_fail_when trigger so it is a staged lever, not an open-ended advisory.
   - >-
     exit-criteria-ledger.yaml must NOT be restructured into a Class D envelope. Its
     exit_criterion_object is genuinely field-shaped and trips the gate's own Class-A smuggling
     detector; evading that detector is the exact anti-pattern contract-population.yaml names.
   - >-
-    A structural size-budget RAISE for decision-entry.yaml is unavailable: Decision 165 requires a
-    marker naming a Decision whose body authorizes that entry, dec-179's body does not, and no new
-    Decision may be minted. Compact-while-adding is the only route.
+    A structural size-budget RAISE for decision-entry.yaml is blocked by the FREEZE, not by
+    marker authorization: budget_raises.frozen_base_violations leg 1 fails any increase on an
+    entry frozen in base "regardless of any marker", and legs 2/3 close the unfreeze-then-raise
+    and deferral bypasses. A `# raise-approved: dec-175` marker WOULD pass Decision 165's
+    authorization test (verified) -- it simply does not matter. Compaction is the only route.
   - >-
     CFG-05 overlaps are FILED as recommendations, never fixed inline (Decision 55 / AGENTS.md
     out-of-scope rule). Portal writes only -- never edit logs/ caches.
@@ -354,19 +419,23 @@ constraints:
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "decision-scout verdict: FLAGS_FOUND (133 of 133 triaged), no BLOCK."
-  - "CITE: Decision 150, 179, 167, 168, 118, 170, 128, 165, 175, 127, 86, 66. RELATED: 136, 166, 151, 103, 169."
+  - "CITE: Decision 150, 179, 167, 168, 118, 170, 128, 165, 175, 127, 86, 66. RELATED: 136, 166, 151, 103, 169, 163, 178."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "closes_criteria is deliberately EMPTY: phase T2.56 is in_progress but c2 is already met and c1 (the ambient-prose shrink) is untouched by this plan. 'Closes none' is declared, not forgotten."
   - "Decision 179 pt 5(ii) authorizes (a) and already names rec-3243 as the owner of amendment metering -- not a new commitment, do not mint one. Decision 136 (dec-136, 2026-07-16) ratified CD.39, the exit-criteria ledger mechanism: it is (b)'s ratified_via, resolving the no-mintable-ratification-event problem."
-  - "Scout flag resolved (Decision 128): decision-entry.yaml measures exactly 500 effective lines against a 508 pin under an operator FREEZE; a tight draft costs ~15 lines vs 8 headroom. Operator chose compact-while-adding to land <500, retiring the note via its own retires_when. A raise is unavailable (Decision 165 needs a Decision body naming the entry; dec-179 does not)."
-  - "Scout flag resolved (Decision 168): decision-entry.yaml is ITSELF Class D, so its edit needs its own amendment_log entry, not just contract-population.yaml's."
-  - "Scout flag resolved (Decision 170): WARN legs live strictly inside the fall-through path, outside examined() -- which is why docs/contracts/check-accounting.yaml is deliberately NOT in scope."
-  - "Scout flag resolved (Decision 163): a never-gating WARN is the declared-but-ungated shape, so size_governance must carry a named flips_to_hard_fail_when trigger."
-  - "LANDMINE: contract-population.yaml ratchet pins bind to the live census by EQUALITY in BOTH directions (_ratchet.check_pins_bound_to_census). grandfathered_max must move 17->16 in the SAME commit as the conversion. status_active_max stays 16."
-  - "Two false claims this plan corrects: contract-population.yaml subject_namespace.non_seedable_exception asserts scripts/roadmap/platform_roadmap.py parses the ledger (that module has no docs/contracts reference at all); exit-criteria-ledger.yaml governance_notes asserts validate_contract_drift 'skips' files with no contract: key (it buckets them as grandfathered DEBT)."
-  - "Measured at plan time (85b0d3e): 35 live entries over the 6,144 cap; 24 over cap x 1.2 (max D166 17,395 B = 2.83x; archive D21 32,578 B); 16 entries carry dated annotations, 5 now over cap. D172=6,389 B, D177=6,630 B (landed 5,775/6,129). Census: scanned=42 ritual=15 declared=10 grandfathered=17 status_active=16 skipped=0."
+  - "AUDIT LEDGER SHAPE: there is NO `audit.migration` key. audit's keys are [meta, question_answers, intervention_erosion, end_state, content_class_routing, sampled_entry_dispositions, migration_sequence, per_surface_assessment, rubric_ratings, findings, rejected_candidates, summary]. The amendment_2026-08-07/08-10/08-24 precedents are LINES inside the `audit.meta.contract_notes` block scalar, not mapping keys. Append there."
+  - "SIZE ARITHMETIC (decision-entry.yaml): file is exactly 500 effective lines; gate is `if eff > limit` so <=500 passes. Additions cost ~17-19 lines (accretion_signal ~12-18 + a new amendment_log entry ~5). Relief: the amendment_log block is 34 effective lines across FOUR entries (2026-08-24 / 08-19 / 08-18 / 08-31) -- compacting all four to <=4-line bodies frees ~18. The two newest ALONE free only ~8 and are NOT sufficient. The contracts-class relief_valve also sanctions 'defer detail'; splitting is forbidden by collocation doctrine. MEASURE before committing."
+  - "Scout+critique flags resolved: (Decision 168) decision-entry.yaml is ITSELF Class D so its edit needs its own amendment_log entry; (Decision 170) WARN legs live inside the fall-through, outside examined(), which is why check-accounting.yaml is NOT in scope; (Decision 163) the WARN carries a named flips_to_hard_fail_when trigger."
+  - "DECISION 178 BLIND SPOT (drove the delta != 0 design): Decision 178 retired validate_live_entry_immutability (verified absent from registry.all_checks()), so a baseline body can now be REWRITTEN in place, not only appended to. A positive-delta-only signal would miss a rewrite that holds the span flat or shrinks it -- exactly what Decision 177's lock used to catch. Hence delta != 0, not delta > 0."
+  - "rec-3243 SCOPE NOTES answered: (i) routing of the Decision 151 clause 3(v) convention-only narrowing -- a WARN that never appends to `failed` narrows no enforcement, so clause 3(v) stays convention-only and no routing statement is owed; flips_to_hard_fail_when is where a future narrowing WOULD route. (ii) clause 3(iv)'s ~3-clarification / ~120-150-word accretion cap is REUSED not duplicated: the delta leg meters bytes against the existing 6,144 cap and adds no second cap. (iii) 'meter the channel, do not ban it' is honored by the WARN tier. (iv) Landed as an extension of the existing registered check, not a new registration -- plan_obligations confirms clean."
+  - "LANDMINE: contract-population.yaml ratchet pins bind to the live census by EQUALITY in BOTH directions (_ratchet.check_pins_bound_to_census). grandfathered_max must move 17->16 in the SAME commit as the conversion. status_active_max stays 16. The binding is SUPPRESSED when census.skipped>0, so VP step 6 asserts skipped==0 to close that hole."
+  - "Three false claims this plan corrects: contract-population.yaml subject_namespace.non_seedable_exception asserts scripts/roadmap/platform_roadmap.py parses the ledger (that module has no docs/contracts reference at all); exit-criteria-ledger.yaml governance_notes asserts validate_contract_drift 'skips' files with no contract: key (it buckets them as grandfathered DEBT); and decision-entry.yaml's intent_accretion_note says 'no validator, no stored guard', which this plan's own validator falsifies."
+  - "CLASS A vs CLASS C adjudication: the smuggling detector rules out Class D only. Class C is permitted `fields` and would dodge the four-required-keys burden (check_required_inline_fields returns [] for non-A). Class A is nonetheless chosen BECAUSE it is the only class enforcing per-field descriptors -- an evaluator that actually evaluates. Non-table Class A precedent: docs/contracts/verification-registry.yaml (Class A, governance: None, plain fields: mapping, YAML shards not a warehouse table)."
+  - "Measured at plan time (85b0d3e): 35 LIVE entries over the plain 6,144 cap; 23 live + 1 archive = 24 over cap x 1.2 (max live D166 17,395 B = 2.83x; archive D21 32,578 B). 16 entries carry dated annotations, 5 now over cap. D172=6,389 B, D177=6,630 B (landed 5,775/6,129). Census: scanned=42 ritual=15 declared=10 grandfathered=17 status_active=16 skipped=0."
+  - "The >20%-over-cap framing is the OPERATOR BRIEF's wording, NOT the audit's -- audits/contract-first-governance-33c8667.yaml contains no such rule (CFG-01 asks for a forward-only per-NEW-entry byte cap). Do not cite the audit for it. The reframing to a delta leg is empirically forced: D172/D177 sit at 1.04x/1.079x, so a static 1.2x rule provably misses both motivating entries while firing 24 times on day one."
   - "scripts/checks/decisions/_baseline.py::baseline_decision_bodies has ZERO consumers today -- (a) is its first. Deliberately NOT in scope: reached via a new baseline_body_reader parameter. Cost: 2 extra `git show` calls, paid only when a DECISIONS file changed (the cost gate at validate_decisions_size.py:125 still short-circuits first). Preflight records 4 recent --ignore-budget bypasses; do not add another."
   - "CI-RCA DEFERRAL (required by the /plan hard block): rec-3292 and rec-3293 are open ci-rca recs unrelated to this scope. Both verified satisfied in-tree at plan time (0 extras in requirements.lock; pytz>=2026.2 at requirements.txt:11; TestVerbEquivalence 7 passed). Deliberately NOT closed here -- another agent is verifying further criteria before closure. Do not file, close, or amend them in this plan."
-  - "CFG-05 sweep scope: 41 governed contracts. Adjacent clusters to adjudicate: decision-entry/marker-grammar (named by CFG-05); check-accounting/check-manifest; deploy-paths/build-lambda/environment-taxonomy; storage-substrate/log-storage; read-engine/ducklake_reader; data-modeling-standard/_joins; plan-obligations/verification-registry/overseer-dispatch; recommendation-relevance/ci-rca-lifecycle; contract-population/file-router; telemetry-lexicon/telemetry_* Class A; secret-material-handling/iam-simulate-fixture; the five Class C identity keys. Empty-result precedent: ledger amendment_2026-08-24 (step 6 recorded EMPTY)."
+  - "CFG-05 sweep scope: 41 governed contracts, contract-vs-contract axis ONLY (which is what CFG-05's own acceptance asks for). The Decision-body-vs-contract instance CFG-05 also names (D162's body vs composite-action-shape.yaml's R1/R2/R3) is SCOPED OUT and the sweep record must say so, or it reads as recall the sweep did not have. Adjacent clusters: decision-entry/marker-grammar; check-accounting/check-manifest; deploy-paths/build-lambda/environment-taxonomy; storage-substrate/log-storage; read-engine/ducklake_reader; data-modeling-standard/_joins; plan-obligations/verification-registry/overseer-dispatch; recommendation-relevance/ci-rca-lifecycle; contract-population/file-router; telemetry-lexicon/telemetry_* Class A; secret-material-handling/iam-simulate-fixture; the five Class C identity keys."
   - "Branch 0 commits behind origin/main at plan time; plan_obligations reports no unmet registrations; baseline green (120 passed across both affected suites)."
 pre_implementation_checklist:
   - Branch confirmed not on main
@@ -377,6 +446,9 @@ pre_implementation_checklist:
   - >-
     Re-run the census BEFORE editing (validate_contract_drift against docs/contracts) to confirm
     grandfathered is still 17 -- main may have moved and the target pin value with it.
+  - >-
+    Re-measure decision-entry.yaml's effective lines BEFORE editing -- the 500/508 figures are
+    plan-time measurements and the compaction budget depends on them.
 execution_steps:
   - >-
     scripts/checks/decisions/validate_decisions_size.py -- add a `baseline_body_reader:
@@ -384,27 +456,33 @@ execution_steps:
     scripts.checks.decisions._baseline.baseline_decision_bodies, imported alongside the existing
     BaselineReaderFn) and two pure helper functions returning lists of WARN strings. Helper 1
     (amendment delta): for each entry present in BOTH the baseline bodies and the head, compute
-    head_span - base_span; emit a WARN when the delta is positive AND head_span > 6,144, naming
-    the decision number, the delta, and the new span. Helper 2 (standing pressure): count entries
-    whose span exceeds 6,144 * 1.2 and return ONE aggregate line naming the count and the largest
-    offender. Call both in the fall-through path only, print their output, and do NOT append to
-    `failed`. Leave all five terminal declarations and the examined() unit untouched.
+    head_span - base_span; emit a WARN when the delta is NON-ZERO (not merely positive -- see
+    the Decision 178 note in context) AND head_span > 6,144, naming the decision number, the
+    signed delta, and the new span. Helper 2 (standing pressure): count entries whose span
+    exceeds 6,144 * 1.2 and return ONE aggregate line naming the count and the largest offender.
+    Call both in the fall-through path only, print their output, and do NOT append to `failed`.
+    Leave all five terminal declarations and the examined() unit untouched.
   - >-
     tests/checks/decisions/test_validate_decisions_size.py -- add TestAmendmentDeltaCap (name
-    exact: rec-3243's acceptance selector) covering grown-past-cap WARNs, grown-but-under-cap
-    silence, ungrown-baseline silence, and new-in-diff entries still HARD-FAILING. Add a
-    warn_never_fails case asserting `failed == []` while WARN text is on stdout, and a
-    standing_pressure case asserting exactly one aggregate line. Drive the module through the
-    injected baseline_body_reader seam with tmp_path, never real git.
+    exact: rec-3243's acceptance selector) covering changed-past-cap WARNs, changed-but-under-cap
+    silence, unchanged-baseline silence, SHRUNK-over-cap WARNs (the delta != 0 case), and
+    new-in-diff entries still HARD-FAILING. Add a warn_never_fails case asserting `failed == []`
+    while WARN text is on stdout, and a standing_pressure case asserting exactly one aggregate
+    line. Drive the module through the injected baseline_body_reader seam with tmp_path, never
+    real git.
   - >-
-    docs/contracts/decision-entry.yaml -- add size_governance.accretion_signal (tier, both legs,
-    and flips_to_hard_fail_when naming the trigger, per Decision 163) AND a new amendment_log
-    entry. In the SAME edit, compact enough existing content (the two newest amendment_log
-    summaries are the designated relief, per the frozen note's retires_when) that the file lands
-    UNDER 500 effective lines. Measure before committing.
+    docs/contracts/decision-entry.yaml -- FIRST compact the amendment_log (all four entries, to
+    <=4-line bodies; ~18 lines of relief, verified available), THEN add
+    size_governance.accretion_signal (tier, both legs, and flips_to_hard_fail_when naming the
+    trigger, per Decision 163), correct intent_accretion_note's now-false "no validator, no
+    stored guard" sentence, and add a new dated amendment_log entry. Measure effective lines and
+    confirm <=500 BEFORE committing. If short, defer detail per the contracts-class relief_valve
+    -- never attempt a raise (the freeze blocks it regardless of marker).
   - >-
     config/structural_size_budgets.yaml -- delete the docs/contracts/decision-entry.yaml budgets
-    entry AND its budget_notes entry TOGETHER (never one without the other).
+    entry AND its budget_notes entry TOGETHER (never one without the other:
+    _e4_frozen_note_integrity fails a note without its entry, and frozen_base_violations leg 2
+    fails an entry that survives its note).
   - >-
     docs/contracts/exit-criteria-ledger.yaml -- convert to Class A: a contract: block (id
     exit-criteria-ledger, class A, contract_version 1, status ratified, ratified_at "2026-07-16",
@@ -414,16 +492,17 @@ execution_steps:
     (description, semantics, populated_by, dq_intent) -- and governance_notes absorbing the
     remaining prose. While restructuring: sweep ops_plans -> ops_execution_plans (rec-3213) and
     DROP the now-false claim that validate_contract_drift "skips" files with no contract: key.
-    Relocate version/last_updated/decisions_cited; no legacy top-level key may survive
-    (ContractDocument is extra="forbid").
+    Relocate version/last_updated/decisions_cited (verified zero consumers); no legacy top-level
+    key may survive (ContractDocument is extra="forbid"). No amendment_log entry is owed on this
+    file -- its free-form base fails to load, so Pass 2 attaches no amendment obligation.
   - >-
     docs/contracts/contract-population.yaml -- retire subject_namespace.non_seedable_exception
-    (the population is now fully declared), correcting rather than deleting its false
-    platform_roadmap.py evaluator claim by recording what was actually true; lower
-    ratchet.grandfathered_max 17 -> 16; amend honesty_clauses.
-    subject_uniqueness_is_precision_not_recall with the sweep outcome; add the required
-    amendment_log entry. Do NOT touch status_active_max (it stays 16; raising it would need a
-    new Decision naming the key, which is unavailable).
+    (the population is now fully declared), correcting rather than silently deleting its false
+    platform_roadmap.py evaluator claim; lower ratchet.grandfathered_max 17 -> 16; amend
+    honesty_clauses.subject_uniqueness_is_precision_not_recall with the sweep outcome (date,
+    contracts compared, rec ids or EMPTY); add the required amendment_log entry with a NEW date.
+    Do NOT touch status_active_max (it stays 16; raising it would need a new Decision naming the
+    key, which is unavailable).
   - >-
     tests/checks/contracts/validate_contract_drift/test_real_population.py -- add a positive
     assertion that exit-criteria-ledger.yaml loads as a valid Class A ritual contract, and
@@ -431,17 +510,24 @@ execution_steps:
   - >-
     CFG-05 recall sweep -- enumerate every governed contract's subject (Class D) and id (ritual),
     then adjudicate the adjacent clusters listed in Context pairwise for genuine parallel or
-    contradictory assertion. For each REAL overlap: call get_rec_write_guidance() then file_rec()
-    through scripts.ops_data_portal (Decision 66). Fix nothing inline. Record the outcome -- rec
-    ids, or an explicit empty result -- in the contract-population.yaml honesty clause.
+    contradictory assertion, contract-vs-contract only. For each REAL overlap: call
+    get_rec_write_guidance() then file_rec() through scripts.ops_data_portal (Decision 66). Fix
+    nothing inline. Record the outcome -- date, contracts compared, rec ids or an explicit EMPTY,
+    and the scoped-out Decision-body axis -- in the contract-population.yaml honesty clause.
   - >-
-    audits/contract-first-governance-33c8667.yaml -- add the amendment_2026-09-01 key on
-    audit.migration recording all three residuals closed, naming CFG-05 and the sweep result,
-    mirroring the amendment_2026-08-24 empty-wave form. Adjust the date if implementation
-    lands on a different day.
+    audits/contract-first-governance-33c8667.yaml -- append ONE new `amendment_YYYY-MM-DD:` line
+    INSIDE the audit.meta.contract_notes block scalar (NOT a new mapping key; there is no
+    audit.migration), recording all three residuals closed, naming CFG-05, the contract count
+    compared, and the rec ids or EMPTY, mirroring the amendment_2026-08-24 line's form.
   - >-
     Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop
     and RCA (Decision 55).
+  - >-
+    Commit flow -- the squash-merge commit body MUST carry the trailer `Resolves: rec-3243,
+    rec-3213` so rec-autoclose.yml closes both through the ops portal post-merge (AGENTS.md
+    Resolves: trailer). Closure is post-merge and workflow-driven, so no VP step asserts it.
+    Fallback if the workflow does not fire: `bin/venv-python -m scripts.ops_data_portal
+    --update-rec rec-NNNN --status closed --resolution "..."`.
   - >-
     'Report: what was implemented, verification results, and the CFG-05 sweep outcome
     (rec ids filed, or empty).'
@@ -449,5 +535,7 @@ rollback: >-
   Each of (a), (b), (c) is independently revertible. (b) is the only one with a cross-file
   coupling: reverting the exit-criteria-ledger.yaml conversion REQUIRES restoring
   ratchet.grandfathered_max to 17 in the same commit, or the equality-bound pin fails the gate
-  in the opposite direction. (a) reverts cleanly (pure addition, no behavior gated on it).
-  (c)'s filed recs are warehouse rows -- close them with a resolution rather than deleting.
+  in the opposite direction. (a) reverts cleanly (pure addition, nothing gated on it), but
+  reverting it after the budget retirement does NOT restore the frozen note -- decision-entry.yaml
+  would simply sit under the unregistered 500 default. (c)'s filed recs are warehouse rows --
+  close them with a resolution rather than deleting.
