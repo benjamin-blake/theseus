@@ -56,9 +56,12 @@ scope:
   - file: tests/test_pr_ci_red_protocol_contract.py
     action: Modify
     purpose: >-
-      re-point the two assertions pinning the never-weaken sentence inline (a substring assert and
-      a full-literal negative case) at the contract pointer that replaces it -- without this the
-      relocation reds the tier and the self-hosting step fails on an undeclared path
+      re-point ALL FOUR assertions derived from the never-weaken sentence -- the substring assert,
+      the two coverage asserts on "VP step" and "budget" (which become permanently-true claims
+      about a rule the file no longer contains, since both substrings occur elsewhere in the
+      skill), and the full-literal negative case -- at the contract pointer that replaces it.
+      Without this the relocation reds the tier, the self-hosting step fails on an undeclared
+      path, and the plan installing the honesty discipline ships two vacuous assertions
 bundled_recommendations: ["rec-3332"]
 infrastructure_dependencies: []
 acceptance_criteria:
@@ -68,7 +71,10 @@ acceptance_criteria:
     grammar (Decision 168): the check is a member of BOTH registry.pre_sequence() and
     registry.full_sequence(), and the contract's basename appears as an executable-context
     string literal in the check module because the check genuinely reads the contract at check
-    time and holds no second copy of the row map.
+    time and holds no second copy of the row map. The check exposes `plan_paths`, `changed_files`
+    and `root` overrides (the validate_plan_scope_closure precedent, accepted UNFILTERED) so
+    fixtures and the self-hosting step can dispatch the enforcing leg directly rather than
+    depending on ambient `implementation_declared` state.
   - >-
     The contract is the CANONICAL statement of both invariants -- LOCATION (touched files subset
     of the resolved plan's declared scope union contract-derived companions, citing Decision 59 as
@@ -89,14 +95,19 @@ acceptance_criteria:
     validate_sloc_budget_raises, validate_structural_size_budget_raises). The one residual arm
     (an assertion or numeric tolerance weakened inside an in-scope source or test file) names the
     open rec that owns it and is stated to be the DOMINANT form of weakening, not one row among
-    peers. A second residual row records that only the PRESENCE of Decision 181's pointer is
-    pinnable -- a future paraphrase re-inlined into the Decision's body stays an agent obligation
-    -- so the declare-your-coverage discipline is applied to this plan's own R6 split. The contract never presents CONTENT as an unqualified binary invariant behind a
+    peers -- and it is the SOLE residual row, so VP step 4's owner assertion has exactly one
+    subject. The R6 split's own residual (only the PRESENCE of Decision 181's pointer is pinnable;
+    a paraphrase re-inlined into the Decision's body stays an agent obligation) is recorded in a
+    separate `known_residuals:` note, NOT as a CONTENT coverage row -- Decision-181 paraphrase
+    drift is not one of the CONTENT invariant's surfaces. The contract never presents CONTENT as an unqualified binary invariant behind a
     location-only evaluator.
   - >-
     validate_scope_boundary FAILS an implement-leg diff touching a path outside (declared scope
     union derived sanctions) naming that path, FAILS a prohibited plan-field edit, DEFERS a
-    plan-only PR, and declares skipped when origin/main is unreachable. Its green counterpart is
+    plan-only PR, and declares skipped when origin/main is unreachable. Deleted paths are named
+    as a known gap in the contract: get_changed_files existence-filters them out and only
+    get_status_aware_diff carries "D" rows, so the seam choice decides whether a deletion is even
+    visible. Its green counterpart is
     exercised in the FIXTURE only -- a fixture whose base already declares the path passes --
     because in the live flow an undeclared path is a STOP, never a scope edit (see AC 11).
   - >-
@@ -254,12 +265,17 @@ verification_plan:
       mirror test, which is graduated.
     action: >-
       Self-hosting run: dispatch validate_scope_boundary against this PR's real diff and confirm
-      it is green -- this plan's own scope table must satisfy the boundary it installs, and its
-      seven graduated registry shards plus docs/decisions-index.json must be sanctioned by rows
-      (a) and (c) rather than by a scope row.
+      it is green -- this plan's own scope table must satisfy the boundary it installs. The
+      dispatch MUST pass an explicit plan_paths override (the validate_plan_scope_closure
+      precedent) plus an explicit changed_files list: the Live Verification Protocol is Workflow
+      Step 4 and `implementation_declared` is not set until Commit Flows Step 7, so an ambient
+      dispatch here resolves no plan, takes the DEFER leg, and prints a green it cannot fail. Row
+      (c) is genuinely exercised here (docs/decisions-index.json already exists); row (a)'s seven
+      graduated shards are written by the graduation walk AFTER this gate, so they are exercised
+      at the commit-flow `validate --pre`, not here.
     command: >-
-      bin/venv-python -c "from scripts.checks import
-      registry;f=[];registry.resolve('validate_scope_boundary')(f);print('FAILURES:',f);raise
+      bin/venv-python -c "import subprocess;from pathlib import Path;from scripts.checks import
+      registry;cf=subprocess.run(['git','diff','--name-only','origin/main...HEAD'],capture_output=True,text=True).stdout.split();f=[];registry.resolve('validate_scope_boundary')(f,plan_paths=[Path('docs/plans/PLAN-inline-defer-boundary-contract.yaml')],changed_files=cf);print('FAILURES:',f);raise
       SystemExit(1 if f else 0)"
     expected: 'prints `FAILURES: []` and exits 0'
     fix_if: >-
@@ -373,11 +389,13 @@ verification_plan:
       the measured cost note the new pre=True check owes.
     action: >-
       Measure the new pre-tier check's own dispatch cost so the fast-tier budget note (Decision
-      153) is evidence-backed rather than asserted.
+      153) is evidence-backed rather than asserted. Uses the same explicit override as step 6 --
+      an ambient dispatch would time the no-op DEFER leg, not the enforcing path.
     command: >-
-      bin/venv-python -c "import time;from scripts.checks import
-      registry;t=time.perf_counter();f=[];registry.resolve('validate_scope_boundary')(f);print('elapsed_s=%.2f'
-      % (time.perf_counter()-t));raise SystemExit(0 if time.perf_counter()-t < 5 else 1)"
+      bin/venv-python -c "import time,subprocess;from pathlib import Path;from scripts.checks
+      import
+      registry;cf=subprocess.run(['git','diff','--name-only','origin/main...HEAD'],capture_output=True,text=True).stdout.split();s=time.perf_counter();f=[];registry.resolve('validate_scope_boundary')(f,plan_paths=[Path('docs/plans/PLAN-inline-defer-boundary-contract.yaml')],changed_files=cf);e=time.perf_counter()-s;print('elapsed_s=%.2f'
+      % e);raise SystemExit(0 if e < 5 else 1)"
     expected: 'prints an elapsed_s under 5 seconds and exits 0'
     fix_if: >-
       Over 5s -- the check is globbing or re-reading the plan corpus. It must stay one hop off the
@@ -411,13 +429,23 @@ verification_plan:
       deferred item 1 nor the CONTENT residual arm is lost with the parent rec, and that Decision
       181 backfilled to ops_decisions.
     command: >-
-      bin/venv-python -m scripts.ops_data_portal --sync && grep -c "verify_ci_workflow"
-      logs/.recommendations-log.jsonl && grep -c "dec-181" logs/.decisions-index.jsonl
-    expected: both greps return a non-zero count
+      bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import
+      json,pathlib;r=[json.loads(l) for l in
+      pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if
+      l.strip()];tx=lambda x:(x.get('title') or '')+(x.get('context') or '');op=[x for x in r if
+      x.get('status')=='open'];a=[x['id'] for x in op if 'rec-3332 item 1' in tx(x)];b=[x['id'] for x in
+      op if 'CONTENT invariant residual arm' in tx(x)];d='dec-181' in
+      pathlib.Path('logs/.decisions-index.jsonl').read_text();print('item1',a,'residual',b,'dec-181',d);raise
+      SystemExit(0 if a and b and d else 1)"
+    expected: 'prints a non-empty id list for item1 and for residual, and dec-181 True'
     fix_if: >-
-      Zero -- file the missing rec via `bin/venv-python -m scripts.ops_data_portal --file-rec`
-      (call get_rec_write_guidance() first, Decision 66) or run
-      `--backfill-decisions-md`, then re-run.
+      An empty list -- file the missing rec via `bin/venv-python -m scripts.ops_data_portal
+      --file-rec` (call get_rec_write_guidance() first, Decision 66), or run
+      `--backfill-decisions-md`, then re-run. The two markers are identity, not decoration: match
+      on the literal phrases `rec-3332 item 1` and `CONTENT invariant residual arm`, both of which
+      match nothing in the warehouse today -- never on a token like `pre_globs` or
+      `verify_ci_workflow` that the parent rec's own context, or unrelated pre-existing recs,
+      already contain.
   - step: 15
     phase: post-deploy
     hermetic: false
@@ -512,10 +540,12 @@ constraints:
   - >-
     The check reads its row map from the contract at check time and holds no second copy
     (plan_obligations.py precedent); it derives plans one hop off the diff and never globs
-    docs/plans/. Name the seam once and use it consistently: _common.get_changed_files compares
-    against the origin/main TIP (two-dot), while get_status_aware_diff uses the MERGE-BASE -- the
-    choice decides whether a stale base pulls main-side modifications into the touched set, so
-    pick one and say which in the module docstring. A row whose sanction_kind the check does not implement must FAIL loudly.
+    docs/plans/. The seam is CHOSEN HERE, not deferred to implement time: use
+    _common.get_status_aware_diff (MERGE-BASE, and the only primitive carrying "D" rows).
+    get_changed_files compares against the origin/main TIP, which on this branch today reports 5
+    files against the merge-base's 1 -- the 4 extra are main-side changes that would each be
+    reported as an undeclared path and, per AC 11, STOP the agent. Name the seam in the module
+    docstring. A row whose sanction_kind the check does not implement must FAIL loudly.
   - Do not weaken a check to pass differential admission (#994 repaired the false-admission defect).
   - No rescue agents or workaround loops (Decision 55).
   - No new standing prose-architecture doc under docs/ (Decision 86).
@@ -613,8 +643,12 @@ execution_steps:
   - Create tests/test_scope_boundary_contract.py covering the prose, contract, and Decision surfaces.
   - >-
     File both successor recs via the ops portal -- call get_rec_write_guidance() before file_rec
-    (Precision Context Injection, Decision 66) -- one for rec-3332's item 1 and one owning the
-    CONTENT residual arm, then write the residual rec id into the contract's coverage row. Run
+    (Precision Context Injection, Decision 66). The first covers rec-3332's item 1 and MUST carry
+    the literal phrase `rec-3332 item 1` in its title or context; the second owns the CONTENT
+    residual arm and MUST carry the literal phrase `CONTENT invariant residual arm`. Both phrases
+    match nothing in the warehouse today, so VP step 14's assertion is discriminating rather than
+    satisfied by a pre-existing rec. Write the second rec's id into the contract's single CONTENT
+    residual coverage row. Run
     `--backfill-decisions-md` for Decision 181 and regenerate docs/decisions-index.json.
   - Execute the Verification Plan -- run each step, loop until pass; on unrecoverable failure stop and RCA (Decision 55).
   - 'Report: what was implemented, verification results, and the DD-B routing line for the PR body covering the grammar half.'
