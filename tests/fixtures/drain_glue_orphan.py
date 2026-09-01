@@ -69,6 +69,7 @@ class ProgressiveS3Client:
         self._dispatched = dispatched
 
     def get_object(self, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
+        body: dict[str, Any]
         if (Bucket, Key) == (_TFSTATE_BUCKET, _TFSTATE_KEY):
             resources = [{"type": "aws_glue_catalog_database", "name": "ops"}] if self._tfstate_orphan_present else []
             body = {"resources": resources}
