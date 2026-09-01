@@ -6,10 +6,11 @@ tier flipped by migration-step-3-grandfathering / T2.56 migration step 3).
 Decision 179 retires the module's three mechanical stock ceilings (the live '## Decision' header
 count, the live-byte-only ceiling, and the live+archive combined byte ceiling) -- bounded
 decision-scout retrieval means no consumer reads the live corpus wholesale anymore, so the guards
-that sized that read no longer have a referent. This file now covers only the surviving
+that sized that read no longer have a referent. This file covers the surviving
 _PER_ENTRY_CAP_BYTES (6_144) hard-fail per-NEW-entry cap (Decision 167 clause 3, fired by
-migration step 3) and TestStockCeilingsRetired's standing guard against the retired ceilings'
-return."""
+migration step 3), TestStockCeilingsRetired's standing guard against the retired ceilings'
+return, and (rec-3243) the WARN-tier-only amendment-delta and standing-pressure accretion legs
+(TestAmendmentDeltaCap, TestWarnNeverFails, TestStandingPressure)."""
 
 from pathlib import Path
 from unittest.mock import patch
@@ -313,3 +314,205 @@ class TestDeclarationAdoption:
         """Neither docs/DECISIONS.md nor docs/DECISIONS_ARCHIVE.md exists under tmp_path --
         mirrors _per_entry_cap_failures's own missing-files tolerance."""
         assert _new_entries_examined_count(tmp_path, baseline_numbers=set()) == 0
+
+
+_NO_BASELINE_BODIES = {"docs/DECISIONS.md": {}, "docs/DECISIONS_ARCHIVE.md": {}}
+
+
+class TestAmendmentDeltaCap:
+    """rec-3243's acceptance selector (exact class name, per the plan). Drives the module
+    through the injected baseline_body_reader seam with tmp_path -- never real git -- covering
+    the amendment-delta leg's WARN/silence boundary, and confirming the pre-existing per-entry
+    hard-fail cap is unaffected by this leg's addition."""
+
+    def test_changed_past_cap_warns(self, tmp_path: Path, capsys) -> None:
+        base_block = _make_block(5, 5_000)
+        head_block = _make_block(5, 6_300)
+        _write_docs(tmp_path, head_block)
+        failed: list[str] = []
+        baseline_bodies = {"docs/DECISIONS.md": {5: base_block}, "docs/DECISIONS_ARCHIVE.md": {}}
+        validate_decisions_size(
+            failed,
+            root=tmp_path,
+            baseline_reader=lambda r: {5},
+            baseline_body_reader=lambda r: baseline_bodies,
+        )
+        assert failed == [], "a historical (baseline) entry must never hard-fail"
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert "Decision 5" in out
+        assert "+1300 bytes" in out
+
+    def test_changed_but_under_cap_is_silent(self, tmp_path: Path, capsys) -> None:
+        base_block = _make_block(5, 5_000)
+        head_block = _make_block(5, 5_500)
+        _write_docs(tmp_path, head_block)
+        failed: list[str] = []
+        baseline_bodies = {"docs/DECISIONS.md": {5: base_block}, "docs/DECISIONS_ARCHIVE.md": {}}
+        validate_decisions_size(
+            failed,
+            root=tmp_path,
+            baseline_reader=lambda r: {5},
+            baseline_body_reader=lambda r: baseline_bodies,
+        )
+        assert failed == []
+        assert "WARN" not in capsys.readouterr().out
+
+    def test_unchanged_baseline_is_silent_even_over_cap(self, tmp_path: Path, capsys) -> None:
+        block = _make_block(5, 7_000)
+        _write_docs(tmp_path, block)
+        failed: list[str] = []
+        baseline_bodies = {"docs/DECISIONS.md": {5: block}, "docs/DECISIONS_ARCHIVE.md": {}}
+        validate_decisions_size(
+            failed,
+            root=tmp_path,
+            baseline_reader=lambda r: {5},
+            baseline_body_reader=lambda r: baseline_bodies,
+        )
+        assert failed == []
+        assert "WARN" not in capsys.readouterr().out
+
+    def test_shrunk_over_cap_still_warns(self, tmp_path: Path, capsys) -> None:
+        """Decision 178 retired validate_live_entry_immutability -- a baseline body can now be
+        rewritten in place, so a SHRUNK-but-still-over-cap entry must still WARN (delta != 0,
+        not delta > 0)."""
+        base_block = _make_block(5, 8_000)
+        head_block = _make_block(5, 7_000)
+        _write_docs(tmp_path, head_block)
+        failed: list[str] = []
+        baseline_bodies = {"docs/DECISIONS.md": {5: base_block}, "docs/DECISIONS_ARCHIVE.md": {}}
+        validate_decisions_size(
+            failed,
+            root=tmp_path,
+            baseline_reader=lambda r: {5},
+            baseline_body_reader=lambda r: baseline_bodies,
+        )
+        assert failed == []
+        out = capsys.readouterr().out
+        assert "WARN" in out
+        assert "-1000 bytes" in out
+
+    def test_none_body_baseline_advisory_skips(self, tmp_path: Path, capsys) -> None:
+        """origin/main unreachable for the BODY baseline specifically -- print nothing, raise
+        nothing, leave the existing terminal declarations untouched."""
+        head_block = _make_block(5, 6_300)
+        _write_docs(tmp_path, head_block)
+        failed: list[str] = []
+        validate_decisions_size(
+            failed,
+            root=tmp_path,
+            baseline_reader=lambda r: {5},
+            baseline_body_reader=lambda r: None,
+        )
+        assert failed == []
+        assert "WARN" not in capsys.readouterr().out
+
+    def test_new_in_diff_entry_still_hard_fails(self, tmp_path: Path, capsys) -> None:
+        """Regression guard: a genuinely new-in-diff over-cap entry still HARD-FAILS through the
+        existing per-entry cap, unaffected by the new accretion legs."""
+        head_block = _make_block(5, _PER_ENTRY_CAP_BYTES + 1)
+        _write_docs(tmp_path, head_block)
+        failed: list[str] = []
+        validate_decisions_size(
+            failed,
+            root=tmp_path,
+            baseline_reader=lambda r: set(),
+            baseline_body_reader=lambda r: _NO_BASELINE_BODIES,
+        )
+        assert "DECISIONS size governance" in failed
+        out = capsys.readouterr().out
+        assert "FAIL" in out
+        assert "Decision 5" in out
+
+
+class TestAccretionHelperMissingFileBranches:
+    """Direct coverage of _amendment_delta_warnings / _standing_pressure_warning's
+    file-missing and entry-absent-from-a-nonempty-baseline branches -- reachable only when
+    called directly, since the registered validate_decisions_size() entry point already fails
+    closed on a missing DECISIONS file before either helper runs."""
+
+    def test_amendment_delta_warnings_skips_a_missing_file_but_still_warns_on_the_present_one(self, tmp_path: Path) -> None:
+        from scripts.checks.decisions.validate_decisions_size import _amendment_delta_warnings
+
+        (tmp_path / "docs").mkdir()
+        (tmp_path / "docs" / "DECISIONS.md").write_text(_make_block(5, 6_300), encoding="utf-8")
+        # docs/DECISIONS_ARCHIVE.md intentionally absent.
+        baseline_bodies = {
+            "docs/DECISIONS.md": {5: _make_block(5, 5_000)},
+            "docs/DECISIONS_ARCHIVE.md": {9: _make_block(9, 5_000)},
+        }
+        warnings = _amendment_delta_warnings(tmp_path, baseline_bodies)
+        assert any("Decision 5" in w for w in warnings)
+
+    def test_amendment_delta_warnings_entry_absent_from_nonempty_baseline_is_silent(self, tmp_path: Path) -> None:
+        from scripts.checks.decisions.validate_decisions_size import _amendment_delta_warnings
+
+        _write_docs(tmp_path, _make_block(5, 6_300))
+        baseline_bodies = {"docs/DECISIONS.md": {99: _make_block(99, 5_000)}, "docs/DECISIONS_ARCHIVE.md": {}}
+        assert _amendment_delta_warnings(tmp_path, baseline_bodies) == []
+
+    def test_standing_pressure_warning_skips_a_missing_file_but_still_counts_the_present_one(self, tmp_path: Path) -> None:
+        from scripts.checks.decisions.validate_decisions_size import _standing_pressure_warning
+
+        (tmp_path / "docs").mkdir()
+        threshold = int(_PER_ENTRY_CAP_BYTES * 1.2)
+        (tmp_path / "docs" / "DECISIONS.md").write_text(_make_block(5, threshold + 100), encoding="utf-8")
+        # docs/DECISIONS_ARCHIVE.md intentionally absent.
+        warnings = _standing_pressure_warning(tmp_path)
+        assert any("1.2x the" in w for w in warnings)
+
+
+class TestWarnNeverFails:
+    """VP step 1 / graduated check_id 'decisions-size-warn-never-fails': the load-bearing safety
+    property of the whole accretion signal -- an accretion condition severe enough to WARN must
+    leave `failed` empty."""
+
+    def test_warn_never_fails(self, tmp_path: Path, capsys) -> None:
+        base_block = _make_block(5, 5_000)
+        head_block = _make_block(5, 6_300)
+        _write_docs(tmp_path, head_block)
+        failed: list[str] = []
+        baseline_bodies = {"docs/DECISIONS.md": {5: base_block}, "docs/DECISIONS_ARCHIVE.md": {}}
+        validate_decisions_size(
+            failed,
+            root=tmp_path,
+            baseline_reader=lambda r: {5},
+            baseline_body_reader=lambda r: baseline_bodies,
+        )
+        assert failed == []
+        assert "WARN" in capsys.readouterr().out
+
+
+class TestStandingPressure:
+    """VP step 3 / graduated check_id 'decisions-size-standing-pressure-single-line': the
+    standing-pressure aggregate is exactly ONE line, not one per entry."""
+
+    def test_standing_pressure_emits_a_single_aggregate_line(self, tmp_path: Path, capsys) -> None:
+        threshold = int(_PER_ENTRY_CAP_BYTES * 1.2)
+        live_text = _make_block(5, threshold + 100) + _make_block(6, threshold + 200)
+        archive_text = _make_block(9, threshold + 50)
+        _write_docs(tmp_path, live_text, archive_text)
+        failed: list[str] = []
+        validate_decisions_size(
+            failed,
+            root=tmp_path,
+            baseline_reader=lambda r: {5, 6, 9},
+            baseline_body_reader=lambda r: _NO_BASELINE_BODIES,
+        )
+        assert failed == []
+        out = capsys.readouterr().out
+        pressure_lines = [line for line in out.splitlines() if "1.2x the" in line]
+        assert len(pressure_lines) == 1, pressure_lines
+        assert "3 decision entries" in pressure_lines[0]
+
+    def test_standing_pressure_is_silent_when_nothing_is_over_threshold(self, tmp_path: Path, capsys) -> None:
+        _write_docs(tmp_path, _make_block(5, _PER_ENTRY_CAP_BYTES))
+        failed: list[str] = []
+        validate_decisions_size(
+            failed,
+            root=tmp_path,
+            baseline_reader=lambda r: {5},
+            baseline_body_reader=lambda r: _NO_BASELINE_BODIES,
+        )
+        assert failed == []
+        assert "1.2x the" not in capsys.readouterr().out

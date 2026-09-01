@@ -11,10 +11,11 @@ from .conftest import validate_contract_drift
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _REAL_CONTRACTS_DIR = _REPO_ROOT / "docs" / "contracts"
 
-# The 20 seedable free-form files this plan (migration-step-3-grandfathering) sweeps -- see
-# docs/plans/PLAN-migration-step-3-grandfathering.yaml scope. exit-criteria-ledger.yaml is the
-# single named non-seedable exception (genuinely Class-A-field-shaped) and is deliberately
-# excluded from this roster.
+# The 20 seedable free-form files migration-step-3-grandfathering (PLAN-migration-step-3-
+# grandfathering) converted to Class D -- see that plan's scope. exit-criteria-ledger.yaml was
+# exempted from that sweep (genuinely Class-A-field-shaped) and is deliberately excluded from
+# this roster; PLAN-cfg-migration-closeout later converted it to a Class A ritual contract in
+# its own right (see TestExitCriteriaLedgerIsClassA below), never added to this Class D roster.
 _SEEDED_CONTRACT_FILES = [
     "_joins.yaml",
     "build-lambda.yaml",
@@ -79,6 +80,27 @@ class TestRealPopulationRegression:
 
             resolves, detail = _population.resolve_evaluator(name, meta.evaluator, root=_REPO_ROOT)
             assert resolves, f"{name}: evaluator does not resolve -- {detail}"
+
+
+class TestExitCriteriaLedgerIsClassA:
+    """VP step 5 / graduated check_id 'exit-criteria-ledger-is-class-a' (PLAN-cfg-migration-
+    closeout): docs/contracts/exit-criteria-ledger.yaml is a genuine Class A ritual contract,
+    proven by driving it through the three DISCRIMINATING ritual legs (load_contract,
+    resolve_refs, check_required_inline_fields) and asserting class/ratified_via directly --
+    not by grepping for a contract: block."""
+
+    def test_exit_criteria_ledger_is_class_a_with_no_inline_field_errors(self) -> None:
+        from scripts.contracts import load_contract, resolve_refs
+        from scripts.contracts_enforcement import check_required_inline_fields
+
+        path = _REAL_CONTRACTS_DIR / "exit-criteria-ledger.yaml"
+        doc = load_contract(path)
+        resolve_refs(doc, path.parent)
+        errors = check_required_inline_fields(doc)
+
+        assert doc.contract.class_.value == "A", doc.contract.class_
+        assert errors == [], errors
+        assert doc.contract.ratified_via and "dec-136" in doc.contract.ratified_via, doc.contract.ratified_via
 
 
 class TestContractPopulationSelfHosting:

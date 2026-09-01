@@ -5,14 +5,21 @@ live-byte-only ceiling, and the live+archive combined byte ceiling -- are RETIRE
 Bounded decision-scout retrieval (PLAN-decision-scout-bounded-retrieval) means no consumer reads
 the live corpus wholesale anymore, so the stock guards that sized that read no longer have a
 referent; Decision 150's significance bar is the retained lever on entry count and triage quality.
-This check survives as the per-NEW-entry authoring size norm enforcer only
+This check survives as the per-NEW-entry authoring size norm enforcer
 (docs/contracts/decision-entry.yaml size_governance.per_entry_size_norm, Decision 167 clause 3,
 rec-2934): a new-in-diff decision entry over the cap HARD-FAILS in the --pre tier. Historical
-entries are never measured (forward-only, mirrors validate_decision_entry_conformance's own
-new-vs-baseline scope). Since this check is registered UNGATED in the --pre tier (unlike the
-glob-gated conformance check), the per-entry sub-check's own (git-cost) baseline read is skipped
-whenever a non-default `root` is injected for testing -- production calls (the default root) pay
-it only when a DECISIONS file changed in this diff.
+entries are never measured by that sub-check (forward-only, mirrors
+validate_decision_entry_conformance's own new-vs-baseline scope). Since this check is registered
+UNGATED in the --pre tier (unlike the glob-gated conformance check), the per-entry sub-check's own
+(git-cost) baseline read is skipped whenever a non-default `root` is injected for testing --
+production calls (the default root) pay it only when a DECISIONS file changed in this diff.
+
+rec-3243 adds a WARN-tier-only accretion signal alongside the per-entry cap, meeting the
+in-place-amendment channel the per-entry cap's forward-only scope cannot reach: an amendment-delta
+leg (a BASELINE entry whose body byte-span changed and whose new span now exceeds the cap) and a
+standing-pressure leg (one aggregate line naming how many live entries sit over 1.2x the cap).
+Both legs are telemetry -- they NEVER append to `failed` -- and sit downstream of this module's
+existing hard-fail cap and cost gate.
 """
 
 from __future__ import annotations
@@ -20,10 +27,17 @@ from __future__ import annotations
 from pathlib import Path
 
 from scripts.checks import _common, registry
-from scripts.checks.decisions._baseline import BaselineReaderFn, baseline_decision_numbers
+from scripts.checks.decisions._baseline import (
+    BaselineBodies,
+    BaselineBodyReaderFn,
+    BaselineReaderFn,
+    baseline_decision_bodies,
+    baseline_decision_numbers,
+)
 from scripts.decisions_md import iter_decision_sections
 
 _PER_ENTRY_CAP_BYTES = 6_144
+_STANDING_PRESSURE_MULTIPLIER = 1.2
 
 
 _PER_ENTRY_CAP_HARD_FAIL_CITATION = (
@@ -76,11 +90,75 @@ def _per_entry_cap_failures(root, baseline_numbers: set[int]) -> list[str]:
     return failures
 
 
+def _amendment_delta_warnings(root: Path, baseline_bodies: BaselineBodies) -> list[str]:
+    """WARN-tier (rec-3243, never appends to `failed`) accretion signal: a BASELINE entry
+    (present in both the origin/main body baseline and the current head) whose body byte-span
+    CHANGED -- delta != 0, not merely grew, since Decision 178 retired
+    validate_live_entry_immutability and a baseline body can now be rewritten in place, holding
+    span flat or shrinking it, not only appended to -- and whose NEW span exceeds the per-entry
+    cap. A new-in-diff entry (absent from the baseline) is outside this leg's domain -- it is
+    already governed by the existing hard-fail per-entry cap above."""
+    warnings: list[str] = []
+    for rel in ("docs/DECISIONS.md", "docs/DECISIONS_ARCHIVE.md"):
+        path = root / rel
+        if not path.exists():
+            continue
+        base_by_number = baseline_bodies.get(rel) or {}
+        if not base_by_number:
+            continue
+        content = path.read_text(encoding="utf-8", errors="replace")
+        for m, block in iter_decision_sections(content):
+            n = int(m.group(1))
+            base_block = base_by_number.get(n)
+            if base_block is None:
+                continue
+            head_span = len(block.encode("utf-8"))
+            base_span = len(base_block.encode("utf-8"))
+            delta = head_span - base_span
+            if delta != 0 and head_span > _PER_ENTRY_CAP_BYTES:
+                sign = "+" if delta > 0 else ""
+                warnings.append(
+                    f"  WARN: Decision {n} ({rel}) body changed size by {sign}{delta} bytes, new span "
+                    f"{head_span} bytes, over the {_PER_ENTRY_CAP_BYTES}-byte per-entry cap "
+                    "(rec-3243 amendment-delta accretion signal; WARN tier only, never fails)."
+                )
+    return warnings
+
+
+def _standing_pressure_warning(root: Path) -> list[str]:
+    """WARN-tier aggregate (rec-3243): ONE line naming the count of live entries -- new or
+    historical, this leg is not baseline-scoped like the delta leg above -- over 1.2x the
+    per-entry cap, and the largest offender, so the operator brief's >20%-over-cap ask lands as
+    telemetry rather than a per-entry noise floor."""
+    threshold = _PER_ENTRY_CAP_BYTES * _STANDING_PRESSURE_MULTIPLIER
+    over: list[tuple[int, str, int]] = []
+    for rel in ("docs/DECISIONS.md", "docs/DECISIONS_ARCHIVE.md"):
+        path = root / rel
+        if not path.exists():
+            continue
+        content = path.read_text(encoding="utf-8", errors="replace")
+        for m, block in iter_decision_sections(content):
+            size = len(block.encode("utf-8"))
+            if size > threshold:
+                over.append((size, rel, int(m.group(1))))
+    if not over:
+        return []
+    over.sort(reverse=True)
+    largest_size, largest_rel, largest_n = over[0]
+    plural = "y" if len(over) == 1 else "ies"
+    return [
+        f"  WARN: {len(over)} decision entr{plural} exceed {threshold:.0f} bytes (1.2x the "
+        f"{_PER_ENTRY_CAP_BYTES}-byte per-entry cap) -- largest: Decision {largest_n} ({largest_rel}) "
+        f"at {largest_size} bytes (rec-3243 standing-pressure accretion signal; WARN tier only, never fails)."
+    ]
+
+
 @registry.register("validate_decisions_size", owner="platform")
 def validate_decisions_size(
     failed: list[str],
     root=None,
     baseline_reader: BaselineReaderFn | None = None,
+    baseline_body_reader: BaselineBodyReaderFn | None = None,
 ) -> None:
     """Enforce the per-NEW-entry authoring size cap (Decision 167 clause 3) on
     docs/DECISIONS.md and docs/DECISIONS_ARCHIVE.md. The stock ceilings this check formerly
@@ -91,10 +169,12 @@ def validate_decisions_size(
 
     root / baseline_reader are test injection seams (mirrors validate_decision_entry_conformance)
     for the hard-fail per-entry cap sub-check below (Decision 167 clause 3, fired by migration
-    step 3). A non-default root always exercises that sub-check (deterministic for tests); the
-    default (production) root skips it whenever this check's own root equals _common.ROOT AND
-    neither DECISIONS file changed in this diff, since this check runs UNGATED on every --pre
-    invocation and the git baseline read is not free.
+    step 3). baseline_body_reader is the companion seam (rec-3243) for the two WARN-tier
+    accretion legs -- amendment delta and standing pressure -- that run alongside the per-entry
+    cap on the fall-through path. A non-default root always exercises the per-entry sub-check
+    (deterministic for tests); the default (production) root skips it whenever this check's own
+    root equals _common.ROOT AND neither DECISIONS file changed in this diff, since this check
+    runs UNGATED on every --pre invocation and the git baseline read is not free.
 
     Composes exactly ONE terminal Decision 170 declaration on each of its five reachable exit
     paths: a missing live or archive file `skipped()`s (could not examine); the cost-gated
@@ -107,6 +187,7 @@ def validate_decisions_size(
     using_default_root = root is None
     root = root if root is not None else _common.ROOT
     baseline_reader = baseline_reader or baseline_decision_numbers
+    baseline_body_reader = baseline_body_reader or baseline_decision_bodies
 
     live_path = root / "docs" / "DECISIONS.md"
     archive_path = root / "docs" / "DECISIONS_ARCHIVE.md"
@@ -136,4 +217,12 @@ def validate_decisions_size(
         print(failure)
     if per_entry_failures:
         failed.append("DECISIONS size governance")
+
+    baseline_bodies = baseline_body_reader(root)
+    if baseline_bodies is not None:
+        for warning in _amendment_delta_warnings(root, baseline_bodies):
+            print(warning)
+        for warning in _standing_pressure_warning(root):
+            print(warning)
+
     registry.examined(_new_entries_examined_count(root, baseline_numbers), unit="new_decision_entries")
