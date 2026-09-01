@@ -456,11 +456,34 @@ class TestIdentityAllowIamActions:
 class TestCheckIdentityIamActionsSubsetOfBoundary:
     """Relocated from _write_coverage with its checker (same ceiling-assertion family)."""
 
-    def test_no_iam_actions_short_circuits_no_file_read(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_non_iam_action_now_reaches_boundary_and_fails_loud_on_unreadable_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """INVERTED (was test_no_iam_actions_short_circuits_no_file_read): the generalized collector
+        now counts s3:GetObject too, so the same statement reaches _load_boundary_actions and fails loud."""
         monkeypatch.setattr(_common, "ROOT", tmp_path)
         failed: list[str] = []
         check_identity_iam_actions_subset_of_boundary([_stmt(["s3:GetObject"], '["*"]')], failed, "k:")
+        assert len(failed) == 1, failed
+        assert "cannot re-read" in failed[0]
+
+    def test_non_iam_action_covered_by_wildcard_ceiling_passes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Both-direction positive: a non-iam: action covered by a boundary wildcard passes."""
+        monkeypatch.setattr(_common, "ROOT", tmp_path)
+        _write_bootstrap(tmp_path, _IDENTITY_WITH_CONDITION + _BOUNDARY_FULL)
+        failed: list[str] = []
+        check_identity_iam_actions_subset_of_boundary([_stmt(["lambda:InvokeFunction"], "[...]")], failed, "k:")
         assert failed == []
+
+    def test_non_iam_action_absent_from_ceiling_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Both-direction negative: a non-iam: action absent from the ceiling fails loud naming it --
+        else the generalization from iam:-only would be vacuous (PLAN-glue-delete-database-grant)."""
+        monkeypatch.setattr(_common, "ROOT", tmp_path)
+        _write_bootstrap(tmp_path, _IDENTITY_WITH_CONDITION + _BOUNDARY_FULL)
+        failed: list[str] = []
+        check_identity_iam_actions_subset_of_boundary([_stmt(["glue:DeleteDatabase"], "[...]")], failed, "k:")
+        assert len(failed) == 1, failed
+        assert "'glue:DeleteDatabase'" in failed[0] and "does not grant it" in failed[0]
 
     def test_all_identity_iam_actions_covered_passes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(_common, "ROOT", tmp_path)

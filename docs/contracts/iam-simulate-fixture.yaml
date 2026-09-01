@@ -57,29 +57,19 @@ contract:
     check: validate_iam_simulate_fixture_shape
 
 amendment_log:
+  - date: "2026-09-01"
+    semantic_break: false
+    change_class: field_add
+    summary: "PLAN-glue-delete-database-grant (Decision 178 clause 4 drain): armed glue:DeleteDatabase's multi_resource_type_verbs map with two live allowed triples (database + userDefinedFunction axes), now that both IAM layers restore the destroy-path GlueCatalog grant."
   - date: "2026-08-31"
     semantic_break: false
     change_class: field_add
-    summary: >-
-      rec-3325 + rec-3327 (PLAN-ci-convergence-fixes): compacted the 55 empty
-      `required_context_keys: {}` lines (now documented as the default, above); removed
-      p2-glue-delete-database (GLUE ADJUDICATION -- post-cleanse the repo declares no glue grant,
-      so the row pinned live drift, not a real grant); added the multi_resource_type_verbs map
-      (contract data, Decision 86 routing) seeded with glue:DeleteDatabase for if that grant
-      returns; and added the Decision 180 PlatformDev-allowed / PlatformAdmin-implicitDeny rows
-      for the IAMRoleMetadataWrite widening.
+    summary: "rec-3325 + rec-3327 (PLAN-ci-convergence-fixes): compacted the 55 empty required_context_keys lines (now documented as the default, above); removed p2-glue-delete-database (pinned live drift, not a real grant); added multi_resource_type_verbs (seeded for glue:DeleteDatabase) and the Decision 180 PlatformDev-allowed / PlatformAdmin-implicitDeny rows for IAMRoleMetadataWrite."
   - date: "2026-08-26"
     semantic_break: false
     change_class: prose_improvement
-    summary: >-
-      Platform cleanse: references to the removed trading-product surfaces and the retired
-      pre-DuckLake query-engine estate were removed or reworded.
-    migration_story: >-
-      The repository became platform-only. Product surfaces (broker credentials, the product
-      roadmap, the market-data pipeline) and the retired legacy query-engine path (staging
-      outbox, ops compaction, legacy workgroup IAM) were deleted, and this contract's
-      references to them were removed in the same change. No live DuckLake field or verb
-      semantics changed.
+    summary: "Platform cleanse: references to the removed trading-product surfaces and the retired pre-DuckLake query-engine estate were removed or reworded."
+    migration_story: "The repository became platform-only; product surfaces and the retired legacy query-engine path were deleted, and this contract's references to them were removed in the same change. No live DuckLake field or verb semantics changed."
   - date: "2026-08-16"
     semantic_break: false
     change_class: governance_note_add
@@ -115,10 +105,11 @@ expected_decision_values:
 # the old p2-glue-delete-database row passed for the wrong reason: it pinned `database/<db>`, but
 # the live grant it purported to cover was actually denied at `userDefinedFunction/<db>/*`).
 # validate_iam_simulate_fixture_shape's multi-resource-type leg fails any verb below whose PRESENT
-# fixture rows do not cover every listed type. glue:DeleteDatabase currently has ZERO rows
-# (terraform/ carries no glue HCL post-cleanse) -- armed-but-inert, seeded here for if the grant
-# returns, per rec-3325's full 61-triple corpus sweep: it is the only genuinely multi-resource-type
-# verb found.
+# fixture rows do not cover every listed type. glue:DeleteDatabase was armed-but-inert (zero rows)
+# from rec-3325's seeding until PLAN-glue-delete-database-grant (2026-09-01) restored the
+# destroy-path grant at both IAM layers and added the database + userDefinedFunction triples below
+# -- per rec-3325's full 61-triple corpus sweep, it is the only genuinely multi-resource-type verb
+# found.
 multi_resource_type_verbs:
   glue:DeleteDatabase:
     - database
@@ -162,6 +153,23 @@ artifacts:
 # Triples: (verb, target_arn_template, expected_decision, required_context_keys, why).
 # ---------------------------------------------------------------------------
 triples:
+  # -- PLAN-glue-delete-database-grant (Decision 178 clause 4 drain, rec-3348/rec-3328): the two
+  # live axes of the restored GlueCatalog destroy-path grant. Per multi_resource_type_verbs above,
+  # glue:DeleteDatabase authorizes against BOTH the database ARN and its userDefinedFunction child
+  # ARN -- a fixture row on only one axis would have passed for the wrong reason (exactly how the
+  # old, removed p2-glue-delete-database row missed the userDefinedFunction gap that run
+  # 33323201848 hit). --
+  - id: p2-glue-delete-database-database-axis
+    verb: "glue:DeleteDatabase"
+    target_arn_template: "arn:aws:glue:${region}:${account_id}:database/agent_platform"
+    expected_decision: allowed
+    why: "Headline axis: DeleteDatabase authorizes directly against the database ARN -- granted in the GlueCatalog Sid, ceiling-covered by boundary glue:* -- both layers, or the intersection denies it."
+  - id: p2-glue-delete-database-udf-axis
+    verb: "glue:DeleteDatabase"
+    target_arn_template: "arn:aws:glue:${region}:${account_id}:userDefinedFunction/agent_platform/simulate-probe"
+    expected_decision: allowed
+    why: 'The companion axis run 33323201848 AccessDenied on: DeleteDatabase also authorizes against the database''s child ARNs, not the database ARN alone -- missing this made the pre-restore grant insufficient. Wildcard-free probe name (build_triples rejects a literal "*" in a target).'
+
   # -- rec-2882 (P0-1): the third-instance destroy companions. THIS PAIR IS THE CLOSURE EVIDENCE. --
   - id: p0-1-list-instance-profiles-for-role
     verb: "iam:ListInstanceProfilesForRole"

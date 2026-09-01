@@ -650,6 +650,36 @@ locals {
           "ssm:ListTagsForResource"
         ]
         Resource = ["arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/agent-platform/*"]
+      },
+      {
+        # Time-boxed restore for the Decision 178 clause 4 drain (PLAN-glue-delete-database-grant):
+        # the 7b67e21d cleanse deleted this Sid and the live aws_glue_catalog_database.ops resource
+        # in the same sweep, deleting the HCL before the resource was destroyed in AWS and orphaning
+        # it in tfstate. Narrowed to the DESTROY path only (Decision 143 worst-verb scoping) -- no
+        # remaining HCL can reach glue:CreateDatabase/UpdateDatabase/CreateTable/UpdateTable, so none
+        # is granted. The fourth Resource ARN (userDefinedFunction/agent_platform/*) is required
+        # because AWS authorizes glue:DeleteDatabase against the database's child ARNs, not the
+        # database ARN alone -- run 33323201848 AccessDenied on exactly this ARN. This grant is
+        # TIME-BOXED to the drain: scripts/ops/drain_glue_orphan.py's close phase files a
+        # removal-obligation rec once the orphan leaves state (rec-3348, rec-3328).
+        Sid    = "GlueCatalog"
+        Effect = "Allow"
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetDatabases",
+          "glue:GetTable",
+          "glue:GetTables",
+          "glue:GetPartitions",
+          "glue:GetTags",
+          "glue:DeleteTable",
+          "glue:DeleteDatabase"
+        ]
+        Resource = [
+          "arn:aws:glue:${var.aws_region}:${var.account_id}:catalog",
+          "arn:aws:glue:${var.aws_region}:${var.account_id}:database/agent_platform",
+          "arn:aws:glue:${var.aws_region}:${var.account_id}:table/agent_platform/*",
+          "arn:aws:glue:${var.aws_region}:${var.account_id}:userDefinedFunction/agent_platform/*"
+        ]
       }
     ]
   })
