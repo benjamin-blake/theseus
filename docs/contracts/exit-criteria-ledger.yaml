@@ -1,64 +1,94 @@
-version: 1
-last_updated: "2026-07-03"
-decisions_cited:
-  - Decision-59
-  - Decision-80
-  - Decision-84
-  - Decision-86
-  - Decision-87
-  - Decision-88
-  - Decision-103
-  - CD.39
-summary: >-
-  Per-criterion status ledger on roadmap tier_items, plus the plan->criterion linkage field.
-  Makes in_progress resolvable: remaining work == the set of open criteria (Decision 59).
-  The ledger is git-authoritative (roadmap YAML), not an ops_* warehouse table.
-
-exit_criterion_object:
+contract:
+  id: exit-criteria-ledger
+  class: A
+  contract_version: 1
+  status: ratified
+  ratified_at: "2026-07-16"
+  ratified_via: "dec-136: Decision 136 ratifies CD.39 -- the exit-criteria ledger (per-criterion status) as the realized in_progress-resolution mechanism"
   description: >-
-    Shape of each TierItem.exit_criteria[] entry. Defined in scripts/roadmap/platform_roadmap.py::ExitCriterion.
-    Bare strings normalize to status=open at load (lazy migration of not_started items).
+    Per-criterion status ledger on roadmap tier_items (docs/ROADMAP-PLATFORM.yaml
+    TierItem.exit_criteria[]), plus the plan->criterion linkage field
+    (PlanDocument.closes_criteria). Makes in_progress resolvable: remaining work == the set
+    of open criteria (Decision 59). The ledger is git-authoritative (roadmap YAML), not an
+    ops_* warehouse table (see governance_notes below).
+
+fields:
   id:
     type: str
+    description: >-
+      Stable identifier for one TierItem.exit_criteria[] entry. Shape defined by
+      scripts/roadmap/platform_roadmap.py::ExitCriterion.
     semantics: >-
-      Stable within the tier_item; the full cross-item ref is '<item-id>:<id>',
-      e.g. 'T2.19:c3'. Auto-assigned 'cN' when normalizing a bare string.
+      Stable within the tier_item; the full cross-item ref is '<item-id>:<id>', e.g.
+      'T2.19:c3'. Auto-assigned 'cN' when normalizing a bare string (lazy migration of
+      not_started items).
+    populated_by: >-
+      scripts/roadmap/platform_roadmap.py at load time -- auto-assigned when normalizing a
+      bare-string criterion, or read verbatim when the entry is already structured.
+    dq_intent:
+      not_null:
+        enforced: true
   text:
     type: str
-    semantics: The criterion prose (verbatim from the bare string before this ledger).
+    description: The criterion prose for one exit_criteria[] entry.
+    semantics: Verbatim from the bare string that predated this ledger's structured form.
+    populated_by: Tier_item author, at roadmap-authoring time.
+    dq_intent:
+      not_null:
+        enforced: true
   status:
     type: "enum: open | met | rehomed"
+    description: Lifecycle status of one exit_criteria[] entry.
     semantics: >-
       open = remaining work. met = closed by an actioned plan or commit (met_by names the
-      plan-slug or commit sha). rehomed = scope moved to another tier_item (met_by names
-      the receiving item id). Default open.
+      plan-slug or commit sha). rehomed = scope moved to another tier_item (met_by names the
+      receiving item id). Default open.
     populated_by: >-
-      /implement bookkeeping walk flips open->met for each ref in plan.closes_criteria on
-      a verified VP pass (Status-Trusted-Never-Inferred / T2.20).
+      /implement's bookkeeping walk flips open->met for each ref in plan.closes_criteria on a
+      verified VP pass (Status-Trusted-Never-Inferred / T2.20).
     write_time_validation: >-
-      met/rehomed REQUIRE a non-empty met_by. Never inferred from prose, file existence,
-      or commit activity. validate.py forbids bare strings on git-diff-touched items.
+      met/rehomed REQUIRE a non-empty met_by. Never inferred from prose, file existence, or
+      commit activity. validate.py forbids bare strings on a git-diff-touched item.
+    dq_intent:
+      not_null:
+        enforced: true
+      accepted_values:
+        enforced: true
+        values: [open, met, rehomed]
   met_by:
     type: "str | null"
+    description: Resolving pointer for a met or rehomed criterion.
     semantics: >-
-      For met: a plan-slug (docs/plans/PLAN-<slug>.yaml exists) or a 40-hex commit sha.
-      For rehomed: the receiving tier_item id (must resolve to a known item).
-      Forward-compatible as a future ops_plans foreign key (T4.5 / Decision 87).
-
-plan_closes_criteria:
-  description: >-
-    PlanDocument.closes_criteria field (scripts/roadmap/plan_document.py). Lists which item
-    criteria the plan commits to close on a verified VP pass.
-  type: "list[str]"
-  semantics: >-
-    Each entry '<item-id>:<criterion-id>' (e.g. 'T-1.23:c2') names a criterion the plan
-    will close. /implement flips exactly these open->met on VP pass. validate.py asserts
-    each ref resolves to a real item:criterion in the roadmap. Default [] -- a plan that
-    closes no item criteria (e.g. a not_started item's first plan) omits the field.
+      For met: a plan-slug (docs/plans/PLAN-<slug>.yaml exists) or a 40-hex commit sha. For
+      rehomed: the receiving tier_item id (must resolve to a known item). Forward-compatible
+      as a future ops_execution_plans foreign key (T4.5 / Decision 87).
+    populated_by: /implement's bookkeeping walk, at the same time status flips to met or rehomed.
+    dq_intent:
+      not_null:
+        enforced: false
+  plan_closes_criteria:
+    type: "list[str]"
+    description: >-
+      PlanDocument.closes_criteria field (scripts/roadmap/plan_document.py) -- lists which
+      item criteria the plan commits to close on a verified VP pass.
+    semantics: >-
+      Each entry '<item-id>:<criterion-id>' (e.g. 'T-1.23:c2') names a criterion the plan will
+      close. /implement flips exactly these open->met on VP pass. validate.py asserts each ref
+      resolves to a real item:criterion in the roadmap. Default [] -- a plan that closes no
+      item criteria (e.g. a not_started item's first plan) omits the field.
+    populated_by: Plan author, at plan-authoring time (the planning skill's follow-on mode).
+    dq_intent:
+      not_null:
+        enforced: false
 
 governance_notes: >-
   Ledger is git-authoritative (roadmap YAML), NOT an ops_* warehouse table. The
   warehouse-SoT invariant (Decision 84) does not apply to this ledger yet; T4.5 is the
   eventual warehouse home and this is the Decision-87 projection-until-T4.x stand-in.
-  This file is intentionally non-ritual (no contract:/class: block) per the CD.25 gate
-  (validate.py::validate_contract_drift skips files without a top-level contract: key).
+  Converted to a Class A ritual contract by PLAN-cfg-migration-closeout (ratified_via
+  dec-136) -- previously free-form, carrying a now-corrected false claim that
+  validate_contract_drift "skips" a contract-less file: a baseline-present free-form file is
+  bucketed as grandfathered DEBT (docs/contracts/contract-population.yaml's census), never
+  silently skipped. `version`, `last_updated`, and `decisions_cited` (verified zero code
+  consumers) were dropped rather than relocated -- ContractDocument's extra="forbid" admits
+  no legacy top-level key, and none of the three had a live reader to preserve.
