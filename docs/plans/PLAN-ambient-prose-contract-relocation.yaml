@@ -253,6 +253,15 @@ verification_plan:
     hermetic: true
   - step: 12
     phase: pre-deploy
+    action: Prove both new checks and both new contracts are registered in their companion surfaces.
+    command: 'bin/venv-python -c "import yaml; from scripts.checks.ci_guards.validate_ci_rca_taxonomy import validate_ci_rca_taxonomy as tx; f=[]; tx(f); tax=(yaml.safe_load(open(''config/ci_rca_taxonomy.yaml'')) or {}).get(''function_to_category'',{}); miss=[n for n in (''validate_git_ops_contract'',''validate_terraform_cc_web_operations'') if n not in tax]; fr=open(''docs/contracts/file-router.yaml'').read(); nofr=[c for c in (''docs/contracts/git-ops.yaml'',''docs/contracts/terraform-cc-web-operations.yaml'') if c not in fr]; print(f, miss, nofr); raise SystemExit(1 if (f or miss or nofr) else 0)"'
+    expected: The taxonomy gate passes, both new check names carry a function_to_category row, and both new contracts are routed in file-router.yaml; exits 0.
+    fix_if: A check name is missing from config/ci_rca_taxonomy.yaml (every registry.all_checks() name must resolve there) or a contract is unrouted in docs/contracts/file-router.yaml (its topic must EQUAL the contract's declared subject, Decision 168).
+    graduation: graduate
+    graduation_check_id: new-checks-and-contracts-registered
+    hermetic: true
+  - step: 13
+    phase: pre-deploy
     action: Prove the surviving terraform/CLAUDE.md stub serves the routine terraform loop unaided and says when to read the contract.
     command: 'grep -q "^## Hard rules" terraform/CLAUDE.md && grep -q "^## AWS context" terraform/CLAUDE.md && grep -q "^## Lambda interaction" terraform/CLAUDE.md && grep -q "Agents never run terraform apply" terraform/CLAUDE.md && grep -q "tf-gated-apply" terraform/CLAUDE.md && grep -q "terraform-apply-sandbox" terraform/CLAUDE.md && grep -q "docs/contracts/terraform-cc-web-operations.yaml" terraform/CLAUDE.md && grep -qiE "read .{0,60}terraform-cc-web-operations" terraform/CLAUDE.md'
     expected: All eight greps hit; exits 0. The stub keeps the routine-path content (hard rules, AWS context, Lambda interaction, the never-self-directed-apply norm, both apply channels) AND carries an explicit read-the-contract-when trigger.
@@ -260,7 +269,7 @@ verification_plan:
     graduation: graduate
     graduation_check_id: terraform-stub-serves-routine-loop
     hermetic: true
-  - step: 13
+  - step: 14
     phase: pre-deploy
     action: Prove the roadmap bookkeeping records evidence WITHOUT flipping the conjunctive criterion.
     command: 'bin/venv-python -c "import yaml; d=yaml.safe_load(open(''docs/ROADMAP-PLATFORM.yaml'')); i=[x for x in d[''tier_items''] if x[''id'']==''T2.56''][0]; c1=[c for c in i[''exit_criteria''] if c[''id'']==''c1''][0]; n=i.get(''progress_note'') or ''''; print(c1[''status''], i[''status''], ''rec-3378'' in n); raise SystemExit(0 if c1[''status'']==''open'' and i[''status'']==''in_progress'' and ''rec-3378'' in n else 1)"'
@@ -269,7 +278,7 @@ verification_plan:
     graduation: graduate
     graduation_check_id: t256-c1-evidence-without-flip
     hermetic: true
-  - step: 14
+  - step: 15
     phase: pre-deploy
     action: Run the authoritative pre-merge gate.
     command: bin/venv-python -m scripts.validate --pre
@@ -277,7 +286,7 @@ verification_plan:
     fix_if: Any check fails - fix on the branch before pushing.
     graduation: not-applicable
     hermetic: false
-  - step: 15
+  - step: 16
     phase: pre-deploy
     action: Prove every AGENTS.md string pinned by a graduated registry entry or a standing test survives verbatim.
     command: 'H=$(grep -o "### Commit signing[^\"]*" AGENTS.md | head -1) && test -n "$H" && grep -qF "$H" terraform/github/repo.tf && grep -qi "SSH-signed" AGENTS.md && grep -qi "reset-author" AGENTS.md && grep -q "forward-fix, never auto-revert" AGENTS.md && grep -q "source=ci_rca" AGENTS.md && grep -q "priority=critical" AGENTS.md && grep -q "trigger_scope" AGENTS.md && grep -q "no rec is filed" AGENTS.md && grep -q "Pre-handoff (local) + post-merge on" AGENTS.md && grep -q "^## Merge protocol" AGENTS.md'
@@ -286,7 +295,7 @@ verification_plan:
     graduation: graduate
     graduation_check_id: agents-md-pinned-guard-strings-survive
     hermetic: true
-  - step: 16
+  - step: 17
     phase: pre-deploy
     action: Prove the prose-budget entries were actually re-seeded to the measured post-relocation sizes.
     command: 'bin/venv-python -c "import yaml; from scripts.preflight.prose_context import measure_prose_context as m; r=m(); b=yaml.safe_load(open(''config/prose_budgets.yaml'')); s1=r[''S1''][''prose_bytes'']; tf=[x for x in r[''S2''][''files''] if x[''path'']==''terraform/CLAUDE.md''][0][''prose_bytes'']; got=(b[''S1''][''root_ambient_load_set''], b[''S2''][''terraform/CLAUDE.md'']); want=(s1, tf); print(''budget'', got, ''measured'', want); raise SystemExit(0 if got==want else 1)"'
@@ -295,7 +304,7 @@ verification_plan:
     graduation: graduate
     graduation_check_id: prose-budgets-reseeded-to-measured
     hermetic: true
-  - step: 17
+  - step: 18
     phase: pre-deploy
     action: Run the full validation tier before commit, as handoff_policy declares.
     command: bin/venv-python -m scripts.validate
@@ -303,7 +312,7 @@ verification_plan:
     fix_if: Any check fails - fix on the branch before committing. On timeout the disposition is blocked, per handoff_policy.
     graduation: not-applicable
     hermetic: false
-  - step: 18
+  - step: 19
     phase: post-deploy
     action: Confirm the three bundled recs closed via the Resolves trailer.
     command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib; r={json.loads(l)['id']:json.loads(l)['status'] for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()}; bad=[k for k in ('rec-2984','rec-3301','rec-2345') if r.get(k)!='closed']; print(bad); raise SystemExit(1 if bad else 0)"
@@ -342,6 +351,36 @@ test_obligations:
     waiver_reason: >-
       Same message-string-only repoint; tests/hooks/test_fresh_branch_base.py covers the hook's
       behaviour and asserts nothing about this string. VP step 5 guards the repoint.
+  - source: docs/contracts/git-ops.yaml
+    behavior: The contract is the resolvable destination the AGENTS.md pointer names, and every repo path it names exists.
+    verification_step: 7
+    test_selector: tests/checks/contracts/test_validate_git_ops_contract.py
+    red_green_expectation: red before (contract absent), green after
+  - source: docs/contracts/terraform-cc-web-operations.yaml
+    behavior: The contract is the resolvable destination the terraform/CLAUDE.md pointer names, and every repo path it names exists.
+    verification_step: 7
+    test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py
+    red_green_expectation: red before (contract absent), green after
+  - source: config/ci_rca_taxonomy.yaml
+    behavior: Both new check names resolve to a function_to_category row, as every registered check must.
+    verification_step: 12
+    command: "from scripts.checks.ci_guards.validate_ci_rca_taxonomy import validate_ci_rca_taxonomy as tx"
+    red_green_expectation: red before the rows land, green after
+  - source: docs/contracts/file-router.yaml
+    behavior: Both new contracts are routed for discovery, with topic equal to the declared subject.
+    verification_step: 12
+    command: "open('docs/contracts/file-router.yaml').read()"
+    red_green_expectation: red before the routes land, green after
+  - source: config/prose_budgets.yaml
+    behavior: The S1 and terraform/CLAUDE.md budgets equal the post-relocation measured bytes, so the ratchet locks the shrink in.
+    verification_step: 17
+    command: "yaml.safe_load(open('config/prose_budgets.yaml'))"
+    red_green_expectation: red before the re-seed, green after
+  - source: docs/ROADMAP-PLATFORM.yaml
+    behavior: c1 stays open, T2.56 stays in_progress, and the progress note cites rec-3378 as the residual owner.
+    verification_step: 14
+    command: "yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'))"
+    red_green_expectation: red before the note lands, green after
 constraints:
   - No rescue agents or workaround loops (Decision 55).
   - Machine-enforced norms stay ambient; only rationale, procedure and field semantics relocate. Never relocate a rule whose only enforcement is an agent reading it.
