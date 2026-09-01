@@ -1,0 +1,323 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "glue-delete-database-grant"
+intent: >-
+  Restore the github_ci_apply GlueCatalog grant at BOTH IAM layers, narrowed to the destroy path
+  and widened with the userDefinedFunction ARN, so the orphaned aws_glue_catalog_database.ops can
+  be destroyed -- completing Decision 178 clause 4's named reconcile in live AWS and unlatching the
+  stalled terraform/personal convergence chain. Closes the generator gap that let the ceiling half
+  be deleted unnoticed.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-glue-delete-database-grant.yaml
+phase: >-
+  Platform CI/CD convergence repair. ad_hoc_rec / ci_rca soft-warn exception category (rec-3348,
+  rec-3328), so the Tier Item Freshness Gate is skipped and no tier_item is claimed. Unblocks
+  PLAN-ci-convergence-fixes VP step 13 and the parked-trigger restore tracked by T2.24.
+scope:
+  - file: terraform/bootstrap/github_ci_apply_policy.tf
+    action: Modify
+    purpose: >-
+      Restore the GlueCatalog Sid narrowed to the destroy path (drop CreateDatabase, UpdateDatabase,
+      CreateTable, UpdateTable -- unreachable post-cleanse, Decision 143 worst-verb scoping) and add
+      the fourth Resource ARN userDefinedFunction/agent_platform/*, the axis run 33323201848 denied on.
+  - file: terraform/bootstrap/github_ci_apply_boundary.tf
+    action: Modify
+    purpose: >-
+      Restore "glue:*" to the DataPlaneAllow ceiling (service-wildcard form, matching every sibling
+      data-plane entry). NOT athena:* -- no athena resource remains in state. Without this the
+      identity grant is silently denied by the intersection (Decision 144 clause 1 / rec-2831 class).
+  - file: docs/contracts/iam-simulate-fixture.yaml
+    action: Modify
+    purpose: >-
+      Arm the rec-3325-seeded multi_resource_type_verbs map with two live allowed triples (database
+      and userDefinedFunction axes) plus the Class D amendment_log entry Decision 168 requires.
+  - file: scripts/checks/iam_tf/_write_companions.py
+    action: Modify
+    purpose: >-
+      Decision 129 forward-fix: generalize check_identity_iam_actions_subset_of_boundary beyond the
+      iam: prefix to assert every identity Allow service prefix is ceiling-covered -- the premise the
+      iam-only scoping rests on, which the cleanse silently broke.
+  - file: tests/checks/iam_tf/test__write_companions.py
+    action: Modify
+    purpose: Mirror coverage (Decision 131) for the generalized ceiling leg, both directions.
+  - file: tests/checks/iam_tf/test_glue_catalog_grant_scope.py
+    action: Create
+    purpose: >-
+      Standing pin on the resource axis: per-Sid parse asserting GlueCatalog's Resource set is exactly
+      the four ARNs, and that the fixture is not silently disarmed. Per-Sid, not a file-wide grep,
+      so "right token in the wrong Sid" fails.
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      Dated amendment_forms annotation on Decision 178 recording the time-boxed drain grant as
+      clause 4's named reconcile (append-only per Decision 177 clause 1; no numbered Decision).
+bundled_recommendations:
+  - rec-3348
+  - rec-3328
+infrastructure_dependencies:
+  - >-
+    terraform/bootstrap is admin-applied MANUALLY out-of-band with the agent_platform_admin profile
+    and is excluded from every auto-apply path (terraform/bootstrap/CLAUDE.md). No CI job applies it.
+  - >-
+    Decision 156 byte ceiling: the rendered inline policy must stay under 10,240 B. The narrow restore
+    measures 8,683 B (headroom 1,557) and is SMALLER than today's live Sid -- dropping four verbs
+    outweighs adding one ARN. The authoritative assertion is the HCL lifecycle precondition, which
+    evaluates at admin plan time (VP step 8), not at PR CI.
+  - >-
+    The convergence record is red at e8332e9f (run 33323201848). A red record is the sole hard block
+    and no push clears it; the only clear path is workflow_dispatch acknowledge_red_commit naming the
+    red SHA or an open rec id (rec-3348 qualifies). Apply-sandbox push/PR triggers stay parked per
+    Decision 178 clause 4, so dispatch is the available route.
+acceptance_criteria:
+  - >-
+    GlueCatalog grants glue:DeleteDatabase on all four ARNs including
+    userDefinedFunction/agent_platform/*, and grants none of the four create/update verbs.
+  - The boundary DataPlaneAllow ceiling grants glue, and athena remains absent.
+  - >-
+    The fixture carries an allowed triple on both the database and userDefinedFunction axes, and
+    validate_iam_simulate_fixture_shape fails if either is removed.
+  - >-
+    check_identity_iam_actions_subset_of_boundary fails when any identity Allow service prefix is
+    missing from the ceiling, and reports zero gaps on the post-change tree.
+  - Live simulate returns zero mismatches and the in-flight destroy drains, flipping the record green.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Exercise the resource-axis pin -- GlueCatalog's Resource set is exactly the four ARNs (parsed
+      per-Sid), the create/update verbs are absent, and the fixture carries both axes.
+    command: bin/venv-python -m pytest tests/checks/iam_tf/test_glue_catalog_grant_scope.py -q
+    expected: exit 0, all assertions pass
+    fix_if: >-
+      Fails red before the HCL edit (expected); after the edit a failure means the UDF ARN landed in
+      the wrong Sid, a create/update verb survived, or a fixture row is missing.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: glue-catalog-grant-udf-resource-axis
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Prove the generalized ceiling leg bites in BOTH directions -- a covered service passes, a
+      service present in an identity Allow but absent from the ceiling fails.
+    command: bin/venv-python -m pytest tests/checks/iam_tf/test__write_companions.py -q
+    expected: exit 0, including the new both-direction cases for the generalized leg
+    fix_if: >-
+      If only the positive case passes the check is vacuous -- assert the negative case fails loud
+      with the service name in the message.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: identity-service-prefix-ceiling-coverage
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Run the generalized check against the REAL tree (not synthetic fixtures) and confirm it reports
+      zero service-coverage gaps once both layers carry glue.
+    command: bin/venv-python -c "from scripts.checks.iam_tf.validate_ci_refresh_read_coverage import validate_ci_refresh_read_coverage as v; f=[]; v(f); assert not f, f; print('zero gaps on the real tree')"
+    expected: prints zero gaps on the real tree
+    fix_if: >-
+      A gap naming glue means the ceiling edit was missed; a gap naming another service means the
+      generalization surfaced a real pre-existing hole -- fix it here, do not narrow the check.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The command re-invokes validate_ci_refresh_read_coverage, an already-registered check that runs
+      in both presubmit tiers via the iam_tf manifest. Graduating a second registry row for the same
+      evaluator would duplicate a standing guard rather than add one; step 2 graduates the new leg's
+      own unit coverage instead.
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Prove the multi-resource-type leg is genuinely armed on the REAL fixture -- delete the
+      userDefinedFunction triple from a scratch copy and confirm the shipped validator refuses it.
+    command: bin/venv-python -c "import pathlib,shutil,tempfile,yaml; from scripts.checks.contracts.validate_iam_simulate_fixture_shape import validate_iam_simulate_fixture_shape as v; d=pathlib.Path(tempfile.mkdtemp()); src=pathlib.Path('docs/contracts/iam-simulate-fixture.yaml'); y=yaml.safe_load(src.read_text()); y['triples']=[t for t in y['triples'] if 'userDefinedFunction' not in str(t.get('target_arn_template',''))]; (d/'iam-simulate-fixture.yaml').write_text(yaml.safe_dump(y)); f=[]; v(f, contracts_dir=d); assert any('userDefinedFunction' in x for x in f), f'mutation not caught -> {f}'; g=[]; v(g); assert not g, g; print('armed - real fixture passes, UDF-stripped copy refused')"
+    expected: prints the armed confirmation line
+    fix_if: >-
+      If the stripped copy passes, both triples are absent (armed-but-inert) or the verb key does not
+      match the map -- the fixture is not actually guarding the axis.
+    hermetic: true
+    graduation: not-applicable
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      Fast presubmit tier. Also covers terraform fmt -check on the edited roots via the existing
+      credential-free _terraform gate (Decision 119 -- no local init/plan for terraform/personal).
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: A .tf fmt or check-accounting failure -- fix on the branch before pushing.
+    hermetic: false
+    graduation: not-applicable
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      Pre-handoff full tier. handoff_policy.full_validation_required_before_commit is declared, so the
+      commit waits on a completed full run exiting 0; step 5 does not discharge it.
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: Triage the named check; do not bypass the budget assertion to get green.
+    hermetic: false
+    graduation: not-applicable
+  - step: 7
+    phase: post-deploy
+    action: >-
+      OPERATOR, after merge: apply terraform/bootstrap by hand with the agent_platform_admin profile.
+      The Decision 156 lifecycle precondition evaluates HERE and is the authoritative byte gate.
+    command: terraform -chdir=terraform/bootstrap plan -out=/tmp/bootstrap.tfplan && terraform -chdir=terraform/bootstrap apply /tmp/bootstrap.tfplan
+    expected: >-
+      Plan shows the GlueCatalog Sid added to the inline policy and glue restored to the boundary
+      DataPlaneAllow; the byte precondition passes; apply succeeds.
+    fix_if: >-
+      If the precondition trips the 10,240 B ceiling, relocate a read-only Sid to the
+      github_ci_apply_reads managed policy (Decision 156 clause 1) -- never drop the UDF ARN.
+  - step: 8
+    phase: post-deploy
+    action: >-
+      OPERATOR: prove the two-layer intersection LIVE. This is the only step that shows the widening
+      took effect through the identity/boundary intersection rather than just in HCL text.
+    command: bin/venv-python -m scripts.ci.iam_simulate --profile agent_platform_admin --fixture docs/contracts/iam-simulate-fixture.yaml
+    expected: exit 0, zero mismatches -- including both new glue triples returning allowed
+    fix_if: >-
+      The userDefinedFunction triple returning implicitDeny while the database triple is allowed means
+      the ceiling half did not apply; re-check the boundary policy's default version.
+  - step: 9
+    phase: post-deploy
+    action: >-
+      OPERATOR: unlatch and drain. Dispatch terraform-apply-sandbox with the acknowledge-and-retry
+      input, then confirm aws_glue_catalog_database.ops leaves state and the record flips green.
+    command: gh workflow run terraform-apply-sandbox.yml -f acknowledge_red_commit=rec-3348 && aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json - --profile agent_platform_admin
+    expected: >-
+      The run passes the convergence precondition (CONVERGENCE_ACK notice, not CONVERGENCE_RED), the
+      destroy of aws_glue_catalog_database.ops succeeds, and the record reads status=green.
+    fix_if: >-
+      A CONVERGENCE_RED refusal means the input did not match the red SHA or the rec-NNNN shape. A
+      fresh AccessDenied on another glue ARN means the resource axis is still incomplete -- widen the
+      Resource list, never the verb list.
+  - step: 10
+    phase: post-deploy
+    action: >-
+      Closure obligation -- confirm both bundled recs actually closed via the Resolves trailer and
+      rec-autoclose.yml rather than assuming the trailer fired.
+    command: >-
+      bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json; rows={json.loads(l)['id']: json.loads(l).get('status') for l in open('logs/.recommendations-log.jsonl') if l.strip()}; bad={r: rows.get(r) for r in ('rec-3348','rec-3328') if rows.get(r)!='closed'}; assert not bad, f'still open -> {bad}'; print('both closed')"
+    expected: prints both closed
+    fix_if: >-
+      Close manually via ops_data_portal --update-rec with a resolution naming the merge SHA
+      (Decision 70 fallback).
+  - step: 11
+    phase: post-deploy
+    action: >-
+      Time-box the grant: file the removal-obligation rec so the drain grant does not become standing
+      unused authority once the resource leaves state.
+    command: >-
+      bin/venv-python -m scripts.ops_data_portal --guidance && bin/venv-python -m scripts.ops_data_portal --file-rec --title "Remove the time-boxed glue drain grant now that aws_glue_catalog_database.ops has left state" --file terraform/bootstrap/github_ci_apply_policy.tf --priority High --effort XS --risk low --source manual --context "The GlueCatalog Sid and the boundary glue ceiling entry were restored by PLAN-glue-delete-database-grant solely to drain the orphaned aws_glue_catalog_database.ops left in tfstate by the 7b67e21d cleanse (Decision 178 clause 4 reconcile). Once that destroy has drained and the resource is out of state, no remaining HCL can reach any glue verb, so both entries become standing unused authority on a public-repo CI identity -- remove them at both layers." --acceptance "! grep -q GlueCatalog terraform/bootstrap/github_ci_apply_policy.tf && ! grep -q glue: terraform/bootstrap/github_ci_apply_boundary.tf"
+    expected: a rec id is printed and the rec is queryable
+    fix_if: >-
+      A portal write that cannot reach the warehouse FAILS LOUD (Decision 84 I-4) -- re-file after
+      restoring connectivity; never stage it in a local file.
+test_obligations:
+  - source: terraform/bootstrap/github_ci_apply_policy.tf
+    behavior: >-
+      GlueCatalog grants glue:DeleteDatabase across all four ARNs including
+      userDefinedFunction/agent_platform/*, and grants none of the four create/update verbs.
+    verification_step: 1
+    test_selector: tests/checks/iam_tf/test_glue_catalog_grant_scope.py::TestGlueCatalogGrantScope::test_resource_set_is_exactly_the_four_arns
+    red_green_expectation: >-
+      Red before the edit (the Sid does not exist post-cleanse, so the lookup fails), green after.
+  - source: terraform/bootstrap/github_ci_apply_boundary.tf
+    behavior: The DataPlaneAllow ceiling grants glue, so the identity grant is not silently denied.
+    verification_step: 1
+    test_selector: tests/checks/iam_tf/test_glue_catalog_grant_scope.py::TestGlueCatalogGrantScope::test_boundary_ceiling_permits_glue
+    red_green_expectation: Red before the ceiling edit (glue absent since 7b67e21d), green after.
+  - source: docs/contracts/iam-simulate-fixture.yaml
+    behavior: >-
+      Both the database and userDefinedFunction triples are present, so the multi-resource-type leg is
+      armed rather than inert and cannot be silently disarmed by deleting both rows.
+    verification_step: 1
+    test_selector: tests/checks/iam_tf/test_glue_catalog_grant_scope.py::TestGlueCatalogGrantScope::test_fixture_arms_both_resource_axes
+    red_green_expectation: Red before the fixture edit (zero triples for the verb), green after.
+  - source: scripts/checks/iam_tf/_write_companions.py
+    behavior: >-
+      Every identity Allow service prefix must be covered by the boundary ceiling, not just iam:
+      actions -- a service dropped from the ceiling fails loud.
+    verification_step: 2
+    test_selector: tests/checks/iam_tf/test__write_companions.py::TestIdentityServicePrefixCeilingCoverage::test_service_absent_from_ceiling_fails
+    red_green_expectation: >-
+      Red before the generalization (the iam-scoped check ignores a missing non-iam service), green after.
+constraints:
+  - No rescue agents or workaround loops (Decision 55) -- forward-fix only.
+  - >-
+    Decision 143 worst-verb scoping: restore ONLY the destroy-path verbs. Do not re-add
+    CreateDatabase/UpdateDatabase/CreateTable/UpdateTable -- no remaining HCL can reach them.
+  - >-
+    Decision 177 clause 1: Decision 178's body is immutable. Record the reconcile as a dated
+    amendment_forms annotation; do NOT mint a numbered Decision for a time-boxed operational grant
+    (Decision 167 clause 2 category-consistency -- see Decision 180's own reasoning).
+  - >-
+    Decision 119: no local terraform init/plan for terraform/personal. Only terraform/bootstrap is
+    planned locally, and only by the operator at VP step 7.
+  - >-
+    Decision 128 decompose-by-default: tests/checks/iam_tf/test__write_companions.py is at 475/500
+    SLOC (25 lines headroom). If the new cases cross 500, decompose -- never raise the budget.
+  - Restore glue only. athena stays deleted at both layers (Decision 178 clause 2).
+context:
+  - "Decision-scout verdict: FLAGS_FOUND (133 of 133 triaged). CITE: dec-156, dec-144, dec-177, dec-167, dec-180, dec-157, dec-132."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "Flags resolved: dec-178 WARN -> clause-4 reconcile framing, time-boxed + annotation; dec-143 WARN -> narrow verb set; dec-129 WARN -> generalized ceiling check (scope row 4), not a deferral; dec-131 NOTE -> fixture negative probe stays a VP step, not a committed test (already covered at tests/checks/contracts/test_validate_iam_simulate_fixture_shape.py:193)."
+  - "Root cause: 7b67e21d (PR #969) deleted the glue HCL AND both IAM layers in one sweep, before the live resource was destroyed -- revoking the authority needed to make Decision 178 clause 2 true in AWS."
+  - "Live state at planning: identity policy grants DeleteDatabase on catalog+database+table/* but NOT userDefinedFunction/*; boundary is still v6 WITH glue:* (bootstrap unapplied since the cleanse). Applying bootstrap as-is would revoke BOTH layers."
+  - "aws_glue_catalog_database.ops is in tfstate at serial 195 holding three retired ops_* catalog entries. SoT for those tables is DuckLake-on-Neon, so the cascade delete is the intended outcome, not data loss."
+  - "FALLBACK (operator-directed): if CI terraform provisioning is blocked and the gated apply cannot run, Decision 178 clause 4's other sanctioned branch is `terraform state rm aws_glue_catalog_database.ops`. Caveat established at planning: PlatformAdmin simulates implicitDeny on glue:DeleteDatabase at both ARNs, so state rm leaves a live unmanaged orphan unless PlatformAdmin is separately granted; it also satisfies neither rec's acceptance oracle, so both would need closing as superseded."
+  - "Decision 156: validate_iam_policy_size is presence-only; the real byte assertion is the HCL lifecycle precondition at admin plan time (VP step 7), inside the human-gated window."
+  - "Decision 168: the fixture is a Class D contract -- fixture edits owe an amendment_log entry in its existing convention."
+  - "ci-rca deferral: rec-3292 (requirements.lock extras) and rec-3293 (pytz missing) are open ci_rca recs sharing no file, Decision, or failure category with this plan. Deferred deliberately -- both are dependency-manifest failures on main, unrelated to the IAM surface here."
+  - "Unblocks PLAN-ci-convergence-fixes VP step 13 (gated on this grant landing) and rec-3327's deferred live proof."
+  - "rec-3350 (filed during this planning session, not bundled): deploy-paths.yaml's red/drift recovery row names only the input-free Reconcile action and omits the acknowledge_red_commit unlatch this plan's VP step 9 depends on -- the discoverability gap, not a blocker here."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read (178, 177, 167, 156, 144, 143, 131, 129, 168, 132, 119)
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    terraform/bootstrap/github_ci_apply_policy.tf -- restore the GlueCatalog Sid with the eight
+    destroy-path verbs (GetDatabase, GetDatabases, GetTable, GetTables, GetPartitions, GetTags,
+    DeleteTable, DeleteDatabase) and four Resource ARNs (catalog, database/agent_platform,
+    table/agent_platform/*, userDefinedFunction/agent_platform/*). Comment must say why the UDF ARN
+    is present (AWS authorizes DeleteDatabase against the database's child ARNs) and that the grant
+    is time-boxed to the drain.
+  - >-
+    terraform/bootstrap/github_ci_apply_boundary.tf -- add "glue:*" back to DataPlaneAllow with a
+    comment naming the intersection hazard and the generalized check that now enforces it.
+  - >-
+    docs/contracts/iam-simulate-fixture.yaml -- add two allowed triples (database/agent_platform and
+    a wildcard-free userDefinedFunction/agent_platform/<probe> ARN; build_triples rejects a literal
+    wildcard in a target) and an amendment_log entry.
+  - >-
+    scripts/checks/iam_tf/_write_companions.py -- generalize
+    check_identity_iam_actions_subset_of_boundary to assert every identity Allow service prefix is
+    ceiling-covered, keeping the existing per-action iam: assertion. Update the docstring: the
+    iam-only scoping premise was broken by the cleanse.
+  - tests/checks/iam_tf/test__write_companions.py -- add both-direction cases for the generalized leg.
+  - >-
+    tests/checks/iam_tf/test_glue_catalog_grant_scope.py -- create the per-Sid resource-axis pin
+    (mirror the structure of test_platform_role_metadata_admin_scope.py).
+  - >-
+    docs/DECISIONS.md -- append a dated amendment_forms annotation to Decision 178 recording the
+    time-boxed drain grant as clause 4's reconcile, and why state rm was not taken.
+  - >-
+    Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and
+    RCA (Decision 55).
+  - >-
+    Commit with the Resolves trailer naming rec-3348 and rec-3328, then follow AGENTS.md Git-ops
+    push -> PR -> CI -> merge. Hold the subscription through the operator apply (Decision 76 / CD.35).
+  - 'Report: what was implemented, verification results, and the operator runbook for steps 7-9.'
+rollback: >-
+  The HCL change is additive and reversible by reverting the PR; nothing is applied at merge (the
+  apply-sandbox triggers are parked and bootstrap is never auto-applied). If the live apply has
+  already landed, re-applying the reverted bootstrap HCL removes the Sid and the ceiling entry --
+  which is the same edit the VP step 11 removal-obligation rec schedules anyway. The destroy itself
+  is not rolled back: once aws_glue_catalog_database.ops is destroyed, recreating it is out of scope
+  (its SoT moved to DuckLake-on-Neon).
