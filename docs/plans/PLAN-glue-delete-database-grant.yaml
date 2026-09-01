@@ -159,6 +159,14 @@ verification_plan:
       exit 0, including the new both-direction cases and the rewritten
       test_no_iam_actions_short_circuits_no_file_read. test_collects_allow_iam_actions_only stays
       UNCHANGED and green -- the sibling-collector design keeps the iam-only helper's contract intact.
+      THEN, in this same step, RE-MEASURE coverage rather than deferring it to step 6: rerun as
+      bin/venv-python -m pytest tests/checks/iam_tf/test__write_companions.py
+      --cov=scripts/checks/iam_tf --cov-report=term-missing and confirm
+      scripts/checks/iam_tf/_write_companions.py still reports 100% from THIS file ALONE
+      (98 statements, 0 missed at planning time -- zero slack). Any case moved onto the split-root
+      sibling that uniquely covers a line drops the source below 100% and hard-fails step 6's
+      validate_test_coverage, because that sibling is never collected for this measurement -- see
+      the coverage-floor constraint. Catch that interaction HERE, not at VP step 6.
     fix_if: >-
       If only the positive case passes the check is vacuous -- assert the negative case fails loud
       naming the uncovered action. If an incumbent was deleted rather than rewritten, restore it.
@@ -295,7 +303,17 @@ verification_plan:
       correlation input, rec_id, must not be passed -- so the script uses it deliberately rather
       than rejecting it as guesswork. Bounded means: filter on the Reconcile workflow AND
       --event workflow_dispatch AND created-after the dispatch timestamp the script itself recorded,
-      then FAIL CLOSED on zero candidates or on more than one, never --limit 1. The ONE thing it
+      then FAIL CLOSED on more than one candidate, never --limit 1. Zero candidates is NOT
+      immediately terminal: a workflow_dispatch run takes SECONDS to appear, so a single immediate
+      query returning zero is a likely TRANSIENT, not an anomaly -- re-query the same bounded filter
+      every 10 seconds for up to 3 minutes (the WAIT section's own poll idiom) before zero becomes a
+      verdict. And because the dispatch is an irreversible side effect that FIRES BEFORE correlation
+      can fail, the phase is RE-ENTRANCY-GATED: re-entering --phase remove would re-pass its
+      preconditions (record still red, orphan still in state) and dispatch a SECOND Reconcile run,
+      parking TWO on the ONE human tf-gated-apply approval this drain spends, so before dispatching
+      the script queries that same bounded filter for a dispatch-triggered Reconcile run in a
+      NON-TERMINAL status and REFUSES to dispatch when one exists, resuming the WAIT against it
+      instead. The ONE thing it
       cannot own: APPROVE gated-apply-reconcile in the
       GitHub Actions UI when it requests the tf-gated-apply Environment. Reconcile is dispatched,
       never terraform-apply-sandbox -- the destroy is a guard-routed delete and apply-sandbox's
@@ -313,14 +331,23 @@ verification_plan:
       60-minute overall timeout and fetches the log only once status is completed. It then confirms
       the destroy from the Reconcile run's own Terraform log line
       "aws_glue_catalog_database.ops: Destruction complete" (gh run view "$RID" --log). It reports
-      THREE distinct outcomes, never collapsing the first into the third: still running / timed out
-      awaiting approval; terminal WITH the Destruction-complete line; terminal WITHOUT it. The run
+      FOUR distinct outcomes, never collapsing any of the first three into the last: still running /
+      timed out awaiting approval; DISPATCHED BUT NOT CORRELATED -- the bounded re-query window
+      expired with zero candidates, or returned more than one, so the run almost certainly EXISTS
+      and only the correlation is missing; it prints the recorded dispatch timestamp and the exact
+      gh run list filter to re-run by hand and says explicitly NOT to re-invoke this phase;
+      terminal WITH the Destruction-complete line; terminal WITHOUT it. The run
       may report failure and the record may still read red -- both expected; step 11 is what turns
       the record green.
     fix_if: >-
       A "world has moved -- re-assess" refusal means a derived fluent no longer matches (record
       already green, orphan already out of state, a different red SHA, a rec in the unexpected
-      state). Re-assess from the printed fluents; never re-run for a different verdict. A still
+      state). Re-assess from the printed fluents; never re-run for a different verdict. A
+      DISPATCHED BUT NOT CORRELATED outcome is NOT a licence to re-run this phase: the dispatch has
+      ALREADY fired, so re-invoking would park a SECOND run on the same human tf-gated-apply
+      approval. The re-entrancy gate refuses that automatically; if it is somehow bypassed, correlate
+      BY HAND -- open the Reconcile workflow's run list in the Actions UI, or re-run the printed
+      gh run list filter -- and resume the WAIT against that run id. A still
       running or timed-out-awaiting-approval outcome is NOT decisive and is NEVER grounds for the
       fallback -- chase the pending tf-gated-apply approval and re-poll. ONLY once the run has
       reached a TERMINAL status does a missing Destruction-complete line mean the apply aborted
@@ -405,12 +432,23 @@ verification_plan:
 test_obligations:
   - source: terraform/bootstrap/github_ci_apply_policy.tf
     behavior: >-
-      GlueCatalog grants glue:DeleteDatabase across all four ARNs including
-      userDefinedFunction/agent_platform/*, and grants none of the four create/update verbs.
+      GlueCatalog's Resource set is exactly the four ARNs, including
+      userDefinedFunction/agent_platform/* -- the axis run 33323201848 denied on.
     verification_step: 1
     test_selector: tests/checks/iam_tf/test_glue_catalog_grant_scope.py::TestGlueCatalogGrantScope::test_resource_set_is_exactly_the_four_arns
     red_green_expectation: >-
-      Red before the edit (the Sid does not exist post-cleanse, so the lookup fails), green after.
+      Red before the edit (the Sid does not exist post-cleanse, so the lookup fails), green after;
+      red again if a fifth ARN is added or the UDF ARN is dropped.
+  - source: terraform/bootstrap/github_ci_apply_policy.tf
+    behavior: >-
+      GlueCatalog grants glue:DeleteDatabase and NONE of the four create/update verbs
+      (CreateDatabase, UpdateDatabase, CreateTable, UpdateTable) -- the Decision 143 worst-verb
+      narrowing, which the resource-axis row above does not assert.
+    verification_step: 1
+    test_selector: tests/checks/iam_tf/test_glue_catalog_grant_scope.py::TestGlueCatalogGrantScope::test_no_create_or_update_verbs_present
+    red_green_expectation: >-
+      Red before the edit (the Sid does not exist post-cleanse, so the verb lookup fails), green
+      after; red again if any create/update verb is re-added alongside the destroy-path set.
   - source: terraform/bootstrap/github_ci_apply_boundary.tf
     behavior: >-
       The DataPlaneAllow ceiling grants glue so the identity grant is not silently denied, and athena
@@ -483,6 +521,25 @@ constraints:
     tests/ops/test_drain_glue_orphan.py) are likewise unregistered and bind at the same hard 500
     default -- decompose rather than register, and never seed a budget row for them.
   - >-
+    Coverage floor -- JOINTLY BINDING with the Decision 128 SLOC constraint above on the SAME file,
+    and the pair is what forecloses the obvious split. Neither
+    scripts/checks/iam_tf/_write_companions.py nor tests/checks/iam_tf/test__write_companions.py has
+    an entry in config/coverage_baseline.yaml, and scripts/test_coverage_checker.py line 440 reads
+    threshold = baseline.get(rel_str, 100.0), so the implicit standard is 100%. MEASURED this
+    session: _write_companions.py is 98 statements, 0 missed -- exactly 100% -- from
+    tests/checks/iam_tf/test__write_companions.py ALONE (33 passed). ZERO SLACK.
+    map_source_to_test resolves that source to exactly that ONE test file and the measurement
+    command is built from that single path, so tests/checks/iam_tf/test__write_companions_split_root.py
+    is NEVER collected for this measurement. Moving any case that uniquely covers a line onto the
+    sibling therefore drops the source below 100% and hard-fails validate_test_coverage, which is
+    registered full_segment=full_after_lint with no pre leg -- VP step 6, which
+    handoff_policy.full_validation_required_before_commit makes a blocking pre-commit gate. The
+    documented escape hatch is CLOSED by this plan's own routing: registering a sub-100 baseline
+    entry requires an inline `# baseline-lowered: dec-NNN <reason>` marker naming a real
+    `## Decision NNN:` header, and this plan deliberately mints no Decision. The two new
+    both-direction cases are the sole exercisers of the new sibling-collector lines, so they are
+    precisely the cases that must NOT move.
+  - >-
     In-array comment rule (the boundary file's own rec-2882 note, which "cost a real debugging
     round"). It binds EVERY bracketed array parsed by a non-greedy Field-equals-bracket regex --
     the boundary's DataPlaneAllow Action array AND the GlueCatalog Sid's own Action/Resource arrays,
@@ -494,7 +551,7 @@ constraints:
   - Restore glue only. athena stays deleted at both layers (Decision 178 clause 2).
 context:
   - "Decision-scout verdict: FLAGS_FOUND (133 of 133 triaged). CITE: dec-156, dec-144, dec-177, dec-167, dec-180, dec-157, dec-132. Added at critique: dec-158 (the fresh-replan substitution that makes gated-apply-reconcile reachable) and dec-126 (the three-intent deploy model the heal triggers belong to)."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 7 round(s)"
   - "Scout flags resolved: dec-178 WARN -> clause-4 reconcile framing, time-boxed + annotation; dec-143 WARN -> narrow verb set; dec-129 WARN -> generalized ceiling check (scope row 4); dec-131 NOTE -> fixture negative probe stays a VP step, not a committed test."
   - "Routing adjudication (decision-entry.yaml significance rule): NOT a numbered Decision. Time-boxed to one drain with a removal rec whose oracle is the grant's own deletion; claimed by the operational_fact row. Decision 180 minted a number because it INVERTED a Decision 129 trigger -- a re-decision; this plan EXECUTES Decision 178 clause 4's already-sanctioned gated-apply branch and inverts nothing."
   - "Root cause: 7b67e21d (PR #969) deleted the glue HCL AND both IAM layers in one sweep, before the live resource was destroyed -- revoking the authority needed to make Decision 178 clause 2 true in AWS."
@@ -547,10 +604,28 @@ execution_steps:
     test_collects_allow_iam_actions_only untouched -- it pins the iam-only helper, which the
     sibling-collector design does not modify. Measured blast radius: exactly one failing incumbent.
   - >-
-    tests/checks/iam_tf/test__write_companions.py SLOC: at 475/500 with two new cases plus a rewrite,
-    crossing 500 is the LIKELY outcome, not a contingency. Plan the split up front onto the existing
-    sibling tests/checks/iam_tf/test__write_companions_split_root.py (Decision 128 -- decompose;
-    neither file is registered, so no budget can be raised).
+    tests/checks/iam_tf/test__write_companions.py SLOC vs coverage -- two constraints, JOINTLY
+    BINDING on this ONE file (see both the Decision 128 and the coverage-floor constraints). At
+    475/500 with two new cases plus a rewrite, crossing 500 is the LIKELY outcome, not a
+    contingency; but the naive remedy -- moving cases onto the existing sibling
+    tests/checks/iam_tf/test__write_companions_split_root.py -- breaks the other constraint,
+    because that sibling is never collected for _write_companions.py's coverage measurement and the
+    source measures exactly 100% with ZERO slack.
+    PRIMARY resolution, and the one to attempt first: KEEP every uniquely-covering case in
+    tests/checks/iam_tf/test__write_companions.py -- above all the two NEW both-direction cases,
+    which are the sole exercisers of the new sibling-collector lines -- and find the needed SLOC by
+    TIGHTENING that same file: collapse duplicated fixture setup into a helper, fold near-identical
+    cases into one parametrize, delete dead scaffolding. Never buy SLOC by moving a case that
+    solely covers a line. Only a case whose every line is also covered by a surviving case may move
+    to the sibling at all, and VP step 2's re-measure is what decides that, not inspection.
+    FALLBACK, sanctioned but ONLY if tightening genuinely cannot fit the file: declare the SOURCE,
+    scripts/checks/iam_tf/_write_companions.py, a concern-split monolith by adding it to
+    _CONCERN_SPLIT_TEST_PACKAGES in scripts/test_coverage_checker.py, which re-resolves the
+    measurement target to the test PACKAGE DIRECTORY tests/checks/iam_tf/_write_companions/ so
+    every module in it is collected together. State the cost plainly: scripts/test_coverage_checker.py
+    is NOT in this plan's scope, so the fallback ADDS A NEW SCOPE ROW (and relocates the test
+    modules into that package directory) -- it is a SCOPE CHANGE to raise with the human before
+    taking it, never something to do silently.
   - >-
     tests/checks/iam_tf/test_glue_catalog_grant_scope.py -- create the per-Sid resource-axis pin
     (mirror the _statement_blocks structure of test_platform_role_metadata_admin_scope.py), including
@@ -568,13 +643,15 @@ execution_steps:
     them. (2) Whether aws_glue_catalog_database.ops is still in tfstate. Decision 119 bars a local
     terraform init for terraform/personal and terraform/personal/backend-sandbox.hcl is a PARTIAL
     backend config, so do NOT shell out to terraform: read the state object DIRECTLY from S3 --
-    read-only, no provider egress, no init -- with
-    aws s3 cp s3://agent-platform-data-lake/tfstate/personal/sandbox/terraform.tfstate - --profile
-    agent_platform_admin, then json.load the stream and look for a resources[] entry whose type ==
-    "aws_glue_catalog_database" and name == "ops". The object lives at the sandbox/ SUB-PREFIX (the
+    read-only, no provider egress, no init -- with a boto3 s3 client get_object on bucket
+    agent-platform-data-lake, key tfstate/personal/sandbox/terraform.tfstate, then json.load the
+    response Body and look for a resources[] entry whose type ==
+    "aws_glue_catalog_database" and name == "ops". Use the boto3 get_object form, NOT an
+    aws s3 cp subprocess: it matches read_convergence_record's existing injected-s3_client seam and
+    keeps the two S3 reads symmetric to stub. The object lives at the sandbox/ SUB-PREFIX (the
     key in backend-sandbox.hcl); tfstate/personal/terraform.tfstate does NOT exist. Route verified
-    working this session against serial 195. Put that fetch behind its OWN injected seam (a boto3 s3
-    client get_object on the same bucket/key, or an injected fetcher callable) so the unit tests
+    working this session against serial 195. Put that fetch behind its OWN injected seam (the same
+    injected boto3 s3 client the record read already takes) so the unit tests
     stub it the same way they stub the record read. (3) Whether rec-3348 and rec-3328 are open or closed --
     reuse reconcile_target.validate_rec_id_open(rec_id, reader), whose reader is likewise injected.
     That fluent decides BOTH that no rec_id may be passed to Reconcile (validate_rec_id_open fails
@@ -585,8 +662,19 @@ execution_steps:
     gh run list query is the ONLY mechanism available and the script must use it deliberately rather
     than reject it as guesswork: record the dispatch timestamp itself, then query filtered on the
     Reconcile workflow AND --event workflow_dispatch AND created-after that timestamp, and FAIL
-    CLOSED on zero candidates or on more than one. Never --limit 1 -- taking the newest row
-    unconditionally is what would make it a guess. Nothing the script acts on is a literal in its
+    CLOSED on more than one candidate. Never --limit 1 -- taking the newest row
+    unconditionally is what would make it a guess. Zero candidates is NOT terminal on the first
+    query: a workflow_dispatch run takes SECONDS to appear, so re-query the SAME bounded filter
+    every 10 seconds up to a 3-minute window before zero becomes a verdict, and when it does,
+    report DISPATCHED BUT NOT CORRELATED rather than a plain failure -- the run exists, only the
+    correlation is missing. (5) Whether an EARLIER dispatch of this same phase is still in flight.
+    The dispatch is an irreversible side effect that fires BEFORE correlation can fail, and
+    re-entering --phase remove re-passes its preconditions (record still red, orphan still in
+    state) and would dispatch a SECOND Reconcile run, leaving two parked on the ONE human
+    tf-gated-apply approval this drain spends -- the only step that spends one. So before
+    dispatching, query the same bounded filter for a dispatch-triggered Reconcile run in a
+    NON-TERMINAL status and REFUSE to dispatch when one exists, printing its run id and resuming
+    the WAIT against it. Nothing the script acts on is a literal in its
     source.
   - >-
     scripts/ops/drain_glue_orphan.py -- part 2 of 2 (ASSERT, GATE, WAIT). ASSERT by PARSING
@@ -618,12 +706,17 @@ execution_steps:
     WAIT: the remove phase's dispatched run parks on a HUMAN tf-gated-apply approval, and
     gh run view --log ERRORS on a run still in progress, so log-line absence is not a verdict until
     the run is terminal. Poll gh run view "$RID" --json status,conclusion every 30 seconds up to a
-    60-minute overall timeout, and report THREE distinct outcomes rather than two: still running /
-    timed out awaiting approval (NOT decisive, never grounds for the state rm fallback); terminal
+    60-minute overall timeout, and report FOUR distinct outcomes rather than two: still running /
+    timed out awaiting approval (NOT decisive, never grounds for the state rm fallback); DISPATCHED
+    BUT NOT CORRELATED, when the bounded correlation window expired with zero candidates or returned
+    more than one (also NOT decisive and NEVER grounds for the fallback -- it prints the recorded
+    dispatch timestamp and the exact gh run list filter so the operator finds the run by hand, and
+    says explicitly not to re-invoke the phase); terminal
     WITH the Destruction-complete line (drained); terminal WITHOUT it (the only case that grounds
     the fallback).
     Profiles differ by operation and must not be conflated: the S3 record read and the S3 tfstate
-    read take --profile (default agent_platform_admin); the close phase's portal calls use the
+    read share the ONE --profile-derived boto3 session (default agent_platform_admin); the close
+    phase's portal calls use the
     agent_platform (PlatformDev) assume-role profile the portal itself requires. Under 500 SLOC or
     decompose (Decision 128) -- unregistered, so no budget exists to raise; reusing
     scripts/ci/reconcile_target.py's three helpers instead of reimplementing them is what keeps the
@@ -636,16 +729,35 @@ execution_steps:
     manual; context = both entries were restored SOLELY to drain the orphan the 7b67e21d cleanse
     left in tfstate (Decision 178 clause 4 reconcile), and once the resource is out of state no
     remaining HCL can reach any glue verb, so both become standing unused authority on a
-    public-repo CI identity; acceptance = the grant's own deletion at BOTH layers,
-    "! grep -q GlueCatalog terraform/bootstrap/github_ci_apply_policy.tf && ! grep -q glue:
-    terraform/bootstrap/github_ci_apply_boundary.tf".
+    public-repo CI identity; acceptance = the grant's own deletion at BOTH layers, decided by a
+    STRUCTURED per-Sid parse and NEVER by raw file text --
+    "bin/venv-python -m pytest tests/checks/iam_tf/test_glue_catalog_grant_scope.py::TestGlueCatalogGrantRemoved::test_glue_sid_absent_at_both_layers -q",
+    the inverted twin the removal rec adds to this plan's own pin file (same _statement_blocks
+    per-Sid parse, asserting the GlueCatalog Sid is absent from the identity policy document and
+    glue absent from the boundary DataPlaneAllow Action list), replacing the presence-asserting
+    class. A grep oracle is WRONG here and would make the obligation unclosable: this plan MANDATES
+    intersection-hazard prose above the boundary Sid line, which contains the literal glue:, and the
+    identity-side comment explaining the UDF ARN will contain GlueCatalog -- so both greps would
+    fail forever and the only way to discharge the obligation would be deleting the explanatory
+    prose. Verified this session that the pytest form passes
+    scripts.executor.acceptance_lint.lint_acceptance_command(acceptance, require_discrimination=True):
+    the ::node_id defeats the bare-path vacuity classifier, and it is not a banned python -c
+    one-liner.
   - >-
-    tests/ops/test_drain_glue_orphan.py (plus tests/ops/__init__.py -- every other tests/
-    subpackage carries one) -- two classes, each hosting one test_obligations row, both run by VP
+    tests/ops/test_drain_glue_orphan.py (plus tests/ops/__init__.py -- the dominant tests/
+    subpackage convention; tests/docs/ is the one exception) -- two classes, each hosting one test_obligations row, both run by VP
     step 7's whole-file command. TestPhasePreconditions: each phase proceeds on a fresh world and
     fails closed on a moved one (record already green, orphan already out of state, a different red
     SHA, a bundled rec in the unexpected state), asserting on the NAMED fluent in the refusal rather
-    than on exit status alone; the moved-world case is named test_moved_world_fails_closed.
+    than on exit status alone; the moved-world case is named test_moved_world_fails_closed. The
+    same class carries the ALREADY-DISPATCHED case,
+    test_remove_refuses_second_dispatch_while_run_in_flight: with the correlation query stubbed to
+    return a dispatch-triggered Reconcile run in a NON-TERMINAL status, --phase remove must NOT
+    dispatch again (assert the stubbed dispatch callable was never invoked) and must print that
+    run's id, even though every other precondition still passes -- the record is still red and the
+    orphan is still in state, which is exactly why a blind re-run would double-spend the ONE human
+    tf-gated-apply approval. Its twin, with the same query stubbed to return only TERMINAL runs,
+    must dispatch -- a one-direction case here is as vacuous as one on the invariants.
     TestWorkflowInvariants: each of the FOUR assertions passes against the real committed file AND
     fails against a mutated copy -- a one-direction case is vacuous and is the failure mode step 7's
     fix_if calls out -- so invariant (d) carries its own cases (a mutated copy that adds a ref: to
