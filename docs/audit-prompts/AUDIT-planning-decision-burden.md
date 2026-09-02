@@ -599,7 +599,7 @@ verdict.
   `scripts/prompt_compliance.py:109-120`; plan-phase invariants checked at :215-227.
 - Plan `context:` line grammar for gates (`planning/SKILL.md:455`): "gates:
   decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s)". Open recs rec-3041
-  (line written once at Step 8, goes stale), rec-2480 (stray paren in the duplicated string).
+  (line written once at `/plan` Step 8, goes stale), rec-2480 (stray paren in the duplicated string).
 
 **S2 -- `/implement` pipeline**
 
