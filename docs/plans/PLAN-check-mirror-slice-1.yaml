@@ -28,7 +28,7 @@ acceptance_criteria:
 - Neutering scripts/checks/deps/validate_check_manifests.py:112 in a scratch clone makes tests/checks/deps/test_validate_check_manifests.py FAIL; on the unmodified branch the same file passes.
 - scripts/checks/ci_guards/validate_workflow_agent_safety.py and scripts/checks/verification/validate_verification_harness.py each have a mirror that calls the REGISTERED function fn(failed) on a synthetic tree, with at least one red-path test per distinct failure-emission site and one green path asserting failed == [].
 - check_per_file_coverage() reports no error for either newly-mirrored module (both measure 100% through their new mirror; no config/coverage_baseline.yaml entry is added).
-- '`git diff --stat origin/main...HEAD -- scripts/checks/` is empty: no check module, manifest Entry, contract, config or SLOC budget is touched -- the change is exactly the four test files.'
+- '`git diff --stat origin/main...HEAD -- scripts/checks/` is empty (no check module or manifest Entry is touched), and step 23 shows config/sloc_budgets.yaml, config/coverage_baseline.yaml and config/check_accounting_baseline.yaml unchanged; the landed diff is the four test files, the plan file''s own bookkeeping, and the sanctioned config/agent/verification_registry/entries/<graduation_check_id>.yaml shards (implement-scope-boundary.yaml graduated_registry_shard).'
 - All four test files stay <= 500 SLOC, ruff-clean, and no raise-approved / baseline-lowered / waiver marker is added anywhere.
 verification_plan:
 - step: 1
@@ -75,7 +75,7 @@ verification_plan:
   fix_if: A non-empty failed means the fixture wrote the wrong bytes (a trailing space or CRLF); the predicate compares content == "@AGENTS.md\n" exactly.
   hermetic: false
   graduation: waive
-  graduation_waiver_reason: Pure companion of steps 3-4 (they are graduated); the same assertion is also re-run by the whole-file selector at step 18 and by CI's own pytest on every merge, so a registry shard would duplicate a standing gate rather than add one.
+  graduation_waiver_reason: Anti-vacuity GREEN companion to the graduated red paths at the same emission site (steps 3-4, validate_claude_md_pointer_invariant.py:28); a shard here would duplicate a registry identity that the red-path rows already carry -- the differential admits a row for its discrimination, and the green half of the same site discriminates nothing on its own.
 - step: 6
   phase: pre-deploy
   action: The check-manifests contract-READ error is reported distinctly from the downstream not-a-mapping message (missing file case; mutant-killing red path).
@@ -102,7 +102,7 @@ verification_plan:
   fix_if: A failure means WORKFLOWS_DIR was not monkeypatched on the HELPER module (scripts.check_workflow_agent_safety), which is where that global lives; the check module itself imports it lazily inside the function.
   hermetic: false
   graduation: waive
-  graduation_waiver_reason: Green companion to step 9 (graduated); step 18's whole-file selector and CI's pytest already re-run it on every merge, so a shard would duplicate a standing gate.
+  graduation_waiver_reason: Anti-vacuity GREEN companion to the graduated red path at the same emission site (step 9, validate_workflow_agent_safety.py:24); graduating it would register a second identity for one site whose red-path row is the standing guard, so it is waived as a duplicate identity, not as unnecessary.
 - step: 9
   phase: pre-deploy
   action: New mirror, red path -- a masked unguarded `claude -p` step drives the wrapper's only failed.append.
@@ -165,7 +165,7 @@ verification_plan:
   fix_if: A non-empty failed means the fake returned FAIL status; VerifierResult defaults severity to HARD_GATE, so the status is what must be PASS here.
   hermetic: false
   graduation: waive
-  graduation_waiver_reason: Green companion of the graduated steps 12-14, re-run by step 18's whole-file selector and by CI's pytest on every merge; a shard would duplicate a standing gate.
+  graduation_waiver_reason: Anti-vacuity GREEN companion to the graduated red paths at the same emission sites (steps 12-14, validate_verification_harness.py:38 and :41); the red-path rows carry the registry identity for those sites and a green-only row would duplicate it. It is also the empty-domain shape Decision 170 warns about (REGISTRY is [] today), which the mirror names explicitly.
 - step: 16
   phase: pre-deploy
   action: Verification-harness sys.path guard -- an absent repo root is injected and then removed, leaving sys.path byte-identical. This is also the test that closes the module's coverage floor (see step 22).
@@ -188,7 +188,7 @@ verification_plan:
   phase: pre-deploy
   action: All four mirrors green together, plus the two mirrors' own registration tests, with no cross-test sys.path or WORKFLOWS_DIR leakage.
   command: bin/venv-python -m pytest tests/checks/contracts/test_validate_claude_md_pointer_invariant.py tests/checks/deps/test_validate_check_manifests.py tests/checks/ci_guards/test_validate_workflow_agent_safety.py tests/checks/verification/test_validate_verification_harness.py tests/checks/ci_guards/test__manifest.py tests/checks/verification/test__manifest.py tests/checks/registry -q
-  expected: All pass (7 + 17 + 4 + 6 in the four mirrors, plus the manifest/registry suites unchanged).
+  expected: All pass (7 + 18 + 4 + 6 in the four mirrors, plus the manifest/registry suites unchanged).
   fix_if: An order-dependent failure means a test mutated global state without monkeypatch (use pytest's monkeypatch or unittest.mock.patch as a context manager everywhere; never assign module globals directly).
   hermetic: false
   graduation: waive
@@ -205,7 +205,7 @@ verification_plan:
   phase: pre-deploy
   action: MUTANT-KILL proof (survivor 2) -- same, for the check-manifests contract-read except branch.
   command: 'MUT=/tmp/claude-0/-home-user-theseus/33ab98e3-d806-55b3-a8cc-2d06b953b1db/scratchpad/task3/mutate.py; CLONE=$(mktemp -d /tmp/claude-0/-home-user-theseus/33ab98e3-d806-55b3-a8cc-2d06b953b1db/scratchpad/task3/clone-kill-XXXXXX); tar -C . --exclude=.venv --exclude=.git --exclude=__pycache__ --exclude=.pytest_cache -cf - . | tar -C "$CLONE" -xf - && ln -s "$PWD/.venv" "$CLONE/.venv" && bin/venv-python "$MUT" --clone "$CLONE" --file scripts/checks/deps/validate_check_manifests.py --site ''validate_check_manifests:{contract_path}: {exc}'' --mode neuter-append && (cd "$CLONE" && PYTHONPATH="$CLONE" ./.venv/bin/python -m pytest tests/checks/deps/test_validate_check_manifests.py -q; test $? -ne 0) && echo "KILLED"'
-  expected: pytest reports 2 failed (both TestContractReadErrorIsReportedDistinctly methods) and the step prints KILLED. Rehearsed at planning time.
+  expected: pytest reports 3 failed (all three TestContractReadErrorIsReportedDistinctly methods -- the second-genuine-error test also reddens, since the "check-manifest.yaml:" message it positively asserts is exactly what the mutant removes) and the step prints KILLED. Rehearsed at planning time.
   fix_if: Green pytest means the _read_errors() filter does not actually exclude the line-126 message; the filter substring must be "did not parse to a YAML mapping".
   hermetic: false
   graduation: not-applicable
