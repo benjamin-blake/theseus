@@ -81,9 +81,12 @@ class ProgressiveS3Client:
     so the second read only turns green once a dispatch actually fired -- mirrors a live apply
     landing between the gate read and the verify read."""
 
-    def __init__(self, tfstate_orphan_present: bool, dispatched: list[str]) -> None:
+    def __init__(self, tfstate_orphan_present: bool, dispatched: list[str], run_id: str = "10") -> None:
         self._tfstate_orphan_present = tfstate_orphan_present
         self._dispatched = dispatched
+        # The record names the run that WROTE it -- converge fact 4 is correlated, not merely
+        # green, so a double returning a bare {"status": "green"} models a record no run owns.
+        self._run_id = run_id
 
     def get_object(self, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
         body: dict[str, Any]
@@ -91,7 +94,7 @@ class ProgressiveS3Client:
             resources = [{"type": "aws_glue_catalog_database", "name": "ops"}] if self._tfstate_orphan_present else []
             body = {"resources": resources}
         elif (Bucket, Key) == (reconcile_target.CONVERGENCE_BUCKET, reconcile_target.CONVERGENCE_KEY):
-            body = {"status": "green"} if self._dispatched else RED_RECORD
+            body = {"status": "green", "run_id": self._run_id} if self._dispatched else RED_RECORD
         else:
             raise RuntimeError(f"NoSuchKey: {Bucket}/{Key}")
         return {"Body": FakeBody(json.dumps(body).encode("utf-8"))}

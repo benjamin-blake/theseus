@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import io
 import json
 import re
 from pathlib import Path
@@ -259,7 +260,7 @@ class TestConvergeVerify:
             "plan_zero_destroys": True,
             "guard_passed": True,
             "review_approving": True,
-            "record_green": True,
+            "record_green_for_this_run": True,
         }
 
     def test_not_converged_when_guard_routed(self) -> None:
@@ -311,7 +312,7 @@ class TestConvergeVerify:
             profile_s3_client=ProgressiveS3Client(tfstate_orphan_present=False, dispatched=[]),
         )
         assert outcome.status == "not_converged"
-        assert outcome.fluents["record_green"] is False
+        assert outcome.fluents["record_green_for_this_run"] is False
 
     def test_not_converged_when_glue_delete_still_in_plan(self) -> None:
         outcome = converge_verify(
@@ -343,6 +344,45 @@ class TestConvergeVerify:
         assert outcome.status == "not_converged"
         assert outcome.fluents["plan_zero_destroys"] is False
         assert outcome.fluents["orphan_delete_absent"] is True
+
+    def test_not_converged_when_the_green_record_was_written_by_a_DIFFERENT_run(self) -> None:
+        """Fact 4 is correlated, not merely green: a green record carries the run_id of whichever
+        run wrote it, so a concurrent push apply's green (or a stale green from an earlier run)
+        must not license this run's converge verdict."""
+
+        class _ForeignGreen:
+            def get_object(self, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
+                body = {"status": "green", "run_id": "88888888"} if "convergence" in Key else {"resources": []}
+                return {"Body": io.BytesIO(json.dumps(body).encode("utf-8"))}
+
+        outcome = converge_verify(
+            correlation_record={"verdict": "correlated", "fluents": {"run_id": 10}},
+            run_payload={"id": 10, "status": "completed"},
+            jobs_payload=self._JOBS_ALL_PASS,
+            job_logs_payload=job_log(),
+            profile_s3_client=_ForeignGreen(),
+        )
+        assert outcome.status == "not_converged"
+        assert outcome.fluents["record_green_for_this_run"] is False
+
+    def test_converged_when_the_green_record_names_this_run(self) -> None:
+        """The record serializes run_id as a STRING while the runs payload reports an int, so the
+        comparison must coerce -- an uncoerced == would make every correlated record fail."""
+
+        class _OwnGreen:
+            def get_object(self, Bucket: str, Key: str) -> dict[str, Any]:  # noqa: N803
+                body = {"status": "green", "run_id": "10"} if "convergence" in Key else {"resources": []}
+                return {"Body": io.BytesIO(json.dumps(body).encode("utf-8"))}
+
+        outcome = converge_verify(
+            correlation_record={"verdict": "correlated", "fluents": {"run_id": 10}},
+            run_payload={"id": 10, "status": "completed"},
+            jobs_payload=self._JOBS_ALL_PASS,
+            job_logs_payload=job_log(),
+            profile_s3_client=_OwnGreen(),
+        )
+        assert outcome.status == "converged"
+        assert outcome.fluents["record_green_for_this_run"] is True
 
     def test_log_from_another_job_is_refused_outright(self) -> None:
         """Not a not_converged -- a verdict read from a different job's log is evidence this

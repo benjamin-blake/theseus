@@ -21,7 +21,7 @@ from scripts.ops.drain_glue_orphan._github import (
     _REPO_NAME,
     _REPO_OWNER,
     assert_log_matches_job,
-    assert_plan_step_present,
+    assert_plan_step_ran,
     converge_guard_review_facts,
     destruction_complete,
     find_in_flight_dispatch,
@@ -286,7 +286,7 @@ def converge_verify(
     # Neither is a fact -- a verdict read from another job's log is not a "not_converged", it is
     # evidence this module must refuse outright.
     job = resolve_apply_sandbox_job(jobs_payload)
-    assert_plan_step_present(job)
+    assert_plan_step_ran(job)
     job_id = assert_log_matches_job(job_logs_payload, job)
     raw = converge_guard_review_facts(jobs_payload)
     post_record = reconcile_target.read_convergence_record(profile_s3_client)
@@ -297,7 +297,16 @@ def converge_verify(
         "plan_zero_destroys": plan_shows_zero_destroys(job_logs_payload),
         "guard_passed": raw["guard_routed"] is not True,
         "review_approving": raw["review_approving"] is True,
-        "record_green": post_record is not None and post_record.get("status") == "green",
+        # CORRELATED, not merely green: the record carries the run_id of whichever run wrote it,
+        # so an uncorrelated status check would accept a green written by a concurrent push apply
+        # or a stale green from an earlier run -- the same correlation hole closed above for the
+        # job log, one field over. Both sides are str()-coerced: the record serializes run_id as a
+        # string while the runs payload reports it as an int.
+        "record_green_for_this_run": (
+            post_record is not None
+            and post_record.get("status") == "green"
+            and str(post_record.get("run_id")) == str(run["id"])
+        ),
     }
     status = "converged" if all(facts.values()) else "not_converged"
     return PhaseOutcome(

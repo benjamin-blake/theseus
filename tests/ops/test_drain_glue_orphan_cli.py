@@ -542,7 +542,16 @@ class TestMainCliFullDispatch:
         monkeypatch.setitem(
             sys.modules,
             "boto3",
-            recording_boto3({(reconcile_target.CONVERGENCE_BUCKET, reconcile_target.CONVERGENCE_KEY): {"status": "green"}})[0],
+            recording_boto3(
+                {
+                    # run_id names the run that WROTE the record -- fact 4 is correlated, so an
+                    # anonymous green no longer licenses converge.
+                    (reconcile_target.CONVERGENCE_BUCKET, reconcile_target.CONVERGENCE_KEY): {
+                        "status": "green",
+                        "run_id": "2",
+                    }
+                }
+            )[0],
         )
         run_json = _write_json(tmp_path, "run.json", {"id": 2, "status": "completed"})
         jobs_json = _write_json(

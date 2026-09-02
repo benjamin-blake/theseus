@@ -25,7 +25,7 @@ from scripts.ops.drain_glue_orphan._github import (
     _PLAN_STEP_NAME,
     _REVIEW_STEP_NAME,
     assert_log_matches_job,
-    assert_plan_step_present,
+    assert_plan_step_ran,
     converge_guard_review_facts,
     destruction_complete,
     find_in_flight_dispatch,
@@ -336,20 +336,41 @@ class TestJobLogEnvelopeIsCorrelatedToItsJob:
             assert_log_matches_job({"job_id": 4242}, {"name": _APPLY_SANDBOX_JOB_NAME})
 
 
-class TestPlanStepPresenceIsRequired:
-    def test_present_plan_step_passes(self) -> None:
+class TestPlanStepMustHaveActuallyRun:
+    def test_successful_plan_step_passes(self) -> None:
         job = {"name": _APPLY_SANDBOX_JOB_NAME, "steps": [{"name": _PLAN_STEP_NAME, "conclusion": "success"}]}
-        assert assert_plan_step_present(job) is None
+        assert assert_plan_step_ran(job) is None
 
     def test_absent_plan_step_fails_closed(self) -> None:
         """_PLAN_STEP_NAME gated the plan-log fetch in the pre-split module; a missing step left
         plan_log empty, which then read as "no destroys"."""
         with pytest.raises(WorldMovedError, match="carries no step named"):
-            assert_plan_step_present({"name": _APPLY_SANDBOX_JOB_NAME, "steps": [{"name": "Renamed"}]})
+            assert_plan_step_ran({"name": _APPLY_SANDBOX_JOB_NAME, "steps": [{"name": "Renamed"}]})
 
     def test_job_with_no_steps_key_fails_closed(self) -> None:
         with pytest.raises(WorldMovedError, match="carries no step named"):
-            assert_plan_step_present({"name": _APPLY_SANDBOX_JOB_NAME})
+            assert_plan_step_ran({"name": _APPLY_SANDBOX_JOB_NAME})
+
+    def test_SKIPPED_plan_step_fails_closed_even_though_it_is_present(self) -> None:
+        """The step is gated `if: github.event_name == 'workflow_dispatch'`, so a push-triggered
+        run carries it present-but-skipped having produced NO plan output. A name-only check
+        passed that job and handed fact 1 a log with nothing to find."""
+        job = {"name": _APPLY_SANDBOX_JOB_NAME, "steps": [{"name": _PLAN_STEP_NAME, "conclusion": "skipped"}]}
+        with pytest.raises(WorldMovedError, match="not 'success'"):
+            assert_plan_step_ran(job)
+
+    def test_failed_plan_step_fails_closed(self) -> None:
+        job = {"name": _APPLY_SANDBOX_JOB_NAME, "steps": [{"name": _PLAN_STEP_NAME, "conclusion": "failure"}]}
+        with pytest.raises(WorldMovedError, match="not 'success'"):
+            assert_plan_step_ran(job)
+
+
+class TestDegenerateSummaryFailsClosedThroughWorldMovedError:
+    def test_summary_with_no_count_prefix_raises_world_moved_not_index_error(self) -> None:
+        """A bare ' to destroy' prefix has no token to read; it must reach the CLI's
+        WorldMovedError handler rather than escaping as an IndexError traceback."""
+        with pytest.raises(WorldMovedError, match="unparseable terraform plan summary"):
+            plan_shows_zero_destroys(_log("Plan: to destroy"))
 
 
 class TestResolveApplySandboxJob:

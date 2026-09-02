@@ -138,7 +138,8 @@ def no_remaining_glue_delete(envelope: dict[str, Any], marker: str = _GLUE_ORPHA
 
 def _destroy_count(summary_line: str) -> int:
     """Reads N from a terraform 'Plan: A to add, B to change, N to destroy.' summary line."""
-    token = summary_line[: summary_line.find(_DESTROY_MARKER)].split()[-1]
+    prefix = summary_line[: summary_line.find(_DESTROY_MARKER)].split()
+    token = prefix[-1] if prefix else ""
     if not token.isdigit():
         raise WorldMovedError(
             f"unparseable terraform plan summary {summary_line.strip()!r} -- refusing to read a destroy count "
@@ -181,15 +182,26 @@ def resolve_apply_sandbox_job(jobs_payload: Any) -> dict[str, Any]:
     return job
 
 
-def assert_plan_step_present(job: dict[str, Any]) -> None:
-    """The plan log fact 1 reads comes from this step. The pre-split module treated a missing plan
-    step as an empty plan log, which then scored as "no destroys" -- the absence-is-success shape
-    this module refuses everywhere else."""
-    if not any(step.get("name") == _PLAN_STEP_NAME for step in job.get("steps", [])):
+def assert_plan_step_ran(job: dict[str, Any]) -> None:
+    """The plan log fact 1 reads comes from this step, so the step must have actually RUN.
+
+    Presence alone is not enough: the step is gated `if: github.event_name == 'workflow_dispatch'`,
+    so a push-triggered run carries it present-but-SKIPPED, producing no plan output at all. A
+    name-only check would pass that job and hand fact 1 a log with nothing to find -- the
+    absence-is-success shape this module refuses everywhere else, and the same reason the
+    pre-split module's empty-plan_log default scored as "no destroys".
+    """
+    step = next((s for s in job.get("steps", []) if s.get("name") == _PLAN_STEP_NAME), None)
+    if step is None:
         raise WorldMovedError(
             f"world has moved -- re-assess: job {_APPLY_SANDBOX_JOB_NAME!r} carries no step named "
             f"{_PLAN_STEP_NAME!r}; the plan log fact 1 reads does not exist, and treating its absence as "
             "'no destroys' would fail open"
+        )
+    if step.get("conclusion") != "success":
+        raise WorldMovedError(
+            f"step {_PLAN_STEP_NAME!r} concluded {step.get('conclusion')!r}, not 'success' -- it produced no "
+            "plan output, so an absent destroy line means nothing; re-dispatch at ref=main via workflow_dispatch"
         )
 
 
