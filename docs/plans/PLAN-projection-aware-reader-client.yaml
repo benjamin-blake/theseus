@@ -202,12 +202,18 @@ verification_plan:
     action: >-
       Live behavioural proof against the deployed reader: a real open_recs call returns strict
       rows, an unprojected field raises, and a projected field still reads.
-    command: >-
-      bin/venv-python -c "from src.common.ducklake_reader_client import make_reader,
-      UnprojectedField; r = make_reader(profile='agent_platform').named('open_recs')[0];
-      assert r.get('title') is not None;
-      import sys;
-      exec(\"try:\\n r.get('source')\\n sys.exit('FAIL: unprojected access did not raise')\\nexcept UnprojectedField as e:\\n print('OK', e)\")"
+    command: |
+      bin/venv-python -c "
+      from src.common.ducklake_reader_client import make_reader, UnprojectedField
+      row = make_reader(profile='agent_platform').named('open_recs')[0]
+      assert row.get('title') is not None, 'projected field must still read'
+      try:
+          row.get('source')
+      except UnprojectedField as exc:
+          print('OK', exc)
+      else:
+          raise SystemExit('FAIL: unprojected access did not raise')
+      "
     expected: prints OK plus the diagnostic naming open_recs, source, and the five-column projection
     fix_if: >-
       If source returns None, the deployed artifact predates this change -- confirm step 10
