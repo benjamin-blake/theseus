@@ -446,12 +446,26 @@ verification_plan:
     graduation_check_id: drain-glue-orphan-payload-fixtures-scrubbed
   - step: 12
     phase: pre-deploy
-    action: Full fast-tier presubmit on the branch before anything live is touched.
-    command: bin/venv-python -m scripts.validate --pre
+    action: >-
+      BOTH presubmit tiers on the branch before anything live is touched, in one step and in this
+      order. The fast tier is the PR/edit-loop gate and is authoritative only when PR CI runs it
+      (Decision 83); the bare full tier is the PRE-HANDOFF gate this plan's
+      handoff_policy.full_validation_required_before_commit obligates, and validate_handoff_full_tier
+      requires a verification_plan step to invoke it. They are two segments of one command rather than
+      two numbered steps deliberately: the post-deploy half already carries nine numbered steps whose
+      prose cross-references each other, and inserting a step here would renumber all of them against
+      text where "15" also appears as content.
+    command: bin/venv-python -m scripts.validate --pre && bin/venv-python -m scripts.validate
     expected: >-
-      Exit 0, including validate_sloc_limits, validate_sloc_budget_raises, validate_verification_registry
-      (with its differential admission leg on the modified shard and the five new graduated shards),
-      validate_scope_boundary, validate_plan_documents and validate_graduation_completeness.
+      BOTH segments exit 0. The fast tier covers validate_sloc_limits, validate_sloc_budget_raises,
+      validate_verification_registry (with its differential admission leg on the modified shard and the
+      five new graduated shards), validate_scope_boundary, validate_plan_documents,
+      validate_graduation_completeness and validate_handoff_full_tier. The full tier additionally runs
+      the glob-skipped checks (validate_check_manifests, validate_pre_glob_closure,
+      validate_executor_boundary, validate_lambda_manifests, validate_lambda_manifest_coverage) and the
+      complete pytest suite. Per handoff_policy.timeout_disposition, a full tier that does not COMPLETE
+      leaves the work blocked -- resume later and rerun it from the start rather than treating a partial
+      run as a pass.
     fix_if: >-
       A scope-boundary failure means a touched path is outside this plan's declared scope union -- the
       fix is a human-directed plan amendment landed as its own revision, never editing this plan's own
