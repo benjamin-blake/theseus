@@ -1,0 +1,232 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "cd40-split-ops-session-log"
+intent: >-
+  Unfreeze Decision 84 Phase 4 (telemetry re-lands on DuckLake, T2.36) by separating the
+  ops_session_log retire-or-migrate disposition from the CD.40 agent-turn capture design,
+  assigning the disposition a single owner, and re-grounding T2.36's depends_on onto the
+  obligations T2.36 already carries in its own exit criteria.
+plan_type: IMPLEMENTATION
+verification_tier: V1
+plan_path: docs/plans/PLAN-cd40-split-ops-session-log.yaml
+phase: T2.26
+scope:
+  - file: docs/ROADMAP-PLATFORM.yaml
+    action: Modify
+    purpose: >-
+      Narrow CD.40 to the agent-turn capture design while retaining the decided RETIRE
+      disposition as one line; re-ground T2.26 c2/c3/c8, T2.18 c2/c8, T3.20 c5/c6; drop
+      both T2.36 depends_on edges.
+bundled_recommendations: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - T2.36 carries an empty depends_on and appears in PlatformRoadmapState.eligible_items()
+  - CD.40 remains state=pending with no ratified_as, retains the agent-turn capture design, and its
+    ops_session_log clause records a DECIDED retire disposition owned by T2.26
+  - T3.20 c5 is status=rehomed with met_by=T2.26, so exactly one item owns the disposition
+  - T2.18 c8 met_by points forward to T2.36 rather than backward to T2.26
+  - No T2.26, T2.18, T3.20 or T2.36 criterion status is flipped to met by this plan
+  - docs/ROADMAP-PLATFORM.yaml is the only file changed and stays under the Decision 114 ceiling
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Prove the goal -- T2.36 is eligible under the real eligibility computation
+    command: >-
+      bin/venv-python -c "import pathlib;from scripts.platform_roadmap_state import
+      PlatformRoadmapState,load;s=PlatformRoadmapState(load(pathlib.Path('docs/ROADMAP-PLATFORM.yaml')));
+      e={i.id for i in s.eligible_items()};assert 'T2.36' in e,'T2.36 still blocked';print('T2.36 ELIGIBLE')"
+    expected: prints "T2.36 ELIGIBLE"; exit 0
+    fix_if: >-
+      AssertionError means a depends_on edge survives or T2.36's status is not not_started.
+      _dep_satisfied requires the named item to be status==complete, so a merely re-grounded
+      edge still blocks -- both T2.26 and T2.18 edges must be removed.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Asserts a transient roadmap state, not an invariant: eligible_items() requires
+      status==not_started, so this check inverts to failing the moment T2.36 legitimately
+      moves to in_progress. Graduating it would install a guard guaranteed to fire on the
+      very progress it exists to enable.
+  - step: 2
+    phase: pre-deploy
+    action: Assert both T2.36 depends_on edges are gone (the specific regression this plan fixes)
+    command: >-
+      bin/venv-python -c "import yaml;d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'));
+      t={i['id']:i for i in d['tier_items']};assert t['T2.36'].get('depends_on') in ([],None),
+      t['T2.36'].get('depends_on');print('T2.36 depends_on empty')"
+    expected: prints "T2.36 depends_on empty"; exit 0
+    fix_if: A non-empty list means an edge survived; remove both T2.26 and T2.18.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      depends_on is roadmap data that legitimately changes as sequencing evolves; a standing
+      "T2.36 has no dependencies" guard would forbid any future legitimate edge rather than
+      catching a regression.
+  - step: 3
+    phase: pre-deploy
+    action: Assert the ownership vacuum is closed -- T3.20 c5 rehomed to T2.26, T2.18 c8 re-pointed forward to T2.36
+    command: >-
+      bin/venv-python -c "import yaml;d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'));
+      t={i['id']:i for i in d['tier_items']};c=lambda i,x:[k for k in t[i]['exit_criteria'] if k['id']==x][0];
+      a=c('T3.20','c5');b=c('T2.18','c8');assert a['status']=='rehomed' and a.get('met_by')=='T2.26',a;
+      assert b.get('met_by')=='T2.36',b;print('ownership reassigned')"
+    expected: prints "ownership reassigned"; exit 0
+    fix_if: >-
+      T3.20 c5 still open (vacuum intact -- T2.26 and T3.20 still name each other) or T2.18 c8
+      still met_by T2.26 (an owner that structurally cannot perform volume-based breaker tuning).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Both assertions describe a transitional ledger state: c5 flips from rehomed to met once
+      rec-3393 lands, and c8 closes when T2.36 completes. A standing check pinning either to
+      today's value would fail on correct forward progress.
+  - step: 4
+    phase: pre-deploy
+    action: Assert CD.40 is narrowed, not ratified and not gutted -- capture design retained, disposition decided
+    command: >-
+      bin/venv-python -c "import yaml;d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'));
+      cd=[x for x in d['candidate_decisions'] if x['id']=='CD.40'][0];t=cd['detail'];
+      assert cd['state']=='pending' and not cd.get('ratified_as'),cd;
+      assert 'telemetry_observations' in t and 'credential scrub' in t.lower(),'capture design lost';
+      assert 'RETIRE' in t and 'T2.26' in t,'decided disposition not recorded';print('CD.40 narrowed')"
+    expected: prints "CD.40 narrowed"; exit 0
+    fix_if: >-
+      Missing capture-design tokens means the narrowing over-deleted (Decision 86: a
+      pre-ratification choice belongs in candidate_decisions[], not criteria prose). A present
+      ratified_as violates the R2 guard for a pending CD.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      CD.40 is state=pending by design and will ratify under T3.20, at which point state and
+      ratified_as both change; a standing assertion on pending-state text blocks that ratification.
+  - step: 5
+    phase: pre-deploy
+    action: Assert no criterion status was flipped to met (Status-Trusted-Never-Inferred)
+    command: >-
+      git diff origin/main -- docs/ROADMAP-PLATFORM.yaml | grep -E '^\+\s+status: met' && exit 1
+      || echo "no met-flips introduced"
+    expected: prints "no met-flips introduced"; exit 0
+    fix_if: >-
+      Any added "status: met" means the plan inferred completion it did not verify. Re-grounding
+      text and rehoming ownership are the only sanctioned edits here; closing T2.26 c2/c3/c7/c8
+      is rec-3393's job, on verified evidence.
+    hermetic: false
+    graduation: not-applicable
+  - step: 6
+    phase: pre-deploy
+    action: Assert the "not yet decided" deadlock language is gone from T2.26 and the T3.20 c6 rewire target is git history
+    command: >-
+      bin/venv-python -c "import yaml;d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'));
+      t={i['id']:i for i in d['tier_items']};j=' '.join(k['text'] for k in t['T2.26']['exit_criteria']);
+      assert 'not yet decided' not in j,'deadlock language survives';
+      c6=[k for k in t['T3.20']['exit_criteria'] if k['id']=='c6'][0]['text'];
+      assert 'query-Lambda verb' not in c6 and 'git' in c6.lower(),c6;print('re-grounded')"
+    expected: prints "re-grounded"; exit 0
+    fix_if: >-
+      Surviving "not yet decided" means T2.26 still reads as blocked on an unmade decision. A
+      surviving "query-Lambda verb" in c6 re-imports the telemetry dependency this plan removes
+      (Decision 174: retirement is by deletion, provenance in git history).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Negative-substring assertions over criteria prose that this plan itself authors; once
+      merged the strings cannot regress without a deliberate roadmap edit, and the criteria
+      are rewritten again when rec-3393 closes them.
+  - step: 7
+    phase: pre-deploy
+    action: Confirm blast radius is exactly one file and the roadmap still validates under its ceiling
+    command: >-
+      test "$(git diff --name-only origin/main | grep -v '^docs/plans/' | tr -d ' ')" = "docs/ROADMAP-PLATFORM.yaml"
+      && test "$(wc -l < docs/ROADMAP-PLATFORM.yaml)" -lt 10000
+      && bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-cd40-split-ops-session-log.yaml
+    expected: all three succeed; exit 0
+    fix_if: >-
+      Extra changed files mean the plan escaped its scope boundary. A line count at or over 10000
+      breaches the Decision 114 ceiling -- the roadmap was at 9327 at planning time, so the
+      re-groundings must stay terse.
+    hermetic: false
+    graduation: not-applicable
+  - step: 8
+    phase: pre-deploy
+    action: Run the fast presubmit tier, which includes validate_platform_roadmap and the CD guards
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0; validate_platform_roadmap, validate_candidate_decision_ratification and
+      validate_candidate_decision_supersession all PASS
+    fix_if: >-
+      A supersession-guard failure means the CD.40 narrowing used "fully superseded by CD.NN"
+      wording instead of the sanctioned "[Amendment ...]" self-demotion shape (CD.10's shape),
+      which is the only form exempt from that guard.
+    hermetic: false
+    graduation: not-applicable
+test_obligations: []
+constraints:
+  - Roadmap and CD encoding only -- no code, config, contract or Lambda-packaged file may be touched.
+  - Flip no criterion status to met; re-ground text and rehome ownership only (Status-Trusted-Never-Inferred).
+  - Narrow CD.40 via a dated "[Amendment ...]" self-demotion (CD.10's shape); never "fully superseded by",
+    which trips validate_candidate_decision_supersession, and never mint ratified_as on a pending CD.
+  - Keep every edit terse -- 673 lines of headroom under the Decision 114 10000-line ceiling.
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND (134 of 134 triaged, no BLOCK).
+    CITE: 84 (I-1 demolition without migration behind the now-met rec-2113 drill; I-4 names the session_log
+    path retiring -- the RETIRE authority), 178 (cleanse removed ops_compaction), 67 (the clause this
+    unblocks), 136 (exit-criteria ledger), 105 (CD lane), 150 cl.1 + 167 cl.2/4 (significance + routing_rule),
+    114 (10000-line ceiling), 93, 48. RELATED: 174, 147, 177, 143, 88, 95/96/97."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "All 4 scout flags adopted: D86 WARN -> narrow CD.40, do not delete (a pre-ratification choice belongs
+    in candidate_decisions[]); D136 -> T2.18 c8 met_by re-pointed T2.26 -> T2.36; D150/167 -> routing claim
+    is work_item, no numbered Decision minted (84 I-1/I-4 already authorizes this; only exit_criteria supply
+    the per-criterion lifecycle needed); D48 -> ops_compaction evidence scoped to LIVE surfaces only
+    (scripts/ src/ config/ terraform/ tests/ .github/ docs/contracts/ = 0; 27 matches survive in historical
+    corpora, so never assert repo-wide zero)."
+  - "THE BUG: T2.26 c2/c3/c8 wait on T3.20's disposition while T3.20 c5 waits on T2.26's -- neither owns the
+    decision, so it was never made. That is what froze Phase 4."
+  - "Two cycles, both invisible to the machine: validate_platform_roadmap DOES run a DFS gray-set cycle
+    detector over depends_on and PASSES today, because every cycle routes one edge through exit-criteria
+    PROSE (34 such edges roadmap-wide). A = T2.36 -> T2.26 -prose-> T3.20 -> T2.36. B = T2.36 -> T2.18,
+    whose c8 says no high-write-rate table exists to co-tune the GC breaker against -- volume only T2.36
+    creates. B is a real sequencing inversion, not a bookkeeping slip."
+  - "Dropping the T2.26 edge ALONE does NOT unblock T2.36 -- simulated: _dep_satisfied requires
+    status=='complete' and both T2.26 and T2.18 are in_progress. BOTH edges must go."
+  - "Dropping T2.18 is re-grounding, not weakening: T2.36 c5 already requires the GC be confirmed pointed at
+    the production catalog BEFORE the first telemetry write -- the guard moves from item- to
+    criterion-granularity. Pipeline live: deploy-ducklake-lambdas runs 6-10 green, latest 33036925964."
+  - "RETIRE evidence (table unprovisioned, producer deleted, coercion branch unreachable, no DQ entry, no
+    read verb, absence already asserted in tests/sync/ops/test_sync_cli.py): enumerated in rec-3393."
+  - "closes_criteria deliberately ABSENT -- this plan closes zero criteria. rec-3393 = the V3 code deletion
+    that closes T2.26 c2/c3/c7/c8 (governed CD channels only, Decision 125/126). rec-3394 = the unrelated
+    T2.51 c3 <-> T2.53 c6 prose cycle found en route."
+  - "Out of scope by human direction: the systemic fix making prose-encoded blocking edges structural or
+    detectable is owned separately by the human."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read (84, 178, 67, 136, 105, 150, 167, 114, 93, 48, 174)
+  - docs/ROADMAP-PLATFORM.yaml located and readable; current line count recorded against the 10000 ceiling
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - "docs/ROADMAP-PLATFORM.yaml, candidate_decisions CD.40 -- append a dated [Amendment 2026-09-02] clause
+    that (a) records the ops_session_log disposition as DECIDED: RETIRE, not migrate, citing Decision 84
+    I-1/I-4 and the dead-surface evidence, (b) names T2.26 as sole owner of the execution, (c) confirms the
+    remaining CD.40 body (turn-grain rows on telemetry_observations + telemetry_transcripts, hook-side
+    credential scrub, the aggregate ops_sessions 3-condition trigger) is unchanged. Keep state: pending;
+    do not add ratified_as or change filed_via."
+  - "tier_item T2.26 -- re-ground c2, c3 and c8 to state the disposition is decided (pointing at the CD.40
+    amendment) and that the residual is EXECUTION only, tracked by rec-3393. Remove the 'blocked on the
+    CD.40/T3.20 retire-or-migrate disposition, not yet decided' language. Leave all statuses open."
+  - "tier_item T3.20 -- flip c5 to status: rehomed with met_by: T2.26 (closing the mutual-ownership vacuum);
+    re-ground c6 so the SESSION_LOG.md reader-rewire target is git history rather than a query-Lambda verb,
+    citing Decision 174. Leave T3.20 depends_on unchanged."
+  - "tier_item T2.18 -- re-ground c2 so its residual is attributed forward rather than to T2.26, and
+    re-point c8's met_by from T2.26 to T2.36. Leave both statuses as they are."
+  - "tier_item T2.36 -- set depends_on to an empty list; add one terse note recording that the T2.26 edge's
+    basis (ops_compaction key-shape coupling) was discharged by Decision 178 and that the T2.18 edge is
+    subsumed by T2.36's own c5. Leave status not_started and all criteria untouched."
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)
+  - "Report: what was re-grounded, verification results, and confirmation that T2.36 is eligible."
+rollback: >-
+  Single-file, data-only change: git revert of the squash commit restores the prior roadmap encoding
+  exactly. No code, infrastructure or warehouse state is touched, so revert is complete and immediate.
+  rec-3393 and rec-3394 survive a revert and would need closing as superseded via the portal.
