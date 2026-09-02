@@ -15,42 +15,52 @@ plan_path: docs/plans/PLAN-roadmap-blocking-edge-semantics.yaml
 phase: >-
   Roadmap-governance data-fidelity repair; extends the T-1.5 schema surface. Soft-warn
   exception category user_explicit_out_of_scope -- claims no tier_item slice and closes no
-  criterion; it annotates criteria on in_progress items T2.18 and T2.26. The liveness detector
-  and its ratchet are a deliberate follow-on (rec-3395).
+  criterion; it annotates open criteria on in_progress items T2.18 and T2.26. The liveness
+  detector and its ratchet are a deliberate follow-on (rec-3395).
 scope:
   - file: scripts/platform_roadmap_models.py
     action: Modify
     purpose: >-
       Add CriterionBlocker {ref, until, note}, ExitCriterion.blocked_by and
-      CandidateDecision.affects; validate every ref resolves. Both new edge types stay OUT of
-      the _validate_graph step-(c) depends_on DFS.
+      CandidateDecision.affects; validate refs resolve AND that until matches the ref's kind.
+      Both new edge types stay OUT of the _validate_graph step-(c) depends_on DFS.
   - file: scripts/roadmap/platform_roadmap.py
     action: Modify
     purpose: re-export CriterionBlocker through the Decision 124 facade so tests can import it
   - file: scripts/platform_roadmap_state.py
     action: Modify
     purpose: >-
-      Guard realization_candidates against the vacuous-True empty-gates path when a CD carries
-      a non-empty affects; surface criterion blocked_by for not_started/blocked items, not only
-      in_progress. affects must never enter _pending_gating_cds_for_item.
+      Guard realization_candidates against the vacuous-True empty-gates path. No other
+      behavior changes -- affects must never enter _pending_gating_cds_for_item.
+  - file: scripts/test_coverage_checker.py
+    action: Modify
+    purpose: >-
+      Add scripts/platform_roadmap_models.py to _CONCERN_SPLIT_TEST_PACKAGES so map_source_to_test
+      resolves to the new mirror package; without it the Delete row breaks check_test_file_exists
+      and validate_diff_coverage for a file that is itself in scope.
   - file: docs/ROADMAP-PLATFORM.yaml
     action: Modify
     purpose: CD.17 gates -> affects transcription; the 7 cited blocked_by refs on T2.18 and T2.26
   - file: docs/contracts/exit-criteria-ledger.yaml
     action: Modify
-    purpose: blocked_by field semantics; correct the model home from the facade to platform_roadmap_models.py
+    purpose: >-
+      blocked_by field semantics + the DFS-exclusion governance note (Decision 86 clause 2
+      field_semantics routing); add the missing amendment_log block; correct the model home
+      from the facade to platform_roadmap_models.py
   - file: docs/contracts/candidate-decision-ratification.yaml
     action: Modify
-    purpose: affects field semantics; narrow the now-partial "gate derivation keys purely on cd.state" claim
-  - file: docs/DECISIONS.md
-    action: Modify
-    purpose: numbered Decision recording the gates/affects split and the DFS-exclusion invariant
+    purpose: affects field semantics; narrow the now-partial gate-derivation claim; amendment_log entry
   - file: tests/test_platform_roadmap_models.py
     action: Delete
     purpose: 497/500 SLOC -- decomposed into the tests/platform_roadmap_models/ mirror package (Decision 128/131)
+  - file: tests/fixtures/platform_roadmap_models.py
+    action: Create
+    purpose: >-
+      Shared _BASE_DOC/_doc/_item/_state_from_doc helpers lifted from the monolith's lines 1-72;
+      a sibling test_*.py import is forbidden by validate_no_cross_test_imports (Decision 131 cl.2)
   - file: tests/platform_roadmap_models/__init__.py
     action: Create
-    purpose: mirror-package marker, matching the tests/platform_roadmap_state/ precedent
+    purpose: mirror-package marker (Decision 131 clause 4), matching tests/platform_roadmap_state/
   - file: tests/platform_roadmap_models/test_schema.py
     action: Create
     purpose: TestStructuralValidation, TestFiledViaUnion, TestCD25SchemaAmendments, TestUserActionRequired, TestModelsCoverageTopUp
@@ -62,10 +72,10 @@ scope:
     purpose: TestExitCriterionNormalizer, TestExitCriteriaIntegrity, TestOpenQuestionKnownGapLifecycle
   - file: tests/platform_roadmap_models/test_blocking_edges.py
     action: Create
-    purpose: new blocked_by/affects round-trip, unresolvable-ref rejection, and DFS-exclusion cases
+    purpose: blocked_by/affects round-trip, ref+until validation, facade import, DFS-exclusion
   - file: tests/platform_roadmap_state/test_graph.py
     action: Modify
-    purpose: assert affects is never completion-blocking and blocked_by reaches non-in_progress projections
+    purpose: assert an affects-only CD never appears in completion_blocked_on_cd / blocked_on_cd
   - file: tests/platform_roadmap_state/test_realization_candidates.py
     action: Modify
     purpose: regression -- an empty-gates CD carrying affects must not become a realization candidate
@@ -75,17 +85,18 @@ scope:
 bundled_recommendations: []
 infrastructure_dependencies: []
 acceptance_criteria:
-  - ExitCriterion.blocked_by and CandidateDecision.affects load, reject unresolvable refs, and are excluded from the depends_on cycle DFS -- a blocked_by ring loads without error
+  - ExitCriterion.blocked_by and CandidateDecision.affects load, reject an unresolvable ref AND a wrong-kind until, and are excluded from the depends_on cycle DFS -- a blocked_by ring loads without error
   - CD.17 carries affects with its eight prior gate ids and gates is empty; blocked_on_cd() for T1.5 goes from ['CD.10', 'CD.17'] to ['CD.10']
-  - CD.17 does NOT appear in realization_candidates() after the split (the empty-gates vacuous-True path is guarded)
-  - All 7 cited blocked_by refs are present on exactly the criteria named in the transcription table, each matching its cited ref and until value
-  - The compute_state_dict projection delta versus origin/main equals the enumerated expected set in execution_steps and contains no other change
+  - CD.17 does NOT appear in realization_candidates() after the split
+  - All 7 cited blocked_by refs are present on exactly the four criteria named in the transcription table, each with its cited ref and until, and no blocked_by exists anywhere else in the roadmap
+  - Every test method name in the deleted monolith survives in the new mirror package
+  - Across all 11 to_preflight_dict keys, the only projection change versus origin/main is T1.5's blocked_on_cd entry
 verification_plan:
   - step: 1
     phase: pre-deploy
-    action: schema accepts the new edge types, rejects unresolvable refs, and excludes them from the DFS
+    action: schema accepts the new edge types, rejects bad refs and wrong-kind until, and excludes them from the DFS
     command: bin/venv-python -m pytest tests/platform_roadmap_models -q
-    expected: all pass, including the unresolvable-ref rejection and the blocked_by-ring-loads case
+    expected: all pass, including unresolvable-ref rejection, wrong-kind until rejection, and the blocked_by-ring-loads case
     fix_if: a blocked_by ring raises "Dependency cycle detected" -- the new edge leaked into step (c)
     graduation: graduate
     graduation_check_id: roadmap-blocked-by-excluded-from-depends-on-dfs
@@ -99,7 +110,7 @@ verification_plan:
     graduation_check_id: roadmap-affects-not-completion-blocking
   - step: 3
     phase: pre-deploy
-    action: live roadmap -- CD.17 split landed, CD.17 absent from realization candidates, all 7 refs on their exact criteria
+    action: live roadmap -- CD.17 split landed, CD.17 absent from realization candidates, all 7 refs on their exact criteria and nowhere else
     command: >-
       bin/venv-python -c "from pathlib import Path; from scripts.platform_roadmap_state import load, PlatformRoadmapState;
       d=load(Path('docs/ROADMAP-PLATFORM.yaml')); s=PlatformRoadmapState(d);
@@ -109,40 +120,64 @@ verification_plan:
       assert 'CD.17' not in {c['id'] for c in s.realization_candidates()};
       t15=next(e for e in s.blocked_on_cd() if e['id']=='T1.5');
       assert t15['blocking_cds']==['CD.10'], t15['blocking_cds'];
-      assert 'CD.17' not in t15['relationships'], t15['relationships'];
       assert 'T1.5' in ti['T1.6'].depends_on, 'T1.5 must REMAIN on T1.6.depends_on';
       exp={('T2.18','c2'):{('T2.26','complete')}, ('T2.26','c2'):{('CD.40','ratified'),('T3.20','complete')},
       ('T2.26','c3'):{('CD.40','ratified'),('T3.20','complete')}, ('T2.26','c8'):{('CD.40','ratified'),('T3.20','complete')}};
       got={(t.id,c.id):{(b.ref,b.until) for b in (c.blocked_by or [])} for t in d.tier_items for c in t.exit_criteria if c.blocked_by};
-      assert got==exp, ('MISMATCH', sorted(set(got)^set(exp)), got);
+      assert got==exp, ('MISMATCH', sorted(set(got)^set(exp)));
       print('OK 7 refs on 4 criteria; CD.17 split clean')"
     expected: "prints OK 7 refs on 4 criteria; CD.17 split clean"
-    fix_if: the MISMATCH tuple names the criterion that carries a wrong, missing or extra ref
+    fix_if: the MISMATCH tuple names the criterion carrying a wrong, missing or extra ref
     graduation: graduate
     graduation_check_id: roadmap-blocked-by-transcription-exact
   - step: 4
     phase: pre-deploy
-    action: projection differential versus origin/main equals the enumerated expected delta (Decision 147 clause 3)
+    action: projection differential versus origin/main is exactly T1.5's blocked_on_cd entry (Decision 147 clause 3)
     command: >-
-      bin/venv-python -c "import json,subprocess,tempfile,pathlib;
-      from scripts.platform_roadmap_state import compute_state_dict;
+      bin/venv-python -c "import subprocess,tempfile,pathlib; from pathlib import Path;
+      from scripts.platform_roadmap_state import load, PlatformRoadmapState;
+      pd=Path('docs/plans');
       base=subprocess.run(['git','show','origin/main:docs/ROADMAP-PLATFORM.yaml'],capture_output=True,text=True).stdout;
       p=pathlib.Path(tempfile.mkdtemp())/'base.yaml'; p.write_text(base);
-      keys=['next_eligible','in_progress','blocked','blocked_on_cd','ratifiable_cds','realization_candidates','deferred_post_mvp','strategic_pending'];
-      b=compute_state_dict(p); h=compute_state_dict(pathlib.Path('docs/ROADMAP-PLATFORM.yaml'));
-      delta={k:[b.get(k),h.get(k)] for k in keys if b.get(k)!=h.get(k)};
-      print(json.dumps({k:'CHANGED' for k in delta},indent=0));
-      print(json.dumps(delta,indent=1,default=str)[:4000])"
-    expected: >-
-      Only blocked_on_cd changes (T1.5 loses CD.17; the other seven CD.17-affected items lose it
-      too). next_eligible, in_progress, blocked, ratifiable_cds, realization_candidates,
-      deferred_post_mvp and strategic_pending are all unchanged. Any other CHANGED key is a defect.
+      b=PlatformRoadmapState(load(p)).to_preflight_dict(plans_dir=pd);
+      h=PlatformRoadmapState(load(Path('docs/ROADMAP-PLATFORM.yaml'))).to_preflight_dict(plans_dir=pd);
+      changed=sorted(k for k in b if b[k]!=h[k]);
+      assert changed==['blocked_on_cd'], ('UNEXPECTED KEYS', changed);
+      bb={e['id']:e['blocking_cds'] for e in b['blocked_on_cd']}; hh={e['id']:e['blocking_cds'] for e in h['blocked_on_cd']};
+      delta={k:(bb.get(k),hh.get(k)) for k in set(bb)|set(hh) if bb.get(k)!=hh.get(k)};
+      assert delta=={'T1.5':(['CD.10','CD.17'],['CD.10'])}, ('UNEXPECTED DELTA', delta);
+      print('OK projection delta bounded to T1.5')"
+    expected: "prints OK projection delta bounded to T1.5"
     fix_if: >-
-      realization_candidates CHANGED means the empty-gates guard is missing; next_eligible or
-      blocked CHANGED means a depends_on edge was altered, which this plan forbids
+      UNEXPECTED KEYS naming realization_candidates means the empty-gates guard is missing;
+      naming next_eligible or blocked means a depends_on edge was altered, which this plan forbids
     graduation: graduate
-    graduation_check_id: roadmap-projection-differential-bounded
+    graduation_check_id: roadmap-projection-delta-bounded-to-t15
   - step: 5
+    phase: pre-deploy
+    action: every test method in the deleted monolith survives the move (12k stale-surface sweep)
+    command: >-
+      bin/venv-python -c "import subprocess,re,pathlib;
+      base=subprocess.run(['git','show','origin/main:tests/test_platform_roadmap_models.py'],capture_output=True,text=True).stdout;
+      old=set(re.findall(r'^    def (test_\w+)', base, re.M));
+      new=set();
+      [new.update(re.findall(r'^    def (test_\w+)', f.read_text(), re.M)) for f in pathlib.Path('tests/platform_roadmap_models').glob('test_*.py')];
+      assert not pathlib.Path('tests/test_platform_roadmap_models.py').exists(), 'monolith still present';
+      missing=sorted(old-new); assert not missing, ('DROPPED TESTS', missing);
+      print('OK preserved', len(old), 'test methods ->', len(new))"
+    expected: "prints OK preserved 72 test methods -> 72 or more"
+    fix_if: DROPPED TESTS names the method(s) lost in the redistribution -- re-home them, do not rewrite
+    graduation: graduate
+    graduation_check_id: roadmap-models-test-move-preserves-methods
+  - step: 6
+    phase: pre-deploy
+    action: map_source_to_test resolves the models module to the new mirror package
+    command: bin/venv-python -m pytest tests/test_coverage_checker -q
+    expected: all pass
+    fix_if: the mapping still returns tests/test_platform_roadmap_models.py -- the roster entry is missing
+    graduation: graduate
+    graduation_check_id: roadmap-models-mirror-package-mapping
+  - step: 7
     phase: pre-deploy
     action: registered roadmap gate and full fast-tier presubmit are green
     command: bin/venv-python -m scripts.validate --pre
@@ -155,12 +190,12 @@ verification_plan:
       governance-tier-items-present-and-roadmap-valid.yaml, which this step invokes.
 test_obligations:
   - source: scripts/platform_roadmap_models.py
-    behavior: affects/blocked_by refs must resolve; blocked_by must never enter the depends_on cycle DFS
+    behavior: refs must resolve, until must match the ref's kind, and blocked_by must never enter the depends_on DFS
     verification_step: 1
     test_selector: tests/platform_roadmap_models/test_blocking_edges.py
     red_green_expectation: red before, green after
   - source: scripts/platform_roadmap_state.py
-    behavior: affects is never a completion gate and never makes an empty-gates CD a realization candidate
+    behavior: an empty-gates CD carrying affects is never a realization candidate
     verification_step: 2
     test_selector: tests/platform_roadmap_state/test_realization_candidates.py
     red_green_expectation: red before, green after
@@ -169,38 +204,54 @@ test_obligations:
     verification_step: 1
     test_selector: tests/platform_roadmap_models/test_blocking_edges.py
     red_green_expectation: red before, green after
+  - source: scripts/test_coverage_checker.py
+    behavior: map_source_to_test resolves platform_roadmap_models.py to the mirror package
+    verification_step: 6
+    test_selector: tests/test_coverage_checker
+    red_green_expectation: red before, green after
   - source: tests/fixtures/platform_roadmap_state.py
     behavior: _cd() accepts affects so state tests can build affects-carrying CDs
     verification_step: 2
     test_selector: tests/platform_roadmap_state/test_realization_candidates.py
     red_green_expectation: red before, green after
+  - source: tests/fixtures/platform_roadmap_models.py
+    behavior: shared doc/item builders are importable by all four package modules
+    verification_step: 1
+    test_selector: tests/platform_roadmap_models/test_schema.py
+    red_green_expectation: red before, green after
 constraints:
   - No rescue agents or workaround loops (Decision 55)
   - >-
     Transcribe ONLY the 7 refs in the execution_steps table, each licensed by its quoted source
-    sentence. Do not add, retarget or delete any other blocking relationship. Eight candidate
-    edges were considered and REJECTED this round for want of a blocking citation (T2.19 c2/c11,
-    T2.29 c8, T3.4 c2, T4.1 c5/c7/c10, T4.18 c1 -- the last already carries T4.15 in depends_on);
-    re-adding any of them is out of scope.
+    sentence. Eight candidate edges were considered and REJECTED for want of a blocking citation
+    (T2.19 c2/c11, T2.29 c8, T3.4 c2, T4.1 c5/c7/c10, T4.18 c1 -- the last already carries T4.15
+    in depends_on); re-adding any of them is out of scope.
   - >-
-    Do NOT modify any depends_on list. In particular T1.5 STAYS on T1.6.depends_on --
-    ROADMAP-PLATFORM.yaml:2946 is a standing determination REFUSING that relocation ("the
-    constraint stays in depends_on rather than being relocated"), and blocked_by has no runtime
-    consumer for not_started items that would replace it.
+    Do NOT modify any depends_on list. T1.5 STAYS on T1.6.depends_on -- ROADMAP-PLATFORM.yaml:2946
+    is a standing determination REFUSING that relocation ("the constraint stays in depends_on
+    rather than being relocated"), and blocked_by has no runtime consumer that would replace it.
   - >-
-    Ship no liveness detector, check module or baseline file here; that is rec-3395's plan,
-    deliberately decoupled so detector correctness and roadmap semantics are reviewed apart.
+    Do NOT surface blocked_by in any preflight projection this round. _slim_roadmap_state is a
+    whitelist and the orient skill enumerates the per-entry field contract; adding a consumer is
+    its own change. rec-3395's check reads the roadmap directly, so it needs no projection.
+  - >-
+    Mint NO numbered Decision. Decision 86 clause 2 and decision-entry.yaml's field_semantics
+    routing row ("Never a numbered Decision") send field/contract semantics to the OWNING
+    contract; this plan amends both owners instead.
+  - Ship no liveness detector, check module or baseline file here; that is rec-3395's plan
   - Do not flip any tier_item or criterion status (Decision 90)
   - Roadmap stays under the Decision 114 10,000-line ceiling; compact in place, never raise (Decision 147)
 context:
-  - "decision-scout: FLAGS_FOUND, 134/134 triaged. CITE: Decision 86 + Decision 127 (routing; no docs/ RCA report), Decision 136 + exit-criteria-ledger.yaml (blocked_by semantics home), Decision 131 + Decision 128 (mirror package; decompose not raise), Decision 167 (yaml significance envelope), Decision 114 + Decision 147 (ceiling; projection differential), Decision 105, Decision 67, Decision 55, Decision 87, Decision 48."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE round 1 -> re-dispatched"
-  - "Root cause: two edge fields (depends_on, gates) carry three semantics (start-blocks, completion-blocks, affects). ROADMAP-PLATFORM.yaml:794 annotates CD.17's gates as '# the strategic items the freeze affects' -- that comment licenses THIS plan's only gates transcription."
-  - "ROADMAP-PLATFORM.yaml:2946 was MISREAD in plan round 1 as licensing a T1.6 depends_on relocation. It refuses one. The T1.6 move is dropped; see the depends_on constraint above."
+  - "decision-scout: FLAGS_FOUND, 134/134 triaged. CITE: Decision 86 + Decision 127 (field semantics -> owning contract, no numbered Decision), Decision 136 + exit-criteria-ledger.yaml (blocked_by home), Decision 131 + Decision 128 (mirror package; decompose not raise), Decision 114 + Decision 147 (ceiling; projection differential), Decision 105, Decision 67, Decision 55, Decision 90, Decision 124, Decision 48."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE rounds 1-2 -> round 3 dispatched"
+  - "Root cause: two edge fields (depends_on, gates) carry three semantics (start-blocks, completion-blocks, affects). ROADMAP-PLATFORM.yaml:794 annotates CD.17's gates as '# the strategic items the freeze affects' -- that comment licenses this plan's only gates transcription."
+  - "ROADMAP-PLATFORM.yaml:2946 was MISREAD in round 1 as licensing a T1.6 depends_on relocation. It refuses one. The move is dropped and a constraint forbids any depends_on edit."
   - "Measurement: 464 raw cycles in the heterogeneous blocking graph; 1 toxic SCC under the internal-depends_on-edge discriminator (17 nodes; 20 including related_candidate_decisions). The CD.17 transcription alone shrinks it to 11/14 and frees T1.5, T1.6, T3.3, T3.4. Residual T4-only core (CD.11/CD.27/CD.38/CD.43) has no documentary evidence and is out of scope."
-  - "A broad blocking-phrase regex over open criteria matched 18 candidates at 33% precision; a narrow one matched 2. Reading the source sentences reduced the defensible set to 7 refs on 4 criteria. rec-3395 cites 34 prose edges roadmap-wide on a wider denominator -- its baseline seeding must re-derive rather than inherit either figure."
+  - "A broad blocking-phrase regex over open criteria matched 18 candidates at 33% precision; a narrow one matched 2. Reading source sentences reduced the defensible set to 7 refs on 4 criteria. rec-3395 cites 34 prose edges on a wider denominator -- its baseline must re-derive, not inherit either figure."
   - "Downstream: rec-3395 (open, High) registers validate_prose_blocking_edges + a shrink-only baseline and adds rehome-coverage. Its clause (a) requires ids be 'declared structurally' -- that declaration is this plan's blocked_by, so this plan is its prerequisite. rec-3394 names a second mutual-ownership vacuum (T2.51 c3 <-> T2.53 c6)."
-  - "validate_platform_roadmap check (ii) does NOT fire on in-item edits: its trigger regex needs a +/- line for the item's own '- id:'. Verified by git diff --no-index on real copies -> touched_ids == set(). No bare-string conversion is forced, and T2.18/T2.26 are already fully structured, so this plan converts none."
+  - "validate_platform_roadmap check (ii) does NOT fire on in-item edits: its regex needs a +/- line for the item's own '- id:'. Verified via git diff --no-index -> touched_ids == set(). No bare-string conversion is forced; T2.18/T2.26 are already fully structured, so this plan converts none."
+  - "Lambda gating: compute_affected_artifacts resolves docs/ROADMAP-PLATFORM.yaml to the active data-pipeline artifact, but only as a bundled assets: entry (manifest line 39), not a handler or include. validate_tier_floor explicitly excludes bundled assets and validate_lambda_deploy_gating is advisory-only, so no build/deploy/smoke step is owed and V2 stands (precedent: PLAN-ambient-prose-contract-relocation.yaml:465)."
+  - "VP step 4 must pass plans_dir explicitly: compute_state_dict derives plans_dir from the yaml path, so a tempdir baseline reports a spurious in_progress delta. Verified -- explicit plans_dir yields an empty delta on an unmodified tree."
   - "ci-rca DEFERRAL: rec-3293 and rec-3292 are open and unresolved. The human deferred them this session -- another agent is validating they are resolved. This plan satisfies none of the three Related-Work conditions and proceeds on that logged deferral."
   - "Roadmap headroom: 9,327 of 10,000 lines; projected growth ~29 lines."
 pre_implementation_checklist:
@@ -210,17 +261,19 @@ pre_implementation_checklist:
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
 execution_steps:
-  - "scripts/platform_roadmap_models.py: add class CriterionBlocker(BaseModel, extra='forbid') with ref: str, until: Literal['complete','ratified','disposition'], note: str|None = None. Add ExitCriterion.blocked_by: list[CriterionBlocker] = Field(default_factory=list) and CandidateDecision.affects: list[str] = Field(default_factory=list). In _validate_graph add a NEW step validating every blocked_by.ref and every affects entry resolves to a known tier_item id, CD id, or tier shortcut. Do NOT add either to the step-(c) adjacency -- that exclusion is the load-bearing invariant."
+  - "scripts/platform_roadmap_models.py: add class CriterionBlocker(BaseModel, extra='forbid') with ref: str, until: Literal['complete','ratified'], note: str|None = None. NOTE: 'disposition' is deliberately NOT a member -- it names a human activity with no observable terminus on any schema object. Add ExitCriterion.blocked_by: list[CriterionBlocker] = Field(default_factory=list) and CandidateDecision.affects: list[str] = Field(default_factory=list). In _validate_graph add a NEW step validating (a) every blocked_by.ref and affects entry resolves to a known tier_item id, CD id, or tier shortcut, and (b) until matches the ref's kind -- 'ratified' only on a CD ref, 'complete' only on a tier_item or tier-shortcut ref. Do NOT add either field to the step-(c) adjacency; that exclusion is the load-bearing invariant."
   - "scripts/roadmap/platform_roadmap.py: import CriterionBlocker from scripts.platform_roadmap_models and add it to __all__."
-  - "scripts/platform_roadmap_state.py: in realization_candidates(), skip any CD whose gates is empty AND affects is non-empty (an empty gates list is vacuously all-complete at _all_gates_complete, platform_roadmap_state.py:298-299; without this guard CD.17 becomes a realization candidate). Leave _pending_gating_cds_for_item keyed on gates/related_candidate_decisions/decision_required_before only -- affects must NOT be added. Surface criterion blocked_by refs for not_started and blocked items as well as in_progress. NOTE (out of scope, file a rec per implement-scope-boundary.yaml): CD.32 already has empty gates with no affects and is vacuously a realization candidate today -- pre-existing, do not fix inline."
+  - "scripts/platform_roadmap_state.py: in realization_candidates(), skip any CD whose gates is empty AND affects is non-empty (an empty gates list is vacuously all-complete at platform_roadmap_state.py:298-299; without this guard CD.17 becomes a realization candidate). Change nothing else -- affects must NOT be added to _pending_gating_cds_for_item, and no projection gains a blocked_by field this round. NOTE (out of scope, file a rec per implement-scope-boundary.yaml): CD.32 has empty gates and no affects and is vacuously a realization candidate today. The rec must frame the semantic fix (zero gates means no gate-derived realization evidence at all), because this plan's guard is scope-shaped and would not catch the next empty-gates/empty-affects CD."
   - "docs/ROADMAP-PLATFORM.yaml: set CD.17 gates: [] and affects: [T1.5, T1.6, T2.1, T3.3, T3.4, T4.1, T4.2, T4.4], moving the existing '# the strategic items the freeze affects' comment onto the affects line as the transcription's citation."
-  - "docs/ROADMAP-PLATFORM.yaml transcription table -- write EXACTLY these 7 refs and no others. T2.18 c2 -> {ref: T2.26, until: complete}, cited by 'The production-catalog destructive GC + confirming S3 storage is stable after N maintenance cycles remains intentionally deferred and is owned by T2.26'. T2.26 c2 -> {ref: CD.40, until: ratified} and {ref: T3.20, until: complete}, cited by 'ops_session_log is the sole remaining table, blocked on the CD.40/T3.20 retire-or-migrate disposition, not yet decided'. T2.26 c3 -> {ref: CD.40, until: ratified} and {ref: T3.20, until: complete}, cited by the LATER (2026-08-26) re-grounding 'it stays open only on the ops_session_log disposition' -- the earlier 2026-07-05 sentence naming T2.36 was superseded by the platform-only cleanse, so do NOT write a T2.36 ref. T2.26 c8 -> {ref: CD.40, until: ratified} and {ref: T3.20, until: complete}, cited by 'this criterion now closes solely on the ops_session_log disposition (CD.40/T3.20)'. Both items are already fully structured; convert nothing."
-  - "docs/contracts/exit-criteria-ledger.yaml: add a blocked_by entry under fields: with type, description, semantics, populated_by and dq_intent matching the met_by entry's shape; record in governance_notes that blocked_by is deliberately excluded from the depends_on cycle DFS and why. While open, correct the id/text entries' model home from scripts/roadmap/platform_roadmap.py::ExitCriterion (the facade) to scripts/platform_roadmap_models.py."
-  - "docs/contracts/candidate-decision-ratification.yaml: document affects (in-scope-of, never completion-blocking) and narrow the standing claim that 'gate derivation keys purely on cd.state == pending' to say derivation keys on gates, which affects deliberately does not populate. Add an amendment_log entry."
-  - "tests: delete tests/test_platform_roadmap_models.py and redistribute its 12 classes into the tests/platform_roadmap_models/ package per the scope rows (mirroring tests/platform_roadmap_state/). Preserve every existing test verbatim -- this is a move, not a rewrite. Add tests/platform_roadmap_models/test_blocking_edges.py covering blocked_by/affects round-trip, unresolvable-ref rejection, facade import of CriterionBlocker, and a blocked_by ring loading without a cycle error. Update tests/fixtures/platform_roadmap_state.py _cd() with an affects kwarg, and add the realization-candidate regression to tests/platform_roadmap_state/test_realization_candidates.py."
-  - "docs/DECISIONS.md: author the next free ## Decision NNN: entry (re-check the current max header at execution time -- 181 at planning time; a concurrent PR may have claimed it). Required markers Status/Date/Decision plus a bare ```yaml envelope immediately after the heading carrying number and significance: numbered_decision. Justify numbered_decision on the DFS-EXCLUSION INVARIANT -- a standing, reversal-relevant prohibition that no single contract owns because it spans the models module, both edge fields and every future graph consumer -- and on Decision 136's exit-criteria ledger post-dating the 2026-06-09 determination at ROADMAP-PLATFORM.yaml:2946. Do NOT justify it on 'no contract owns gates semantics': candidate-decision-ratification.yaml does, and this plan amends it. Record reversal conditions (what would justify folding blocked_by back into the DFS). Keep the entry under the Decision 167 clause 3 6,144-byte cap."
+  - "docs/ROADMAP-PLATFORM.yaml transcription table -- write EXACTLY these 7 refs and no others. T2.18 c2 -> {ref: T2.26, until: complete}, cited by 'The production-catalog destructive GC + confirming S3 storage is stable after N maintenance cycles remains intentionally deferred and is owned by T2.26'. IDIOM NOTE: 'owned by T2.26' is also this item's rehome idiom (c4 and c8 use it with status: rehomed + met_by: T2.26). c2 is transcribed as blocked_by, NOT rehomed, because only its production-catalog HALF moved -- the smoke-scoped half is already met and stays here, so the criterion cannot be wholly rehomed. Do not convert c2's status. T2.26 c2 -> {ref: CD.40, until: ratified} and {ref: T3.20, until: complete}, cited by 'ops_session_log is the sole remaining table, blocked on the CD.40/T3.20 retire-or-migrate disposition, not yet decided'. T2.26 c3 -> the same pair, cited by the LATER (2026-08-26) re-grounding 'it stays open only on the ops_session_log disposition' -- the earlier 2026-07-05 sentence naming T2.36 was superseded by the platform-only cleanse, so do NOT write a T2.36 ref. T2.26 c8 -> the same pair, cited by 'this criterion now closes solely on the ops_session_log disposition (CD.40/T3.20)'. Both items are already fully structured; convert nothing."
+  - "docs/contracts/exit-criteria-ledger.yaml: add a blocked_by entry under fields: with type, description, semantics, populated_by and dq_intent matching the met_by entry's shape. Record in governance_notes that blocked_by is deliberately excluded from the depends_on cycle DFS, and why (the edges it carries close real rings, so folding them into a load-time rejector would make the roadmap unloadable rather than reporting the deadlock). Correct fields.id/fields.text's model home from scripts/roadmap/platform_roadmap.py::ExitCriterion (the facade) to scripts/platform_roadmap_models.py. This file has NO amendment_log key -- add one, because contracts_enforcement.check_amendment_for_diff category 6 fires on a change to an existing field's description/semantics and will fail without it."
+  - "docs/contracts/candidate-decision-ratification.yaml: document affects (in-scope-of, never completion-blocking) and narrow the standing claim that 'gate derivation keys purely on cd.state == pending' to say derivation keys on gates, which affects deliberately does not populate. Add an amendment_log entry. Also correct surfacing_signal.location and second_signal_realized_but_pending.location, which carry the same stale facade home being fixed in the ledger."
+  - "tests: lift the monolith's shared helpers (_BASE_DOC/_doc/_item/_state_from_doc, lines 1-72) into tests/fixtures/platform_roadmap_models.py; a sibling test_*.py import is forbidden by validate_no_cross_test_imports. Delete tests/test_platform_roadmap_models.py and redistribute its 12 classes into the package per the scope rows, preserving every test verbatim -- this is a move, not a rewrite (VP step 5 enforces method-name preservation). Add tests/platform_roadmap_models/test_blocking_edges.py covering blocked_by/affects round-trip, unresolvable-ref rejection, wrong-kind until rejection, facade import of CriterionBlocker, and a blocked_by ring loading without a cycle error."
+  - "scripts/test_coverage_checker.py: add 'scripts/platform_roadmap_models.py' to _CONCERN_SPLIT_TEST_PACKAGES, alongside the existing scripts/platform_roadmap_state.py entry."
+  - "tests/fixtures/platform_roadmap_state.py: add an affects kwarg to _cd(). tests/platform_roadmap_state/: add the realization-candidate regression and the affects-not-completion-blocking assertion."
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - 'Report: what was implemented, verification results, and the CD.32 rec filed'
 rollback: >-
-  Single-commit revert. The new fields are additive and default-empty and no depends_on edge is
-  touched, so reverting restores the prior graph reading exactly; no data migration or deploy.
+  Single-commit revert. The new fields are additive and default-empty, no depends_on edge is
+  touched, and the test move is name-preserving, so reverting restores the prior graph reading
+  exactly; no data migration or deploy.
