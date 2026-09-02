@@ -34,7 +34,10 @@ scope:
     action: Create
     purpose: >-
       Executes each NAMED_READS verb's SQL in in-memory DuckDB and asserts the column set equals
-      its VERB_FIELDS entry; SELECT * verbs resolve via resolve_table_spec(table).ordered_columns.
+      its VERB_FIELDS entry; SELECT * verbs resolve via resolve_table_spec(table).ordered_columns
+      (a tuple of (name, sql_type) pairs). Note rec_history selects from {hist} while its
+      NamedRead.table is ops_recommendations -- the sentinel resolves correctly only because
+      _order_columns is shared between the history and current tables.
       Also asserts the client's literal version pin equals NAMED_READS_VERSION at this commit.
   - file: tests/common/ducklake_reader_client/test_reader_rows_helper.py
     action: Create
@@ -60,8 +63,9 @@ acceptance_criteria:
     VERB_FIELDS declares a column tuple for every fixed-column NAMED_READS verb and the
     ALL_TABLE_COLUMNS sentinel for the four SELECT * verbs; a test proves each fixed-column entry
     equals the column set that verb's SQL actually produces in DuckDB, and resolves each sentinel
-    through resolve_table_spec(table).ordered_columns at assertion time. No SELECT * column list
-    is hand-copied, so an ops_tables column add cannot drift the declaration.
+    through resolve_table_spec(table).ordered_columns at assertion time -- which yields
+    (name, sql_type) PAIRS, so project it as [c for c, _ in spec.ordered_columns]. No SELECT *
+    column list is hand-copied, so an ops_tables column add cannot drift the declaration.
   - >-
     The client's literal registry-version pin equals NAMED_READS_VERSION at this commit, asserted
     by test rather than by comment.
@@ -69,7 +73,8 @@ acceptance_criteria:
     verb_rows(verb, rows) returns each row containing exactly the verb's declared columns --
     extra keys dropped, and an unknown verb name raises rather than passing through.
   - >-
-    TestFindOpenConvergenceStaleRec's three fixtures (lines ~19-22 and ~29-31) build rows through
+    TestFindOpenConvergenceStaleRec's two fixture lists (five dicts, lines ~19-23 and ~29-32)
+    build rows through
     verb_rows("open_recs", ...). EXACTLY ONE test is marked xfail(strict=True):
     test_returns_first_matching_rec. test_returns_none_when_no_match and
     test_returns_none_on_empty_list still pass after stripping and MUST NOT be marked, or
@@ -132,7 +137,7 @@ verification_plan:
       rows the dedup lookup finds nothing, and the assertions are xfail(strict=True) so the test
       fails loudly the moment a repair makes it pass without being rewritten.
     command: bin/venv-python -m pytest tests/convergence_health/test_escalate.py -q -rx
-    expected: exit 0 with the lookup assertions reported XFAIL (not XPASS, not PASS)
+    expected: exit 0 with `1 xfailed` reported (not XPASS, not a bare PASS)
     fix_if: >-
       XPASS means the lookup started matching without the test being updated -- rewrite the test
       against the repaired lookup rather than deleting the marker.
@@ -177,9 +182,8 @@ verification_plan:
       The xfail reasons cite a filed recommendation id, so the production defect the markers
       encode has a durable record rather than living only as test metadata.
     command: |
-      grep -q 'rec-[0-9]\+' tests/convergence_health/test_escalate.py
-      echo "OK - xfail reason cites a rec id"
-    expected: prints the OK line
+      grep -Eq 'xfail\(strict=True[^)]*rec-[0-9]+' tests/convergence_health/test_escalate.py && echo "OK - xfail reason cites a rec id"
+    expected: prints `OK - xfail reason cites a rec id`
     fix_if: >-
       File the dedup-blindness rec first (execution step 1) and cite its id in the xfail reason;
       an xfail pointing at a non-existent 'repair plan' is an orphan.
@@ -188,7 +192,10 @@ verification_plan:
     graduation_check_id: convergence-xfail-cites-rec
   - step: 8
     phase: pre-deploy
-    action: Coverage on the modified client holds its ratcheted floor (config/coverage_baseline.yaml records 88.3).
+    action: >-
+      The per-file coverage mapping check passes for the modified client. (The 88.3 ratchet in
+      config/coverage_baseline.yaml is enforced separately inside validate.py -- this command runs
+      the per-file check, not that comparison.)
     command: bin/venv-python -m scripts.test_coverage_checker --check-coverage --file src/common/ducklake_reader_client.py
     expected: exit 0 with a PASS verdict (the checker emits PASS/FAIL and "all N source files at 100%", never a bare percentage to compare)
     fix_if: On FAIL, add assertions rather than lowering the baseline.
@@ -341,14 +348,13 @@ context:
     VERB_FIELDS duplicates a server-owned contract. Adding `fields` there is the real fix;
     deploy-ducklake-lambdas.yml makes the five-artifact redeploy CI time, not toil -- re-weigh.
   - >-
-    Recorded, not fixed here: deploy-prod-lambdas.yml's paths filter and PROD_SOURCE_PATHSPECS
-    (code_drift.py:261) both omit src/common/**, so a change to this client neither triggers a
-    deploy nor raises prod_code_drift -- the deployed artifact could carry stale client code
-    indefinitely with no alarm. File as a rec from the implementing session.
-  - >-
-    preflight/alerts.py calls named("budget_breach_recent"), registered NOWHERE server-side (live
-    probe: HTTP 500 unknown-verb), surviving only via a broad except. Fix in the call-site
-    follow-on.
+    Recorded, not fixed here (execution step 10 files the rec): this path matches
+    deploy-ducklake-lambdas.yml's and DUCKLAKE_SOURCE_PATHSPECS' ducklake_*.py glob while
+    appearing in no ducklake manifest, and is absent from deploy-prod-lambdas.yml's filter and
+    PROD_SOURCE_PATHSPECS despite being packaged into data-pipeline -- over-triggering one
+    channel, under-triggering the other, with no prod_code_drift alarm. Separately,
+    preflight/alerts.py calls named("budget_breach_recent"), registered NOWHERE server-side
+    (live probe: HTTP 500 unknown-verb), surviving only via a broad except -- call-site follow-on.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -392,8 +398,9 @@ execution_steps:
   - >-
     tests/convergence_health/test_escalate.py -- convert ONLY TestFindOpenConvergenceStaleRec's
     fixtures (~19-22, ~29-31) via verb_rows("open_recs", ...) and mark ONLY
-    test_returns_first_matching_rec with pytest.mark.xfail(strict=True, reason=...) citing the
-    rec id from step 1. Do NOT mark test_returns_none_when_no_match or
+    test_returns_first_matching_rec with pytest.mark.xfail(strict=True, reason="... rec-NNNN ...")
+    -- the rec id must sit INSIDE the xfail(...) call itself, inline in the reason string, because
+    VP step 7 anchors on that shape. Do NOT mark test_returns_none_when_no_match or
     test_returns_none_on_empty_list -- they still pass after stripping and would XPASS.
   - >-
     Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop
