@@ -1,0 +1,728 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: drain-glue-orphan-mcp-transport
+intent: >-
+  Make the Decision 178 clause 4 drain runbook reachable on the only surface that runs it by moving its
+  GitHub I/O off the gh CLI onto the agent's mcp__github__ tools (Decision 76 clause 4), then spend the
+  one unspent tf-gated-apply approval to drain aws_glue_catalog_database.ops and clear the red
+  convergence record -- proving the restructured runbook against the live operation it exists for, and
+  correcting the two stale premises the same landing left in PLAN-terraform-state-triggers-restore.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-drain-glue-orphan-mcp-transport.yaml
+phase: >-
+  Platform CI/CD convergence repair. ad_hoc_rec soft-warn exception category (rec-3381 Critical,
+  rec-3384/rec-3385 High), so the Tier Item Freshness Gate is skipped and no tier_item is claimed --
+  same shape as PLAN-glue-delete-database-grant, whose VP steps 10-12 this plan's VP 13-19 supersede.
+scope:
+  - file: scripts/ops/drain_glue_orphan.py
+    action: Delete
+    purpose: >-
+      Replaced by the facade package below. Decompose-by-default (Decision 128): 441 SLOC today; -90
+      removing the gh wiring, +~160 for normalization, the sub-command CLI and next_action descriptors
+      lands it near 510, over the 500 limit. No sloc_budgets.yaml entry is added.
+  - file: scripts/ops/drain_glue_orphan/__init__.py
+    action: Create
+    purpose: >-
+      Facade re-exporting the FULL public surface of the deleted module (Decision 124 / 80 pt 3 / 104),
+      so tests/fixtures/drain_glue_orphan.py's `from scripts.ops.drain_glue_orphan import
+      _TFSTATE_BUCKET, _TFSTATE_KEY` and every existing test import keep resolving unchanged.
+  - file: scripts/ops/drain_glue_orphan/_world.py
+    action: Create
+    purpose: >-
+      assert_workflow_invariants, tfstate_has_orphan, RemoveState, derive_remove_state and the three
+      gates, moved behaviour-preserving. Carries the per-leg AWS identity split (below) and the
+      corrected Decision 120 re-derivation of the raw-S3 tfstate read.
+  - file: scripts/ops/drain_glue_orphan/_github.py
+    action: Create
+    purpose: >-
+      NEW. Normalizes mcp__github__ payloads to the module's internal run shape and holds the pure
+      oracles: select_dispatch_candidate, find_in_flight_dispatch, is_terminal, the destruction-line
+      read and the four-fact converge read. The four measured shape hazards live and die here.
+  - file: scripts/ops/drain_glue_orphan/_phases.py
+    action: Create
+    purpose: >-
+      PhaseOutcome plus the gate/correlate/verify sub-phases for remove and converge, and phase_close
+      unchanged. All fail-closed judgement stays here as pure functions over injected seams.
+  - file: scripts/ops/drain_glue_orphan/__main__.py
+    action: Create
+    purpose: >-
+      argparse --phase/--step CLI, the two AWS profile flags, loading of agent-written payload JSON,
+      the on-disk step-record chain, and next_action emission. `-m scripts.ops.drain_glue_orphan`
+      resolves here, so the invocation surface is unchanged by the package conversion.
+  - file: tests/ops/test_drain_glue_orphan.py
+    action: Modify
+    purpose: >-
+      Keep the phase, precondition and workflow-invariant cases; DELETE TestLiveWiring wholesale (its
+      subject is gone); repoint the no-hardcoded-fluent source scan from a single file to the package
+      directory. Must stay under 500 SLOC after the split below.
+  - file: tests/ops/test_drain_glue_orphan_github.py
+    action: Create
+    purpose: >-
+      The reachability regression guard: real captured mcp__github__ payloads driven through the
+      normalizer and oracles, WITH explicit negatives proving the gh-shaped keys are no longer read.
+  - file: tests/ops/test_drain_glue_orphan_cli.py
+    action: Create
+    purpose: >-
+      Sub-command routing, the facade surface, the per-leg profile wiring, the step-record chain, and
+      the next_action contract.
+  - file: tests/fixtures/drain_glue_orphan.py
+    action: Modify
+    purpose: >-
+      Repoint the S3/reader doubles at the package; add loaders for the captured payload JSON and a
+      recording session factory that reports which profile each boto3 client was built from.
+  - file: tests/fixtures/drain_glue_orphan_payloads/reconcile_runs.json
+    action: Create
+    purpose: >-
+      Real mcp__github__ actions_list(list_workflow_runs, reconcile.yml, event=workflow_dispatch)
+      payload. Pins `id` and `created_at`, and supplies a real all-terminal listing (7 runs, newest
+      2026-08-15) so the pre-dispatch in-flight gate is exercised against reality.
+  - file: tests/fixtures/drain_glue_orphan_payloads/reconcile_run_jobs.json
+    action: Create
+    purpose: >-
+      Real actions_list(list_workflow_jobs) payload for reconcile run 31883298153. Pins the
+      double-nested {"jobs": {"jobs": [...]}} envelope AND the skipped-job-carries-no-steps case that
+      the converge viewer's fail-closed branch must handle.
+  - file: tests/fixtures/drain_glue_orphan_payloads/apply_sandbox_run_jobs.json
+    action: Create
+    purpose: >-
+      Real list_workflow_jobs payload for terraform-apply-sandbox run 33323201848 (the red run named in
+      the convergence record) -- the converge four-fact oracle's actual input shape, with the real
+      review and plan step names and conclusions.
+  - file: tests/fixtures/drain_glue_orphan_payloads/job_logs_envelope.json
+    action: Create
+    purpose: >-
+      Real get_job_logs envelope (logs[].logs_content, job_id, job_name, original_length) carrying a
+      BOUNDED, REDACTED excerpt only -- never a raw terraform apply log. Pins the timestamp-prefixed
+      line format and the truncation guard's input.
+  - file: config/agent/verification_registry/entries/drain-glue-orphan-preconditions.yaml
+    action: Modify
+    purpose: >-
+      Repoint guard_target (currently scripts/ops/drain_glue_orphan.py, a path this plan DELETES) at
+      the package, and check_spec.node_id at a test file that does not exist on origin/main. check_id
+      and therefore the filename are PRESERVED (filename-equals-check_id is structurally enforced).
+  - file: docs/plans/PLAN-terraform-state-triggers-restore.yaml
+    action: Modify
+    purpose: >-
+      rec-3384 + rec-3385. Correct the iam-simulate-fixture scope item's two false premises, de-vacuate
+      VP5, and replace VP9/VP10's frozen literals with run-time derivations from live tfstate. Not the
+      resolved plan of this diff, so implement-scope-boundary's prohibited_field_edits do not apply.
+  - file: docs/plans/PLAN-drain-glue-orphan-mcp-transport.yaml
+    action: Create
+    purpose: this plan
+bundled_recommendations:
+  - rec-3381
+  - rec-3384
+  - rec-3385
+acceptance_criteria:
+  - >-
+    scripts/ops/drain_glue_orphan.py no longer exists, the facade package contains no gh invocation and
+    no subprocess import, and no config/, scripts/, tests/, bin/ or .github/ path still references the
+    deleted module path.
+  - >-
+    Every name the deleted module exported is importable from scripts.ops.drain_glue_orphan, and every
+    pre-existing behavioural test still passes against the package.
+  - >-
+    Committed real mcp__github__ payloads drive the normalizer, and a paired negative proves the four
+    gh-shaped assumptions (databaseId, createdAt, single-nested jobs, untruncated logs) are dead.
+  - >-
+    The tfstate read is the ONLY leg using agent_platform_admin; the convergence record, the DuckLake
+    reader and the portal write all run as agent_platform, wired structurally rather than probed.
+  - >-
+    gate, correlate and verify each refuse to run without their predecessor's on-disk step record, and
+    verify refuses to emit a destruction verdict from a truncated log or an uncorrelated run.
+  - Every scope Python file is under 500 SLOC and config/sloc_budgets.yaml gains no entry.
+  - aws_glue_catalog_database.ops is absent from terraform/personal tfstate.
+  - >-
+    The convergence record reads status green, written by the acknowledge-and-retry apply itself
+    (Decision 92 point 2) and never by a direct S3 write.
+  - >-
+    PLAN-terraform-state-triggers-restore carries no vacuous glue assertion, no athena precondition and
+    no frozen destroy count.
+  - rec-3381, rec-3384 and rec-3385 are closed, and the removal-obligation rec is filed.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Prove the gh transport is gone and the old surface is unreachable, non-vacuously. The `test -f`
+      on the facade guarantees the package exists, so the recursive greps cannot pass by scanning
+      nothing -- the vacuity mode that makes rec-3381's own acceptance oracle useless once the file is
+      deleted, and the same mode rec-3384 records in the plan this one repairs.
+    command: >-
+      test ! -f scripts/ops/drain_glue_orphan.py && test -f scripts/ops/drain_glue_orphan/__init__.py &&
+      ! grep -rn "subprocess" scripts/ops/drain_glue_orphan/ &&
+      ! grep -rn '"gh"' scripts/ops/drain_glue_orphan/ &&
+      ! grep -rn "scripts/ops/drain_glue_orphan\.py" config/ scripts/ tests/ bin/ .github/
+    expected: >-
+      Exit 0. The module file is gone, the package is present, neither `subprocess` nor a "gh" argv
+      literal survives anywhere in it, and no live config, script, test, bin or workflow path still
+      names the deleted module. docs/plans/ is deliberately excluded -- PLAN-glue-delete-database-grant
+      names that path in its own merged scope and must not be edited.
+    fix_if: >-
+      A surviving `subprocess` import means a live-wiring helper was moved rather than deleted. A
+      surviving config/ hit is almost certainly the verification-registry shard's guard_target -- fix it
+      in step 10, not by weakening this grep.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: drain-glue-orphan-no-gh-transport
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Prove the facade re-exports the FULL public surface of the deleted module, derived from the
+      pre-change file at origin/main rather than from a hand-listed set, so a name dropped in the move
+      reds instead of surfacing as an ImportError at drain time.
+    command: bin/venv-python -m pytest tests/ops/test_drain_glue_orphan_cli.py::TestFacadeSurface -q
+    expected: >-
+      Passes. The test reads the deleted module's source from `git show origin/main:scripts/ops/
+      drain_glue_orphan.py`, collects every module-level name not starting with a dunder, and asserts
+      each is reachable on scripts.ops.drain_glue_orphan.
+    fix_if: >-
+      A missing name is a facade gap, not a test bug -- add the re-export. If origin/main is
+      unreachable the test must SKIP with a printed reason, never silently pass on an empty name set.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: drain-glue-orphan-facade-surface
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      The reachability guard this plan exists to install. Drive the four committed REAL payloads through
+      the normalizer and oracles, and assert the paired NEGATIVES -- feeding the gh-shaped keys must
+      yield no candidate rather than a wrong one. Both defects previously found in this module were
+      invisible because its tests asserted argv shapes against invented payloads while mocking
+      subprocess.run; there is no rehearsal subject left after the drain.
+    command: bin/venv-python -m pytest tests/ops/test_drain_glue_orphan_github.py -q
+    expected: >-
+      Passes, covering all four measured hazards: `id` is read and `databaseId` is not; `created_at`
+      is read and a payload carrying only `createdAt` correlates ZERO candidates (the silent-forever
+      failure); list_workflow_jobs' double-nested {"jobs": {"jobs": [...]}} envelope resolves the
+      apply-sandbox job while a single-nested dict does not; and a jobs payload whose skipped job
+      carries no steps[] key raises WorldMovedError rather than inferring guard_routed from absence.
+    fix_if: >-
+      A green run against a hand-written payload proves nothing -- if a fixture had to be edited to make
+      a test pass, the fixture is no longer captured reality and the test has been inverted. Recapture
+      from the named run ids instead.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: drain-glue-orphan-mcp-payload-shapes
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Prove the fail-closed chain is structural rather than documented (Decision 163): every step
+      refuses without its predecessor's on-disk record, and verify refuses the one verdict that carries
+      irreversible consequence unless its evidence is complete.
+    command: bin/venv-python -m pytest tests/ops/test_drain_glue_orphan_cli.py::TestFailClosedChain -q
+    expected: >-
+      Passes. correlate without a gate record exits non-zero; verify without a correlation record exits
+      non-zero; verify whose fetched run id disagrees with the recorded one exits non-zero; a job-logs
+      payload whose returned line count is short of original_length raises rather than reporting
+      terminal_without_destruction; and more than one correlation candidate raises rather than picking.
+    fix_if: >-
+      If any of these merely PRINTS a warning and continues, the protection is advisory and the step
+      has not passed. A truncated-log false negative is the specific fail-open that would license an
+      operator escalation the resource does not need.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: drain-glue-orphan-fail-closed-chain
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      Prove the per-leg AWS identity split is wired structurally, not asserted by an in-process probe
+      (Decision 143). The tfstate read is the ONLY leg that may use the admin identity.
+    command: bin/venv-python -m pytest tests/ops/test_drain_glue_orphan_cli.py::TestProfileLegs -q
+    expected: >-
+      Passes. A recording session factory shows the client used for the tfstate get_object was built
+      from --state-profile, and that the convergence-record read, the DuckLake reader and file_rec were
+      all built from --profile. Defaults are agent_platform for --profile and agent_platform_admin for
+      --state-profile; passing the admin profile to --profile is accepted but recorded, not required.
+    fix_if: >-
+      One shared client for both S3 objects collapses the split -- the convergence record is readable by
+      PlatformDev (verified live) and must stay on it. Do NOT satisfy this step by widening PlatformDev's
+      tfstate grant: that deny is deliberate (platform_roles.tf:170, DEP-13 / Decision 113 -- both
+      ExternalIds live in tfstate's assume_role_policy trust documents).
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Graduating this would pin a CLI flag pairing specific to a one-shot runbook that is frozen once
+      the drain completes. The durable control is the IAM deny itself, which AWS enforces outside this
+      repo; a standing repo check would restate it at a weaker altitude.
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      Confirm the decomposition absorbed the growth rather than a budget raise absorbing it
+      (Decision 128 / 165).
+    command: >-
+      ! grep -q "drain_glue_orphan" config/sloc_budgets.yaml &&
+      bin/venv-python -m scripts.checks.sloc.sloc_limits 2>/dev/null || true;
+      ! grep -q "drain_glue_orphan" config/sloc_budgets.yaml
+    expected: >-
+      Exit 0 -- no drain_glue_orphan entry exists in config/sloc_budgets.yaml, meaning every package
+      module and every test file landed at or under 500 SLOC without registration. The standing
+      validate_sloc_limits check in both presubmit tiers is what proves the per-file numbers.
+    fix_if: >-
+      If a file crosses 500, split it further -- do NOT register it and do NOT add a raise-approved
+      marker. There is no Decision authorizing a raise for this work, so validate_sloc_budget_raises
+      would fail the PR on an unmarked increase anyway.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_sloc_limits and validate_sloc_budget_raises already enforce exactly this in both
+      presubmit tiers; a registry shard here would be a duplicate oracle for a standing repo-wide check.
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      Confirm the restructure preserved full coverage of the decision logic. The pre-change module was
+      232 statements at 100 percent across 52 tests; that number is the baseline the move must not erode.
+    command: >-
+      bin/venv-python -m pytest tests/ops/ -q --cov=scripts.ops.drain_glue_orphan
+      --cov-report=term-missing --cov-fail-under=100
+    expected: 100 percent statement coverage of the package, every test green.
+    fix_if: >-
+      Do NOT reach an uncovered branch by patching the module's own constants (rec-2925 names that
+      escape hatch explicitly). An unreachable branch is deleted, not mocked into coverage.
+    hermetic: false
+    graduation: not-applicable
+  - step: 8
+    phase: pre-deploy
+    action: >-
+      rec-3384. Correct the iam-simulate-fixture scope item's two false premises in
+      PLAN-terraform-state-triggers-restore and de-vacuate its VP5. Ground truth measured this session:
+      the fixture carries 68 triples, the exact id `p2-glue-delete-database` is ABSENT (so the existing
+      `not in ids` assertion passes vacuously), and the two armed replacement rows are live.
+    command: >-
+      grep -q "p2-glue-delete-database-database-axis" docs/plans/PLAN-terraform-state-triggers-restore.yaml &&
+      grep -q "p2-glue-delete-database-udf-axis" docs/plans/PLAN-terraform-state-triggers-restore.yaml &&
+      ! grep -q "cleanse removed that grant from both the identity policy and the boundary but left the row"
+      docs/plans/PLAN-terraform-state-triggers-restore.yaml &&
+      ! grep -q "60 triples" docs/plans/PLAN-terraform-state-triggers-restore.yaml
+    expected: >-
+      Exit 0. The scope item no longer instructs removal of a row that PLAN-ci-convergence-fixes already
+      removed, no longer claims the grant is absent (PR #1008 restored it at both IAM layers), and names
+      the two armed rows as coverage to PRESERVE. VP5 asserts both armed ids are PRESENT rather than
+      asserting a renamed id's absence, and its stale 60/61 triple expectation is gone.
+    fix_if: >-
+      Do not simply delete VP5 -- the fixture shape check it also runs is still wanted. Replace the
+      vacuous membership assertion; keep the shape leg.
+    hermetic: true
+    graduation: not-applicable
+  - step: 9
+    phase: pre-deploy
+    action: >-
+      rec-3385. Remove the unsatisfiable athena precondition and the frozen destroy counts from
+      PLAN-terraform-state-triggers-restore's VP9/VP10. Ground truth: the committed fixture carries ZERO
+      athena rows and Decision 178 clause 2 deliberately keeps athena absent from both IAM layers, so no
+      athena verb can ever simulate `allowed` and nothing in the repo owns restoring one.
+    command: >-
+      ! grep -q "'iam','lambda','logs','glue','athena','secretsmanager'" docs/plans/PLAN-terraform-state-triggers-restore.yaml &&
+      ! grep -q "destroy_count')==15" docs/plans/PLAN-terraform-state-triggers-restore.yaml &&
+      ! grep -q "len(t)>=14" docs/plans/PLAN-terraform-state-triggers-restore.yaml &&
+      grep -q "derive" docs/plans/PLAN-terraform-state-triggers-restore.yaml
+    expected: >-
+      Exit 0. `need` drops athena and is derived from the services the addresses STILL IN STATE actually
+      require; the triple-count floor and the destroy_count/address-set literals are replaced by a
+      derivation from live tfstate at run time. The "assert the SET, name the intruder" control that
+      rec-3323 installed is PRESERVED -- only its frozen membership becomes derived.
+    fix_if: >-
+      Do NOT substitute a new hardcoded number computed from this session's arithmetic. That reproduces
+      the exact defect: four of the fourteen retired addresses are already drained (this plan drains the
+      last of them), so any literal authored now is stale the moment VP 13-19 run.
+    hermetic: true
+    graduation: not-applicable
+  - step: 10
+    phase: pre-deploy
+    action: >-
+      Repoint the verification-registry shard off the deleted path. Its check_spec.node_id MUST name a
+      test file absent from origin/main: modifying a shard re-triggers real differential admission,
+      which materializes an origin/main worktree and requires the check to FAIL there. A node_id that
+      still names the pre-existing test file would PASS on origin/main and red the PR as "not admitted".
+    command: >-
+      grep -q "guard_target: scripts/ops/drain_glue_orphan/" config/agent/verification_registry/entries/drain-glue-orphan-preconditions.yaml &&
+      grep -q "check_id: drain-glue-orphan-preconditions" config/agent/verification_registry/entries/drain-glue-orphan-preconditions.yaml &&
+      test -f "$(bin/venv-python -c "import yaml;print(yaml.safe_load(open('config/agent/verification_registry/entries/drain-glue-orphan-preconditions.yaml'))['check_spec']['node_id'].split('::')[0])")" &&
+      ! git show origin/main:"$(bin/venv-python -c "import yaml;print(yaml.safe_load(open('config/agent/verification_registry/entries/drain-glue-orphan-preconditions.yaml'))['check_spec']['node_id'].split('::')[0])")" >/dev/null 2>&1
+    expected: >-
+      Exit 0. guard_target names the package directory, check_id (and therefore the filename) is
+      unchanged, the node_id's file exists on this branch, and `git show origin/main:<that file>` FAILS
+      -- proving the differential will produce the required FAIL on the reverted tree.
+    fix_if: >-
+      If the node_id file does exist on origin/main, point it at one of the two new test files instead.
+      Never resolve an admission failure by deleting the shard -- Decision 132/176 make graduation a
+      pre-merge obligation, and the check_id must survive.
+    hermetic: true
+    graduation: not-applicable
+  - step: 11
+    phase: pre-deploy
+    action: >-
+      Public-repo boundary on the captured fixtures (Decision 101, AGENTS.md never-commit list). Run and
+      GitHub-jobs payloads may be committed verbatim -- their commit text is already in this repo's git
+      history -- but terraform job logs carry account ids and ARNs and are committed only as bounded,
+      redacted excerpts.
+    command: >-
+      ! grep -rEn "arn:aws:[^:]*:[^:]*:[0-9]{12}:|(AIDA|ASIA|AKIA)[A-Z0-9]{16}" tests/fixtures/drain_glue_orphan_payloads/ &&
+      bin/venv-python -m scripts.ci.redaction_check --mode assert-clean tests/fixtures/drain_glue_orphan_payloads/job_logs_envelope.json
+    expected: >-
+      Exit 0. No account-bearing ARN and no IAM key-id shape survives in any payload fixture, and the
+      job-log excerpt passes the repo's own redaction assertion. The pre-commit block-sensitive-identifiers
+      pygrep hook and detect-secrets are the standing belt-and-braces.
+    fix_if: >-
+      A hit in the job-log excerpt means the excerpt was taken raw -- re-scrub via redaction_check
+      --mode redact and re-bound it. Never add the file to an exclude list to get past the hook.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The standing controls are the pre-commit block-sensitive-identifiers pygrep hook and the
+      detect-secrets baseline, both of which already scan every committed path on every commit; a
+      registry shard scoped to one fixture directory would be a narrower duplicate of a repo-wide gate.
+  - step: 12
+    phase: pre-deploy
+    action: Full fast-tier presubmit on the branch before anything live is touched.
+    command: bin/venv-python -m scripts.validate --pre
+    expected: >-
+      Exit 0, including validate_sloc_limits, validate_sloc_budget_raises, validate_verification_registry
+      (with its differential admission leg on the modified shard), validate_scope_boundary,
+      validate_plan_documents and validate_graduation_completeness.
+    fix_if: >-
+      A scope-boundary failure means a touched path is outside this plan's declared scope union -- the
+      fix is a human-directed plan amendment landed as its own revision, never editing this plan's own
+      scope list after the fact.
+    hermetic: false
+    graduation: not-applicable
+  - step: 13
+    phase: post-deploy
+    action: >-
+      OPERATOR, ADMIN container. Preflight the two things the drain cannot recover from mid-flight: that
+      the mcp__github__ transport is actually available in THIS session, and that both AWS profiles
+      resolve. The ADMIN container carries agent_platform and agent_platform_admin; the DEV container
+      carries only agent_platform and cannot run VP 14-19 at all.
+    command: >-
+      aws sts get-caller-identity --profile agent_platform &&
+      aws sts get-caller-identity --profile agent_platform_admin &&
+      aws s3api head-object --bucket agent-platform-data-lake --key tfstate/personal/sandbox/terraform.tfstate --profile agent_platform_admin
+    expected: >-
+      Both identities resolve (PlatformDev and PlatformAdmin) and the admin identity can reach the
+      tfstate object. Separately and in the SAME session, the agent confirms mcp__github__actions_list
+      answers for reconcile.yml -- a Python process cannot make that call, so it is an agent-tool check,
+      not a shell command, and its result is recorded in the PR evidence.
+    fix_if: >-
+      head-object AccessDenied under agent_platform_admin means the wrong container: the same call under
+      agent_platform is EXPECTED to be denied (deliberate, DEP-13 / Decision 113) and is not a failure.
+      If mcp__github__ is unavailable, STOP -- there is no fallback transport on this surface; every
+      api.github.com route returns 403 through the agent proxy regardless of token.
+    hermetic: false
+    graduation: not-applicable
+  - step: 14
+    phase: post-deploy
+    action: >-
+      REMOVE, gate. The agent first calls mcp__github__actions_list(method=list_workflow_runs,
+      owner=benjamin-blake, repo=theseus, resource_id="reconcile.yml",
+      workflow_runs_filter={event:"workflow_dispatch"}, per_page=20) and writes the payload verbatim to
+      logs/debug/drain/remove-runs.json (gitignored). The gate then asserts the four workflow-topology
+      invariants against committed source, derives the convergence record and both bundled-rec states as
+      agent_platform, derives orphan-in-tfstate as agent_platform_admin, and applies the in-flight
+      refusal over the supplied listing.
+    command: >-
+      bin/venv-python -m scripts.ops.drain_glue_orphan --phase remove --step gate
+      --profile agent_platform --state-profile agent_platform_admin
+      --runs-json logs/debug/drain/remove-runs.json
+      --out logs/debug/drain/remove-gate.json
+    expected: >-
+      Prints every derived fluent before deciding, then verdict=dispatch with a next_action naming
+      mcp__github__actions_run_trigger(method=run_workflow, workflow_id="reconcile.yml", ref="main") and
+      NO inputs -- Reconcile reads the red commit from the record itself, and rec_id must not be passed
+      because reconcile_target fails the dispatch on a CLOSED rec. Three of the four preconditions were
+      already verified at planning time: invariants PASS, target actionable at e8332e9f, rec-3348 and
+      rec-3328 both closed. Writes remove-gate.json, which step 15 requires.
+    fix_if: >-
+      A "world has moved -- re-assess" refusal means a derived fluent moved since planning; re-assess
+      from the printed fluents and never re-run for a different verdict. verdict=resume means a
+      dispatch-triggered run is already non-terminal -- do NOT dispatch; skip to step 16 against that run
+      id. Ground truth at planning time: the newest reconcile.yml workflow_dispatch run is 2026-08-15, so
+      the single human tf-gated-apply approval this drain spends is UNSPENT.
+    hermetic: false
+    graduation: not-applicable
+  - step: 15
+    phase: post-deploy
+    action: >-
+      REMOVE, dispatch and correlate. THE IRREVERSIBLE STEP. The agent records a UTC second-granularity
+      timestamp BEFORE dispatching, calls actions_run_trigger exactly once, then re-lists the same
+      bounded filter and writes it to logs/debug/drain/remove-runs-after.json. The module selects the
+      unique candidate created at or after the recorded timestamp and FAILS CLOSED on more than one --
+      it never picks, and never takes the newest.
+    command: >-
+      bin/venv-python -m scripts.ops.drain_glue_orphan --phase remove --step correlate
+      --profile agent_platform --state-profile agent_platform_admin
+      --gate-record logs/debug/drain/remove-gate.json
+      --runs-json logs/debug/drain/remove-runs-after.json
+      --dispatch-timestamp "$DISPATCH_TS" --out logs/debug/drain/remove-correlation.json
+    expected: >-
+      verdict=correlated with a single run id, written to remove-correlation.json. Zero candidates is NOT
+      terminal and NOT a licence to dispatch again -- a workflow_dispatch run takes seconds to appear, so
+      the agent re-calls actions_list and re-runs this step against a fresh listing. The run then parks
+      on the tf-gated-apply Environment awaiting a HUMAN approval, which is where this step ends: there
+      is no polling loop, because the container hibernates between turns (Decision 76).
+    fix_if: >-
+      More than one candidate raises -- correlate by hand in the Actions UI, never guess. If the dispatch
+      fired but correlation cannot be established, do NOT re-invoke step 15: the side effect has already
+      happened and a second run would park on the same single approval. The gate's in-flight refusal
+      exists to catch that, but the discipline is the primary control.
+    hermetic: false
+    graduation: not-applicable
+  - step: 16
+    phase: post-deploy
+    action: >-
+      REMOVE, verify. Re-invokable and idempotent -- run it after the human approves and the run reaches
+      a terminal status. The agent calls actions_get(get_workflow_run) for status, then
+      actions_list(list_workflow_jobs) to find the applying job, then get_job_logs(job_id=...,
+      return_content=true, tail_lines >= that job's original_length), writing each payload to
+      logs/debug/drain/. EXPECT the run itself to conclude `failure`: Reconcile re-plans at the red SHA
+      e8332e9f, which predates the S3 InvalidTag fix, so its apply still trips that tag. The success
+      condition is the destruction line, never a green run.
+    command: >-
+      bin/venv-python -m scripts.ops.drain_glue_orphan --phase remove --step verify
+      --profile agent_platform --state-profile agent_platform_admin
+      --correlation-record logs/debug/drain/remove-correlation.json
+      --run-json logs/debug/drain/remove-run.json
+      --job-logs-json logs/debug/drain/remove-job-logs.json
+      --out logs/debug/drain/remove-verify.json
+    expected: >-
+      verdict=drained, from the Reconcile log line "aws_glue_catalog_database.ops: Destruction complete".
+      A run still queued/in_progress/waiting yields a non-failing "not yet terminal" verdict naming this
+      same command to re-run -- that is the normal path while the approval is pending, not an error.
+    fix_if: >-
+      A truncated log RAISES rather than reporting terminal_without_destruction -- refetch with a larger
+      tail_lines. terminal_without_destruction on a COMPLETE log means the apply aborted before reaching
+      the destroy; the module emits next_action=escalate_to_operator and NEVER an executable command.
+      `terraform state rm` is explicitly ruled out for this resource by Decision 178's 2026-09-01 Update
+      (it would require a separate operator-authorized PlatformAdmin grant) and is an operator decision
+      under Decision 126 regardless.
+    hermetic: false
+    graduation: not-applicable
+  - step: 17
+    phase: post-deploy
+    action: >-
+      CONVERGE, gate and dispatch. Re-reads the record for the acknowledge SHA (never a hardcoded one),
+      confirms the orphan has actually left state, then the agent dispatches
+      actions_run_trigger(workflow_id="terraform-apply-sandbox.yml", ref="main",
+      inputs={acknowledge_red_commit: <derived SHA>}) and correlates against that workflow's own listing
+      -- never Reconcile's. Unlike Reconcile this re-plans FRESH at the dispatch ref, which is why ref
+      must be main: the tag fix is present there and no glue delete remains, so the guard should PASS and
+      the apply runs inside apply-sandbox itself, spending NO second approval (Decision 158 route i).
+    command: >-
+      bin/venv-python -m scripts.ops.drain_glue_orphan --phase converge --step gate
+      --profile agent_platform --state-profile agent_platform_admin
+      --runs-json logs/debug/drain/converge-runs.json
+      --out logs/debug/drain/converge-gate.json
+    expected: >-
+      Gate passes only when the record is still red AND the orphan is gone; prints the derived
+      acknowledge SHA; next_action names the apply-sandbox dispatch with that SHA as the input value.
+      Correlation then proceeds exactly as step 15, against terraform-apply-sandbox.yml.
+    fix_if: >-
+      Orphan still in state means step 16 did not actually land -- do not proceed. A guard ROUTE here is
+      terminal for a dispatch (gated-apply is push-only), and recovery is the human-gated break-glass
+      admin apply, not another dispatch. This is the ONLY sanctioned use of apply-sandbox's
+      acknowledge_red_commit input; rec-2918 proposes retiring that input, so it must not be implemented
+      before this step runs.
+    hermetic: false
+    graduation: not-applicable
+  - step: 18
+    phase: post-deploy
+    action: >-
+      CONVERGE, verify. Assert the AUTHORITATIVE four-fact oracle explicitly rather than inferring
+      success from the record turning green. The guard and review verdicts are read from the
+      apply-sandbox job's own step conclusions in the captured list_workflow_jobs payload.
+    command: >-
+      bin/venv-python -m scripts.ops.drain_glue_orphan --phase converge --step verify
+      --profile agent_platform --state-profile agent_platform_admin
+      --correlation-record logs/debug/drain/converge-correlation.json
+      --run-json logs/debug/drain/converge-run.json
+      --jobs-json logs/debug/drain/converge-jobs.json
+      --job-logs-json logs/debug/drain/converge-job-logs.json
+      --out logs/debug/drain/converge-verify.json
+    expected: >-
+      verdict=converged, requiring ALL FOUR: the fresh main-tip plan shows no remaining
+      aws_glue_catalog_database delete; the guard verdict is PASS (the review step is not skipped); the
+      review step's own conclusion is success; and the record now reads status green. The record is
+      green because the acknowledge-and-retry apply WROTE it (Decision 92 point 2) -- this plan never
+      writes that S3 object directly.
+    fix_if: >-
+      A missing review step raises rather than inferring guard_routed from its absence -- that inference
+      would fail open on the authoritative safety oracle. REVISE means read the reviewer's stated reason
+      and fix its cause, never re-dispatch for a friendlier reviewer. A still-STARVED reviewer after its
+      one retry leaves the record untouched; re-dispatch is correct there.
+    hermetic: false
+    graduation: not-applicable
+  - step: 19
+    phase: post-deploy
+    action: >-
+      CLOSE. Re-derives both of the ORIGINAL drain's bundled recs from the warehouse via the named-verb
+      reader (never from logs/.recommendations-log.jsonl, which is a read cache and never a write
+      source), then files the time-boxed removal-obligation rec so the restored glue grant does not
+      become standing unused authority on a public-repo CI identity. Calls get_rec_write_guidance before
+      file_rec (Decision 66).
+    command: >-
+      bin/venv-python -m scripts.ops.drain_glue_orphan --phase close
+      --profile agent_platform --state-profile agent_platform_admin
+      --out logs/debug/drain/close.json
+    expected: >-
+      Prints rec-3348 and rec-3328 confirmed closed, then the new removal rec's id. Both were verified
+      closed in the warehouse at planning time, so a "still open" result here means the world moved.
+    fix_if: >-
+      The phase REFUSING to file the removal rec while the orphan is still in state is a fail-closed
+      precondition, not a bug. A portal write that cannot reach the warehouse FAILS LOUD (Decision 84
+      I-4) -- re-file after restoring connectivity, never stage it in a local file.
+    hermetic: false
+    graduation: not-applicable
+  - step: 20
+    phase: post-deploy
+    action: >-
+      Post the over-collected live evidence to the PR BEFORE marking any post-deploy row PASS, then
+      confirm all three bundled recs closed. The VP compliance table must also carry the two superseded
+      rows and the VF-08 disclosure named in constraints.
+    command: >-
+      bin/venv-python -m scripts.sync.ops sync &&
+      grep -q '"id": "rec-3381", "status": "closed"' logs/.recommendations-log.jsonl ||
+      bin/venv-python -m scripts.ops_data_portal --show-rec rec-3381
+    expected: >-
+      rec-3381, rec-3384 and rec-3385 all read closed after the Resolves trailer fires rec-autoclose on
+      the squash merge. The PR body carries: the Reconcile run URL, the job-log excerpt showing
+      "aws_glue_catalog_database.ops: Destruction complete", the apply-sandbox run URL, the four-fact
+      converge output, and the post-drain convergence record read.
+    fix_if: >-
+      A rec still open means the trailer did not fire -- close it manually via ops_data_portal
+      --update-rec with a resolution naming the merge SHA (Decision 70 fallback). If the grep form does
+      not match the cache's actual serialization, read the rec through the portal rather than weakening
+      the assertion to a bare id grep.
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/ops/drain_glue_orphan/__init__.py
+    behavior: >-
+      Every module-level public name exported by the deleted single-file module stays importable from
+      the package, so no caller breaks silently on the move.
+    verification_step: 2
+    test_selector: tests/ops/test_drain_glue_orphan_cli.py::TestFacadeSurface
+    red_green_expectation: >-
+      Red before (the package does not exist), green after; a deliberately omitted re-export must red it.
+  - source: scripts/ops/drain_glue_orphan/_world.py
+    behavior: >-
+      The four workflow-topology invariants and the three preconditions still fail closed, and the
+      tfstate leg alone uses the admin identity while every other leg uses PlatformDev.
+    verification_step: 5
+    test_selector: tests/ops/test_drain_glue_orphan_cli.py::TestProfileLegs
+    red_green_expectation: >-
+      Red before (one shared client for both S3 objects), green after the per-leg split.
+  - source: scripts/ops/drain_glue_orphan/_github.py
+    behavior: >-
+      Real mcp__github__ payloads normalize correctly and the four gh-shaped assumptions are provably
+      dead, including the truncated-log refusal.
+    verification_step: 3
+    test_selector: tests/ops/test_drain_glue_orphan_github.py
+    red_green_expectation: >-
+      Red before (the pre-change code reads databaseId/createdAt/single-nested jobs), green after.
+  - source: scripts/ops/drain_glue_orphan/_phases.py
+    behavior: >-
+      Each phase verdict is derived from the supplied evidence only, and the destructive-licensing
+      verdict is unreachable without complete evidence.
+    verification_step: 4
+    test_selector: tests/ops/test_drain_glue_orphan_cli.py::TestFailClosedChain
+    red_green_expectation: Red before (no step-record chain exists), green after.
+  - source: scripts/ops/drain_glue_orphan/__main__.py
+    behavior: >-
+      Sub-command routing reaches the right phase, each step refuses without its predecessor's record,
+      and next_action names a real mcp__github__ tool with usable arguments.
+    verification_step: 4
+    test_selector: tests/ops/test_drain_glue_orphan_cli.py::TestFailClosedChain
+    red_green_expectation: Red before (no --step surface exists), green after.
+  - source: tests/fixtures/drain_glue_orphan.py
+    behavior: Test doubles and payload loaders for the package.
+    verification_step: 7
+    command: bin/venv-python -m pytest tests/ops/ -q
+    waiver_reason: >-
+      This file is a test-double module, not production behaviour; it carries no branch of its own that
+      a dedicated test could red. It is exercised transitively by every test in tests/ops/, and the
+      coverage gate in step 7 is what proves it is actually reached rather than merely imported.
+constraints:
+  - >-
+    Do NOT edit docs/plans/PLAN-glue-delete-database-grant.yaml. Its VP 10-12 are superseded by VP 13-19
+    here; record old VP 10 and 11 as FAIL with an RCA pointer in THIS plan's PR-body compliance table.
+  - >-
+    VF-08's two-consecutive-passes confirmation is STRUCTURALLY UNAVAILABLE for VP 15-18: a destroy that
+    spends a single human approval cannot be repeated. Disclose that as a residual in the compliance
+    table. Do NOT relabel it as declared Hermeticity.NON_HERMETIC_BY_CONSTRUCTION -- the implement skill
+    names that relabel as the anti-pattern, and detected nondeterminism is orthogonal to a verifier's
+    declared property.
+  - >-
+    The remove phase spends exactly ONE human tf-gated-apply approval (Decision 158 route ii -- a destroy
+    always guard-BLOCKs). The converge phase should spend NONE (route i, fresh guard-PASS). A second
+    approval request means the world moved: stop and re-assess.
+  - >-
+    No agent-side polling loop, no sleep, no /loop (Decision 76: the container hibernates between turns).
+    Every wait in this runbook is a human handoff plus a re-invokable idempotent verify step.
+  - >-
+    Agents never self-direct a terraform apply (Decision 126). terminal_without_destruction emits
+    next_action=escalate_to_operator and never an executable terraform state rm.
+  - No rescue agents or workaround loops (Decision 55). Never weaken a check to obtain green (Decision 181).
+  - >-
+    Do not widen PlatformDev's tfstate grant to simplify the profile split -- the deny is deliberate
+    (DEP-13 / Decision 113: both ExternalIds live in tfstate's assume_role_policy trust documents).
+context:
+  - "decision-scout: FLAGS_FOUND (round 2 of 2; 134/134 triaged). CITE: 178, 92, 158, 126, 77, 76, 100, 128, 165, 124, 80, 104, 132, 176, 148, 101, 181, 70, 167, 150."
+  - "gates: decision-scout=FLAGS_FOUND after 2 round(s); plan-critique=<verdict> after <N> round(s)"
+  - "Scout flags resolved: D143 -> per-leg identity split (VP5, not a probe); D59 -> step-record chain gates every step; D120 -> the tfstate docstring premise 'Decision 119 bars a local terraform init' is REVERSED (mirror syncs to $HOME/.terraform-mirror on ADMIN), correct it and re-derive; D75 frame-lock rejected on record -- an ops workflow cannot pause for another workflow's Environment approval, and a CI tfstate read would widen the DEP-13 fence."
+  - "Transport MEASURED: api.github.com 403s from CC-web for GH_TOKEN (literal value 'proxy-injected'), for ~/.config/gh-mcp/token, and unauthenticated. Only git is proxied; mcp__github__ is the sole GitHub transport."
+  - "Four MCP-vs-gh shape hazards: id!=databaseId; created_at!=createdAt (correlates zero forever); list_workflow_jobs double-nested {jobs:{jobs:[]}}; get_job_logs truncates to tail_lines and reports original_length."
+  - "Fixture sources: reconcile.yml workflow_dispatch listing (7 runs, newest 2026-08-15); jobs of runs 31883298153 and 33323201848. tests/fixtures/* is governed:false in config/structural_size_budgets.yaml -- size-exempt, real-payload precedent cited there."
+  - "Verified at planning: invariants PASS; target actionable at e8332e9f; rec-3348/rec-3328 closed; newest reconcile dispatch 2026-08-15, so the approval is UNSPENT. Baseline: 232 stmts, 100% cov, 52 tests green while the module cannot run -- the RCA as a measurement."
+  - "RCA routing (DD-B): operational_fact -> rec. PR body + rec-3381 resolution, citing Decision 48 (records this mode verbatim) and rec-2925 (owns the class). No numbered Decision, no new prose doc (Decision 86)."
+  - "rec-3381's acceptance goes VACUOUS once the module file is deleted; VP1 is the non-vacuous replacement -- update the rec via the portal before closing."
+  - "iam-simulate-fixture ground truth: 68 triples; ZERO athena rows; exact id p2-glue-delete-database ABSENT; both -database-axis and -udf-axis rows live."
+  - "Registry hazard: a shard edit re-triggers differential admission (origin/main worktree must FAIL), so check_spec.node_id must name a file absent from origin/main -- VP10."
+  - "rec-2918 (open, High) retires apply-sandbox's acknowledge_red_commit, which VP17 depends on; it must not land before this drain converges."
+  - "ci-rca DEFERRAL: rec-3293 and rec-3292 share no file, Decision Record or failure category with this scope (dependency manifests on main). Deferred deliberately -- this plan gates a non-repeatable live operation whose single unspent human approval is the scarce resource."
+  - "rec-3389 filed this session: approvals.py swallows the same proxy 403, so preflight stuck_approvals:0 is unearned. Out of scope here."
+  - "ONE plan deliberately: a fix-only plan would carry no live verification of the fix, which is the exact failure mode being repaired. The >5-file heuristic is informational under the Decision 67 freeze."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read (48, 55, 59, 70, 76, 77, 84, 86, 92, 100, 101, 113, 120, 124, 126, 128, 143, 158, 163, 165, 176, 178, 181)
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - VP 13-19 require the ADMIN container (both AWS profiles); confirm before starting the post-deploy half
+execution_steps:
+  - >-
+    Create the facade package, moving assert_workflow_invariants / tfstate_has_orphan / derive and gate
+    functions behaviour-preserving into _world.py. Correct the tfstate docstring's reversed Decision 119
+    premise and state the Decision 120 re-derivation.
+  - >-
+    Write _github.py: normalize mcp__github__ run, jobs and job-logs payloads to the internal shape;
+    extract select_dispatch_candidate and is_terminal as pure functions; add the truncation guard.
+    Delete wait_for_terminal's polling loop -- it becomes the re-invokable verify step.
+  - >-
+    Write _phases.py (gate/correlate/verify per phase, phase_close unchanged) and __main__.py (the
+    --phase/--step CLI, the two profile flags with defaults agent_platform and agent_platform_admin, the
+    on-disk step-record chain, and next_action emission).
+  - >-
+    Capture the four real mcp__github__ payloads from the run ids named in context; redact and bound the
+    job-log excerpt via scripts.ci.redaction_check; commit them under tests/fixtures/drain_glue_orphan_payloads/.
+  - >-
+    Split the test file three ways, delete TestLiveWiring, repoint the source scan at the package, and
+    add the payload, CLI, facade, profile-leg and fail-closed-chain suites.
+  - Repoint the verification-registry shard (guard_target and node_id) preserving check_id.
+  - >-
+    Apply the rec-3384 and rec-3385 corrections to PLAN-terraform-state-triggers-restore, replacing
+    frozen literals with run-time derivations rather than freshly-computed numbers.
+  - Update rec-3381's acceptance via ops_data_portal --update-rec to the non-vacuous VP1 form.
+  - >-
+    Execute Verification Plan steps 1-12 (pre-deploy) -- run each step, loop until pass; open the PR and
+    merge only on green CI.
+  - >-
+    Execute Verification Plan steps 13-20 in the ADMIN container. Post live evidence to the PR before
+    marking any post-deploy row PASS. On an unrecoverable V3 failure stop and RCA (Decision 55).
+  - 'Report: what was implemented, verification results, and the VP compliance table with the VF-08 residual and the two superseded rows.'
+rollback: >-
+  The pre-deploy half (VP 1-12) is an ordinary revert of the branch. The post-deploy half is NOT
+  reversible: VP 16 destroys aws_glue_catalog_database.ops in live AWS and spends a single human
+  tf-gated-apply approval. If VP 17-18 fail after VP 16 has landed, the orphan is already gone and the
+  correct recovery is the human-gated break-glass admin apply of terraform/personal at main tip
+  (terraform/CLAUDE.md), never a re-dispatch and never terraform state rm.
