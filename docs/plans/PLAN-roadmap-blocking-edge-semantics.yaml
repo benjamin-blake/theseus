@@ -45,8 +45,8 @@ scope:
     action: Modify
     purpose: >-
       blocked_by field semantics + the DFS-exclusion governance note (Decision 86 clause 2
-      field_semantics routing); add the missing amendment_log block; correct the model home
-      from the facade to platform_roadmap_models.py
+      field_semantics routing); add the field-level amendment_log entry under fields.id;
+      correct the model home from the facade to platform_roadmap_models.py
   - file: docs/contracts/candidate-decision-ratification.yaml
     action: Modify
     purpose: affects field semantics; narrow the now-partial gate-derivation claim; amendment_log entry
@@ -57,7 +57,10 @@ scope:
     action: Create
     purpose: >-
       Shared _BASE_DOC/_doc/_item/_state_from_doc helpers lifted from the monolith's lines 1-72;
-      a sibling test_*.py import is forbidden by validate_no_cross_test_imports (Decision 131 cl.2)
+      a sibling test_*.py import is forbidden by validate_no_cross_test_imports (Decision 131 cl.2).
+      These duplicate tests/fixtures/platform_roadmap_state.py near-verbatim: one fixture module per
+      mirror package is the deliberate repo pattern (plan_document_helpers, ops_portal_records,
+      affected_tests_helpers), not accidental copy-paste.
   - file: tests/platform_roadmap_models/__init__.py
     action: Create
     purpose: mirror-package marker (Decision 131 clause 4), matching tests/platform_roadmap_state/
@@ -73,6 +76,12 @@ scope:
   - file: tests/platform_roadmap_models/test_blocking_edges.py
     action: Create
     purpose: blocked_by/affects round-trip, ref+until validation, facade import, DFS-exclusion
+  - file: tests/test_coverage_checker/test_coverage_checker_map.py
+    action: Modify
+    purpose: >-
+      assert map_source_to_test resolves scripts/platform_roadmap_models.py to the mirror
+      package; without this the roster edit ships unverified (the suite is green before and
+      after it today)
   - file: tests/platform_roadmap_state/test_graph.py
     action: Modify
     purpose: assert an affects-only CD never appears in completion_blocked_on_cd / blocked_on_cd
@@ -91,6 +100,7 @@ acceptance_criteria:
   - All 7 cited blocked_by refs are present on exactly the four criteria named in the transcription table, each with its cited ref and until, and no blocked_by exists anywhere else in the roadmap
   - Every test method name in the deleted monolith survives in the new mirror package
   - Across all 11 to_preflight_dict keys, the only projection change versus origin/main is T1.5's blocked_on_cd entry
+  - map_source_to_test resolves scripts/platform_roadmap_models.py to tests/platform_roadmap_models, asserted by a test that fails without the roster entry
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -165,7 +175,7 @@ verification_plan:
       assert not pathlib.Path('tests/test_platform_roadmap_models.py').exists(), 'monolith still present';
       missing=sorted(old-new); assert not missing, ('DROPPED TESTS', missing);
       print('OK preserved', len(old), 'test methods ->', len(new))"
-    expected: "prints OK preserved 72 test methods -> 72 or more"
+    expected: "prints OK preserved 70 test methods -> 70 or more"
     fix_if: DROPPED TESTS names the method(s) lost in the redistribution -- re-home them, do not rewrite
     graduation: graduate
     graduation_check_id: roadmap-models-test-move-preserves-methods
@@ -207,7 +217,7 @@ test_obligations:
   - source: scripts/test_coverage_checker.py
     behavior: map_source_to_test resolves platform_roadmap_models.py to the mirror package
     verification_step: 6
-    test_selector: tests/test_coverage_checker
+    test_selector: tests/test_coverage_checker/test_coverage_checker_map.py
     red_green_expectation: red before, green after
   - source: tests/fixtures/platform_roadmap_state.py
     behavior: _cd() accepts affects so state tests can build affects-carrying CDs
@@ -229,7 +239,7 @@ constraints:
   - >-
     Do NOT modify any depends_on list. T1.5 STAYS on T1.6.depends_on -- ROADMAP-PLATFORM.yaml:2946
     is a standing determination REFUSING that relocation ("the constraint stays in depends_on
-    rather than being relocated"), and blocked_by has no runtime consumer that would replace it.
+    rather than being relocated to prose"), and blocked_by has no runtime consumer that would replace it.
   - >-
     Do NOT surface blocked_by in any preflight projection this round. _slim_roadmap_state is a
     whitelist and the orient skill enumerates the per-entry field contract; adding a consumer is
@@ -266,13 +276,13 @@ execution_steps:
   - "scripts/platform_roadmap_state.py: in realization_candidates(), skip any CD whose gates is empty AND affects is non-empty (an empty gates list is vacuously all-complete at platform_roadmap_state.py:298-299; without this guard CD.17 becomes a realization candidate). Change nothing else -- affects must NOT be added to _pending_gating_cds_for_item, and no projection gains a blocked_by field this round. NOTE (out of scope, file a rec per implement-scope-boundary.yaml): CD.32 has empty gates and no affects and is vacuously a realization candidate today. The rec must frame the semantic fix (zero gates means no gate-derived realization evidence at all), because this plan's guard is scope-shaped and would not catch the next empty-gates/empty-affects CD."
   - "docs/ROADMAP-PLATFORM.yaml: set CD.17 gates: [] and affects: [T1.5, T1.6, T2.1, T3.3, T3.4, T4.1, T4.2, T4.4], moving the existing '# the strategic items the freeze affects' comment onto the affects line as the transcription's citation."
   - "docs/ROADMAP-PLATFORM.yaml transcription table -- write EXACTLY these 7 refs and no others. T2.18 c2 -> {ref: T2.26, until: complete}, cited by 'The production-catalog destructive GC + confirming S3 storage is stable after N maintenance cycles remains intentionally deferred and is owned by T2.26'. IDIOM NOTE: 'owned by T2.26' is also this item's rehome idiom (c4 and c8 use it with status: rehomed + met_by: T2.26). c2 is transcribed as blocked_by, NOT rehomed, because only its production-catalog HALF moved -- the smoke-scoped half is already met and stays here, so the criterion cannot be wholly rehomed. Do not convert c2's status. T2.26 c2 -> {ref: CD.40, until: ratified} and {ref: T3.20, until: complete}, cited by 'ops_session_log is the sole remaining table, blocked on the CD.40/T3.20 retire-or-migrate disposition, not yet decided'. T2.26 c3 -> the same pair, cited by the LATER (2026-08-26) re-grounding 'it stays open only on the ops_session_log disposition' -- the earlier 2026-07-05 sentence naming T2.36 was superseded by the platform-only cleanse, so do NOT write a T2.36 ref. T2.26 c8 -> the same pair, cited by 'this criterion now closes solely on the ops_session_log disposition (CD.40/T3.20)'. Both items are already fully structured; convert nothing."
-  - "docs/contracts/exit-criteria-ledger.yaml: add a blocked_by entry under fields: with type, description, semantics, populated_by and dq_intent matching the met_by entry's shape. Record in governance_notes that blocked_by is deliberately excluded from the depends_on cycle DFS, and why (the edges it carries close real rings, so folding them into a load-time rejector would make the roadmap unloadable rather than reporting the deadlock). Correct fields.id/fields.text's model home from scripts/roadmap/platform_roadmap.py::ExitCriterion (the facade) to scripts/platform_roadmap_models.py. This file has NO amendment_log key -- add one, because contracts_enforcement.check_amendment_for_diff category 6 fires on a change to an existing field's description/semantics and will fail without it."
+  - "docs/contracts/exit-criteria-ledger.yaml: add a blocked_by entry under fields: with type, description, semantics, populated_by and dq_intent matching the met_by entry's shape. Record in governance_notes that blocked_by is deliberately excluded from the depends_on cycle DFS, and why (the edges it carries close real rings, so folding them into a load-time rejector would make the roadmap unloadable rather than reporting the deadlock). Correct fields.id/fields.text's model home from scripts/roadmap/platform_roadmap.py::ExitCriterion (the facade) to scripts/platform_roadmap_models.py. The category-6 remedy is FIELD-level, not top-level: contracts_enforcement.check_amendment_for_diff reads base_spec.amendment_log / head_spec.amendment_log (contracts_enforcement.py:83-85), so add an amendment_log entry under fields.id itself -- a top-level contract block covers only a contract.description change and will NOT clear the gate. Use change_class: prose_improvement with semantic_break: false (a stale-pointer correction). Note the stale facade home appears only at fields.id.description and fields.id.populated_by; fields.text carries no model-home reference, and populated_by is not in category 6's attribute tuple. Adding a top-level amendment_log as well is optional and harmless, but it is not the remedy."
   - "docs/contracts/candidate-decision-ratification.yaml: document affects (in-scope-of, never completion-blocking) and narrow the standing claim that 'gate derivation keys purely on cd.state == pending' to say derivation keys on gates, which affects deliberately does not populate. Add an amendment_log entry. Also correct surfacing_signal.location and second_signal_realized_but_pending.location, which carry the same stale facade home being fixed in the ledger."
   - "tests: lift the monolith's shared helpers (_BASE_DOC/_doc/_item/_state_from_doc, lines 1-72) into tests/fixtures/platform_roadmap_models.py; a sibling test_*.py import is forbidden by validate_no_cross_test_imports. Delete tests/test_platform_roadmap_models.py and redistribute its 12 classes into the package per the scope rows, preserving every test verbatim -- this is a move, not a rewrite (VP step 5 enforces method-name preservation). Add tests/platform_roadmap_models/test_blocking_edges.py covering blocked_by/affects round-trip, unresolvable-ref rejection, wrong-kind until rejection, facade import of CriterionBlocker, and a blocked_by ring loading without a cycle error."
-  - "scripts/test_coverage_checker.py: add 'scripts/platform_roadmap_models.py' to _CONCERN_SPLIT_TEST_PACKAGES, alongside the existing scripts/platform_roadmap_state.py entry."
+  - "scripts/test_coverage_checker.py: add 'scripts/platform_roadmap_models.py' to _CONCERN_SPLIT_TEST_PACKAGES, alongside the existing scripts/platform_roadmap_state.py entry. Then add test_maps_platform_roadmap_models_to_concern_split_package to tests/test_coverage_checker/test_coverage_checker_map.py, asserting map_source_to_test(ROOT / 'scripts/platform_roadmap_models.py') == ROOT / 'tests/platform_roadmap_models' -- the same shape as the 14 sibling test_maps_*_to_concern_split_package cases already there. Without it the package suite is green before and after the roster edit (277 passed today), so the change would ship unverified."
   - "tests/fixtures/platform_roadmap_state.py: add an affects kwarg to _cd(). tests/platform_roadmap_state/: add the realization-candidate regression and the affects-not-completion-blocking assertion."
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
-  - 'Report: what was implemented, verification results, and the CD.32 rec filed'
+  - 'Report: what was implemented, verification results, and the recs filed (CD.32 vacuous-realization; rec-842, whose acceptance greps the deleted monolith and is now permanently unsatisfiable)'
 rollback: >-
   Single-commit revert. The new fields are additive and default-empty, no depends_on edge is
   touched, and the test move is name-preserving, so reverting restores the prior graph reading
