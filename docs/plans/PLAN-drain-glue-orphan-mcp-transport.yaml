@@ -327,23 +327,27 @@ verification_plan:
       -- the committed file's zero athena rows are corroborating, not the reason.
     command: >-
       ! grep -q "athena" docs/plans/PLAN-terraform-state-triggers-restore.yaml &&
-      ! grep -q "destroy_count" docs/plans/PLAN-terraform-state-triggers-restore.yaml &&
+      ! grep -q "==15" docs/plans/PLAN-terraform-state-triggers-restore.yaml &&
       ! grep -q "len(t)>=14" docs/plans/PLAN-terraform-state-triggers-restore.yaml &&
-      grep -q "remaining_retired_addresses" docs/plans/PLAN-terraform-state-triggers-restore.yaml
+      grep -q "remaining_retired_addresses" docs/plans/PLAN-terraform-state-triggers-restore.yaml &&
+      grep -q "expected_destroy_instances" docs/plans/PLAN-terraform-state-triggers-restore.yaml
     expected: >-
-      Exit 0. Measured today: clause 1 has 4 matches, clause 2 has 2, clause 3 has 1, clause 4 has 0 -- all four
-      are non-vacuous in the correct direction. An earlier draft asserted the absence of
-      "'iam','lambda',...' and "destroy_count')==15", both of which have ZERO matches today because the
-      file stores them YAML-escaped as ''iam'' and destroy_count''); and asserted the presence of
-      "derive", which already matches twice. THE REPLACEMENT FLOOR (this is the specified derivation, not
-      an instruction to invent one): the implementing agent derives
-      `remaining_retired_addresses` = the retired-address list already enumerated in that plan's VP9,
-      INTERSECTED with the addresses actually present in terraform/personal tfstate, read under
-      --state-profile agent_platform_admin. VP10's coverage floor becomes
-      `len(t) >= len(remaining_retired_addresses)` and its `need` set becomes the services those
-      remaining addresses require; VP9's destroy assertion becomes that same derived set. The
-      "assert the SET, name the intruder" control rec-3323 installed is PRESERVED -- only its membership
-      becomes derived.
+      Exit 0. Measured today: clause 1 has 4 matches, clause 2 has 1, clause 3 has 1, clauses 4 and 5
+      have 0 -- all five non-vacuous in the correct direction. Clause 2 targets the frozen literal
+      `==15`, NOT the key `destroy_count`, which SURVIVES as the evidence-file schema key: that count is
+      a DISTINCT control ("the count catches an extra instance of an expected address") and is replaced,
+      never deleted. THE SPECIFIED DERIVATION, WITH BOTH GRAINS NAMED -- the retired list is at ADDRESS
+      grain while terraform reports INSTANCES: (a) `remaining_retired_addresses` (address grain) = that
+      plan's enumerated retired-address list INTERSECTED with the addresses present in
+      terraform/personal tfstate, read under --state-profile agent_platform_admin; (b)
+      `expected_destroy_instances` (instance grain) = the summed instance cardinality of those same
+      state entries. VP10's coverage floor becomes `len(t) >= len(remaining_retired_addresses)` and its
+      `need` set becomes the services those addresses require; VP9 asserts the derived address SET and
+      the derived instance COUNT, both. The `EXPECT = R - {null_resource.create_ops_views}` carve-out is
+      SUBSUMED rather than dropped: that resource is for_each over `{}`, so it has zero instances and is
+      therefore absent from tfstate, and the intersection excludes it automatically -- state that in the
+      replacement text rather than leaving it implicit. The "assert the SET, name the intruder" control
+      rec-3323 installed is PRESERVED; only its membership becomes derived.
     fix_if: >-
       Do NOT delete the coverage floor without the replacement above: that floor exists because
       iam_simulate refuses only an EMPTY triples list, so a one-triple fixture would report a clean
@@ -361,8 +365,9 @@ verification_plan:
     action: >-
       Repoint the verification-registry shard off the deleted path, keeping its name honest. check_id
       (and therefore the filename) is PRESERVED, so its node_id must still point at PRECONDITION cases --
-      move a TestPreconditionGates class into one of the two NEW test files rather than aiming the
-      preconditions shard at an unrelated suite. That also satisfies differential admission, which
+      move the existing TestPhasePreconditions class (tests/ops/test_drain_glue_orphan.py:90) into one of
+      the two NEW test files, renaming it TestPreconditionGates, rather than aiming the preconditions
+      shard at an unrelated suite. That also satisfies differential admission, which
       materializes an origin/main worktree and requires the check to FAIL there: a node_id naming the
       pre-existing test file would PASS on origin/main and red the PR as "not admitted".
     command: >-
@@ -394,12 +399,19 @@ verification_plan:
       redacted excerpts. This is the only gate between a real apply log and a PUBLIC repo, so it is
       self-contained rather than delegated.
     command: >-
+      test -d tests/fixtures/drain_glue_orphan_payloads/ &&
+      test -n "$(ls -A tests/fixtures/drain_glue_orphan_payloads/)" &&
       ! grep -rEn --binary-files=without-match "arn:aws:[^:]*:[^:]*:[0-9]{12}:" tests/fixtures/drain_glue_orphan_payloads/ &&
       ! grep -rEn --binary-files=without-match "(AIDA|ASIA|AKIA)[A-Z0-9]{16}" tests/fixtures/drain_glue_orphan_payloads/ &&
       ! grep -rEn --binary-files=without-match "(^|[^0-9A-Za-z])[0-9]{12}([^0-9A-Za-z]|$)" tests/fixtures/drain_glue_orphan_payloads/
     expected: >-
-      Exit 0. No account-bearing ARN, no IAM key-id shape and no bare 12-digit token survives in any
-      payload fixture. The 12-digit clause is safe against the real payloads: GitHub run ids, job ids,
+      Exit 0. The leading `test -d` + non-empty guard is LOAD-BEARING TWICE: a negated recursive grep
+      exits 0 on a MISSING directory (grep itself exits 2), so without the guard all three clauses pass
+      vacuously before any fixture is committed; and because that directory does not exist on
+      origin/main, the guard is also what makes this graduated shard ADMISSIBLE -- run_differential
+      requires the check to FAIL on the reverted worktree, and an unguarded command would PASS there and
+      be rejected as "not admitted -- revert did not produce FAIL (tautological)". No account-bearing
+      ARN, no IAM key-id shape and no bare 12-digit token survives in any payload fixture. The 12-digit clause is safe against the real payloads: GitHub run ids, job ids,
       workflow ids and actor ids in these captures are 11 digits or fewer, so it fires only on an account
       id. Deliberately NOT delegated to scripts.ci.redaction_check --mode assert-clean: that module takes
       a bare positional mode and reads STDIN (not a path), its shape check lives in `redact` not
@@ -419,7 +431,7 @@ verification_plan:
     command: bin/venv-python -m scripts.validate --pre
     expected: >-
       Exit 0, including validate_sloc_limits, validate_sloc_budget_raises, validate_verification_registry
-      (with its differential admission leg on the modified shard and the four new graduated shards),
+      (with its differential admission leg on the modified shard and the five new graduated shards),
       validate_scope_boundary, validate_plan_documents and validate_graduation_completeness.
     fix_if: >-
       A scope-boundary failure means a touched path is outside this plan's declared scope union -- the
@@ -619,6 +631,9 @@ verification_plan:
       the record now reads status green. The record is green because the acknowledge-and-retry apply WROTE
       it (Decision 92 point 2) -- this plan never writes that S3 object directly.
     fix_if: >-
+      A truncated plan log RAISES, exactly as in VP16 -- fact 1 reads plan text from a job-logs payload
+      subject to the same tail_lines truncation, and a truncated read would yield a false "zero destroys"
+      on the authoritative oracle. Refetch with a larger tail_lines rather than accepting it.
       A non-empty destroy set means retired addresses beyond the drained orphan are still in state; that
       is a PLAN-terraform-state-triggers-restore concern -- diagnose and STOP, do not widen this plan. A
       missing review step raises rather than inferring guard_routed from its absence, which would fail
@@ -712,14 +727,16 @@ test_obligations:
     verification_step: 4
     test_selector: tests/ops/test_drain_glue_orphan_cli.py::TestFailClosedChain
     red_green_expectation: Red before (no --step surface exists), green after.
-  - source: tests/fixtures/drain_glue_orphan.py
-    behavior: Test doubles and payload loaders for the package.
-    verification_step: 7
-    command: bin/venv-python -m pytest tests/ops/ -q
-    waiver_reason: >-
-      This file is a test-double module, not production behaviour; it carries no branch of its own that
-      a dedicated test could red. It is exercised transitively by every test in tests/ops/, and the
-      coverage gate in step 7 is what proves it is actually reached rather than merely imported.
+  - source: config/agent/verification_registry/entries/drain-glue-orphan-preconditions.yaml
+    behavior: >-
+      The graduated preconditions shard keeps its check_id, points guard_target at the package rather
+      than the deleted module path, and names a precondition node_id that passes here and is absent from
+      origin/main, so differential admission still produces the required FAIL on the revert.
+    verification_step: 10
+    test_selector: tests/ops/test_drain_glue_orphan_cli.py::TestPreconditionGates
+    red_green_expectation: >-
+      Red before (the class does not exist and guard_target names a deleted path), green after the move
+      and the repoint.
 constraints:
   - >-
     Do NOT edit docs/plans/PLAN-glue-delete-database-grant.yaml. Its VP 10-12 are superseded by VP 13-19
@@ -785,8 +802,10 @@ execution_steps:
     --phase/--step CLI, the two profile flags with defaults agent_platform and agent_platform_admin, the
     on-disk step-record chain, and next_action emission).
   - >-
-    Capture the four real mcp__github__ payloads from the run ids named in context; redact and bound the
-    job-log excerpt via scripts.ci.redaction_check; commit them under tests/fixtures/drain_glue_orphan_payloads/.
+    Capture the four real mcp__github__ payloads from the run ids named in context. Bound and scrub the
+    job-log excerpt BY HAND against VP11's shape greps -- NOT via scripts.ci.redaction_check, which hard-
+    fails when the account id parses empty from gitignored tfvars, as it does in every CC-web session.
+    Commit them under tests/fixtures/drain_glue_orphan_payloads/.
   - >-
     Split the test file three ways, delete TestLiveWiring, repoint the source scan at the package, and
     add the payload, CLI, facade, profile-leg and fail-closed-chain suites.
