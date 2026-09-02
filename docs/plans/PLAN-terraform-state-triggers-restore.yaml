@@ -33,11 +33,13 @@ scope:
     tick can land between the phase 1 merge and the pending_gated stamp.
 - file: docs/contracts/iam-simulate-fixture.yaml
   action: Modify
-  purpose: 'Phase 2. Remove the p2-glue-delete-database row (verb glue:DeleteDatabase, expected_decision allowed). The cleanse
-    removed that grant from both the identity policy and the boundary but left the row, so after the phase 3 apply the mandated
-    post-apply gate would report a mismatch. MANDATORY COMPANION: this file is also contract.class D / status active -- the
-    same check_amendment_log_for_class_d gate applies, so the edit must add a new amendment_log[] entry or validate_contract_drift
-    reds the phase 2 PR.'
+  purpose: 'Phase 2. CORRECTED (rec-3384): the original premise here -- remove a stale row -- no longer holds. The row this
+    item once targeted was already removed by PLAN-ci-convergence-fixes (see the fixture''s own amendment_log), and
+    PLAN-glue-delete-database-grant (#1008) then restored the grant and armed two replacement rows,
+    p2-glue-delete-database-database-axis and p2-glue-delete-database-udf-axis, both of which simulate allowed against the
+    live account today. No row deletion applies; this item is retained as the Modify-scope carrier for this file''s
+    Decision 178 phase-2 annotation. VP5 below is corrected to assert the two replacement ids are PRESENT (today''s real
+    coverage) instead of the now-vacuous absence of the retired id.'
 - file: docs/contracts/deploy-paths.yaml
   action: Modify
   purpose: 'PHASE 1, and the structural half of the fix. INSERT a PRE-APPLY step INTO admin_out_of_band.procedure.steps immediately
@@ -193,14 +195,19 @@ verification_plan:
     breached the ceiling.'
 - step: 5
   phase: pre-deploy
-  action: Assert the stale fixture row is gone and the fixture still passes its standing shape check.
+  action: rec-3384. Assert the two armed replacement rows are present (the retired row was already removed by an earlier
+    plan, so asserting its absence alone is vacuous) and the fixture still passes its standing shape check.
   command: bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/contracts/iam-simulate-fixture.yaml')); ids=[r['id']
-    for r in d['triples']]; assert 'p2-glue-delete-database' not in ids, 'stale row still present'; print(len(ids))" && bin/venv-python
-    -c "from scripts.checks.contracts.validate_iam_simulate_fixture_shape import validate_iam_simulate_fixture_shape as v;
-    f=[]; v(f); assert not f, f"
-  expected: Row absent; shape check passes (60 triples, one fewer than the 61 measured before the change).
+    for r in d['triples']]; assert 'p2-glue-delete-database' not in ids, 'stale row resurfaced'; assert
+    'p2-glue-delete-database-database-axis' in ids, 'armed replacement row (database axis) missing'; assert
+    'p2-glue-delete-database-udf-axis' in ids, 'armed replacement row (udf axis) missing'; print(len(ids))" &&
+    bin/venv-python -c "from scripts.checks.contracts.validate_iam_simulate_fixture_shape import
+    validate_iam_simulate_fixture_shape as v; f=[]; v(f); assert not f, f"
+  expected: Retired id absent; both armed replacement ids present (p2-glue-delete-database-database-axis,
+    p2-glue-delete-database-udf-axis); shape check passes (68 triples measured at rec-3384's filing).
   fix_if: If the triples key differs from the assumed name, read the fixture and adjust the accessor -- do not weaken the
-    assertion to a substring grep.
+    assertion to a substring grep. If either armed replacement id is missing, live IAM-simulate coverage regressed -- do
+    not proceed past step 10's preflight without it.
   graduation: graduate
   graduation_check_id: iam-simulate-fixture-glue-row-absent
 - step: 6
@@ -257,13 +264,21 @@ verification_plan:
   action: 'PHASE 1. On the PR, confirm the speculative-plan job actually RAN, then read its comment and confirm the plan is
     exactly the expected delta. FAIL CLOSED: absence of evidence is a STOP, never a pass.'
   command: 'bin/venv-python -c "import json, pathlib; p=pathlib.Path(''/tmp/tf-reconcile/step9.json''); assert p.is_file(),
-    ''no evidence file -- record the MCP result first (see expected); this step cannot self-clear''; e=json.loads(p.read_text());
-    assert e.get(''speculative_plan_conclusion'')==''success'', ''speculative-plan check did not conclude success''; R={''aws_glue_catalog_database.ops'',''aws_athena_workgroup.production'',''aws_cloudwatch_log_group.ops_compaction'',''aws_iam_role.ops_compaction'',''aws_iam_role_policy.ops_compaction'',''aws_lambda_function.ops_compaction'',''aws_lambda_permission.s3_invoke_ops_compaction'',''aws_secretsmanager_secret.alpaca_paper'',''aws_secretsmanager_secret.alpaca_live'',''null_resource.create_ops_tables'',''null_resource.create_ops_views'',''null_resource.drop_ops_recommendations_view'',''null_resource.drop_ops_decisions_view'',''null_resource.drop_ops_priority_queue_view''};
-    EXPECT=R-{''null_resource.create_ops_views''}; addrs={a.split(''['')[0] for a in e[''destroy_addresses'']}; assert addrs
-    <= R, f''UNEXPECTED destroy addresses: {sorted(addrs-R)}''; assert addrs == EXPECT, f''expected retired address missing
-    from destroy set: {sorted(EXPECT-addrs)}''; assert e.get(''destroy_count'')==15, ''instance destroy count is not 15'';
-    assert e.get(''add_count'')==0, ''plan creates resources -- unexpected''; print(''PR'', e.get(''pr''), ''verified: 14
-    addresses / 15 instances destroyed, 0 adds, speculative-plan success'')"'
+    ''no evidence file -- record the MCP result first (see expected); this step cannot self-clear'';
+    e=json.loads(p.read_text()); assert e.get(''speculative_plan_conclusion'')==''success'', ''speculative-plan check did not
+    conclude success'';
+    R={''aws_glue_catalog_database.ops'',''aws_athena_workgroup.production'',''aws_cloudwatch_log_group.ops_compaction'',''aws_iam_role.ops_compaction'',''aws_iam_role_policy.ops_compaction'',''aws_lambda_function.ops_compaction'',''aws_lambda_permission.s3_invoke_ops_compaction'',''aws_secretsmanager_secret.alpaca_paper'',''aws_secretsmanager_secret.alpaca_live'',''null_resource.create_ops_tables'',''null_resource.create_ops_views'',''null_resource.drop_ops_recommendations_view'',''null_resource.drop_ops_decisions_view'',''null_resource.drop_ops_priority_queue_view''};
+    remaining_retired_addresses=set(e.get(''remaining_retired_addresses'') or []); assert remaining_retired_addresses, ''no
+    remaining_retired_addresses recorded -- this step cannot self-clear''; assert remaining_retired_addresses <= R, f''recorded
+    remaining_retired_addresses outside R: {sorted(remaining_retired_addresses-R)}'';
+    expected_destroy_instances=e.get(''expected_destroy_instances''); assert isinstance(expected_destroy_instances, int) and
+    expected_destroy_instances>0, ''no expected_destroy_instances recorded''; addrs={a.split(''['')[0] for a in
+    e[''destroy_addresses'']}; assert addrs <= R, f''UNEXPECTED destroy addresses: {sorted(addrs-R)}''; assert addrs ==
+    remaining_retired_addresses, f''expected retired address missing from destroy set:
+    {sorted(remaining_retired_addresses-addrs)}''; assert e.get(''destroy_count'')==expected_destroy_instances, f''instance
+    destroy count is not {expected_destroy_instances}''; assert e.get(''add_count'')==0, ''plan creates resources --
+    unexpected''; print(''PR'', e.get(''pr''), ''verified:'', len(remaining_retired_addresses), ''addresses /'',
+    expected_destroy_instances, ''instances destroyed, 0 adds, speculative-plan success'')"'
   expected: 'Exits 0. The agent FIRST runs mcp__github__pull_request_read(owner=benjamin-blake, repo=theseus, pullNumber=<N>,
     method=get_check_runs) and (method=get_comments), then writes /tmp/tf-reconcile/step9.json as {"pr": <N>, "speculative_plan_conclusion":
     "success", "destroy_count": 15, "add_count": 0, "destroy_addresses": [<every ''# <address> will be destroyed'' line from
@@ -293,12 +308,20 @@ verification_plan:
   action: PHASE 1 PREFLIGHT (ADMIN container), after step 9 and BEFORE the merge that dispatches the destroy. Prove the apply
     identity is authorized for every destroy verb the 14 addresses need, so an AccessDenied cannot half-run the apply and
     latch the record red.
-  command: 'mkdir -p /tmp/tf-reconcile && bin/venv-python -c "import yaml; d=yaml.safe_load(open(''/tmp/tf-reconcile/preflight-fixture.yaml''));
-    t=d.get(''triples'') or []; assert len(t)>=14, ''fixture must cover all 14 addresses, not a token subset''; svc={x[''verb''].split('':'')[0]
-    for x in t}; need={''iam'',''lambda'',''logs'',''glue'',''athena'',''secretsmanager''}; assert need <= svc, f''fixture
-    misses services: {sorted(need-svc)}''; assert (d.get(''principal'') or {}).get(''arn_template''), ''fixture must declare
-    principal.arn_template (iam_simulate resolves the simulated identity from it)''; print(len(t), ''triples covering'', sorted(svc))"
-    && bin/venv-python -m scripts.ci.iam_simulate --fixture /tmp/tf-reconcile/preflight-fixture.yaml --profile agent_platform_admin'
+  command: 'mkdir -p /tmp/tf-reconcile && bin/venv-python -c "import yaml, json, pathlib;
+    step9=json.loads(pathlib.Path(''/tmp/tf-reconcile/step9.json'').read_text());
+    remaining_retired_addresses=set(step9.get(''remaining_retired_addresses'') or []); assert remaining_retired_addresses,
+    ''step9.json carries no remaining_retired_addresses -- run step 9 first'';
+    SVC={''aws_glue_catalog_database'':''glue'',''aws_cloudwatch_log_group'':''logs'',''aws_iam_role'':''iam'',''aws_iam_role_policy'':''iam'',''aws_lambda_function'':''lambda'',''aws_lambda_permission'':''lambda'',''aws_secretsmanager_secret'':''secretsmanager''};
+    need={SVC[a.split(''.'')[0]] for a in remaining_retired_addresses if a.split(''.'')[0] in SVC};
+    d=yaml.safe_load(open(''/tmp/tf-reconcile/preflight-fixture.yaml'')); t=d.get(''triples'') or []; assert len(t) >=
+    len(remaining_retired_addresses), f''fixture must cover all {len(remaining_retired_addresses)} remaining retired addresses,
+    not a token subset''; svc={x[''verb''].split('':'')[0] for x in t}; assert need <= svc, f''fixture misses services:
+    {sorted(need-svc)}''; assert (d.get(''principal'') or {}).get(''arn_template''), ''fixture must declare
+    principal.arn_template (iam_simulate resolves the simulated identity from it)''; print(len(t), ''triples covering'',
+    sorted(svc), ''--'', len(remaining_retired_addresses), ''remaining retired addresses needing'', sorted(need))" &&
+    bin/venv-python -m scripts.ci.iam_simulate --fixture /tmp/tf-reconcile/preflight-fixture.yaml --profile
+    agent_platform_admin'
   expected: Exit 0, zero mismatches, covering the delete verb the provider issues for every one of the 14 addresses -- the
     IAM role and its role policy, the Lambda function and its permission, the CloudWatch log group, the two broker credential
     envelopes, the Glue database and the Athena workgroup.
@@ -539,13 +562,15 @@ test_obligations:
     not by a unit test. Step 7 additionally asserts no non-comment line changed, and is decoupled with `;` so an absent terraform
     binary cannot mask that assertion.
 - source: docs/contracts/iam-simulate-fixture.yaml
-  behavior: The fixture no longer asserts a grant the apply role will not hold after phase 3.
+  behavior: The fixture no longer asserts the retired grant, and instead confirms both live replacement rows are present.
   verification_step: 5
   command: bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/contracts/iam-simulate-fixture.yaml')); ids=[r['id']
-    for r in d['triples']]; assert 'p2-glue-delete-database' not in ids, 'stale row still present'; print(len(ids))"
+    for r in d['triples']]; assert 'p2-glue-delete-database' not in ids, 'stale row resurfaced'; assert
+    'p2-glue-delete-database-database-axis' in ids, 'armed replacement row (database axis) missing'; assert
+    'p2-glue-delete-database-udf-axis' in ids, 'armed replacement row (udf axis) missing'; print(len(ids))"
   waiver_reason: The behavioural proof is the live simulate against real IAM at VP step 15 (zero mismatches under the narrowed
     grant surface), which a unit test structurally cannot reproduce -- static text cannot see condition-key evaluation or
-    the identity/boundary intersection. A unit test asserting one row's absence would pin a snapshot, not a behaviour; the
+    the identity/boundary intersection. A unit test asserting row membership would pin a snapshot, not a behaviour; the
     token-free structural tripwire is deliberately deferred to a follow-on rec.
 - source: terraform/bootstrap/CLAUDE.md
   behavior: The ambient bootstrap runbook carries the pre-apply ordering caveat, so an operator applying an unrelated bootstrap
@@ -649,8 +674,8 @@ execution_steps:
   confirm the apply succeeded. Hold the PR subscription through apply (implement skill, Hold subscription through apply).'
 - Run VP step 12. Do not start phase 2 until the verdict is clean AND the record's commit_sha is the phase-1 merge SHA.
 - PHASE 2 PR. Restore terraform-drift.yml's schedule cron '17 * * * *' and delete the CRON DISABLED comment; invert test_drift_workflow_is_workflow_dispatch_only
-  into test_drift_workflow_cron_is_restored. Remove the p2-glue-delete-database row from docs/contracts/iam-simulate-fixture.yaml.
-  Append the dated Decision 178 annotation using the pinned '> **Update (DATE):**' form as its own line.
+  into test_drift_workflow_cron_is_restored. Append the dated Decision 178 annotation using the pinned '> **Update (DATE):**'
+  form as its own line.
 - 'Run VP steps 1, 2, 5, 6, 8 BEFORE committing (step 2 stashes uncommitted workflow edits, so it can only run pre-commit).
   Step 2 is repeated here deliberately: it proves the drift test''s RED half, and that test does not exist until this phase.
   Commit, push, open the PR, merge on green.'
