@@ -190,3 +190,44 @@ class TestContractFileFails:
         _write_tree(tmp_path, _ENTRY_LITERAL, contract_text="- just\n- a\n- list\n")
         failed = _run(tmp_path)
         assert any("did not parse to a YAML mapping" in f for f in failed), failed
+
+
+class TestContractReadErrorIsReportedDistinctly:
+    """The contract-READ except branch (validate_check_manifests.py:112) must emit its own entry.
+
+    Line 113 leaves contract_data=None, so line 126's "... did not parse to a YAML mapping."
+    message keeps firing and by itself satisfies the `any("check-manifest.yaml" in f)` assertions
+    of TestContractFileFails -- which is why neutering line 112 survives them. Per Decision 181
+    point 3 the masking message is stripped by an EXACT suffix match first, and every assertion on
+    what remains is POSITIVE (the except-branch message is present), never an absence claim.
+    """
+
+    @staticmethod
+    def _read_errors(failed: list[str]) -> list[str]:
+        return [f for f in failed if not f.endswith(" did not parse to a YAML mapping.")]
+
+    def test_missing_contract_file_reports_the_read_error_distinctly(self, tmp_path: Path) -> None:
+        manifest_dir = tmp_path / "scripts" / "checks" / "fake_domain"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "_manifest.py").write_text(_ENTRY_LITERAL, encoding="utf-8")
+        (tmp_path / "docs" / "contracts").mkdir(parents=True)
+        read_errors = self._read_errors(_run(tmp_path))
+        assert read_errors, "only the masking not-a-mapping message was emitted; the OSError branch is silent"
+        assert any("check-manifest.yaml:" in f and "No such file or directory" in f for f in read_errors), read_errors
+
+    def test_invalid_yaml_contract_reports_the_parse_error_distinctly(self, tmp_path: Path) -> None:
+        _write_tree(tmp_path, _ENTRY_LITERAL, contract_text="contract: [unclosed\n")
+        read_errors = self._read_errors(_run(tmp_path))
+        assert read_errors, "only the masking not-a-mapping message was emitted; the yaml.YAMLError branch is silent"
+        assert any("check-manifest.yaml:" in f and "flow sequence" in f for f in read_errors), read_errors
+
+    def test_filter_keeps_a_second_genuine_error(self, tmp_path: Path) -> None:
+        """The suffix filter strips ONLY the not-a-mapping message: a genuine failure from another
+        site (here the manifest-SyntaxError arm at :79) survives it alongside the read error."""
+        manifest_dir = tmp_path / "scripts" / "checks" / "fake_domain"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "_manifest.py").write_text("def broken(:\n    pass\n", encoding="utf-8")
+        (tmp_path / "docs" / "contracts").mkdir(parents=True)
+        read_errors = self._read_errors(_run(tmp_path))
+        assert any("Check-manifest grammar:" in f and "fake_domain/_manifest.py" in f for f in read_errors), read_errors
+        assert any("check-manifest.yaml:" in f for f in read_errors), read_errors
