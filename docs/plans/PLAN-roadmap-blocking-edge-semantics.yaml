@@ -1,0 +1,158 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "roadmap-blocking-edge-semantics"
+intent: >-
+  De-overload the roadmap blocking graph so the edge types authors actually need exist as
+  fields: split CandidateDecision.gates into gates (completion-blocking) plus affects
+  (in-scope-of), and add per-criterion blocked_by. Transcribe the blocking edges that today
+  survive only in YAML comments and criterion prose, so downstream liveness analysis reads
+  the authored plan of record rather than an overloaded proxy for it.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-roadmap-blocking-edge-semantics.yaml
+phase: >-
+  Roadmap-governance data-fidelity repair; extends the T-1.5 schema surface. Soft-warn
+  exception category user_explicit_out_of_scope -- claims no tier_item slice. Companion
+  instrument plan (liveness detector + ratchet) is deliberately deferred to a follow-on.
+scope:
+  - file: scripts/platform_roadmap_models.py
+    action: Modify
+    purpose: >-
+      Add CandidateDecision.affects and ExitCriterion.blocked_by (list of {ref, until, note});
+      validate every ref resolves to a known tier_item or CD id. Both new edge types stay OUT
+      of the _validate_graph step-(c) depends_on DFS.
+  - file: scripts/platform_roadmap_state.py
+    action: Modify
+    purpose: >-
+      _pending_gating_cds_for_item must not treat affects as blocking; surface criterion
+      blocked_by refs in to_preflight_dict so agents see the real edge.
+  - file: docs/ROADMAP-PLATFORM.yaml
+    action: Modify
+    purpose: >-
+      CD.17 gates -> affects transcription per its own inline comment; blocked_by on the 13
+      prose-only blocker criteria; T1.5 moved off T1.6.depends_on onto T1.6 c7 blocked_by;
+      forced ExitCriterion conversion of 32 bare-string criteria on touched items.
+  - file: docs/contracts/exit-criteria-ledger.yaml
+    action: Modify
+    purpose: blocked_by field semantics in the contract that owns exit_criteria[] (Decision 86/136)
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: numbered Decision recording the gates/affects split and the blocked_by edge type
+  - file: tests/test_platform_roadmap_models.py
+    action: Modify
+    purpose: schema tests for affects/blocked_by, ref resolution, and DFS exclusion
+  - file: tests/platform_roadmap_state/test_graph.py
+    action: Modify
+    purpose: assert affects is not completion-blocking and blocked_by reaches the preflight dict
+bundled_recommendations: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - ExitCriterion.blocked_by and CandidateDecision.affects load, reject unresolvable refs, and are excluded from the depends_on cycle DFS (a blocked_by ring loads without error)
+  - CD.17 carries affects with its eight prior gate ids and gates is empty; T1.5 no longer reports CD.17 in completion_blocked_on_cd
+  - All 13 prose-only blocker edges are carried in blocked_by, including T2.26 c2/c3/c8 naming CD.40 and T3.20
+  - T1.6.depends_on no longer contains T1.5; T1.6 c7 carries blocked_by ref T1.5 until complete
+  - No touched tier_item retains a bare-string criterion; validate_platform_roadmap passes
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: schema accepts the new edge types and rejects unresolvable refs
+    command: bin/venv-python -m pytest tests/test_platform_roadmap_models.py -q
+    expected: all pass, including the unresolvable-ref rejection and blocked_by-ring-loads cases
+    fix_if: a blocked_by ring raises "Dependency cycle detected" -- the new edge leaked into the step-(c) DFS
+    graduation: graduate
+    graduation_check_id: roadmap-blocked-by-excluded-from-depends-on-dfs
+  - step: 2
+    phase: pre-deploy
+    action: affects is not completion-blocking; blocked_by reaches the preflight projection
+    command: bin/venv-python -m pytest tests/platform_roadmap_state/test_graph.py -q
+    expected: all pass
+    fix_if: affects entries still appear in completion_blocked_on_cd
+    graduation: graduate
+    graduation_check_id: roadmap-affects-not-completion-blocking
+  - step: 3
+    phase: pre-deploy
+    action: live roadmap -- CD.17 no longer completion-gates T1.5, and the 13 blockers are structured
+    command: >-
+      bin/venv-python -c "from pathlib import Path; from scripts.platform_roadmap_state import load, PlatformRoadmapState;
+      d=load(Path('docs/ROADMAP-PLATFORM.yaml')); s=PlatformRoadmapState(d);
+      cd={c.id:c for c in d.candidate_decisions}; ti={t.id:t for t in d.tier_items};
+      assert cd['CD.17'].gates==[], cd['CD.17'].gates;
+      assert set(cd['CD.17'].affects)=={'T1.5','T1.6','T2.1','T3.3','T3.4','T4.1','T4.2','T4.4'};
+      assert 'T1.5' not in ti['T1.6'].depends_on, ti['T1.6'].depends_on;
+      n=sum(len(c.blocked_by or []) for t in d.tier_items for c in t.exit_criteria);
+      assert n>=13, n;
+      t226={c.id:c for c in ti['T2.26'].exit_criteria};
+      refs={b.ref for cid in ('c2','c3','c8') for b in (t226[cid].blocked_by or [])};
+      assert {'CD.40','T3.20'} <= refs, refs; print('OK blocked_by refs=',n)"
+    expected: "prints OK blocked_by refs= with a count of at least 13"
+    fix_if: AssertionError names the field that was not transcribed
+    graduation: graduate
+    graduation_check_id: roadmap-cd17-gates-affects-split
+  - step: 4
+    phase: pre-deploy
+    action: no bare-string criteria survive on any touched item and the roadmap gate passes
+    command: |-
+      bin/venv-python -c "from scripts.checks.roadmap.validate_platform_roadmap import
+      validate_platform_roadmap as v; f=[]; v(f); print('FAILED:', f); raise SystemExit(1 if f else 0)"
+    expected: "prints FAILED: [] and exits 0"
+    fix_if: check (ii) names a touched item still holding bare-string criteria -- convert that item's full criteria list
+    graduation: not-applicable
+  - step: 5
+    phase: pre-deploy
+    action: full fast-tier presubmit is green
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: read the named failing check and fix within scope
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/platform_roadmap_models.py
+    behavior: affects/blocked_by refs must resolve; blocked_by must never enter the depends_on cycle DFS
+    verification_step: 1
+    test_selector: tests/test_platform_roadmap_models.py
+    red_green_expectation: red before, green after
+  - source: scripts/platform_roadmap_state.py
+    behavior: affects is never treated as a completion gate; blocked_by is surfaced to preflight
+    verification_step: 2
+    test_selector: tests/platform_roadmap_state/test_graph.py
+    red_green_expectation: red before, green after
+constraints:
+  - No rescue agents or workaround loops (Decision 55)
+  - >-
+    Transcription only -- every edge written must be justified by existing documentary evidence
+    (an inline YAML comment, CD detail text, or criterion prose). Do not invent, retarget or
+    delete a blocking relationship this plan cannot cite.
+  - >-
+    Ship no liveness detector, check module or baseline file here; the instrument is a follow-on
+    plan, deliberately decoupled so detector correctness and roadmap semantics are reviewed apart.
+  - Do not flip any tier_item or criterion status (Decision 90 -- /plan and this plan never flip status)
+  - Roadmap stays under the Decision 114 10,000-line ceiling; compact in place, never raise (Decision 147)
+context:
+  - "decision-scout: FLAGS_FOUND, 134/134 triaged. CITE: Decision 86 (routing; no docs/ RCA report), Decision 136 + exit-criteria-ledger.yaml (field-semantics home), Decision 131 (mirror test path), Decision 167 (yaml significance envelope), Decision 114 + Decision 147 (roadmap ceiling; compact never raise), Decision 105 (ratification lane), Decision 67 (STRATEGIC freeze), Decision 55, Decision 87, Decision 48 (V2)."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "Root cause: two edge fields (depends_on, gates) carry three semantics (start-blocks, completion-blocks, affects). Exactly 2 of 211 edge lines carry a semantics-correcting inline comment -- ROADMAP-PLATFORM.yaml:794 (CD.17 gates, '# the strategic items the freeze affects') and :2946 (T1.6 depends_on, 'gates ... T1.6 COMPLETION ... AUTHORABLE ahead of T1.5'). Those two edges are exactly the two that close the CD.17 deadlock ring."
+  - "Deadlock measurement this session: 464 raw cycles in the heterogeneous graph; 1 toxic SCC under the internal-depends_on-edge discriminator (17 nodes, 20 including related_candidate_decisions). CD.17 split alone shrinks it to 11/14 and frees T1.5, T1.6, T3.3, T3.4. Residual T4-only core (CD.11/CD.27/CD.38/CD.43) has no documentary evidence and is out of scope."
+  - "Two Fable advice-consults informed this split. Consult 1: land the governance/semantics amendment first, then the detector against a cleaner graph. Consult 2: keep the new edge type out of the load-time DFS or the transcription PR fails CI on its own sweep; corpus-wide prose gating has 3-33% precision and must not gate."
+  - "ci-rca DEFERRAL: rec-3293 and rec-3292 are open and unresolved. The human deferred them this session -- another agent is validating they are resolved. This plan satisfies none of the three Related-Work conditions and proceeds on that logged deferral."
+  - "Touching a tier_item forces full ExitCriterion conversion (validate_platform_roadmap check (ii)): T1.6 (8), T2.29 (9), T3.4 (2), T4.1 (13) = 32 bare strings. T2.18/T2.19/T2.26/T4.18 are already structured."
+  - "Roadmap headroom: 9,327 of 10,000 lines. Projected growth ~136 lines."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - "scripts/platform_roadmap_models.py: add a CriterionBlocker model {ref: str, until: Literal['complete','ratified','disposition'], note: str|None}; ExitCriterion.blocked_by: list[CriterionBlocker] = []; CandidateDecision.affects: list[str] = []. In _validate_graph add a step validating every blocked_by.ref and affects entry resolves to a known tier_item id, CD id, or tier shortcut. Do NOT add either to the step-(c) adjacency."
+  - "scripts/platform_roadmap_state.py: leave _pending_gating_cds_for_item keyed on gates/related_candidate_decisions/decision_required_before only (affects must not be added); add criterion blocked_by refs to the in_progress preflight projection."
+  - "docs/ROADMAP-PLATFORM.yaml: set CD.17 gates: [] and affects: [T1.5, T1.6, T2.1, T3.3, T3.4, T4.1, T4.2, T4.4], preserving the inline comment as the transcription's citation. Remove T1.5 from T1.6.depends_on and add blocked_by {ref: T1.5, until: complete} to T1.6 c7, quoting the retired inline comment in the note. Add blocked_by to the 13 prose-only blocker criteria (T1.6 c2; T2.18 c2; T2.19 c2, c11; T2.26 c2, c3, c8; T2.29 c8; T3.4 c2; T4.1 c5, c7, c10; T4.18 c1). Convert all bare-string criteria on T1.6, T2.29, T3.4 and T4.1 to ExitCriterion objects, preserving text verbatim and status open."
+  - "docs/contracts/exit-criteria-ledger.yaml: add a blocked_by entry to fields: with type, description, semantics, populated_by and dq_intent, matching the met_by entry's shape; note in governance_notes that blocked_by is deliberately excluded from the depends_on cycle DFS."
+  - "docs/DECISIONS.md: author the next free ## Decision NNN: entry (re-check the current max header at execution time -- 181 at planning time). Required markers Status/Date/Decision; a bare ```yaml envelope immediately after the heading carrying number and significance: numbered_decision with a justification naming why exit-criteria-ledger.yaml alone is insufficient (it owns exit_criteria[] but not CandidateDecision.gates semantics). Record reversal conditions."
+  - "tests/test_platform_roadmap_models.py: add cases for affects/blocked_by round-trip, unresolvable-ref rejection, and a blocked_by ring loading without a cycle error."
+  - "tests/platform_roadmap_state/test_graph.py: add cases asserting an affects-only CD never appears in completion_blocked_on_cd and that blocked_by refs reach to_preflight_dict."
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - 'Report: what was implemented, verification results'
+rollback: >-
+  Single-commit revert. The new fields are additive and default-empty, so reverting restores the
+  prior graph reading exactly; no data migration or deploy is involved.
