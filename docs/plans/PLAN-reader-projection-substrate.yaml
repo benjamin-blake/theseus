@@ -19,7 +19,9 @@ scope:
   - file: src/common/ducklake_reader_client.py
     action: Modify
     purpose: >-
-      Add VERB_FIELDS (declared projection per verb) and a literal registry-version pin; make
+      Add VERB_FIELDS (declared projection per verb; the four SELECT * verbs carry an
+      ALL_TABLE_COLUMNS sentinel rather than ~80 hand-copied names, so a routine field_semantics
+      column add cannot drift them) and a literal registry-version pin; make
       query() raise instead of swallowing every exception and returning None. Deliberately does
       NOT add strict Row access -- see the sequencing note in context.
   - file: tests/fixtures/reader_rows.py
@@ -55,9 +57,11 @@ bundled_recommendations: []
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
-    VERB_FIELDS declares a column tuple for every NAMED_READS verb, and a test proves each entry
-    equals the column set that verb's SQL actually produces in DuckDB (SELECT * verbs resolved
-    through the table spec, not hand-copied).
+    VERB_FIELDS declares a column tuple for every fixed-column NAMED_READS verb and the
+    ALL_TABLE_COLUMNS sentinel for the four SELECT * verbs; a test proves each fixed-column entry
+    equals the column set that verb's SQL actually produces in DuckDB, and resolves each sentinel
+    through resolve_table_spec(table).ordered_columns at assertion time. No SELECT * column list
+    is hand-copied, so an ops_tables column add cannot drift the declaration.
   - >-
     The client's literal registry-version pin equals NAMED_READS_VERSION at this commit, asserted
     by test rather than by comment.
@@ -65,9 +69,12 @@ acceptance_criteria:
     verb_rows(verb, rows) returns each row containing exactly the verb's declared columns --
     extra keys dropped, and an unknown verb name raises rather than passing through.
   - >-
-    tests/convergence_health/test_escalate.py builds its rows through verb_rows("open_recs", ...)
-    and its lookup assertions are xfail(strict=True); the suite can no longer assert on source or
-    status for that verb.
+    TestFindOpenConvergenceStaleRec's three fixtures (lines ~19-22 and ~29-31) build rows through
+    verb_rows("open_recs", ...). EXACTLY ONE test is marked xfail(strict=True):
+    test_returns_first_matching_rec. test_returns_none_when_no_match and
+    test_returns_none_on_empty_list still pass after stripping and MUST NOT be marked, or
+    strict=True reports XPASS and reds the step. The remaining ~12 hand-authored fixture sites in
+    that file convert in the call-site repair plan, not here.
   - >-
     DuckLakeReader.query() raises on reader failure instead of returning None, and its three
     former return-None assertions are pytest.raises.
@@ -78,8 +85,12 @@ acceptance_criteria:
     NO strict-access behaviour ships in this plan: no Row subclass, no UnprojectedField, no
     legacy roster. Reading an unprojected field still returns None after this change.
   - >-
-    The data-pipeline artifact is redeployed through .github/workflows/deploy-prod-lambdas.yml
-    and that run concludes success including its per-function smoke step.
+    Both triggered deploy channels conclude green: the automatic deploy-ducklake-lambdas run
+    (fired by this file matching its src/common/ducklake_*.py glob) and the manually dispatched
+    deploy-prod-lambdas run. No shell-executable verifier for a run conclusion exists here (the
+    gh CLI is prohibited by AGENTS.md and the agent profile lacks lambda:GetFunctionConfiguration),
+    so both conclusions are read via mcp__github__actions_get and recorded in the handoff report;
+    the VP asserts the preconditions and the absence of any break-glass local deploy.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -89,7 +100,7 @@ verification_plan:
     command: bin/venv-python -m pytest tests/common/ducklake_reader_client/test_verb_fields_parity.py::test_verb_fields_match_registry_sql -q
     expected: exit 0; all 12 NAMED_READS verbs covered, the four SELECT * verbs resolved via resolve_table_spec
     fix_if: A mismatch means VERB_FIELDS drifted from the registry -- correct the declaration, never relax the test.
-    hermetic: true
+    hermetic: false
     graduation: graduate
     graduation_check_id: verb-fields-match-registry-sql
   - step: 2
@@ -100,7 +111,7 @@ verification_plan:
     fix_if: >-
       A drifted pin means VERB_FIELDS was updated without re-checking the registry version, or
       the registry moved without updating the client.
-    hermetic: true
+    hermetic: false
     graduation: graduate
     graduation_check_id: verb-fields-version-pin-matches
   - step: 3
@@ -131,29 +142,63 @@ verification_plan:
   - step: 5
     phase: pre-deploy
     action: >-
-      query() raises on reader failure rather than returning None (Decision 84 I-4), and
+      query() raises on reader failure rather than returning None (Decision 55 loud-fail +
+      Decision 84 I-3's closed boundary; NOT I-4, which is a write invariant), and
       _READER_TRANSIENT_STATUS still equals the ops_portal.reader_transient set.
     command: bin/venv-python -m pytest tests/common/ducklake_reader_client/test_ducklake_reader.py tests/ops_data_portal/test_reader_transient.py -q
     expected: exit 0; the three former return-None assertions now assert a raise
     fix_if: >-
       A surviving `except Exception: return None` in query() reintroduces the silent-degradation
       path; a changed _READER_TRANSIENT_STATUS breaks Decision 155 clause 2's equality assertion.
-    hermetic: true
+    hermetic: false
     graduation: graduate
     graduation_check_id: query-raises-transient-export-intact
   - step: 6
     phase: pre-deploy
+    action: >-
+      Prove the non-breaking claim mechanically: DuckLakeReader.query() has NO production call
+      sites, so making it raise cannot red any live path.
+    command: |
+      if grep -rn '\.query(' --include='*.py' scripts/ src/ | grep -v 'def query'; then
+        echo "FAIL - production .query() call site found"
+        exit 1
+      fi
+      echo "OK - no production .query() call sites"
+    expected: prints the OK line; every .query( occurrence is confined to tests/
+    fix_if: >-
+      A production call site means query() raising IS breaking -- bring that caller into scope
+      with an explicit try/except rather than shipping a silent behaviour change.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: reader-query-no-production-callers
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      The xfail reasons cite a filed recommendation id, so the production defect the markers
+      encode has a durable record rather than living only as test metadata.
+    command: |
+      grep -q 'rec-[0-9]\+' tests/convergence_health/test_escalate.py
+      echo "OK - xfail reason cites a rec id"
+    expected: prints the OK line
+    fix_if: >-
+      File the dedup-blindness rec first (execution step 1) and cite its id in the xfail reason;
+      an xfail pointing at a non-existent 'repair plan' is an orphan.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: convergence-xfail-cites-rec
+  - step: 8
+    phase: pre-deploy
     action: Coverage on the modified client holds its ratcheted floor (config/coverage_baseline.yaml records 88.3).
     command: bin/venv-python -m scripts.test_coverage_checker --check-coverage --file src/common/ducklake_reader_client.py
-    expected: reported coverage >= 88.3
-    fix_if: Below the floor, add assertions rather than lowering the baseline.
+    expected: exit 0 with a PASS verdict (the checker emits PASS/FAIL and "all N source files at 100%", never a bare percentage to compare)
+    fix_if: On FAIL, add assertions rather than lowering the baseline.
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
       Coverage is already ratcheted by its own standing baseline gate inside validate.py;
       graduating a second per-file coverage check would duplicate that mechanism rather than
       guard any behaviour this plan introduces.
-  - step: 7
+  - step: 9
     phase: pre-deploy
     action: Fast presubmit tier passes on the branch.
     command: bin/venv-python -m scripts.validate --pre
@@ -161,68 +206,87 @@ verification_plan:
     fix_if: Diagnose and fix on the branch; a --pre failure files no rec and gates nothing.
     hermetic: false
     graduation: not-applicable
-  - step: 8
+  - step: 10
     phase: pre-deploy
     action: >-
       Full validation tier completes green before commit/PR, as handoff_policy declares
-      (Decision 163 / rec-2965 -- validate_handoff_full_tier fails a plan that declares the
-      obligation without a step that discharges it).
+      (Decision 163 / rec-2965).
     command: bin/venv-python -m scripts.validate
     expected: exit 0
-    fix_if: >-
-      On timeout the disposition is `blocked` -- resume later and rerun the full tier from the
-      start; never commit on a partial run.
+    fix_if: On timeout the disposition is `blocked` -- resume later and rerun from the start.
     hermetic: false
     graduation: not-applicable
-  - step: 9
+  - step: 11
     phase: post-deploy
     action: >-
-      Redeploy data-pipeline through the governed channel. A MANUAL workflow_dispatch is
-      REQUIRED: deploy-prod-lambdas.yml's push paths filter covers src/data/handlers, seven named
-      scripts/ files and config/lambda/data-pipeline -- NOT src/common/**, so merging this change
-      triggers no deploy. This command asserts that precondition still holds; the implementing
-      agent then dispatches via mcp__github__actions_run_trigger and reads the conclusion via
-      mcp__github__actions_get (the gh CLI is prohibited by AGENTS.md). The workflow's own
-      per-function smoke step is the authoritative verifier (Decision 119 CI-delegation).
-    command: >-
-      bin/venv-python -c "import yaml, pathlib;
-      w = yaml.safe_load(pathlib.Path('.github/workflows/deploy-prod-lambdas.yml').read_text());
-      on = w[True] if True in w else w['on'];
-      assert 'workflow_dispatch' in on, 'no manual dispatch path available';
-      paths = on['push']['paths'];
-      assert not any(p.startswith('src/common') for p in paths), 'paths filter now covers src/common -- recheck whether manual dispatch is still required';
-      print('OK: manual workflow_dispatch required and available')"
-    expected: prints the OK line; then the dispatched deploy-prod-lambdas run concludes success including its per-function smoke step
+      Assert the two-channel deploy preconditions. This file matches BOTH
+      deploy-ducklake-lambdas.yml's 'src/common/ducklake_*.py' glob (so merging fires the
+      five-artifact DuckLake chain automatically -- byte-identical, since no ducklake manifest
+      lists this file, but it must still go green and it IS ci-rca-watched) AND nothing in
+      deploy-prod-lambdas.yml's paths filter (so the prod redeploy needs a manual dispatch). The
+      implementing agent then reads both run conclusions via mcp__github__actions_get.
+    command: |
+      bin/venv-python -c "
+      import yaml, pathlib, fnmatch
+      g = yaml.safe_load(pathlib.Path('.github/workflows/deploy-ducklake-lambdas.yml').read_text())
+      p = yaml.safe_load(pathlib.Path('.github/workflows/deploy-prod-lambdas.yml').read_text())
+      gon = g[True] if True in g else g['on']
+      pon = p[True] if True in p else p['on']
+      f = 'src/common/ducklake_reader_client.py'
+      assert any(fnmatch.fnmatch(f, x) for x in gon['push']['paths']), 'ducklake channel no longer auto-fires'
+      assert not any(f.startswith(x.rstrip('*/')) for x in pon['push']['paths']), 'prod filter now covers this path'
+      assert 'workflow_dispatch' in pon, 'no manual dispatch path on the prod channel'
+      print('OK - ducklake auto-fires, prod needs manual dispatch')
+      "
+    expected: prints the OK line; both dispatched/triggered runs then conclude success
     fix_if: >-
-      If the assertion about the paths filter fails, someone added src/common coverage -- re-read
-      the workflow before dispatching. If the dispatched run fails, read its log and forward-fix;
-      never fall back to a local `build_lambda --deploy` (break-glass only, Decision 125 cl.3).
+      If the DuckLake run's reconcile-gate refuses (non-empty pending_reconcile on a
+      reconcile_scope=ducklake table), that is a pre-existing warehouse condition, not this
+      change -- resolve it before re-running; do NOT fall back to a local build_lambda --deploy
+      (break-glass only, Decision 125 cl.3).
+    hermetic: false
+    graduation: not-applicable
+  - step: 12
+    phase: post-deploy
+    action: No break-glass local deploy was used anywhere in this change.
+    command: |
+      if git diff origin/main --unified=0 -- 'src/*' 'scripts/*' 'tests/*' '.github/*' | grep -E '^\+.*build_lambda.*--deploy'; then
+        echo "FAIL - break-glass deploy invocation added"
+        exit 1
+      fi
+      echo "OK - no break-glass deploy invocation added"
+    expected: prints the OK line
+    fix_if: Remove the local deploy invocation; the governed channels are the only sanctioned route.
     hermetic: false
     graduation: not-applicable
 test_obligations:
   - source: src/common/ducklake_reader_client.py
-    behavior: >-
-      query() raises on reader failure instead of returning None, closing the silent-degradation
-      path; _READER_TRANSIENT_STATUS remains exported and unchanged.
+    behavior: query() raises on reader failure instead of returning None.
     verification_step: 5
-    test_selector: tests/common/ducklake_reader_client/test_ducklake_reader.py::test_ducklake_reader_query_returns_none_on_error
+    test_selector: tests/common/ducklake_reader_client/test_ducklake_reader.py::test_ducklake_reader_query_raises_on_error
     red_green_expectation: >-
-      red before (the existing assertion is `query(...) is None`, which passes today and fails
-      once the method raises), green after the assertion is rewritten to pytest.raises.
+      red before -- the pre-change assertion is `query(...) is None`, so the rewritten
+      pytest.raises form fails until the method actually raises; green after.
   - source: src/common/ducklake_reader_client.py
-    behavior: >-
-      VERB_FIELDS declares the true projected column set for every registered verb, and the
-      literal version pin tracks NAMED_READS_VERSION.
+    behavior: VERB_FIELDS declares the true projected column set for every registered verb.
     verification_step: 1
     test_selector: tests/common/ducklake_reader_client/test_verb_fields_parity.py::test_verb_fields_match_registry_sql
-    red_green_expectation: red before (VERB_FIELDS does not exist; import error), green after.
+    red_green_expectation: red before (VERB_FIELDS does not exist -- ImportError at collection), green after.
+  - source: src/common/ducklake_reader_client.py
+    behavior: the literal registry-version pin tracks NAMED_READS_VERSION.
+    verification_step: 2
+    test_selector: tests/common/ducklake_reader_client/test_verb_fields_parity.py::test_version_pin_matches_registry
+    red_green_expectation: red before (the pin does not exist -- ImportError at collection), green after.
   - source: tests/fixtures/reader_rows.py
-    behavior: >-
-      verb_rows() strips a fixture dict to exactly the named verb's declared columns and rejects
-      an unregistered verb name, so fixtures cannot express shapes the reader never emits.
+    behavior: verb_rows() drops keys outside the named verb's declared projection.
     verification_step: 3
     test_selector: tests/common/ducklake_reader_client/test_reader_rows_helper.py::test_verb_rows_strips_extra_keys
-    red_green_expectation: red before (the helper does not exist; collection error), green after.
+    red_green_expectation: red before (the helper does not exist -- collection error), green after.
+  - source: tests/fixtures/reader_rows.py
+    behavior: verb_rows() raises on an unregistered verb name rather than passing rows through.
+    verification_step: 3
+    test_selector: tests/common/ducklake_reader_client/test_reader_rows_helper.py::test_verb_rows_rejects_unknown_verb
+    red_green_expectation: red before (the helper does not exist -- collection error), green after.
 constraints:
   - No rescue agents or workaround loops (Decision 55).
   - >-
@@ -293,36 +357,54 @@ pre_implementation_checklist:
   - Acceptance criteria understood and verifiable
 execution_steps:
   - >-
-    tests/fixtures/reader_rows.py -- verb_rows(verb, rows) looks the verb up in the client's
-    VERB_FIELDS, drops keys outside that projection, and raises on an unregistered verb name.
+    FIRST, file the dedup-blindness rec via scripts.ops_data_portal (file_rec): open_recs
+    consumers filtering on unprojected source/status, citing scripts/convergence_health/
+    escalate.py:57 and code_drift.py:89,:284. Its id is cited by the xfail reason below and
+    checked by VP step 7, so nothing else can start until it exists.
   - >-
-    src/common/ducklake_reader_client.py -- add VERB_FIELDS: dict[str, tuple[str, ...]] covering
-    all 12 registered verbs plus a literal _NAMED_READS_VERSION_PIN. Leave named() and
+    tests/fixtures/reader_rows.py -- verb_rows(verb, rows) looks the verb up in the client's
+    VERB_FIELDS, resolves the ALL_TABLE_COLUMNS sentinel through the table spec, drops keys
+    outside that projection, and raises on an unregistered verb name.
+  - >-
+    src/common/ducklake_reader_client.py -- add VERB_FIELDS covering all 12 registered verbs
+    (fixed-column tuples; ALL_TABLE_COLUMNS sentinel for rec_by_id, rec_history, decision_by_id,
+    priority_queue_current) plus a literal _NAMED_READS_VERSION_PIN. Leave named() and
     current_state() returning plain dicts; leave _READER_TRANSIENT_STATUS and the retry loop
     untouched.
   - >-
     src/common/ducklake_reader_client.py -- make query() raise instead of catching Exception and
-    returning None; keep the ReaderInvokeError type so callers can catch deliberately.
+    returning None, and narrow its return annotation at ~line 319 from `list[dict] | None` to
+    `list[dict]` now that the None branch is gone.
   - >-
-    tests/common/ducklake_reader_client/test_verb_fields_parity.py -- execute each verb's SQL in
-    in-memory DuckDB (reuse the harness in tests/fixtures/ducklake_fakes.py and
-    tests/test_session_preflight_cache_serving.py); resolve the four SELECT * verbs via
-    resolve_table_spec(table).ordered_columns; assert the version pin.
+    tests/common/ducklake_reader_client/test_verb_fields_parity.py -- COPY (do not import) the
+    real DuckDB verb harness pattern from tests/test_session_preflight_cache_serving.py
+    (_con/_load_recs/_run_verb, ~lines 65-85): validate_no_cross_test_imports forbids importing
+    any module whose final dotted component starts with test_, and tests/fixtures/
+    ducklake_fakes.py's FakeCon is a connection double that cannot execute SQL. Guard the import
+    with `duckdb = pytest.importorskip("duckdb")` (precedent: tests/ops_data_portal/
+    test_cli.py:14) so the module is skippable where duckdb is absent.
   - tests/common/ducklake_reader_client/test_reader_rows_helper.py -- verb_rows stripping and unknown-verb rejection.
   - >-
     tests/common/ducklake_reader_client/test_ducklake_reader.py -- rewrite the three
-    query()-returns-None assertions (~124, ~132, ~187) as pytest.raises.
+    query()-returns-None assertions (~124, ~132, ~187) as pytest.raises and rename
+    test_ducklake_reader_query_returns_none_on_error to ..._query_raises_on_error. Leave the two
+    success-path calls (~114, ~175) alone.
   - >-
-    tests/convergence_health/test_escalate.py -- build the fixtures at ~19-22 via
-    verb_rows("open_recs", ...) and mark the lookup assertions
-    pytest.mark.xfail(strict=True, reason=...) naming the call-site repair plan.
+    tests/convergence_health/test_escalate.py -- convert ONLY TestFindOpenConvergenceStaleRec's
+    fixtures (~19-22, ~29-31) via verb_rows("open_recs", ...) and mark ONLY
+    test_returns_first_matching_rec with pytest.mark.xfail(strict=True, reason=...) citing the
+    rec id from step 1. Do NOT mark test_returns_none_when_no_match or
+    test_returns_none_on_empty_list -- they still pass after stripping and would XPASS.
   - >-
     Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop
     and RCA (Decision 55).
   - >-
-    File a rec for the deploy-prod-lambdas.yml / PROD_SOURCE_PATHSPECS src/common/** gap noted in
-    context, via scripts.ops_data_portal.
-  - 'Report: what was implemented, verification results'
+    File a second rec for the deploy-trigger/affected-set mismatch: this file matches
+    deploy-ducklake-lambdas.yml's and DUCKLAKE_SOURCE_PATHSPECS' src/common/ducklake_*.py glob
+    while appearing in NO ducklake manifest, and is absent from deploy-prod-lambdas.yml's filter
+    and PROD_SOURCE_PATHSPECS despite being packaged into data-pipeline -- so it over-triggers
+    one channel and under-triggers the other.
+  - 'Report: what was implemented, verification results, and both deploy run conclusions'
 work_areas: []
 rollback: >-
   Revert the client commit and redeploy data-pipeline via deploy-prod-lambdas.yml
