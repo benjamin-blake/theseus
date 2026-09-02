@@ -26,9 +26,12 @@ and answer the questions the requester did not think to ask.
 
 The requester's candidates originate from anecdotal experience, not from telemetry, a Decision,
 or a roadmap item. Treat each as never-evaluated. REJECT is a fully acceptable verdict for any
-candidate; "burden real, no remedy" is NOT an acceptable outcome for a confirmed burden. Do not
-manufacture agreement with the requester, and do not reject a candidate merely because a prior
-audit rejected something with a similar name (see the traps below).
+candidate; "burden real, no remedy" is NOT an acceptable outcome for a confirmed burden. An
+INSTRUMENTATION-ONLY remedy -- a record or measurement with a declared decision trigger and no
+other mechanism -- is an admissible originated remedy when you judge the burden unmeasured
+(NS-E); it still needs a landing surface, a carrying cost, and, for B1, a sunset condition. Do
+not manufacture agreement with the requester, and do not reject a candidate merely because a
+prior audit rejected something with a similar name (see the traps below).
 
 Deliverables: `audits/planning-decision-burden-<sha>.yaml` and
 `audits/planning-decision-burden-<sha>.md`. The ONLY files you create or modify in the
@@ -57,20 +60,32 @@ Per-candidate adjudication, with its mapping to the output contract pinned:
   one for the burden itself (the defect in the current workflow that produces it) and up to two
   more for DISTINCT defects you traced while establishing it (e.g. an inconsistency between two
   rules is a different defect from the absence of a third). A burden verdicted REFUTED files NO
-  finding and gets exactly one `rejected_candidates[]` row naming the compensating control.
+  finding and gets exactly one `rejected_candidates[]` row naming the compensating control. The
+  at-least-one rule binds B1-B3 only (see the unnamed-burden rule below).
+- A REFUTED burden's five candidate remedies are all verdicted `reject` or `defer-to-roadmap`
+  by construction and its `adopted_set` is empty. If you judge one of them sound for a DIFFERENT
+  burden that is not REFUTED, re-home it: add an originated remedy under that burden whose
+  `rationale` opens with the source id (e.g. "from B2-R4"); the original keeps its `reject`.
 - A REMEDY never files a finding by being adopted or rejected. Its disposition lives ONLY in
   `burden_dispositions` and is never mirrored into `findings[]` or `rejected_candidates[]`. A
   remedy's adjudication may EXPOSE a defect in the current workflow; that defect files as a
   finding attributed to the burden it belongs to, subject to the per-burden cap above.
-- An UNNAMED burden surfaced under Q6 (cap 3) files AT MOST ONE finding each, and only when it
-  meets the same evidence bar as B1-B3; otherwise it is recorded in Q6's answer with
-  `confidence: HYPOTHESIS` and no finding.
+- An UNNAMED burden surfaced under Q6 (cap 3; ids B4-B6 in the order surfaced) gets its own
+  `burden_dispositions` entry and files AT MOST ONE finding, and only when it meets the same
+  evidence bar as B1-B3. A B4-B6 entry MAY carry `burden_verdict: PARTIAL` with zero findings
+  (its evidence and remedies then live only in the disposition, `confidence: HYPOTHESIS`) --
+  this overrides the at-least-one rule for unnamed burdens.
 - A GROUNDING MAP fact you trace to a defect outside every burden files AT MOST THREE findings
   in total across the whole audit, `surface: shared`; a fact you considered and dismissed goes to
   `rejected_candidates[]`.
-- Per finding, `roadmap_crossref.classification`: CONFIRMED-defect nobody owns -> `novel`; owned by
-  an item whose remedy is insufficient or unbuilt -> `planned-insufficient` / `planned-unbuilt`;
-  fully covered by the owning item -> `rejected_candidates[]`, never a finding.
+- Per finding, `roadmap_crossref.classification` is INDEPENDENT of `confidence`: a defect nobody
+  owns -> `novel`, whatever its confidence; owned by an item whose remedy is insufficient or
+  unbuilt -> `planned-insufficient` / `planned-unbuilt`; fully covered by the owning item ->
+  `rejected_candidates[]`, never a finding. A degraded run changes confidences, never
+  classifications.
+- A `surface: shared` finding counts against every surface whose files or items its `evidence`
+  names (per the SCOPE table); if its evidence names none, it counts against none. Per-surface
+  maturity reads this rule.
 
 Hard ceiling: `total_findings` <= 15. If you find yourself above it, you are counting remedies
 or restating one defect under several names.
@@ -84,9 +99,10 @@ or restating one defect under several names.
   gate's PROCEED/REVISE series terminates. The terraform sense is out of scope entirely; do not
   read those preflight keys as evidence about gate rounds.
 - **"Split" is overloaded.** The repository uses "split" for config directory splits,
-  history/current table splits, IAM identity-policy splits, verb splits, and more. A naive
-  search matches 217 of 366 plans. Only PLAN-splitting (one intended body of work authored as
-  two or more plans) is in scope. The tight pattern that isolates it is given in EMPIRICAL PASS.
+  history/current table splits, IAM identity-policy splits, verb splits, and more. A
+  case-insensitive file-level search (`grep -l -i split docs/plans/PLAN-*.yaml`) matches 219 of
+  366 plans. Only PLAN-splitting (one intended body of work authored as two or more plans) is in
+  scope. The tight pattern that isolates it is given in EMPIRICAL PASS.
 - **Inward roadmap scout vs outward world scout.** The requester's B2 candidate is an INWARD
   alignment check against `docs/ROADMAP-PLATFORM.yaml` (planned future work). The prior audit
   `audits/planning-workflow-scaling-369a963a.yaml` REJECTED a proposal named "P10 per-plan world
@@ -119,13 +135,25 @@ or restating one defect under several names.
   The protocol prescribes a fresh-context subagent on that model; the model can be dispatched
   without the protocol, and the protocol's settled-vs-contested framing is the substantive part.
   When a candidate says "Fable consult", adjudicate the PROTOCOL and its trigger, not the model.
-- **`/overseer` is a meta-layer, not a tier.** Decision 90 pins four tiers; the overseer composes
-  `/plan` and `/implement` and must not become a fifth tier. A remedy that routes B1/B2/B3 through
-  the overseer is admissible only if it composes existing tiers.
-- **Plan-critique's own "suggest split" is a scope judgement, not B1's mechanism.** The critique
-  skill can recommend splitting an over-large plan (Phase 2 step 8) and `/plan` Step 9's
-  escalation menu lists "split the plan". That is where a split is DECIDED. B1 is about what
-  happens to the second half AFTER that decision.
+- **`/overseer` is a meta-layer, not a tier.** Decision 90 pins four tiers and does not mention
+  the overseer; the meta-layer rule lives in the overseer skill (`overseer/SKILL.md:15` and
+  `:29`, `meta_layer_not_tier: true`), `docs/contracts/overseer-dispatch.yaml:4`, and
+  `AGENTS.md:102`. A remedy that routes B1/B2/B3 through the overseer is admissible only if it
+  composes existing tiers.
+- **Where a split is decided, and which split producer is live.** `plan-critique/SKILL.md:39`
+  puts "Too large (suggest split)?" under the STRATEGIC branch of Phase 2 step 8, and the
+  output template at `:136` carries "too large (suggest split into: X, Y)" -- residue of the
+  suspended STRATEGIC plan type (Decision 67); the IMPLEMENTATION branch (`:40`) asks only "Are
+  all scope entries necessary?". The live producers of an IMPLEMENTATION-plan split are the
+  planning skill's Complexity Assessment freeze override (`planning/SKILL.md:244-253`: "split
+  into multiple atomic IMPLEMENTATION plans during this planning session") and `/plan` Step 9's
+  escalation menu (`plan.md:101`). Those are where a split is DECIDED. B1 is about what happens
+  to the second half AFTER that decision. Do not trace the STRATEGIC branch as a live path.
+- **"Step 8" names four things.** `/plan` Step 8 writes the plan (`plan.md:85`); `/implement`
+  Step 8 captures friction (`implement.md:112`); plan-critique Phase 2 step 8 evaluates scope
+  (`plan-critique/SKILL.md:38`); planning Data-Model step 8 is the Fable escalation
+  (`planning/SKILL.md:280`). This prompt qualifies every reference; do the same in your
+  deliverables.
 - **Audit outputs live under `audits/`, prompts under `docs/audit-prompts/`.** Your deliverables
   go under `audits/`; never write under `docs/audit-prompts/`.
 
@@ -148,8 +176,11 @@ Vocabulary:
 - **Burden**: a decision the human currently makes, or a memory the human currently keeps, that
   the workflow could carry instead.
 - **Remedy**: a mechanism that removes or narrows a burden. A remedy has a **landing surface**
-  (the file(s) it changes) and a **carrying cost** (bytes or lines added there, against the
-  measured headroom).
+  (the file(s) it changes), a **carrying cost** (bytes or lines added there, against the
+  measured headroom), and a **runtime cost** (subagent dispatches, estimated tokens, and
+  estimated wall-clock added per `/plan` or `/implement` session, with the basis of the
+  estimate). An **instrumentation-only remedy** adds a record or measurement with a declared
+  decision trigger and no other mechanism.
 - **Bootstrap era**: the present operating state -- Decision 67's STRATEGIC/executor freeze is
   active, no autonomous consumer reads the recommendation queue, and the priority-queue producer
   (T4.3) has not landed. **End state**: the executor consumes the rec queue (Decision 90's fourth
@@ -211,9 +242,11 @@ session by itself; do not pass `--open-session`.
 - IF preflight fails for ANY reason (credentials, egress, import error, or a partial success
   where the report is written but the recommendations sync did not complete): do NOT abort. Set
   `meta.degraded_dedup: true`, set every `findings[].confidence` and every
-  `burden_dispositions.*.candidate_remedies[].confidence` to `HYPOTHESIS` (this overrides the
-  file:line CONFIRMED rule for the duration of a degraded run), set every `dedup_hit_count` to
-  null, skip the recommendation-grain rows of the EMPIRICAL PASS, and proceed. Dedup then runs
+  `candidate_remedies[].confidence` and `originated_remedies[].confidence` under
+  `burden_dispositions` to `HYPOTHESIS` (this overrides the file:line CONFIRMED rule for the
+  duration of a degraded run; `roadmap_crossref.classification` is unaffected), set every
+  `dedup_hit_count` to null, skip the recommendation-grain rows of the EMPIRICAL PASS, and
+  proceed. Dedup then runs
   against the git-tracked sources only (`docs/ROADMAP-PLATFORM.yaml`, `docs/DECISIONS.md`,
   `audits/*.yaml`).
 - IF `logs/.recommendations-log.jsonl` is absent or empty: same flag, same downgrade.
@@ -274,16 +307,18 @@ judges two alternatives unworkable a priori -- planning both halves in parallel 
 dependent) and planning the second half in a subagent after the first lands (the planning agent's
 context is then an overseer's) -- but you must adjudicate them anyway.
 
-**Pinned framing you must apply and state in your answer.** B1's work is NON-roadmap grain: a
-split half is not a tier_item exit criterion. Its ruled long-term home is a recommendation the
-end-state executor consumes (NS-C; Decision 67 freeze; T4.3 producer not landed). The bootstrap-
-era problem is that a follow-on rec has no surfacing path: `/orient` reads no recommendations,
-and `/plan` surfaces open recs only by keyword match against a task the human has ALREADY
-chosen (GROUNDING MAP S1/S4). So every B1 remedy is a BRIDGE: it must declare its sunset
-condition, and it must be compared against extending T-1.23's shipped machinery before anything
-new is proposed. Decision 115 rules where transient handoff state may live (PR description for
-the ephemeral half; plan YAML or roadmap exit criteria for the durable half; no standing handoff
-files) and carries a reversal condition you must quote and test against B1.
+**Pinned framing you must apply and state in your answer (a ruling, not a finding).** B1's work
+is NON-roadmap grain: a split half is not a tier_item exit criterion. Its ruled long-term home is
+a recommendation the end-state executor consumes (NS-C; Decision 67 freeze; T4.3 producer not
+landed). So every B1 remedy is a BRIDGE: it must declare its sunset condition, and it must be
+compared against extending T-1.23's shipped machinery before anything new is proposed.
+**What you establish, not assume:** whether a follow-on rec has a surfacing path today. The
+GROUNDING MAP records what `/orient` reads (S4) and how `/plan` suggests recs (S1); trace them,
+apply the rec counterfactual in EMPIRICAL PASS, and verdict B1 on that evidence -- B1 is REFUTED
+if you find a property-matched surfacing path. Decision 115 rules where transient handoff state
+may live (PR description for the ephemeral half; plan YAML or roadmap exit criteria for the
+durable half; no standing handoff files) and carries a reversal condition you must quote and
+test against B1.
 
 **Candidate remedies (adjudicate every one):**
 
@@ -302,9 +337,9 @@ files) and carries a reversal condition you must quote and test against B1.
   reads to emit the prompt. Note the schema forbids extra keys and `/orient` reads only the
   preflight cache today.
 
-For each: verdict per the pinned remedy enum, the landing surface(s), carrying cost against
-measured headroom, what the human stops deciding or remembering, the sunset condition, and how
-it composes with T-1.23 (extends / parallels / conflicts).
+For each: `verdict` per the pinned remedy enum; `landing_surfaces`; `carrying_cost` against
+measured headroom; `runtime_cost`; `human_decision_removed` (what the human stops deciding or
+remembering); `sunset_condition`; and `t123_relation` (extends / parallels / conflicts).
 
 ### Q2 -- B2, design forks (verdict: CONFIRMED | PARTIAL | REFUTED; prose points to `burden_dispositions.B2`)
 
@@ -344,11 +379,11 @@ neither; say which.
   instead of dispatching a second scout -- one subagent, two corpora, one report with a new
   ROADMAP section.
 
-For each: verdict, which sub-burden(s) it addresses, landing surface(s), carrying cost, what the
-human stops deciding, the model and dispatch cost per plan (a Fable dispatch is not free -- say
-what it costs in wall-clock and tokens relative to the plan's own cost, as an estimate with its
-basis), and the failure mode if the mechanism is wrong (a scout that misses a conflict; a consult
-that decides a fork the human wanted).
+For each: `verdict`; `sub_burdens_addressed` (B2a, B2b, both, or neither); `landing_surfaces`;
+`carrying_cost`; `human_decision_removed`; `runtime_cost` (a Fable dispatch is not free --
+dispatches per plan, estimated tokens and wall-clock relative to the plan's own cost, with the
+basis); and `failure_mode_if_wrong` (a scout that misses a conflict; a consult that decides a
+fork the human wanted).
 
 ### Q3 -- B3, gate non-convergence (verdict: CONFIRMED | PARTIAL | REFUTED; prose points to `burden_dispositions.B3`)
 
@@ -389,11 +424,12 @@ fresh-full-re-evaluation on every re-dispatch is a deliberately ratified propert
   judgement (the `Finding-Origin Attribution` field exists for registration-closure findings
   only today), and the round cap counts only rounds whose REVISE carried a judgement finding.
 
-For each: verdict, landing surface(s), carrying cost, what the human stops deciding, the
-interaction with the fresh-full-re-evaluation property (does the remedy preserve it), the
-interaction with rec-2944 and P6's revisit condition, and what record the remedy leaves that the
-requester's future transcript analysis can read (Decision 87 clause 4 rules where critique
-imperatives and deliberation live -- check whether a remedy's record contradicts it).
+For each: `verdict`; `landing_surfaces`; `carrying_cost`; `runtime_cost`;
+`human_decision_removed`; and `property_interactions`, which must cover three things: whether the
+remedy preserves the fresh-full-re-evaluation property, how it interacts with rec-2944 and with
+P6's revisit condition, and what record it leaves that the requester's future transcript analysis
+can read (Decision 87 clause 4 rules where critique imperatives and deliberation live -- check
+whether the record contradicts it).
 
 ### Q4 -- Net decision load (verdict: reduces | neutral | relocates | increases)
 
@@ -402,7 +438,8 @@ plus every originated remedy): count the human decisions per plan removed and ad
 and rate the net. "Relocates" means the same number of decisions reach the human at a different
 step or in a different shape; say whether the relocation is itself worth having (e.g. depth
 reduced at the same count). Then state the aggregate carrying cost of the adopted set per
-landing surface against measured headroom, and rate it on VD3 -- as a rating, not a veto.
+landing surface against measured headroom and its aggregate `runtime_cost_total` per `/plan`
+session, and rate both on VD3 -- as a rating, not a veto.
 Finally, give a dependency-ordered adoption sequence: `sequence_position` unique and consecutive
 from 1 across every adopted and originated remedy, each with a `vehicle` from the pinned enum and
 a `depends_on` list whose every edge has a stated basis.
@@ -481,8 +518,10 @@ Every rating carries `evidence` (file:line or item id) and a one-line `note`.
 ## DEEP-DIVES
 
 - **DD-A -- Split-to-successor trace (feeds Q1, Q6).** Trace, end to end, what happens to a split
-  half today: where the split is decided (planning skill Complexity Assessment; critique Phase 2
-  step 8; `/plan` Step 9 escalation menu), what artefact records the decision (the plan's
+  half today: where the split is decided (the planning skill's Complexity Assessment freeze
+  override, `planning/SKILL.md:244-253`; `/plan` Step 9's escalation menu, `plan.md:101`; NOT
+  plan-critique Phase 2 step 8, whose split suggestion is STRATEGIC-branch residue), what
+  artefact records the decision (the plan's
   `context:`? the PR body? a rec? nothing?), and what could surface it in a later session
   (`/orient` sections 5-6 read only the preflight cache; `/plan` Step 3 keyword-matches recs
   against the chosen task). Apply the counterfactual per EMPIRICAL PASS to sampled plans. Then
@@ -522,10 +561,10 @@ verdict.
 - `.claude/skills/planning/SKILL.md:177-186` -- Suggest Aligned Recommendations: keyword
   extraction from the task description, matched against `title`, `file`, `context`; top 3-5
   presented with "include rec-XXX or skip".
-- `planning/SKILL.md:244-250` -- Complexity Assessment: >5 scope files or >8 steps suggests
+- `planning/SKILL.md:244-253` -- Complexity Assessment: >5 scope files or >8 steps suggests
   STRATEGIC; "Freeze override (active)": author as one larger IMPLEMENTATION plan "or split into
-  multiple atomic IMPLEMENTATION plans during this planning session"; classification "MUST be
-  presented to the human and confirmed".
+  multiple atomic IMPLEMENTATION plans during this planning session"; the Presentation Rule at
+  `:253`: classification "MUST be presented to the human and confirmed".
 - `planning/SKILL.md:280-284` -- Data-Model Assessment step 8 "Fable escalation": for a NEW
   table, NEW identity scheme, or `merge_key` change only, dispatch a `model:"fable"`
   advice-consult per the overseer skill's protocol; routine calls "do not need escalation".
@@ -566,7 +605,7 @@ verdict.
 
 - `.claude/commands/implement.md:52-58` -- IMPLEMENTATION dispatch: count scope files and steps,
   present a summary, execute steps sequentially.
-- `implement.md:112-121` -- Step 8 Capture Friction: file a rec via the portal with
+- `implement.md:112-121` -- `/implement` Step 8 Capture Friction: file a rec via the portal with
   `source=manual`; RCA-First for recurring gaps.
 - `implement.md:123-126` -- Step 9 Report: "Files changed, verification results ..., code review
   findings fixed, bugs fixed, design decisions"; then close the telemetry session. No step in
@@ -587,8 +626,11 @@ verdict.
 
 **S3 -- gates**
 
-- `.claude/skills/plan-critique/SKILL.md:38-39` -- Scope evaluation: "Too large (suggest
-  split)? Too small (merge ...)?"
+- `.claude/skills/plan-critique/SKILL.md:38-40` -- Phase 2 step 8 Scope evaluation: the
+  STRATEGIC branch (`:39`) asks "Too large (suggest split)? Too small (merge ...)?"; the
+  IMPLEMENTATION branch (`:40`) asks "Are all scope entries necessary? Does the Scope extend
+  beyond the stated phase?"; the output template (`:136`) carries "too large (suggest split
+  into: X, Y)".
 - `plan-critique/SKILL.md:93-109` -- Phase 2b Frame Challenge (12e-12i, Decision 75) with 12j:
   a concrete contradiction -> REVISE; real questions without contradiction -> surfaced "for human
   consideration", not REVISE.
@@ -603,7 +645,10 @@ verdict.
   CITE / CONTRADICT / RELATED / IRRELEVANT; :76-117 the report shape with a Verdict line and
   "Decisions triaged: N of M"; :119 ~1,200-word cap. The skill reads decisions only; no roadmap
   projection is part of its brief or its Phase 1.
-- Prose headroom, measured bytes `budget - current` from `config/prose_budgets.yaml:48-56`:
+- Prose headroom, measured bytes `budget - current` from `config/prose_budgets.yaml:48-56`
+  (re-derive: read the file as raw text, match `^\s{2}(\.claude/[^:]+):\s*(\d+)` per line, and
+  subtract `os.path.getsize(path)` -- the inline `# raise-approved` comments make
+  `yaml.safe_load` unsuitable):
   planning 76, plan-critique 7, decision-scout 0, implement 95, orient 21, overseer 0,
   code-review 4, audit-prompt 46, executor-rca 0. `config/prose_budgets.yaml:8`: S3
   (`.claude/commands/*.md`) is measured-only with no budget entry. `:24-29` relief valves:
@@ -616,7 +661,10 @@ verdict.
 
 - `.claude/skills/orient/SKILL.md:8,17` -- strictly read-only; "Files no recommendations or
   decisions". No section of the skill reads `logs/.recommendations-log.jsonl`; its Inputs table
-  reads the preflight cache and roadmap projections.
+  reads the preflight cache and roadmap projections. The one recommendation class it does
+  surface is ci-rca: `:125` names the `ci_rca_*` preflight keys as the CI-RCA Triage source and
+  `:178` ranks HARD BLOCK ci-rca recs as item 0 of the work list -- a rec-surfacing path that
+  already exists, at preflight-cache grain.
 - `orient/SKILL.md:174-186` -- Section 5 Ranked What-to-Work-On: CI-RCA first; in_progress
   follow-on planning ranked fewest-open-criteria-first with three cases (parked-gated /
   mid-implementing / needs follow-on), reading `needs_followon_plan` from the cache; keystone-
@@ -660,12 +708,17 @@ verdict.
 
 **S6 -- plan schema + mechanical checks**
 
-- `scripts/roadmap/plan_document.py:223-241` -- `PlanDocument` fields: `schema_version`,
+- `scripts/roadmap/plan_document.py:223-249` -- `PlanDocument` fields: `schema_version`,
   `slug`, `intent`, `plan_type`, `verification_tier`, `plan_path`, `phase`, `scope`,
   `bundled_recommendations`, `closes_criteria`, `infrastructure_dependencies`,
   `acceptance_criteria`, `verification_plan`, `test_obligations`, `constraints`, `context`,
-  optional `fallback_reevaluation`. No field names a successor, follow-on, or split sibling.
-  `model_config = ConfigDict(extra="forbid")` on every model (:74, :81, :89, :136, :172, :188).
+  `pre_implementation_checklist` (`:242`), `execution_steps` (`:243`), `work_areas` (`:244`),
+  `rollback` (`:245`), `tier_waiver` (`:246`), `handoff_policy` (`:247`; the `HandoffPolicy`
+  submodel at `:73-77` carries `full_validation_required_before_commit` and
+  `timeout_disposition`, checked by `_validate_handoff_policy` at `:283`),
+  `fallback_reevaluation` (`:248`), `implementation_declared` (`:249`). No field names a
+  successor, follow-on, or split sibling. `model_config = ConfigDict(extra="forbid")` on every
+  model (:74, :81, :89, :136, :172, :188).
 - `scripts/prompt_compliance.py:109-120, 215-227` -- parses the invariants block; plan-phase
   invariants are "structural invariants enforced by prompt ordering".
 - Open recs: rec-389 (High, M) "Plan quality structural constraints ... critique cycling
@@ -693,7 +746,10 @@ verdict.
 - `docs/DECISIONS.md:5261` Decision 87 (as amended; clause 4 at :5279-5280) -- ONE plans table
   `ops_execution_plans`; `critique_history` on the plan row is the home of the critic's
   imperative; deliberation lives in telemetry; authority-flip deferred to T4.x.
-- `docs/DECISIONS.md:5205` Decision 90 -- four tiers; `/overseer` not a tier.
+- `docs/DECISIONS.md:5205` Decision 90 -- four tiers (`/orient -> /plan -> /implement ->
+  /develop-executor`); the section does not mention the overseer. The meta-layer rule:
+  `overseer/SKILL.md:15` and `:29` (`meta_layer_not_tier: true`),
+  `docs/contracts/overseer-dispatch.yaml:4`, `AGENTS.md:102`.
 - `docs/DECISIONS.md:6222` Decision 67 -- STRATEGIC/executor freeze (Amended - Partially Active).
 - `docs/DECISIONS.md:5319` Decision 86 and `:3200` Decision 127 -- no standing prose docs; the
   only stored prose is agent-instruction content.
@@ -716,7 +772,12 @@ verdict.
 - `audits/planning-workflow-scaling-369a963a.yaml` (+ `.md`): 8 findings, PWS-01 highest
   leverage (the `gates:` line is free text nothing validates; 29 placeholders then); D1
   CONFIRMED round telemetry; D5 CONFIRMED "inward-only alternatives search". Proposal
-  dispositions relevant here (read `proposal_adjudication.P4/P5/P6/P10/P11/P13` in full): P6
+  dispositions relevant here (read `proposal_adjudication.P2/P3/P4/P5/P6/P10/P11/P13` in
+  full): P2 lint engine plus six of eight seed rules ADOPT-MODIFIED (sequence 4; lands in the
+  existing `roadmap/` or `verification/` check domain as an importable library, not a new
+  domain); P3 lint wiring ADOPT-MODIFIED (sequence 11, depends on P2; two surfaces -- the
+  `plan_obligations` advisory CLI at `/plan` Step 6b and critique Phase 1 5b -- with the
+  executor surface deferred behind Decision 67); P6
   re-round convergence discipline REJECT on three grounds with revisit condition "if PWS-01's
   typed record later shows real oscillation" and the note "rec-2944's convergence-rule
   reconciliation covers the cap inconsistency without admission-narrowing"; P10 per-plan world
@@ -724,15 +785,18 @@ verdict.
   scan ADOPT-MODIFIED (operator-run or cost-triggered, at most 3 recs, sunset after two
   zero-yield passes; sequence 14; depends on P4/P5); P4 provenance-honesty norm and P5
   `alternatives` envelope field ADOPT-MODIFIED (sequence 2-3); P13 confidence-gated escalation
-  ROADMAP. Searches for `never_evaluated`, `horizon`, and an `alternatives` envelope field
-  across `docs/DECISIONS.md`, `docs/contracts/decision-entry.yaml`, and
-  `logs/.recommendations-log.jsonl` return zero hits; no rec in the cache cites a PWS finding id.
+  ROADMAP. Searches for `never_evaluated`, `horizon`, `plan_lint` / `plan-lint` / `lint engine`,
+  and an `alternatives` envelope field across `docs/DECISIONS.md`,
+  `docs/contracts/decision-entry.yaml`, `docs/ROADMAP-PLATFORM.yaml`, and
+  `logs/.recommendations-log.jsonl` return zero hits; no lint module exists under
+  `scripts/roadmap/` or `scripts/verification/`; no rec in the cache cites a PWS finding id.
 - `audits/workflow-review-d107b4a.yaml`: WF-04 (handoff lost the scout output; since addressed
   at `implement.md:50`), WF-08 (gate verdicts leave no artefact; runtime compliance check
   vacuous), WF-10 (`/plan` command restates skill methodology).
 - rec-2944 (open, Medium, S, file `.claude/skills/planning/SKILL.md`): the three rules differ in
   kind; observed converging series 7 -> 4 -> 3 with no repeat tripped the count cap; its cited
-  lines 454/579/617 now resolve at 462/597/635.
+  lines 454/579/617 now resolve at 463/597/635 (the bold `**Convergence rule:**` header sits at
+  `:462`).
 
 ## EMPIRICAL PASS
 
@@ -746,17 +810,20 @@ placeholder; the regex `plan-critique=\w+ after (\d+) round` parses 118, histogr
 pattern `split (this |the )?plan|plan (was |is )?split|split into (two|multiple|smaller)
 (plans|IMPLEMENTATION)|second (half|plan)|follow-?on plan|follow-?up plan` (case-insensitive,
 over the YAML dump) matches 35 plans; 5 of those reference at least one OTHER `PLAN-*.yaml` by
-filename. 17 slugs carry `wave`/`phase`/`part`-style segmentation.
+filename. 16 slugs match `wave|phase|part` case-insensitively (14 `wave`, 2 `phase`, 0 `part`).
 
 **Recommendation facts (re-derive; skip if `degraded_dedup`):** 872 open recs; by source
 code-review 486, implement-agent 90, planning 72, manual 69, implement-session 53. 64 open recs
-carry follow-on/split language in title or context (`created_timestamp` ages: min 0, median 33,
-max 134 days; 33 older than 30 days; 8 older than 90). All open recs: median age 47 days, 169
+match the case-insensitive substring pattern `follow-?on plan|follow-?up plan|deferred to a
+later plan|split` over `title` plus `context` (`created_timestamp` ages against 2026-09-02: min
+0, median 33, max 134 days; 33 older than 30 days; 8 older than 90). All open recs: median age 47 days, 169
 older than 90. Planning/implement/manual-sourced: 284, median 29 days, 25 older than 90.
 
 **Sample -- do NOT exceed 20 plans and 12 recs:**
 
-- ALL 12 plans recording four or more rounds (DD-C).
+- ALL plans recording four or more rounds (12 at the drafting tree; re-derive) (DD-C). This
+  reserve always wins: if re-derivation yields more than 12, take all of them and shrink the two
+  reserves below (split-pattern first, then placeholder) to stay within 20.
 - 4 plans matching the tight split pattern that name NO other plan file, and 2 that do (DD-A).
 - 2 plans carrying the literal placeholder in the `gates:` line.
 - 12 open recs from the 64 with follow-on/split language, choosing the 6 oldest and 6 youngest.
@@ -765,8 +832,8 @@ older than 90. Planning/implement/manual-sourced: 284, median 29 days, 25 older 
   match could have surfaced it.
 
 Record every sampled path/id in `meta.empirical_sample` (`plans: []`, `recs: []`,
-`truncated: false`); set `truncated: true` if you could not reach the reserved counts and say
-why.
+`truncated: false`); set `truncated: true` if you could not reach the reserved counts OR had
+to shrink a reserve to respect the cap, and say why in `meta.contract_notes`.
 
 **Counterfactual test, applied per sampled plan:**
 
@@ -821,7 +888,8 @@ T4.2 / T4.10 (persona contracts), the prior audit's P4 / P5 / P6 / P10 / P11 / P
 
 - Decision 67 / CD.17: STRATEGIC plans suspended; the executor is frozen. Do not propose a
   STRATEGIC-plan or executor-consuming mechanism as a bootstrap remedy.
-- Decision 90: four tiers; the overseer is a meta-layer. No fifth tier, no new plan type.
+- Decision 90: four tiers. The overseer is a meta-layer (`overseer/SKILL.md:15`, `:29`;
+  `overseer-dispatch.yaml:4`; `AGENTS.md:102`). No fifth tier, no new plan type.
 - Decision 73: PR `--pre` CI is the authoritative gate; open ci-rca recs halt planning.
 - Decision 84: all rec writes go through the portal; no offline outbox; local JSONL is a cache.
 - Decisions 86 / 127: no new standing prose-architecture doc; do not propose one.
@@ -848,9 +916,13 @@ audit:
   meta: {audited_commit: <sha>, base_branch: main,
          model: <your self-reported model name, free text>,
          methodology_version: 1, scope_surfaces: [S1, S2, S3, S4, S5, S6, S7],
-         degraded_dedup: false, contract_notes: "", stale_anchors: [],
+         # base_branch, model, methodology_version, scope_surfaces are provenance-only:
+         # read by the human, by no rule in this prompt
+         degraded_dedup: false, contract_notes: "",
+         stale_anchors: [{anchor: "", expected: "", found: ""}],   # empty list is legal
          empirical_sample: {plans: [], recs: [], truncated: false},
-         self_verification: {rounds: 0, degraded: false, unresolved_findings: []}}
+         self_verification: {rounds: 0, degraded: false,
+                             unresolved_findings: [{lane: R1|R2|R3|R4, finding: ""}]}}
   question_answers:
     - {q: Q1, verdict: CONFIRMED|PARTIAL|REFUTED, basis: [<finding ids>], prose: ""}
     - {q: Q2, verdict: CONFIRMED|PARTIAL|REFUTED, basis: [], prose: ""}
@@ -858,7 +930,8 @@ audit:
     - {q: Q4, verdict: reduces|neutral|relocates|increases, basis: [], prose: "",
        decisions_removed: [<one line each>], decisions_added: [<one line each>],
        carrying_cost_by_surface: [{surface: <path>, delta: "<+N bytes or +N lines>",
-                                   headroom: "<measured>", disposition: fits|relocate|raise}]}
+                                   headroom: "<measured>", disposition: fits|relocate|raise}],
+       runtime_cost_total: "<dispatches per /plan session, est. tokens, est. wall-clock, basis>"}
     - {q: Q5, verdict: sufficient|partial|insufficient, basis: [], prose: "",
        external_checklist: [{property: <1..8 name>, rating: met|partial|missed, evidence: ""}]}
     - {q: Q6, answers: [{question, answer, basis: [<finding ids>]}]}
@@ -872,6 +945,9 @@ audit:
       candidate_remedies:
         - {id: B1-R1, verdict: adopt-as-proposed|adopt-modified|reject|defer-to-roadmap,
            modification: "", landing_surfaces: [<paths>], carrying_cost: "",
+           runtime_cost: "<dispatches per session, est. tokens, est. wall-clock, basis>",
+           sub_burdens_addressed: [],    # B2 remedies only: subset of [B2a, B2b]; [] elsewhere
+           property_interactions: "",    # B3 remedies: REQUIRED non-empty (see Q3); "n/a" elsewhere
            human_decision_removed: "", human_decision_retained: "",
            sunset_condition: "",            # REQUIRED for every B1 remedy; "n/a -- end-state form" allowed elsewhere
            t123_relation: extends|parallels|conflicts|n/a,   # B1 remedies only
@@ -884,7 +960,8 @@ audit:
            confidence: CONFIRMED|HYPOTHESIS, sequence_position: <int|null>,
            depends_on: [<remedy ids>]}
       originated_remedies:
-        - {id: B1-O1, name: "", <same fields as a candidate remedy minus t123_relation unless B1>}
+        - {id: B1-O1, name: "", instrumentation_only: true|false,   # ids B<n>-O<k>
+           <same fields as a candidate remedy; t123_relation only under B1>}
       adopted_set: [<remedy ids>]    # non-empty iff burden_verdict != REFUTED
   per_surface_assessment:
     - {surface: S1, maturity: <derived>, strengths: "", top_gaps: [<finding ids>]}
@@ -892,8 +969,8 @@ audit:
     - {surface: S1, dimension: VD1, rating: strong|adequate|weak|absent|n/a,
        evidence: "file:line|item-id", note: ""}
   findings:
-    - {id: PDB-01, surface: S1..S7|shared, burden: B1|B2|B3|B4|B5|B6|none,
-       question: Q1..Q6, dimension: VD1..VD7, title,
+    - {id: PDB-01, surface: S1..S7|shared, burden: B1|B2|B3|B4|B5|B6|none,   # PDB-NN, consecutive from 01
+       question: Q1..Q6|none, dimension: VD1..VD7, title,   # question: none iff burden: none
        evidence: "file:line|item-id", evidence_kind: static|observed,
        current_behavior, ideal_behavior, gap, compensating_controls_considered: "",
        change_type: add|rescope|enforce|unify|persist|clarify|retune_gate,
@@ -908,7 +985,7 @@ audit:
     - {candidate, why_dismissed, compensating_control, control_property_match,
        decision_or_item_id}
   summary: {total_findings, novel_count, planned_insufficient_count, planned_unbuilt_count,
-            burden_verdicts: {B1: <v>, B2: <v>, B3: <v>},
+            burden_verdicts: {B1: <v>, B2: <v>, B3: <v>},   # add B4..B6 keys iff surfaced under Q6
             adopted_remedy_count, originated_remedy_count, rejected_remedy_count,
             deferred_remedy_count,
             top_improvements: [ids], highest_leverage_change: <id>,
@@ -928,9 +1005,10 @@ len(originated_remedies across all burdens)`, where adopt-as-proposed and adopt-
 count as adopted and every originated remedy counts as adopted. `top_improvements` and
 `highest_leverage_change` MUST be finding ids. `sequence_position` is unique and consecutive from
 1 over the adopted set and null on every rejected or deferred remedy. Exactly 6
-`question_answers`, exactly 49 `rubric_ratings`, exactly 7 `per_surface_assessment`, exactly 3
-to 6 `burden_dispositions`, exactly 15 candidate remedies across B1-B3 (5 each, ids as pinned).
-An empty `findings[]` with a stated reason is legal; a missing block is not.
+`question_answers`, exactly 8 `external_checklist` rows under Q5, exactly 49 `rubric_ratings`,
+exactly 7 `per_surface_assessment`, exactly 3 to 6 `burden_dispositions`, exactly 15 candidate
+remedies across B1-B3 (5 each, ids as pinned). An empty `findings[]` with a stated reason is
+legal; a missing block is not. A B4-B6 disposition at PARTIAL with zero findings is legal.
 
 `control_property_match` is REQUIRED whenever a compensating control is the reason for a
 dismissal: name the property the control exercises, cite where it operates, and state why the
@@ -961,16 +1039,18 @@ dismissal.
 
 Maturity per surface, computed LAST, top-down, first match wins:
 
-- **frontier** = 0 open critical or high findings on the surface AND every Q5
-  `external_checklist` row rated met or partial (never missed). This tier stays reachable when a
-  property-matched compensating control was argued for a row.
+- **frontier** = 0 open critical or high findings on the surface AND no Q5 `external_checklist`
+  row rated `missed` whose `evidence` names this surface. This tier stays reachable when a
+  property-matched compensating control was argued for a row (rating it `partial`).
 - **strong** = 0 critical AND <= 1 high on the surface.
-- **solid** = <= 1 critical on the surface.
+- **solid** = <= 1 critical AND <= 3 high on the surface.
 - **nascent** = otherwise.
 
-The `external_checklist` gates only the top tier; a surface untouched by a checklist row is rated
-on finding counts alone, and a `missed` row blocks frontier for every surface the row's evidence
-names.
+A finding counts "on the surface" when its `surface` is that id, or when its `surface` is
+`shared` and its `evidence` names a file or item belonging to that surface (per the SCOPE
+table); a `shared` finding whose evidence names none counts against none. The
+`external_checklist` gates only the top tier, and only for the surfaces a `missed` row's
+evidence names; a surface no checklist row names is rated on finding counts alone.
 
 ## SELF-VERIFICATION GATE
 
@@ -992,18 +1072,23 @@ words. Do NOT tell any verifier what you found hard or what a previous round sai
   is required, and every place the two files disagree. Check the counting invariant arithmetic
   yourself." Paste into R1's dispatch, inline and verbatim: the COUNTING INVARIANT paragraph;
   every pinned enum (burden verdict, remedy verdict, `t123_relation`, `end_state_disposition`,
-  `vehicle`, Q4 and Q5 verdicts, checklist rating, rubric rating, `change_type`, `evidence_kind`,
-  `effort`, `classification`, `severity`, `confidence`, maturity); the maturity ladder; and the
-  coverage counts: 6 question answers; 3-6 burden dispositions with B1-B3 present; 15 candidate
-  remedies with ids B1-R1..R5, B2-R1..R5, B3-R1..R5; a non-empty `adopted_set` for every burden
-  not REFUTED; 49 rubric cells; 7 per-surface entries; `total_findings <= 15`; an
-  `empirical_sample` of at most 20 plans and 12 recs. "A silently truncated audit must not pass."
+  `vehicle`, `sub_burdens_addressed`, Q4 and Q5 verdicts, checklist rating, rubric rating,
+  `change_type`, `evidence_kind`, `effort`, `classification`, `severity`, `confidence`,
+  `question` including `none`, maturity), the `stale_anchors` and `unresolved_findings` entry
+  shapes, the id formats (`PDB-NN` consecutive from 01; `B<n>-O<k>`); the maturity ladder
+  including the shared-finding rule; and the coverage counts: 6 question answers; exactly 8
+  `external_checklist` rows under Q5; 3-6 burden dispositions with B1-B3 present; 15 candidate
+  remedies with ids B1-R1..R5, B2-R1..R5, B3-R1..R5, each carrying `runtime_cost`, every B3
+  remedy a non-empty `property_interactions`, every B1 remedy a non-empty `sunset_condition`; a
+  non-empty `adopted_set` for every burden not REFUTED; 49 rubric cells; 7 per-surface entries;
+  `total_findings <= 15`; an `empirical_sample` of at most 20 plans and 12 recs. "A silently
+  truncated audit must not pass."
 - **R2 -- Fact auditor (grounding).** Full repository read access. Task: "Independently verify
   every factual claim, file:line anchor, quoted identifier (Decision, tier_item, rec, contract
   key, schema field, check name), measured headroom, and re-derived count in this audit against
   the repository at the audited commit. Re-run every counting command the audit reports. Verify
-  `meta.empirical_sample`: every path exists, the caps hold, all 12 four-or-more-round plans are
-  present unless `truncated` is true." Tag each `wrong | stale | unverifiable`.
+  `meta.empirical_sample`: every path exists, the caps hold, every four-or-more-round plan (12 at the
+  drafting tree; re-derive) is present unless `truncated` is true." Tag each `wrong | stale | unverifiable`.
 - **R3 -- Adversarial adjudication challenger (anti-deference).** Full repository read access.
   Task: "Contest the VERDICTS, not the facts. For each burden CONFIRMED: is the cause the
   workflow, or the requester's habit? For each REFUTED: is the compensating control
