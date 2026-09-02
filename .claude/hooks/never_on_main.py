@@ -132,7 +132,7 @@ def main() -> int:
         "verify with: git branch --show-current\n"
         "If the result is still 'main', create a new branch before retrying:\n"
         "  git checkout -b claude/your-slug\n"
-        "See AGENTS.md 'Git-ops procedure' for the full branching topology.\n"
+        "See docs/contracts/git-ops.yaml for the full branching topology.\n"
     )
     return 2
 

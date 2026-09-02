@@ -32,7 +32,7 @@
 
      Resolves: rec-NNNN[, rec-MMMM]
 
-     See AGENTS.md "Resolves: trailer" and the ops_data_portal fallback (Decision 70).
+     See docs/contracts/git-ops.yaml's resolves_trailer and the ops_data_portal fallback (Decision 70).
      Omit this section if the PR resolves no recs. -->
 
 ---
@@ -42,6 +42,6 @@
      "PUBLIC repository / confidential-data boundary".
 
      COMMIT-MESSAGE CONVENTIONS: feat({slug}), plan({slug}), roadmap({ids}), scope({slug}),
-     audit({slug}). See AGENTS.md "Commit-message conventions".
+     audit({slug}). See docs/contracts/git-ops.yaml's commit_message_conventions.
 
      Drop any section above that does not apply to this PR. -->

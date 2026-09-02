@@ -17,246 +17,35 @@ Some rules below restate root rules for proximity. Root `CLAUDE.md` is authorita
 - Personal-account infra lives in the isolated `terraform/personal/` root module (own provider + state); it is the only live root module. The legacy work-account root's `.tf` files (retained for a while as architectural-evolution artefacts per CD.21, never applied) were removed in the platform cleanse.
 - The personal account has no SCP restricting IAM users or external OIDC (Decisions 36/37 do not apply to this account). OIDC provider + CI roles are created in `terraform/personal/oidc.tf`.
 
-## Running terraform/personal/ on CC-web (no local machine; vars come from remote state)
+## Running terraform/personal/ on CC-web
 **This project runs ONLY on Claude Code on the web. There is no operator local machine.**
 
-**Third-party-provider init is github.com-egress-blocked by default (Decision 119), MIRROR-ENABLED
-on a synced admin container (Decision 120):** the CC-web outbound proxy scopes github.com to
-repo-scoped API calls, so a stock CC-web session CANNOT `terraform init` `terraform/personal` via a
-direct fetch -- the `kislerdm/neon` provider's authentication-checksum fetch permanently 403s on
-github.com. `hashicorp/*` providers (releases.hashicorp.com) init fine regardless. Decision 119 named
-an S3-backed `provider_installation` `filesystem_mirror` as its reversal mechanism; Decision 120
-realized it: `.github/workflows/terraform-provider-mirror-seed.yml` (the sole egress-having actor)
-seeds `s3://agent-platform-data-lake/tf-provider-mirror/`, and `bin/setup-cloud-env.sh` syncs it
-locally on `INSTALL_TERRAFORM=1` containers, resolving `config/terraform/cc-web.tfrc` and setting
-`TF_CLI_CONFIG_FILE` -- gated on a successful, non-empty sync (an empty/stale sync leaves
-`TF_CLI_CONFIG_FILE` unset rather than exporting a config that excludes `kislerdm/*` from `direct`
-with nothing in the mirror to serve). With that mirror synced, local `terraform init` of
-`terraform/personal` succeeds with no github.com fetch (see the "Operator-only / break-glass
-(Decision 120)" section below for when this is used).
+Read `docs/contracts/terraform-cc-web-operations.yaml` before touching `terraform/personal/` -- it
+carries the full CC-web operating procedure (provider-mirror init, remote-state variable recovery,
+the speculative-plan + apply-the-saved-plan pipeline, alarm-only drift detection, the convergence
+anchor, and the operator-only break-glass loop). This stub carries only what the ROUTINE
+(non-admin) loop needs unaided.
 
-This RELAXES but does NOT REMOVE the CI-delegation: routine (non-admin) `terraform validate`/`plan`/`apply`
-for `terraform/personal` remain CI-mediated and authoritative regardless of any given container's
-mirror state -- `validate` via the required `terraform-validate` job (Decision 83; NOT CC-web-only
--- mirror-consuming, read-only, version-gated, fail-open, rec-2836); `plan`/`apply`
-via the speculative-plan + apply-the-saved-plan pipeline described below (Decision 77 / Decision 92).
-The mirror-enabled local-init path exists for the ADMIN container's interactive human-gated apply
-loop (IAM/trust/destroy changes that guard-BLOCK the CD pipeline, Decision 94 escape hatch) --
-not a routine-change CI bypass. See Decision 119 for the original
-constraint and Decision 120 for the realized reversal mechanism and its own reversal conditions
-(mirror sync ceasing to be maintained falls back to this section's original CI-delegated posture
-with no code change required).
-
-`terraform/personal/terraform.personal.tfvars` is **gitignored** (`.gitignore`:
-`terraform/**/terraform.personal.tfvars`), so it is NOT in the fresh clone and there is no standalone
-`s3://.../terraform.personal.tfvars` object to fetch -- do not go looking for that file. The four
-no-default vars (`account_id`, `owner_email`, `platform_dev_external_id`, `platform_admin_external_id`)
-are recoverable from the **remote Terraform state in S3**, which IS the source of truth:
-- State: `s3://agent-platform-data-lake/tfstate/personal/sandbox/terraform.tfstate` (region `eu-west-2`),
-  wired via `terraform -chdir=terraform/personal init -backend-config=backend-sandbox.hcl`.
-- The values live as resource attributes in that state: `account_id` in every resource ARN;
-  the two ExternalIds in the IAM roles' `assume_role_policy` trust documents (`sts:ExternalId` condition);
-  `owner_email` in resource tags / the SNS subscription endpoint. `account_id` is also obtainable from
-  `aws sts get-caller-identity`.
-- After `init`, recover them with `terraform state show` / a parse of the state JSON, then pass via `-var`
-  (or a regenerated, still-gitignored tfvars) for `plan`.
-- **Never paste these values into chat, a PR, or any committed file** -- the ExternalIds are AssumeRole
-  trust secrets and the account id is shape-blocked by the pre-commit `never-commit` hook.
-- **ExternalId-based state recovery is admin-tier-only (DEP-13 / T2.44 / Decision 144 pt.3):** the
-  recovery path above requires reading `tfstate/personal/*` directly, and only `PlatformAdmin` (the
-  `agent_platform_admin` profile) may do so. `PlatformDev` (the ambient `agent_platform` runtime
-  identity used by every CC-web session) is explicitly denied `s3:GetObject` on `tfstate/personal/*`
-  (the `DenyStateRead` statement in `terraform/personal/platform_roles.tf`'s DailyOps policy), so this
-  ExternalId recovery procedure is unreachable from the routine runtime identity by design -- it
-  requires deliberately assuming the admin tier.
+**Agents never run terraform apply as a self-directed, routine action; operators may always invoke
+it directly. The sole agent exception is the human-gated break-glass admin tier in
+`docs/contracts/terraform-cc-web-operations.yaml` -- an agent may execute `terraform apply` there
+only after a human has reviewed the plan and explicitly directed it (Decision 126).**
 
 **Deployment model (Decision 126):** the PR -> CI apply pipeline below is the default, ambient
 path. Local/manual apply is operator-only break-glass, not a routine agent action -- see
-"Operator-only / break-glass" below. Full intent -> trigger -> recovery wayfinding:
-`docs/contracts/deploy-paths.yaml`. Guard classification (what auto-applies vs what blocks) is
-authoritative SOLELY in `environment-taxonomy.yaml` Axis A + Guard classification
-(T2.25 / Decision 92 point 5) -- the table below names the channel, it does not restate that
-classification.
+`docs/contracts/terraform-cc-web-operations.yaml`'s operator-only / break-glass section. Full
+intent -> trigger -> recovery wayfinding: `docs/contracts/deploy-paths.yaml`. Guard classification
+(what auto-applies vs what blocks) is authoritative SOLELY in `environment-taxonomy.yaml` Axis A +
+Guard classification (T2.25 / Decision 92 point 5) -- the table below names the channel, it does
+not restate that classification.
 
 | Want | Do | If blocked |
 |---|---|---|
 | Apply a guard-PASS (non-IAM or in-budget IAM) `terraform/personal` change | Open a PR; CD (`terraform-apply-sandbox.yml`) plans on the PR and applies the SAME reviewed plan.bin at merge (T2.21, no re-plan) | N/A -- this is the primary path |
 | Apply an out-of-budget IAM / trust / destroy `terraform/personal` change | Open a PR; CD routes to the `tf-gated-apply` GitHub Environment | Approve in GitHub Actions (benjamin-blake); CD applies the same reviewed plan.bin -- never from a laptop |
 | Recover from a red convergence record (failed/refused apply, or drift) | guard-BLOCK: dispatch Reconcile (`reconcile.yml`, LANDED) -- re-plans, re-guards, routes to `tf-gated-apply`. guard-PASS: `terraform-apply-sandbox` `workflow_dispatch` acknowledge-and-retry. AFTER `ci-rca` rec review (Decision 55/72) | No auto-remediation |
-| Apply `terraform/` (legacy hashicorp/*-only roots) or `terraform/github` | Same PR -> CD path where a workflow exists | See "Operator-only / break-glass" below |
-| Apply `terraform/bootstrap`, or apply `terraform/personal` by hand (bootstrap, reversing a manual admin change, or a guard-BLOCKed case with no CD path yet) | Operator action only | See "Operator-only / break-glass" below |
-
-**Agents never run terraform apply as a self-directed, routine action; operators may always invoke it directly. The sole agent exception is the human-gated break-glass admin tier below -- an agent may execute `terraform apply` there only after a human has reviewed the plan and explicitly directed it (Decision 126).**
-
-**Sticky + observed (CD.35 / T2.20 Wave 1):** the apply job reads a durable convergence record as
-a precondition and refuses on red (never overwrites on refusal), writes the record green/red
-(always-run) after apply, and apply failures wire into `ci-rca` -- a later green run can no longer
-mask an earlier apply failure. See "Convergence anchor" below for the full mechanism.
-
-**Concurrency tradeoff (correct-by-design):** a gated-apply job pending human approval holds the
-`terraform-apply-sandbox` concurrency group (`cancel-in-progress: false`), so later auto-applies queue
-behind it. This is intentional: serialisation prevents the saved plan.bin from going stale during the
-pending window, and applies must serialise on shared tfstate regardless. Expected cost is low (near-zero
-gated frequency). If an approval is abandoned, reject it in the GitHub Actions UI to release the queue.
-
-### Operator-only / break-glass (Decision 120)
-
-NOT the default agent path. Retained -- not deleted -- for bootstrap, reversing a manual admin
-change, and the guard-BLOCK / out-of-budget-IAM cases the CD pipeline cannot yet apply on its own
-(Decision 94 escape hatch). Its danger is that it is ambient, not that it exists (Decision 126).
-Agents never self-direct a `terraform apply`; an agent may execute one here only after a human
-has reviewed the plan and explicitly directed it -- never self-directed, never the default path.
-The operator-recovery procedure itself is quarantined at
-`docs/contracts/deploy-paths.yaml#admin_out_of_band.procedure` (Decision 127 / tier_item T2.41)
--- not surfaced here.
-
-**Apply posture (record-backed sandbox CD, CD.35 / T2.20 Wave 1):** sandbox CD auto-apply
-(`.github/workflows/terraform-apply-sandbox.yml`; push-to-main touching `terraform/personal/**` auto-applies
-behind the guard + subagent plan review). It sources all no-default root-module variables from the
-`agent-platform-terraform-personal-tfvars` Secrets Manager secret: the apply role's `SecretsManagerReadOnly`
-grant fetches the secret body to `terraform.personal.tfvars`, which is passed to `terraform plan` via
-`-var-file`. New no-default variables only require updating that secret -- no per-variable workflow edit.
-`TF_VAR_aws_profile=""` is the sole remaining env override (blanks the named-profile default so the OIDC
-credential env vars take effect).
-
-### Speculative plan + apply-the-saved-plan (CD.35 / T2.21 Wave 2)
-
-Wave 2 closes the review->apply loop: a PR that touches `terraform/personal/**` now gets a
-speculative plan (human-readable, guard-verdict-annotated) BEFORE it lands, and at merge the
-SAME reviewed plan.bin is applied -- not a re-plan.
-
-**Speculative-plan job** (`speculative-plan` in `terraform-apply-sandbox.yml`):
-- Triggers on `pull_request` paths `terraform/personal/**`; same-repo fork-gated (`if: head.repo.full_name == github.repository`).
-- Assumes `agent-platform-github-ci-planner`'s PR-sub statement (tfstate-read, tfplan-write; no convergence write, no tfstate write/delete; T2.49 merged plan+drift into one dual-sub role).
-- Runs `terraform plan -lock=false` (read-only; the plan role cannot take the S3 native lock).
-- Runs the unmodified guard to capture the **PREDICTED** verdict (advisory; the merge-time verdict is authoritative).
-- Persists `plan.bin` to `s3://agent-platform-data-lake/tfplan/personal/<pr-head-sha>.bin`.
-- Scrubs account_id, both ExternalIds and owner_email from the comment via `scripts/ci/redaction_check.py`; self-fails if a 12-digit sequence survives the *plan text* or any secret literal survives the body (public-repo safety).
-- Posts the redacted plan diff + predicted verdict as a PR comment.
-- Does NOT add a required status check (Decision 83 / CD.20 -- a required check wedges autonomous fix-merges).
-
-**Apply-the-saved-plan path** (push to main in `apply-sandbox`):
-- Resolves the PR head SHA from the merge commit (`gh api .../commits/<sha>/pulls`).
-- Fetches `tfplan/personal/<pr-head-sha>.bin` from S3; `terraform show -json` -> plan.json.
-- **No re-plan**: if no PR is found or no saved object exists, the step fails closed (exit 1). Recovery is the existing `workflow_dispatch` acknowledge-and-retry (which re-plans fresh -- the only human-reviewed re-plan path).
-- Runs the guard against the saved plan's plan.json at merge time (authoritative verdict; **no `continue-on-error`** -- Decision 77 no-TOCTOU preserved).
-- Applies `plan.bin` -- the exact artefact reviewed on the PR.
-- Convergence record `plan_sha` is set to `sha256(plan.bin)` on the push path; null on `workflow_dispatch` (dispatch uses a fresh plan not persisted to S3).
-
-**`workflow_dispatch` path** (unchanged except gating):
-- The `Terraform plan` step is now `if: github.event_name == 'workflow_dispatch'` -- dispatch is the only auto-apply path that re-plans.
-- Use dispatch for the acknowledge-and-retry unlatch (naming the red commit or rec-id) OR for out-of-band applies (e.g. rolling back a manual admin change).
-
-**Stale saved plan (fail-closed, Decision 55 / CD.35)**:
-- Terraform's native staleness check errors if the saved plan.bin's state serial is stale.
-- The apply step exits non-zero -> the always-run convergence record write sets `status=red` -> ci-rca files a `source=ci_rca` rec.
-- Recovery: `workflow_dispatch` acknowledge-and-retry (re-plans fresh, human-reviewed). NO silent re-plan-and-apply; the push path has no fallback.
-
-**tfplan/personal/ S3 prefix**:
-- `s3://agent-platform-data-lake/tfplan/personal/<pr-head-sha>.bin` -- write-IAM is the planner role's PR-sub statement only; read is `github_ci_apply` via its existing `DataLakeObjectIO` bucket-wide grant.
-- Objects are inert once the speculative-plan job is removed; prune optionally.
-
-**Capability split (github_ci_pr vs the planner role's PR-sub statement)**:
-- `github_ci_pr`: convergence record read, provider-mirror read, DuckLake invoke. **No tfstate read** (fork-safe; `simulate-principal-policy` returns implicitDeny on `s3:GetObject tfstate/...`).
-- Planner PR-sub (T2.49 merged plan+drift): tfstate READ, tfplan WRITE, full refresh-read surface (mirrors apply-role plan-time reads). No convergence write (see Convergence anchor below), no tfstate write/delete, no DeleteObject anywhere.
-- Fork gating: enforced at the WORKFLOW JOB level (`if: head.repo.full_name == github.repository`) -- NOT the OIDC trust condition. Trust mirrors `github_ci_pr` (pull_request sub) plus a `sts:RoleSessionName` partition (Convergence anchor below). The job gate + read-only policy together give the desired fork isolation.
-
-**Role creation is guard-BLOCKED (gated-apply, T2.48 c2 / T2.49):** `github_ci_planner` (T2.49 / DEP-12: replaces `github_ci_plan` + `github_ci_drift`) is IAM-sensitive -- the guard exits 2 and routes to the `tf-gated-apply` Environment (Decision 92; approve in GitHub Actions). Slice E's T2.48 inversion made gated `iam:CreateRole` executable for a new boundary-carrying `agent-platform-*` role -- planner + deploy both declare the mandatory boundary in HCL, so the gated create succeeds with no admin-apply detour. The speculative-plan and drift workflows' `continue-on-error` on the assume-role step covers any residual bootstrap window.
-
-### Alarm-only scheduled drift detection (CD.35 Wave 5 / T2.24)
-
-Closes the last convergence gap: an hourly scheduled workflow (`terraform-drift.yml`) detects
-out-of-band infra drift without auto-applying.
-
-**Cron cadence:** `17 * * * *` (hourly, offset off the top of the hour).
-
-**Exit-code semantics:**
-- `0` -- no change; cycle is clean, no action.
-- `2` -- drift (changes detected); see "Drift signal" below.
-- `1` -- error; if stderr matches `"Error acquiring the state lock"` it is a lock-held skip
-  (an in-flight apply holds the native S3 lock -> exit 0, no alarm, no rec, record untouched).
-  Any other `exit 1` is a genuine error: the run fails loudly; no rec is filed and no red flip
-  occurs (drift != error).
-
-**Native-lock coexistence:** the drift plan runs `-lock=true -lock-timeout=120s`. The
-planner role's main-sub statement has `s3:PutObject + s3:DeleteObject` scoped to the EXACT lock
-object key `tfstate/personal/sandbox/terraform.tfstate.tflock` (terraform's conditional-put
-acquire + delete release), and NO write on the state object `terraform.tfstate` itself.
-Serialisation with apply is via the native S3 lock only -- there is no shared GHA concurrency
-group between `terraform-drift` and `terraform-apply-sandbox`.
-
-**Drift signal (ec=2):** on a green->red transition:
-1. Merge-write the convergence record red (preserves all existing fields; adds `drift_detected_at`,
-   `drift_run_url`, `drift_reason`).
-2. File a rec directly via the ops portal: `source=tf_drift`, `priority=High`.
-
-**Dedup -- one red = one signal:** if the record is already red (from a prior drift cycle OR a
-failed apply), the workflow logs "already red; not re-alarming" and exits 0. No duplicate rec is
-filed. The already-red state folds all concurrent or subsequent drift signals into one open rec
-until the apply-dispatch unlatch clears it.
-
-**Drift NEVER writes the record green.** Green is written solely by a converged apply
-(`terraform-apply-sandbox`), so a clean drift cycle can never mask a prior apply-failure red.
-The convergence writer set is now `{github_ci_apply (Wave 1), github_ci_planner main-sub (T2.49, reserved session only)}`.
-
-**Recovery -- dispatch-ack unlatch:** resolve the drift by running `terraform-apply-sandbox`
-via `workflow_dispatch` (naming the red commit or the open rec id in `acknowledge_red_commit`).
-A successful apply writes green; close the `tf_drift` rec via the `Resolves:` trailer or
-`update_rec` portal call.
-
-**Planner main-sub IAM (least-privilege, T2.49 absorbed drift's capabilities):** tfstate READ +
-scoped `.tflock` PutObject/DeleteObject + `convergence/personal/*` GetObject/PutObject
-(fail-closed, aws:userid-conditioned -- see Convergence anchor below) + ducklake-WRITER
-InvokeFunction/InvokeFunctionUrl (NOT the reader; Decision 84 closed boundary) + same
-refresh-time read surface as the PR-sub statement. No state-object write, no tfplan, no resource
-mutation, no IAM write. Role creation is covered by the single "Role creation is guard-BLOCKED"
-note above (Speculative plan section) -- one gated-apply create serves both subs.
-
-**Drift recs vs ci-rca recs:** drift recs use `source=tf_drift` and are filed DIRECTLY via the
-ops portal (no ci-rca agent). ci-rca's model is log-RCA over a FAILED CI run; drift is a
-state-vs-code delta from a SUCCESSFUL plan (ec=2) and has no failure log to RCA (Decision 72/92).
-
-### Convergence anchor (CD.35 / T2.20 Wave 1)
-
-The server-side anti-masking anchor. All four pieces live in `terraform-apply-sandbox.yml` + `oidc.tf`:
-
-- **Durable record:** `s3://agent-platform-data-lake/convergence/personal/sandbox.json`
-  (`{status, commit_sha, run_id, run_url, timestamp, plan_sha}`; `plan_sha` is null until Wave 2 saved
-  plans). Its OWN S3 prefix, **outside `tfstate/`**, so the read-only PR role reads it without ever seeing
-  tfstate. Write-IAM is the **sanctioned writer set {github_ci_apply, github_ci_planner main-sub} among
-  the CI roles** -- T2.49 / DEP-12 merged the former `github_ci_drift` writer into `github_ci_planner`'s
-  main-sub statement, enforced in `oidc.tf` / `terraform/bootstrap/github_ci_apply.tf` by
-  `ConvergenceRecordWrite` on each writer (apply: Wave 1; planner: T2.49, fail-closed), the explicit
-  `DenyConvergenceRecordWrite` on `github_ci_branch` (ci-rca / `agent/*` CI keep read, never write/delete
-  the record), and the PR role's read-only `S3ReadConvergenceRecord`. This is the integrity anchor -- a
-  commit status alone is spoofable. (The residual admin / `platform_breakglass` write path is not yet
-  IAM-fenced; full privilege-tiering -- the pipeline's own IAM to a bootstrap root -- landed at Wave 4 /
-  T2.23 (`terraform/bootstrap/`). "Unbypassable" is scoped to merge-path CI actors, per CD.35 5.5d.)
-  **c2 doc-truthfulness (T2.49 hardening item 2): two DIFFERENT protections, don't conflate.**
-  The trust-policy `sts:RoleSessionName` partition (main-sub StringEquals / pr-sub
-  StringNotEquals the reserved `local.convergence_writer_session_name`) IS human-gate-protected
-  (a trust edit is IAM-sensitive, guard-BLOCKs to `tf-gated-apply`). BUT `ConvergenceRecordWrite`'s
-  `aws:userid` condition lives in the planner's INLINE policy -- an in-budget UPDATE on a
-  boundary-carrying role AUTO-APPLIES (Decision 92 pt5 / T2.25), NOT the human gate. Its real
-  protection is the standing check `scripts/checks/iam_tf/validate_convergence_writer_isolation.py`
-  (`validate --pre`/full), which asserts the condition holds and no 2nd unconditioned Allow exists.
-- **Red-record refusal = the SOLE hard block.** The apply job's read-precondition refuses (emits the
-  distinguishable marker `CONVERGENCE_RED`, exits non-zero, and does **NOT** overwrite the record) when the
-  record is red. Unbypassable by any merge-path actor. An **absent** record = first-apply-allowed
-  (pass-on-absent); the first apply writes the first record (no human seed -- preserves apply-only write-IAM).
-- **Advisory `terraform-converged` PR status (NOT a required check).** A read-only `pull_request` job
-  (`github_ci_pr` role, `S3ReadConvergenceRecord`) posts it for visibility. Deliberately advisory: a required
-  check would wedge the autonomous fix-merge once a record is red, or be admin-bypassed anyway
-  (`main-protection` `strict=false`, admin `bypass_mode=always`, Decision 83). Do **not** add it to the
-  ruleset's `required_status_checks`.
-- **Dispatch-ack unlatch = the ONLY way to clear red.** A red record clears **only** when an apply from a
-  `workflow_dispatch` acknowledge-and-retry run succeeds; its `acknowledge_red_commit` input names the red
-  commit SHA (or the open rec id). A plain push never clears red (auto-allow-descendants is rejected -- on
-  linear-history main every commit is a descendant). The dispatch actor + input are the audit trail; the
-  agent may dispatch via the GitHub MCP actions trigger **after** the `ci-rca` rec is reviewed (Decision
-  55/72) -- nothing auto-remediates. Refusals-while-red dedupe to the one open red-record rec (ci-rca anchors
-  on the record's commit). Serialisation is the existing workflow `concurrency` group
-  (`cancel-in-progress: false`).
+| Apply `terraform/` (legacy hashicorp/*-only roots) or `terraform/github` | Same PR -> CD path where a workflow exists | See `docs/contracts/terraform-cc-web-operations.yaml`'s operator-only / break-glass section |
+| Apply `terraform/bootstrap`, or apply `terraform/personal` by hand (bootstrap, reversing a manual admin change, or a guard-BLOCKed case with no CD path yet) | Operator action only | See `docs/contracts/terraform-cc-web-operations.yaml`'s operator-only / break-glass section |
 
 ## Out-of-band IAM grants (drift -- not managed by this module)
 

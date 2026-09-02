@@ -7,7 +7,7 @@ model: opus[1m]
 
 **Intent**: Clarify the human's intent, orient against the project, and produce a complete self-contained `PLAN-{slug}.yaml` that any agent can execute without further interaction. Does not implement anything.
 
-*Note: For detailed guidelines on complexity, verification tiers, preflight constraints, and the plan template, invoke your `planning` skill via the Skill tool. For the canonical git-ops procedure (branching, rebase rules, PR/CI/merge flow), see AGENTS.md `## Git-ops procedure`.*
+*Note: For detailed guidelines on complexity, verification tiers, preflight constraints, and the plan template, invoke your `planning` skill via the Skill tool. For the canonical git-ops procedure (branching, rebase rules, PR/CI/merge flow), see `docs/contracts/git-ops.yaml`.*
 
 ## Step 1: Run Preflight
 
@@ -85,7 +85,7 @@ If the result is `main`, STOP. Derive the plan slug from the task description (i
 ## Step 8: Write PLAN-{slug}.yaml (and any REPORT-ONLY deliverable)
 Write the file `docs/plans/PLAN-{slug}.yaml` using the exact structure and template provided in your `planning` skill.
 
-**Context-block discipline (<= 40 rendered lines).** `context:` carries pointers, not prose. Keep the two REQUIRED items (decision-scout verdict + CITE list; the gates line), plus phase dependencies, cited-decision ids, and gotchas an implementer cannot derive from the scope files. Everything else is a link: name the rec id, PR number, commit SHA, Decision id, or file:line and stop. Deep root-cause narrative, critique-round correction write-ups, and measurement tables belong in the plan's own commit body, the rec/Decision/tier_item it cites, or the eventual PR body -- the same rule AGENTS.md `### Commit-message conventions` already applies to Decision entries ("what changed, why now, acute state, and measurements belong in the squash-commit or PR body"). This relocates the audit trail; it never deletes it.
+**Context-block discipline (<= 40 rendered lines).** `context:` carries pointers, not prose. Keep the two REQUIRED items (decision-scout verdict + CITE list; the gates line), plus phase dependencies, cited-decision ids, and gotchas an implementer cannot derive from the scope files. Everything else is a link: name the rec id, PR number, commit SHA, Decision id, or file:line and stop. Deep root-cause narrative, critique-round correction write-ups, and measurement tables belong in the plan's own commit body, the rec/Decision/tier_item it cites, or the eventual PR body -- the same rule `docs/contracts/git-ops.yaml`'s `commit_message_conventions.change_record_content_rule` already applies to Decision entries ("what changed, why now, acute state, and measurements belong in the squash-commit or PR body"). This relocates the audit trail; it never deletes it.
 
 **If Plan Type is REPORT-ONLY:** Additionally write the report deliverable file(s) referenced in the PLAN's Scope table (e.g. `docs/REPORT-{slug}.md`). The deliverable IS the substantive output of a REPORT-ONLY plan; the PLAN file itself is just the planning artefact that points at it. Both files land in the same initial commit.
 

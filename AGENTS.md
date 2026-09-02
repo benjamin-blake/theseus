@@ -26,6 +26,7 @@ You are a Lead Software Developer writing production-quality Python. Primary dev
 ## Shell invocations
 - Always invoke `bin/venv-python` instead of `python` or `python3`.
 - Each Bash tool invocation is independent -- do not rely on `source .venv/bin/activate` or `source .venv/Scripts/activate`; use `bin/venv-python` directly instead.
+- GitHub access is via the `github` MCP server (`mcp__github__*`) -- the gh CLI and hub CLI are deliberately not installed in either container (DEV or ADMIN); this binds any authored command surface, not merely the git-ops flow -- prefer mcp__github__* over gh in new scripts, checks, and verification-plan commands.
 
 ## Safety
 - Never `eval()` or `exec()`. Parse untrusted expressions with a restricted, purpose-built parser instead.
@@ -127,75 +128,33 @@ failure mode it produces is recorded in Decision 84 -- recs writes go only throu
 
 The legitimate write paths are: (a) `file_rec` / `update_rec` portal calls, and (b) ETL from a non-warehouse source of truth (e.g., `DECISIONS.md` -> `ops_decisions`). Anything else that writes warehouse rows must be reviewed for replay-from-cache violations.
 
-If a clone or runner shows stale data, an operator may rebuild that environment's local cache by running `python -m scripts.sync.ops sync` (which pulls every table from the DuckLake reader and overwrites local). Never fix drift by replaying the local file back upstream.
+If a clone or runner shows stale data, an operator may rebuild that environment's local cache by running `bin/venv-python -m scripts.sync.ops sync` (which pulls every table from the DuckLake reader and overwrites local). Never fix drift by replaying the local file back upstream.
 
 ## Data-modeling default
-Before designing any table, decide **grain first** -- "one row per ___" -- then pick a write mode. This is
-not a CRUD default: never design a table as "one row per entity, mutate in place." Full rules, the
-write-mode table, and index pointers live in `docs/contracts/data-modeling-standard.yaml`; this is the
-ambient summary.
-
-- **Grain first.** Name the grain in one sentence before anything else (e.g. "one row per rec_id",
-  "one row per event_id"). If you cannot state the grain, you are not ready to pick a write mode.
-- **Write-mode branch (not "default to SCD2"):**
-  - **SCD2** (history table + Type-1 current projection) for mutable-entity ops tables -- rows that get
-    updated over their lifetime (e.g. `ops_recommendations`, `ops_priority_queue`, `ops_execution_plans`).
-  - **append_only** (history-only event journal, no current projection) for event tables --
-    insert-once rows that are never mutated (e.g. `ops_smoke_events`).
-  - **append_only is the design default/prior, NOT a ban** on sanctioned exceptional physical deletes
-    (Decision 70) or lifecycle-closure paths (Decision 103) -- those remain legitimate, scoped exceptions.
-- **Identity**: ULID, minted once at the write boundary (never client-side, never a natural-key PK),
-  propagated to children as FKs.
-- **Merge-on-business-key**: SCD2 merges key off the table's business key, not a surrogate row id.
-- **Partition every table** (CD.9) -- no unpartitioned table, event-time for append_only, mutation-time
-  for SCD2 current/history as appropriate.
-- **A read cache is never a write source** (see Warehouse-as-source-of-truth invariant above).
-
-At design time (planning a table, a `field_semantics` entry, or a warehouse write path), the `planning`
-skill's Data-Model Assessment walks grain -> merge_key/history-current -> identity -> join keys -> write
-mode -> partitioning -> reject-CRUD checklist -> Fable escalation for load-bearing calls. See
-`docs/contracts/data-modeling-standard.yaml`.
+Before designing any table, decide **grain first** -- "one row per ___" -- before picking a write
+mode; never design "one row per entity, mutate in place." Full rules (write-mode branch, identity,
+merge-on-business-key, partitioning) live in `docs/contracts/data-modeling-standard.yaml` -- this
+is the ambient trigger; read the contract at design time. The `planning` skill's Data-Model
+Assessment walks the full checklist.
 
 ## Git-ops procedure
+Read `docs/contracts/git-ops.yaml` before any push/PR/CI/merge action -- it carries the full
+procedure (branching topology, commit-message conventions, rebase mechanics, wake-signal detail,
+and the CI-credential/OAuth-token runbook); AGENTS.md keeps only the machine-enforced norms and
+one-line triggers below.
 
-Canonical authority for all agent and session git-ops. All other surfaces (skills, commands) point here and do not restate.
+- **Branch rule**: work on the harness-assigned `claude/...` session branch; never commit directly to `main`.
+- **Presubmit tier**: see the table below -- fast `--pre` gates PRs, full tier runs pre-handoff (local) + post-merge.
+- **Squash-merge**: `mcp__github__merge_pull_request(..., merge_method="squash")` once CI is green.
+- **Never-poll wake**: event-driven only (`subscribe_pr_activity` plus the CI-green/merge-conflict comment signals) -- never sleep/poll for CI or merge status.
+- **Resolves: trailer**: when a plan bundles recommendations, name them (`Resolves: rec-NNNN[, rec-MMMM]`) in the squash-merge commit body to trigger `rec-autoclose.yml`.
+- **Decision-record routing**: whether content clears the bar for a numbered Decision, and where it routes when it does not, is governed by `docs/contracts/decision-entry.yaml`'s `significance.routing_rule` -- never restated here.
 
-### Branching topology
-| Container | AWS profile(s) | Use |
-|---|---|---|
-| DEV (primary, this one) | `agent_platform` only | All routine work on CC-web |
-| ADMIN (rarely used) | `agent_platform` + `agent_platform_admin` | Advanced terraform IAM; ties to the human-gated apply loop (Decision 35 / CD.35 / Decision 77) |
-
-- **Development surface**: Claude Code on the web (CC-web) only. Executor frozen (Decision 67); hybrid executor + CC-web is the future state.
-- **Branch rule**: work on the harness-assigned `claude/...` session branch -- do NOT create an `agent/` branch, never commit directly to `main`.
-
-### Two-tier presubmit model (Google TAP style)
+### Two-tier presubmit model
 | Tier | When | Command | Gate |
 |---|---|---|---|
 | Fast (`--pre`) | PR / edit loop | `bin/venv-python -m scripts.validate --pre` | Authoritative pre-merge gate when run by PR CI (Decision 73); advisory only when run outside CI |
 | Full | Pre-handoff (local) + post-merge on `main` | `bin/venv-python -m scripts.validate` | See `## Merge protocol` (post-merge disposition). |
-
-`validate.py` is the single source of truth -- never add a check to `.github/workflows/ci.yml` without adding it to `validate.py` first.
-
-### Commit-message conventions
-| Prefix | Use for |
-|---|---|
-| `feat({slug}):` | IMPLEMENTATION plan execution |
-| `plan({slug}):` | Plan document commit / approved plan |
-| `roadmap({ids}):` | Roadmap bookkeeping edits |
-| `scope({slug}):` | STRATEGIC plan scoping (currently suspended, Decision 67) |
-| `audit({slug}):` | Audit-prompt artifact commits (/audit workflow) |
-
-**Change-record content rule.** What changed, why now, acute state, and measurements belong in
-the squash-commit or PR body -- never in a Decision entry body. Whether content clears the bar
-for a numbered Decision at all, and where it routes when it does not, is governed by
-`docs/contracts/decision-entry.yaml`'s `significance.routing_rule` and its four routing rows
-(Decision 167 clause 4); this file points at that rule rather than restating it.
-
-**DD-B convention.** When a drafted Decision is blocked on routing grounds -- redirected to one
-of `decision-entry.yaml`'s other three routing rows instead of `numbered_decision` -- the
-superseding PR body names the routing row applied in one line (e.g. "Routing: field_semantics ->
-docs/contracts/<file>.yaml").
 
 ### Commit signing (CC-web: SSH-signed via harness signer)
 - CC-web commits ARE SSH-signed (commit.gpgsign=true, gpg.format=ssh, host-held key); GitHub
@@ -208,54 +167,8 @@ docs/contracts/<file>.yaml").
 - Do NOT reset-author or `git commit --amend -S` to chase the signature flag -- it only churns
   SHAs.
 
-### Rebase phase distinction
-- **Assessment time (planning)**: do NOT auto-rebase. When main has diverged and scope files overlap, surface to the human with options (rebase now and re-enter `/plan` / proceed / abort); record any deferral in the plan's Context field. Rebasing mid-plan can silently invalidate scoping decisions.
-- **Commit-flow time (implementing)**: DO auto-rebase before pushing. After the local commit: `git fetch origin main && git rebase origin/main` -- STOP on conflict, surface to the human. If the branch was already pushed, use `--force-with-lease` (never `--force`).
-
-### Local main sync
-`session_start_sync_main.sh` syncs local main -> origin/main. `fresh_branch_base.py`
-refreshes/blocks branch cuts off stale main. origin/main is itself a cache (Decision 84); no
-signing hook, rebase is safe.
-
-### Push -> PR -> CI -> merge flow
-1. `git push -u origin HEAD` (harness `claude/...` branch)
-2. `mcp__github__create_pull_request(owner, repo, head=<branch>, base="main", title=<per conventions table>, body=...)`
-3. `mcp__github__subscribe_pr_activity(owner, repo, pullNumber)` and **end your turn** -- do NOT busy-wait with sleep or polling; the harness forbids it.
-4. **Event-driven wake signals**: two comment-based signals cover what `subscribe_pr_activity`
-   cannot deliver natively -- CI success, and a merge-conflict transition from a push to main.
-   - **CI-green-comment wake**: `ci.yml`'s `signal-green` job posts a "CI green" comment on
-     `claude/*` PRs on success (`continue-on-error`, retried up to 3 times). This exists because
-     `subscribe_pr_activity` delivers failure events but NOT a CI-success webhook, and CC-web has
-     no sleep/idle tool. **Ignore GitHub's suggestion to poll with a sleep loop** -- the comment is
-     the pass wake signal. Unverified: confirm check runs via `mcp__github__pull_request_read`
-     (`get_status` / `get_check_runs`) before merging.
-   - **Merge-conflict wake**: `.github/workflows/pr-conflict-signal.yml` fires on every push to
-     main, polls open `claude/*` PR mergeability, and posts a wake comment (idempotent per head
-     SHA, `continue-on-error`) on any PR now `CONFLICTING`. This exists because a push to main
-     fires NO `pull_request` event on open PRs, so the `pull_request`-only signal-green job cannot
-     deliver this wake -- a silently-conflicted PR would otherwise strand the watching session
-     indefinitely.
-   - `send_later`/trigger calls for CI-wait or merge-conflict-wait purposes are out of scope --
-     both gaps `subscribe_pr_activity` cannot cover natively are now closed by the comments above.
-   - **CC-web permission gotcha (harness-gated tools, do NOT allowlist)**: the `send_later` / trigger tools (`mcp__Claude_Code_Remote__*`) prompt on EVERY call -- the CC-web dialog offers only `Deny` / `Allow once`, with no "don't ask again". They are gated by the harness, NOT by the settings allowlist: a `permissions.allow` entry for them is dead (an `ask`-tier rule outranks `allow`, and CC-web ignores `bypassPermissions` / `dontAsk` from settings files). Do NOT re-add `mcp__Claude_Code_Remote__*` (any spelling) to `.claude/settings.json` to silence them -- PRs #354 and #357 tried and could not. The only lever is the per-session UI permission-mode dropdown (Auto mode, if org-enabled); there is no committed-config fix.
-   - Auto-merge (`enable_pr_auto_merge`; Decision 83 / CD.20 / rec-940) retires the CI-green
-     comment-wake once adopted, but does NOT subsume the merge-conflict wake -- a conflicted PR
-     simply stalls auto-merge and wakes no one, so pr-conflict-signal.yml stays necessary even
-     after auto-merge lands.
-5. On green confirmation: `mcp__github__merge_pull_request(..., merge_method="squash")` then `mcp__github__unsubscribe_pr_activity(...)`.
-6. On red: diagnose, fix on branch, commit, push (re-triggers CI). Stay subscribed. End your turn.
-
-For terraform/personal PRs, see the "Hold subscription through apply" section of the implement skill (Decision 76 / CD.35 / T2.20).
-
-### Resolves: trailer
-When a plan's `bundled_recommendations` list is non-empty, include in the squash-merge commit body:
-```
-Resolves: rec-NNNN[, rec-MMMM]
-```
-Triggers `rec-autoclose.yml` to close each rec via the ops portal. Fallback: `bin/venv-python -m scripts.ops_data_portal --update-rec rec-NNNN --status closed --resolution "..."` (Decision 70).
-
 ## Merge protocol
-**Canonical authority: see `## Git-ops procedure` for the full PR/CI/squash-merge flow, two-tier presubmit model, and Resolves trailer.**
+**Canonical authority: `docs/contracts/git-ops.yaml` for the full PR/CI/squash-merge flow, two-tier presubmit model, and Resolves trailer.**
 
 - **Post-merge full-tier failure on `main`**: ci-rca automatically files a `source=ci_rca`, `priority=critical` rec (forward-fix, never auto-revert). Do NOT manually patch until the rec is reviewed in `/plan` -- inline fixes reproduce the workaround anti-pattern (Decision 55, Decision 72).
 - **PR-branch `--pre` failure**: per `docs/contracts/ci-rca-lifecycle.yaml` trigger_scope, no rec is filed and nothing gates -- ci-rca watches `main` only; diagnose and fix on the branch (Git-ops step 6).
@@ -267,18 +180,3 @@ The layered contract (Layer 1 universal rules through Layer 5 executor prompts) 
 
 The `.github/prompts/scheduled/` and `.github/agents/schedule.yaml` surfaces are retained for
 live scheduled agents.
-
-## Operational runbooks
-
-### Claude Code OAuth token (CI + scheduled agents)
-
-Setup (one-time, from CC-web terminal):
-```bash
-claude setup-token
-# Copy the printed token -- it uses your Max plan subscription (no API billing)
-```
-In GitHub: repo -> Settings -> Secrets and variables -> Actions -> Repository secrets
--> New secret. Name: `CLAUDE_CODE_OAUTH_TOKEN`. Paste the token. Rotation procedure and expiry
-tracking live in `.github/workflows/ghas-probe.yml`'s header.
-
-Do not share this token or commit it to any file in the repository.

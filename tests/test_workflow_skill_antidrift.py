@@ -89,4 +89,4 @@ def test_plan_context_block_cap_is_declared_on_both_surfaces() -> None:
     workflow = _PLAN_CMD.read_text(encoding="utf-8")
     assert "context: # <= 40 rendered lines" in planning
     assert "**Context-block discipline (<= 40 rendered lines).**" in workflow
-    assert "`### Commit-message conventions`" in workflow
+    assert "`commit_message_conventions.change_record_content_rule`" in workflow
