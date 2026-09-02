@@ -7,7 +7,7 @@ argument-hint: [docs/plans/PLAN-slug.yaml]
 
 **Intent**: For IMPLEMENTATION plans: execute the Ordered Execution Steps directly. For STRATEGIC plans: research Work Areas and produce atomic, automatable recommendations for the executor.
 
-*Note: For detailed guidelines on how to execute each step below, invoke your `implement` skill via the Skill tool. For the canonical git-ops procedure (branching, rebase rules, PR/CI/merge flow), see AGENTS.md `## Git-ops procedure`.*
+*Note: For detailed guidelines on how to execute each step below, invoke your `implement` skill via the Skill tool. For the canonical git-ops procedure (branching, rebase rules, PR/CI/merge flow), see `docs/contracts/git-ops.yaml`.*
 
 ## Step 1: Run Preflight
 ```bash

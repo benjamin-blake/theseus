@@ -101,7 +101,7 @@ _BLOCK_MESSAGE = (
     "Local main cannot be force-updated while it is checked out, so it may be stale.\n"
     "Branch directly off the remote ref instead:\n"
     "  git checkout -b <name> origin/main\n"
-    "See AGENTS.md 'Git-ops procedure' for the local-main-sync / branch-off-remote-main guard.\n"
+    "See docs/contracts/git-ops.yaml for the local-main-sync / branch-off-remote-main guard.\n"
 )
 
 

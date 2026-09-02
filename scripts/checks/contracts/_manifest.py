@@ -155,4 +155,20 @@ ENTRIES: tuple[Entry, ...] = (
         pre_globs=None,
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_git_ops_contract",
+        module="scripts.checks.contracts.validate_git_ops_contract",
+        attr="validate_git_ops_contract",
+        pre=True,
+        pre_globs=None,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_terraform_cc_web_operations",
+        module="scripts.checks.contracts.validate_terraform_cc_web_operations",
+        attr="validate_terraform_cc_web_operations",
+        pre=True,
+        pre_globs=None,
+        full_segment="full_after_lint",
+    ),
 )

@@ -1,0 +1,225 @@
+# Git-ops procedure contract (PLAN-ambient-prose-contract-relocation, T2.56 c1). A Class D
+# mechanism contract carrying the full push -> PR -> CI -> merge procedure, the two-tier
+# presubmit model, commit-message conventions, rebase mechanics, and the CI-credential (Claude
+# Code OAuth token) provisioning runbook -- relocated out of AGENTS.md's ambient S1 load-set
+# (Decision 110/127) per Decision 86/114 routing (procedure detail belongs in a contract, not
+# ambient prose). AGENTS.md keeps only the machine-enforced norms and a one-line trigger per flow
+# step (Decision 139 portability hedge) plus the two subsections a graduated registry entry or a
+# standing test pins verbatim (Commit signing; the two-tier presubmit table's Full row) -- this
+# file is the canonical authority for the procedure body itself.
+#
+# Declared subject explicitly covers CI credential provisioning (Decision 127 points 2-3): the
+# relocated OAuth-token runbook sits INSIDE this contract's subject ("the GitHub-surface
+# operations plane") rather than stretching past it -- provisioning the credential CI/scheduled
+# agents authenticate with is part of the GitHub-surface operations plane, not a separate concern.
+contract:
+  id: git-ops
+  class: D
+  contract_version: 1
+  status: ratified
+  ratified_via: "PLAN-ambient-prose-contract-relocation"
+  description: >-
+    Class D mechanism contract for the GitHub-surface operations plane, including CI credential
+    provisioning: branch rule, two-tier presubmit model, commit-message conventions, commit
+    signing, rebase mechanics, the push -> PR -> CI -> merge flow (including its event-driven
+    wake signals), the Resolves: trailer, and the Claude Code OAuth-token runbook. Canonical
+    authority for all agent and session git-ops -- AGENTS.md's Git-ops procedure / Merge protocol
+    sections point here rather than restate it.
+  subject: git-ops-procedure
+  evaluator:
+    check: validate_git_ops_contract
+
+amendment_log:
+  - date: "2026-09-01"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-ambient-prose-contract-relocation: initial authoring, relocating AGENTS.md's
+      '## Git-ops procedure' detail, '## Merge protocol' detail, and '## Operational runbooks'
+      (the Claude Code OAuth-token runbook) out of the ambient S1 root load-set. No new rule --
+      the moved content is unchanged prose, restated here rather than in AGENTS.md.
+    migration_story: >-
+      AGENTS.md keeps a one-line trigger per git-ops flow step (branch rule, presubmit tier,
+      squash-merge, never-poll wake, Resolves trailer) plus the two subsections a graduated
+      registry entry or a standing test pins verbatim (Commit signing; the two-tier presubmit
+      table's Full row) and the two ci-rca Merge-protocol bullets a standing test pins verbatim
+      -- everything else in this file was copied from AGENTS.md's prior text with no semantic
+      change.
+
+# Every repo-relative path this contract's procedure names, verified to exist by
+# validate_git_ops_contract (scripts/checks/contracts/validate_git_ops_contract.py).
+referenced_repo_paths:
+  - .claude/hooks/fresh_branch_base.py
+  - .claude/hooks/session_start_commit_signing.py
+  - .claude/hooks/session_start_sync_main.sh
+  - .claude/settings.json
+  - .github/workflows/ci.yml
+  - .github/workflows/ghas-probe.yml
+  - .github/workflows/pr-conflict-signal.yml
+  - .github/workflows/rec-autoclose.yml
+  - docs/contracts/ci-rca-lifecycle.yaml
+  - docs/contracts/decision-entry.yaml
+  - scripts/validate.py
+
+branching_topology:
+  containers:
+    - name: DEV
+      note: primary, this one
+      aws_profiles: ["agent_platform"]
+      use: All routine work on CC-web
+    - name: ADMIN
+      note: rarely used
+      aws_profiles: ["agent_platform", "agent_platform_admin"]
+      use: >-
+        Advanced terraform IAM; ties to the human-gated apply loop (Decision 35 / CD.35 /
+        Decision 77).
+  development_surface: >-
+    Claude Code on the web (CC-web) only. Executor frozen (Decision 67); hybrid executor + CC-web
+    is the future state.
+  branch_rule: >-
+    Work on the harness-assigned `claude/...` session branch -- do NOT create an `agent/` branch,
+    never commit directly to `main`.
+
+two_tier_presubmit_model:
+  description: >-
+    Google TAP style. AGENTS.md keeps the Full row of this table ambient verbatim (pinned by a
+    graduated registry entry and a standing test); this restates both rows' full detail.
+  fast:
+    tier: "Fast (`--pre`)"
+    when: PR / edit loop
+    command: bin/venv-python -m scripts.validate --pre
+    gate: >-
+      Authoritative pre-merge gate when run by PR CI (Decision 73); advisory only when run
+      outside CI.
+  full:
+    tier: Full
+    when: "Pre-handoff (local) + post-merge on `main`"
+    command: bin/venv-python -m scripts.validate
+    gate: "See AGENTS.md's Merge protocol section (post-merge disposition)."
+  single_source_of_truth: >-
+    `scripts/validate.py` is the single source of truth -- never add a check to
+    `.github/workflows/ci.yml` without adding it to `validate.py` first.
+
+commit_message_conventions:
+  prefixes:
+    - prefix: "feat({slug}):"
+      use_for: IMPLEMENTATION plan execution
+    - prefix: "plan({slug}):"
+      use_for: Plan document commit / approved plan
+    - prefix: "roadmap({ids}):"
+      use_for: Roadmap bookkeeping edits
+    - prefix: "scope({slug}):"
+      use_for: STRATEGIC plan scoping (currently suspended, Decision 67)
+    - prefix: "audit({slug}):"
+      use_for: Audit-prompt artifact commits (/audit workflow)
+  change_record_content_rule: >-
+    What changed, why now, acute state, and measurements belong in the squash-commit or PR body
+    -- never in a Decision entry body. Whether content clears the bar for a numbered Decision at
+    all, and where it routes when it does not, is governed by `docs/contracts/decision-entry.yaml`'s
+    `significance.routing_rule` and its four routing rows (Decision 167 clause 4); this file
+    points at that rule rather than restating it.
+  dd_b_convention: >-
+    When a drafted Decision is blocked on routing grounds -- redirected to one of
+    `decision-entry.yaml`'s other three routing rows instead of `numbered_decision` -- the
+    superseding PR body names the routing row applied in one line (e.g. "Routing:
+    field_semantics -> docs/contracts/<file>.yaml").
+
+commit_signing_note: >-
+  AGENTS.md's '### Commit signing (CC-web: SSH-signed via harness signer)' subsection stays
+  ambient verbatim (pinned: its heading is mirrored in terraform/github/repo.tf by the graduated
+  check cc-web-signing-premise-corrected) -- not restated here. Covers: SSH signing via the
+  harness-held key, why local `git log --format=%G?` reads N/B, `session_start_commit_signing.py`'s
+  role, and why reset-author / amend -S must never be used to chase the signature flag.
+
+rebase_phase_distinction:
+  assessment_time: >-
+    (planning) do NOT auto-rebase. When main has diverged and scope files overlap, surface to
+    the human with options (rebase now and re-enter `/plan` / proceed / abort); record any
+    deferral in the plan's Context field. Rebasing mid-plan can silently invalidate scoping
+    decisions.
+  commit_flow_time: >-
+    (implementing) DO auto-rebase before pushing. After the local commit: `git fetch origin main
+    && git rebase origin/main` -- STOP on conflict, surface to the human. If the branch was
+    already pushed, use `--force-with-lease` (never `--force`).
+
+local_main_sync: >-
+  `session_start_sync_main.sh` syncs local main -> origin/main. `fresh_branch_base.py`
+  refreshes/blocks branch cuts off stale main. origin/main is itself a cache (Decision 84); no
+  signing hook, rebase is safe.
+
+push_pr_ci_merge_flow:
+  steps:
+    - "git push -u origin HEAD (harness claude/... branch)."
+    - >-
+      mcp__github__create_pull_request(owner, repo, head=<branch>, base="main", title=<per the
+      commit-message-conventions table above>, body=...).
+    - >-
+      mcp__github__subscribe_pr_activity(owner, repo, pullNumber) and end your turn -- do NOT
+      busy-wait with sleep or polling; the harness forbids it.
+    - >-
+      On green confirmation: mcp__github__merge_pull_request(..., merge_method="squash") then
+      mcp__github__unsubscribe_pr_activity(...).
+    - "On red: diagnose, fix on branch, commit, push (re-triggers CI). Stay subscribed. End your turn."
+  wake_signals:
+    coverage_note: >-
+      Two comment-based signals cover what subscribe_pr_activity cannot deliver natively -- CI
+      success, and a merge-conflict transition from a push to main. send_later/trigger calls for
+      CI-wait or merge-conflict-wait purposes are out of scope -- both gaps are closed by the two
+      signals below, not by polling.
+    ci_green_comment: >-
+      ci.yml's signal-green job posts a "CI green" comment on claude/* PRs on success
+      (continue-on-error, retried up to 3 times). This exists because subscribe_pr_activity
+      delivers failure events but NOT a CI-success webhook, and CC-web has no sleep/idle tool.
+      Ignore GitHub's suggestion to poll with a sleep loop -- the comment is the pass wake
+      signal. Unverified: confirm check runs via mcp__github__pull_request_read (get_status /
+      get_check_runs) before merging.
+    merge_conflict: >-
+      .github/workflows/pr-conflict-signal.yml fires on every push to main, polls open claude/*
+      PR mergeability, and posts a wake comment (idempotent per head SHA, continue-on-error) on
+      any PR now CONFLICTING. This exists because a push to main fires NO pull_request event on
+      open PRs, so the pull_request-only signal-green job cannot deliver this wake -- a
+      silently-conflicted PR would otherwise strand the watching session indefinitely.
+    cc_web_permission_gotcha: >-
+      Harness-gated tools, do NOT allowlist: the send_later / trigger tools
+      (mcp__Claude_Code_Remote__*) prompt on EVERY call -- the CC-web dialog offers only Deny /
+      Allow once, with no "don't ask again". They are gated by the harness, NOT by the settings
+      allowlist: a permissions.allow entry for them is dead (an ask-tier rule outranks allow, and
+      CC-web ignores bypassPermissions / dontAsk from settings files). Do NOT re-add
+      mcp__Claude_Code_Remote__* (any spelling) to .claude/settings.json to silence them -- PRs
+      #354 and #357 tried and could not. The only lever is the per-session UI permission-mode
+      dropdown (Auto mode, if org-enabled); there is no committed-config fix.
+    auto_merge_relationship: >-
+      Auto-merge (enable_pr_auto_merge; Decision 83 / CD.20 / rec-940) retires the CI-green
+      comment-wake once adopted, but does NOT subsume the merge-conflict wake -- a conflicted PR
+      simply stalls auto-merge and wakes no one, so pr-conflict-signal.yml stays necessary even
+      after auto-merge lands.
+  terraform_personal_note: >-
+    For terraform/personal PRs, see the "Hold subscription through apply" section of the
+    implement skill (Decision 76 / CD.35 / T2.20).
+
+resolves_trailer: >-
+  When a plan's `bundled_recommendations` list is non-empty, include in the squash-merge commit
+  body: "Resolves: rec-NNNN[, rec-MMMM]". Triggers `rec-autoclose.yml` to close each rec via the
+  ops portal. Fallback: `bin/venv-python -m scripts.ops_data_portal --update-rec rec-NNNN
+  --status closed --resolution "..."` (Decision 70).
+
+merge_protocol_note: >-
+  AGENTS.md's '## Merge protocol' heading and its two ci-rca bullets (post-merge full-tier
+  failure; PR-branch --pre failure) stay ambient verbatim -- pinned by
+  tests/test_pr_ci_red_protocol_contract.py and the graduated registry entries
+  agents-md-contradiction-resolved / agents-md-pr-branch-disposition-stated. Not restated here;
+  its "Canonical authority" line points at this contract.
+
+oauth_token_provisioning:
+  description: >-
+    Claude Code OAuth token (CI + scheduled agents) -- relocated from AGENTS.md's '## Operational
+    runbooks' (rec-2984): a REFERENCE PROCEDURE, not a universal rule an agent needs on every
+    turn.
+  setup_one_time_from_cc_web_terminal:
+    - "claude setup-token"
+    - "# Copy the printed token -- it uses your Max plan subscription (no API billing)"
+  github_secret_entry: >-
+    In GitHub: repo -> Settings -> Secrets and variables -> Actions -> Repository secrets -> New
+    secret. Name: CLAUDE_CODE_OAUTH_TOKEN. Paste the token. Rotation procedure and expiry
+    tracking live in `.github/workflows/ghas-probe.yml`'s header.
+  handling: Do not share this token or commit it to any file in the repository.
