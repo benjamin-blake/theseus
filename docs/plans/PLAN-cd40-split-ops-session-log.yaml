@@ -22,10 +22,11 @@ scope:
   - file: docs/PROJECT_CONTEXT.md
     action: Modify
     purpose: >-
-      Correct two claims this plan falsifies -- the T2.18 -> T2.19/T2.26 -> T2.36 critical-path
-      chain (line ~87) and "Session log remains on its legacy path pending disposition" (line ~119).
-      The stamped roadmap_tier_id_set sha will NOT catch either (no tier_item is added or removed),
-      so the drift would be silent.
+      Correct three claims this plan falsifies -- the T2.18 -> T2.19/T2.26 -> T2.36 critical-path chain
+      (~L87), "Session log remains on its legacy path pending disposition" (~L119), and "T3.20 ...
+      coordinates retirement or rewiring of legacy session-log surfaces" (~L138), since the retirement
+      half moves to T2.26. The stamped roadmap_tier_id_set sha catches none of them (no tier_item is
+      added or removed), so the drift would be silent.
 bundled_recommendations: []
 infrastructure_dependencies: []
 acceptance_criteria:
@@ -35,6 +36,8 @@ acceptance_criteria:
   - T3.20 c5 is status=rehomed with met_by=T2.26, so exactly one item owns the disposition
   - T2.18 c2 and c8 both point forward to T2.36 rather than backward to T2.26, and c2's text names the
     "S3 storage stable after N maintenance cycles" soak as the residual being transferred
+  - The transferred soak lands on T2.36 as a NEW OPEN exit criterion (c6), not as a note -- so it stays
+    visible to open_criteria_count, needs_followon_plan and /orient rather than becoming prose
   - No T2.26, T2.18, T3.20 or T2.36 criterion status is flipped to met by this plan
   - docs/ROADMAP-PLATFORM.yaml and docs/PROJECT_CONTEXT.md are the only files changed, and the roadmap
     stays under the Decision 114 ceiling
@@ -84,12 +87,15 @@ verification_plan:
       a=c('T3.20','c5');b=c('T2.18','c8');e=c('T2.18','c2');
       assert a['status']=='rehomed' and a.get('met_by')=='T2.26',a;assert b.get('met_by')=='T2.36',b;
       assert e['status']=='rehomed' and e.get('met_by')=='T2.36',e;
-      assert 'maintenance cycles' in e['text'],'c2 must name the transferred soak';print('ownership reassigned')"
+      assert 'maintenance cycles' in e['text'],'c2 must name the transferred soak';
+      assert any(k['status']=='open' and 'maintenance cycles' in k['text'] for k in t['T2.36']['exit_criteria']),
+      'T2.36 must CARRY the soak as open work, not as a note';print('ownership reassigned')"
     expected: prints "ownership reassigned"; exit 0
     fix_if: >-
       T3.20 c5 still open means the vacuum is intact (T2.26 and T3.20 still name each other). A T2.18
       c2/c8 still pointing at T2.26 leaves an owner that structurally cannot perform volume-based work.
-      A c2 text without "maintenance cycles" means the soak was silently dropped rather than transferred.
+      A c2 text without "maintenance cycles", or a T2.36 with no OPEN criterion carrying it, means the
+      soak was demoted to prose -- the exact failure class this plan exists to remove.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -198,21 +204,25 @@ constraints:
   - Flip no criterion status to met; re-ground text and rehome ownership only (Status-Trusted-Never-Inferred).
   - Narrow CD.40 via a dated "[Amendment ...]" self-demotion (CD.10's shape); never "fully superseded by",
     which trips validate_candidate_decision_supersession, and never mint ratified_as on a pending CD.
-  - Keep every edit terse -- 673 lines of headroom under the Decision 114 10000-line ceiling.
+  - >-
+    Keep every edit terse -- two independent ceilings apply. The roadmap has 673 lines of headroom under
+    the Decision 114 10000-line limit. docs/PROJECT_CONTEXT.md has only 125 BYTES of headroom under its
+    prose_budgets.yaml S8 budget of 14032 (currently 13907), enforced by validate_prose_limits in --pre,
+    so its three edits must be net non-increasing. Do NOT reseed config/prose_budgets.yaml -- under-budget
+    is an advisory and never an error (prose_limits.py), the ratchet-down guard always passes, that
+    advisory already fires today at 125 under, and a reseed would add a third file and break VP step 7.
   - No rescue agents or workaround loops (Decision 55).
 context:
   - "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND (134 of 134 triaged, no BLOCK).
-    CITE: 84 (I-1 demolition without migration behind the now-met rec-2113 drill; I-4 names the session_log
-    path retiring -- the RETIRE authority), 178 (cleanse removed ops_compaction), 67 (the clause this
-    unblocks), 136 (exit-criteria ledger), 105 (CD lane), 150 cl.1 + 167 cl.2/4 (significance + routing_rule),
-    114 (10000-line ceiling), 93, 48. RELATED: 174, 147, 177, 143, 88, 95/96/97."
+    CITE: 84 (I-1 demolition without migration behind the now-met rec-2113 drill; I-4 retires the
+    session_log path -- the RETIRE authority), 178 (cleanse removed ops_compaction), 67, 136 (ledger),
+    105 (CD lane), 150 cl.1 + 167 cl.2/4, 114, 93, 48. RELATED: 174, 147, 177, 143, 88, 95/96/97."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
   - "All 4 scout flags adopted: D86 WARN -> narrow CD.40, do not delete (a pre-ratification choice belongs
     in candidate_decisions[]); D136 -> T2.18 c8 met_by re-pointed T2.26 -> T2.36; D150/167 -> routing claim
-    is work_item, no numbered Decision minted (84 I-1/I-4 already authorizes this; only exit_criteria supply
-    the per-criterion lifecycle needed); D48 -> ops_compaction evidence scoped to LIVE surfaces only
-    (scripts/ src/ config/ terraform/ tests/ .github/ docs/contracts/ = 0; 27 matches survive in historical
-    corpora, so never assert repo-wide zero)."
+    is work_item, no numbered Decision minted (84 I-1/I-4 already authorizes this); D48 -> ops_compaction
+    evidence scoped to LIVE surfaces only (scripts/ src/ config/ terraform/ tests/ .github/ docs/contracts/
+    = 0; 27 matches survive in historical corpora, so never assert repo-wide zero)."
   - "THE BUG: T2.26 c2/c3/c8 wait on T3.20's disposition while T3.20 c5 waits on T2.26's -- neither owns the
     decision, so it was never made. That is what froze Phase 4."
   - "Two cycles, both invisible to the machine: validate_platform_roadmap DOES run a DFS gray-set cycle
@@ -225,19 +235,21 @@ context:
   - "Dropping T2.18 is re-grounding, not weakening: T2.36 c5 already requires the GC be confirmed pointed at
     the production catalog BEFORE the first telemetry write -- the guard moves from item- to
     criterion-granularity. Pipeline live: deploy-ducklake-lambdas runs 6-10 green, latest 33036925964."
-  - "RETIRE evidence (table unprovisioned, producer deleted, coercion branch unreachable, no DQ entry, no
-    read verb, absence already asserted in tests/sync/ops/test_sync_cli.py): enumerated in rec-3393."
-  - "closes_criteria deliberately ABSENT -- this plan closes zero criteria. rec-3393 = the V3 code deletion
-    that closes T2.26 c2/c3/c7/c8 (governed CD channels only, Decision 125/126). rec-3394 = the unrelated
-    T2.51 c3 <-> T2.53 c6 prose cycle found en route."
-  - "T2.18 c2 is REHOMED to T2.36, not merely re-worded: its residual is the 'S3 stable after N
-    maintenance cycles' soak, which needs write volume only T2.36 creates. T2.36 c5 carries the
-    pre-write pointing/threshold guard but NOT that soak -- the two texts are not equivalent, and the
-    plan says so rather than letting 'c5 already carries it' stand unqualified (critique r1 finding 2)."
+  - "RETIRE evidence (unprovisioned table, deleted producer, unreachable coercion branch, no DQ entry, no
+    read verb, absence already asserted in tests/sync/ops/test_sync_cli.py): enumerated in rec-3393, which
+    also carries the V3 deletion closing T2.26 c2/c3/c7/c8 via the governed CD channels (Decision 125/126).
+    rec-3394 = the unrelated T2.51 c3 <-> T2.53 c6 prose cycle found en route. closes_criteria is
+    deliberately ABSENT: this plan closes zero criteria."
+  - "T2.18 c2 REHOMES to T2.36 and T2.36 gains a NEW OPEN c6 to receive it. c5 covers c2's
+    production-catalog-GC half but NOT its 'S3 stable after N maintenance cycles' soak (critique r1
+    finding 2). r2 then caught that routing the soak to a note would drop roadmap-wide open criteria
+    naming it from 1 to ZERO -- reproducing the very prose-encoded-obligation defect this plan removes,
+    and breaking the rehome convention set by T2.18 c4 and T2.19 c15. Hence c6, asserted by VP step 3."
   - "docs/PROJECT_CONTEXT.md is in scope because this plan falsifies two of its claims (critical-path
     chain ~L87; 'session log remains on its legacy path pending disposition' ~L119) and the stamped
-    roadmap_tier_id_set sha cannot detect either -- no tier_item is added or removed, so the drift would
-    be silent (critique r1 finding 3)."
+    roadmap_tier_id_set sha cannot detect them -- no tier_item is added or removed, so the drift would be
+    silent (r1 finding 3). r2 added a THIRD falsified line, ~L138's 'T3.20 coordinates retirement or
+    rewiring', since the retirement half moves to T2.26. S8 byte budget: 125 bytes headroom, see constraints."
   - "Out of scope by human direction: the systemic fix making prose-encoded blocking edges structural or
     detectable is owned separately by the human."
 pre_implementation_checklist:
@@ -266,9 +278,13 @@ execution_steps:
     open criteria, and that closeout is /orient's to surface on its own evidence, not this plan's to infer."
   - "tier_item T2.36 -- set depends_on to an empty list; add one terse note recording that the T2.26 edge's
     basis (ops_compaction key-shape coupling) was discharged by Decision 178; that the T2.18 edge's
-    pre-write half is subsumed by T2.36's own c5; and -- stated plainly, not elided -- that c5 does NOT
-    carry T2.18 c2's 'S3 storage stable after N maintenance cycles' soak, which reaches T2.36 via c2's
-    rehome rather than via c5. Leave status not_started and all criteria untouched."
+    pre-write half is subsumed by T2.36's own c5. Then ADD a new open exit criterion c6 carrying the
+    residual T2.18 c2 transfers: 'S3 storage confirmed stable after N maintenance cycles under real
+    telemetry write volume'. c5 covers c2's OTHER deferred half (the production-catalog destructive GC
+    being confirmed pointed before the first write); c5 does NOT cover the soak, which is why c6 exists
+    as OPEN work rather than a note -- a note would be invisible to open_criteria_count and /orient,
+    reproducing the prose-encoded-obligation defect this plan removes. Leave status not_started and
+    criteria c1-c5 untouched."
   - "docs/PROJECT_CONTEXT.md -- correct the two claims this plan falsifies: the critical-path chain
     (~line 87) must stop asserting T2.18/T2.26 gate T2.36, and the storage line (~line 119) must stop
     saying the session log 'remains on its legacy path pending disposition' -- the disposition is now
@@ -276,6 +292,6 @@ execution_steps:
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)
   - "Report: what was re-grounded, verification results, and confirmation that T2.36 is eligible."
 rollback: >-
-  Single-file, data-only change: git revert of the squash commit restores the prior roadmap encoding
-  exactly. No code, infrastructure or warehouse state is touched, so revert is complete and immediate.
+  Two-file, data-only change (docs/ROADMAP-PLATFORM.yaml + docs/PROJECT_CONTEXT.md): git revert of the
+  squash commit restores the prior encoding of both exactly. No code, infrastructure or warehouse state is touched, so revert is complete and immediate.
   rec-3393 and rec-3394 survive a revert and would need closing as superseded via the portal.
