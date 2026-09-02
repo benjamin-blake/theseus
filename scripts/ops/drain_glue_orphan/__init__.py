@@ -5,7 +5,7 @@ Re-exports the full carried-forward surface of the single-file module this packa
 keep resolving unchanged, and so tests/fixtures/drain_glue_orphan.py's imports of private names
 (_TFSTATE_BUCKET, _TFSTATE_KEY) keep working.
 
-NOT re-exported -- ten names from the pre-split module, each superseded by this restructure rather
+NOT re-exported -- eleven names from the pre-split module, each superseded by this restructure rather
 than dropped by accident (tests/ops/test_drain_glue_orphan_cli.py::TestFacadeSurface asserts this
 list against origin/main's actual symbol table, so an UNDOCUMENTED drop still reds):
   - wait_for_terminal, correlate_dispatch: both slept in a loop; superseded by the re-invokable
