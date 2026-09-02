@@ -22,7 +22,10 @@ import pytest
 
 from scripts.ops.drain_glue_orphan._github import (
     _APPLY_SANDBOX_JOB_NAME,
+    _PLAN_STEP_NAME,
     _REVIEW_STEP_NAME,
+    assert_log_matches_job,
+    assert_plan_step_present,
     converge_guard_review_facts,
     destruction_complete,
     find_in_flight_dispatch,
@@ -32,6 +35,8 @@ from scripts.ops.drain_glue_orphan._github import (
     no_remaining_glue_delete,
     normalize_run,
     normalize_runs,
+    plan_shows_zero_destroys,
+    resolve_apply_sandbox_job,
     select_dispatch_candidate,
     unwrap_jobs_payload,
 )
@@ -261,3 +266,97 @@ class TestConvergeGuardReviewFacts:
         jobs = [{"name": _APPLY_SANDBOX_JOB_NAME}]
         with pytest.raises(WorldMovedError, match="carries no step named"):
             converge_guard_review_facts({"jobs": {"jobs": jobs}})
+
+
+def _log(*lines: str, job_id: int = 99288847073) -> dict[str, object]:
+    """A get_job_logs envelope in the real flat shape, sized so the truncation guard passes."""
+    return {"job_id": job_id, "logs_content": "\n".join(lines), "original_length": len(lines)}
+
+
+class TestPlanShowsZeroDestroysIsWidenedAndPresenceRequired:
+    """CONVERGE fact 1. VP19 specifies ZERO destroys of ANY address, widened from the orphan-only
+    scan: a destroy of any other remaining retired address would route the guard and make this
+    phase unreachable, so the oracle tests that premise rather than assuming it."""
+
+    def test_zero_destroy_summary_passes(self) -> None:
+        assert plan_shows_zero_destroys(_log("Plan: 0 to add, 0 to change, 0 to destroy.")) is True
+
+    def test_no_changes_verdict_passes(self) -> None:
+        assert plan_shows_zero_destroys(_log("No changes. Your infrastructure matches the configuration.")) is True
+
+    def test_destroy_of_a_NON_glue_address_fails_the_fact(self) -> None:
+        """The widening this fix exists for: the orphan-only scan passed this log, because the
+        address it looked for is absent while a DIFFERENT retired address is being destroyed."""
+        envelope = _log(
+            "  # aws_athena_workgroup.production will be destroyed",
+            "Plan: 0 to add, 0 to change, 1 to destroy.",
+        )
+        assert plan_shows_zero_destroys(envelope) is False
+        assert no_remaining_glue_delete(envelope) is True
+
+    def test_nonzero_destroy_count_alone_fails_the_fact(self) -> None:
+        assert plan_shows_zero_destroys(_log("Plan: 0 to add, 0 to change, 2 to destroy.")) is False
+
+    def test_log_with_no_plan_verdict_raises_rather_than_passing(self) -> None:
+        """The inherited fail-open: the pre-split module defaulted plan_log to "" whenever the
+        plan step was missing, so `address not in ""` scored as no-destroys. An empty or
+        wrong-job log must RAISE here, never license converge."""
+        with pytest.raises(WorldMovedError, match="no terraform plan verdict"):
+            plan_shows_zero_destroys(_log("Post job cleanup.", "Cleaning up orphan processes"))
+
+    def test_unparseable_summary_raises_rather_than_counting_zero(self) -> None:
+        with pytest.raises(WorldMovedError, match="unparseable terraform plan summary"):
+            plan_shows_zero_destroys(_log("Plan: some to add, none to change, many to destroy."))
+
+    def test_truncated_log_still_raises_before_any_destroy_read(self) -> None:
+        envelope = {"job_id": 1, "logs_content": "Plan: 0 to add, 0 to change, 0 to destroy.", "original_length": 900}
+        with pytest.raises(WorldMovedError, match="job log truncated"):
+            plan_shows_zero_destroys(envelope)
+
+
+class TestJobLogEnvelopeIsCorrelatedToItsJob:
+    """Nothing else in the chain ties the agent-supplied log to the correlated run, so a verdict
+    about one job could otherwise be read out of another job's log entirely."""
+
+    def test_matching_job_id_returns_it(self) -> None:
+        job = {"name": _APPLY_SANDBOX_JOB_NAME, "id": 4242}
+        assert assert_log_matches_job({"job_id": 4242}, job) == 4242
+
+    def test_mismatched_job_id_fails_closed(self) -> None:
+        job = {"name": _APPLY_SANDBOX_JOB_NAME, "id": 4242}
+        with pytest.raises(WorldMovedError, match="another job's log"):
+            assert_log_matches_job({"job_id": 9999}, job)
+
+    def test_envelope_without_a_job_id_fails_closed(self) -> None:
+        with pytest.raises(WorldMovedError, match="another job's log"):
+            assert_log_matches_job({"logs_content": ""}, {"name": _APPLY_SANDBOX_JOB_NAME, "id": 4242})
+
+    def test_job_without_an_id_fails_closed(self) -> None:
+        with pytest.raises(WorldMovedError, match="another job's log"):
+            assert_log_matches_job({"job_id": 4242}, {"name": _APPLY_SANDBOX_JOB_NAME})
+
+
+class TestPlanStepPresenceIsRequired:
+    def test_present_plan_step_passes(self) -> None:
+        job = {"name": _APPLY_SANDBOX_JOB_NAME, "steps": [{"name": _PLAN_STEP_NAME, "conclusion": "success"}]}
+        assert assert_plan_step_present(job) is None
+
+    def test_absent_plan_step_fails_closed(self) -> None:
+        """_PLAN_STEP_NAME gated the plan-log fetch in the pre-split module; a missing step left
+        plan_log empty, which then read as "no destroys"."""
+        with pytest.raises(WorldMovedError, match="carries no step named"):
+            assert_plan_step_present({"name": _APPLY_SANDBOX_JOB_NAME, "steps": [{"name": "Renamed"}]})
+
+    def test_job_with_no_steps_key_fails_closed(self) -> None:
+        with pytest.raises(WorldMovedError, match="carries no step named"):
+            assert_plan_step_present({"name": _APPLY_SANDBOX_JOB_NAME})
+
+
+class TestResolveApplySandboxJob:
+    def test_resolves_the_real_double_nested_payload(self) -> None:
+        job = resolve_apply_sandbox_job(load_payload("apply_sandbox_run_jobs.json"))
+        assert job["name"] == _APPLY_SANDBOX_JOB_NAME
+
+    def test_missing_job_fails_closed(self) -> None:
+        with pytest.raises(WorldMovedError, match="no job named"):
+            resolve_apply_sandbox_job({"jobs": {"jobs": [{"name": "other"}]}})

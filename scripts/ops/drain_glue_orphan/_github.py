@@ -27,6 +27,10 @@ _REVIEW_STEP_NAME = "Subagent plan review (digest-fed, JSON-classified)"
 _PLAN_STEP_NAME = "Terraform plan (workflow_dispatch -- fresh plan)"
 _DESTRUCTION_LINE = "aws_glue_catalog_database.ops: Destruction complete"
 _GLUE_ORPHAN_ADDRESS = "aws_glue_catalog_database.ops"
+_PLAN_SUMMARY_MARKER = "Plan:"
+_DESTROY_MARKER = " to destroy"
+_NO_CHANGES_MARKER = "No changes."
+_DESTROYED_LINE_MARKER = "will be destroyed"
 
 _NON_TERMINAL_STATUSES = frozenset({"queued", "in_progress", "requested", "waiting", "pending"})
 
@@ -125,11 +129,82 @@ def destruction_complete(envelope: dict[str, Any], marker: str = _DESTRUCTION_LI
 
 
 def no_remaining_glue_delete(envelope: dict[str, Any], marker: str = _GLUE_ORPHAN_ADDRESS) -> bool:
-    """CONVERGE fact 1: the fresh main-tip plan carries zero destroys of the orphan address --
-    widened deliberately from a general "no glue delete" scan to this specific address, since a
-    destroy of any OTHER remaining retired address would also route the guard and this oracle
-    tests the premise that made this phase reachable, rather than assuming it."""
+    """Diagnostic only: is the ORPHAN address specifically absent from the plan log? Reported
+    alongside fact 1 so a non-empty destroy set can be triaged per VP19's fix_if (the orphan
+    itself vs some other retired address), and deliberately NOT the fact that gates the verdict --
+    see plan_shows_zero_destroys."""
     return not any(marker in line for line in job_log_lines(envelope))
+
+
+def _destroy_count(summary_line: str) -> int:
+    """Reads N from a terraform 'Plan: A to add, B to change, N to destroy.' summary line."""
+    token = summary_line[: summary_line.find(_DESTROY_MARKER)].split()[-1]
+    if not token.isdigit():
+        raise WorldMovedError(
+            f"unparseable terraform plan summary {summary_line.strip()!r} -- refusing to read a destroy count "
+            "from a line whose shape this oracle does not recognise"
+        )
+    return int(token)
+
+
+def plan_shows_zero_destroys(envelope: dict[str, Any]) -> bool:
+    """CONVERGE fact 1: the fresh main-tip plan destroys NOTHING.
+
+    Widened from the orphan-address scan the pre-split module used, exactly as VP19 specifies: a
+    destroy of ANY remaining retired address would route the guard and make this phase
+    unreachable, so this oracle tests that premise rather than assuming it.
+
+    PRESENCE-required, not absence-based. The predecessor read `orphan_address not in plan_log`
+    with plan_log defaulting to "" whenever the plan step was missing, so an empty, truncated or
+    wrong-job log scored as "no destroys" -- fail-open on the very fact that licenses converge. A
+    log carrying no terraform plan verdict at all RAISES here instead of passing.
+    """
+    lines = job_log_lines(envelope)
+    summaries = [line for line in lines if _PLAN_SUMMARY_MARKER in line and _DESTROY_MARKER in line]
+    if not summaries and not any(_NO_CHANGES_MARKER in line for line in lines):
+        raise WorldMovedError(
+            "job log carries no terraform plan verdict (no 'Plan: ... to destroy' summary, no 'No changes.') -- "
+            "refusing to read zero-destroys from a log that never planned; refetch the plan step's log"
+        )
+    if any(_DESTROYED_LINE_MARKER in line for line in lines):
+        return False
+    return all(_destroy_count(line) == 0 for line in summaries)
+
+
+def resolve_apply_sandbox_job(jobs_payload: Any) -> dict[str, Any]:
+    """apply-sandbox's own job, failing closed when the workflow topology has moved."""
+    job = find_job(unwrap_jobs_payload(jobs_payload), _APPLY_SANDBOX_JOB_NAME)
+    if job is None:
+        raise WorldMovedError(
+            f"world has moved -- re-assess: no job named {_APPLY_SANDBOX_JOB_NAME!r} in the supplied jobs payload"
+        )
+    return job
+
+
+def assert_plan_step_present(job: dict[str, Any]) -> None:
+    """The plan log fact 1 reads comes from this step. The pre-split module treated a missing plan
+    step as an empty plan log, which then scored as "no destroys" -- the absence-is-success shape
+    this module refuses everywhere else."""
+    if not any(step.get("name") == _PLAN_STEP_NAME for step in job.get("steps", [])):
+        raise WorldMovedError(
+            f"world has moved -- re-assess: job {_APPLY_SANDBOX_JOB_NAME!r} carries no step named "
+            f"{_PLAN_STEP_NAME!r}; the plan log fact 1 reads does not exist, and treating its absence as "
+            "'no destroys' would fail open"
+        )
+
+
+def assert_log_matches_job(envelope: dict[str, Any], job: dict[str, Any]) -> Any:
+    """The get_job_logs envelope carries the job_id it was fetched for. Nothing else in the chain
+    ties the agent-supplied log to the correlated run, so without this a verdict about THIS job
+    could be read out of some other job's log entirely."""
+    envelope_job_id = envelope.get("job_id")
+    job_id = job.get("id")
+    if envelope_job_id is None or job_id is None or envelope_job_id != job_id:
+        raise WorldMovedError(
+            f"job-logs envelope reports job_id {envelope_job_id!r} but the correlated "
+            f"{_APPLY_SANDBOX_JOB_NAME!r} job is {job_id!r} -- refusing to read a verdict from another job's log"
+        )
+    return job_id
 
 
 def converge_guard_review_facts(jobs_payload: Any) -> dict[str, bool]:
@@ -137,12 +212,7 @@ def converge_guard_review_facts(jobs_payload: Any) -> dict[str, bool]:
     inferred from log text. Fails closed (raises) when the job or its review step cannot be found:
     inferring guard_routed from either absence would fail OPEN on the authoritative safety oracle
     the whole converge phase exists to check."""
-    jobs = unwrap_jobs_payload(jobs_payload)
-    job = find_job(jobs, _APPLY_SANDBOX_JOB_NAME)
-    if job is None:
-        raise WorldMovedError(
-            f"world has moved -- re-assess: no job named {_APPLY_SANDBOX_JOB_NAME!r} in the supplied jobs payload"
-        )
+    job = resolve_apply_sandbox_job(jobs_payload)
     steps = {s.get("name"): s for s in job.get("steps", [])}
     review_step = steps.get(_REVIEW_STEP_NAME)
     if review_step is None:

@@ -27,11 +27,9 @@ import yaml
 
 from scripts.ops.drain_glue_orphan._github import (
     _APPLY_SANDBOX_DISPATCH_FILE,
-    _APPLY_SANDBOX_JOB_NAME,
     _RECONCILE_DISPATCH_FILE,
     _REPO_NAME,
     _REPO_OWNER,
-    _REVIEW_STEP_NAME,
 )
 from scripts.ops.drain_glue_orphan._phases import (
     PhaseOutcome,
@@ -44,7 +42,16 @@ from scripts.ops.drain_glue_orphan._phases import (
     remove_verify,
 )
 from scripts.ops.drain_glue_orphan._world import _ROOT, WorldMovedError, assert_workflow_invariants
-from tests.fixtures.drain_glue_orphan import RED_RECORD, ProgressiveS3Client, make_s3, reader_returning, unreachable_file_rec
+from tests.fixtures.drain_glue_orphan import (
+    APPLY_SANDBOX_JOB_ID,
+    RED_RECORD,
+    ProgressiveS3Client,
+    apply_sandbox_jobs,
+    job_log,
+    make_s3,
+    reader_returning,
+    unreachable_file_rec,
+)
 
 _PACKAGE_DIR = _ROOT / "scripts" / "ops" / "drain_glue_orphan"
 
@@ -169,15 +176,27 @@ class TestRemoveVerify:
         outcome = remove_verify(
             correlation_record={"verdict": "correlated", "fluents": {"run_id": 5}},
             run_payload={"id": 5, "status": "completed"},
-            job_logs_payload={"logs_content": "aws_glue_catalog_database.ops: Destruction complete", "original_length": 1},
+            job_logs_payload=job_log("aws_glue_catalog_database.ops: Destruction complete"),
         )
         assert outcome.status == "drained"
+        assert outcome.fluents["job_id"] == APPLY_SANDBOX_JOB_ID
+
+    def test_envelope_without_a_job_id_is_refused(self) -> None:
+        """The remove step has no jobs payload to correlate against (VP16 supplies only the run
+        and the log), so the envelope's own job_id is the sole tie between the destruction verdict
+        and the job that produced it -- a log that cannot say where it came from licenses nothing."""
+        with pytest.raises(WorldMovedError, match="carries no job_id"):
+            remove_verify(
+                correlation_record={"verdict": "correlated", "fluents": {"run_id": 5}},
+                run_payload={"id": 5, "status": "completed"},
+                job_logs_payload={"logs_content": "aws_glue_catalog_database.ops: Destruction complete"},
+            )
 
     def test_terminal_without_destruction_escalates_to_operator(self) -> None:
         outcome = remove_verify(
             correlation_record={"verdict": "correlated", "fluents": {"run_id": 5}},
             run_payload={"id": 5, "status": "completed"},
-            job_logs_payload={"logs_content": "some other output", "original_length": 1},
+            job_logs_payload=job_log("some other output"),
         )
         assert outcome.status == "terminal_without_destruction"
         assert outcome.next_action == {"tool": "escalate_to_operator"}
@@ -219,12 +238,8 @@ class TestConvergeCorrelate:
 
 
 class TestConvergeVerify:
-    _JOBS_ALL_PASS = {
-        "jobs": {"jobs": [{"name": _APPLY_SANDBOX_JOB_NAME, "steps": [{"name": _REVIEW_STEP_NAME, "conclusion": "success"}]}]}
-    }
-    _JOBS_GUARD_ROUTED = {
-        "jobs": {"jobs": [{"name": _APPLY_SANDBOX_JOB_NAME, "steps": [{"name": _REVIEW_STEP_NAME, "conclusion": "skipped"}]}]}
-    }
+    _JOBS_ALL_PASS = apply_sandbox_jobs("success")
+    _JOBS_GUARD_ROUTED = apply_sandbox_jobs("skipped")
 
     def test_converged_when_all_four_facts_hold(self) -> None:
         dispatched: list[str] = ["fired"]
@@ -233,13 +248,15 @@ class TestConvergeVerify:
             correlation_record={"verdict": "correlated", "fluents": {"run_id": 10}},
             run_payload={"id": 10, "status": "completed"},
             jobs_payload=self._JOBS_ALL_PASS,
-            job_logs_payload={"logs_content": "Plan: 0 to add, 0 to change, 0 to destroy.", "original_length": 1},
+            job_logs_payload=job_log(),
             profile_s3_client=s3,
         )
         assert outcome.status == "converged"
         assert outcome.fluents == {
             "run_id": 10,
-            "no_remaining_glue_delete": True,
+            "apply_sandbox_job_id": APPLY_SANDBOX_JOB_ID,
+            "orphan_delete_absent": True,
+            "plan_zero_destroys": True,
             "guard_passed": True,
             "review_approving": True,
             "record_green": True,
@@ -255,7 +272,7 @@ class TestConvergeVerify:
             correlation_record={"verdict": "correlated", "fluents": {"run_id": 10}},
             run_payload={"id": 10, "status": "completed"},
             jobs_payload=self._JOBS_GUARD_ROUTED,
-            job_logs_payload={"logs_content": "Plan: 0 to add, 0 to change, 0 to destroy.", "original_length": 1},
+            job_logs_payload=job_log(),
             profile_s3_client=s3,
         )
         assert outcome.status == "not_converged"
@@ -266,22 +283,18 @@ class TestConvergeVerify:
             correlation_record={"verdict": "correlated", "fluents": {"run_id": 10}},
             run_payload={"id": 10, "status": "in_progress"},
             jobs_payload=self._JOBS_ALL_PASS,
-            job_logs_payload={"logs_content": "", "original_length": 0},
+            job_logs_payload=job_log(),
             profile_s3_client=make_s3(None, orphan_present=False),
         )
         assert outcome.status == "not_yet_terminal"
 
     def test_not_converged_when_review_step_did_not_approve(self) -> None:
-        jobs = {
-            "jobs": {
-                "jobs": [{"name": _APPLY_SANDBOX_JOB_NAME, "steps": [{"name": _REVIEW_STEP_NAME, "conclusion": "failure"}]}]
-            }
-        }
+        jobs = apply_sandbox_jobs("failure")
         outcome = converge_verify(
             correlation_record={"verdict": "correlated", "fluents": {"run_id": 10}},
             run_payload={"id": 10, "status": "completed"},
             jobs_payload=jobs,
-            job_logs_payload={"logs_content": "Plan: 0 to add, 0 to change, 0 to destroy.", "original_length": 1},
+            job_logs_payload=job_log(),
             profile_s3_client=ProgressiveS3Client(tfstate_orphan_present=False, dispatched=["fired"]),
         )
         assert outcome.status == "not_converged"
@@ -294,7 +307,7 @@ class TestConvergeVerify:
             correlation_record={"verdict": "correlated", "fluents": {"run_id": 10}},
             run_payload={"id": 10, "status": "completed"},
             jobs_payload=self._JOBS_ALL_PASS,
-            job_logs_payload={"logs_content": "Plan: 0 to add, 0 to change, 0 to destroy.", "original_length": 1},
+            job_logs_payload=job_log(),
             profile_s3_client=ProgressiveS3Client(tfstate_orphan_present=False, dispatched=[]),
         )
         assert outcome.status == "not_converged"
@@ -305,11 +318,53 @@ class TestConvergeVerify:
             correlation_record={"verdict": "correlated", "fluents": {"run_id": 10}},
             run_payload={"id": 10, "status": "completed"},
             jobs_payload=self._JOBS_ALL_PASS,
-            job_logs_payload={"logs_content": "  # aws_glue_catalog_database.ops will be destroyed", "original_length": 1},
+            job_logs_payload=job_log(
+                "  # aws_glue_catalog_database.ops will be destroyed", "Plan: 0 to add, 0 to change, 1 to destroy."
+            ),
             profile_s3_client=ProgressiveS3Client(tfstate_orphan_present=False, dispatched=["fired"]),
         )
         assert outcome.status == "not_converged"
-        assert outcome.fluents["no_remaining_glue_delete"] is False
+        assert outcome.fluents["plan_zero_destroys"] is False
+        assert outcome.fluents["orphan_delete_absent"] is False
+
+    def test_not_converged_when_a_NON_glue_address_is_still_being_destroyed(self) -> None:
+        """VP19's widening: the orphan-address scan passes this plan (the orphan is gone) while a
+        DIFFERENT retired address is still being destroyed -- which would route the guard and make
+        this phase unreachable. Fact 1 must fail; the orphan diagnostic must stay True."""
+        outcome = converge_verify(
+            correlation_record={"verdict": "correlated", "fluents": {"run_id": 10}},
+            run_payload={"id": 10, "status": "completed"},
+            jobs_payload=self._JOBS_ALL_PASS,
+            job_logs_payload=job_log(
+                "  # aws_athena_workgroup.production will be destroyed", "Plan: 0 to add, 0 to change, 1 to destroy."
+            ),
+            profile_s3_client=ProgressiveS3Client(tfstate_orphan_present=False, dispatched=["fired"]),
+        )
+        assert outcome.status == "not_converged"
+        assert outcome.fluents["plan_zero_destroys"] is False
+        assert outcome.fluents["orphan_delete_absent"] is True
+
+    def test_log_from_another_job_is_refused_outright(self) -> None:
+        """Not a not_converged -- a verdict read from a different job's log is evidence this
+        module must refuse, so it raises rather than scoring facts."""
+        with pytest.raises(WorldMovedError, match="another job's log"):
+            converge_verify(
+                correlation_record={"verdict": "correlated", "fluents": {"run_id": 10}},
+                run_payload={"id": 10, "status": "completed"},
+                jobs_payload=self._JOBS_ALL_PASS,
+                job_logs_payload=job_log(job_id=999999),
+                profile_s3_client=ProgressiveS3Client(tfstate_orphan_present=False, dispatched=["fired"]),
+            )
+
+    def test_missing_plan_step_is_refused_outright(self) -> None:
+        with pytest.raises(WorldMovedError, match="carries no step named"):
+            converge_verify(
+                correlation_record={"verdict": "correlated", "fluents": {"run_id": 10}},
+                run_payload={"id": 10, "status": "completed"},
+                jobs_payload=apply_sandbox_jobs("success", with_plan_step=False),
+                job_logs_payload=job_log(),
+                profile_s3_client=ProgressiveS3Client(tfstate_orphan_present=False, dispatched=["fired"]),
+            )
 
 
 class TestPhaseOutcomeReport:

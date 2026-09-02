@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Any, Callable
 
 from scripts.ci import reconcile_target
-from scripts.ops.drain_glue_orphan import _TFSTATE_BUCKET, _TFSTATE_KEY
+from scripts.ops.drain_glue_orphan import (
+    _APPLY_SANDBOX_JOB_NAME,
+    _PLAN_STEP_NAME,
+    _REVIEW_STEP_NAME,
+    _TFSTATE_BUCKET,
+    _TFSTATE_KEY,
+)
 
 RED_RECORD = {"status": "red", "commit_sha": "fake-red-commit-sha"}
 
@@ -135,3 +141,24 @@ def recording_boto3(objects: dict[tuple[str, str], Any]) -> tuple[Any, list[tupl
         Session = _RecordingSession
 
     return _FakeBoto3Module(), calls
+
+
+APPLY_SANDBOX_JOB_ID = 4242
+
+
+def apply_sandbox_jobs(
+    review_conclusion: str = "success", *, job_id: int = APPLY_SANDBOX_JOB_ID, with_plan_step: bool = True
+) -> dict[str, Any]:
+    """A list_workflow_jobs payload in the real double-nested shape, carrying the job `id` and the
+    plan step converge_verify's fail-closed preconditions require."""
+    steps = [{"name": _REVIEW_STEP_NAME, "conclusion": review_conclusion}]
+    if with_plan_step:
+        steps.append({"name": _PLAN_STEP_NAME, "conclusion": "success"})
+    return {"jobs": {"jobs": [{"name": _APPLY_SANDBOX_JOB_NAME, "id": job_id, "steps": steps}]}}
+
+
+def job_log(*lines: str, job_id: int = APPLY_SANDBOX_JOB_ID) -> dict[str, Any]:
+    """A get_job_logs envelope in the real flat shape, sized so the truncation guard passes.
+    Defaults to a clean zero-destroy terraform plan verdict."""
+    body = lines or ("Plan: 0 to add, 0 to change, 0 to destroy.",)
+    return {"job_id": job_id, "logs_content": "\n".join(body), "original_length": len(body)}

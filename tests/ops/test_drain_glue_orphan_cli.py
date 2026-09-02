@@ -16,10 +16,6 @@ import pytest
 
 from scripts.ci import reconcile_target
 from scripts.ops.drain_glue_orphan.__main__ import main
-from scripts.ops.drain_glue_orphan._github import (
-    _APPLY_SANDBOX_JOB_NAME,
-    _REVIEW_STEP_NAME,
-)
 from scripts.ops.drain_glue_orphan._phases import (
     converge_verify,
     phase_close,
@@ -36,6 +32,8 @@ from scripts.ops.drain_glue_orphan._world import (
 )
 from tests.fixtures.drain_glue_orphan import (
     RED_RECORD,
+    apply_sandbox_jobs,
+    job_log,
     load_payload,
     make_s3,
     reader_returning,
@@ -387,11 +385,7 @@ class TestFailClosedChain:
 
     def test_converge_verify_truncated_log_raises(self) -> None:
         truncated = load_payload("job_logs_envelope.json")
-        jobs = {
-            "jobs": {
-                "jobs": [{"name": _APPLY_SANDBOX_JOB_NAME, "steps": [{"name": _REVIEW_STEP_NAME, "conclusion": "success"}]}]
-            }
-        }
+        jobs = apply_sandbox_jobs("success", job_id=truncated["job_id"])
         with pytest.raises(WorldMovedError, match="truncated"):
             converge_verify(
                 correlation_record={"verdict": "correlated", "fluents": {"run_id": 1}},
@@ -506,7 +500,7 @@ class TestMainCliFullDispatch:
         job_logs = _write_json(
             tmp_path,
             "job_logs.json",
-            {"logs_content": "aws_glue_catalog_database.ops: Destruction complete", "original_length": 1},
+            job_log("aws_glue_catalog_database.ops: Destruction complete"),
         )
         rc, verify = _run_main(
             tmp_path,
@@ -554,17 +548,9 @@ class TestMainCliFullDispatch:
         jobs_json = _write_json(
             tmp_path,
             "jobs.json",
-            {
-                "jobs": {
-                    "jobs": [
-                        {"name": _APPLY_SANDBOX_JOB_NAME, "steps": [{"name": _REVIEW_STEP_NAME, "conclusion": "success"}]}
-                    ]
-                }
-            },
+            apply_sandbox_jobs("success"),
         )
-        job_logs = _write_json(
-            tmp_path, "job_logs.json", {"logs_content": "Plan: 0 to add, 0 to change, 0 to destroy.", "original_length": 1}
-        )
+        job_logs = _write_json(tmp_path, "job_logs.json", job_log())
         rc, verify = _run_main(
             tmp_path,
             "converge",

@@ -20,6 +20,8 @@ from scripts.ops.drain_glue_orphan._github import (
     _RECONCILE_DISPATCH_FILE,
     _REPO_NAME,
     _REPO_OWNER,
+    assert_log_matches_job,
+    assert_plan_step_present,
     converge_guard_review_facts,
     destruction_complete,
     find_in_flight_dispatch,
@@ -27,6 +29,8 @@ from scripts.ops.drain_glue_orphan._github import (
     no_remaining_glue_delete,
     normalize_run,
     normalize_runs,
+    plan_shows_zero_destroys,
+    resolve_apply_sandbox_job,
     select_dispatch_candidate,
 )
 from scripts.ops.drain_glue_orphan._world import (
@@ -195,13 +199,24 @@ def remove_verify(
             ),
             {"run_id": run["id"], "status": run["status"]},
         )
+    # This step has no jobs payload to correlate against (VP16 supplies only the run and the log),
+    # so the envelope's own job_id is recorded on the verdict rather than left implicit: the
+    # irreversible step's evidence must name which job's log licensed it.
+    job_id = job_logs_payload.get("job_id")
+    if job_id is None:
+        raise WorldMovedError(
+            "job-logs envelope carries no job_id -- refusing to license a destruction verdict from a log "
+            "that cannot say which job it came from"
+        )
     if destruction_complete(job_logs_payload):
-        return PhaseOutcome("drained", f"Reconcile run {run['id']} destroyed the orphan", {"run_id": run["id"]})
+        return PhaseOutcome(
+            "drained", f"Reconcile run {run['id']} destroyed the orphan", {"run_id": run["id"], "job_id": job_id}
+        )
     return PhaseOutcome(
         "terminal_without_destruction",
         f"Reconcile run {run['id']} reached a terminal status with NO destruction line -- escalate to operator, "
         "never terraform state rm",
-        {"run_id": run["id"]},
+        {"run_id": run["id"], "job_id": job_id},
         next_action={"tool": "escalate_to_operator"},
     )
 
@@ -266,19 +281,37 @@ def converge_verify(
             f"run {run['id']} status={run['status']!r} -- still running; re-run this same command later",
             {"run_id": run["id"], "status": run["status"]},
         )
+    # Fail-closed preconditions BEFORE any fact is read: the supplied log must belong to the
+    # apply-sandbox job of the correlated run, and the step that produces the plan log must exist.
+    # Neither is a fact -- a verdict read from another job's log is not a "not_converged", it is
+    # evidence this module must refuse outright.
+    job = resolve_apply_sandbox_job(jobs_payload)
+    assert_plan_step_present(job)
+    job_id = assert_log_matches_job(job_logs_payload, job)
     raw = converge_guard_review_facts(jobs_payload)
     post_record = reconcile_target.read_convergence_record(profile_s3_client)
     # Every key here is POSITIVE polarity (True == good) so all(facts.values()) means what it
     # says -- guard_routed (True == the guard BLOCKED) inverts to guard_passed on the way in,
     # rather than being fed to all() in its raw, blocked-is-truthy shape.
     facts: dict[str, Any] = {
-        "no_remaining_glue_delete": no_remaining_glue_delete(job_logs_payload),
+        "plan_zero_destroys": plan_shows_zero_destroys(job_logs_payload),
         "guard_passed": raw["guard_routed"] is not True,
         "review_approving": raw["review_approving"] is True,
         "record_green": post_record is not None and post_record.get("status") == "green",
     }
     status = "converged" if all(facts.values()) else "not_converged"
-    return PhaseOutcome(status, f"apply-sandbox run {run['id']} reached a terminal status", {"run_id": run["id"], **facts})
+    return PhaseOutcome(
+        status,
+        f"apply-sandbox run {run['id']} reached a terminal status",
+        {
+            "run_id": run["id"],
+            "apply_sandbox_job_id": job_id,
+            # Diagnostic, deliberately outside facts: VP19's fix_if triages a non-empty destroy
+            # set by whether the orphan itself or some other retired address is still going.
+            "orphan_delete_absent": no_remaining_glue_delete(job_logs_payload),
+            **facts,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
