@@ -1,0 +1,226 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: lockfile-gate-inline-comments
+intent: >-
+  Make the requirements.lock sync gate honest: parse every top-level declaration in requirements.txt and
+  requirements-dev.txt (including the four that carry inline comments and are silently skipped today), and
+  turn any declaration the gate cannot parse into a FAIL instead of a skip, so a dependency gate input can
+  never be fail-open (Decision 135 posture; Decision 80 / T3.11 lockfile parity).
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-lockfile-gate-inline-comments.yaml
+phase: >-
+  Dependency-governance gate honesty (defect surface of T3.11, complete). No tier_item slice, closes no
+  criterion; soft-warn exception category ad_hoc_rec (autonomous-day brief 2026-09-02, Task 2; no rec named,
+  so bundled_recommendations is empty by the brief's own rule).
+scope:
+  - file: scripts/import_governance.py
+    action: Modify
+    purpose: >-
+      check_lockfile_sync strips inline comments with pip's own rule ((^|\s+)#.*$, the value of
+      pip._internal.req.req_file.COMMENT_RE, copied with a provenance comment -- never imported, Decision 100 spirit)
+      before calling packaging.Requirement, and returns (False, message naming every line) when any declaration
+      still fails to parse -- replacing the `except InvalidRequirement: continue` silent skip at lines 82-85.
+      _parse_lock_pins is deliberately untouched (its skip already fails closed through the missing-pins branch).
+  - file: tests/test_import_governance.py
+    action: Modify
+    purpose: >-
+      The mirror file (map_source_to_test resolves scripts/import_governance.py here, and validate_test_coverage
+      measures the module's 100% floor through this file ONLY -- Decision 159 / decision-scout flag). Replace
+      TestCheckLockfileSync::test_invalid_top_level_requirement_is_ignored (it asserts the defect) in place with
+      six red-first tests in the same class: commented absurd bump FAILS, uncommented control FAILS identically,
+      unparseable declaration FAILS, pip comment semantics (a hash without preceding whitespace is not a comment),
+      commented declarations are counted, and the live declaration count equals the parsed count. The class's
+      autouse _isolate_dev_requirements fixture already isolates requirements-dev.txt. Projected SLOC ~472 of 500.
+bundled_recommendations: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - A declaration with a trailing whitespace-hash comment (e.g. `duckdb>=99.0  # comment`) is parsed and checked against the lock; an absurd specifier makes check_lockfile_sync return (False, "...incompatible pins...") exactly as the uncommented form does.
+  - Any declaration line that still fails packaging.Requirement after comment stripping makes check_lockfile_sync return (False, message naming that line); it is never skipped.
+  - Comment stripping uses pip's rule (^|\s+)#.*$ so the gate never accepts a line pip itself rejects (`foo>=1.0#x` is unparseable and FAILS).
+  - "On the live tree every declaration across requirements.txt and requirements-dev.txt is parsed: the gate still passes and its message reports 24 top-level packages (20 today), with zero new failures."
+  - requirements.txt, requirements.lock and config/sloc_budgets.yaml are unchanged; both touched Python files stay <= 500 SLOC; scripts/import_governance.py stays at 100% mirror-measured coverage; no raise-approved, baseline-lowered or waiver marker is added.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: RED baseline -- reproduce the fail-open skip on the unmodified code before any edit.
+    command: >-
+      bin/venv-python -c "import tempfile,pathlib; from unittest.mock import patch; import scripts.import_governance as ig; d=pathlib.Path(tempfile.mkdtemp()); (d/'requirements.txt').write_text('duckdb>=99.0  # inline comment\n', encoding='utf-8'); (d/'requirements.lock').write_text('duckdb==1.5.4\n', encoding='utf-8'); [patch.object(ig,n,v).start() for n,v in (('_REQUIREMENTS_TXT',d/'requirements.txt'),('_REQUIREMENTS_LOCK',d/'requirements.lock'),('_REQUIREMENTS_DEV',d/'absent-dev.txt'))]; ok,msg=ig.check_lockfile_sync(); print('in_sync=',ok,'|',msg); raise SystemExit(0 if ok else 1)"
+    expected: Exit 0 printing in_sync= True and "0 top-level packages" -- the commented absurd bump is skipped, confirming the defect is live before the fix (reproduced at planning time on origin/main 735e69f). After the fix this same command exits 1 with an incompatible-pins message.
+    fix_if: If this exits 1 on unmodified code the defect is already absent; STOP and re-derive rather than writing a fix for a bug that is not there.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Asserts the presence of the very defect this plan removes; it holds only on pre-fix code, so graduating it would land a permanently-failing guard the moment the fix merges.
+  - step: 2
+    phase: pre-deploy
+    action: GREEN (test a) -- an absurd bump WITH a trailing comment fails the gate.
+    command: bin/venv-python -m pytest tests/test_import_governance.py::TestCheckLockfileSync::test_absurd_bump_with_trailing_comment_fails -q
+    expected: 1 passed -- check_lockfile_sync returns in_sync False with "incompatible pins" and "duckdb>=99.0 rejects 1.5.4" in the message.
+    fix_if: Still in_sync True means the comment was not stripped before Requirement(); confirm the strip runs on the raw line before the blank/dash skip and before Requirement().
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: lockfile-sync-commented-absurd-bump-fails
+  - step: 3
+    phase: pre-deploy
+    action: CONTROL (test b) -- the same absurd bump WITHOUT a comment fails identically.
+    command: bin/venv-python -m pytest tests/test_import_governance.py::TestCheckLockfileSync::test_absurd_bump_without_comment_fails_identically -q
+    expected: 1 passed -- in_sync False with the same "incompatible pins" message shape as step 2 (the specifier-compatibility branch is unchanged).
+    fix_if: If this fails the fix broke the pre-existing specifier-compatibility branch (scripts/import_governance.py lines 103-109); the comment strip must not alter uncommented lines.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: A control that passes on pre-fix code by construction (the specifier-compatibility branch already catches it), so it discriminates nothing on this diff and the differential gate would correctly reject it as tautological.
+  - step: 4
+    phase: pre-deploy
+    action: GREEN (test c) -- a genuinely unparseable declaration makes the gate FAIL rather than being skipped.
+    command: bin/venv-python -m pytest tests/test_import_governance.py::TestCheckLockfileSync::test_unparseable_declaration_fails_not_skipped -q
+    expected: 1 passed -- in_sync False and the message names the offending line verbatim ("not a requirement").
+    fix_if: in_sync True means the InvalidRequirement branch still continues; it must collect the line and return False after the loop.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: lockfile-sync-unparseable-declaration-fails
+  - step: 5
+    phase: pre-deploy
+    action: pip comment semantics -- a hash with no preceding whitespace is NOT a comment, so `foo>=1.0#x` is unparseable and FAILS (a naive split('#') would silently accept it).
+    command: bin/venv-python -m pytest tests/test_import_governance.py::TestCheckLockfileSync::test_hash_without_preceding_whitespace_is_not_a_comment -q
+    expected: 1 passed -- in_sync False naming `foo>=1.0#x`; the gate rejects exactly what pip rejects.
+    fix_if: in_sync True means the strip regex is wrong (naive split) -- use (^|\s+)#.*$ and strip AFTER matching, never str.split('#').
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: lockfile-sync-hash-without-whitespace-not-comment
+  - step: 6
+    phase: pre-deploy
+    action: Live invariant -- every declaration in the real requirements.txt + requirements-dev.txt is parsed (declaration count == parsed count reported by the gate; no literal count, Decision 104 spirit).
+    command: bin/venv-python -m pytest tests/test_import_governance.py::TestCheckLockfileSync::test_live_declarations_all_parsed -q
+    expected: 1 passed -- the test counts non-blank, non-comment, non-dash declaration lines with pip's comment rule (24 today) and asserts the gate message reports the same number of top-level packages.
+    fix_if: A mismatch means some declaration is still skipped; print the set difference between declared names and top_level keys.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: lockfile-sync-live-declarations-all-parsed
+  - step: 7
+    phase: pre-deploy
+    action: Zero new failures on main -- the live gate still passes and now reports 24 top-level packages (was 20).
+    command: >-
+      bin/venv-python -c "from scripts.import_governance import check_lockfile_sync; ok,msg=check_lockfile_sync(); print(msg); assert ok, msg; assert '24 top-level packages' in msg, msg"
+    expected: Prints the PASS message containing "pins all 24 top-level packages compatibly".
+    fix_if: A FAIL here means one of the four newly-parsed declarations (psycopg2-binary, duckdb, python-ulid, pytz) is genuinely out of sync with the lock -- that is a real finding; file a rec, do NOT touch requirements.txt/lock in this plan and do NOT weaken the parse.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: The literal 24 drifts with every dependency add or remove; the standing guard is step 6's count-equality invariant, which is graduated.
+  - step: 8
+    phase: pre-deploy
+    action: The fail-open assertion is gone from the mirror module.
+    command: >-
+      bin/venv-python -c "import pathlib; s=pathlib.Path('tests/test_import_governance.py').read_text(encoding='utf-8'); assert 'test_invalid_top_level_requirement_is_ignored' not in s, 'fail-open test still present'; print('OK')"
+    expected: Prints OK.
+    fix_if: Delete the method (lines 292-305 on origin/main); its replacement is step 4's test in the same class.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: One-shot deletion assertion about this diff; the behavioural guard against fail-open is step 4, which is graduated.
+  - step: 9
+    phase: pre-deploy
+    action: The whole mirror module and the wrapper's mirror stay green, and the module's 100% mirror-measured coverage floor holds (Decision 159, no baseline entry).
+    command: >-
+      bin/venv-python -m pytest tests/test_import_governance.py tests/checks/deps/test_validate_lockfile_sync.py -q && bin/venv-python -c "from pathlib import Path; from scripts.test_coverage_checker import check_per_file_coverage; e=check_per_file_coverage([Path('scripts/import_governance.py')]); assert not e, e; print('coverage OK')"
+    expected: All tests pass and "coverage OK" prints -- the new fail branch is exercised from the mirror file, so measured coverage is 100%.
+    fix_if: A coverage error means a branch of the new code is reachable only from outside the mirror file; add the missing case to TestCheckLockfileSync. Never add a config/coverage_baseline.yaml entry to absorb the drop (Decision 181).
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Whole-file selectors and the coverage floor are already run by CI's pytest and validate_test_coverage on every merge; a registry row would duplicate standing gates rather than add a guard.
+  - step: 10
+    phase: pre-deploy
+    action: Lint the two touched files.
+    command: bin/venv-python -m ruff check scripts/import_governance.py tests/test_import_governance.py
+    expected: All checks passed!
+    fix_if: Fix the reported rule violations; never add a noqa to silence one.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: CI's ruff job already lints every file on every PR; graduating a per-file ruff invocation duplicates it.
+  - step: 11
+    phase: pre-deploy
+    action: No SLOC regression, no budget change, and the dependency files themselves are untouched.
+    command: >-
+      bin/venv-python -c "import pathlib,subprocess; bad=[(str(p),n) for p in map(pathlib.Path,['scripts/import_governance.py','tests/test_import_governance.py']) for n in [len([l for l in p.read_text(encoding='utf-8').splitlines() if l.strip() and not l.strip().startswith('#')])] if n>500]; assert not bad, bad; assert subprocess.run(['git','diff','--quiet','origin/main...HEAD','--','config/sloc_budgets.yaml','config/coverage_baseline.yaml','requirements.txt','requirements.lock']).returncode==0, 'sloc_budgets.yaml, coverage_baseline.yaml, requirements.txt or requirements.lock changed versus origin/main'; print('OK')"
+    expected: Prints OK.
+    fix_if: Over 500 means decompose the mirror file into a Decision 131 concern-split test package (register scripts/import_governance.py in scripts/test_coverage_checker._CONCERN_SPLIT_TEST_PACKAGES) -- never a flat sibling test file, which the coverage floor cannot see; a diff in the budget, baseline or dependency files means the plan boundary was crossed -- revert those hunks.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: Diff-against-origin/main assertion about this PR only; vacuous on every later commit.
+  - step: 12
+    phase: pre-deploy
+    action: Fast tier green on the branch.
+    command: bin/venv-python -m scripts.validate --pre
+    expected: Exit 0; validate_lockfile_sync prints PASS with the 24-package message.
+    fix_if: Diagnose the named failing check; do not weaken any check to obtain green (Decision 181).
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Runs scripts.validate itself -- a registry row invoking the tier that runs the registry is the recursion the hermetic rule forbids.
+  - step: 13
+    phase: pre-deploy
+    action: Full-tier validation before handoff, as handoff_policy.full_validation_required_before_commit declares (Decision 163). Executed exactly once, at /implement Step 7 closure item 4 after implementation_declared is true and every bookkeeping write has landed; its evidence is logs/debug/validation-result.json (scope all, exit 0).
+    command: bin/venv-python -m scripts.validate
+    expected: Exit 0 -- the complete suite (pytest, validate_test_coverage at 100% for scripts/import_governance.py, validate_lockfile_sync at 24 packages) is green with the whole change in tree.
+    fix_if: A full-tier-only failure is in scope for this plan to fix on the branch. Never skip a test, lower a coverage floor, or weaken the parse to get green.
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/import_governance.py
+    behavior: A declaration carrying a trailing whitespace-hash comment is parsed and checked against the lock, so an absurd specifier fails the gate.
+    verification_step: 2
+    test_selector: tests/test_import_governance.py::TestCheckLockfileSync::test_absurd_bump_with_trailing_comment_fails
+    red_green_expectation: Red before (reproduced at planning time on origin/main 735e69f -- the commented line is skipped and the gate reports 0 top-level packages, in_sync True), green after the comment strip lands.
+  - source: scripts/import_governance.py
+    behavior: A declaration that still fails to parse after comment stripping returns (False, message naming the line) instead of being skipped.
+    verification_step: 4
+    test_selector: tests/test_import_governance.py::TestCheckLockfileSync::test_unparseable_declaration_fails_not_skipped
+    red_green_expectation: Red before (the InvalidRequirement branch continues and the gate stays green -- the deleted legacy test asserted exactly that), green after the branch collects and fails.
+  - source: scripts/import_governance.py
+    behavior: Comment stripping follows pip's (^|\s+)#.*$ rule, so a hash without preceding whitespace stays part of the line and the line fails as unparseable.
+    verification_step: 5
+    test_selector: tests/test_import_governance.py::TestCheckLockfileSync::test_hash_without_preceding_whitespace_is_not_a_comment
+    red_green_expectation: Red before (pre-fix code skips the InvalidRequirement line, in_sync True), green after; a naive split('#') implementation would ALSO fail this test (it would parse foo>=1.0 and pass), which is why the regex is pinned.
+  - source: scripts/import_governance.py
+    behavior: Every declaration in the live requirements.txt + requirements-dev.txt is counted by the gate (declaration count == parsed count).
+    verification_step: 6
+    test_selector: tests/test_import_governance.py::TestCheckLockfileSync::test_live_declarations_all_parsed
+    red_green_expectation: Red before (24 declarations after pip-style comment stripping vs 20 reported, measured on origin/main 735e69f), green after.
+constraints:
+  - No rescue agents or workaround loops (Decision 55); a parse failure is surfaced with the offending line, never guessed around.
+  - Do NOT touch requirements.txt or requirements.lock in this plan (the brief's Task 2 rule) -- if the newly-parsed declarations reveal real drift, file a rec.
+  - Do NOT weaken any check, assertion, or test to obtain green (Decision 181, docs/contracts/implement-scope-boundary.yaml CONTENT invariant); replacing the legacy fail-open test with a stricter assertion of the fix (step 4) is the sanctioned inversion, not a weakening -- the residual arm (rec-3357) is unenforced mechanically, so this justification is explicit here.
+  - Do NOT raise a SLOC budget, add a coverage_baseline entry, or add a raise-approved / baseline-lowered / waiver marker (Decision 128, 159, 181).
+  - New tests MUST live in tests/test_import_governance.py (the mirror file) -- a sibling test file contributes zero to the module's mirror-measured coverage floor (Decision 159 / 131); if the file would exceed 500 SLOC, decompose into a registered concern-split package, never a flat sibling.
+  - Comment stripping must use pip's rule (^|\s+)#.*$ copied as a module constant with a provenance comment, never `import pip._internal` (private API, no stability contract) and never str.split('#').
+  - "_parse_lock_pins keeps its skip-on-InvalidRequirement: an unparseable lock line yields no pin, and the missing-pins branch already fails closed (tests/test_import_governance.py::TestCheckLockfileSync::test_invalid_lock_entries_do_not_count_as_pins pins that)."
+  - Lines starting with `-` (-r/-c/-e forms) keep being skipped, unchanged; rec-2494 tracks those forms and is out of scope here.
+context:
+  - "Operator confirmation: standing grant in the autonomous-day brief of 2026-09-02 (Task 2)."
+  - "Decision-scout verdict FLAGS_FOUND (134 of 134 triaged). CITE: Decision 80, 55, 135, 99, 132, 176, 163, 181. RELATED: Decision 104, 131, 100, 48, 83. Flag D159 [WARN] PIVOTED (tests moved into the mirror file, sibling Create row dropped); flag D170 [WARN, spirit] DEFERRED with the note below."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "Defect: scripts/import_governance.py:78-85 -- a `#`-prefixed line is skipped and `except InvalidRequirement: continue` skips anything packaging.Requirement rejects; inline comments (`pkg>=x  # why`) are rejected by packaging, so requirements.txt:8-11 (psycopg2-binary, duckdb, python-ulid, pytz) are never checked. Measured on origin/main 735e69f: gate message reports 20 top-level packages; 24 declarations exist after pip-style comment stripping. All four skipped floors are satisfied by the lock today (verified by the scout), so the honest gate is green on landing."
+  - "Comment rule source: pip._internal.req.req_file.COMMENT_RE == (^|\\s+)#.*$ (verified in the venv); copy it, do not import it. tests/test_import_governance.py:251 uses split('#')[0] for one known line and is left alone."
+  - "Lock side untouched: _parse_lock_pins skip is fail-closed via the missing-pins branch; the lock is pip-compile output, not hand-authored."
+  - "Decision 170 DEFERRAL (scout spirit flag): validate_lockfile_sync sits on config/check_accounting_baseline.yaml:80 and declares no examined()/skipped(); the 20-vs-24 undercount is the partial-examination signal examined(n) exists for. Declaring it needs check_lockfile_sync's (bool, str) return widened or the message parsed, and the roster shrink is the autonomous-day brief's Task 8 (slice-0 path-aware metric first). Deferred there; not widened here (brief: ship alone)."
+  - "Decision 83 payoff: .github/workflows/dependabot-auto-merge.yml:10-12 grounds its auto-merge safety on validate_lockfile_sync redding pr-validate when a floor rises above the lock pin -- false today for the four commented lines, true after this plan. No edit to that workflow."
+  - "Decision 99: the duckdb line is generator-written by scripts/sync/ducklake_version.py with a whitespace-hash comment; after this plan a floor bump there reds the gate until requirements.lock is regenerated in the same PR (intended)."
+  - "Deploy-trigger check: neither scope file matches deploy-prod-lambdas.yml or deploy-ducklake-lambdas.yml `paths:` (verified 2026-09-02)."
+  - "Aligned open recs NOT bundled (grant: bundle only recs the task names; Task 2 names none): rec-2490, rec-2494 (requirements-file parsing in scripts/checks/_scaffolding.py), rec-1997 (upper-bound pins). None is satisfied by this plan; all stay open."
+  - "SLOC on origin/main: scripts/import_governance.py 213, tests/test_import_governance.py 410 (-13 deleted, +~75 added -> ~472). No config/sloc_budgets.yaml or coverage_baseline.yaml entry for either; validate_test_coverage (full tier) holds import_governance.py at 100% via the mirror file only."
+  - "Tier membership: validate_lockfile_sync Entry (scripts/checks/deps/_manifest.py:25-31) is pre=True with no pre_globs (always runs in --pre) and full_after_lint; config/ci_rca_taxonomy.yaml:118 maps it to dependency_gap. No registration surface changes."
+  - "ci-rca: zero unresolved recs at planning time (rec-3292 and rec-3293 closed 2026-09-02 via ci-rca-lifecycle.yaml closure_dependency.manual_route, fix commits c19328d3 / 5fd4d72d stamped)."
+  - "Graduated shards for steps 2, 4, 5, 6 are written by /implement's Verification Graduation walk under config/agent/verification_registry/entries/<graduation_check_id>.yaml and are sanctioned by implement-scope-boundary.yaml graduated_registry_shard, so they are not Scope rows. Their test_selector node_ids live in the mirror file, which exists on origin/main, so the differential's revert leg genuinely runs each test against the pre-fix module."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - VP step 1 (RED baseline) run FIRST on unmodified code and its exit 0 recorded before any edit
+execution_steps:
+  - Run VP step 1 on the unmodified tree; record its output (in_sync True, 0 top-level packages). If it does not reproduce, STOP.
+  - "tests/test_import_governance.py FIRST (red before green) -- inside class TestCheckLockfileSync, delete test_invalid_top_level_requirement_is_ignored (whole method, lines 292-305 on origin/main) and add, in its place, a helper `_gate(self, tmp_path, req_text, lock_text)` that writes tmp_path/'requirements.txt' and tmp_path/'requirements.lock', patches scripts.import_governance._REQUIREMENTS_TXT and _REQUIREMENTS_LOCK, and returns check_lockfile_sync() (the class's autouse fixture already isolates _REQUIREMENTS_DEV), plus six tests named exactly as the VP selects them: test_absurd_bump_with_trailing_comment_fails (`duckdb>=99.0  # inline comment` vs `duckdb==1.5.4` -> not in_sync, 'incompatible pins' and 'duckdb>=99.0 rejects 1.5.4' in msg); test_absurd_bump_without_comment_fails_identically (same without the comment -> same assertions); test_unparseable_declaration_fails_not_skipped (`not a requirement` + `requests>=2.0` vs `requests==2.31.0` -> not in_sync, 'not a requirement' in msg); test_hash_without_preceding_whitespace_is_not_a_comment (`foo>=1.0#x` vs `foo==1.0.0` -> not in_sync, 'foo>=1.0#x' in msg); test_commented_declarations_are_counted (the four real commented shapes with matching lock pins -> in_sync and '4 top-level packages' in msg); test_live_declarations_all_parsed (no patching of TXT/LOCK; the autouse fixture is bypassed by patching _REQUIREMENTS_DEV back to ROOT/'requirements-dev.txt' inside the test: count lines of ROOT/requirements.txt + ROOT/requirements-dev.txt after re.sub(r'(^|\\s+)#.*$','',line).strip() that are non-empty and do not start with '-', assert check_lockfile_sync() is in_sync and f'{n} top-level packages' in msg). Run steps 2, 4, 5, 6 now and record the RED output in the PR body."
+  - "scripts/import_governance.py -- add a module-level `_REQUIREMENT_COMMENT_RE = re.compile(r\"(^|\\s+)#.*$\")` with a one-line comment citing pip's req_file.COMMENT_RE as the provenance (copied, not imported). In check_lockfile_sync's top-level loop: `line = _REQUIREMENT_COMMENT_RE.sub(\"\", raw_line).strip()`; skip when `not line or line.startswith(\"-\")` (the `startswith(\"#\")` test becomes redundant and goes); wrap Requirement(line) so InvalidRequirement appends `raw_line.strip()` to a local `unparseable: list[str]` instead of `continue`; after the loop compute req_identity, then `if unparseable: return False, f\"requirements declarations cannot be parsed (the gate cannot check what it cannot parse): {', '.join(repr(l) for l in unparseable)} ({req_identity})\"`. Leave _parse_lock_pins untouched. Run steps 2-6 again and record GREEN."
+  - Execute the rest of the Verification Plan in order (steps 7-12 on the branch; step 13 once at Step 7 closure item 4 per the brief).
+  - "Report: what was implemented, the red-then-green evidence for steps 2/4/5/6, the live message (20 -> 24), the coverage-floor result from step 9, and the Verification Graduation section for the four graduate steps."
+rollback: Single squash commit; reverting restores the silent skip. A post-merge validate_lockfile_sync FAIL naming one of psycopg2-binary, duckdb, python-ulid or pytz is the gate finally checking a real declaration, not a regression -- fix the lock or the declaration forward, never revert the parse.
