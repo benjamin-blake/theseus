@@ -3,7 +3,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.checks.hygiene.validate_test_count_coupling import _find_violations
+from scripts.checks.hygiene.validate_test_count_coupling import _find_violations, validate_test_count_coupling
 
 
 class TestValidateTestCountCoupling:
@@ -109,3 +109,28 @@ class TestValidateTestCountCoupling:
 
         names = [s.name for s in registry.pre_sequence() + registry.full_sequence()]
         assert names.count("validate_test_count_coupling") >= 2
+
+
+class TestRegisteredWrapperEmission:
+    """The registered wrapper itself: the incumbent nine tests all call the pure
+    _find_violations core, so the wrapper's own failed.append was reached by no test."""
+
+    validate_test_count_coupling = staticmethod(validate_test_count_coupling)
+
+    def _run(self, tmp_path: Path, body: str) -> list[str]:
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "test_fixture.py").write_text(body, encoding="utf-8")
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            failed: list[str] = []
+            self.validate_test_count_coupling(failed)
+        return failed
+
+    def test_violating_tree_appends_a_failure(self, tmp_path: Path, capsys) -> None:
+        failed = self._run(tmp_path, "def test_x():\n    assert len(TABLE_NAMES) == 11\n")
+        assert failed == ["Test-count coupling guard"]
+        assert "Hardcoded exact-count assertions found:" in capsys.readouterr().out
+
+    def test_clean_tree_appends_nothing(self, tmp_path: Path) -> None:
+        failed = self._run(tmp_path, "def test_x():\n    assert len(rows) == 3\n")
+        assert failed == []

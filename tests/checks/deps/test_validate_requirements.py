@@ -101,3 +101,15 @@ class TestValidateRequirementsNetworkDemotion:
 
         full_names = {step.name for step in registry.full_sequence() if step.kind == "check"}
         assert "validate_requirements" in full_names
+
+
+class TestRequirementsFileMissing:
+    """The early-return branch: no requirements.txt under ROOT is a hard failure, not a skip."""
+
+    def test_missing_requirements_file_appends_a_failure(self, tmp_path: Path, capsys) -> None:
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            failed: list[str] = []
+            validate_requirements(failed)
+
+        assert failed == ["Requirements validation"]
+        assert "requirements.txt not found" in capsys.readouterr().out
