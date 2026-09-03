@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
+from collections.abc import Iterable
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import cast
+
+import yaml
 
 from scripts.preflight import _common
 from src.common.ducklake_reader_client import DuckLakeReader
@@ -360,6 +365,142 @@ def _check_convergence_rca_gap(convergence_health: dict | None, cache_rows: obje
         return None
 
 
+_OWNER_NAMED_RE = re.compile(
+    r"another agent|operator-direct(?:ed|ion)|human-direct(?:ed|ion)|human deferred|operator ruling",
+    re.IGNORECASE,
+)
+
+# code-review round 1 High finding (ci_rca_signals.py:434): searching the WHOLE qualifying entry
+# for an owner phrase fabricates an attribution when the entry merely *discusses* a rec near the
+# word "defer" rather than recording a deferral decision for it -- reproduced live against this
+# plan's own corpus entry, an 851-char census-methodology note whose rec-id mentions sit
+# 187-247 chars from an unrelated "operator-directed" example quote. The one plan this scan's
+# owner leg is ever graded against (docs/plans/PLAN-ambient-prose-contract-relocation.yaml, the
+# earliest-sorting owner-bearing plan for the corpus's two audit-pinned ids) places its owner
+# phrase within 53 chars of the rec id it deferred. 100 sits with margin on both sides of that
+# measured split (53 genuine / 187 fabricated) -- bounding the owner search to a window around
+# the SPECIFIC rec id's own mention, not the entry as a whole.
+_OWNER_PROXIMITY_CHARS = 100
+
+
+def _owner_named_near(entry_lower: str, rec_id: str) -> str | None:
+    """Return the lower-cased owner phrase within `_OWNER_PROXIMITY_CHARS` of *rec_id*'s first
+    mention in *entry_lower*, or None when no owner phrase sits that close. Never widened to a
+    whole-entry search -- see the fabrication note on `_OWNER_PROXIMITY_CHARS` above."""
+    rec_idx = entry_lower.find(rec_id)
+    if rec_idx == -1:
+        return None
+    window_start = max(0, rec_idx - _OWNER_PROXIMITY_CHARS)
+    window_end = rec_idx + len(rec_id) + _OWNER_PROXIMITY_CHARS
+    owner_match = _OWNER_NAMED_RE.search(entry_lower, window_start, window_end)
+    return owner_match.group().lower() if owner_match else None
+
+
+def _scan_prior_deferrals(rec_ids: Iterable[str], plans_dir: Path) -> dict[str, dict]:
+    """Scan docs/plans for a prior deferral rationale naming each of *rec_ids*.
+
+    Mirrors the SORTED substring-prefilter-then-YAML-parse walk of
+    scripts/platform_roadmap_state.py:101 (compute_followon_state) -- full-parsing the whole
+    docs/plans corpus to read one optional field dominates runtime, so every plan whose text
+    lacks a requested rec id (matched EXACTLY) or whose LOWER-CASED text lacks the substring
+    "defer" is skipped before it is ever YAML-parsed.
+
+    A plan counts toward a rec's `count` and `plan_slugs` at most once, and only when a SINGLE
+    top-level `context` list entry contains BOTH the exact rec id and the case-insensitive
+    substring "defer". `owner_named` is the lower-cased phrase matched by `_OWNER_NAMED_RE` within
+    `_OWNER_PROXIMITY_CHARS` of the rec id's own mention in that same qualifying entry (never the
+    whole entry -- see `_owner_named_near`), taken from the EARLIEST-SORTING counted plan that
+    supplies one that close -- a counted plan naming no owner nearby is passed over, never treated
+    as "owner_named: none" for the whole rec. The walk MUST iterate
+    `sorted(plans_dir.glob("PLAN-*.yaml"))`, never a bare `.glob`, which yields filesystem order:
+    against this repo's own corpus an unsorted walk answers "another agent"
+    (PLAN-cfg-migration-closeout) where the sorted walk answers "operator-directed"
+    (PLAN-ambient-prose-contract-relocation) -- sorting is the only reason the earliest-sorting
+    rule is well defined.
+
+    Returns a zeroed {count: 0, plan_slugs: [], owner_named: None} entry for every id in
+    *rec_ids* up front, so a rec with no matching plan still round-trips a well-shaped payload.
+    Returns immediately (all zeroed) when `plans_dir` is not a directory. Swallows a per-file
+    OSError (unreadable) or yaml.YAMLError (malformed) and skips that file -- never raises.
+    """
+    result: dict[str, dict] = {rec_id: {"count": 0, "plan_slugs": [], "owner_named": None} for rec_id in rec_ids}
+    if not result or not plans_dir.is_dir():
+        return result
+
+    for plan_file in sorted(plans_dir.glob("PLAN-*.yaml")):
+        try:
+            text = plan_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "defer" not in text.lower():
+            continue
+        candidate_ids = [rec_id for rec_id in result if rec_id in text]
+        if not candidate_ids:
+            continue
+        try:
+            plan_data = yaml.safe_load(text)
+        except yaml.YAMLError:
+            continue
+        if not isinstance(plan_data, dict):
+            continue
+        context = plan_data.get("context")
+        if not isinstance(context, list):
+            continue
+        slug = plan_file.stem[len("PLAN-") :]
+        for rec_id in candidate_ids:
+            for entry in context:
+                if not isinstance(entry, str) or rec_id not in entry:
+                    continue
+                entry_lower = entry.lower()
+                if "defer" not in entry_lower:
+                    continue
+                bucket = result[rec_id]
+                if slug in bucket["plan_slugs"]:
+                    break
+                bucket["plan_slugs"].append(slug)
+                bucket["count"] += 1
+                if bucket["owner_named"] is None:
+                    owner_named = _owner_named_near(entry_lower, rec_id)
+                    if owner_named is not None:
+                        bucket["owner_named"] = owner_named
+                break
+    return result
+
+
+def annotate_prior_deferrals(correlation: dict[str, list[dict]], plans_dir: Path | None = None) -> dict[str, list[dict]]:
+    """Attach `prior_deferrals` ({count, plan_slugs, owner_named}) to each UNRESOLVED rec dict.
+
+    Short-circuits to a no-op (zero docs/plans reads) when `correlation["unresolved"]` is empty.
+    `plans_dir=None` -- the sole production call shape, since scripts/session/preflight.py passes
+    no directory -- resolves to `_common.ROOT / "docs" / "plans"`, an absolute, cwd-INDEPENDENT
+    path identical to the one callers pass explicitly; `_common` is already imported by this
+    module, so no new import is needed. Mutates and returns the SAME correlation dict in place:
+    `correlate_recs_with_commits` (scripts/preflight/correlation.py:134 and :136, the append
+    sites for the `rec = {**rec, ...}` sibling-cluster branch built at :129) appends the SAME
+    dict objects to `unresolved` and to the full rec list, so this in-place annotation is also
+    visible through `report["ci_rca_recs"]` -- additive and benign, not a copy. Degrades to a
+    zeroed payload per rec on any scan error and never raises (the `_check_convergence_rca_gap`
+    degrade posture in this module).
+    """
+    unresolved = correlation.get("unresolved") or []
+    if not unresolved:
+        return correlation
+
+    resolved_dir = plans_dir if plans_dir is not None else _common.ROOT / "docs" / "plans"
+    rec_ids = {rec.get("id", "") for rec in unresolved if isinstance(rec, dict) and rec.get("id")}
+    try:
+        deferrals = _scan_prior_deferrals(rec_ids, resolved_dir)
+    except Exception:  # noqa: BLE001
+        deferrals = {}
+
+    for rec in unresolved:
+        if not isinstance(rec, dict):
+            continue
+        rec_id = rec.get("id", "")
+        rec["prior_deferrals"] = deferrals.get(rec_id) or {"count": 0, "plan_slugs": [], "owner_named": None}
+    return correlation
+
+
 def print_ci_rca_recs(recs: list[dict], correlation: dict[str, list[dict]] | None = None) -> None:
     """Print the CI RCA Recs section to terminal.
 
@@ -411,5 +552,13 @@ def print_ci_rca_recs(recs: list[dict], correlation: dict[str, list[dict]] | Non
             priority = rec.get("priority", "")
             created = rec.get("created_timestamp", "")
             print(f"  {rec_id} [{priority}] {created}: {title}")
+            deferral = rec.get("prior_deferrals")
+            if deferral and deferral.get("count"):
+                slugs = deferral.get("plan_slugs") or []
+                shown = ", ".join(slugs[:5])
+                if len(slugs) > 5:
+                    shown += f", +{len(slugs) - 5} more"
+                owner = deferral.get("owner_named") or "none"
+                print(f"    deferred {deferral['count']} times (plans: {shown}; owner named: {owner})")
 
     print()

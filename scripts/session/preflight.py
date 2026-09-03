@@ -291,6 +291,7 @@ def main(roadmap_detail: str = "slim") -> int:
     ci_rca_correlation = correlation.correlate_ci_rca_with_main(
         ci_rca_recs, recent_main_commits, closed_ci_rca_recs=closed_ci_rca_recs
     )
+    ci_rca_correlation = ci_rca_signals.annotate_prior_deferrals(ci_rca_correlation)
     ci_rca_signals.print_ci_rca_recs(ci_rca_recs, correlation=ci_rca_correlation)
     ci_rca_signals.print_ci_rca_dispute_recs(ci_rca_dispute_recs)
     ci_rca_signals.print_ci_rca_undetermined_recs(ci_rca_undetermined_recs)
