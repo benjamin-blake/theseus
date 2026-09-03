@@ -438,7 +438,7 @@ subagent-dispatch division of labor; schema: `docs/contracts/overseer-dispatch.y
 **Dispatch shape (non-subagent runs):**
 - `subagent_type: "general-purpose"` (needs `Skill`, `Read` access)
 - `description: "Decision scout gate"`
-- `prompt:` self-contained per the Example body below -- Intent: Step 3; approach: Steps 3-5;
+- `prompt:` self-contained per the Example body above -- Intent: Step 3; approach: Steps 3-5;
   scope: Step 4; tier: Step 5; cited decisions: the human.
 
 **Verdict handling:**
@@ -587,7 +587,7 @@ The critic tags every finding mechanical or judgement with a stable anchor (plan
 
 Otherwise, once findings are disposed with none recurring, run ONE fresh confirming round. PROCEED -> done; pin `plan-critique=<verdict> after <N> round(s); round <N> autonomous` (round 4 autonomous when addressed; no round-5 rule). REVISE -> escalate below, "one more round" among the choices.
 
-**Escalation shape** (round 3, an interrupt, or a REVISE confirming round): present, per finding, the finding verbatim with tag and anchor; why it did not converge; your recommendation; and, when re-escalating, a clause that starts a new series naming the predecessor rounds -- plus the five choices: accept-with-deferral / re-scope / split / abandon / one more round. Carrier: chat, or GATE_REQUEST `open_questions`.
+**Escalation shape** (disputed residue, an oscillation interrupt, or a REVISE on the confirming round): present, per finding, the finding verbatim with tag and anchor; why it did not converge; your recommendation; and, when re-escalating, a clause that starts a new series naming the predecessor rounds -- plus the five choices: accept-with-deferral / re-scope / split / abandon / one more round. Carrier: chat, or GATE_REQUEST `open_questions`.
 
 **Contested-residue consult:** On contested residue only -- never a mechanical finding -- consult `model:"fable"` per the overseer skill's Fable Advice-Consult Protocol -- a third fresh reading of THIS plan against the repo's own Decisions, not industry practice. It recommends a disposition and decides nothing. Revisit after 10 contested escalations; demote if it changed nothing in 8 or more.
 
