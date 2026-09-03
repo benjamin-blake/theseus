@@ -388,6 +388,12 @@ def main(roadmap_detail: str = "slim") -> int:
     report["provisional_contracts_due"] = provisional_contracts_due
     report["decision_conditions"] = decision_conditions_bucket
     report["non_automatable_softcap_breached"] = recs_cache._check_non_automatable_softcap(non_automatable_count)
+    # Ad-hoc /orient lane (audit PDB-01, B1-R4 + B4-O1): pure derivations over the already-pulled
+    # recs_rows_cache -- unconditionally written on both the healthy and degraded paths (a
+    # degraded warm pull yields [] for both, never a missing key -- Decision 55: no silent zero,
+    # the READER half of that honesty is /orient's own recs_read_status-keyed degraded clause).
+    report["followon_recs"] = recs_cache._derive_followon_recs(recs_rows_cache or [])
+    report["open_critical_recs"] = recs_cache._derive_open_critical_recs(recs_rows_cache or [])
     report["ci_rca_liveness_alert"] = ci_rca_liveness_alert
     report["convergence_sensor_liveness_alert"] = convergence_sensor_liveness_alert
     summary.print_convergence_sensor_liveness_alert(convergence_sensor_liveness_alert)

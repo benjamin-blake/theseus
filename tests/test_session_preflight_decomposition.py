@@ -111,10 +111,14 @@ FROZEN_REPORT_KEYS = frozenset(
         "context",
         "platform_roadmap",
         "session_start",
-        # 8 post-assignments
+        # 10 post-assignments
         "provisional_contracts_due",
         "decision_conditions",
         "non_automatable_softcap_breached",
+        # Ad-hoc /orient lane (audit PDB-01, B1-R4 + B4-O1): pure derivations over
+        # recs_rows_cache, written unconditionally right after the softcap gauge above.
+        "followon_recs",
+        "open_critical_recs",
         "ci_rca_liveness_alert",
         "convergence_sensor_liveness_alert",
         "convergence_rca_gap_alert",
@@ -126,7 +130,7 @@ FROZEN_REPORT_KEYS = frozenset(
         "prose_context",
     }
 )
-assert len(FROZEN_REPORT_KEYS) == 48, "frozen report key list itself drifted -- fix the constant, not the assertion"
+assert len(FROZEN_REPORT_KEYS) == 50, "frozen report key list itself drifted -- fix the constant, not the assertion"
 
 # Frozen export list: every public function + every test-referenced private symbol from the
 # pre-refactor module (facade-resident + all 9 domain modules + _common + the back-compat
@@ -368,12 +372,12 @@ def _run_stubbed_main(
 
 
 class TestReportSchemaFreeze:
-    """A stubbed main() run's report top-level key set equals the frozen 48-key list."""
+    """A stubbed main() run's report top-level key set equals the frozen 50-key list."""
 
     def test_report_key_set_matches_frozen_keys(self, tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
         _, report, _ = _run_stubbed_main(tmp_path, capsys)
         assert set(report.keys()) == FROZEN_REPORT_KEYS
-        assert len(report.keys()) == 48
+        assert len(report.keys()) == 50
 
 
 class TestFacadeCompleteness:

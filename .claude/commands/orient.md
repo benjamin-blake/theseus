@@ -29,6 +29,11 @@ fields), `blocked_on_cd`, `gate_evaluations`, `ratifiable_cds`, `realized_but_pe
 `non_automatable_softcap_breached`, `terraform_pending`, `dependabot_stranded_prs`
 (rendered from the cache only -- orient never shells out to `gh` to recompute it).
 
+For the ad-hoc lane (Section 6's trailing subsection, below): `followon_recs`,
+`open_critical_recs`, `priority_queue` and `recs_read_status` -- the last lets the renderer tell a
+DEGRADED recommendation pull from a genuinely empty lane rather than reading an unknown Critical
+population as a silent zero.
+
 For `files_in_scope` (overlap matrix) and `depends_on` (keystone computation), use the typed-loader
 projection -- pure-local `scripts.roadmap.platform_roadmap.load()` import, no warehouse I/O, distinct from
 the banned `-m scripts.roadmap.platform_roadmap` module entrypoint. Keystone fan-out is a reverse query, so
@@ -49,7 +54,7 @@ Apply the `orient` skill methodology to produce the six-section chat deliverable
 5. Ranked What-to-Work-On
 6. /plan Prompts with Overlap Matrix
 
-See the skill's Deliverable Shape section for the full spec of each, except Section 2's CI-RCA triage rendering, specified below.
+See the skill's Deliverable Shape section for the full spec of each, except Section 2's CI-RCA triage rendering and Section 6's ad-hoc lane trailing subsection, both specified below.
 
 ### CI-RCA Triage rendering (deliverable Section 2)
 
@@ -88,6 +93,46 @@ If HARD BLOCK recs exist, note them prominently at the top of this section.
    - `verdict == "satisfied"` -> the SOFT PROMPT close-then-stamp route above, naming `stamp_fixed_by_sha`.
    - `timed_out` true -> report "relevance probe did not complete (timed out at 120s)"; this is NOT evidence the rec is still unresolved -- surface the `acceptance` string verbatim and emit the /plan prompt marked inconclusive.
    - any other verdict -> name the verdict and emit the /plan prompt.
+
+### Ad-hoc lane rendering (deliverable Section 6, trailing subsection)
+
+Rendered AFTER the in_progress follow-on prompts, the eligible-item prompts and the overlap
+matrix (Section 6's own spec, in the skill) -- additive to and NEVER consuming the five roadmap
+`/plan` prompt slots. The ad-hoc prompts sit OUTSIDE the overlap matrix and the keystone ranking:
+they are rec-grain and carry no `files_in_scope`/`depends_on` to project (Decision 90; audit
+B1-R4 (b) "never competing for the five roadmap slots"). The lane renders id/title/parent only --
+relevance is judged by `/plan`'s Recommendation Relevance Gate when a prompt is RUN; no relevance
+verdict is computed or cached at preflight (Decision 55 surfacing-only, Decision 103).
+
+Cache-only: render from this Step's `followon_recs`, `open_critical_recs` and `priority_queue`
+plus `recs_read_status` -- never a rec-cache read or a DuckLake reader call. An absent key means
+the preflight cache predates this lane -- say so and recommend re-running preflight.
+
+**Omission / degraded rule**: omit the whole subsection when `followon_recs`, `open_critical_recs`
+and `priority_queue` are all empty AND `recs_read_status` is `ok`. When `recs_read_status` is
+anything else, render the subsection as DEGRADED naming that status instead of omitting it --
+mirroring the skill's `decision_conditions` degradation clause: a degraded read must never present
+as an empty lane (Decision 55). This DEGRADED guarantee covers the two REC keys only. The queue
+bucket is a declared residual: the preflight report carries no independent queue-read status
+(`priority_queue_source` derives from `creds_status` alone), so a failed per-table
+`ops_priority_queue` warm pull renders as an empty queue, indistinguishable from a genuinely empty
+one. Do not widen the trigger to `creds_status != ok` to mask this -- creds down already implies
+`recs_read_status != ok`, so that disjunct is redundant and would not close this per-table window.
+
+**Cap and order**: at most 3 prompts TOTAL across the three buckets, ordered open Critical recs ->
+ready follow-on recs -> priority-queue head. Three or more open Critical recs displace the
+follow-on and queue buckets entirely, so an empty follow-on bucket reads as displacement, never as
+"nothing ready". A rec present in both `open_critical_recs` and `followon_recs` renders once --
+its Critical entry wins. Within the open-Critical bucket, oldest-created-first is a deterministic
+TIE-BREAK under the cap, not an urgency rank -- the bucket order itself (Critical first) carries
+the urgency semantic.
+
+Render (within the total cap of 3):
+```
+/plan rec-NNNN: <title> (open Critical, source=<source>)
+/plan rec-NNNN: follow-on of PLAN-<parent_plan> -- <title>
+/plan <rec_id>: <rationale>   # priority-queue head
+```
 
 Output the deliverable to the chat. This is the sole output of `/orient`.
 
