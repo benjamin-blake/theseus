@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from scripts.checks.sloc.sloc_limits import _load_sloc_budgets, _update_sloc_budgets, validate_sloc_limits
 
 
@@ -237,3 +239,50 @@ class TestUpdateSlocBudgetsLoweringGap:
             result = _load_sloc_budgets()
 
         assert result["scripts/shrunk_but_still_big.py"] == 550
+
+
+class TestSlocRatchetAdvisoryEmission:
+    """sloc_limits.py:111 -- the ratchet-down advisory never touches `failed`, so stdout is the
+    only channel that can observe it. Owns its helpers rather than reusing another class's."""
+
+    @staticmethod
+    def _write_budget(tmp_path: Path, rel: str, budget: int) -> None:
+        """Write a one-entry config/sloc_budgets.yaml under tmp_path."""
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(exist_ok=True)
+        (config_dir / "sloc_budgets.yaml").write_text(f"budgets:\n  {rel}: {budget}\n", encoding="utf-8")
+
+    @staticmethod
+    def _run(tmp_path: Path, sloc: int, budget: int) -> list[str]:
+        """Register scripts/heavy.py at `budget` with exactly `sloc` SLOC and run the gate."""
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir(exist_ok=True)
+        (scripts_dir / "heavy.py").write_text("x = 1\n" * sloc, encoding="utf-8")
+        TestSlocRatchetAdvisoryEmission._write_budget(tmp_path, "scripts/heavy.py", budget)
+        failed: list[str] = []
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            validate_sloc_limits(failed)
+        return failed
+
+    def test_registered_file_below_budget_emits_ratchet_advisory(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Strictly below budget -> the non-blocking ratchet-down advisory is printed."""
+        failed = self._run(tmp_path, sloc=550, budget=600)
+
+        out = capsys.readouterr().out
+        assert failed == []
+        assert "SLOC advisories (non-blocking):" in out
+        assert "scripts/heavy.py: 550 SLOC below budget 600" in out
+        assert "validate --update-sloc-budgets" in out
+
+    def test_registered_file_exactly_at_budget_emits_no_advisory(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Exactly at budget -> nothing is printed (the other side of the same comparison)."""
+        failed = self._run(tmp_path, sloc=550, budget=550)
+
+        out = capsys.readouterr().out
+        assert failed == []
+        assert "below budget" not in out
+        assert "SLOC advisories (non-blocking):" not in out

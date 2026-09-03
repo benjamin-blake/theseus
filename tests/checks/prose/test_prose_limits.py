@@ -265,3 +265,48 @@ class TestValidateProseLimits:
         assert "raise" in out
         assert "split" not in out
         assert "decompose" not in out
+
+
+class TestProseRatchetAdvisoryEmission:
+    """prose_limits.py:79 -- the ratchet-down advisory never touches `failed`, so stdout is the
+    only channel that can observe it (the twin of the SLOC ratchet advisory)."""
+
+    @staticmethod
+    def _run(tmp_path: Path, failed: list[str]) -> None:
+        """Run the gate under the mirror's established three-patch measurement context."""
+        with (
+            patch("scripts.checks._common.ROOT", tmp_path),
+            patch("scripts.preflight.prose_context._common.ROOT", tmp_path),
+            patch(
+                "scripts.preflight.prose_context._resolve_s2_directory_claude_files",
+                return_value=[],
+            ),
+        ):
+            validate_prose_limits(failed)
+
+    def test_under_budget_emits_the_ratchet_advisory(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Strictly below budget -> the non-blocking reseed advisory is printed."""
+        _write(tmp_path / "CLAUDE.md", "x" * 10)
+        _write_budgets(tmp_path, "S1:\n  root_ambient_load_set: 500\n")
+
+        failed: list[str] = []
+        self._run(tmp_path, failed)
+
+        out = capsys.readouterr().out
+        assert failed == []
+        assert "Prose budget advisories (non-blocking):" in out
+        assert "S1 root_ambient_load_set: 10 bytes below budget 500" in out
+        assert "reseed config/prose_budgets.yaml to ratchet down" in out
+
+    def test_exactly_at_budget_emits_no_advisory(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Exactly at budget -> nothing is printed (the other side of the same comparison)."""
+        _write(tmp_path / "CLAUDE.md", "x" * 10)
+        _write_budgets(tmp_path, "S1:\n  root_ambient_load_set: 10\n")
+
+        failed: list[str] = []
+        self._run(tmp_path, failed)
+
+        out = capsys.readouterr().out
+        assert failed == []
+        assert "below budget" not in out
+        assert "Prose budget advisories (non-blocking):" not in out
