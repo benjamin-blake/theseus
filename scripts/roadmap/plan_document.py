@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 _SUPPORTED_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4})
 _V2_PHASE_ENUM: frozenset[str] = frozenset({"pre-deploy", "post-deploy"})
 _MIN_WAIVER_CHARS = 20
+_REC_ID_RE = re.compile(r"rec-\d+")
 
 # pytest arguments whose VALUE names something the run will NOT execute. A linked step that
 # excludes an obligation's own selector is worse than one that never mentions it: the plan reads
@@ -232,6 +233,7 @@ class PlanDocument(BaseModel):
     phase: str = Field(min_length=1)
     scope: list[ScopeEntry] = Field(min_length=1)
     bundled_recommendations: list[str] = Field(default_factory=list)
+    followon_recs: list[str] = Field(default_factory=list)
     closes_criteria: list[str] = Field(default_factory=list)
     infrastructure_dependencies: list[str] = Field(default_factory=list)
     acceptance_criteria: list[str] = Field(min_length=1)
@@ -277,6 +279,19 @@ class PlanDocument(BaseModel):
                 raise ValueError(
                     f"closes_criteria entry {entry!r} is not a valid '<item-id>:<crit-id>' token "
                     "(item-id and crit-id must both be non-empty)"
+                )
+        return v
+
+    @field_validator("followon_recs")
+    @classmethod
+    def _followon_recs_tokens(cls, v: list[str]) -> list[str]:
+        # Shape check only, mirroring _closes_criteria_tokens: a deferred half's intent belongs
+        # on the rec itself (title, context, acceptance), never restated as prose here.
+        for entry in v:
+            if not _REC_ID_RE.fullmatch(entry):
+                raise ValueError(
+                    f"followon_recs entry {entry!r} is not a valid 'rec-NNNN' token -- the half's "
+                    "intent belongs on the rec, not in this field"
                 )
         return v
 

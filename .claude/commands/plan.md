@@ -87,6 +87,8 @@ Write the file `docs/plans/PLAN-{slug}.yaml` using the exact structure and templ
 
 **Context-block discipline (<= 40 rendered lines).** `context:` carries pointers, not prose. Keep the two REQUIRED items (decision-scout verdict + CITE list; the gates line), plus phase dependencies, cited-decision ids, and gotchas an implementer cannot derive from the scope files. Everything else is a link: name the rec id, PR number, commit SHA, Decision id, or file:line and stop. Deep root-cause narrative, critique-round correction write-ups, and measurement tables belong in the plan's own commit body, the rec/Decision/tier_item it cites, or the eventual PR body -- the same rule `docs/contracts/git-ops.yaml`'s `commit_message_conventions.change_record_content_rule` already applies to Decision entries ("what changed, why now, acute state, and measurements belong in the squash-commit or PR body"). This relocates the audit trail; it never deletes it.
 
+**Planning-time split.** Applies only if this plan defers a half -- a split decided at planning time: file the other half now via the same portal call `.claude/commands/implement.md` Step 7 describes, and record the returned id in this plan's `followon_recs`. A plan that defers nothing writes nothing; the clause is a no-op then, exactly as in `implement.md` Step 7.
+
 **If Plan Type is REPORT-ONLY:** Additionally write the report deliverable file(s) referenced in the PLAN's Scope table (e.g. `docs/REPORT-{slug}.md`). The deliverable IS the substantive output of a REPORT-ONLY plan; the PLAN file itself is just the planning artefact that points at it. Both files land in the same initial commit.
 
 After writing, commit to the branch and push immediately, so no unpushed commit spans a gate turn boundary:
