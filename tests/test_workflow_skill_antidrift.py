@@ -152,6 +152,25 @@ def test_implement_step7_files_the_deferred_half_and_writes_followon_recs() -> N
     assert "no-op" in step7
     assert step7.index("only if this session deferred a half") < step7.index(handoff)
 
+    # The block's substantive body, not just its heading and guard: without these the graduated
+    # entry followon-half-filing-step-pinned would claim to pin a filing step whose portal call,
+    # flags and write-back could all be deleted while the check stayed green. Asserted against a
+    # whitespace-collapsed copy because the source is wrapped prose, so a literal that reads as
+    # one phrase may straddle a newline.
+    flat = " ".join(step7.split())
+    write_back = "append the returned id to this plan's `followon_recs`"
+    for needle in (
+        "scripts.ops_data_portal --guidance",
+        "--file-rec",
+        "--source manual",
+        "--tags follow-on",
+        "Deferred half of PLAN-{slug}",
+        "lint_acceptance_command(require_discrimination=True)",
+        write_back,
+    ):
+        assert needle in flat, needle
+    assert flat.index("--file-rec") < flat.index(write_back)
+
     tail = workflow[workflow.index("## Step 9") :]
     assert "follow-on rec ids" in tail
 
