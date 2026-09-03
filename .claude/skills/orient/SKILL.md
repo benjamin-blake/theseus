@@ -1,11 +1,11 @@
 ---
 name: orient
-description: Read-only orientation session. Surfaces in-progress/eligible work, CI-RCA triage, ranked what-to-work-on, and up to N disjoint /plan prompts with an overlap matrix and keystone-first sequencing. Chat reply only; writes nothing.
+description: Read-only orientation session. Surfaces in-progress/eligible work, CI-RCA triage, ranked what-to-work-on, and up to N disjoint /plan prompts with an overlap matrix and keystone-first sequencing. Chat reply only; writes nothing (one named probe exception -- Read-Only Contract).
 ---
 
 # Orient Methodology
 
-You are using this skill to augment the `/orient` workflow. This skill is **strictly read-only**: it produces a chat reply only. No files, roadmap edits, recommendation writes, or decision writes.
+You are using this skill to augment the `/orient` workflow. This skill is **strictly read-only** (one named exception, in Read-Only Contract): it produces a chat reply only. No files, roadmap edits, recommendation writes, or decision writes.
 
 Decisions cited: 90 (Four-Tier Workflow Architecture), 59 (prefer deterministic signals), 72 (RCA-as-Plan-Source), 76 (.claude/ canonical), 84 (closed boundary), 86 (no new prose-architecture docs), 88 (egress budget).
 
@@ -16,6 +16,7 @@ The `/orient` workflow produces **one deliverable: a chat reply**. It:
 - Makes no roadmap status edits
 - Files no recommendations or decisions (Single Portal Invariant untouched)
 - Issues no git commits or pushes
+- Runs no subprocess except the CI-RCA relevance probe of `.claude/commands/orient.md` Step 3 -- read-only by that step's guard clause, writing no file, rec, or roadmap edit
 
 Status flips remain the verification-earned closing step owned by `/implement` tier-item bookkeeping. Orient reports roadmap state AS AUTHORED -- it never promotes, infers, or corrects status.
 
@@ -34,6 +35,7 @@ Status flips remain the verification-earned closing step owned by `/implement` t
 | Roadmap detail (`files_in_scope`, `depends_on`) | `docs/ROADMAP-PLATFORM.yaml` | Typed-loader projection: `scripts.roadmap.platform_roadmap.load()` (pure-local, no warehouse I/O -- distinct from the banned `-m scripts.roadmap.platform_roadmap` module entrypoint), returning both a candidate-scoped projection (filtered to the ids already surfaced by the preflight cache) and a roadmap-wide `depends_index` (`{id: depends_on}`, cheap) for reverse-dependency lookups; see the orient command Step 2 for the literal runnable form. Full-file Read only as an error fallback if the extraction fails. |
 | Recent main activity | `logs/.preflight-report.json` (`recent_main_commits`) | Read preflight cache |
 | Decision reversal-conditions monitor | `logs/.preflight-report.json` (`decision_conditions`: `monitored[]`, `surfaced[]`, `malformed[]`) | Read preflight cache (`scripts.preflight.decision_conditions.preflight_bucket()`, SEQ-02) |
+| Rec `acceptance` string (Step 3 probe) | `logs/.recommendations-log.jsonl` | Read local cache file (no portal or reader call) |
 
 **Read-from-preflight-cache constraint (Decision 88 egress budget; Decision 84 closed boundary):** `/orient` reads the preflight cache -- it must NOT trigger a fresh warehouse reader fan-out. Do not call `bin/venv-python -m scripts.roadmap.platform_roadmap` or any DuckLake reader verb during orient. The preflight script is the only path that may refresh `logs/.preflight-report.json`.
 
@@ -133,14 +135,7 @@ Source: `ci_rca_unresolved_recs`, `ci_rca_likely_resolved_recs`, `ci_rca_livenes
 | `status == "unknown"` | S3 read failed -- note as informational; may indicate transient credential issue. |
 | `status == "green"` or `convergence_health` is null | No action needed. |
 
-| Preflight signal | Classification | Operator action |
-|---|---|---|
-| `ci_rca_unresolved_recs` non-empty | **HARD BLOCK** | List each rec (id, priority, title). The next `/plan` enforces the block; orient surfaces it. |
-| `ci_rca_likely_resolved_recs` non-empty | **SOFT PROMPT** | "LIKELY RESOLVED -- verify and close." Provide the close command per rec: `bin/venv-python -m scripts.ops_data_portal --update-rec <id> --status closed --resolution 'Fixed by ...'`. |
-| `ci_rca_liveness_alert` non-null | **HARD ALERT** | Main CI red >30 min with no rec. Triage immediately. |
-| `forward_fix_recursion_alert` non-null | **HARD ALERT** | 3+ ci-rca recs targeting same file in 24h. Triage immediately. |
-
-If HARD BLOCK recs exist, note them prominently at the top of this section.
+Classification rows, the `prior_deferrals` render and the close-then-stamp route have ONE home: `.claude/commands/orient.md` Step 3 ("CI-RCA Triage rendering"). Render this section from there; restate no row here.
 
 ### 3. Momentum & Direction
 
