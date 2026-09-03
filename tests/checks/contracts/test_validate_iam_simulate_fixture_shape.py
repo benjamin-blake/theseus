@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from scripts.checks import registry
 from scripts.checks.contracts.validate_iam_simulate_fixture_shape import validate_iam_simulate_fixture_shape
 
@@ -315,3 +317,20 @@ class TestWiring:
 
         assert callable(resolved)
         assert resolved is validate_iam_simulate_fixture_shape
+
+
+class TestPassLineOutput:
+    """The PASS summary is the ONLY test-observable consequence of the `len(failed) ==
+    error_count_before` accounting branch (registry.examined() runs unconditionally above it).
+
+    Asserts the count-bearing PREFIX only, never a hardcoded triple total."""
+
+    def test_clean_fixture_prints_the_pass_line(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _write(tmp_path)
+
+        failed: list[str] = []
+        validate_iam_simulate_fixture_shape(failed, contracts_dir=tmp_path)
+
+        assert failed == []
+        out = capsys.readouterr().out
+        assert "  PASS: iam-simulate-fixture.yaml passes the pure validation layer (" in out

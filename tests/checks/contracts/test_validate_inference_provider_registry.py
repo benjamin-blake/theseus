@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from scripts.checks import registry
@@ -148,3 +149,24 @@ class TestWiring:
 
         assert callable(resolved)
         assert resolved is validate_inference_provider_registry
+
+
+class TestPassLineOutput:
+    """The PASS summary is the ONLY test-observable consequence of the `len(failed) ==
+    error_count_before` accounting branch (registry.examined() runs unconditionally above it)."""
+
+    def test_clean_fixture_prints_the_pass_line(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _write_contract(
+            tmp_path,
+            list(model_registry._VALID_PROVIDERS),
+            model_registry._DEFAULT_EXECUTOR_PROVIDER,
+            _VALID_RETIRED,
+        )
+
+        failed: list[str] = []
+        validate_inference_provider_registry(failed, contracts_dir=tmp_path)
+
+        assert failed == []
+        out = capsys.readouterr().out
+        expected = "  PASS: inference-provider.yaml provider_defaults and retired_providers agree with model_registry.py."
+        assert expected in out

@@ -152,3 +152,39 @@ class TestCensusAccountingOnEveryRejectionPath:
         validate_contract_drift(failed, contracts_dir=tmp_path)
         assert len(failed) == 2, failed
         assert not any("census" in f for f in failed), failed
+
+
+class TestRunSummaryOutput:
+    """The gate's two stdout-only comparisons -- the self-hosting line (:167) and the PASS/FAIL
+    verdict line (:384). Neither can be seen by a `failed` assertion, which is why the 97 tests
+    around them leave both mutants alive; and the self-hosting one needs a tree whose ONLY file
+    is the population contract, because any other file keeps the flipped comparison true."""
+
+    def test_self_hosting_line_is_printed_only_for_the_population_file(
+        self, tmp_path, install_fake_git, write_contract, FakeGit, capsys
+    ) -> None:
+        install_fake_git(FakeGit(merge_base_rc=1))
+        write_contract(tmp_path, "contract-population.yaml", "population: {}\n")
+        failed: list[str] = []
+        validate_contract_drift(failed, contracts_dir=tmp_path)
+        assert "  Self-hosting: contract-population.yaml was scanned by this run." in capsys.readouterr().out
+
+    def test_clean_run_prints_the_pass_summary(
+        self, tmp_path, install_fake_git, write_contract, FakeGit, valid_class_a, capsys
+    ) -> None:
+        install_fake_git(FakeGit(merge_base_rc=1))
+        write_contract(tmp_path, "alpha.yaml", valid_class_a())
+        failed: list[str] = []
+        validate_contract_drift(failed, contracts_dir=tmp_path)
+        assert failed == []
+        assert "  PASS: 1 file(s) scanned, 1 governed contract(s)." in capsys.readouterr().out
+
+    def test_single_violation_run_prints_the_fail_summary(
+        self, tmp_path, install_fake_git, write_contract, FakeGit, capsys
+    ) -> None:
+        install_fake_git(FakeGit(merge_base_rc=0, merge_base="BASE0000", ls_tree=[]))
+        write_contract(tmp_path, "freeform.yaml", "some_key: value\n")
+        failed: list[str] = []
+        validate_contract_drift(failed, contracts_dir=tmp_path)
+        assert len(failed) == 1, failed
+        assert "  FAIL: 1 file(s) scanned -- 1 violation(s)." in capsys.readouterr().out

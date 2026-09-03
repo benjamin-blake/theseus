@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from scripts.checks.ci_guards.validate_ops_portal_patch_targets import _find_violations as _ops_portal_patch_violations
+from scripts.checks.ci_guards.validate_ops_portal_patch_targets import validate_ops_portal_patch_targets
 
 
 class TestValidateOpsPortalPatchTargets:
@@ -83,3 +84,41 @@ class TestValidateOpsPortalPatchTargets:
 
         names = [s.name for s in registry.pre_sequence() + registry.full_sequence()]
         assert names.count("validate_ops_portal_patch_targets") >= 2
+
+
+class TestOpsPortalPatchTargetsWrapperEmission:
+    """The REGISTERED wrapper's own ROOT/tests glob and its single failed.append -- every test
+    above drives the pure _find_violations(paths) core directly, so that append runs nowhere."""
+
+    def _run(self, tmp_path: Path, body: str) -> list[str]:
+        target = tmp_path / "tests" / "test_subject.py"
+        target.parent.mkdir(parents=True)
+        target.write_text(body, encoding="utf-8")
+        failed: list[str] = []
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            validate_ops_portal_patch_targets(failed)
+        return failed
+
+    def test_stale_facade_patch_under_root_appends_the_guard_failure(self, tmp_path: Path, capsys) -> None:
+        failed = self._run(
+            tmp_path,
+            "from unittest.mock import patch\n"
+            "def test_x():\n"
+            "    with patch('scripts.ops_data_portal._ducklake_write'):\n"
+            "        file_decision({'title': 'd'}, _skip_sync=True)\n",
+        )
+
+        assert failed == ["ops_portal facade patch-target guard"]
+        assert "Stale facade patch targets found:" in capsys.readouterr().out
+
+    def test_corrected_submodule_patch_under_root_appends_nothing(self, tmp_path: Path, capsys) -> None:
+        failed = self._run(
+            tmp_path,
+            "from unittest.mock import patch\n"
+            "def test_x():\n"
+            "    with patch('scripts.ops_portal.decisions._ducklake_write'):\n"
+            "        file_decision({'title': 'd'}, _skip_sync=True)\n",
+        )
+
+        assert failed == []
+        assert "No stale facade patch targets against moved ops_portal callers found." in capsys.readouterr().out
