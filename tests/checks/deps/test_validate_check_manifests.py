@@ -231,3 +231,19 @@ class TestContractReadErrorIsReportedDistinctly:
         read_errors = self._read_errors(_run(tmp_path))
         assert any("Check-manifest grammar:" in f and "fake_domain/_manifest.py" in f for f in read_errors), read_errors
         assert any("check-manifest.yaml:" in f for f in read_errors), read_errors
+
+
+class TestScanSummaryLine:
+    """The terminal PASS/FAIL summary is the check's only operator-visible verdict -- no
+    incumbent test reads stdout, so the branch that selects it was unasserted."""
+
+    def test_clean_tree_prints_the_pass_summary(self, tmp_path: Path, capsys) -> None:
+        _write_tree(tmp_path, _ENTRY_LITERAL)
+        assert _run(tmp_path) == []
+        assert "PASS: 1 manifest(s) scanned." in capsys.readouterr().out
+
+    def test_violating_tree_prints_the_fail_summary(self, tmp_path: Path, capsys) -> None:
+        _write_tree(tmp_path, _ENTRY_LITERAL.replace("fake_domain.validate_x", "fake_domain.absent"))
+        failed = _run(tmp_path)
+        assert len(failed) == 1
+        assert "FAIL: 1 violation(s)." in capsys.readouterr().out

@@ -195,6 +195,21 @@ class TestLoadErrorHandling:
         )
         assert any("could not import scripts.roadmap.plan_document" in f for f in failed)
 
+    def test_implement_leg_import_error_is_reported_by_the_implement_leg_itself(self, tmp_path: Path) -> None:
+        """The implement leg's own append, told apart from the plan leg's identical wording."""
+        repo, rel = self.fixture.build(tmp_path, "gc-impl-import-distinct", [_step(1)], registry_entries=[])
+        failed: list[str] = []
+        validate_graduation_completeness(
+            failed,
+            changed_files=[rel],
+            root=repo,
+            load_plan=self._raiser(ImportError("no module")),
+            baseline_registry_reader=lambda r: [],
+        )
+        implement_leg = [f for f in failed if "(implement-PR leg)" in f]
+        assert implement_leg, failed
+        assert "could not import scripts.roadmap.plan_document" in implement_leg[0]
+
     def test_implement_leg_schema_error_skips_without_double_reporting(self, tmp_path: Path, capsys) -> None:
         repo, rel = self.fixture.build(tmp_path, "gc-impl-schema", [_step(1)], registry_entries=[])
         failed: list[str] = []
