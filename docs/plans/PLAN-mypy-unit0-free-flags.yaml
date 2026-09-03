@@ -1,0 +1,163 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: mypy-unit0-free-flags
+intent: 'Give AGENTS.md''s "type hints required" rule its first real mypy gate at zero cost: adopt the five strictness flags measured as exactly zero-delta on this tree (warn_redundant_casts, no_implicit_optional, strict_equality, warn_no_return, check_untyped_defs) into pyproject.toml''s two-line [tool.mypy] block, and pin them with one test so a later edit cannot silently drop them. No baseline entry is added, lowered or raised, and no file under src/** or any deploy-trigger path is touched (Decision 161 ratchet posture; Task 5 Section 2 rule).'
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-mypy-unit0-free-flags.yaml
+phase: Mypy strictness adoption, free tier (the flags Decision 161's deliberately-minimal [tool.mypy] block left unset). No tier_item slice, closes no criterion; soft-warn exception category ad_hoc_rec (autonomous-day brief 2026-09-02, Task 5 Unit 0; no rec named, so bundled_recommendations is empty by the brief's own rule).
+scope:
+- file: pyproject.toml
+  action: Modify
+  purpose: Append the five zero-delta strictness flags to the existing [tool.mypy] block as `<flag> = true`, keeping `python_version = "3.12"` and `disable_error_code = ["import-untyped"]` byte-identical. Three of the five (warn_redundant_casts, strict_equality, check_untyped_defs) genuinely change mypy's behaviour and measure zero new errors on this tree; two (no_implicit_optional, warn_no_return) are already mypy 2.3.0 defaults, so adopting them pins a default against a future upstream flip rather than adding enforcement today. No other pyproject block is touched -- [tool.pytest.ini_options].addopts in particular is read by validate_hermeticity_flags and stays unchanged.
+- file: tests/checks/typing/test_pyproject_mypy_flags.py
+  action: Create
+  purpose: The single pinning test. Reads pyproject.toml with tomllib (anchored on scripts.checks._common.ROOT, so it is cwd-independent), asserts every adopted flag is present AND is exactly True, and asserts the two pre-existing keys survive. Membership assertions only -- never an exact key count over the [tool.mypy] mapping, which Units 2-5 will grow (tests/CLAUDE.md test-count coupling). Imports stdlib plus scripts.checks._common only, so validate_no_cross_test_imports is satisfied by construction. Lands in the existing tests/checks/typing/ mirror package (which already carries __init__.py); projected ~25 SLOC of 500.
+bundled_recommendations: []
+infrastructure_dependencies: []
+acceptance_criteria:
+- pyproject.toml [tool.mypy] carries warn_redundant_casts, no_implicit_optional, strict_equality, warn_no_return and check_untyped_defs, each set to true, alongside an unchanged python_version = "3.12" and disable_error_code = ["import-untyped"].
+- tests/checks/typing/test_pyproject_mypy_flags.py asserts each adopted flag is present and is True and that both pre-existing keys survive, with no exact-count assertion over the [tool.mypy] mapping.
+- '`bin/venv-python -m mypy scripts/ src/` still reports "Found 87 errors in 40 files (checked 388 source files)" with the block in place -- stdout byte-identical to the no-flags run (re-measured 2026-09-03 under the requirements.lock-pinned mypy 2.3.0), so no new error lands anywhere, src/** and deploy-trigger files included.'
+- 'mypy actually honours the adopted block: a synthetic module checked against the repo''s own pyproject.toml reports [redundant-cast], [comparison-overlap] and an [operator] error inside an untyped def -- all three absent under the pre-change block.'
+- 'validate_mypy_ratchet returns an empty failed list and config/mypy_baseline.yaml is byte-unchanged: no new entry, no raise, no `baseline-raised` marker; it still holds 40 entries summing to 94.'
+- 'The diff touches only pyproject.toml, the new test file, this plan and the two graduated registry shards under config/agent/verification_registry/entries/ (Decision 176 grain): no file under src/**, no deploy-trigger path, no scripts/executor/** file and not scripts/execute_recommendation.py; no config/sloc_budgets.yaml or config/coverage_baseline.yaml entry is added and the new test file stays at or under 500 SLOC.'
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: RED baseline -- prove on the unmodified tree that all five flags are absent and that exactly the two pre-existing keys are there. Run FIRST, before any edit. Marked hermetic false for a stated reason, not for cost -- this step deliberately INVERTS once the change lands, so validate_vp_replay re-executing it against the implementation-bearing tree would see exit 1.
+  command: bin/venv-python -c "import tomllib, pathlib; m=tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))['tool']['mypy']; absent=[f for f in ('warn_redundant_casts','no_implicit_optional','strict_equality','warn_no_return','check_untyped_defs') if f not in m]; print('absent=',absent,'| existing=',sorted(m)); raise SystemExit(0 if len(absent)==5 and m['python_version']=='3.12' and m['disable_error_code']==['import-untyped'] else 1)"
+  expected: Exit 0, printing all five flag names in `absent=` and `existing= ['disable_error_code', 'python_version']` (reproduced at planning time on the session HEAD). After the edit this same command exits 1, which is the intended inversion.
+  fix_if: If this exits 1 on unmodified code the flags already landed -- STOP and re-derive rather than re-adding what is already there.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Asserts the ABSENCE of the very flags this plan adds; it holds only on pre-change code, so graduating it would land a guard that fails permanently the moment the change merges.
+- step: 2
+  phase: pre-deploy
+  action: GREEN -- the pinning test passes with the flags in pyproject (hermetic false; a pytest subprocess, per the Decision 148 partition this unit follows).
+  command: bin/venv-python -m pytest tests/checks/typing/test_pyproject_mypy_flags.py::TestAdoptedMypyFlags::test_zero_delta_strictness_flags_are_pinned -q
+  expected: 1 passed -- every adopted flag is present and is True, python_version is "3.12" and disable_error_code is ["import-untyped"].
+  fix_if: A missing-flag failure means the pyproject edit is incomplete; a not-True failure means a flag was written as a string or 1 rather than a TOML boolean `true`.
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: mypy-adopted-strictness-flags-pinned-in-pyproject
+- step: 3
+  phase: pre-deploy
+  action: Zero-delta re-measurement -- the whole-tree count is unchanged with the block in place (hermetic false; a ~1-minute mypy subprocess, per the Decision 148 partition).
+  command: bin/venv-python -c "import subprocess, sys; from scripts.checks import _common; r=subprocess.run([sys.executable,'-m','mypy','scripts/','src/'],capture_output=True,text=True,encoding='utf-8',errors='replace',cwd=_common.ROOT); tail=(r.stdout or '').strip().splitlines()[-1]; print(tail); raise SystemExit(0 if tail=='Found 87 errors in 40 files (checked 388 source files)' else 1)"
+  expected: Exit 0 printing "Found 87 errors in 40 files (checked 388 source files)" -- identical to the pre-change measurement, so no flag pushed an error into any file, src/** and deploy-trigger files included.
+  fix_if: A higher count means a flag is NOT zero-delta on this tree. Identify the added error's file from the diff of the two stdouts; if it lands in src/** or a deploy-trigger file, DROP that flag from pyproject and log it in the run log (the brief's Unit 0 rule) -- never add a baseline entry and never edit the offending file.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: The literal 87/40 is Unit 0's snapshot and Unit 1 deliberately drives it down, so a graduated shard asserting it would red on the very next unit; the standing regression guard is validate_mypy_ratchet, which the full tier already runs on every merge.
+- step: 4
+  phase: pre-deploy
+  action: Effectiveness probe -- mypy actually discovers and honours the adopted block (a text assertion alone would pass even if mypy ignored the file).
+  command: bin/venv-python -c "import subprocess, sys, tempfile, pathlib; from scripts.checks import _common; d=pathlib.Path(tempfile.mkdtemp()); p=d/'probe.py'; p.write_text(chr(10).join(['from typing import cast','','','def a() -> int:','    return cast(int, 1)','','','def b() -> bool:',\"    return 1 == 'x'\",'','','def c():',\"    return 's' + 1\",'']), encoding='utf-8'); r=subprocess.run([sys.executable,'-m','mypy','--config-file',str(_common.ROOT/'pyproject.toml'),'--no-error-summary',str(p)],capture_output=True,text=True,encoding='utf-8',errors='replace',cwd=_common.ROOT); print(r.stdout); missing=[c for c in ('[redundant-cast]','[comparison-overlap]','[operator]') if c not in r.stdout]; print('missing=',missing); raise SystemExit(0 if not missing else 1)"
+  expected: Exit 0 with `missing= []` -- warn_redundant_casts yields [redundant-cast], strict_equality yields [comparison-overlap], and check_untyped_defs yields the [operator] error inside the untyped def. Measured red-then-green at planning time (exit 1 with all three missing under the pre-change block, exit 0 under the adopted block).
+  fix_if: 'A missing code means that flag is not live -- check it is inside [tool.mypy] (not a stray table) and written as a TOML boolean. Never satisfy this by adding the flags on the mypy argv instead: argv flags would not be seen by validate_mypy_ratchet''s own invocation.'
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: mypy-adopted-strictness-flags-are-live
+- step: 5
+  phase: pre-deploy
+  action: The registered full-tier ratchet still passes and the baseline registry is untouched.
+  command: bin/venv-python -c "from scripts.checks.typing.mypy_baseline import validate_mypy_ratchet, load_baseline; f=[]; validate_mypy_ratchet(f); print(f); b=load_baseline(); print('entries=',len(b),'sum=',sum(b.values())); raise SystemExit(0 if not f and len(b)==40 and sum(b.values())==94 else 1)"
+  expected: Exit 0 printing `[]` then `entries= 40 sum= 94`, with the three pre-existing non-blocking ratchet-down advisories (postflight_gates.py, session/preflight.py, src/common/config.py) still printed above it.
+  fix_if: A non-empty list is a real ratchet violation -- find the file whose count rose and drop the flag that caused it. Never add or raise a config/mypy_baseline.yaml entry to absorb it (Decision 161 clause 4, Decision 165, Decision 181).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: This IS the registered full-tier check validate_mypy_ratchet plus a literal roster snapshot Unit 1 will deliberately shrink; graduating a shard that re-invokes a registered check duplicates the tier and would red on the next unit.
+- step: 6
+  phase: pre-deploy
+  action: The whole typing mirror package stays green with the new module in it.
+  command: bin/venv-python -m pytest tests/checks/typing/ -q
+  expected: All tests pass -- the pre-existing test_mypy_baseline.py and test__manifest.py modules plus the new pinning test.
+  fix_if: A failure in test_mypy_baseline.py means the pyproject edit perturbed the baseline machinery, which it must not; diagnose there rather than adjusting the new test.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: A whole-directory selector that CI's own pytest job already runs on every PR and merge; a registry row invoking it would duplicate a standing gate rather than add a guard.
+- step: 7
+  phase: pre-deploy
+  action: Lint and format-check the new test file.
+  command: bin/venv-python -m ruff check tests/checks/typing/test_pyproject_mypy_flags.py && bin/venv-python -m ruff format --check tests/checks/typing/test_pyproject_mypy_flags.py
+  expected: 'All checks passed! followed by: 1 file already formatted.'
+  fix_if: Fix the reported rule violations or run `ruff format` on the file; never add a noqa to silence one.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: CI's ruff lint and ruff format jobs already cover every file on every PR; graduating a per-file ruff invocation duplicates them exactly.
+- step: 8
+  phase: pre-deploy
+  action: Scope-boundary and size assertion -- nothing forbidden by the Task 5 Section 2 rule is in the diff, and the new test file is within budget.
+  command: 'bin/venv-python -c "import subprocess, pathlib; deploy={''scripts/aws_profile.py'',''scripts/llm/github_models_client.py'',''scripts/llm/client.py'',''scripts/llm/utils.py'',''scripts/run_scheduled_agent.py'',''scripts/s3_log_store.py'',''scripts/tool_runtime.py'',''scripts/execute_recommendation.py'',''config/mypy_baseline.yaml'',''config/sloc_budgets.yaml'',''config/coverage_baseline.yaml''}; r=subprocess.run([''git'',''diff'',''--name-only'',''origin/main...HEAD''],capture_output=True,text=True,encoding=''utf-8'',errors=''replace''); changed=r.stdout.split() if r.returncode==0 else None; print(''DIFF-CHECKED'' if changed is not None else ''DIFF-SKIPPED: origin/main unreachable, boundary not asserted this run''); bad=[p for p in (changed or []) if p in deploy or p.startswith((''src/'',''scripts/executor/'',''config/lambda/''))]; t=pathlib.Path(''tests/checks/typing/test_pyproject_mypy_flags.py''); n=len([ln for ln in t.read_text(encoding=''utf-8'').splitlines() if ln.strip() and not ln.strip().startswith(''#'')]); print(''changed='',changed,''| forbidden='',bad,''| sloc='',n); raise SystemExit(0 if not bad and n<=500 else 1)"'
+  expected: On the branch it prints DIFF-CHECKED, then `forbidden= []`, a `changed=` list holding only pyproject.toml, the new test file and this plan (plus any graduated registry shard), and `sloc=` well under 500. Where origin/main is unreachable the step prints DIFF-SKIPPED with that reason and still asserts the SLOC bound -- an unasserted boundary is printed, never silently passed.
+  fix_if: Any forbidden path in the diff means the Section 2 boundary was crossed -- revert that hunk. Over 500 SLOC means trim the test file; never raise a SLOC budget (Decision 128 decompose-by-default). A DIFF-SKIPPED line on the branch means fetch origin/main and re-run; do not merge on a skipped boundary assertion.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: A diff-against-origin/main assertion about this PR only -- vacuous on every later commit, and the standing surfaces (validate_scope_boundary, validate_sloc_limits) already own these invariants in the tiers.
+- step: 9
+  phase: pre-deploy
+  action: Fast tier green on the branch. Note it does NOT run validate_mypy_ratchet -- step 5 and step 10 are what prove the ratchet.
+  command: bin/venv-python -m scripts.validate --pre
+  expected: Exit 0; validate_mypy_baseline_edits prints its no-unauthorized-raises PASS (config/mypy_baseline.yaml is unchanged, so the tamper guard has nothing to gate).
+  fix_if: Diagnose the named failing check; never weaken a check to obtain green (Decision 181).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Invokes scripts.validate itself -- a registry row that runs the tier which runs the registry is the recursion the hermetic-replay rule forbids.
+- step: 10
+  phase: pre-deploy
+  action: Full-tier validation before handoff, as handoff_policy.full_validation_required_before_commit declares (Decision 163). Executed exactly once, at /implement Step 7 closure item 4, after implementation_declared is true and every bookkeeping write has landed.
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0 -- the complete suite including validate_mypy_ratchet (full tier only) and validate_mypy_baseline_edits is green with the whole change in tree.
+  fix_if: A full-tier-only failure is in scope for this plan to fix on the branch. Never skip a test, add a baseline entry, or drop an assertion to get green.
+  hermetic: false
+  graduation: not-applicable
+test_obligations:
+- source: pyproject.toml
+  behavior: The five adopted mypy strictness flags are present and true in [tool.mypy], and python_version plus disable_error_code survive the edit.
+  verification_step: 2
+  test_selector: tests/checks/typing/test_pyproject_mypy_flags.py::TestAdoptedMypyFlags::test_zero_delta_strictness_flags_are_pinned
+  red_green_expectation: Red before -- measured on the session HEAD at planning time, [tool.mypy] holds only python_version and disable_error_code, so the test fails on the missing-flags assertion. Green after the pyproject edit. Step 4 independently proves the block is not merely present but honoured by mypy (red-then-green measured at planning time).
+constraints:
+- Adopt EXACTLY the five named flags. warn_unused_ignores, warn_unreachable, disallow_incomplete_defs and disallow_untyped_defs belong to Units 2-5 and are not zero-delta; adding one here would break the serial-unit contract.
+- Do NOT touch config/mypy_baseline.yaml in this unit -- no new entry, no raise, no `baseline-raised` marker, and no `--update` run (Decision 161 clause 4, Decision 165). The baseline may only ratchet DOWN, and that is Unit 1's work.
+- Do NOT edit any file under src/**, any deploy-trigger path (src/data/handlers/**, scripts/aws_profile.py, scripts/llm/github_models_client.py, scripts/llm/client.py, scripts/llm/utils.py, scripts/run_scheduled_agent.py, scripts/s3_log_store.py, scripts/tool_runtime.py, config/lambda/**, src/lambdas/ducklake_*/**, src/common/ducklake_*.py), scripts/executor/**, or scripts/execute_recommendation.py -- the Task 5 Section 2 rule.
+- Do NOT weaken a check, test, or assertion to obtain green, and do NOT silence a new mypy error with a type ignore or an argv flag (Decision 181, docs/contracts/implement-scope-boundary.yaml CONTENT invariant). A flag that is not zero-delta is DROPPED and logged, never accommodated.
+- Do NOT raise a SLOC budget or add a coverage_baseline entry (Decision 128 decompose-by-default, Decision 159).
+- 'The pinning test asserts membership and value, never an exact key count over [tool.mypy]: Units 2-5 grow that mapping and a count assertion would break a PR that never touched the test file (tests/CLAUDE.md test-count coupling, validate_test_count_coupling).'
+- No cross-test imports (Decision 131) -- the new module imports stdlib plus scripts.checks._common only; it must not import from test_mypy_baseline.py or any other test_* module.
+- Do NOT reinstall, upgrade or downgrade mypy in this unit. The venv already holds the requirements.lock-pinned mypy 2.3.0; the coordinator restores 2.3.1 after Task 5's LAST merge, not here.
+- No rescue agents or workaround loops (Decision 55) -- a flag that adds an error is reported and dropped, never guessed around.
+context:
+- 'Operator confirmation: standing grant in the autonomous-day brief of 2026-09-02 (Task 5 Unit 0).'
+- 'Decision-scout verdict FLAGS_FOUND (134 of 134 decisions triaged). CITE: Decision 161, Decision 165, Decision 176, Decision 132, Decision 148, Decision 163, Decision 181, Decision 131, Decision 55. RELATED: Decision 166, Decision 128, Decision 130, Decision 104, Decision 169, Decision 48, Decision 75, Decision 170, Decision 159, Decision 153, Decision 135, Decision 76. Decision 132 [NOTE] (the plan-PR leg of validate_graduation_completeness needs a graduation disposition on EVERY phase: pre-deploy step, both tiers) ACCEPTED with adjustment, no pivot owed -- re-read of the drafted VP shows all 10 pre-deploy steps are already disposed: 2 graduate (steps 2, 4, each with a graduation_check_id), 7 waive each carrying a graduation_waiver_reason (steps 1, 3, 5, 6, 7, 8, 9) and 1 not-applicable (step 10), so the plan-PR leg is satisfied as drafted; the tally is recorded here so a later VP edit cannot silently drop one. Decision 176 was absent from the draft''s citations and is now cited, with its own context line pinning the graduated-row grain and the two shard filenames. No [WARN] contradiction, no SPIRIT flag and no BLOCK: nothing pivoted, nothing deferred, nothing abandoned.'
+- 'gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 1 round(s) (11 non-blocking notes recorded, none folded)'
+- 'Graduated-row grain (Decision 176, amends Decision 166): the verification registry is ONE RECORD PER FILE at config/agent/verification_registry/entries/<check_id>.yaml -- the flat registry.yaml `entries:` list and its 6,000-line ceiling are RETIRED (596 shards on disk at HEAD; scripts/verification_graduation.shard_path_for is the path authority), and validate_verification_registry''s placement leg fails any shard whose filename differs from its own check_id. This unit''s two graduate steps therefore land exactly two new shards: entries/mypy-adopted-strictness-flags-pinned-in-pyproject.yaml (VP step 2) and entries/mypy-adopted-strictness-flags-are-live.yaml (VP step 4). Both ids are filename-safe kebab slugs and neither collides with an existing shard (checked 2026-09-03). No step, acceptance criterion or execution step in this plan describes an append to registry.yaml.'
+- 'Measurement provenance (2026-09-03, mypy 2.3.0 -- the requirements.lock pin; the venv''s own 2.3.1 was recorded before the coordinator downgraded it): `mypy scripts/ src/` = 87 errors in 40 files (388 checked); each of the five flags alone and all five together produce byte-identical stdout; re-measured with the flags written into a [tool.mypy] BLOCK (not argv) and the output is byte-identical to the no-flags run. Raw outputs under the coordinator''s task5 scratch.'
+- 'Honest scoping of the five: warn_redundant_casts, strict_equality and check_untyped_defs are OFF by default and genuinely change behaviour (proved live by VP step 4); no_implicit_optional and warn_no_return are already ON by default in mypy 2.3.0, so their entries pin a default rather than add enforcement -- the plan claims nothing more for them.'
+- 'Placement rule for a test with no source counterpart: `map_source_to_test(ROOT/''pyproject.toml'')` returns None and `check_test_file_exists` returns (True, ''skipped: not in src/ or scripts/'') -- verified at planning time -- so tests/CLAUDE.md''s mirror convention (Decision 131, amends Decision 104) imposes no location and no coverage obligation. Home chosen by concern: tests/checks/typing/ is the mirror package of scripts/checks/typing/ (mypy governance) and already carries __init__.py. Precedent: validate_hermeticity_flags reads [tool.pytest.ini_options].addopts and is pinned from tests/checks/verification/test_validate_hermeticity_flags.py.'
+- 'Placement alternatives rejected: tests/validate/ is the declared concern-split test package for scripts/validate.py (_CONCERN_SPLIT_TEST_PACKAGES), so a pyproject-mypy test there mis-attributes the subject; appending to tests/checks/typing/test_mypy_baseline.py puts an off-subject assertion in the mirror file whose coverage floor is scoped to mypy_baseline.py (Decision 159) and pushes it from 404 toward the 500 ceiling.'
+- 'Ratchet state at planning time: validate_mypy_ratchet returns [] on HEAD with three non-blocking ratchet-down advisories (scripts/executor/postflight_gates.py 1<5, scripts/session/preflight.py 4<5, src/common/config.py 1<3). config/mypy_baseline.yaml holds 40 entries summing to 94; this unit leaves all of it untouched -- the paydown is Unit 1.'
+- 'Tier placement: validate_mypy_ratchet is FULL TIER ONLY and validate_mypy_baseline_edits runs in both (scripts/checks/typing/_manifest.py). `validate --pre` therefore proves nothing about the ratchet. The --pre diff-aware mypy scaffold (scripts/validate.py _scaffold_mypy_diff, `--follow-imports=silent` on changed files) is explicitly INFORMATIONAL and non-blocking, so the adopted flags cannot red the fast tier even where a follow-imports-silent view differs from the whole-tree one.'
+- 'Deploy-trigger check: neither pyproject.toml nor tests/checks/typing/** appears in the `paths:` of .github/workflows/deploy-prod-lambdas.yml or deploy-ducklake-lambdas.yml (both read 2026-09-03), so this diff triggers no Lambda deploy.'
+- 'Registration closure: docs/contracts/plan-obligations.yaml declares one registration surface, triggered by Create of scripts/checks/<domain>/(validate|check)_*.py. Neither scope row matches, so this plan owes no companion rows. bundled_recommendations is empty because Task 5 names no rec (the brief''s own rule).'
+- 'Serial-unit contract: Unit 0 must merge before Unit 1 (baseline paydown) and before Units 2-5 (one flag each). This unit does NOT restore the venv''s mypy version -- the coordinator reinstalls mypy==2.3.1 and re-prints `mypy --version` after Task 5''s LAST merge.'
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- only the plan-cited decision sections
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+- '`bin/venv-python -m mypy --version` prints 2.3.0 (the requirements.lock pin) before any measurement is taken'
+- VP step 1 (RED baseline) run FIRST on the unmodified tree and its exit 0 recorded before any edit
+execution_steps:
+- Run VP step 1 on the unmodified tree; record its output (all five flags absent, exactly two existing keys). If it exits 1, STOP -- the flags already landed.
+- Print and record `bin/venv-python -m mypy --version` in the run log. It must read 2.3.0. Do NOT change it in this unit; note explicitly in the run log that restoring 2.3.1 is the coordinator's post-Task-5 step, not this PR's.
+- 'tests/checks/typing/test_pyproject_mypy_flags.py FIRST (red before green): a module docstring citing Task 5 Unit 0 and Decision 161; `from __future__ import annotations`; `import tomllib`; `from scripts.checks import _common`; a module-level `_ADOPTED_FLAGS: tuple[str, ...]` holding the five names in pyproject order; a `_mypy_block()` helper that opens `_common.ROOT / ''pyproject.toml''` in binary mode and returns `tomllib.load(fh)[''tool''][''mypy'']`; and class TestAdoptedMypyFlags with the single method test_zero_delta_strictness_flags_are_pinned asserting (a) no flag is missing, (b) every flag `is True`, (c) `block[''python_version''] == ''3.12''`, (d) `block[''disable_error_code''] == [''import-untyped'']`. No len()-equality over the block. Run VP step 2 now and record the RED failure.'
+- 'pyproject.toml -- append five lines to the existing [tool.mypy] block, after disable_error_code, each as `<flag> = true`, in this order: warn_redundant_casts, no_implicit_optional, strict_equality, warn_no_return, check_untyped_defs. Do not reorder or reformat the two existing keys and do not add a comment block. Re-run VP step 2 and record GREEN.'
+- Run VP steps 3, 4 and 5 and record their outputs verbatim in the run log -- the byte-identical 87/40 line, `missing= []`, and the ratchet's `[]` with `entries= 40 sum= 94`. If step 3 shows a higher count, drop the offending flag, log which flag and which file blocked it, and re-run steps 2-5.
+- Execute the rest of the Verification Plan in order (steps 6-9 on the branch; step 10 once at /implement Step 7 closure item 4).
+- 'Report: the red-then-green evidence for steps 1/2/4, the zero-delta re-measurement, the ratchet output, the recorded mypy version with the explicit note that this unit does not restore 2.3.1, and the Verification Graduation section for the two graduate steps -- each landing as its own shard at config/agent/verification_registry/entries/<graduation_check_id>.yaml (Decision 176 one-record-per-file grain, filename must equal check_id), never an append to a flat registry.yaml.'
+rollback: Single squash commit; reverting removes the five flags and the pinning test and restores the two-line [tool.mypy] block. config/mypy_baseline.yaml is untouched by this unit, so there is no ratchet state to unwind and no revert-ordering constraint against Unit 1. A post-merge validate_mypy_ratchet failure naming a file whose count rose is a real regression from some other change, not from this diff -- the zero-delta property is re-provable at any commit by VP step 3.
