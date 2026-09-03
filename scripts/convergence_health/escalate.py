@@ -10,7 +10,7 @@ for the full public surface.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 from scripts.convergence_health.assess import (
     RED_AGE_THRESHOLD_HOURS,
@@ -61,9 +61,13 @@ def find_open_convergence_stale_rec(
 
 def _fetch_open_recs(profile: Optional[str] = None) -> list[dict[str, Any]]:
     """Fetch all open recs from the DuckLake reader (live, never the local JSONL cache)."""
-    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
 
-    return make_reader(profile=profile).named("open_recs") or []
+    # make_reader() is annotated -> Reader (the Protocol, which deliberately does not declare
+    # named()) but only ever constructs a DuckLakeReader; cast narrows the type at this one call
+    # site rather than widening the Protocol by omission.
+    reader = cast(DuckLakeReader, make_reader(profile=profile))
+    return reader.named("open_recs") or []
 
 
 def _condition_for_verdict(verdict: HealthVerdict) -> str:

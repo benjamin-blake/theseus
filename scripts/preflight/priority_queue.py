@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime, timezone
+from typing import cast
 
 from scripts.preflight import _common
+from src.common.ducklake_reader_client import DuckLakeReader
 
 
 def _shape_priority_queue_rows(rows: list[dict], max_items: int) -> list[dict]:
@@ -112,7 +114,8 @@ def read_priority_queue(
     # Decision 70 semantics (all entries of the LATEST curator run) are preserved inside the
     # priority_queue_current verb's correlated subquery -- not by the generic current projection.
     try:
-        reader_rows = _common._make_reader(table="ops_priority_queue").named("priority_queue_current")
+        reader = cast(DuckLakeReader, _common._make_reader(table="ops_priority_queue"))
+        reader_rows = reader.named("priority_queue_current")
         shaped = _shape_priority_queue_rows(reader_rows, max_items)
         shaped.sort(key=lambda r: (r.get("rank") is None, r.get("rank", 0)))
         return shaped

@@ -31,6 +31,7 @@ import stat
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +59,12 @@ def _pull_via_reader(table: str) -> list[dict] | None:
     not updated). The reader is the sole backend for every migrated table (Decision 84 I-1).
     """
     try:
-        from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
+        from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
 
-        reader = make_reader(table=table)
+        # make_reader() is annotated -> Reader (the Protocol, which deliberately does not declare
+        # named()) but only ever constructs a DuckLakeReader, which also carries current_state;
+        # cast narrows the type here rather than widening the Protocol by omission.
+        reader = cast(DuckLakeReader, make_reader(table=table))
         if table == "ops_priority_queue":
             # Decision 70: the queue current state is ALL entries of the LATEST curator run.
             # The generic latest-per-merge-key projection would silently change these semantics,
@@ -321,7 +325,9 @@ def upsert_cache_row(table: str, row: dict, *, merge_key: str = "id", path: Path
         logger.warning("sync_ops.upsert_cache_row: row missing merge key %r; cache not updated", merge_key)
         return 0
 
-    local_path = path if path is not None else _LOGS_DIR / local_rel
+    # The guard above already returned 0 when `path` is None and `local_rel` is falsy, so this
+    # arm is reached only with a non-empty _TABLE_TO_LOCAL entry.
+    local_path = path if path is not None else _LOGS_DIR / cast("str", local_rel)
     # No-op for /dev/null sentinel or character devices -- real-path write errors still propagate (Decision 55).
     if str(local_path) == os.devnull:
         return 0

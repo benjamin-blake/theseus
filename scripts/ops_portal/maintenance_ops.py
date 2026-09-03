@@ -13,7 +13,7 @@ import re
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 
 from pydantic import ValidationError
 
@@ -192,10 +192,14 @@ def purge_postmortems_for(failed_rec_id: str, dry_run: bool = False, profile: Op
     if not re.fullmatch(r"rec-\d+", failed_rec_id):
         raise ValueError(f"Invalid rec ID for purge: {failed_rec_id!r}. Must match rec-\\d+.")
 
-    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
 
     title_prefix = f"Investigate executor failure for {failed_rec_id}"
-    rows = make_reader(profile=profile).named("recs_by_title_prefix", title_prefix=f"{title_prefix}%")
+    # make_reader() is annotated -> Reader (the Protocol, which deliberately does not declare
+    # named()) but only ever constructs a DuckLakeReader; cast narrows the type at this one call
+    # site rather than widening the Protocol by omission.
+    reader = cast(DuckLakeReader, make_reader(profile=profile))
+    rows = reader.named("recs_by_title_prefix", title_prefix=f"{title_prefix}%")
     id_re = re.compile(rf"Investigate executor failure for {re.escape(failed_rec_id)}(?![0-9])")
     matched = [
         r["id"]

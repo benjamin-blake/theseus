@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import Any
+from typing import Any, cast
 
 from scripts.checks import _common
 
@@ -122,9 +122,13 @@ def _fetch_open_recs(profile: str | None = None) -> list[dict]:
     escalate._fetch_open_recs, scripts.preflight.recs_cache._derive_open_recs's server-side
     counterpart) -- the named verb returns every open rec; callers filter client-side.
     """
-    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
 
-    return make_reader(profile=profile).named("open_recs") or []
+    # make_reader() is annotated -> Reader (the Protocol, which deliberately does not declare
+    # named()) but only ever constructs a DuckLakeReader; cast narrows the type at this one call
+    # site rather than widening the Protocol by omission.
+    reader = cast(DuckLakeReader, make_reader(profile=profile))
+    return reader.named("open_recs") or []
 
 
 def _is_open_budget_breach_row(rec: dict) -> bool:

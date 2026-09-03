@@ -32,7 +32,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, cast
 
 import yaml
 
@@ -256,9 +256,13 @@ def _fetch_decision_from_reader(decision_id: str, profile: Optional[str] = None)
         raise ValueError(f"_fetch_decision_from_reader: invalid decision_id: {decision_id!r}")
 
     from scripts.sync.ops import _coerce_ops_decisions_row  # noqa: PLC0415
-    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
 
-    rows = make_reader(profile=profile).named("decision_by_id", id=decision_id)
+    # make_reader() is annotated -> Reader (the Protocol, which deliberately does not declare
+    # named()) but only ever constructs a DuckLakeReader; cast narrows the type at this one call
+    # site rather than widening the Protocol by omission.
+    reader = cast(DuckLakeReader, make_reader(profile=profile))
+    rows = reader.named("decision_by_id", id=decision_id)
     if not rows:
         return None
     rec = _coerce_ops_decisions_row(dict(rows[0]))

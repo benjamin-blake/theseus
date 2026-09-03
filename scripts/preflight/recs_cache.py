@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime, timezone
+from typing import cast
 
 from scripts.preflight import _common
+from src.common.ducklake_reader_client import DuckLakeReader
 
 
 def _derive_open_recs(rows: list[dict]) -> list[dict]:
@@ -27,8 +29,8 @@ def _derive_open_recs(rows: list[dict]) -> list[dict]:
 
 def _derive_decisions_max_updated(rows: list[dict]) -> list[dict]:
     """Client-side `decisions_max_updated` verb: [{ts: max(last_updated_timestamp)}] (mirrors the verb row)."""
-    stamps = [_common._row_ts(r, "last_updated_timestamp") for r in rows]
-    stamps = [s for s in stamps if s is not None]
+    raw_stamps = [_common._row_ts(r, "last_updated_timestamp") for r in rows]
+    stamps = [s for s in raw_stamps if s is not None]
     if not stamps:
         return [{"ts": None}]
     newest = max(stamps)
@@ -106,7 +108,7 @@ def _count_recommendations_reader(cache_rows: object = _common._READER_SENTINEL)
         return _tally_rec_counts(_derive_open_recs(cache_rows), source="cache")  # type: ignore[arg-type]
 
     try:
-        rows = _common._make_reader().named("open_recs")
+        rows = cast(DuckLakeReader, _common._make_reader()).named("open_recs")
         return _tally_rec_counts(rows, source="reader")
     except Exception as exc:  # noqa: BLE001
         import logging as _log  # noqa: PLC0415
@@ -207,7 +209,8 @@ def _get_latest_decision_ts(cache_rows: object = _common._READER_SENTINEL) -> st
         rows = _derive_decisions_max_updated(cache_rows)  # type: ignore[arg-type]
     else:
         try:
-            rows = _common._make_reader(table="ops_decisions").named("decisions_max_updated")
+            reader = cast(DuckLakeReader, _common._make_reader(table="ops_decisions"))
+            rows = reader.named("decisions_max_updated")
         except Exception:  # noqa: BLE001
             return None
     if not rows:

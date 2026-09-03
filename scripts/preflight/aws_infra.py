@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from typing import cast
 
 from scripts.preflight import _common
+from src.common.ducklake_reader_client import DuckLakeReader
 
 
 def check_credentials() -> str:
@@ -74,7 +76,7 @@ def _prime_reader_url(creds_status: str) -> None:
     if os.environ.get("DUCKLAKE_READER_URL"):
         return  # already primed (CI override or earlier call)
     try:
-        url = _common._make_reader()._reader_url()  # type: ignore[union-attr]
+        url = cast(DuckLakeReader, _common._make_reader())._reader_url()
         if isinstance(url, str) and url:
             os.environ["DUCKLAKE_READER_URL"] = url
     except Exception as exc:  # noqa: BLE001
