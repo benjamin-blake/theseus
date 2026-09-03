@@ -10,6 +10,15 @@
 # The account ID is supplied at apply time via the gitignored terraform.personal.tfvars; it is
 # never a committed literal (PLAN Step 11b parameterisation invariant).
 # Retired-resource state reconciliation for this root is governed by Decision 178 clause 4 (docs/DECISIONS.md).
+#
+# Draining a retired address needs a PUSH, never a workflow_dispatch. A destroy always routes the
+# deterministic guard, and terraform-apply-sandbox's gated-apply job (the one carrying the
+# tf-gated-apply human approval) is gated on github.event_name == 'push'. So a dispatched run
+# produces a correct fresh plan, routes it, and then skips the job that would apply it -- there is
+# nothing to approve and nothing lands. Reconcile cannot substitute: it replays the saved plan.bin
+# for the red commit, which stops rendering once config drops a provider that plan still
+# references. The merge of a PR touching this root is the vehicle -- it generates a NEW plan.bin
+# and its push-triggered run reaches gated-apply.
 
 terraform {
   # use_lockfile (native S3 state locking, no DynamoDB lock table) requires Terraform 1.10+.
