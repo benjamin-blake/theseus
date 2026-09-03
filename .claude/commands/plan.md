@@ -98,7 +98,7 @@ git push -u origin HEAD
 
 ## Step 9: Plan Critique Gate (MANDATORY)
 **DO NOT output the completion message until this step completes.**
-Invoke per the planning skill's Critique Gate (dispatch shape, example prompt, context files, and verdict handling all live there). Substitute `{slug}` with the actual branch slug. Loop on REVISE (3-round cap, then escalate per the skill -- the escalation menu includes narrowing scope, re-deriving the approach, or **split the plan** into smaller IMPLEMENTATION plans), proceed on PROCEED. Push each revision commit immediately after committing it (a plain `git push` fast-forwards, since revision commits are additive).
+Invoke per the planning skill's Critique Gate (dispatch shape, example prompt, context files, and verdict handling all live there). Substitute `{slug}` with the actual branch slug. Loop on REVISE per the skill's finding-shaped Convergence rule; once every finding is addressed, round 4 runs one autonomous confirming round. Escalation (disputed residue, or a round-4 REVISE) offers accept-with-deferral / re-scope / split / abandon / one more round. Proceed on PROCEED. Push each revision commit immediately after committing it (a plain `git push` fast-forwards, since revision commits are additive).
 
 Note: this gate reviews the PLAN artefact, not the report deliverable. For REPORT-ONLY plans, the deliverable gets its own critique in Step 10.
 
