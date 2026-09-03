@@ -107,6 +107,16 @@ class TestContractShape:
             "the R6 split's own residual belongs in known_residuals, not the CONTENT coverage map"
         )
 
+    def test_bookkeeping_row_permits_the_followon_recs_write_back(self) -> None:
+        """PLAN-plan-followon-recs-field (PDB-01): /implement Step 7 closure writes a deferred
+        half's filed rec id back into the resolved plan's followon_recs, ahead of the item that
+        sets implementation_declared true -- sanctioned here alongside closes_criteria."""
+        doc = _load_contract()
+        row = doc["sanction_rows"]["implementing_plan_bookkeeping"]
+        assert "followon_recs" in row["permitted_field_edits"]
+        entries = doc["amendment_log"]
+        assert any("plan-followon-recs-field" in (e.get("summary") or "") for e in entries)
+
     def test_unmodelled_companions_present(self) -> None:
         doc = _load_contract()
         companions = {row["path"] for row in doc["unmodelled_companions"]}

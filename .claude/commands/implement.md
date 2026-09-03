@@ -105,6 +105,22 @@ that point, so the cost is bounded to fixing and rerunning the closure.
 
 ## Step 7: Commit, PR, and Merge
 **You MUST execute the commit flow autonomously once Step 6 passes. Do not stop to ask for permission.**
+
+### Deferred half (follow-on split)
+This applies only if this session deferred a half of the plan's work; if nothing was deferred it
+is a no-op -- proceed to the Commit Flow. Otherwise, before the implement skill's closure item 3
+(the one that sets `implementation_declared` true): run `bin/venv-python -m
+scripts.ops_data_portal --guidance` first (Decision 66), then `--file-rec` naming `--title` (the
+/plan prompt for the half), `--file`, `--context` (opening "Deferred half of PLAN-{slug}: <what
+must land first>"), `--acceptance` (a discriminating shell oracle for the deferred half --
+`lint_acceptance_command(require_discrimination=True)` rejects a thin probe at write time),
+`--effort`, `--priority`, `--risk`, `--source manual` and `--tags follow-on`; then append the
+returned id to this plan's `followon_recs` (a permitted bookkeeping edit per
+`docs/contracts/implement-scope-boundary.yaml`) and continue with closure items 3-4. If the portal
+is unreachable, the write FAILS LOUDLY (Decision 84 I-4, no offline outbox) -- restore
+connectivity and re-file before declaring; never skip this step silently and never compose the id
+client-side.
+
 Apply the appropriate **Commit Flow** (STRATEGIC or IMPLEMENTATION) defined in your `implement` skill. All GitHub operations use the GitHub MCP tools (`mcp__github__*`) -- the `gh` CLI is not available on the web harness. Wait for CI event-driven via `subscribe_pr_activity`; never busy-wait with a sleep timer or a recurring scheduled re-check.
 
 When creating the PR body, emit a `Resolves: rec-NNNN[, rec-MMMM]` trailer if the plan's `bundled_recommendations` list is non-empty. After the merge, execute the **post-merge closeout fallback** from the implement skill (verify `rec-autoclose` closed each rec; close directly if not).
@@ -123,7 +139,7 @@ bin/venv-python -m scripts.session.postflight --log-housekeeping
 ## Step 9: Report and Close Session
 Output the final report:
 - **STRATEGIC**: Total recs filed, breakdowns, briefing files created, and next step instructions.
-- **IMPLEMENTATION**: Files changed, verification results (actual outcomes per step), code review findings fixed, bugs fixed, design decisions.
+- **IMPLEMENTATION**: Files changed, verification results (actual outcomes per step), code review findings fixed, bugs fixed, design decisions, and any follow-on rec ids filed for a deferred half.
 
 Finally, close the telemetry session:
 ```bash

@@ -84,12 +84,10 @@ operates in **follow-on mode**. This is the common case -- most items take N fol
 in `/implement`'s bookkeeping walk, on a verified VP pass, for explicitly declared closes_criteria.
 See T2.20 lesson. Never infer `met` from prose, file existence, or commit activity.
 
-### closes_criteria field format
-Each entry is a string `"<item-id>:<crit-id>"` matching exactly one ExitCriterion in the roadmap:
-- `item-id` must be a real tier_item id in the roadmap.
-- `crit-id` must be an id within that item's exit_criteria (e.g. `c1`, `c2`, ...).
-- `validate.py` enforces referential integrity: a closes_criteria ref to a nonexistent
-  item:criterion fails CI (check (iii) in validate_platform_roadmap).
+### closes_criteria / followon_recs field format
+Field format and write-time validation for both plan-linkage fields: see
+docs/contracts/exit-criteria-ledger.yaml (plan_closes_criteria, plan_followon_recs). Only
+followon_recs carries a template line below; closes_criteria stays prose-only by design.
 
 ## Platform Roadmap Eligibility (Workflow Step 2)
 
@@ -490,6 +488,7 @@ scope: # min 1 entry; only files listed here may be modified
     action: Create # Create | Modify | Delete
     purpose: why this file changes
 bundled_recommendations: [] # included open recs (list of str), or []
+followon_recs: [] # deferred halves as follow-on rec ids, or []
 infrastructure_dependencies: [] # list of str; populate when .tf files appear in scope
 acceptance_criteria: # min 1; each independently verifiable
   - verifiable condition 1
