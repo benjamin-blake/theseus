@@ -1,5 +1,6 @@
 """Tests for validate_rec_relevance_contract() -- T3.8 enum-drift guard."""
 
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -66,3 +67,33 @@ class TestValidateRecRelevanceContract:
         with patch("scripts.checks._common.ROOT", tmp_path):
             validate_rec_relevance_contract(failed)
         assert failed
+
+
+class TestRecRelevanceContractResidualBranches:
+    """The two residual arms no existing test reaches."""
+
+    @staticmethod
+    def _write_contract(tmp_path: Path, body: str) -> None:
+        contracts_dir = tmp_path / "docs" / "contracts"
+        contracts_dir.mkdir(parents=True, exist_ok=True)
+        (contracts_dir / "recommendation-relevance.yaml").write_text(body, encoding="utf-8")
+
+    @staticmethod
+    def _run(tmp_path: Path) -> list[str]:
+        failed: list[str] = []
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            validate_rec_relevance_contract(failed)
+        return failed
+
+    def test_sequence_contract_appends_the_not_a_mapping_failure(self, tmp_path: Path) -> None:
+        """A contract that parses cleanly to a LIST is reported as not-a-mapping."""
+        self._write_contract(tmp_path, "- relevant\n- unknown\n")
+        assert self._run(tmp_path) == ["rec-relevance contract: not a YAML mapping"]
+
+    def test_unimportable_evaluator_appends_the_import_failure(self, tmp_path: Path) -> None:
+        """An unimportable scripts.rec_relevance is reported, not silently passed over."""
+        self._write_contract(tmp_path, "verdicts:\n  - relevant\n")
+        with patch.dict(sys.modules, {"scripts.rec_relevance": None}):
+            failed = self._run(tmp_path)
+        assert len(failed) == 1, f"Expected exactly one failure but got: {failed}"
+        assert failed[0].startswith("rec-relevance contract: cannot import scripts.rec_relevance: ")

@@ -72,3 +72,36 @@ class TestFieldSemanticsDriftGate:
         assert output.read_text(encoding="utf-8") == injected, (
             "validate_field_semantics_drift must NOT auto-write the file (Decision 55 fail-closed)"
         )
+
+
+class TestFieldSemanticsDriftErrorBranches:
+    """The two error-path appends the happy/drift tests above never reach."""
+
+    def test_unreadable_output_path_appends_the_read_failure(self, tmp_path: Path) -> None:
+        """A committed file that cannot be read is a failure, never a silent no-drift."""
+        import unittest.mock as _m
+
+        missing = tmp_path / "never_created" / "field_semantics.yaml"
+        with _m.patch("scripts.schema_to_field_semantics._OUTPUT_PATH", missing):
+            failed: list[str] = []
+            validate_field_semantics_drift(failed)
+
+        assert len(failed) == 1, f"Expected exactly one failure but got: {failed}"
+        assert failed[0].startswith("Field semantics drift gate: cannot read ")
+        assert "No such file or directory" in failed[0]
+
+    def test_generator_exception_appends_the_generator_failure(self, tmp_path: Path) -> None:
+        """A generator that raises is a failure, never treated as no-drift."""
+        import unittest.mock as _m
+
+        output = tmp_path / "field_semantics.yaml"
+        output.write_text("committed: content\n", encoding="utf-8")
+
+        with (
+            _m.patch("scripts.schema_to_field_semantics._OUTPUT_PATH", output),
+            _m.patch("scripts.schema_to_field_semantics.generate", side_effect=RuntimeError("synthetic boom")),
+        ):
+            failed: list[str] = []
+            validate_field_semantics_drift(failed)
+
+        assert failed == ["Field semantics drift gate: generator raised: synthetic boom"]
