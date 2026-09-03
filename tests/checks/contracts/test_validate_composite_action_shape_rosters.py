@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from scripts.checks import registry
@@ -324,3 +325,22 @@ class TestWiring:
 
         assert callable(resolved)
         assert resolved is validate_composite_action_shape_rosters
+
+
+class TestPassLineOutput:
+    """The PASS summary is the ONLY test-observable consequence of the `len(failed) ==
+    error_count_before` accounting branch (registry.examined() runs unconditionally above it).
+
+    Asserts the count-bearing PREFIX, never a hardcoded entry total -- the roster grows by
+    addition, and an exact-count assertion would red a PR that never touched this file."""
+
+    def test_clean_fixture_prints_the_pass_line(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _write_contract(tmp_path)
+        baseline = _write_baseline(tmp_path, _live_pinned())
+
+        failed: list[str] = []
+        validate_composite_action_shape_rosters(failed, contracts_dir=tmp_path, baseline_config_path=baseline)
+
+        assert failed == []
+        out = capsys.readouterr().out
+        assert "  PASS: composite-action-shape.yaml rosters match the live guard/config surfaces (" in out

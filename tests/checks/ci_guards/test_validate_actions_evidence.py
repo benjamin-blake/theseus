@@ -224,3 +224,42 @@ def test_duplicate_workflow_display_name_is_rejected(tmp_path: Path) -> None:
     _write(path, contract)
     with pytest.raises(ValueError, match="display name is ambiguous"):
         subject.validate_contract(root)
+
+
+class TestUnreachedContractGuards:
+    """The two guards the canonical matrix never reaches (Task 3 mutation survivors).
+
+    Both are masked by a same-message or looser-regex sibling: :53's TYPE raise shares its
+    wording with the ORDER guard two lines below, and :115's arity raise shares the substring
+    'critical step' with the downstream 'not tied to the selected critical step' message.
+    """
+
+    @pytest.mark.parametrize("bound", [7.0, True])
+    def test_non_integer_day_bounds_are_rejected(self, tmp_path: Path, bound: Any) -> None:
+        root = _fixture(tmp_path)
+        path, contract = _contract(root)
+        contract["retention_classes"]["ordinary_ci"]["minimum_days"] = bound
+        _write(path, contract)
+        with pytest.raises(ValueError, match="retention class ordinary_ci: invalid day bounds"):
+            subject.validate_contract(root)
+
+    def test_critical_step_selector_matching_no_step_is_rejected_as_missing_or_ambiguous(self, tmp_path: Path) -> None:
+        root = _fixture(tmp_path)
+        path, contract = _contract(root)
+        selector = {"name": "no step in this job carries this name"}
+        contract["governed_jobs"][0]["critical_step"] = selector
+        contract["governed_jobs"][0]["surface"]["step"] = selector
+        _write(path, contract)
+        with pytest.raises(ValueError, match="critical step selector is missing or ambiguous"):
+            subject.validate_contract(root)
+
+    def test_duplicate_critical_step_name_is_rejected_as_missing_or_ambiguous(self, tmp_path: Path) -> None:
+        root = _fixture(tmp_path)
+        _, contract = _contract(root)
+        entry = contract["governed_jobs"][0]
+        workflow = root / entry["workflow"]
+        document = _yaml(workflow)
+        document["jobs"][entry["job"]]["steps"].append({"name": entry["critical_step"]["name"], "run": "true"})
+        _write(workflow, document)
+        with pytest.raises(ValueError, match="critical step selector is missing or ambiguous"):
+            subject.validate_contract(root)

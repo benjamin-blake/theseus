@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from scripts.checks import registry
@@ -214,3 +215,20 @@ class TestWiring:
 
         assert callable(resolved)
         assert resolved is validate_ci_rca_lifecycle_projection
+
+
+class TestPassLineOutput:
+    """The PASS summary is the ONLY test-observable consequence of the `len(failed) ==
+    error_count_before` accounting branch: registry.examined() runs unconditionally above it,
+    so neither the accounting channel nor `failed` can discriminate a flipped comparison."""
+
+    def test_clean_fixture_prints_the_pass_line(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        _write_contract(tmp_path, _VALID_PROJECTION_FIELDS, _VALID_WATCHED_WORKFLOW_SET)
+
+        failed: list[str] = []
+        validate_ci_rca_lifecycle_projection(failed, contracts_dir=tmp_path)
+
+        assert failed == []
+        out = capsys.readouterr().out
+        expected = "  PASS: ci-rca-lifecycle.yaml projection_fields, escape_class enum, and watched_workflow_set all resolve."
+        assert expected in out
