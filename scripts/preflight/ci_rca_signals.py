@@ -6,8 +6,10 @@ import json
 import subprocess
 import sys
 from datetime import datetime, timezone
+from typing import cast
 
 from scripts.preflight import _common
+from src.common.ducklake_reader_client import DuckLakeReader
 
 
 def _derive_ci_rca_open(rows: list[dict]) -> list[dict]:
@@ -134,7 +136,7 @@ def _fetch_ci_rca_recs(cache_rows: object = _common._READER_SENTINEL) -> list[di
 
     _reader_exc: Exception | None = None
     try:
-        return _common._make_reader().named("ci_rca_open")
+        return cast(DuckLakeReader, _common._make_reader()).named("ci_rca_open")
     except Exception as exc:  # noqa: BLE001
         _reader_exc = exc
 
@@ -186,7 +188,7 @@ def _fetch_ci_rca_recs_since(ts: str, cache_rows: object = _common._READER_SENTI
     if cache_rows is not _common._READER_SENTINEL:
         return [] if cache_rows is None else _derive_ci_rca_since(cache_rows, ts)  # type: ignore[arg-type]
     try:
-        return _common._make_reader().named("ci_rca_since", since_ts=ts)
+        return cast(DuckLakeReader, _common._make_reader()).named("ci_rca_since", since_ts=ts)
     except Exception:  # noqa: BLE001
         pass
     return []

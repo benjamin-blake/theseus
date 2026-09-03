@@ -56,12 +56,15 @@ validate_verification_registry / VF-06).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from scripts import verification_graduation
 from scripts.checks import _common, registry
 
-LoadPlanFn = Callable[[str, Path], object]
+if TYPE_CHECKING:
+    from scripts.roadmap.plan_document import PlanDocument
+
+LoadPlanFn = Callable[[str, Path], "PlanDocument"]
 BaselineRegistryReaderFn = Callable[[Path], list[dict]]
 
 

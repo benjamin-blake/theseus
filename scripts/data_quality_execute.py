@@ -131,9 +131,9 @@ def run_checks(
     run_start = time.time()
 
     if dry_run:
-        results = [CheckResult(check=c, verdict="SKIP", detail="dry-run") for c in checks]
+        skipped = [CheckResult(check=c, verdict="SKIP", detail="dry-run") for c in checks]
         return RunResult(
-            results=results,
+            results=skipped,
             verdict="SKIP",
             duration_seconds=time.time() - run_start,
         )

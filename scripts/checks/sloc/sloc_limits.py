@@ -41,10 +41,10 @@ def _update_sloc_budgets() -> None:
 
     new_budgets: dict[str, int] = {}
     for rel, budget in existing.items():
-        sloc = current_sloc.get(rel)
-        if sloc is None or sloc <= _SLOC_LIMIT:
+        measured = current_sloc.get(rel)
+        if measured is None or measured <= _SLOC_LIMIT:
             continue  # deleted, or shrank to <=500 -- drop from the registry
-        new_budgets[rel] = min(sloc, budget)
+        new_budgets[rel] = min(measured, budget)
 
     lowered = sorted(k for k in new_budgets if new_budgets[k] < existing[k])
     dropped = sorted(k for k in existing if k not in new_budgets)

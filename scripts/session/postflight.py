@@ -131,8 +131,8 @@ def run_pre_commit_sanity() -> int:
     branch = _common._current_branch()
 
     if branch == "main":
-        output = {"status": "FAIL", "branch": branch, "reason": "On main branch - cannot commit"}
-        print(json.dumps(output, indent=2))
+        fail_output = {"status": "FAIL", "branch": branch, "reason": "On main branch - cannot commit"}
+        print(json.dumps(fail_output, indent=2))
         return 1
 
     plan_file = _common.find_plan_file()

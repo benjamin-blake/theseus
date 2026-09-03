@@ -280,9 +280,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.fingerprint:
             print("ERROR: --find-open-ci-rca-rec requires --fingerprint", file=sys.stderr)
             return 1
-        rec_id = find_open_ci_rca_rec_by_fingerprint(args.fingerprint, profile=args.profile)
-        if rec_id:
-            print(rec_id)
+        found_rec_id = find_open_ci_rca_rec_by_fingerprint(args.fingerprint, profile=args.profile)
+        if found_rec_id:
+            print(found_rec_id)
         return 0
 
     if args.bump_ci_rca_occurrence:

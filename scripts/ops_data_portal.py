@@ -41,7 +41,7 @@ import sys
 import xml.etree.ElementTree as ET  # noqa: F401 -- imported-name trap; patch("...ET.parse") test target
 from datetime import date
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 
 import yaml
 
@@ -410,9 +410,13 @@ def _fetch_rec_from_reader(rec_id: str, profile: Optional[str] = None) -> Option
         raise ValueError(f"_fetch_rec_from_reader: invalid rec_id: {rec_id!r}")
 
     from scripts.sync.ops import _coerce_ops_rec_row  # noqa: PLC0415
-    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
 
-    rows = make_reader(profile=profile).named("rec_by_id", id=rec_id)
+    # make_reader() is annotated -> Reader (the Protocol, which deliberately does not declare
+    # named()) but only ever constructs a DuckLakeReader; cast narrows the type at this one call
+    # site rather than widening the Protocol by omission.
+    reader = cast(DuckLakeReader, make_reader(profile=profile))
+    rows = reader.named("rec_by_id", id=rec_id)
     if not rows:
         return None
     coerced = _coerce_ops_rec_row(dict(rows[0]))

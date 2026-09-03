@@ -8,10 +8,11 @@ import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from scripts import decisions_md
 from scripts.preflight import _common
+from src.common.ducklake_reader_client import DuckLakeReader
 
 
 def parse_last_session() -> str:
@@ -81,7 +82,7 @@ def read_context_files(open_recs_count: int | None = None) -> dict:
     else:
         recommendations_count = 0
         try:
-            recommendations_count = len(_common._make_reader().named("open_recs"))
+            recommendations_count = len(cast(DuckLakeReader, _common._make_reader()).named("open_recs"))
         except Exception:  # noqa: BLE001
             pass
 
