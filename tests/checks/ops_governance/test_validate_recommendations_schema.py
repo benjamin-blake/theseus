@@ -1,6 +1,7 @@
 """Tests for validate_recommendations_schema() -- specifically the python -c ban."""
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -59,3 +60,27 @@ class TestValidateRecommendationsSchema:
             failed: list[str] = []
             validate_recommendations_schema(failed)
         assert failed == []
+
+
+class TestRecommendationsSchemaImportFailure:
+    """The registered wrapper's lazy-import guard must append its own failure entry."""
+
+    def test_unimportable_recommendation_model_appends_a_failure(self, tmp_path: Path, capsys) -> None:
+        """An unimportable Recommendation model is reported, not silently tolerated.
+
+        The lazy-import guard appends the SAME string as the errors branch further down, so
+        the stdout marker is what tells this site apart from that one.
+        """
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir(parents=True)
+        (log_dir / ".recommendations-log.jsonl").write_text("", encoding="utf-8")
+
+        failed: list[str] = []
+        with (
+            patch.dict(sys.modules, {"scripts.executor.jsonl_store": None}),
+            patch("scripts.checks._common.ROOT", tmp_path),
+        ):
+            validate_recommendations_schema(failed)
+
+        assert failed == ["Recommendations schema validation"]
+        assert "Could not import Recommendation model" in capsys.readouterr().out

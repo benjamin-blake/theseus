@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Annotated, Optional
+from unittest.mock import patch
 
 from pydantic import BaseModel
 
-from scripts.checks.ops_governance.validate_pydantic_yaml_drift import _check_drift_for_table
+from scripts.checks.ops_governance.validate_pydantic_yaml_drift import _check_drift_for_table, validate_pydantic_yaml_drift
 from src.schemas.annotations import DqAcceptedValues, DqDeleted, DqNotNull, migrating
 
 
@@ -135,3 +138,87 @@ class TestDqDeleted:
         failed: list[str] = []
         _check_drift_for_table(failed, SyntheticModel, table)
         assert failed == []
+
+
+_CLEAN_OPS_YAML = """tables:
+  ops_recommendations:
+    columns: {}
+  ops_decisions:
+    columns: {}
+"""
+
+# RecPayload.title carries DqNotNull; declaring only accepted_values here makes the
+# symmetric difference non-empty, so the field-level append fires through the wrapper.
+_DRIFTING_OPS_YAML = """tables:
+  ops_recommendations:
+    columns:
+      title:
+        tests:
+          - accepted_values:
+              values: ["a", "b"]
+  ops_decisions:
+    columns: {}
+"""
+
+_UNPARSEABLE_OPS_YAML = "tables: [unterminated\n"
+
+# Parses cleanly, but to a LIST -- ops.get() then raises AttributeError, which is
+# neither ImportError nor YAMLError, so the catch-all arm handles it.
+_WRONG_SHAPE_OPS_YAML = "- ops_recommendations\n- ops_decisions\n"
+
+
+def _write_ops_yaml(root: Path, body: str) -> None:
+    dq_dir = root / "config" / "agent" / "data_quality"
+    dq_dir.mkdir(parents=True, exist_ok=True)
+    (dq_dir / "ops.yaml").write_text(body, encoding="utf-8")
+
+
+def _run_wrapper(root: Path) -> list[str]:
+    failed: list[str] = []
+    with patch("scripts.checks._common.ROOT", root):
+        validate_pydantic_yaml_drift(failed)
+    return failed
+
+
+class TestPydanticYamlDriftWrapper:
+    """The REGISTERED wrapper itself -- every existing test above calls the private helper."""
+
+    def test_missing_ops_yaml_appends_a_failure(self, tmp_path: Path, capsys) -> None:
+        """No config/agent/data_quality/ops.yaml at all -> the wrapper appends and returns."""
+        failed = _run_wrapper(tmp_path)
+        assert failed == ["Pydantic-YAML drift"]
+        assert "not found" in capsys.readouterr().out
+
+    def test_clean_ops_yaml_prints_the_pass_line(self, tmp_path: Path, capsys) -> None:
+        """A drift-free ops.yaml adds no failure AND prints the PASS line."""
+        _write_ops_yaml(tmp_path, _CLEAN_OPS_YAML)
+        failed = _run_wrapper(tmp_path)
+        assert failed == []
+        assert "PASS: pydantic-yaml drift check" in capsys.readouterr().out
+
+    def test_drifting_ops_yaml_appends_the_field_level_failure(self, tmp_path: Path) -> None:
+        """Anti-vacuity companion: a genuinely drifting ops.yaml reaches the field-level append."""
+        _write_ops_yaml(tmp_path, _DRIFTING_OPS_YAML)
+        assert _run_wrapper(tmp_path) == ["Pydantic-YAML drift: RecPayload.title"]
+
+    def test_unimportable_schemas_appends_a_failure(self, tmp_path: Path, capsys) -> None:
+        """An unimportable src.schemas is reported through the ImportError arm."""
+        _write_ops_yaml(tmp_path, _CLEAN_OPS_YAML)
+        with patch.dict(sys.modules, {"src.schemas": None}):
+            failed = _run_wrapper(tmp_path)
+        assert failed == ["Pydantic-YAML drift"]
+        assert "Could not import src.schemas" in capsys.readouterr().out
+
+    def test_unparseable_ops_yaml_appends_a_failure(self, tmp_path: Path, capsys) -> None:
+        """An unterminated flow sequence raises yaml.YAMLError from safe_load."""
+        _write_ops_yaml(tmp_path, _UNPARSEABLE_OPS_YAML)
+        failed = _run_wrapper(tmp_path)
+        assert failed == ["Pydantic-YAML drift"]
+        assert "YAML parse error" in capsys.readouterr().out
+
+    def test_unexpected_error_appends_a_failure(self, tmp_path: Path, capsys) -> None:
+        """A parseable-but-wrongly-shaped ops.yaml lands in the catch-all arm."""
+        _write_ops_yaml(tmp_path, _WRONG_SHAPE_OPS_YAML)
+        failed = _run_wrapper(tmp_path)
+        assert failed == ["Pydantic-YAML drift"]
+        assert "Unexpected error" in capsys.readouterr().out
