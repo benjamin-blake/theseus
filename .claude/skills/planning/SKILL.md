@@ -451,11 +451,13 @@ subagent-dispatch division of labor; schema: `docs/contracts/overseer-dispatch.y
 Do not loop more than 3 times. If the gate keeps returning BLOCK after 3 revisions, escalate to the human: "After N revisions the decision-scout still flags BLOCK on [decision N]. Continued pivoting suggests either the underlying intent contradicts the decision (re-scope the request) or the decision needs to be revisited (file a recommendation to revise the decision). How would you like to proceed?"
 
 ## Confirmation Gate (Workflow Step 6b)
-Wait for explicit 'write the plan' (or clear equivalent) before proceeding. Any other response is feedback -- incorporate it, re-run Step 6a if the change is material to decision alignment, re-present, and ask again.
+Wait for explicit 'write the plan'; anything else is feedback -- incorporate it, re-run Step 6a if material to decision alignment, re-present, ask again.
 IT IS **CRITICAL** THAT YOU DO NOT PROCEED UNTIL THE HUMAN CONFIRMS THE PLAN.
-**If you are a subagent** (no direct chat turn with the human to wait on), obtain this SAME
-confirmation via the `AskUserQuestion` tool -- it blocks for a real human reply regardless of
-caller; this checkpoint needs no overseer mediation (not a bias-fresh-context gate).
+Class each design fork: consistency-only is decided-with-notice, else ask in the pinned shape --
+`docs/contracts/overseer-dispatch.yaml#autonomy_tiers.plan_fork_classification`.
+**If you are a subagent**: use `AskUserQuestion` if you hold it; an overseer-dispatched author does
+not -- forks and confirmation ride a post-verdict `GATE_REQUEST` (`gate: step-6b-confirmation`) the
+overseer relays.
 
 ## Create Branch (Workflow Step 7)
 See `docs/contracts/git-ops.yaml` as the canonical git-ops authority for branching topology (DEV vs ADMIN containers, AWS profiles, harness branch vs never agent/).

@@ -56,7 +56,7 @@ decisions: [decision ids cited or newly ratified]
 open_questions: [unresolved items requiring human input, or empty]
 ```
 `GATE_REQUEST` is never terminal: the author paused mid-lifecycle to request an overseer-dispatched
-gate (decision-scout, plan-critique, code-review). It EXTENDS this shape with `gate`/`round`/
+gate, or the Step 6b confirmation relay. It EXTENDS this shape with `gate`/`round`/
 `inputs` (reusing `artifacts`, never a separate field) per
 `overseer-dispatch.yaml#gate_request_trampoline`; ledger status stays planning/implementing
 through it. Never accept pasted contents, diffs, or raw transcripts. A hand-back missing `status`,
@@ -116,8 +116,9 @@ proceed-with-notice.
 
 **Division of labor:** the author subagent (planning or implementation) runs its own lifecycle,
 commits, pushes, opens its own PR, and stops -- hands the PR back via PROCEED. `/plan`'s own Step
-6b confirmation (distinct from the 3 GATE_REQUEST gates below) is satisfied directly via the
-author's own `AskUserQuestion` tool call -- no overseer mediation needed. **Gate ownership** never
+6b confirmation rides a `GATE_REQUEST` (`gate:
+step-6b-confirmation`) the overseer relays to the human verbatim -- no gate
+skill is dispatched. **Gate ownership** never
 lives with the author: the overseer dispatches EVERY decision-scout, plan-critique, and code-review
 as a fresh sibling, and owns subscribe_pr_activity -> CI-green -> squash-merge, waiting in the
 **foreground** of its own turn (never `run_in_background`) and resuming the paused author via
