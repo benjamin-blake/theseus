@@ -69,3 +69,29 @@ class TestDecisionsIndexFreshness:
             failed: list[str] = []
             validate_decisions_index_freshness(failed)
         assert len(failed) == 1
+
+
+# Decision 170: stdout is this baselined check's only outcome channel today, so this migrates to examined()/skipped().
+class TestPassLineIsGatedOnTheFailureDelta:
+    """The `if len(failed) == before:` guard at validate_decisions_index_freshness.py:23 is the
+    check's only outcome channel (it declares no examined()/skipped()), so it is asserted from
+    both sides: the PASS line appears exactly when the delegate added nothing."""
+
+    def test_pass_line_is_printed_when_the_index_is_current(self, tmp_path: Path, capsys) -> None:
+        export_path = tmp_path / "decisions-index.json"
+        export_path.write_text(json.dumps(build_index(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        with patch("scripts.decisions_index._EXPORT_PATH", export_path):
+            failed: list[str] = []
+            validate_decisions_index_freshness(failed)
+        assert failed == []
+        assert "PASS: decisions index is current." in capsys.readouterr().out
+
+    def test_pass_line_is_withheld_when_the_index_is_stale(self, tmp_path: Path, capsys) -> None:
+        export_path = tmp_path / "decisions-index.json"
+        export_path.write_text(json.dumps({"decisions": [], "metadata": {}}), encoding="utf-8")
+        with patch("scripts.decisions_index._EXPORT_PATH", export_path):
+            failed: list[str] = []
+            validate_decisions_index_freshness(failed)
+        out = capsys.readouterr().out
+        assert failed != []
+        assert "PASS: decisions index is current." not in out
