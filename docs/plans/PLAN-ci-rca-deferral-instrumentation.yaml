@@ -1,0 +1,841 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: ci-rca-deferral-instrumentation
+intent: >-
+  Make the repeated ci-rca deferral visible where the decision is actually taken: preflight
+  computes, per unresolved ci-rca rec, how many merged plans already logged a deferral rationale
+  naming it, which plans, and any owner their text names; /orient renders that on the HARD BLOCK
+  line and, at three or more deferrals, hands the agent the T3.8 relevance probe to run in-session
+  so a fixed-but-open rec is closed once with proof instead of re-deferred by reflex. Preflight
+  itself never executes a rec acceptance command.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-ci-rca-deferral-instrumentation.yaml
+phase: >-
+  CI-RCA deferral instrumentation (audit planning-decision-burden-735e69fc, originated remedy
+  B5-O1, finding PDB-06). No tier_item slice and no closes_criteria; soft-warn exception category
+  ad_hoc_rec (overseer run under the user directive of 2026-09-03, brief section 4 slice F).
+  Cross-referenced items: T3.8 (complete -- its relevance engine is CALLED from /orient by this
+  plan, not modified) and T3.9 (not_started -- owns the closure half, deliberately not
+  re-specified here).
+scope:
+- file: scripts/preflight/ci_rca_signals.py
+  action: Modify
+  purpose: >-
+    Add the deferral scan and its render. `_OWNER_NAMED_RE` (a pinned alternation grounded in the
+    observed corpus), `_scan_prior_deferrals(rec_ids, plans_dir)` returning
+    {rec_id: {count, plan_slugs, owner_named}} by walking
+    `sorted(plans_dir.glob("PLAN-*.yaml"))` over docs/plans -- the walk is SORTED, mirroring the
+    cited precedent scripts/platform_roadmap_state.py:101 verbatim, because `pathlib.Path.glob`
+    yields FILESYSTEM order and `owner_named` is BY DEFINITION the phrase supplied by the
+    EARLIEST-SORTING matching plan THAT SUPPLIES ONE (a matching plan naming no owner is passed
+    over, exactly as acceptance criterion 2 and VP step 3 already state), never "the first
+    encountered" in filesystem order (round-4 critique finding F1,
+    the divergence re-executed against the live corpus at planning time: an unsorted walk returns
+    "another agent" from PLAN-cfg-migration-closeout, a sorted walk returns "operator-directed"
+    from PLAN-ambient-prose-contract-relocation, and the unsorted answer REDS VP step 3) -- with a
+    CASE-INSENSITIVE `defer` substring prefilter, then a YAML parse of only the matching files
+    whose per-entry `defer` test is likewise case-insensitive (the rec-id match stays exact,
+    matching the audit's own census -- see context), and public
+    `annotate_prior_deferrals(correlation, plans_dir=None)` which short-circuits to a no-op when
+    `correlation["unresolved"]` is empty and otherwise attaches a `prior_deferrals` key to each
+    unresolved rec dict in place. `plans_dir=None` is the SOLE production call shape (the
+    scripts/session/preflight.py wiring passes no directory) and RESOLVES TO
+    `_common.ROOT / "docs" / "plans"` -- an absolute, cwd-INDEPENDENT path, byte-identical to the
+    one VP step 3 passes explicitly; `_common` is already imported at ci_rca_signals.py:10, so the
+    resolution needs no new import, and it must never be a cwd-relative `docs/plans` (round-3
+    critique finding F1: under a cwd-relative default the production path silently returns zeros
+    from any working directory but the repo root, the render prints nothing at count 0, and every
+    VP step still passes). `print_ci_rca_recs`'s HARD BLOCK branch renders the payload as a
+    second indented line per rec. The correlation=None backward-compat branch is untouched.
+    Degrades to an empty payload on any error and never raises (the `_check_convergence_rca_gap`
+    pattern in this same file). The `annotate_prior_deferrals` docstring records the aliasing the
+    round-2 critique noted: `correlate_recs_with_commits` (scripts/preflight/correlation.py:134
+    and :136 -- the append sites; the only copy is the `rec = {**rec, ...}` sibling-cluster branch
+    at :129, and the :84-105 span the earlier draft cited is the commit-match loop, round-3
+    critique finding F4)
+    appends the SAME dict objects to `unresolved` and to the full rec list, so annotating in place
+    is also visible through `report["ci_rca_recs"]` -- additive and benign, stated so a later
+    reader does not mistake the annotation for a copy. Projected +60 SLOC on 348 measured
+    (500 ceiling, 152 headroom).
+- file: scripts/session/preflight.py
+  action: Modify
+  purpose: >-
+    One line, inserted between the `correlation.correlate_ci_rca_with_main(...)` assignment
+    (line 291) and the `ci_rca_signals.print_ci_rca_recs(...)` call (line 294):
+    `ci_rca_correlation = ci_rca_signals.annotate_prior_deferrals(ci_rca_correlation)`. Single call
+    site, so the printed section and `report["ci_rca_unresolved_recs"]` (line 366) carry the same
+    annotated dicts. +1 SLOC on 427 measured.
+- file: tests/session/preflight/test_ci_rca_signals_deferrals.py
+  action: Create
+  purpose: >-
+    The behaviour guard. Classes: TestScanPriorDeferrals (context-entry-only rule, the
+    rec-id-and-defer-in-the-SAME-entry condition, an UPPER/MIXED-CASE fixture whose entry reads
+    "ci-rca DEFERRAL: ... Deferred ..." with no lowercase "defer" and must still be counted,
+    per-plan de-duplication, owner regex hit and miss, OWNER DETERMINISM --
+    `test_owner_named_comes_from_the_earliest_sorting_plan` writes two fixture plans carrying
+    DIFFERENT owner phrases, the later-sorting filename created FIRST, and asserts the
+    EARLIER-sorting filename supplies `owner_named` irrespective of creation order (round-4
+    critique finding F1; without it the owner leg is exercised only by VP step 3 against the live
+    corpus, which is the unexercised-path-behind-green-steps shape round-3 finding F1 raised) --
+    and an unreadable/malformed plan degrades rather
+    than raises); TestAnnotatePriorDeferrals
+    (empty unresolved set performs no plans walk; annotation is in place and returns the same
+    object; likely_resolved entries are not annotated; and -- round-3 critique finding F1 -- the
+    DEFAULT `plans_dir` exercised end-to-end by
+    `test_default_plans_dir_resolves_to_the_repo_corpus`, which `monkeypatch.chdir(tmp_path)` FIRST,
+    then calls `annotate_prior_deferrals({"unresolved": [{"id": "rec-3292"}], "likely_resolved":
+    []})` with NO `plans_dir` argument and asserts `count >= len(present)` under the same existence
+    conditioning VP step 3 uses -- the chdir is what makes the leg discriminating, since a
+    cwd-relative default returns zeros from `tmp_path` while the `_common.ROOT` default does not);
+    TestPrintPriorDeferralsRender (HARD BLOCK
+    line shape, the "+M more" overflow past five slugs, "owner named: none" when null);
+    TestOrientDeferralSurfacingContract (anti-drift over .claude/commands/orient.md and
+    .claude/skills/orient/SKILL.md, including the CROSS-SURFACE consistency assertions the round-2
+    critique's finding F1 requires: the skill restates no classification row, its Read-Only
+    Contract names the same Step 3 probe exception the command's write-nothing paragraph names,
+    its Inputs table registers logs/.recommendations-log.jsonl, and neither its frontmatter
+    description nor its line-8 "strictly read-only" sentence stands as an unqualified absolute); TestPreflightReportWiring (end-to-end `_preflight.main()`
+    report-key assertion, class-level skipif on a missing boto3, mirroring the module-level guard
+    test_main_report.py carries for the same main()-integration pattern). Sibling-file naming
+    follows the existing test_ci_rca_signals_abstention_matrix.py precedent; no module-level
+    importorskip, so the anti-drift and unit classes still run in the boto3-less fast tier.
+    Imports scripts.preflight.ci_rca_signals, scripts.preflight._common (for `ROOT`, used only by
+    the default-resolution method) and tests.fixtures.session_preflight_module only.
+- file: .claude/commands/orient.md
+  action: Modify
+  purpose: >-
+    Step 2 gains "(each entry carries `prior_deferrals`)" beside `ci_rca_unresolved_recs`. Step 3
+    gains a new "### CI-RCA Triage rendering (deliverable Section 2)" subsection that RECEIVES the
+    per-signal classification table relocated out of the orient skill (four rows unchanged in
+    meaning, the SOFT PROMPT row extended to the close-THEN-stamp route per
+    docs/contracts/ci-rca-lifecycle.yaml `closure_dependency.manual_route`), plus the
+    `prior_deferrals` render rule and the N >= 3 close-or-plan trigger. The trigger carries a
+    side-effect guard clause FIRST (read the rec's `acceptance` string from the read cache; probe
+    only when it is read-only -- a grep, a read-only inspection, or a pytest selector run under a
+    NON-WRITING invocation, `-p no:cacheprovider` appended to its pytest segment -- otherwise
+    surface the string verbatim and emit the /plan prompt instead), then the literal
+    `evaluate_rec_relevance(..., run_acceptance_probe=True, acceptance_timeout=120)` command the
+    /orient agent runs in session, which TIMES the call so a probe that hits the ceiling is
+    reported as "did not complete" rather than being silently read as "not satisfied"
+    (`_run_acceptance_probe` returns False on failure AND on timeout alike --
+    scripts/rec_relevance.py:33-45), and a THREE-WAY routing rule (satisfied -> close-then-stamp;
+    did not complete -> say so and treat it as no evidence either way; any other verdict -> the
+    /plan prompt). `recent_commits` is read from the preflight cache's `recent_main_commits` and
+    never from a `git log` Bash call (the skill's cache-only rule at
+    .claude/skills/orient/SKILL.md:38 and :149, Decision 88 / Decision 84) -- authored WITHOUT the
+    literal `git log` token, whose absence from the subsection VP step 6 asserts. Two one-line
+    amendments elsewhere in the same file close contradictions the subsection would otherwise
+    ship: line 51's "See the skill's Deliverable Shape section for the full spec of each" gains an
+    "except Section 2's CI-RCA triage rendering, specified below" carve-out (without it the
+    single-home relocation ships a pointer cycle straight back into the skill), and line 55's
+    "**Write nothing.**" paragraph gains a carve-out naming the Step 3 relevance probe as its sole
+    permitted subprocess -- read-only by the guard clause, pytest cache plugin disabled, creating
+    no tracked file, no rec and no roadmap edit. S3 surface (Decision 127): measured-only, no
+    prose budget entry.
+- file: .claude/skills/orient/SKILL.md
+  action: Modify
+  purpose: >-
+    Four edits, all funded by one deletion. (1) Replace lines 136-143 (the per-signal
+    classification table, the blank line and the trailing "If HARD BLOCK recs exist" sentence --
+    779 bytes measured) with a single pointer line (214 bytes measured) naming
+    .claude/commands/orient.md Step 3 as the one home for that rendering. (2) The
+    `## Read-Only Contract` bullet list gains one subprocess bullet (174) naming the Step 3
+    relevance probe as its sole exception, so the skill carries the SAME carve-out the command
+    does -- round-2 critique finding F1: a carve-out written into only one of the two surfaces
+    that state the rule recreates the two-surfaces-one-subject drift this relocation exists to
+    remove, and .claude/commands/orient.md:43 tells the agent to load this skill. (3) The Inputs
+    table gains a row (130) registering `logs/.recommendations-log.jsonl` as the source of the rec
+    `acceptance` string the Step 3 probe reads -- a genuinely NEW input, since `_derive_ci_rca_open`
+    (ci_rca_signals.py:17-26) projects only {id, title, priority, created_timestamp, file} and
+    never `acceptance`, so the probe cannot be driven from the preflight cache alone; it is a read
+    of a read cache, so no Decision 84 or Decision 88 boundary is crossed. (4) The frontmatter
+    description (50) and the line-8 "strictly read-only" sentence (45) each gain a short qualifier
+    pointing at the Read-Only Contract, so no absolute stands unqualified beside the exception.
+    The Section 2 heading, the Source line and the whole convergence-health surfacing table stay
+    byte-identical. Measured arithmetic: 779 removed, 613 added (214+174+130+50+45), net REDUCTION
+    166 bytes to ~23,278 on a surface with 21 bytes of headroom.
+- file: config/prose_budgets.yaml
+  action: Modify
+  purpose: >-
+    Ratchet the S4 `.claude/skills/orient/SKILL.md` entry DOWN from 23465 to the post-edit
+    measured byte count (projected ~23,278), keeping current == budget tight as the registry
+    requires. A decrease is unrestricted by validate_prose_budget_raises; no `# raise-approved:`
+    marker is added or needed.
+bundled_recommendations: []
+infrastructure_dependencies: []
+acceptance_criteria:
+- >-
+  Every entry of `logs/.preflight-report.json` `ci_rca_unresolved_recs` carries `prior_deferrals`
+  with keys `count` (int), `plan_slugs` (list of slugs, de-duplicated, ordered by plan filename)
+  and `owner_named` (a matched owner phrase, or null when the deferral lines name nobody); the
+  derivation counts a plan exactly once per rec, and only when the rec id (matched EXACTLY) and
+  the substring "defer" (matched CASE-INSENSITIVELY, in both the whole-file prefilter and the
+  per-entry test) occur in the SAME top-level `context` entry of that PLAN-*.yaml. The production
+  call passes no directory -- `annotate_prior_deferrals(correlation)` resolves its `plans_dir`
+  default to `_common.ROOT / "docs" / "plans"` -- so these values are computed from the
+  repository's own corpus regardless of the process working directory (round-3 critique finding
+  F1). `owner_named` is DETERMINISTIC, not an implementation freedom: the walk iterates
+  `sorted(plans_dir.glob("PLAN-*.yaml"))`, so the returned phrase is the one carried by the
+  EARLIEST-SORTING plan (by PLAN-*.yaml filename) among those counted for that rec THAT NAMES AN
+  OWNER -- a counted plan naming none is passed over, and `owner_named` is null only when no
+  counted plan names one. A bare,
+  filesystem-ordered `.glob` is a DEFECT, not an equivalent implementation -- re-executed against
+  the live corpus at planning time it answers "another agent" where the sorted walk answers
+  "operator-directed" (round-4 critique finding F1).
+- >-
+  Run against the repository's own docs/plans corpus, the scan reproduces the audit's pinned
+  census with no adjustment: for rec-3292 and rec-3293 every audit-named slug that still EXISTS
+  under docs/plans appears in `plan_slugs` and `count` equals `len(plan_slugs)`. The owner leg
+  degrades the same way the subset leg does (round-2 critique finding F2): `owner_named` equals
+  the phrase carried by the EARLIEST-sorting surviving audit plan that names one -- today
+  "operator-directed", supplied by PLAN-ambient-prose-contract-relocation.yaml, the only plan in
+  the corpus that supplies it -- weakens to "non-null" when an unknown plan sorts ahead of that
+  plan, and drops to no assertion at all once no owner-bearing audit plan survives. It is never
+  widened to accept null while an owner-bearing plan survives, because that is the discrimination
+  the check exists to provide. Measured 2026-09-03 with a case-insensitive prototype: all eight
+  audit plans survive, all eight are returned for both ids, and the per-plan owner phrases are
+  "operator-directed" (ambient-prose-contract-relocation), "another agent"
+  (cfg-migration-closeout, inline-defer-boundary-contract, reader-projection-substrate), "human
+  deferred" (roadmap-blocking-edge-semantics) and none for the remaining three. The existence
+  conditioning rests on OBSERVED PRACTICE, not on a decision governing .yaml deletion (round-3
+  critique findings F2 and F3): plan files ARE deleted in this repository -- PR #969 (squash commit
+  7b67e21d) removed 13 docs/plans/PLAN-*.yaml files in a single commit, among them
+  PLAN-audit-remediation-wave-3.yaml, three PLAN-broker-credential-*.yaml files,
+  PLAN-ducklake-ops-migration-fpb.yaml, two PLAN-iceberg-*.yaml files, five PLAN-t2-*.yaml files
+  and PLAN-verifier-hermeticity.yaml (1+3+1+2+5+1 = 13) -- so a later deletion of an audit-named plan, including the one
+  plan that supplies today's owner phrase, must DEGRADE this check rather than red it. Decision 174
+  is cited only as the SAME-DIRECTION principle (a superseded planning-artefact FORMAT carries no
+  working-tree retention obligation; retirement is by deletion with provenance in git history); it
+  governs a format transition, NOT the deletion of an individual PLAN-*.yaml, and is not relied on
+  as authority for one. Re-verified 2026-09-03 at origin/main bdf14215: the round-2 draft's claim
+  that the working tree "has already retired PLAN-mypy-unit1-baseline-paydown.yaml" was FALSE --
+  that file is present under docs/plans and `git log --diff-filter=D` shows no deletion of it --
+  and the citation is replaced by the PR #969 evidence above without weakening the criterion.
+- >-
+  No module under `scripts/preflight/**` or `scripts/session/**` imports `scripts.rec_relevance`
+  or mentions `run_acceptance_probe`; preflight computes the deferral facts only and executes no
+  rec acceptance command (Decision 55, mirroring the surfacing-only rule stated at
+  scripts/preflight/correlation.py:173).
+- >-
+  The preflight HARD BLOCK section renders a per-rec deferral line of the shape "deferred N times
+  (plans: a, b, c; owner named: X)" -- with "+M more" once more than five slugs exist, and "owner
+  named: none" when `owner_named` is null -- and the HARD BLOCK condition itself
+  (`ci_rca_unresolved_recs` non-empty) is unchanged.
+- >-
+  With `ci_rca_unresolved_recs` empty, `annotate_prior_deferrals` performs no docs/plans walk at
+  all (zero plan-file reads), so the common path costs nothing.
+- >-
+  .claude/commands/orient.md Step 3 carries a single "CI-RCA Triage rendering" home holding all
+  four classification rows, the `prior_deferrals` render rule, the N >= 3 trigger, a SIDE-EFFECT
+  GUARD CLAUSE (read the rec's `acceptance` string from the cache first; probe only when it is
+  read-only -- a grep, a read-only inspection, or a pytest selector under a non-writing invocation
+  carrying `-p no:cacheprovider` -- otherwise surface the string verbatim and emit the /plan
+  prompt instead), a BOUNDED probe command carrying both `run_acceptance_probe=True` and an
+  explicit `acceptance_timeout=` whose elapsed time is measured, a THREE-WAY routing rule
+  (satisfied -> close-then-stamp naming `stamp_fixed_by_sha`; "did not complete" when the probe
+  hits the timeout ceiling -> say so and treat it as no evidence either way; any other verdict ->
+  the /plan prompt), and `recent_commits` sourced from the preflight cache's `recent_main_commits`
+  -- a rule the subsection expresses WITHOUT the literal `git log` token (write it as e.g. "cache
+  only", the rule the skill's Section 3 already carries), because VP step 6 asserts that token is
+  absent from the subsection. In the same file, the Step 3 pointer to the skill's Deliverable
+  Shape section carves out Section 2 ("except Section 2's CI-RCA triage rendering") and the
+  "**Write nothing.**" paragraph carves out the Step 3 relevance probe by name.
+  .claude/skills/orient/SKILL.md points at that section, no longer restates any classification
+  row, and carries the MIRROR of the command's carve-out (round-2 critique finding F1): its
+  `## Read-Only Contract` bullet list names the Step 3 relevance probe as the sole permitted
+  subprocess, its frontmatter description and its line-8 "strictly read-only" sentence each carry
+  a short qualifier pointing there, and its Inputs table registers
+  `logs/.recommendations-log.jsonl` as the source of the `acceptance` string the probe reads.
+  Neither surface asserts an unqualified absolute that the other contradicts.
+- >-
+  .claude/skills/orient/SKILL.md is smaller than its pre-change 23,444 bytes (projected ~23,278
+  after the four edits), its S4 budget entry equals the new measured size exactly and carries no `# raise-approved:` marker, and
+  `bin/venv-python -m scripts.validate` exits 0 with no prose or SLOC failure; no new
+  config/sloc_budgets.yaml entry is registered and every touched Python file stays at or under
+  500 SLOC.
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: >-
+    RED baseline on the unmodified tree -- prove the symbol and the test module are absent before
+    anything is written. Run FIRST. Marked hermetic false for a stated reason, not for cost: this
+    step deliberately INVERTS once the change lands, so replaying it against the
+    implementation-bearing tree would exit 1.
+  command: |-
+    bin/venv-python -c "import pathlib; src=pathlib.Path('scripts/preflight/ci_rca_signals.py').read_text(encoding='utf-8'); wire=pathlib.Path('scripts/session/preflight.py').read_text(encoding='utf-8'); t=pathlib.Path('tests/session/preflight/test_ci_rca_signals_deferrals.py'); print('in_signals=', 'prior_deferrals' in src, '| in_preflight=', 'annotate_prior_deferrals' in wire, '| test_exists=', t.exists()); raise SystemExit(0 if 'prior_deferrals' not in src and 'annotate_prior_deferrals' not in wire and not t.exists() else 1)"
+  expected: >-
+    Exit 0 printing `in_signals= False | in_preflight= False | test_exists= False` (reproduced on
+    the session HEAD at planning time). After the change this same command exits 1, which is the
+    intended inversion.
+  fix_if: >-
+    Exit 1 on the unmodified tree means part of this change already landed -- STOP and re-derive
+    the diff rather than writing over existing work.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Asserts the ABSENCE of the very symbols this plan introduces; it holds only on pre-change code,
+    so graduating it would land a standing guard that fails permanently the moment the change
+    merges.
+- step: 2
+  phase: pre-deploy
+  action: >-
+    GREEN unit -- the whole new test module passes, covering the scan rule, the annotate
+    short-circuit, the render shape and the anti-drift assertions.
+  command: |-
+    bin/venv-python -m pytest tests/session/preflight/test_ci_rca_signals_deferrals.py -q
+  expected: >-
+    All tests pass (TestPreflightReportWiring may report as skipped in an interpreter without
+    boto3; every other class must run and pass).
+  fix_if: >-
+    A TestScanPriorDeferrals failure means the context-entry rule is wrong (most likely the scan is
+    matching the rec id and "defer" in DIFFERENT context entries, or counting a plan twice). A
+    TestAnnotatePriorDeferrals failure on the empty-set case means the short-circuit is missing and
+    the common path is paying for a full plans walk. A failure on
+    `test_default_plans_dir_resolves_to_the_repo_corpus` means the `plans_dir=None` default is
+    wrong: an AttributeError on `None.is_dir()` means it is never resolved at all, and a zero count
+    means it resolves cwd-relatively (the method chdirs into `tmp_path` first). Resolve it to
+    `_common.ROOT / "docs" / "plans"`; never satisfy the method by passing a directory into the
+    call or by dropping the chdir -- both delete the discrimination the method exists to provide.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    A whole-module selector that CI's own pytest job already runs on every PR and merge; the three
+    load-bearing behaviours inside it are graduated individually by steps 3, 5 and 6, so a fourth
+    row invoking the whole file would duplicate a standing gate rather than add a guard.
+- step: 3
+  phase: pre-deploy
+  action: >-
+    Live-corpus fidelity -- the scan reproduces the audit's own pinned deferral census against the
+    real docs/plans corpus, not a fixture. This is the step that would catch a scan reading the
+    wrong field, joining across entries, mis-attributing the owner, or matching "defer"
+    case-SENSITIVELY. BOTH legs are existence-conditioned on the audit-named plans that still
+    exist (round-2 critique finding F2): the subset leg on `present`, and the owner leg on the
+    earliest-sorting surviving plan that actually supplies an owner phrase -- so a plan-file
+    DELETION degrades the assertion instead of reddening it, including deletion of the single plan
+    that supplies today's phrase. The grounding is observed practice, not a decision about .yaml
+    files (round-3 critique finding F3): PR #969 / commit 7b67e21d deleted 13 PLAN-*.yaml files at
+    once; Decision 174 is the same-direction principle for a superseded artefact FORMAT only.
+  command: |-
+    bin/venv-python -c "from scripts.preflight.ci_rca_signals import _scan_prior_deferrals; from scripts.preflight import _common; plans=_common.ROOT/'docs'/'plans'; KNOWN={'ambient-prose-contract-relocation':'operator-directed','cfg-migration-closeout':'another agent','drain-glue-orphan-mcp-transport':None,'glue-delete-database-grant':None,'inline-defer-boundary-contract':'another agent','reader-projection-substrate':'another agent','roadmap-blocking-edge-semantics':'human deferred','sync-deps-test-hermeticity':None}; present=set(KNOWN) & {p.stem[5:] for p in plans.glob('PLAN-*.yaml')}; r=_scan_prior_deferrals({'rec-3292','rec-3293'}, plans); lead=lambda e:[s for s in e['plan_slugs'] if KNOWN.get(s)]; owner_ok=lambda e: True if not lead(e) else ((e['owner_named'] is not None) if [s for s in e['plan_slugs'] if s not in KNOWN and s<lead(e)[0]] else (e['owner_named']==KNOWN[lead(e)[0]])); print('present=',sorted(present),'| owners=',{i:r[i]['owner_named'] for i in r},'|',r); ok=all(present <= set(r[i]['plan_slugs']) and r[i]['count']==len(r[i]['plan_slugs']) and owner_ok(r[i]) for i in ('rec-3292','rec-3293')); raise SystemExit(0 if ok else 1)"
+  expected: >-
+    Exit 0 with `present=` listing all eight audit-named slugs today and `owners=` showing
+    "operator-directed" for both ids. Each of rec-3292 and rec-3293 returns every present slug (a
+    superset is allowed and expected once this plan's own file lands in docs/plans), count equal to
+    len(plan_slugs), and an owner leg conditioned on the plan that supplies the phrase: today
+    PLAN-ambient-prose-contract-relocation.yaml sorts first among the surviving owner-bearing audit
+    plans, so the leg is the exact equality `owner_named == "operator-directed"`; retire that one
+    plan and the expectation becomes "another agent" (cfg-migration-closeout, the next
+    owner-bearing slug in filename order) with no edit to the command; let an unknown plan sort
+    ahead of the earliest known one and the leg weakens to non-null; retire every owner-bearing
+    audit plan and it drops out entirely. Measured at planning time with a case-insensitive
+    prototype of exactly this rule: 8 and 8 slugs, owner "operator-directed", and the same rule
+    reproduced rec-2923=9, rec-2836=8, rec-2710=6, rec-2762=6 -- the audit's census exactly (those
+    four return owner_named null, so the owner leg is deliberately pinned to the two ids that
+    carry one). The same prototype run case-SENSITIVELY returns rec-3292=5,
+    rec-3293=5, rec-2836=6, rec-2923=7, rec-2710=6, rec-2762=5 -- it drops
+    cfg-migration-closeout, drain-glue-orphan-mcp-transport and reader-projection-substrate. The
+    owner lambda's degradation matrix (today; ambient retired; all owner-bearing retired;
+    mis-read owner; dropped owner; unknown plan sorting ahead with and without an owner; this
+    plan self-counting) was executed at planning time and each case behaved as stated.
+  fix_if: >-
+    FIRST diagnosis on ANY owner-leg failure -- ITERATION ORDER. `owners=` reporting "another
+    agent" where "operator-directed" is expected means the scan walks a bare
+    `plans_dir.glob("PLAN-*.yaml")` (filesystem order) instead of
+    `sorted(plans_dir.glob("PLAN-*.yaml"))`; re-executed against the live corpus at planning time,
+    the unsorted walk returns "another agent" from PLAN-cfg-migration-closeout and the sorted walk
+    returns "operator-directed" from PLAN-ambient-prose-contract-relocation. Add the `sorted(...)`
+    -- never edit the regex, the KNOWN map or the assertion to chase this. Only once the walk is
+    confirmed sorted do the two remaining owner diagnoses below apply.
+    A missing slug that `present=` still lists is almost certainly a CASE-SENSITIVE match: the
+    dropped plans' context entries read "ci-rca DEFERRAL: ... Deferred ..." with no lowercase
+    "defer" (both parse fine as plain strings, so this is not a block-scalar problem). Lower-case
+    both the file prefilter and the per-entry test; never widen the assertion. A count above
+    len(plan_slugs) means a plan is counted once per matching entry instead of once per plan. With the walk confirmed sorted, a
+    failing owner leg means either the pinned `_OWNER_NAMED_RE` alternation no longer matches the
+    phrase carried by the earliest surviving owner-bearing plan (fix the alternation, never the
+    assertion) or the command's KNOWN map has gone stale against the corpus (re-derive the map
+    from the plans that still exist). Never widen the leg to accept null while an owner-bearing
+    plan survives -- that drops the discrimination the row exists to provide.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: preflight-prior-deferrals-census-fidelity
+- step: 4
+  phase: pre-deploy
+  action: >-
+    End-to-end wiring -- `_preflight.main()` writes the annotation into the report JSON, so the
+    signal reaches the file /orient and /plan actually read (not just the in-process dict).
+  command: |-
+    bin/venv-python -m pytest tests/session/preflight/test_ci_rca_signals_deferrals.py::TestPreflightReportWiring -q
+  expected: >-
+    1 passed; where boto3 is absent this reports 1 skipped -- the row is only claimed from a
+    boto3-bearing interpreter (round-4 critique finding F2). With one open ci_rca rec stubbed and
+    `_scan_prior_deferrals` patched to a canned mapping,
+    `report["ci_rca_unresolved_recs"][0]["prior_deferrals"]` equals the canned payload.
+  fix_if: >-
+    A missing key means the annotate call was placed after the report dict is built, or on a copy;
+    it must sit between the correlate assignment and the print call so both consumers see the same
+    dicts. A skip here in a boto3-bearing venv means the skipif predicate is wrong.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    The class is boto3-guarded (mirroring test_main_report.py's module-level guard for the same
+    main()-integration pattern), so on a fast-tier interpreter without boto3 a registry row
+    invoking it would record a skip as a pass -- a vacuous standing guard is worse than none, and
+    step 3 plus step 5 already graduate the two behaviours that must not regress.
+- step: 5
+  phase: pre-deploy
+  action: >-
+    Surfacing-only invariant -- the binding correction from the audit's round-3 review. No preflight
+    or session module may import the relevance engine or run an acceptance probe.
+  command: |-
+    bin/venv-python -c "import pathlib; files=sorted(list(pathlib.Path('scripts/preflight').rglob('*.py'))+list(pathlib.Path('scripts/session').rglob('*.py'))); hits=[str(p) for p in files if any(tok in p.read_text(encoding='utf-8') for tok in ('rec_relevance','run_acceptance_probe'))]; landed='annotate_prior_deferrals' in pathlib.Path('scripts/preflight/ci_rca_signals.py').read_text(encoding='utf-8'); print('scanned=',len(files),'| violations=',hits,'| annotate_present=',landed); raise SystemExit(0 if not hits and landed else 1)"
+  expected: >-
+    Exit 0 with `violations= []` and `annotate_present= True`, over 21 files at planning-time HEAD.
+    Two conjuncts by design (claim-ADDITIVE authoring; precedent: the 2026-08-31
+    ci-rca-lifecycle-records-watched-set governance note in
+    docs/contracts/verification-registry.yaml): the surfacing-only scan is the row's
+    named claim and holds identically on origin/main, so the `annotate_prior_deferrals`-present
+    assertion -- verified ABSENT on origin/main (grep returns 0) -- is what makes the differential
+    leg fail there. Without it scripts.verification_graduation.run_differential returns "not
+    admitted -- revert did not produce FAIL (tautological)".
+  fix_if: >-
+    A `violations=` hit means an acceptance probe or the relevance engine has been wired into a
+    session-start path. Remove it: the probe belongs in the /orient session, per-rec and on demand
+    (docs/contracts/recommendation-relevance.yaml constraints, Decision 88). Never satisfy this by
+    narrowing the scanned directories. `annotate_present= False` means the signal function was
+    never added or was renamed -- fix the source or the check_spec's symbol, never delete the
+    conjunct (deleting it makes the row tautological and un-admittable).
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: preflight-never-runs-acceptance-probes
+- step: 6
+  phase: pre-deploy
+  action: >-
+    Rendering anti-drift, within AND across the two surfaces -- the CI-RCA triage rendering has
+    exactly one home (the command), the skill points at it and restates none of it, the trigger
+    carries a bounded, guarded, runnable probe, the two carve-outs that keep the command
+    self-consistent (the Section 2 pointer exception and the write-nothing probe exception) are
+    present, and the skill MIRRORS the probe carve-out in its Read-Only Contract and registers the
+    recs read cache the probe reads (round-2 critique finding F1: the command's carve-out alone
+    leaves the skill it tells the agent to load contradicting it in three places).
+  command: |-
+    bin/venv-python -m pytest "tests/session/preflight/test_ci_rca_signals_deferrals.py::TestOrientDeferralSurfacingContract" -q
+  expected: >-
+    All tests in the class pass: orient.md Step 3 holds the four classification rows,
+    `prior_deferrals`, the N >= 3 trigger, `run_acceptance_probe=True`, an explicit
+    `acceptance_timeout=`, `no:cacheprovider`, the "did not complete" branch of the three-way
+    routing rule, `stamp_fixed_by_sha`, the side-effect guard clause (the word `acceptance` beside
+    a read-only qualifier) and `recent_main_commits` as the probe's commit source, and contains no
+    `git log` token in that subsection; orient.md Step 2 names `prior_deferrals`; the
+    Deliverable-Shape pointer line carries the "except Section 2" carve-out and the
+    "**Write nothing.**" paragraph names the relevance probe; the skill contains the pointer to
+    `.claude/commands/orient.md` and no longer contains a `**HARD BLOCK**` or `**SOFT PROMPT**`
+    table row (the two surviving unbolded occurrences at SKILL.md:178 and :203 are untouched, so
+    the bolded-token assertion is satisfiable without collateral deletion); and the cross-surface
+    assertions pass -- the skill's `## Read-Only Contract` names the Step 3 relevance probe as its
+    sole subprocess exception and points at `.claude/commands/orient.md`, the skill's frontmatter
+    description and its "strictly read-only" sentence each carry the Read-Only-Contract qualifier
+    rather than standing as unqualified absolutes, and the skill's Inputs table registers
+    `logs/.recommendations-log.jsonl`.
+  fix_if: >-
+    A failure naming the skill means the relocation left a duplicate row behind -- delete it there
+    rather than relaxing the assertion; two homes for one rendering rule is the drift this step
+    exists to prevent. A failure on the "except Section 2" or the write-nothing carve-out means
+    the command still contradicts itself (a pointer cycle back into the skill, or a blanket
+    write-nothing clause standing beside an instruction to run a subprocess) -- add the carve-out,
+    never drop the assertion. A failure on a cross-surface assertion means the carve-out landed in
+    the command only: the skill still says "strictly read-only" or "writes nothing" with no
+    qualifier, or its Inputs table does not register the recs read cache the probe reads. Fix the
+    skill; do not delete the assertion, and do not resolve the contradiction by deleting the
+    command's carve-out.
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: orient-ci-rca-triage-rendering-single-home
+- step: 7
+  phase: pre-deploy
+  action: >-
+    Prose-budget arithmetic -- the capped S4 surface shrank and the registry was ratcheted down to
+    the measured value with no raise marker.
+  command: |-
+    bin/venv-python -c "import yaml,pathlib; from scripts.preflight.prose_context import measure_prose_context; raw=pathlib.Path('config/prose_budgets.yaml').read_text(encoding='utf-8'); b=yaml.safe_load(raw)['S4']['.claude/skills/orient/SKILL.md']; cur=[f['prose_bytes'] for f in measure_prose_context()['S4']['files'] if f['path'].endswith('orient/SKILL.md')][0]; marker=[l for l in raw.splitlines() if 'orient/SKILL.md' in l and 'raise-approved' in l]; print('current=',cur,'budget=',b,'pre_change=23444','markers=',marker); raise SystemExit(0 if cur==b and cur<23444 and not marker else 1)"
+  expected: >-
+    Exit 0 with current == budget, both below the pre-change 23,444 bytes (projected ~23,278
+    after the four skill edits: 779 removed, 613 added), and `markers= []`.
+  fix_if: >-
+    current > budget means the relocation freed less than the pointer line costs -- shorten the
+    pointer, never raise the budget (a raise here would need a `# raise-approved: dec-NNN` marker
+    and a Decision that authorises it). current != budget means the registry was not reseeded to
+    the measured value.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    An exact current==budget equality is a one-time implementation assertion, not a standing
+    invariant: the registry deliberately treats below-budget as a non-blocking ADVISORY, so a
+    graduated equality row would red on any future legitimate shrink of this surface. The standing
+    guards are the registered validate_prose_limits and validate_prose_budget_raises, which run in
+    both presubmit tiers.
+- step: 8
+  phase: pre-deploy
+  action: >-
+    Structural-size boundary -- no file crossed the 500-SLOC ceiling and no budget entry was
+    registered to absorb growth.
+  command: |-
+    bin/venv-python -c "import pathlib,yaml; sl=lambda p: len([l for l in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if l.strip() and not l.strip().startswith('#')]); a=sl('scripts/preflight/ci_rca_signals.py'); b=sl('scripts/session/preflight.py'); c=sl('tests/session/preflight/test_ci_rca_signals_deferrals.py'); reg=yaml.safe_load(pathlib.Path('config/sloc_budgets.yaml').read_text(encoding='utf-8'))['budgets']; print('ci_rca_signals=',a,'preflight=',b,'new_test=',c,'registered=',sorted(reg)); raise SystemExit(0 if a<=500 and b<=500 and c<=500 and not {'scripts/preflight/ci_rca_signals.py','scripts/session/preflight.py','tests/session/preflight/test_ci_rca_signals_deferrals.py'} & set(reg) else 1)"
+  expected: >-
+    Exit 0. ci_rca_signals well under 500 (348 measured before the change, 152 headroom), preflight
+    under 500 (427 measured, 73 headroom), the new test module under 500, and
+    `registered= ['scripts/execute_recommendation.py']` unchanged.
+  fix_if: >-
+    A file over 500 is decomposed into a facade package (Decision 128 / Decision 80 pattern), never
+    registered with a raise marker and never absorbed by `--update-sloc-budgets`.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    validate_sloc_limits is the registered whole-repo owner of this invariant in both tiers; a
+    graduated row naming these three paths would duplicate it and would go stale the moment a file
+    is renamed or decomposed.
+- step: 9
+  phase: pre-deploy
+  action: Lint and format-check the two changed Python files and the new test module.
+  command: |-
+    bin/venv-python -m ruff check scripts/preflight/ci_rca_signals.py scripts/session/preflight.py tests/session/preflight/test_ci_rca_signals_deferrals.py && bin/venv-python -m ruff format --check scripts/preflight/ci_rca_signals.py scripts/session/preflight.py tests/session/preflight/test_ci_rca_signals_deferrals.py
+  expected: "All checks passed! followed by: 3 files already formatted."
+  fix_if: >-
+    Fix the reported rule violations or run `ruff format` on the files; never add a `noqa` to
+    silence one.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    CI's ruff lint and ruff format jobs already cover every file on every PR and merge; graduating a
+    per-file ruff invocation duplicates them exactly.
+- step: 10
+  phase: pre-deploy
+  action: Fast tier green on the branch.
+  command: |-
+    bin/venv-python -m scripts.validate --pre
+  expected: >-
+    Exit 0, including validate_prose_limits (no over-budget error and no below-budget advisory for
+    the orient skill), validate_prose_budget_raises (a decrease passes unrestricted) and
+    validate_sloc_limits.
+  fix_if: >-
+    Diagnose the named failing check; never weaken a check, skip a test or relax an assertion to
+    obtain green (Decision 181, docs/contracts/implement-scope-boundary.yaml CONTENT invariant).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: >-
+    Invokes scripts.validate itself -- a registry row that runs the tier which runs the registry is
+    the recursion the hermetic-replay rule explicitly forbids.
+- step: 11
+  phase: pre-deploy
+  action: >-
+    Full-tier validation before handoff, as handoff_policy.full_validation_required_before_commit
+    declares (Decision 163). Executed exactly once, at /implement Step 7 closure item 4, after
+    implementation_declared is true and every bookkeeping write has landed.
+  command: |-
+    bin/venv-python -m scripts.validate
+  expected: >-
+    Exit 0 -- the complete suite with the whole change in tree, including validate_vp_replay
+    replaying this plan's hermetic steps 3, 5, 7, 8 and 9 against the complete tree.
+  fix_if: >-
+    A full-tier-only failure is in scope for this plan to fix on the branch. Never skip a test, add
+    a baseline entry or drop an assertion to get green.
+  hermetic: false
+  graduation: not-applicable
+test_obligations:
+- source: scripts/preflight/ci_rca_signals.py
+  behavior: >-
+    A deferral is counted once per plan, and only when the rec id (exact) and the substring
+    "defer" (CASE-INSENSITIVE, in both the file prefilter and the per-entry test) appear in the
+    SAME top-level `context` entry; the owner phrase is read from that entry; a malformed or
+    unreadable plan is skipped rather than raised.
+  verification_step: 2
+  test_selector: tests/session/preflight/test_ci_rca_signals_deferrals.py::TestScanPriorDeferrals::test_counts_only_a_context_entry_naming_both_the_rec_and_defer
+  red_green_expectation: >-
+    Red before -- `_scan_prior_deferrals` does not exist, so the import fails at collection. Green
+    after the scan lands. Step 3 independently re-proves the same rule against the live docs/plans
+    corpus rather than a fixture.
+- source: scripts/preflight/ci_rca_signals.py
+  behavior: >-
+    `owner_named` is DETERMINISTIC under a SORTED walk: given two plans that both count for the
+    same rec and carry DIFFERENT owner phrases, the phrase from the EARLIER PLAN-*.yaml filename
+    is returned, irrespective of the order in which the two files were created. Round-4 critique
+    finding F1: `pathlib.Path.glob` yields filesystem order, and against the live corpus an
+    unsorted walk returns "another agent" where the sorted walk returns "operator-directed" --
+    the value VP step 3 asserts.
+  verification_step: 2
+  test_selector: tests/session/preflight/test_ci_rca_signals_deferrals.py::TestScanPriorDeferrals::test_owner_named_comes_from_the_earliest_sorting_plan
+  red_green_expectation: >-
+    Red before -- `_scan_prior_deferrals` does not exist, so the module fails at collection. Green
+    after the SORTED walk lands. The method writes PLAN-zzz-later-owner.yaml first (owner phrase
+    "human deferred") and PLAN-aaa-earlier-owner.yaml second (owner phrase "another agent") into
+    `tmp_path`, both naming the same fixture rec id beside "defer" in one context entry, and
+    asserts `owner_named == "another agent"`. The ASSERTION is on the sorted semantics and so is
+    deterministic regardless of readdir order; on this filesystem readdir returns tmp_path entries
+    in creation order (verified at planning time), so the method also reds against a scan whose
+    walk drops the `sorted(...)`. This is the ONLY fixture-level exercise of the owner leg --
+    without it that leg is proven solely by VP step 3 against the live corpus, the
+    unexercised-path-behind-green-steps shape round-3 finding F1 raised.
+- source: scripts/preflight/ci_rca_signals.py
+  behavior: >-
+    `print_ci_rca_recs` renders the payload on the HARD BLOCK line as "deferred N times (plans: a,
+    b, c[, +M more]; owner named: X | none)" -- at most five slugs, "+M more" beyond that, "owner
+    named: none" when `owner_named` is null -- and prints no extra line at all when
+    `prior_deferrals` is absent or its count is zero.
+  verification_step: 2
+  test_selector: tests/session/preflight/test_ci_rca_signals_deferrals.py::TestPrintPriorDeferralsRender
+  red_green_expectation: >-
+    Red before -- the render does not exist, so the class fails at collection on the missing
+    payload contract and its captured-stdout assertions find no deferral line. Green after the
+    HARD BLOCK branch gains the second indented line.
+- source: scripts/preflight/ci_rca_signals.py
+  behavior: >-
+    `annotate_prior_deferrals` short-circuits: with `correlation["unresolved"]` empty it performs
+    ZERO plan-file reads (no docs/plans access at all) and returns the same object; with entries
+    present it attaches `prior_deferrals` to each unresolved rec dict in place and leaves
+    `likely_resolved` untouched.
+  verification_step: 2
+  test_selector: tests/session/preflight/test_ci_rca_signals_deferrals.py::TestAnnotatePriorDeferrals
+  red_green_expectation: >-
+    Red before -- the symbol does not exist, so the class fails at collection. Green after, with
+    the zero-read case proven by monkeypatching `_scan_prior_deferrals` to raise and asserting the
+    empty-unresolved call still returns the same object untouched (constraint 2 makes this
+    short-circuit load-bearing for the remedy's near-zero-cost claim).
+- source: scripts/preflight/ci_rca_signals.py
+  behavior: >-
+    `annotate_prior_deferrals` called with NO `plans_dir` -- the sole production call shape --
+    resolves the default to `_common.ROOT / "docs" / "plans"` and scans the real corpus, rather
+    than degrading to a zeroed payload or raising. Round-3 critique finding F1: every other
+    assertion in this plan either passes a directory explicitly (VP step 3) or patches the scan
+    (VP step 4 / the short-circuit case), so an unexercised default is the one defect that would
+    ship the headline signal silently dead with all eleven VP steps green.
+  verification_step: 2
+  test_selector: tests/session/preflight/test_ci_rca_signals_deferrals.py::TestAnnotatePriorDeferrals::test_default_plans_dir_resolves_to_the_repo_corpus
+  red_green_expectation: >-
+    Red before -- the symbol does not exist, so the method fails at collection. Red also for a
+    wrong default: with `plans_dir` left as None and never resolved the call raises AttributeError
+    on `None.is_dir()`, and with a cwd-relative `docs/plans` it returns count 0 because the method
+    calls `monkeypatch.chdir(tmp_path)` before the call. Green after the `_common.ROOT` resolution
+    lands: the method asserts `count >= len(present)`, where `present` is the audit-named slugs
+    still under `_common.ROOT / "docs" / "plans"` -- the SAME existence conditioning VP step 3 uses,
+    so a later plan deletion degrades the assertion instead of reddening it. Prototyped 2026-09-03
+    from cwd `/tmp` against the live corpus: present = 8, rec-3292 count = 8.
+- source: scripts/session/preflight.py
+  behavior: >-
+    The report JSON's `ci_rca_unresolved_recs` entries carry `prior_deferrals`, because the annotate
+    call sits between the correlate assignment and the print call and mutates the dicts both
+    consumers share.
+  verification_step: 4
+  test_selector: tests/session/preflight/test_ci_rca_signals_deferrals.py::TestPreflightReportWiring::test_unresolved_entries_carry_prior_deferrals
+  red_green_expectation: >-
+    Red before -- the key is absent from every unresolved entry in the report main() writes. Green
+    after the one-line wiring.
+- source: .claude/commands/orient.md
+  behavior: >-
+    Step 3 is the single home for the CI-RCA triage rendering: four classification rows, the
+    `prior_deferrals` render, the N >= 3 trigger, the side-effect guard clause on the rec's
+    `acceptance` string (including the non-writing `-p no:cacheprovider` qualifier for a
+    pytest-shaped acceptance), a bounded probe command carrying `run_acceptance_probe=True` and an
+    explicit `acceptance_timeout=` that sources its commits from `recent_main_commits` and issues
+    no `git log`, the three-way routing rule with its explicit "did not complete" branch, and the
+    close-then-stamp route naming `stamp_fixed_by_sha`; the file's Deliverable-Shape pointer
+    carves out Section 2 and its "**Write nothing.**" paragraph carves out the Step 3 probe.
+  verification_step: 6
+  test_selector: tests/session/preflight/test_ci_rca_signals_deferrals.py::TestOrientDeferralSurfacingContract::test_command_carries_the_single_home_rendering
+  red_green_expectation: >-
+    Red before -- orient.md contains no classification table, no `prior_deferrals`, no probe
+    command, and its pointer and write-nothing lines carry no carve-out. Green after the
+    relocation and the additions.
+- source: .claude/skills/orient/SKILL.md
+  behavior: >-
+    The skill points at the command for the classification rendering and restates none of it -- no
+    `**HARD BLOCK**` or `**SOFT PROMPT**` table row survives in the skill.
+  verification_step: 6
+  test_selector: tests/session/preflight/test_ci_rca_signals_deferrals.py::TestOrientDeferralSurfacingContract::test_skill_points_at_the_command_and_restates_no_row
+  red_green_expectation: >-
+    Red before -- the skill still holds all four rows at lines 136-141 and carries no pointer. Green
+    after the relocation.
+- source: .claude/skills/orient/SKILL.md
+  behavior: >-
+    The skill does not contradict the command it tells the agent to load: its
+    `## Read-Only Contract` bullet list names the `.claude/commands/orient.md` Step 3 relevance
+    probe as its sole subprocess exception, its frontmatter description and its line-8 "strictly
+    read-only" sentence each carry a qualifier pointing at that contract instead of standing as
+    unqualified absolutes, and its Inputs table registers `logs/.recommendations-log.jsonl` as the
+    source of the rec `acceptance` string the probe reads (a new input, not a projection of the
+    preflight cache, which never carries `acceptance`).
+  verification_step: 6
+  test_selector: tests/session/preflight/test_ci_rca_signals_deferrals.py::TestOrientDeferralSurfacingContract::test_skill_mirrors_the_probe_carveout_and_registers_the_recs_cache
+  red_green_expectation: >-
+    Red before -- the skill's Read-Only Contract, frontmatter and line-8 sentence carry no
+    exception and its Inputs table has no `logs/.recommendations-log.jsonl` row, so all four
+    assertions fail. Green after the three skill additions; the test also fails if a later edit
+    resolves the contradiction by DELETING the command's carve-out instead, because it asserts the
+    exception is named on both surfaces.
+- source: config/prose_budgets.yaml
+  behavior: >-
+    The S4 orient entry equals the post-edit measured byte count, is below the pre-change 23,444
+    bytes, and carries no `# raise-approved:` marker.
+  verification_step: 7
+  command: |-
+    bin/venv-python -c "import yaml,pathlib; from scripts.preflight.prose_context import measure_prose_context; raw=pathlib.Path('config/prose_budgets.yaml').read_text(encoding='utf-8'); b=yaml.safe_load(raw)['S4']['.claude/skills/orient/SKILL.md']; cur=[f['prose_bytes'] for f in measure_prose_context()['S4']['files'] if f['path'].endswith('orient/SKILL.md')][0]; marker=[l for l in raw.splitlines() if 'orient/SKILL.md' in l and 'raise-approved' in l]; print('current=',cur,'budget=',b,'pre_change=23444','markers=',marker); raise SystemExit(0 if cur==b and cur<23444 and not marker else 1)"
+  red_green_expectation: >-
+    Red before -- the entry reads 23465 while the surface measures 23,444, so the equality assertion
+    fails. Green after the relocation and the ratchet-down edit. Deliberately a VP command and not a
+    pytest row: an exact-equality standing test would red on any future legitimate shrink, which the
+    registry treats as a non-blocking advisory.
+constraints:
+- >-
+  Preflight NEVER executes a rec acceptance command. No `scripts.rec_relevance` import and no
+  `run_acceptance_probe` token may appear under `scripts/preflight/**` or `scripts/session/**`
+  (Decision 55; the surfacing-only rule stated at scripts/preflight/correlation.py:173). VP step 5
+  is the standing guard, graduated as a claim-ADDITIVE row: the surfacing-only scan verbatim plus
+  one discriminating assertion that `annotate_prior_deferrals` is present in
+  scripts/preflight/ci_rca_signals.py (absent on origin/main), which is what lets
+  scripts.verification_graduation.run_differential admit it at all. Precedent:
+  docs/contracts/verification-registry.yaml governance note, 2026-08-31.
+- >-
+  The docs/plans walk is skipped entirely when `correlation["unresolved"]` is empty -- the common
+  path must read zero plan files. The remedy's zero-dispatch, near-zero-cost claim depends on this
+  short-circuit, not on the scan being fast.
+- >-
+  Do not weaken, relax, widen or gate the Decision 73 point 4 HARD BLOCK. `prior_deferrals` is
+  advisory instrumentation attached beside the block; the block's condition
+  (`ci_rca_unresolved_recs` non-empty) and its effect on /plan are unchanged.
+- >-
+  One subject, one home, and no surface left contradicting another. The CI-RCA triage rendering
+  lives only in `.claude/commands/orient.md` Step 3; the probe exception that rendering creates is
+  named in BOTH `.claude/commands/orient.md`'s write-nothing paragraph and
+  `.claude/skills/orient/SKILL.md`'s Read-Only Contract, because the command instructs the agent
+  to load that skill (orient.md:43) and a carve-out on one surface only reproduces the drift the
+  relocation removes. Any input the relocated rendering introduces is registered in the skill's
+  Inputs table.
+- >-
+  Preflight proposes nothing and closes nothing. Closure needs proof and a human turn (Decision
+  103); the /orient probe informs the choice, and the close-then-stamp route is executed by the
+  operator, never by a session-start path.
+- >-
+  The /orient probe is BOUNDED and self-reporting. It passes an explicit `acceptance_timeout` and
+  measures elapsed time, because `_run_acceptance_probe` collapses failure and timeout into the
+  same False (scripts/rec_relevance.py:33-45): a timeout read as "not satisfied" routes the agent
+  to /plan and reproduces the reflex deferral this plan exists to break. A pytest-shaped
+  acceptance is probed only under a non-writing invocation (`-p no:cacheprovider`); an acceptance
+  that is not a grep, a read-only inspection or such a pytest selector is surfaced verbatim and
+  never executed.
+- >-
+  No numbered Decision, no new contract, no new standing prose-architecture doc (Decision 86 and
+  docs/contracts/decision-entry.yaml routing). `prior_deferrals` semantics live in the function
+  docstring and the orient command, where every other preflight-report key's semantics live.
+- >-
+  Prose: every byte added to the capped S4 orient skill is funded in-file. This plan takes a net
+  REDUCTION there and ratchets config/prose_budgets.yaml down to the measured value. Never add a
+  `# raise-approved:` marker to that entry -- Decision 165 makes an unauthorised marker a CI
+  failure in its own right, and a decrease needs none.
+- >-
+  SLOC ceiling 500 per file -- decompose, never raise (Decision 128; Decision 130 puts tests/ in
+  scan scope, so the new test module counts). No config/sloc_budgets.yaml entry is added for any
+  file this plan touches, no `# raise-approved:` marker is authored (Decision 165: a marker must
+  name a Decision that AUTHORISES the entry, and none does here), and `--update-sloc-budgets` is
+  not run.
+- >-
+  The scan must never raise inside preflight. Wrap the per-file read and parse so an unreadable or
+  malformed PLAN-*.yaml is skipped, mirroring `_check_convergence_rca_gap`'s degrade-to-None
+  posture in this same module.
+- >-
+  No cross-test imports (Decision 131): the new module imports stdlib,
+  scripts.preflight.ci_rca_signals, scripts.preflight._common (for `ROOT`, used only by the
+  default-resolution method) and tests.fixtures.session_preflight_module only, and must not import
+  from any other test_* module.
+- >-
+  No exact-count assertions against growing collections, and no assertion that pins a named plan
+  file into existence. The census check asserts an EXISTENCE-CONDITIONED subset (the audit slugs
+  still present under docs/plans) plus internal consistency plus an owner leg that is conditioned
+  on the plan which actually SUPPLIES the phrase, not merely on the set being non-empty (round-2
+  critique finding F2): exact equality against the earliest-sorting surviving owner-bearing audit
+  plan, weakening to non-null when an unknown plan sorts ahead of it, and dropping out entirely
+  when no owner-bearing audit plan survives. So neither a later plan deferring an instrumented rec
+  (which grows the set) nor a plan-file DELETION -- an observed practice in this repository, PR
+  #969 / commit 7b67e21d deleted 13 PLAN-*.yaml files at once (round-3 critique findings F2/F3);
+  Decision 174 stands only as the same-direction principle for a superseded artefact FORMAT and is
+  NOT authority over an individual .yaml -- including deletion of the single plan that supplies
+  today's phrase, can red it; and it is never widened to accept null while an owner-bearing plan
+  survives. This plan creates no retention obligation on any docs/plans file.
+- No rescue agents or workaround loops (Decision 55). Linux/bash commands only; `bin/venv-python`
+  never bare `python` (AGENTS.md Shell invocations).
+context:
+- 'Source: audits/planning-decision-burden-735e69fc.yaml -- burden B5 (PARTIAL), originated remedy B5-O1 (instrumentation_only, vehicle "check", sunset at CD.17 reversal), finding PDB-06 (medium, HYPOTHESIS after the audit''s self-verification cap). Overseer brief section 4 slice F, wave 1; implementation depends on nothing and blocks nothing.'
+- 'BINDING CORRECTION (brief section 6; audit meta.self_verification.unresolved_findings R3 item 1, blocking): B5-O1 as originally written put `evaluate_rec_relevance(..., run_acceptance_probe=True)` inside preflight, which runs `subprocess.run(cmd, shell=True)` on a cache-sourced acceptance string at session start -- against scripts/preflight/correlation.py:173 and Decision 55. This plan implements the adopt-modified form: preflight computes {count, plan_slugs, owner_named} only, and the T3.8 probe runs in the /orient session where the operator already acts.'
+- 'PDB-06 acceptance, superseded in one clause by brief section 6 -- recorded so G3 does not read a false "unmet" (round-1 critique F4): the audit''s PDB-06 acceptance string requires prior_deferrals to carry "count, plan slugs, any named owner and the T3.8 relevance verdict", and B5-O1 still reads verdict: adopt-as-proposed with a carrying_cost describing the in-preflight probe. The binding correction removes the verdict from the PREFLIGHT payload, so that string can no longer pass verbatim. The MODIFIED acceptance this plan satisfies: logs/.preflight-report.json ci_rca_unresolved_recs entries carry prior_deferrals with count, plan_slugs and owner_named; /orient''s CI-RCA Triage renders it; and the T3.8 relevance verdict is obtained at the same decision point, one surface later, by the bounded guarded probe command Step 3 hands the /orient agent. Nothing of the finding is dropped -- only the surface that computes the verdict moves.'
+- 'Also recorded from the audit''s round-4 review (item 6, cosmetic): B5-O1''s end-state owner is the queue CONSUMER (T4.2 under CD.17 reversal), not T4.3 the producer repoint; the sunset condition itself is unaffected. No scope consequence.'
+- 'Preflight read (logs/.preflight-report.json, session_start 2026-09-03T11:27:19Z; already run by the orchestrator, not re-run): venv_ok true, creds_status ok, branch claude/overseer-audit-pdb, uncommitted_changes false, log_sync_result skipped, main_freshness ok with commits_behind 0 and main_files_changed_since_branch empty -- Main Divergence Assessment finds no overlap and defers nothing.'
+- 'Related-Work check at write time: ci_rca_unresolved_recs is EMPTY, so the Decision 73 point 4 HARD BLOCK does not fire and no Related-Work condition is owed. rec-3292 and rec-3293 were closed with proof and fixed_by_sha-stamped by the overseer run''s step 0 before this plan was authored.'
+- 'Recommendation Relevance Gate (run_acceptance_probe=False, mandatory at planning time per Decision 55): rec-2413, rec-2270 and rec-2272 each return verdict "unknown" ("no signals available to assess relevance"), so none is excluded by the gate; none is bundled by choice (fork D4). bundled_recommendations is empty, so the Closure Obligation''s rec-resolving trigger does not fire; there is no Delete row and no X -> Y cutover, so its surface-retiring trigger does not fire either.'
+- 'Adjacent open recs on this plan''s own scope files, deliberately NOT bundled: rec-2413 (Medium -- orient.md Intent line still enumerates four of six deliverable sections; its second acceptance grep already passes), rec-2270 (Low -- orient skill frontmatter says "up to N disjoint"), rec-2272 (Low -- orient.md 2-hour freshness threshold undocumented). Each is a distinct cosmetic defect whose fix is not incidental to this change, and the brief names no Resolves target for slice F.'
+- 'Tier Item Freshness Gate: intent matches the soft-warn exception category ad_hoc_rec and names no tier_item, so the gate is skipped with a soft warning. Corroborated regardless -- T3.8 is complete (its engine is called, never modified) and T3.9 is not_started (it owns post-merge reconciliation, the closure half); this plan closes no criterion of either and touches neither''s files_in_scope.'
+- 'Decision Significance Gate: no numbered Decision is drafted. Contract-first check -- the only field-semantics content is `prior_deferrals`, and no docs/contracts/*.yaml documents preflight-report keys (a grep of docs/contracts/ for ci_rca_unresolved_recs returns nothing), so there is no contract home to prefer; every other preflight key''s semantics live in its own function docstring. docs/contracts/recommendation-relevance.yaml already sanctions the /orient probe shape ("acceptance probe is on-demand per-rec only; never queue-wide", Decision 88) and needs no amendment.'
+- 'Data-Model Assessment: not conducted -- no table, DDL, field_semantics entry or warehouse write path is in scope. Infrastructure/Lambda Assessment: no .tf file; `lambda_manifest --list-patterns` covers neither scripts/preflight/** nor .claude/**, so no build, deploy, smoke-test or model-ID step is owed (CD.16 / Decision 79).'
+- 'Complexity Assessment: 6 scope files crosses the >5 heuristic, which is SUSPENDED while the executor freeze holds (AGENTS.md Temporary Operational Constraints, Decision 67) -- authored as one IMPLEMENTATION plan. The six files are one mechanism (compute -> wire -> render -> test -> budget) and do not split into atomic halves without leaving a signal computed and never rendered.'
+- 'Prose-budget arithmetic, measured 2026-09-03: .claude/skills/orient/SKILL.md is 23,444 bytes against an S4 budget of 23,465 (21 bytes headroom). The relocation removes lines 136-143 (779 bytes = 56+14+152+246+109+125+1+76) and the four edits add 613 measured bytes -- pointer line 214, Read-Only Contract subprocess bullet 174, Inputs row 130, frontmatter qualifier 50, line-8 qualifier 45 -- so the surface SHRINKS 166 bytes to ~23,278 and the budget is ratcheted DOWN to the measured value. Round-2 critique finding F1 is funded out of the same deletion: the ~513-byte surplus the earlier draft banked is spent on the three cross-surface additions rather than returned to the budget, and the surface still ends below its pre-change 23,444 bytes, so acceptance criterion 7 and VP step 7 (`cur == b and cur < 23444`) both still hold (decreases are unrestricted; validate_prose_budget_raises gates the upward direction only). .claude/commands/orient.md is S3, measured-only under Decision 127, and carries no budget entry.'
+- 'flag: Decision 76 [NOTE] -- methodology relocated into Layer 3 (.claude/commands/orient.md) | disposition: defer-with-note, fork D2(a) stands (identical disposition in both 6b proxy rounds): the whole per-signal classification table moves to the command so deliverable Section 2 has ONE rendering home. Splitting it -- SOFT PROMPT close route in the skill, deferral trigger in the command -- would put two surfaces on one subject, the drift-by-design anti-pattern AGENTS.md names; the command is also the file every /orient session reads first, while the skill is loaded on demand, so the relocation makes the rules MORE reliably read. Layer tension acknowledged and accepted: Decision 76 clause 5 and docs/contracts/instruction-architecture.yaml Layer 3 `excludes` push methodology toward the skill, but the audit''s adjudicated landing_surfaces and brief section 4 pin the direction, the relocated content is operator-action rows, literal commands and a routing rule (Layer 3 `contains`), config/prose_budgets.yaml''s relief valve sanctions deferring detail to an uncapped surface the capped one points at, and single-home anti-drift outweighs the tension.'
+- 'One-hop indirection accepted: .claude/skills/planning/SKILL.md:47 says "apply the close or triage guidance from the orient skill", which now resolves one hop further to the command. planning/SKILL.md is slice A''s capped surface (76 bytes headroom) and is deliberately untouched here to avoid a cross-slice byte conflict; rec-2273 already tracks that forward-reference as a defect in its own right.'
+- 'Cost measured at planning time on this tree (374 plans): reading every plan''s text is 0.015s -- a SECOND pass over a corpus preflight already walks once per run via compute_followon_state (scripts/platform_roadmap_state.py:101), not the only one (round-4 critique finding F3); parsing only the plans naming an unresolved rec is 0.279s for a rec named in nine of them; with ci_rca_unresolved_recs empty (today) the scan reads nothing. These supersede the audit''s "~0.1s" estimate.'
+- 'Scan rule pinned to the audit''s own census key (contract_notes 7d): a deferral counts when the rec id (exact) and the substring "defer" (case-insensitive) occur in the SAME top-level `context` entry of a PLAN-*.yaml. A planning-time prototype of exactly this rule reproduced the audit''s pinned figures with no adjustment (8, 8, 9, 8, 6, 6 across the six recs the audit names), which is the evidence that the rule is the right one.'
+- 'Census evidence behind fork D3 and its case-insensitivity amendment (made at 6b proxy round 1, re-verified at round 2 by an independent prototype): substring-prefilter-then-YAML-parse mirrors scripts/platform_roadmap_state.py:101-125 (compute_followon_state), the repo''s existing all-plans walk, verbatim in shape and for the same stated reason (full-parsing ~350 plans to read one optional key dominated runtime). Both the file prefilter and the per-entry "defer" test are CASE-INSENSITIVE; the rec-id match stays exact. Measured on the live corpus 2026-09-03: case-sensitive returns rec-3292=5, rec-3293=5, rec-2836=6, rec-2923=7, rec-2710=6, rec-2762=5 and silently drops the plans whose entries read "ci-rca DEFERRAL: ... Deferred ..."; case-insensitive returns 8, 8, 8, 9, 6, 6 -- the audit''s census exactly, with owner_named "operator-directed".'
+- 'flag: Decision 174 [WARN] -- the graduated census row pins plan files nothing promises to keep | disposition: defer-with-note with the assertion made existence-conditioned (fork D8b; identical disposition in both 6b proxy rounds): a plan whose own context entry names an instrumented rec beside the word "defer" raises that rec''s count once it merges, so VP step 3 never asserts an exact count. It now asserts an EXISTENCE-CONDITIONED subset -- `present = want & {p.stem[5:] for p in plans.glob("PLAN-*.yaml")}`, then `present <= set(plan_slugs)`, `count == len(plan_slugs)`, and an owner leg conditioned on the plan that actually SUPPLIES the phrase rather than on `present` being non-empty (round-2 critique finding F2 -- the earlier form silently flipped to "another agent" and reddened the graduated row if PLAN-ambient-prose-contract-relocation.yaml alone were retired, which is exactly the kind of deletion PR #969 demonstrates does happen in this repository): equality against `KNOWN[lead[0]]` where `lead` is the surviving owner-bearing audit plans in filename order, weakening to non-null when an unknown plan sorts ahead of `lead[0]`, and dropping out when `lead` is empty. The grounding is OBSERVED PRACTICE, narrowed from the round-2 wording per round-3 critique finding F3: PR #969 (squash commit 7b67e21d) deleted 13 docs/plans/PLAN-*.yaml files in a single commit, so plan files demonstrably do not survive indefinitely and the graduated signal must degrade to zero on deletion rather than red. Decision 174 is cited as the SAME-DIRECTION principle only -- it makes a superseded planning-artefact FORMAT (the retired PLAN-*.md shape) retirable by deletion with no working-tree retention obligation, and does NOT govern deletion of an individual PLAN-*.yaml, so it is not the authority this row rests on. This plan creates no retention obligation on any plan file either way. Calibration note: graduated rows are differential-admitted at graduation time and are not re-executed as standing guards by validate.py today, so the standing cost is latent -- but the fix is free.'
+- 'flag: Decision 90 [NOTE] -- /orient runs a shell acceptance probe in-session against the writes-nothing clause | disposition: defer-with-note plus a NARROWED side-effect guard and an in-surface carve-out (the 6b proxy disposition, extended with round-1 critique finding F1): /orient''s "writes nothing" clause covers repo, warehouse and roadmap writes. The T3.8 probe stays in the /orient session per the binding brief section 6 -- it is the on-demand, per-rec call docs/contracts/recommendation-relevance.yaml sanctions (Decision 88, "never queue-wide"), and the only write it can lead to (closure) is executed by the operator afterwards (Decision 103). Three guards, each asserted by VP step 6: (a) the trigger opens with the side-effect clause -- read the rec''s `acceptance` from the read cache and probe only when it is a grep, a read-only inspection, or a pytest selector run under a NON-WRITING invocation (`-p no:cacheprovider`, so the run creates no .pytest_cache); anything else is surfaced verbatim and routed to /plan; (b) the disposition is written INTO BOTH surfaces that state the rule (round-2 critique finding F1) -- orient.md''s "**Write nothing.**" paragraph gains a carve-out naming the Step 3 relevance probe as its sole permitted subprocess, creating no tracked file, no rec and no roadmap edit, AND .claude/skills/orient/SKILL.md -- the skill orient.md:43 tells the agent to load, which states the same rule in three places (frontmatter "writes nothing", line 8 "strictly read-only", the ## Read-Only Contract section) -- gains the mirroring bullet plus two short qualifiers, so the next reader does not meet two opposed instructions on either surface; the skill''s Inputs table also registers logs/.recommendations-log.jsonl, the read cache the probe reads the rec''s `acceptance` string from, because _derive_ci_rca_open never projects that field (a read of a read cache; no Decision 84 or 88 boundary is crossed); (c) `recent_commits` is sourced from the preflight cache''s `recent_main_commits`, never a `git log` Bash call (.claude/skills/orient/SKILL.md:38 and :149; Decision 88 egress budget, Decision 84 closed boundary).'
+- 'Fork ledger (grammar: fork | chosen | class | precedent | precedent_kind | reversible | persisted). One line per fork; both 6b proxy rounds are covered -- round 2 re-decided the same eight forks and changed no choice, so amendments made in round 1 are named inline and no round-2 divergence exists to record.'
+- 'fork: Where the T3.8 acceptance probe runs -- inside preflight at session start, or in the /orient session on demand per rec. | chosen: (b) in the /orient session, on demand and per-rec; preflight computes {count, plan_slugs, owner_named} and executes nothing. | class: consistency-only | precedent: brief section 6 binding correction (audit meta.self_verification round-3 item 1, blocking); scripts/preflight/correlation.py:173 surfacing-only rule; Decision 55; docs/contracts/recommendation-relevance.yaml on-demand-per-rec constraint (Decision 88) | precedent_kind: answered-fork (human-proxy adjudicated binding correction; decision anchor Decision 55, contract anchor recommendation-relevance.yaml) | reversible: no -- reversing means re-litigating the audit correction | persisted: scope rows 1 and 4, acceptance criterion 3, constraint 1, VP step 5 (graduated preflight-never-runs-acceptance-probes)'
+- 'fork: How much of the orient skill Section 2 relocates into the command -- the whole four-row per-signal classification table, or only the prior_deferrals render plus a pointer. | chosen: (a) the whole table plus its trailing HARD BLOCK sentence; a single pointer line stays in the skill. | class: asked (the scout raised a credible Decision 76 layer tension, so not consistency-only) | precedent: audit landing_surfaces (skill disposition relocate) and brief section 4 slice-F row pin the direction; AGENTS.md two-surfaces-one-subject anti-pattern; config/prose_budgets.yaml header relief valve; measured 779 bytes freed against 613 spent (the pointer line plus the three cross-surface additions round-2 critique finding F1 requires), and the skill has only 21 bytes of headroom to fund the SOFT PROMPT row extension in place | precedent_kind: answered-fork | reversible: yes -- a later plan can move the table back; nothing depends on its location | persisted: scope rows 4 and 5, acceptance criteria 6 and 7, VP steps 6 and 7 (graduated orient-ci-rca-triage-rendering-single-home)'
+- 'fork: Scan implementation -- a standalone prefilter-then-parse walk in ci_rca_signals.py, or piggyback on the existing roadmap all-plans walk. | chosen: (a) standalone substring-prefilter-then-YAML-parse walk, amended to case-INSENSITIVE defer matching with exact rec-id matching. | class: consistency-only | precedent: scripts/platform_roadmap_state.py:101-125 (compute_followon_state) -- same shape and same stated reason; brief section 4 slice-F file list excludes the roadmap module, so piggybacking would widen scope | precedent_kind: none (code convention; no Decision or contract governs the walk shape) | reversible: yes | persisted: scope row 1, acceptance criteria 1 and 2, VP step 3 (graduated preflight-prior-deferrals-census-fidelity)'
+- 'fork: Whether to bundle rec-2413 (the orient.md Intent line enumerating four of six deliverable sections) as a Resolves target. | chosen: (b) do not bundle. | class: asked | precedent: brief section 4 names no Resolves target for slice F (section 6 assigns rec-3054 to slice C and nothing to F); the review criterion is exact remedy scope; the Relevance Gate returned unknown for rec-2413, rec-2270 and rec-2272; slice C edits orient.md afterwards and can pick it up | precedent_kind: answered-fork | reversible: yes -- cheaply, it is a one-line Intent fix | persisted: bundled_recommendations empty, plus the adjacent-open-recs context line'
+- 'fork: Which recs carry the annotation -- unresolved only, or unresolved plus likely_resolved. | chosen: (a) ci_rca_unresolved_recs entries only. | class: consistency-only | precedent: PDB-06 acceptance string names ci_rca_unresolved_recs only; the likely_resolved lane already prompts closure, so a deferral count beside it is noise | precedent_kind: none (audit-finding acceptance text) | reversible: yes | persisted: scope row 1, acceptance criterion 1, VP step 4'
+- 'fork: Where the tests live -- extend tests/session/preflight/test_ci_rca_signals.py, or add a sibling module. | chosen: (a) a new sibling tests/session/preflight/test_ci_rca_signals_deferrals.py with a class-level boto3 skipif on the main()-integration class only. | class: consistency-only | precedent: test_ci_rca_signals_abstention_matrix.py sibling precedent; test_ci_rca_signals.py measures 407 SLOC and its module-level importorskip(boto3) would skip the anti-drift class in the boto3-less fast tier; Decision 131 no cross-test imports; Decision 128 and Decision 130 (500-SLOC ceiling, tests/ in scan scope) | precedent_kind: decision | reversible: yes | persisted: scope row 3, the no-cross-test-imports constraint, VP steps 2, 4 and 6'
+- 'fork: Prose-budget handling for the shrunken skill -- ratchet the S4 entry down to the new measured size, or leave 23465 standing as headroom. | chosen: (a) reseed the S4 orient entry to the post-edit measured value, no marker. | class: consistency-only | precedent: config/prose_budgets.yaml header (zero-headroom seeding, ratchet-down-only); scripts/checks/prose/prose_limits.py:80-83 advisory text instructing a reseed to ratchet down; Decision 165 and validate_prose_budget_raises gate the upward direction only | precedent_kind: contract | reversible: yes | persisted: scope row 6, acceptance criterion 7, VP step 7'
+- 'fork: Shape of the live-corpus census assertion in VP step 3 -- exact counts, a plain named-slug subset, or an existence-conditioned subset. | chosen: (b) an existence-conditioned subset of the audit-named slugs plus count == len(plan_slugs) plus the owner phrase only when at least one named plan survives. | class: asked (arising from the Decision 174 [WARN] disposition) | precedent: OBSERVED PRACTICE -- PR #969 / commit 7b67e21d deleted 13 docs/plans/PLAN-*.yaml files in one commit, so an unconditioned named-slug subset would red on an ordinary plan deletion; exact counts additionally fail on this plan self-counting once merged. Decision 174 is the same-direction principle (a superseded planning-artefact FORMAT carries no working-tree retention obligation) and NOT authority over an individual .yaml -- narrowed per round-3 critique finding F3 | precedent_kind: none (observed repository practice; Decision 174 same-direction only) | reversible: yes | persisted: VP step 3 command and expected, acceptance criterion 2, the no-exact-count constraint'
+- 'Vehicle (brief section 6): vehicle stays `check` for the preflight half -- a deterministic preflight signal computation, not a validate.py gate; the /orient half is command-surface text and has no vehicle.'
+- 'VP step 6 token rule (authoring instruction, not a scope change): the orient.md Step 3 subsection must express the cache-only commit source WITHOUT the literal `git log` token -- write it as e.g. cache only, the rule the skill Section 3 already states -- because VP step 6 asserts that token is ABSENT from the subsection. Wording such as never from a `git log` Bash call in this plan describes INTENT, not the text to author.'
+- 'Self-reference note: this plan''s own census-evidence context entry (fork D3) names rec-3292 and rec-3293 beside the word DEFERRAL, so once merged the plan file itself becomes a matching plan for those two ids. Both recs are already closed and fixed_by_sha-stamped, so they will not appear in ci_rca_unresolved_recs and nothing is annotated with the inflated count; VP step 3 asserts a SUPERSET (present <= plan_slugs) precisely so this is tolerated. No change is owed.'
+- 'Carried to the orchestrator for slice C (audit Q3, rec-3054 -- /orient must surface open Critical recs as a non-blocking lane): rec-3054''s acceptance is a two-conjunct case-insensitive grep over .claude/skills/orient/SKILL.md for "critical recs" AND "non-blocking". Measured on this tree: "critical recs" 0 hits (so the acceptance fails today) and "non-blocking" 1 hit at SKILL.md:99, in the realization-candidates paragraph, OUTSIDE the lines 136-143 this plan relocates (that block contains neither token). This slice therefore leaves rec-3054''s acceptance state exactly as it found it; slice C owns the rec.'
+- 'Graduation calibration (Decision 132 -- graduation is an enforced pre-merge obligation; Decision 48 -- tier V2): three graduate rows, seven waives, one not-applicable. VP step 5 is authored claim-ADDITIVE -- the surfacing-only scan verbatim PLUS one assertion that `annotate_prior_deferrals` is present in scripts/preflight/ci_rca_signals.py, verified ABSENT on origin/main (git show returns 0 hits). Without that conjunct the step passes on both legs and scripts.verification_graduation.run_differential returns "not admitted -- revert did not produce FAIL (tautological)", which the implement skill''s Constraints also forbid as a candidate. Precedent for adding a discriminating assertion while keeping the row''s named claim and its check_id: docs/contracts/verification-registry.yaml governance note, 2026-08-31 (ci-rca-lifecycle-records-watched-set).'
+- 'Sequencing note for the implementer: slice C (orient-followon-adhoc-lane) later edits the same two orient files in different regions (Section 6 of the command, a Critical-recs lane in the skill) and merges after this slice; nothing here forecloses it. Note the D7(a) consequence: the S4 entry is reseeded to the post-edit measured size, so the orient skill lands at ZERO headroom and the bytes this plan frees are NOT available to slice C under budget -- slice C funds its own skill bytes in-file, as its brief row (0 bytes net) already assumes.'
+- 'Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND. CITE: Decision 132, Decision 48, Decision 165, Decision 130, Decision 73, Decision 103. RELATED: Decision 87, Decision 135. Flagged and disposed above: Decision 76 [NOTE], Decision 90 [NOTE], Decision 174 [WARN] -- all defer-with-note, approach unchanged. Already cited by this plan and re-affirmed: Decision 55, Decision 67, Decision 79, Decision 84, Decision 86, Decision 88, Decision 127, Decision 128, Decision 131, Decision 163, Decision 176, Decision 181.'
+- 'Round-2 plan-critique dispositions (verdict REVISE, gate_run_id ci-rca-deferral-instrumentation-plan-critique-r2-2c7ff7fc): F1 (High, cross-surface carve-out) FIXED -- the skill edit grows from one pointer line to four edits (pointer, Read-Only Contract subprocess bullet, Inputs row for logs/.recommendations-log.jsonl, frontmatter and line-8 qualifiers), VP step 6 and a second test_obligations row assert the cross-surface consistency, and the arithmetic stays a net reduction (779 removed, 613 added). F2 (Medium, owner leg not existence-conditioned) FIXED -- VP step 3''s owner assertion is now conditioned on the plan that supplies the phrase, with a measured eight-case degradation matrix; acceptance criterion 2 and the no-exact-count constraint are reworded to match. The report''s three noted-no-change items are also absorbed: the report["ci_rca_recs"] aliasing is recorded in the annotate_prior_deferrals docstring (scope row 1); the claim-additive graduation precedent and the measured-evidence praise need no change. The Layer-3 accretion risk and the __pycache__ narrowness are noted without change -- the Decision 76 [NOTE] disposition already carries the first, and the plan''s wording ("creates no tracked file") is already precise about the second. Round-3 plan-critique dispositions (verdict REVISE, gate_run_id ci-rca-deferral-instrumentation-plan-critique-r3-5cb2bcb3): F1 (Medium, unexercised production `plans_dir=None` path) FIXED -- scope row 1, execution step 2 and acceptance criterion 1 now state that the default resolves to `_common.ROOT / "docs" / "plans"` (absolute, cwd-independent, no new import; `_common` is imported at ci_rca_signals.py:10), and TestAnnotatePriorDeferrals gains test_default_plans_dir_resolves_to_the_repo_corpus, which chdirs into tmp_path FIRST and then calls annotate_prior_deferrals with no plans_dir, asserting count >= len(present) under VP step 3''s own existence conditioning; a matching test_obligations row carries the red/green expectation and VP step 2''s fix_if names both failure modes. The chdir is an addition beyond the critique''s minimum: without it a cwd-relative default would still pass whenever pytest runs from the repo root. Prototyped 2026-09-03 from cwd /tmp -- present 8, rec-3292 count 8. F2 (Low, false factual claim) FIXED -- both halves verified independently at origin/main bdf14215: docs/plans/PLAN-mypy-unit1-baseline-paydown.yaml is PRESENT (118,878 bytes) and git log --diff-filter=D returns nothing for it, while git show 7b67e21d (PR #969) deletes exactly 13 docs/plans/PLAN-*.yaml files; acceptance criterion 2 now cites the PR #969 evidence, names the false claim it replaces, and is not weakened. F3 (Low, citation over-reach) FIXED -- Decision 174 read in full: it governs retirement of the superseded PLAN-*.md FORMAT (amending Decision 85), so the [WARN] disposition, acceptance criterion 2, the no-exact-count constraint, VP step 3''s action and the fork-D8b precedent now rest on the observed PR #969 practice and cite Decision 174 as the same-direction principle only; fork D8b''s precedent_kind changes from decision to none (observed repository practice). F4 (Note, line reference) FIXED -- scope row 1 now cites scripts/preflight/correlation.py:134 and :136 as the append sites, names the sole copy at :129, and records that the earlier :84-105 span is the commit-match loop; verified by grep on the live file. No finding is disputed. Scope is unchanged: the same six scope rows, eleven VP steps and three graduated check_ids.'
+- 'Round-4 plan-critique dispositions (verdict REVISE -- F1 only; gate_run_id ci-rca-deferral-instrumentation-plan-critique-r4-3701d7e8; TERMINAL bounded revision, no further round follows). F1 (Medium, BLOCKING -- the graduated census row owner leg depended on an unpinned plan-file iteration order) FIXED, all four required changes applied, and the divergence INDEPENDENTLY re-executed at planning time before writing rather than trusted from the report: unsorted glob returns ("PLAN-cfg-migration-closeout", "another agent"), sorted glob returns ("PLAN-ambient-prose-contract-relocation", "operator-directed"), and the per-plan owner phrases were re-derived (operator-directed for ambient-prose-contract-relocation; another agent for cfg-migration-closeout, inline-defer-boundary-contract and reader-projection-substrate; human deferred for roadmap-blocking-edge-semantics; none for drain-glue-orphan-mcp-transport, glue-delete-database-grant and sync-deps-test-hermeticity). (i) scope row 1 and execution step 2 pin the walk to sorted(plans_dir.glob("PLAN-*.yaml")) and define owner_named as the phrase supplied by the EARLIEST-SORTING matching plan, never the first encountered. (ii) Acceptance criterion 1 adds owner determinism to the derivation contract it already pinned for count and plan_slugs. (iii) TestScanPriorDeferrals gains test_owner_named_comes_from_the_earliest_sorting_plan -- two fixture plans carrying DIFFERENT owner phrases, the later-sorting filename created first -- with its own test_obligations row, so the owner leg is exercised at fixture level and not only by VP step 3 against the live corpus. (iv) VP step 3 fix_if now names iteration order as the FIRST diagnosis, ahead of the _OWNER_NAMED_RE and KNOWN-map diagnoses that were the round-4 misdirection. F2 (Low) FOLDED IN -- VP step 4 expected now reads "1 passed; where boto3 is absent this reports 1 skipped -- the row is only claimed from a boto3-bearing interpreter". F3 (Note) TAKEN -- the cost context line now states the 0.015s text read is a SECOND pass over a corpus preflight already walks via compute_followon_state. F4 (Note) DECLINED, per the orchestrator instruction and the round-4 critic own rationale: no per-session probe cap is added; the unresolved-rec cap is already 5 and the measured canonical probe was 2.26s. Scope, tier, graduation calibration, closure obligations, Lambda completeness and every measured figure were cleared by the round-4 critic and are unchanged.'
+- 'gates: decision-scout=FLAGS_FOUND after 1 round(s) (ci-rca-deferral-instrumentation-decision-scout-r1-b1e66712);
+  plan-critique=REVISE after 4 round(s) (ci-rca-deferral-instrumentation-plan-critique-r1-4c214ff2,
+  ci-rca-deferral-instrumentation-plan-critique-r2-2c7ff7fc, ci-rca-deferral-instrumentation-plan-critique-r3-5cb2bcb3,
+  ci-rca-deferral-instrumentation-plan-critique-r4-3701d7e8); round 4 autonomous (user directive 2026-09-03;
+  ledger autonomous_decision_log #3); the round-4 REVISE carried a single finding (F1, an unpinned plan-file
+  iteration order that would have reddened this plan''s own graduated VP step 3), fixed in a terminal bounded
+  revision on the round-4 critic''s own "no further round is warranted once F1 lands" and verified mechanically
+  by the orchestrator rather than by a fifth gate (ledger autonomous_decision_log #8);
+  6b=proxy-confirmed after 1 adjust round(s) (user directive 2026-09-03; ledger autonomous_decision_log #10)'
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- only the plan-cited decision sections
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+- VP step 1 (RED baseline) run FIRST on the unmodified tree and its exit 0 recorded before any edit
+- 'The measured pre-change sizes are re-confirmed on the implementation tree: .claude/skills/orient/SKILL.md 23,444 bytes, its S4 budget 23,465, scripts/preflight/ci_rca_signals.py 348 SLOC'
+execution_steps:
+- Run VP step 1 on the unmodified tree and record its output. If it exits 1, STOP -- part of this change already landed.
+- 'scripts/preflight/ci_rca_signals.py: add `_OWNER_NAMED_RE` (a pinned, case-insensitive alternation of the phrases observed in the corpus: another agent / operator-direct(ed|ion) / human-direct(ed|ion) / human deferred / operator ruling), `_scan_prior_deferrals(rec_ids, plans_dir)` and `annotate_prior_deferrals(correlation, plans_dir=None)`. The scan returns a zeroed payload for every requested id, returns immediately when `plans_dir` is not a directory, iterates sorted(plans_dir.glob("PLAN-*.yaml")) -- SORTED, never a bare .glob, which yields FILESYSTEM order (the cited precedent scripts/platform_roadmap_state.py:101 sorts for exactly this reason) -- reads each PLAN-*.yaml once, skips a file whose text names no requested id (exact match) or whose LOWER-CASED text lacks "defer", parses only the survivors, walks the top-level `context` list, counts a plan at most once per rec when the entry contains the exact rec id AND its lower-cased form contains "defer", de-duplicates and orders `plan_slugs` by plan filename, records as owner_named the lowercased owner phrase supplied by the EARLIEST-SORTING matching plan THAT SUPPLIES ONE, passing over a matching plan that names no owner (under the sorted walk that is simply the first owner phrase encountered -- which is the ONLY reason the walk must be sorted; round-4 critique finding F1: with a bare .glob the live corpus answers "another agent" instead of "operator-directed" and VP step 3 reds) or leaves null, and swallows per-file OSError/YAML errors. `annotate_prior_deferrals` RESOLVES a `plans_dir` of None to `_common.ROOT / "docs" / "plans"` -- absolute and cwd-INDEPENDENT, the identical path VP step 3 passes explicitly, and never a cwd-relative `docs/plans`; `_common` is already imported at the top of this module, so no new import is needed. That default is the only shape production ever calls (the preflight wiring passes no directory), so getting it wrong ships a permanently zeroed signal behind eleven green VP steps (round-3 critique finding F1). It returns the correlation unchanged when `unresolved` is empty (no directory access at all -- the short-circuit precedes the resolution and the scan call), else attaches `prior_deferrals` to each unresolved rec dict in place and returns the same dict. Its docstring states the aliasing: correlate_recs_with_commits appends the SAME dict objects to `unresolved` and to the full rec list, so the in-place annotation is also visible through report["ci_rca_recs"] -- additive and benign (acceptance criterion 1 constrains ci_rca_unresolved_recs only), but recorded so a later reader does not read the annotation as a copy.'
+- 'scripts/preflight/ci_rca_signals.py: in `print_ci_rca_recs`''s HARD BLOCK branch (the `correlation is not None` path only), print a second indented line per rec when `prior_deferrals` is present and `count` is non-zero: `    deferred N times (plans: a, b, c[, +M more]; owner named: X | none)`, showing at most five slugs. Leave the correlation=None backward-compat branch and the SOFT prompt branch byte-identical.'
+- 'scripts/session/preflight.py: insert the single line `ci_rca_correlation = ci_rca_signals.annotate_prior_deferrals(ci_rca_correlation)` immediately after the `correlate_ci_rca_with_main(...)` assignment and before `print_ci_rca_recs(...)`.'
+- 'tests/session/preflight/test_ci_rca_signals_deferrals.py FIRST for the unit classes where practical (red before green): TestScanPriorDeferrals (including a fixture plan whose context entry reads "ci-rca DEFERRAL: rec-9001 ... Deferred by operator-direction." with no lowercase "defer", which must still be counted -- this is the case the live corpus actually exhibits, and test_owner_named_comes_from_the_earliest_sorting_plan, which writes PLAN-zzz-later-owner.yaml FIRST carrying the owner phrase "human deferred" and PLAN-aaa-earlier-owner.yaml SECOND carrying "another agent", both naming the same fixture rec id beside "defer" in a single context entry, and asserts owner_named == "another agent" -- the EARLIER filename wins irrespective of creation order, which is exactly what a bare .glob does not guarantee), TestAnnotatePriorDeferrals (whose methods include test_default_plans_dir_resolves_to_the_repo_corpus: it calls monkeypatch.chdir(tmp_path) FIRST, then annotate_prior_deferrals({"unresolved": [{"id": "rec-3292"}], "likely_resolved": []}) with NO plans_dir argument, and asserts count >= len(present) where present is the audit-named slugs still under _common.ROOT / "docs" / "plans" -- the same existence conditioning VP step 3 uses, so a later plan deletion degrades the leg instead of reddening it. Prototyped 2026-09-03 from cwd /tmp: present 8, rec-3292 count 8, and a cwd-relative default would return 0 there), TestPrintPriorDeferralsRender, TestOrientDeferralSurfacingContract (whose two methods are test_command_carries_the_single_home_rendering and test_skill_mirrors_the_probe_carveout_and_registers_the_recs_cache, plus test_skill_points_at_the_command_and_restates_no_row), TestPreflightReportWiring (class-level `@pytest.mark.skipif` on a missing boto3, with the reason naming test_main_report.py''s equivalent module-level guard). Fixture plans are written into `tmp_path`; only VP step 3 and the single default-resolution method of TestAnnotatePriorDeferrals read the real corpus, and that method reads it through the resolved default rather than a passed path -- which is the point of it. Run VP step 2 and record the RED failures, then GREEN after each source edit.'
+- '.claude/skills/orient/SKILL.md, four edits (measure each with `wc -c` before and after). (1) Delete lines 136-143 (the per-signal table, the blank line and the "If HARD BLOCK recs exist" sentence, 779 bytes) and put ONE pointer line in their place naming `.claude/commands/orient.md` Step 3 as the sole home -- e.g. "Classification rows, the `prior_deferrals` render and the close-then-stamp route have ONE home: `.claude/commands/orient.md` Step 3 ("CI-RCA Triage rendering"). Render this section from there; restate no row here." (214 bytes measured). Do NOT name the bolded HARD BLOCK / SOFT PROMPT tokens in the pointer -- VP step 6 asserts no bolded row survives here, and the two unbolded occurrences at :178 and :203 stay untouched. (2) Append one bullet to the `## Read-Only Contract` list, after "Issues no git commits or pushes": "- Runs no subprocess except the CI-RCA relevance probe of `.claude/commands/orient.md` Step 3 -- read-only by that step''s guard clause, writing no file, rec, or roadmap edit" (174). (3) Add one Inputs-table row: "| Rec `acceptance` string (Step 3 probe) | `logs/.recommendations-log.jsonl` | Read local cache file (no portal or reader call) |" (130). (4) Qualify the two remaining absolutes: the frontmatter description''s "Chat reply only; writes nothing." gains " (one named probe exception -- Read-Only Contract)" (50) and line 8''s "**strictly read-only**" gains " (one named exception, in Read-Only Contract)" (45). Change nothing else in Section 2 -- the heading, the Source line and the convergence-health table stay byte-identical. Net: 779 out, 613 in, ~23,278 bytes.'
+- '.claude/commands/orient.md: add "(each entry carries `prior_deferrals`)" beside `ci_rca_unresolved_recs` in Step 2; scope the Deliverable-Shape pointer at line 51 to read "... for the full spec of each, except Section 2''s CI-RCA triage rendering, specified below"; extend the "**Write nothing.**" line at 55 with the probe carve-out ("Sole exception: the Step 3 relevance probe, admitted only under that step''s read-only guard clause and run with pytest''s cache plugin disabled -- it creates no tracked file, no rec and no roadmap edit."); and add the "### CI-RCA Triage rendering (deliverable Section 2)" subsection to Step 3 carrying the relocated four-row table with the SOFT PROMPT row extended to close-THEN-stamp (`--update-rec ... --status closed --resolution ...` then `stamp_fixed_by_sha`, citing docs/contracts/ci-rca-lifecycle.yaml `closure_dependency.manual_route`), the `prior_deferrals` render rule, and the N >= 3 close-or-plan trigger.'
+- 'The Step 3 trigger text, in order. (1) The side-effect guard clause: read the rec''s `acceptance` string from `logs/.recommendations-log.jsonl` and probe ONLY when it is read-only -- a grep, a read-only inspection, or a pytest selector, and a pytest selector only after `-p no:cacheprovider` is appended to its pytest segment so the run creates no .pytest_cache; anything else is surfaced verbatim, unprobed, with the /plan prompt. (2) The literal fenced command, which reads the rec from the cache, appends that flag when the acceptance''s final `&&` segment invokes pytest, TIMES the call, and prints verdict, evidence, elapsed and a timed_out flag: `evaluate_rec_relevance(rec, run_acceptance_probe=True, acceptance_timeout=120, recent_commits=<report["recent_main_commits"]>)` with `timed_out = elapsed >= 0.95 * 120` (commits read from the preflight cache; phrase the source as e.g. cache only -- do NOT write the literal `git log` token into the subsection, since VP step 6 asserts its absence). (3) The three-way routing rule: verdict "satisfied" -> the SOFT PROMPT close-then-stamp row; timed_out true -> report "relevance probe did not complete (timed out at 120s)", state explicitly that this is NOT evidence the rec is still unresolved, surface the acceptance verbatim and emit the /plan prompt marked inconclusive; any other verdict -> name the verdict and emit the /plan prompt. The 120s ceiling is deliberate headroom over the engine''s 10s default: the round-1 critique measured the canonical rec-3293 acceptance at 2.26s where the audit had estimated ~20s, and a probe that silently times out is indistinguishable from "not satisfied" (scripts/rec_relevance.py:33-45).'
+- 'config/prose_budgets.yaml: measure `.claude/skills/orient/SKILL.md` after the edit and set its S4 entry to exactly that value. Do not add a marker or comment to the line.'
+- Execute the rest of the Verification Plan in order (steps 2-10 on the branch; step 11 once at /implement Step 7 closure item 4), recording each command's output verbatim in the VP Compliance Table.
+- 'Report: the red-then-green evidence for steps 1, 2, 4 and 6, the live-corpus census output from step 3, the violations= [] line from step 5, the measured before/after byte counts and the reseeded budget from step 7, and the Verification Graduation section for the three graduate steps -- each landing as its own shard at config/agent/verification_registry/entries/<graduation_check_id>.yaml (Decision 176 one-record-per-file grain; the filename must equal the check_id), never an append to a flat registry file.'
+rollback: >-
+  Single squash commit. Reverting removes the scan, the one-line wiring, the new test module and
+  the orient edits, and restores the S4 budget entry to 23465 -- the pre-change skill text and its
+  budget move together, so no ratchet state is left dangling. The three graduated registry shards
+  are removed with the same revert. Nothing in this change writes to the warehouse, alters a rec's
+  status, or changes what the Decision 73 HARD BLOCK does, so a revert has no operational
+  after-effect beyond the loss of the signal.
