@@ -212,3 +212,25 @@ class TestContractVocabularyIsCausal:
         failed: list[str] = []
         validate_decision_currency(failed, root=root)
         assert any("I3" in f for f in failed), failed
+
+
+# Decision 170: stdout is this baselined check's only outcome channel today, so this migrates to examined()/skipped().
+class TestPassLineIsGatedOnTheFailureDelta:
+    """The `if len(failed) == before:` guard at validate_decision_currency.py:185 is the check's
+    only outcome channel (it declares no examined()/skipped()), so it is asserted from both
+    sides: the summary PASS line appears exactly when I1-I5 added nothing."""
+
+    def test_pass_line_is_printed_on_a_healthy_tree(self, tmp_path: Path, capsys) -> None:
+        root = _build_tree(tmp_path)
+        failed: list[str] = []
+        validate_decision_currency(failed, root=root)
+        assert failed == []
+        assert "PASS: all five currency invariants hold (1 live entries)." in capsys.readouterr().out
+
+    def test_pass_line_is_withheld_when_an_invariant_fails(self, tmp_path: Path, capsys) -> None:
+        root = _build_tree(tmp_path, index_decisions=[{"number": 1, "live": True, "currency": "not_a_real_token"}])
+        failed: list[str] = []
+        validate_decision_currency(failed, root=root)
+        out = capsys.readouterr().out
+        assert any("I3" in f for f in failed), failed
+        assert "PASS: all five currency invariants hold" not in out

@@ -126,3 +126,44 @@ class TestValidateExecutorBoundary:
             failed: list[str] = []
             validate_executor_boundary(failed)
         assert failed == []
+
+
+class TestUnreadableRecommendationsLog:
+    """The OSError arm of validate_executor_boundary (validate_executor_boundary.py:64-67):
+    a path that exists but cannot be read must be reported, never silently treated as clean."""
+
+    def test_unreadable_jsonl_appends_a_failure(self, tmp_path: Path, capsys) -> None:
+        # A directory at the JSONL path: exists() is True, read_text() raises IsADirectoryError
+        # (an OSError) -- no mock needed, so the arm is driven by the real filesystem.
+        (tmp_path / "logs" / ".recommendations-log.jsonl").mkdir(parents=True)
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            failed: list[str] = []
+            validate_executor_boundary(failed)
+        assert failed == ["Executor boundary validation"]
+        assert "ERROR: Could not read JSONL file:" in capsys.readouterr().out
+
+
+class TestLineLevelTolerance:
+    """The per-line tolerance branches (a blank line, a `#` comment line, and a line that is not
+    JSON) are skipped rather than raised on -- and skipping them is not a silent pass: the one
+    well-formed boundary rec in the same file is still reported."""
+
+    def test_blank_comment_and_malformed_lines_are_skipped(self, tmp_path: Path) -> None:
+        import json
+
+        rec = {
+            "id": "rec-002",
+            "status": "open",
+            "automatable": True,
+            "file": "scripts/executor/plan.py",
+        }
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir(parents=True)
+        (log_dir / ".recommendations-log.jsonl").write_text(
+            "\n# a comment line\n{ not json at all\n" + json.dumps(rec) + "\n",
+            encoding="utf-8",
+        )
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            failed: list[str] = []
+            validate_executor_boundary(failed)
+        assert failed == ["Executor boundary validation"]

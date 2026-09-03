@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from scripts.checks import registry
 from scripts.checks.iam_tf import _manifest
-from scripts.checks.iam_tf.validate_terraform_tag_charset import validate_terraform_tag_charset
+from scripts.checks.iam_tf.validate_terraform_tag_charset import _tags_block_end, validate_terraform_tag_charset
 
 
 def _run(tmp_path: Path, tf: str, filename: str = "main.tf") -> list[str]:
@@ -157,3 +157,32 @@ class TestRealTree:
         failed: list[str] = []
         validate_terraform_tag_charset(failed)
         assert failed == []
+
+
+class TestTagsBlockSpanStopsAtItsOwnClosingBrace:
+    """_tags_block_end must return at the brace that balances the tags block (depth back to 0).
+    A span that runs past it would drag resource-level literal attributes into the charset scan,
+    reporting violations for values that are not tag values at all."""
+
+    _TF = """
+resource "aws_s3_bucket" "b" {
+  tags = {
+    Name = "ok"
+  }
+  bucket = "outside (the) tags, block"
+}
+"""
+
+    def test_literal_outside_the_tags_block_is_not_scanned(self, tmp_path: Path) -> None:
+        registry.pop_declaration()
+        failed = _run(tmp_path, self._TF)
+        declaration = registry.pop_declaration()
+        assert failed == []
+        assert declaration is not None
+        assert declaration.count == 1
+
+    def test_tags_block_end_stops_at_its_own_closing_brace(self) -> None:
+        brace_pos = self._TF.index("{", self._TF.index("tags"))
+        end = _tags_block_end(self._TF, brace_pos)
+        assert self._TF[end - 1] == "}"
+        assert self._TF[brace_pos + 1 : end - 1].strip() == 'Name = "ok"'
