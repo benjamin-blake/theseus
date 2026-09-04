@@ -530,6 +530,14 @@ reviewed, and recorded here, and the guard's retirement is disclosed rather than
 > `gated-apply`'s reach to that path), not Reconcile's guard-routed delete -- `github_ci_apply`
 > still executes the destroy through `tf-gated-apply`, never `state rm`. See Decision 183.
 
+> **Update (2026-09-04):** Clause 4 is discharged (PLAN-terraform-state-triggers-restore): all 14
+> retired addresses left tfstate through two human-approved `tf-gated-apply` runs, never `state rm`
+> -- 33323201848 (2026-08-30; 14 of 15 instances, then red on three since-fixed defects,
+> rec-3326/3327/3348) and 33923277096 (2026-09-04; `aws_glue_catalog_database.ops`, via the Decision
+> 183 dispatch after an admin split-apply of the two PlatformDev/PlatformAdmin inline-policy
+> narrowings the CI apply role cannot write). The apply-sandbox push/PR triggers were restored in
+> #975; the drift cron `17 * * * *` is restored here. Record green at main HEAD, backlog empty.
+
 ---
 
 ## Decision 177: The decision corpus enforces append-only live-body immutability -- a waiver-free lock with a dated-annotation correction dialect (amends Decision 151) (Decided)

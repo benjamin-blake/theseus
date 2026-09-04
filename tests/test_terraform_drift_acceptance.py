@@ -82,17 +82,19 @@ def _triggers(workflow: Path) -> dict[str, object]:
     return on
 
 
-def test_drift_workflow_is_workflow_dispatch_only() -> None:
-    """The scheduled cron is REMOVED while the personal module's retired resources await operator
-    tfstate reconciliation: every tick would flag the deliberate state-vs-code delta and flip the
-    convergence record red, wedging the deploy channel. workflow_dispatch is the only entry point."""
-    assert set(_triggers(DRIFT_WORKFLOW)) == {"workflow_dispatch"}
+def test_drift_workflow_cron_is_restored() -> None:
+    """Decision 178 clause 4 discharged: the hourly cron is RESTORED now that the personal module's
+    retired resources are gone from tfstate, so a drift tick no longer sees the deliberate
+    state-vs-code delta. Pins the exact cron so a tick cannot silently move off the :17 slot."""
+    on = _triggers(DRIFT_WORKFLOW)
+    assert set(on) == {"schedule", "workflow_dispatch"}
+    assert on["schedule"] == [{"cron": "17 * * * *"}], f"drift cron must be '17 * * * *', got {on['schedule']!r}"
 
 
 def test_apply_sandbox_workflow_triggers_are_restored() -> None:
-    """Decision 178 clause 4: the push and pull_request triggers are RESTORED because restoring them
-    is the PREREQUISITE for reconciling the personal module's retired resources -- a workflow_dispatch
-    run guard-routes on the destroys but skips gated-apply, so nothing can apply until these fire.
+    """Decision 178 clause 4: the push and pull_request triggers are RESTORED -- the push path is the
+    routine vehicle for a guard-routed destroy reaching gated-apply (Decision 183 later widened that
+    reach to a routed workflow_dispatch as well, so a dispatch no longer skips gated-apply).
     Both restored triggers filter on terraform/personal/** -- a workflows-only PR fires neither."""
     on = _triggers(APPLY_SANDBOX_WORKFLOW)
     assert set(on) == {"push", "pull_request", "workflow_dispatch"}
