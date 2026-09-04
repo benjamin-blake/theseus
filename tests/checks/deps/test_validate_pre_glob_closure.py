@@ -1,12 +1,15 @@
 """Mirror test for scripts/checks/deps/validate_pre_glob_closure.py (D2-3 wave 4a, rec-3289).
 
 Behaviour is pinned on SYNTHETIC fixture repositories, never on the live backlog count -- that
-number moves with every glob edit. One live smoke test asserts only that the auditor runs green
-(it is advisory) against the real tree.
+number moves with every glob edit. TWO classes depend on the real tree and neither pins that
+count: TestLiveTreeSmoke asserts only that the auditor runs green (it is advisory), and
+TestPrunedEdgesRoster builds the real import graph via _closure_view to pin the wave-4b prune
+roster's CONTENT and the liveness of every edge it declares.
 """
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -138,10 +141,103 @@ class TestClosureModules:
 
 
 class TestPrunedEdgesRoster:
-    def test_starts_empty(self) -> None:
-        """Wave 4a lands the auditor ADVISORY so the real backlog is measured before any edge is
-        excluded. An entry may only be added with an inline reason (wave 4b pay-down)."""
-        assert vpgc._PRUNED_EDGES == {}
+    """The reviewed wave-4b hub roster, pinned against SILENT staleness.
+
+    A row whose key or target no longer exists, or whose target is no longer a SUCCESSOR of its key
+    in the live import subgraph, prunes nothing and reads exactly like a correct row. So these
+    assertions check resolution AND liveness against the real graph the auditor traverses, carry an
+    explicit non-vacuity guard so an emptied roster cannot satisfy them, and are paired with a
+    negative control that feeds the detector a deliberately bogus roster. CONTENT and edge liveness
+    are pinned here; the live backlog count never is.
+    """
+
+    _CAP = 4
+    _REGISTRY = "scripts.checks.registry"
+    _COMMON = "scripts.checks._common"
+
+    @staticmethod
+    def _dead_rows(roster: dict[str, tuple[str, ...]]) -> list[str]:
+        """One report per dead row, in the three shapes a stale roster can take: an unresolvable
+        key, an unresolvable target, and a declared pair that is not an edge of the live subgraph."""
+        root = _common.ROOT
+        view = vpgc._closure_view(root)
+        reports: list[str] = []
+        for key, targets in sorted(roster.items()):
+            key_live = vpgc._module_to_repo_path(key, root) is not None and key in view
+            if not key_live:
+                reports.append(f"key {key} unresolvable")
+            for target in targets:
+                if vpgc._module_to_repo_path(target, root) is None or target not in view:
+                    reports.append(f"target {target} unresolvable")
+                elif not key_live or not view.has_edge(key, target):
+                    reports.append(f"edge {key} -> {target} not live")
+        return reports
+
+    @staticmethod
+    def _literal_block() -> list[str]:
+        """Source lines of the _PRUNED_EDGES literal, ast-located rather than offset-guessed."""
+        source = Path(vpgc.__file__).read_text(encoding="utf-8").splitlines()
+        node = next(
+            n
+            for n in ast.walk(ast.parse("\n".join(source)))
+            if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.target.id == "_PRUNED_EDGES"
+        )
+        return source[node.lineno - 1 : node.end_lineno]
+
+    def test_the_roster_is_the_two_reviewed_hub_rows(self) -> None:
+        """Supersedes test_starts_empty, whose whole contract was the staging precondition (the
+        roster is INTENTIONALLY EMPTY until an entry is added with an inline reason) that this
+        authorised wave-4b pay-down discharges. Also the NON-VACUITY guard the two staleness
+        assertions below lean on -- they iterate the roster and would pass trivially against an
+        emptied one."""
+        roster = vpgc._PRUNED_EDGES
+        assert sorted(roster) == [self._COMMON, self._REGISTRY]
+        assert roster[self._COMMON] == ("scripts.roadmap.plan_document",)
+        targets = roster[self._REGISTRY]
+        assert "scripts.checks._schema" in targets
+        assert len([t for t in targets if t.endswith("._manifest")]) == 17
+        assert len(targets) == 18
+
+    def test_row_count_is_exactly_the_reviewed_two_and_within_the_cap(self) -> None:
+        """An EXACT pin replacing an exact pin (`== {}` -> `== 2`), never a 0 -> 4 allowance: the
+        cap records the reviewed wave ceiling and is not permission to fill it."""
+        assert len(vpgc._PRUNED_EDGES) == 2
+        assert len(vpgc._PRUNED_EDGES) <= self._CAP
+
+    def test_every_declared_edge_is_live_in_the_import_subgraph(self) -> None:
+        """Every key and target resolves to a real repo module AND every declared pair is genuinely
+        an edge of the subgraph the auditor traverses -- a row that resolves but no longer prunes
+        anything is indistinguishable from a correct one."""
+        assert vpgc._PRUNED_EDGES, "an emptied roster must not satisfy this assertion vacuously"
+        assert self._dead_rows(vpgc._PRUNED_EDGES) == []
+
+    def test_the_detector_rejects_all_three_dead_row_shapes(self) -> None:
+        """Negative control, green in BOTH states by construction: it feeds the detector its own
+        bogus roster and never reads the real one. Without it the assertions above could all be
+        satisfied by a detector that returns an empty list unconditionally. FOUR findings, not
+        three -- a bogus KEY also invalidates every edge declared under it."""
+        bogus = {
+            "scripts.checks.no_such_hub": ("scripts.checks._schema",),
+            self._REGISTRY: ("scripts.checks.no_such_target", "scripts.dependency_graph"),
+        }
+        reports = self._dead_rows(bogus)
+        assert reports == [
+            "key scripts.checks.no_such_hub unresolvable",
+            "edge scripts.checks.no_such_hub -> scripts.checks._schema not live",
+            "target scripts.checks.no_such_target unresolvable",
+            f"edge {self._REGISTRY} -> scripts.dependency_graph not live",
+        ]
+        assert len(reports) == 4
+
+    def test_every_row_is_preceded_by_an_inline_rationale_comment(self) -> None:
+        """The module's own rule for adding an entry, enforced rather than trusted. Together with
+        the cap test this is the anti-gaming pin: a row cannot be added silently or unexplained."""
+        assert vpgc._PRUNED_EDGES, "an emptied roster must not satisfy this assertion vacuously"
+        block = self._literal_block()
+        for key in vpgc._PRUNED_EDGES:
+            index = next(i for i, line in enumerate(block) if line.strip().startswith(f'"{key}":'))
+            preceding = next(block[i] for i in range(index - 1, -1, -1) if block[i].strip())
+            assert preceding.strip().startswith("#"), f"row {key} carries no inline rationale comment"
 
 
 class TestGatedEntries:

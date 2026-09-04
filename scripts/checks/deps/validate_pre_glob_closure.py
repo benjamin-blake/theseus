@@ -46,13 +46,42 @@ if TYPE_CHECKING:  # networkx is imported only by the deferred scripts.dependenc
 # import targets that are DROPPED from this auditor's traversal -- the pruning wave 2's prototype
 # performed silently, promoted to an explicit, tested, per-edge declaration.
 #
-# INTENTIONALLY EMPTY at introduction: wave 4a lands advisory precisely so the real backlog is
-# MEASURED before any edge is excluded. Add an entry only with an inline comment stating why the
-# edge has no behavioural bearing on the importing check -- the known candidate is
-# scripts.checks._common's function-scope `import scripts.roadmap.plan_document` (a deferred,
-# PLC0415-exempt import), which extract_first_party_imports still records as a closure edge
-# because it walks the whole AST rather than the module's top-level statements.
-_PRUNED_EDGES: dict[str, tuple[str, ...]] = {}
+# WAVE 4b DISCHARGE: wave 4a landed advisory precisely so the real backlog was MEASURED before any
+# edge was excluded (930 findings across 40 of 47 gated checks), and the two reviewed hub rows
+# below are the one-time allowance that measurement authorised -- never the pay-down method, which
+# is ADDING GLOBS to the checks that under-declare them. Add an entry only with an inline comment
+# stating why the edge has no behavioural bearing on the importing check, and naming the condition
+# that would remove the row again.
+_PRUNED_EDGES: dict[str, tuple[str, ...]] = {
+    # 17 _manifest targets: Decision 169 registration fan-out -- registry imports each only to assemble _ALL_ENTRIES.
+    # The _schema target is a DISTINCT argument: a pure declaration module (Entry, SEGMENT_TOKENS) with no first-party
+    # imports, so it drops one path and nothing behind it; 0 of the 45 checks that lose it import it directly.
+    # REMOVE this row if a check is shown to need _schema or a manifest in its closure, or at the wave-4c flip.
+    # COUPLING: the mirror test pins 17 targets EXACTLY, so a PR adding an 18th check domain must extend this row too.
+    "scripts.checks.registry": (
+        "scripts.checks._schema",
+        "scripts.checks.ci_guards._manifest",
+        "scripts.checks.contracts._manifest",
+        "scripts.checks.decisions._manifest",
+        "scripts.checks.deps._manifest",
+        "scripts.checks.executor._manifest",
+        "scripts.checks.hygiene._manifest",
+        "scripts.checks.iam_tf._manifest",
+        "scripts.checks.lambda_pkg._manifest",
+        "scripts.checks.misc._manifest",
+        "scripts.checks.ops_governance._manifest",
+        "scripts.checks.prompts._manifest",
+        "scripts.checks.prose._manifest",
+        "scripts.checks.roadmap._manifest",
+        "scripts.checks.sloc._manifest",
+        "scripts.checks.structural._manifest",
+        "scripts.checks.typing._manifest",
+        "scripts.checks.verification._manifest",
+    ),
+    # A deferred, PLC0415-exempt function-scope import in _common.load_plan. Safe by COVERAGE, not reachability:
+    # 3 of its 5 callers declare no globs at all and so always run; the other 2 already declare scripts/roadmap/** themselves.
+    "scripts.checks._common": ("scripts.roadmap.plan_document",),
+}
 
 # Per-check cap on printed paths; the count is always reported in full.
 _MAX_PRINTED_PATHS = 8
