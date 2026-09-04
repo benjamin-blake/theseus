@@ -21,9 +21,11 @@ scope:
   purpose: '(1) gated-apply''s job-level `if` drops the `github.event_name == ''push''` conjunct (keeps always()
     && needs.apply-sandbox.result == ''success'' && needs.apply-sandbox.outputs.routed == ''true''); (2) apply-sandbox
     gains, mirroring reconcile.yml''s RECONCILE_FRESH_PLAN_ARTIFACT hand-off verbatim, an `upload_fresh_plan_sha256`
-    EMIT step (1-line body) and an actions/upload-artifact@v4 step (name sandbox-fresh-plan-${{ github.run_id }},
-    retention-days 1), both `if: success() && github.event_name == ''workflow_dispatch'' && steps.guard.outputs.routed
-    == ''true''`, placed after the apply step and before the record write; job outputs fresh_plan_pending (steps.upload_fresh_plan_sha256.outcome
+    EMIT step (1-line body) and an actions/upload-artifact@v4 step named ''Upload fresh plan.bin as a run-scoped
+    artifact (SANDBOX_FRESH_PLAN_ARTIFACT)'' (artifact sandbox-fresh-plan-${{ github.run_id }}, retention-days 2
+    -- the ephemeral_handoff class maximum, giving the human approval two days before the hand-off expires), both
+    `if: success() && github.event_name == ''workflow_dispatch'' && steps.guard.outputs.routed == ''true''`, placed
+    after the apply step and before the record write; job outputs fresh_plan_pending (steps.upload_fresh_plan_sha256.outcome
     == ''success''), fresh_plan_sha256, and artifact_sha (steps.artifact_sha.outputs.value); (3) gated-apply gains
     an actions/download-artifact@v4 step and a `verify_fresh_plan_sha256` VERIFY step (error text names SANDBOX_FRESH_PLAN_ARTIFACT),
     both `if: needs.apply-sandbox.outputs.fresh_plan_pending == ''true''`, placed BEFORE fetch_plan, whose `if`
@@ -158,6 +160,21 @@ scope:
     is recorded on push and null on a workflow_dispatch, including the dispatch-routed gated apply''. event-gated
     stays the sandbox call sites'' mode on purpose: a missing plan.bin must still let the always-run write latch
     red (fail-closed), which `unchecked` would turn into a failed write. No shell body changes (R1/R3 untouched).'
+- file: docs/contracts/github-actions-evidence.yaml
+  action: Modify
+  purpose: 'One artifact_uploads entry for the new upload step (validate_actions_evidence requires the inventory
+    to equal the set of every actions/upload-artifact step): workflow .github/workflows/terraform-apply-sandbox.yml,
+    job apply-sandbox, step ''Upload fresh plan.bin as a run-scoped artifact (SANDBOX_FRESH_PLAN_ARTIFACT)'', artifact
+    sandbox-fresh-plan-${{ github.run_id }}, retention_class ephemeral_handoff (minimum 1 / maximum 2 days; the
+    step declares retention-days 2) -- the exact shape of reconcile.yml''s reconcile-fresh-plan entry.'
+- file: AGENTS.md
+  action: Modify
+  purpose: 'Rewrite the Deployment model bullet''s clause ''red/drift = run the one-input Reconcile action'' to
+    a pointer at the heal verb docs/contracts/deploy-paths.yaml''s reconcile row selects, NET-NON-GROWING: AGENTS.md
+    is 18932 bytes and the S1 root_ambient_load_set budget (config/prose_budgets.yaml) is 18943 including CLAUDE.md''s
+    11 bytes, so trim in-bullet words (e.g. the trailing parenthetical ''it points at, and never restates, this
+    file''s apply-model/guard rules'') to pay for the pointer. Public-surface artefact: the human approved this
+    row at critique round 2 (2026-09-04).'
 bundled_recommendations:
 - rec-3522
 - rec-3135
@@ -273,9 +290,9 @@ verification_plan:
     and 'needs.apply-sandbox.outputs.artifact_sha' in str(b['with']['artifact-sha']), b['with']; w=[s for s in j['apply-sandbox']['steps']+g
     if 'wake' in str(s.get('name','')).lower()]; assert len(w)==2 and all('acknowledge_red_commit' in str(s.get('env',{}).get('SHA',''))
     for s in w), [s.get('env') for s in w]; assert 'terraform plan' not in ' '.join(str(s.get('run','')) for s in
-    g); fp=next(s for s in g if s.get('id')=='fetch_plan'); assert "github.event_name == 'push'" in str(fp.get('if',''))
-    and "fresh_plan_pending != 'true'" in str(fp.get('if','')), fp.get('if'); print('HANDOFF_OK')" && ! grep -q
-    'always true whenever gated-apply itself runs' .github/actions/write-convergence-record/action.yml && echo WCR_DESC_OK
+    g); fp=next(s for s in g if s.get('id')=='fetch_plan'); c=str(fp.get('if','')); assert 'github.event_name ==
+    \x27push\x27' in c and 'fresh_plan_pending != \x27true\x27' in c, c; print('HANDOFF_OK')" && ! grep -q 'always
+    true whenever gated-apply itself runs' .github/actions/write-convergence-record/action.yml && echo WCR_DESC_OK
   expected: Output carries `HANDOFF_OK` and `WCR_DESC_OK`.
   fix_if: AssertionError on o -> a job output is missing; on b['with'] -> gated-apply still re-resolves the PR head
     sha, which fails on a dispatch commit; on the wake envs -> the approver would be pointed at the wrong PR; the
@@ -286,16 +303,19 @@ verification_plan:
     (execution step 2), which VP step 1 graduates; a second registry row would pin the same YAML paths twice.
 - step: 6
   phase: pre-deploy
-  action: Both new inline run bodies carry r3_workflows baseline entries at their measured counts, no existing terraform-apply-sandbox.yml
-    body grew past its ceiling, and the masked-errexit guard stays clean.
+  action: 'Both new inline run bodies carry r3_workflows baseline entries at their measured counts, no existing
+    terraform-apply-sandbox.yml body grew past its ceiling, and the masked-errexit guard stays clean. Also: validate_actions_evidence
+    accepts the artifact inventory with the new upload''s row.'
   command: bin/venv-python -c "import scripts.checks.ci_guards.validate_composite_action_shell_bodies as b; f=[];
     b.validate_composite_action_shell_bodies(f); assert not f, f" && bin/venv-python -c "import scripts.checks.ci_guards.validate_masked_errexit_steps
     as e; f=[]; e.validate_masked_errexit_steps(f); assert not f, f" && [ "$(grep -c 'terraform-apply-sandbox.yml::apply-sandbox::upload_fresh_plan_sha256\|terraform-apply-sandbox.yml::gated-apply::verify_fresh_plan_sha256'
-    config/composite_action_body_baseline.yaml)" -eq 2 ] && echo BODIES_OK
+    config/composite_action_body_baseline.yaml)" -eq 2 ] && bin/venv-python -c "import scripts.checks.ci_guards.validate_actions_evidence
+    as v; f=[]; v.validate_actions_evidence(f); assert not f, f" && echo BODIES_OK
   expected: Output carries `BODIES_OK`.
   fix_if: R3-workflow failure naming a new key -> register it at its measured count; naming an existing key -> an
     existing body grew, restore its size (never add a raise marker for this); errexit failure -> a new body declared
-    continue-on-error, remove it.
+    continue-on-error, remove it. validate_actions_evidence 'inventory differs' -> add the github-actions-evidence.yaml
+    row with the step's exact name.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: validate_composite_action_shell_bodies and validate_masked_errexit_steps are already
@@ -322,13 +342,17 @@ verification_plan:
 - step: 8
   phase: pre-deploy
   action: terraform/CLAUDE.md's recovery row routes by the deploy-paths rule and the file did not grow past its
-    11450-byte prose budget.
+    11450-byte prose budget; AGENTS.md's deployment-model clause points at the deploy-paths reconcile row and the
+    file did not grow past 18932 bytes (the S1 ambient set budget minus CLAUDE.md).
   command: 'test "$(wc -c < terraform/CLAUDE.md)" -le 11450 && grep -q ''deploy-paths.yaml'' terraform/CLAUDE.md
     && grep -q ''acknowledge-and-retry'' terraform/CLAUDE.md && ! grep -q ''guard-PASS: `terraform-apply-sandbox`
-    `workflow_dispatch` acknowledge-and-retry'' terraform/CLAUDE.md && echo CLAUDEMD_OK'
+    `workflow_dispatch` acknowledge-and-retry'' terraform/CLAUDE.md && [ "$(wc -c < AGENTS.md)" -le 18932 ] && grep
+    -q ''deploy-paths.yaml'' AGENTS.md && ! grep -q ''red/drift = run the one-input Reconcile action'' AGENTS.md
+    && echo CLAUDEMD_OK'
   expected: Output carries `CLAUDEMD_OK`.
   fix_if: Size test fails -> shrink the row (the prose-budget check would fail --pre anyway); the old guard-verdict
-    split text survives -> the row was not rewritten.
+    split text survives -> the row was not rewritten. AGENTS.md size fails -> trim in-bullet words; the old 'one-input
+    Reconcile action' clause survives -> the pointer was not written.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: The prose-budget check already guards the size; the text assertions pin this plan's
@@ -371,11 +395,12 @@ verification_plan:
   phase: pre-deploy
   action: 'Scope hygiene: scripts/verify_ci_workflow.py (at 500 SLOC) is untouched and no terraform/personal/**
     file is in the diff (a push apply of this PR''s merge must not be triggered while the record is red).'
-  command: git fetch origin main --quiet; git diff --quiet origin/main -- scripts/verify_ci_workflow.py && [ -z
-    "$(git diff --name-only origin/main -- terraform/personal/)" ] && echo SCOPE_OK
+  command: git diff --quiet origin/main -- scripts/verify_ci_workflow.py && [ -z "$(git diff --name-only origin/main
+    -- terraform/personal/)" ] && echo SCOPE_OK
   expected: Output carries `SCOPE_OK`.
   fix_if: verify_ci_workflow.py differs -> move the change into the new guard module; a terraform/personal path
-    appears -> revert it, that is rec-3400's deferred half after green.
+    appears -> revert it, that is rec-3400's deferred half after green. origin/main unreachable -> the replay advisory-skips;
+    run after a fetch locally.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: A PR-time scope assertion against origin/main; once merged the diff is empty by definition
@@ -459,19 +484,23 @@ verification_plan:
   fix_if: 'sha256 mismatch -> the step already exits 1 and the record reds: refuse; AccessDenied on glue -> VP step
     13 was skipped, re-run it; any other apply error -> the record is red at HEAD with a precise failed address:
     fix forward and re-dispatch (one dispatch + one approval each time, the point of this plan), never terraform
-    state rm.'
+    state rm. download-artifact fails because the approval came after the 2-day retention -> the record latched
+    RED at HEAD by design (download is outside the Decision 154 allow-list); reject nothing, just re-dispatch and
+    approve within two days.'
   graduation: not-applicable
 - step: 16
   phase: post-deploy
   action: The record is green at origin/main HEAD, written by the dispatch run, with both stale markers gone; session
     preflight agrees.
-  command: REC=$(aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json - --profile agent_platform);
-    echo "$REC"; git fetch origin main --quiet; HEAD=$(git rev-parse origin/main); printf '%s' "$REC" | HEAD="$HEAD"
-    bin/venv-python -c "import json,sys,os; r=json.load(sys.stdin); assert r['status']=='green', r; assert r['commit_sha']==os.environ['HEAD'],
-    (r['commit_sha'], os.environ['HEAD']); assert 'infra_error' not in r and 'pending_gated' not in r, r; print('RECORD_GREEN_AT_HEAD
-    run_id='+str(r['run_id']))" && bin/venv-python -m scripts.session.preflight >/dev/null && bin/venv-python -c
-    "import json; r=json.load(open('logs/.preflight-report.json')); print(r.get('convergence_health'))"
-  expected: RECORD_GREEN_AT_HEAD with the dispatch run id; preflight convergence_health status green.
+  command: RUN="${RUN:?set RUN to the dispatch run id VP step 14 recorded}"; REC=$(aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json
+    - --profile agent_platform); echo "$REC"; git fetch origin main --quiet; HEAD=$(git rev-parse origin/main);
+    printf '%s' "$REC" | HEAD="$HEAD" RUN="$RUN" bin/venv-python -c "import json,sys,os; r=json.load(sys.stdin);
+    assert r['status']=='green', r; assert r['commit_sha']==os.environ['HEAD'], (r['commit_sha'], os.environ['HEAD']);
+    assert 'infra_error' not in r and 'pending_gated' not in r, r; assert str(r['run_id'])==os.environ['RUN'], (r['run_id'],
+    os.environ['RUN']); print('RECORD_GREEN_AT_HEAD run_id='+str(r['run_id']))" && bin/venv-python -m scripts.session.preflight
+    >/dev/null && bin/venv-python -c "import json; r=json.load(open('logs/.preflight-report.json')); print(r.get('convergence_health'))"
+  expected: RECORD_GREEN_AT_HEAD with run_id equal to the dispatch run id (asserted, not eyeballed); preflight convergence_health
+    status green.
   fix_if: commit_sha != HEAD -> a later terraform/personal merge outran the dispatch (its push apply converges it,
     or dispatch again without ack); markers present -> the green write did not replace the record (the green branch
     writes a fresh dict, so a different writer touched it).
@@ -618,6 +647,19 @@ test_obligations:
   command: '! grep -q ''always true whenever gated-apply itself runs'' .github/actions/write-convergence-record/action.yml'
   waiver_reason: Description-only manifest edit with no shell body change; validate_composite_action_manifests and
     the R1/R3 body guards remain the behavioral guards.
+- source: docs/contracts/github-actions-evidence.yaml
+  behavior: The artifact classification inventory equals the set of upload-artifact steps, including the new sandbox-fresh-plan
+    upload.
+  verification_step: 6
+  command: bin/venv-python -c "import scripts.checks.ci_guards.validate_actions_evidence as v; f=[]; v.validate_actions_evidence(f);
+    assert not f, f"
+  red_green_expectation: 'Red before (inventory differs: missing the new upload), green after the entry lands.'
+- source: AGENTS.md
+  behavior: Deployment-model clause points at the deploy-paths reconcile row; the ambient set stays within budget.
+  verification_step: 8
+  command: '[ "$(wc -c < AGENTS.md)" -le 18932 ]'
+  waiver_reason: Ambient prose on a public-surface file; validate_prose_limits guards the S1 set size and the clause
+    carries no executable branch.
 constraints:
 - 'Decision 77 no-TOCTOU on every route: the gated job applies the SAME plan.bin the guard inspected -- on push
   the digest-verified saved plan.bin, on dispatch the run-scoped artifact whose sha256 was EMITTED by apply-sandbox
@@ -668,38 +710,40 @@ constraints:
   guard-routed dispatch reaches lives solely in environment-taxonomy.yaml.'
 - 'The consolidation toward one input-free head verb is rec-3568''s job: this plan never edits reconcile.yml or
   Decision 158''s route set.'
+- Hermetic pre-deploy steps perform no network I/O (validate_vp_replay runs them in CI); origin/main is assumed
+  reachable by the replay itself.
 context:
 - 'Decision-scout verdict FLAGS_FOUND (all folded in, none pivoted). CITE: 154, 158, 92, 94, 77, 126, 180, 98, 128,
   170, 162, 165, 167, 177, 181, 103. Decisions triaged: 135 of 135. Roadmap items intersected: 11; CONFLICT: 0;
   RELATED: 10.'
 - 'gates: decision-scout=FLAGS_FOUND (folded: 178 WARN; 167/181/103/126-86 NOTEs; 162/144 SPIRIT; T2.46/T2.47/T2.48/T2.56);
-  plan-critique=REVISE round 1 (8 findings: 1-3 required, 4-8 informational; all fixed, none disputed) -> <verdict>
-  after <N> round(s). Step 6b (2026-09-04): both-sequenced toward one head verb; rec-3415 deferred as logged intent;
-  split-apply + rec-2918 supersession accepted (Decision 103 proof).'
+  plan-critique=REVISE round 1 (8 findings: 1-3 required, 4-8 informational; all fixed, none disputed) -> REVISE
+  round 2 (9 findings: 1-3 required, 4-9 informational; 1-3 and 5-9 fixed, 4 no-change-needed, none recurring) ->
+  <verdict> after <N> round(s). Step 6b (2026-09-04): both-sequenced toward one head verb; rec-3415 deferred as
+  logged intent; split-apply + rec-2918 supersession accepted (Decision 103 proof).'
 - 'Red record: red at e8332e9f (PR #975; run 33323201848) with stale infra_error (run 33668842982) and pending_gated
   (run 33794840397) markers; re-read live before dispatching. HEAD plan (PR #1053 comment; run 33794840397 guard):
-  1 destroy + 9 updates; BLOCK on the destroy + platform_dev role + platform_dev_runtime + platform_admin_datalake.'
+  1 destroy + 9 updates; BLOCK on the destroy + 3 IAM addresses.'
 - 'Five dead ends: Reconcile cannot render the null-provider saved plan (rec-3400/rec-3415) and re-plans at RED_SHA
   whose HCL still carries the S3 tag #995 fixed; ack dispatch hits a push-only gated-apply (rec-3522/rec-3135; Decision
-  154''s rec-2647/rec-2523 deadlock); push latch-refused (run 33799080416); PlatformAdmin has no glue authority
-  (Decision 178 update); the CI role cannot PutRolePolicy on PlatformDev/PlatformAdmin (Decision 180 cl.3) -- unreached
-  by any attempt.'
-- 'Why acknowledge-and-retry: only the dispatch path plans at main HEAD (terraform-cc-web-operations.yaml workflow_dispatch_path);
-  Reconcile''s RED_SHA checkout is load-bearing (Decision 154 pt 2, Decision 158 pt 1). Hand-off mirrors reconcile.yml
-  494-511 / 748-785 (Decision 158 route ii, run 30589703121).'
+  154''s rec-2647/rec-2523 deadlock); push latch-refused (run 33799080416); PlatformAdmin lacks glue authority (Decision
+  178 update); the CI role cannot PutRolePolicy on PlatformDev/PlatformAdmin (Decision 180 cl.3), unreached by any
+  attempt.'
+- 'Why acknowledge-and-retry: only the dispatch path plans at main HEAD; Reconcile''s RED_SHA checkout is load-bearing
+  (Decision 154 pt 2, 158 pt 1). Hand-off mirrors reconcile.yml 494-511 / 748-785 (Decision 158 route ii, run 30589703121).'
 - 'rec-2918 superseded: the eventual single verb is the input-free HEAD re-plan (rec-3568), not Reconcile; its part
   (c) (generalised topology guard) IS delivered here.'
 - 'ci-rca deferral (rec-3551, selection_budget.py coverage): none of the three Related-Work conditions applies;
-  deferred because this plan is the Critical unlatch of a 5-day red blocking every terraform/personal apply and
-  rec-3551 is an XS paydown with its own lane.'
-- 'Main divergence at write time: 1 commit behind origin/main (#1069, verification_registry entries only); no scope
-  overlap; rebase at Step 11. Next free Decision number 183 at write time.'
-- 'Operator sequence after merge: VP 12 admin split-apply (two inline policies) -> VP 13 live simulate -> VP 14
-  dispatch ack -> VP 15 approve -> VP 16 green at HEAD -> VP 17 drain close -> rec-3400''s deferred half as its
-  own PR (empty-plan push apply converges green at the newer HEAD; rec-3300 auto-closes).'
+  this plan is the Critical unlatch of a 5-day red and rec-3551 is an XS paydown with its own lane.'
+- 'Main divergence at write time: 1 commit behind origin/main (#1069, unrelated registry entries); no scope overlap;
+  rebase at Step 11. Next free Decision number 183.'
+- 'Operator sequence after merge: VP 12 admin split-apply (two inline policies) -> 13 live simulate -> 14 dispatch
+  ack -> 15 approve -> 16 green at HEAD -> 17 drain close -> rec-3400''s deferred half as its own PR (empty-plan
+  push apply converges green at the newer HEAD; rec-3300 auto-closes).'
 - 'Follow-on recs to FILE at implement Step 7 (discoveries): (i) ADMIN_ONLY guard verdict for inline-policy writes
   on non-prefixed managed roles, citing T2.48:c6; (ii) retire/re-scope drain_glue_orphan remove/converge phases;
-  (iii) T2.46/DEP-08 hand-off consolidation (may fold into rec-3568).'
+  (iii) T2.46/DEP-08: consolidate the two hand-off quartets into a composite action pair, retiring the r3_workflows
+  bodies upload_fresh_plan_sha256 and verify_fresh_plan_sha256 this plan registers (may fold into rec-3568).'
 - 'fork: which heal verb becomes total | chosen: acknowledge-and-retry now, sequenced toward one input-free HEAD
   verb (rec-3568) | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: Decision
   NNN + deploy-paths reconcile row + rec-3568'
@@ -708,6 +752,9 @@ context:
 - 'fork: admin split-apply before the single dispatch vs dispatch-first partial failure | chosen: split-apply first
   | class: asked | precedent: Decision 98 pt 1 + Decision 180 cl.2-3 + PLAN-admin-converge-tf-personal-red-clear
   | precedent_kind: decision | reversible: yes | persisted: deploy-paths admin_out_of_band SPLIT-APPLY step'
+- 'fork: AGENTS.md deployment-model clause -> pointer at deploy-paths reconcile row (public surface, critique round
+  2) | chosen: yes | class: asked | precedent: none | precedent_kind: none | reversible: yes | persisted: AGENTS.md
+  + VP 8'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -724,21 +771,25 @@ execution_steps:
   == ''success'' }}, fresh_plan_sha256: ${{ steps.upload_fresh_plan_sha256.outputs.sha256 }}. New apply-sandbox
   steps go immediately after the `apply` step and before the record write, both `if: success() && github.event_name
   == ''workflow_dispatch'' && steps.guard.outputs.routed == ''true''`; EMIT body: echo "sha256=$(sha256sum ${{ env.WORKDIR
-  }}/plan.bin | cut -d'' '' -f1)" >> "$GITHUB_OUTPUT"; upload: actions/upload-artifact@v4 name sandbox-fresh-plan-${{
-  github.run_id }}, path ${{ env.WORKDIR }}/plan.bin, retention-days 1. gated-apply: `if` becomes always() && needs.apply-sandbox.result
-  == ''success'' && needs.apply-sandbox.outputs.routed == ''true''; replace the artifact_sha body with echo "value=${{
-  needs.apply-sandbox.outputs.artifact_sha }}" >> "$GITHUB_OUTPUT" (keep id artifact_sha); insert, before fetch_plan,
-  an actions/download-artifact@v4 step (name sandbox-fresh-plan-${{ github.run_id }}, path ${{ env.WORKDIR }}, if
-  fresh_plan_pending == ''true'') and a `verify_fresh_plan_sha256` step (same if; set -euo pipefail; ACTUAL=$(sha256sum
-  plan.bin | cut -d'' '' -f1); on mismatch ::error::SANDBOX_FRESH_PLAN_ARTIFACT sha256 mismatch: expected X, got
-  Y. Refusing to apply a possibly-corrupted plan. then exit 1; else echo verified); fetch_plan gets `if: needs.apply-sandbox.outputs.fresh_plan_pending
-  != ''true'' && github.event_name == ''push''`. Wake steps: SHA env `${{ github.event_name == ''push'' && github.sha
-  || github.event.inputs.acknowledge_red_commit }}` in both jobs; apply-sandbox''s wake `if` becomes always() &&
-  steps.precond.outputs.refused != ''true'' && (github.event_name == ''push'' || (github.event_name == ''workflow_dispatch''
-  && steps.guard.outputs.routed == ''true'')); its routed message names the run''s apply-sandbox plan + guard steps
-  as what to review before approving. Update the header comment''s T2.22 bullet, the input description, the gated-apply
-  job header comment, the gated artifact_sha step comment and the gated apply step comment to name both heal verbs
-  (no comment may still say the gated job is push-only). Keep every existing body''s line count (validate_composite_action_shell_bodies
+  }}/plan.bin | cut -d'' '' -f1)" >> "$GITHUB_OUTPUT"; upload: a step named exactly ''Upload fresh plan.bin as a
+  run-scoped artifact (SANDBOX_FRESH_PLAN_ARTIFACT)'' using actions/upload-artifact@v4 with name sandbox-fresh-plan-${{
+  github.run_id }}, path ${{ env.WORKDIR }}/plan.bin, retention-days 2 (github-actions-evidence.yaml keys the inventory
+  on the step NAME). gated-apply: `if` becomes always() && needs.apply-sandbox.result == ''success'' && needs.apply-sandbox.outputs.routed
+  == ''true''; replace the artifact_sha body with echo "value=${{ needs.apply-sandbox.outputs.artifact_sha }}" >>
+  "$GITHUB_OUTPUT" (keep id artifact_sha); insert, before fetch_plan, an actions/download-artifact@v4 step (name
+  sandbox-fresh-plan-${{ github.run_id }}, path ${{ env.WORKDIR }}, if fresh_plan_pending == ''true'') and a `verify_fresh_plan_sha256`
+  step (same if; set -euo pipefail; ACTUAL=$(sha256sum plan.bin | cut -d'' '' -f1); on mismatch ::error::SANDBOX_FRESH_PLAN_ARTIFACT
+  sha256 mismatch: expected X, got Y. Refusing to apply a possibly-corrupted plan. then exit 1; else echo verified);
+  fetch_plan gets `if: needs.apply-sandbox.outputs.fresh_plan_pending != ''true'' && github.event_name == ''push''`.
+  Wake steps: SHA env `${{ github.event_name == ''push'' && github.sha || github.event.inputs.acknowledge_red_commit
+  }}` in both jobs; apply-sandbox''s wake `if` becomes always() && steps.precond.outputs.refused != ''true'' &&
+  (github.event_name == ''push'' || (github.event_name == ''workflow_dispatch'' && steps.guard.outputs.routed ==
+  ''true'')); its routed message names ${{ github.sha }} as the commit whose fresh plan is pending (the record''s
+  commit_sha on success), and names the run''s apply-sandbox plan + guard steps as what to review before approving;
+  gated-apply''s dispatch-path message likewise names github.sha as the applied commit, never the acknowledged red
+  commit. Update the header comment''s T2.22 bullet, the input description, the gated-apply job header comment,
+  the gated artifact_sha step comment and the gated apply step comment to name both heal verbs (no comment may still
+  say the gated job is push-only). Keep every existing body''s line count (validate_composite_action_shell_bodies
   enforces it).'
 - scripts/checks/ci_guards/validate_dispatch_gated_apply_topology.py -- implement invariants (i)-(vii) from the
   scope row, each with a distinct failure message prefixed `dispatch-gated-apply-topology:`; load via scripts.verify_ci_workflow._load;
@@ -775,6 +826,10 @@ execution_steps:
   still right: dispatch Reconcile (reconcile.yml). Fix merged after the red commit: terraform-apply-sandbox workflow_dispatch
   acknowledge-and-retry (guard-ROUTE now reaches tf-gated-apply). Rule + admin split-apply: docs/contracts/deploy-paths.yaml
   reconcile row'' and trim the If-blocked cell so wc -c stays <= 11450.'
+- AGENTS.md -- rewrite the Deployment model bullet's 'red/drift = run the one-input Reconcile action' clause to
+  'red/drift = the heal verb docs/contracts/deploy-paths.yaml's reconcile row selects (Reconcile at the red commit,
+  or the acknowledge-and-retry dispatch at HEAD)' and trim the bullet's trailing parenthetical so wc -c AGENTS.md
+  stays <= 18932; no other AGENTS.md change.
 - 'docs/DECISIONS.md + docs/decisions-index.json -- AUTHOR THE NUMBERED DECISION. Allocate NNN at write time: grep
   -hoE ''^#{2,3} Decision [0-9]+:'' docs/DECISIONS.md docs/DECISIONS_ARCHIVE.md | grep -oE ''[0-9]+'' | sort -n
   | tail -1, take the next (183 at planning time), and re-run immediately before writing. Header `## Decision NNN:
@@ -799,11 +854,12 @@ execution_steps:
   routed-dispatch gated apply lands a change the approver could not have reviewed from the apply-sandbox logs (then
   make the wake comment a hard precondition or restore the push conjunct + invert the guard); (b) the consolidation
   rec-3568 lands (one input-free HEAD heal verb) -- then this entry''s verb split collapses to the head verb and
-  Reconcile''s red-commit replay retires; the three-site mechanism (the job `if`, the topology guard''s invariant
-  (i), the drain tool''s invariant (a)) is what a reverser or consolidator must move together; state as a CONSOLIDATION
-  clause (forward intent, human-chosen at Step 6b) rather than a pure reversal; Related: 55, 72, 77, 92, 94, 119,
-  120, 126, 127, 154, 158, 162, 178, 180, T2.22, T2.37, T2.47, rec-3522, rec-3135, rec-2918, rec-2647, rec-2523.
-  ONE entry, measured UNDER 6,144 bytes (Decision 167 clause 3; trim Related before anything else). Point (6): Decision
+  Reconcile''s red-commit replay retires; the three mechanism sites (the job `if`, the topology guard''s invariant
+  (i), the drain tool''s invariant (a)) plus the two ambient pointers (terraform/CLAUDE.md''s recovery row, AGENTS.md''s
+  deployment-model clause) are what a reverser or consolidator must move together; state as a CONSOLIDATION clause
+  (forward intent, human-chosen at Step 6b) rather than a pure reversal; Related: 55, 72, 77, 92, 94, 119, 120,
+  126, 127, 154, 158, 162, 178, 180, T2.22, T2.37, T2.47, rec-3522, rec-3135, rec-2918, rec-2647, rec-2523. ONE
+  entry, measured UNDER 6,144 bytes (Decision 167 clause 3; trim Related before anything else). Point (6): Decision
   181 coverage story for the drain tool''s invariant (a) inversion, naming validate_dispatch_gated_apply_topology
   as the successor enforcement surface; point (7): Decision 178 clause 4''s drain vehicle moves to the acknowledge-and-retry
   dispatch (substance unchanged). ALSO append to Decision 178''s existing 2026-09-01 update block a dated `> **Update
