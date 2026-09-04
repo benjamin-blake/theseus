@@ -39,7 +39,9 @@ module does not implement is a loud failure, never a silently-skipped row.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import cast
 
 import yaml
 
@@ -71,10 +73,61 @@ def _plan_content_at_ref(plan_rel: str, root: Path, ref: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _row_derived_paths(kind: str | None, row: dict, doc, plan_rel: str, plan_scope_files: set[str]) -> list[str] | None:
+def _secrets_baseline_keys(baseline_rel: str, root: Path, base: str, failed: list[str]) -> set[str]:
+    """Union of `baseline_rel`'s results-map filename keys from the working tree and from `base`.
+
+    Missing at either half contributes nothing silently (no baseline, no churn); unparseable JSON
+    at either half appends a finding, never raises (Decision 55). The base-ref half mirrors
+    `_plan_content_at_ref`'s git-show-return-code convention: a non-zero `git show` (unresolvable
+    ref, or path absent at base) contributes nothing silently.
+    """
+    keys: set[str] = set()
+
+    working_path = root / baseline_rel
+    if working_path.exists():
+        try:
+            working_data = json.loads(working_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            failed.append(
+                f"scope-boundary: {baseline_rel} is unparseable in the working tree -- cannot derive its sanctioned scope"
+            )
+        else:
+            if isinstance(working_data, dict):
+                keys.update((working_data.get("results") or {}).keys())
+
+    result = _common.run(["git", "show", f"{base}:{baseline_rel}"], capture_output=True, text=True, encoding="utf-8", cwd=root)
+    if result.returncode == 0:
+        try:
+            base_data = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            failed.append(f"scope-boundary: {baseline_rel} is unparseable at base ref {base!r} -- cannot derive its scope")
+        else:
+            if isinstance(base_data, dict):
+                keys.update((base_data.get("results") or {}).keys())
+
+    return keys
+
+
+def _row_derived_paths(
+    kind: str | None,
+    row: dict,
+    doc,
+    plan_rel: str,
+    plan_scope_files: set[str],
+    root: Path,
+    base: str,
+    failed: list[str],
+    baseline_key_memo: dict[str, set[str]],
+) -> list[str] | None:
     """Derived sanctioned paths for one sanction_rows entry against one resolved plan. None means
     `kind` is an unimplemented sanction_kind -- the caller reports a loud failure, never a silent
-    skip."""
+    skip. `root`/`base`/`failed`/`baseline_key_memo` are consumed only by the
+    scope_file_in_secrets_baseline branch; `baseline_key_memo` is keyed on the row's
+    `trigger.baseline_path` (a per-row field, not a single unkeyed slot) so a future second
+    baseline-backed row does not silently reuse this row's key set, and the union read (plus any
+    unparseable-baseline finding) happens at most once per dispatch regardless of how many
+    resolved plans or rows consult it.
+    """
     sanctions = row.get("sanctions") or {}
     if kind == "graduation_check_id_per_step":
         template = sanctions.get("path_template", "")
@@ -88,6 +141,17 @@ def _row_derived_paths(kind: str | None, row: dict, doc, plan_rel: str, plan_sco
     if kind == "scope_contains_file":
         target = (row.get("trigger") or {}).get("file")
         if target and target in plan_scope_files:
+            return [sanctions.get("path_template", "")]
+        return []
+    if kind == "scope_file_in_secrets_baseline":
+        # Cast, not validate: trigger.baseline_path is guaranteed present by the contract's own
+        # row-shape assertion (VP step 1 of PLAN-secrets-baseline-sanction-row), never re-checked
+        # here -- a row that omits it is a contract-authoring defect, not a runtime case this
+        # function guards against (see the plan's "root / None RAISE" note).
+        baseline_path = cast(str, (row.get("trigger") or {}).get("baseline_path"))
+        if baseline_path not in baseline_key_memo:
+            baseline_key_memo[baseline_path] = _secrets_baseline_keys(baseline_path, root, base, failed)
+        if plan_scope_files & baseline_key_memo[baseline_path]:
             return [sanctions.get("path_template", "")]
         return []
     return None
@@ -143,6 +207,7 @@ def _enforce(resolved: list[str], changed: list[str], root: Path, base: str, fai
 
     declared_scope: set[str] = set()
     sanctioned: set[str] = set()
+    baseline_key_memo: dict[str, set[str]] = {}
 
     for plan_rel in resolved:
         if not (root / plan_rel).exists():
@@ -159,7 +224,7 @@ def _enforce(resolved: list[str], changed: list[str], root: Path, base: str, fai
 
         for row_name, row in sanction_rows.items():
             kind = (row.get("trigger") or {}).get("kind") if isinstance(row, dict) else None
-            derived = _row_derived_paths(kind, row, doc, plan_rel, plan_scope_files)
+            derived = _row_derived_paths(kind, row, doc, plan_rel, plan_scope_files, root, base, failed, baseline_key_memo)
             if derived is None:
                 failed.append(
                     f"scope-boundary: sanction row {row_name!r} declares unimplemented trigger kind "

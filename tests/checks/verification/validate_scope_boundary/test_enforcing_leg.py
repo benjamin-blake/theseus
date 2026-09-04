@@ -1,181 +1,30 @@
-"""Tests for validate_scope_boundary() -- implement-scope diff-vs-plan boundary check (Decision
-59's deterministic scope guard). Mirror of
-scripts/checks/verification/validate_scope_boundary.py.
+"""TestEnforcingLeg (Decision 131 concern-split decomposition of the former flat
+test_validate_scope_boundary.py monolith that used to live one directory up), moved verbatim.
 
-TestPlanOnlyLeg / TestSkippedBase cover the DEFER and skipped legs (mirrors
-test_validate_vp_replay.py's own split). TestEnforcingLeg covers the diff-vs-scope matrix: an
-unsanctioned path fails, a prohibited plan-field edit fails, a fully-declared diff passes, each
-sanction_rows trigger kind derives its path correctly, and an unimplemented trigger kind fails
-loud. TestPlanPathsOverride covers the dispatch seam VP steps 6/11 use to enforce before anything
-is committed.
+Covers the diff-vs-scope matrix: an unsanctioned path fails, a prohibited plan-field edit fails, a
+fully-declared diff passes, each pre-existing sanction_rows trigger kind derives its path
+correctly, and an unimplemented trigger kind fails loud. The secrets_baseline_regeneration
+trigger kind's own arms live in test_secrets_baseline_row.py.
 """
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import yaml as _yaml
 
-from scripts.checks import registry
-from scripts.checks.verification.validate_scope_boundary import validate_scope_boundary
-
-_DEFAULT_SANCTION_ROWS = {
-    "graduated_registry_shard": {
-        "trigger": {"kind": "graduation_check_id_per_step"},
-        "sanctions": {"path_template": "config/agent/verification_registry/entries/{graduation_check_id}.yaml"},
-        "prohibited_field_edits": [],
-    },
-    "implementing_plan_bookkeeping": {
-        "trigger": {"kind": "resolved_plan_path"},
-        "sanctions": {},
-        "permitted_field_edits": ["implementation_declared"],
-        "prohibited_field_edits": [
-            "acceptance_criteria",
-            "scope",
-            "verification_plan[].command",
-            "verification_plan[].expected",
-        ],
-        "disposition_on_violation": "STOP: an undeclared touched path is never resolved by editing the plan's own scope.",
-    },
-    "decisions_index_regeneration": {
-        "trigger": {"kind": "scope_contains_file", "file": "docs/DECISIONS.md"},
-        "sanctions": {"path_template": "docs/decisions-index.json"},
-        "prohibited_field_edits": [],
-    },
-}
-
-
-_DUMMY_VP_STEP = {
-    "step": 1,
-    "phase": "pre-deploy",
-    "hermetic": True,
-    "action": "dummy",
-    "command": "true",
-    "expected": "n/a",
-    "fix_if": "n/a",
-}
-
-
-def _plan_dict(slug: str, scope: list[dict], verification_plan: list[dict] | None = None, declared: bool = False) -> dict:
-    return {
-        "schema_version": 2,
-        "slug": slug,
-        "intent": "Fixture plan for validate_scope_boundary unit tests.",
-        "plan_type": "IMPLEMENTATION",
-        "verification_tier": "V2",
-        "plan_path": f"docs/plans/PLAN-{slug}.yaml",
-        "phase": "Test fixture",
-        "scope": scope,
-        "acceptance_criteria": ["dummy criterion"],
-        "verification_plan": verification_plan or [_DUMMY_VP_STEP],
-        "execution_steps": ["dummy step"],
-        "implementation_declared": declared,
-    }
-
-
-def _write_plan(
-    root: Path, slug: str, scope: list[dict], verification_plan: list[dict] | None = None, declared: bool = False
-) -> str:
-    plans_dir = root / "docs" / "plans"
-    plans_dir.mkdir(parents=True, exist_ok=True)
-    rel = f"docs/plans/PLAN-{slug}.yaml"
-    (plans_dir / f"PLAN-{slug}.yaml").write_text(
-        _yaml.dump(_plan_dict(slug, scope, verification_plan, declared)), encoding="utf-8"
-    )
-    return rel
-
-
-def _write_contract(root: Path, sanction_rows: dict | None = None) -> None:
-    contracts_dir = root / "docs" / "contracts"
-    contracts_dir.mkdir(parents=True, exist_ok=True)
-    body = {
-        "contract": {"id": "implement-scope-boundary", "class": "D", "subject": "implement-scope-boundary"},
-        "sanction_rows": _DEFAULT_SANCTION_ROWS if sanction_rows is None else sanction_rows,
-    }
-    (contracts_dir / "implement-scope-boundary.yaml").write_text(_yaml.dump(body), encoding="utf-8")
-
-
-def _git(repo: Path, args: list[str]) -> subprocess.CompletedProcess:
-    result = subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True, encoding="utf-8")
-    assert result.returncode == 0, f"git {args} failed: {result.stderr}"
-    return result
-
-
-def _init_repo(repo: Path) -> None:
-    repo.mkdir(parents=True, exist_ok=True)
-    _git(repo, ["init", "-q"])
-    _git(repo, ["config", "user.email", "test@example.com"])
-    _git(repo, ["config", "user.name", "Test"])
-
-
-def _commit_all(repo: Path, message: str) -> str:
-    _git(repo, ["add", "-A"])
-    _git(repo, ["commit", "-q", "-m", message])
-    return _git(repo, ["rev-parse", "HEAD"]).stdout.strip()
-
-
-class _ResolvedFixture:
-    """Shared repo builder: a base commit (origin/main, carrying the contract), then a second
-    commit declaring the plan's implementation_declared true -- the resolvable, enforceable
-    shape."""
-
-    def build(
-        self,
-        tmp_path: Path,
-        slug: str,
-        scope: list[dict],
-        verification_plan: list[dict] | None = None,
-        sanction_rows: dict | None = None,
-    ) -> tuple[Path, str]:
-        repo = tmp_path / "repo"
-        _init_repo(repo)
-        _write_contract(repo, sanction_rows)
-        _write_plan(repo, slug, scope, verification_plan, declared=False)
-        base_sha = _commit_all(repo, "base")
-        _git(repo, ["update-ref", "refs/remotes/origin/main", base_sha])
-
-        rel = _write_plan(repo, slug, scope, verification_plan, declared=True)
-        _commit_all(repo, "declare implementation")
-        return repo, rel
-
-
-class TestPlanOnlyLeg:
-    def test_no_plan_in_diff_is_vacuous_pass(self, tmp_path: Path) -> None:
-        failed: list[str] = []
-        validate_scope_boundary(failed, changed_files=["scripts/foo.py"], root=tmp_path)
-        assert failed == []
-
-    def test_undeclared_plan_defers_no_enforcement(self, tmp_path: Path, capsys) -> None:
-        repo = tmp_path / "repo"
-        _init_repo(repo)
-        _write_contract(repo)
-        base_sha = _commit_all(repo, "base")
-        _git(repo, ["update-ref", "refs/remotes/origin/main", base_sha])
-        rel = _write_plan(
-            repo, "sb-plan-only", [{"file": "scripts/foo.py", "action": "Modify", "purpose": "x"}], declared=False
-        )
-        _commit_all(repo, "add undeclared plan")
-
-        failed: list[str] = []
-        validate_scope_boundary(failed, changed_files=[rel, "scripts/rogue.py"], root=repo)
-        out = capsys.readouterr().out
-        assert failed == []
-        assert f"DEFER: {rel}" in out
-
-
-class TestSkippedBase:
-    def test_declaration_skipped_when_base_unreachable(self, tmp_path: Path) -> None:
-        rel = _write_plan(
-            tmp_path, "sb-no-base", [{"file": "scripts/foo.py", "action": "Modify", "purpose": "x"}], declared=False
-        )
-        failed: list[str] = []
-        registry.pop_declaration()
-        validate_scope_boundary(failed, changed_files=[rel], root=tmp_path)
-        declaration = registry.pop_declaration()
-        assert declaration is not None
-        assert declaration.kind == "skipped"
-        assert failed == []
+from .conftest import (
+    _DEFAULT_SANCTION_ROWS,
+    _DUMMY_VP_STEP,
+    _commit_all,
+    _git,
+    _init_repo,
+    _plan_dict,
+    _ResolvedFixture,
+    _write_contract,
+    _write_plan,
+    validate_scope_boundary,
+)
 
 
 class TestEnforcingLeg:
@@ -448,72 +297,4 @@ class TestEnforcingLeg:
 
         failed: list[str] = []
         validate_scope_boundary(failed, changed_files=[rel, "scripts/foo.py"], root=repo)
-        assert failed == []
-
-
-class TestPlanPathsOverride:
-    """VP steps 6/11's own dispatch shape: an explicit plan_paths override IS the resolved set
-    directly, bypassing implementation_declared flip-detection entirely -- required because the
-    Verification Plan runs before the commit flow sets that field."""
-
-    def test_override_enforces_even_when_not_yet_declared(self, tmp_path: Path) -> None:
-        repo = tmp_path / "repo"
-        _init_repo(repo)
-        _write_contract(repo)
-        rel = _write_plan(
-            repo, "sb-override", [{"file": "scripts/foo.py", "action": "Modify", "purpose": "x"}], declared=False
-        )
-        base_sha = _commit_all(repo, "base")
-        _git(repo, ["update-ref", "refs/remotes/origin/main", base_sha])
-
-        failed: list[str] = []
-        validate_scope_boundary(failed, plan_paths=[rel], changed_files=[rel, "scripts/foo.py", "scripts/rogue.py"], root=repo)
-        assert any("scripts/rogue.py" in f for f in failed)
-
-    def test_override_passes_when_fully_declared(self, tmp_path: Path) -> None:
-        repo = tmp_path / "repo"
-        _init_repo(repo)
-        _write_contract(repo)
-        rel = _write_plan(
-            repo, "sb-override-ok", [{"file": "scripts/foo.py", "action": "Modify", "purpose": "x"}], declared=False
-        )
-        base_sha = _commit_all(repo, "base")
-        _git(repo, ["update-ref", "refs/remotes/origin/main", base_sha])
-
-        failed: list[str] = []
-        validate_scope_boundary(failed, plan_paths=[rel], changed_files=[rel, "scripts/foo.py"], root=repo)
-        assert failed == []
-
-
-class TestAccounting:
-    def test_examined_count_matches_resolved_plans(self, tmp_path: Path) -> None:
-        repo, rel = _ResolvedFixture().build(
-            tmp_path, "sb-acct", [{"file": "scripts/foo.py", "action": "Modify", "purpose": "x"}]
-        )
-        failed: list[str] = []
-        registry.pop_declaration()
-        validate_scope_boundary(failed, changed_files=[rel, "scripts/foo.py"], root=repo)
-        declaration = registry.pop_declaration()
-        assert declaration is not None
-        assert declaration.kind == "examined"
-        assert declaration.count == 1
-        assert declaration.unit == "declared_plans"
-
-    def test_examined_zero_when_no_plan_in_diff(self) -> None:
-        failed: list[str] = []
-        registry.pop_declaration()
-        validate_scope_boundary(failed, changed_files=["scripts/foo.py"], root=Path("/nonexistent"))
-        declaration = registry.pop_declaration()
-        assert declaration is not None
-        assert declaration.kind == "examined"
-        assert declaration.count == 0
-
-    def test_default_changed_files_uses_status_aware_diff(self, tmp_path: Path) -> None:
-        """No changed_files arg -- falls back to _common.get_status_aware_diff(). An empty diff
-        means no plan paths at all, so the check no-ops without touching real git state."""
-        from unittest.mock import patch
-
-        failed: list[str] = []
-        with patch("scripts.checks._common.get_status_aware_diff", return_value=[]):
-            validate_scope_boundary(failed)
         assert failed == []
