@@ -154,6 +154,8 @@ class TestPrunedEdgesRoster:
     _CAP = 4
     _REGISTRY = "scripts.checks.registry"
     _COMMON = "scripts.checks._common"
+    _BUDGET_RECS = "scripts.checks._budget_recs"
+    _PORTAL = "scripts.ops_data_portal"
 
     @staticmethod
     def _dead_rows(roster: dict[str, tuple[str, ...]]) -> list[str]:
@@ -174,6 +176,31 @@ class TestPrunedEdgesRoster:
         return reports
 
     @staticmethod
+    def _inert_rows(roster: dict[str, tuple[str, ...]]) -> list[str]:
+        """One report per row that prunes nothing the auditor actually walks -- the two vacuous
+        shapes a perfectly LIVE edge can still take (rec-3553): a key no gated check's closure
+        reaches, and a row whose targets stay reachable by another route.
+
+        Each row is judged ALONE against the UNPRUNED closure -- the roster patched to that single
+        row versus the roster patched to empty -- never against the live roster minus the row, so
+        one row can never excuse another by having already pruned its targets.
+        """
+        view = vpgc._closure_view(_common.ROOT)
+        modules = [entry.module for entry in vpgc._gated_entries()]
+        with patch.object(vpgc, "_PRUNED_EDGES", {}):
+            unpruned = {module: vpgc._closure_modules(view, module) for module in modules}
+        reports: list[str] = []
+        for key, targets in sorted(roster.items()):
+            if not any(key in closure for closure in unpruned.values()):
+                reports.append(f"key {key} is in no gated check's closure")
+                continue
+            with patch.object(vpgc, "_PRUNED_EDGES", {key: targets}):
+                shrinks = any(vpgc._closure_modules(view, module) < unpruned[module] for module in modules)
+            if not shrinks:
+                reports.append(f"row {key} shrinks no gated closure")
+        return reports
+
+    @staticmethod
     def _literal_block() -> list[str]:
         """Source lines of the _PRUNED_EDGES literal, ast-located rather than offset-guessed."""
         source = Path(vpgc.__file__).read_text(encoding="utf-8").splitlines()
@@ -184,24 +211,28 @@ class TestPrunedEdgesRoster:
         )
         return source[node.lineno - 1 : node.end_lineno]
 
-    def test_the_roster_is_the_two_reviewed_hub_rows(self) -> None:
+    def test_the_roster_is_the_three_reviewed_hub_rows(self) -> None:
         """Supersedes test_starts_empty, whose whole contract was the staging precondition (the
         roster is INTENTIONALLY EMPTY until an entry is added with an inline reason) that this
         authorised wave-4b pay-down discharges. Also the NON-VACUITY guard the two staleness
         assertions below lean on -- they iterate the roster and would pass trivially against an
-        emptied one."""
+        emptied one. The _budget_recs row's target tuple is pinned EXACTLY at its single reviewed
+        element: the operator's ceiling counts ROWS, so growing a key's targets would be an
+        unpriced prune, and this pin is what makes the cap unevadable through targets."""
         roster = vpgc._PRUNED_EDGES
-        assert sorted(roster) == [self._COMMON, self._REGISTRY]
+        assert sorted(roster) == [self._BUDGET_RECS, self._COMMON, self._REGISTRY]
+        assert roster[self._BUDGET_RECS] == (self._PORTAL,)
         assert roster[self._COMMON] == ("scripts.roadmap.plan_document",)
         targets = roster[self._REGISTRY]
         assert "scripts.checks._schema" in targets
         assert len([t for t in targets if t.endswith("._manifest")]) == 17
         assert len(targets) == 18
 
-    def test_row_count_is_exactly_the_reviewed_two_and_within_the_cap(self) -> None:
-        """An EXACT pin replacing an exact pin (`== {}` -> `== 2`), never a 0 -> 4 allowance: the
-        cap records the reviewed wave ceiling and is not permission to fill it."""
-        assert len(vpgc._PRUNED_EDGES) == 2
+    def test_row_count_is_exactly_the_reviewed_three_and_within_the_cap(self) -> None:
+        """An EXACT pin replacing an exact pin (`== 2` -> `== 3`), never an inequality or a range:
+        the cap records the reviewed wave ceiling and is not permission to fill it. Three of the
+        operator's four allowed rows are spent; one is left."""
+        assert len(vpgc._PRUNED_EDGES) == 3
         assert len(vpgc._PRUNED_EDGES) <= self._CAP
 
     def test_every_declared_edge_is_live_in_the_import_subgraph(self) -> None:
@@ -228,6 +259,54 @@ class TestPrunedEdgesRoster:
             f"edge {self._REGISTRY} -> scripts.dependency_graph not live",
         ]
         assert len(reports) == 4
+
+    def test_the_budget_recs_row_removes_the_portal_from_every_scaffolded_closure(self) -> None:
+        """The row's EFFECT, asserted on CLOSURES rather than on the auditor's printed finding
+        counts, so the series' later glob widenings cannot silently empty it. Every gated check
+        that reaches the rec-filing hub loses scripts.ops_data_portal from its audited closure and
+        regains it the moment the row is dropped."""
+        view = vpgc._closure_view(_common.ROOT)
+        without = {key: targets for key, targets in vpgc._PRUNED_EDGES.items() if key != self._BUDGET_RECS}
+        scaffolded = [
+            entry.module for entry in vpgc._gated_entries() if self._BUDGET_RECS in vpgc._closure_modules(view, entry.module)
+        ]
+        assert scaffolded, "no gated check reaches the rec-filing hub, so this row prunes nothing"
+        for module in scaffolded:
+            assert self._PORTAL not in vpgc._closure_modules(view, module)
+            with patch.object(vpgc, "_PRUNED_EDGES", without):
+                assert self._PORTAL in vpgc._closure_modules(view, module)
+
+    def test_every_row_key_is_reachable_from_a_gated_closure(self) -> None:
+        """rec-3553: the liveness pin above accepts a row that is a genuinely live edge and still
+        prunes nothing the auditor walks. LOAD-BEARING is the third property, alongside resolvable
+        and live -- the key must sit in some gated check's unpruned closure AND the row must
+        strictly shrink at least one such closure."""
+        assert vpgc._PRUNED_EDGES, "an emptied roster must not satisfy this assertion vacuously"
+        assert self._inert_rows(vpgc._PRUNED_EDGES) == []
+
+    def test_the_inertness_detector_rejects_both_vacuous_row_shapes(self) -> None:
+        """Negative control, green in BOTH states by construction: it feeds the detector its own
+        bogus roster and never reads the real one. BOTH shapes, because a control that fires on
+        only one of them halves the discrimination the reachability pin rests on.
+
+        Shape 1, the unreachable key: scripts.build_lambda -> scripts.build_lambda_config, a live
+        edge whose key sits in NO gated check's unpruned closure. Shape 2, the reachable-but-inert
+        row: scripts.checks._scaffolding -> scripts.checks._common, a live edge whose key sits in
+        three gated checks' unpruned closures and which shrinks none of them, because
+        scripts.checks._common is independently reachable from every gated check module. The
+        _dead_rows assertion is what keeps the detector from reporting for the WRONG reason: both
+        fixtures must be live edges, or these reports would be about staleness instead."""
+        bogus: dict[str, tuple[str, ...]] = {
+            "scripts.build_lambda": ("scripts.build_lambda_config",),
+            "scripts.checks._scaffolding": (self._COMMON,),
+        }
+        assert self._dead_rows(bogus) == []
+        reports = self._inert_rows(bogus)
+        assert reports == [
+            "key scripts.build_lambda is in no gated check's closure",
+            "row scripts.checks._scaffolding shrinks no gated closure",
+        ]
+        assert len(reports) == 2
 
     def test_every_row_is_preceded_by_an_inline_rationale_comment(self) -> None:
         """The module's own rule for adding an entry, enforced rather than trusted. Together with
