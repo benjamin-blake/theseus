@@ -413,7 +413,7 @@ class TestDuckLakeReaderSSMResolution:
 
         def fake_ssm(*a, **k):
             ssm_called.append(True)
-            return None
+            return
 
         monkeypatch.setattr(ir, "_resolve_function_url_via_ssm", fake_ssm)
 

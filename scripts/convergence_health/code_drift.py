@@ -248,7 +248,7 @@ def detect_ducklake_code_drift(
 # Prod-class code-drift alarm (T2.43 / Decision 125/126)
 #
 # Mirrors detect_ducklake_code_drift exactly, scoped to the prod-class functions
-# (scheduled-agent-dispatcher, findings-processor) and their
+# named scheduled-agent-dispatcher and findings-processor, and their
 # deploy-records/prod/<function>.json records (read_deploy_record channel="prod"). ANY stale
 # function triggers exactly ONE deduped prod_code_drift rec (never one per function). Never
 # writes a deploy record; never redeploys; never runs build_lambda. Alarm-not-gate (priority

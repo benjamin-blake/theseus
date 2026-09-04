@@ -69,14 +69,14 @@ def _write(tmp_path: Path, body: str, name: str = "fixture.yaml") -> Path:
 
 
 def _triple(**overrides) -> Triple:
-    base = dict(
-        id="t",
-        verb="iam:DeleteRole",
-        target_arn="arn:aws:iam::acct:role/agent-platform-simulate-probe",
-        expected_decision="allowed",
-        context={},
-        why="because",
-    )
+    base = {
+        "id": "t",
+        "verb": "iam:DeleteRole",
+        "target_arn": "arn:aws:iam::acct:role/agent-platform-simulate-probe",
+        "expected_decision": "allowed",
+        "context": {},
+        "why": "because",
+    }
     base.update(overrides)
     return Triple(**base)  # type: ignore[arg-type]
 

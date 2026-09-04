@@ -15,7 +15,7 @@ import pytest
 from scripts.ci.plan_digest import PlanDigestError, emit, main, verify
 
 # ---------------------------------------------------------------------------
-# emit()
+# tests for emit()
 # ---------------------------------------------------------------------------
 
 

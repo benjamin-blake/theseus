@@ -64,7 +64,7 @@ def read_context_files(open_recs_count: int | None = None) -> dict:
     recent_sessions: list[str] = []
     if _common.SESSION_LOG_FILE.exists():
         content = _common.SESSION_LOG_FILE.read_text(encoding="utf-8")
-        # Match ## [YYYY-MM-DD] headers and capture the Done line
+        # Matches the ## [YYYY-MM-DD] headers and captures the Done line
         session_blocks = re.findall(
             r"(## \[\d{4}-\d{2}-\d{2}\][^\n]*)(?:\n\*\*Done:\*\* ([^\n]+))?",
             content,

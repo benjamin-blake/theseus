@@ -25,12 +25,12 @@ _DSN = {
     "sslmode": "require",
 }
 
-_PROBE_KWARGS = dict(
-    data_path="s3://test-bucket/ducklake/",
-    meta_schema="ducklake_ops",
-    extension_directory="/opt/extensions",
-    timeout_s=10,
-)
+_PROBE_KWARGS = {
+    "data_path": "s3://test-bucket/ducklake/",
+    "meta_schema": "ducklake_ops",
+    "extension_directory": "/opt/extensions",
+    "timeout_s": 10,
+}
 
 
 # ---------------------------------------------------------------------------

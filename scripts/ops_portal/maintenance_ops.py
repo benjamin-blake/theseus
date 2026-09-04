@@ -80,7 +80,7 @@ def selftest_roundtrip(profile: Optional[str] = None) -> dict:
         raise RuntimeError(f"selftest_roundtrip FAIL ({backend}): wrote {probe_id} but read-back returned {len(rows)} rows")
 
     # SCD2 supersede via the writer on the caller-keyed test- keyspace (Decision 84 I-2 sanctioned
-    # exception; Decision 103/81). NOT via update_rec: its _fetch_rec_from_reader helper only
+    # exception; Decision 103/81). NOT via update_rec, because its _fetch_rec_from_reader helper only
     # accepts writer-allocated rec-NNN ids, and this is a caller-keyed test- probe id.
     superseded_record = {
         **record,

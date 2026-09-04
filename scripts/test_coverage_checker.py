@@ -135,22 +135,22 @@ def _grandfathered_source_to_test(source_path: Path) -> Path | None:
 
     if parts[0] == "src" and len(parts) >= 3 and parts[1] == "common" and rel.name in _DUCKLAKE_RUNTIME_SPLIT_MODULES:
         return ROOT / "tests" / "test_ducklake_runtime.py"
-    elif parts[0] == "src" and len(parts) >= 4 and parts[1] == "lambdas":
+    if parts[0] == "src" and len(parts) >= 4 and parts[1] == "lambdas":
         return ROOT / "tests" / f"test_{parts[2]}_handler.py"
-    elif parts[0] == "src" and len(parts) >= 2:
+    if parts[0] == "src" and len(parts) >= 2:
         stem = rel.stem
         return ROOT / "tests" / f"test_{stem}.py"
-    elif parts[0] == "scripts" and len(parts) >= 2 and parts[1] == "checks":
+    if parts[0] == "scripts" and len(parts) >= 2 and parts[1] == "checks":
         return ROOT / "tests" / "test_validate.py"
-    elif parts[0] == "scripts" and len(parts) == 3 and parts[1] == "convergence_health":
+    if parts[0] == "scripts" and len(parts) == 3 and parts[1] == "convergence_health":
         return ROOT / "tests" / "test_convergence_health.py"
-    elif parts[0] == "scripts" and len(parts) == 3 and parts[1] in _NESTED_SUBPACKAGE_TEST_PREFIX:
+    if parts[0] == "scripts" and len(parts) == 3 and parts[1] in _NESTED_SUBPACKAGE_TEST_PREFIX:
         # Nested scripts/ subpackages (RS-01 / rec-164): ci_rca/session/sync strip the family
         # prefix, roadmap keeps full names -- each module keeps its flat test (see the prefix map).
         # One dict-lookup branch (not four parallel elifs) keeps this function under the
         # Decision 43 cyclomatic-complexity ceiling; still whitelisted (no general len==3 rule).
         return ROOT / "tests" / f"{_NESTED_SUBPACKAGE_TEST_PREFIX[parts[1]]}{rel.stem}.py"
-    elif parts[0] == "scripts" and len(parts) == 2:
+    if parts[0] == "scripts" and len(parts) == 2:
         stem = rel.stem
         return ROOT / "tests" / f"test_{stem}.py"
 

@@ -1267,15 +1267,14 @@ def _execute_recommendation_inner(
                 failure_reason=failure_reason or "",
             )
             return False
-        else:
-            logger.info("[REVIEW] No CRITICAL/HIGH findings remaining -- review clean")
-            save_checkpoint(
-                branch=branch,
-                plan_file=rec_id,
-                current_step=steps_completed,
-                total_steps=total_steps,
-                status="REVIEW_COMPLETE",
-            )
+        logger.info("[REVIEW] No CRITICAL/HIGH findings remaining -- review clean")
+        save_checkpoint(
+            branch=branch,
+            plan_file=rec_id,
+            current_step=steps_completed,
+            total_steps=total_steps,
+            status="REVIEW_COMPLETE",
+        )
     else:
         logger.info("[REVIEW] Code review skipped")
 

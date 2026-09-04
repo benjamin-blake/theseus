@@ -27,7 +27,7 @@ def validate_environment_taxonomy(failed: list[str]) -> None:
     for rel in _common.get_changed_files():
         if not rel.endswith((".md", ".yaml", ".yml")):
             continue
-        if rel in allowlist_files or rel.startswith(".github/") or rel.startswith("tests/"):
+        if rel in allowlist_files or rel.startswith((".github/", "tests/")):
             continue
         try:
             text = (_common.ROOT / rel).read_text(encoding="utf-8")

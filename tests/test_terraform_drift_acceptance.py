@@ -30,8 +30,7 @@ def _extract_acceptance_values(run_block: str) -> list[str]:
     """Return all --acceptance values from a run block that also invokes ops_data_portal."""
     if not _PORTAL_PATTERN.search(run_block):
         return []
-    values = _ACCEPTANCE_DOUBLE.findall(run_block) + _ACCEPTANCE_SINGLE.findall(run_block)
-    return values
+    return _ACCEPTANCE_DOUBLE.findall(run_block) + _ACCEPTANCE_SINGLE.findall(run_block)
 
 
 def _collect_acceptance_values() -> list[tuple[str, str]]:

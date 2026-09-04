@@ -140,7 +140,7 @@ class TestTerraformDriftDetection:
     def test_terraform_stub_version_mismatch_is_drift(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = self._in_sync_repo(tmp_path, terraform_version="1.10.5")
         stub_dir = self._stub_terraform(tmp_path, version="1.9.0")
-        env = {**dict(**{"PATH": f"{stub_dir}:/usr/bin:/bin", "HOME": str(tmp_path), "INSTALL_TERRAFORM": "1"})}
+        env = {"PATH": f"{stub_dir}:/usr/bin:/bin", "HOME": str(tmp_path), "INSTALL_TERRAFORM": "1"}
         result = _run_sync(repo, ["--check"], env=env)
         assert result.returncode == 1
         assert "terraform=1" in result.stdout
@@ -148,7 +148,7 @@ class TestTerraformDriftDetection:
     def test_terraform_stub_version_match_is_no_drift(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = self._in_sync_repo(tmp_path, terraform_version="1.10.5")
         stub_dir = self._stub_terraform(tmp_path, version="1.10.5")
-        env = {**dict(**{"PATH": f"{stub_dir}:/usr/bin:/bin", "HOME": str(tmp_path), "INSTALL_TERRAFORM": "1"})}
+        env = {"PATH": f"{stub_dir}:/usr/bin:/bin", "HOME": str(tmp_path), "INSTALL_TERRAFORM": "1"}
         result = _run_sync(repo, ["--check"], env=env)
         assert result.returncode == 0
         assert "in sync" in result.stdout

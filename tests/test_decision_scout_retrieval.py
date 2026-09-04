@@ -28,7 +28,7 @@ from typing import Any
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _INDEX_PATH = _REPO_ROOT / "docs" / "decisions-index.json"
 
-# (probe_name, keywords, expected_decision_number, shares_title_vocabulary)
+# _PROBES rows carry probe_name, keywords, expected_decision_number, shares_title_vocabulary
 _PROBES: tuple[tuple[str, tuple[str, ...], int, bool], ...] = (
     # No title vocabulary overlap: Decision 100's title never says "pg_dump"/"pg_restore" --
     # only its Problem-marker excerpt does. Discriminates via triage_excerpt alone.

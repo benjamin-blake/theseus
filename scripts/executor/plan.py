@@ -76,7 +76,6 @@ def _validate_model_hierarchy() -> None:
     """No-op stub retained for backwards compatibility.  Model validation now
     delegated to model_registry which loads from docs/contracts/inference-provider.yaml.
     """
-    pass
 
 
 _validate_model_hierarchy()
