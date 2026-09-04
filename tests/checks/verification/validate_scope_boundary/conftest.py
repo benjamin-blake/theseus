@@ -1,8 +1,7 @@
 """Package conftest for tests/checks/verification/validate_scope_boundary/ (Decision 131
-concern-split decomposition of the former
-tests/checks/verification/test_validate_scope_boundary.py monolith, SLOC decompose-by-default --
-see AGENTS.md SLOC governance; sibling precedent:
-tests/checks/verification/validate_graduation_completeness/{conftest.py,test_plan_leg.py}).
+concern-split decomposition of the former flat test_validate_scope_boundary.py monolith that used
+to live one directory up, SLOC decompose-by-default -- see AGENTS.md SLOC governance; sibling
+precedent: tests/checks/verification/validate_graduation_completeness/{conftest.py,test_plan_leg.py}).
 
 Homes every helper crossing the split boundary: _DEFAULT_SANCTION_ROWS (now carrying the
 secrets_baseline_regeneration row), _DUMMY_VP_STEP, _plan_dict, _write_plan, _write_contract,

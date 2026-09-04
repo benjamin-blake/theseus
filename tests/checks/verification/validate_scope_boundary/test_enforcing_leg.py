@@ -1,5 +1,5 @@
-"""TestEnforcingLeg (Decision 131 concern-split decomposition of the former
-tests/checks/verification/test_validate_scope_boundary.py monolith), moved verbatim.
+"""TestEnforcingLeg (Decision 131 concern-split decomposition of the former flat
+test_validate_scope_boundary.py monolith that used to live one directory up), moved verbatim.
 
 Covers the diff-vs-scope matrix: an unsanctioned path fails, a prohibited plan-field edit fails, a
 fully-declared diff passes, each pre-existing sanction_rows trigger kind derives its path

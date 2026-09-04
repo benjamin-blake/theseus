@@ -1,6 +1,6 @@
 """TestPlanOnlyLeg, TestSkippedBase, TestPlanPathsOverride, TestAccounting (Decision 131
-concern-split decomposition of the former
-tests/checks/verification/test_validate_scope_boundary.py monolith), moved verbatim.
+concern-split decomposition of the former flat test_validate_scope_boundary.py monolith that used
+to live one directory up), moved verbatim.
 
 TestPlanOnlyLeg / TestSkippedBase cover the DEFER and skipped legs (mirrors
 test_validate_vp_replay.py's own split). TestPlanPathsOverride covers the dispatch seam VP steps
