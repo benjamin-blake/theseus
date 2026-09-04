@@ -58,6 +58,7 @@ _DISPATCH_EVENT = "github.event_name == 'workflow_dispatch'"
 _FRESH_PLAN_PENDING = "needs.apply-sandbox.outputs.fresh_plan_pending == 'true'"
 _FRESH_PLAN_NOT_PENDING = "needs.apply-sandbox.outputs.fresh_plan_pending != 'true'"
 _ACK_INPUT = "acknowledge_red_commit"
+_ARTIFACT_MARKER = "SANDBOX_FRESH_PLAN_ARTIFACT"
 
 
 def _report(failed: list[str], label: str, ok: bool, detail: str = "") -> None:
@@ -155,20 +156,18 @@ def _check_invariant_iv(failed: list[str], apply_sandbox_steps: list[dict[str, A
         emit_step is not None and _DISPATCH_EVENT in emit_if and "steps.guard.outputs.routed == 'true'" in emit_if,
         repr(emit_if),
     )
-    upload_step = next(
-        (
-            step
-            for step in apply_sandbox_steps
-            if str(step.get("uses", "")).startswith("actions/upload-artifact") and step.get("id") != "download"
-        ),
-        None,
-    )
+    # Identity-anchored on the artifact marker, never positional: a first-match `next()` over
+    # every actions/upload-artifact step would silently validate an UNRELATED upload added earlier
+    # in the job and let an ungated fresh-plan upload through.
+    uploads = [step for step in apply_sandbox_steps if str(step.get("uses", "")).startswith("actions/upload-artifact")]
+    marked = [step for step in uploads if _ARTIFACT_MARKER in str(step.get("name", ""))]
+    upload_step = marked[0] if len(marked) == 1 else None
     upload_if = str(upload_step.get("if", "")) if upload_step else ""
     _report(
         failed,
         "(iv) the upload-artifact step is gated on workflow_dispatch AND guard routed",
         upload_step is not None and _DISPATCH_EVENT in upload_if and "steps.guard.outputs.routed == 'true'" in upload_if,
-        repr(upload_if),
+        f"{len(marked)} of {len(uploads)} upload step(s) name {_ARTIFACT_MARKER}; if={upload_if!r}",
     )
 
 

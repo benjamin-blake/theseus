@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 from scripts.checks import _common, registry
 from scripts.checks.ci_guards.validate_dispatch_gated_apply_topology import (
+    _ARTIFACT_MARKER,
     validate_dispatch_gated_apply_topology,
 )
 from scripts.verify_ci_workflow import _load
@@ -106,6 +107,29 @@ class TestPerInvariantNegatives:
         for step in data["jobs"]["apply-sandbox"]["steps"]:
             if str(step.get("uses", "")).startswith("actions/upload-artifact"):
                 step["if"] = "success()"
+        failed = _run(data)
+        assert any("(iv)" in item for item in failed), failed
+
+    def test_invariant_iv_is_not_fooled_by_an_unrelated_earlier_upload(self) -> None:
+        """A first-match `next()` over upload-artifact steps would validate this unrelated,
+        correctly-gated upload and let the real fresh-plan upload go ungated. Marker-anchored
+        selection must still fail."""
+        data = copy.deepcopy(_real_workflow())
+        steps = data["jobs"]["apply-sandbox"]["steps"]
+        decoy = {"name": "Upload some other diagnostic", "uses": "actions/upload-artifact@v4", "if": "always()"}
+        steps.insert(0, decoy)
+        for step in steps:
+            if _ARTIFACT_MARKER in str(step.get("name", "")) and str(step.get("uses", "")).startswith(
+                "actions/upload-artifact"
+            ):
+                step["if"] = "success()"
+        failed = _run(data)
+        assert any("(iv)" in item for item in failed), failed
+
+    def test_invariant_iv_fails_when_the_marked_upload_step_is_absent(self) -> None:
+        data = copy.deepcopy(_real_workflow())
+        steps = data["jobs"]["apply-sandbox"]["steps"]
+        data["jobs"]["apply-sandbox"]["steps"] = [step for step in steps if _ARTIFACT_MARKER not in str(step.get("name", ""))]
         failed = _run(data)
         assert any("(iv)" in item for item in failed), failed
 

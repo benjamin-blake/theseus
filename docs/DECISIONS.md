@@ -48,7 +48,9 @@ attempt, but load-bearing the moment a fresh plan reaches gated-apply.
    with a symmetric sha256 EMIT (apply-sandbox) / VERIFY (gated-apply) pair (mirrors
    `RECONCILE_FRESH_PLAN_ARTIFACT`, Decision 158 route (ii)). The saved-plan and artifact plan
    sources stay mutually exclusive per run; Decision 77 artifact identity (the gated job applies
-   the SAME plan.bin the guard inspected) holds on every route.
+   the SAME plan.bin the guard inspected) holds on every route. This also authorizes that file's
+   structural-size raise to 550 effective lines (Decision 166 roster): the added steps ARE the
+   mechanism, not sprawl.
 3. **What widens.** The `tf-gated-apply` Environment's REACH grows by exactly one cell (a routed
    dispatch) -- the inverse of Decision 158 point 4's narrowing -- adjudicated by the human at
    plan time (2026-09-04). No second approval mechanism is introduced.
