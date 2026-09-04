@@ -301,3 +301,20 @@ class TestCli:
     def test_cli_with_no_paths_prints_help_and_exits_zero(self, capsys: pytest.CaptureFixture) -> None:
         assert sb.main([]) == 0
         assert "declare or split" in capsys.readouterr().out.lower()
+
+
+class TestBudgetVerdict:
+    """The convenience .hard_fail property: True for any non-zero exit code, False for zero."""
+
+    def test_hard_fail_reflects_exit_code(self) -> None:
+        failing = sb.BudgetVerdict(outcome="breach", limit_s=180.0, waiver_cause=None, exit_code=1, allowance_s=180.0)
+        passing = sb.BudgetVerdict(outcome="within_budget", limit_s=180.0, waiver_cause=None, exit_code=0, allowance_s=180.0)
+        assert failing.hard_fail is True
+        assert passing.hard_fail is False
+
+
+class TestCountTestModules:
+    """The on-disk census: zero (never raising) when the tree has no tests/ subdirectory."""
+
+    def test_returns_zero_when_tests_dir_absent(self, tmp_path) -> None:
+        assert sb.count_test_modules(root=tmp_path) == 0
