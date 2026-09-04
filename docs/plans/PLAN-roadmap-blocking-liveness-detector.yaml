@@ -23,7 +23,7 @@ scope:
     action: Create
     purpose: >-
       Pure graph module. Builds the blocking graph over NON_TERMINAL nodes, classifies every edge by
-      the terminal state it demands, runs Tarjan SCC, and returns toxic SCCs (>=1 internal
+      the terminal state it demands, runs networkx SCC, and returns toxic SCCs (>=1 internal
       completion-demanding edge). Report-only; never raises at load. Exposes a --report CLI.
   - file: scripts/checks/roadmap/validate_roadmap_liveness.py
     action: Create
@@ -101,13 +101,17 @@ acceptance_criteria:
     Run against the live roadmap the detector reports exactly 2 toxic SCCs spanning 19 node ids, and
     config/roadmap_liveness_baseline.yaml holds exactly those 19 ids.
   - >-
-    A roadmap edit that closes a fresh completion-demanding ring FAILS, because leg A compares the
-    measured toxic set against the HEAD baseline unconditionally -- and the only admission path,
-    editing the baseline, is itself refused by the frozen _BASELINE_SEED.
+    A roadmap edit closing a fresh completion-demanding ring that recruits ANY node absent from the
+    HEAD baseline fails under leg A(a), and the only admission path -- editing the baseline -- is
+    itself refused by the frozen _BASELINE_SEED.
   - >-
-    The baseline is shrink-only with no marker escape: removing a no-longer-toxic id passes, adding
-    an id absent from the in-module frozen _BASELINE_SEED fails, and an unreadable diff base SKIPs
-    only leg A's diff sub-leg while legs A(a), A(b), B and C keep enforcing.
+    The ratchet tightens, it does not merely refuse to grow: a baselined id that is no longer
+    measured toxic FAILS under leg A(d) until it is removed, so a PR draining a core must shrink the
+    roster in the same change and a later edit cannot re-close that ring against a stale roster.
+  - >-
+    The baseline carries no marker escape: adding an id absent from the in-module frozen
+    _BASELINE_SEED fails, and an unreadable diff base SKIPs only leg A's diff sub-leg (c) while legs
+    A(a), A(b), A(d), B and C keep enforcing.
   - >-
     Leg C's failure message names the re-sequence escape, so an author whose new criterion closes a
     ring is never left with deleting the prose as the only in-PR move.
@@ -190,9 +194,11 @@ verification_plan:
   - step: 4
     phase: pre-deploy
     action: >-
-      Prove the ratchet has teeth in both directions -- removing a baselined id passes, adding an id
-      absent from the frozen in-module _BASELINE_SEED fails even though the config edit alone is
-      well-formed, and an unreadable diff base SKIPs loudly rather than treating missing as empty.
+      Prove the ratchet has teeth in every direction -- adding an id absent from the frozen in-module
+      _BASELINE_SEED fails even though the config edit alone is well-formed; a baselined id that is
+      no longer measured toxic FAILS under leg A(d) until removed, and passes once removed; and an
+      unreadable diff base SKIPs sub-leg (c) loudly rather than treating missing as empty or
+      disabling the base-independent legs.
     command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k Ratchet -q
     expected: All selected tests pass, exit status 0, and at least one test is selected.
     fix_if: >-
@@ -403,7 +409,7 @@ test_obligations:
     command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k Ratchet -q
     waiver_reason: >-
       The shard is a declarative registry record, not behavior. Its admission is gated by
-      validate_verification_registry's differential check, and the assertion it records is VP step 3,
+      validate_verification_registry's differential check, and the assertion it records is VP step 4,
       which the linked command runs directly.
   - source: config/agent/verification_registry/entries/roadmap-liveness-graph-semantics.yaml
     behavior: The graduated graph-semantics check is admitted as a standing regression guard.
@@ -419,7 +425,7 @@ test_obligations:
     command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py::TestRehomeCoverage::test_rehome_target_must_carry_open_criterion -q
     waiver_reason: >-
       The shard is a declarative registry record, not behavior. Its admission is gated by
-      validate_verification_registry's differential check, and the assertion it records is VP step 4,
+      validate_verification_registry's differential check, and the assertion it records is VP step 5,
       which the linked command runs directly.
   - source: config/agent/verification_registry/entries/roadmap-liveness-legc-text-keyed.yaml
     behavior: The graduated leg-C insertion-robustness check is admitted as a standing regression guard.
@@ -427,7 +433,7 @@ test_obligations:
     command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k "LegC or Insertion" -q
     waiver_reason: >-
       The shard is a declarative registry record, not behavior. Its admission is gated by
-      validate_verification_registry's differential check, and the assertion it records is VP step 5,
+      validate_verification_registry's differential check, and the assertion it records is VP step 6,
       which the linked command runs directly.
 constraints:
   - Report deadlocks, never reject at load -- these edges must NOT enter the RoadmapDocument model_validator DFS (scripts/platform_roadmap_models.py:234-256), which would make the roadmap unloadable.
@@ -460,6 +466,7 @@ context:
   - "Prereq landed at c1f818f3 (PR 1070). PR 1017 was that work's PLAN commit, not the feature."
   - "Gotchas: compute_state_dict derives plans_dir from the yaml path -- pass plans_dir explicitly to to_preflight_dict in tempdir fixtures; preflight.py::_slim_roadmap_state is a WHITELIST (this plan adds no projection key); roadmap-liveness.yaml is Class D so it uses the top-level amendment_log, not a field-level one."
   - "Backtick discipline (rec-3398): validate_vp_replay treats backticked spans in a hermetic step's expected as required output literals. Step 2 is the ONLY hermetic step (every pytest-bearing step is hermetic:false) and its expected carries no backticks."
+  - "Lambda affectation recorded (three merged precedents do the same): compute_affected_artifacts returns {'data-pipeline': ['docs/ROADMAP-PLATFORM.yaml']} and that artifact is status: active, but the touch is ASSET-only -- validate_tier_floor::_lambda_code_files excludes assets by design and validate_lambda_deploy_gating is advisory. No build/deploy/smoke/model-ID step is owed; V2 stands and infrastructure_dependencies is correctly empty."
   - "Adjacent, NOT in scope: rec-3567 (realization_candidates vacuous-empty-gates admits CD.32), Plan A's follow-on."
 pre_implementation_checklist:
   - Branch confirmed not on main
@@ -476,8 +483,12 @@ execution_steps:
     whose state is pending; every edge with a terminal endpoint is pruned. Edge demands -- depends_on
     and blocked_by until complete demand `complete`; cd.gates, decision_required_before and
     blocked_by until ratified demand `ratified`; the Decision 105 reverse edge from a pending CD to
-    each gated item demands `evidence`. Tarjan SCC, then toxic iff an internal edge demands
-    `complete`. Add a --report CLI printing the SCC count and the sorted node ids. Never raise on a
+    each gated item demands `evidence`. Use networkx.strongly_connected_components over a DiGraph --
+    networkx>=3.6.1 is declared in BOTH requirements.txt and requirements-fast.txt and is already
+    imported by two --pre checks (scripts/checks/deps/affected_graph.py,
+    validate_pre_glob_closure.py) and scripts/dependency_graph.py -- never a hand-rolled recursive
+    Tarjan kernel, whose every branch the full tier's 100%-line-coverage gate would have to cover.
+    An SCC is toxic iff it holds an internal edge demanding `complete`. Add a --report CLI printing the SCC count and the sorted node ids. Never raise on a
     malformed document -- return an empty result and let the caller declare skipped().
   - >-
     Create scripts/checks/roadmap/validate_roadmap_liveness.py, decorated @registry.register with
@@ -528,7 +539,10 @@ execution_steps:
     _population.resolve_evaluator refuses it. Body carries a unique subject, a top-level
     amendment_log, the NON_TERMINAL node-class and edge-demand semantics, the baseline grammar,
     LEG C'S BLOCKING-PHRASE GRAMMAR as the single source the check reads (never a second copy in the
-    module) with the precision basis for the chosen phrase set, and the leg-C residual declaration
+    module) with the precision basis for the chosen phrase set, LEG B'S OWN PRECISION BASIS (live
+    population is 8 rehomed criteria; "target carries >=1 open criterion" is NECESSARY BUT NOT
+    SUFFICIENT for "the rehomed scope actually landed" -- a rehome whose scope was never transcribed
+    passes so long as the target holds any unrelated open criterion), and the leg-C residual declaration
     naming rec-3581 (Decision 181 clause 2). Cross-reference T2.54 as owner of instruction-layer
     clause-to-check traceability.
   - >-
@@ -555,7 +569,10 @@ execution_steps:
     cases for leg A.
   - >-
     Add the FIVE verification-registry shards under config/agent/verification_registry/entries/ for
-    the five graduate-disposition steps, filenames equal to their check_ids verbatim.
+    the five graduate-disposition steps, filenames equal to their check_ids verbatim. Each shard's
+    check_spec.node_id MUST be a CONCRETE pytest node id -- reuse the selectors already in
+    test_obligations -- never the -k expressions the VP commands use: TestSelectorCheck.run passes
+    node_id as a single argv element, so a -k form is not materializable.
   - >-
     Execute the Verification Plan -- run each step, loop until pass; on an unrecoverable failure stop
     and RCA rather than weakening an assertion (Decision 55, Decision 181 clause 1).
