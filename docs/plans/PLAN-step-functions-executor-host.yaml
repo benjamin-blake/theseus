@@ -61,6 +61,13 @@ scope:
     purpose: >-
       Decision 117 boundary_patterns gain the loop kernel path, the rendered ASL, the persona and
       loop-policy contracts, config/agent/executor/personas.yaml, .github/CODEOWNERS, the leash's own implementation (executor_boundary_guard, underscore spelling) and scripts/checks/executor/, so no rec targeting them ever derives automatable.
+  - file: config/agent/verification_registry/entries/roadmap-t4-containment-resequence-invariants.yaml
+    action: Modify
+    purpose: >-
+      Graduated shard that pins T4.10a and T4.11 depends_on by equality; re-pinned in the same commit to
+      the edges this plan re-points (T4.10a -> [T1.12]; T4.11 -> [T4.1, T4.10a, T4.19]) so VP 1's
+      registry replay stays green. Re-pinning a graduated equality to the new edges is not a CONTENT
+      weakening: the check still pins by equality.
   - file: tests/test_ops_data_portal_validators.py
     action: Modify
     purpose: Behavioral test that compute_automatable returns False for every new boundary path (red on origin/main for the non-Python paths).
@@ -237,7 +244,7 @@ verification_plan:
     graduation_check_id: t41-rescoped-to-step-functions-host
   - step: 9
     phase: pre-deploy
-    action: T4.10a PRECEDES THE DEFINITION AND T4.11 IS DEFINITION-CARRIED WITH HARD CEILINGS AND THE ALIGNED TERRAFORM FILENAME. Red on origin/main.
+    action: T4.10a PRECEDES THE DEFINITION AND T4.11 IS DEFINITION-CARRIED WITH HARD CEILINGS AND THE ALIGNED TERRAFORM FILENAME; the containment shard is re-pinned to the same edges in the same commit (VP 1 replays it). Red on origin/main.
     command: >-
       bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'));
       ti={t['id']:t for t in d['tier_items']};
@@ -251,7 +258,7 @@ verification_plan:
       fs=' '.join(map(str,t['files_in_scope'])); assert 'executor_step_functions.tf' in fs and 'executor_state_machine.tf' not in fs, fs;
       print('OK')"
     expected: OK
-    fix_if: Re-point the edges, reword c2 and the intent, align the terraform filename to T4.1's, add c6 as an ExitCriterion object with status open.
+    fix_if: Re-point the edges, reword c2 and the intent, align the terraform filename to T4.1's, add c6 as an ExitCriterion object with status open; if VP 1's registry replay fails on roadmap-t4-containment-resequence-invariants, the shard's two pinned lists differ from the YAML order written -- align them.
     hermetic: true
     graduation: graduate
     graduation_check_id: t410a-t411-repointed-to-loop-definition
@@ -266,7 +273,7 @@ verification_plan:
       assert 'T4.19' in t['depends_on'] and 'T4.20' in t['depends_on'], t['depends_on'];
       ec={c['id']:c['text'] for c in t['exit_criteria']};
       assert 'persona compute' in ec['c10'] and 'verdict plane' in ec['c10'] and 'reselling' in ec['c10'], ec['c10'];
-      assert 'DISTINCT WORKFLOW RUNS' in ec['c9'], 'c9 formulation lost';
+      assert 'DISTINCT WORKFLOW RUNS' in ec['c9'], 'c9 formulation lost'; assert 'eliminated' in ec['c1'], 'c1 still reads the five-member set';
       assert 'mocked personas' in it.lower() and 'arm-zero' in it.lower(), 'arm-zero on the oracle not stated';
       print('OK')"
     expected: OK
@@ -368,7 +375,7 @@ verification_plan:
     graduation_waiver_reason: Duplicates validate_platform_roadmap's standing Decision 114 line-ceiling assertion, registered in both validate tiers; a second registry slot would count the same file twice.
   - step: 16
     phase: pre-deploy
-    action: THE NEW BOUNDARY PATTERNS CHANGE BEHAVIOR -- compute_automatable derives False for every new path. Red on origin/main (all seven target paths derive True today because no pattern matches them).
+    action: THE NEW BOUNDARY PATTERNS CHANGE BEHAVIOR -- compute_automatable derives False for every new path. Red on origin/main -- with the risk score patched to 0.0, all seven paths derive True today because no pattern matches them (unpatched, scripts/checks/executor/validate_executor_boundary.py already derives False for an unrelated reason, its radon and coverage risk score, which is why the patch is required).
     command: bin/venv-python -m pytest "tests/test_ops_data_portal_validators.py::test_compute_automatable_executor_loop_kernel_path_is_never_automatable" -q
     expected: All selected tests pass.
     fix_if: A failing path means its pattern is missing from capabilities.yaml or is spelled so the substring match in risk_scoring.compute_automatable cannot hit it.
@@ -482,12 +489,28 @@ test_obligations:
     behavior: A rec targeting the loop kernel path, the rendered ASL, a persona contract, the loop-policy contract, config/agent/executor/personas.yaml, .github/CODEOWNERS or the leash's own implementation never derives automatable.
     verification_step: 16
     test_selector: tests/test_ops_data_portal_validators.py::test_compute_automatable_executor_loop_kernel_path_is_never_automatable
-    red_green_expectation: red on origin/main for all seven paths (no pattern matches, so an XS edit derives True), green once the patterns land.
+    red_green_expectation: red on origin/main for all seven paths with the risk score patched to 0.0 (no pattern matches, so an XS edit derives True; unpatched, one path is already False for an unrelated risk-score reason), green once the patterns land.
+  - source: config/agent/verification_registry/entries/roadmap-t4-containment-resequence-invariants.yaml
+    behavior: The containment shard pins T4.10a and T4.11 depends_on by equality to the re-pointed edges, so the roadmap and the shard change together.
+    verification_step: 9
+    command: >-
+      bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'));
+      ti={t['id']:t for t in d['tier_items']};
+      assert ti['T4.10a']['depends_on']==['T1.12'], ti['T4.10a']['depends_on'];
+      assert 'T4.10a' in ti['T4.19']['depends_on'], ti['T4.19']['depends_on'];
+      t=ti['T4.11']; assert 'T4.19' in t['depends_on'], t['depends_on'];
+      ec={c['id']:c['text'] for c in t['exit_criteria']};
+      assert 'c6' in ec and 'raise-approved' in ec['c6'], ec.get('c6');
+      assert 'loop definition' in ec['c2'] and 'Step Functions state machine enforces' not in ec['c2'], ec['c2'];
+      assert 'enforced by Step Functions state (not by' not in t['intent'], 'T4.11 intent still definition-in-Step-Functions shaped';
+      fs=' '.join(map(str,t['files_in_scope'])); assert 'executor_step_functions.tf' in fs and 'executor_state_machine.tf' not in fs, fs;
+      print('OK')"
+    red_green_expectation: red on origin/main against the re-pointed edges (VP 9 asserts them from the roadmap side), green once roadmap and shard change together; VP 1's registry replay exercises the shard itself.
   - source: tests/test_ops_data_portal_validators.py
     behavior: The parametrized guard covers every new pattern class by path, not by reading capabilities.yaml back.
     verification_step: 16
     test_selector: tests/test_ops_data_portal_validators.py::test_compute_automatable_executor_loop_kernel_path_is_never_automatable
-    red_green_expectation: the test itself is the guard -- it fails on origin/main where the patterns are absent and passes after; it asserts compute_automatable's return, never the YAML list.
+    red_green_expectation: the test itself is the guard -- it fails on origin/main where the patterns are absent and passes after; it asserts compute_automatable's return with the risk score patched to 0.0 so the boundary is the only path to False, never the YAML list.
   - source: docs/PROJECT_CONTEXT.md
     behavior: Definition/host wording present, definition-shaped lines gone, byte count at or under the S8 budget.
     verification_step: 17
@@ -515,20 +538,21 @@ constraints:
   - Decision 86 / 127 routing -- rationale in the Decisions, sequencing in tier items, the ASL allowlist and port registry in docs/contracts/executor-loop-definition.yaml (authored by T4.19, not here); no new prose doc under docs/.
   - Decision 93 -- no live item may depend_on a deferred_post_mvp item; T4.22-T4.24 depend on live items, never the reverse.
   - Decision 114 -- roadmap under 10,000 lines (9,346 at planning); Decision 43 / T2.56 c1 -- PROJECT_CONTEXT.md at or under 14,032 bytes (13,907 at planning); config/prose_budgets.yaml and config/sloc_budgets.yaml are out of scope.
-  - The registry entries pinned to CD.27, CD.43 and T4.x (cd27-fallback-spec-and-carrier-binding, cd27-layer2-preconditions-cover-esb01, cd27-precondition-discharge-rule-recorded, cd27-stability-gate-evaluable, roadmap-cd27-t4-1-terraform-apply-not-in-executor, t4x-persona-contracts-mechanism-word-free, sfn-transition-line-arithmetic-consistent, cd43-selection-criteria-well-formed, t41-names-workspace-store-criteria) must stay green -- amend beside pinned text, never through it; a bare colon-space in a new discipline point turns it into a mapping, so quote or fold every new string; the same hazard applies to the PLAIN scalars this plan appends to (north_star NS.3/NS.5 detail, CD.27's ESB-04 point), so bracketed notes use ' -- ' and those scalars are quoted or folded when touched.
+  - The registry entries pinned to CD.27, CD.43 and T4.x (cd27-fallback-spec-and-carrier-binding, cd27-layer2-preconditions-cover-esb01, cd27-precondition-discharge-rule-recorded, cd27-stability-gate-evaluable, roadmap-cd27-t4-1-terraform-apply-not-in-executor, t4x-persona-contracts-mechanism-word-free, sfn-transition-line-arithmetic-consistent, cd43-selection-criteria-well-formed, t41-names-workspace-store-criteria, roadmap-t4-containment-resequence-invariants) must stay green -- amend beside pinned text, never through it; the containment shard is the one exception, re-pinned to the new edges in scope because it asserts equality on the very edges this plan re-points; a bare colon-space in a new discipline point turns it into a mapping, so quote or fold every new string; the same hazard applies to the PLAIN scalars this plan appends to (north_star NS.3/NS.5 detail, CD.27's ESB-04 point), so bracketed notes use ' -- ' and those scalars are quoted or folded when touched.
   - Decision 160 / 179 -- docs/decisions-index.json is regenerated by scripts.decisions_index --write, never hand-edited.
   - Single Portal Invariant (Decision 84) -- the two follow-on recs are filed via scripts.ops_data_portal file_rec after get_rec_write_guidance(); the read cache is refreshed only through the portal's --sync verb; logs/ files are never written.
   - Decision 126 -- no terraform apply, no Lambda deploy; the Step Functions definition's provision intent and the glue Lambdas' code-deploy intent are NAMED in T4.1's text, not exercised.
   - Decision 55 -- no rescue agents or workaround loops; a failing registry check is diagnosed and the edit corrected, never quarantined.
-  - Scope boundary (Decision 59) -- only the seven scope files change, plus the sanctioned derived paths (the graduated registry shards under config/agent/verification_registry/entries/ and this plan's own followon_recs field); out-of-scope findings become recs via the portal.
+  - Scope boundary (Decision 59) -- only the eight scope files change, plus the sanctioned derived paths (the graduated registry shards under config/agent/verification_registry/entries/ and this plan's own followon_recs field); out-of-scope findings become recs via the portal.
   - No emojis; ASCII hyphens; no eval or exec in any command; every command Linux/bash-compatible via bin/venv-python.
 context:
   - "Decision-scout verdict FLAGS_FOUND; CITE: 55, 67, 75, 83, 86, 93, 117, 126, 128, 143, 150, 160, 164, 169, 177. Decisions triaged: 135 of 135. Roadmap items intersected: 8; CONFLICT: 0; RELATED: 6."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 3 round(s); round 4 confirming pending"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 4 round(s); the confirming round returned two NEW mechanical findings and no recurrence, escalated to the operator per the convergence rule"
   - "Flag dispositions (operator-confirmed 2026-09-04): 167 accept, two entries by reversal surface (see the split line); 39 accept, scoped supersession plus annotation; 100 accept, premise-absent reading, native test primitives added to Options; 43 accept, byte-neutral edit; 116 accept, no amendment, first-party lane stated; 84 accept, DuckLake stays sole backend, catalog host is the adapter; 114 accept, line budget plus step 15; 171 accept, Additional Use Grant dependency clause; 178 SPIRIT accept, paid plane is a separate repo importing the platform, adapter residency and licensing recorded OPEN with a reversal condition."
   - "Critique round 1 (REVISE) dispositions: M1 fixed (chr(96) fence); M2 fixed (portal --sync); M3 fixed (case-insensitive arm-zero); M4 fixed (Lambda gating disposition below); J1 fixed (NS.3/NS.5 reading in 183 clause 2 and on north_star); J2 fixed (split decided on substance, below); J3 fixed (T4.21 edges on T4.1 and T4.16; probe owned by T4.21 c3); J4 fixed (reselling note kept in c10); I1-I10 fixed (step 15 waived; stamp refresh; block separator; CD.43 note and cost_projection residuals named; clause 5 wording; T4.21 effort M; T4.11 filename; rec-3386 grep in step 2; moto-as-engine in Options; rec-2827 wording)."
   - "Critique round 2 (REVISE, no round-1 recurrence) dispositions: M-A fixed (north_star principles list in VP 11); I-A fixed (T4.15 anchors re-drawn, P1/P2/P3 sentence kept verbatim); I-B fixed (plain-scalar sites quoted or folded, bracketed notes use two hyphens); I-C fixed (TierItem field names); I-D fixed (distinct workflow runs verbatim in T4.9/T4.9a c1); I-E/I-F fixed (constraint and budget wording); I-G fixed (T2.29 pointer); I-H fixed (README NS rows); I-I fixed (lapse_condition note, VP 6/7 legs); J-A fixed (T4.20 c7 hermeticity in Options); Decision 39 line anchors dropped."
   - "Critique round 3 (REVISE narrowly, no recurrence) dispositions: I-1 fixed (leash implementation joins boundary_patterns: executor_boundary_guard underscore spelling plus scripts/checks/executor/; 117 annotation and 184 clause 3 name it; test covers seven paths); I-3 fixed (stamp leg moved to step 21, waived as advisory-by-design); I-4 fixed (T3.10 criteria 1 and 4 re-homed onto T4.19 and T4.10a contract surfaces, VP 13 leg); m-1 kept knowingly; m-2 fixed (literal grep -c acceptance replayed in VP 12); m-3 fixed (left literal for traceability); m-4 fixed (ESB-04 leg scoped); m-5 fixed (envelope, Warehouse ID and stanza shift); m-6 fixed (rec file fields); m-7 fixed (T4.12 pointer, VP 11 leg); m-8 fixed (117 annotation tense); m-9 fixed (#1073 merged)."
+  - "Critique round 4 (confirming; REVISE narrowly on two NEW findings, no recurrence) dispositions: N-1 fixed (containment shard in scope, re-pinned in the same commit, obligation row on VP 9, constraints list of ten); N-2 fixed (risk score patched to 0.0 so the boundary is the only path to False; seven cases red on origin/main); m-A fixed (quoted decided_date); m-B fixed (portal-derived automatable); m-C fixed (CD.44 rationale); m-D fixed (c1 note, VP 10 leg)."
   - "The split is substantive, not split-then-recombine (Decision 167 reversal (b)): Decision 183 is the product-boundary commitment (open-core, ports and their North Star reading, Actions class, credential policy, licence) with the adapter-residency, no-free-tier and actions-policy reversal conditions; Decision 184 is the executor-architecture commitment (loop model, Decision 39/100 scoping, staged leash, App identity, Options considered) with the subset-outgrown, app-identity and moto-engine reversal conditions. Each clears the significance bar alone, neither restates the other, and the operator authorised the second header on 2026-09-04. Numbering race: if 183 is taken both shift by the same offset, together with each entry's envelope number, its Warehouse ID dec-NNN line and its reversal stanza decision field, and every 'Decision 183'/'Decision 184' citation in STEPs 2-7 shifts with them; VP 2 locates entries by title and VP 3/4 by the generic Amended-by form."
   - "Lambda deploy assessment: docs/ROADMAP-PLATFORM.yaml is a bundled asset of the active data-pipeline Lambda artifact (compute_affected_artifacts(scope) == {'data-pipeline': ['docs/ROADMAP-PLATFORM.yaml']}). This edit is an ASSET-only doc change with no Lambda code change; the scheduled-agent dispatcher is disabled and validate_lambda_deploy_gating is advisory, so no build, deploy or smoke step is warranted and infrastructure_dependencies stays empty (precedent: PLAN-candidate-decision-ratification)."
   - "Fable advice-consults (three, model fable, fresh context; full reports in this plan's PR body): kernel order -> definition-first, engine-deferred (ADOPTED over kernel-first); leash -> c-staged b1 patterns + merge-node guard, b2 base-ref required check, d kernel ceilings, released-version rule deferred to the package (ADOPTED); language -> Python for K1 and K3 decided now (ADOPTED). Adapt: T4.20 opens with a moto fidelity probe."
@@ -544,7 +568,7 @@ pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
   - only the plan-cited decision sections (39, 55, 75, 83, 93, 100, 117, 126, 128, 143, 160, 163, 167, 171, 177, 178) plus docs/contracts/decision-entry.yaml (metadata_envelope, amendment_forms, block_separator, significance) and config/decision_supersession_waivers.yaml header
-  - All files in scope located and readable; the nine registry entries named in constraints read
+  - All files in scope located and readable; the ten registry entries named in constraints read
   - rec-3386, rec-3226, rec-3219 context and acceptance fields read from the local cache
   - Acceptance criteria understood and verifiable; the three consult reports in the plan PR body read
 execution_steps:
@@ -561,7 +585,7 @@ execution_steps:
     ```yaml
     number: 183
     status: Decided
-    decided_date: 2026-09-04
+    decided_date: "2026-09-04"
     significance:
       value: numbered_decision
       justification: "Durable, reversal-relevant product-boundary commitment (open-core, ports, Actions class, credential policy); no contract owns the boundary and no single prior entry can be amended to carry it"
@@ -607,7 +631,7 @@ execution_steps:
     ```yaml
     number: 184
     status: Decided
-    decided_date: 2026-09-04
+    decided_date: "2026-09-04"
     amends: [39, 117]
     significance:
       value: numbered_decision
@@ -708,10 +732,9 @@ execution_steps:
     83 ruleset; terraform/github/repo.tf; human-gated apply). Its creation, installation and the live probe
     that a red required check refuses its merge are T4.21 c3, which this item depends on; this discharges
     rec-2827 premise, and rec-2827 closes at T4.21 c3.' All criteria stay bare strings. Add a dated
-    progress_note line citing this plan. T4.10a: depends_on becomes [T1.12]; add a progress_note line:
+    progress_note line citing this plan. T4.10a: depends_on becomes [T1.12]; in the SAME commit rewrite the graduated shard config/agent/verification_registry/entries/roadmap-t4-containment-resequence-invariants.yaml so its two pinned lists read c('T4.10a deps', ... == ['T1.12']) and c('T4.11 deps', ... == ['T4.1','T4.10a','T4.19']) -- preserve the file's doubled-single-quote YAML escaping, and write T4.11's depends_on in exactly that order; add a progress_note line:
     'depends_on re-pointed off T4.1 -- persona contracts precede the loop definition (T4.19), which references
-    them; Decision 184.' T4.11: intent phrase 'enforced by Step Functions state (not by persona prompt
-    discipline)' becomes 'enforced by the loop definition's states (T4.19; rendered to Step Functions state in
+    them; Decision 184.' T4.11 (depends_on written as [T4.1, T4.10a, T4.19], matching the shard): intent phrase 'enforced by Step Functions state (not by persona prompt discipline)' becomes 'enforced by the loop definition's states (T4.19; rendered to Step Functions state in
     the cloud tier and executed by the local engine in the free tier), never by persona prompt discipline, with
     kernel-side hard ceilings per Decision 184 clause 3'; depends_on adds T4.19; files_in_scope adds
     'src/executor_loop/definition.py' and its terraform line becomes 'terraform/personal/executor_step_functions.tf
@@ -726,7 +749,7 @@ execution_steps:
     node are gated together in that one control'. T4.12: append a progress_note line: '2026-09-04 (PLAN-step-functions-executor-host): Decision 183 clause 3 rules that GitHub-hosted runners are the verdict plane and never persona compute; cD's Actions-schedule option is read against that ruling (an LLM scheduled-agent session on a hosted runner is the same workload shape) and cD stays open.' T2.11b c5: replace 'Step Functions + Lambda Durable Functions executor' with 'the executor (repo-owned loop definition hosted on Step Functions; CD.27 as amended by
     Decision 184)' -- status unchanged.
   - |-
-    STEP 4c -- ROADMAP, T4.15 AND THE BUNDLED RECS. T4.15 intent: keep, verbatim, the sentence beginning 'It also carries the two-plane' (it wraps after 'It' in the file) and everything from 'This item SELECTS nothing until it runs' to the end; replace everything BEFORE 'It also carries' so the intent opens: 'CD.27's layer-2 substrate is NOT selected, and this item is the instrument that selects it -- now under a FIXED, repo-owned loop definition (T4.19; Decision 184): the arms differ in where PERSONA COMPUTE runs behind the run_persona port, never in the loop's definition. Until this spike runs the incumbent stands and nothing else is pinned. The spike compares the arms -- durable_functions (the incumbent), sfn_over_stateless_workers, self_checkpointed_lambda_dynamodb and long_running_container (a Fargate task; the free tier's local container is its twin) -- against CD.27's substrate-neutral resume properties P1 (resume without re-doing completed work), P2 (workspace continuity) and P3 (bounded loss), using decision_scout as the spike vehicle. hosted_cli_runner is eliminated from the arms by Decision 183 clause 3 (GitHub-hosted runners are the verdict plane, never persona compute), so CD.44's two-plane candidate maps its compute plane onto the container arm (CD.44 GOV-2 as amended). Arm-zero runs first: mocked personas on the T4.20 oracle validate the harness and c9's verification split before any deployed arm.' The P1/P2/P3 sentence is kept because t4x-persona-contracts-mechanism-word-free binds this intent to the resume properties. depends_on: [T4.19, T4.20].
+    STEP 4c -- ROADMAP, T4.15 AND THE BUNDLED RECS. T4.15 intent: keep, verbatim, the sentence beginning 'It also carries the two-plane' (it wraps after 'It' in the file) and everything from 'This item SELECTS nothing until it runs' to the end; replace everything BEFORE 'It also carries' so the intent opens: 'CD.27's layer-2 substrate is NOT selected, and this item is the instrument that selects it -- now under a FIXED, repo-owned loop definition (T4.19; Decision 184): the arms differ in where PERSONA COMPUTE runs behind the run_persona port, never in the loop's definition. Until this spike runs the incumbent stands and nothing else is pinned. The spike compares the arms -- durable_functions (the incumbent), sfn_over_stateless_workers, self_checkpointed_lambda_dynamodb and long_running_container (a Fargate task; the free tier's local container is its twin) -- against CD.27's substrate-neutral resume properties P1 (resume without re-doing completed work), P2 (workspace continuity) and P3 (bounded loss), using decision_scout as the spike vehicle. hosted_cli_runner is eliminated from the arms by Decision 183 clause 3 (GitHub-hosted runners are the verdict plane, never persona compute), so CD.44's two-plane candidate maps its compute plane onto the container arm (CD.44 GOV-2 as amended). Arm-zero runs first: mocked personas on the T4.20 oracle validate the harness and c9's verification split before any deployed arm.' The P1/P2/P3 sentence is kept because CD.44's discipline point keeps lifecycle-tracked fields on CD.27's substrate-neutral property language. depends_on: [T4.19, T4.20].
     c10 text becomes: 'GITHUB ACTIONS USAGE-POLICY FIT, as ruled by Decision 183 clause 3: GitHub-hosted runners
     are the verdict plane and event-triggered repo-lifecycle compute only and are NOT persona compute, so the
     record no longer argues proportionality for a persona arm; it states the Actions-safe set the loop uses
@@ -735,8 +758,7 @@ execution_steps:
     100-300 recs per month baseline), names the re-evaluation triggers -- an explicit GitHub allowance for agent
     sessions, a repo-visibility flip, CI leaving hosted runners -- that reopen the ruling, and keeps the
     BUSL-1.1 relicensing note that clause 3 (reselling Actions) is not engaged by developing commercial software
-    ON Actions and would engage only if customer workloads ever executed on Actions minutes.' c1-c9 stay
-    verbatim (c5's dispatch credential still applies to the container arm). rec-3226: T4.9 c1 becomes 'Contract states GitHub Actions is the only verifier / validation runner for PR --pre and main full-validate, executing as distinct workflow runs from any persona compute run on every T4.15 arm (T4.15 c9); the executor never hosts its own verdict' and T4.9a c1 the same without 'and main full-validate'. Write each as a single-line double-quoted string so 'distinct workflow runs' and 'T4.15 c9' each stay on one physical line (rec-3226's acceptance uses grep -c, which counts matching LINES, so each single-line criterion contributes one; VP 12 replays that literal command after its own regex legs).
+    ON Actions and would engage only if customer workloads ever executed on Actions minutes.' c1 gains, appended: ' [Amendment 2026-09-04, Decision 183 clause 3 -- the set is the four remaining candidates; hosted_cli_runner is eliminated]'; c2-c9 stay verbatim (c5's dispatch credential still applies to the container arm). rec-3226: T4.9 c1 becomes 'Contract states GitHub Actions is the only verifier / validation runner for PR --pre and main full-validate, executing as distinct workflow runs from any persona compute run on every T4.15 arm (T4.15 c9); the executor never hosts its own verdict' and T4.9a c1 the same without 'and main full-validate'. Write each as a single-line double-quoted string so 'distinct workflow runs' and 'T4.15 c9' each stay on one physical line (rec-3226's acceptance uses grep -c, which counts matching LINES, so each single-line criterion contributes one; VP 12 replays that literal command after its own regex legs).
     rec-3219: T4.8 files_in_scope replaces scripts/executor/lock_registry.py and
     rec_scheduler.py with 'src/executor_loop/locks/registry.py    # new -- Life-2 home (rec-3219; Decision
     184)' and 'src/executor_loop/locks/scheduler.py    # new'; T4.9a replaces scripts/executor/github_checks.py
@@ -808,7 +830,7 @@ execution_steps:
     .github/CODEOWNERS, executor_boundary_guard (underscore spelling, so scripts/ci/executor_boundary_guard.py and its test match; the hyphenated workflow file is already covered by the existing .github/workflows/ pattern), scripts/checks/executor/. tests/test_ops_data_portal_validators.py: add a parametrized
     test named test_compute_automatable_executor_loop_kernel_path_is_never_automatable over the paths
     src/executor_loop/rendered/executor_loop.asl.json, docs/contracts/personas/plan_agent.yaml,
-    docs/contracts/executor-loop-policy.yaml, config/agent/executor/personas.yaml, .github/CODEOWNERS, scripts/ci/executor_boundary_guard.py and scripts/checks/executor/validate_executor_boundary.py, asserting compute_automatable(path, 'XS') is False; confirm it FAILS on origin/main before the YAML edit.
+    docs/contracts/executor-loop-policy.yaml, config/agent/executor/personas.yaml, .github/CODEOWNERS, scripts/ci/executor_boundary_guard.py and scripts/checks/executor/validate_executor_boundary.py; each case patches scripts.ops_portal.risk_scoring._compute_risk_score to return 0.0 (the sibling tests' patch target at tests/test_ops_data_portal_validators.py lines 104 and 111), so the boundary pattern is the ONLY path to False, and asserts compute_automatable(path, 'XS') is False; confirm all seven cases FAIL on origin/main before the YAML edit.
   - |-
     STEP 6 -- PROJECT_CONTEXT AND README, WITHIN BUDGET. docs/PROJECT_CONTEXT.md: critical-path line '-> T4.1
     Step Functions executor substrate' becomes '-> T4.19-21 then T4.1 (definition, guard, SFN host)'; end-state line '->
@@ -826,8 +848,7 @@ execution_steps:
     as a bring-any-model Action (LiteLLM backend incl. GitHub Models free tier via
     scripts/llm/github_models_client.py); GitHub App later for check-run identity and Marketplace billing' (file scripts/llm/github_models_client.py) and
     (6) 'Evidence-based model routing: route personas by measured cost-per-verified-merge per task class from
-    telemetry (model_registry + T3.x); published receipts double as marketing' (file scripts/llm/model_registry.py) -- both source brainstorm,
-    automatable false, citing rec-3386 and Decisions 183/184. Record the returned ids in the PR body and in
+    telemetry (model_registry + T3.x); published receipts double as marketing' (file scripts/llm/model_registry.py) -- both source brainstorm; automatable is portal-derived (Decision 117: neither file matches a boundary pattern, so the writer's formula decides); citing rec-3386 and Decisions 183/184. Record the returned ids in the PR body and in
     this plan's followon_recs field in the same PR.
   - Execute the Verification Plan -- run each step; loop until pass; on an unrecoverable failure stop and RCA (Decision 55). Run `bin/venv-python -m scripts.validate` (full tier) before handoff.
   - "Report: what was implemented, verification results, the Decision numbers actually minted, the two follow-on rec ids; squash-merge body carries `Resolves: rec-3386, rec-3226, rec-3219` and the PR body carries the three consult reports and the decision-scout report verbatim."
