@@ -50,14 +50,23 @@ scope:
   - file: docs/contracts/roadmap-liveness.yaml
     action: Create
     purpose: >-
-      Class D contract: node-class semantics, edge-demand taxonomy, baseline grammar, and the single
-      leg-C residual declaration discharging Decision 181 clause 2. Not a general clause-to-check index.
+      Class D contract: node-class semantics, edge-demand taxonomy, baseline grammar, and the
+      PER-SURFACE Decision 181 clause 2 discharge -- leg C's prose residual (rec-3581), the
+      starvation residual the toxic-SCC rule structurally cannot see (rec-3582), and leg B's
+      necessary-but-not-sufficient bound. Not a general clause-to-check index.
   - file: docs/contracts/file-router.yaml
     action: Modify
     purpose: >-
       Two registrations, not one -- the route whose topic equals the new contract's subject
       (Decision 168), AND the scripts_root_allowlist.allowed_files entry for the new depth-1 module
       (validate_placement scans every tracked depth-1 scripts/ file, not just diff-added ones).
+  - file: docs/contracts/exit-criteria-ledger.yaml
+    action: Modify
+    purpose: >-
+      Its blocked_by semantics currently reads "carries no runtime consumer beyond the schema
+      validator today -- rec-3395 (open) is the deferred liveness-detector follow-on that will read
+      it". This plan SHIPS that consumer and closes rec-3395, so the sentence is false on merge.
+      Name validate_roadmap_liveness as the consumer, plus the accompanying amendment_log entry.
   - file: docs/ROADMAP-PLATFORM.yaml
     action: Modify
     purpose: >-
@@ -280,13 +289,17 @@ verification_plan:
       Discharge the Closure Obligation -- refresh the read cache from the warehouse and confirm both
       bundled recommendations are closed.
     command: >-
-      bin/venv-python -m scripts.sync.ops sync && grep rec-3395 logs/.recommendations-log.jsonl |
-      grep -c closed && grep rec-3394 logs/.recommendations-log.jsonl | grep -c closed
-    expected: The sync completes, both greps report a non-zero count, and exit status is 0.
+      bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json; rows=[json.loads(l)
+      for l in open('logs/.recommendations-log.jsonl')]; assert all(any(r['id']==i and
+      r['status']=='closed' for r in rows) for i in ('rec-3394','rec-3395')), 'bundled rec not closed'"
+    expected: The sync completes, the assertion holds for both ids, and exit status is 0.
     fix_if: >-
-      Either rec is still open -- rec-3395 needs its acceptance re-pointed at the shipped selector
-      via update_rec before closure, and rec-3394 needs its closure evidence recorded rather than
-      being closed bare.
+      The assertion raises, meaning a bundled rec is still open. rec-3395 needs its acceptance
+      re-pointed at the shipped selector via update_rec before closure, and rec-3394 needs its
+      closure evidence recorded rather than being closed bare. Do NOT weaken this back to a
+      substring grep: `grep rec-3395 ... | grep -c closed` matches any line CONTAINING the literal,
+      and three cache lines mention rec-3395 today (rec-3395, rec-3579, rec-3582), so a follow-on
+      rec closing would green the step while the bundled rec stayed open.
     hermetic: false
     graduation: not-applicable
   - step: 10
@@ -296,9 +309,10 @@ verification_plan:
     expected: Exit status 0 with no FAIL lines in the summary.
     fix_if: >-
       validate_placement reports platform_roadmap_liveness.py as a scripts/ root stray (its
-      allowlist entry is missing), validate_pre_glob_closure names an uncovered transitive import for
-      the new Entry, or validate_structural_size_limits reports the new config or contract file past
-      its class budget.
+      allowlist entry is missing), or validate_structural_size_limits reports the new config or
+      contract file past its class budget. Note validate_pre_glob_closure is ADVISORY by design -- it
+      prints findings and never appends to failed -- so it can flag an uncovered import without
+      failing this step; read its output even when the tier is green.
     hermetic: false
     graduation: not-applicable
   - step: 11
@@ -387,6 +401,17 @@ test_obligations:
       Contract conformance is enforced repo-wide by validate_contract_drift and the Decision 168
       evaluator-resolution guard, both of which run in the fast tier over this exact file. A
       plan-local unit test would duplicate that engine without adding a distinct assertion.
+  - source: docs/contracts/exit-criteria-ledger.yaml
+    behavior: >-
+      Its blocked_by semantics names validate_roadmap_liveness as the field's runtime consumer, so
+      the contract stops claiming the consumer is a deferred follow-on once this plan ships it.
+    verification_step: 10
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      The edit is a prose re-grounding plus its mandatory amendment_log entry; validate_contract_drift
+      enforces amendment-log-on-change repo-wide in the fast tier over this exact file, and no
+      deterministic oracle exists for prose truth. A plan-local test would assert a sentence, not a
+      behavior.
   - source: docs/contracts/file-router.yaml
     behavior: A route exists whose topic equals the new contract's subject.
     verification_step: 10
@@ -447,7 +472,12 @@ constraints:
     model validator to until complete, which can close a fresh toxic ring that leg A then rejects as
     net baseline growth the frozen _BASELINE_SEED cannot admit. Leg C's message must name this and
     point at the escape (re-sequence the edge, or the criterion is genuinely blocked and the ring is
-    a true finding) -- never leave deleting the prose as the only in-PR move.
+    a true finding) -- never leave deleting the prose as the only in-PR move. Leg A(d) carries the
+    SAME obligation for the same reason: an ordinary /implement bookkeeping flip of a tier item to
+    complete can drain a node out of the measured toxic set and red the check, so its message must
+    name the remedy (remove the drained id from config/roadmap_liveness_baseline.yaml in this PR)
+    rather than leaving an agent at a bare failure -- the moment Decision 181 clause 1's forbidden
+    weakening looks attractive.
   - SLOC -- both new modules stay under 500; decompose into a facade package if a budget is crossed, never raise (Decision 128).
   - No rescue agents or workaround loops (Decision 55); no assertion, budget or criterion weakened to obtain green (Decision 181 clause 1).
 context:
@@ -526,8 +556,14 @@ execution_steps:
     docs/DECISIONS_ARCHIVE.md, scripts/decisions_md.py, scripts/platform_roadmap_models.py,
     scripts/platform_roadmap_state.py, scripts/platform_roadmap_gate_rules.py,
     scripts/platform_roadmap_liveness.py, scripts/roadmap/**, scripts/checks/roadmap/**,
-    scripts/checks/_common.py, scripts/checks/registry.py, scripts/checks/_marker_guard.py and
-    config/roadmap_liveness_baseline.yaml.
+    scripts/checks/_common.py, scripts/checks/registry.py, scripts/checks/_marker_guard.py,
+    config/roadmap_liveness_baseline.yaml AND docs/contracts/roadmap-liveness.yaml. That last one is
+    load-bearing, not decorative: execution step 6 makes the contract the SOLE source of leg C's
+    blocking-phrase grammar, read at run time, so omitting it means a PR that widens or narrows the
+    phrase set silently SKIPS the gate in --pre and only reddens post-merge -- the fail-open
+    under-inclusion class this manifest's own docstring warns about. Precedent:
+    validate_plan_scope_closure carries docs/contracts/plan-obligations.yaml in both its pre_globs
+    and its _CLOSURE_INPUTS row.
   - Add the config/ci_rca_taxonomy.yaml function_to_category row -- validate_roadmap_liveness -> schema_drift.
   - >-
     Create docs/contracts/roadmap-liveness.yaml as a Class D contract. status MUST be
@@ -539,10 +575,19 @@ execution_steps:
     _population.resolve_evaluator refuses it. Body carries a unique subject, a top-level
     amendment_log, the NON_TERMINAL node-class and edge-demand semantics, the baseline grammar,
     LEG C'S BLOCKING-PHRASE GRAMMAR as the single source the check reads (never a second copy in the
-    module) with the precision basis for the chosen phrase set, LEG B'S OWN PRECISION BASIS (live
+    module) with the precision basis for the chosen phrase set, the PER-SURFACE residual map that
+    Decision 181 clause 2 actually requires -- one row per unenforced surface naming either its
+    enforcing check or its owning rec: leg C's pre-existing prose corpus (rec-3581) AND the
+    starvation class the toxic-SCC rule structurally excludes (rec-3582: a pending CD whose every
+    gated item is parked can never accrue realization evidence, so criteria blocked_by it are
+    starved with no owner; 5 live instances) -- LEG B'S OWN PRECISION BASIS (live
     population is 8 rehomed criteria; "target carries >=1 open criterion" is NECESSARY BUT NOT
     SUFFICIENT for "the rehomed scope actually landed" -- a rehome whose scope was never transcribed
-    passes so long as the target holds any unrelated open criterion), and the leg-C residual declaration
+    passes so long as the target holds any unrelated open criterion, recorded as an ACCEPTED
+    PERMANENT BOUND of the leg rather than a residual, since no cheap oracle for "the rehomed scope
+    landed" exists), a governance note recording WHY three heterogeneous invariants share one
+    registered name (rec-3395 asked for the bundle; they share one graph load) and the split trigger
+    if leg B or leg C proves noisy, and the leg-C residual declaration
     naming rec-3581 (Decision 181 clause 2). Cross-reference T2.54 as owner of instruction-layer
     clause-to-check traceability.
   - >-
@@ -554,7 +599,8 @@ execution_steps:
     file the plan itself created.
   - >-
     Add the _CLOSURE_INPUTS row for validate_roadmap_liveness in
-    tests/checks/roadmap/test__manifest.py, listing the same closure the Entry's pre_globs cover.
+    tests/checks/roadmap/test__manifest.py, listing the same closure the Entry's pre_globs cover --
+    docs/contracts/roadmap-liveness.yaml and config/roadmap_liveness_baseline.yaml included.
     One row per gated Entry is that dict's stated convention; omitting it leaves the new Entry
     silently uncovered by TestClosureMembersAreCovered.
   - >-
