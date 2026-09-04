@@ -145,7 +145,7 @@ verification_plan:
       Prove the ratchet has teeth in both directions -- removing a baselined id passes, adding an id
       absent from the frozen in-module _BASELINE_SEED fails even though the config edit alone is
       well-formed, and an unreadable diff base SKIPs loudly rather than treating missing as empty.
-    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k ratchet -q
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k Ratchet -q
     expected: All selected tests pass, exit status 0, and at least one test is selected.
     fix_if: >-
       Adding an unseeded id passes, meaning the frozen-constant cross-check is not consulted and a
@@ -174,7 +174,7 @@ verification_plan:
       Leg C insertion robustness -- inserting a criterion at the head of a bare-string list must
       report exactly one added criterion, not one per downstream sibling whose synthetic index id
       shifted.
-    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k "legc or insertion" -q
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k "LegC or Insertion" -q
     expected: All selected tests pass, exit status 0, and at least one test is selected.
     fix_if: >-
       The insertion fixture reports 7 findings instead of 1 -- the base-versus-head comparison is
@@ -188,7 +188,11 @@ verification_plan:
       Confirm the seven registration surfaces -- the check resolves through the registry, the
       manifest Entry dispatches it, the ci_rca taxonomy carries its row, and it is NOT grandfathered
       into the check-accounting baseline.
-    command: bin/venv-python -m pytest tests/checks/roadmap/test__manifest.py tests/test_checks_registry.py -q && grep -q "validate_roadmap_liveness" config/ci_rca_taxonomy.yaml && ! grep -q "validate_roadmap_liveness" config/check_accounting_baseline.yaml
+    command: >-
+      bin/venv-python -m pytest tests/checks/ci_guards/test_validate_ci_rca_taxonomy.py -q &&
+      bin/venv-python -m pytest tests/checks/roadmap/test__manifest.py tests/test_checks_registry.py -q &&
+      grep -q "validate_roadmap_liveness" config/ci_rca_taxonomy.yaml &&
+      ! grep -q "validate_roadmap_liveness" config/check_accounting_baseline.yaml
     expected: Tests pass, the taxonomy grep succeeds, the accounting-baseline grep finds nothing, and the chained command exits 0.
     fix_if: >-
       validate_ci_rca_taxonomy reports the registered check absent from function_to_category, or
@@ -201,7 +205,10 @@ verification_plan:
     action: >-
       Confirm the roadmap transcription landed, still loads under the Pydantic schema, and did not
       change the toxic-SCC count.
-    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_platform_roadmap.py -q && bin/venv-python -m scripts.platform_roadmap_liveness --report
+    command: >-
+      bin/venv-python -m pytest tests/checks/roadmap/test_validate_platform_roadmap.py
+      tests/checks/roadmap/test_validate_roadmap_liveness.py -q &&
+      bin/venv-python -m scripts.platform_roadmap_liveness --report
     expected: Tests pass, the report again names 2 toxic SCCs and 19 toxic node ids, and the chained command exits 0.
     fix_if: >-
       The roadmap fails to load because until ratified was paired with a tier_item ref rather than a
@@ -274,6 +281,75 @@ test_obligations:
     verification_step: 6
     test_selector: tests/checks/roadmap/test__manifest.py::TestEntries::test_every_entry_resolves
     red_green_expectation: red before (Entry absent, check never dispatched), green after.
+  - source: config/roadmap_liveness_baseline.yaml
+    behavior: >-
+      The roster is shrink-only and bounded by the module's frozen _BASELINE_SEED -- an id may be
+      removed, but an id absent from that constant can never be admitted by a config edit alone.
+    verification_step: 3
+    test_selector: tests/checks/roadmap/test_validate_roadmap_liveness.py::TestRatchet::test_unseeded_id_addition_fails
+    red_green_expectation: >-
+      red before (no ratchet exists, so any baseline edit passes), green after; and red again if the
+      frozen-constant cross-check is dropped and only the diff comparison remains.
+  - source: docs/ROADMAP-PLATFORM.yaml
+    behavior: >-
+      T2.53 c6 carries exactly the licensed blocked_by edge to CD.41 until ratified, and that edge
+      adds no toxic SCC because a ratified-demanding edge is never completion-demanding.
+    verification_step: 7
+    test_selector: tests/checks/roadmap/test_validate_roadmap_liveness.py::TestTranscription::test_cd41_ratified_edge_adds_no_toxic_scc
+    red_green_expectation: >-
+      red if the transcription is written with until complete (a third toxic core appears), green
+      with until ratified; pins the semantic distinction the whole discriminator rests on.
+  - source: config/ci_rca_taxonomy.yaml
+    behavior: validate_roadmap_liveness resolves to the schema_drift failure category.
+    verification_step: 6
+    command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_ci_rca_taxonomy.py -q
+    waiver_reason: >-
+      Coverage is already enforced repo-wide by validate_ci_rca_taxonomy check 1b, which fails any
+      registered check absent from function_to_category. A plan-local test would re-assert that
+      existing gate against itself rather than guard new behavior; the linked command runs the real
+      gate instead.
+  - source: docs/contracts/roadmap-liveness.yaml
+    behavior: >-
+      Class D conformance -- unique subject, an evaluator naming a check that resolves, and a
+      top-level amendment_log.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Contract conformance is enforced repo-wide by validate_contract_drift and the Decision 168
+      evaluator-resolution guard, both of which run in the fast tier over this exact file. A
+      plan-local unit test would duplicate that engine without adding a distinct assertion.
+  - source: docs/contracts/file-router.yaml
+    behavior: A route exists whose topic equals the new contract's subject.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Route-to-subject agreement and the docs-root allowlist are enforced repo-wide by
+      validate_placement and the file-router drift check, both of which run in the fast tier over
+      this file. The obligation is discharged by running those gates, not by a duplicate test.
+  - source: config/agent/verification_registry/entries/roadmap-liveness-graph-semantics.yaml
+    behavior: The graduated graph-semantics check is admitted as a standing regression guard.
+    verification_step: 1
+    command: bin/venv-python -m pytest tests/test_platform_roadmap_liveness.py -q
+    waiver_reason: >-
+      The shard is a declarative registry record, not behavior. Its admission is gated by
+      validate_verification_registry's differential check against origin/main, and the assertion it
+      records is VP step 1, which the linked command runs directly.
+  - source: config/agent/verification_registry/entries/roadmap-liveness-rehome-target-carries-open-criterion.yaml
+    behavior: The graduated rehome-coverage check is admitted as a standing regression guard.
+    verification_step: 4
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py::TestRehomeCoverage::test_rehome_target_must_carry_open_criterion -q
+    waiver_reason: >-
+      The shard is a declarative registry record, not behavior. Its admission is gated by
+      validate_verification_registry's differential check, and the assertion it records is VP step 4,
+      which the linked command runs directly.
+  - source: config/agent/verification_registry/entries/roadmap-liveness-legc-text-keyed.yaml
+    behavior: The graduated leg-C insertion-robustness check is admitted as a standing regression guard.
+    verification_step: 5
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k "LegC or Insertion" -q
+    waiver_reason: >-
+      The shard is a declarative registry record, not behavior. Its admission is gated by
+      validate_verification_registry's differential check, and the assertion it records is VP step 5,
+      which the linked command runs directly.
 constraints:
   - Report deadlocks, never reject at load -- these edges must NOT enter the RoadmapDocument model_validator DFS (scripts/platform_roadmap_models.py:221-238), which would make the roadmap unloadable.
   - No warn tier -- check-accounting has no "warned" status, so a warn records as "enforced" (docs/contracts/check-accounting.yaml status_vocabulary). All three legs hard-fail.
