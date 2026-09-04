@@ -1,0 +1,197 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "selection-budget-coverage-gap"
+intent: >-
+  Close CI-RCA rec-3551 by covering the two untested branches in
+  scripts/checks/deps/selection_budget.py, restoring the file to the 100%-per-file floor and
+  clearing the unresolved-ci-rca hard block that gates all other planning work.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-selection-budget-coverage-gap.yaml
+phase: >-
+  ci_rca soft-warn exception category; no tier_item claimed. Adjacent to T3.7 (deferred_post_mvp,
+  diff-line-coverage ratchet) and T2.55 (shrink-only baselines) -- neither is advanced here.
+scope:
+  - file: tests/checks/deps/test_selection_budget.py
+    action: Modify
+    purpose: >-
+      Add TestBudgetVerdict and TestCountTestModules (neither class exists today) covering
+      selection_budget.py lines 113 and 123 -- the only two uncovered statements.
+bundled_recommendations:
+  - rec-3551
+followon_recs:
+  - rec-3232
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    scripts/checks/deps/selection_budget.py measures 100% per-file line coverage under the
+    production oracle (scripts.test_coverage_checker --check-coverage), which reports 98.4% today.
+  - >-
+    BudgetVerdict.hard_fail is asserted True for a non-zero exit_code and False for exit_code 0.
+  - >-
+    count_test_modules returns 0 for a root whose tests/ subdirectory is absent, without raising.
+  - >-
+    rec-3551's own acceptance command passes verbatim; both node ids it names resolve.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Run rec-3551's acceptance command verbatim -- the rec's own closure oracle. Both node ids
+      are absent today (TestBudgetVerdict and TestCountTestModules do not exist), so this is a
+      genuine red-before probe, not a re-run of an already-passing file.
+    command: bin/venv-python -m pytest tests/checks/deps/test_selection_budget.py::TestBudgetVerdict::test_hard_fail_reflects_exit_code tests/checks/deps/test_selection_budget.py::TestCountTestModules::test_returns_zero_when_tests_dir_absent
+    expected: >-
+      exit 0; 2 passed. Before the change this exits 4 with a pytest "not found" collection error.
+    fix_if: >-
+      A node id does not resolve -- the class or method name diverges from rec-3551's acceptance
+      string. Rename the test to match the rec verbatim rather than editing the rec.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: selection-budget-branch-tests-present
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Assert 100% per-file coverage through the PRODUCTION oracle -- the same baseline-aware code
+      path the full-tier gate uses (rec-943 parent-directory --cov spec included). Do not
+      substitute a hand-rolled "pytest --cov=... --cov-fail-under=100": the parent-directory form
+      that rec-943 mandates measures the whole scripts/checks/deps package, so --cov-fail-under
+      fails at ~27.8% regardless of this file (verified at planning time).
+    command: bin/venv-python -m scripts.test_coverage_checker --check-coverage --files scripts/checks/deps/selection_budget.py
+    expected: >-
+      exit 0. Today this exits 1 with "scripts/checks/deps/selection_budget.py: 98.4% line
+      coverage (expected 100%)" -- the exact string rec-3551 cites.
+    fix_if: >-
+      Still short of 100%: read the reported Missing line numbers and add the covering assertion.
+      Never register the file in config/coverage_baseline.yaml to obtain green -- that is a
+      Decision 181 gate-weakening and T2.55:c1 forecloses new below-threshold entries.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates an already-permanent gate. validate_test_coverage enforces this identical
+      per-file oracle in the full tier for any diff touching this file, so a graduated second
+      per-file coverage invocation would pay a pytest fork on every registry run to re-assert what
+      the full tier already asserts. Step 1's test_selector guard covers the residual case the
+      full-tier gate misses (the tests being deleted without selection_budget.py being touched).
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Discharge the handoff obligation with a real full-tier run. This is the step whose
+      NON-EXECUTION on PR #1063 is this rec's systemic root cause -- the plan declared it and
+      nothing verified it ran. Run it to completion and read the Validation Summary.
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0; no "Coverage below 100%" entry in the Validation Summary.
+    fix_if: >-
+      Any check fails -- fix on the branch before pushing. A full-tier failure here is precisely
+      the signal that would otherwise land on main as a fresh ci_rca rec.
+    hermetic: false
+    graduation: not-applicable
+  - step: 4
+    phase: post-deploy
+    action: >-
+      After squash-merge with a "Resolves: rec-3551" trailer, confirm rec-autoclose closed the rec
+      in the warehouse (closure obligation for a rec-resolving plan).
+    command: bin/venv-python -m scripts.sync.ops sync && grep rec-3551 logs/.recommendations-log.jsonl | grep -c closed
+    expected: >-
+      Non-zero count -- the rec-3551 row in the refreshed read cache carries closed status.
+    fix_if: >-
+      Still open: the Resolves trailer was missing or malformed in the squash-merge body. Close it
+      via bin/venv-python -m scripts.ops_data_portal --update-rec rec-3551, never by editing the
+      local cache (AGENTS.md read-cache-is-never-a-write-source invariant).
+test_obligations:
+  - source: tests/checks/deps/test_selection_budget.py
+    behavior: >-
+      selection_budget.py's BudgetVerdict.hard_fail property and count_test_modules'
+      absent-tests-directory branch stay exercised, so neither silently reverts to uncovered.
+    verification_step: 1
+    test_selector: tests/checks/deps/test_selection_budget.py::TestBudgetVerdict::test_hard_fail_reflects_exit_code
+    red_green_expectation: >-
+      red before, green after -- the node id does not resolve today (pytest exits 4, "not found"),
+      and passes once the class is added.
+constraints:
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    Add tests; never add a config/coverage_baseline.yaml entry for selection_budget.py. Baselining
+    to obtain green is a Decision 181 CONTENT-invariant gate-weakening, and T2.55:c1 rejects new
+    below-threshold registrations. Decision 159's roster is a one-time grandfather, not precedent.
+  - >-
+    Do not modify scripts/checks/deps/selection_budget.py. The source is correct; only its test
+    coverage is short. Editing the source to delete the uncovered branches would change behaviour
+    to satisfy a coverage metric.
+  - >-
+    Tests colocate at the Decision 131 mirror path already in use
+    (tests/checks/deps/test_selection_budget.py); do not create a second test home.
+  - >-
+    Class and method names must match rec-3551's acceptance string verbatim -- that string is the
+    rec's closure oracle and rec-autoclose replays it.
+  - >-
+    Out of scope: the prevention mechanism. It is owned by rec-3232 (see context) and is a
+    separate plan by explicit human decision at the Step 6b fork.
+context:
+  - >-
+    Decision-scout verdict FLAGS_FOUND. CITE list (verbatim): Decision 159, Decision 163,
+    Decision 169, Decision 170, Decision 132, Decision 165, Decision 181, Decision 167,
+    Decision 177. Decisions triaged: 135 of 135. Roadmap items intersected: 25; CONFLICT: 2;
+    RELATED: 22.
+  - >-
+    "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - >-
+    Scout flags Decision 182 [WARN], Decision 153 [SPIRIT WARN], Decision 103 [WARN], Decision 128
+    [WARN], T3.7 [CONFLICT], T3.9 [CONFLICT] all attach to the DEFERRED prevention half, not to
+    this plan -- this plan's scope is one test file and touches no tier, budget, manifest or
+    registry surface. Decision 181 and T2.55:c1 are the two that bind here; both are encoded as
+    constraints above.
+  - >-
+    Root cause, two layers. Proximate: rec-3551 -- 122 statements, 2 missed (lines 113, 123),
+    98.36%. Systemic: docs/plans/PLAN-fast-tier-budget-breadth-split.yaml VP step 17 declared
+    "bin/venv-python -m scripts.validate" and was never executed. validate_handoff_full_tier
+    (Decision 163) is a static text matcher over plan YAML and scripts/validate.py writes no run
+    record, so nothing can detect a declared-but-unexecuted full tier. Decision 163 named this
+    "declared-vs-executed" failure mode and closed only the metadata-to-declared-step layer.
+  - >-
+    Recurrence: rec-3551 is the fourth distinct escape of this class since rec-2970 named the gap
+    on 2026-08-03 (rec-3043/3044, rec-3147, rec-3211/3212, rec-3551; two files drew duplicate
+    pairs). Measured at planning time, all four escape files cost 0.3-0.5s to measure; the one
+    expensive outlier is scripts/validate.py at ~197s, already baselined at 73.0.
+  - >-
+    Prevention is NOT unowned and needs no new rec: validate_diff_coverage already ships as a
+    pre=True REPORT-ONLY classifier (landed 2026-08-22, PR #946) that was live and reporting on
+    PR #1063 itself. rec-3232 owns the blocking flip and is actionable now -- its 20-PR
+    measurement window closed at 32 merges. rec-3221 is the adjacent heavy-dep classifier.
+  - >-
+    Do not "fix" step 2 by switching to pytest --cov-fail-under. Verified at planning time: the
+    rec-943-mandated parent-directory --cov spec measures the whole package and reports 27.77%.
+    Also verified: "-p no:cacheprovider" without "--randomly-seed" crashes pytest-randomly with an
+    INTERNALERROR in this repo.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read (159, 163, 181; 131 for colocation)
+  - tests/checks/deps/test_selection_budget.py and scripts/checks/deps/selection_budget.py read
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    tests/checks/deps/test_selection_budget.py -- add class TestBudgetVerdict with
+    test_hard_fail_reflects_exit_code, constructing BudgetVerdict(...) twice and asserting
+    .hard_fail is True for a non-zero exit_code and False for exit_code 0. BudgetVerdict is a
+    frozen dataclass with fields outcome, limit_s, waiver_cause, exit_code, allowance_s -- all
+    five are required positionally or by keyword.
+  - >-
+    tests/checks/deps/test_selection_budget.py -- add class TestCountTestModules with
+    test_returns_zero_when_tests_dir_absent, calling count_test_modules(root=tmp_path) against a
+    pytest tmp_path that has no tests/ subdirectory, and asserting the result is 0. Use the
+    root= parameter; do not monkeypatch __file__.
+  - >-
+    Place both classes alongside the seven existing classes (TestAllowance, TestSplitPhaseTimes,
+    TestBudgetExtraKeys, TestPrediction, TestClassifyBranchOrder, TestSubtractionSetPins, TestCli)
+    following the file's existing assertion and import idiom.
+  - >-
+    Execute the Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure
+    stop and RCA (Decision 55).
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Revert the single test-file commit. No source, schema, registry or config surface changes, so
+  there is no migration or state to unwind; selection_budget.py returns to 98.4% and rec-3551
+  reopens as the outstanding ci-rca item.
