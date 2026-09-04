@@ -17,17 +17,27 @@ fields:
     type: str
     description: >-
       Stable identifier for one TierItem.exit_criteria[] entry. Shape defined by
-      scripts/roadmap/platform_roadmap.py::ExitCriterion.
+      scripts/platform_roadmap_models.py::ExitCriterion.
     semantics: >-
       Stable within the tier_item; the full cross-item ref is '<item-id>:<id>', e.g.
       'T2.19:c3'. Auto-assigned 'cN' when normalizing a bare string (lazy migration of
       not_started items).
     populated_by: >-
-      scripts/roadmap/platform_roadmap.py at load time -- auto-assigned when normalizing a
+      scripts/platform_roadmap_models.py at load time -- auto-assigned when normalizing a
       bare-string criterion, or read verbatim when the entry is already structured.
     dq_intent:
       not_null:
         enforced: true
+    amendment_log:
+      - date: "2026-09-04"
+        semantic_break: false
+        change_class: prose_improvement
+        summary: >-
+          PLAN-roadmap-blocking-edge-semantics: corrected the stale model-home pointer from
+          scripts/roadmap/platform_roadmap.py (the Decision 124 facade) to
+          scripts/platform_roadmap_models.py (ExitCriterion's actual defining module since the
+          Decision 124 decomposition split the models out of the facade). No field shape or
+          semantics changed.
   text:
     type: str
     description: The criterion prose for one exit_criteria[] entry.
@@ -66,6 +76,34 @@ fields:
     dq_intent:
       not_null:
         enforced: false
+  blocked_by:
+    type: "list[dict]"
+    description: >-
+      Blocking edges on one exit_criteria[] entry: this criterion cannot close until every
+      listed ref reaches its named terminus. Shape defined by
+      scripts/platform_roadmap_models.py::CriterionBlocker ({ref, until, note}).
+    semantics: >-
+      ref resolves to a known tier_item id, CD id, or tier shortcut; until is 'complete' (valid
+      only on a tier_item/tier-shortcut ref) or 'ratified' (valid only on a CD ref) -- the
+      schema validator rejects a ref/until kind mismatch, and an unresolvable ref, at load
+      time. note is optional free text. Distinct from depends_on: blocked_by is transcribed
+      ONLY from verbatim documentary evidence (never inferred from status, prose tone, or
+      commit activity) and carries no runtime consumer beyond the schema validator today --
+      rec-3395 (open) is the deferred liveness-detector follow-on that will read it. Default
+      [] -- most criteria carry no blocked_by.
+    populated_by: >-
+      Tier_item author, transcribing a verbatim blocking citation found in roadmap prose at
+      roadmap-authoring time.
+    dq_intent:
+      not_null:
+        enforced: false
+    governance_notes: >-
+      Deliberately EXCLUDED from RoadmapDocument._validate_graph's step-(c) depends_on cycle
+      DFS. The edges blocked_by carries close real rings (e.g. a criterion legitimately
+      blocked_by the very item that rehomed part of its scope back onto it) -- folding them
+      into the load-time cycle rejector would make the roadmap unloadable rather than reporting
+      the deadlock it represents. depends_on remains the sole DFS-checked adjacency; blocked_by
+      is validated independently (ref resolution + until/kind agreement only, no cycle check).
   plan_closes_criteria:
     type: "list[str]"
     description: >-
@@ -177,6 +215,16 @@ audit_invariants:
     skills-only or commands-only Scope list yields K=0.
 
 amendment_log:
+  - date: "2026-09-04"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-roadmap-blocking-edge-semantics: added the blocked_by field (per-criterion blocking
+      edges, {ref, until, note}), split out of the overloaded gates/depends_on proxy so a
+      criterion's blocking relationship is an authored field rather than an inferred side
+      effect of depends_on or CandidateDecision.gates. Deliberately excluded from the
+      depends_on cycle DFS (see the field's own governance_notes). Also corrected fields.id's
+      stale model-home pointer (own amendment_log entry on that field).
   - date: "2026-09-03"
     semantic_break: false
     change_class: governance_note_add

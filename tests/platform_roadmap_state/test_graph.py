@@ -507,3 +507,44 @@ class TestCompletionBlockedOnCd:
         result = state.to_preflight_dict(plans_dir=tmp_path)
         ip = next(i for i in result["in_progress"] if i["id"] == "T0.1")
         assert ip["completion_blocked_on_cd"] == ["CD.77"]
+
+
+# ---------------------------------------------------------------------------
+# TestAffectsNeverCompletionBlocking -- PLAN-roadmap-blocking-edge-semantics
+# ---------------------------------------------------------------------------
+
+
+class TestAffectsNeverCompletionBlocking:
+    """A pending CD's affects list is in-scope-of, never completion-blocking: it must never
+    surface as a source in blocked_on_cd() or completion_blocked_on_cd(), unlike gates."""
+
+    def test_affects_only_cd_absent_from_blocked_on_cd(self) -> None:
+        doc = _doc(tier_items=[_item("T0.1")], candidate_decisions=[_cd("CD.17", affects=["T0.1"])])
+        result = _state_from_doc(doc).blocked_on_cd()
+        assert not any(r["id"] == "T0.1" for r in result)
+
+    def test_affects_only_cd_absent_from_completion_blocked_on_cd(self, tmp_path: Path) -> None:
+        doc = _doc(
+            tier_items=[_item("T0.1", status="in_progress")],
+            candidate_decisions=[_cd("CD.17", affects=["T0.1"])],
+        )
+        state = PlatformRoadmapState(RoadmapDocument.model_validate(doc))
+        result = state.to_preflight_dict(plans_dir=tmp_path)
+        ip = next(i for i in result["in_progress"] if i["id"] == "T0.1")
+        assert ip["completion_blocked_on_cd"] == []
+
+    def test_affects_and_gates_both_present_only_gates_blocks(self, tmp_path: Path) -> None:
+        # A CD carrying BOTH gates (on T0.2) and affects (on T0.1) blocks only the gated item.
+        doc = _doc(
+            tier_items=[
+                _item("T0.1", status="in_progress"),
+                _item("T0.2", status="in_progress"),
+            ],
+            candidate_decisions=[_cd("CD.17", gates=["T0.2"], affects=["T0.1"])],
+        )
+        state = PlatformRoadmapState(RoadmapDocument.model_validate(doc))
+        result = state.to_preflight_dict(plans_dir=tmp_path)
+        ip1 = next(i for i in result["in_progress"] if i["id"] == "T0.1")
+        ip2 = next(i for i in result["in_progress"] if i["id"] == "T0.2")
+        assert ip1["completion_blocked_on_cd"] == []
+        assert ip2["completion_blocked_on_cd"] == ["CD.17"]

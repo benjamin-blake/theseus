@@ -59,12 +59,24 @@ class DocumentMeta(BaseModel):
         raise ValueError(f"Invalid filed_via '{v}'. Must be 'pending_log_decision_lambda' or 'ops_decisions:dec-<NNN>'")
 
 
+class CriterionBlocker(BaseModel):
+    """One blocking edge on an ExitCriterion: this criterion cannot close until `ref` reaches
+    `until`. NOTE: 'disposition' is deliberately NOT a member -- it names a human activity with
+    no observable terminus on any schema object, unlike a tier_item/CD's own status/state."""
+
+    model_config = ConfigDict(extra="forbid")
+    ref: str
+    until: Literal["complete", "ratified"]
+    note: str | None = None
+
+
 class ExitCriterion(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str
     text: str
     status: Literal["open", "met", "rehomed"] = "open"
     met_by: str | None = None
+    blocked_by: list[CriterionBlocker] = Field(default_factory=list)
 
 
 class TierItem(BaseModel):
@@ -114,6 +126,7 @@ class CandidateDecision(BaseModel):
     title: str
     detail: str = ""
     gates: list[str] = Field(default_factory=list)
+    affects: list[str] = Field(default_factory=list)
     state: Literal["pending", "ratified", "superseded"] = "pending"
     ratified_as: str | None = None
     realization_evidence: str | None = Field(
@@ -250,6 +263,43 @@ class RoadmapDocument(BaseModel):
                 if not (_TIER_SHORTCUT_RE.match(ref) or ref in item_ids):
                     raise ValueError(f"CandidateDecision '{cd.id}': gate ref '{ref}' does not resolve")
 
+        # (d2) candidate_decisions.affects resolution -- same tier-only resolution as gates
+        # (affects is in-scope-of, not completion-blocking; it never targets a CD).
+        for cd in self.candidate_decisions:
+            for ref in cd.affects:
+                if not (_TIER_SHORTCUT_RE.match(ref) or ref in item_ids):
+                    raise ValueError(f"CandidateDecision '{cd.id}': affects ref '{ref}' does not resolve")
+
+        # (d3) exit_criteria[].blocked_by resolution + until/kind agreement. Deliberately
+        # EXCLUDED from the step-(c) depends_on adjacency: these edges close real rings (e.g. a
+        # criterion blocked_by the very item that rehomed part of its scope), so folding them
+        # into the load-time cycle rejector would make the roadmap unloadable rather than
+        # reporting the deadlock (see docs/contracts/exit-criteria-ledger.yaml governance_notes).
+        cd_ids: set[str] = {cd.id for cd in self.candidate_decisions}
+        for item in self.tier_items:
+            for crit in item.exit_criteria:
+                for blocker in crit.blocked_by:
+                    ref = blocker.ref
+                    if _TIER_SHORTCUT_RE.match(ref) or ref in item_ids:
+                        if blocker.until != "complete":
+                            raise ValueError(
+                                f"tier_item '{item.id}' criterion '{crit.id}': blocked_by ref '{ref}' "
+                                f"resolves to a tier_item/tier-shortcut but until='{blocker.until}' "
+                                "(must be 'complete')"
+                            )
+                    elif ref in cd_ids:
+                        if blocker.until != "ratified":
+                            raise ValueError(
+                                f"tier_item '{item.id}' criterion '{crit.id}': blocked_by ref '{ref}' "
+                                f"resolves to a CandidateDecision but until='{blocker.until}' "
+                                "(must be 'ratified')"
+                            )
+                    else:
+                        raise ValueError(
+                            f"tier_item '{item.id}' criterion '{crit.id}': blocked_by ref '{ref}' "
+                            "does not resolve to a known tier_item id, CD id, or tier shortcut"
+                        )
+
         # (e) gate-rule grammar validation
         for gate in self.cross_tier_gates:
             try:
@@ -263,10 +313,10 @@ class RoadmapDocument(BaseModel):
                 # Widened to list[str] | str | None (T-1.12). Each grammar-shaped string is
                 # validated; non-grammar prose entries (e.g. "T0.13 may start") have no
                 # function calls and are no-ops under GateRuleParser. List form is iterated.
+                # The field's own type (list[str] | str | None) already guarantees every entry
+                # is a str -- no isinstance guard needed here.
                 entries = drb if isinstance(drb, list) else [drb]
                 for entry in entries:
-                    if not isinstance(entry, str):
-                        continue
                     try:
                         GateRuleParser.validate(entry, helpers)
                     except ValueError as exc:

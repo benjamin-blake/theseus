@@ -10,7 +10,21 @@ contract:
   evaluator:
     agent_surface: .claude/skills/implement/SKILL.md
 
-amendment_log: []
+amendment_log:
+  - date: "2026-09-04"
+    semantic_break: true
+    change_class: field_add
+    summary: >-
+      PLAN-roadmap-blocking-edge-semantics: documented the new CandidateDecision.affects field
+      (in-scope-of, never completion-blocking -- see affects_field below) and narrowed the
+      necessary_not_sufficient claim from "gate derivation keys purely on cd.state == pending"
+      to "keys on gates, which affects deliberately does not populate" -- affects splits the
+      formerly-overloaded gates field's non-gating uses (e.g. CD.17) out into their own edge
+      type. Also corrected three stale scripts/roadmap/platform_roadmap.py (facade) pointers to
+      their real defining modules: scripts/platform_roadmap_models.py for CandidateDecision's
+      own fields (surfacing_signal.location, second_signal_realized_but_pending.location), and
+      scripts/platform_roadmap_state.py for blocked_on_cd / to_preflight_dict
+      (necessary_not_sufficient).
 
 version: 1
 last_updated: "2026-07-24"
@@ -56,10 +70,26 @@ canonical_ratified_shape:
     warehouse ids (dec-1085/1086/1089/1091) before Decision 105 reconciled them onto the real
     3-digit DECISIONS.md numbers.
 
+affects_field:
+  field: affects
+  type: "list[str]"
+  location: "CandidateDecision.affects (scripts/platform_roadmap_models.py)"
+  semantics: >-
+    In-scope-of, never completion-blocking (PLAN-roadmap-blocking-edge-semantics -- splits the
+    former overloaded gates field into two edge types: gates stays completion-blocking, affects
+    is the non-gating "this CD's work touches these items" relationship, e.g. CD.17's freeze
+    scope). A tier_item named in a CD's affects is within that CD's scope of impact but its
+    completion is NOT gated on the CD ratifying -- gate derivation (see necessary_not_sufficient
+    below) keys on gates only, which affects deliberately does not populate.
+    realization_candidates() and blocked_on_cd() (scripts/platform_roadmap_state.py) both treat
+    an empty-gates CD carrying affects as non-gating: no vacuous-True realization surfacing, no
+    completion_blocked_on_cd entry.
+  computed_by: "Read directly off CandidateDecision.affects; no dedicated projection helper."
+
 surfacing_signal:
   field: realization_evidence
   type: "str | None"
-  location: "CandidateDecision.realization_evidence (scripts/roadmap/platform_roadmap.py)"
+  location: "CandidateDecision.realization_evidence (scripts/platform_roadmap_models.py)"
   semantics: >-
     Free-text evidence that a pending CD's gated work is realized/live, set by whoever notices
     (audit, /orient session, planning). Truthy realization_evidence on a state==pending CD makes
@@ -73,7 +103,7 @@ second_signal_realized_but_pending:
     lower-confidence surfacing signal, distinct from the deliberate realization_evidence signal above.
   field: detail
   type: "str"
-  location: "CandidateDecision.detail (scripts/roadmap/platform_roadmap.py)"
+  location: "CandidateDecision.detail (scripts/platform_roadmap_models.py)"
   semantics: >-
     A pending CD whose free-text detail carries a '[Realized' prose marker but has NOT (yet) been
     given structured realization_evidence is flagged for corroboration/ratification-review -- a
@@ -195,8 +225,9 @@ lane_steps:
       still pending, so stale pending-tense assertions do not survive the flip.
 
 necessary_not_sufficient: >-
-  Ratifying a CD clears the COMPLETION gate on items it gates (gate derivation keys purely on
-  cd.state == 'pending'; scripts/roadmap/platform_roadmap.py blocked_on_cd / to_preflight_dict). It does
-  NOT close those items' open CODE exit criteria, and does NOT cascade to unrelated items whose
-  own gating CDs remain pending. Tier_item status flips (Decision 90 bookkeeping) are a separate
-  /implement step from the ratification itself.
+  Ratifying a CD clears the COMPLETION gate on items named in its gates field (gate derivation
+  keys on gates, together with cd.state == 'pending' -- affects deliberately does NOT populate
+  gate derivation; see affects_field above). scripts/platform_roadmap_state.py's blocked_on_cd
+  / to_preflight_dict compute this. It does NOT close those items' open CODE exit criteria, and
+  does NOT cascade to unrelated items whose own gating CDs remain pending. Tier_item status
+  flips (Decision 90 bookkeeping) are a separate /implement step from the ratification itself.
