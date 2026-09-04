@@ -11,14 +11,14 @@
 # never a committed literal (PLAN Step 11b parameterisation invariant).
 # Retired-resource state reconciliation for this root is governed by Decision 178 clause 4 (docs/DECISIONS.md).
 #
-# Draining a retired address needs a PUSH, never a workflow_dispatch. A destroy always routes the
-# deterministic guard, and terraform-apply-sandbox's gated-apply job (the one carrying the
-# tf-gated-apply human approval) is gated on github.event_name == 'push'. So a dispatched run
-# produces a correct fresh plan, routes it, and then skips the job that would apply it -- there is
-# nothing to approve and nothing lands. Reconcile cannot substitute: it replays the saved plan.bin
-# for the red commit, which stops rendering once config drops a provider that plan still
-# references. The merge of a PR touching this root is the vehicle -- it generates a NEW plan.bin
-# and its push-triggered run reaches gated-apply.
+# Draining a retired address never uses `terraform state rm`: a destroy always routes the
+# deterministic guard to terraform-apply-sandbox's gated-apply job (the tf-gated-apply human
+# approval). Two heal verbs reach it (Decision 183): the push-triggered run from merging a PR that
+# touches this root applies the saved, digest-verified plan.bin; a workflow_dispatch
+# acknowledge-and-retry run plans fresh at main HEAD and hands that plan.bin to gated-apply as the
+# sha256-verified SANDBOX_FRESH_PLAN_ARTIFACT -- the only path that also clears a red record.
+# Reconcile cannot substitute: it replays the saved plan.bin for the red commit, which stops
+# rendering once config drops a provider that plan still references.
 
 terraform {
   # use_lockfile (native S3 state locking, no DynamoDB lock table) requires Terraform 1.10+.
