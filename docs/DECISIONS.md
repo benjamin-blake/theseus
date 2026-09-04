@@ -2,6 +2,97 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 183: Two heal verbs for a red sandbox record, one routing rule -- the acknowledge-and-retry dispatch becomes total (a guard-routed fresh plan at HEAD reaches tf-gated-apply); Reconcile heals at the red commit (amends Decision 126 point 1's reconcile intent; extends Decision 158's Environment-reach accounting) (Decided)
+
+```yaml
+number: 183
+status: Decided
+decided_date: "2026-09-04"
+amends: [126, 178]
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable architectural commitment about the recovery model and the Environment's reach, with
+    stated reversal conditions, spanning three prior entries (126, 154, 158) and retiring
+    rec-2918's single-heal-verb direction. The contract-first alternative -- an
+    environment-taxonomy.yaml governance note -- was rejected: it can carry the mechanism but not
+    the re-decision of which verb heals which shape. amendment_forms was rejected: more than one
+    prior entry and one call site are amended.
+```
+
+**Status:** Decided
+**Date:** 2026-09-04
+**Warehouse ID:** dec-183
+
+**Problem:**
+Five dead ends stranded the red sandbox convergence record (red at e8332e9f, PR #975, run
+33323201848): (1) Reconcile cannot render the null-provider saved plan.bin (rec-3400/rec-3415)
+and re-plans AT RED_SHA, whose HCL still carries the S3 tag PR #995 later fixed. (2) The
+acknowledge-and-retry dispatch hits a push-only gated-apply job (rec-3522/rec-3135; Decision
+154's rec-2647/rec-2523 deadlock) -- a guard-routed fresh plan is silently discarded. (3) A plain
+push latch-refuses against the red record (run 33799080416) -- auto-allow-descendants is rejected
+by design. (4) PlatformAdmin lacks glue:DeleteDatabase authority (Decision 178's 2026-09-01
+update) -- the state-rm branch needs a grant that does not exist. (5) The CI apply role cannot
+PutRolePolicy on PlatformDev or PlatformAdmin (Decision 180 clause 3) -- unreached by any prior
+attempt, but load-bearing the moment a fresh plan reaches gated-apply.
+
+**Decision:**
+1. **Two heal verbs, one routing rule.** Red commit's HCL still the desired state -> Reconcile
+   (re-applies the reviewed plan.bin, or re-plans AT the red commit). The fix for the red failure
+   merged AFTER the red commit -> the acknowledge-and-retry dispatch (plans fresh at main HEAD;
+   guard-PASS applies behind the subagent review, guard-ROUTE waits for the tf-gated-apply
+   approval in the same run). Either way one dispatch, at most one approval.
+2. **The mechanism.** `.github/workflows/terraform-apply-sandbox.yml`'s `gated-apply` job is
+   reachable on `workflow_dispatch` when the guard routes, not push-only. The fresh plan.bin is
+   handed over as a run-scoped `SANDBOX_FRESH_PLAN_ARTIFACT`
+   with a symmetric sha256 EMIT (apply-sandbox) / VERIFY (gated-apply) pair (mirrors
+   `RECONCILE_FRESH_PLAN_ARTIFACT`, Decision 158 route (ii)). The saved-plan and artifact plan
+   sources stay mutually exclusive per run; Decision 77 artifact identity (the gated job applies
+   the SAME plan.bin the guard inspected) holds on every route. This also authorizes that file's
+   structural-size raise to 550 effective lines (Decision 166 roster): the added steps ARE the
+   mechanism, not sprawl.
+3. **What widens.** The `tf-gated-apply` Environment's REACH grows by exactly one cell (a routed
+   dispatch) -- the inverse of Decision 158 point 4's narrowing -- adjudicated by the human at
+   plan time (2026-09-04). No second approval mechanism is introduced.
+4. **The admin split-apply is the designed complement, not break-glass.** Decision 180 makes any
+   PlatformDev/PlatformAdmin inline-policy write admin-tier; a fresh plan carrying one is split by
+   `-target` under `agent_platform_admin` FIRST (presented, human-accepted), then the governed
+   path carries the remainder -- so the one gated approval spends only on CI-executable actions.
+5. **rec-2918 disposition.** Part (b) (a single heal verb) is superseded by point 1 above; part
+   (c) (the generalised recovery-workflow-topology guard) is delivered by
+   `validate_dispatch_gated_apply_topology`.
+6. **Decision 181 coverage story.** `scripts/ops/drain_glue_orphan/_world.py`'s invariant (a) is
+   re-grounded to the post-fix topology (a deliberate re-adjudication authorized by this entry);
+   `validate_dispatch_gated_apply_topology` is the successor surface enforcing it.
+7. **Decision 178 clause 4.** The drain vehicle for `aws_glue_catalog_database.ops` moves from
+   Reconcile's guard-routed delete to the acknowledge-and-retry dispatch's guard-routed delete
+   (substance unchanged: `github_ci_apply` executes the destroy through `tf-gated-apply`, never
+   `state rm`).
+
+**Reversal conditions:**
+(a) A routed-dispatch gated apply lands a change the approver could not have reviewed from the
+apply-sandbox logs -> make the wake comment's plan-review pointer a hard precondition, or restore
+the push conjunct and invert the guard.
+(b) **Consolidation, not reversal:** when rec-3568 (one input-free HEAD heal verb) lands, this
+entry's verb split collapses to the single head verb and Reconcile's red-commit replay retires.
+The three mechanism sites (`gated-apply`'s job `if`, the topology guard's invariant (i), the
+drain tool's invariant (a)) plus the two ambient pointers (`terraform/CLAUDE.md`'s recovery row,
+AGENTS.md's deployment-model clause) are what a reverser or consolidator must move together.
+
+**Rationale:**
+The acknowledge-and-retry dispatch is the ONLY heal verb that plans fresh at main HEAD (Reconcile's
+RED_SHA checkout is load-bearing, Decision 154 pt 2 / Decision 158 pt 1); a push-only gated-apply
+made it structurally unreachable on a guard-ROUTED verdict, stranding this exact incident for five
+days. Mirroring reconcile.yml's already-reviewed `RECONCILE_FRESH_PLAN_ARTIFACT` hand-off keeps one
+sha256-verified pattern for "hand a same-run plan.bin to a gated job" rather than inventing a
+second. The admin split-apply keeps Decision 180's permanent CI-role boundary intact while still
+letting the one human approval clear the whole incident.
+
+**Related:** 126, 154, 158, 178, T2.47, rec-3522, rec-3135, rec-2918, rec-3568.
+
+---
+
+
 ## Decision 182: Fast-tier budget split -- an unwaivable non-test half and a breadth-derived test half (amends Decision 153) (Decided)
 
 ```yaml
@@ -432,6 +523,12 @@ reviewed, and recorded here, and the guard's retirement is disclosed rather than
 > the state-rm branch would instead require a separate operator-authorized PlatformAdmin grant,
 > since PlatformAdmin carries no live glue:DeleteDatabase authority of its own. See rec-3348 /
 > rec-3328 for the time-boxed removal-obligation tracking the grant's own retirement.
+
+> **Update (2026-09-04):** Clause 4's drain vehicle moves again, substance unchanged: the
+> `aws_glue_catalog_database.ops` destroy now runs through the terraform-apply-sandbox
+> workflow_dispatch acknowledge-and-retry dispatch's guard-routed delete (Decision 183 widened
+> `gated-apply`'s reach to that path), not Reconcile's guard-routed delete -- `github_ci_apply`
+> still executes the destroy through `tf-gated-apply`, never `state rm`. See Decision 183.
 
 ---
 
@@ -3493,6 +3590,13 @@ boundary -- `deploy-paths.yaml` names roles by logical name only, no account IDs
 Decision 118 (free-form registry precedent for a non-ritual contract -- `deploy-paths.yaml` carries
 no `contract:`/`class:` block), Decision 72 (architectural-review vehicle for a recurring ci-rca
 class -- this Decision is that vehicle for rec-2658).
+
+> **Amended by Decision 183 (2026-09-04):** point 1's reconcile intent is re-read as one of TWO
+> heal verbs, not the sole one -- a red commit whose HCL is still the desired state still routes
+> to Reconcile, but a fix that merged AFTER the red commit routes to the terraform-apply-sandbox
+> workflow_dispatch acknowledge-and-retry dispatch instead, which Decision 183 also makes total
+> (a guard-routed fresh plan now reaches `tf-gated-apply`, widening this Decision's `deploy-paths.yaml`
+> pointer target by exactly the same reach Decision 158 point 4 had narrowed).
 
 ---
 

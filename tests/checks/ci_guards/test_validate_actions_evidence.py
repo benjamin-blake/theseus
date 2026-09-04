@@ -70,7 +70,7 @@ class TestActionsEvidenceCounterfactuals:
 def test_real_contract_enumerates_every_upload() -> None:
     subject.validate_contract(ROOT)
     contract = _yaml(ROOT / subject.CONTRACT_PATH)
-    assert len(contract["artifact_uploads"]) == len(subject._actual_uploads(ROOT)) == 6
+    assert len(contract["artifact_uploads"]) == len(subject._actual_uploads(ROOT)) == 7
 
 
 def test_validation_result_uploads_are_declared_in_the_contract() -> None:

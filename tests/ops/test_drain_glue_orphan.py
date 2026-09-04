@@ -471,9 +471,11 @@ class TestWorkflowInvariants:
     def test_passes_against_real_committed_source(self) -> None:
         assert_workflow_invariants(_ROOT)  # must not raise
 
-    def test_invariant_a_fails_when_gated_apply_loses_push_condition(self, tmp_path: Path) -> None:
+    def test_invariant_a_fails_when_gated_apply_regains_push_condition(self, tmp_path: Path) -> None:
         apply_sandbox, reconcile_wf, budget = _real_docs()
-        apply_sandbox["jobs"]["gated-apply"]["if"] = "always() && needs.apply-sandbox.outputs.routed == 'true'"
+        apply_sandbox["jobs"]["gated-apply"]["if"] = (
+            str(apply_sandbox["jobs"]["gated-apply"]["if"]) + " && github.event_name == 'push'"
+        )
         _write_mutated_tree(tmp_path, apply_sandbox=apply_sandbox, reconcile_wf=reconcile_wf, budget=budget)
         with pytest.raises(WorldMovedError, match=r"\(a\)"):
             assert_workflow_invariants(tmp_path)
