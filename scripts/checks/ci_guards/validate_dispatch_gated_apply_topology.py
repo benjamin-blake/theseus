@@ -75,13 +75,6 @@ def _steps(job: Any) -> list[dict[str, Any]]:
     return [step for step in steps if isinstance(step, dict)] if isinstance(steps, list) else []
 
 
-def _step_body(step: dict[str, Any]) -> str:
-    """Flatten one step's `run:`, `if:`, and `env:` values into a single searchable string."""
-    env = step.get("env") or {}
-    env_text = "\n".join(f"{key}: {value}" for key, value in env.items() if isinstance(value, str))
-    return f"{step.get('run') or ''}\n{step.get('if') or ''}\n{env_text}"
-
-
 def _find_step(
     steps: list[dict[str, Any]], *, step_id: str | None = None, uses_prefix: str | None = None
 ) -> dict[str, Any] | None:

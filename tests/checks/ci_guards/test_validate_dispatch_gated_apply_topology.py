@@ -166,6 +166,19 @@ class TestPerInvariantNegatives:
         assert any("(vii)" in item for item in failed), failed
 
 
+class TestMissingJobs:
+    def test_fails_and_declares_vacuous_when_a_required_job_is_absent(self) -> None:
+        data = copy.deepcopy(_real_workflow())
+        del data["jobs"]["gated-apply"]
+        with registry.outcome_scope("validate_dispatch_gated_apply_topology"):
+            failed = _run(data)
+        declaration = registry.pop_declaration()
+        assert any("job missing" in item for item in failed), failed
+        assert declaration is not None
+        assert declaration.kind == "examined"
+        assert declaration.count == 0
+
+
 class TestUnreadableWorkflow:
     def test_skipped_is_declared_when_workflow_unreadable(self) -> None:
         with registry.outcome_scope("validate_dispatch_gated_apply_topology"):
