@@ -81,6 +81,19 @@ _PRUNED_EDGES: dict[str, tuple[str, ...]] = {
     # A deferred, PLC0415-exempt function-scope import in _common.load_plan. Safe by COVERAGE, not reachability:
     # 3 of its 5 callers declare no globs at all and so always run; the other 2 already declare scripts/roadmap/** themselves.
     "scripts.checks._common": ("scripts.roadmap.plan_document",),
+    # scripts.checks._budget_recs -> scripts.ops_data_portal: the rec-FILING side channel every
+    # scaffolded check inherits through scripts.checks._scaffolding, which imports _budget_recs at
+    # module scope. Both portal imports are function-scope, inside _file_budget_breach_rec and
+    # _file_budget_bypass_rec.
+    # Measured effect of this row at e27d2d2 on 2026-09-04: the advisory backlog goes 279 -> 150
+    # findings, entirely in the three checks that reach _budget_recs, with the count of checks
+    # carrying findings unmoved at 39 of 47.
+    # REMOVE this row if a check's verdict is shown to depend on portal code, if _budget_recs
+    # acquires a MODULE-SCOPE scripts.ops_data_portal import, if a check reaching _budget_recs is
+    # shown to EXAMINE portal behaviour, and in any case at the wave-4c flip.
+    # CEILING: this is the THIRD of the operator's four allowed rows; a fourth exhausts the cap and
+    # a fifth would be a cap raise, not an addition.
+    "scripts.checks._budget_recs": ("scripts.ops_data_portal",),
 }
 
 # Per-check cap on printed paths; the count is always reported in full.
