@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scripts.checks import registry
+from scripts.checks.deps import selection_budget
 from tests.fixtures.subprocess_stubs import _pre_mock_run
 from tests.fixtures.validate_module import _validate
 
@@ -22,6 +23,33 @@ _FAST_TIER_BUDGET_SECONDS = _validate._FAST_TIER_BUDGET_SECONDS
 _FORCED_FULL_SUITE_CEILING_SECONDS = _validate._FORCED_FULL_SUITE_CEILING_SECONDS
 run_pytest_diff = _validate.run_pytest_diff
 
+# Decision 182 repair, not a relaxation: under the split, an elapsed with EVERY phase at 0.0 is a
+# run whose whole wall clock is unattributed, which the unwaivable non-test arm now claims. Each
+# case below that names a TEST-half arm therefore places its elapsed inside a real dominating
+# pytest_diff phase -- the same slow-step side_effect pattern
+# test_breach_rec_receives_a_real_dominant_phase already used -- so the case still describes the arm
+# it names. Exit codes and message assertions are unchanged.
+_UNREACHABLE_TEST_ALLOWANCE = selection_budget.CEILING_SECONDS - selection_budget.NON_TEST_BUDGET_SECONDS + 100.0
+
+
+def _test_half_clock(test_phase_s: float, elapsed: float | None = None):
+    """Return (fake_monotonic, slow_pytest_diff) placing ``test_phase_s`` of the run's elapsed
+    inside the pytest_diff phase, with any remainder in the lint phase, so the non-test half stays
+    a stated quantity instead of absorbing the whole clock."""
+    clock = {"t": 0.0}
+    remainder = 0.0 if elapsed is None else float(elapsed) - float(test_phase_s)
+
+    def fake_monotonic() -> float:
+        return clock["t"]
+
+    def slow_pytest_diff(changed_tests: list[str], failed: list[str]) -> None:
+        clock["t"] += float(test_phase_s)
+
+    def slow_lint(*_args: object, **_kwargs: object) -> None:
+        clock["t"] += remainder
+
+    return fake_monotonic, slow_pytest_diff, slow_lint
+
 
 class TestBudgetAssertion:
     """Tests for the 5-minute fast-tier wall-clock budget assertion."""
@@ -32,12 +60,16 @@ class TestBudgetAssertion:
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
         monkeypatch.delenv("CI", raising=False)
 
+        fake_monotonic, slow_pytest_diff, slow_lint = _test_half_clock(_UNREACHABLE_TEST_ALLOWANCE)
+
         with (
             patch("scripts.checks._common.get_changed_files", return_value=[]),
             patch("scripts.checks._common.run", side_effect=_pre_mock_run),
             patch.object(registry, "pre_sequence", return_value=pre_sequence_stub(checks=())),
             patch("validate._file_budget_breach_rec"),
-            patch("time.monotonic", side_effect=itertools.chain([0.0], itertools.repeat(400.0))),
+            patch("validate.run_pytest_diff", side_effect=slow_pytest_diff),
+            patch("validate.run_lint_checks", side_effect=slow_lint),
+            patch("time.monotonic", side_effect=fake_monotonic),
             pytest.raises(SystemExit) as exc_info,
         ):
             _validate.main()
@@ -52,12 +84,16 @@ class TestBudgetAssertion:
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
         monkeypatch.delenv("CI", raising=False)
 
+        fake_monotonic, slow_pytest_diff, slow_lint = _test_half_clock(_UNREACHABLE_TEST_ALLOWANCE)
+
         with (
             patch("scripts.checks._common.get_changed_files", return_value=[]),
             patch("scripts.checks._common.run", side_effect=_pre_mock_run),
             patch.object(registry, "pre_sequence", return_value=pre_sequence_stub(checks=())),
             patch("validate._file_budget_breach_rec"),
-            patch("time.monotonic", side_effect=itertools.chain([0.0], itertools.repeat(400.0))),
+            patch("validate.run_pytest_diff", side_effect=slow_pytest_diff),
+            patch("validate.run_lint_checks", side_effect=slow_lint),
+            patch("time.monotonic", side_effect=fake_monotonic),
             pytest.raises(SystemExit),
         ):
             _validate.main()
@@ -82,8 +118,16 @@ class TestBudgetAssertion:
 
         assert exc_info.value.code == 0
 
-    def test_budget_constant_is_300(self) -> None:
-        assert _FAST_TIER_BUDGET_SECONDS == 300
+    def test_floor_total_constant_matches_the_declared_partition(self) -> None:
+        """Decision 182 re-points this pin at the FLOOR TOTAL and strengthens it: the single
+        equality it replaces (== 300) is now a three-way identity, so the case pins the new value
+        AND the partition identity the old one never covered."""
+        assert (
+            _FAST_TIER_BUDGET_SECONDS
+            == selection_budget.FLOOR_TOTAL_SECONDS
+            == selection_budget.NON_TEST_BUDGET_SECONDS + selection_budget.TEST_BASE_SECONDS
+            == 420
+        )
 
     def test_breach_rec_receives_a_real_dominant_phase(self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub) -> None:
         """The dominant phase threaded to _file_budget_breach_rec must correctly identify WHICH
@@ -170,6 +214,8 @@ class TestForcedFullSuiteWaiver:
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
         monkeypatch.delenv("CI", raising=False)
 
+        fake_monotonic, slow_pytest_diff, slow_lint = _test_half_clock(380.0, elapsed=400.0)
+
         with (
             patch("scripts.checks._common.get_changed_files", return_value=[]),
             patch("scripts.checks._common.run", side_effect=_pre_mock_run),
@@ -177,7 +223,9 @@ class TestForcedFullSuiteWaiver:
             patch("scripts.checks.deps.affected_tests.derive_affected_tests", return_value=self._selection(True)),
             patch("scripts.checks.deps.affected_tests.emit_manifest"),
             patch("validate._file_budget_breach_rec") as mock_breach,
-            patch("time.monotonic", side_effect=itertools.chain([0.0], itertools.repeat(400.0))),
+            patch("validate.run_pytest_diff", side_effect=slow_pytest_diff),
+            patch("validate.run_lint_checks", side_effect=slow_lint),
+            patch("time.monotonic", side_effect=fake_monotonic),
             pytest.raises(SystemExit) as exc_info,
         ):
             _validate.main()
@@ -193,13 +241,17 @@ class TestForcedFullSuiteWaiver:
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
         monkeypatch.delenv("CI", raising=False)
 
+        fake_monotonic, slow_pytest_diff, slow_lint = _test_half_clock(380.0, elapsed=400.0)
+
         with (
             patch("scripts.checks._common.get_changed_files", return_value=[]),
             patch("scripts.checks._common.run", side_effect=_pre_mock_run),
             patch.object(registry, "pre_sequence", return_value=pre_sequence_stub(checks=())),
             patch("scripts.checks.deps.affected_tests.derive_affected_tests", return_value=self._selection(True)),
             patch("scripts.checks.deps.affected_tests.emit_manifest"),
-            patch("time.monotonic", side_effect=itertools.chain([0.0], itertools.repeat(400.0))),
+            patch("validate.run_pytest_diff", side_effect=slow_pytest_diff),
+            patch("validate.run_lint_checks", side_effect=slow_lint),
+            patch("time.monotonic", side_effect=fake_monotonic),
             pytest.raises(SystemExit) as exc_info,
         ):
             _validate.main()
@@ -215,6 +267,8 @@ class TestForcedFullSuiteWaiver:
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
         monkeypatch.delenv("CI", raising=False)
 
+        fake_monotonic, slow_pytest_diff, slow_lint = _test_half_clock(380.0, elapsed=400.0)
+
         with (
             patch("scripts.checks._common.get_changed_files", return_value=[]),
             patch("scripts.checks._common.run", side_effect=_pre_mock_run),
@@ -222,7 +276,9 @@ class TestForcedFullSuiteWaiver:
             patch("scripts.checks.deps.affected_tests.derive_affected_tests", return_value=self._selection(False)),
             patch("scripts.checks.deps.affected_tests.emit_manifest"),
             patch("validate._file_budget_breach_rec") as mock_breach,
-            patch("time.monotonic", side_effect=itertools.chain([0.0], itertools.repeat(400.0))),
+            patch("validate.run_pytest_diff", side_effect=slow_pytest_diff),
+            patch("validate.run_lint_checks", side_effect=slow_lint),
+            patch("time.monotonic", side_effect=fake_monotonic),
             pytest.raises(SystemExit) as exc_info,
         ):
             _validate.main()
@@ -238,6 +294,10 @@ class TestForcedFullSuiteWaiver:
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
         monkeypatch.delenv("CI", raising=False)
 
+        fake_monotonic, slow_pytest_diff, slow_lint = _test_half_clock(
+            float(_FORCED_FULL_SUITE_CEILING_SECONDS) - 100.0, elapsed=float(_FORCED_FULL_SUITE_CEILING_SECONDS)
+        )
+
         with (
             patch("scripts.checks._common.get_changed_files", return_value=[]),
             patch("scripts.checks._common.run", side_effect=_pre_mock_run),
@@ -245,10 +305,9 @@ class TestForcedFullSuiteWaiver:
             patch("scripts.checks.deps.affected_tests.derive_affected_tests", return_value=self._selection(True)),
             patch("scripts.checks.deps.affected_tests.emit_manifest"),
             patch("validate._file_budget_breach_rec") as mock_breach,
-            patch(
-                "time.monotonic",
-                side_effect=itertools.chain([0.0], itertools.repeat(float(_FORCED_FULL_SUITE_CEILING_SECONDS))),
-            ),
+            patch("validate.run_pytest_diff", side_effect=slow_pytest_diff),
+            patch("validate.run_lint_checks", side_effect=slow_lint),
+            patch("time.monotonic", side_effect=fake_monotonic),
             pytest.raises(SystemExit) as exc_info,
         ):
             _validate.main()
@@ -264,6 +323,10 @@ class TestForcedFullSuiteWaiver:
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
         monkeypatch.delenv("CI", raising=False)
 
+        fake_monotonic, slow_pytest_diff, slow_lint = _test_half_clock(
+            float(_FORCED_FULL_SUITE_CEILING_SECONDS), elapsed=float(_FORCED_FULL_SUITE_CEILING_SECONDS) + 100.0
+        )
+
         with (
             patch("scripts.checks._common.get_changed_files", return_value=[]),
             patch("scripts.checks._common.run", side_effect=_pre_mock_run),
@@ -271,10 +334,9 @@ class TestForcedFullSuiteWaiver:
             patch("scripts.checks.deps.affected_tests.derive_affected_tests", return_value=self._selection(True)),
             patch("scripts.checks.deps.affected_tests.emit_manifest"),
             patch("validate._file_budget_breach_rec") as mock_breach,
-            patch(
-                "time.monotonic",
-                side_effect=itertools.chain([0.0], itertools.repeat(float(_FORCED_FULL_SUITE_CEILING_SECONDS) + 100.0)),
-            ),
+            patch("validate.run_pytest_diff", side_effect=slow_pytest_diff),
+            patch("validate.run_lint_checks", side_effect=slow_lint),
+            patch("time.monotonic", side_effect=fake_monotonic),
             pytest.raises(SystemExit) as exc_info,
         ):
             _validate.main()
@@ -383,11 +445,15 @@ class TestIgnoreBudgetFlag:
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
         monkeypatch.delenv("CI", raising=False)
 
+        fake_monotonic, slow_pytest_diff, slow_lint = _test_half_clock(380.0, elapsed=400.0)
+
         with (
             patch("scripts.checks._common.get_changed_files", return_value=[]),
             patch("scripts.checks._common.run", side_effect=_pre_mock_run),
             patch.object(registry, "pre_sequence", return_value=pre_sequence_stub(checks=())),
-            patch("time.monotonic", side_effect=itertools.chain([0.0], itertools.repeat(400.0))),
+            patch("validate.run_pytest_diff", side_effect=slow_pytest_diff),
+            patch("validate.run_lint_checks", side_effect=slow_lint),
+            patch("time.monotonic", side_effect=fake_monotonic),
             patch("validate._file_budget_bypass_rec"),
             patch("validate._file_budget_breach_rec") as mock_breach,
             pytest.raises(SystemExit) as exc_info,
