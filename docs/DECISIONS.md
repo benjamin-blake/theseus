@@ -2,6 +2,98 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 182: Fast-tier budget split -- an unwaivable non-test half and a breadth-derived test half (amends Decision 153) (Decided)
+
+```yaml
+number: 182
+status: Decided
+decided_date: "2026-09-03"
+amends: [153]
+significance:
+  value: numbered_decision
+  justification: >-
+    Retires a ratified numeric contract -- Decision 153's single fast-tier design budget -- for a
+    two-quantity gate whose floor total RISES. A re-decision, not a tweak.
+```
+
+**Status:** Decided
+**Date:** 2026-09-03
+**Warehouse ID:** dec-182
+
+**Problem:**
+PR #1049 -- reviewed, green, type-only -- was blocked on wall clock alone, zero failed checks
+(374.248s); the same commit re-ran at 289.567s. An aggregate wall clock cannot detect drift when
+its margin is nondeterministic, and it averaged two causes: static/check time, where Decision 73's
+anti-drift rationale applies, and pytest time, a measured function of selection breadth. It was
+also already jointly unsatisfiable with the allowances inside it: an all-green narrow run at
+validate_vp_replay's ratified maximum costs 150 + 71.766 + 28.317 = 250.083s of 300.
+
+**Decision:**
+1. Decision 153 point 3 said, verbatim, "The fast tier retains exactly ONE design budget: 300s".
+   That clause is NEGATED. The tier asserts TWO: NON_TEST_BUDGET_SECONDS = 240 on the non-test
+   half, and max(180, 2.0 x min(n_selected, test-module census)) on the pytest_diff phase, capped
+   at the derived CEILING_SECONDS - NON_TEST_BUDGET_SECONDS. The point 4 five-property tier
+   test (flag, sequence, scope, trigger/role, budget contract) is re-run: only the fifth changes,
+   so this stays ONE tier with a two-term contract, not a new tier.
+2. The non-test half is defined BY SUBTRACTION -- elapsed minus the one subtracted pytest_diff
+   phase, identically static + replay + unattributed -- so unattributed time is governed too. It
+   CONTAINS validate_vp_replay's phase rather than exempting it: 240 DOMINATES that check's own
+   150s green maximum (MAX_AGGREGATE_SECONDS 120 + one PER_STEP_TIMEOUT_SECONDS 30), the only
+   in-tier allowance in a sweep of all 112 --pre steps. Hence 240 not 120, and a CORRECTION.
+3. The floor total rises to 240 + 180 = 420s, 120s ABOVE the retired 300s aggregate, and rises
+   with breadth to a worst-case asserted total of exactly 1500s -- the existing derived ceiling,
+   unchanged and still the only ceiling constant. This narrows what Decision 73 point 1 / its
+   "Enforced budgets" rationale enforces; 73 is cited and re-read, never amended.
+4. Branch order: non_test_breach, bypass, forced_waived, forced_ceiling_breach, breach,
+   breadth_waived, within_budget -- the non-test half outranks every waiver, so a forced full-suite
+   run LOSES Decision 153 point 1's waiver once its non-test half exceeds 240s. "Unwaivable"
+   removes the LOCAL --ignore-budget escape only; CI already rejects that flag, so CI enforcement
+   is unchanged.
+5. Three green shapes deliberately begin to hard-fail: a non-test half above 240s inside a
+   sub-420s run; a run with no pytest_diff phase, whose elapsed lands wholly in the unwaivable
+   half; and the forced run above. No measured CI run (51.014/65.501/71.766s) is among them.
+6. Enforcement coverage. Both budgets: validate.py's budget-assertion scaffold over
+   scripts/checks/deps/selection_budget.py, every --pre run. non_test_breach reporting: rec-free BY
+   DESIGN, discharged by mirroring a titled section to the CI step summary (Decision 153 point 3's
+   doctrine). Unenforced residuals, each with an owning rec: (i) a non-test half measured at 51-72s
+   may drift to 240 before firing (3.34x), narrowing only from the static_s / replay_s /
+   phase_count series this change starts recording; (ii) budget_ingest.INGESTED_OUTCOMES has no
+   non_test_breach row, so that sensor files no rec; (iii) the breach-rec "limit 5m" wording is
+   unedited and understates its arm's limit.
+
+**Rationale:**
+Decision 135's cap-and-defer path cannot bound this shape: the CAP governs the transitive-residue
+channel only, the protected recall channels being exempt by design. The 300s cap was an operator
+placeholder for the point at which a better solution was worth engineering. Criterion (ii) of the
+calibration mandate is NOT met and is not claimed: the largest single --pre check measures 7.448s
+of a 49.422s all-check total, so doubling any one static check moves the non-test half under 8s
+against 168.234s of headroom and never fires; what 240 catches is ~3.34x growth of the WHOLE
+half. The teeth survive: on the narrowest measured run the retired aggregate tolerated a non-test
+half up to 271.683s where the split fires at 240 -- 31.683s TIGHTER. The same file-count proxy
+survives in .claude/skills/planning/SKILL.md's STRATEGIC heuristic, to be replaced by this measured
+breadth number when Decision 67 lifts.
+
+**Reversal conditions:** (a) re-derive the constant if the recorded static_s / replay_s /
+phase_count series shows a green non-test half above 0.8 x NON_TEST_BUDGET_SECONDS; (b)
+re-derive it if validate_vp_replay's MAX_AGGREGATE_SECONDS or PER_STEP_TIMEOUT_SECONDS moves (the
+mirror pin is the trigger), re-deriving the cap as CEILING - NON_TEST in the same edit; (c)
+re-derive the coefficient once the recorded population exceeds this entry's three runs. Two
+DESIGN-LEVEL conditions condemn the split itself: (d) if over a rolling three-month window more
+than half of non-forced --pre runs take the breadth_waived path
+AND the median allowance exceeds 2 x TEST_BASE_SECONDS, the test half bounds nothing -- a gate
+that waives most of its population is a report, and the answer is a new Decision retiring or
+re-founding the split; (e) if no non-test breach fires for two consecutive quarters WHILE the
+recorded static_s series grows past 1.5x its calibrated worst (71.766s), the unwaivable half is a
+gate in name only and that drift belongs per-check.
+
+**Significance:** clears the Decision 150 bar -- retires a ratified numeric contract, moves a
+governed floor, installs a second measured cause.
+
+**Related:** 153 (amended), 73 (cited, narrowed, not amended), 135, 128, 165, 167, 177, 181, 84.
+
+---
+
+
 ## Decision 181: The scope-boundary CONTENT invariant is a standing prohibition, declared with per-surface enforcement coverage rather than asserted as an unqualified rule (Decided)
 
 ```yaml

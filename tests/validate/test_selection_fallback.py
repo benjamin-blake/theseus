@@ -9,6 +9,7 @@ in the summary the operator (and CI's step log) actually reads.
 
 import itertools
 import sys
+from contextlib import ExitStack
 from unittest.mock import patch
 
 import pytest
@@ -38,24 +39,47 @@ def _manifest(**overrides):
     return manifest
 
 
-def _run_pre(monkeypatch: pytest.MonkeyPatch, pre_sequence_stub, manifest, elapsed: float):
+def _run_pre(monkeypatch: pytest.MonkeyPatch, pre_sequence_stub, manifest, elapsed: float, test_phase_s: float | None = None):
+    """test_phase_s (Decision 182) places that many seconds of ``elapsed`` inside the pytest_diff
+    phase and the remainder inside lint, so a breach case is DIAGNOSED OFF PHASE TIMINGS -- which is
+    what this module's docstring actually claims -- rather than landing in the unwaivable non-test
+    half as wholly unattributed time."""
     monkeypatch.setattr(sys, "argv", ["validate", "--pre"])
     monkeypatch.setenv("_VALIDATE_DEPTH", "0")
     monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
     monkeypatch.delenv("CI", raising=False)
 
+    clock = {"t": 0.0}
+
+    def _advance(seconds: float):
+        def _fn(*_args: object, **_kwargs: object) -> None:
+            clock["t"] += float(seconds)
+
+        return _fn
+
+    if test_phase_s is None:
+        shaping = [patch("time.monotonic", side_effect=itertools.chain([0.0], itertools.repeat(elapsed)))]
+    else:
+        shaping = [
+            patch("validate.run_pytest_diff", side_effect=_advance(test_phase_s)),
+            patch("validate.run_lint_checks", side_effect=_advance(elapsed - test_phase_s)),
+            patch("time.monotonic", side_effect=lambda: clock["t"]),
+        ]
+
     selection = {"selected": manifest["selected"], "manifest": manifest}
-    with (
-        patch("scripts.checks._common.get_changed_files", return_value=[]),
-        patch("scripts.checks._common.run", side_effect=_pre_mock_run),
-        patch.object(registry, "pre_sequence", return_value=pre_sequence_stub(checks=())),
-        patch("scripts.checks.deps.affected_tests.derive_affected_tests", return_value=selection),
-        patch("scripts.checks.deps.affected_tests.emit_manifest"),
-        patch("validate._file_budget_breach_rec"),
-        patch("time.monotonic", side_effect=itertools.chain([0.0], itertools.repeat(elapsed))),
-        pytest.raises(SystemExit) as exc_info,
-    ):
-        _validate.main()
+    with ExitStack() as stack:
+        for context in [
+            patch("scripts.checks._common.get_changed_files", return_value=[]),
+            patch("scripts.checks._common.run", side_effect=_pre_mock_run),
+            patch.object(registry, "pre_sequence", return_value=pre_sequence_stub(checks=())),
+            patch("scripts.checks.deps.affected_tests.derive_affected_tests", return_value=selection),
+            patch("scripts.checks.deps.affected_tests.emit_manifest"),
+            patch("validate._file_budget_breach_rec"),
+            *shaping,
+        ]:
+            stack.enter_context(context)
+        with pytest.raises(SystemExit) as exc_info:
+            _validate.main()
     return exc_info.value.code
 
 
@@ -88,7 +112,7 @@ class TestFallbackSurfacing:
         """A breach diagnosed off phase timings is misleading when selection was degraded --
         the dominant-phase report must say so rather than reading as ordinary drift."""
         manifest = _manifest(fallback=True, fallback_reason="RuntimeError('boom')")
-        code = _run_pre(monkeypatch, pre_sequence_stub, manifest, elapsed=400.0)
+        code = _run_pre(monkeypatch, pre_sequence_stub, manifest, elapsed=400.0, test_phase_s=380.0)
 
         out = capsys.readouterr().out
         assert code == 1
@@ -98,7 +122,7 @@ class TestFallbackSurfacing:
     def test_healthy_budget_breach_has_no_fallback_note(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture, pre_sequence_stub
     ) -> None:
-        code = _run_pre(monkeypatch, pre_sequence_stub, _manifest(), elapsed=400.0)
+        code = _run_pre(monkeypatch, pre_sequence_stub, _manifest(), elapsed=400.0, test_phase_s=380.0)
 
         out = capsys.readouterr().out
         assert code == 1
