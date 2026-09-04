@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import cast
+
+import yaml
 
 from scripts.preflight import _common
 from src.common.ducklake_reader_client import DuckLakeReader
@@ -25,6 +28,108 @@ def _derive_open_recs(rows: list[dict]) -> list[dict]:
         if r.get("status") == "open"
     ]
     return sorted(open_rows, key=lambda r: r.get("id") or "")
+
+
+def _oldest_first_sort_key(row: dict) -> tuple[int, datetime, str]:
+    """Sort key: oldest `created_timestamp` first, rows with an unparseable timestamp last, ties
+    broken by id. Shared by `_derive_followon_recs` and `_derive_open_critical_recs`: readiness is
+    the membership predicate, this is only a deterministic tie-break under the /orient cap, not an
+    urgency rank (audit B1-R4 (c) governs the bucket RANK, not this age ordering)."""
+    ts = _common._row_ts(row)
+    if ts is None:
+        return (1, datetime.max.replace(tzinfo=timezone.utc), row.get("id") or "")
+    return (0, ts, row.get("id") or "")
+
+
+def _landed_followon_rec_ids(plans_dir: Path | None = None) -> dict[str, str]:
+    """Map each rec id named in a LANDED plan's `followon_recs` to that plan's slug.
+
+    Walks docs/plans/PLAN-*.yaml under the T-1.23 substring gate (scripts/platform_roadmap_state.py
+    ::compute_followon_state precedent): a document whose text never mentions the key cannot
+    declare one, so it is skipped before yaml.safe_load ever runs -- zero reader call (Decision 88
+    invariant ii). Only a plan carrying `implementation_declared: true` contributes (Fork 1: this
+    is a DELIBERATE NARROWING of the adjudicated remedy text, pinned by Decision 148's
+    implementation_declared resolution signal) -- a plan whose implementation has not landed marks
+    its half not-yet-ready, so its rec ids are withheld from the map entirely.
+
+    Exception-contained (a per-file OSError or yaml.YAMLError is skipped, never raised). The first
+    plan a sorted walk finds naming a given rec id wins that id's entry.
+    """
+    resolved_dir = plans_dir if plans_dir is not None else _common.ROOT / "docs" / "plans"
+    result: dict[str, str] = {}
+    if not resolved_dir.is_dir():
+        return result
+
+    for plan_file in sorted(resolved_dir.glob("PLAN-*.yaml")):
+        try:
+            text = plan_file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "followon_recs" not in text:
+            continue
+        try:
+            plan_data = yaml.safe_load(text)
+        except yaml.YAMLError:
+            continue
+        if not isinstance(plan_data, dict):
+            continue
+        if plan_data.get("implementation_declared") is not True:
+            continue
+        recs = plan_data.get("followon_recs")
+        if not isinstance(recs, list):
+            continue
+        slug = plan_file.stem[len("PLAN-") :]
+        for rec_id in recs:
+            if isinstance(rec_id, str) and rec_id not in result:
+                result[rec_id] = slug
+    return result
+
+
+def _derive_followon_recs(rows: list[dict], plans_dir: Path | None = None) -> list[dict]:
+    """Client-side `followon_recs` /orient key: OPEN recs named in a landed plan's followon_recs.
+
+    Intersects `_landed_followon_rec_ids`'s map with the OPEN rows in *rows* -- both derivations
+    take already-pulled rows as an argument, never a reader call (Decision 88 invariant ii).
+    Ordered oldest-created-first via `_oldest_first_sort_key` (a tie-break, not an urgency rank).
+    """
+    landed = _landed_followon_rec_ids(plans_dir)
+    if not landed:
+        return []
+    matched = [r for r in rows if r.get("status") == "open" and r.get("id") in landed]
+    matched.sort(key=_oldest_first_sort_key)
+    return [
+        {
+            "id": r.get("id", ""),
+            "title": r.get("title", ""),
+            "parent_plan": landed[r.get("id", "")],
+        }
+        for r in matched
+    ]
+
+
+def _derive_open_critical_recs(rows: list[dict]) -> list[dict]:
+    """Client-side `open_critical_recs` /orient key: open Critical recs whose source is not the
+    EXACT string 'ci_rca' (Fork 3) -- an open Critical `ci_rca_evidence_dispute` row IS surfaced,
+    because every ci_rca preflight predicate and the Decision 73 halt match the exact source only,
+    so such a row would otherwise have no lane at all (rec-3054's own complaint; audit B4-O1).
+    Ordered oldest-created-first via `_oldest_first_sort_key` (a tie-break, not an urgency rank).
+    """
+    matched = [
+        r
+        for r in rows
+        if r.get("status") == "open"
+        and str(r.get("priority", "")).lower() == "critical"
+        and str(r.get("source", "")) != "ci_rca"
+    ]
+    matched.sort(key=_oldest_first_sort_key)
+    return [
+        {
+            "id": r.get("id", ""),
+            "title": r.get("title", ""),
+            "source": r.get("source", ""),
+        }
+        for r in matched
+    ]
 
 
 def _derive_decisions_max_updated(rows: list[dict]) -> list[dict]:

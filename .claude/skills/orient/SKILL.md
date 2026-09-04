@@ -102,7 +102,7 @@ Realized-but-pending (needs corroboration): CD.2 (hint: <realized_hint>) | CD.21
 ```
 Realization candidates (derived): CD.4 (gates: ...) | CD.5 (gates: ...)
 ```
-`/orient` stays read-only here exactly as elsewhere in this section -- it never writes `realization_evidence`; a human-confirmed `/plan` session is what would draft the evidence text (and, separately, the ratifying Decision, per the planning skill's ratification section). Preserve the "do NOT surface a pending CD with no `realization_evidence` in the RATIFIABLE list" rule above unchanged: a CD surfacing here never appears in Ratifiable CDs until a human writes `realization_evidence` for it.
+`/orient` stays read-only here exactly as elsewhere in this section -- it never writes `realization_evidence`; a human-confirmed `/plan` session is what would draft the evidence text (and, separately, the ratifying Decision, per the planning skill's ratification section).
 
 **Blocked-on-CD annotation**: for each item in `platform_roadmap.blocked_on_cd`, add a "gated by CD.NN" note in the Notes column including the relationship type (`gates`, `related`, or `decision_required_before`) and whether the item carries `bootstrap_completion_exempt: true` (in which case it may start/complete despite the pending CD). An item can be eligible-to-start while still annotated as gated-by-CD; the annotation informs planning, it is not a hard block on eligibility.
 
@@ -215,6 +215,8 @@ Then one prompt per eligible (not_started) item, ordered keystone-first:
 ```
 /plan <item-id>: <item-name>
 ```
+
+Ad-hoc lane (non-blocking, cap 3): open Critical recs, ready follow-on recs, priority queue -- rendering rule in the orient command Section 6 trailing subsection.
 
 ## Scope
 
