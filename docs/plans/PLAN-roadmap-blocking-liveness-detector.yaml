@@ -1,0 +1,384 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "roadmap-blocking-liveness-detector"
+intent: >-
+  Make roadmap deadlock machine-visible: a registered check that builds the heterogeneous blocking
+  graph, reports strongly connected components that structurally cannot progress, and ratchets the
+  measured stock down shrink-only -- closing the gap where validate_platform_roadmap passes green
+  while two live cores are deadlocked.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-roadmap-blocking-liveness-detector.yaml
+phase: >-
+  Roadmap-governance enforcement; consumes the ExitCriterion.blocked_by / CandidateDecision.affects
+  surface added by PLAN-roadmap-blocking-edge-semantics (commit c1f818f3, PR 1070). Soft-warn
+  exception category ad_hoc_rec (rec-3395, rec-3394), so the Tier Item Freshness Gate is skipped:
+  claims no tier_item slice and closes no criterion. Boundary: T2.54 owns instruction-layer
+  clause-to-check traceability and is NOT advanced here; T2.55 owns retiring marker escapes on the
+  SLOC/coverage registries and is not touched.
+scope:
+  - file: scripts/platform_roadmap_liveness.py
+    action: Create
+    purpose: >-
+      Pure graph module. Builds the blocking graph over NON_TERMINAL nodes, classifies every edge by
+      the terminal state it demands, runs Tarjan SCC, and returns toxic SCCs (>=1 internal
+      completion-demanding edge). Report-only; never raises at load. Exposes a --report CLI.
+  - file: scripts/checks/roadmap/validate_roadmap_liveness.py
+    action: Create
+    purpose: >-
+      The registered check. Leg A liveness ratchet vs the baseline, leg B rehome coverage
+      (hard-fail), leg C diff-scoped criterion-level prose-to-structural (hard-fail). Declares
+      examined()/skipped() on every reachable exit path (Decision 170).
+  - file: scripts/checks/roadmap/_manifest.py
+    action: Modify
+    purpose: >-
+      Add the gated Entry (bare string literals, Decision 169) with pre_globs covering the whole
+      transitive first-party import closure -- see execution_steps for the exact glob list.
+  - file: config/roadmap_liveness_baseline.yaml
+    action: Create
+    purpose: >-
+      Frozen shrink-only baseline, one record per tier_item/CD id (Decision 176 grain), seeded at the
+      19 measured toxic nodes. No marker escape grammar of any kind.
+  - file: config/ci_rca_taxonomy.yaml
+    action: Modify
+    purpose: function_to_category row -- validate_roadmap_liveness -> schema_drift (surface 4 of 7)
+  - file: docs/contracts/roadmap-liveness.yaml
+    action: Create
+    purpose: >-
+      Class D contract: node-class semantics, edge-demand taxonomy, baseline grammar, and the single
+      leg-C residual declaration discharging Decision 181 clause 2. Not a general clause-to-check index.
+  - file: docs/contracts/file-router.yaml
+    action: Modify
+    purpose: route entry whose topic equals the new contract's subject (Decision 168)
+  - file: docs/ROADMAP-PLATFORM.yaml
+    action: Modify
+    purpose: >-
+      Sole edit -- add blocked_by [{ref: CD.41, until: ratified}] to T2.53 c6, the only edge the
+      verbatim text licenses. T2.51 c3 is NOT edited (its text disclaims the block).
+  - file: config/agent/verification_registry/entries/roadmap-liveness-graph-semantics.yaml
+    action: Create
+    purpose: verification-registry shard for the graduated graph-semantics step (Decision 132/176)
+  - file: config/agent/verification_registry/entries/roadmap-liveness-rehome-target-carries-open-criterion.yaml
+    action: Create
+    purpose: verification-registry shard for the graduated rehome-coverage step
+  - file: config/agent/verification_registry/entries/roadmap-liveness-legc-text-keyed.yaml
+    action: Create
+    purpose: verification-registry shard for the graduated leg-C insertion-robustness step
+  - file: tests/test_platform_roadmap_liveness.py
+    action: Create
+    purpose: graph-module unit tests over synthetic fixtures (mirror of the graph module)
+  - file: tests/checks/roadmap/test_validate_roadmap_liveness.py
+    action: Create
+    purpose: check mirror test -- three legs, ratchet teeth, accounting declaration
+bundled_recommendations: ["rec-3395", "rec-3394"]
+followon_recs: ["rec-3579", "rec-3580", "rec-3581", "rec-3582"]
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    scripts/platform_roadmap_liveness.py classifies an SCC toxic iff it contains an internal edge
+    demanding `complete` of a member; a pending-CD build-then-ratify cycle is never toxic.
+  - >-
+    Run against the live roadmap the detector reports exactly 2 toxic SCCs spanning 19 node ids, and
+    config/roadmap_liveness_baseline.yaml holds exactly those 19 ids.
+  - >-
+    The baseline is shrink-only with no marker escape: removing an id passes, adding an id absent
+    from the in-module frozen _BASELINE_SEED fails, and an unreadable diff base SKIPs loudly.
+  - >-
+    Leg B fails a roadmap in which a rehomed criterion's met_by target carries no open criterion, and
+    passes on the live roadmap (0 violations), using the normalizing loader so bare-string criteria
+    are counted as open.
+  - >-
+    Leg C fails a criterion added or edited in the diff whose text names a NON_TERMINAL roadmap id
+    with a blocking phrase and carries no matching blocked_by entry, and reports no finding when a
+    criterion is merely inserted into a bare-string list ahead of unchanged siblings.
+  - >-
+    validate_roadmap_liveness is registered, dispatched from the roadmap manifest, present in
+    config/ci_rca_taxonomy.yaml function_to_category, absent from config/check_accounting_baseline.yaml,
+    and declares examined()/skipped() on every reachable exit path.
+  - >-
+    T2.53 c6 carries blocked_by [{ref: CD.41, until: ratified}], the roadmap still loads, and the
+    toxic-SCC count is unchanged at 2.
+  - rec-3395 and rec-3394 are closed with evidence, and the full validation tier exits 0.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Exercise the discriminator over synthetic fixtures -- a pending-CD build-then-ratify 2-cycle is
+      benign; a ring carrying an internal completion-demanding edge is toxic; a blocked_by until
+      ratified edge alone never makes a ring toxic; the rec-3394 shape (rehome-out criterion plus a
+      blocked_by until ratified edge to a CD that gates the rehome source) yields no toxic SCC.
+    command: bin/venv-python -m pytest tests/test_platform_roadmap_liveness.py -q
+    expected: All tests pass, exit status 0, and no test is skipped.
+    fix_if: >-
+      A benign CD cycle is reported toxic (the ratified/evidence edge kinds leaked into the
+      completion-demanding set), or the rec-3394 fixture reports a toxic SCC (the until value is
+      being ignored and every blocked_by edge is treated as completion-demanding).
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: roadmap-liveness-graph-semantics
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Run the detector against the live roadmap and confirm it reports exactly 2 toxic SCCs spanning
+      19 node ids, and that the seeded baseline holds exactly those ids.
+    command: bin/venv-python -m scripts.platform_roadmap_liveness --report
+    expected: >-
+      Output names 2 toxic SCCs and 19 total toxic node ids, listing CD.11, CD.27, CD.38, CD.40,
+      CD.43, T2.18, T2.19, T2.26, T2.36, T3.2, T3.20, T4.1, T4.10a, T4.13, T4.2, T4.3, T4.4, T4.9 and
+      T4.9a. Exit status 0.
+    fix_if: >-
+      A third SCC appears (an unlicensed blocked_by edge was transcribed onto T2.51 c3), or the count
+      drops to 1 (blocked_by was excluded from the graph, which loses the T2.26 core), or T4.9 is
+      missing (deferred_post_mvp was excluded from NON_TERMINAL).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The 19-id set is the measured stock at authoring time and is expected to SHRINK as rec-3579 and
+      rec-3580 drain their cores. Graduating it would pin a transient census as a standing
+      regression guard and would red the build on exactly the progress the ratchet exists to reward.
+      Step 3's shrink-only assertion is the durable form of this check and is graduated instead.
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Prove the ratchet has teeth in both directions -- removing a baselined id passes, adding an id
+      absent from the frozen in-module _BASELINE_SEED fails even though the config edit alone is
+      well-formed, and an unreadable diff base SKIPs loudly rather than treating missing as empty.
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k ratchet -q
+    expected: All selected tests pass, exit status 0, and at least one test is selected.
+    fix_if: >-
+      Adding an unseeded id passes, meaning the frozen-constant cross-check is not consulted and a
+      config edit alone can admit a new member; or the missing-base case is treated as an empty base,
+      which would let the seeding PR silently pass its own gate.
+    hermetic: false
+    graduation: not-applicable
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Leg B rehome coverage -- fails when a rehomed criterion's met_by target carries no open
+      criterion, passes on the live roadmap, and counts bare-string criteria as open via the
+      normalizing loader.
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py::TestRehomeCoverage::test_rehome_target_must_carry_open_criterion -q
+    expected: The selected test passes and exit status is 0.
+    fix_if: >-
+      The live roadmap reports 3 violations for T0.4 c4, T1.16 c7 and T3.6 c5 -- that is the naive
+      yaml.safe_load plus isinstance dict path, which misses the 419 bare-string criteria that
+      normalize to status open only through the loader.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: roadmap-liveness-rehome-target-carries-open-criterion
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      Leg C insertion robustness -- inserting a criterion at the head of a bare-string list must
+      report exactly one added criterion, not one per downstream sibling whose synthetic index id
+      shifted.
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k "legc or insertion" -q
+    expected: All selected tests pass, exit status 0, and at least one test is selected.
+    fix_if: >-
+      The insertion fixture reports 7 findings instead of 1 -- the base-versus-head comparison is
+      keyed on the synthetic criterion id rather than on criterion text.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: roadmap-liveness-legc-text-keyed
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      Confirm the seven registration surfaces -- the check resolves through the registry, the
+      manifest Entry dispatches it, the ci_rca taxonomy carries its row, and it is NOT grandfathered
+      into the check-accounting baseline.
+    command: bin/venv-python -m pytest tests/checks/roadmap/test__manifest.py tests/test_checks_registry.py -q && grep -q "validate_roadmap_liveness" config/ci_rca_taxonomy.yaml && ! grep -q "validate_roadmap_liveness" config/check_accounting_baseline.yaml
+    expected: Tests pass, the taxonomy grep succeeds, the accounting-baseline grep finds nothing, and the chained command exits 0.
+    fix_if: >-
+      validate_ci_rca_taxonomy reports the registered check absent from function_to_category, or
+      validate_check_accounting reports it as undeclared because examined()/skipped() is missing on
+      some reachable exit path.
+    hermetic: true
+    graduation: not-applicable
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      Confirm the roadmap transcription landed, still loads under the Pydantic schema, and did not
+      change the toxic-SCC count.
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_platform_roadmap.py -q && bin/venv-python -m scripts.platform_roadmap_liveness --report
+    expected: Tests pass, the report again names 2 toxic SCCs and 19 toxic node ids, and the chained command exits 0.
+    fix_if: >-
+      The roadmap fails to load because until ratified was paired with a tier_item ref rather than a
+      candidate_decision, or the toxic count moved off 2, meaning an edge beyond the single licensed
+      T2.53 c6 to CD.41 entry was transcribed.
+    hermetic: true
+    graduation: not-applicable
+  - step: 8
+    phase: pre-deploy
+    action: >-
+      Discharge the Closure Obligation -- refresh the read cache from the warehouse and confirm both
+      bundled recommendations are closed.
+    command: >-
+      bin/venv-python -m scripts.sync.ops sync && grep rec-3395 logs/.recommendations-log.jsonl |
+      grep -c closed && grep rec-3394 logs/.recommendations-log.jsonl | grep -c closed
+    expected: The sync completes, both greps report a non-zero count, and exit status is 0.
+    fix_if: >-
+      Either rec is still open -- rec-3395 needs its acceptance re-pointed at the shipped selector
+      via update_rec before closure, and rec-3394 needs its closure evidence recorded rather than
+      being closed bare.
+    hermetic: false
+    graduation: not-applicable
+  - step: 9
+    phase: pre-deploy
+    action: Run the fast presubmit tier over the change set.
+    command: bin/venv-python -m scripts.validate --pre
+    expected: Exit status 0 with no FAIL lines in the summary.
+    fix_if: >-
+      validate_pre_glob_closure names an uncovered transitive import for the new Entry, or
+      validate_structural_size_limits reports the new config or contract file past its class budget.
+    hermetic: false
+    graduation: not-applicable
+  - step: 10
+    phase: pre-deploy
+    action: >-
+      Run the FULL presubmit tier to discharge handoff_policy.full_validation_required_before_commit
+      before any commit or handoff (Decision 163).
+    command: bin/venv-python -m scripts.validate
+    expected: Exit status 0 with no FAIL lines in the Validation Summary.
+    fix_if: >-
+      validate_test_coverage reports either new module below 100% line coverage -- the full tier is
+      the only tier that runs the whole-file coverage gate, so a branch missed by the fast tier
+      surfaces here.
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/platform_roadmap_liveness.py
+    behavior: >-
+      An SCC is toxic iff it holds an internal edge demanding complete of a member; ratified and
+      realization-evidence edges never make a ring toxic; NON_TERMINAL admits deferred_post_mvp.
+    verification_step: 1
+    test_selector: tests/test_platform_roadmap_liveness.py::TestToxicClassification::test_ratified_only_ring_is_benign
+    red_green_expectation: >-
+      red before (module absent), green after; and red if the until value is ignored so every
+      blocked_by edge is treated as completion-demanding.
+  - source: scripts/checks/roadmap/validate_roadmap_liveness.py
+    behavior: >-
+      Leg A fails net baseline growth and SKIPs on a missing base; leg B fails a rehome target with
+      no open criterion; leg C fails an added or edited criterion naming a blocker with no
+      blocked_by, and is insertion-robust because it keys on criterion text.
+    verification_step: 4
+    test_selector: tests/checks/roadmap/test_validate_roadmap_liveness.py::TestRehomeCoverage::test_rehome_target_must_carry_open_criterion
+    red_green_expectation: >-
+      red before (check absent), green after; and red if the check parses the roadmap with
+      yaml.safe_load plus isinstance dict, which reports 3 false violations on the live roadmap.
+  - source: scripts/checks/roadmap/_manifest.py
+    behavior: >-
+      The new Entry dispatches validate_roadmap_liveness in both tiers using bare string literals,
+      with pre_globs covering its whole transitive first-party import closure.
+    verification_step: 6
+    test_selector: tests/checks/roadmap/test__manifest.py::TestEntries::test_every_entry_resolves
+    red_green_expectation: red before (Entry absent, check never dispatched), green after.
+constraints:
+  - Report deadlocks, never reject at load -- these edges must NOT enter the RoadmapDocument model_validator DFS (scripts/platform_roadmap_models.py:221-238), which would make the roadmap unloadable.
+  - No warn tier -- check-accounting has no "warned" status, so a warn records as "enforced" (docs/contracts/check-accounting.yaml status_vocabulary). All three legs hard-fail.
+  - Baseline is frozen shrink-only with NO marker escape grammar, bounded by an in-module frozen _BASELINE_SEED; reuse scripts/checks/_marker_guard.py, never a sixth copy (Decision 165/166).
+  - >-
+    Transcribe blocked_by ONLY from verbatim documentary evidence -- the T2.51 c3 edge is unlicensed
+    and must not be added (Decision 55 -- no unilateral judgement calls).
+  - SLOC -- both new modules stay under 500; decompose into a facade package if a budget is crossed, never raise (Decision 128).
+  - No rescue agents or workaround loops (Decision 55); no assertion, budget or criterion weakened to obtain green (Decision 181 clause 1).
+context:
+  - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: dec-169, dec-170, dec-166, dec-168, dec-182, dec-114, dec-132, dec-136, dec-181. RELATED: dec-131, dec-161, dec-128, dec-105. Decisions triaged: 135 of 135. Roadmap items intersected: 3; CONFLICT: 1; RELATED: 2."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "Scout WARN dec-093 resolved: NON_TERMINAL is a distinct node class, NOT dec-093's ratified `live` term. Measured: 1 of 19 seed ids (T4.9) is deferred_post_mvp; 0 toxic SCCs exist only because parked nodes are admitted. A parked item is reactivatable by a status flip, so a ring through it is a latent deadlock -- and rec-3394's instance is deferred-to-deferred."
+  - "Scout WARN dec-055 resolved: each seeded core carries an owning drain rec -- rec-3579 (T2/T3), rec-3580 (T4). Leg C residual is rec-3581; starvation blind spot is rec-3582."
+  - "Scout CONFLICT T2.54 resolved by bounding: leg C covers roadmap-criterion prose -> blocked_by only. T2.54:c1's instruction-layer index is NOT built here; the contract carries one residual declaration, not a general index."
+  - "Discriminator correction (measured): the brief's `internal depends_on edge` rule false-negatives on rec-3394's own shape (T2.51 depends_on is empty). Replaced by the completion-demanding edge rule -- reproduces today's cores AND catches that shape."
+  - "Sizing re-derived, not inherited: 61 elementary cycles over 60 NON_TERMINAL nodes / 97 edges -> 9 non-trivial SCCs, 2 toxic, 19 nodes. The brief's 464/11 figures reproduce only with blocked_by AND deferred_post_mvp both excluded (a pre-Plan-A edge model)."
+  - "Corroboration: all 14 tier_items in the two toxic cores are ineligible; T4.15 (not_started, benign SCC) is eligible. validate_platform_roadmap passes green throughout -- that is the gap."
+  - "rec-3394 does not reproduce as filed (independently reached by Fable consult). T2.51 c3 verbatim: `this criterion is satisfiable by the single-object MVP instance as originally written`. T2.51 c4 requires CD.41 ratified `before the dashboard is served`, so ratification precedes T2.51 completing. Ordering, not a ring -- close with that evidence, do not re-scope."
+  - "rec-3395 acceptance names validate_prose_blocking_edges.py; shipped module is validate_roadmap_liveness.py -- re-point via update_rec before closing. Its rec_relevance stale_target verdict is a Create-shaped-rec false positive (rec-3355 owns that defect)."
+  - "ci-rca deferral (preflight HARD BLOCK): rec-3551 is owned by PLAN-selection-budget-coverage-gap, merged a75d30e0 / PR 1073. Not same-file, same-Decision or same-category here; deferred on explicit human direction."
+  - "Branch was 3 commits behind origin/main (06bcec32) at authoring with ZERO scope overlap; rebase deferred to the Step 11 commit flow."
+  - "Prereq landed at c1f818f3 (PR 1070). PR 1017 was that work's PLAN commit, not the feature."
+  - "Gotchas: compute_state_dict derives plans_dir from the yaml path -- pass plans_dir explicitly to to_preflight_dict in tempdir fixtures; preflight.py::_slim_roadmap_state is a WHITELIST (this plan adds no projection key); roadmap-liveness.yaml is Class D so it uses the top-level amendment_log, not a field-level one."
+  - "Backtick discipline (rec-3398): validate_vp_replay treats backticked spans in a hermetic step's expected as required output literals -- hermetic steps 2, 6, 7 carry none."
+  - "Adjacent, NOT in scope: rec-3567 (realization_candidates vacuous-empty-gates admits CD.32), Plan A's follow-on."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    Create scripts/platform_roadmap_liveness.py. Public surface: build_blocking_graph(doc) returning
+    edges plus a per-edge demand label, toxic_sccs(doc) returning the toxic components, and
+    toxic_node_ids(doc) returning the flat sorted id set the baseline keys on. NON_TERMINAL = tier
+    items whose status is not_started, in_progress or deferred_post_mvp, plus candidate_decisions
+    whose state is pending; every edge with a terminal endpoint is pruned. Edge demands -- depends_on
+    and blocked_by until complete demand `complete`; cd.gates, decision_required_before and
+    blocked_by until ratified demand `ratified`; the Decision 105 reverse edge from a pending CD to
+    each gated item demands `evidence`. Tarjan SCC, then toxic iff an internal edge demands
+    `complete`. Add a --report CLI printing the SCC count and the sorted node ids. Never raise on a
+    malformed document -- return an empty result and let the caller declare skipped().
+  - >-
+    Create scripts/checks/roadmap/validate_roadmap_liveness.py, decorated @registry.register with
+    owner="platform". Leg A -- compute toxic_node_ids, read config/roadmap_liveness_baseline.yaml at
+    HEAD and at the diff base via _marker_guard.default_base_reader, fail on any id present at HEAD
+    but absent at base, and additionally fail any HEAD id absent from the in-module frozen
+    _BASELINE_SEED; on an unreadable base call registry.skipped and return. Leg B -- for every
+    exit criterion whose status is rehomed, resolve met_by and fail unless that item carries at
+    least one open criterion; use the normalizing loader, never yaml.safe_load plus isinstance dict.
+    Leg C -- parse the base roadmap PER ITEM via TierItem.model_validate (never the whole document,
+    whose graph validator can raise on an older base), diff criteria KEYED ON TEXT, and for each
+    added or text-changed criterion fail if its text names a NON_TERMINAL id with a blocking phrase
+    and carries no blocked_by entry for that ref. Declare registry.examined(...) or
+    registry.skipped(...) on every reachable exit path.
+  - >-
+    Create config/roadmap_liveness_baseline.yaml with the 19 seed ids under an entries key, plus a
+    header comment recording -- shrink-only, no marker escape grammar of any kind, bounded by the
+    module's frozen _BASELINE_SEED, missing-base SKIP, the owning drain recs rec-3579 and rec-3580,
+    and the Decision 159 style reversal condition (if no toxic finding drives a drain within two
+    quarters, unwind the ratchet with the check rather than leaving a permanently exempt roster).
+  - >-
+    Register the Entry in scripts/checks/roadmap/_manifest.py with pre=True and
+    full_segment="full_after_lint", using bare string literals. pre_globs must cover the whole
+    transitive first-party import closure -- docs/ROADMAP-*, docs/DECISIONS.md,
+    docs/DECISIONS_ARCHIVE.md, scripts/decisions_md.py, scripts/platform_roadmap_models.py,
+    scripts/platform_roadmap_state.py, scripts/platform_roadmap_gate_rules.py,
+    scripts/platform_roadmap_liveness.py, scripts/roadmap/**, scripts/checks/roadmap/**,
+    scripts/checks/_common.py, scripts/checks/registry.py, scripts/checks/_marker_guard.py and
+    config/roadmap_liveness_baseline.yaml.
+  - Add the config/ci_rca_taxonomy.yaml function_to_category row -- validate_roadmap_liveness -> schema_drift.
+  - >-
+    Create docs/contracts/roadmap-liveness.yaml as a Class D contract with a unique subject, an
+    evaluator naming validate_roadmap_liveness that resolves, a top-level amendment_log, the
+    NON_TERMINAL node-class and edge-demand semantics, the baseline grammar, and the leg-C residual
+    declaration naming rec-3581 (Decision 181 clause 2). Cross-reference T2.54 as the owner of
+    instruction-layer clause-to-check traceability. Add the matching file-router route whose topic
+    equals the contract subject.
+  - >-
+    Edit docs/ROADMAP-PLATFORM.yaml -- add blocked_by [{ref: CD.41, until: ratified, note citing the
+    verbatim clause}] to T2.53 c6 ONLY. Do not touch T2.51 c3.
+  - >-
+    Write tests/test_platform_roadmap_liveness.py and
+    tests/checks/roadmap/test_validate_roadmap_liveness.py over synthetic fixtures, including the
+    rec-3394 shape (a rehome-out criterion plus a blocked_by until ratified edge to a CD gating the
+    rehome source yields no toxic SCC) so the instance survives as a semantic pin rather than a live
+    roadmap assertion. Include the bare-string insertion fixture for leg C and the ratchet-teeth
+    cases for leg A.
+  - >-
+    Add the three verification-registry shards under config/agent/verification_registry/entries/ for
+    the graduated steps, filenames equal to their check_ids.
+  - >-
+    Execute the Verification Plan -- run each step, loop until pass; on an unrecoverable failure stop
+    and RCA rather than weakening an assertion (Decision 55, Decision 181 clause 1).
+  - >-
+    Close the bundled recs through the ops portal -- re-point rec-3395's acceptance at the shipped
+    selector then close it; close rec-3394 citing the T2.51 c3 disclaimer clause, the T2.51 c4
+    ratification-precedes-completion clause, the transcription commit, and detector output showing
+    T2.51 and T2.53 in no toxic SCC. Never edit logs/ directly.
+  - 'Report: what was implemented, verification results, and the final toxic-SCC census.'
+work_areas: []
+rollback: >-
+  Delete the check module, its manifest Entry, the ci_rca_taxonomy row, the baseline, the contract
+  and its file-router route, and revert the T2.53 c6 blocked_by edit. The graph module is
+  import-only and inert once unregistered. Nothing in the roadmap's load path changes, so no data
+  migration is involved and the revert is a single commit.
