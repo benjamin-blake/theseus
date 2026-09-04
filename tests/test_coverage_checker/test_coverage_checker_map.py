@@ -407,3 +407,22 @@ class TestBudgetIngestConcernSplitRegistration:
 
     def test_budget_ingest_pre_decomposition_single_file_module_is_gone(self) -> None:
         assert not (ROOT / "tests" / "convergence_health" / "test_budget_ingest.py").exists()
+
+
+class TestPlatformRoadmapModelsConcernSplitRegistration:
+    """scripts/platform_roadmap_models.py (PLAN-roadmap-blocking-edge-semantics) is registered
+    directly in _CONCERN_SPLIT_TEST_PACKAGES, alongside its sibling scripts/platform_roadmap_state.py
+    entry. Without this registration map_source_to_test falls through _grandfathered_source_to_test's
+    generic scripts-root rule to tests/test_platform_roadmap_models.py -- a file this plan deletes in
+    favor of the tests/platform_roadmap_models/ mirror package -- dropping the module out of the
+    coverage roster entirely and breaking check_test_file_exists / validate_diff_coverage for a file
+    that is itself in scope."""
+
+    def test_maps_platform_roadmap_models_to_concern_split_package(self) -> None:
+        source = ROOT / "scripts" / "platform_roadmap_models.py"
+        result = map_source_to_test(source)
+        assert result is not None
+        assert result == ROOT / "tests" / "platform_roadmap_models"
+
+    def test_platform_roadmap_models_pre_decomposition_single_file_module_is_gone(self) -> None:
+        assert not (ROOT / "tests" / "test_platform_roadmap_models.py").exists()

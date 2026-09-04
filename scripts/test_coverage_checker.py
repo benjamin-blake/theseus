@@ -214,6 +214,7 @@ _CONCERN_SPLIT_TEST_PACKAGES: frozenset[str] = frozenset(
         "scripts/verify_ci_workflow.py",
         "scripts/contracts_enforcement.py",
         "scripts/platform_roadmap_state.py",
+        "scripts/platform_roadmap_models.py",
         "scripts/build_lambda_deploy.py",
         "scripts/lambda_manifest.py",
         "scripts/ducklake_neon_smoke_test.py",
