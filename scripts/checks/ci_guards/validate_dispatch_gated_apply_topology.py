@@ -8,7 +8,7 @@ stayed latched. Decision 183 makes gated-apply DISPATCH-REACHABLE: reachable fro
 with the fresh plan.bin handed over as a run-scoped SANDBOX_FRESH_PLAN_ARTIFACT (mirrors
 reconcile.yml's RECONCILE_FRESH_PLAN_ARTIFACT hand-off verbatim) instead of being fetched from S3.
 
-Seven invariants, asserted over the PARSED workflow (never a whole-file grep, matching the sibling
+Eight invariants, asserted over the PARSED workflow (never a whole-file grep, matching the sibling
 scripts.verify_ci_workflow._check_recovery_workflow_topology shape this guard is modelled on):
 
   (i)   gated-apply's `if` contains the routed signal and NO LONGER contains the push conjunct --
@@ -30,8 +30,13 @@ scripts.verify_ci_workflow._check_recovery_workflow_topology shape this guard is
         commit) and its DuckLake fetch step still reads steps.artifact_sha.outputs.value.
   (vii) both best-effort wake steps derive their PR-lookup SHA from the acknowledge input on a
         dispatch, so the wake targets the incident PR being watched, not an unrelated HEAD commit.
+  (viii) apply-sandbox's own job `if` admits ONLY push and workflow_dispatch. This is the belt
+        invariant (i) removed: with no event conjunct left on gated-apply, its exclusion from the
+        workflow's pull_request trigger rests solely on apply-sandbox skipping (and thus failing
+        gated-apply's `needs` condition). Widening that `if` would make the tf-gated-apply
+        Environment PR-reachable with zero signal (Decision 83 / T2.22: NOT a PR required check).
 
-Declares registry.examined(7, unit="topology_invariants") (Decision 170) -- one count per
+Declares registry.examined(8, unit="topology_invariants") (Decision 170) -- one count per
 invariant above, not per individual assertion within one. Loads the workflow via
 scripts.verify_ci_workflow._load (never re-implements YAML parsing); registry.skipped(reason) only
 if the workflow file itself cannot be read.
@@ -75,15 +80,10 @@ def _steps(job: Any) -> list[dict[str, Any]]:
     return [step for step in steps if isinstance(step, dict)] if isinstance(steps, list) else []
 
 
-def _find_step(
-    steps: list[dict[str, Any]], *, step_id: str | None = None, uses_prefix: str | None = None
-) -> dict[str, Any] | None:
-    for step in steps:
-        if step_id is not None and step.get("id") == step_id:
-            return step
-        if uses_prefix is not None and str(step.get("uses", "")).startswith(uses_prefix):
-            return step
-    return None
+def _find_step(steps: list[dict[str, Any]], step_id: str) -> dict[str, Any] | None:
+    """A step by its `id`. Steps carrying no id are selected by their name marker at the call
+    site instead (invariants (iv)/(v)) -- never positionally."""
+    return next((step for step in steps if step.get("id") == step_id), None)
 
 
 def _check_invariant_i(failed: list[str], gated_if: str) -> None:
@@ -102,7 +102,7 @@ def _check_invariant_ii(failed: list[str], gated_job: dict[str, Any], gated_step
         gated_job.get("environment") == "tf-gated-apply",
         repr(gated_job.get("environment")),
     )
-    apply_step = _find_step(gated_steps, step_id="apply")
+    apply_step = _find_step(gated_steps, "apply")
     apply_body = str(apply_step.get("run", "")) if apply_step else ""
     _report(
         failed,
@@ -141,7 +141,7 @@ def _check_invariant_iii(failed: list[str], apply_sandbox_outputs: dict[str, Any
 
 
 def _check_invariant_iv(failed: list[str], apply_sandbox_steps: list[dict[str, Any]]) -> None:
-    emit_step = _find_step(apply_sandbox_steps, step_id="upload_fresh_plan_sha256")
+    emit_step = _find_step(apply_sandbox_steps, "upload_fresh_plan_sha256")
     emit_if = str(emit_step.get("if", "")) if emit_step else ""
     _report(
         failed,
@@ -165,15 +165,19 @@ def _check_invariant_iv(failed: list[str], apply_sandbox_steps: list[dict[str, A
 
 
 def _check_invariant_v(failed: list[str], gated_steps: list[dict[str, Any]]) -> None:
-    download_step = _find_step(gated_steps, uses_prefix="actions/download-artifact")
+    # Identity-anchored for the same reason invariant (iv) is: an unrelated download-artifact
+    # step added earlier in the job must not be validated in the fresh plan's place.
+    downloads = [step for step in gated_steps if str(step.get("uses", "")).startswith("actions/download-artifact")]
+    marked = [step for step in downloads if _ARTIFACT_MARKER in str(step.get("name", ""))]
+    download_step = marked[0] if len(marked) == 1 else None
     download_if = str(download_step.get("if", "")) if download_step else ""
     _report(
         failed,
         "(v) gated-apply's download-artifact step is gated on fresh_plan_pending",
         download_step is not None and _FRESH_PLAN_PENDING in download_if,
-        repr(download_if),
+        f"{len(marked)} of {len(downloads)} download step(s) name {_ARTIFACT_MARKER}; if={download_if!r}",
     )
-    verify_step = _find_step(gated_steps, step_id="verify_fresh_plan_sha256")
+    verify_step = _find_step(gated_steps, "verify_fresh_plan_sha256")
     verify_if = str(verify_step.get("if", "")) if verify_step else ""
     _report(
         failed,
@@ -181,7 +185,7 @@ def _check_invariant_v(failed: list[str], gated_steps: list[dict[str, Any]]) -> 
         verify_step is not None and _FRESH_PLAN_PENDING in verify_if,
         repr(verify_if),
     )
-    fetch_plan_step = _find_step(gated_steps, step_id="fetch_plan")
+    fetch_plan_step = _find_step(gated_steps, "fetch_plan")
     fetch_plan_if = str(fetch_plan_step.get("if", "")) if fetch_plan_step else ""
     _report(
         failed,
@@ -192,7 +196,7 @@ def _check_invariant_v(failed: list[str], gated_steps: list[dict[str, Any]]) -> 
 
 
 def _check_invariant_vi(failed: list[str], gated_steps: list[dict[str, Any]]) -> None:
-    artifact_sha_step = _find_step(gated_steps, step_id="artifact_sha")
+    artifact_sha_step = _find_step(gated_steps, "artifact_sha")
     artifact_sha_body = str(artifact_sha_step.get("run", "")) if artifact_sha_step else ""
     _report(
         failed,
@@ -200,10 +204,8 @@ def _check_invariant_vi(failed: list[str], gated_steps: list[dict[str, Any]]) ->
         artifact_sha_step is not None and "needs.apply-sandbox.outputs.artifact_sha" in artifact_sha_body,
         repr(artifact_sha_body),
     )
-    build_step = next(
-        (step for step in gated_steps if str(step.get("uses", "")).endswith("build-ducklake-artifacts")),
-        None,
-    )
+    builds = [step for step in gated_steps if str(step.get("uses", "")).endswith("build-ducklake-artifacts")]
+    build_step = builds[0] if len(builds) == 1 else None
     build_with = build_step.get("with", {}) if build_step else {}
     _report(
         failed,
@@ -228,10 +230,29 @@ def _check_invariant_vii(
     )
 
 
+def _check_invariant_viii(failed: list[str], apply_sandbox_job: dict[str, Any]) -> None:
+    """The belt invariant (i) removed. gated-apply's `if` no longer carries ANY event conjunct, so
+    its exclusion from the workflow's `pull_request` trigger now rests SOLELY on apply-sandbox's
+    own `if` -- a pull_request run skips apply-sandbox, whose non-success result then fails
+    gated-apply's `needs` condition. Nothing else asserts that. If apply-sandbox's `if` were ever
+    widened to admit pull_request, the tf-gated-apply Environment would become PR-reachable with
+    zero signal, breaking Decision 83 / T2.22's "NOT a PR required check" constraint."""
+    condition = str(apply_sandbox_job.get("if", ""))
+    admits_only_push_and_dispatch = (
+        _PUSH_CONJUNCT in condition and _DISPATCH_EVENT in condition and "pull_request" not in condition
+    )
+    _report(
+        failed,
+        "(viii) apply-sandbox's job `if` admits only push and workflow_dispatch, never pull_request",
+        admits_only_push_and_dispatch,
+        repr(condition),
+    )
+
+
 @registry.register("validate_dispatch_gated_apply_topology", owner="platform")
 def validate_dispatch_gated_apply_topology(failed: list[str]) -> None:
     """Assert terraform-apply-sandbox.yml's dispatch-reachable gated-apply topology (Decision 183;
-    rec-2918 part (c)). See module docstring for the seven invariants."""
+    rec-2918 part (c)). See module docstring for the eight invariants."""
     print("\n=== dispatch-gated-apply topology guard ===")
     try:
         data = _load(str(_common.ROOT / _WORKFLOW_PATH))
@@ -261,5 +282,6 @@ def validate_dispatch_gated_apply_topology(failed: list[str]) -> None:
     _check_invariant_v(failed, gated_steps)
     _check_invariant_vi(failed, gated_steps)
     _check_invariant_vii(failed, apply_sandbox_steps, gated_steps)
+    _check_invariant_viii(failed, apply_sandbox)
 
-    registry.examined(7, unit="topology_invariants")
+    registry.examined(8, unit="topology_invariants")

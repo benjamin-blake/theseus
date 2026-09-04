@@ -56,14 +56,14 @@ class TestPassPath:
         names = {step.name for step in registry.pre_sequence()}
         assert "validate_dispatch_gated_apply_topology" in names
 
-    def test_examined_count_is_seven_topology_invariants(self) -> None:
+    def test_examined_count_is_eight_topology_invariants(self) -> None:
         with registry.outcome_scope("validate_dispatch_gated_apply_topology"):
             failed: list[str] = []
             validate_dispatch_gated_apply_topology(failed)
         declaration = registry.pop_declaration()
         assert declaration is not None
         assert declaration.kind == "examined"
-        assert declaration.count == 7
+        assert declaration.count == 8
         assert declaration.unit == "topology_invariants"
 
 
@@ -164,6 +164,36 @@ class TestPerInvariantNegatives:
                 step["env"]["SHA"] = "${{ github.sha }}"
         failed = _run(data)
         assert any("(vii)" in item for item in failed), failed
+
+    def test_invariant_v_is_not_fooled_by_an_unrelated_earlier_download(self) -> None:
+        data = copy.deepcopy(_real_workflow())
+        steps = data["jobs"]["gated-apply"]["steps"]
+        steps.insert(0, {"name": "Download something else", "uses": "actions/download-artifact@v4", "if": "always()"})
+        for step in steps:
+            if _ARTIFACT_MARKER in str(step.get("name", "")) and str(step.get("uses", "")).startswith(
+                "actions/download-artifact"
+            ):
+                step["if"] = "success()"
+        failed = _run(data)
+        assert any("(v)" in item for item in failed), failed
+
+    def test_invariant_viii_fails_when_apply_sandbox_admits_pull_request(self) -> None:
+        """gated-apply carries no event conjunct any more, so a widened apply-sandbox `if` is the
+        one thing that would make the tf-gated-apply Environment PR-reachable."""
+        data = copy.deepcopy(_real_workflow())
+        data["jobs"]["apply-sandbox"]["if"] = (
+            "${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' "
+            "|| github.event_name == 'pull_request' }}"
+        )
+        failed = _run(data)
+        assert any("(viii)" in item for item in failed), failed
+        assert not any("(i)" in item for item in failed), failed
+
+    def test_invariant_viii_fails_when_apply_sandbox_drops_its_event_gate(self) -> None:
+        data = copy.deepcopy(_real_workflow())
+        data["jobs"]["apply-sandbox"]["if"] = "success()"
+        failed = _run(data)
+        assert any("(viii)" in item for item in failed), failed
 
 
 class TestMissingJobs:
