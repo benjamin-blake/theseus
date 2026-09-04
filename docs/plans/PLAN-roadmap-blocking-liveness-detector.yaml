@@ -141,8 +141,10 @@ acceptance_criteria:
     scripts_root_allowlist.allowed_files, so validate_placement does not report it as a root stray.
   - >-
     validate_roadmap_liveness is registered, dispatched from the roadmap manifest, present in
-    config/ci_rca_taxonomy.yaml function_to_category, absent from config/check_accounting_baseline.yaml,
-    and declares examined()/skipped() on every reachable exit path.
+    config/ci_rca_taxonomy.yaml function_to_category, and absent from
+    config/check_accounting_baseline.yaml. The per-exit-path declaration claim is carried by the
+    mirror test's TestAccounting selector, NOT by validate_check_accounting, whose ratchet_limitation
+    bounds it to a module-level AST scan.
   - >-
     T2.53 c6 carries blocked_by [{ref: CD.41, until: ratified}], the roadmap still loads, and the
     toxic-SCC count is unchanged at 2.
@@ -240,8 +242,11 @@ verification_plan:
       Leg C insertion robustness -- inserting a criterion at the head of a bare-string list must
       report exactly one added criterion, not one per downstream sibling whose synthetic index id
       shifted.
-    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k "LegC or Insertion" -q
-    expected: All selected tests pass, exit status 0, and at least one test is selected.
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k "LegC or Insertion or RemedyMessages" -q
+    expected: >-
+      All selected tests pass, exit status 0, and at least one test is selected -- including
+      TestRemedyMessages, which asserts that leg C's and leg A(d)'s failure text each name their
+      in-PR remedy rather than failing bare.
     fix_if: >-
       The insertion fixture reports 7 findings instead of 1 -- the base-versus-head comparison is
       keyed on the synthetic criterion id rather than on criterion text.
@@ -255,16 +260,24 @@ verification_plan:
       manifest Entry dispatches it, the ci_rca taxonomy carries its row, and it is NOT grandfathered
       into the check-accounting baseline.
     command: >-
+      bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k Accounting -q &&
       bin/venv-python -m pytest tests/checks/ci_guards/test_validate_ci_rca_taxonomy.py -q &&
       bin/venv-python -m pytest tests/checks/roadmap/test__manifest.py
       tests/checks/registry/test_manifest_contracts.py -q &&
       grep -q "validate_roadmap_liveness" config/ci_rca_taxonomy.yaml &&
       ! grep -q "validate_roadmap_liveness" config/check_accounting_baseline.yaml
-    expected: Tests pass, the taxonomy grep succeeds, the accounting-baseline grep finds nothing, and the chained command exits 0.
+    expected: >-
+      TestAccounting passes (asserting every reachable exit path of the check body reaches an
+      examined() or skipped() call, which validate_check_accounting itself cannot see), the
+      remaining tests pass, the taxonomy grep succeeds, the accounting-baseline grep finds nothing,
+      and the chained command exits 0.
     fix_if: >-
       validate_ci_rca_taxonomy reports the registered check absent from function_to_category, or
-      validate_check_accounting reports it as undeclared because examined()/skipped() is missing on
-      some reachable exit path.
+      validate_check_accounting reports the module undeclared (no examined()/skipped() call anywhere
+      in it) or still present in config/check_accounting_baseline.yaml. Note what that check CANNOT
+      report: docs/contracts/check-accounting.yaml's ratchet_limitation states the AST scan proves a
+      declaration exists somewhere in the MODULE, never that every reachable exit path reaches one --
+      which is why the per-path claim is carried by this step's own TestAccounting selector instead.
     hermetic: false
     graduation: not-applicable
   - step: 8
@@ -357,13 +370,31 @@ test_obligations:
     red_green_expectation: >-
       red before (check absent), green after; and red if the check parses the roadmap with
       yaml.safe_load plus isinstance dict, which reports 3 false violations on the live roadmap.
+  - source: scripts/checks/roadmap/validate_roadmap_liveness.py
+    behavior: >-
+      Leg C's and leg A(d)'s failure messages each name their in-PR remedy -- re-sequence the edge
+      for leg C, remove the drained id from config/roadmap_liveness_baseline.yaml for leg A(d) --
+      so an author is never left at a bare failure, which is where Decision 181 clause 1's
+      forbidden weakening becomes tempting.
+    verification_step: 6
+    test_selector: tests/checks/roadmap/test_validate_roadmap_liveness.py::TestRemedyMessages::test_leg_a_d_message_names_baseline_removal
+    red_green_expectation: >-
+      red before (no check exists), green after; and red again if either message is reduced to a
+      bare violation line, which is the regression this row guards.
   - source: scripts/checks/roadmap/_manifest.py
     behavior: >-
       The new Entry dispatches validate_roadmap_liveness in both tiers using bare string literals,
       with pre_globs covering its whole transitive first-party import closure.
     verification_step: 7
-    test_selector: tests/checks/roadmap/test__manifest.py::TestRoadmapManifest::test_entry_resolves_to_a_callable_named_its_own_attr
-    red_green_expectation: red before (Entry absent, check never dispatched), green after.
+    test_selector: tests/checks/roadmap/test__manifest.py::TestRoadmapManifest::test_roadmap_liveness_entry_covers_its_contract_and_baseline
+    red_green_expectation: >-
+      red before with StopIteration (the Entry does not exist to select), green after. NOT the
+      parametrized test_entry_resolves_to_a_callable_named_its_own_attr: that one is parametrized
+      over _manifest.ENTRIES, so an absent Entry simply fails to parametrize and the suite is GREEN
+      before -- a vacuous red/green claim. The new test must resolve the Entry by name and assert
+      pre is True, full_segment == "full_after_lint", and that pre_globs is a superset of
+      {docs/contracts/roadmap-liveness.yaml, config/roadmap_liveness_baseline.yaml,
+      scripts/platform_roadmap_liveness.py}, which is the behavior this row actually claims.
   - source: config/roadmap_liveness_baseline.yaml
     behavior: >-
       The roster is shrink-only and bounded by the module's frozen _BASELINE_SEED -- an id may be
@@ -455,7 +486,7 @@ test_obligations:
   - source: config/agent/verification_registry/entries/roadmap-liveness-legc-text-keyed.yaml
     behavior: The graduated leg-C insertion-robustness check is admitted as a standing regression guard.
     verification_step: 6
-    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k "LegC or Insertion" -q
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k "LegC or Insertion or RemedyMessages" -q
     waiver_reason: >-
       The shard is a declarative registry record, not behavior. Its admission is gated by
       validate_verification_registry's differential check, and the assertion it records is VP step 6,
@@ -573,7 +604,11 @@ execution_steps:
     READING, not mention -- validate_roadmap_liveness.py (or a one-hop scripts/ import) must carry
     the literal string "roadmap-liveness.yaml" in executable context or
     _population.resolve_evaluator refuses it. Body carries a unique subject, a top-level
-    amendment_log, the NON_TERMINAL node-class and edge-demand semantics, the baseline grammar,
+    amendment_log, the NON_TERMINAL node-class and edge-demand semantics -- including WHY
+    status: reserved is excluded while deferred_post_mvp is admitted (measured: all 8 reserved items
+    carry empty depends_on, nothing depends on one, and no criterion blocks on one, so no ring can
+    pass through a reserved node; the four pending CDs gating reserved items are a starvation-adjacent
+    class owned by rec-3582, not a toxic-SCC class) -- the baseline grammar,
     LEG C'S BLOCKING-PHRASE GRAMMAR as the single source the check reads (never a second copy in the
     module) with the precision basis for the chosen phrase set, the PER-SURFACE residual map that
     Decision 181 clause 2 actually requires -- one row per unenforced surface naming either its
@@ -598,9 +633,14 @@ execution_steps:
     tracked depth-1 scripts/ file, not only diff-added ones, so without this the build fails on a
     file the plan itself created.
   - >-
-    Add the _CLOSURE_INPUTS row for validate_roadmap_liveness in
-    tests/checks/roadmap/test__manifest.py, listing the same closure the Entry's pre_globs cover --
-    docs/contracts/roadmap-liveness.yaml and config/roadmap_liveness_baseline.yaml included.
+    In tests/checks/roadmap/test__manifest.py, add the _CLOSURE_INPUTS row for
+    validate_roadmap_liveness listing the same closure the Entry's pre_globs cover --
+    docs/contracts/roadmap-liveness.yaml and config/roadmap_liveness_baseline.yaml included -- AND
+    add an Entry-specific test test_roadmap_liveness_entry_covers_its_contract_and_baseline that
+    resolves the Entry by name (next(e for e in ENTRIES if e.name == "validate_roadmap_liveness"))
+    and asserts pre, full_segment and the pre_globs superset. The existing parametrized tests and
+    TestClosureMembersAreCovered cannot serve as this plan's oracle: both iterate a collection the
+    new Entry is absent from before the change, so they are green-before, not red-before.
     One row per gated Entry is that dict's stated convention; omitting it leaves the new Entry
     silently uncovered by TestClosureMembersAreCovered.
   - >-
