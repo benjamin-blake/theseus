@@ -148,4 +148,19 @@ ENTRIES: tuple[Entry, ...] = (
         ),
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_dispatch_gated_apply_topology",
+        module="scripts.checks.ci_guards.validate_dispatch_gated_apply_topology",
+        attr="validate_dispatch_gated_apply_topology",
+        pre=True,
+        pre_globs=(
+            ".github/workflows/terraform-apply-sandbox.yml",
+            ".github/workflows/reconcile.yml",
+            "scripts/checks/ci_guards/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+            "scripts/verify_ci_workflow.py",
+        ),
+        full_segment="full_after_lint",
+    ),
 )

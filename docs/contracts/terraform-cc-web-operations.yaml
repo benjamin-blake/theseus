@@ -34,6 +34,15 @@ contract:
     check: validate_terraform_cc_web_operations
 
 amendment_log:
+  - date: "2026-09-04"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      PLAN-dispatch-gated-apply-unlatch (Decision 183): workflow_dispatch_path gains the
+      guard-ROUTED-reaches-gated-apply step, and convergence_anchor.dispatch_ack_unlatch records
+      that the routed case is no longer a dead end and that plan_sha stays null on the
+      dispatch-routed gated apply (event-gated mode kept, fail-closed). No field semantics changed
+      -- reachability detail lives solely in docs/contracts/environment-taxonomy.yaml.
   - date: "2026-09-01"
     semantic_break: false
     change_class: prose_improvement
@@ -199,6 +208,7 @@ speculative_plan_and_apply_the_saved_plan:
     steps:
       - "The Terraform plan step is now if: github.event_name == 'workflow_dispatch' -- dispatch is the only auto-apply path that re-plans."
       - "Use dispatch for the acknowledge-and-retry unlatch (naming the red commit or rec-id) OR for out-of-band applies (e.g. rolling back a manual admin change)."
+      - "A guard-ROUTED dispatch now reaches gated-apply (SANDBOX_FRESH_PLAN_ARTIFACT hand-off); plan_sha stays null on the dispatch path (Decision 183)."
   stale_saved_plan: >-
     (fail-closed, Decision 55 / CD.35) Terraform's native staleness check errors if the saved
     plan.bin's state serial is stale. The apply step exits non-zero -> the always-run convergence
@@ -329,4 +339,11 @@ convergence_anchor:
     trail; the agent may dispatch via the GitHub MCP actions trigger AFTER the ci-rca rec is
     reviewed (Decision 55/72) -- nothing auto-remediates. Refusals-while-red dedupe to the one
     open red-record rec (ci-rca anchors on the record's commit). Serialisation is the existing
-    workflow concurrency group (cancel-in-progress: false).
+    workflow concurrency group (cancel-in-progress: false). The routed case is no longer a dead
+    end (Decision 183): if the fresh plan the dispatch builds at main HEAD is guard-ROUTED
+    (IAM/trust/destroy diff), the same run's gated-apply job picks it up via
+    SANDBOX_FRESH_PLAN_ARTIFACT and waits for the tf-gated-apply Environment approval, same as the
+    routine push-path guard-BLOCK route -- see docs/contracts/environment-taxonomy.yaml
+    axis_a.sandbox_gated_apply for the mechanism. plan_sha on the write-convergence-record call
+    stays null on this route (event-gated mode kept, fail-closed) even though a real plan.bin was
+    applied.

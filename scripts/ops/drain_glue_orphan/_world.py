@@ -51,8 +51,10 @@ def assert_workflow_invariants(repo_root: Path = _ROOT) -> None:
     violations: list[str] = []
 
     gated_apply_if = str(apply_sandbox.get("jobs", {}).get("gated-apply", {}).get("if", ""))
-    if "github.event_name == 'push'" not in gated_apply_if:
-        violations.append("(a) terraform-apply-sandbox.yml gated-apply no longer requires github.event_name == 'push'")
+    if "github.event_name == 'push'" in gated_apply_if:
+        violations.append(
+            "(a) terraform-apply-sandbox.yml gated-apply is still push-gated; the dispatch-routed gated apply is unreachable"
+        )
 
     gar_if = str(reconcile_wf.get("jobs", {}).get("gated-apply-reconcile", {}).get("if", ""))
     if "github.event_name == 'push'" in gar_if:
