@@ -10,26 +10,36 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import scripts.convergence_health as ch
 from scripts.convergence_health import HealthVerdict, escalate, find_open_convergence_stale_rec
+from tests.fixtures.reader_rows import verb_rows
 
 
 class TestFindOpenConvergenceStaleRec:
+    @pytest.mark.xfail(strict=True, reason="open_recs never returns source/status -- see rec-3563 (dedup blindness)")
     def test_returns_first_matching_rec(self) -> None:
-        recs = [
-            {"id": "rec-100", "source": "ci_rca", "status": "open"},
-            {"id": "rec-101", "source": "tf_convergence_stale", "status": "open"},
-            {"id": "rec-102", "source": "tf_convergence_stale", "status": "closed"},
-        ]
+        recs = verb_rows(
+            "open_recs",
+            [
+                {"id": "rec-100", "source": "ci_rca", "status": "open"},
+                {"id": "rec-101", "source": "tf_convergence_stale", "status": "open"},
+                {"id": "rec-102", "source": "tf_convergence_stale", "status": "closed"},
+            ],
+        )
         result = find_open_convergence_stale_rec(recs)
         assert result is not None
         assert result["id"] == "rec-101"
 
     def test_returns_none_when_no_match(self) -> None:
-        recs = [
-            {"id": "rec-100", "source": "ci_rca", "status": "open"},
-            {"id": "rec-101", "source": "tf_convergence_stale", "status": "closed"},
-        ]
+        recs = verb_rows(
+            "open_recs",
+            [
+                {"id": "rec-100", "source": "ci_rca", "status": "open"},
+                {"id": "rec-101", "source": "tf_convergence_stale", "status": "closed"},
+            ],
+        )
         assert find_open_convergence_stale_rec(recs) is None
 
     def test_returns_none_on_empty_list(self) -> None:
