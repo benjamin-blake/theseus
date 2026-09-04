@@ -239,6 +239,7 @@ _CONCERN_SPLIT_TEST_PACKAGES: frozenset[str] = frozenset(
         "scripts/convergence_health/budget_ingest.py",
         "scripts/verification_graduation.py",
         "scripts/checks/verification/validate_graduation_completeness.py",
+        "scripts/checks/verification/validate_scope_boundary.py",
     }
 )
 

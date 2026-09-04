@@ -89,7 +89,7 @@ class TestContractShape:
     def test_sanction_rows_are_conditional_not_flat_allowlist(self) -> None:
         doc = _load_contract()
         rows = doc["sanction_rows"]
-        assert len(rows) >= 3
+        assert len(rows) >= 4
         for name, row in rows.items():
             assert "trigger" in row and "kind" in row["trigger"], (
                 f"{name} has no trigger.kind -- looks like a flat allowlist entry"
@@ -117,11 +117,18 @@ class TestContractShape:
         entries = doc["amendment_log"]
         assert any("plan-followon-recs-field" in (e.get("summary") or "") for e in entries)
 
-    def test_unmodelled_companions_present(self) -> None:
+    def test_secrets_baseline_retired_from_unmodelled_companions(self) -> None:
+        """PLAN-secrets-baseline-sanction-row: .secrets.baseline is no longer an unmodelled
+        companion -- it is now the secrets_baseline_regeneration sanction row's own subject --
+        while config/composite_action_body_baseline.yaml remains unmodelled (still below the
+        evidence bar for its own trigger rule)."""
         doc = _load_contract()
         companions = {row["path"] for row in doc["unmodelled_companions"]}
-        assert ".secrets.baseline" in companions
+        assert ".secrets.baseline" not in companions
         assert "config/composite_action_body_baseline.yaml" in companions
+        row = doc["sanction_rows"]["secrets_baseline_regeneration"]
+        assert row["trigger"]["kind"] == "scope_file_in_secrets_baseline"
+        assert row["sanctions"]["path_template"] == ".secrets.baseline"
 
 
 class TestProseSurfacesPointAtContract:

@@ -79,6 +79,18 @@ class TestMapSourceToTest:
         assert result is not None
         assert result == ROOT / "tests" / "ci_rca" / "taxonomy"
 
+    def test_maps_scripts_checks_verification_validate_scope_boundary_to_concern_split_package(self) -> None:
+        """scripts/checks/verification/validate_scope_boundary.py maps to the
+        tests/checks/verification/validate_scope_boundary/ concern-split package
+        (PLAN-secrets-baseline-sanction-row: the flat test_validate_scope_boundary.py monolith was
+        decomposed per Decision 128 SLOC governance, and the source is a declared
+        _CONCERN_SPLIT_TEST_PACKAGES entry so map_source_to_test resolves to the package directory
+        instead of the deleted flat file)."""
+        source = ROOT / "scripts" / "checks" / "verification" / "validate_scope_boundary.py"
+        result = map_source_to_test(source)
+        assert result is not None
+        assert result == ROOT / "tests" / "checks" / "verification" / "validate_scope_boundary"
+
     def test_maps_still_grandfathered_sync_sibling_to_flat_home(self) -> None:
         """scripts/sync/ducklake_version.py (never on the 24-roster, never concern-split) still
         resolves to its flat grandfathered home via _NESTED_SUBPACKAGE_TEST_PREFIX -- proves
