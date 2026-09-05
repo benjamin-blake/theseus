@@ -81,7 +81,18 @@ scope:
       `named("<verb>")` RESULT on a key VERB_FIELDS says that verb does not project. Must be
       DATA-FLOW linked, not module-level co-occurrence -- scripts/preflight/recs_cache.py holds
       named("open_recs") at :216 and a `status == "open"` filter at :28 on DIFFERENT data paths and
-      is correct code the guard must not flag, without resorting to an allowlist. A pytest would be
+      is correct code the guard must not flag, without resorting to an allowlist. THREE further
+      input classes are live in the tree today and each needs a declared disposition, all verified:
+      (a) SENTINEL verbs -- VERB_FIELDS['rec_by_id'] is a bare object(), not a tuple, so a naive
+      `key not in VERB_FIELDS[verb]` raises TypeError; four verbs carry it (rec_by_id, rec_history,
+      decision_by_id, priority_queue_current) and they project every column, so nothing filtered on
+      them can be out of projection; (b) verbs absent from VERB_FIELDS entirely --
+      scripts/preflight/alerts.py:136 calls named('budget_breach_recent'), which is in neither
+      VERB_FIELDS nor NAMED_READS; that needs an explicit registry.skipped(reason) arm, never a
+      silent pass and never a flag; (c) result-through-a-callable indirection --
+      scripts/ci/reconcile_target.py:114-117 filters rows[0].get('status') where rows came from a
+      _call closure (:126-134) returning named('rec_by_id'); correct code, must NOT be flagged, and
+      it is the guard's hardest positive/negative discrimination. A pytest would be
       diff-selection-dependent (a PR editing convergence_health/escalate.py does not select
       tests/test_rec_episode.py under Decision 135's affected-set selector), so the guard would
       silently not run at the exact moment it matters. Precedent:
@@ -100,8 +111,10 @@ scope:
   - file: tests/checks/hygiene/test_validate_episode_lookup_projection.py
     action: Create
     purpose: >-
-      Mirror test for the guard -- fires on the pre-migration shape, passes on the migrated tree,
-      does NOT fire on the recs_cache.py two-path shape, and declares on every exit path.
+      Mirror test for the guard, one case per input class -- fires on the pre-migration shape;
+      passes on the migrated tree; does NOT fire on the recs_cache.py two-path shape; does NOT
+      raise on a sentinel verb; does NOT fire on the reconcile_target.py callable indirection;
+      records skipped(reason) for a verb absent from VERB_FIELDS; declares on every exit path.
   - file: tests/test_rec_episode.py
     action: Create
     purpose: >-
@@ -124,10 +137,14 @@ scope:
   - file: config/agent/verification_registry/entries/convergence-xfail-cites-rec.yaml
     action: Delete
     purpose: >-
-      HARD BLOCKER if skipped. This graduated shard runs `grep -Eq 'xfail\(strict=True[^)]*rec-[0-9]+'
+      This graduated shard runs `grep -Eq 'xfail\(strict=True[^)]*rec-[0-9]+'
       tests/convergence_health/test_escalate.py` and PASSES today -- verified. It pins the DEFECT'S
-      MARKER, so removing the xfail reds it. Retire it via the documented path (git mv into
-      entries/deprecated/), never a bare delete.
+      MARKER rather than the defect's absence, so it goes stale the moment the xfail is removed.
+      NOT a CI blocker: validate_verification_registry runs its differential only over ADDED or
+      MODIFIED shards (validate_verification_registry.py:194-198) and never executes live ones, so
+      a surviving shard would not red this PR -- an earlier draft asserted otherwise without
+      checking, which is the same unverified-premise failure this plan exists to remove. Retire it
+      via the documented path (git mv into entries/deprecated/), never a bare delete.
   - file: config/agent/verification_registry/entries/deprecated/convergence-xfail-cites-rec.yaml
     action: Create
     purpose: The retirement destination for the shard above; entries/deprecated/ is the contract's retirement subtree and is already in use.
@@ -141,10 +158,16 @@ scope:
       returned None, and _fetch_open_recs is absent from scripts.convergence_health.__all__.
   - file: tests/convergence_health/code_drift/test_ducklake.py
     action: Modify
-    purpose: Red/green that the ducklake sensor's dedup lookup now matches an open ducklake_code_drift rec.
+    purpose: >-
+      Red/green that the ducklake sensor's dedup lookup now matches an open ducklake_code_drift rec.
+      NOTE the module imports the deleted finder at :33 and carries a TestFindOpenDucklakeDriftRec
+      class over it, so it fails at COLLECTION, not assertion, until edited.
   - file: tests/convergence_health/code_drift/test_prod.py
     action: Modify
-    purpose: Red/green that the prod sensor's dedup lookup now matches an open prod_code_drift rec.
+    purpose: >-
+      Red/green that the prod sensor's dedup lookup now matches an open prod_code_drift rec. NOTE the
+      module imports the deleted finder at :25 and carries a TestFindOpenProdDriftRec class over it,
+      so it fails at COLLECTION, not assertion, until edited.
   - file: tests/convergence_health/test_assess.py
     action: Modify
     purpose: Assert escalation_action still resolves through the assess re-export after the re-home.
@@ -179,8 +202,10 @@ acceptance_criteria:
     pre-change path returned None -- proven live against the warehouse for tf_convergence_stale.
   - >-
     The registered guard flags a module that filters a named-verb RESULT on a key that verb does not
-    project, and does NOT flag scripts/preflight/recs_cache.py, whose two uses sit on different data
-    paths.
+    project, and handles all four live input classes correctly: it does NOT flag
+    scripts/preflight/recs_cache.py (two uses, different data paths), does NOT raise on a sentinel
+    VERB_FIELDS entry, does NOT flag scripts/ci/reconcile_target.py's callable indirection, and
+    records skipped(reason) rather than passing silently for a verb absent from VERB_FIELDS.
   - >-
     find_rec raises loudly when handed rows lacking a key its predicate filters on, instead of
     returning None.
@@ -246,20 +271,24 @@ verification_plan:
   - step: 13
     phase: pre-deploy
     action: >-
-      Write and pass rec-3291's acceptance oracle -- the standing assertion that every episode
-      finder's filtered keys are a subset of what VERB_FIELDS says its read projects.
+      Write and pass rec-3291's acceptance oracle. Post-migration the four named()-based finders no
+      longer exist, so the assertion's subject is find_rec itself: the keys it filters on must be a
+      subset of the keys its read actually returns, asserted against a full-projection fixture row
+      and against resolve_table_spec's declared column set. This is a RUNTIME assertion on the
+      primitive and is distinct from the registered guard, which is a STATIC AST scan over call
+      sites -- neither subsumes the other.
     command: "bin/venv-python -m pytest tests/convergence_health/test_open_rec_dedupe.py::test_open_rec_finders_match_live_verb_projection -q"
     expected: "1 passed. This is rec-3291's acceptance command verbatim; it exits 4 today because the file does not exist."
     fix_if: "Exit 4 after implementation means the file or node id was named differently from rec-3291's probe -- match it exactly."
     hermetic: true
     graduation: graduate
-    graduation_check_id: episode-finders-match-verb-projection
+    graduation_check_id: find-rec-filters-within-projection
   - step: 14
     phase: pre-deploy
     action: Prove the retired xfail shard no longer runs and the retirement path was used.
     command: "test ! -f config/agent/verification_registry/entries/convergence-xfail-cites-rec.yaml && test -f config/agent/verification_registry/entries/deprecated/convergence-xfail-cites-rec.yaml"
     expected: "Exit 0 -- the shard moved into entries/deprecated/ rather than being deleted outright."
-    fix_if: "A surviving live shard reds on the removed xfail; a missing deprecated copy means it was deleted instead of retired."
+    fix_if: "A surviving live shard is stale rather than red (the registry gates only added/modified entries); a missing deprecated copy means it was deleted instead of retired."
     hermetic: true
     graduation: graduate
     graduation_check_id: xfail-marker-shard-retired
@@ -288,7 +317,7 @@ verification_plan:
   - step: 7
     phase: pre-deploy
     action: Confirm the two files nearest the SLOC cap did not cross it.
-    command: "bin/venv-python -m scripts.checks.sloc.sloc_limits 2>/dev/null || bin/venv-python -c \"from scripts.checks import registry; f=[]; registry.resolve('validate_sloc_limits')(f); raise SystemExit(1 if f else 0)\""
+    command: "bin/venv-python -c \"from scripts.checks import registry; f=[]; registry.resolve('validate_sloc_limits')(f); raise SystemExit(1 if f else 0)\""
     expected: "Exit 0 -- notably tests/checks/test__budget_recs.py (490 at planning time) and scripts/convergence_health/budget_ingest.py (462) stay under 500."
     fix_if: "A breach means decompose that file (Decision 128), never add a budget raise."
     hermetic: true
@@ -318,10 +347,10 @@ verification_plan:
     graduation: not-applicable
   - step: 10
     phase: post-deploy
-    action: Verify rec-3563 closed after the merge.
-    command: "bin/venv-python -m scripts.sync.ops pull && grep -q '\"id\": \"rec-3563\"' logs/.recommendations-log.jsonl && ! grep -E '\"id\": \"rec-3563\".*\"status\": \"open\"' logs/.recommendations-log.jsonl"
-    expected: "rec-3563 present in the refreshed cache and no longer open (closed by the Resolves: trailer via rec-autoclose.yml)."
-    fix_if: "Still open means the squash-merge body omitted the Resolves: rec-3563 trailer; close it through the portal."
+    action: Verify BOTH bundled recs closed after the merge.
+    command: "bin/venv-python -m scripts.sync.ops pull && ! grep -E '\"id\": \"rec-3291\".*\"status\": \"open\"' logs/.recommendations-log.jsonl && ! grep -E '\"id\": \"rec-3563\".*\"status\": \"open\"' logs/.recommendations-log.jsonl"
+    expected: "Neither rec-3291 nor rec-3563 is open in the refreshed cache (closed by the Resolves: trailer via rec-autoclose.yml)."
+    fix_if: "Either still open means the squash-merge body omitted it from the Resolves: trailer; close it through the portal."
     hermetic: false
     graduation: not-applicable
   - step: 11
@@ -407,7 +436,7 @@ test_obligations:
     command: "bin/venv-python -c \"from scripts.checks import registry; f=[]; registry.resolve('validate_episode_lookup_projection')(f); raise SystemExit(1 if f else 0)\""
     red_green_expectation: "Red before (resolve raises, no Entry); green after."
   - source: tests/convergence_health/test_open_rec_dedupe.py
-    behavior: every episode finder's filtered keys are a subset of its read's declared projection.
+    behavior: find_rec filters only on keys its read actually returns, against a full-projection fixture and the declared table spec.
     verification_step: 13
     test_selector: tests/convergence_health/test_open_rec_dedupe.py::test_open_rec_finders_match_live_verb_projection
     red_green_expectation: "Red before -- the file does not exist, so rec-3291's probe exits 4; green after."
@@ -479,8 +508,9 @@ execution_steps:
   - "Migrate budget_ingest + _budget_recs: delete the duplicate _fetch_open_recs, move the (branch, phase) match onto find_rec's sub_key arm, simplify _is_open_budget_breach_row, and repoint test_ingest.py's three patch sites and conftest.py's fixture layer."
   - "Re-home escalation_action into rec_episode.decide with a re-export from assess.py; remove all FOUR names from the facade imports and __all__."
   - "Remove the xfail(strict=True) at tests/convergence_health/test_escalate.py:21 and re-point TestFindOpenConvergenceStaleRec at the primitive's behaviour, keeping the class name for rec-3563's oracle."
-  - "Execute Verification Plan steps 1-8; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)."
-  - "Merge with a `Resolves: rec-3563` trailer in the squash-merge body, then run VP steps 9-12 -- the cleanup runs POST-MERGE so the hourly cron is no longer re-filing."
+  - "Execute Verification Plan steps 1-8 and 13-14 (every pre-deploy step); loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)."
+  - "Merge with a `Resolves: rec-3291, rec-3563` trailer in the squash-merge body, then run VP steps 9-12 -- the cleanup runs POST-MERGE so the hourly cron is no longer re-filing."
+  - "File a follow-on rec for the three hand-rolled current_state episode lookups this plan leaves unmigrated (scripts/ops_portal/ci_rca_runtime.py:72, scripts/ops_portal/ci_rca_lifecycle.py:53, scripts/ci_rca/convergence_dedup.py:109) -- each is already CORRECT, so this is convergence-on-one-primitive, not a defect fix -- and record its id in followon_recs."
   - "Report: what was implemented, verification results."
 work_areas: []
 rollback: >-
