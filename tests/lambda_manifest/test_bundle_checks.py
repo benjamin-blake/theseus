@@ -216,3 +216,38 @@ class TestComputeAffectedArtifacts:
         with patch("scripts.lambda_manifest._LAMBDAS_DIR", tmp_path / "nonexistent"):
             result = compute_affected_artifacts(["any/file.py"])
         assert result == {}
+
+    def test_manifest_yaml_change_matches_when_declared_paths_do_not_cover_it(self, tmp_path):
+        """The not-already-matched append arm.
+
+        test_manifest_yaml_change_matches cannot reach it: its fixture declares includes of
+        src/, so src/lambdas/<slug>/manifest.yaml is already appended by the prefix match and
+        the inner not-in-matches guard is False. A manifest whose declared paths do not cover
+        its own manifest.yaml is the only shape that reaches the append.
+        """
+        func_dir = tmp_path / "myfunc"
+        func_dir.mkdir()
+        content = {"artifact": "myfunc.zip", "handlers": [], "includes": ["docs/"], "status": "active"}
+        (func_dir / "manifest.yaml").write_text(yaml.dump(content), encoding="utf-8")
+        with (
+            patch("scripts.lambda_manifest._LAMBDAS_DIR", tmp_path),
+            patch("scripts.lambda_manifest.ROOT", tmp_path),
+        ):
+            result = compute_affected_artifacts(["src/lambdas/myfunc/manifest.yaml"])
+        assert result == {"myfunc": ["src/lambdas/myfunc/manifest.yaml"]}
+
+    def test_manifest_yaml_change_is_not_double_counted_when_a_prefix_also_matches(self, tmp_path):
+        """The not-already-matched guard itself, in the shape where it is load-bearing.
+
+        _make_manifest declares includes of src/, so the prefix match has ALREADY appended
+        src/lambdas/<slug>/manifest.yaml by the time the manifest.yaml arm runs; the guard is
+        the only thing stopping a second append. The exact single-element list is what
+        discriminates it -- a membership assertion passes just as well against the duplicate.
+        """
+        self._make_manifest(tmp_path, "myfunc", [])
+        with (
+            patch("scripts.lambda_manifest._LAMBDAS_DIR", tmp_path),
+            patch("scripts.lambda_manifest.ROOT", tmp_path),
+        ):
+            result = compute_affected_artifacts(["src/lambdas/myfunc/manifest.yaml"])
+        assert result == {"myfunc": ["src/lambdas/myfunc/manifest.yaml"]}
