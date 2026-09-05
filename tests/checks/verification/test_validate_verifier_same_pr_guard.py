@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from scripts import verification_graduation
+from scripts.checks import registry
 from scripts.checks.verification.validate_verifier_same_pr_guard import validate_verifier_same_pr_guard
 
 
@@ -99,6 +100,115 @@ class TestSamePrGuard:
         ):
             validate_verifier_same_pr_guard(failed)
         assert "Verifier same-PR guard" in failed
+
+    def _write_default_covers_verifier(self, tmp_path: Path) -> str:
+        """Fixture verifier whose single class declares the default covers of ['**']."""
+        verifier_src = tmp_path / "scripts" / "verifiers"
+        verifier_src.mkdir(parents=True)
+        (verifier_src / "wide_verifier.py").write_text("class WideVerifier:\n    covers = ['**']\n", encoding="utf-8")
+        return "scripts/verifiers/wide_verifier.py"
+
+    def _run_with_changed(self, tmp_path: Path, changed: list[str]) -> list[str]:
+        """Drive the guard under the three seams the sibling cases already patch, inside
+        registry.outcome_scope so the module-level declaration slot is reset rather than left
+        populated for whatever dispatch reads it next."""
+        failed: list[str] = []
+        with registry.outcome_scope("validate_verifier_same_pr_guard"):
+            with (
+                patch("scripts.checks._common.ROOT", tmp_path),
+                patch("scripts.checks._common.get_changed_files", return_value=changed),
+                patch("scripts.checks._common.run", return_value=MagicMock(returncode=0, stdout="")),
+            ):
+                validate_verifier_same_pr_guard(failed)
+        return failed
+
+    def test_resolved_plan_companion_is_not_a_covered_file(self, tmp_path: Path) -> None:
+        """A CANDIDATE plan path is its own diff's bookkeeping companion, never a covered file."""
+        rel = self._write_default_covers_verifier(tmp_path)
+        failed = self._run_with_changed(tmp_path, [rel, "docs/plans/PLAN-some-slug.yaml"])
+        assert not failed, f"Expected no violation for a plan companion: {failed}"
+
+    def test_violation_still_detected_when_plan_and_covered_file_both_present(self, tmp_path: Path) -> None:
+        """Decision 181 pin: a real covered source file still violates with a plan path present."""
+        rel = self._write_default_covers_verifier(tmp_path)
+        failed = self._run_with_changed(tmp_path, [rel, "docs/plans/PLAN-some-slug.yaml", "scripts/target.py"])
+        assert "Verifier same-PR guard" in failed
+
+    def test_non_plan_path_under_docs_plans_is_still_covered(self, tmp_path: Path) -> None:
+        """Decision 181 pin: the exemption is PLAN_PATH_RE's set, not the docs/plans directory."""
+        rel = self._write_default_covers_verifier(tmp_path)
+        failed = self._run_with_changed(tmp_path, [rel, "docs/plans/nested/PLAN-c.yaml"])
+        assert "Verifier same-PR guard" in failed
+
+    def test_declares_examined_outcome_for_scanned_verifier_modules(self, tmp_path: Path) -> None:
+        """Decision 170: the terminal exit declares examined(n, unit="verifier_modules"), where n
+        is the count of verifier files present in the changed set (the guard's ``scanned += 1``
+        per verifier file it processes). Two blocks pin both ends of that arithmetic so a mutant
+        that guts the counter -- 'scanned += 1' replaced with 'pass', or the call hardcoded to
+        examined(0, unit="verifier_modules") -- cannot satisfy both:
+
+        Block 1 -- EMPTY DOMAIN: the diff holds no verifier file, so count == 0 and status is
+        vacuous (an always-zero counter passes this block alone, which is why block 2 exists).
+
+        Block 2 -- non-empty domain: the diff holds exactly two verifier files, each with a
+        narrow ``covers`` that matches no other file present in the diff (so exception (c)
+        suppresses any violation and this block stays a pure accounting probe). The count is
+        pinned at 2, not 0 or 1, and status must be enforced -- this is the assertion an
+        always-zero or off-by-one mutant fails, since it can no longer fake the count by
+        returning a constant."""
+        failed: list[str] = []
+        with registry.outcome_scope("validate_verifier_same_pr_guard"):
+            with (
+                patch("scripts.checks._common.get_changed_files", return_value=["scripts/validate.py"]),
+                patch("scripts.checks._common.run", return_value=MagicMock(returncode=0, stdout="")),
+            ):
+                validate_verifier_same_pr_guard(failed)
+        declaration = registry.pop_declaration()
+        assert not failed
+        assert declaration is not None
+        assert declaration.kind == "examined"
+        assert declaration.count == 0
+        assert declaration.unit == "verifier_modules"
+        assert registry.derive_status(declaration, bool(failed)) == "vacuous"
+
+        verifier_src = tmp_path / "scripts" / "verifiers"
+        verifier_src.mkdir(parents=True)
+        (verifier_src / "verifier_a.py").write_text(
+            "class VerifierA:\n    covers = ['scripts/only_a_target.py']\n", encoding="utf-8"
+        )
+        (verifier_src / "verifier_b.py").write_text(
+            "class VerifierB:\n    covers = ['scripts/only_b_target.py']\n", encoding="utf-8"
+        )
+        rel_a = "scripts/verifiers/verifier_a.py"
+        rel_b = "scripts/verifiers/verifier_b.py"
+        failed_two: list[str] = []
+        with registry.outcome_scope("validate_verifier_same_pr_guard"):
+            with (
+                patch("scripts.checks._common.ROOT", tmp_path),
+                patch("scripts.checks._common.get_changed_files", return_value=[rel_a, rel_b]),
+                patch("scripts.checks._common.run", return_value=MagicMock(returncode=0, stdout="")),
+            ):
+                validate_verifier_same_pr_guard(failed_two)
+        declaration_two = registry.pop_declaration()
+        assert not failed_two, f"Expected no violation for narrowly-covered verifiers: {failed_two}"
+        assert declaration_two is not None
+        assert declaration_two.kind == "examined"
+        assert declaration_two.count == 2
+        assert declaration_two.unit == "verifier_modules"
+        assert registry.derive_status(declaration_two, bool(failed_two)) == "enforced"
+
+    def test_declares_skipped_outcome_when_verifiers_dir_absent(self, tmp_path: Path) -> None:
+        """Decision 170: the scripts/verifiers-absent exit declares skipped -- an unavailable
+        input, never an empty domain."""
+        failed: list[str] = []
+        with registry.outcome_scope("validate_verifier_same_pr_guard"):
+            with patch("scripts.checks._common.ROOT", tmp_path):
+                validate_verifier_same_pr_guard(failed)
+        declaration = registry.pop_declaration()
+        assert not failed
+        assert declaration is not None
+        assert declaration.kind == "skipped"
+        assert registry.derive_status(declaration, bool(failed)) == "skipped"
 
 
 class TestSamePrGuardHelpers:
