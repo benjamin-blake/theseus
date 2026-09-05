@@ -3,21 +3,30 @@ docs/contracts/check-accounting.yaml). Exercises the guard in all five direction
 unbaselined fails, config-edit-alone admission fails (frozen-constant cross-check), a declaring
 check passes, net baseline growth fails, an edited-but-unadopted baselined check fails
 (touch-it-fix-it), and an absent base SKIPs loudly rather than passing silently.
+
+Also carries the roster-truth property (TestRosterCarriesNoFullyDeclaringModule): the live
+grandfather roster in config/check_accounting_baseline.yaml exempts only checks that still owe a
+declaration, measured through the path-aware metric's is_fully_declared verdict.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.checks import registry
+from scripts.checks import _common, registry
+from scripts.checks.hygiene._declaring_coverage import is_fully_declared, measure_check
 from scripts.checks.hygiene.validate_check_accounting import (
     _check_module_rel_path,
+    _load_baseline_entries,
     _module_declares,
     validate_check_accounting,
 )
+
+_BASELINE_REL_PATH = "config/check_accounting_baseline.yaml"
 
 _UNDECLARED_SOURCE = """
 def fake_check(failed):
@@ -68,6 +77,19 @@ def _write_contract(tmp_path: Path, text: str = _VALID_CONTRACT) -> None:
     contract_path = tmp_path / "docs" / "contracts" / "check-accounting.yaml"
     contract_path.parent.mkdir(parents=True, exist_ok=True)
     contract_path.write_text(text, encoding="utf-8")
+
+
+def _fully_declared_roster_names(roster: Iterable[str], checks: Iterable[str]) -> list[str]:
+    """The names present in BOTH `roster` and `checks` that the path-aware declaring-coverage
+    metric proves declare on every reachable success-exit path, each rendered as
+    "name success_exits/declared/undeclared" so a failing assertion carries its own evidence.
+
+    Resolution goes through registry.resolve() and the verdict through is_fully_declared, which
+    applies the contract's mandatory undecidable filter first -- an undecidable row reports
+    undeclared == 0 without having measured anything and is never read as fully declared.
+    """
+    rows = [(name, measure_check(name, registry.resolve(name))) for name in sorted(set(roster) & set(checks))]
+    return [f"{name} {row.success_exits}/{row.declared}/{row.undeclared}" for name, row in rows if is_fully_declared(row)]
 
 
 class TestUndeclaredUnbaselinedCheckFails:
@@ -311,3 +333,24 @@ class TestCheckModuleRelPathDirect:
             patch("scripts.checks._common.ROOT", tmp_path),
         ):
             assert _check_module_rel_path("some_check") is None
+
+
+class TestRosterCarriesNoFullyDeclaringModule:
+    """The Decision 170 grandfather roster exempts only checks that still owe a declaration."""
+
+    def test_no_live_roster_name_is_fully_declared(self) -> None:
+        roster = _load_baseline_entries((_common.ROOT / _BASELINE_REL_PATH).read_text(encoding="utf-8"))
+        proven = _fully_declared_roster_names(roster, registry.all_checks())
+
+        assert proven == [], (
+            f"{_BASELINE_REL_PATH} still exempts checks the path-aware metric proves declare on every "
+            f"reachable success-exit path (name success_exits/declared/undeclared): {proven} -- strike them."
+        )
+
+    def test_oracle_returns_a_non_empty_result_over_the_whole_registered_fleet(self) -> None:
+        """Discrimination: the same helper driven over every registered check returns a NON-empty
+        result, so the empty live-roster result above is evidence about the roster rather than an
+        oracle that can only ever say none."""
+        checks = registry.all_checks()
+
+        assert _fully_declared_roster_names(checks, checks) != []
