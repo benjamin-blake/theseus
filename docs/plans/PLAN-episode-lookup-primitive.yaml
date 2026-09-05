@@ -13,8 +13,10 @@ verification_tier: V2
 plan_path: docs/plans/PLAN-episode-lookup-primitive.yaml
 phase: >-
   Bundle 2a of 3 (keystone for 2b, PLAN-backlog-health-detection, which builds its four-class
-  escalator on this primitive). Resolves rec-3563, which filed this defect on 2026-09-04 and
-  explicitly sequenced the call-site fix as a follow-on. Names no tier_item, so the Tier Item
+  escalator on this primitive). Resolves rec-3291 (2026-08-27, the original) AND rec-3563
+  (2026-09-04, its undetected duplicate). Both diagnose this defect correctly and both deferred
+  the call-site fix to a follow-on that was never picked up -- the rec about dedup blindness was
+  itself filed twice because neither author could find the other's. Names no tier_item, so the Tier Item
   Freshness Gate is skipped (soft-warn exception category: ad_hoc_rec).
 scope:
   - file: scripts/rec_episode.py
@@ -112,6 +114,23 @@ scope:
     purpose: >-
       Mirror test for the cleanup module -- keeper selection is newest-per-(source, title), --propose
       writes nothing, and --confirm closes exactly the proposed set.
+  - file: tests/convergence_health/test_open_rec_dedupe.py
+    action: Create
+    purpose: >-
+      rec-3291's acceptance oracle names
+      test_open_rec_finders_match_live_verb_projection in this file and the file does not exist --
+      the correct discriminating form (exit 4 until written). Writing it IS the fix: assert every
+      episode finder's filtered keys are a subset of what VERB_FIELDS says its read projects.
+  - file: config/agent/verification_registry/entries/convergence-xfail-cites-rec.yaml
+    action: Delete
+    purpose: >-
+      HARD BLOCKER if skipped. This graduated shard runs `grep -Eq 'xfail\(strict=True[^)]*rec-[0-9]+'
+      tests/convergence_health/test_escalate.py` and PASSES today -- verified. It pins the DEFECT'S
+      MARKER, so removing the xfail reds it. Retire it via the documented path (git mv into
+      entries/deprecated/), never a bare delete.
+  - file: config/agent/verification_registry/entries/deprecated/convergence-xfail-cites-rec.yaml
+    action: Create
+    purpose: The retirement destination for the shard above; entries/deprecated/ is the contract's retirement subtree and is already in use.
   - file: tests/convergence_health/test_escalate.py
     action: Modify
     purpose: >-
@@ -151,7 +170,7 @@ scope:
       exact projection find_rec replaces. All six files in the package import from it, and
       map_source_to_test resolves budget_ingest.py to this DIRECTORY, so the coverage floor is
       package-wide.
-bundled_recommendations: ["rec-3563"]
+bundled_recommendations: ["rec-3291", "rec-3563"]
 followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
@@ -175,7 +194,14 @@ acceptance_criteria:
     in that population. Expressed relationally on purpose: at planning time the 23 open recs span
     TWO titles (14 persistently_red, 9 stale_green_backlog), so the deterministic rule closes 21 and
     leaves 2 -- not the 22/1 an earlier draft assumed.
-  - rec-3563 is closed, and its acceptance probe still names a node id that exists.
+  - >-
+    Both rec-3291 and rec-3563 are closed, and each one's acceptance probe names a node id that
+    exists: rec-3291's test_open_rec_finders_match_live_verb_projection is written, and
+    rec-3563's TestFindOpenConvergenceStaleRec is retained rather than deleted with the function
+    it tested.
+  - >-
+    The graduated shard pinning the xfail marker is retired into entries/deprecated/, so removing
+    the marker does not red a live check.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -217,6 +243,26 @@ verification_plan:
     hermetic: true
     graduation: graduate
     graduation_check_id: rec-3563-dedup-blindness-closed
+  - step: 13
+    phase: pre-deploy
+    action: >-
+      Write and pass rec-3291's acceptance oracle -- the standing assertion that every episode
+      finder's filtered keys are a subset of what VERB_FIELDS says its read projects.
+    command: "bin/venv-python -m pytest tests/convergence_health/test_open_rec_dedupe.py::test_open_rec_finders_match_live_verb_projection -q"
+    expected: "1 passed. This is rec-3291's acceptance command verbatim; it exits 4 today because the file does not exist."
+    fix_if: "Exit 4 after implementation means the file or node id was named differently from rec-3291's probe -- match it exactly."
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: episode-finders-match-verb-projection
+  - step: 14
+    phase: pre-deploy
+    action: Prove the retired xfail shard no longer runs and the retirement path was used.
+    command: "test ! -f config/agent/verification_registry/entries/convergence-xfail-cites-rec.yaml && test -f config/agent/verification_registry/entries/deprecated/convergence-xfail-cites-rec.yaml"
+    expected: "Exit 0 -- the shard moved into entries/deprecated/ rather than being deleted outright."
+    fix_if: "A surviving live shard reds on the removed xfail; a missing deprecated copy means it was deleted instead of retired."
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: xfail-marker-shard-retired
   - step: 5
     phase: pre-deploy
     action: Prove all four deleted symbols are unreachable and the facade still imports.
@@ -360,6 +406,16 @@ test_obligations:
     verification_step: 3
     command: "bin/venv-python -c \"from scripts.checks import registry; f=[]; registry.resolve('validate_episode_lookup_projection')(f); raise SystemExit(1 if f else 0)\""
     red_green_expectation: "Red before (resolve raises, no Entry); green after."
+  - source: tests/convergence_health/test_open_rec_dedupe.py
+    behavior: every episode finder's filtered keys are a subset of its read's declared projection.
+    verification_step: 13
+    test_selector: tests/convergence_health/test_open_rec_dedupe.py::test_open_rec_finders_match_live_verb_projection
+    red_green_expectation: "Red before -- the file does not exist, so rec-3291's probe exits 4; green after."
+  - source: config/agent/verification_registry/entries/deprecated/convergence-xfail-cites-rec.yaml
+    behavior: the shard pinning the xfail marker is retired, not deleted, so removing the marker reds nothing.
+    verification_step: 14
+    command: "test ! -f config/agent/verification_registry/entries/convergence-xfail-cites-rec.yaml && test -f config/agent/verification_registry/entries/deprecated/convergence-xfail-cites-rec.yaml"
+    red_green_expectation: "Red before (the live shard still exists and passes on the present xfail); green after the git mv."
   - source: config/ci_rca_taxonomy.yaml
     behavior: the new guard carries a function_to_category row, without which its registration fails validation.
     verification_step: 8
@@ -396,9 +452,9 @@ context:
   - "decision-scout=FLAGS_FOUND. Decisions triaged: 136 of 136. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2. CITE: Decision 84 (I-3 structural filter, I-4 loud-fail), Decision 88 (egress budget, invariant (ii)), Decision 61 (source as origin discriminator), Decision 62 + 2026-06-16 amendment, Decision 55, Decision 124 (ops_portal unmapped -> flat home), Decision 131 (mirror rule), Decision 132 (graduation obligation), Decision 103 (close_proposed, never a direct close), Decision 169 (bare string literals in Entry), CD.12."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 1 round"
   - "Defect: escalate.py:70 _fetch_open_recs uses named('open_recs') -> SELECT id,title,context,created_timestamp,automatable; three finders filter on source/status (escalate.py:56, code_drift.py:89, code_drift.py:284) so all three always return None."
-  - "Tracking rec: rec-3563 (open, High, filed 2026-09-04) states 'the call-site fix is sequenced as a separate follow-on' -- this plan is that follow-on. Its acceptance names TestFindOpenConvergenceStaleRec and the xfail removal, which is why VP step 4 is that exact command and the class name is retained."
+  - "Tracking recs: rec-3291 (open, High, 2026-08-27, file=code_drift.py) is the ORIGINAL; rec-3563 (open, High, 2026-09-04, file=escalate.py) is its undetected duplicate -- two recs on ONE defect, indexed under different files, which is why the relevance engine's same-file open-duplicate check never compared them. rec-3563 states 'the call-site fix is sequenced as a separate follow-on' -- this plan is that follow-on. Its acceptance names TestFindOpenConvergenceStaleRec and the xfail removal, which is why VP step 4 is that exact command and the class name is retained."
   - "Already diagnosed once: scripts/checks/_budget_recs.py:135 documents this exact failure mode and worked around it for one consumer only."
-  - "Realised damage: 23 open tf_convergence_stale recs, 2026-08-28 -> 2026-09-02, spanning TWO titles (14 persistently_red, 9 stale_green_backlog). Both code_drift sources have 0 rows ever, so their copy is latent."
+  - "Realised damage: 31 tf_convergence_stale recs total, 2026-08-15 -> 2026-09-02 (~3 weeks) -- 8 already closed by hand, 23 still open across TWO titles (14 persistently_red, 9 stale_green_backlog). The cleanup toll has been paid twice before. Both code_drift sources have 0 rows ever, so their copy is latent."
   - "Measured at 194fe48e: named('open_recs') 1104 rows/1,286,984 B/65.7s; current_state(status='open') 1104/2,071,223 B/18.9s; four scoped current_state(source=...) reads 94 rows/170,363 B total."
   - "SoT for projections: VERB_FIELDS (src/common/ducklake_reader_client.py:149), proven by tests/common/ducklake_reader_client/test_verb_fields_parity.py executing each verb's registered SQL in DuckDB. Nothing consulted it at the call site -- that is the class."
   - "Home choice verified: map_source_to_test('scripts/ops_portal/episode.py') is None (Decision 124); flat scripts/rec_episode.py maps to tests/test_rec_episode.py."
