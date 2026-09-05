@@ -18,6 +18,37 @@ contract:
     check: validate_check_accounting
 
 amendment_log:
+  - date: "2026-09-05"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-check-accounting-path-aware-declaring-coverage: added the path_aware_declaring_coverage
+      top-level key -- the REPORT-ONLY path-level observable ratchet_limitation names as deferred
+      future work, defining what a success-exit path is, what reaching a declaration means, the
+      stated CFG-lite limits, the undecidable vocabulary, the bound direction, and the two
+      machine-readable report-line values. Its RUNTIME READER is validate_declaring_coverage,
+      which formats its fleet report line from fleet_line_grammar through its own
+      report_grammar() seam; contract.evaluator stays validate_check_accounting, unwidened. No
+      threshold, no status_vocabulary member and no change to the declaration ratchet: the
+      fail-closed arm ratchet_limitation defers stays deferred. The key also fixes the bound to
+      DECIDABLE rows only (an undecidable row's undeclared=0 is the absence of a measurement, so
+      a consumer must filter on undecidable_reason first), pins the bare-wildcard match
+      fall-through rule, and names the grammar-unavailable shapes that all route to one declared
+      skipped(reason) rather than raising through the tier dispatch. The same entry also carries
+      the two post-review tightenings of those clauses: stated_cfg_lite_limits now fixes the
+      UNCONDITIONAL-EVALUATION rule (a declaration or failure sink reachable only through a
+      lambda body, an IfExp branch, a non-first BoolOp operand or a comprehension element is
+      SKIPPED -- not credited, and not routed to undecidable), and grammar_unavailable_routing
+      now covers the malformed-TEMPLATE shapes (unknown placeholder, unclosed brace, positional
+      field, invalid format spec, index/attribute field name), which report_grammar rejects at
+      its single validation seam so no str.format raise can reach the tier dispatch either. And
+      the round-2 tightenings of the same clauses: the unconditional-evaluation rule now also
+      names an assert's msg and a Compare comparator after the first as CONDITIONAL positions
+      (crediting either was the one shape that could invert the bound rather than widen it), the
+      limits now state plainly that compound-statement header expressions and return values are
+      not scanned at all so a declaration there reads as undeclared, and the walker now routes
+      EVERY ast.parse failure -- ValueError, RecursionError and MemoryError alongside
+      SyntaxError -- to the existing source_unavailable reason, adding no vocabulary member.
   - date: "2026-08-22"
     semantic_break: false
     change_class: field_add
@@ -121,3 +152,119 @@ ratchet_limitation: >-
   run failing on an unexplained vacuous result) is explicitly deferred future work, not installed
   by this contract -- it is gated behind a future path-aware declaring-coverage metric on the
   adopted set clearing a stated threshold (see Decision 170's reversal/deferred-work clause).
+
+path_aware_declaring_coverage:
+  purpose: >-
+    The path-level declaring-coverage metric ratchet_limitation names as deferred future work,
+    built REPORT-ONLY. Its registered reporter is validate_declaring_coverage (full tier only)
+    and its CFG-lite walker is scripts/checks/hygiene/_declaring_coverage.py. It states NO
+    threshold, adds no status_vocabulary member, and never appends to its own failed list -- it
+    turns "a declaration exists somewhere in a MODULE" into "how many reachable exit PATHS reach
+    one", which is the precondition Decision 170's reversal/deferred-work clause set for ever
+    revisiting fail-closed vacuity enforcement.
+  success_exit_path: >-
+    A `return` statement, or the implicit end of the check callable's body, reached on a walked
+    path that never appended or extended the callable's FIRST POSITIONAL PARAMETER (its own
+    `failed` list). A `raise`, and a `return` taken after such an append, are FAILURE exits and
+    are excluded from the success-exit population entirely -- an error path owes no declaration.
+  reaching_a_declaration: >-
+    A success-exit path is `declared` iff an examined()/skipped() call was evaluated on that
+    path before the exit. The call is recognised through the defining module's OWN import
+    aliases (`from scripts.checks import registry` with or without an alias, `from
+    scripts.checks.registry import examined/skipped` with or without an alias, `import
+    scripts.checks.registry` with or without an alias) -- never by matching the bare identifier
+    `examined`, so a module defining its own local helper of that name is not credited.
+  stated_cfg_lite_limits:
+    - No helper inlining -- a declaration delegated to a module-level helper is invisible to the
+      walk, so the calling path is reported UNDECLARED.
+    - Nested functions and classes are OUT of the walk at any depth; a nested definition
+      statement contributes no effects and its body is never walked.
+    - Only the calls a statement evaluates UNCONDITIONALLY are its effects. A lambda body is a
+      nested function and is never descended into, and a declaration or failure sink reachable
+      only through an IfExp branch (a ternary), a non-first BoolOp operand (an and/or
+      short-circuit), a comprehension/generator element, an assert's msg (evaluated only when
+      the assertion FAILS) or a Compare comparator after the first (short-circuited by an
+      earlier false comparison) is NOT an effect of that statement.
+      Such a call is SKIPPED rather than routed to undecidable, so the row stays decidable and
+      the skip errs in the stated direction -- one more undeclared success exit for a skipped
+      declaration, and one more success exit retained in the population for a skipped sink.
+      Crediting it would report DECLARED for a path that may evaluate the declaration zero times
+      at runtime, which inverts the bound rather than widening it.
+    - Compound-statement HEADER expressions are never scanned (an if/while test and any walrus
+      inside it, a for iterable, a with item, a match subject), and neither is a return VALUE
+      -- only the statements of a walked block carry effects. An unconditionally evaluated
+      declaration in one of those positions therefore reads as UNDECLARED -- incomplete in the
+      same safe direction as every limit above, so it costs declared coverage and can never
+      manufacture it.
+    - An except handler is entered from the try block's ENTRY state, never from a mid-body
+      state, so a declaration made partway through the try body is not credited to the handler.
+    - break and continue END the walked path (no exit is recorded for them), while post-loop
+      code is still walked from the loop-ENTRY state, so no undeclared path is lost.
+    - A match statement always contributes its own entry state to the fall-through set, as if no
+      case matched, so trailing code after the cases is walked undeclared. This holds EVEN WHEN
+      a bare wildcard case (case _ with no guard) is present -- the walk does NOT suppress the
+      implicit fall-through, so such a statement followed by a trailing return reports THREE
+      success exits with one undeclared rather than two, which is the conservative direction.
+    - Exits are counted per (exit site x distinct reaching state), so the walk is bounded by
+      construction and needs no path budget.
+  undecidable_vocabulary:
+    - opaque_decorator
+    - dynamic_declaration
+    - function_not_found
+    - source_unavailable
+  undecidable_rule: >-
+    A check whose body cannot be reasoned about is reported in its own undecidable category with
+    ZERO exits of every kind, never counted as declared. UNDECIDABLE_REASONS in
+    scripts/checks/hygiene/_declaring_coverage.py is the frozen constant this list mirrors.
+  bound_direction: >-
+    Every stated limit above errs toward reporting MORE undeclared and never toward reporting
+    declared. Therefore `undeclared` is an UPPER bound and `declared` a LOWER bound on the true
+    path-level figures, and no consumer -- a later roster-shrink slice included -- may read
+    either integer as exact. The metric is a floor on how much declaring coverage exists, never
+    a ceiling on how little. THE BOUND COVERS DECIDABLE ROWS ONLY: `declared` and `undeclared`
+    are evidence about path declaration if and only if `undecidable_reason` is None. An
+    undecidable row reports success_exits=0, declared=0 and undeclared=0 with the reason set,
+    so its `undeclared == 0` is the ABSENCE of a measurement and never a full-declaration
+    verdict. Any consumer -- in particular a roster-deletion oracle -- MUST filter on
+    `undecidable_reason is None` first; is_fully_declared in
+    scripts/checks/hygiene/_declaring_coverage.py is the predicate that does so (decidable, at
+    least one success exit, zero undeclared) and validate_declaring_coverage selects its
+    per-check report lines through it. An undecidable row's report line prints its reason and no
+    declared/undeclared figures, so the printed output carries nothing readable as a bound.
+  fleet_line_grammar: 'fleet: checks={checks} success_exits={success_exits} declared={declared} undeclared={undeclared} undecidable={undecidable}'
+  fleet_line_regex: 'fleet: checks=\d+ success_exits=\d+ declared=\d+ undeclared=\d+ undecidable=\d+'
+  report_line_values_note: >-
+    TWO machine-readable values, deliberately: fleet_line_grammar is the str.format TEMPLATE
+    validate_declaring_coverage reads back at runtime through report_grammar() and formats its
+    one fleet summary line with, while fleet_line_regex is the MATCH regex the
+    declaring-coverage-fleet-report-line verification-registry shard carries verbatim as its
+    expected. A template and a regex are not the same string, so one key cannot honestly serve
+    both jobs; their mutual agreement is pinned by matching the regex against a line the check
+    actually emits, never by re-deriving one from the other on both sides of an assertion. The
+    regex is deliberately UNANCHORED so the emitted, indented line still matches.
+  grammar_unavailable_routing: >-
+    validate_declaring_coverage's report_grammar() seam returns None -- never an exception --
+    for EVERY shape in which fleet_line_grammar is unavailable, and every one of them routes to
+    the SAME single skipped(reason) exit with an empty failed list. The routed set is: an
+    unreadable or absent contract file (OSError), undecodable file bytes (UnicodeDecodeError),
+    malformed YAML (yaml.YAMLError), a document that is not a mapping, a missing
+    path_aware_declaring_coverage key, a missing or non-mapping fleet_line_grammar sub-key, a
+    fleet_line_grammar value that is present but not a string, AND a value that IS a string but
+    is not RENDERABLE over the five report fields: an unknown placeholder name (KeyError), an
+    unclosed brace (ValueError), a positional field such as {0} (IndexError), an invalid format
+    spec such as {checks:%Y} (ValueError), and an index or attribute field name such as
+    {checks[0]} (TypeError/AttributeError). report_grammar validates the template ONCE, at that
+    seam: every replacement field must name one of checks, success_exits, declared, undeclared
+    or undecidable exactly, and a trial format with integer dummies must succeed. fleet_line
+    therefore renders an already-validated template and carries NO second guard -- a duplicated
+    guard there is unreachable through the check's public entry point, so the one-place rule is
+    deliberate rather than an omission. Only named exception classes are caught (OSError,
+    UnicodeDecodeError, yaml.YAMLError at the read seam; KeyError, IndexError, ValueError at the
+    template seam); a bare except is forbidden in the check module. This routing is
+    load-bearing rather than defensive: scripts/validation_result.py dispatches a check with no
+    try/except, so a raise from inside this check would abort the whole full tier and destroy
+    that run's CI-RCA attribution substrate.
+  deferred: >-
+    Unchanged by this key: no threshold is stated, no "warned" status_vocabulary member is
+    added, and the fail-closed vacuity enforcement ratchet_limitation defers remains deferred.
+    A threshold, when one is eventually justified, lands as its own reviewed change.
