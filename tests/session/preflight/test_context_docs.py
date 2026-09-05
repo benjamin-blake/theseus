@@ -8,10 +8,14 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
+
+from scripts.preflight import _common as preflight_common
 
 boto3 = pytest.importorskip("boto3")
 
@@ -295,3 +299,87 @@ class TestEndstateDrift:
 
         assert result["stale"] is False
         assert result["new_ids"] == []
+
+
+class TestEndstateStampRefResolves:
+    """docs/PROJECT_CONTEXT.md's Source stamp ref half resolves through _check_endstate_drift's
+    own matcher, so the drift check reaches its git-show attribution branch instead of reporting
+    stale with an empty new_ids list, and that ref names a commit whose ROADMAP-PLATFORM.yaml
+    tier_item id set hashes to the stamped fingerprint.
+    """
+
+    _PROBE_ROADMAP = "tier_items:\n  - id: PROBE.1\n    name: Probe item\n    status: not_started\n"
+
+    def _repo_root(self) -> Path:
+        return preflight_common.ROOT
+
+    def _real_stamp_line(self) -> str:
+        text = (self._repo_root() / "docs" / "PROJECT_CONTEXT.md").read_text(encoding="utf-8")
+        stamped = [line for line in text.splitlines() if "roadmap_tier_id_set sha256:" in line]
+        assert stamped, "docs/PROJECT_CONTEXT.md carries no roadmap_tier_id_set stamp line"
+        return stamped[0]
+
+    def _drive_drift(self, tmp_path: Path) -> tuple[dict[str, object], list[list[str]]]:
+        """Run the REAL _check_endstate_drift over the REAL stamp line copied into tmp_path,
+        beside a probe roadmap whose id set differs from the stamped one. Returns the drift
+        result and every argv the recorder captured."""
+        (tmp_path / "docs").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "docs" / "PROJECT_CONTEXT.md").write_text(self._real_stamp_line() + "\n", encoding="utf-8")
+        (tmp_path / "docs" / "ROADMAP-PLATFORM.yaml").write_text(self._PROBE_ROADMAP, encoding="utf-8")
+        recorded: list[list[str]] = []
+
+        def _record(cmd: list[str], **kwargs: object) -> MagicMock:
+            recorded.append(list(cmd))
+            return MagicMock(returncode=1, stdout="")
+
+        with (
+            patch("scripts.preflight._common.ROOT", tmp_path),
+            patch("session_preflight.subprocess.run", side_effect=_record),
+        ):
+            result = _preflight._check_endstate_drift()
+        return result, recorded
+
+    def _recorded_show_ref(self, recorded: list[list[str]]) -> str:
+        """The ref _check_endstate_drift resolved, lifted from the git show it only reaches once
+        its own ref grammar matches. An empty recording means the matcher never matched."""
+        shows = [cmd for cmd in recorded if cmd[:2] == ["git", "show"]]
+        assert shows, "the Source stamp ref half never matched _check_endstate_drift's ref grammar"
+        target = shows[0][2]
+        assert target.endswith(":docs/ROADMAP-PLATFORM.yaml"), target
+        return target.split(":", 1)[0]
+
+    def test_stamp_ref_half_reaches_the_attribution_branch(self, tmp_path: Path) -> None:
+        result, recorded = self._drive_drift(tmp_path)
+        assert result["stale"] is True
+        ref = self._recorded_show_ref(recorded)
+        assert re.fullmatch(r"[0-9a-f]{7,40}", ref), ref
+
+    def test_stamp_ref_names_commit_hashing_to_the_stamped_fingerprint(self, tmp_path: Path) -> None:
+        _result, recorded = self._drive_drift(tmp_path)
+        ref = self._recorded_show_ref(recorded)
+        root = str(self._repo_root())
+        present = subprocess.run(
+            ["git", "cat-file", "-e", f"{ref}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=root,
+        )
+        if present.returncode != 0:
+            pytest.skip(f"stamped commit {ref} is absent from this checkout (shallow or partial clone)")
+        show = subprocess.run(
+            ["git", "show", f"{ref}:docs/ROADMAP-PLATFORM.yaml"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            cwd=root,
+        )
+        assert show.returncode == 0, show.stderr
+        items = (yaml.safe_load(show.stdout) or {}).get("tier_items", [])
+        old_ids = sorted({str(i["id"]) for i in items if isinstance(i, dict) and "id" in i})
+        digest = hashlib.sha256("\n".join(old_ids).encode()).hexdigest()
+        stamped = re.search(r"roadmap_tier_id_set sha256:\s*([a-f0-9]{64})", self._real_stamp_line())
+        assert stamped, "the Source stamp line carries no sha256 half"
+        assert digest == stamped.group(1)
