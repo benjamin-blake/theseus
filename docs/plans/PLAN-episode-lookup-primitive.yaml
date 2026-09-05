@@ -1,0 +1,264 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "episode-lookup-primitive"
+intent: >-
+  Close a documented, partially-repaired defect class: three scheduled-monitor dedup lookups filter
+  on `source`/`status` against a verb that projects neither, so each always returns None and re-files
+  instead of updating. Replace the bulk-fetch-then-client-filter shape with one scoped episode
+  primitive every rec-governance monitor calls, and make the wrong read unreachable rather than safer.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-episode-lookup-primitive.yaml
+phase: >-
+  Bundle 2a of 3 (keystone for 2b, PLAN-backlog-health-detection, which builds its four-class
+  escalator on this primitive). Ad-hoc defect found during 2b planning; names no tier_item, so the
+  Tier Item Freshness Gate is skipped (soft-warn exception category: ad_hoc_rec).
+scope:
+  - file: scripts/rec_episode.py
+    action: Create
+    purpose: >-
+      The shared episode primitive: find_rec (scoped read + status/sub-key filter + a runtime
+      assertion that the rows carry every key the predicate filters on), decide (re-homed
+      escalation_action), run_episode (file/update/close orchestration with build_fields /
+      build_update / build_close hooks and a suppress_file flag). Flat module, not a package and not
+      under scripts/ops_portal/: map_source_to_test resolves this to tests/test_rec_episode.py, while
+      scripts/ops_portal/** returns None by Decision 124 and would leave the primitive outside the
+      per-file coverage floor.
+  - file: scripts/convergence_health/escalate.py
+    action: Modify
+    purpose: >-
+      Migrate escalate() onto run_episode; DELETE _fetch_open_recs (not patch it -- a callerless
+      patched helper preserves the bulk-fetch-then-client-filter shape). Titles, contexts,
+      acceptance probes, resolutions and _condition_from_existing_rec stay here.
+  - file: scripts/convergence_health/code_drift.py
+    action: Modify
+    purpose: >-
+      Migrate both sensors (detect_ducklake_code_drift, detect_prod_code_drift) onto run_episode and
+      delete find_open_ducklake_drift_rec / find_open_prod_drift_rec's hand-rolled scans. Two
+      single-condition sensors are the honest test that the primitive is not escalate-shaped.
+  - file: scripts/convergence_health/assess.py
+    action: Modify
+    purpose: Re-home escalation_action into rec_episode.decide; keep a re-export so existing importers are unaffected.
+  - file: scripts/convergence_health/budget_ingest.py
+    action: Modify
+    purpose: Drop the `from scripts.convergence_health.escalate import _fetch_open_recs` import; call the primitive.
+  - file: scripts/convergence_health/__init__.py
+    action: Modify
+    purpose: Remove _fetch_open_recs from the facade imports and __all__ so the deleted helper is unreachable.
+  - file: scripts/checks/_budget_recs.py
+    action: Modify
+    purpose: >-
+      Delete this module's own duplicate _fetch_open_recs copy, migrate _find_open_budget_breach_rec
+      onto find_rec's sub_key arm, and simplify _is_open_budget_breach_row back to a straight
+      status/source check now that the rows actually carry both. Its docstring's diagnosis of the
+      defect becomes the rationale comment, not a workaround.
+  - file: tests/test_rec_episode.py
+    action: Create
+    purpose: >-
+      Mirror test for the primitive: the four decide states, the runtime missing-key assertion, the
+      sub_key arm, run_episode's three hooks (including build_update returning None as a no-op), and
+      the class guard -- no module under scripts/ may call named("open_recs") and then filter on
+      `source`/`status`, with VERB_FIELDS as the oracle.
+  - file: tests/convergence_health/test_escalate.py
+    action: Modify
+    purpose: >-
+      Red/green for the dedup defect: a scoped lookup finds the already-open tf_convergence_stale rec
+      where the old path returned None. Also asserts _fetch_open_recs is absent from
+      scripts.convergence_health.__all__.
+  - file: tests/convergence_health/code_drift/test_ducklake.py
+    action: Modify
+    purpose: Red/green that the ducklake sensor's dedup lookup now matches an open ducklake_code_drift rec.
+  - file: tests/convergence_health/code_drift/test_prod.py
+    action: Modify
+    purpose: Red/green that the prod sensor's dedup lookup now matches an open prod_code_drift rec.
+  - file: tests/convergence_health/test_assess.py
+    action: Modify
+    purpose: Assert escalation_action still resolves through the assess re-export after the re-home.
+  - file: tests/checks/test__budget_recs.py
+    action: Modify
+    purpose: Cover the simplified _is_open_budget_breach_row and the removal of the duplicate _fetch_open_recs.
+  - file: tests/convergence_health/budget_ingest/test_dedupe.py
+    action: Modify
+    purpose: Cover budget_ingest's migration onto find_rec's sub_key arm.
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    A scoped episode lookup returns the already-open rec for a source that has one, where the
+    pre-change path returned None -- proven live against the warehouse for tf_convergence_stale.
+  - >-
+    No module under scripts/ calls named("open_recs") and then filters the result on `source` or
+    `status`; the guard fails if one is reintroduced.
+  - >-
+    find_rec raises loudly when handed rows lacking a key its predicate filters on, instead of
+    returning None.
+  - _fetch_open_recs is absent from scripts/convergence_health/ and from its facade __all__, and has no remaining copy in scripts/checks/_budget_recs.py.
+  - >-
+    The 22 redundant open tf_convergence_stale recs are closed as superseded against the single
+    retained keeper, and one open rec remains for that source.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Prove the primitive's missing-key assertion fires rather than silently returning None.
+    command: "bin/venv-python -m pytest tests/test_rec_episode.py::test_find_rec_raises_when_filtered_key_absent -q"
+    expected: "1 passed -- find_rec raises on rows lacking `source`/`status`"
+    fix_if: "Exit 4 means the test is unwritten; a pass before the primitive exists means the assertion is not discriminating."
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: rec-episode-missing-key-raises
+  - step: 2
+    phase: pre-deploy
+    action: Prove the class guard rejects the exact defect shape being removed.
+    command: "bin/venv-python -m pytest tests/test_rec_episode.py::test_no_open_recs_verb_source_status_filter -q"
+    expected: "1 passed -- no scripts/ module pairs named('open_recs') with a source/status filter"
+    fix_if: "A failure names the offending module:line. If it passes before the migration, the guard is not scanning the three known sites."
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: no-open-recs-verb-source-status-filter
+  - step: 3
+    phase: pre-deploy
+    action: Red/green the convergence-stale dedup lookup against a fixture carrying full columns.
+    command: "bin/venv-python -m pytest tests/convergence_health/test_escalate.py -q"
+    expected: "All pass, including the new case asserting a scoped lookup matches an open tf_convergence_stale rec."
+    fix_if: "The new case failing means escalate() still resolves its lookup through the narrow projection."
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      A whole-file selector, not a single kernel-expressible assertion; steps 1 and 2 graduate the
+      two primitives this file exercises, and graduating a third file-level pytest run would
+      duplicate them without adding discrimination.
+  - step: 4
+    phase: pre-deploy
+    action: Prove the deleted helper is unreachable through the facade.
+    command: "bin/venv-python -c \"import scripts.convergence_health as c; assert '_fetch_open_recs' not in c.__all__ and not hasattr(c, '_fetch_open_recs')\" && ! grep -rn 'def _fetch_open_recs' scripts/"
+    expected: "Exit 0 -- absent from __all__, absent as an attribute, and no definition remains anywhere under scripts/."
+    fix_if: "A surviving definition or export means a caller was missed; find it before deleting."
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: fetch-open-recs-fully-removed
+  - step: 5
+    phase: pre-deploy
+    action: Run both migrated code_drift sensors' mirror tests.
+    command: "bin/venv-python -m pytest tests/convergence_health/code_drift tests/convergence_health/budget_ingest tests/checks/test__budget_recs.py tests/convergence_health/test_assess.py -q"
+    expected: "All pass -- both sensors, budget_ingest and the assess re-export survive the migration."
+    fix_if: "A failure here means the primitive is escalate-shaped and does not fit a single-condition sensor."
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      A multi-path regression selector over four already-mirrored test homes; its value is breadth
+      at implement time, and the per-behaviour assertions it runs are already owned by those homes'
+      own coverage floor rather than by a standing kernel check.
+  - step: 6
+    phase: post-deploy
+    action: >-
+      Live proof against the warehouse: the scoped lookup finds the open tf_convergence_stale rec
+      the pre-change path could not see.
+    command: "bin/venv-python -m scripts.rec_episode --probe tf_convergence_stale"
+    expected: "Prints the matched rec id and exits 0. Before the change the equivalent lookup returned None."
+    fix_if: "Exit non-zero or 'no open rec' means the scoped read is not binding `source` structurally; check _parse_single_key_filter."
+    hermetic: false
+    graduation: not-applicable
+  - step: 7
+    phase: post-deploy
+    action: >-
+      One-time deterministic cleanup, then confirm exactly one open rec remains for the source.
+      Semantic-verdict closure is licensed here by explicit operator direction recorded in Context,
+      which is the human confirmation Decision 103 requires -- not an agent judgement call.
+    command: "bin/venv-python -m scripts.rec_episode --dedupe-existing tf_convergence_stale --confirm && bin/venv-python -m scripts.rec_episode --probe tf_convergence_stale --count"
+    expected: "22 recs closed as superseded naming the keeper; the count command then prints 1."
+    fix_if: "A count other than 1 means the keeper selection is not deterministic; do not re-run blind -- inspect first."
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/rec_episode.py
+    behavior: >-
+      find_rec scopes its read by `source`, filters `status` and any sub_key client-side, and raises
+      when a filtered key is absent from the rows rather than returning None.
+    verification_step: 1
+    test_selector: tests/test_rec_episode.py::test_find_rec_raises_when_filtered_key_absent
+    red_green_expectation: "Red before (module absent, exit 4); green after."
+  - source: scripts/convergence_health/escalate.py
+    behavior: escalate() resolves an already-open tf_convergence_stale rec instead of filing a duplicate.
+    verification_step: 3
+    test_selector: tests/convergence_health/test_escalate.py
+    red_green_expectation: "Red before on the new case (lookup returns None against a full-column fixture); green after."
+  - source: scripts/convergence_health/code_drift.py
+    behavior: both drift sensors resolve an already-open rec for their own source through the primitive.
+    verification_step: 5
+    test_selector: tests/convergence_health/code_drift
+    red_green_expectation: "Red before on the new cases; green after."
+  - source: scripts/checks/_budget_recs.py
+    behavior: >-
+      _is_open_budget_breach_row checks `status`/`source` directly instead of treating an absent key
+      as satisfied, and the module carries no _fetch_open_recs of its own.
+    verification_step: 5
+    test_selector: tests/checks/test__budget_recs.py
+    red_green_expectation: "Red before (absent-key rows still pass the old inverted predicate); green after."
+  - source: scripts/convergence_health/budget_ingest.py
+    behavior: the (branch, phase) dedupe resolves through find_rec's sub_key arm, not a context-substring scan over a bulk fetch.
+    verification_step: 5
+    test_selector: tests/convergence_health/budget_ingest/test_dedupe.py
+    red_green_expectation: "Red before; green after."
+  - source: scripts/convergence_health/assess.py
+    behavior: escalation_action remains importable from assess after being re-homed into rec_episode.decide.
+    verification_step: 5
+    test_selector: tests/convergence_health/test_assess.py
+    red_green_expectation: "Green before and after by design -- the re-export exists to keep it so; the test fails if the re-export is dropped."
+  - source: scripts/convergence_health/__init__.py
+    behavior: the facade no longer exports _fetch_open_recs.
+    verification_step: 3
+    test_selector: tests/convergence_health/test_escalate.py
+    red_green_expectation: >-
+      Red before (the name is exported today, so the absence assertion fails); green after. Step 4
+      is the independent shell-level proof that no definition survives anywhere under scripts/.
+constraints:
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    Do NOT widen the `open_recs` verb's SQL. Its registered purpose is the preflight tally and
+    tests/test_session_preflight_cache_serving.py::TestVerbEquivalence::test_open_recs_equivalence
+    pins a client-side mirror to its exact projection. The defect is reusing a tally verb as a
+    dedup-lookup verb, not the verb.
+  - >-
+    The scoped read must use the structural single-key form `source = '<value>'`; the client parses
+    it into a {column, value} pair (Decision 84 I-3, rec-2170) and never interpolates SQL.
+  - Reads transit the DuckLake reader; writes transit file_rec/update_rec. The local JSONL is never a write source.
+  - One read per `source` per invocation, sub-keyed locally for multiple episodes under one source. Do not build a cross-source cache.
+context:
+  - "Decision-scout verdict + CITE list (verbatim decision ids)"
+  - "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s)"
+  - "Defect: escalate.py:70 _fetch_open_recs uses named('open_recs') -> SELECT id,title,context,created_timestamp,automatable; three finders filter on source/status (escalate.py:56, code_drift.py:89, code_drift.py:284) so all three always return None."
+  - "Already diagnosed once: scripts/checks/_budget_recs.py:135 documents this exact failure mode and worked around it for one consumer only."
+  - "Realised damage: 23 open tf_convergence_stale recs, 2026-08-28 -> 2026-09-02. Both code_drift sources have 0 rows ever, so their copy is latent."
+  - "Measured at 194fe48e: named('open_recs') 1104 rows/1,286,984 B/65.7s; current_state(status='open') 1104/2,071,223 B/18.9s; four scoped current_state(source=...) reads 94 rows/170,363 B total."
+  - "SoT for projections: VERB_FIELDS (src/common/ducklake_reader_client.py:149), proven by tests/common/ducklake_reader_client/test_verb_fields_parity.py executing each verb's registered SQL in DuckDB. Nothing consulted it at the call site -- that is the class."
+  - "Home choice: map_source_to_test('scripts/ops_portal/episode.py') is None (Decision 124); flat scripts/rec_episode.py maps to tests/test_rec_episode.py."
+  - "Decision 103 clause: semantic verdicts produce close_proposed, never a direct close. VP step 7's closure is licensed by explicit operator direction (this session, 2026-09-05); the 22 ids are enumerated in the implementing PR body as the confirmation artifact."
+  - "Decision 57 spirit flag from the round-2 decision-scout drove this split: shipping a further copy of episode logic while deferring the known defect was the divergence."
+  - "Two Fable advice-consults informed the seam; the second conceded recs_by_title_prefix in favour of source-keyed current_state. Its DECISIONS.md:1101 citation is a mis-cite (that line is Decision 169 reversal condition (b), scoped to validate.py's dispatch facade)."
+  - "SLOC headroom at 194fe48e: escalate 203, code_drift 326, assess 92, _budget_recs 248 -- all under 500, no registered budgets, no raise anticipated."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - Re-confirm the open tf_convergence_stale count before VP step 7; it was 23 at planning time
+execution_steps:
+  - "Create scripts/rec_episode.py: find_rec(rows_or_source, *, source, statuses=('open',), sub_key=None) with the missing-key assertion, decide() re-homed from assess.escalation_action, and run_episode() with build_fields/build_update/build_close hooks plus suppress_file."
+  - "Write tests/test_rec_episode.py first (red): the missing-key assertion, the four decide states, the sub_key arm, build_update returning None as a no-op, and the named('open_recs')+source/status class guard."
+  - "Migrate scripts/convergence_health/escalate.py onto run_episode; delete _fetch_open_recs; keep all per-condition text and _condition_from_existing_rec."
+  - "Migrate both code_drift sensors onto run_episode; delete their hand-rolled finders."
+  - "Migrate budget_ingest + _budget_recs: delete the duplicate _fetch_open_recs, move the (branch, phase) match onto find_rec's sub_key arm, and simplify _is_open_budget_breach_row to a direct status/source check."
+  - "Re-home escalation_action into rec_episode.decide with a re-export from assess.py; drop _fetch_open_recs from the facade imports and __all__."
+  - "Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)."
+  - "Run VP step 7's cleanup only after steps 1-6 pass, and enumerate the 22 closed rec ids in the PR body."
+  - "Report: what was implemented, verification results."
+work_areas: []
+rollback: >-
+  The migration is additive-then-subtractive: reverting the commit restores _fetch_open_recs and the
+  hand-rolled finders. The VP step 7 rec closures are NOT reverted by a code revert -- they are
+  warehouse writes; reopening them, if ever needed, is a deliberate update_rec per id from the
+  enumerated list in the PR body.
