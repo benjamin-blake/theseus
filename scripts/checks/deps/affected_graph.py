@@ -42,9 +42,7 @@ _EDITED_TEST_RE = re.compile(r"tests/.*test_[^/]+\.py$")
 def _is_changed_source_py(path: str) -> bool:
     """A non-test .py file under src/ or scripts/ -- the import-closure/mirror-map channels'
     candidate set."""
-    return (
-        path.endswith(".py") and (path.startswith("src/") or path.startswith("scripts/")) and not _EDITED_TEST_RE.match(path)
-    )
+    return path.endswith(".py") and (path.startswith(("src/", "scripts/"))) and not _EDITED_TEST_RE.match(path)
 
 
 def _is_changed_tests_helper_py(path: str) -> bool:

@@ -44,13 +44,13 @@ class FakeCon:
 
 
 def _result(**kw):
-    base = dict(
-        ulid="01ULID",
-        rec_id="rec-1",
-        occ_retries=0,
-        commit_ms=1.0,
-        created_timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
-        last_updated_timestamp=datetime(2026, 1, 1, tzinfo=timezone.utc),
-    )
+    base = {
+        "ulid": "01ULID",
+        "rec_id": "rec-1",
+        "occ_retries": 0,
+        "commit_ms": 1.0,
+        "created_timestamp": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "last_updated_timestamp": datetime(2026, 1, 1, tzinfo=timezone.utc),
+    }
     base.update(kw)
     return rt.WriteResult(**base)

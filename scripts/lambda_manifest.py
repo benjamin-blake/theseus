@@ -257,7 +257,7 @@ def compute_affected_artifacts(changed_files: list[str]) -> dict[str, list[str]]
             if _is_excluded(changed, manifest.excludes):
                 continue
             for mp in manifest_paths:
-                if changed == mp or changed.startswith(mp + "/") or changed.startswith(mp + "\\"):
+                if changed == mp or changed.startswith((mp + "/", mp + "\\")):
                     matches.append(changed)
                     break
             # Also check if the manifest.yaml itself changed

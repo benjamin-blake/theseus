@@ -196,7 +196,7 @@ class TestReconcileDedupe:
 
         def _find(trigger_key):
             call_order.append(f"find:{trigger_key}")
-            return None
+            return
 
         with (
             patch("scripts.ops_data_portal.sync", side_effect=_sync) as mock_sync,

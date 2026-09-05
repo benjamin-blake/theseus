@@ -340,8 +340,7 @@ def to_ducklake_sql(sql: str, table: str, database: str) -> str:
     - Idempotent: already-translated SQL passes through unchanged.
     """
     out = sql.replace(f"{database}.{table}_current", "{tbl}").replace(f"{database}.{table}", "{tbl}")
-    out = re.sub(r"\bregexp_like\(", "regexp_matches(", out)
-    return out
+    return re.sub(r"\bregexp_like\(", "regexp_matches(", out)
 
 
 def _uniqueness_sql(column: str) -> str:

@@ -184,7 +184,7 @@ class TestValidateMypyRatchet:
 
         def fake_run_mypy(failed_list: list[str]) -> None:
             failed_list.append("mypy proof-of-execution guard: fake failure")
-            return None
+            return
 
         with (
             patch("scripts.checks._common.ROOT", tmp_path),
@@ -372,7 +372,7 @@ class TestSeed:
     def test_seed_aborts_when_mypy_did_not_run_to_completion(self, tmp_path: Path) -> None:
         def fake_run_mypy(failed: list[str]) -> None:
             failed.append("mypy proof-of-execution guard: fake failure")
-            return None
+            return
 
         with (
             patch("scripts.checks._common.ROOT", tmp_path),
@@ -477,7 +477,7 @@ class TestUpdate:
 
         def fake_run_mypy(failed: list[str]) -> None:
             failed.append("mypy proof-of-execution guard: fake failure")
-            return None
+            return
 
         with (
             patch("scripts.checks._common.ROOT", tmp_path),

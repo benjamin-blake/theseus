@@ -97,7 +97,7 @@ _ROLLUP_KEY_BY_STATUS: dict[str, str] = {
 
 
 def _rollups(outcomes: list[registry.CheckOutcome]) -> dict[str, int]:
-    counts = {key: 0 for key in _ROLLUP_KEY_BY_STATUS.values()}
+    counts = dict.fromkeys(_ROLLUP_KEY_BY_STATUS.values(), 0)
     for outcome in outcomes:
         key = _ROLLUP_KEY_BY_STATUS.get(outcome.status)
         if key is not None:

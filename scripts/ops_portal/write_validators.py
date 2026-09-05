@@ -116,7 +116,7 @@ def _build_expression_validator(params: dict) -> None:
     raise) because expression remains a legitimate SQL-only test type for the compiler; only its
     write-time capability is retired.
     """
-    return None
+    return
 
 
 # One builder per recognised write_time test name; each takes the test's params dict and returns

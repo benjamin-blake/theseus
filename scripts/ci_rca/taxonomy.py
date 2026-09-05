@@ -74,7 +74,7 @@ def _parse_failed_checks_block(log_text: str) -> list[str]:
         if stripped.startswith("- "):
             checks.append(stripped[2:].strip())
             continue
-        if checks and (not stripped or stripped.startswith("Fix all failures") or stripped.startswith("===")):
+        if checks and (not stripped or stripped.startswith(("Fix all failures", "==="))):
             break
     return checks
 

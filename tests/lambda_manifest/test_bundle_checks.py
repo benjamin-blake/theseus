@@ -21,7 +21,7 @@ from scripts.lambda_manifest import (
 pytestmark = pytest.mark.unit
 
 # ---------------------------------------------------------------------------
-# check_handler_imports
+# tests for check_handler_imports
 # ---------------------------------------------------------------------------
 
 

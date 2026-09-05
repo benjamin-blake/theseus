@@ -137,7 +137,7 @@ def update_lambda_functions(
             function_zip_map = {fn: key for fn, key in function_zip_map.items() if fn in only_functions}
         channel = "ducklake"
     else:
-        function_zip_map = {fn: "lambda-packages/data-pipeline.zip" for fn in _build_prod_function_names()}
+        function_zip_map = dict.fromkeys(_build_prod_function_names(), "lambda-packages/data-pipeline.zip")
         channel = "prod"
 
     for fn_name, fixed_s3_key in function_zip_map.items():

@@ -39,8 +39,7 @@ def _normalize_acceptance(acceptance_cmd: object) -> str:
         parts = [c.get("command", "") for c in acceptance_cmd if isinstance(c, dict)]
     else:
         parts = [str(p) for p in acceptance_cmd]
-    joined = " && ".join(p for p in parts if p and p.strip())
-    return joined
+    return " && ".join(p for p in parts if p and p.strip())
 
 
 def run_acceptance(acceptance_cmd: object) -> bool:
