@@ -57,8 +57,15 @@ scope:
       Joins census rows to probe verdicts and COMPOSES scripts/rec_relevance.py rather than
       re-deriving it. rec_relevance already implements acceptance_probe, target_existence ->
       stale_target, and open_duplicate (title Jaccard >= 0.7 on the same file), and Decision 103
-      names it THE relevance evaluator -- so this module calls it for those signals and adds only
-      what is genuinely new: the probe-verdict join, the satisfied-vs-vacuous split (probe exits 0
+      names it THE relevance evaluator -- so this module calls it for those signals. CRITICAL: it
+      composes evaluate_rec_relevance with run_acceptance_probe=False (the default). That flag
+      routes to rec_relevance._run_acceptance_probe (scripts/rec_relevance.py:33-47), which runs
+      rec-authored shell through a bare subprocess.run(cmd, shell=True) with NO namespace
+      isolation; setting it True here would execute untrusted commands outside probe.py's sandbox
+      and defeat the entire three-job split. The acceptance-probe signal comes exclusively from
+      probe.py's verdict join. classify.py runs inside the ESCALATE job (it is pure joining and
+      predicate evaluation over data, no execution) and has no CLI subcommand of its own. It adds
+      only what is genuinely new: the probe-verdict join, the satisfied-vs-vacuous split (probe exits 0
       is a satisfied CANDIDATE when commits touch rec.file since creation, vacuous only when none
       do), the Decision 64 bootstrap-cohort split on the premise-dead class, the dependency-ref
       predicate, and the acceptance-quality class.
@@ -97,6 +104,11 @@ scope:
       A workflows row for the new workflow. MANDATORY: validate_ci_rca_adjudication's
       _check_workflow_coverage fails in both directions, and the map currently holds exactly 22
       entries for exactly 22 .yml files. Keyed on the workflow's display name, not its filename.
+      Declare tier: not_a_gate, ci_rca: excluded, owner: platform, plus a rationale -- matching
+      every sibling weekly probe (dedup-probe, ghas-probe, dependabot-stranded,
+      ci-rca-inactivity-sweep). ci_rca: watched would additionally require editing
+      .github/workflows/ci-rca.yml's on.workflow_run.workflows list in the same PR, and that file
+      is deliberately NOT in scope.
   - file: config/composite_action_body_baseline.yaml
     action: Modify
     purpose: >-
@@ -106,7 +118,8 @@ scope:
     action: Modify
     purpose: >-
       artifact_uploads rows for the two inter-job artifacts, retention_class ephemeral_handoff at
-      1-day retention. _validate_uploads enforces an exact two-way inventory match plus integer
+      1-day retention, PLUS a new amendment_log[] entry -- this is a class D contract and
+      check_amendment_log_for_class_d fails any parsed-content change without one. _validate_uploads enforces an exact two-way inventory match plus integer
       retention-days inside class bounds (ephemeral_handoff is 1-2 days).
   - file: docs/DECISIONS.md
     action: Modify
@@ -141,7 +154,7 @@ scope:
       data-quality enforcement. Decision 181 clause 2 requires publishing, per surface, either the
       enforcing check or the fact that the surface is an unenforced residual with an owning rec id.
       This is that publication; deferring it to implement time would reproduce the prose-only shape
-      181 exists to prevent.
+      181 exists to prevent. Needs a new amendment_log[] entry -- class D contract, same rule.
   - file: scripts/checks/ops_governance/check_source_registry.py
     action: Modify
     purpose: Add scripts/backlog_health/escalate.py to SCANNED_PATHS so the four new source literals are guarded.
@@ -192,6 +205,10 @@ acceptance_criteria:
     The probe job declares no id-token permission, references no secrets, and checks out with
     persist-credentials false -- all three halves of the credential-free claim.
   - No command classified unprobeable_unsafe or prose_only is ever executed, and neither is ever recorded as a pass.
+  - >-
+    scripts/backlog_health/probe.py is the ONLY module in the package that executes a rec-authored
+    command: no other module calls subprocess, and classify.py composes evaluate_rec_relevance with
+    run_acceptance_probe left False.
   - >-
     An unavailable user namespace yields the isolation_unavailable verdict and a non-zero exit, never
     a pass -- verified on a real GitHub-hosted runner, not only in the authoring container.
@@ -249,12 +266,23 @@ verification_plan:
   - step: 6
     phase: pre-deploy
     action: Prove the Decision 181 residual is published with an owning rec id, not deferred to prose.
-    command: "grep -A6 'merge_gate' docs/contracts/check-accounting.yaml | grep -qE 'rec-[0-9]+'"
-    expected: "Exit 0 -- the residual stanza names the merge-gate surface and an owning rec id."
+    command: "grep -A6 'merge_gate' docs/contracts/check-accounting.yaml | grep -qE 'rec-[0-9]+' && ! grep -q validate_recommendations_schema config/check_accounting_baseline.yaml"
+    expected: "Exit 0 -- the residual stanza names the merge-gate surface and an owning rec id, AND the roster entry is gone."
     fix_if: "No match means the residual was described in the plan but never published where Decision 181 clause 2 requires it."
     hermetic: true
     graduation: graduate
     graduation_check_id: recs-dq-merge-gate-residual-published
+  - step: 14
+    phase: pre-deploy
+    action: >-
+      Prove probe.py is the sole executor of rec-authored commands -- the structural backing for the
+      credential-free frame, which permissions alone do not give.
+    command: "! grep -rn 'subprocess\\|run_acceptance_probe=True' scripts/backlog_health/ --include=*.py | grep -v '^scripts/backlog_health/probe.py:'"
+    expected: "Exit 0 -- no module other than probe.py references subprocess or enables the unisolated relevance probe."
+    fix_if: "A hit in classify.py means rec-authored shell would run outside the unshare sandbox, in whichever job classify.py lands in."
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: backlog-probe-sole-executor
   - step: 7
     phase: pre-deploy
     action: Run the whole new package plus the modified check mirrors and the coverage-map test.
@@ -293,7 +321,7 @@ verification_plan:
       Verify the isolation primitive ON THE RUNNER, not only in the authoring container. `unshare`
       has zero precedent anywhere in this repo and Ubuntu 24.04 can restrict unprivileged user
       namespaces via AppArmor.
-    command: "bin/venv-python -m scripts.github_dispatch --workflow backlog-health.yml --input dry_run=true --wait"
+    command: "echo 'DISPATCH VIA MCP: mcp__github__actions_run_trigger(owner=\"benjamin-blake\", repo=\"theseus\", workflow_id=\"backlog-health.yml\", ref=\"main\", inputs={\"dry_run\":\"true\"}), then poll mcp__github__actions_get and read the probe job via mcp__github__get_job_logs'"
     expected: >-
       The probe job reports the namespace engaged and returns real verdicts. If the namespace is
       unavailable the job FAILS with isolation_unavailable rather than reporting probes passed.
@@ -322,7 +350,7 @@ verification_plan:
   - step: 13
     phase: post-deploy
     action: Verify both bundled recs closed after the merge.
-    command: "bin/venv-python -m scripts.sync.ops pull && ! grep -E '\"id\": \"rec-3312\".*\"status\": \"open\"' logs/.recommendations-log.jsonl && ! grep -E '\"id\": \"rec-3309\".*\"status\": \"open\"' logs/.recommendations-log.jsonl"
+    command: "bin/venv-python -m scripts.sync.ops sync && ! grep -E '\"id\": \"rec-3312\".*\"status\": \"open\"' logs/.recommendations-log.jsonl && ! grep -E '\"id\": \"rec-3309\".*\"status\": \"open\"' logs/.recommendations-log.jsonl"
     expected: "Neither rec is open in the refreshed cache (closed by the Resolves: trailer via rec-autoclose.yml)."
     fix_if: "Still open means the squash-merge body omitted the Resolves: rec-3312, rec-3309 trailer; close them through the portal."
     hermetic: false
@@ -344,8 +372,9 @@ test_obligations:
     red_green_expectation: "Red before; green after."
   - source: scripts/backlog_health/classify.py
     behavior: >-
-      composes rec_relevance for the ratified signals and adds only the probe join, the
-      satisfied-vs-vacuous split, the bootstrap-cohort split and the dependency-ref predicate.
+      composes rec_relevance with run_acceptance_probe=False and executes nothing itself; adds only
+      the probe join, the satisfied-vs-vacuous split, the bootstrap-cohort split and the
+      dependency-ref predicate.
     verification_step: 2
     test_selector: tests/test_backlog_health_classify.py
     red_green_expectation: "Red before; green after."
@@ -417,7 +446,7 @@ test_obligations:
   - source: docs/contracts/check-accounting.yaml
     behavior: the merge-gate residual stanza exists and names an owning rec id.
     verification_step: 6
-    command: "grep -A6 'merge_gate' docs/contracts/check-accounting.yaml | grep -qE 'rec-[0-9]+'"
+    command: "grep -A6 'merge_gate' docs/contracts/check-accounting.yaml | grep -qE 'rec-[0-9]+' && ! grep -q validate_recommendations_schema config/check_accounting_baseline.yaml"
     red_green_expectation: "Red before (no residual stanza); green after."
   - source: docs/ROADMAP-PLATFORM.yaml
     behavior: the T1.6 progress_note is added without any criterion status changing.
@@ -465,6 +494,8 @@ context:
   - "Probe form: audit the REWRITTEN command (step_acceptance.py:80-84 normalisations), because the harm is the executor auto-closing an unfixed rec and that is what it runs. Measured: 475 of 689 rewritten, only 2 change verdict."
   - "Reader latency varies widely (4.2s to 65.7s observed on the same call); timeout-minutes 30 carries the margin."
   - "ci_rca_taxonomy currently holds exactly 22 workflow entries for 22 .yml files, keyed on display name."
+  - "compute_affected_artifacts(scope) reports {data-pipeline: [docs/ROADMAP-PLATFORM.yaml]} -- the roadmap is an assets: row of that manifest, NOT a src/lambdas/** source file. The obligation is discharged by the governed deploy-prod-lambdas.yml channel, whose paths: filter excludes the asset (Decision 125/126). Do not re-derive this as a missing V3 deploy step."
+  - "VP step 11 runs the three stages as separate local processes where the workflow uses inter-job artifacts: census --dry-run writes its payload to a temp path the probe stage reads, and probe --dry-run writes its verdicts likewise. The --dry-run contract is that no WAREHOUSE write occurs; local temp files are the stand-in for the artifact handoff."
   - "Two Fable advice-consults informed this design; the first rejected env-scrubbing as a security control (with id-token: write, ACTIONS_ID_TOKEN_REQUEST_* is in every step's environment) and produced the three-job split."
 pre_implementation_checklist:
   - Branch confirmed not on main
