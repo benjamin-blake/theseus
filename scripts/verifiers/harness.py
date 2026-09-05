@@ -129,7 +129,6 @@ class Verifier(ABC):
 
         Must not raise exceptions; all failures should be returned as FAIL or SKIPPED.
         """
-        pass
 
     async def run(self) -> VerifierResult:
         """Run the verifier with timing instrumentation."""
