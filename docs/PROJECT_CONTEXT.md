@@ -2,7 +2,7 @@
 
 Canonical Layer 2 project knowledge base for Claude Code. This file is loaded on demand by workflows; keep rules in `CLAUDE.md` / `AGENTS.md`, workflow method in `.claude/commands/` and `.claude/skills/`, and machine semantics in `docs/contracts/*.yaml`.
 
-Source stamp: ROADMAP-PLATFORM.yaml @ working tree; roadmap_tier_id_set sha256: 5ce59be4136f4c884d0aa427c09f29ed728e5192f41da0f2128fb02a60dc7307
+Source stamp: ROADMAP-PLATFORM.yaml @ 722df8501dc9d717ead5bf70691bd646839be5d0; roadmap_tier_id_set sha256: 5ce59be4136f4c884d0aa427c09f29ed728e5192f41da0f2128fb02a60dc7307
 
 ## Operating contract
 

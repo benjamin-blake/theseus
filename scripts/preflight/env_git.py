@@ -189,7 +189,17 @@ def check_main_freshness() -> dict:
     }
 
 
-def _get_recent_main_commits(n: int = 5) -> list[dict]:
+# Correlation window the ci_rca likely-resolved engine is served. It must outlive the
+# fix-to-triage lag, which the retired five-commit default did not: see
+# audits/planning-decision-burden-735e69fc.yaml section B5, finding PDB-06, carried at
+# HYPOTHESIS confidence after that audit's round-4 self-verification cap. Its empirical
+# half is re-measured here and is the falsifiable one -- the two motivating fix commits
+# sat 117 and 116 commits behind origin/main on 2026-09-05; no commits-per-day rate is
+# carried, that conversion being averaging-window sensitive where the commit lag is not.
+MAIN_COMMIT_CORRELATION_WINDOW: int = 60
+
+
+def _get_recent_main_commits(n: int = MAIN_COMMIT_CORRELATION_WINDOW) -> list[dict]:
     """Return the last *n* commits on origin/main as structured dicts.
 
     Each dict has keys: sha, date (ISO), subject, files (list of changed paths).

@@ -4,12 +4,15 @@ run_log_sync, activate-hint printing, recent-main-commits parsing (rec-2709 Wave
 
 from __future__ import annotations
 
+import inspect
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from scripts.preflight import env_git
 
 boto3 = pytest.importorskip("boto3")
 
@@ -408,3 +411,46 @@ class TestGetRecentMainCommits:
         with patch("session_preflight.subprocess.run", return_value=self._make_git_result("")):
             result = _preflight._get_recent_main_commits()
         assert result == []
+
+
+class TestRecentMainCommitsCorrelationWindow:
+    """The commit-correlation window _get_recent_main_commits serves the ci_rca likely-resolved
+    engine is a named constant at or above the declared floor, the parameter default is that
+    constant, and a default call returns the whole window rather than the retired five commits.
+    """
+
+    _FLOOR = 60
+    _RETIRED_DEFAULT = 5
+
+    def _make_git_result(self, stdout: str) -> MagicMock:
+        r = MagicMock()
+        r.returncode = 0
+        r.stdout = stdout
+        return r
+
+    def _synthetic_log(self, count: int) -> str:
+        """git-log stdout in _get_recent_main_commits' own --format/--name-only shape, one record
+        per commit. The record count is derived from the window constant, never a literal, so the
+        case survives a later raise of the window."""
+        return "".join(
+            f"COMMIT:{i:040x}|2026-09-05T10:00:00+00:00|feat(window): synthetic commit {i}\nscripts/synthetic_{i}.py\n\n"
+            for i in range(count)
+        )
+
+    def test_window_constant_meets_declared_floor(self) -> None:
+        window = env_git.MAIN_COMMIT_CORRELATION_WINDOW
+        assert isinstance(window, int)
+        assert window >= self._FLOOR
+
+    def test_parameter_default_is_the_window_constant(self) -> None:
+        default = inspect.signature(env_git._get_recent_main_commits).parameters["n"].default
+        assert default == env_git.MAIN_COMMIT_CORRELATION_WINDOW
+
+    def test_default_call_returns_the_whole_window(self) -> None:
+        window = env_git.MAIN_COMMIT_CORRELATION_WINDOW
+        stdout = self._synthetic_log(window)
+        with patch("scripts.preflight.env_git.subprocess.run", return_value=self._make_git_result(stdout)):
+            result = env_git._get_recent_main_commits()
+        assert len(result) == window
+        assert len(result) > self._RETIRED_DEFAULT
+        assert result[-1]["files"] == [f"scripts/synthetic_{window - 1}.py"]
