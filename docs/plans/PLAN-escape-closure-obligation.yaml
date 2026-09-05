@@ -1,0 +1,693 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: escape-closure-obligation
+intent: 'Close the permanence leg of the escape loop: an escape-classified recommendation cannot reach
+  a terminal status without naming a landed, existence-verified permanent artifact or declaring a categorised
+  reason none is feasible, asserted once at the ops-portal write boundary, with back_validation upgraded
+  from file-only candidate pairing to artifact-existence verification.'
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-escape-closure-obligation.yaml
+phase: 'Control-plane loop closure -- the closure-time artifact obligation of audit finding LSA-04 (audits/loop-spec-adoption-4d8bac4a.yaml),
+  classified planned-insufficient against T3.4. Ad hoc, soft-warn category ad_hoc_rec: NO tier_item is
+  claimed, no roadmap row is added and no exit criterion is closed, so this plan declares no closes_criteria
+  and does not touch docs/ROADMAP-PLATFORM.yaml. Keystone slice of the loop-spec-adoption wave; runs concurrently
+  with a sibling slice, hence the five declared scope exclusions.'
+scope:
+- file: scripts/ops_portal/closure_gate.py
+  action: Create
+  purpose: 'The closure-obligation rule body (Decision 128 decompose-by-default; ops_data_portal.py has
+    78 SLOC headroom so the gate BODY must not live inline). Owns: the escape-classified predicate over
+    merged context (escape_class OR detection_gap.escape_mode), the <kind>:<ref> artifact grammar and
+    its static resolver for the four kinds, the categorised hatch grammar, and the single ClosureArtifactRequired(ValueError).
+    Pure and side-effect free -- it refuses, never remediates (Decision 55/72).'
+- file: scripts/ops_data_portal.py
+  action: Modify
+  purpose: update_rec gains keyword-only closure_artifact / closure_none_feasible_reason parameters that
+    stamp into the merged context_v2_json, and calls the gate immediately before _ducklake_write. The
+    single enforcement site all four closure paths already funnel through. Module-scope import of the
+    gate symbol so scripts.ops_data_portal.<sym> stays the correct patch target (validate_ops_portal_patch_targets).
+- file: scripts/ops_portal/cli.py
+  action: Modify
+  purpose: Adds --closure-artifact and --closure-none-feasible-reason to the --update-rec fields group,
+    and a THIRD classification table _UPDATE_REC_KWARG_MAP (dest -> update_rec keyword parameter) alongside
+    _UPDATE_REC_FIELD_MAP / _UPDATE_REC_REJECTIONS, so the write-fidelity contract (Decision 66/163) still
+    classifies every dest by exactly one table. Relaxes the at-least-one-update-field guard to accept
+    a kwarg-only invocation (the pre-merge stamp).
+- file: scripts/ops_portal/ci_rca_schema.py
+  action: Modify
+  purpose: CiRcaContext gains Optional closure_artifact and closure_none_feasible_reason with their patterns.
+    Backward-compatible Optional additions per the file's own :129-133 precedent -- NO schema_version
+    ceiling raise and NO new ops_recommendations column.
+- file: scripts/ops_portal/ci_rca_lifecycle.py
+  action: Modify
+  purpose: 'Adds close_recs_from_trailer(ids, commit_sha, run_url, ...) -> int, the importable helper
+    rec-autoclose.yml delegates its closure loop to (the stamp_fixed_by_sha / Decision 142 precedent).
+    Owns the catch-skip-mark refusal: ClosureArtifactRequired is caught, a Decision-155-shaped marker
+    is printed and mirrored to $GITHUB_STEP_SUMMARY, the rec is skipped and left open, and the returned
+    exit code stays 0. 285 SLOC, 215 headroom.'
+- file: .github/workflows/rec-autoclose.yml
+  action: Modify
+  purpose: The close-resolved-recs-from-resolves-trailer step delegates to close_recs_from_trailer, SHRINKING
+    its body well under the config/composite_action_body_baseline.yaml r3_workflows ceiling of 63 so that
+    file is never edited (decreases need no marker; the guard fails only on line_count > entry). The Backfill
+    decisions to warehouse step and its Decision 155 non-zero exit are untouched.
+- file: scripts/ci_rca/inactivity_sweep.py
+  action: Modify
+  purpose: 'close_inactive_recs passes closure_none_feasible_reason=''stale_no_recurrence: <proof>'' through
+    update_rec. Without this the gate wedges a scheduled workflow permanently and grows an open source=ci_rca
+    backlog that hard-blocks the /plan queue.'
+- file: scripts/ci_rca/back_validation.py
+  action: Modify
+  purpose: 'find_preventive_regressions upgrades from file-only candidate pairing to artifact-existence
+    VERIFICATION: each flag gains closure_artifact / artifact_status / grade keys resolved via closure_gate''s
+    static resolver (additive keys, no reader egress, Decision 88). Existing coverage is 79.7% against
+    an unbaselined 100% standard, so this file''s uncovered branches are brought to 100% in the same change
+    rather than registering a baseline entry.'
+- file: scripts/preflight/ci_rca_gauges.py
+  action: Modify
+  purpose: 'print_ci_rca_back_validation emits a per-flag GRADE (VERIFIED-PRESENT / CONFIRMED-ABSENT /
+    HATCHED / CANDIDATE) in place of the blanket ''[CANDIDATE] file-only match'' banner. Stays surfacing-only
+    (Decision 55): even CONFIRMED-ABSENT files nothing. 404 SLOC, 96 headroom.'
+- file: docs/contracts/ci-rca-lifecycle.yaml
+  action: Modify
+  purpose: 'Class D field-semantics home (Decision 86/127): the two new projection_fields rows plus a
+    closure_obligation section carrying the artifact kind vocabulary, the per-kind static resolution rule,
+    and the hatch category vocabulary. REQUIRES a new amendment_log[] entry (change_class: field_add)
+    -- scripts/checks/contracts/_population.py fails a content change without one.'
+- file: docs/DECISIONS.md
+  action: Modify
+  purpose: Decision 184, drafted verbatim in execution_steps below. Human-approved at a pre-merge gate.
+    Measured span 6079 bytes against the 6144-byte per-entry hard cap.
+- file: tests/ops_data_portal/test_closure_gate.py
+  action: Create
+  purpose: 'Mirror home for the gate body: predicate over both halves of the union, the four artifact
+    kinds resolving present/absent, the known-bad fixture (a named artifact that does not exist on main),
+    hatch grammar accept/reject, and a contract-parity test asserting the kind and category vocabularies
+    in closure_gate.py equal those declared in docs/contracts/ci-rca-lifecycle.yaml::closure_obligation.'
+- file: tests/ops_data_portal/test_update_rec_content_validation.py
+  action: Modify
+  purpose: 'The Decision 131 mirror home for update_rec write-boundary changes (its own docstring says
+    so). Adds the acceptance cases: rec-3131 replayed is refused; a named-but-absent artifact is refused;
+    a resolvable artifact and a well-formed hatch both pass; a status-preserving write on an already-closed
+    escape rec is NOT gated. All with mock_write.assert_not_called() on the refusal paths.'
+- file: tests/ops_data_portal/test_cli.py
+  action: Modify
+  purpose: test_cli_update_rec_flag_dest_classification_is_exhaustive becomes a three-way partition (threaded
+    | rejected | kwarged) with pairwise disjointness -- a strengthening, not a weakening. Adds threading
+    proof that --closure-artifact reaches update_rec's keyword parameter and that a kwarg-only invocation
+    is accepted.
+- file: tests/ops_data_portal/test_ci_rca_schema.py
+  action: Modify
+  purpose: CiRcaContext accepts the two new Optional fields, rejects malformed values, and a context omitting
+    both still validates (backward compatibility for every historical row).
+- file: tests/test_ci_rca_lifecycle.py
+  action: Modify
+  purpose: 'close_recs_from_trailer: refusal is caught, marked and skipped with the returned exit code
+    still 0 and the rec left open; a non-gate exception still yields exit code 1; the marker is mirrored
+    to $GITHUB_STEP_SUMMARY. Plus the workflow-shape pin that rec-autoclose.yml delegates to the helper
+    and its body stays at or under the ratchet ceiling of 63.'
+- file: tests/test_ci_rca_inactivity_sweep.py
+  action: Modify
+  purpose: The sweep passes a well-formed stale_no_recurrence hatch into update_rec, so an escape-classified
+    rec closes rather than wedging the scheduled workflow.
+- file: tests/test_ci_rca_back_validation.py
+  action: Modify
+  purpose: 'Artifact-existence grading: VERIFIED-PRESENT, CONFIRMED-ABSENT (the known-bad fixture), HATCHED,
+    and CANDIDATE for a historical prior rec carrying neither field. Also closes this file''s coverage
+    gap to 100% (validate_test_coverage, full tier).'
+- file: tests/session/preflight/test_ci_rca_gauges.py
+  action: Modify
+  purpose: 'The grade-aware banner: the printed output carries the per-flag grade and the delegation pin
+    at :314-334 still holds.'
+- file: docs/plans/PLAN-escape-closure-obligation.yaml
+  action: Create
+  purpose: This plan document.
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+- Closing an escape-classified rec (escape_class set OR detection_gap.escape_mode set) with neither a
+  closure_artifact nor a closure_none_feasible_reason raises ClosureArtifactRequired at the portal and
+  performs no write.
+- Closing one whose named closure_artifact does not resolve to an existing artifact on the tree is refused
+  the same way -- the known-bad fixture.
+- The historical rec-3131 case, replayed (status closed, resolution 'Duplicate of rec-3132...', no artifact,
+  no hatch), is refused.
+- A closure supplying a resolvable artifact, and a closure supplying a well-formed categorised hatch,
+  both succeed.
+- A status-preserving write on an already-terminal escape rec (stamp_fixed_by_sha, occurrence bump, context
+  correction) is NOT gated.
+- rec-autoclose.yml handles a refusal by printing a marker, skipping the rec and exiting 0 -- it never
+  propagates the exception and never reddens this ci_rca:watched workflow.
+- The scheduled inactivity sweep still closes an escape-classified inactive rec, satisfying the hatch
+  programmatically with its stale_no_recurrence proof.
+- back_validation grades each pairing by the prior rec's named artifact actually existing (VERIFIED-PRESENT
+  / CONFIRMED-ABSENT / HATCHED), falling back to CANDIDATE for historical rows carrying neither field,
+  and files nothing at any grade.
+- docs/contracts/ci-rca-lifecycle.yaml declares both new projection_fields and the closure_obligation
+  vocabularies, carries a new amendment_log entry, and a test fails if the contract and the gate disagree.
+- Decision 184 exists in docs/DECISIONS.md with a conformant metadata envelope and a span at or below
+  the 6144-byte per-entry cap.
+- config/composite_action_body_baseline.yaml, config/ci_rca_taxonomy.yaml, AGENTS.md, scripts/rec_trailer.py
+  and docs/ROADMAP-PLATFORM.yaml are untouched, and no SLOC or coverage baseline is raised or lowered.
+- bin/venv-python -m scripts.checks.deps.selection_budget --plan <this plan> predicts within_budget (Decision
+  182).
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: 'Exercise the gate body directly: the union predicate, the four artifact kinds resolving present
+    and absent, the hatch grammar, and the contract-parity assertion that the vocabularies in closure_gate.py
+    equal those declared in ci-rca-lifecycle.yaml.'
+  command: bin/venv-python -m pytest tests/ops_data_portal/test_closure_gate.py -q
+  expected: Exit 0, all tests pass, including test_named_artifact_absent_on_main_is_refused (the known-bad
+    fixture) and test_closure_vocabularies_match_contract.
+  fix_if: A kind resolves an absent artifact as present -- the resolver is matching too loosely (e.g.
+    a pytest node id whose file exists but whose def does not). A parity failure means the contract section
+    and the module disagree; the contract is the field-semantics authority, so correct whichever is wrong
+    and never delete the assertion.
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: closure-gate-artifact-resolver-and-vocabulary
+- step: 2
+  phase: pre-deploy
+  action: Exercise the obligation at the write boundary through update_rec, including the audit's literal
+    acceptance (rec-3131 replayed is refused) and the non-gating of status-preserving writes.
+  command: bin/venv-python -m pytest tests/ops_data_portal/test_update_rec_content_validation.py -q
+  expected: Exit 0. test_rec_3131_replay_is_refused and test_named_artifact_absent_is_refused both raise
+    ClosureArtifactRequired with mock_write.assert_not_called(); test_resolvable_artifact_closes and test_hatched_closure_closes
+    write; test_status_preserving_write_on_closed_escape_rec_is_not_gated writes.
+  fix_if: If mock_write WAS called on a refusal, the gate is placed after _ducklake_write -- move it before.
+    If the status-preserving case is refused, the transition predicate is keying on the merged status
+    instead of on (status in updates AND existing status non-terminal), which would wedge stamp_fixed_by_sha
+    on every already-closed escape rec.
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: update-rec-closure-obligation-boundary
+- step: 3
+  phase: pre-deploy
+  action: Exercise the CLI write-fidelity partition with the new kwarg table and the flag threading.
+  command: bin/venv-python -m pytest tests/ops_data_portal/test_cli.py -q
+  expected: Exit 0. test_cli_update_rec_flag_dest_classification_is_exhaustive passes as a three-way partition
+    and the new threading tests show --closure-artifact reaching update_rec's keyword parameter.
+  fix_if: '''unclassified'' names the new dests -- they were added to the argument group without a table
+    entry. Never resolve this by deleting the equality assertion or by dropping to a subset check; the
+    graduated shard portal-cli-update-rec-field-fidelity pins its strength.'
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: The durable guard already exists as a graduated shard (config/agent/verification_registry/entries/portal-cli-update-rec-field-fidelity.yaml,
+    node id tests/ops_data_portal/test_cli.py::TestCLI::test_cli_update_rec_flag_dest_classification_is_exhaustive).
+    This step strengthens that same node id from a two-way to a three-way partition; a second shard would
+    pin the identical assertion twice.
+- step: 4
+  phase: pre-deploy
+  action: Exercise the CiRcaContext additions, including that a context omitting both new fields still
+    validates.
+  command: bin/venv-python -m pytest tests/ops_data_portal/test_ci_rca_schema.py -q
+  expected: Exit 0; the new fields accept well-formed values, reject malformed ones, and their absence
+    still validates.
+  fix_if: A historical-shaped context failing validation means a field was declared required rather than
+    Optional -- that would retro-reject every existing row and violates the prospective-only ruling in
+    Decision 184 point 6.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: The standing regression guard for these two fields is the already-registered
+    validate_ci_rca_lifecycle_projection (pre=True with no pre_globs, so it runs unconditionally), which
+    asserts projection_fields is a subset of the live CiRcaContext. A graduated shard would duplicate
+    a check that already runs in both tiers at zero added gate cost.
+- step: 5
+  phase: pre-deploy
+  action: Exercise the extracted rec-autoclose helper's refusal contract -- catch, mark, skip, exit 0
+    -- and the workflow-shape pin that the step delegates to it and stays under the body ratchet.
+  command: bin/venv-python -m pytest tests/test_ci_rca_lifecycle.py -q
+  expected: Exit 0. test_closure_refusal_skips_and_exits_zero returns 0 with the rec left open and a marker
+    printed; test_non_gate_exception_still_exits_nonzero returns 1; test_rec_autoclose_step_delegates_to_helper
+    passes.
+  fix_if: 'A returned exit code of 1 on the refusal path means the gate exception is being caught by the
+    generic handler -- the ClosureArtifactRequired clause must come BEFORE it. Do not ''fix'' this by
+    making the gate non-raising: an exit-1 here reddens a ci_rca:watched workflow and enters the closure
+    trap in docs/contracts/ci-rca-lifecycle.yaml.'
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: rec-autoclose-closure-refusal-exits-zero
+- step: 6
+  phase: pre-deploy
+  action: Exercise the inactivity sweep's programmatic hatch so the scheduled workflow is not wedged.
+  command: bin/venv-python -m pytest tests/test_ci_rca_inactivity_sweep.py -q
+  expected: Exit 0; close_inactive_recs passes a well-formed stale_no_recurrence hatch and an escape-classified
+    inactive rec closes.
+  fix_if: A refusal here means the hatch string does not satisfy the categorised grammar -- fix the sweep's
+    proof string, never widen the grammar to admit a bare constant (Decision 184 reversal condition (b)
+    monitors exactly that drift).
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: The sweep's hatch is one caller's argument shape, not a repo-wide invariant;
+    the durable guard is step 1's hatch-grammar test, which is what a shard would end up pinning. Graduating
+    this would pin one call site's literal string and go stale the moment the proof format changes.
+- step: 7
+  phase: pre-deploy
+  action: Exercise back_validation's upgrade from file-only candidate pairing to artifact-existence verification
+    across all four grades.
+  command: bin/venv-python -m pytest tests/test_ci_rca_back_validation.py -q
+  expected: Exit 0; flags carry grade VERIFIED-PRESENT, CONFIRMED-ABSENT, HATCHED and CANDIDATE for the
+    four prior-rec shapes, and the pre-existing file-only pairing behaviour is unchanged for historical
+    rows carrying neither new field.
+  fix_if: A historical prior rec grading as anything but CANDIDATE means the upgrade is retro-judging
+    rows filed before the obligation existed. If a flag disappeared entirely, the upgrade replaced pairing
+    instead of annotating it -- the file-only pairing must survive as the fallback.
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: back-validation-artifact-existence-grades
+- step: 8
+  phase: pre-deploy
+  action: Exercise the grade-aware preflight banner and confirm the existing gauge-delegation pin still
+    holds.
+  command: bin/venv-python -m pytest tests/session/preflight/test_ci_rca_gauges.py -q
+  expected: Exit 0; the printed section carries the per-flag grade and no longer asserts a blanket '[CANDIDATE]
+    file-only match' banner for every flag.
+  fix_if: 'If the gauge now files, closes or proposes anything, revert it: Decision 55 keeps this surface
+    advisory even at CONFIRMED-ABSENT grade.'
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Print formatting of one preflight section, already pinned by the existing
+    delegation test at tests/session/preflight/test_ci_rca_gauges.py:314-334. A shard on banner text would
+    pin prose and break on any wording change without guarding a behaviour.
+- step: 9
+  phase: pre-deploy
+  action: Prove the rec-autoclose body extraction SHRANK under the r3_workflows ceiling, so config/composite_action_body_baseline.yaml
+    (owned by a concurrent slice) is never edited.
+  command: bin/venv-python -c "from scripts.checks.ci_guards._workflow_shell_bodies import scan_workflow_bodies;k='.github/workflows/rec-autoclose.yml::autoclose::close-resolved-recs-from-resolves-trailer';n=scan_workflow_bodies()[k];assert
+    n<=63,(k,n);print('BODY_OK',n,'<= 63')"
+  expected: Exit 0 and BODY_OK with a count at or below 63 (63 is the live ceiling and the body measures
+    exactly 63 today, so any net growth fails).
+  fix_if: A count above 63 means refusal handling was added inline instead of extracted. Extract more
+    of the loop into close_recs_from_trailer. Never resolve this by editing config/composite_action_body_baseline.yaml
+    -- it is owned by a concurrent slice and is a declared scope exclusion of this plan.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: validate_composite_action_shell_bodies is already a registered check enforcing
+    exactly this ceiling in both tiers; this step is the in-plan early-warning replay of a guard that
+    already exists, so a shard would be a third copy of the same rule.
+- step: 10
+  phase: pre-deploy
+  action: 'Prove the SLOC decompose-by-default ruling held: no scope file crossed 500 SLOC, so config/sloc_budgets.yaml
+    is untouched and no raise marker is consumed.'
+  command: bin/venv-python -c "import pathlib;f=['scripts/ops_data_portal.py','scripts/ops_portal/closure_gate.py','scripts/ops_portal/ci_rca_lifecycle.py','scripts/ops_portal/cli.py','scripts/preflight/ci_rca_gauges.py'];c={p:sum(1
+    for l in pathlib.Path(p).read_text(encoding='utf-8').splitlines() if l.strip() and not l.strip().startswith('#'))
+    for p in f};over={p:n for p,n in c.items() if n>500};assert not over,over;print('SLOC_OK '+str(c))"
+  expected: Exit 0 and SLOC_OK listing every file at or below 500.
+  fix_if: A file over 500 means the change grew inline instead of decomposing. Split it into another cohesive
+    module behind the ops_portal facade (Decision 124 pattern). Never raise a budget (Decision 128).
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: validate_sloc_limits already enforces the 500-SLOC rule over the whole repo
+    in both tiers. This step is a per-file early warning over this plan's own transient file list; a shard
+    would pin that list forever.
+- step: 11
+  phase: pre-deploy
+  action: Prove Decision 184 landed as a conformant new entry within the per-entry authoring cap.
+  command: bin/venv-python -c "from scripts.decisions_md import iter_decision_sections;c=open('docs/DECISIONS.md',encoding='utf-8').read();b=[x
+    for m,x in iter_decision_sections(c) if int(m.group(1))==184];assert len(b)==1,'Decision 184 header
+    missing';n=len(b[0].encode());assert n<=6144,('span',n);assert 'significance:' in b[0] and 'numbered_decision'
+    in b[0];print('DEC184_OK span='+str(n))"
+  expected: 'Exit 0 and DEC184_OK with a span at or below 6144 bytes (drafted measurement: 6079).'
+  fix_if: A span above 6144 hard-fails validate_decisions_size -- trim the Rationale and Reversal-conditions
+    prose, never the nine numbered rulings. A missing header means the number was taken by a concurrent
+    PR; shift to the next free number and update every citation in this plan and in the contract.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: validate_decisions_size and validate_decision_entry_conformance already enforce
+    the per-entry cap and the envelope on every new entry in both tiers. Graduating a check for one specific
+    decision number would pin a one-off.
+- step: 12
+  phase: pre-deploy
+  action: Prove the Class D contract carries the new field semantics AND the amendment_log entry its population
+    check requires.
+  command: bin/venv-python -c "import yaml;d=yaml.safe_load(open('docs/contracts/ci-rca-lifecycle.yaml',encoding='utf-8'));pf=d['projection_fields'];assert
+    'closure_artifact' in pf and 'closure_none_feasible_reason' in pf,sorted(pf);co=d['closure_obligation'];assert
+    co['artifact_kinds'] and co['hatch_categories'];assert any(e['date']>='2026-09-05' for e in d['amendment_log']),'no
+    new amendment_log entry';print('CONTRACT_OK')"
+  expected: Exit 0 and CONTRACT_OK.
+  fix_if: A missing amendment_log entry fails scripts/checks/contracts/_population.py on any content change.
+    A projection_fields key absent from the live CiRcaContext fails validate_ci_rca_lifecycle_projection's
+    subset assertion -- add the field to the schema, do not delete the contract row.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: The subset invariant is already guarded by the registered validate_ci_rca_lifecycle_projection,
+    and the amendment_log obligation by scripts/checks/contracts/_population.py -- both run today. This
+    step only front-loads them.
+- step: 13
+  phase: pre-deploy
+  action: 'Scope boundary, BOTH DIRECTIONS: the working-tree-aware status diff equals exactly this plan''s
+    declared scope -- nothing outside, nothing declared but untouched -- and the five files this plan
+    excludes for concurrent-slice safety are absent from both the touched set and the declared set.'
+  command: bin/venv-python -c "from scripts.checks import _common;t={p for _s,p in _common.get_status_aware_diff()};e={'scripts/ops_portal/closure_gate.py','scripts/ops_data_portal.py','scripts/ops_portal/cli.py','scripts/ops_portal/ci_rca_schema.py','scripts/ops_portal/ci_rca_lifecycle.py','.github/workflows/rec-autoclose.yml','scripts/ci_rca/inactivity_sweep.py','scripts/ci_rca/back_validation.py','scripts/preflight/ci_rca_gauges.py','docs/contracts/ci-rca-lifecycle.yaml','docs/DECISIONS.md','tests/ops_data_portal/test_closure_gate.py','tests/ops_data_portal/test_update_rec_content_validation.py','tests/ops_data_portal/test_cli.py','tests/ops_data_portal/test_ci_rca_schema.py','tests/test_ci_rca_lifecycle.py','tests/test_ci_rca_inactivity_sweep.py','tests/test_ci_rca_back_validation.py','tests/session/preflight/test_ci_rca_gauges.py','docs/plans/PLAN-escape-closure-obligation.yaml','config/agent/verification_registry/entries/closure-gate-artifact-resolver-and-vocabulary.yaml','config/agent/verification_registry/entries/update-rec-closure-obligation-boundary.yaml','config/agent/verification_registry/entries/rec-autoclose-closure-refusal-exits-zero.yaml','config/agent/verification_registry/entries/back-validation-artifact-existence-grades.yaml'};f={'config/composite_action_body_baseline.yaml','config/ci_rca_taxonomy.yaml','AGENTS.md','scripts/rec_trailer.py','docs/ROADMAP-PLATFORM.yaml'};assert
+    not (e&f),{'exclusion_declared':sorted(e&f)};assert not (t&f),{'forbidden_touched':sorted(t&f)};assert
+    t==e,{'outside_declared_scope':sorted(t-e),'declared_but_untouched':sorted(e-t)};print('TOUCHED_SET_EXACT
+    '+str(len(t)))"
+  expected: Exit 0 and TOUCHED_SET_EXACT 24 (20 scope rows plus the four graduation shards this plan's
+    graduate dispositions create at implement time).
+  fix_if: 'forbidden_touched names one of the five concurrency exclusions -- STOP and revert that edit;
+    it collides with a live parallel slice. outside_declared_scope names an undeclared path: revert it,
+    never append it to scope (an undeclared touched path is a STOP under the scope-boundary contract''s
+    deviation branch b, and the escape is a human-directed plan amendment). declared_but_untouched means
+    a scope row was not implemented.'
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Asserts this diff's own transient file set, meaningless once merged; the durable
+    rule it instantiates is already a registered check in both tiers (validate_scope_boundary reading
+    docs/contracts/implement-scope-boundary.yaml). A shard would pin one PR's file list forever.
+- step: 14
+  phase: pre-deploy
+  action: 'Decision 182 budget prediction over this plan''s own scope: the non-test half must stay inside
+    NON_TEST_BUDGET_SECONDS = 240 and the measured selection breadth inside its derived allowance.'
+  command: bin/venv-python -m scripts.checks.deps.selection_budget --plan docs/plans/PLAN-escape-closure-obligation.yaml
+  expected: 'predicted outcome: within_budget (measured at authoring time: n_selected 163 of census 539,
+    allowance 326s, predicted elapsed 162.2-210.6s).'
+  fix_if: 'breach means SPLIT the scope into atomic units until the prediction clears -- the measured
+    selection breadth, not the scope-row count, is the quantity to plan against. breadth_waived means
+    keep the scope but DECLARE the measured breadth here. non_test_breach is not a scope problem at all:
+    stop and open a planning session against the recorded static_s series.'
+  hermetic: false
+  graduation: not-applicable
+  graduation_check_id: null
+  graduation_waiver_reason: null
+- step: 15
+  phase: pre-deploy
+  action: Full presubmit tier before commit, per this plan's handoff_policy -- this is the tier that runs
+    validate_test_coverage, which holds scripts/ci_rca/back_validation.py to the unbaselined 100% per-file
+    standard it currently misses at 79.7%.
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0. Coverage reports 100% for scripts/ci_rca/back_validation.py, scripts/ci_rca/inactivity_sweep.py
+    and scripts/ops_data_portal.py.
+  fix_if: 'A per-file coverage failure means an added branch is unexercised -- add the test. Do NOT register
+    a config/coverage_baseline.yaml entry to get under it: a new sub-100 registration needs a ''# baseline-lowered:
+    dec-NNN'' marker and would spend Decision 184 on hiding debt this plan created.'
+  hermetic: false
+  graduation: not-applicable
+  graduation_check_id: null
+  graduation_waiver_reason: null
+- step: 16
+  phase: pre-deploy
+  action: 'Anti-remediation pin (Decision 55/72, Decision 184 point 9): the gate body must contain no
+    write, filing, retry or status-mutation call. It refuses and surfaces; it never fixes.'
+  command: bin/venv-python -c "import re,pathlib;s=pathlib.Path('scripts/ops_portal/closure_gate.py').read_text(encoding='utf-8');bad=[p
+    for p in ('file_rec','update_rec','_ducklake_write','write_ops','file_ops','update_ops','os.remove','shutil.','open(')
+    if re.search(r'\\b'+re.escape(p),s)];assert not bad,{'remediation_calls':bad};print('NO_REMEDIATION_OK')"
+  expected: Exit 0 and NO_REMEDIATION_OK -- zero matches.
+  fix_if: Any match means the gate acquired a side effect. A refusal that files a follow-up rec, synthesizes
+    a fixture, downgrades a status or retries with a substitute artifact is the Decision 55 workaround
+    anti-pattern; delete it and let the ValueError stand. Resolver file reads belong in a helper the caller
+    injects, keeping the rule function pure.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: closure-gate-no-remediation-calls
+test_obligations:
+- source: scripts/ops_portal/closure_gate.py
+  behavior: The union predicate, the four-kind static artifact resolver, the categorised hatch grammar
+    and the single ClosureArtifactRequired exception stay as declared; a named artifact absent from the
+    tree never resolves as present.
+  verification_step: 1
+  test_selector: tests/ops_data_portal/test_closure_gate.py::test_named_artifact_absent_on_main_is_refused
+  red_green_expectation: red before (module absent), green after
+- source: scripts/ops_data_portal.py
+  behavior: update_rec refuses a transition into closed/superseded for an escape-classified rec that names
+    neither a resolvable artifact nor a well-formed hatch, and writes nothing on that path.
+  verification_step: 2
+  test_selector: tests/ops_data_portal/test_update_rec_content_validation.py::test_rec_3131_replay_is_refused
+  red_green_expectation: red before (the closure is accepted today), green after
+- source: scripts/ops_portal/cli.py
+  behavior: Every dest on the two rec argument groups is classified by exactly one of the three tables,
+    and --closure-artifact reaches update_rec's keyword parameter rather than being silently accepted
+    and dropped.
+  verification_step: 3
+  test_selector: tests/ops_data_portal/test_cli.py::TestCLI::test_cli_update_rec_flag_dest_classification_is_exhaustive
+  red_green_expectation: red before (the new dests are unclassified under the two-table partition), green
+    after
+- source: scripts/ops_portal/ci_rca_schema.py
+  behavior: The two new fields are Optional with validated patterns, and a context omitting both still
+    validates so no historical row is retro-rejected.
+  verification_step: 4
+  test_selector: tests/ops_data_portal/test_ci_rca_schema.py::test_closure_fields_are_optional_and_validated
+  red_green_expectation: red before (fields undeclared), green after
+- source: scripts/ops_portal/ci_rca_lifecycle.py
+  behavior: close_recs_from_trailer catches a closure refusal, marks it, skips the rec and returns exit
+    code 0, while any other exception still returns 1.
+  verification_step: 5
+  test_selector: tests/test_ci_rca_lifecycle.py::test_closure_refusal_skips_and_exits_zero
+  red_green_expectation: red before (helper absent), green after
+- source: .github/workflows/rec-autoclose.yml
+  behavior: The closure step delegates to the importable helper instead of carrying the loop inline, so
+    a refusal cannot redden this ci_rca:watched workflow and the body stays under its ratchet ceiling.
+  verification_step: 5
+  test_selector: tests/test_ci_rca_lifecycle.py::test_rec_autoclose_step_delegates_to_helper
+  red_green_expectation: red before (the step inlines the loop), green after
+- source: scripts/ci_rca/inactivity_sweep.py
+  behavior: The scheduled sweep supplies a well-formed stale_no_recurrence hatch, so an escape-classified
+    inactive rec still closes and the workflow is not wedged.
+  verification_step: 6
+  test_selector: tests/test_ci_rca_inactivity_sweep.py::test_sweep_supplies_stale_no_recurrence_hatch
+  red_green_expectation: red before (the sweep passes no hatch and the gate refuses), green after
+- source: scripts/ci_rca/back_validation.py
+  behavior: A pairing whose prior rec named an artifact is graded by that artifact's actual existence,
+    while a prior rec carrying neither new field still grades CANDIDATE on the unchanged file-only pairing.
+  verification_step: 7
+  test_selector: tests/test_ci_rca_back_validation.py::test_named_but_absent_artifact_grades_confirmed_absent
+  red_green_expectation: red before (grading absent), green after
+- source: scripts/preflight/ci_rca_gauges.py
+  behavior: The back-validation section prints a per-flag grade instead of a blanket CANDIDATE banner,
+    and remains surfacing-only at every grade.
+  verification_step: 8
+  test_selector: tests/session/preflight/test_ci_rca_gauges.py::test_back_validation_banner_is_grade_aware
+  red_green_expectation: red before (blanket banner), green after
+- source: docs/contracts/ci-rca-lifecycle.yaml
+  behavior: The contract's declared artifact-kind and hatch-category vocabularies stay identical to the
+    ones the gate enforces -- contract-code drift fails rather than silently diverging.
+  verification_step: 1
+  test_selector: tests/ops_data_portal/test_closure_gate.py::test_closure_vocabularies_match_contract
+  red_green_expectation: red before (contract section absent), green after
+constraints:
+- 'Decision 67: IMPLEMENTATION only; the >5-file / >8-step STRATEGIC heuristic is suspended, so this lands
+  as one larger IMPLEMENTATION plan.'
+- 'Decision 55 / 72: the gate REFUSES and surfaces. It must never file a rec, synthesize a fixture, downgrade
+  a status, or retry with a substituted artifact. VP step 16 pins this mechanically.'
+- 'Hard refusal semantics: in rec-autoclose.yml the refusal is catch-skip-mark and exit 0, never a propagated
+  exception with exit_code=1. rec-autoclose is ci_rca:watched; an exit-1 files a new critical source=ci_rca
+  rec for a gate doing its job and enters the closure trap documented in docs/contracts/ci-rca-lifecycle.yaml.'
+- 'Decision 128 / 124: the gate BODY lives in a new scripts/ops_portal/ module, never inline (ops_data_portal.py
+  is at 422/500). Never raise a SLOC budget; decompose.'
+- 'SCOPE EXCLUSIONS, load-bearing for parallel safety -- this slice runs concurrently with a sibling slice
+  in a separate worktree. These five files must not be touched: config/composite_action_body_baseline.yaml
+  (owned by the concurrent slice), config/ci_rca_taxonomy.yaml (owned by a later wave), AGENTS.md (34
+  bytes of prose-budget headroom, and an always-ask public surface), scripts/rec_trailer.py (the trailer-grammar
+  route is ruled out), docs/ROADMAP-PLATFORM.yaml (zero roadmap rows this run). If one becomes genuinely
+  unavoidable, STOP and hand back BLOCKED rather than editing it.'
+- 'Artifact-supply route: the artifact is stamped into context_v2_json BEFORE merge via update_rec''s
+  new keyword parameter and its CLI flag. The `Resolves:` trailer grammar is NOT extended -- that route
+  touches .github/pull_request_template.md, AGENTS.md and the implement skill, all public-surface or byte-capped.'
+- 'Decision 84: portal writes only (file_rec / update_rec). Never edit logs/*.jsonl. The gate is client-side;
+  no ducklake_reader verb and no ducklake_writer action is added, so no Lambda redeploy and no governed
+  CD channel is involved.'
+- 'Decision 88: no new reader egress. rec_by_id already returns ALL_TABLE_COLUMNS including context_v2_json,
+  so escape classification is readable at gate time for free; back_validation keeps reading only the caller-injected
+  warm cache.'
+- 'Decision 86 / 127: field semantics route to docs/contracts/ci-rca-lifecycle.yaml. Do NOT mint a new
+  contract file, a new top-level registry (config/closure_artifacts.yaml or similar), or any standing
+  prose doc under docs/.'
+- This slice registers NO check under scripts/checks/. The obligation is a runtime write-time validator
+  in the same family as _validate_context_length and the CIRCA-02 strict-mode raise; making it a validate.py
+  check is the rejected P2/P3 shape and would pay all seven check surfaces for a tautological guard.
+- 'AGENTS.md: every behavior change lands with a test that fails without it; every new guard ships a known-bad
+  fixture. ruff, line length 127, type hints, no emojis, plain ASCII hyphens.'
+- 'Decision 182: the fast tier asserts NON_TEST_BUDGET_SECONDS = 240 (unwaivable) plus a breadth-derived
+  pytest half. VP step 14 requires within_budget before commit.'
+context:
+- 'SoT: audits/loop-spec-adoption-4d8bac4a.yaml LSA-04 (high, observed, CONFIRMED) -- READ-ONLY here.'
+- 'Audit is 108 commits stale. Re-verified at this branch: escape_class 37 recs, escape_mode 92, union
+  92 (escape_class is a strict subset), all closed, all source=ci_rca; failure_category gate_escape 0.'
+- PREDICATE = the union. escape_class alone leaves 55 escapes ungated; gate_escape is unbuildable (agent_only_categories,
+  never emitted by scripts/ci_rca/taxonomy.py).
+- 'The audit''s insertion point is gone: ops_data_portal.py:358''s inline lint call was deleted by PR
+  #1007 as dead code. Live write path is update_rec:429-478.'
+- 'ADJUDICATED: write_validators.py cannot express this rule -- its builders are per-COLUMN (v, col) ->
+  None and fire only for columns in `updates` AND _UPDATE_CONTENT_VALIDATED_FIELDS, while a closure gate
+  is cross-field. Hence a dedicated call; config/agent/data_quality/ops.yaml is NOT in scope.'
+- 'THIRD closure path the audit misses: inactivity_sweep.py::close_inactive_recs (weekly, autonomous).
+  FOURTH: propose_or_close_rec:511 (agent-invoked in /implement, so a loud raise is correct).'
+- 'PAST TENSE: rec-3328/3292/3293 all closed; zero open source=ci_rca recs. rec-3328''s closure DID land
+  an artifact. rec-3131''s claimed check is still absent (verified by grep) -- the finding stands.'
+- 'STRICT FROM DAY ONE over warn-then-strict: the grandfathering window is free RIGHT NOW and closes on
+  the next escape filed. CI_RCA_STRICT_MODE reuse rejected -- it governs an unrelated rollout.'
+- 'BOUND: closed + superseded (8 ci_rca recs are superseded; gating closed alone is a trivial bypass).
+  declined NOT bound (zero today), monitored by Decision 184 reversal condition (c).'
+- 'DUPLICATE-OF DOES NOT DELEGATE (7 of 92): rec-3131''s target rec-3132 landed no artifact either, so
+  delegation would launder the gap. A duplicate declares the hatch category duplicate_of.'
+- 'RESIDUAL ACCEPTED: the gate is client-side; an out-of-repo writer caller is unguarded. Deferred as
+  a follow-on rec; Decision 184 reversal condition (d) is its trigger.'
+- 'RATCHET SAFETY: the rec-autoclose closure step measures 63 of its 63-line ceiling, so refusal handling
+  cannot be inline -- extraction shrinks it and the guard fails only on line_count > entry, so config/composite_action_body_baseline.yaml
+  is never edited. The shard rec-autoclose-failed-counter-exit-present pins the BACKFILL step, not this
+  one (verified).'
+- 'COVERAGE (full tier only): back_validation.py is 79.7% against an unbaselined 100% standard, so touching
+  it obliges 100%; ops_data_portal.py and inactivity_sweep.py already measure 100%.'
+- 'DECISION 182 budget measured over this exact 20-file scope: n_selected 163 (census 539), allowance
+  326s, non-test budget 240s, predicted elapsed 162.2-210.6s, outcome within_budget. VP 14 re-runs it.'
+- 'Decisions cited: 184 (drafted here), 182, 181/183 (new since the audit; verified non-binding here),
+  55/72, 84, 86/88, 103, 104, 124, 127, 128, 131, 142, 150, 155, 162, 165, 167. Every Decision number
+  the audit cites was re-checked and still resolves.'
+- 'ROADMAP: zero rows. T3.4 is the planned-insufficient owner but is STRATEGIC (suspended, Decision 67)
+  and ROADMAP-PLATFORM.yaml is a concurrency exclusion; deferred intent is filed as recs.'
+- 'Decision-scout verdict + CITE list (verbatim decision ids): PENDING -- gate-requested to the orchestrator
+  (subagent-dispatch mode); filled in verbatim on verdict.'
+- 'gates: decision-scout=PENDING; plan-critique=PENDING after 0 round(s)'
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- Only the plan-cited decision sections read (55, 72, 84, 88, 124, 128, 142, 155, 162, 182)
+- audits/loop-spec-adoption-4d8bac4a.yaml LSA-04 read (read-only; never edited)
+- docs/contracts/ci-rca-lifecycle.yaml read, including closure_dependency and projection_fields
+- All files in scope located and readable
+- The five scope exclusions understood as hard STOP boundaries, not preferences
+- Acceptance criteria understood and verifiable
+execution_steps:
+- 'Create scripts/ops_portal/closure_gate.py: ClosureArtifactRequired(ValueError); is_escape_classified(ctx)
+  -> bool over escape_class OR detection_gap.escape_mode; ARTIFACT_KINDS and HATCH_CATEGORIES vocabularies;
+  parse+resolve helpers per kind (pytest -> file exists AND a matching `def` line; fixture -> path exists;
+  check -> membership of {s.name for s in scripts.checks.registry.full_sequence()} via a FUNCTION-LOCAL
+  import so the registry is only imported for a check: token; shard -> config/agent/verification_registry/entries/<id>.yaml
+  exists); assert_closure_obligation(existing_status, new_status, merged_ctx, root=...) raising with an
+  actionable message that names the --closure-artifact flag. Keep the module pure: no writes, no filing,
+  no retries (VP step 16 pins this).'
+- 'Modify scripts/ops_data_portal.py::update_rec: add keyword-only closure_artifact and closure_none_feasible_reason
+  parameters; after `merged = {**existing, **updates}` and before the write-time column validator loop,
+  shallow-merge the supplied values into merged[''context_v2_json''] (mirroring correct_rec_context''s
+  parse -> mutate -> re-dump shape so sibling keys survive); loud-fail if a closure kwarg is supplied
+  for a rec with no existing context_v2_json. Then call assert_closure_obligation(existing.get(''status''),
+  merged.get(''status''), parsed_merged_ctx) immediately before _ducklake_write. Import the gate symbol
+  at MODULE scope so scripts.ops_data_portal.<sym> remains the correct patch target. Update the docstring''s
+  Raises section.'
+- 'Modify scripts/ops_portal/ci_rca_schema.py: add closure_artifact and closure_none_feasible_reason to
+  CiRcaContext as Optional[str] with the two patterns, in the same block and with the same backward-compatibility
+  comment as the existing ci-rca-identity-lifecycle additions. No schema_version ceiling change.'
+- 'Modify scripts/ops_portal/cli.py: register --closure-artifact and --closure-none-feasible-reason on
+  the ''--update-rec fields'' group; add _UPDATE_REC_KWARG_MAP mapping their dests to update_rec keyword
+  parameter names; build the kwargs dict in the --update-rec branch and pass it through; relax the ''requires
+  at least one update field'' guard to `if not updates and not kwargs`; extend the module docstring''s
+  write-fidelity paragraph to name the third table.'
+- 'Modify scripts/ops_portal/ci_rca_lifecycle.py: add close_recs_from_trailer(ids, commit_sha, run_url,
+  recs_cache, profile=None) -> int carrying the loop currently inline in rec-autoclose.yml, with an `except
+  ClosureArtifactRequired` clause placed BEFORE the generic handler that prints the Decision-155-shaped
+  marker (mirrored to $GITHUB_STEP_SUMMARY when set, per the scripts/ops_portal/decisions.py:182 precedent),
+  skips the rec, and does NOT touch exit_code. Preserve the existing RuntimeError-skip and generic-exception-exit-1
+  branches and the stamp_fixed_by_sha call verbatim.'
+- 'Modify .github/workflows/rec-autoclose.yml: replace the closure loop in the ''Close resolved recs from
+  Resolves trailer'' step with a call to close_recs_from_trailer, keeping the trailer parse, the cache
+  read and sys.exit(rc). The body MUST end at or below 63 effective lines (VP step 9) -- config/composite_action_body_baseline.yaml
+  is a declared scope exclusion and must not be edited. Leave the ''Backfill decisions to warehouse''
+  step and its Decision 155 non-zero exit untouched.'
+- 'Modify scripts/ci_rca/inactivity_sweep.py::close_inactive_recs: pass closure_none_feasible_reason=f''stale_no_recurrence:
+  {proof}'' into update_rec alongside the existing status/resolution updates.'
+- 'Modify scripts/ci_rca/back_validation.py: for each pairing, read the prior rec''s closure_artifact
+  / closure_none_feasible_reason and add closure_artifact, artifact_status and grade keys to the flag
+  dict (VERIFIED-PRESENT / CONFIRMED-ABSENT / HATCHED / CANDIDATE). Keep the existing keys and the file-only
+  pairing as the fallback. Import the resolver from closure_gate; add no reader egress (Decision 88).
+  Also close this module''s coverage gap to 100% (currently 79.7% against an unbaselined 100% standard)
+  by exercising the timestamp-parse fallbacks and the malformed-context branch.'
+- 'Modify scripts/preflight/ci_rca_gauges.py::print_ci_rca_back_validation: print the per-flag grade and
+  the resolved artifact token, replacing the blanket ''[CANDIDATE] file-only match'' line with a grade
+  legend. Keep the section advisory at every grade (Decision 55).'
+- 'Modify docs/contracts/ci-rca-lifecycle.yaml: add closure_artifact and closure_none_feasible_reason
+  to projection_fields (home: context_v2_json (CiRcaContext); authored_by: closer, supplied at update_rec
+  closure time), add a closure_obligation section declaring artifact_kinds, the per-kind resolution rule,
+  hatch_categories, the bound statuses and the refusal contract, and append an amendment_log[] entry (date
+  2026-09-05, semantic_break: false, change_class: field_add) -- the population check fails a content
+  change without one.'
+- Write the tests named in test_obligations, each red before its production change and green after; the
+  known-bad fixture is an escape-classified rec closed with a named artifact that does not exist in the
+  tree, and it must be refused.
+- 'Insert Decision 184 into docs/DECISIONS.md immediately above Decision 183 (newest first), verbatim
+  from the DECISION 184 DRAFT step below. Re-check the current max ''## Decision NNN:'' header first:
+  numbers are not reserved at draft time, so if a concurrent PR took 184, shift to the next free number
+  and update every citation in this plan and in docs/contracts/ci-rca-lifecycle.yaml in the same edit.'
+- Execute the Verification Plan -- run each step; loop until pass; on an unrecoverable failure stop and
+  RCA (Decision 55). Never resolve a scope-boundary or ratchet failure by editing one of the five declared
+  exclusions.
+- 'At Step 7 closure, before implementation_declared is set true, file the four deferred halves as recs
+  via file_rec (call get_rec_write_guidance() first, per Decision 66) and write the returned ids back
+  into this plan''s followon_recs field -- the sanctioned bookkeeping edit. The four: (1) retire or redefine
+  the dead gate_escape agent_only category in config/ci_rca_taxonomy.yaml (excluded here for concurrency);
+  (2) a writer-side backstop for the residual out-of-repo bypass of the client-side gate (needs a Lambda
+  change through the governed CD channel); (3) backfill closure_artifact or a hatch onto the 92 historical
+  escape closures so back_validation can grade them; (4) monitor Decision 184 reversal condition (c) --
+  whether any escape-classified rec reaches declined. Each carries dependencies naming this plan.'
+- 'Report: what was implemented, verification results, and the four filed follow-on rec ids.'
+- "DECISION 184 DRAFT (human-approved at a pre-merge gate; paste verbatim into docs/DECISIONS.md):\n\n\
+  ## Decision 184: Closure-time artifact obligation for escape-classified recs -- a named landed artifact\
+  \ or a categorised stated reason, gated once at the portal (Decided)\n\n```yaml\nnumber: 184\nstatus:\
+  \ Decided\ndecided_date: \"2026-09-05\"\nsignificance:\n  value: numbered_decision\n  justification:\
+  \ >-\n    A standing precondition on rec closure binding four call paths, plus a ratchet over its own\n\
+  \    weakening. docs/contracts/ci-rca-lifecycle.yaml was considered and rejected as the home: it\n \
+  \   owns the fields' MEANING via projection_fields, but a field-semantics row cannot carry an\n    enforcement\
+  \ commitment, a refusal contract, or its own relaxation asymmetry.\n```\n\n**Status:** Decided\n**Date:**\
+  \ 2026-09-05\n\n**Problem:**\nAudit LSA-04 (loop-spec-adoption-4d8bac4a, observed): whether closing\
+  \ an escape-classified rec\nleaves a permanent machine artifact is author convention. rec-3131 closed\
+  \ claiming a `--pre` iam_tf\ninvariant still absent at HEAD; the class recurred as rec-3328 on fingerprint\
+  \ 10ac13c3. Of 92\nescape-classified recs, 6 name any artifact-shaped token in `resolution`. The graduation\
+  \ registry,\ndedup and back_validation are all detection-grade: guarantee (d) has no closure-time obligation.\n\
+  \n**Decision:**\n1. PREDICATE. Escape-classified means `context_v2_json.escape_class` OR\n   `detection_gap.escape_mode`\
+  \ is set (92 recs; escape_class alone selects 37, a strict subset).\n   `failure_category == \"gate_escape\"\
+  ` is NOT the predicate and cannot be: an\n   `agent_only_categories` value never emitted by `scripts/ci_rca/taxonomy.py`,\
+  \ matching zero rows,\n   deliberately re-modelled onto `escape_mode`.\n2. ONE ENFORCEMENT SITE. Asserted\
+  \ once, in `scripts/ops_data_portal.py::update_rec` before\n   `_ducklake_write`, body in `scripts/ops_portal/closure_gate.py`.\
+  \ All four closure paths --\n   `rec-autoclose.yml`, the CLI, `inactivity_sweep.py`, `propose_or_close_rec`\
+  \ -- already funnel\n   through `update_rec`; a second gate would be a drift surface, not a second guarantee.\n\
+  3. BINDING. Fires only on a TRANSITION into `closed` or `superseded` from a non-terminal status.\n \
+  \  `superseded` is bound because gating `closed` alone leaves a trivial bypass; `declined` is\n   deliberately\
+  \ NOT bound (zero source=ci_rca recs are declined; declining asserts the RCA was not\n   actionable),\
+  \ a monitored residual under (c). A status-preserving write -- `stamp_fixed_by_sha`,\n   occurrence\
+  \ bumps, corrections -- is never gated.\n4. ARTIFACT, EXISTENCE-VERIFIED AND STATIC ONLY. Closure names\
+  \ a landed artifact in\n   `context_v2_json.closure_artifact`, resolved to a filesystem or registry\
+  \ fact at write time;\n   execution grade stays in the full tier (rec-2875 is the cost precedent). Kind\
+  \ vocabulary and\n   resolution rules are field semantics in\n   `docs/contracts/ci-rca-lifecycle.yaml::closure_obligation`\
+  \ (86/127).\n5. HATCH. `context_v2_json.closure_none_feasible_reason` carries a CATEGORISED stated reason\n\
+  \   (grammar in that same contract section). A duplicate-of closure does NOT delegate the obligation\n\
+  \   to its target -- rec-3131's target rec-3132 landed no artifact either, so delegation would\n   launder\
+  \ the gap; a duplicate declares the hatch. The inactivity sweep MAY satisfy it\n   programmatically\
+  \ with its `stale_no_recurrence` last_seen/created proof; the alternative wedges\n   a scheduled workflow\
+  \ and grows a backlog that hard-blocks planning.\n6. STRICT FROM DAY ONE, PROSPECTIVE ONLY. No feature\
+  \ flag, no warn window: all 92 escape recs are\n   closed and zero source=ci_rca recs are open, so it\
+  \ costs nothing on landing, and a warn window\n   would exempt precisely the first real escape after\
+  \ it. As with CIRCA-02 the gate is per-write;\n   historical rows are never retro-checked and nothing\
+  \ enumerates them.\n7. REFUSAL IS LOUD, NOT RED. The gate raises `ClosureArtifactRequired` (a ValueError),\
+  \ writing\n   nothing. `rec-autoclose.yml` CATCHES it, prints a Decision-155-shaped marker mirrored\
+  \ to\n   `$GITHUB_STEP_SUMMARY`, skips that rec leaving it open, and EXITS 0. An exit-1 would file a\
+  \ new\n   critical source=ci_rca rec for a gate doing its job and enter that contract's closure trap.\
+  \ The\n   workflow's non-zero exit on its DECISIONS.md backfill step (155) is unchanged.\n8. RATCHET\
+  \ ASYMMETRY. Correcting or removing an artifact token is free with a stated reason.\n   WEAKENING it\
+  \ -- narrowing the predicate, unbinding a status, adding a hatch category -- requires\n   a numbered\
+  \ Decision amending this one.\n9. NEVER REMEDIATES. The gate refuses and surfaces; it never files a\
+  \ rec, synthesizes a fixture,\n   downgrades a status, or retries (55, 72).\n\n**Rationale:**\nA hard\
+  \ gate adds friction to every ci_rca closure, including environment escapes whose honest\nartifact is\
+  \ \"none feasible\" -- hence a categorised hatch, not an exception: a declaration is\nauditable, silence\
+  \ is not. Asserting at `update_rec` is what makes it cheap -- no new writer verb,\nno new column, no\
+  \ check registers, so no check surface is paid. Point 7 is load-bearing:\nrec-autoclose is `ci_rca:\
+  \ watched`, so propagating would turn every correct refusal into a critical\nrec and a red watched workflow.\n\
+  \n**Reversal conditions:** (a) if over a rolling quarter more than half of gated closures take the\n\
+  hatch rather than naming an artifact, this is ritual not ratchet -- re-found or retire it; (b) if\n\
+  the programmatic `stale_no_recurrence` hatch becomes the majority of hatched closures, the sweep is\n\
+  laundering the obligation and its exemption is re-decided; (c) if any source=ci_rca rec reaches\n`declined`\
+  \ while escape-classified, point 3's residual is live and the binding extends by an\namending Decision;\
+  \ (d) if a caller is seen closing around the client-side gate, the obligation\nmoves to the writer boundary.\n\
+  \n**Significance:** clears the Decision 150 bar -- a standing precondition on a lifecycle transition\n\
+  across four call paths, with a weakening ratchet and a refusal contract binding a watched\nworkflow's\
+  \ exit code.\n\n**Related:** 55/72, 84, 88, 103, 124, 128, 142, 150, 155, 162, 165, 167, 182, 86/127.\
+  \ Audit ref:\nLSA-04 of `audits/loop-spec-adoption-4d8bac4a.yaml`.\n"
+work_areas: []
+rollback: 'The change is additive and prospective. Reverting the merge restores the prior closure behaviour
+  exactly: the two CiRcaContext fields are Optional so any rec stamped in the interim still validates
+  and simply stops being read, no warehouse row needs repair, and no historical row was ever retro-checked.
+  If the gate must be neutralised urgently without a revert, the minimal change is to make assert_closure_obligation
+  a no-op -- but that is a WEAKENING under Decision 184 point 8 and needs an amending Decision, not a
+  quiet edit.'
