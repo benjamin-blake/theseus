@@ -378,7 +378,7 @@ def generate_compound_plan(recs: list[dict]) -> "ExecutionPlan":
             all_steps.append(step)
         combined_text_parts.append(f"## {rec['id']}: {rec.get('title', '')}\n{plan.plan_text}")
 
-    compound = _pl.ExecutionPlan(
+    return _pl.ExecutionPlan(
         rec_id=recs[0]["id"],
         slug=f"compound-{recs[0]['id']}",
         revision=1,
@@ -389,7 +389,6 @@ def generate_compound_plan(recs: list[dict]) -> "ExecutionPlan":
         steps=all_steps,
         plan_text="\n\n".join(combined_text_parts),
     )
-    return compound
 
 
 def _extract_scope_files(plan_text: str) -> str:

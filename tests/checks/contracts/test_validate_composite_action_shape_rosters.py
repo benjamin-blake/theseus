@@ -28,7 +28,7 @@ _REAL_CLOSING_SCRIPT = ".github/actions/write-convergence-record/assert_review_o
 
 
 def _live_pinned() -> dict[str, int]:
-    return {key: 5 for key in sorted(_R1_KNOWN_VIOLATORS)}
+    return dict.fromkeys(sorted(_R1_KNOWN_VIOLATORS), 5)
 
 
 def _write_baseline(tmp_path: Path, r1: dict[str, int] | None) -> Path:

@@ -57,7 +57,7 @@ def main() -> None:
     content = session_log_path.read_text(encoding="utf-8")
     recent_entries = parse_session_log(content)
 
-    counts: dict[str, int] = {cat: 0 for cat in CATEGORIES}
+    counts: dict[str, int] = dict.fromkeys(CATEGORIES, 0)
     counts["other"] = 0
 
     for entry in recent_entries:

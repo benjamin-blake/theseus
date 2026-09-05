@@ -95,7 +95,7 @@ class TestVerificationRegistry:
         assert "Verification registry" in failed
 
     def test_fail_unknown_slot(self, tmp_path: Path) -> None:
-        _write_shard(tmp_path, {"check_id": "x", **{**_BASE_FIELDS, "primitive_slot": "unknown_slot"}})
+        _write_shard(tmp_path, {"check_id": "x", **_BASE_FIELDS, "primitive_slot": "unknown_slot"})
         failed: list[str] = []
         with patch("scripts.checks._common.ROOT", tmp_path):
             validate_verification_registry(failed)
@@ -297,7 +297,7 @@ class TestVerificationRegistryDifferential:
         assert not failed
 
     def test_added_entry_not_admitted_tautological(self, tmp_path: Path) -> None:
-        _write_shard(tmp_path, {"check_id": "taut", **{**_BASE_FIELDS, "guard_target": "x", "plan_slug": "p"}})
+        _write_shard(tmp_path, {"check_id": "taut", **_BASE_FIELDS, "guard_target": "x", "plan_slug": "p"})
         failed: list[str] = []
         with (
             patch("scripts.checks._common.ROOT", tmp_path),
@@ -318,7 +318,7 @@ class TestVerificationRegistryDifferential:
         assert any("not admitted" in f for f in failed), failed
 
     def test_no_added_entry_is_noop(self, tmp_path: Path) -> None:
-        _write_shard(tmp_path, {"check_id": "x", **{**_BASE_FIELDS, "guard_target": "y", "plan_slug": "p"}})
+        _write_shard(tmp_path, {"check_id": "x", **_BASE_FIELDS, "guard_target": "y", "plan_slug": "p"})
         failed: list[str] = []
         with (
             patch("scripts.checks._common.ROOT", tmp_path),
@@ -332,7 +332,7 @@ class TestVerificationRegistryDifferential:
         mock_diff.assert_not_called()
 
     def test_graduation_error_surfaces_as_failure(self, tmp_path: Path) -> None:
-        _write_shard(tmp_path, {"check_id": "bad", **{**_BASE_FIELDS, "guard_target": "y", "plan_slug": "p"}})
+        _write_shard(tmp_path, {"check_id": "bad", **_BASE_FIELDS, "guard_target": "y", "plan_slug": "p"})
         failed: list[str] = []
         with (
             patch("scripts.checks._common.ROOT", tmp_path),

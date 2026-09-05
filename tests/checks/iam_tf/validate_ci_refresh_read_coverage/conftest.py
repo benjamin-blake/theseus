@@ -280,6 +280,6 @@ _SYNTHETIC_PARITY_WHY = (
 @pytest.fixture
 def synthetic_parity_exempt() -> Iterator[None]:
     """Neutralise design (c) rule 2 for a synthetic fixture tree, and only for it."""
-    exemptions = {rtype: _SYNTHETIC_PARITY_WHY for rtype in WRITE_COVERAGE}
+    exemptions = dict.fromkeys(WRITE_COVERAGE, _SYNTHETIC_PARITY_WHY)
     with patch.dict("scripts.checks.iam_tf._write_symmetry.READ_SCOPE_PARITY_EXEMPT", exemptions, clear=False):
         yield
