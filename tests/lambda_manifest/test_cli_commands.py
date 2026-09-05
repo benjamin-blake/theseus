@@ -4,6 +4,7 @@ tests/test_lambda_manifest.py, rec-2709 Wave 12).
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -41,6 +42,20 @@ class TestCoverageCheck:
 
             rc = cmd_check_coverage(None)
         assert rc == 1
+
+    def test_skips_non_directory_and_pycache_children(self, tmp_path, capsys):
+        """The loop-continue arm. rc is a genuine discriminator here: an unskipped stray child
+        has no manifest.yaml, so it would land in missing and the command would return 1."""
+        (tmp_path / "stray_note.txt").write_text("not a lambda directory\n", encoding="utf-8")
+        (tmp_path / "__pycache__").mkdir()
+        with patch("scripts.lambda_manifest._LAMBDAS_DIR", tmp_path):
+            from scripts.lambda_manifest import cmd_check_coverage
+
+            rc = cmd_check_coverage(None)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "stray_note.txt" not in out
+        assert "__pycache__" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -86,6 +101,21 @@ class TestCmdValidate:
         assert rc == 0
         captured = capsys.readouterr()
         assert "SKIP" in captured.out
+
+    def test_skips_non_directory_and_pycache_children(self, tmp_path, capsys):
+        """The loop-continue arm, asserted THROUGH stdout. rc does NOT discriminate it: an
+        unskipped non-directory child falls through to the no-manifest SKIP branch and
+        cmd_validate still returns 0, so only the absence of the names proves the continue."""
+        (tmp_path / "stray_note.txt").write_text("not a lambda directory\n", encoding="utf-8")
+        (tmp_path / "__pycache__").mkdir()
+        with patch("scripts.lambda_manifest._LAMBDAS_DIR", tmp_path):
+            from scripts.lambda_manifest import cmd_validate
+
+            rc = cmd_validate(None)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "stray_note.txt" not in out
+        assert "__pycache__" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +240,43 @@ class TestCmdCheckBundles:
         assert "data/runtime.yaml" in out  # failure is the dropped asset
         assert "FAIL (asset)" in out
 
+    def test_load_all_failure_reports_and_fails(self, tmp_path, capsys):
+        """The load_all except branch, reached by a real FileNotFoundError from iterdir()."""
+        with patch("scripts.lambda_manifest._LAMBDAS_DIR", tmp_path / "nonexistent"):
+            from scripts.lambda_manifest import cmd_check_bundles
+
+            rc = cmd_check_bundles(None)
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "FAIL: could not load manifests:" in out
+
+    def test_staging_failure_is_reported_and_the_loop_continues(self, tmp_path, capsys):
+        """The stage_bundle except branch. Two active slugs, staging raising for the FIRST:
+        the second slug's Checking line must still appear AFTER the staging FAIL, which is the
+        only assertion that proves the loop continued rather than aborting."""
+        for slug in ("aaa", "bbb"):
+            slug_dir = tmp_path / slug
+            slug_dir.mkdir()
+            (slug_dir / "manifest.yaml").write_text(yaml.dump({"artifact": f"{slug}.zip"}), encoding="utf-8")
+
+        def _stage(manifest, stage_dir, *, skip_pip=True):
+            if manifest.artifact == "aaa.zip":
+                raise RuntimeError("staging blew up")
+
+        with (
+            patch("scripts.lambda_manifest._LAMBDAS_DIR", tmp_path),
+            patch("scripts.lambda_manifest.ROOT", tmp_path),
+            patch("scripts.lambda_manifest.stage_bundle", side_effect=_stage),
+        ):
+            from scripts.lambda_manifest import cmd_check_bundles
+
+            rc = cmd_check_bundles(None)
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "FAIL staging: staging blew up" in out
+        assert out.index("Checking bbb") > out.index("FAIL staging")
+        assert "OK   handlers import-resolved, assets present" in out
+
 
 # ---------------------------------------------------------------------------
 # CLI list-patterns command
@@ -256,3 +323,38 @@ class TestMinimalEnv:
             env = _minimal_env()
         assert "AWS_ACCESS_KEY_ID" not in env
         assert "AWS_SECRET_ACCESS_KEY" not in env
+
+
+# ---------------------------------------------------------------------------
+# main() argparse dispatch
+# ---------------------------------------------------------------------------
+
+
+class TestMainDispatch:
+    @pytest.mark.parametrize(
+        ("flag", "target"),
+        [
+            ("--validate", "cmd_validate"),
+            ("--check-coverage", "cmd_check_coverage"),
+            ("--check-bundles", "cmd_check_bundles"),
+            ("--list-patterns", "cmd_list_patterns"),
+        ],
+    )
+    def test_flag_dispatches_to_its_command(self, flag, target, monkeypatch):
+        from scripts.lambda_manifest import main
+
+        monkeypatch.setattr(sys, "argv", ["lambda_manifest.py", flag])
+        with patch(f"scripts.lambda_manifest.{target}", return_value=7) as sentinel:
+            with pytest.raises(SystemExit) as exc:
+                main()
+        assert exc.value.code == 7
+        assert sentinel.call_count == 1
+
+    def test_no_flag_is_rejected_by_the_required_group(self, monkeypatch, capsys):
+        from scripts.lambda_manifest import main
+
+        monkeypatch.setattr(sys, "argv", ["lambda_manifest.py"])
+        with pytest.raises(SystemExit) as exc:
+            main()
+        assert exc.value.code == 2
+        assert "one of the arguments" in capsys.readouterr().err
