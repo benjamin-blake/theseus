@@ -12,8 +12,13 @@ verification_tier: V2
 plan_path: docs/plans/PLAN-backlog-health-detection.yaml
 phase: >-
   Bundle 2b of 3. DEPENDS ON PLAN-episode-lookup-primitive (2a) being merged first: the escalator
-  here calls scripts/rec_episode.py's run_episode. Ad-hoc rec bundle from the 2026-08 full-backlog
-  sweep; names no tier_item, so the Tier Item Freshness Gate is skipped (soft-warn: ad_hoc_rec).
+  here calls scripts/rec_episode.py's run_episode. Lands the monitor substrate T1.6 move 1 describes
+  ("live-reader-dependent checks leave the BLOCKING gate ... they run only on the scheduled monitor,
+  filing recs; alarm-not-gate per CD.12") ahead of T1.6 itself, which is not_started behind
+  depends_on [T0.12, T1.5] and whose own subject is the DQ RUNNER's uniqueness checks and the
+  dq_check verb family -- neither of which this plan touches. Scoped as ad_hoc_rec (bundles rec-3312
+  and rec-3309, no tier_item claimed), with a T1.6 progress_note recording that the substrate exists
+  so the roadmap does not misstate its own state.
 scope:
   - file: .github/workflows/backlog-health.yml
     action: Create
@@ -42,15 +47,21 @@ scope:
       The bounded runner: each command executed under `unshare -rmn` with a read-only bind mount of
       the checkout, a pid cap, PYTHONPYCACHEPREFIX and pytest cache_dir redirected to tmpfs, a 10s
       (30s pytest) per-probe timeout AND a global probe-budget cap. Verdicts are pass / fail /
-      timeout / budget_exhausted -- never a silent True. Stamps main_sha; a vacuity verdict is
-      meaningless without the tree it was measured against.
+      timeout / budget_exhausted / isolation_unavailable -- never a silent True. The last of those is
+      mandatory: Ubuntu 24.04 can restrict unprivileged user namespaces via AppArmor, and an
+      unavailable namespace must fail loudly (Decision 55) rather than degrade into a pass. Stamps
+      main_sha; a vacuity verdict is meaningless without the tree it was measured against.
   - file: scripts/backlog_health/classify.py
     action: Create
     purpose: >-
-      The four defect-class predicates over census rows joined to probe verdicts, including the
-      satisfied-vs-vacuous split (a probe exiting 0 is a satisfied CANDIDATE when commits touch
-      rec.file since creation, and vacuous only when none do) and the Decision 64 bootstrap-cohort
-      split on the premise-dead class.
+      Joins census rows to probe verdicts and COMPOSES scripts/rec_relevance.py rather than
+      re-deriving it. rec_relevance already implements acceptance_probe, target_existence ->
+      stale_target, and open_duplicate (title Jaccard >= 0.7 on the same file), and Decision 103
+      names it THE relevance evaluator -- so this module calls it for those signals and adds only
+      what is genuinely new: the probe-verdict join, the satisfied-vs-vacuous split (probe exits 0
+      is a satisfied CANDIDATE when commits touch rec.file since creation, vacuous only when none
+      do), the Decision 64 bootstrap-cohort split on the premise-dead class, the dependency-ref
+      predicate, and the acceptance-quality class.
   - file: scripts/backlog_health/escalate.py
     action: Create
     purpose: >-
@@ -63,12 +74,18 @@ scope:
   - file: scripts/test_coverage_checker.py
     action: Modify
     purpose: >-
-      Register backlog_health in _NESTED_SUBPACKAGE_TEST_PREFIX. MANDATORY, not optional: that map
-      is explicitly whitelisted "so a NEW scripts/<pkg>/ does not silently inherit a mapping", so
-      without this row every module above sits outside the per-file coverage floor.
+      ONE row: register backlog_health in _NESTED_SUBPACKAGE_TEST_PREFIX with prefix
+      "test_backlog_health_". That map is explicitly whitelisted "so a NEW scripts/<pkg>/ does not
+      silently inherit a mapping", so without it every module above sits outside the per-file
+      coverage floor. It is the FLAT-HOME family map, verified live: it yields
+      tests/test_backlog_health_census.py, matching siblings like scripts/sync/ducklake_version.py ->
+      tests/test_sync_ducklake_version.py. It does NOT yield tests/backlog_health/test_census.py --
+      that mirror route requires _ALL_MIRROR_TARGET_HOMES membership, a frozenset documented as
+      never mutated. The flat homes below follow the mechanism as designed; no new branch is added
+      to this 468-SLOC, unregistered, 32-lines-of-headroom file.
   - file: tests/test_coverage_checker/test_coverage_checker_map.py
     action: Modify
-    purpose: Assert the new package resolves to its mirror home.
+    purpose: Assert scripts/backlog_health/<stem>.py resolves to tests/test_backlog_health_<stem>.py.
   - file: config/agent/data_quality/source_registry.yaml
     action: Modify
     purpose: >-
@@ -89,20 +106,42 @@ scope:
     action: Modify
     purpose: >-
       artifact_uploads rows for the two inter-job artifacts, retention_class ephemeral_handoff at
-      1-day retention (the reconcile.yml / terraform-apply-sandbox plan.bin precedent).
+      1-day retention. _validate_uploads enforces an exact two-way inventory match plus integer
+      retention-days inside class bounds (ephemeral_handoff is 1-2 days).
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-
-      A dated amendment_forms annotation on Decision 103 scoping its "queue-wide relevance surfacing
-      serves the warmed read-cache only" clause to the interactive read-time gate, and naming the
-      scheduled monitor as a sanctioned venue with its measured two-attach-per-episode pattern. A
-      contract cannot narrow the Decision that ratified it, so this cannot land in the contract alone.
+      A dated amendment_forms annotation on Decision 103 doing TWO things: scoping its "queue-wide
+      relevance surfacing serves the warmed read-cache only" clause to the interactive read-time
+      gate and naming the scheduled monitor as a sanctioned venue with its measured
+      two-attach-per-episode pattern; and recording that recommendation-relevance.yaml's two
+      never-queue-wide clauses attribute that constraint to Decision 88, which is a MIS-CITE --
+      Decision 88 is a catalog-EGRESS budget and probe execution is local shell, not egress; the real
+      owner is Decision 103. Follows the Decision-70 mis-cite amendment precedent already carried on
+      Decisions 103 and 87. A contract cannot narrow the Decision that ratified it, so this cannot
+      land in the contract alone.
   - file: docs/contracts/recommendation-relevance.yaml
     action: Modify
     purpose: >-
-      Track the Decision 103 annotation in acceptance_probe.signal, plus an amendment_log entry.
-      Also records how this monitor's verdicts relate to the ratified enum: satisfied candidates are
-      surfaced as close-proposals, never auto-closed.
+      BOTH clauses carrying the constraint, not one: signal_definitions.acceptance_probe.signal (:68)
+      AND constraints[1] (:94). Plus an amendment_log entry recording the Decision 103 annotation and
+      the Decision 88 mis-cite. Also records that this monitor emits close-proposals for satisfied
+      candidates and never auto-closes -- deliberately stricter than closure_split permits.
+  - file: docs/ROADMAP-PLATFORM.yaml
+    action: Modify
+    purpose: >-
+      A T1.6 progress_note recording that the scheduled-monitor substrate its move 1 describes has
+      landed via this plan, and that T1.6's own subject (the DQ runner's live-reader uniqueness
+      checks, the dq_check verb family, source='dq_drift') is untouched. Operational fact, not a
+      criterion flip -- /plan never flips criteria (Status-Trusted-Never-Inferred).
+  - file: docs/contracts/check-accounting.yaml
+    action: Modify
+    purpose: >-
+      The Decision 181 residual declaration: after this change the MERGE-GATE surface carries no recs
+      data-quality enforcement. Decision 181 clause 2 requires publishing, per surface, either the
+      enforcing check or the fact that the surface is an unenforced residual with an owning rec id.
+      This is that publication; deferring it to implement time would reproduce the prose-only shape
+      181 exists to prevent.
   - file: scripts/checks/ops_governance/check_source_registry.py
     action: Modify
     purpose: Add scripts/backlog_health/escalate.py to SCANNED_PATHS so the four new source literals are guarded.
@@ -110,34 +149,32 @@ scope:
     action: Modify
     purpose: >-
       Declare registry.examined(n, unit="rec rows") / registry.skipped(reason) on every reachable
-      exit path so the absent-cache path stops reading as a pass.
+      exit path -- the absent-cache early return at :21-23, the ImportError path at :35-39, and the
+      success path -- so none of them reads as a silent pass.
   - file: config/check_accounting_baseline.yaml
     action: Modify
-    purpose: Remove validate_recommendations_schema from the grandfather roster (a shrink, which the guard permits; re-adding is what it forbids).
-  - file: tests/backlog_health/__init__.py
-    action: Create
-    purpose: Test package marker.
-  - file: tests/backlog_health/conftest.py
-    action: Create
-    purpose: Shared fixtures -- a full-column open-rec row factory and a fake reader (Decision 131 per-package conftest shape).
-  - file: tests/backlog_health/test_census.py
+    purpose: >-
+      REMOVE validate_recommendations_schema from the grandfather roster. A shrink is permitted and
+      re-adding is what the guard forbids; TOUCH-IT-FIX-IT is satisfied because the module adopts the
+      declaration in the same PR.
+  - file: tests/test_backlog_health_census.py
     action: Create
     purpose: "Mirror test -- the five classification buckets, the status=='open' post-read invariant, and that unsafe commands never reach the probe payload."
-  - file: tests/backlog_health/test_probe.py
+  - file: tests/test_backlog_health_probe.py
     action: Create
     purpose: >-
-      Mirror test: per-probe timeout, global budget exhaustion, the four verdicts, and that a
-      prose-only or unsafe input is never recorded as a pass.
-  - file: tests/backlog_health/test_classify.py
+      Mirror test -- per-probe timeout, global budget exhaustion, isolation_unavailable, the five
+      verdicts, and that a prose-only or unsafe input is never recorded as a pass.
+  - file: tests/test_backlog_health_classify.py
     action: Create
-    purpose: "Mirror test -- the satisfied-vs-vacuous split, the bootstrap-cohort split, and the dangling-dependency predicate."
-  - file: tests/backlog_health/test_escalate.py
+    purpose: "Mirror test -- the satisfied-vs-vacuous split, the bootstrap-cohort split, the dependency-ref predicate, and that rec_relevance is composed rather than reimplemented."
+  - file: tests/test_backlog_health_escalate.py
     action: Create
     purpose: "Mirror test -- one rec per class, build_update returning None on an unchanged finding set, and close on a class returning to zero."
-  - file: tests/backlog_health/test___main__.py
+  - file: tests/test_backlog_health___main__.py
     action: Create
     purpose: "Mirror test -- subcommand wiring, dry-run, and loud non-zero exit on a reader or portal failure."
-  - file: tests/backlog_health/test___init__.py
+  - file: tests/test_backlog_health___init__.py
     action: Create
     purpose: Facade surface test.
   - file: tests/checks/ops_governance/test_validate_recommendations_schema.py
@@ -151,17 +188,24 @@ followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
   - The workflow exists with schedule and workflow_dispatch triggers and is absent from main-protection required_status_checks.
-  - The probe job declares no id-token permission and references no secrets, so nothing it executes can mint a credential.
+  - >-
+    The probe job declares no id-token permission, references no secrets, and checks out with
+    persist-credentials false -- all three halves of the credential-free claim.
   - No command classified unprobeable_unsafe or prose_only is ever executed, and neither is ever recorded as a pass.
+  - >-
+    An unavailable user namespace yields the isolation_unavailable verdict and a non-zero exit, never
+    a pass -- verified on a real GitHub-hosted runner, not only in the authoring container.
   - A pytest node-id naming a test that does not exist is classified expected_fail_missing_node, never executed and never counted vacuous.
   - Each of the four defect classes yields at most one open rec at any time, and a tick whose finding set is unchanged writes no new rec version.
   - validate_recommendations_schema declares skipped() on the absent-cache path and no longer appears in the check-accounting grandfather roster.
+  - The merge-gate surface's loss of recs data-quality enforcement is published as a Decision 181 residual with an owning rec id.
+  - rec-3312 and rec-3309 are both closed.
 verification_plan:
   - step: 1
     phase: pre-deploy
     action: Prove the probe runner never reports a pass for input it must not execute.
-    command: "bin/venv-python -m pytest tests/backlog_health/test_probe.py -q"
-    expected: "All pass, including unsafe/prose-only/timeout/budget-exhausted each returning its own verdict rather than a pass."
+    command: "bin/venv-python -m pytest tests/test_backlog_health_probe.py -q"
+    expected: "All pass -- unsafe, prose-only, timeout, budget-exhausted and isolation-unavailable each return their own verdict rather than a pass."
     fix_if: "Exit 4 means unwritten. A pass verdict for prose-only means run_acceptance's step_acceptance.py:72-78 behaviour was inherited instead of diverged from."
     hermetic: true
     graduation: graduate
@@ -169,7 +213,7 @@ verification_plan:
   - step: 2
     phase: pre-deploy
     action: Prove the satisfied-vs-vacuous split, so a landed fix is not misreported as a bad probe.
-    command: "bin/venv-python -m pytest tests/backlog_health/test_classify.py -q"
+    command: "bin/venv-python -m pytest tests/test_backlog_health_classify.py -q"
     expected: "All pass: a probe exiting 0 with commits to rec.file since creation classifies satisfied_candidate; with none, vacuous."
     fix_if: "A single collapsed 'vacuous' bucket means the Decision 103 collision is unresolved -- 31 of 36 live cases would be misreported."
     hermetic: true
@@ -177,10 +221,10 @@ verification_plan:
     graduation_check_id: backlog-satisfied-vacuous-split
   - step: 3
     phase: pre-deploy
-    action: Prove the probe job cannot reach a credential.
-    command: "bin/venv-python -c \"import yaml,sys; j=yaml.safe_load(open('.github/workflows/backlog-health.yml'))['jobs']['probe']; p=j.get('permissions') or {}; sys.exit(0 if p.get('id-token') in (None,'none') and 'secrets.' not in yaml.dump(j) else 1)\""
-    expected: "Exit 0 -- the probe job declares no id-token permission and references no secrets."
-    fix_if: "Exit 1 means the job can mint an OIDC token; with id-token: write the ACTIONS_ID_TOKEN_REQUEST_* vars are in every step's environment and env-scrubbing cannot close it."
+    action: Prove all three halves of the probe job's credential-free claim.
+    command: "bin/venv-python -c \"import yaml,sys; j=yaml.safe_load(open('.github/workflows/backlog-health.yml'))['jobs']['probe']; d=yaml.dump(j); p=j.get('permissions') or {}; sys.exit(0 if p.get('id-token') in (None,'none') and 'secrets.' not in d and 'persist-credentials: false' in d else 1)\""
+    expected: "Exit 0 -- no id-token permission, no secrets reference, and persist-credentials false on the checkout."
+    fix_if: "Exit 1 means one of the three is missing; with id-token: write the ACTIONS_ID_TOKEN_REQUEST_* vars are in every step's environment and env-scrubbing cannot close it."
     hermetic: true
     graduation: graduate
     graduation_check_id: backlog-probe-job-credential-free
@@ -204,42 +248,83 @@ verification_plan:
     graduation_check_id: recs-schema-absent-cache-declares-skipped
   - step: 6
     phase: pre-deploy
-    action: Run the whole new package plus the two modified check mirrors and the coverage-map test.
-    command: "bin/venv-python -m pytest tests/backlog_health tests/checks/ops_governance/test_validate_recommendations_schema.py tests/checks/ops_governance/test_check_source_registry.py tests/test_coverage_checker/test_coverage_checker_map.py -q"
-    expected: "All pass, including the assertion that scripts/backlog_health/ resolves to its mirror home."
+    action: Prove the Decision 181 residual is published with an owning rec id, not deferred to prose.
+    command: "grep -A6 'merge_gate' docs/contracts/check-accounting.yaml | grep -qE 'rec-[0-9]+'"
+    expected: "Exit 0 -- the residual stanza names the merge-gate surface and an owning rec id."
+    fix_if: "No match means the residual was described in the plan but never published where Decision 181 clause 2 requires it."
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: recs-dq-merge-gate-residual-published
+  - step: 7
+    phase: pre-deploy
+    action: Run the whole new package plus the modified check mirrors and the coverage-map test.
+    command: "bin/venv-python -m pytest tests/test_backlog_health_census.py tests/test_backlog_health_escalate.py tests/test_backlog_health___main__.py tests/test_backlog_health___init__.py tests/checks/ops_governance/test_validate_recommendations_schema.py tests/checks/ops_governance/test_check_source_registry.py tests/test_coverage_checker/test_coverage_checker_map.py -q"
+    expected: "All pass, including the assertion that scripts/backlog_health/<stem>.py resolves to tests/test_backlog_health_<stem>.py."
     fix_if: "A None mapping means _NESTED_SUBPACKAGE_TEST_PREFIX was not updated and the coverage floor does not bind the new package."
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
-      A breadth selector spanning four test homes whose individual behaviours steps 1, 2 and 5
-      already graduate; a fifth kernel entry running the same assertions adds cost without adding
+      A breadth selector spanning seven test files whose individual behaviours steps 1, 2, 5 and 6
+      already graduate; an eighth kernel entry running the same assertions adds cost without adding
       discrimination.
-  - step: 7
+  - step: 8
     phase: pre-deploy
-    action: Prove the whole gate surface still passes with the roster shrink applied.
+    action: Prove the whole fast-tier gate surface still passes with the roster shrink applied.
     command: "bin/venv-python -m scripts.validate --pre"
     expected: "Exit 0 -- notably validate_check_accounting accepts the shrink and validate_ci_rca_adjudication accepts the new workflow row."
     fix_if: "An adjudication failure names the missing taxonomy entry; an R3 failure names the unregistered inline body."
     hermetic: false
     graduation: not-applicable
-  - step: 8
+  - step: 9
+    phase: pre-deploy
+    action: >-
+      Pre-handoff full-tier validation. Required because this plan declares
+      handoff_policy.full_validation_required_before_commit (Decision 163 clause 2, enforced by
+      validate_handoff_full_tier in both presubmit tiers -- verified failing against this plan before
+      this step was added).
+    command: "bin/venv-python -m scripts.validate"
+    expected: "Exit 0 on the complete tier."
+    fix_if: "Do not commit on a timeout or partial run (timeout_disposition: blocked); resume later and rerun the full tier from the start."
+    hermetic: false
+    graduation: not-applicable
+  - step: 10
     phase: post-deploy
     action: >-
-      Live dry run against the real reader and the real tree -- the integration proof this tier
-      otherwise lacks. Reports per-class counts and writes nothing.
-    command: "bin/venv-python -m scripts.backlog_health census --dry-run && bin/venv-python -m scripts.backlog_health probe --dry-run && bin/venv-python -m scripts.backlog_health escalate --dry-run"
+      Verify the isolation primitive ON THE RUNNER, not only in the authoring container. `unshare`
+      has zero precedent anywhere in this repo and Ubuntu 24.04 can restrict unprivileged user
+      namespaces via AppArmor.
+    command: "bin/venv-python -m scripts.github_dispatch --workflow backlog-health.yml --input dry_run=true --wait"
     expected: >-
-      Counts in the neighbourhood of the planning-time census (see Context); every class reported;
-      no rec filed, updated or closed.
+      The probe job reports the namespace engaged and returns real verdicts. If the namespace is
+      unavailable the job FAILS with isolation_unavailable rather than reporting probes passed.
+    fix_if: >-
+      An isolation_unavailable result is a design decision point, not a retry: either the runner
+      supports a different primitive (a container) or the probe half cannot run there. Do not
+      degrade to unisolated execution.
+    hermetic: false
+    graduation: not-applicable
+  - step: 11
+    phase: post-deploy
+    action: Live dry run against the real reader and the real tree; reports per-class counts and writes nothing.
+    command: "bin/venv-python -m scripts.backlog_health census --dry-run && bin/venv-python -m scripts.backlog_health probe --dry-run && bin/venv-python -m scripts.backlog_health escalate --dry-run"
+    expected: "Counts in the neighbourhood of the planning-time census (see Context); every class reported; no rec filed, updated or closed."
     fix_if: "Any write in dry-run mode is a hard stop. A zero probeable count means the census classifier is over-filtering."
     hermetic: false
     graduation: not-applicable
-  - step: 9
+  - step: 12
     phase: post-deploy
-    action: Exercise the real workflow end to end and confirm one rec per class with findings.
+    action: Exercise the real escalator twice and confirm one rec per class with findings, and idempotence on the second run.
     command: "bin/venv-python -m scripts.backlog_health escalate && bin/venv-python -m scripts.backlog_health escalate"
     expected: "The first run files at most one rec per class; the second files nothing and updates only classes whose finding set changed."
     fix_if: "A second rec for the same class means the episode lookup is not scoping on source -- re-check the 2a primitive."
+    hermetic: false
+    graduation: not-applicable
+  - step: 13
+    phase: post-deploy
+    action: Verify both bundled recs closed after the merge.
+    command: "bin/venv-python -m scripts.sync.ops pull && ! grep -E '\"id\": \"rec-3312\".*\"status\": \"open\"' logs/.recommendations-log.jsonl && ! grep -E '\"id\": \"rec-3309\".*\"status\": \"open\"' logs/.recommendations-log.jsonl"
+    expected: "Neither rec is open in the refreshed cache (closed by the Resolves: trailer via rec-autoclose.yml)."
+    fix_if: "Still open means the squash-merge body omitted the Resolves: rec-3312, rec-3309 trailer; close them through the portal."
     hermetic: false
     graduation: not-applicable
 test_obligations:
@@ -247,64 +332,67 @@ test_obligations:
     behavior: >-
       classifies without executing, asserts every read row is status == 'open', and never places an
       unsafe or prose-only command into the probe payload.
-    verification_step: 6
-    test_selector: tests/backlog_health/test_census.py
+    verification_step: 7
+    test_selector: tests/test_backlog_health_census.py
     red_green_expectation: "Red before (module absent, exit 4); green after."
   - source: scripts/backlog_health/probe.py
     behavior: >-
-      bounded per-probe and global budgets, network-isolated read-only execution, and four distinct
-      verdicts with no silent pass.
+      bounded per-probe and global budgets, network-isolated read-only execution, five distinct
+      verdicts including isolation_unavailable, and no silent pass.
     verification_step: 1
-    test_selector: tests/backlog_health/test_probe.py
+    test_selector: tests/test_backlog_health_probe.py
     red_green_expectation: "Red before; green after."
   - source: scripts/backlog_health/classify.py
-    behavior: the satisfied-vs-vacuous split, the bootstrap-cohort split, and the dangling-dependency predicate.
+    behavior: >-
+      composes rec_relevance for the ratified signals and adds only the probe join, the
+      satisfied-vs-vacuous split, the bootstrap-cohort split and the dependency-ref predicate.
     verification_step: 2
-    test_selector: tests/backlog_health/test_classify.py
+    test_selector: tests/test_backlog_health_classify.py
     red_green_expectation: "Red before; green after."
   - source: scripts/backlog_health/escalate.py
     behavior: one rec per class per episode, no write on an unchanged finding set, and no write to any individual rec.
-    verification_step: 6
-    test_selector: tests/backlog_health/test_escalate.py
+    verification_step: 7
+    test_selector: tests/test_backlog_health_escalate.py
     red_green_expectation: "Red before; green after."
   - source: scripts/backlog_health/__main__.py
     behavior: subcommand wiring, dry-run writing nothing, and a loud non-zero exit on reader or portal failure.
-    verification_step: 6
-    test_selector: tests/backlog_health/test___main__.py
+    verification_step: 7
+    test_selector: tests/test_backlog_health___main__.py
     red_green_expectation: "Red before; green after."
   - source: scripts/backlog_health/__init__.py
     behavior: the facade re-exports the package's public surface.
-    verification_step: 6
-    test_selector: tests/backlog_health/test___init__.py
+    verification_step: 7
+    test_selector: tests/test_backlog_health___init__.py
     red_green_expectation: "Red before; green after."
   - source: scripts/checks/ops_governance/validate_recommendations_schema.py
-    behavior: declares skipped(reason) when the cache is absent and examined(n) when it is present.
+    behavior: declares skipped(reason) when the cache is absent and examined(n) when it is present, on every reachable exit path.
     verification_step: 5
     test_selector: tests/checks/ops_governance/test_validate_recommendations_schema.py::test_absent_cache_is_recorded_as_skipped
     red_green_expectation: "Red before (the check returns without declaring); green after."
   - source: scripts/checks/ops_governance/check_source_registry.py
     behavior: the scan set covers the new escalator so its source literals must be registered.
-    verification_step: 6
+    verification_step: 7
     test_selector: tests/checks/ops_governance/test_check_source_registry.py
     red_green_expectation: "Red before; green after."
   - source: scripts/test_coverage_checker.py
-    behavior: scripts/backlog_health/*.py resolves to its tests/backlog_health/ mirror home.
-    verification_step: 6
+    behavior: scripts/backlog_health/<stem>.py resolves to tests/test_backlog_health_<stem>.py.
+    verification_step: 7
     test_selector: tests/test_coverage_checker/test_coverage_checker_map.py
     red_green_expectation: "Red before (map_source_to_test returns None today); green after."
   - source: .github/workflows/backlog-health.yml
-    behavior: the probe job holds no credential and the workflow is not a required check.
+    behavior: the probe job holds no credential, references no secrets, and checks out without persisted credentials.
     verification_step: 3
-    command: "bin/venv-python -c \"import yaml,sys; j=yaml.safe_load(open('.github/workflows/backlog-health.yml'))['jobs']['probe']; p=j.get('permissions') or {}; sys.exit(0 if p.get('id-token') in (None,'none') and 'secrets.' not in yaml.dump(j) else 1)\""
-    red_green_expectation: >-
-      Red before -- the file does not exist, so the load raises. Green after. Recorded with a
-      command rather than a selector because the assertion is a shell-level YAML predicate over the
-      workflow, not a pytest module; VP step 4 is the companion guard on required_status_checks.
+    command: "bin/venv-python -c \"import yaml,sys; j=yaml.safe_load(open('.github/workflows/backlog-health.yml'))['jobs']['probe']; d=yaml.dump(j); p=j.get('permissions') or {}; sys.exit(0 if p.get('id-token') in (None,'none') and 'secrets.' not in d and 'persist-credentials: false' in d else 1)\""
+    red_green_expectation: "Red before -- the file does not exist, so the load raises. Green after. A command, not a selector, because the assertion is a YAML predicate over the workflow."
 constraints:
   - No rescue agents or workaround loops (Decision 55).
   - >-
     DEPENDS ON PLAN-episode-lookup-primitive being merged. Do not re-implement episode dedup here;
     call scripts/rec_episode.run_episode.
+  - >-
+    Compose scripts/rec_relevance.py for acceptance_probe, target_existence and open_duplicate --
+    Decision 103 names it THE relevance evaluator. Do not ship a second, divergent evaluator; that is
+    the same duplication Decision 57's spirit flag drove the 2a/2b split for.
   - >-
     Do NOT "repair" the ~283 open recs whose pytest node-id names a test that does not exist. Exit 4
     until written is the CORRECT discriminating form, much of it authored deliberately in the 2026-08
@@ -322,16 +410,18 @@ constraints:
     Screen every command string with the repo's never-commit shape patterns before it enters an
     artifact. The aws/gh/curl token filter is a hermeticity classifier, not a content-boundary
     control -- an agent-authored command can carry an internal identifier with no denylisted token.
+  - >-
+    GitHub access is via the github MCP server; the gh CLI is deliberately not installed. VP step 10's
+    dispatch must use that surface, never gh.
 context:
-  - "Decision-scout verdict + CITE list (verbatim decision ids)"
-  - "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s)"
+  - "decision-scout=FLAGS_FOUND. Decisions triaged: 136 of 136. Roadmap items intersected: 4; CONFLICT: 1; RELATED: 3. CITE: Decision 62 + its 2026-06-16 amendment (the sanctioning authority), Decision 61 (findings flow via source), Decision 84 (I-3 structural filter, I-4 loud-fail), Decision 88 (egress budget), Decision 170 (examined/skipped), Decision 181 (declare-your-coverage), Decision 162 (R3 inline-body ratchet), Decision 83 (non-wedging), Decision 148 (hermetic default), Decision 55, Decision 131, Decision 64 (bootstrap cohort), Decision 103, CD.12."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 1 round"
   - "Venue is settled by Decision 62's 2026-06-16 amendment + CD.12 (alarm-not-gate); do not re-open it."
   - "Census measured at a702e438 over 1079 open recs: probeable 689, expected_fail_missing_node 283, unprobeable_unsafe 89, prose_only 10, unprobeable_shape 8. Probe pass 109.7s, 8 timeouts, 36 exit-0 -> 31 satisfied candidates / 5 vacuous. Class 2: 0 lint-rejects, 4 non-discriminating. Class 3: 42 non-empty dependency lists, 0 malformed, 0 dangling. Class 4: 194 premise-dead (48 pre-2026-05-01 bootstrap cohort, 146 post-anchor), 25 near-duplicates."
   - "Class 3 has an EMPTY population today by design: Bundle 1 (#1007) added write-time array_element_format on dependencies, so the malformed arm is prospectively guarded; the dangling arm is guarded nowhere and this is its only detector. Do not write an acceptance criterion requiring a non-zero finding."
-  - "rec-3309 disposition: sync-the-cache is ruled out -- it would make the blocking gate live-reader-dependent, which Decision 62's amendment forbids. Chosen: declare examined/skipped + leave the grandfather roster, and move the substantive assertion onto this monitor against live rows."
-  - "Decision 181 residual: after this change the merge-gate surface carries NO recs data-quality enforcement. Declare it as an unenforced residual with an owning follow-on rec id at implement time."
+  - "rec-3309 disposition: sync-the-cache is ruled out -- it would make the blocking gate live-reader-dependent, which Decision 62's amendment forbids. Chosen: declare examined/skipped, REMOVE the entry from the grandfather roster, and move the substantive assertion onto this monitor against live rows."
   - "Decision 143 residual: the probe job's credential-free structure is a real primitive; the escalate job's artifact schema-validation is an in-repo, agent-editable guard with no structural counterpart. File follow-on recs for pinning the role's OIDC trust sub to the escalate job and for narrowing the writer identity to an append verb."
-  - "Isolation mechanism validated live in CC-web: unshare -rmn + read-only bind + ulimit -u works unprivileged, network unreachable inside, venv+pytest work with PYTEST_ADDOPTS='-o cache_dir=/tmp/pytest_cache' and PYTHONPYCACHEPREFIX=/tmp/pyc (NOT -p no:cacheprovider, which breaks this repo's pytest config), and a nonexistent node-id still exits 4."
+  - "Isolation mechanism validated in CC-web ONLY: unshare -rmn + read-only bind + ulimit -u works unprivileged, network unreachable inside, venv+pytest work with PYTEST_ADDOPTS='-o cache_dir=/tmp/pytest_cache' and PYTHONPYCACHEPREFIX=/tmp/pyc (NOT -p no:cacheprovider, which breaks this repo's pytest config), and a nonexistent node-id still exits 4. It has ZERO precedent elsewhere in this repo -- VP step 10 is the runner-side proof."
   - "Probe form: audit the REWRITTEN command (step_acceptance.py:80-84 normalisations), because the harm is the executor auto-closing an unfixed rec and that is what it runs. Measured: 475 of 689 rewritten, only 2 change verdict."
   - "Reader latency varies widely (4.2s to 65.7s observed on the same call); timeout-minutes 30 carries the margin."
   - "ci_rca_taxonomy currently holds exactly 22 workflow entries for 22 .yml files, keyed on display name."
@@ -343,20 +433,23 @@ pre_implementation_checklist:
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
   - PLAN-episode-lookup-primitive is merged to main and scripts/rec_episode.py exists
-  - Re-run the planning-time census before VP step 8; the corpus moved 1064 -> 1081 within one session
+  - Re-run the planning-time census before VP step 11; the corpus moved 1064 -> 1081 within one session
 execution_steps:
   - "Confirm scripts/rec_episode.py exists on main (2a merged); this plan does not create it."
-  - "Register backlog_health in scripts/test_coverage_checker.py FIRST, so every module written after it is coverage-bound as it lands."
+  - "Register backlog_health in scripts/test_coverage_checker.py FIRST with prefix test_backlog_health_, so every module written after it is coverage-bound as it lands."
   - "Write scripts/backlog_health/census.py plus its mirror test: the structural read, the status=='open' post-read invariant, and the five-bucket classifier."
-  - "Write scripts/backlog_health/probe.py plus its mirror test: unshare-isolated execution, per-probe and global budgets, four verdicts, main_sha stamping."
-  - "Write scripts/backlog_health/classify.py plus its mirror test: satisfied-vs-vacuous, bootstrap-cohort split, dangling-dependency predicate."
+  - "Write scripts/backlog_health/probe.py plus its mirror test: unshare-isolated execution, per-probe and global budgets, five verdicts including isolation_unavailable, main_sha stamping."
+  - "Write scripts/backlog_health/classify.py plus its mirror test, COMPOSING rec_relevance for acceptance_probe / target_existence / open_duplicate rather than re-deriving them."
   - "Write scripts/backlog_health/escalate.py on rec_episode.run_episode, plus __main__.py and __init__.py and their mirrors."
   - "Register the four sources in config/agent/data_quality/source_registry.yaml and widen check_source_registry's SCANNED_PATHS."
   - "Author .github/workflows/backlog-health.yml as three jobs; add its ci_rca_taxonomy row, its r3_workflows baseline entries, and the two github-actions-evidence artifact rows in the same pass."
-  - "Land the rec-3309 half: examined/skipped declarations plus the check_accounting_baseline shrink and the red/green test."
-  - "Add the Decision 103 dated annotation and the recommendation-relevance.yaml tracking edit with its amendment_log entry."
-  - "Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)."
-  - "File the follow-on recs named in Context (Decision 181 residual, Decision 143 OIDC-sub pin, writer-identity narrowing, the stale ducklake_reader.yaml rec-2170 KNOWN GAP line) and record their ids in followon_recs."
+  - "Land the rec-3309 half: examined/skipped declarations on all three exit paths, the check_accounting_baseline removal, and the red/green test."
+  - "File the follow-on rec that will own the merge-gate residual, then publish the Decision 181 residual stanza in docs/contracts/check-accounting.yaml naming it."
+  - "Add the Decision 103 dated annotation (venue scoping AND the Decision 88 mis-cite record) and the recommendation-relevance.yaml edits to BOTH clauses with an amendment_log entry."
+  - "Add the T1.6 progress_note to docs/ROADMAP-PLATFORM.yaml recording that the monitor substrate landed; do not flip any criterion."
+  - "Execute Verification Plan steps 1-9; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)."
+  - "Merge with a `Resolves: rec-3312, rec-3309` trailer, then run VP steps 10-13."
+  - "File the remaining follow-on recs named in Context (Decision 143 OIDC-sub pin, writer-identity narrowing, the stale ducklake_reader.yaml rec-2170 KNOWN GAP line) and record their ids in followon_recs."
   - "Report: what was implemented, verification results."
 work_areas: []
 rollback: >-
