@@ -8,9 +8,12 @@ import subprocess
 import sys
 
 from scripts.checks import _common, registry
+from scripts.checks._marker_guard import default_base_reader
+from scripts.checks.roadmap import _roadmap_spans
 
 _40HEX_RE = re.compile(r"^[0-9a-f]{40}$")
 _ROADMAP_MAX_LINES = 10_000  # Decision 114 (raised from KG.11's 2500)
+_ROADMAP_REL_PATH = "docs/ROADMAP-PLATFORM.yaml"
 
 
 def _roadmap_size_issues(text: str, ceiling: int = _ROADMAP_MAX_LINES) -> list[str]:
@@ -21,6 +24,37 @@ def _roadmap_size_issues(text: str, ceiling: int = _ROADMAP_MAX_LINES) -> list[s
             f"  FAIL: docs/ROADMAP-PLATFORM.yaml is {line_count} lines, exceeding the {ceiling}-line ceiling (Decision 114)"
         ]
     return []
+
+
+def _print_span_attribution(diff_text: str, post_text: str, legacy_ids: set[str]) -> None:
+    """REPORT-ONLY: print the span attribution beside criterion (ii)'s legacy detector.
+
+    Reads the origin/main image through the EXISTING scripts.checks._marker_guard
+    .default_base_reader seam -- including its missing-base contract (None on an unreachable
+    ref), which this advisory needs and which a second `git show` seam of this module's own
+    would duplicate (Decision 104 sole-home discipline).
+
+    Nothing here appends to `failed` and nothing here raises: the base-image read is guarded by
+    name (OSError, UnicodeDecodeError -- the reader shells `git show` with strict UTF-8) and falls
+    through to the SKIP line, so the presubmit exit code is identical with and without these two
+    lines on every input.
+    """
+    try:
+        base_text = default_base_reader(_ROADMAP_REL_PATH)
+    except (OSError, UnicodeDecodeError):
+        base_text = None
+    if base_text is None:
+        print(f"  SKIP: origin/main image of {_ROADMAP_REL_PATH} unreachable -- span attribution not reported")
+        return
+    pre_spans = _roadmap_spans.item_spans(base_text)
+    post_spans = _roadmap_spans.item_spans(post_text)
+    span_ids = _roadmap_spans.touched_item_ids(pre_spans, post_spans, _roadmap_spans.changed_lines(diff_text))
+    consumed = legacy_ids & ({span.item_id for span in pre_spans} | {span.item_id for span in post_spans})
+    print(
+        f"  SPAN-ATTRIBUTION span_named={len(span_ids)} legacy_named={len(consumed)} "
+        f"missed_by_legacy={sorted(span_ids - consumed)}"
+    )
+    print(f"  SPAN-ATTRIBUTION legacy_named_outside_spans={sorted(consumed - span_ids)} (report-only, nothing failed)")
 
 
 @registry.register("validate_platform_roadmap", owner="platform")
@@ -57,7 +91,8 @@ def validate_platform_roadmap(failed: list[str]) -> None:
 
         doc = load(roadmap_path)
         issues: list[str] = []
-        issues += _roadmap_size_issues(roadmap_path.read_text(encoding="utf-8"))
+        roadmap_text = roadmap_path.read_text(encoding="utf-8")
+        issues += _roadmap_size_issues(roadmap_text)
 
         # (i) met criterion met_by resolves to a real plan file OR a 40-hex sha
         plans_root = _common.ROOT / "docs" / "plans"
@@ -82,7 +117,8 @@ def validate_platform_roadmap(failed: list[str]) -> None:
             cwd=str(_common.ROOT),
         )
         if diff_result.returncode == 0 and diff_result.stdout.strip():
-            touched_ids: set[str] = set(re.findall(r"^[+-]\s+- id: (\S+)", diff_result.stdout, re.MULTILINE))
+            touched_ids: set[str] = _roadmap_spans.legacy_regex_item_ids(diff_result.stdout)
+            _print_span_attribution(diff_result.stdout, roadmap_text, touched_ids)
             if touched_ids:
                 with roadmap_path.open(encoding="utf-8") as fh:
                     raw_doc = _yaml.safe_load(fh)
@@ -130,6 +166,7 @@ def validate_platform_roadmap(failed: list[str]) -> None:
                 except Exception as plan_exc:  # noqa: BLE001
                     issues.append(f"  FAIL: {plan_file.name}: could not parse for closes_criteria: {plan_exc}")
 
+        registry.examined(len(doc.tier_items), unit="tier_items")
         if issues:
             for msg in issues:
                 print(msg)

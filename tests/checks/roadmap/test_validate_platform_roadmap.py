@@ -363,3 +363,239 @@ class TestPlatformRoadmapWrapperFailureEmission:
         out = capsys.readouterr().out
         assert failed == ["Platform roadmap schema validation"]
         assert "FAIL: Unexpected error: boom" in out
+
+
+class TestAccountingDeclaration:
+    """Decision 170 arm (d): the check declares examined() over tier_items on its single
+    reachable success exit, and that ONE unconditional call before the terminal if/else dominates
+    every branch of the criteria walk -- which is why each branch is driven here rather than only
+    the happy path (the walker enters except handlers from the try-ENTRY state, so a declaration
+    inside a handler would not cover the fall-through).
+    """
+
+    _ROADMAP = (
+        "document:\n  id: test-roadmap\n  version: 1\n  status: draft\n  filed_via: pending_log_decision_lambda\n"
+        "tier_items:\n"
+        "  - id: T0.1\n"
+        "    tier: T0\n"
+        "    name: Test item\n"
+        "    exit_criteria:\n"
+        "      - id: c1\n"
+        "        text: structured criterion\n"
+        "        status: open\n"
+    )
+
+    def _tree(self, tmp_path: Path) -> None:
+        """Write a loadable roadmap plus an empty docs/plans/ under tmp_path."""
+        (tmp_path / "docs" / "plans").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "docs" / "ROADMAP-PLATFORM.yaml").write_text(self._ROADMAP, encoding="utf-8")
+
+    @staticmethod
+    def _no_diff():
+        """Patch the criterion (ii) git-diff seam so it sees an empty diff."""
+        return patch(
+            "scripts.checks.roadmap.validate_platform_roadmap.subprocess.run",
+            return_value=_mock_completed(returncode=0, stdout=""),
+        )
+
+    def _run(self, tmp_path: Path):
+        """Drive the check and return (failed, declaration)."""
+        from scripts.checks import registry  # noqa: PLC0415
+
+        failed: list[str] = []
+        with patch("scripts.checks._common.ROOT", tmp_path), self._no_diff():
+            validate_platform_roadmap(failed)
+        return failed, registry.pop_declaration()
+
+    def test_the_success_path_declares_examined_over_tier_items(self, tmp_path: Path) -> None:
+        self._tree(tmp_path)
+
+        failed, declaration = self._run(tmp_path)
+
+        assert failed == []
+        assert declaration is not None
+        assert declaration.kind == "examined"
+        assert declaration.unit == "tier_items"
+        assert declaration.count == 1
+
+    def test_the_module_measures_fully_declared_on_every_reachable_success_exit(self) -> None:
+        from scripts.checks import registry  # noqa: PLC0415
+        from scripts.checks.hygiene._declaring_coverage import is_fully_declared, measure_check  # noqa: PLC0415
+
+        row = measure_check("validate_platform_roadmap", registry.resolve("validate_platform_roadmap"))
+
+        assert row.undeclared == 0
+        assert is_fully_declared(row)
+
+    def test_the_roster_no_longer_exempts_this_check(self) -> None:
+        import yaml  # noqa: PLC0415
+
+        roster = yaml.safe_load((ROOT / "config" / "check_accounting_baseline.yaml").read_text(encoding="utf-8"))
+
+        assert "validate_platform_roadmap" not in roster["entries"]
+
+    @pytest.mark.parametrize(
+        ("plan_body", "expect_failure"),
+        [
+            ("- not a mapping\n", False),
+            ("closes_criteria: 3\n", False),
+            ("closes_criteria:\n  - nocolon\n", True),
+            ("closes_criteria: [unclosed\n", True),
+        ],
+    )
+    def test_the_declaration_is_reached_from_every_criteria_walk_branch(
+        self, tmp_path: Path, plan_body: str, expect_failure: bool
+    ) -> None:
+        self._tree(tmp_path)
+        (tmp_path / "docs" / "plans" / "PLAN-probe.yaml").write_text(plan_body, encoding="utf-8")
+
+        failed, declaration = self._run(tmp_path)
+
+        assert bool(failed) is expect_failure
+        assert declaration is not None and declaration.kind == "examined"
+
+    def test_the_declaration_is_reached_when_a_criterion_is_not_an_exit_criterion_object(self, tmp_path: Path) -> None:
+        from scripts.roadmap import platform_roadmap  # noqa: PLC0415
+
+        self._tree(tmp_path)
+        real_load = platform_roadmap.load
+
+        def _load_with_a_raw_criterion(path):
+            doc = real_load(path)
+            doc.tier_items[0].exit_criteria.append("a raw criterion the walk must skip")
+            return doc
+
+        from scripts.checks import registry  # noqa: PLC0415
+
+        failed: list[str] = []
+        with (
+            patch("scripts.checks._common.ROOT", tmp_path),
+            self._no_diff(),
+            patch("scripts.roadmap.platform_roadmap.load", _load_with_a_raw_criterion),
+        ):
+            validate_platform_roadmap(failed)
+        declaration = registry.pop_declaration()
+
+        assert failed == []
+        assert declaration is not None and declaration.kind == "examined"
+
+
+class TestSpanAttributionAdvisory:
+    """The report-only span attribution printed beside criterion (ii)'s frozen legacy detector.
+
+    REPORT-ONLY is absolute: the advisory prints, and criterion (ii)'s failing-arm input stays
+    the legacy set behind its named symbol.
+    """
+
+    _PRE = (
+        "document:\n  id: test-roadmap\n  version: 1\n  status: draft\n  filed_via: pending_log_decision_lambda\n"
+        "tier_items:\n"
+        "  - id: T0.1\n"
+        "    tier: T0\n"
+        "    name: Test item\n"
+        "    exit_criteria:\n"
+        "      - id: c1\n"
+        "        text: structured criterion\n"
+        "        status: open\n"
+    )
+    _POST = _PRE.replace("    name: Test item\n", "    name: Test item edited\n")
+
+    @staticmethod
+    def _unified(pre: str, post: str) -> str:
+        import difflib  # noqa: PLC0415
+
+        return "\n".join(difflib.unified_diff(pre.splitlines(), post.splitlines(), lineterm="")) + "\n"
+
+    def _tree(self, tmp_path: Path) -> None:
+        (tmp_path / "docs" / "plans").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "docs" / "ROADMAP-PLATFORM.yaml").write_text(self._POST, encoding="utf-8")
+
+    def _run(self, tmp_path: Path, diff_text: str, base_text: str | None | Exception) -> list[str]:
+        """Drive the check with a synthetic diff and a synthetic origin/main image.
+
+        `default_base_reader` is patched EXPLICITLY on both arms -- including the None arm.
+        Leaving it unpatched would not exercise the missing-base contract at all: the
+        `subprocess.run` patch below rebinds the attribute on the shared subprocess module, which
+        `scripts.checks._common.run` calls too, so the real reader would read back the synthetic
+        diff as though it were the origin/main image.
+        """
+        reader = {"side_effect": base_text} if isinstance(base_text, Exception) else {"return_value": base_text}
+        failed: list[str] = []
+        with (
+            patch("scripts.checks._common.ROOT", tmp_path),
+            patch(
+                "scripts.checks.roadmap.validate_platform_roadmap.subprocess.run",
+                return_value=_mock_completed(returncode=0, stdout=diff_text),
+            ),
+            patch("scripts.checks.roadmap.validate_platform_roadmap.default_base_reader", **reader),
+        ):
+            validate_platform_roadmap(failed)
+        return failed
+
+    def test_the_advisory_names_the_ids_the_legacy_detector_missed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._tree(tmp_path)
+        diff = self._unified(self._PRE, self._POST)
+
+        failed = self._run(tmp_path, diff, self._PRE)
+
+        out = capsys.readouterr().out
+        assert "SPAN-ATTRIBUTION span_named=1 legacy_named=0 missed_by_legacy=['T0.1']" in out
+        assert "legacy_named_outside_spans=[] (report-only, nothing failed)" in out
+        assert failed == []
+
+    def test_the_legacy_detector_names_nothing_on_that_same_body_edit(self, tmp_path: Path) -> None:
+        from scripts.checks.roadmap._roadmap_spans import legacy_regex_item_ids  # noqa: PLC0415
+
+        diff = self._unified(self._PRE, self._POST)
+
+        assert legacy_regex_item_ids(diff) == set()
+
+    def test_criterion_ii_consumes_the_frozen_legacy_set(self, tmp_path: Path) -> None:
+        """The failing arm's input is the SAME legacy detector, now behind a named symbol: a diff
+        naming a touched item with a bare-string criterion still fails."""
+        bare = self._POST.replace(
+            "    exit_criteria:\n      - id: c1\n        text: structured criterion\n        status: open\n",
+            "    exit_criteria:\n      - a bare string criterion\n",
+        )
+        (tmp_path / "docs" / "plans").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "docs" / "ROADMAP-PLATFORM.yaml").write_text(bare, encoding="utf-8")
+
+        failed = self._run(tmp_path, "+  - id: T0.1\n+    status: in_progress\n", self._PRE)
+
+        assert "Platform roadmap criteria integrity" in failed
+
+    def test_the_advisory_changes_nothing_criterion_ii_appends(self, tmp_path: Path) -> None:
+        self._tree(tmp_path)
+        diff = self._unified(self._PRE, self._POST)
+
+        with_advisory = self._run(tmp_path, diff, self._PRE)
+        without_base = self._run(tmp_path, diff, None)
+
+        assert with_advisory == without_base == []
+
+    def test_the_origin_main_unreachable_arm_prints_its_own_skip_line(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """default_base_reader's missing-base contract (None on an unreachable ref) is the
+        advisory's own skip arm -- a second git seam of this module's own is what Decision 104
+        sole-home discipline forbids."""
+        self._tree(tmp_path)
+
+        failed = self._run(tmp_path, self._unified(self._PRE, self._POST), None)
+
+        out = capsys.readouterr().out
+        assert "SKIP: origin/main image of docs/ROADMAP-PLATFORM.yaml unreachable" in out
+        assert "SPAN-ATTRIBUTION" not in out
+        assert failed == []
+
+    @pytest.mark.parametrize("boom", [UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad"), OSError("git unavailable")])
+    def test_a_raising_base_read_is_skipped_and_never_failed(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], boom: Exception
+    ) -> None:
+        """RED on the pre-fix module: the raise reached the check body's catch-all and appended to failed."""
+        self._tree(tmp_path)
+        failed = self._run(tmp_path, self._unified(self._PRE, self._POST), boom)
+        assert failed == []
+        assert "SKIP: origin/main image of docs/ROADMAP-PLATFORM.yaml unreachable" in capsys.readouterr().out
