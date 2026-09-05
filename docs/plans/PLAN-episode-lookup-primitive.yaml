@@ -37,7 +37,10 @@ scope:
       prints the keeper and the ids it would supersede and writes nothing; --confirm performs the
       closes. A migration is not a durable verb, and lodging a bulk destructive close inside a
       primitive three monitors import would leave it permanently reachable. Flat module, so it maps
-      to tests/test_rec_episode_dedupe.py and is deletable once the migration is done.
+      to tests/test_rec_episode_dedupe.py and is deletable once the migration is done. It does NOT
+      compose ops_data_portal.propose_or_close_rec (:481): that helper proposes per single rec on
+      a relevance verdict, while this proposes one keeper group in bulk on a deterministic
+      identity predicate -- a different grain, not a reimplementation of the same one.
   - file: scripts/convergence_health/escalate.py
     action: Modify
     purpose: >-
@@ -64,8 +67,8 @@ scope:
     action: Modify
     purpose: >-
       Remove FOUR names, not one: _fetch_open_recs plus find_open_convergence_stale_rec (imports at
-      :64,:65 via code_drift and :76 via escalate) and find_open_ducklake_drift_rec /
-      find_open_prod_drift_rec, and their __all__ entries at :123-125. Deleting the finders without
+      :64,:65 via code_drift and :74,:76 via escalate) and find_open_ducklake_drift_rec /
+      find_open_prod_drift_rec, and their __all__ entries at :109 and :123-125. Deleting the finders without
       the matching facade edits makes `import scripts.convergence_health` raise ImportError.
   - file: scripts/checks/_budget_recs.py
     action: Modify
@@ -91,8 +94,12 @@ scope:
       VERB_FIELDS nor NAMED_READS; that needs an explicit registry.skipped(reason) arm, never a
       silent pass and never a flag; (c) result-through-a-callable indirection --
       scripts/ci/reconcile_target.py:114-117 filters rows[0].get('status') where rows came from a
-      _call closure (:126-134) returning named('rec_by_id'); correct code, must NOT be flagged, and
-      it is the guard's hardest positive/negative discrimination. A pytest would be
+      _call closure (:128-135) returning named('rec_by_id'); correct code, must NOT be flagged --
+      though note it passes because rec_by_id is a SENTINEL verb projecting every column, not
+      because the guard traces the closure. Tracing callables is deliberately OUT OF SCOPE: the
+      guard reasons about direct named()-result filtering only, and an indirection-reached
+      out-of-projection filter is a known blind spot recorded here rather than claimed closed.
+      A pytest would be
       diff-selection-dependent (a PR editing convergence_health/escalate.py does not select
       tests/test_rec_episode.py under Decision 135's affected-set selector), so the guard would
       silently not run at the exact moment it matters. Precedent:
@@ -102,7 +109,11 @@ scope:
   - file: scripts/checks/hygiene/_manifest.py
     action: Modify
     purpose: >-
-      Register the check with pre=True, pre_globs=("scripts/**",) and full_segment="full_after_lint".
+      Register the check with pre=True, pre_globs=("scripts/**", "src/common/**") and
+      full_segment="full_after_lint". The src/common/** leg is REQUIRED, not decorative:
+      VERB_FIELDS lives at src/common/ducklake_reader_client.py:149, which does not match
+      scripts/** (verified), so a PR NARROWING a verb's projection -- the exact change class that
+      newly creates out-of-projection filters -- would not select this guard in the fast tier.
       module=/attr= must be BARE STRING LITERALS (Decision 169) or scripts.dependency_graph's AST
       edge scan severs the driver->check edge.
   - file: config/ci_rca_taxonomy.yaml
@@ -125,8 +136,9 @@ scope:
   - file: tests/test_rec_episode_dedupe.py
     action: Create
     purpose: >-
-      Mirror test for the cleanup module -- keeper selection is newest-per-(source, title), --propose
-      writes nothing, and --confirm closes exactly the proposed set.
+      Mirror test for the cleanup module -- keeper selection is the newest open rec PER SOURCE
+      (title-blind, matching the runtime lookup), --propose writes nothing, and --confirm closes
+      exactly the proposed set.
   - file: tests/convergence_health/test_open_rec_dedupe.py
     action: Create
     purpose: >-
@@ -214,11 +226,13 @@ acceptance_criteria:
     find_open_prod_drift_rec remains defined under scripts/ or exported from the convergence_health
     facade, and `import scripts.convergence_health` succeeds.
   - >-
-    Every open tf_convergence_stale rec except one keeper per (source, title) is closed as
-    superseded naming its keeper, and the surviving open count equals the number of distinct titles
-    in that population. Expressed relationally on purpose: at planning time the 23 open recs span
-    TWO titles (14 persistently_red, 9 stale_green_backlog), so the deterministic rule closes 21 and
-    leaves 2 -- not the 22/1 an earlier draft assumed.
+    Every open tf_convergence_stale rec except ONE keeper for the source is closed as superseded
+    naming that keeper, leaving exactly one open rec for the source. Keyed on SOURCE, not
+    (source, title), because that is the runtime grain: find_open_convergence_stale_rec
+    (escalate.py:53-60) matches on source+status and is title-BLIND, and
+    _condition_from_existing_rec (:83-92) exists precisely because one rec covers all three
+    conditions. A per-title cleanup would leave a second rec the sensor picks up on no tick and
+    never closes. At planning time the population is 23 open, so the rule closes 22 and leaves 1.
   - >-
     Both rec-3291 and rec-3563 are closed, and each one's acceptance probe names a node id that
     exists: rec-3291's test_open_rec_finders_match_live_verb_projection is written, and
@@ -274,15 +288,17 @@ verification_plan:
       Write and pass rec-3291's acceptance oracle. Post-migration the four named()-based finders no
       longer exist, so the assertion's subject is find_rec itself: the keys it filters on must be a
       subset of the keys its read actually returns, asserted against a full-projection fixture row
-      and against resolve_table_spec's declared column set. This is a RUNTIME assertion on the
-      primitive and is distinct from the registered guard, which is a STATIC AST scan over call
-      sites -- neither subsumes the other.
+      and against resolve_table_spec's declared column set. SCOPE NOTE: an unnarrowed
+      current_state read returns every column, so the only edit this can falsify is a future
+      selected_fields narrowing -- that regrowth path is exactly what it guards, and the step
+      says so rather than implying broader coverage. Distinct from the registered guard, which
+      is a STATIC AST scan over call sites; neither subsumes the other.
     command: "bin/venv-python -m pytest tests/convergence_health/test_open_rec_dedupe.py::test_open_rec_finders_match_live_verb_projection -q"
     expected: "1 passed. This is rec-3291's acceptance command verbatim; it exits 4 today because the file does not exist."
     fix_if: "Exit 4 after implementation means the file or node id was named differently from rec-3291's probe -- match it exactly."
     hermetic: true
     graduation: graduate
-    graduation_check_id: find-rec-filters-within-projection
+    graduation_check_id: find-rec-selected-fields-regrowth-guard
   - step: 14
     phase: pre-deploy
     action: Prove the retired xfail shard no longer runs and the retirement path was used.
@@ -290,8 +306,13 @@ verification_plan:
     expected: "Exit 0 -- the shard moved into entries/deprecated/ rather than being deleted outright."
     fix_if: "A surviving live shard is stale rather than red (the registry gates only added/modified entries); a missing deprecated copy means it was deleted instead of retired."
     hermetic: true
-    graduation: graduate
-    graduation_check_id: xfail-marker-shard-retired
+    graduation: waive
+    graduation_waiver_reason: >-
+      A one-shot migration-moment claim: permanently TRUE after the git mv, with no revertable
+      counter-example. docs/contracts/verification-registry.yaml's governance_notes record exactly
+      this shape as disqualifying (plan-obligations-enumeration-homed,
+      no-retired-ci-role-in-live-surfaces). Graduating it would also couple a standing check to the
+      contents of entries/deprecated/, which a sanctioned future orphan sweep may prune.
   - step: 5
     phase: pre-deploy
     action: Prove all four deleted symbols are unreachable and the facade still imports.
@@ -311,8 +332,8 @@ verification_plan:
     graduation: waive
     graduation_waiver_reason: >-
       A breadth regression selector over four already-mirrored homes; the per-behaviour assertions
-      it runs are owned by those homes' own coverage floor, and steps 1-5 graduate the five
-      primitives this plan actually introduces. A sixth kernel entry would re-run them without
+      it runs are owned by those homes' own coverage floor, and steps 1-5 and 13 already graduate
+      the primitives this plan introduces. A further kernel entry would re-run them without
       adding discrimination.
   - step: 7
     phase: pre-deploy
@@ -321,8 +342,12 @@ verification_plan:
     expected: "Exit 0 -- notably tests/checks/test__budget_recs.py (490 at planning time) and scripts/convergence_health/budget_ingest.py (462) stay under 500."
     fix_if: "A breach means decompose that file (Decision 128), never add a budget raise."
     hermetic: true
-    graduation: graduate
-    graduation_check_id: episode-migration-sloc-clean
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates an already-standing check: validate_sloc_limits gates every PR in both the fast
+      and full tiers, so a graduated shard asserting it is clean can never independently red. The
+      step earns its place at implement time as the named guard on the two near-cap files; it does
+      not earn a standing registry entry.
   - step: 8
     phase: pre-deploy
     action: >-
@@ -363,8 +388,8 @@ verification_plan:
       of them. Sequenced post-merge because convergence-health's hourly cron on main keeps re-filing
       until the fix lands, so a pre-merge close would race it.
     command: "bin/venv-python -m scripts.rec_episode_dedupe tf_convergence_stale --propose"
-    expected: "Prints one keeper per distinct title and the ids it proposes to supersede; exits 0; no warehouse write occurs."
-    fix_if: "Any write in propose mode is a hard stop. A keeper that is not the newest in its title group means selection is not deterministic."
+    expected: "Prints the single keeper (newest open rec for the source) and the ids it proposes to supersede; exits 0; no warehouse write occurs."
+    fix_if: "Any write in propose mode is a hard stop. A keeper that is not the newest open rec for the source means selection is not deterministic."
     hermetic: false
     graduation: not-applicable
   - step: 12
@@ -373,8 +398,8 @@ verification_plan:
       STOP for operator confirmation of step 11's enumerated list and its keeper rule, paste both
       into the PR body as the confirmation artifact, then close and verify.
     command: "bin/venv-python -m scripts.rec_episode_dedupe tf_convergence_stale --confirm && bin/venv-python -m scripts.rec_episode --probe tf_convergence_stale --count"
-    expected: "The proposed recs close as superseded naming their keeper; the count equals the number of distinct titles (2 at planning time)."
-    fix_if: "A count above the distinct-title number means the population moved between propose and confirm; re-run step 11 and re-confirm -- never re-run this blind."
+    expected: "The proposed recs close as superseded naming the keeper; the count prints 1."
+    fix_if: "A count above 1 means the population moved between propose and confirm; re-run step 11 and re-confirm -- never re-run this blind."
     hermetic: false
     graduation: not-applicable
 test_obligations:
@@ -386,8 +411,13 @@ test_obligations:
     verification_step: 1
     test_selector: tests/test_rec_episode.py::test_find_rec_raises_when_filtered_key_absent
     red_green_expectation: "Red before (module absent, exit 4); green after."
+  - source: scripts/rec_episode.py
+    behavior: find_rec raises when the reader is unreachable rather than returning empty, so a dedup read can never be mistaken for 'no open rec'.
+    verification_step: 1
+    test_selector: tests/test_rec_episode.py::test_find_rec_raises_when_reader_unreachable
+    red_green_expectation: "Red before (module absent, exit 4); green after. The three current_state precedents fail open here, so this is a deliberate divergence and needs its own guard."
   - source: scripts/rec_episode_dedupe.py
-    behavior: keeper selection is newest-per-(source, title); --propose writes nothing; --confirm closes exactly the proposed set.
+    behavior: keeper selection is the newest open rec per SOURCE (title-blind); --propose writes nothing; --confirm closes exactly the proposed set.
     verification_step: 6
     test_selector: tests/test_rec_episode_dedupe.py
     red_green_expectation: "Red before (module absent, exit 4); green after."
@@ -474,13 +504,19 @@ constraints:
   - Reads transit the DuckLake reader; writes transit file_rec/update_rec. The local JSONL is never a write source.
   - One read per `source` per invocation, sub-keyed locally for multiple episodes under one source. Do not build a cross-source cache.
   - >-
+    find_rec RAISES when the reader is unreachable; it never fails open. This diverges deliberately
+    from the three current_state precedents (ci_rca_runtime.py:72, ci_rca_lifecycle.py:53,
+    convergence_dedup.py:109), which log a warning and return empty. Fail-open on a DEDUP read is
+    indistinguishable from 'no open rec' and re-files a duplicate -- it reproduces this plan's own
+    defect by a different route (Decision 55 loud failure).
+  - >-
     scripts/ci_rca/probe_health.py:134 carries a third escalation_action copy, documented there as an
     identical truth table. It is deliberately OUT of scope -- it is a ci_rca-lane consumer with its
     own lifecycle contract. Note it, do not migrate it here.
 context:
-  - "decision-scout=FLAGS_FOUND. Decisions triaged: 136 of 136. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2. CITE: Decision 84 (I-3 structural filter, I-4 loud-fail), Decision 88 (egress budget, invariant (ii)), Decision 61 (source as origin discriminator), Decision 62 + 2026-06-16 amendment, Decision 55, Decision 124 (ops_portal unmapped -> flat home), Decision 131 (mirror rule), Decision 132 (graduation obligation), Decision 103 (close_proposed, never a direct close), Decision 169 (bare string literals in Entry), CD.12."
+  - "decision-scout=FLAGS_FOUND. Decisions triaged: 136 of 136. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2. CITE: Decision 84 (I-3 structural filter, I-4 loud-fail), Decision 88 (egress budget, invariant (ii)), Decision 61 (source as origin discriminator), Decision 62 + 2026-06-16 amendment, Decision 55, Decision 124 (ops_portal unmapped -> flat home), Decision 131 (mirror rule), Decision 132 (graduation obligation), Decision 103 (close_proposed, never a direct close), Decision 169 (bare string literals in Entry), Decision 176 + docs/contracts/verification-registry.yaml (shard retirement into entries/deprecated/ and the one-shot-claim graduation rule), CD.12."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 1 round"
-  - "Defect: escalate.py:70 _fetch_open_recs uses named('open_recs') -> SELECT id,title,context,created_timestamp,automatable; three finders filter on source/status (escalate.py:56, code_drift.py:89, code_drift.py:284) so all three always return None."
+  - "Defect: escalate.py:70 _fetch_open_recs uses named('open_recs') -> SELECT id,title,context,created_timestamp,automatable; three finders filter on source/status (escalate.py:58, code_drift.py:92, code_drift.py:287) so all three always return None."
   - "Tracking recs: rec-3291 (open, High, 2026-08-27, file=code_drift.py) is the ORIGINAL; rec-3563 (open, High, 2026-09-04, file=escalate.py) is its undetected duplicate -- two recs on ONE defect, indexed under different files, which is why the relevance engine's same-file open-duplicate check never compared them. rec-3563 states 'the call-site fix is sequenced as a separate follow-on' -- this plan is that follow-on. Its acceptance names TestFindOpenConvergenceStaleRec and the xfail removal, which is why VP step 4 is that exact command and the class name is retained."
   - "Already diagnosed once: scripts/checks/_budget_recs.py:135 documents this exact failure mode and worked around it for one consumer only."
   - "Realised damage: 31 tf_convergence_stale recs total, 2026-08-15 -> 2026-09-02 (~3 weeks) -- 8 already closed by hand, 23 still open across TWO titles (14 persistently_red, 9 stale_green_backlog). The cleanup toll has been paid twice before. Both code_drift sources have 0 rows ever, so their copy is latent."
@@ -497,7 +533,7 @@ pre_implementation_checklist:
   - only the plan-cited decision sections
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
-  - Re-confirm the open tf_convergence_stale population and its title split before VP step 11; it was 23 across 2 titles at planning time
+  - Re-confirm the open tf_convergence_stale count before VP step 11; it was 23 at planning time and the rule leaves exactly 1
 execution_steps:
   - "Create scripts/rec_episode.py: find_rec(source, *, statuses=('open',), sub_key=None, rows=None) with the missing-key assertion, decide() re-homed from assess.escalation_action, run_episode() with build_fields/build_update/build_close hooks plus suppress_file, and a main() carrying only --probe/--count."
   - "Create scripts/rec_episode_dedupe.py with --propose/--confirm and newest-per-(source, title) keeper selection."
