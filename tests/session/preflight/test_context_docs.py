@@ -114,6 +114,13 @@ class TestReadContextFiles:
         assert result["open_decisions_count"] == expected_open
 
     def test_recent_sessions_extracted(self, tmp_path: Path) -> None:
+        """RE-SHAPED (Decision 181, PLAN-preflight-context-docs-honesty): this case's fixture is
+        OLDEST-FIRST and its index-0 assertion previously pinned the 2026-03-01 header, which
+        ENCODED the positional-slice defect -- recent_sessions returned the oldest entries. The
+        index-0 assertion is inverted to the NEWEST-dated entry and a second assertion pinning the
+        older entry at index 1 is ADDED, so the case constrains strictly more than before; the
+        count assertion is unchanged. Nothing was deleted or weakened.
+        """
         session_log = tmp_path / "SESSION_LOG.md"
         session_log.write_text(
             "## [2026-03-01] -- agent/feature-a\n\n**Done:** Did something\n"
@@ -128,7 +135,8 @@ class TestReadContextFiles:
         ):
             result = _preflight.read_context_files()
         assert len(result["recent_sessions"]) == 2
-        assert "2026-03-01" in result["recent_sessions"][0]
+        assert "2026-03-10" in result["recent_sessions"][0]
+        assert "2026-03-01" in result["recent_sessions"][1]
 
     def test_missing_files_return_defaults(self, tmp_path: Path) -> None:
         with (
