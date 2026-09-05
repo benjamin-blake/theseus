@@ -158,7 +158,7 @@ Render as a table: practice -> preflight signal -> PASS/WATCH/GAP.
 | Practice | Preflight signal | PASS/WATCH/GAP threshold |
 |---|---|---|
 | Terraform converged | `convergence_health.status` | PASS if `green`; WATCH if `red` and `red_age_hours` < 6; GAP if `red` and `red_age_hours` >= 6 or `stuck_approvals` > 0 |
-| Data quality coverage | `data_quality.last_verdict` | PASS if `pass`; WATCH if `warn`; GAP if `fail` or field absent |
+| Data quality coverage | `data_quality.last_run.verdict` | PASS if `PASS`; WATCH if `DEGRADED` or `SKIP`; GAP if `FAIL`, `HARD_GATE`, `ERROR` or null/absent |
 | CI-RCA liveness | `ci_rca_unresolved_recs` empty AND `ci_rca_liveness_alert` null | PASS if both clear; GAP if either non-empty or non-null |
 | Rec backlog (soft cap) | `non_automatable_softcap_breached` | PASS if false; GAP if true |
 | Terraform pending | `terraform_pending` | PASS if false or absent; WATCH if true |

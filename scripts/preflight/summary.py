@@ -89,14 +89,48 @@ def print_budget_breach_summary(summary: dict | None) -> None:
         )
 
 
+# The two fail-open reasons context_docs._check_endstate_drift returns when it could not compare
+# the fingerprint at all. Both used to render as SILENCE, which a consumer reads as "clean".
+_ENDSTATE_SKIPPED_REASONS = frozenset({"stamp_absent", "parse_error"})
+
+
 def print_endstate_drift_advisory(endstate_drift: dict) -> None:
-    """Print the Platform End-State fingerprint staleness advisory (see
-    context_docs._check_endstate_drift)."""
+    """Print the Platform End-State fingerprint advisory (see context_docs._check_endstate_drift).
+
+    Always names WHY. The stale line carries its reason and the ref it resolved, so the three
+    previously byte-identical stale causes are three distinct lines; both fail-open branches print
+    a SKIPPED line saying drift is UNKNOWN, not clean, instead of nothing; and a reason neither
+    vocabulary names -- a legacy space-separated note from an older context_docs, or a value that
+    is not even a string -- also prints a SKIPPED line, because silence is what a consumer reads
+    as clean. SILENCE means IN-SYNC ALONE.
+
+    The reason is resolved through str() BEFORE the _ENDSTATE_SKIPPED_REASONS membership test:
+    membership on an unhashable value (a list- or dict-valued reason) raises TypeError, and this
+    renderer runs on main()'s thread. Reads every field with .get so a partial dict cannot raise.
+    """
+    reason = str(endstate_drift.get("reason") or endstate_drift.get("note") or "unspecified")
     if endstate_drift.get("stale"):
         new_ids = endstate_drift.get("new_ids") or []
         ids_note = f" (new ids: {new_ids})" if new_ids else ""
-        msg = f"Advisory: Platform End-State fingerprint stale -- roadmap has new tier_item IDs since the stamp.{ids_note}"
-        print(msg, file=sys.stderr)
+        print(
+            "Advisory: Platform End-State fingerprint stale -- roadmap has new tier_item IDs since "
+            f"the stamp.{ids_note} reason={reason} stamp_ref={endstate_drift.get('stamp_ref') or 'none'}",
+            file=sys.stderr,
+        )
+        return
+    if reason == "ok":
+        return
+    if reason in _ENDSTATE_SKIPPED_REASONS:
+        print(
+            f"Advisory: Platform End-State drift check SKIPPED -- reason={reason}; the fingerprint "
+            "could not be compared, so drift is UNKNOWN, not clean.",
+            file=sys.stderr,
+        )
+        return
+    print(
+        f"Advisory: Platform End-State drift check SKIPPED -- unrecognized reason={reason!r}; drift is UNKNOWN, not clean.",
+        file=sys.stderr,
+    )
 
 
 def _format_preflight_summary(report: dict, report_path: Path) -> str:
