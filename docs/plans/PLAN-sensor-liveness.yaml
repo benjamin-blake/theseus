@@ -1,0 +1,1069 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: sensor-liveness
+intent: >-
+  Give the schedule-bearing workflow fleet the liveness backstop audit finding LSA-02 says it lacks:
+  a fifth, alarm-only leg on the existing convergence-health cron that asserts last-scheduled-run
+  age for every peer derived at run time from the workflows' own `on:.schedule` blocks, and files
+  one deduped alarm-lane rec per stale loop. Absence-of-runs becomes a detected condition instead of
+  a silent one; nothing new gates a PR.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-sensor-liveness.yaml
+phase: >-
+  Platform hardening -- standing-loop observability. Slice S2 of the loop-spec-adoption overseer run,
+  driving audit finding LSA-02 from audits/loop-spec-adoption-4d8bac4a.yaml. Names NO tier_item and
+  adds NO roadmap row (soft-warn exception category ad_hoc_rec), so the Tier Item Freshness Gate is
+  skipped; the audit finding is the forward-intent carrier and deferred halves ride recs.
+scope:
+  - file: scripts/convergence_health/sensor_liveness.py
+    action: Create
+    purpose: >-
+      The whole leg: peer-set derivation from .github/workflows/*.yml `on:.schedule` (with the
+      PyYAML `on:`-parses-as-True normalization, fail-loud by default), the cron-shape cadence oracle
+      and its clamped staleness threshold, the per-peer `?event=schedule` last-run query, the log2
+      staleness-bucket episode key, the four-verb file|update|unchanged|drop decision, the
+      correlated-outage collapse rule, and the `--liveness-probe` acceptance oracle. Its own module because budget_ingest.py is already
+      462 SLOC and code_drift.py 326 against the 500 ceiling (Decision 128 decompose-by-default).
+  - file: scripts/convergence_health/__init__.py
+    action: Modify
+    purpose: >-
+      Facade re-export of the new public surface plus its __all__ entries, and one submodule line in
+      the docstring roster (lines 22-28) that declares the package's contents. SLOC-exempt --
+      scripts/checks/sloc/_shared.py::iter_gated_py_files skips every __init__.py.
+  - file: scripts/convergence_health/__main__.py
+    action: Modify
+    purpose: >-
+      Two new entry points mirroring main_prod_drift/main_budget_ingest -- main_sensor_liveness() for
+      the cron leg and main_liveness_probe(workflow) for the acceptance oracle -- plus their branches
+      in _dispatch(). 108 SLOC today; ample headroom under 500.
+  - file: .github/workflows/convergence-health.yml
+    action: Modify
+    purpose: >-
+      One named step after "Ingest CI fast-tier budget breaches (rec-3288)", carrying
+      `env: GH_TOKEN: ${{ github.token }}` like the budget-ingest step, plus a header paragraph
+      stating the leg's alarm-only invariants. No `permissions:` change -- the job's existing
+      `actions: read` (line 80) already covers listing workflow runs.
+  - file: config/composite_action_body_baseline.yaml
+    action: Modify
+    purpose: >-
+      Mandatory r3_workflows entry for the new inline `run:` body --
+      `.github/workflows/convergence-health.yml::health-check::assert-scheduled-loop-liveness-lsa-02: 2`
+      -- without which scripts/checks/ci_guards/_workflow_shell_bodies.py:195-203 fails the PR.
+  - file: config/agent/data_quality/source_registry.yaml
+    action: Modify
+    purpose: >-
+      New `canonical_id: loop_liveness_stale` entry (description + signal_interpretation +
+      added_date), following the prod_code_drift shape at lines 198-200 including its explicit
+      "Priority High, not source=ci_rca -- does NOT hard-block the /plan queue" clause. Required:
+      ops_data_portal validate_source rejects an unregistered source at write time. Its
+      signal_interpretation is ALSO the home of this leg's three tuning/grain calls, because the
+      no-mint routing claim below says field semantics land here and nowhere else: (a)
+      clamp(2 x period, 6h, 45d) with the DETECTION LATENCY each bound imposes stated numerically
+      (6 hours hourly, 14 days weekly, 45 days monthly) AND the ceiling's own grounding (45d is the
+      largest threshold whose first bucket, spanning [T, 2T), fits inside the 90-day run-retention
+      horizon), (b) the FLEET_COLLAPSE_MIN_STALE = 3
+      correlated-outage override that turns N simultaneous stale loops into one fleet rec, and why
+      3 rather than a majority, and (c) the log2 bucket schedule with its TWO-LEG post-closure dwell
+      -- same-anchor +1-bucket, cross-anchor one-threshold-since-closure.
+      Stating them here is what makes the routing claim true rather than merely asserted.
+  - file: scripts/checks/ops_governance/check_source_registry.py
+    action: Modify
+    purpose: >-
+      Add scripts/convergence_health/sensor_liveness.py to SCANNED_PATHS so the new hardcoded
+      "source" literal is statically guarded, taking the governance-correct side of a split
+      precedent (escalate.py and code_drift.py are listed; budget_ingest.py is not).
+  - file: tests/convergence_health/test_sensor_liveness.py
+    action: Create
+    purpose: >-
+      The mirror test (auto-mapped -- map_source_to_test resolves the new module here with no
+      scripts/test_coverage_checker.py edit). Carries the known-bad fixtures: a workflow whose `on:`
+      key parses as True, an empty derived peer set at BOTH the pure seam and through
+      `detect_stale_loops`, an unclassifiable cron shape, a peer whose only recent runs are
+      workflow_dispatch, a dead GitHub query, a shallow clone, a peer whose native `state` is
+      disabled_inactivity, a `state: active` peer past its threshold that must still alarm, a
+      resolved rec two buckets back, a resolved rec exactly one bucket back (the same-anchor dwell),
+      several resolved recs at different buckets in one episode (the MAX-not-first case), a resolved
+      rec at a DIFFERENT anchor closed inside and outside the cross-anchor dwell, a sweep row whose
+      title matches only through LIKE's `_` wildcard, a golden title literal and the constructed LIKE
+      pattern, a recovery-then-redeath that must update rather than file, a fleet collapse a new peer
+      joins after closure, and counts over MAX_TITLE_SWEEPS and MAX_REC_BY_ID.
+  - file: tests/convergence_health/test___main__.py
+    action: Modify
+    purpose: Cover the two new _dispatch branches, mirroring the existing --budget-ingest routing tests.
+  - file: tests/checks/ops_governance/test_check_source_registry.py
+    action: Modify
+    purpose: Cover the widened SCANNED_PATHS roster.
+bundled_recommendations: []
+followon_recs: [rec-3640, rec-3665]
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    The peer set is DERIVED at run time from every .github/workflows/*.yml `on:.schedule` block and
+    is never declared anywhere; over the live tree it resolves to exactly the NINE schedule-bearing
+    workflows (ci-rca-inactivity-sweep, codeql, convergence-health, cost-reconciliation, dedup-probe,
+    dependabot-stranded, ghas-probe, main-canary, terraform-drift) -- nine, not the audit's stale
+    eight, terraform-drift having regained `cron: '17 * * * *'` at PR #1082.
+  - >-
+    Peer derivation survives PyYAML parsing the bare `on:` key as Python True, and an empty derived
+    peer set RAISES rather than reporting an all-clear -- the exact Decision 55 false-negative a
+    naive `data.get("on")` would install. Fail-loud is the DEFAULT, not an opt-in flag: the
+    production chain main_sensor_liveness -> detect_stale_loops -> derive_scheduled_peers passes no
+    flag and inherits the guard, only a test opts out, and both halves are asserted -- the signature
+    default at VP step 1 and the production chain's own raise at VP step 5.
+  - >-
+    Each peer's staleness threshold is derived from that workflow's OWN cron string (no per-workflow
+    literal anywhere): nominal period from a hand-rolled 5-field shape matcher, then
+    clamp(2 x period, 6h, 45d) -- the audit's own multiplier, with the delay tolerance carried by the
+    6h FLOOR, which is where it actually bites, rather than by an inflated multiplier. An
+    unclassifiable cron shape raises rather than being skipped.
+  - >-
+    The last-run query is per-peer, bounded, and filtered `?event=schedule&per_page=1` -- all nine
+    peers also carry workflow_dispatch, so an unfiltered query lets a manual dispatch masquerade as
+    cron liveness. A query that returns no payload RAISES (a dead sensor and a live fleet must not
+    look the same); an empty workflow_runs LIST is a real signal, resolved against the workflow
+    file's own first-commit age so a legitimately-new schedule is quiet and a silently-disabled one
+    alarms.
+  - >-
+    The single likeliest cause -- GitHub's 60-day inactivity auto-disable -- is read from GitHub's
+    OWN native primitive rather than inferred (Decision 100): ONE bounded
+    `GET /repos/{owner}/{repo}/actions/workflows?per_page=100` per tick supplies each peer's `state`
+    (active | disabled_inactivity | disabled_manually), and that value DISCRIMINATES the filed rec's
+    remediation text -- re-enable the workflow vs. investigate a delivery drop. The age assertion
+    stays the general oracle and is never replaced by `state`: it is a strict superset that also
+    catches a removed `schedule:` block, a deleted workflow and a silent delivery drop, each of
+    which leaves `state: active`. A missing or unparseable `state` degrades the remediation text to
+    the generic form; it never suppresses the age-derived alarm.
+  - >-
+    Catalog egress is bounded and LAZY (Decision 88 clause 1(ii)): a tick with zero stale peers
+    issues ZERO warehouse reads and constructs no reader at all. A stale tick pays one open-recs
+    fetch, ONE `recs_by_title_prefix` sweep per stale episode, and AT MOST ONE `rec_by_id` per stale
+    episode (the cross-anchor post-closure dwell of criterion 8, and nothing else). The LIKE pattern
+    is stated here literally because `recs_by_title_prefix` is
+    `... WHERE title LIKE ? ORDER BY id` (src/common/ducklake_scd2_schema.py:345-351) and binds the
+    WHOLE pattern -- there is NO implicit trailing `%`, exactly as the precedent
+    `f"{_BUDGET_TITLE_PREFIX}%on {branch}"` (budget_ingest.py:396) shows. The pattern is
+    `f"Loop: {k}.%"` -- trailing `%` mandatory; a pattern without it matches only titles EXACTLY
+    EQUAL to the prefix, which no title ever is, so the sweep would return zero rows on every tick
+    forever, never find the resolved mute, fall through to `file`, and re-file hourly after every
+    human closure -- Decision 142 / rec-2644 and Decision 103 verbatim. Because LIKE also treats `_`
+    as a single-character wildcard (the fleet key `__fleet__` carries four), every returned row is
+    re-filtered CLIENT-SIDE on the exact markers -- `title.startswith(f"Loop: {k}. ")`, source
+    `loop_liveness_stale`, status in RESOLVED_REC_STATUSES -- which is the same re-filter
+    `_fetch_resolved_budget_recs`'s docstring names as what makes its own over-broad match harmless.
+    Both call caps -- `MAX_TITLE_SWEEPS = len(peers) + 1` and `MAX_REC_BY_ID = len(peers) + 1` -- are
+    on the CALL COUNT and are STRUCTURALLY unreachable (there cannot be more stale peers than derived
+    peers), so a raise means a real invariant violation, never accumulated history. Rows per sweep
+    are the loop's own lifetime `loop_liveness_stale` recs -- ~11/year for a permanently-dead loop at
+    the log2 rate, 0-2 realistically, four small columns each -- which is the honest cost of the
+    loop-only prefix criterion 8 requires. Row growth NEVER stops the sensor; only a cap sized
+    against an accumulating population would, and neither cap here is.
+  - >-
+    Exactly one deduped rec per stale loop, filed via the ops portal with source
+    `loop_liveness_stale`, using budget_ingest's four verbs file|update|unchanged|drop and never a
+    close: restoring cadence closes nothing automatically.
+  - >-
+    A resolved rec is never resurrected, a still-dead loop is never permanently muted, and NO
+    death-recovery-death cycle mints an episode per recovery -- stated at its true width, because the
+    two mechanisms below cover DIFFERENT halves of the flap and neither covers both. The open matcher
+    keys on (loop) ALONE, so a loop has at most ONE open rec ever and a redeath while that rec is
+    open UPDATES it in place; that is the whole of the flap protection WHILE A REC IS OPEN, and it is
+    the half an earlier draft over-claimed as the whole. Once a human CLOSES the rec, a redeath
+    changes the anchor by construction (a recovery means a new `run:{id}`), so a resolved matcher
+    pinned to `Episode: {a}.` would find no mute and re-file -- so the resolved matcher is deliberately
+    keyed on the LOOP alone at the sweep, and discriminates client-side on the returned title in two
+    legs. Leg 1, same anchor: take the MAXIMUM bucket over the loop's resolved recs carrying the
+    CURRENT `Episode: {a}.` marker and mute while `current_bucket <= max_resolved_bucket + 1`, so
+    continued deadness re-alarms on a log2 schedule (1x, 2x, 4x, 8x ... the threshold) and a closure
+    anywhere inside the recorded bucket still buys one full bucket-width (>= threshold, >= 6h) of
+    dwell. Leg 2, cross anchor: the loop's newest resolved rec at a DIFFERENT anchor (highest id --
+    `recs_by_title_prefix` orders by id, which is monotone in filing order) is fetched with ONE
+    `rec_by_id` and its `last_updated_timestamp` -- the closure instant, as recorded by the last SCD2
+    write -- gates a drop while `now - closed_at < threshold`. Leg 2 exists because the anchor is
+    what a flap destroys, so an anchor-keyed dwell cannot see across one, and only a timestamp can:
+    the residual it closes is exactly the case where the human closes the rec AFTER the loop has
+    re-died but BEFORE the leg has noticed (inside the sub-threshold window), which is the only
+    ordering that escapes the anchor mechanics -- if the recovery run lands after the closure, the
+    next filing is already at recovery + threshold and the dwell holds with no read at all. This is
+    the ONE `rec_by_id` in the design and it is deliberately not a fan-out: exactly one call, only on
+    a stale tick, only when leg 1 did not already mute, capped at `MAX_REC_BY_ID = len(peers) + 1`.
+    The alternative -- comparing buckets ACROSS episodes -- is rejected outright: a closure at
+    bucket 9 would then mute every future episode below bucket 11 (256 days on an hourly loop), which
+    is LSA-02 re-created inside its own fix.
+  - >-
+    Title and context carry only bucket-quantised quantities, never the live age, so within a bucket
+    the fields are byte-identical tick to tick and the no-op guard fires -- no duplicate SCD2 history
+    row per hourly tick. The three episode markers are carried in the TITLE and the title BEGINS with
+    them, START-ANCHORED at offset 0, in exactly this shape:
+    `Loop: {k}. Episode: {a}. Bucket: {n}. Scheduled loop has not run within its derived threshold`
+    -- markers first, human-readable tail after. "In that order" is NOT sufficient and was the
+    earlier wording's defect: a title reading `Scheduled loop stale -- Loop: x. Episode: y.
+    Bucket: 2.` has the markers in order and matches the `Loop: {k}.%` LIKE pattern NOTHING, because
+    a LIKE pattern with a trailing `%` and no leading one is start-anchored. The context restates the
+    three markers for a human reader only.
+  - >-
+    Correlated-outage collapse is bounded AND reachable at incident timescale: when the stale count
+    reaches `FLEET_COLLAPSE_MIN_STALE = 3`, one fleet rec naming every stale peer is filed instead of
+    N per-loop recs, because N simultaneously-dead loops is one incident with one root cause, not N
+    defects. Three, not a majority: the live threshold classes are 6h x3 (both hourly loops plus
+    main-canary), 14d x5 (the weeklies) and 45d x1 (monthly), so a total delivery outage reaches 3
+    stale at T+6h but would not reach a 5-of-9 majority until T+14d -- a majority rule would have
+    missed the 2026-08-15 OIDC-rename incident (Decision 172) entirely, since it resolved in days. On
+    a collapse tick the per-loop episodes are SUPPRESSED, not closed: any already-open per-loop rec
+    is left untouched (no update, no close) and the fleet rec carries the full stale roster. The
+    fleet episode's BUCKET is derived from its OWN anchor age exactly as a per-loop bucket is --
+    `floor(log2((now - since_ts) / FLEET_THRESHOLD_SECONDS)) + 1`, where `since_ts` is the fleet
+    anchor and `FLEET_THRESHOLD_SECONDS` is the minimum threshold over the DERIVED peer set (6h over
+    the live tree). Both terms are constant within an episode by construction -- the anchor because an
+    anchor change IS a new episode, the divisor because it is a pure function of the workflow tree --
+    so the fleet bucket is monotone non-decreasing within an episode, which is what the +1-bucket
+    dwell requires. It is explicitly NOT `min(bucket over stale peers)`: `min` over a GROWING set is
+    non-monotonic, and on this plan's own timeline it silences a fleet outage a human acknowledged.
+    Fleet rec filed at T+6h; human closes at T+2d (age 48h / 6h -> bucket 4); at T+14d the five weekly
+    peers join at bucket 1; `min` drops to 1; `1 <= 4 + 1` -> drop; the rec stays muted until `min`
+    reaches 6, i.e. the weeklies at 32 x 14d ~= 448 days. That is LSA-02 re-created for the fleet
+    pseudo-loop and it contradicts this criterion's own siblings; the own-anchor derivation cannot
+    produce it.
+  - >-
+    The new `loop_liveness_stale` signal_interpretation carries all three tuning calls verbatim --
+    (a) `clamp(2 x period, 6h, 45d)` with what each bound buys (the floor tolerates ~5 missed hourly
+    runs; the ceiling is the LARGEST threshold whose FIRST staleness bucket fits entirely inside the
+    90-day Actions run-retention horizon, since bucket 1 spans age [T, 2T) and 2 x 45d = 90d exactly,
+    so the whole of bucket 1 is observable with a live `run:{id}` anchor and the anchor flip to
+    `intro:{sha}` lands ON a bucket boundary rather than inside one -- at the unclamped 2x monthly of
+    62d, bucket 1 spans [62d, 124d) and the anchor flips mid-bucket, changing the episode's identity
+    underneath an open rec without a bucket advance) AND the DETECTION LATENCY each bound imposes,
+    stated as a number: 6 hours to detect a dead hourly loop, 14 days a dead weekly loop, 45 days a
+    dead monthly loop; (b) the
+    `FLEET_COLLAPSE_MIN_STALE = 3` correlated-outage override and why 3 rather than a majority; and
+    (c) the log2 bucket schedule with its two-leg post-closure dwell (same-anchor +1-bucket,
+    cross-anchor one-threshold-since-closure). So the field semantics live
+    exactly where this plan's own no-mint routing claim says they land, and a future reader finds
+    them at the registry entry rather than only in a merged plan file.
+  - >-
+    Alarm-only: nothing this plan adds gates a PR. convergence-health is neither of the two
+    required_status_checks contexts (terraform/github/repo.tf:85-99) and stays `tier: not_a_gate /
+    ci_rca: excluded` in config/ci_rca_taxonomy.yaml -- which this plan does not touch.
+  - >-
+    Each filed rec's `acceptance` is a real, discriminating, repo-local shell probe
+    (`bin/venv-python -m scripts.convergence_health --liveness-probe <workflow>`) that exits non-zero
+    while the loop is dead and zero once cadence is restored -- never `gh`, which is deliberately not
+    installed in either container.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Peer derivation is `on:`-True-key correct and fails loud on an empty set BY DEFAULT -- the
+      load-bearing false-negative guard, asserted on the SIGNATURE so an implementer cannot ship the
+      production path with the guard off. A synthetic workflow mapping whose only schedule lives
+      under the Python True key is detected; a tree with no schedule-bearing workflow RAISES on the
+      DEFAULT call instead of returning an empty, reassuring result; and only a test that explicitly
+      passes `require_non_empty=False` opts out.
+    command: |-
+      bin/venv-python -c "
+      import inspect
+      from scripts.convergence_health.sensor_liveness import peers_from_workflow_docs
+      default = inspect.signature(peers_from_workflow_docs).parameters['require_non_empty'].default
+      assert default is True, ('fail-loud must be the DEFAULT, not opt-in; got', default)
+      true_key = {'name': 'x', True: {'schedule': [{'cron': '0 6 * * 1'}], 'workflow_dispatch': None}}
+      assert peers_from_workflow_docs({'w.yml': true_key}) == {'w.yml': ['0 6 * * 1']}, 'on-as-True key not normalised'
+      plain = {'name': 'x', 'on': {'schedule': [{'cron': '0 6 * * 1'}]}}
+      assert peers_from_workflow_docs({'w.yml': plain}) == {'w.yml': ['0 6 * * 1']}, 'plain on key not read'
+      assert peers_from_workflow_docs({'w.yml': {'name': 'x', 'on': {'push': None}}}, require_non_empty=False) == {}, 'non-scheduled workflow admitted'
+      raised = False
+      try:
+          peers_from_workflow_docs({})
+      except Exception:
+          raised = True
+      assert raised, 'an empty derived peer set must RAISE by DEFAULT, never report an all-clear'
+      print('PEER_DERIVATION_OK')
+      "
+    expected: Exit 0 and PEER_DERIVATION_OK.
+    fix_if: >-
+      A KeyError or an empty dict for the True-key document means the normalization
+      (`data.get("on", data.get(True, {}))`, the idiom at scripts/verify_ci_workflow.py:15-19 and
+      scripts/checks/ci_guards/validate_ci_rca_adjudication.py:57) is missing -- add it. A default of
+      False means fail-loud was shipped opt-in: invert it, never "remember to pass the flag at the
+      call site". No raise on the empty tree means the sensor would report all-clear forever from a
+      broken parse; add the fail-loud guard.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: sensor-liveness-peer-derivation-on-key
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Live fleet enumeration: derived over the real .github/workflows tree the peer set is exactly
+      the NINE schedule-bearing workflows, terraform-drift.yml among them -- correcting the audit's
+      stale count of eight and proving the derivation reads the tree, not a fixture.
+    command: |-
+      bin/venv-python -c "
+      from scripts.convergence_health.sensor_liveness import derive_scheduled_peers
+      peers = derive_scheduled_peers()
+      expected = {'ci-rca-inactivity-sweep.yml', 'codeql.yml', 'convergence-health.yml', 'cost-reconciliation.yml', 'dedup-probe.yml', 'dependabot-stranded.yml', 'ghas-probe.yml', 'main-canary.yml', 'terraform-drift.yml'}
+      assert set(peers) == expected, {'missing': sorted(expected - set(peers)), 'unexpected': sorted(set(peers) - expected)}
+      assert peers['terraform-drift.yml'] == ['17 * * * *'], peers['terraform-drift.yml']
+      assert peers['convergence-health.yml'] == ['37 * * * *'], peers['convergence-health.yml']
+      print('LIVE_PEERS %d' % len(peers))
+      "
+    expected: Exit 0 and LIVE_PEERS 9.
+    fix_if: >-
+      A count other than 9 means either the derivation is wrong or the fleet legitimately changed
+      since this plan was authored. Re-enumerate the tree by hand before touching the code: if a
+      workflow was genuinely added or removed, update this step's expected set (a plan amendment),
+      never the derivation.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Pins one moment's workflow fleet by name. Graduating it would red every legitimate future
+      addition or removal of a scheduled workflow, which is precisely the declared-register drift the
+      audit rejected P1 for. The durable half of this assertion -- that derivation reads the tree and
+      fails loud on an empty result -- is graduated at step 1 instead.
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Threshold oracle over the four live cron SHAPES: hourly, every-N-hours, weekly-by-dow and
+      monthly-by-dom map to their nominal periods; at the 2x multiplier the clamp lifts both hourly
+      loops UP to the 6h floor, lands main-canary's 3h period exactly ON the floor, leaves the five
+      weekly peers UNCLAMPED at 14d (the one assertion that proves the multiplier itself is applied
+      rather than swallowed by a bound) and holds monthly DOWN at the 45d ceiling; an unclassifiable
+      shape raises rather than defaulting.
+    command: |-
+      bin/venv-python -c "
+      from scripts.convergence_health.sensor_liveness import cron_period_seconds, staleness_threshold_seconds
+      assert cron_period_seconds('37 * * * *') == 3600
+      assert cron_period_seconds('0 */3 * * *') == 10800
+      assert cron_period_seconds('0 6 * * 1') == 604800
+      assert cron_period_seconds('0 6 4 * *') == 2678400
+      assert staleness_threshold_seconds('37 * * * *') == 21600, 'hourly must clamp UP to the 6h floor, not 2h'
+      assert staleness_threshold_seconds('0 */3 * * *') == 21600, 'a 3h loop lands exactly ON the 6h floor at 2x'
+      assert staleness_threshold_seconds('0 6 * * 1') == 1209600, 'weekly is unclamped: 2 x 7d = 14d'
+      assert staleness_threshold_seconds('0 6 4 * *') == 3888000, 'monthly must clamp DOWN to the 45d ceiling'
+      raised = False
+      try:
+          cron_period_seconds('0 6 4 * 1')
+      except Exception:
+          raised = True
+      assert raised, 'an unclassifiable cron shape must raise, never be silently skipped'
+      print('THRESHOLD_ORACLE_OK')
+      "
+    expected: Exit 0 and THRESHOLD_ORACLE_OK.
+    fix_if: >-
+      A wrong period means the 5-field shape matcher misreads a field; a wrong threshold means the
+      clamp order is wrong (clamp AFTER multiplying, floor before ceiling). A silent default instead
+      of a raise on the unclassifiable shape is the Decision 55 anti-masking violation this step
+      exists to catch -- never widen the matcher to swallow it.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: sensor-liveness-threshold-oracle
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Episode grain: the four verbs, the key asymmetry, and THE TITLE/PATTERN COMPOSITION ITSELF.
+      Same bucket with an open rec -> unchanged (no SCD2 churn); bucket advance with an open rec ->
+      update; a recovery-then-redeath with an open rec -> update, NOT a new episode, because the open
+      matcher keys on the loop alone; a resolved rec at the SAME (loop, anchor) with MAX bucket N ->
+      drop while current <= N + 1 and file at N + 2; a resolved rec at a DIFFERENT anchor closed less
+      than one threshold ago -> drop (the cross-anchor dwell), and file once that threshold elapses.
+      `TestEpisodeGrain::test_title_prefix_composition` is the load-bearing addition: it asserts the
+      CONSTRUCTED LIKE pattern string equals `Loop: convergence-health.yml.%` -- trailing `%` present
+      -- and that a golden title LITERAL, written out by hand in the test and NOT composed through
+      the producer's own helper, both starts with `Loop: ` at offset 0 and is matched by that pattern
+      under Python's own `fnmatch` translation of LIKE. A fixture that built its titles through the
+      same helper as the producer could not catch a pattern/title mismatch at all. Plus the
+      FLEET_COLLAPSE_MIN_STALE = 3 correlated-outage rule, its suppress-not-close interaction with
+      already-open per-loop recs, and the fleet bucket's own-anchor derivation.
+      Hermetic by Decision 148 clause 3: two narrow
+      node selections over a fully-injected module with no network, no creds and no writes, replayed
+      at implement time against the implementation-bearing tree -- well inside validate_vp_replay's
+      30s PER_STEP_TIMEOUT_SECONDS. This is the anti-regression evidence for rec-2644's defect class
+      (Decision 142), so it is the step whose independent re-execution matters most.
+    command: bin/venv-python -m pytest tests/convergence_health/test_sensor_liveness.py::TestEpisodeGrain tests/convergence_health/test_sensor_liveness.py::TestFleetCollapse -q
+    expected: >-
+      All tests pass; the constructed pattern carries its trailing `%` and matches the hand-written
+      golden title; the drop cases file nothing and reopen nothing, the two-buckets-back and
+      dwell-elapsed cases file a NEW rec, the redeath-while-open case updates the single open rec
+      rather than filing a second, and the fleet bucket rises rather than falling when a new peer
+      joins a collapse.
+    fix_if: >-
+      A pattern without its trailing `%` reds test_title_prefix_composition and is the single most
+      dangerous defect in this leg: `recs_by_title_prefix` is `WHERE title LIKE ?` with NO implicit
+      wildcard, so a bare prefix matches only titles exactly equal to it, the sweep returns zero rows
+      forever, the resolved mute is never found and every human closure is followed by a fresh rec on
+      the next tick -- Decision 142 / rec-2644 verbatim. A golden title that does not start at
+      offset 0 with `Loop: ` fails the same node and means the human-readable summary was put in
+      front of the markers. A drop on the two-buckets-back case means the resolved matcher took the
+      FIRST rather than the MAX bucket, or dropped the +2 boundary -- that permanently mutes a
+      still-dead loop the moment a human closes its rec, which is
+      LSA-02's own defect re-created one level up. A file on the same-bucket case means the resolved
+      sweep is not consulted at all and a closed rec will be resurrected hourly -- Decision 142's
+      rec-2644 finding exactly (a closed rec flipped back to open on a coarse-key match, discarding
+      the closed rec's fix-proof), one level up and on a different table (Decision 103). A file on
+      the redeath-while-open case means the anchor was left in the OPEN key: widen it to the loop
+      alone, or a
+      flapping hourly loop mints up to four bucket-1 recs a day and the log2 bound -- which bounds
+      recs per EPISODE, not episodes -- buys nothing. A file one bucket back means the same-anchor
+      dwell is missing: a human who closes at 03:20 gets a fresh rec at the 03:37 tick. A file
+      immediately after a closure at a NEW anchor means the cross-anchor leg is missing -- that is
+      the half the open key cannot cover, and it needs the closure timestamp, not another bucket
+      comparison. A fleet bucket that DROPS when a peer joins means it was derived as
+      `min(bucket over stale peers)` instead of from the fleet episode's own anchor age.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: sensor-liveness-episode-grain-verbs
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      Anti-masking, all SEVEN fail-loud paths (six behavioural plus the lazy/bounded catalog path,
+      which `execution_steps` already places inside TestAntiMasking and which an earlier draft's
+      prose undercounted), INCLUDING the production chain: `detect_stale_loops`
+      itself raises when derivation yields an empty peer set -- the flag is not passed at that call
+      site, it is the DEFAULT, and this is the assertion proving the production path
+      main_sensor_liveness -> detect_stale_loops -> derive_scheduled_peers inherits the guard rather
+      than an implementer having to remember it. A dead GitHub query raises instead of reporting an
+      empty (reassuring) population; `?event=schedule` is load-bearing, so a peer whose only recent
+      runs are workflow_dispatch reads STALE where an unfiltered query would read fresh; an empty
+      workflow_runs list falls back to the workflow file's first-commit age; a shallow clone raises
+      before that fallback can misreport; and a peer whose native `state` is disabled_inactivity is
+      reported as DISABLED rather than merely late, while a `state: active` peer past its threshold
+      still alarms -- `state` refines the remediation text and never suppresses the age verdict. The
+      seventh path is the catalog contract: a healthy tick constructs NO reader and issues NO query,
+      and a stale tick raises above either call-count cap (`MAX_TITLE_SWEEPS` and `MAX_REC_BY_ID`,
+      both `len(peers) + 1`) rather than silently truncating.
+      Hermetic by Decision 148 clause 3 on the same grounds as step 4: one narrow node selection,
+      fully injected, network-free, replayed against the implementation-bearing tree.
+    command: bin/venv-python -m pytest tests/convergence_health/test_sensor_liveness.py::TestAntiMasking -q
+    expected: All tests pass, including the known-bad fixture for each of the seven paths.
+    fix_if: >-
+      A `detect_stale_loops` that returns a clean all-clear on an empty derivation means the
+      production chain is passing `require_non_empty=False`, or the default was never inverted -- the
+      sensor reports healthy while watching nothing, with every other VP step green. A test that
+      reports "no stale loops" from a query that never ran is the exact false negative
+      Decision 55 forbids and budget_ingest._DEAD_QUERY_MESSAGE exists to prevent -- raise instead.
+      A dispatch-only peer reading fresh means the `event=schedule` parameter was dropped from the
+      URL. A `state: active` peer past its threshold that does NOT alarm means `state` was wired as
+      a gate on the verdict instead of a refinement of the remediation text -- invert it.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: sensor-liveness-anti-masking
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      Whole-suite green across the three touched test modules, and the new mirror test stays ONE file
+      under the 500-SLOC ceiling so no tests/convergence_health/sensor_liveness/ package (and
+      therefore no scripts/test_coverage_checker.py _CONCERN_SPLIT_TEST_PACKAGES edit) is dragged in
+      (the no-edit claim rests on Decision 131's mirror rule -- map_source_to_test resolves the new
+      module to this path with no grandfather-table entry). Stays `hermetic: false` deliberately,
+      unlike steps 4 and 5: this is a three-module whole-suite run whose wall clock is not bounded
+      by construction against validate_vp_replay's 30s per-step timeout, and its SLOC half asserts
+      this PR's transient line counts, which is exactly what replay should not pin.
+    command: |-
+      bin/venv-python -m pytest tests/convergence_health/test_sensor_liveness.py tests/convergence_health/test___main__.py tests/checks/ops_governance/test_check_source_registry.py -q
+      bin/venv-python -c "
+      import pathlib
+      def sloc(rel):
+          lines = pathlib.Path(rel).read_text(encoding='utf-8').splitlines()
+          return len([l for l in lines if l.strip() and not l.strip().startswith('#')])
+      module = sloc('scripts/convergence_health/sensor_liveness.py')
+      mirror = sloc('tests/convergence_health/test_sensor_liveness.py')
+      assert module < 500, ('module SLOC', module)
+      assert mirror < 500, ('mirror test SLOC', mirror)
+      print('SLOC ok module=%d test=%d' % (module, mirror))
+      "
+    expected: All tests pass and SLOC ok with both counts under 500.
+    fix_if: >-
+      A count at or above 500 means DECOMPOSE, never raise the budget (Decision 128) -- split the
+      module along its own seams (derivation / threshold oracle / dedupe) into a second submodule and
+      re-export through the facade. Do NOT add an entry to config/sloc_budgets.yaml.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      A whole-module pytest run duplicates the node-level shards graduated at steps 4 and 5, and the
+      SLOC half is already a registered check in both tiers (validate_sloc_limits over
+      scripts/checks/sloc/_shared.py's 500 ceiling). A shard here would pin this PR's transient line
+      counts forever.
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      Governance wiring, asserted against the real enforcing modules rather than by grep: the
+      r3_workflows baseline key exists at the exact slug the scanner derives with the matching line
+      count, the new source is a registered canonical_id, the module is in the source-registry scan
+      set, and the facade re-exports the new surface.
+    command: |-
+      bin/venv-python -c "
+      import pathlib, yaml
+      import scripts.convergence_health as ch
+      from scripts.checks.ci_guards._workflow_shell_bodies import scan_workflow_bodies
+      from scripts.checks.ops_governance.check_source_registry import SCANNED_PATHS
+      key = '.github/workflows/convergence-health.yml::health-check::assert-scheduled-loop-liveness-lsa-02'
+      bodies = scan_workflow_bodies()
+      assert key in bodies, sorted(k for k in bodies if 'convergence-health' in k)
+      baseline = yaml.safe_load(pathlib.Path('config/composite_action_body_baseline.yaml').read_text())['r3_workflows']
+      assert baseline.get(key) == bodies[key], (baseline.get(key), bodies[key])
+      entries = yaml.safe_load(pathlib.Path('config/agent/data_quality/source_registry.yaml').read_text())['entries']
+      assert 'loop_liveness_stale' in {e['canonical_id'] for e in entries}
+      assert 'scripts/convergence_health/sensor_liveness.py' in SCANNED_PATHS
+      assert hasattr(ch, 'detect_stale_loops') and hasattr(ch, 'main_sensor_liveness')
+      print('WIRING_OK')
+      "
+    expected: Exit 0 and WIRING_OK.
+    fix_if: >-
+      A missing baseline key means the step name was changed after the entry was written -- re-derive
+      the slug with _name_slug (lowercase, every non-alphanumeric run collapsed to one hyphen) rather
+      than guessing. A missing canonical_id means every portal write from this leg is rejected at
+      write time by validate_source.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Every clause here is already enforced fleet-wide by a registered check in both tiers
+      (_workflow_shell_bodies' R3 leg, check_source_registry, validate_acceptance_literals); a shard
+      would be a fifth copy of the same oracle bound to this one PR's key names, and the R3 leg
+      already fails loudly on an unregistered body.
+  - step: 8
+    phase: pre-deploy
+    action: >-
+      Decision 182 budget prediction over this plan's own declared scope -- the fast tier now asserts
+      TWO quantities (NON_TEST_BUDGET_SECONDS = 240, unwaivable, plus the breadth-derived test half),
+      so the scope must be shown to clear them before implementation, not discovered in CI.
+    command: |-
+      bin/venv-python -m scripts.checks.deps.selection_budget --plan docs/plans/PLAN-sensor-liveness.yaml > /tmp/sensor-liveness-budget.txt 2>&1 \
+        && grep -E '^(scope|test-execution allowance|predicted CI|predicted outcome)' /tmp/sensor-liveness-budget.txt \
+        && grep -qx 'predicted outcome: within_budget' /tmp/sensor-liveness-budget.txt
+    expected: >-
+      Exit 0 and the printed report ends `predicted outcome: within_budget` (RE-MEASURED after the
+      plan-critique round-2 revisions and a rebase onto origin/main 0e9cc16f: 11 paths, n_selected
+      124 of a 544 census, allowance 248s, predicted CI test half 61.4-72.5s, predicted CI elapsed
+      112.5-144.3s -- so the non-test half is 51.1-71.8s against the unwaivable 240s non-test
+      budget, clearing it by more than 3x. Neither the round-1 nor the round-2 revisions changed a
+      scope row, and the census did not move across the round-2 rebase either, so all six quantities
+      are byte-identical to the round-1 measurement). The reporter exits 0 on every path -- the grep
+      is what makes this step assert rather than merely print.
+    fix_if: >-
+      breadth_waived means keep the scope and DECLARE the measured breadth here; breach means SPLIT
+      the scope into atomic units until the prediction clears; non_test_breach means neither -- the
+      non-test half is drifting and no scope change fixes it, so stop and open a planning session
+      against the recorded static_s series (Decision 182 point 6).
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Asserts this one scope's transient selection breadth, which is meaningless once merged, and the
+      durable budget contract is already asserted on every --pre run by validate.py's budget-assertion
+      scaffold over scripts/checks/deps/selection_budget.py (Decision 182 point 6).
+  - step: 9
+    phase: pre-deploy
+    action: >-
+      Scope boundary, both directions: the working-tree status diff equals exactly the ten declared
+      scope files plus this plan's own sanctioned path and the four sanctioned graduation shards --
+      nothing outside, nothing declared but untouched. The five files this slice must not touch,
+      because a concurrently-running sibling slice or a later wave owns them, are asserted absent by
+      name from BOTH the declared set and the touched set.
+    command: |-
+      bin/venv-python -c "
+      from scripts.checks import _common
+      touched = {p for _s, p in _common.get_status_aware_diff()}
+      expected = {
+          'scripts/convergence_health/sensor_liveness.py',
+          'scripts/convergence_health/__init__.py',
+          'scripts/convergence_health/__main__.py',
+          '.github/workflows/convergence-health.yml',
+          'config/composite_action_body_baseline.yaml',
+          'config/agent/data_quality/source_registry.yaml',
+          'scripts/checks/ops_governance/check_source_registry.py',
+          'tests/convergence_health/test_sensor_liveness.py',
+          'tests/convergence_health/test___main__.py',
+          'tests/checks/ops_governance/test_check_source_registry.py',
+          'docs/plans/PLAN-sensor-liveness.yaml',
+          'config/agent/verification_registry/entries/sensor-liveness-peer-derivation-on-key.yaml',
+          'config/agent/verification_registry/entries/sensor-liveness-threshold-oracle.yaml',
+          'config/agent/verification_registry/entries/sensor-liveness-episode-grain-verbs.yaml',
+          'config/agent/verification_registry/entries/sensor-liveness-anti-masking.yaml',
+      }
+      forbidden = {'docs/DECISIONS.md', 'docs/ROADMAP-PLATFORM.yaml', 'config/ci_rca_taxonomy.yaml', 'config/sloc_budgets.yaml', 'scripts/verify_ci_workflow.py'}
+      assert not (forbidden & expected), sorted(forbidden & expected)
+      assert not (forbidden & touched), {'forbidden_touched': sorted(forbidden & touched)}
+      assert touched == expected, {'outside_declared_scope': sorted(touched - expected), 'declared_but_untouched': sorted(expected - touched)}
+      print('TOUCHED_SET_EXACT %d' % len(touched))
+      "
+    expected: Exit 0 and TOUCHED_SET_EXACT 15.
+    fix_if: >-
+      forbidden_touched names one of the five barred files: docs/DECISIONS.md and
+      docs/ROADMAP-PLATFORM.yaml are owned by a concurrently-running sibling slice (two concurrent
+      Decision mints collide at the same hunk and contend for the same number),
+      config/ci_rca_taxonomy.yaml belongs to the LSA-05 cap/stop-declaration slice, and
+      config/sloc_budgets.yaml plus scripts/verify_ci_workflow.py are never-touch by construction
+      (the latter sits at exactly 500/500 SLOC). STOP and hand back rather than editing any of them.
+      outside_declared_scope names an undeclared path: revert that edit -- never resolve it by
+      appending the path to this plan's scope, which is a STOP under the scope-boundary contract's
+      deviation branch b. declared_but_untouched means a scope row was not implemented.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Asserts this diff's own transient file set, meaningless once merged, and the durable rule it
+      instantiates is already a registered check in both tiers (validate_scope_boundary reading
+      docs/contracts/implement-scope-boundary.yaml). A shard would pin one PR's file list forever.
+  - step: 10
+    phase: pre-deploy
+    action: >-
+      Both presubmit tiers green before the handoff: the fast tier is the authoritative pre-merge
+      gate when PR CI runs it (Decision 73), and the full tier is the pre-handoff local obligation
+      this plan's handoff_policy declares.
+    command: |-
+      bin/venv-python -m scripts.validate --pre
+      bin/venv-python -m scripts.validate
+    expected: Both invocations exit 0 with "All checks passed."
+    fix_if: >-
+      A red in the fast tier is fixed on the branch (no ci-rca rec is filed for a PR-branch --pre
+      failure; ci-rca watches main only). A red in the full tier blocks the commit outright per
+      handoff_policy.timeout_disposition -- resume later and rerun the full tier from the start,
+      never commit past it.
+    hermetic: false
+    graduation: not-applicable
+  - step: 11
+    phase: post-deploy
+    action: >-
+      After merge, the first scheduled convergence-health tick on main runs the new step GREEN and
+      its stdout reports nine peers assessed. This is the only step exercising the live Actions API:
+      the agent proxy returns HTTP 403 for direct api.github.com calls from a session container and
+      the gh CLI is deliberately not installed, so the live path is reachable only from the workflow
+      itself and its evidence is read back through the github MCP server.
+    command: echo "Read the newest scheduled convergence-health run via mcp__github__actions_list(owner=benjamin-blake, repo=theseus, workflow_id=convergence-health.yml, event=schedule, per_page=1), then mcp__github__get_job_logs on the health-check job; require conclusion success and a stdout line reporting nine peers assessed"
+    expected: >-
+      The newest scheduled run's conclusion is success and the health-check job log carries a
+      `[convergence_health] sensor_liveness result:` line with peers=9 -- proving the derivation ran
+      against the real tree under real credentials, not a fixture.
+    fix_if: >-
+      A red step is a forward-fix on a branch, never a revert of the leg. A peers count other than 9
+      means the runner's checkout differs from the tree this plan measured. A raised dead-query means
+      the step is missing `env: GH_TOKEN: ${{ github.token }}` -- the ducklake/prod-drift steps
+      deliberately omit it and only the first and budget-ingest steps set it.
+    hermetic: false
+  - step: 12
+    phase: post-deploy
+    action: >-
+      No false-positive rec storm on the first live tick: the leg filed at most what the live fleet's
+      real staleness justifies, every filed rec carries source loop_liveness_stale, and no rec was
+      closed by this leg.
+    command: |-
+      bin/venv-python -c "
+      import json, pathlib
+      from scripts.ops_data_portal import sync
+      sync(['ops_recommendations'])
+      rows = [json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()]
+      mine = [r for r in rows if r.get('source') == 'loop_liveness_stale']
+      print('loop_liveness_stale recs: %d' % len(mine))
+      for rec in mine:
+          print(' ', rec['id'], rec['status'], rec['title'][:90])
+      assert len(mine) <= 1, 'more than one alarm on a healthy fleet is a false-positive storm -- inspect before proceeding'
+      "
+    expected: >-
+      Zero or one loop_liveness_stale rec, each open and naming a genuinely stale loop. Zero is the
+      expected outcome on a healthy fleet.
+    fix_if: >-
+      A rec per peer means the threshold clamp or the event=schedule filter is wrong -- diagnose from
+      the rec context's `Loop:`/`Episode:`/`Bucket:` markers, fix forward, and decline the false recs
+      through the portal (update_rec with a resolution naming the defect). Never edit
+      logs/.recommendations-log.jsonl, which is a read cache and never a write source.
+    hermetic: false
+test_obligations:
+  - source: scripts/convergence_health/sensor_liveness.py
+    behavior: >-
+      Peer derivation normalises the PyYAML `on:`-as-True key and RAISES on an empty set BY DEFAULT,
+      so fail-loud cannot be lost by an implementer taking the default at the production call site.
+    verification_step: 1
+    command: |-
+      assert default is True, ('fail-loud must be the DEFAULT, not opt-in; got', default)
+    red_green_expectation: >-
+      Red before (the module does not exist, so the import fails), green after. A
+      `require_non_empty=False` default reds this obligation specifically, which is the whole point
+      of asserting the signature rather than only the behaviour behind an explicit flag.
+  - source: scripts/convergence_health/sensor_liveness.py
+    behavior: >-
+      The 5-field cron shape matcher and the clamp derive every threshold from the workflow's own
+      cron -- clamp(2 x period, 6h, 45d) -- and an unclassifiable shape raises rather than defaulting.
+    verification_step: 3
+    command: |-
+      assert staleness_threshold_seconds('0 6 * * 1') == 1209600, 'weekly is unclamped: 2 x 7d = 14d'
+    red_green_expectation: >-
+      Red before (the module does not exist), green after. A 3x multiplier reds the weekly assertion
+      at 1814400; a missing or misordered clamp reds the hourly and monthly assertions.
+  - source: scripts/convergence_health/sensor_liveness.py
+    behavior: >-
+      The four verbs, the key asymmetry -- open on (loop) alone, resolved swept on (loop) alone and
+      discriminated client-side into a same-anchor MAX-bucket +1 dwell and a cross-anchor
+      one-threshold-since-closure dwell -- the start-anchored title composition and the LIKE pattern
+      it must match, plus the FLEET_COLLAPSE_MIN_STALE = 3 correlated-outage rule, its
+      suppress-not-close interaction with already-open per-loop recs, and the fleet bucket's
+      own-anchor derivation.
+    verification_step: 4
+    test_selector: tests/convergence_health/test_sensor_liveness.py::TestEpisodeGrain
+    red_green_expectation: >-
+      Red before (the module does not exist, so collection fails), green after. The known-bad
+      fixtures fail specifically: a LIKE pattern missing its trailing `%`, or a title that does not
+      start at offset 0 with `Loop: `, reds
+      TestEpisodeGrain::test_title_prefix_composition -- which compares the CONSTRUCTED pattern
+      string against the literal `Loop: convergence-health.yml.%` and matches it against a golden
+      title written out by hand in the test, never composed through the producer's own helper, so a
+      producer/matcher mismatch cannot cancel out; taking the FIRST rather than the MAX resolved
+      bucket, or dropping the +2 boundary, reds
+      TestEpisodeGrain::test_two_buckets_later_files_a_new_rec; leaving the anchor in the OPEN key
+      reds TestEpisodeGrain::test_redeath_updates_the_open_rec; dropping the same-anchor dwell reds
+      TestEpisodeGrain::test_one_bucket_back_drops; dropping the cross-anchor closure-timestamp leg
+      reds TestEpisodeGrain::test_new_anchor_within_a_threshold_of_closure_drops (and its paired
+      test_new_anchor_after_the_dwell_files); omitting the exact-marker client-side re-filter reds
+      TestEpisodeGrain::test_underscore_wildcard_row_is_refiltered_out, whose fixture returns a row
+      titled `Loop: XXfleetYY. ...` that the `Loop: __fleet__.%` pattern matches under LIKE's
+      `_`-as-wildcard rule and the exact re-filter must reject.
+  - source: scripts/convergence_health/sensor_liveness.py
+    behavior: >-
+      The correlated-outage collapse: FLEET_COLLAPSE_MIN_STALE = 3 triggers it, per-loop episodes are
+      SUPPRESSED not closed, and the fleet episode's bucket is derived from its OWN anchor age over
+      the min threshold of the DERIVED peer set -- so it is monotone non-decreasing within an episode
+      and a peer joining the collapse can never mute an acknowledged fleet rec.
+    verification_step: 4
+    test_selector: tests/convergence_health/test_sensor_liveness.py::TestFleetCollapse
+    red_green_expectation: >-
+      Red before (the module does not exist, so collection fails), green after. Deriving the fleet
+      bucket as `min(bucket over stale peers)` -- the shape the majority-threshold draft carried,
+      which was dead code while collapse was unreachable for 21 days and became live the moment
+      MIN_STALE dropped to 3 -- reds
+      TestFleetCollapse::test_fleet_bucket_rises_when_a_new_peer_joins_after_closure specifically:
+      that fixture closes the fleet rec at bucket 4 and then adds a bucket-1 weekly peer, and under
+      `min` the +1-bucket dwell drops the episode and mutes the fleet for ~448 days. Closing or
+      updating an already-open per-loop rec on a collapse tick reds
+      TestFleetCollapse::test_open_per_loop_recs_are_suppressed_not_closed.
+  - source: scripts/convergence_health/sensor_liveness.py
+    behavior: >-
+      All seven anti-masking paths, including `detect_stale_loops` itself raising on an empty
+      derivation (the PRODUCTION chain, not merely the pure seam), native `state` refining the
+      remediation text without ever suppressing the age verdict, and the lazy, call-count-capped
+      catalog path (both MAX_TITLE_SWEEPS and MAX_REC_BY_ID).
+    verification_step: 5
+    test_selector: tests/convergence_health/test_sensor_liveness.py::TestAntiMasking
+    red_green_expectation: >-
+      Red before (the module does not exist), green after. A production chain that passes
+      require_non_empty=False reds
+      TestAntiMasking::test_detect_stale_loops_raises_on_empty_derivation.
+  - source: scripts/convergence_health/__main__.py
+    behavior: >-
+      _dispatch routes --sensor-liveness to main_sensor_liveness and --liveness-probe to
+      main_liveness_probe, and both return 1 with a no-outbox message on an exception.
+    verification_step: 6
+    test_selector: tests/convergence_health/test___main__.py::TestDispatch
+    red_green_expectation: Red before (no such branches; the flags fall through to main()), green after.
+  - source: scripts/convergence_health/__init__.py
+    behavior: The facade re-exports the new public surface so existing `from scripts.convergence_health import X` call and patch sites keep resolving.
+    verification_step: 7
+    command: |-
+      assert hasattr(ch, 'detect_stale_loops') and hasattr(ch, 'main_sensor_liveness')
+    red_green_expectation: Red before (AttributeError), green after.
+  - source: .github/workflows/convergence-health.yml
+    behavior: >-
+      The health-check job carries a step invoking `python -m scripts.convergence_health
+      --sensor-liveness` with GH_TOKEN in its env, and the header states the leg's alarm-only
+      invariants.
+    verification_step: 6
+    test_selector: tests/convergence_health/test_sensor_liveness.py::TestWorkflowWiring
+    red_green_expectation: >-
+      Red before (no such step), green after. Precedent for asserting the workflow file from this
+      test package: tests/convergence_health/budget_ingest/test_grouping.py:106.
+  - source: config/composite_action_body_baseline.yaml
+    behavior: >-
+      The new inline `run:` body is registered under r3_workflows at the exact key
+      scan_workflow_bodies derives, with the matching effective line count.
+    verification_step: 7
+    command: |-
+      assert baseline.get(key) == bodies[key], (baseline.get(key), bodies[key])
+    red_green_expectation: Red before (KeyError on the unregistered body, which is also how _workflow_shell_bodies.py:195-203 reds the PR), green after.
+  - source: config/agent/data_quality/source_registry.yaml
+    behavior: loop_liveness_stale is a registered canonical_id, without which every portal write from this leg is rejected at write time by validate_source.
+    verification_step: 7
+    command: |-
+      assert 'loop_liveness_stale' in {e['canonical_id'] for e in entries}
+    red_green_expectation: Red before (the id is absent), green after.
+  - source: scripts/checks/ops_governance/check_source_registry.py
+    behavior: The new producer module is in SCANNED_PATHS, so its hardcoded source literal is statically guarded at presubmit.
+    verification_step: 6
+    test_selector: tests/checks/ops_governance/test_check_source_registry.py::TestScannedPaths
+    red_green_expectation: Red before (the path is absent from the roster), green after.
+constraints:
+  - >-
+    THIS SLICE MINTS NO NUMBERED DECISION and must not touch docs/DECISIONS.md. Three independent
+    grounds, none of which is "Decision 62 already ratified an alarm lane" (it did not -- see the
+    context line correcting that): (1) Decision 150 clause 1's significance bar reserves a numbered
+    entry for a durable architectural commitment with reversal-relevant consequences and routes
+    field semantics to a governance note in the owning contract instead; docs/contracts/
+    decision-entry.yaml's routing_rule Q2 (reversal-relevant?) and Q3 (unclaimed by another row?)
+    both fail here. (2) Decision 167 clause 2 makes that routing claim a machine-checked envelope
+    field and REJECTS `field_semantics` outright on any entry that is by construction minting a
+    number -- so this content is un-mintable by construction, not merely discouraged. (3) Four LIVE
+    source_registry canonical_ids -- tf_convergence_stale, ducklake_code_drift, prod_code_drift and
+    reconcile_starved -- each carry description + signal_interpretation and the identical
+    "Priority High, not source=ci_rca -- does NOT hard-block the /plan queue" clause, and not one of
+    them minted a number. This leg is the same shape landing in the same place. A concurrent sibling
+    slice is minting the next number; two concurrent mints collide at the same hunk. If analysis
+    concludes a Decision is genuinely required, STOP and hand back BLOCKED.
+  - >-
+    Do NOT touch docs/ROADMAP-PLATFORM.yaml (zero roadmap rows this run; deferred forward intent is
+    filed as a rec with `dependencies`, never a tier_item), config/ci_rca_taxonomy.yaml (owned by the
+    LSA-05 cap/stop-declaration slice; convergence-health's row at line 267 already covers this
+    workflow and no new workflow is added, so validate_ci_rca_adjudication's two-way census stays
+    satisfied), or config/sloc_budgets.yaml.
+  - >-
+    Do NOT build the audit's bundled "P5-amended leg (c): marker-gate schedule:-block removal". That
+    is a GATE and belongs to the verifier-weakening-guards slice; it would drag
+    scripts/checks/_marker_guard.py, docs/contracts/marker-grammar.yaml and a new registered check
+    into an alarm-only slice. This slice's whole value proposition is that a removed `schedule:`
+    block stops producing runs and therefore trips the age assertion with no gate at all.
+  - >-
+    scripts/verify_ci_workflow.py is at EXACTLY 500/500 SLOC and is OUT OF SCOPE. Do not pin more
+    crons there (the _check_canary pattern at lines 156-164): that is leg (c) by another route, turns
+    an alarm into a PR blocker, and breaches the ceiling on the first added line. Never raise a SLOC
+    budget -- decompose (Decision 128).
+  - >-
+    No new declared state. The peer set, its cadences and its thresholds are DERIVED at run time from
+    the workflows themselves; do not create docs/contracts/loop-spec.yaml, a `sensors:` block, or a
+    config/loop_liveness.yaml. The audit rejected P1/P2/P3 for exactly this (a fourth register over
+    the same population is the drift-by-design second surface NS6 and AGENTS.md prohibit).
+  - >-
+    No cron library. croniter or any dependency drags in requirements.lock, dependency governance and
+    the runtime-lock cache-key assertions. Hand-roll a bounded 5-field shape matcher tested against
+    the nine live literals.
+  - >-
+    The sensor SURFACES, never remediates: no workflow_dispatch of a stale peer, no schedule edit, no
+    close verb. This is pinned by convergence-health.yml's own alarm-only invariants (lines 14-19).
+  - >-
+    Every external dependency injected (gh_caller, portal_caller, open_recs, resolved_recs, the git
+    runner, `now`) so the module is unit-testable with no network -- mirroring
+    ingest_budget_breaches' signature. A dead query RAISES; there is no outbox (Decision 84 I-4).
+  - >-
+    Decision 88 binds this leg: it adds a RECURRING catalog read path (~720 ticks/month on an hourly
+    cron), so clause 1(ii) (never re-query what is already in hand, and reach the warehouse only
+    through a registered named verb) and clause 2 (the read cost must be stated, not assumed) are
+    live obligations. Every fetch is LAZY -- a tick with zero stale peers constructs no reader and
+    issues no query at all. The episode markers live in the TITLE, so `recs_by_title_prefix`'s own
+    (id, title, status, source) columns decide the SAME-ANCHOR half of the resolved match with no
+    further read; the CROSS-ANCHOR dwell needs the closure instant, which no named verb projects
+    except via `rec_by_id`'s `SELECT *`, so it costs AT MOST ONE `rec_by_id` per stale episode and
+    only when the same-anchor half did not already mute. That is a single call, not a fan-out, and it
+    is not a reversal of the title-marker design -- the title still decides everything the title can
+    decide; a timestamp is the one thing it cannot carry, because a rec's title is written before its
+    closure exists. Both caps are on the CALL COUNT --
+    `MAX_TITLE_SWEEPS = len(peers) + 1` and `MAX_REC_BY_ID = len(peers) + 1` --
+    quantities that cannot be exceeded without an invariant violation, since a stale set is a subset
+    of the derived peer set. Do NOT reintroduce a cap sized against an ACCUMULATING rec population:
+    `loop` is a permanent workflow identity, so its resolved recs accumulate forever at the ~11/year
+    rate the log2 bucketing deliberately produces, and a raise-on-overflow against that population
+    is a sensor that silently stops sensing after about a year -- LSA-02 re-created two levels up.
+    That accumulation IS what the loop-only sweep prefix now returns as rows, and that is the
+    accepted cost of the criterion-8 dwell: rows grow, calls do not, and only a cap on rows would
+    stop the sensor.
+  - >-
+    Decision 100 binds the disabled-workflow reading: GitHub exposes workflow `state` natively
+    (active | disabled_inactivity | disabled_manually), so read the primitive instead of vendoring
+    an inference for it. Scope the reliance precisely -- `state` refines the filed rec's remediation
+    text ONLY. It never becomes the alarm oracle: the age assertion is the strict superset that also
+    catches a removed `schedule:` block, a deleted workflow and a delivery drop, all of which leave
+    `state: active`. This does not license a cron library (see the no-croniter constraint) -- that
+    is not a GitHub primitive.
+  - >-
+    Portal writes only through file_rec / update_rec. Never Edit or Write logs/*.jsonl -- a read cache
+    is never a write source, and replaying one upstream is the row-resurrection failure recorded in
+    Decision 84.
+  - Never `gh` in any authored command, script, check or VP step -- the gh and hub CLIs are deliberately not installed in either container; the github MCP server is the sanctioned surface.
+  - No rescue agents or workaround loops (Decision 55). Out-of-scope bugs become recommendations, not inline fixes.
+context:
+  - "Audit source of truth: audits/loop-spec-adoption-4d8bac4a.yaml finding LSA-02 (surface S7, dimension VD4, candidate C4, severity high, confidence CONFIRMED, effort S); DD-B move 7 is its evidence anchor."
+  - "RE-BASED against 108 commits of drift. The audit says EIGHT schedule-bearing workflows; the live number is NINE -- terraform-drift.yml regained `cron: '17 * * * *'` at PR #1082 (d9134084) after #969 removed it, so it is now the SECOND hourly loop. Verified live this session."
+  - "Half the audit's rationale is DISCHARGED: its verdict-level claim that terraform-drift's disabled cron has a re-enable condition owned by no item was owned by Decision 178 clause 4 and executed at #1082. The absence-of-runs gap itself is untouched and the finding stands."
+  - "Verified negative: config/ci_rca_taxonomy.yaml's terraform-drift row (lines 259-266) is NOT stale -- its rationale is about tf_drift double-recording under Decision 92 point 6 and never mentioned the cron state. No edit is owed there and the file stays out of scope."
+  - "NAME-COLLISION TRAP 1: docs/plans/PLAN-roadmap-blocking-liveness-detector.yaml (PR #1079, approved, unimplemented) and recs 3579/3580/3581/3582 are about ROADMAP-GRAPH deadlock -- strongly connected components in a blocking graph. NOT cron liveness. Different subject, different surface, no overlap."
+  - "NAME-COLLISION TRAP 2: scripts/preflight/ci_rca_signals.py::_check_convergence_sensor_liveness and its graduated shard convergence-sensor-liveness-signal.yaml fire on the latest convergence-health run's CONCLUSION (red-but-unactioned), for that one workflow, from preflight. LSA-02 is absence-of-runs, across all nine peers, from the cron. Same word, different defect."
+  - "rec-3092 (ghas-probe liveness advisory, open, Medium) is the nearest open neighbour and is also red-but-unactioned, remedied through scripts/preflight/decision_conditions.py and a Decision 83 reversal stanza. CITE, do not bundle -- bundling drags in two files this slice otherwise never touches."
+  - "Decisions cited: 48 (V3's behavioural-acceptance definition -- why steps 11-12 invoke and read back rather than grep), 55 (fail loud, no false negatives -- the empty-peer-set, dead-query, dispatch-only, shallow-clone and over-cap raises), 61 (the ratified rule that scheduled-agent findings flow through ops_recommendations via `source` -- the direct authority for registering loop_liveness_stale instead of minting a table or a register), 83 (non-wedging: not added to required_status_checks), 84 I-3/I-4 (named reader verbs, no outbox), 88 (catalog egress is a first-class budget -- clause 1(ii) bounds the fan-out, clause 2 obliges the read accounting below), 100 (managed services own their primitives -- read GitHub's native workflow `state`), 103 (a resolved rec is never silently reactivated), 128 (decompose, never raise a SLOC budget), 131 (the mirror rule -- map_source_to_test resolves the new module with no test_coverage_checker.py edit; this is the claim that keeps that file out of scope), 132 + 176 (the four graduation shards: the two-leg enforcement model and the one-record-per-file registry grain the shards are authored into), 142 (rec-2644: a closed rec flipped back to open on a coarse-key match, discarding its fix-proof -- the specific precedent the asymmetric open/resolved key defends against, and the closest governing authority for the episode grain), 148 clause 3 (hermetic-true default restored for pre-deploy feature verification -- steps 4 and 5), 150 clause 1 + 167 clause 2 (the significance bar and its machine-checked routing claim -- the no-mint grounds), 162 (the r3_workflows baseline row: a first registration at its exactly-measured 2 effective lines owes no raise-approved marker), 163 (the enforcement-shape principle -- why leg (c) is deferred rather than absorbed here), 178 clause 4 (terraform-drift cron restoration, discharged), 181 (declare enforcement coverage per surface), 182 (the two-quantity fast-tier budget -- step 8), 183 (new since the audit; no bearing on this leg, named so the re-base is auditable)."
+  - "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND (no BLOCK). Scout counts, verbatim -- Decisions triaged: 136 of 136 / Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3. CITE list: 48, 55, 61, 62, 83, 84, 88, 100, 103, 128, 131, 132, 142, 148, 150, 162, 163, 167, 176, 178, 181, 182, 183. Confirmed by the scout and not relitigated: minting is genuinely not owed (routing_rule Q2 and Q3 both fail; Decision 167 clause 2 makes field_semantics un-mintable by construction; four live source_registry precedents minted nothing), the constraint set passes, the PLAN-roadmap-blocking-liveness-detector dedup trap is avoided, and the noise budget is sound. Four flags applied: 148 WARN (steps 4/5 hermetic-true), 62 NOTE (re-grounded on 150+167; rec-3665 filed), 88 NOTE (fan-out bounded + accounted), 100 NOTE (native `state` read), 163 SPIRIT NOTE (leg-(c) deferral recorded)."
+  - "PLAN-CRITIQUE ROUND-2 DISPOSITIONS (recorded so round 3 can tell a re-finding from an oscillation). FIXED: B1 the LIKE pattern -- literal `f\"Loop: {k}.%\"` with the trailing `%` stated, the title start-anchored at offset 0, a constructed-pattern + hand-written-golden-title assertion added at VP step 4, and the exact-marker client-side re-filter restored against LIKE's `_` wildcard. B2 the 45d ceiling re-grounded (largest threshold whose first bucket [T, 2T) fits the 90-day horizon; the old '62d overruns the window' claim was false). B3 the fleet bucket moved off `min(bucket over stale peers)` onto its own anchor age over the derived set's min threshold, with a TestFleetCollapse node and its own test_obligation row. N2-N7 all applied. CHOSEN, per N1's explicit 'choose and say why': neither offered option verbatim but the second one's intent -- a time-based post-closure dwell -- implemented as a loop-only sweep prefix plus at most ONE `rec_by_id` for the newest cross-anchor resolved rec's closure instant. Option (a) (loop-only prefix alone) was rejected because comparing buckets ACROSS episodes either permanently mutes a loop after a deep-bucket closure or costs a permanent 2x detection-latency penalty that would falsify criterion 11's stated 6h/14d/45d latencies. The `rec_by_id` is NOT a reversal of round 1's title-marker fix: the title still decides everything a title can decide, and a closure timestamp is the one thing it cannot carry, because a rec's title is written before its closure exists. The read accounting and criterion 6 were re-measured and restated to match, and both caps stay CALL-COUNT caps at len(peers)+1."
+  - "gates: decision-scout=FLAGS_FOUND (applied, no re-dispatch -- no material approach change); plan-critique=<verdict> after <N> round(s)"
+  - "DECISION 62 IS NOT THE RATIFYING LANE, correcting this plan's own earlier grounding: Decision 62's body decides the OPPOSITE -- no Claude Code cron agent, and no scheduling concern separate from validation itself. An alarm-not-gate monitor lane exists only in its 2026-06-16 premise-revisit amendment, and that amendment is scoped to LIVE-READER-dependent DQ checks specifically, sourced to CD.12 and owned by tier_item T1.6. It is not a general lane and this leg is not inside it. The no-mint conclusion is unaffected -- Decision 150 clause 1 + Decision 167 clause 2 carry it independently, and the four live source_registry instances are the precedent. Decision 62 is cited here for one thing only: the silent-cron gap its amendment names."
+  - "LATENT DEFECT IN THE DECISION LOG, surfaced by the scout, NOT fixed here: that same amendment asserts the silent-cron failure mode is mitigated by a persistent-unavailability alarm (Decision 74). Decision 74 is the npm EACCES / workflow_dispatch escape-hatch entry and contains no such alarm -- so the log records as already-existing the exact mitigation THIS PLAN supplies. Fixing it inline is barred by Decision 59 and by this plan's own never-touch constraint on docs/DECISIONS.md; filed as rec-3665 (followon_recs) instead."
+  - "DECISION 88 READ ACCOUNTING (clause 2's measurement obligation, discharged at design time), RE-MEASURED after the criterion-8 cross-anchor dwell landed: the leg adds a recurring path on an hourly cron -- ~720 ticks/month. Steady state on a healthy fleet is ZERO warehouse reads and no reader construction per tick, because every rec fetch is lazy behind a non-empty stale set; the marginal per-tick cost is instead 10 bounded GitHub Actions API calls (9 per-peer run queries + 1 workflows listing). A stale tick pays 1 open-recs fetch + at most len(peers)+1 recs_by_title_prefix sweeps + at most len(peers)+1 rec_by_id, i.e. <= 21 catalog reads. The open-recs fetch is `_fetch_open_recs`, which calls `named(\"open_recs\")` with NO `limit` and therefore returns EVERY open rec with its context (938 today) in one response -- correctness is unaffected (the verb is paginable, so an absent limit is a full read, never a silent truncation), and clause 2 counts it as exactly 1 read, which is how it is counted above. Both caps are on the CALL COUNT and are structurally unreachable (a stale set is a subset of the derived peer set) -- which is exactly what distinguishes them from a cap sized against an accumulating rec population, where normal growth reaches the cap by design and a raise there stops the sensor sensing. Rows per sweep are the loop's own lifetime loop_liveness_stale recs (~11/year for a permanently-dead loop at the log2 rate, 0-2 realistically), four small columns each -- the accepted, stated cost of pinning the sweep to the loop alone so the cross-anchor dwell can see across a flap. Worst case (every tick stale for a month) is <= 15,120 metadata reads; the realistic case is a handful per year."
+  - "LEG (c) DEFERRAL, recorded rather than implicit (Decision 163): 163's enforcement-shape principle prefers a structural, exceptionless instrument over detection-after-the-fact for a universal obligation, and the audit's P5-amended marker-gate on `schedule:`-block removal is exactly that instrument. It is deliberately NOT built here: it is a GATE, it belongs with the LSA-01 verifier-weakening-guards slice that owns _marker_guard.py and marker-grammar.yaml, and dragging it into an alarm-only leg would turn this into a PR blocker. This leg is 163-compatible as the alarm complement, not a substitute: it detects a removed schedule: block with no gate at all, on any route including the ones a marker gate cannot see (a delivery drop, an inactivity auto-disable). The choice is a deferral to a named owner, not an omission."
+  - "THRESHOLD: the audit's 2x is ADOPTED, not deviated from; the tolerance lives in the CLAMP, which is where it actually bites. clamp(2 x period, 6h floor, 45d ceiling) over the four live shapes -- both hourly loops clamp UP to 6h (the floor buys ~5 tolerated misses, which is the real defence against GitHub's documented best-effort scheduled delivery); main-canary's 3h period lands exactly ON the floor; the five weekly peers are UNCLAMPED at 14d; cost-reconciliation clamps DOWN to the 45d ceiling. THE CEILING'S RATIONALE, re-grounded because the 3x-era wording did not survive the move to 2x: bucket 1 spans age [T, 2T), so 45d is the LARGEST threshold whose first bucket fits entirely inside the 90-day Actions run-retention horizon (2 x 45d = 90d exactly). At 45d the whole of bucket 1 is observable with a live `run:{id}` anchor and the anchor flip to `intro:{sha}` lands ON the bucket boundary; at the unclamped 2x monthly of 62d bucket 1 spans [62d, 124d) and the anchor flips MID-bucket, changing an open episode's identity without a bucket advance. The earlier wording asserted instead that '2x monthly = 62d and 3x = 93d both overrun the useful window', which is FALSE on this plan's own numbers for 62d (62 < 90) -- and criterion 11 puts this rationale verbatim into source_registry.yaml, so a numerically false claim would have become a governance artifact. An earlier draft of this plan used 3x and was corrected: the delay-tolerance argument it rested on is NULL at the hourly end, because 2x and 3x both clamp to the same 6h there, and it is identical on the monthly peer too, so 3x differed from 2x on only main-canary (6h -> 9h) and the five weeklies (14d -> 21d) -- five of nine peers losing a week of detection latency for a reason that by the plan's own arithmetic cannot apply to them."
+  - "SELF-INCLUSION, kept but NOT claimed as who-watches-the-watcher coverage: convergence-health is in its own derived peer set, because excluding it would be a hand-maintained filter on a set whose whole point is derivation, and a dispatched tick after the cron died does correctly report the sensor itself (`?event=schedule` is what makes that reading honest). But it is INERT as residual coverage: a workflow_dispatch tick needs a human to notice and press the button, and the premise of LSA-02 is precisely that nobody notices. Self-inclusion pays off only once someone is already looking, so it does not narrow the residual below."
+  - "NOISE BUDGET, designed: within a staleness bucket the title and context are byte-identical, so the no-op guard fires and nothing is written; buckets advance on a log2 schedule (1x, 2x, 4x, 8x ...), so a permanently dead loop whose every rec is closed yields ~11 recs per YEAR before the +1-bucket same-anchor dwell and fewer after it, not one per hourly tick. FLAPPING needs TWO mechanisms, not one, because the log2 bound bounds recs per EPISODE and bounds nothing about episode count, and a flap changes the anchor by construction. While a rec is OPEN the loop-only open key carries it: a death-recovery-death cycle updates the one open rec (one SCD2 history row per episode transition, <= 4/day on a 6h threshold) instead of filing a fresh bucket-1 rec per cycle. Once the rec is CLOSED the open key is silent, and the anchor mechanics alone already cover the common ordering -- if the recovery run lands after the closure, the next filing is at recovery + threshold, so a full threshold of quiet is bought with no read at all. The ONE ordering that escapes both is a closure landing after the redeath but inside the sub-threshold window before the leg notices; that is what the cross-anchor closure-timestamp dwell exists for, and without it a human closing each rec on a 6h-threshold loop that flaps every 6h would see up to four fresh recs a day resume. A correlated multi-loop outage collapses to ONE rec at 3 simultaneously stale peers, which a total delivery outage reaches at T+6h -- and 3 rather than a 5-of-9 majority precisely because the worked case, the 2026-08-15 OIDC-rename incident (Decision 172), resolved in days and would never have reached a majority, the weekly peers not crossing until T+14d."
+  - "RETENTION DISCONTINUITY, named rather than discovered: past ~90 days dead, every `event=schedule` run ages out of the Actions retention window, `workflow_runs` comes back EMPTY, and the anchor flips `run:{id}` -> `intro:{sha}` on an otherwise-unchanged loop. That is a new episode, so the bucket JUMPS to its `intro:{sha}`-relative value rather than continuing the run-relative series. The direction is safe -- the workflow file's first-commit age always exceeds the last-run age, so the bucket only ever jumps UP, never resetting to 1 and never muting. WHAT THE FLIP DOES DEPENDS ON WHETHER A REC IS OPEN, corrected from an earlier wording that claimed the loop-only open key covers it unconditionally: while a rec is OPEN the loop-only open matcher does update it in place rather than filing a second one; once the prior rec has been CLOSED the flip is an anchor change like any other, so the same-anchor sweep leg finds nothing and it is the CROSS-ANCHOR dwell of criterion 8 -- one threshold since the closure instant -- that decides whether the flip files now or waits. Named here so a future reader meets the discontinuity in the design rather than in a rec diff."
+  - "DECLARED RESIDUAL (Decision 181 declare-your-coverage, per surface), stated at its true width. A leg riding the convergence-health cron cannot report that cron dying -- Decision 172 records exactly that (the rename outage disabled ci-rca AND convergence-health, so nothing auto-filed and a stale-green record masked it). Three consequences an earlier draft understated. (1) The leg is STRONGEST against uncorrelated single-loop death and WEAKEST against the correlated case, so the correlated-outage collapse rule's own cited incident -- the Decision 172 OIDC outage -- is exactly the case this leg cannot observe, because that outage took the cron the leg rides. The collapse rule shapes noise for correlated outages that SPARE convergence-health; it is not coverage of the one that does not. (2) This plan makes convergence-health carry a FIFTH sensing leg (escalate, ducklake code drift, prod-class code drift, budget ingest, now this), so it INCREASES concentration on a single cron rather than diversifying it. That is an argued cost, not an oversight: a second cron is a second thing to keep alive and would need its own liveness backstop, and the honest complement is a different SURFACE, not a second workflow. (3) That complement is preflight's session-time signal, whose own blindness is rec-3640, so LSA-02 is only FULLY closed once rec-3640 lands -- the forward link is recorded here and in followon_recs as the named closure condition. rec-3640 keeps `dependencies: []` deliberately: the dependency runs LSA-02 -> rec-3640, not the reverse, and putting it on the rec would record the link backwards. No VP step in this plan claims the residual."
+  - "FAIL-LOUD SURFACES ONLY AS A RED RUN, and that channel is itself blind -- named because the residual above stops one step short of it. Every raise this leg adds (empty peer set, unclassifiable cron, dead query, shallow clone, either call cap) fails the convergence-health step, which fails the health-check job, which turns the scheduled run red. That run is `tier: not_a_gate / ci_rca: excluded` in config/ci_rca_taxonomy.yaml, so nothing gates and ci-rca files nothing; the only watcher of a red-but-unactioned convergence-health run is preflight `_check_convergence_sensor_liveness`, which is permanently blind on CC-web for exactly the reason rec-3640 records (it shells out to `gh run list`, absent from both containers, and swallows FileNotFoundError as OSError -> None). So this leg's own fail-loud lands in the same blind channel whose blindness the residual already names as LSA-02's closure condition. That is deliberate and not fixed here -- scripts/preflight/ is out of scope and rec-3640 owns it -- but it is stated rather than left for a reader to discover: until rec-3640 lands, a raise in this leg is visible only to someone who opens the Actions tab."
+  - "HERMETIC FLIP PAYOFF (Decision 148): steps 1-5, 7 and 9 are now hermetic pre-deploy, so validate_vp_replay's implement leg independently re-executes them against the implementation-bearing tree once the implement session sets `implementation_declared: true` (implement skill step 3 of the bookkeeping walk). On this plan-only PR the same check DEFERS with a printed reason -- that is the expected, correct output here, not a miss. No `expected` field on a hermetic step carries backtick literals, so replay asserts exit-0 only and no accidental substring contract is created."
+  - "Live-path unreachability, discovered this session and load-bearing for VP design: the agent proxy returns HTTP 403 for direct api.github.com calls from a session container, and gh/hub are not installed. The sensor's live path is therefore exercised only inside the workflow; steps 1-10 are fully injected/mocked and step 11 reads the real run back through mcp__github__*."
+  - "DEFERRED HALVES, filed not deferred to prose (followon_recs = rec-3640, rec-3665): rec-3640 -- the same discovery shows scripts/preflight/ci_rca_signals.py's two liveness signals shell out to `gh run list` and swallow FileNotFoundError as OSError -> None, so both are permanently blind on CC-web. Same anti-masking class as LSA-02 one level up, different surface (preflight, not the cron), and scripts/preflight/ is out of this slice's scope. Filed with dependencies [] -- it does not depend on this leg."
+  - "Effort: the audit says S; this plan agrees only because the two S-breaking items are settled HERE rather than at implementation time -- the cadence oracle is a bounded shape matcher (no library) and the episode grain is fixed above as the key asymmetry plus its two dwell legs (open matcher on the loop alone; resolved sweep on the loop alone, discriminated client-side into a same-anchor MAX-bucket +1 dwell and a cross-anchor one-threshold-since-closure dwell costing at most one rec_by_id). Left to implementation, both make this a low-M."
+  - "Branch was cut fresh from origin/main (a702e438) this session and REBASED onto origin/main 0e9cc16f before the plan-critique round-2 push (clean, no conflict); no scope file overlaps main_files_changed_since_branch at either base. Preflight: venv ok, creds ok, ci_rca_unresolved_recs empty (no hard block), non_automatable softcap breached (938) -- a standing planning-context note, not a gate."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read (never full DECISIONS.md)
+  - audits/loop-spec-adoption-4d8bac4a.yaml LSA-02 read in full
+  - scripts/convergence_health/budget_ingest.py read in full -- its docstring is the discipline this leg copies
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    Create scripts/convergence_health/sensor_liveness.py with a module docstring in budget_ingest.py's
+    register, stating in order: what absence-of-runs defect this closes and why the existing backstops
+    miss it; PEER SET IS DERIVED, NEVER DECLARED (and the `on:`-as-True normalization, with the
+    empty-set raise); THRESHOLD IS DERIVED FROM EACH CRON, with the clamp constants and the named
+    real-world property each defends; EPISODE GRAIN, spelling out why the open matcher keys on (loop,
+    anchor) and the resolved matcher on (loop, anchor, bucket) and what each alternative breaks;
+    NO-OP UPDATES ARE SKIPPED, and why bucket-quantised fields are what make that guard fire;
+    FILE/UPDATE ONLY, NEVER CLOSE; FLEET COLLAPSE; FAIL LOUDLY, NO OUTBOX.
+  - >-
+    Implement derivation: `derive_scheduled_peers()` walks .github/workflows/*.yml|*.yaml from the
+    checkout, `peers_from_workflow_docs(docs, require_non_empty=True)` is the pure seam the tests
+    drive, reading `data.get("on", data.get(True, {}))`. Returns {filename: [cron, ...]}. Raise when
+    require_non_empty and the result is empty. The DEFAULT is True in BOTH functions and at every
+    production call site -- `detect_stale_loops` inherits it by calling `derive_scheduled_peers()`
+    with no flag -- so only a test that explicitly passes `require_non_empty=False` (the
+    non-scheduled-workflow fixture) opts out. Fail-loud is never opt-in.
+  - >-
+    Implement the threshold oracle: `cron_period_seconds(expr)` -- a bounded 5-field shape matcher
+    that must accept EXACTLY the four shapes the nine live literals use, enumerated here so an
+    implementer does not have to re-derive them from the tree. (i) LITERAL minute, `*` hour,
+    `* * *` dom/mon/dow -> hourly, 3600s. This is the shape BOTH live hourly peers use --
+    convergence-health `37 * * * *` and terraform-drift `17 * * * *` -- and an earlier wording of
+    this step omitted it while enumerating a `*/N` minute field that no live peer uses. (ii) literal
+    minute, `*/N` hour, `* * *` -> N x 3600s (main-canary `0 */3 * * *` -> 10800). (iii) literal
+    minute, literal hour, `*` dom, `*` mon, literal dow -> weekly, 604800s (`0 6 * * 1`).
+    (iv) literal minute, literal hour, literal dom, `*` mon, `*` dow -> monthly, 2678400s
+    (`0 6 4 * *`; use 31 days so the window is never tighter than reality). A `*/N` MINUTE field may
+    be accepted as a fifth shape (N x 60s) since it is cheap and unambiguous, but it is not load-
+    bearing and no live peer exercises it. Raise on anything else -- including a literal dom AND a
+    literal dow together (`0 6 4 * 1`), which cron treats as a union and this matcher must not guess
+    at. `staleness_threshold_seconds(expr)` clamps 2 x period into [6h, 45d]. Both pure.
+  - >-
+    Implement the query: per peer, GET /repos/{owner}/{repo}/actions/workflows/{file}/runs?event=schedule&per_page=1
+    through an injected gh_caller (default `approvals._make_github_caller`). Nine bounded calls, never
+    a repo-wide listing (a monthly loop's last run is unreachable by pagination). No payload -> raise
+    with a _DEAD_QUERY-shaped message. Empty workflow_runs -> fall back to the workflow file's
+    first-commit age via an injected git runner, after an `_assert_full_history` guard mirroring
+    code_drift.py:35-52. Add ONE more bounded call per tick -- GET
+    /repos/{owner}/{repo}/actions/workflows?per_page=100 (22 workflow files today, one page) --
+    and index its `state` by filename (Decision 100: read GitHub's own primitive rather than
+    inferring auto-disable). `state` selects the filed rec's remediation sentence and nothing else;
+    a missing or unrecognised value degrades to the generic sentence. Never let `state` gate,
+    suppress or short-circuit the age verdict.
+  - >-
+    Implement the episode key and the four verbs: anchor is `run:{id}` or `intro:{sha}`; bucket is
+    0 while fresh, else floor(log2(age/threshold)) + 1. The TITLE BEGINS with the three markers,
+    start-anchored at offset 0, in exactly this shape:
+    `f"Loop: {k}. Episode: {a}. Bucket: {n}. Scheduled loop has not run within its derived threshold"`
+    -- markers first, human-readable tail after, never the reverse. The context restates them for a
+    human reader. Putting them at the START of the title is what lets `recs_by_title_prefix` -- which
+    is `SELECT id, title, status, source FROM {tbl} WHERE title LIKE ? ORDER BY id`
+    (src/common/ducklake_scd2_schema.py:345-351) -- decide the resolved match from the returned title
+    alone. Open matcher: a membership predicate mirroring
+    `scripts/checks/_budget_recs._is_open_budget_breach_row`, over escalate._fetch_open_recs (one
+    call, context included for the no-op guard). It must be shaped like that precedent and NOT as a
+    bare title-substring scan: the `open_recs` verb projects id/title/context/created_timestamp/
+    automatable ONLY and filters `status = 'open'` SERVER-side, so a live row carries NEITHER
+    `status` NOR `source` -- an ABSENT key therefore means "the verb already guaranteed it" while an
+    EXPLICIT value is still honoured (`source is not None and source != "loop_liveness_stale"` ->
+    reject), and the population itself is identified by `title.startswith(f"Loop: {k}. ")`. Predicating
+    hard on `source == "loop_liveness_stale"` is the exact bug that precedent's docstring records:
+    it returns None for every real open rec, so the leg re-files instead of updating. At most one
+    open rec per loop, so a recovery-then-redeath while it is open UPDATES that rec with the new
+    anchor and bucket instead of minting an episode per flap. Resolved matcher: one
+    `recs_by_title_prefix` sweep per stale episode with the LIKE pattern written LITERALLY as
+    `f"Loop: {k}.%"` -- the TRAILING `%` IS MANDATORY AND IS NOT IMPLICIT. The verb binds the whole
+    pattern (precedent: `f"{_BUDGET_TITLE_PREFIX}%on {branch}"`, budget_ingest.py:396); a pattern
+    without it matches only titles EXACTLY EQUAL to the prefix, which none are, so the sweep returns
+    zero rows forever and every human closure is followed by a fresh rec on the next tick. Pin the
+    prefix through the LOOP ALONE, not through `Episode: {a}.`, because a flap changes the anchor and
+    an anchor-pinned sweep cannot see across one. Then re-filter EVERY returned row CLIENT-SIDE on
+    the exact markers -- `title.startswith(f"Loop: {k}. ")`, source `loop_liveness_stale`, status in
+    RESOLVED_REC_STATUSES -- mirroring `_fetch_resolved_budget_recs`'s any-status-sweep-then-exact-
+    re-filter shape. The re-filter is load-bearing, not defensive: LIKE treats `_` as a
+    single-character wildcard and the fleet key `__fleet__` carries four, so `Loop: __fleet__.%` also
+    matches `Loop: XXfleetYY. ...` under LIKE. Two dwell legs over the re-filtered rows: (1)
+    SAME ANCHOR -- among rows also carrying the current `Episode: {a}.` marker take the MAXIMUM
+    bucket N (never the first hit; an episode routinely has several resolved recs at different
+    buckets) and mute while `current_bucket <= N + 1`, filing at N + 2. (2) CROSS ANCHOR -- if leg 1
+    did not mute and any re-filtered row carries a DIFFERENT anchor, take the highest-id such row
+    (`ORDER BY id` is monotone in filing order, so the last row is the newest), issue ONE `rec_by_id`
+    for it, and drop while `now - last_updated_timestamp < threshold`. Decide
+    update|unchanged|drop|file exactly as budget_ingest._decide_action does, and add _DRY_RUN_LABELS.
+    Every fetch is LAZY and BOUNDED (Decision 88): return early with zero warehouse reads and no
+    reader construction when no peer is stale; on a stale tick issue at most
+    `MAX_TITLE_SWEEPS = len(peers) + 1` sweeps and `MAX_REC_BY_ID = len(peers) + 1` id fetches, and
+    RAISE above either cap. Both caps are STRUCTURAL call-count caps, so a raise means a bug, never
+    accumulated history. Both constants are asserted by the mirror test, not merely documented.
+  - >-
+    Implement the correlated-outage collapse: when len(stale) >= FLEET_COLLAPSE_MIN_STALE (3), emit
+    ONE episode keyed `Loop: __fleet__.` with anchor `since:{max last-run timestamp among stale
+    peers}`, naming every stale peer in the context, instead of the per-loop episodes. Derive the
+    fleet BUCKET from that episode's OWN anchor age, exactly as a per-loop bucket derives from its
+    own anchor: `floor(log2((now - since_ts) / FLEET_THRESHOLD_SECONDS)) + 1`, where
+    `FLEET_THRESHOLD_SECONDS = min(staleness_threshold_seconds(c) for every DERIVED peer)` -- the
+    derived set, not the stale set, so the divisor is a pure function of the workflow tree (6h over
+    the live tree) and is constant within an episode by construction, as the anchor already is. Do
+    NOT use `min(bucket over stale peers)`, which the majority-threshold draft carried and which was
+    dead code while collapse was unreachable for 21 days: `min` over a GROWING set is non-monotonic,
+    and the +1-bucket dwell assumes monotone advance, so a fleet rec filed at T+6h and closed by a
+    human at T+2d (bucket 4) goes silent the moment the five weekly peers join at bucket 1 on
+    T+14d (`1 <= 4 + 1` -> drop) and stays muted for ~448 days. Same source, same verbs -- a second
+    source value would be invisible to the matcher. Suppression is not closure: any already-open
+    per-loop rec is left exactly as it is on a collapse tick (no update, no close), because this leg
+    never closes anything.
+  - >-
+    Implement `detect_stale_loops(...)` returning {"peers", "stale", "filed", "updated", "unchanged",
+    "dropped", "fleet_collapse"}, and the `--liveness-probe [workflow]` oracle that exits 0 when the
+    named peer (or every peer) is within its derived threshold and 1 otherwise -- this is the command
+    every filed rec's `acceptance` names, so it must be discriminating and must not use gh.
+  - >-
+    Wire the leg: main_sensor_liveness / main_liveness_probe in __main__.py plus their _dispatch
+    branches; facade re-exports and the docstring roster line in __init__.py; the named workflow step
+    with GH_TOKEN and the header paragraph; the r3_workflows baseline key at its exactly-measured
+    effective line count with NO `# raise-approved:` marker (Decision 162 R3 requires one only to
+    exceed a declared ceiling -- a first registration at its true count is a plain entry, and
+    Decision 128's marker grammar is not owed here); the source_registry canonical_id
+    (prod_code_drift's shape, including its not-source=ci_rca clause) whose signal_interpretation
+    MUST state all three: the clamp(2 x period, 6h, 45d) with the numeric detection latency each
+    bound imposes (6h hourly, 14d weekly, 45d monthly), the FLEET_COLLAPSE_MIN_STALE = 3
+    correlated-outage override with its why-not-a-majority reason, and the log2 bucket schedule with
+    its TWO-LEG post-closure dwell (same-anchor +1-bucket, cross-anchor
+    one-threshold-since-closure), and the ceiling's grounding that 45d is the largest threshold whose
+    first bucket fits inside the 90-day run-retention horizon; the SCANNED_PATHS entry.
+  - >-
+    Write tests/convergence_health/test_sensor_liveness.py as ONE file under 500 SLOC, with classes
+    TestPeerDerivation, TestThresholdOracle, TestEpisodeGrain, TestFleetCollapse, TestAntiMasking,
+    TestWorkflowWiring, and a test pinning RESOLVED_REC_STATUSES against
+    src.common.ducklake_scd2_schema (mirroring budget_ingest's). Every class carries its known-bad
+    fixture. TestEpisodeGrain additionally covers test_title_prefix_composition -- which asserts the
+    CONSTRUCTED LIKE pattern equals the literal `Loop: convergence-health.yml.%` (trailing `%`
+    present) and matches a GOLDEN TITLE LITERAL hand-written in the test; that literal must NOT be
+    composed through the producer's own title helper, or a producer/matcher mismatch cancels out and
+    the test proves nothing -- plus test_redeath_updates_the_open_rec (the loop-only open key),
+    test_one_bucket_back_drops (the same-anchor dwell), test_two_buckets_later_files_a_new_rec,
+    test_max_resolved_bucket_wins_over_first_hit (several resolved recs at different buckets in one
+    episode), test_new_anchor_within_a_threshold_of_closure_drops and its paired
+    test_new_anchor_after_the_dwell_files (the cross-anchor closure-timestamp leg), and
+    test_underscore_wildcard_row_is_refiltered_out (a `Loop: XXfleetYY. ...` row that LIKE matches
+    under `Loop: __fleet__.%` and the exact re-filter must reject). TestFleetCollapse additionally
+    covers test_fleet_bucket_rises_when_a_new_peer_joins_after_closure -- the fleet rec closed at a
+    high bucket, a weekly peer joining later, asserting the fleet bucket does NOT fall and the fleet
+    is not muted. TestAntiMasking additionally covers
+    test_detect_stale_loops_raises_on_empty_derivation (the production chain, not just the pure
+    seam), the two `state` cases (a disabled_inactivity peer reported as disabled, and a
+    `state: active` peer past its threshold that still alarms) and the lazy/bounded catalog path
+    (zero reader construction on a healthy tick; a raise when the sweep count would exceed
+    MAX_TITLE_SWEEPS and when the id-fetch count would exceed MAX_REC_BY_ID). Extend
+    tests/convergence_health/test___main__.py and
+    tests/checks/ops_governance/test_check_source_registry.py.
+  - Execute the Verification Plan -- run each step; loop until pass; on an unrecoverable V3 failure stop and RCA (Decision 55), never patch around it.
+  - Author the four graduated registry shards named in steps 1, 3, 4 and 5 at their exact graduation_check_ids.
+  - 'Report: what was implemented, verification results, the live peer count observed on the first scheduled tick, and any rec the leg filed.'
+work_areas: []
+rollback: >-
+  Delete the workflow step, the module, its mirror test, the baseline key, the source_registry entry
+  and the SCANNED_PATHS line. The leg has no dependents and writes no state outside the rec table, so
+  removal is total; any rec it already filed stays in the warehouse and is closed through the portal.
