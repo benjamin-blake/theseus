@@ -58,7 +58,12 @@ scope:
       New `canonical_id: loop_liveness_stale` entry (description + signal_interpretation +
       added_date), following the prod_code_drift shape at lines 198-200 including its explicit
       "Priority High, not source=ci_rca -- does NOT hard-block the /plan queue" clause. Required:
-      ops_data_portal validate_source rejects an unregistered source at write time.
+      ops_data_portal validate_source rejects an unregistered source at write time. Its
+      signal_interpretation is ALSO the home of this leg's two tuning/grain calls, because the
+      no-mint routing claim below says field semantics land here and nowhere else: (a) the
+      3x-cadence clamp into [6h, 45d] and why it deviates from the audit's 2x, and (b) the
+      majority-collapse override that turns N simultaneous stale loops into one fleet rec. Stating
+      them here is what makes the routing claim true rather than merely asserted.
   - file: scripts/checks/ops_governance/check_source_registry.py
     action: Modify
     purpose: >-
@@ -71,8 +76,10 @@ scope:
       The mirror test (auto-mapped -- map_source_to_test resolves the new module here with no
       scripts/test_coverage_checker.py edit). Carries the known-bad fixtures: a workflow whose
       `on:` key parses as True, an empty derived peer set, an unclassifiable cron shape, a peer
-      whose only recent runs are workflow_dispatch, a dead GitHub query, a shallow clone, and a
-      resolved rec at an earlier bucket.
+      whose only recent runs are workflow_dispatch, a dead GitHub query, a shallow clone, a peer
+      whose native `state` is disabled_inactivity, a `state: active` peer past its threshold that
+      must still alarm, a resolved rec at an earlier bucket, and a resolved-candidate population
+      over the `rec_by_id` cap.
   - file: tests/convergence_health/test___main__.py
     action: Modify
     purpose: Cover the two new _dispatch branches, mirroring the existing --budget-ingest routing tests.
@@ -80,7 +87,7 @@ scope:
     action: Modify
     purpose: Cover the widened SCANNED_PATHS roster.
 bundled_recommendations: []
-followon_recs: [rec-3640]
+followon_recs: [rec-3640, rec-3665]
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
@@ -105,6 +112,24 @@ acceptance_criteria:
     file's own first-commit age so a legitimately-new schedule is quiet and a silently-disabled one
     alarms.
   - >-
+    The single likeliest cause -- GitHub's 60-day inactivity auto-disable -- is read from GitHub's
+    OWN native primitive rather than inferred (Decision 100): ONE bounded
+    `GET /repos/{owner}/{repo}/actions/workflows?per_page=100` per tick supplies each peer's `state`
+    (active | disabled_inactivity | disabled_manually), and that value DISCRIMINATES the filed rec's
+    remediation text -- re-enable the workflow vs. investigate a delivery drop. The age assertion
+    stays the general oracle and is never replaced by `state`: it is a strict superset that also
+    catches a removed `schedule:` block, a deleted workflow and a silent delivery drop, each of
+    which leaves `state: active`. A missing or unparseable `state` degrades the remediation text to
+    the generic form; it never suppresses the age-derived alarm.
+  - >-
+    Catalog egress is bounded and LAZY (Decision 88 clause 1(ii)): a tick with zero stale peers
+    issues ZERO warehouse reads and constructs no reader at all. Only a tick that has already found
+    a stale peer pays one open-recs fetch plus one `recs_by_title_prefix` sweep, and then at most
+    one `rec_by_id` per candidate episode -- hard-capped at `len(peers) + 1` by a named constant
+    that RAISES above the cap rather than fanning out silently. Candidate selection reads the
+    title/status/source columns the prefix sweep already returned; it never issues a `rec_by_id` to
+    decide whether it wants that rec.
+  - >-
     Exactly one deduped rec per stale loop, filed via the ops portal with source
     `loop_liveness_stale`, using budget_ingest's four verbs file|update|unchanged|drop and never a
     close: restoring cadence closes nothing automatically.
@@ -122,6 +147,11 @@ acceptance_criteria:
     (derived as ceil(len(peers)/2), not a literal), one fleet rec naming every stale peer is filed
     instead of N per-loop recs, because N simultaneously-dead loops is one incident with one root
     cause, not N defects.
+  - >-
+    The new `loop_liveness_stale` signal_interpretation carries both design deviations verbatim --
+    the 3x/[6h, 45d] clamp (and why not the audit's 2x) and the majority-collapse override -- so the
+    field semantics live exactly where this plan's own no-mint routing claim says they land, and a
+    future reader finds them at the registry entry rather than only in a merged plan file.
   - >-
     Alarm-only: nothing this plan adds gates a PR. convergence-health is neither of the two
     required_status_checks contexts (terraform/github/repo.tf:85-99) and stays `tier: not_a_gate /
@@ -234,33 +264,44 @@ verification_plan:
       Episode grain: the four verbs and the deliberate open/resolved key asymmetry. Same bucket with
       an open rec -> unchanged (no SCD2 churn); bucket advance with an open rec -> update; a resolved
       rec at the SAME (loop, anchor, bucket) -> drop; a resolved rec at an EARLIER bucket only ->
-      file. Plus the fleet-collapse majority rule.
+      file. Plus the fleet-collapse majority rule. Hermetic by Decision 148 clause 3: two narrow
+      node selections over a fully-injected module with no network, no creds and no writes, replayed
+      at implement time against the implementation-bearing tree -- well inside validate_vp_replay's
+      30s PER_STEP_TIMEOUT_SECONDS. This is the anti-regression evidence for rec-2644's defect class
+      (Decision 142), so it is the step whose independent re-execution matters most.
     command: bin/venv-python -m pytest tests/convergence_health/test_sensor_liveness.py::TestEpisodeGrain tests/convergence_health/test_sensor_liveness.py::TestFleetCollapse -q
     expected: All tests pass; the drop case files nothing and reopens nothing, and the earlier-bucket case files a NEW rec.
     fix_if: >-
       A drop on the earlier-bucket case means the resolved matcher is keying on (loop, anchor) alone
       -- that permanently mutes a still-dead loop the moment a human closes its rec, which is
       LSA-02's own defect re-created one level up. A file on the same-bucket case means the resolved
-      sweep is not consulted at all and a closed rec will be resurrected hourly (Decision 103).
-    hermetic: false
+      sweep is not consulted at all and a closed rec will be resurrected hourly -- Decision 142's
+      rec-2644 finding exactly (a closed rec flipped back to open on a coarse-key match, discarding
+      the closed rec's fix-proof), one level up and on a different table (Decision 103).
+    hermetic: true
     graduation: graduate
     graduation_check_id: sensor-liveness-episode-grain-verbs
   - step: 5
     phase: pre-deploy
     action: >-
-      Anti-masking, all four fail-loud paths: a dead GitHub query raises instead of reporting an
+      Anti-masking, all five fail-loud paths: a dead GitHub query raises instead of reporting an
       empty (reassuring) population; `?event=schedule` is load-bearing, so a peer whose only recent
       runs are workflow_dispatch reads STALE where an unfiltered query would read fresh; an empty
       workflow_runs list falls back to the workflow file's first-commit age; a shallow clone raises
-      before that fallback can misreport.
+      before that fallback can misreport; and a peer whose native `state` is disabled_inactivity is
+      reported as DISABLED rather than merely late, while a `state: active` peer past its threshold
+      still alarms -- `state` refines the remediation text and never suppresses the age verdict.
+      Hermetic by Decision 148 clause 3 on the same grounds as step 4: one narrow node selection,
+      fully injected, network-free, replayed against the implementation-bearing tree.
     command: bin/venv-python -m pytest tests/convergence_health/test_sensor_liveness.py::TestAntiMasking -q
-    expected: All tests pass, including the known-bad fixture for each of the four paths.
+    expected: All tests pass, including the known-bad fixture for each of the five paths.
     fix_if: >-
       A test that reports "no stale loops" from a query that never ran is the exact false negative
       Decision 55 forbids and budget_ingest._DEAD_QUERY_MESSAGE exists to prevent -- raise instead.
       A dispatch-only peer reading fresh means the `event=schedule` parameter was dropped from the
-      URL.
-    hermetic: false
+      URL. A `state: active` peer past its threshold that does NOT alarm means `state` was wired as
+      a gate on the verdict instead of a refinement of the remediation text -- invert it.
+    hermetic: true
     graduation: graduate
     graduation_check_id: sensor-liveness-anti-masking
   - step: 6
@@ -268,7 +309,12 @@ verification_plan:
     action: >-
       Whole-suite green across the three touched test modules, and the new mirror test stays ONE file
       under the 500-SLOC ceiling so no tests/convergence_health/sensor_liveness/ package (and
-      therefore no scripts/test_coverage_checker.py _CONCERN_SPLIT_TEST_PACKAGES edit) is dragged in.
+      therefore no scripts/test_coverage_checker.py _CONCERN_SPLIT_TEST_PACKAGES edit) is dragged in
+      (the no-edit claim rests on Decision 131's mirror rule -- map_source_to_test resolves the new
+      module to this path with no grandfather-table entry). Stays `hermetic: false` deliberately,
+      unlike steps 4 and 5: this is a three-module whole-suite run whose wall clock is not bounded
+      by construction against validate_vp_replay's 30s per-step timeout, and its SLOC half asserts
+      this PR's transient line counts, which is exactly what replay should not pin.
     command: |-
       bin/venv-python -m pytest tests/convergence_health/test_sensor_liveness.py tests/convergence_health/test___main__.py tests/checks/ops_governance/test_check_source_registry.py -q
       bin/venv-python -c "
@@ -342,10 +388,12 @@ verification_plan:
         && grep -E '^(scope|test-execution allowance|predicted CI|predicted outcome)' /tmp/sensor-liveness-budget.txt \
         && grep -qx 'predicted outcome: within_budget' /tmp/sensor-liveness-budget.txt
     expected: >-
-      Exit 0 and the printed report ends `predicted outcome: within_budget` (measured at plan time:
-      11 paths, n_selected 123 of a 539 census, allowance 246s, predicted CI elapsed 111.2-142.6s
-      against the 240s non-test budget). The reporter exits 0 on every path -- the grep is what
-      makes this step assert rather than merely print.
+      Exit 0 and the printed report ends `predicted outcome: within_budget` (RE-MEASURED after the
+      decision-scout revisions and a rebase onto origin/main 194fe48e: 11 paths, n_selected 124 of a
+      544 census, allowance 248s, predicted CI elapsed 112.5-144.3s against the 240s non-test
+      budget; the scope table is unchanged by those revisions, so the breadth moved only with the
+      census). The reporter exits 0 on every path -- the grep is what makes this step assert rather
+      than merely print.
     fix_if: >-
       breadth_waived means keep the scope and DECLARE the measured breadth here; breach means SPLIT
       the scope into atomic units until the prediction clears; non_test_breach means neither -- the
@@ -477,7 +525,8 @@ test_obligations:
     behavior: >-
       Peer derivation normalises the PyYAML `on:`-as-True key and raises on an empty set; the cron
       shape matcher and clamp derive each threshold; the four verbs and the asymmetric open/resolved
-      episode key; the four anti-masking raise paths.
+      episode key; the five anti-masking paths (including native `state` refining remediation text
+      without ever suppressing the age verdict); and the lazy, capped catalog fan-out.
     verification_step: 4
     test_selector: tests/convergence_health/test_sensor_liveness.py::TestEpisodeGrain
     red_green_expectation: >-
@@ -528,15 +577,21 @@ test_obligations:
     red_green_expectation: Red before (the path is absent from the roster), green after.
 constraints:
   - >-
-    THIS SLICE MINTS NO NUMBERED DECISION and must not touch docs/DECISIONS.md. It is the fifth
-    instance of an already-ratified pattern (Decision 62's alarm-not-gate monitor lane, realised four
-    times on this same cron as tf_convergence_stale / ducklake_code_drift / prod_code_drift /
-    budget_breach), and neither the prod-drift nor the rec-3288 budget-ingest leg minted one.
-    Per docs/contracts/decision-entry.yaml's routing_rule the content routes to `field_semantics` --
-    the new source_registry canonical_id's description and signal_interpretation, exactly where
-    prod_code_drift's equivalent semantics live. A concurrent sibling slice is minting the next
-    number; two concurrent mints collide at the same hunk. If analysis concludes a Decision is
-    genuinely required, STOP and hand back BLOCKED.
+    THIS SLICE MINTS NO NUMBERED DECISION and must not touch docs/DECISIONS.md. Three independent
+    grounds, none of which is "Decision 62 already ratified an alarm lane" (it did not -- see the
+    context line correcting that): (1) Decision 150 clause 1's significance bar reserves a numbered
+    entry for a durable architectural commitment with reversal-relevant consequences and routes
+    field semantics to a governance note in the owning contract instead; docs/contracts/
+    decision-entry.yaml's routing_rule Q2 (reversal-relevant?) and Q3 (unclaimed by another row?)
+    both fail here. (2) Decision 167 clause 2 makes that routing claim a machine-checked envelope
+    field and REJECTS `field_semantics` outright on any entry that is by construction minting a
+    number -- so this content is un-mintable by construction, not merely discouraged. (3) Four LIVE
+    source_registry canonical_ids -- tf_convergence_stale, ducklake_code_drift, prod_code_drift and
+    reconcile_starved -- each carry description + signal_interpretation and the identical
+    "Priority High, not source=ci_rca -- does NOT hard-block the /plan queue" clause, and not one of
+    them minted a number. This leg is the same shape landing in the same place. A concurrent sibling
+    slice is minting the next number; two concurrent mints collide at the same hunk. If analysis
+    concludes a Decision is genuinely required, STOP and hand back BLOCKED.
   - >-
     Do NOT touch docs/ROADMAP-PLATFORM.yaml (zero roadmap rows this run; deferred forward intent is
     filed as a rec with `dependencies`, never a tier_item), config/ci_rca_taxonomy.yaml (owned by the
@@ -571,6 +626,23 @@ constraints:
     runner, `now`) so the module is unit-testable with no network -- mirroring
     ingest_budget_breaches' signature. A dead query RAISES; there is no outbox (Decision 84 I-4).
   - >-
+    Decision 88 binds this leg: it adds a RECURRING catalog read path (~720 ticks/month on an hourly
+    cron), so clause 1(ii) (never re-query what is already in hand, and reach the warehouse only
+    through a registered named verb) and clause 2 (the read cost must be stated, not assumed) are
+    live obligations. Both fetches are LAZY -- a tick with zero stale peers constructs no reader and
+    issues no query at all -- and the `rec_by_id` fan-out is hard-capped at `len(peers) + 1` by a
+    named constant that RAISES above the cap. Candidate filtering uses the columns
+    `recs_by_title_prefix` already returned; never a `rec_by_id` issued to decide whether that rec
+    is wanted.
+  - >-
+    Decision 100 binds the disabled-workflow reading: GitHub exposes workflow `state` natively
+    (active | disabled_inactivity | disabled_manually), so read the primitive instead of vendoring
+    an inference for it. Scope the reliance precisely -- `state` refines the filed rec's remediation
+    text ONLY. It never becomes the alarm oracle: the age assertion is the strict superset that also
+    catches a removed `schedule:` block, a deleted workflow and a delivery drop, all of which leave
+    `state: active`. This does not license a cron library (see the no-croniter constraint) -- that
+    is not a GitHub primitive.
+  - >-
     Portal writes only through file_rec / update_rec. Never Edit or Write logs/*.jsonl -- a read cache
     is never a write source, and replaying one upstream is the row-resurrection failure recorded in
     Decision 84.
@@ -584,15 +656,20 @@ context:
   - "NAME-COLLISION TRAP 1: docs/plans/PLAN-roadmap-blocking-liveness-detector.yaml (PR #1079, approved, unimplemented) and recs 3579/3580/3581/3582 are about ROADMAP-GRAPH deadlock -- strongly connected components in a blocking graph. NOT cron liveness. Different subject, different surface, no overlap."
   - "NAME-COLLISION TRAP 2: scripts/preflight/ci_rca_signals.py::_check_convergence_sensor_liveness and its graduated shard convergence-sensor-liveness-signal.yaml fire on the latest convergence-health run's CONCLUSION (red-but-unactioned), for that one workflow, from preflight. LSA-02 is absence-of-runs, across all nine peers, from the cron. Same word, different defect."
   - "rec-3092 (ghas-probe liveness advisory, open, Medium) is the nearest open neighbour and is also red-but-unactioned, remedied through scripts/preflight/decision_conditions.py and a Decision 83 reversal stanza. CITE, do not bundle -- bundling drags in two files this slice otherwise never touches."
-  - "Decisions cited: 55 (fail loud, no false negatives -- the empty-peer-set, dead-query, dispatch-only and shallow-clone raises), 62 (alarm-not-gate monitor lane, rec-2854), 83 (non-wedging: not added to required_status_checks), 84 I-3/I-4 (named reader verbs, no outbox), 103 (a resolved rec is never silently reactivated), 128 (decompose, never raise a SLOC budget), 178 clause 4 (terraform-drift cron restoration, discharged), 181 (declare enforcement coverage per surface), 182 (the two-quantity fast-tier budget -- step 8), 183 (new since the audit; no bearing on this leg, named so the re-base is auditable)."
-  - "Decision-scout verdict + CITE list (verbatim decision ids)"
-  - "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s)"
+  - "Decisions cited: 48 (V3's behavioural-acceptance definition -- why steps 11-12 invoke and read back rather than grep), 55 (fail loud, no false negatives -- the empty-peer-set, dead-query, dispatch-only, shallow-clone and over-cap raises), 61 (the ratified rule that scheduled-agent findings flow through ops_recommendations via `source` -- the direct authority for registering loop_liveness_stale instead of minting a table or a register), 83 (non-wedging: not added to required_status_checks), 84 I-3/I-4 (named reader verbs, no outbox), 88 (catalog egress is a first-class budget -- clause 1(ii) bounds the fan-out, clause 2 obliges the read accounting below), 100 (managed services own their primitives -- read GitHub's native workflow `state`), 103 (a resolved rec is never silently reactivated), 128 (decompose, never raise a SLOC budget), 131 (the mirror rule -- map_source_to_test resolves the new module with no test_coverage_checker.py edit; this is the claim that keeps that file out of scope), 132 + 176 (the four graduation shards: the two-leg enforcement model and the one-record-per-file registry grain the shards are authored into), 142 (rec-2644: a closed rec flipped back to open on a coarse-key match, discarding its fix-proof -- the specific precedent the asymmetric open/resolved key defends against, and the closest governing authority for the episode grain), 148 clause 3 (hermetic-true default restored for pre-deploy feature verification -- steps 4 and 5), 150 clause 1 + 167 clause 2 (the significance bar and its machine-checked routing claim -- the no-mint grounds), 162 (the r3_workflows baseline row: a first registration at its exactly-measured 2 effective lines owes no raise-approved marker), 163 (the enforcement-shape principle -- why leg (c) is deferred rather than absorbed here), 178 clause 4 (terraform-drift cron restoration, discharged), 181 (declare enforcement coverage per surface), 182 (the two-quantity fast-tier budget -- step 8), 183 (new since the audit; no bearing on this leg, named so the re-base is auditable)."
+  - "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND (no BLOCK). Scout counts, verbatim -- Decisions triaged: 136 of 136 / Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3. CITE list: 48, 55, 61, 62, 83, 84, 88, 100, 103, 128, 131, 132, 142, 148, 150, 162, 163, 167, 176, 178, 181, 182, 183. Confirmed by the scout and not relitigated: minting is genuinely not owed (routing_rule Q2 and Q3 both fail; Decision 167 clause 2 makes field_semantics un-mintable by construction; four live source_registry precedents minted nothing), the constraint set passes, the PLAN-roadmap-blocking-liveness-detector dedup trap is avoided, and the noise budget is sound. Four flags applied: 148 WARN (steps 4/5 hermetic-true), 62 NOTE (re-grounded on 150+167; rec-3665 filed), 88 NOTE (fan-out bounded + accounted), 100 NOTE (native `state` read), 163 SPIRIT NOTE (leg-(c) deferral recorded)."
+  - "gates: decision-scout=FLAGS_FOUND (applied, no re-dispatch -- no material approach change); plan-critique=<verdict> after <N> round(s)"
+  - "DECISION 62 IS NOT THE RATIFYING LANE, correcting this plan's own earlier grounding: Decision 62's body decides the OPPOSITE -- no Claude Code cron agent, and no scheduling concern separate from validation itself. An alarm-not-gate monitor lane exists only in its 2026-06-16 premise-revisit amendment, and that amendment is scoped to LIVE-READER-dependent DQ checks specifically, sourced to CD.12 and owned by tier_item T1.6. It is not a general lane and this leg is not inside it. The no-mint conclusion is unaffected -- Decision 150 clause 1 + Decision 167 clause 2 carry it independently, and the four live source_registry instances are the precedent. Decision 62 is cited here for one thing only: the silent-cron gap its amendment names."
+  - "LATENT DEFECT IN THE DECISION LOG, surfaced by the scout, NOT fixed here: that same amendment asserts the silent-cron failure mode is mitigated by a persistent-unavailability alarm (Decision 74). Decision 74 is the npm EACCES / workflow_dispatch escape-hatch entry and contains no such alarm -- so the log records as already-existing the exact mitigation THIS PLAN supplies. Fixing it inline is barred by Decision 59 and by this plan's own never-touch constraint on docs/DECISIONS.md; filed as rec-3665 (followon_recs) instead."
+  - "DECISION 88 READ ACCOUNTING (clause 2's measurement obligation, discharged at design time): the leg adds a recurring path on an hourly cron -- ~720 ticks/month. Steady state on a healthy fleet is ZERO warehouse reads and no reader construction per tick, because both rec fetches are lazy behind a non-empty stale set; the marginal per-tick cost is instead 10 bounded GitHub Actions API calls (9 per-peer run queries + 1 workflows listing). A stale tick pays 1 open-recs fetch + 1 recs_by_title_prefix + at most len(peers)+1 rec_by_id, i.e. <= 12 catalog reads, capped by a named constant that raises rather than fanning out. Worst case (every tick stale for a month) is <= 8,640 metadata reads; the realistic case is a handful per year."
+  - "LEG (c) DEFERRAL, recorded rather than implicit (Decision 163): 163's enforcement-shape principle prefers a structural, exceptionless instrument over detection-after-the-fact for a universal obligation, and the audit's P5-amended marker-gate on `schedule:`-block removal is exactly that instrument. It is deliberately NOT built here: it is a GATE, it belongs with the LSA-01 verifier-weakening-guards slice that owns _marker_guard.py and marker-grammar.yaml, and dragging it into an alarm-only leg would turn this into a PR blocker. This leg is 163-compatible as the alarm complement, not a substitute: it detects a removed schedule: block with no gate at all, on any route including the ones a marker gate cannot see (a delivery drop, an inactivity auto-disable). The choice is a deferral to a named owner, not an omission."
   - "THRESHOLD DEVIATION, stated deliberately: the audit's acceptance says 2x cadence. GitHub scheduled runs are documented best-effort and are routinely delayed or dropped under load, so 2x on an hourly cron false-positives. This plan uses clamp(3 x period, 6h floor, 45d ceiling): the floor buys ~5 tolerated misses on an hourly loop, and the ceiling keeps the monthly cost-reconciliation loop's window inside the 90-day Actions run-retention horizon (a naive 3x monthly = 93d exceeds it and could never fire)."
   - "SELF-INCLUSION, stated deliberately: convergence-health is in its own derived peer set. Excluding it would be a filter on a set whose whole point is derivation, and it is not structurally impossible for the sensor to be stale -- the workflow also runs on workflow_dispatch, so a dispatched tick after the cron died correctly reports the sensor itself, which is the who-watches-the-watcher case the audit names. `?event=schedule` is what makes that reading honest."
   - "NOISE BUDGET, designed: within a staleness bucket the title and context are byte-identical, so the no-op guard fires and nothing is written; buckets advance on a log2 schedule (1x, 2x, 4x, 8x ...), so a permanently dead loop whose every rec is closed yields ~11 recs per YEAR, not one per hourly tick. A simultaneous multi-loop outage collapses to ONE rec once the stale count reaches a majority of the derived peer set -- the 2026-08-15 OIDC-rename incident (Decision 172) is the worked case: one root cause, several loops down at once."
   - "DECLARED RESIDUAL (Decision 181 declare-your-coverage, per surface): a leg riding the convergence-health cron cannot report convergence-health's OWN cron dying -- Decision 172 records exactly that (the rename outage disabled ci-rca AND convergence-health, so nothing auto-filed and a stale-green record masked it). This leg covers the other eight peers plus its own cron whenever it runs at all (including a workflow_dispatch tick). The out-of-band complement is preflight's session-time signal, whose own blindness is rec-3640. Naming the residual is the point; it is not closed here and no VP step claims it."
+  - "HERMETIC FLIP PAYOFF (Decision 148): steps 1-5, 7 and 9 are now hermetic pre-deploy, so validate_vp_replay's implement leg independently re-executes them against the implementation-bearing tree once the implement session sets `implementation_declared: true` (implement skill step 3 of the bookkeeping walk). On this plan-only PR the same check DEFERS with a printed reason -- that is the expected, correct output here, not a miss. No `expected` field on a hermetic step carries backtick literals, so replay asserts exit-0 only and no accidental substring contract is created."
   - "Live-path unreachability, discovered this session and load-bearing for VP design: the agent proxy returns HTTP 403 for direct api.github.com calls from a session container, and gh/hub are not installed. The sensor's live path is therefore exercised only inside the workflow; steps 1-10 are fully injected/mocked and step 11 reads the real run back through mcp__github__*."
-  - "DEFERRED HALF, filed not deferred to prose: rec-3640 (followon_recs) -- the same discovery shows scripts/preflight/ci_rca_signals.py's two liveness signals shell out to `gh run list` and swallow FileNotFoundError as OSError -> None, so both are permanently blind on CC-web. Same anti-masking class as LSA-02 one level up, different surface (preflight, not the cron), and scripts/preflight/ is out of this slice's scope. Filed with dependencies [] -- it does not depend on this leg."
+  - "DEFERRED HALVES, filed not deferred to prose (followon_recs = rec-3640, rec-3665): rec-3640 -- the same discovery shows scripts/preflight/ci_rca_signals.py's two liveness signals shell out to `gh run list` and swallow FileNotFoundError as OSError -> None, so both are permanently blind on CC-web. Same anti-masking class as LSA-02 one level up, different surface (preflight, not the cron), and scripts/preflight/ is out of this slice's scope. Filed with dependencies [] -- it does not depend on this leg."
   - "Effort: the audit says S; this plan agrees only because the two S-breaking items are settled HERE rather than at implementation time -- the cadence oracle is a bounded shape matcher (no library) and the episode grain is fixed as the open/resolved key asymmetry above. Left to implementation, both make this a low-M."
   - "Branch was cut fresh from origin/main (a702e438) this session; no scope file overlaps main_files_changed_since_branch. Preflight: venv ok, creds ok, ci_rca_unresolved_recs empty (no hard block), non_automatable softcap breached (938) -- a standing planning-context note, not a gate."
 pre_implementation_checklist:
@@ -629,7 +706,12 @@ execution_steps:
     a repo-wide listing (a monthly loop's last run is unreachable by pagination). No payload -> raise
     with a _DEAD_QUERY-shaped message. Empty workflow_runs -> fall back to the workflow file's
     first-commit age via an injected git runner, after an `_assert_full_history` guard mirroring
-    code_drift.py:35-52.
+    code_drift.py:35-52. Add ONE more bounded call per tick -- GET
+    /repos/{owner}/{repo}/actions/workflows?per_page=100 (22 workflow files today, one page) --
+    and index its `state` by filename (Decision 100: read GitHub's own primitive rather than
+    inferring auto-disable). `state` selects the filed rec's remediation sentence and nothing else;
+    a missing or unrecognised value degrades to the generic sentence. Never let `state` gate,
+    suppress or short-circuit the age verdict.
   - >-
     Implement the episode key and the four verbs: anchor is `run:{id}` or `intro:{sha}`; bucket is
     0 while fresh, else floor(log2(age/threshold)) + 1. Context carries `Loop: {k}.`,
@@ -638,6 +720,11 @@ execution_steps:
     RESOLVED_REC_STATUSES fetched with `recs_by_title_prefix` + `rec_by_id` (mirroring
     _fetch_resolved_budget_recs); reuse escalate._fetch_open_recs for the open half. Decide
     update|unchanged|drop|file exactly as budget_ingest._decide_action does, and add _DRY_RUN_LABELS.
+    Both fetches are LAZY and BOUNDED (Decision 88): return early with zero warehouse reads when no
+    peer is stale; on a stale tick filter the prefix sweep's own id/title/status/source columns down
+    to candidates whose title names a derived peer or the fleet key, then issue at most
+    `MAX_RESOLVED_LOOKUPS = len(peers) + 1` `rec_by_id` calls and RAISE above that cap rather than
+    fanning out. The cap constant is asserted by the mirror test, not merely documented.
   - >-
     Implement the fleet-collapse rule: when len(stale) >= ceil(len(peers)/2), emit ONE episode keyed
     `Loop: __fleet__.` with anchor `since:{max last-run timestamp among stale peers}` and bucket
@@ -651,15 +738,22 @@ execution_steps:
   - >-
     Wire the leg: main_sensor_liveness / main_liveness_probe in __main__.py plus their _dispatch
     branches; facade re-exports and the docstring roster line in __init__.py; the named workflow step
-    with GH_TOKEN and the header paragraph; the r3_workflows baseline key; the source_registry
-    canonical_id (prod_code_drift's shape, including its not-source=ci_rca clause); the SCANNED_PATHS
-    entry.
+    with GH_TOKEN and the header paragraph; the r3_workflows baseline key at its exactly-measured
+    effective line count with NO `# raise-approved:` marker (Decision 162 R3 requires one only to
+    exceed a declared ceiling -- a first registration at its true count is a plain entry, and
+    Decision 128's marker grammar is not owed here); the source_registry canonical_id
+    (prod_code_drift's shape, including its not-source=ci_rca clause) whose signal_interpretation
+    MUST state both the 3x/[6h, 45d] clamp with its deviation-from-2x reason and the
+    majority-collapse override; the SCANNED_PATHS entry.
   - >-
     Write tests/convergence_health/test_sensor_liveness.py as ONE file under 500 SLOC, with classes
     TestPeerDerivation, TestThresholdOracle, TestEpisodeGrain, TestFleetCollapse, TestAntiMasking,
     TestWorkflowWiring, and a test pinning RESOLVED_REC_STATUSES against
     src.common.ducklake_scd2_schema (mirroring budget_ingest's). Every class carries its known-bad
-    fixture. Extend tests/convergence_health/test___main__.py and
+    fixture. TestAntiMasking additionally covers the two `state` cases (a disabled_inactivity peer
+    reported as disabled, and a `state: active` peer past its threshold that still alarms) and the
+    lazy/bounded catalog path (zero reader construction on a healthy tick; a raise when the
+    resolved-candidate population exceeds MAX_RESOLVED_LOOKUPS). Extend tests/convergence_health/test___main__.py and
     tests/checks/ops_governance/test_check_source_registry.py.
   - Execute the Verification Plan -- run each step; loop until pass; on an unrecoverable V3 failure stop and RCA (Decision 55), never patch around it.
   - Author the four graduated registry shards named in steps 1, 3, 4 and 5 at their exact graduation_check_ids.
