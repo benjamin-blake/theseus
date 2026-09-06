@@ -58,9 +58,10 @@ scope:
     action: Create
     purpose: >-
       Joins census rows to probe verdicts and COMPOSES scripts/rec_relevance.py rather than
-      re-deriving it. rec_relevance already implements acceptance_probe, target_existence ->
-      stale_target, and open_duplicate (title Jaccard >= 0.7 on the same file), and Decision 103
-      names it THE relevance evaluator -- so this module calls it for those signals. CRITICAL: it
+      re-deriving it. rec_relevance already implements target_existence -> stale_target and
+      open_duplicate (title Jaccard >= 0.7 on the same file), and Decision 103 names it THE
+      relevance evaluator -- so this module calls it for THOSE TWO signals and no others. It also
+      implements an acceptance_probe signal, which this module must NEVER use. CRITICAL: it
       composes evaluate_rec_relevance with run_acceptance_probe=False (the default). That flag
       routes to rec_relevance._run_acceptance_probe (scripts/rec_relevance.py:33-47), which runs
       rec-authored shell through a bare subprocess.run(cmd, shell=True) with NO namespace
@@ -84,8 +85,10 @@ scope:
   - file: scripts/test_coverage_checker.py
     action: Modify
     purpose: >-
-      ONE row: register backlog_health in _NESTED_SUBPACKAGE_TEST_PREFIX with prefix
-      "test_backlog_health_". That map is explicitly whitelisted "so a NEW scripts/<pkg>/ does not
+      One map row plus its docstring count: register backlog_health in
+      _NESTED_SUBPACKAGE_TEST_PREFIX with prefix "test_backlog_health_", and update the
+      "whitelisted to these six" wording at :122 to seven (no test pins the count, so nothing
+      fails, but the constant and its docstring must not drift). That map is explicitly whitelisted "so a NEW scripts/<pkg>/ does not
       silently inherit a mapping", so without it every module above sits outside the per-file
       coverage floor. It is the FLAT-HOME family map, verified live: it yields
       tests/test_backlog_health_census.py, matching siblings like scripts/sync/ducklake_version.py ->
@@ -217,10 +220,11 @@ acceptance_criteria:
   - No command classified unprobeable_unsafe or prose_only is ever executed, and neither is ever recorded as a pass.
   - >-
     scripts/backlog_health/probe.py is the ONLY module that executes a REC-AUTHORED command, proven
-    by an AST assertion rather than a string match: no module outside it imports or calls
-    _run_acceptance_probe, passes run_acceptance_probe truthy by any expression, or reaches
-    subprocess/os.system/os.popen with a rec-derived argument. census.py's fixed-argv git log over
-    repo history is permitted and must not be flagged.
+    by an AST walk over scripts/backlog_health/** rather than a string match: outside probe.py no
+    module imports or calls _run_acceptance_probe, no module passes run_acceptance_probe as anything
+    but the literal False, and every subprocess/os.system/os.popen argv is entirely
+    constant-foldable literals. census.py's fixed-argv git log over repo history is permitted and
+    must not be flagged.
   - >-
     An unavailable user namespace yields the isolation_unavailable verdict and a non-zero exit, never
     a pass -- verified on a real GitHub-hosted runner, not only in the authoring container.
@@ -292,9 +296,15 @@ verification_plan:
       earlier two-token grep was run against seven synthetic trees and passed three shapes that must
       fail, including `from scripts.rec_relevance import _run_acceptance_probe` -- the round-2 defect
       verbatim -- plus os.system and a space-padded kwarg. The invariant is capability-level: outside
-      probe.py no module may import or call _run_acceptance_probe, pass run_acceptance_probe truthy
-      by any expression, or reach subprocess/os.system/os.popen with an argument derived from a rec
-      field. census.py's fixed-argv `git log` is explicitly permitted.
+      probe.py no module may (i) import or call _run_acceptance_probe -- an ast.Import/ImportFrom
+      name match plus an ast.Call on Name/Attribute; (ii) pass run_acceptance_probe as anything
+      other than the literal False -- 'truthy by any expression' is undecidable statically, so the
+      sound over-approximation is literal-False-or-absent, which rejects `=flag` and `=bool(x)`
+      rather than admitting them; or (iii) reach subprocess/os.system/os.popen with an argv that is
+      not entirely constant-foldable literals -- taint is undecidable by AST, and all-literal-argv
+      is the sound proxy that admits census.py's fixed `git log` and rejects any rec-derived value.
+      Walk root: scripts/backlog_health/**. Negative fixtures must include `run_acceptance_probe=flag`
+      and a direct _run_acceptance_probe import, both of which the earlier grep passed.
     command: "bin/venv-python -m pytest tests/test_backlog_health_classify.py::test_probe_is_sole_rec_authored_executor -q"
     expected: "1 passed -- the AST walk finds no rec-authored execution path outside probe.py, and does not flag census.py's literal git argv."
     fix_if: "Exit 4 means unwritten. If it passes against a fixture carrying the direct _run_acceptance_probe import, the walk is string-matching rather than resolving imports and calls."
@@ -356,7 +366,7 @@ verification_plan:
     action: Live dry run against the real reader and the real tree; reports per-class counts and writes nothing.
     command: "bin/venv-python -m scripts.backlog_health census --dry-run && bin/venv-python -m scripts.backlog_health probe --dry-run && bin/venv-python -m scripts.backlog_health escalate --dry-run"
     expected: "Counts in the neighbourhood of the planning-time census (see Context); every class reported; no rec filed, updated or closed."
-    fix_if: "Any write in dry-run mode is a hard stop. A zero probeable count means the census classifier is over-filtering."
+    fix_if: "Any write in dry-run mode is a hard stop. A zero probeable count means the census classifier is over-filtering. A zero SATISFIED-CANDIDATE count with a non-zero exit-0 probe count means census.py collected no usable recent_commits -- 31 of 36 live exit-0 cases are satisfied candidates, so zero is the signature of a collection bug, not a clean backlog."
     hermetic: false
     graduation: not-applicable
   - step: 12
@@ -378,8 +388,10 @@ verification_plan:
 test_obligations:
   - source: scripts/backlog_health/census.py
     behavior: >-
-      classifies without executing, asserts every read row is status == 'open', and never places an
-      unsafe or prose-only command into the probe payload.
+      classifies without executing, asserts every read row is status == 'open', never places an
+      unsafe or prose-only command into the probe payload, AND collects the recent_commits list
+      classify.py's satisfied-vs-vacuous split depends on -- over unbounded history, since a window
+      that truncates before a rec's creation collapses satisfied_candidate into vacuous silently.
     verification_step: 7
     test_selector: tests/test_backlog_health_census.py
     red_green_expectation: "Red before (module absent, exit 4); green after."
@@ -534,7 +546,7 @@ execution_steps:
   - "Register backlog_health in scripts/test_coverage_checker.py FIRST with prefix test_backlog_health_, so every module written after it is coverage-bound as it lands."
   - "Write scripts/backlog_health/census.py plus its mirror test: the structural read, the status=='open' post-read invariant, and the five-bucket classifier."
   - "Write scripts/backlog_health/probe.py plus its mirror test: unshare-isolated execution, per-probe and global budgets, five verdicts including isolation_unavailable, main_sha stamping."
-  - "Write scripts/backlog_health/classify.py plus its mirror test, COMPOSING rec_relevance for acceptance_probe / target_existence / open_duplicate rather than re-deriving them."
+  - "Write scripts/backlog_health/classify.py plus its mirror test, composing rec_relevance for target_existence and open_duplicate ONLY. Leave run_acceptance_probe at its False default and take the acceptance-probe signal exclusively from probe.py's verdict join -- with the flag False rec_relevance yields NO probe signal at all, so 'compose it for acceptance_probe' is satisfiable only by the unsafe route (see constraints)."
   - "Write scripts/backlog_health/escalate.py on rec_episode.run_episode, plus __main__.py and __init__.py and their mirrors."
   - "Register the four sources in config/agent/data_quality/source_registry.yaml and widen check_source_registry's SCANNED_PATHS."
   - "Author .github/workflows/backlog-health.yml as three jobs; add its ci_rca_taxonomy row, its r3_workflows baseline entries, and the two github-actions-evidence artifact rows in the same pass."
@@ -542,7 +554,7 @@ execution_steps:
   - "File the follow-on rec that will own the merge-gate residual, then publish the Decision 181 residual stanza in docs/contracts/check-accounting.yaml naming it."
   - "Add the Decision 103 dated annotation (venue scoping AND the Decision 88 mis-cite record) and the recommendation-relevance.yaml edits to BOTH clauses with an amendment_log entry."
   - "Add the T1.6 progress_note to docs/ROADMAP-PLATFORM.yaml recording that the monitor substrate landed; do not flip any criterion."
-  - "Execute Verification Plan steps 1-9; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)."
+  - "Execute Verification Plan steps 1-9 and 14 (every pre-deploy step); loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)."
   - "Merge with a `Resolves: rec-3312, rec-3309` trailer, then run VP steps 10-13."
   - "File the remaining follow-on recs named in Context (Decision 143 OIDC-sub pin, writer-identity narrowing, the stale ducklake_reader.yaml rec-2170 KNOWN GAP line) and record their ids in followon_recs."
   - "Report: what was implemented, verification results."
