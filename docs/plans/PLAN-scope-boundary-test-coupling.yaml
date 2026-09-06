@@ -122,14 +122,19 @@ verification_plan:
     phase: pre-deploy
     hermetic: true
     action: >-
-      NON-WEAKENING PROOF -- AN UNDECLARED TEST PATH STILL STOPS. Dispatches the real enforcing leg against
-      this plan with a touched test path deliberately left out of its scope. The guard must still fail; if it
-      passes, this change widened the boundary rather than narrowing it.
-    command: "bin/venv-python -c \"from pathlib import Path; from scripts.checks.verification.validate_scope_boundary import validate_scope_boundary as v; f=[]; v(f, plan_paths=['docs/plans/PLAN-scope-boundary-test-coupling.yaml'], changed_files=['tests/session/preflight/test_context_docs.py'], root=Path('.')); assert any('outside declared scope' in x for x in f), 'GUARD WEAKENED: an undeclared test path no longer STOPs'; print('GUARD-INTACT')\""
+      NON-WEAKENING PROOF -- ALL FOUR CLAUSES OF AC 6 AT ONCE. Dispatches the real enforcing leg against this
+      plan with a touched test path deliberately left out of its scope (must still STOP), then asserts
+      sanction_rows still holds exactly 4 entries (no row added) and that the evaluator module is absent from
+      the diff against origin/main (enforcement changed by data, not code). Preservation proof: it passes on
+      the pre-implementation tree by design and carries no red-green discrimination -- steps 1, 2 and 3 carry
+      that.
+    command: "bin/venv-python -c \"import subprocess, yaml; from pathlib import Path; from scripts.checks.verification.validate_scope_boundary import validate_scope_boundary as v; f=[]; v(f, plan_paths=['docs/plans/PLAN-scope-boundary-test-coupling.yaml'], changed_files=['tests/session/preflight/test_context_docs.py'], root=Path('.')); assert any('outside declared scope' in x for x in f), 'GUARD WEAKENED: an undeclared test path no longer STOPs'; d=yaml.safe_load(open('docs/contracts/implement-scope-boundary.yaml')); n=len(d['sanction_rows']); assert n == 4, f'GUARD WIDENED: sanction_rows count is {n}, expected 4 -- a row was added'; changed=subprocess.run(['git','diff','origin/main','--name-only'],capture_output=True,text=True,check=True).stdout.split(); assert 'scripts/checks/verification/validate_scope_boundary.py' not in changed, 'GUARD ALTERED: the evaluator module was modified'; print('GUARD-INTACT')\""
     expected: GUARD-INTACT
     fix_if: >-
-      No failure is raised -- a sanction row covering test paths was added despite this plan forbidding it, or
-      the path was added to scope. Both are prohibited; revert and re-read sanction_row_eligibility.
+      No failure is raised -- a sanction row covering test paths was added, or the path was added to scope.
+      Count != 4 -- a row was added despite sanction_row_eligibility. Evaluator present in the diff -- code was
+      edited where a contract-data change was required. All three are prohibited; revert and re-read
+      sanction_row_eligibility.
     graduation: waive
     graduation_waiver_reason: >-
       The probe names this plan's own path, which the graduated shard would outlive; a standing check keyed to
@@ -172,6 +177,20 @@ verification_plan:
     expected: exit 0
     fix_if: Any check fails -- diagnose and fix on the branch; no rec is filed for a PR-branch --pre failure.
     graduation: not-applicable
+  - step: 9
+    phase: pre-deploy
+    hermetic: false
+    action: >-
+      FULL-TIER GATE, run locally pre-handoff. Required because handoff_policy declares
+      full_validation_required_before_commit; validate_handoff_full_tier fails the plan file itself in BOTH
+      presubmit tiers unless a step invokes the full tier. Commit and PR wait for a completed exit 0.
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: >-
+      A full-tier-only check fails -- fix on the branch before handoff. If the run times out, the declared
+      timeout_disposition is blocked: resume later and rerun the full tier from the start, never partially.
+      A post-merge full-tier failure on main is ci-rca's to file, never an inline patch (Decision 55/72).
+    graduation: not-applicable
 test_obligations:
   - source: docs/contracts/implement-scope-boundary.yaml
     behavior: >-
@@ -182,6 +201,15 @@ test_obligations:
     red_green_expectation: >-
       Red before -- the sanction_row_eligibility key does not exist at origin/main, so the pin test raises
       KeyError. Green after.
+  - source: docs/contracts/implement-scope-boundary.yaml
+    behavior: >-
+      sanction_rows.implementing_plan_bookkeeping.amendment_procedure states the two-act escape, and the new
+      amendment_log entry carries its Decision 75 conscious-choice note.
+    verification_step: 3
+    test_selector: tests/test_scope_boundary_contract.py::TestContractShape::test_bookkeeping_row_documents_the_two_act_amendment_procedure
+    red_green_expectation: >-
+      Red before -- neither the amendment_procedure key nor the new amendment_log entry exists at origin/main,
+      so the pin test raises KeyError. Green after.
 constraints:
   - >-
     ADDITIVE ONLY on the contract. No existing field is modified, no sanction row is added, and the tri-surface
@@ -201,9 +229,8 @@ context:
   - "Decision-scout verdict: FLAGS_FOUND. CITE: Decision 59, Decision 168, Decision 86, Decision 163, Decision 75. Decisions triaged: 136 of 136. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 0."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
   - >-
-    Trigger: an /implement session on branch claude/step-functions-executor-host-g2uadf (plan merged via
-    PR #1080) read the single-diff unsatisfiability as a contract contradiction and proposed a test-file
-    sanction row. It is not a contradiction -- see amendment_procedure, the clause this plan adds.
+    Trigger: an /implement session on claude/step-functions-executor-host-g2uadf (plan merged via PR #1080)
+    read the single-diff unsatisfiability as a contract contradiction and proposed a test-file sanction row.
   - >-
     Reproduction at 67e54236: validate_scope_boundary(plan_paths=[PLAN-step-functions-executor-host.yaml],
     changed_files=[docs/PROJECT_CONTEXT.md, tests/docs/test_project_context.py]) yields exactly 1 failure.
@@ -224,9 +251,12 @@ context:
     residual_agent_obligation (residual_owner rec-3357). Rows model mechanically GENERATED companions; a
     hand-written test is not one.
   - >-
-    rec-3586 (open, High) proposes three new rows, item 3 being a hardcoded-count mirror test -- the same class
-    this plan refuses. Narrowed here, not closed. Its four current rows plus three proposed would reach 7,
-    tripping provisional_v0.re_ratification_trigger at >= 6.
+    rec-3586 (open, High) named three companions. Item 1 (.secrets.baseline) ALREADY LANDED on 2026-09-04 as
+    the secrets_baseline_regeneration row, so the rec's live surface is items 2 and 3 only. Item 3 is a
+    hardcoded-count mirror test -- the same class this plan refuses -- leaving exactly ONE surviving item
+    (config/structural_size_budgets.yaml). Arithmetic: 4 current rows + 1 surviving = 5, which stays BELOW
+    provisional_v0.re_ratification_trigger (sanction_rows >= 6); admitting item 3 as well would reach 6 and
+    trip it. Narrowed here through the portal, never closed.
   - rec-3635 tracks the duplicated stamp grammar; this plan adds one consumer-mirroring copy and does not bundle it.
   - >-
     Out of scope, for the blocked plan's author: its VP step 21 asserts stamp == hash(working-tree roadmap ids)
@@ -267,11 +297,15 @@ execution_steps:
     tests/test_scope_boundary_contract.py -- add
     TestContractShape::test_sanction_row_eligibility_excludes_hand_written_test_files (asserts the ineligible
     subject, the rec-3357 citation and the rec-3586 narrowing reference) and
-    TestContractShape::test_bookkeeping_row_documents_the_two_act_amendment_procedure.
+    TestContractShape::test_bookkeeping_row_documents_the_two_act_amendment_procedure, which must ALSO assert
+    the new amendment_log entry carries its Decision 75 conscious-choice note -- check_amendment_log_for_class_d
+    asserts only that some new entry exists, never its content, so AC 5 is otherwise unpinned.
   - >-
-    Call update_rec on rec-3586 rescoping it to its two remaining items and appending the exact phrase
+    Call update_rec on rec-3586 rescoping it to its ONE surviving item, the size-budget companion
+    (config/structural_size_budgets.yaml): item 1 already landed as the secrets_baseline_regeneration row and
+    item 3 is now permanently ineligible under sanction_row_eligibility. Append the exact phrase
     "narrowed by PLAN-scope-boundary-test-coupling" to its context, and repair its acceptance oracle so the
-    probe still discriminates the un-narrowed half. Portal only -- never edit the JSONL cache.
+    probe still discriminates the surviving item. Portal only -- never edit the JSONL cache.
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)
   - 'Report: what was implemented, verification results'
 work_areas: []
