@@ -59,9 +59,11 @@ scope:
   - file: docs/ROADMAP-PLATFORM.yaml
     action: Modify
     purpose: >-
-      Amend T1.13:c9's text in place with a dated re-grounding block naming gate_is_postmerge_canary as
-      the derivation input c9 omits and scoping the measurement gap; re-ground T1.13's files_in_scope,
-      three entries of which no longer exist. No new roadmap row.
+      Append ONE compact re-grounding line to T1.13:c9's text -- naming gate_is_postmerge_canary as the
+      derivation input c9 omits and rec-3666 as the owner of the deferred check_absent value -- not a
+      third dated narrative block (Decision 147: compact storage, narrative to git history; c9 already
+      carries two such blocks and the file sits at 9,368 of its 10,000-line ceiling). Re-ground
+      T1.13's files_in_scope, three entries of which no longer exist. No new roadmap row.
   - file: tests/test_ci_rca_vacuous_pass.py
     action: Modify
     purpose: Failing-first truth-table rows for the precedence hoist and the raw-tier rule.
@@ -87,7 +89,7 @@ scope:
     action: Create
     purpose: This plan.
 bundled_recommendations: []
-followon_recs: []
+followon_recs: ["rec-3666"]
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
@@ -120,8 +122,9 @@ acceptance_criteria:
     enum equal to the live pydantic pattern alternation, and validate_ci_rca_lifecycle_projection fails
     if the two ever diverge.
   - >-
-    T1.13:c9's text carries a dated re-grounding block naming gate_is_postmerge_canary; c9's status stays
-    open and no roadmap row is added.
+    T1.13:c9's text carries a one-line re-grounding naming gate_is_postmerge_canary and rec-3666 as the
+    owner of the deferred check_absent value; c9's status stays open; and the roadmap's tier_item id set
+    is byte-identical to origin/main's, asserted by a real id-set diff rather than declared in prose.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -184,19 +187,30 @@ verification_plan:
       Red-then-green on the repository's own tests, run against the real suites rather than a synthetic
       driver: all seven touched behaviour suites must pass, and the migration-seam guard on
       resolve_workflow_tier must still hold unchanged. This is the step every unit test_obligation links to.
+      Deliberately NOT hermetic, against Decision 148 clause 3's restored default, for a mechanism
+      reason rather than convenience: validate_vp_replay's replay time is accounted as replay_s, a term
+      of the quantity Decision 182 asserts its UNWAIVABLE 240s non-test budget over
+      (static_s + replay_s + unattributed_s), so graduating a seven-suite pytest run into replay would
+      move governed TEST time into the one budget no re-scope can fix (verdict non_test_breach:
+      "neither declare nor split"). Measured on this tree: 205 tests in 15.8s, versus 4.7s for this
+      plan's seven other hermetic steps combined and a PER_STEP_TIMEOUT_SECONDS of 30. The planning
+      skill's own Hermetic-authoring paragraph carves pytest steps out for this reason.
     command: >-
       bin/venv-python -m pytest tests/test_ci_rca_vacuous_pass.py
       tests/ci_rca/taxonomy/test_load_and_classify.py tests/ci_rca/evidence/test_generate.py
       tests/ops_data_portal/test_ci_rca_runtime.py tests/test_ci_rca_probe_health.py
       tests/session/preflight/test_ci_rca_gauges.py
-      tests/checks/contracts/test_validate_ci_rca_lifecycle_projection.py -q -p no:randomly
+      tests/checks/contracts/test_validate_ci_rca_lifecycle_projection.py -q --randomly-seed=20260710
     expected: >-
       Exit 0, zero failures. tests/ci_rca/taxonomy/test_load_and_classify.py::TestResolveWorkflowTier
       passes without modification to its three original assertions.
     fix_if: >-
       A failure in TestResolveWorkflowTier means resolve_workflow_tier itself was changed rather than a
       raw sibling added -- revert and add the sibling. A failure elsewhere is the repair being wrong, not
-      the test being wrong: never relax an assertion to make this pass.
+      the test being wrong: never relax an assertion to make this pass. An argparse
+      "unrecognized arguments: --randomly-seed=last" error is not a test failure: it means the seed
+      selector was replaced by -p no:randomly, which disables the plugin that owns the flag pyproject.toml's
+      addopts still passes. Keep the explicit fixed seed (scripts.checks._scaffolding._PYTEST_RANDOMLY_SEED).
     hermetic: false
     graduation: not-applicable
   - step: 4
@@ -314,31 +328,49 @@ verification_plan:
   - step: 8
     phase: pre-deploy
     action: >-
-      Roadmap bookkeeping is an amendment, not a row addition, and c9 stays open. Asserts the tier_item
-      count is unchanged against origin/main, that c9's status is still open, that its text gained the
-      dated re-grounding block naming the missing input, and that the three dead files_in_scope entries
+      Roadmap bookkeeping is an amendment, not a row addition, and c9 stays open. Reads
+      docs/ROADMAP-PLATFORM.yaml at origin/main and diffs its tier_item id SET against the working
+      tree's -- the "no roadmap ROW ADDITIONS" constraint made assertable rather than merely asserted
+      (Decision 163: a universal obligation is enforced structurally, not declared in metadata). Also
+      asserts c9 is still open, that its text gained the one-line re-grounding naming both the missing
+      derivation input and the deferred value's owner, and that the three dead files_in_scope entries
       are gone.
     command: >-
-      bin/venv-python -c "import yaml,pathlib;
+      bin/venv-python -c "import subprocess,yaml,pathlib;
+      base=yaml.safe_load(subprocess.run(['git','show','origin/main:docs/ROADMAP-PLATFORM.yaml'],capture_output=True,text=True,check=True).stdout);
       d=yaml.safe_load(pathlib.Path('docs/ROADMAP-PLATFORM.yaml').read_text(encoding='utf-8'));
-      it=[i for i in d['tier_items'] if i['id']=='T1.13'][0]; c=[x for x in it['exit_criteria'] if
-      x['id']=='c9'][0]; assert c['status']=='open' and 'gate_is_postmerge_canary' in c['text'];
+      b={i['id'] for i in base['tier_items']}; n={i['id'] for i in d['tier_items']};
+      assert n==b, {'added':sorted(n-b),'removed':sorted(b-n)};
+      it=[i for i in d['tier_items'] if i['id']=='T1.13'][0];
+      c=[x for x in it['exit_criteria'] if x['id']=='c9'][0];
+      assert c['status']=='open', c['status'];
+      assert 'gate_is_postmerge_canary' in c['text'], 'c9 re-grounding absent';
+      assert 'rec-3666' in c['text'], 'c9 does not name the deferred check_absent owner';
       dead={'docs/INTENT-ci-rca-methodology.md','scripts/ci_rca/evidence.py','scripts/ci_rca_gate_evidence.py'};
       assert not (dead & set(it['files_in_scope'])), sorted(dead & set(it['files_in_scope']));
-      print('ROADMAP_C9_OK')"
-    expected: Exit 0 and ROADMAP_OK naming the unchanged item count, c9=open, and the re-grounded files_in_scope.
+      print('ROADMAP_OK tier_items='+str(len(n))+' added=0 removed=0 c9=open check_absent_owner=rec-3666')"
+    expected: >-
+      Exit 0 and a `ROADMAP_OK` line carrying the tier_item count, `added=0 removed=0` against
+      origin/main, `c9=open`, and `check_absent_owner=rec-3666`.
     fix_if: >-
       A non-empty 'added' list means a roadmap ROW was added -- the human forbade row additions in this
-      run; revert it and express the change as criterion text. A c9 status other than open means the
-      criterion was flipped: /plan and /implement never infer 'met', and c9's part (a) throttle is
-      unbuilt by design. A surviving dead path means the files_in_scope re-grounding was skipped.
+      run; revert it and express the change as criterion text. A non-empty 'removed' list means an item
+      was deleted, which this plan never sanctions. A c9 status other than open means the criterion was
+      flipped: /plan and /implement never infer 'met', and c9's part (a) throttle is unbuilt by design.
+      A missing rec-3666 means the c9 line named the check_absent deferral without naming its owner --
+      the declared-but-unowned mode this plan exists to stop. A surviving dead path means the
+      files_in_scope re-grounding was skipped. A CalledProcessError on git show means origin/main was
+      never fetched: run git fetch origin main, do not weaken the assertion to a working-tree-only check.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
-      Base-relative and transient: the item-count and text-delta clauses compare against origin/main,
-      which after this PR merges already carries the amended text, so the assertion inverts. The durable
-      half -- that every tier_item id resolves and criteria carry valid statuses -- is already a
-      registered check running in both tiers (validate_platform_roadmap).
+      Two of the four clauses are base-relative and invert on merge: once this PR lands, origin/main
+      itself carries the amended c9 text, so the text-delta and owner clauses stop discriminating. The
+      id-set clause does not invert, but as a standing check it would assert "the roadmap never gains a
+      row", which is false of the roadmap in general and true only inside this plan's window. The
+      durable half -- every tier_item id resolves, criteria carry valid statuses, and the file stays
+      under its line ceiling -- is already a registered check running in both tiers
+      (validate_platform_roadmap).
   - step: 9
     phase: pre-deploy
     action: >-
@@ -374,9 +406,13 @@ verification_plan:
       bin/venv-python -m scripts.checks.deps.selection_budget --plan
       docs/plans/PLAN-escape-mode-classifier-repair.yaml --json
     expected: >-
-      Exit 0 and a JSON record whose predicted_outcome is "within_budget". Measured at authoring time on
-      the same scope: n_selected 117 of a 544 census, predicted CI elapsed 103.5-132.4s against a 240s
-      non-test budget and a 234s test allowance.
+      Exit 0 and a JSON record whose predicted_outcome is "within_budget". Re-measured 2026-09-06 after
+      the round-1 scout edits, on this exact scope: n_selected 113 of a 544 census, predicted elapsed
+      98.4-125.6s of which the test half is 47.4-53.8s, leaving a non-test half of 51.0-71.8s against
+      the UNWAIVABLE 240s NON_TEST_BUDGET_SECONDS, with allowance_s 226.0 for the test half. Read every
+      integer as drift-prone: the scout's independent run on a slightly different tree returned
+      n_selected 111 of a 539 census with the same within_budget verdict, and the non-test half is a
+      pair of module constants (_PREDICT_NON_TEST_LOW/HIGH), not a scope-derived quantity.
     fix_if: >-
       "breach" means SPLIT the scope into atomic units until the prediction clears -- selection breadth,
       not the scope-row count, is the quantity to plan against. "breadth_waived" means keep the scope but
@@ -476,22 +512,34 @@ test_obligations:
     test_selector: tests/checks/contracts/test_validate_ci_rca_lifecycle_projection.py
     red_green_expectation: red before (the key is absent), green after; step 7's corrupted-copy arm proves the parity assertion bites.
   - source: docs/ROADMAP-PLATFORM.yaml
-    behavior: T1.13:c9 carries the dated re-grounding block and stays open; no tier_item row is added; files_in_scope resolves.
+    behavior: >-
+      T1.13:c9 carries the one-line re-grounding, names rec-3666, and stays open; the tier_item id set
+      is unchanged against origin/main; files_in_scope resolves.
     verification_step: 8
     command: >-
-      bin/venv-python -c "import yaml,pathlib;
+      bin/venv-python -c "import subprocess,yaml,pathlib;
+      base=yaml.safe_load(subprocess.run(['git','show','origin/main:docs/ROADMAP-PLATFORM.yaml'],capture_output=True,text=True,check=True).stdout);
       d=yaml.safe_load(pathlib.Path('docs/ROADMAP-PLATFORM.yaml').read_text(encoding='utf-8'));
-      it=[i for i in d['tier_items'] if i['id']=='T1.13'][0]; c=[x for x in it['exit_criteria'] if
-      x['id']=='c9'][0]; assert c['status']=='open' and 'gate_is_postmerge_canary' in c['text'];
+      b={i['id'] for i in base['tier_items']}; n={i['id'] for i in d['tier_items']};
+      assert n==b, {'added':sorted(n-b),'removed':sorted(b-n)};
+      it=[i for i in d['tier_items'] if i['id']=='T1.13'][0];
+      c=[x for x in it['exit_criteria'] if x['id']=='c9'][0];
+      assert c['status']=='open', c['status'];
+      assert 'gate_is_postmerge_canary' in c['text'], 'c9 re-grounding absent';
+      assert 'rec-3666' in c['text'], 'c9 does not name the deferred check_absent owner';
       dead={'docs/INTENT-ci-rca-methodology.md','scripts/ci_rca/evidence.py','scripts/ci_rca_gate_evidence.py'};
       assert not (dead & set(it['files_in_scope'])), sorted(dead & set(it['files_in_scope']));
-      print('ROADMAP_C9_OK')"
-    red_green_expectation: red before (the phrase is absent from c9's text), green after.
+      print('ROADMAP_OK tier_items='+str(len(n))+' added=0 removed=0 c9=open check_absent_owner=rec-3666')"
+    red_green_expectation: >-
+      red before (the phrase and the rec id are both absent from c9's text), green after; the id-set
+      clause is green in both states and is the no-row-addition half.
 constraints:
   - >-
-    Decision 182: the 240s non-test fast-tier half is UNWAIVABLE. Step 10 carries the budget prediction
-    and must report within_budget; measured within_budget at authoring time (n_selected 117, predicted
-    103.5-132.4s).
+    Decision 182: the 240s non-test fast-tier half is UNWAIVABLE -- no bypass, forced-scope, breadth or
+    fallback path reaches it, and its non_test_breach verdict is explicitly not fixable by re-scoping.
+    Step 10 carries the prediction and must report within_budget; re-measured 2026-09-06 on the final
+    scope: n_selected 113 of 544, elapsed 98.4-125.6s, test half 47.4-53.8s, non-test half 51.0-71.8s.
+    Re-measure at /implement time rather than trusting these integers.
   - >-
     Decision 128: decompose, never raise a SLOC budget. Measured headroom to the 500 limit on every
     touched source file at authoring time: vacuous_pass 378, _bundle_core 391, taxonomy 200, probe_health
@@ -530,52 +578,56 @@ constraints:
   - >-
     A content change to docs/contracts/ci-rca-lifecycle.yaml REQUIRES a new amendment_log[] entry
     (enforced by scripts/checks/contracts/_population.py:374-388).
+  - >-
+    This plan mints NO numbered Decision, and that is an adjudication, not an assumption. Applying
+    docs/contracts/decision-entry.yaml's three routing questions: questions 1 and 2 fail on this plan's
+    own rollback ("reverting the commit restores the prior classifier exactly. No data migration"), and
+    question 3 fails because every element already has an owning row -- the field's meaning routes to
+    field_semantics (the projection_fields entry in docs/contracts/ci-rca-lifecycle.yaml this plan
+    writes), the gauge routes to operational_fact, and the c9 amendment routes to work_item, all three
+    of which read "Never a numbered Decision". Rationale routes to the PR body plus that contract note.
+    Do not draft a `## Decision NNN:` header for any part of this work.
   - No rescue agents or workaround loops (Decision 55).
 context:
   - >-
-    "Decision-scout verdict + CITE list (verbatim decision ids)"
+    decision-scout=FLAGS_FOUND. Decisions triaged: 136 of 136. Roadmap items intersected: 6; CONFLICT: 1; RELATED: 4.
+    CITE: Decision 167 (the no-numbered-Decision routing adjudication, worked in constraints), 168 (Class D clause 2,
+    "resolution by evidence of reading, not by mention", governs the declare-and-generalise move on
+    validate_ci_rca_lifecycle_projection), 136 (exit-criteria ledger, governs c9), 163, 147, 148, 182, 128, 84, 79, 55.
   - >-
-    "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s)"
+    gates: decision-scout=FLAGS_FOUND after 1 round (8 flags, all applied, none disputed); plan-critique=<verdict>
+    after <N> round(s), dispatched as two narrower halves -- design, then constraints.
   - >-
-    Follow-on /plan on T1.13 (in_progress). closes_criteria EMPTY by design: c9 stays open on part (a)'s
-    rec-2415 throttle, unbuilt (ROADMAP-PLATFORM.yaml:3655-3657). This repairs part (c), amends c9 text.
+    Follow-on /plan on T1.13 (in_progress). closes_criteria EMPTY by design: c9 holds open on part (a)'s unbuilt
+    rec-2415 throttle. This repairs part (c). Its fourth value check_absent is deferred to rec-3666, filed at PLAN
+    time rather than /implement so the c9 line names a real owner, not a bare deferral (the T1.13 CONFLICT flag).
   - >-
-    Measured over logs/.recommendations-log.jsonl, 92 escape-classified recs: tier_misplaced 50,
-    undetermined 42, check_ran_vacuously 0, no_premerge_gate_by_design 0. Monthly 0/3, 22/69, 18/18, 2/2
-    (2026-06..09). 23 recs pair rca_confidence=high with escape_mode=undetermined.
+    92 escape-classified recs in logs/.recommendations-log.jsonl: tier_misplaced 50, undetermined 42, other two 0;
+    monthly 0/3, 22/69, 18/18, 2/2 (2026-06..09). Cross-tab actual_gate x escape_mode splits the 42 with zero residue:
+    (CI,undetermined)=25 is the precedence bug, (unknown,undetermined)=17 the erased not_a_gate tier. ATTRIBUTION
+    BASIS -- _DetectionGap projects only earliest_viable_gate, actual_gate_that_caught_it, gap_explanation and
+    escape_mode, so the classifier INPUTS ARE ABSENT from stored rows, never 'undetermined': the 25/17 split rests on
+    the wf_tier identity, NOT on stored inputs read back. Corroboration: rec-3328, rec-2965.
   - >-
-    Cross-tab actual_gate x escape_mode splits the 42 abstentions with zero residue: (CI,undetermined)=25
-    is the precedence bug, (unknown,undetermined)=17 the erased not_a_gate tier. All 17 are
-    terraform-apply-sandbox / reconcile / rec-autoclose, each tier not_a_gate in ci_rca_taxonomy.yaml --
-    erasures, not misses. Prose corroboration: rec-3328 gap_explanation, rec-2965 why_chain.
+    Why vacuous-first, not canary-first: only 2 of 22 taxonomy workflows carry a real tier, so canary-first makes
+    escape_mode a restatement of actual_gate and leaves check_ran_vacuously unreachable. Vacuous-first recovers the
+    same 25 and breaks none of the 8 existing truth-table rows (hand-verified at authoring, re-verified row-by-row).
   - >-
-    RCA's PR #797 truncation contributor is STALE, no truncation work in scope: PR #849 (07e48c91,
-    2026-08-04) already swapped head-only bounding for bound_text_windowed (fetch_logs.py:334), retaining
-    the tail carrying the pytest summary; the field stayed 100% undetermined anyway.
+    Fix 3 adds nothing beyond the deferral: gate_bypassed is real (rec-3570) but underivable from current bundle
+    inputs, and an unemittable enum value recreates this very defect. Fix 4 ships the gauge and the check-3 mirror but
+    NO escalation -- it counts a trailing window, so post-merge it would file a rec for this PR's own fix.
   - >-
-    Why vacuous-first, not the literal canary-first hoist: only 2 of 22 taxonomy workflows carry a real
-    tier, the other 20 are not_a_gate, so canary-first makes escape_mode a pure restatement of
-    actual_gate (dead becomes redundant) and leaves check_ran_vacuously unreachable. Vacuous-first
-    recovers the same 25, breaks none of the 8 existing truth-table rows (hand-verified).
+    Decision 79/125/126 measured, not assumed: compute_affected_artifacts returns {'data-pipeline':
+    ['docs/ROADMAP-PLATFORM.yaml']} -- ASSET-only affectedness on an active artifact, no handler or include touched, and
+    deploy-prod-lambdas.yml's on.push.paths (mirrored in PROD_SOURCE_PATHSPECS) excludes it: no code ships, V2 retained.
   - >-
-    Fix 3 adds NOTHING, deliberately: not_applicable has no derivation; gate_bypassed is real (rec-3570)
-    but underivable from current bundle inputs, and an unemittable enum value recreates this very defect;
-    check_absent (tier_membership is None) would reclassify ~40 recs. So scope touches neither
-    ci_rca_schema.py nor rec_write_guidance.py, cutting overlap with the escape-closure-obligation slice
-    from three files to one. Fix 4 ships gauge + check-3 mirror but no escalation: the gauge counts recs
-    created in a trailing window, so for ~14 days post-merge it would file a rec for the defect this PR
-    fixes.
+    T1.13 Freshness Gate: silent-completion NO, supersession NO, gating decisions NONE; stale-reference FIRES on the
+    three dead files_in_scope paths, so re-grounding is an explicit scope row. Preflight: venv/creds ok, 0 behind 0
+    ahead, ci_rca_unresolved_recs empty, softcap 966, data_quality null; live ci_rca_abstention_gauge 0/5 = 0.0% at
+    14d, the false green. RCA's PR #797 truncation contributor is STALE (PR #849, 07e48c91) -- none in scope.
   - >-
-    T1.13 Freshness Gate: silent-completion NO, supersession NO, gating decisions NONE. Stale-reference
-    FIRES -- docs/INTENT-ci-rca-methodology.md, scripts/ci_rca/evidence.py, scripts/ci_rca_gate_evidence.py
-    are gone; files_in_scope re-grounding is an explicit scope row in the same roadmap edit. Preflight:
-    venv/creds ok, 0 behind 0 ahead, ci_rca_unresolved_recs empty, softcap breached (966),
-    data_quality.last_run null; live ci_rca_abstention_gauge reads 0/5 = 0.0% at 14d, the false green.
-  - >-
-    Deferred halves /implement files at Step 7 closure and writes back to followon_recs: (i) check_absent
-    from tier_membership is None; (ii) gate_bypassed plus a deterministic merge-bypass input, covering
-    the 10 recs whose earliest_viable_gate is already 'pre' yet read tier_misplaced; (iii) escape_mode
-    abstention escalation once a post-fix rate is observed.
+    Remaining deferred halves, filed at /implement Step 7 into followon_recs: (i) gate_bypassed plus a deterministic
+    merge-bypass input (the 10 recs whose earliest_viable_gate is 'pre' yet read tier_misplaced); (ii) escalation.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -620,12 +672,19 @@ execution_steps:
     the abstention_surface note recording the second gauge and why it is additive, and add the
     amendment_log entry.
   - >-
-    docs/ROADMAP-PLATFORM.yaml -- append the dated re-grounding block to T1.13:c9's text and re-ground
-    T1.13's files_in_scope. No row addition, no status flip.
+    docs/ROADMAP-PLATFORM.yaml -- append exactly ONE re-grounding line to T1.13:c9's text, not a third
+    dated narrative block (Decision 147). Shape: "[RE-GROUNDED 2026-09-06,
+    PLAN-escape-mode-classifier-repair]: part (c)'s derivation omits gate_is_postmerge_canary and
+    erases the not_a_gate tier, which is why escape_mode read undetermined 100% from 2026-08-02; this
+    plan repairs three of the four values and defers check_absent to rec-3666. c9 stays open on part
+    (a)." Then re-ground T1.13's files_in_scope. No row addition, no status flip.
   - Add the failing-first test rows named in test_obligations to each of the six test files in scope.
   - >-
-    File the three deferred halves via scripts.ops_data_portal file_rec and write the returned ids back
-    into this plan's followon_recs at Step 7 closure, before implementation_declared is set true.
+    File the TWO remaining deferred halves (gate_bypassed; abstention escalation) via
+    scripts.ops_data_portal file_rec -- calling get_rec_write_guidance() first per Decision 66 -- and
+    append the returned ids to this plan's followon_recs at Step 7 closure, before
+    implementation_declared is set true. The third half, check_absent, was filed at plan time as
+    rec-3666 precisely so the c9 line above could name a real owner; do not re-file it.
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - 'Report: what was implemented, verification results'
 work_areas: []
