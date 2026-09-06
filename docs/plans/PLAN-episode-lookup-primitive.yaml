@@ -229,8 +229,8 @@ acceptance_criteria:
     Every open tf_convergence_stale rec except ONE keeper for the source is closed as superseded
     naming that keeper, leaving exactly one open rec for the source. Keyed on SOURCE, not
     (source, title), because that is the runtime grain: find_open_convergence_stale_rec
-    (escalate.py:53-60) matches on source+status and is title-BLIND, and
-    _condition_from_existing_rec (:83-92) exists precisely because one rec covers all three
+    (escalate.py:52-60) matches on source+status and is title-BLIND, and
+    _condition_from_existing_rec (:82-92) exists precisely because one rec covers all three
     conditions. A per-title cleanup would leave a second rec the sensor picks up on no tick and
     never closes. At planning time the population is 23 open, so the rule closes 22 and leaves 1.
   - >-
@@ -381,8 +381,9 @@ verification_plan:
   - step: 11
     phase: post-deploy
     action: >-
-      RUN AFTER MERGE, not before. PROPOSE the duplicate closures -- prints the keeper per (source,
-      title) and the ids it would supersede, and writes nothing. Decision 103 requires a semantic
+      RUN AFTER MERGE, not before. PROPOSE the duplicate closures -- prints THE keeper for the
+      source (newest open rec, title-blind) and the ids it would supersede, and writes nothing.
+      Decision 103 requires a semantic
       verdict (duplicate/superseded) to produce a close_proposal for human confirmation before any
       close; the operator's standing direction licensed the RULE, this step puts the LIST in front
       of them. Sequenced post-merge because convergence-health's hourly cron on main keeps re-filing
@@ -504,9 +505,11 @@ constraints:
   - Reads transit the DuckLake reader; writes transit file_rec/update_rec. The local JSONL is never a write source.
   - One read per `source` per invocation, sub-keyed locally for multiple episodes under one source. Do not build a cross-source cache.
   - >-
-    find_rec RAISES when the reader is unreachable; it never fails open. This diverges deliberately
-    from the three current_state precedents (ci_rca_runtime.py:72, ci_rca_lifecycle.py:53,
-    convergence_dedup.py:109), which log a warning and return empty. Fail-open on a DEDUP read is
+    find_rec RAISES when the reader is unreachable; it never fails open. TWO of the three
+    current_state precedents fail open (ci_rca_runtime.py:72 and convergence_dedup.py:109, each a
+    try/except + _is_reader_unreachable_error + logger.warning); the third,
+    ci_rca_lifecycle.py:53, has no exception handling and already propagates -- so an in-tree
+    raising precedent exists and this is a divergence from two, not three. Fail-open on a DEDUP read is
     indistinguishable from 'no open rec' and re-files a duplicate -- it reproduces this plan's own
     defect by a different route (Decision 55 loud failure).
   - >-
@@ -516,7 +519,7 @@ constraints:
 context:
   - "decision-scout=FLAGS_FOUND. Decisions triaged: 136 of 136. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 2. CITE: Decision 84 (I-3 structural filter, I-4 loud-fail), Decision 88 (egress budget, invariant (ii)), Decision 61 (source as origin discriminator), Decision 62 + 2026-06-16 amendment, Decision 55, Decision 124 (ops_portal unmapped -> flat home), Decision 131 (mirror rule), Decision 132 (graduation obligation), Decision 103 (close_proposed, never a direct close), Decision 169 (bare string literals in Entry), Decision 176 + docs/contracts/verification-registry.yaml (shard retirement into entries/deprecated/ and the one-shot-claim graduation rule), CD.12."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 1 round"
-  - "Defect: escalate.py:70 _fetch_open_recs uses named('open_recs') -> SELECT id,title,context,created_timestamp,automatable; three finders filter on source/status (escalate.py:58, code_drift.py:92, code_drift.py:287) so all three always return None."
+  - "Defect: escalate.py:70 _fetch_open_recs uses named('open_recs') -> SELECT id,title,context,created_timestamp,automatable; three finders filter on source/status (escalate.py:57, code_drift.py:89, code_drift.py:284) so all three always return None."
   - "Tracking recs: rec-3291 (open, High, 2026-08-27, file=code_drift.py) is the ORIGINAL; rec-3563 (open, High, 2026-09-04, file=escalate.py) is its undetected duplicate -- two recs on ONE defect, indexed under different files, which is why the relevance engine's same-file open-duplicate check never compared them. rec-3563 states 'the call-site fix is sequenced as a separate follow-on' -- this plan is that follow-on. Its acceptance names TestFindOpenConvergenceStaleRec and the xfail removal, which is why VP step 4 is that exact command and the class name is retained."
   - "Already diagnosed once: scripts/checks/_budget_recs.py:135 documents this exact failure mode and worked around it for one consumer only."
   - "Realised damage: 31 tf_convergence_stale recs total, 2026-08-15 -> 2026-09-02 (~3 weeks) -- 8 already closed by hand, 23 still open across TWO titles (14 persistently_red, 9 stale_green_backlog). The cleanup toll has been paid twice before. Both code_drift sources have 0 rows ever, so their copy is latent."
@@ -536,7 +539,7 @@ pre_implementation_checklist:
   - Re-confirm the open tf_convergence_stale count before VP step 11; it was 23 at planning time and the rule leaves exactly 1
 execution_steps:
   - "Create scripts/rec_episode.py: find_rec(source, *, statuses=('open',), sub_key=None, rows=None) with the missing-key assertion, decide() re-homed from assess.escalation_action, run_episode() with build_fields/build_update/build_close hooks plus suppress_file, and a main() carrying only --probe/--count."
-  - "Create scripts/rec_episode_dedupe.py with --propose/--confirm and newest-per-(source, title) keeper selection."
+  - "Create scripts/rec_episode_dedupe.py with --propose/--confirm and keeper selection = the newest open rec PER SOURCE, title-blind, matching find_open_convergence_stale_rec's own predicate. NOT per-(source, title): that grain would leave a second rec the sensor never picks up."
   - "Write tests/test_rec_episode.py and tests/test_rec_episode_dedupe.py first (red)."
   - "Create scripts/checks/hygiene/validate_episode_lookup_projection.py with DATA-FLOW linkage (not module co-occurrence), its _manifest.py Entry, its ci_rca_taxonomy row, and its mirror test including the recs_cache.py non-flagging case."
   - "Migrate scripts/convergence_health/escalate.py onto run_episode; delete _fetch_open_recs and find_open_convergence_stale_rec; keep all per-condition text and _condition_from_existing_rec."
