@@ -1,0 +1,281 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "scope-boundary-test-coupling"
+intent: >-
+  Remove the recurring collision in which a plan that legitimately refreshes docs/PROJECT_CONTEXT.md's
+  roadmap_tier_id_set stamp is forced to touch an undeclared test file, by deleting the false literal
+  assertion at its source and recording in the scope-boundary contract that sanction rows never cover
+  hand-written test files -- narrowing Decision 59's guard rather than widening it.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-scope-boundary-test-coupling.yaml
+phase: >-
+  Platform verification-system hardening. Ad hoc, soft-warn category ad_hoc_rec; no tier_item claimed and
+  no roadmap exit criterion closed, so this plan declares no closes_criteria. RELATED (not targeted):
+  T2.54 (clause-to-check traceability -- adds one more clause/pin-test edge), T2.56 (normative layering --
+  routes field semantics into the owning contract).
+scope:
+  - file: tests/docs/test_project_context.py
+    action: Modify
+    purpose: >-
+      Replace the string-literal roadmap_tier_id_set fingerprint assertion with the stamp grammar
+      _check_endstate_drift actually consumes, so a legitimate stamp refresh no longer reds this test.
+  - file: docs/contracts/implement-scope-boundary.yaml
+    action: Modify
+    purpose: >-
+      Add sanction_row_eligibility (hand-written test files are never eligible) and
+      implementing_plan_bookkeeping.amendment_procedure (how the two-act escape clears both invariants),
+      plus the Class D amendment_log entry. Additive only.
+  - file: tests/test_scope_boundary_contract.py
+    action: Modify
+    purpose: Pin both new contract clauses so neither degrades to prose nothing asserts (Decision 163).
+  - file: docs/plans/PLAN-scope-boundary-test-coupling.yaml
+    action: Modify
+    purpose: implementation_declared and graduation bookkeeping at closure.
+bundled_recommendations: []
+followon_recs:
+  - rec-3667
+  - rec-3668
+infrastructure_dependencies: []
+acceptance_criteria:
+  - tests/docs/test_project_context.py pins no literal 64-hex fingerprint; it asserts the stamp grammar instead.
+  - >-
+    A well-formed stamp refresh leaves the working-tree copy of that test green while origin/main's copy of
+    the same test goes red on the identical tree.
+  - >-
+    docs/contracts/implement-scope-boundary.yaml declares sanction_row_eligibility naming hand-written test
+    files ineligible, citing the rec-3357 CONTENT residual as the reason.
+  - >-
+    sanction_rows.implementing_plan_bookkeeping carries amendment_procedure stating that the scope amendment
+    lands on main first, so the implement diff compares against the amended base.
+  - A new dated amendment_log entry records both additions and carries a Decision 75 conscious-choice note.
+  - >-
+    Decision 59's guard is not weakened: no sanction row is added, no existing field is modified, the
+    evaluator module is untouched, and an undeclared test path still STOPs.
+  - The contract note does not contain the token structural_size_budgets, so rec-3586's oracle stays FALSE.
+  - rec-3586 is narrowed through update_rec to its two remaining items, not silently superseded.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    hermetic: false
+    action: >-
+      A LEGITIMATE STAMP REFRESH NO LONGER BREAKS THE DOCS TEST. Builds a scratch tree carrying a mutated but
+      well-formed stamp, runs origin/main's copy of the test against it (must FAIL -- this is the coupling),
+      then the working-tree copy against the identical tree (must PASS). Red on origin/main by construction.
+      Mechanism prototyped at plan time against a hand-applied fix and confirmed to print DIFFERENTIAL-OK.
+    command: 'S=$(mktemp -d) && mkdir -p "$S/tests/docs" "$S/docs" && sed -E "s/roadmap_tier_id_set sha256: [0-9a-f]{64}/roadmap_tier_id_set sha256: 2fdd9e1f0d84a6b5423cbe77884ba19837d678135bd77c14400c0269295724cb/" docs/PROJECT_CONTEXT.md > "$S/docs/PROJECT_CONTEXT.md" && git show origin/main:tests/docs/test_project_context.py > "$S/tests/docs/test_project_context.py" && ! bin/venv-python -m pytest "$S/tests/docs/test_project_context.py" -q > /dev/null 2>&1 && cp tests/docs/test_project_context.py "$S/tests/docs/test_project_context.py" && bin/venv-python -m pytest "$S/tests/docs/test_project_context.py" -q > /dev/null && echo DIFFERENTIAL-OK'
+    expected: DIFFERENTIAL-OK
+    fix_if: >-
+      Base copy PASSES on a mutated stamp -- the literal is already gone from origin/main, so rebase and
+      re-read. Working-tree copy FAILS -- the replacement assertion is stricter than the stamp grammar
+      _check_endstate_drift consumes; loosen it to match the consumer regex, never the reverse.
+    graduation: not-applicable
+  - step: 2
+    phase: pre-deploy
+    hermetic: true
+    action: >-
+      NO DERIVED FINGERPRINT LITERAL SURVIVES IN THE DOCS TEST. Standing regression guard against
+      re-introducing the coupling. Red on origin/main (exactly one 64-hex literal is present there today).
+    command: 'test "$(grep -coE "[0-9a-f]{64}" tests/docs/test_project_context.py || true)" = "0" && echo NO-FINGERPRINT-LITERAL'
+    expected: NO-FINGERPRINT-LITERAL
+    fix_if: >-
+      A 64-hex literal remains -- the assertion was rewritten to pin a different derived value rather than
+      the stamp's grammar.
+    graduation: graduate
+    graduation_check_id: docs-context-test-pins-no-fingerprint-literal
+  - step: 3
+    phase: pre-deploy
+    hermetic: false
+    action: >-
+      BOTH NEW CONTRACT CLAUSES ARE PINNED AND THE AMENDED DOCS TEST IS GREEN. Red on origin/main (neither
+      sanction_row_eligibility nor amendment_procedure exists there, so the new pin tests fail).
+    command: bin/venv-python -m pytest tests/test_scope_boundary_contract.py tests/docs/test_project_context.py -q
+    expected: all tests pass, including the two new pin tests
+    fix_if: >-
+      A pin test fails -- the contract clause was authored under a different key or nesting than the test
+      reads. Reconcile the test to the contract's actual shape; never delete the pin to obtain green.
+    graduation: waive
+    graduation_waiver_reason: >-
+      Both selectors already execute inside the repository's standing pytest sweep in the --pre and full
+      tiers, so a registry shard would re-run an already-standing guard rather than add one. Step 2 carries
+      the graduated guard for this plan's genuinely new invariant.
+  - step: 4
+    phase: pre-deploy
+    hermetic: false
+    action: >-
+      THE EVALUATOR'S BEHAVIOUR IS UNCHANGED. The scope-boundary check's own suite still passes against the
+      amended contract, proving the two additive keys neither break the loader nor introduce an unimplemented
+      trigger kind (which validate_scope_boundary fails loudly on, never silently skips).
+    command: bin/venv-python -m pytest tests/checks/verification/validate_scope_boundary -q
+    expected: all tests pass
+    fix_if: >-
+      A sanction-row dispatch test fails -- a new key was nested inside sanction_rows where the check iterates
+      rows and read it as a row with no trigger.kind. sanction_row_eligibility is TOP-LEVEL, a sibling of
+      sanction_rows, precisely so the row loop never sees it.
+    graduation: waive
+    graduation_waiver_reason: >-
+      Whole-package selector already executed by the standing pytest sweep in both validate tiers; graduating
+      it would duplicate an existing standing guard.
+  - step: 5
+    phase: pre-deploy
+    hermetic: true
+    action: >-
+      NON-WEAKENING PROOF -- AN UNDECLARED TEST PATH STILL STOPS. Dispatches the real enforcing leg against
+      this plan with a touched test path deliberately left out of its scope. The guard must still fail; if it
+      passes, this change widened the boundary rather than narrowing it.
+    command: "bin/venv-python -c \"from pathlib import Path; from scripts.checks.verification.validate_scope_boundary import validate_scope_boundary as v; f=[]; v(f, plan_paths=['docs/plans/PLAN-scope-boundary-test-coupling.yaml'], changed_files=['tests/session/preflight/test_context_docs.py'], root=Path('.')); assert any('outside declared scope' in x for x in f), 'GUARD WEAKENED: an undeclared test path no longer STOPs'; print('GUARD-INTACT')\""
+    expected: GUARD-INTACT
+    fix_if: >-
+      No failure is raised -- a sanction row covering test paths was added despite this plan forbidding it, or
+      the path was added to scope. Both are prohibited; revert and re-read sanction_row_eligibility.
+    graduation: waive
+    graduation_waiver_reason: >-
+      The probe names this plan's own path, which the graduated shard would outlive; a standing check keyed to
+      a single retired plan file rots into a false pass. The invariant it proves is already the subject of the
+      scope-boundary package exercised in step 4.
+  - step: 6
+    phase: pre-deploy
+    hermetic: true
+    action: >-
+      THE CONTRACT NOTE DOES NOT FLIP rec-3586's ACCEPTANCE ORACLE. That oracle is a conjunction of greps for
+      structural_size_budgets and sanction_rows in this contract; the first token appears zero times today, so
+      the oracle is FALSE. Introducing the token while describing which of rec-3586's rows are narrowed would
+      flip it TRUE and expose the rec to deterministic auto-closure with two items unaddressed.
+    command: '! grep -q structural_size_budgets docs/contracts/implement-scope-boundary.yaml && grep -q sanction_row_eligibility docs/contracts/implement-scope-boundary.yaml && echo ORACLE-SAFE'
+    expected: ORACLE-SAFE
+    fix_if: >-
+      The token is present -- reword the eligibility note to describe the size-budget companion by role rather
+      than by config filename.
+    graduation: waive
+    graduation_waiver_reason: >-
+      This is a transitional guard, not a durable invariant: rec-3586 item 2 legitimately proposes a row for
+      that very file, so a standing check forbidding the token would become wrong the moment that row lands.
+  - step: 7
+    phase: pre-deploy
+    hermetic: false
+    action: >-
+      rec-3586 IS NARROWED THROUGH THE GOVERNED PORTAL, NOT SILENTLY SUPERSEDED (Decision 103). Verified from
+      the read cache after a pull, never by writing the cache.
+    command: bin/venv-python -m scripts.sync.ops sync > /dev/null && grep rec-3586 logs/.recommendations-log.jsonl | grep -q "narrowed by PLAN-scope-boundary-test-coupling" && echo REC-3586-NARROWED
+    expected: REC-3586-NARROWED
+    fix_if: >-
+      The marker phrase is absent -- the update_rec call in the execution steps did not run, or wrote a
+      different phrase. Re-run update_rec; never edit logs/.recommendations-log.jsonl directly.
+    graduation: not-applicable
+  - step: 8
+    phase: pre-deploy
+    hermetic: false
+    action: FAST-TIER GATE. The authoritative pre-merge gate when run by PR CI (Decision 73).
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: Any check fails -- diagnose and fix on the branch; no rec is filed for a PR-branch --pre failure.
+    graduation: not-applicable
+test_obligations:
+  - source: docs/contracts/implement-scope-boundary.yaml
+    behavior: >-
+      sanction_row_eligibility declares hand-written test files ineligible for a sanction row, and
+      implementing_plan_bookkeeping documents the two-act amendment procedure that clears both invariants.
+    verification_step: 3
+    test_selector: tests/test_scope_boundary_contract.py::TestContractShape::test_sanction_row_eligibility_excludes_hand_written_test_files
+    red_green_expectation: >-
+      Red before -- the sanction_row_eligibility key does not exist at origin/main, so the pin test raises
+      KeyError. Green after.
+constraints:
+  - >-
+    ADDITIVE ONLY on the contract. No existing field is modified, no sanction row is added, and the tri-surface
+    STOP disposition string stays byte-identical across the contract row, deviation_trigger branch (b) and the
+    check module (Decision 181 CONTENT never-weaken).
+  - >-
+    sanction_row_eligibility is a TOP-LEVEL key, a sibling of sanction_rows -- never nested inside it, where
+    validate_scope_boundary's row loop would read it as a row declaring no trigger.kind and fail loudly.
+  - Do not modify scripts/checks/verification/validate_scope_boundary.py. Enforcement changes by data, not code.
+  - >-
+    Do not edit docs/plans/PLAN-step-functions-executor-host.yaml or docs/PROJECT_CONTEXT.md. The blocked plan
+    belongs to another session; the stamp value itself is owned by rec-3667.
+  - Do not add a numbered Decision -- field semantics route to the owning contract (Decision 86).
+  - No rescue agents or workaround loops (Decision 55).
+  - Out-of-scope bugs become recommendations via scripts.ops_data_portal, never inline fixes (Decision 59).
+context:
+  - "Decision-scout verdict: FLAGS_FOUND. CITE: Decision 59, Decision 168, Decision 86, Decision 163, Decision 75. Decisions triaged: 136 of 136. Roadmap items intersected: 2; CONFLICT: 0; RELATED: 0."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - >-
+    Trigger: an /implement session on branch claude/step-functions-executor-host-g2uadf (plan merged via
+    PR #1080) read the single-diff unsatisfiability as a contract contradiction and proposed a test-file
+    sanction row. It is not a contradiction -- see amendment_procedure, the clause this plan adds.
+  - >-
+    Reproduction at 67e54236: validate_scope_boundary(plan_paths=[PLAN-step-functions-executor-host.yaml],
+    changed_files=[docs/PROJECT_CONTEXT.md, tests/docs/test_project_context.py]) yields exactly 1 failure.
+  - >-
+    The literal is a false invariant, green only because a known drift is unaddressed: _check_endstate_drift
+    reports stale=True, new_ids [T4.15..T4.18], and the sha half has never been refreshed since e88b6664.
+  - >-
+    Coverage relocation, stated with its limit (Decision 181): presence, ref grammar and sha-vs-ref consistency
+    are guarded by tests/session/preflight/test_context_docs.py::TestEndstateStampRefResolves, but its
+    consistency test pytest.skips when the stamped commit is absent -- ci.yml runs pr-validate at fetch-depth 0
+    (resolves) and main-validate at fetch-depth 2 (skips), so the post-merge tier asserts nothing about the
+    stamp VALUE after this change. Declared, not glossed; owned by rec-3668. Do NOT cite the
+    endstate-stamp-ref-resolves shard instead: validate_verification_registry runs the differential gate only
+    for shards added or modified in the diff, so shards are not standing per-run checks.
+  - >-
+    Why not a sanction row: a row grants "may be touched without declaration"; granting that over tests/**
+    widens exactly the surface invariants.content.enforcement_coverage names as its dominant
+    residual_agent_obligation (residual_owner rec-3357). Rows model mechanically GENERATED companions; a
+    hand-written test is not one.
+  - >-
+    rec-3586 (open, High) proposes three new rows, item 3 being a hardcoded-count mirror test -- the same class
+    this plan refuses. Narrowed here, not closed. Its four current rows plus three proposed would reach 7,
+    tripping provisional_v0.re_ratification_trigger at >= 6.
+  - rec-3635 tracks the duplicated stamp grammar; this plan adds one consumer-mirroring copy and does not bundle it.
+  - >-
+    Out of scope, for the blocked plan's author: its VP step 21 asserts stamp == hash(working-tree roadmap ids)
+    while TestEndstateStampRefResolves asserts stamp == hash(ids at the stamp's ref commit). Both hold only if
+    a commit already carries the post-change roadmap, so an in-diff refresh that also adds tier ids is
+    unsatisfiable. Pointing the ref at a branch commit passes PR CI and then degrades to a permanent
+    pytest.skip on main after squash-merge. The stamp is a trailing artefact; rec-3667 owns its refresh.
+  - Branch reset onto origin/main at 67e54236 before planning; no scope file diverged.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections (59, 168, 86, 163, 75, 181, 55, 103)
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    tests/docs/test_project_context.py -- import re; replace the literal stamp assertion in
+    test_project_context_preserves_roadmap_end_state_orientation with a search for the grammar
+    _check_endstate_drift consumes (roadmap_tier_id_set sha256: followed by 64 hex). Leave the four
+    orientation assertions untouched. One short comment explaining why the value is not pinned.
+  - >-
+    docs/contracts/implement-scope-boundary.yaml -- add amendment_procedure to
+    sanction_rows.implementing_plan_bookkeeping stating the escape is two acts: the scope amendment lands on
+    main as its own reviewed PR first, so the implement diff resolves against the amended base ref, clearing
+    prohibited_field_edits and LOCATION together; a single diff is unsatisfiable by construction and that is
+    the guard working. Do not touch disposition_on_violation.
+  - >-
+    docs/contracts/implement-scope-boundary.yaml -- add the TOP-LEVEL sanction_row_eligibility key: eligible
+    means a path a tool regenerates as a mechanical consequence of an in-scope edit whose content is
+    independently governed; ineligible names hand-written test files, with the rec-3357 residual as the reason
+    and tests/docs/test_project_context.py as the precedent, and states the remedy is fixing the hardcoded
+    derived value at source. Reference rec-3586 as narrowed WITHOUT using the token structural_size_budgets.
+  - >-
+    docs/contracts/implement-scope-boundary.yaml -- append a dated amendment_log entry (semantic_break false,
+    change_class field_add) summarising both additions and carrying a Decision 75 conscious-choice note that
+    narrowing eligibility was chosen over sanctioning the companion.
+  - >-
+    tests/test_scope_boundary_contract.py -- add
+    TestContractShape::test_sanction_row_eligibility_excludes_hand_written_test_files (asserts the ineligible
+    subject, the rec-3357 citation and the rec-3586 narrowing reference) and
+    TestContractShape::test_bookkeeping_row_documents_the_two_act_amendment_procedure.
+  - >-
+    Call update_rec on rec-3586 rescoping it to its two remaining items and appending the exact phrase
+    "narrowed by PLAN-scope-boundary-test-coupling" to its context, and repair its acceptance oracle so the
+    probe still discriminates the un-narrowed half. Portal only -- never edit the JSONL cache.
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Every change is additive or a single-line assertion swap. Reverting the commit restores the literal
+  assertion and removes both contract keys; no data migration, no generated artefact, and no evaluator code
+  is involved. rec-3667 and rec-3668 remain filed and stay valid independently of this plan.
