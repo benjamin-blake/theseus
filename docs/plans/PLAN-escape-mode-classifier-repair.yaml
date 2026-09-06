@@ -1,0 +1,945 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: escape-mode-classifier-repair
+intent: >-
+  Repair detection_gap.escape_mode from a dead field (100% 'undetermined' since 2026-08-02) into a
+  field that actually classifies, by fixing the two deterministic-classifier defects that account for
+  every abstention, and point a gauge at the field itself so the next regression cannot hide behind a
+  monitor that never reads it. HONEST MARGIN: this moves the field from 0 bits to roughly ONE bit --
+  post-fix the distribution is near-deterministic in the workflow name (75 tier_misplaced /
+  17 no_premerge_gate_by_design over the 92-row cache, H = 0.69 bits EXACT for that split), because only
+  2 of the 22 taxonomy workflows carry a real tier. That 0.69 rests on ASSUMING a third class of zero,
+  which is an assumption and not a measurement: the 50 rows already reading tier_misplaced would
+  reclassify to check_ran_vacuously under the new vacuous-first ordering if their inputs were
+  (vacuous_pass=True, coverage='selected'), and _DetectionGap stores no classifier INPUTS, so that count
+  is unknowable from the cache. The direction is conservative -- any nonzero check_ran_vacuously RAISES
+  H -- so read 0.69 as a FLOOR on the post-fix margin, not a point estimate.
+  That is more than a restatement of actual_gate_that_caught_it
+  (which is what a canary-first ordering would have produced, and which is why vacuous-first is the
+  right ordering), but it is not a return to a richly discriminating signal. The residual value is
+  that check_ran_vacuously becomes REACHABLE for the first time, and that a regression back to 100%
+  abstention now trips a gauge instead of passing silently.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-escape-mode-classifier-repair.yaml
+phase: T1.13
+scope:
+  - file: scripts/ci_rca/vacuous_pass.py
+    action: Modify
+    purpose: >-
+      compute_escape_mode: hoist the two determinate-input rules above the abstention guard; narrow that
+      guard to vacuous_pass and merge_gate_test_coverage ONLY, and simultaneously add
+      `gate_is_postmerge_canary is False` as an explicit precondition on the retained not_selected proxy
+      (rule 5). Narrowing the guard alone would be WRONG: rule 5 does not REFERENCE the canary, but its
+      correctness CONSUMES it as a precondition, because rule 2 outranks it -- with an undetermined
+      canary a not_selected coverage could still have been a canary run, so answering
+      no_premerge_gate_by_design there is a guess. Also accept the raw workflow tier as a new keyword
+      input so not_a_gate yields no_premerge_gate_by_design directly.
+  - file: scripts/ci_rca/taxonomy.py
+    action: Modify
+    purpose: >-
+      Add resolve_workflow_tier_raw, which preserves the not_a_gate sentinel instead of collapsing it to
+      'unknown', and reduce resolve_workflow_tier to a delegation wrapper over it
+      (`return "unknown" if raw in ("not_a_gate", _MISS) else raw`) so the taxonomy lookup is not
+      duplicated. resolve_workflow_tier's OBSERVABLE RETURN CONTRACT is unchanged -- that is the
+      invariant, not the function body.
+  - file: scripts/ci_rca/evidence/_bundle_core.py
+    action: Modify
+    purpose: Resolve the raw tier alongside wf_tier and thread it into the compute_escape_mode call.
+  - file: scripts/ci_rca/probe_health.py
+    action: Modify
+    purpose: >-
+      Add compute_escape_mode_abstention_rate beside compute_abstention_rate -- a separate gauge over
+      detection_gap.escape_mode, never a widening of the rca_confidence gauge the contract's
+      abstention_surface pins to its preflight twin.
+  - file: scripts/preflight/ci_rca_gauges.py
+    action: Modify
+    purpose: >-
+      Compute and print the escape_mode abstention gauge on the warm-cache path (no new reader egress),
+      AND re-word the existing print_ci_rca_abstention_gauge label (ci_rca_gauges.py:69-76) so BOTH
+      preflight gauge lines name the field each reads. Today that line prints "CI-RCA probe abstention
+      (last 14d): 0/5" -- the label says PROBE but the number measures the AGENT's self-rated
+      rca_confidence, and after this PR a second line appears at a materially different rate with
+      nothing disambiguating them. New shapes: "CI-RCA agent rca_confidence abstention (last Nd): x/y
+      low-confidence/undetermined (z%)" and "CI-RCA probe escape_mode abstention (last Nd): x/y
+      detection_gap.escape_mode=undetermined (z%)". The substring
+      tests/session/preflight/test_ci_rca_gauges_abstention_label.py:33 asserts is
+      'low-confidence/undetermined', which the new label retains, so that OUT-OF-SCOPE file stays green
+      and untouched; the full-string pin at tests/session/preflight/test_ci_rca_gauges.py:109 is
+      in-scope and is updated with it.
+  - file: scripts/session/preflight.py
+    action: Modify
+    purpose: Carry the new gauge into logs/.preflight-report.json and print it in the CI-RCA block.
+  - file: scripts/ops_portal/ci_rca_runtime.py
+    action: Modify
+    purpose: >-
+      Add the check-3 abstention-mirror branch so a bundle abstention on escape_mode that the agent
+      CONTRADICTS is caught. This is NOT a copy of check-1's shape: escape_mode is
+      `Optional[str] = None` (ci_rca_schema.py:80-83) while earliest_viable_gate is REQUIRED, so the two
+      fields are not schema-symmetric. Copying check-1's `agent_evg != "undetermined"` predicate would
+      fire on `agent_escape is None` -- every rec where the agent legally omitted an optional field
+      while the bundle abstained. The predicate is
+      `bundle_escape == "undetermined" and agent_escape is not None and agent_escape != "undetermined"`.
+  - file: scripts/checks/contracts/validate_ci_rca_lifecycle_projection.py
+    action: Modify
+    purpose: >-
+      Resolve dotted projection_fields keys through nested BaseModel annotations, and re-base the
+      enum-parity obligation on the LIVE PYDANTIC MODEL rather than on the contract's own declaration:
+      for every DECLARED projection_fields entry, resolve it against the live model, and if the resolved
+      field carries an alternation-shaped pattern (^(a|b|c)$) the entry MUST declare an `enum` equal to
+      that alternation. Deriving the obligation from the contract's own `enum:` key would turn today's
+      MANDATORY check into an OPT-IN one -- deleting escape_class.enum would make it vacuous where it
+      currently hard-fails -- letting the contract disarm its own evaluator.
+  - file: docs/contracts/ci-rca-lifecycle.yaml
+    action: Modify
+    purpose: >-
+      Declare detection_gap.escape_mode in projection_fields (type, enum, home, authored_by), record the
+      new gauge in abstention_surface, and add the required amendment_log entry.
+  - file: docs/ROADMAP-PLATFORM.yaml
+    action: Modify
+    purpose: >-
+      Append ONE compact re-grounding line to T1.13:c9's text -- naming gate_is_postmerge_canary as the
+      derivation input c9 omits and rec-3666 as the owner of the deferred check_absent value -- not a
+      third dated narrative block (Decision 147: compact storage, narrative to git history; c9 already
+      carries two such blocks and the file sits at 9,368 of its 10,000-line ceiling). Re-ground
+      T1.13's files_in_scope, three entries of which no longer exist. No new roadmap row.
+  - file: tests/test_ci_rca_vacuous_pass.py
+    action: Modify
+    purpose: Failing-first truth-table rows for the precedence hoist and the raw-tier rule.
+  - file: tests/ci_rca/taxonomy/test_load_and_classify.py
+    action: Modify
+    purpose: Cover resolve_workflow_tier_raw, including that the existing resolve_workflow_tier contract is unchanged.
+  - file: tests/ci_rca/evidence/test_generate.py
+    action: Modify
+    purpose: Assert the bundle threads the raw tier so a not_a_gate workflow emits no_premerge_gate_by_design.
+  - file: tests/ops_data_portal/test_ci_rca_runtime.py
+    action: Modify
+    purpose: Failing-first row for the check-3 abstention-mirror branch.
+  - file: tests/test_ci_rca_probe_health.py
+    action: Modify
+    purpose: Failing-first rows for compute_escape_mode_abstention_rate, including the zero-total guard.
+  - file: tests/session/preflight/test_ci_rca_gauges.py
+    action: Modify
+    purpose: Failing-first rows for the gauge's compute and print helpers.
+  - file: tests/checks/contracts/test_validate_ci_rca_lifecycle_projection.py
+    action: Modify
+    purpose: Failing-first rows for dotted-path resolution and generalised enum parity.
+  - file: docs/plans/PLAN-escape-mode-classifier-repair.yaml
+    action: Create
+    purpose: This plan.
+bundled_recommendations: []
+followon_recs: ["rec-3666", "rec-3669"]
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    compute_escape_mode returns 'tier_misplaced' when gate_is_postmerge_canary is True regardless of
+    whether vacuous_pass or merge_gate_test_coverage is the undetermined sentinel -- the 25 of 42 live
+    abstentions whose actual_gate_that_caught_it is already 'CI'.
+  - >-
+    compute_escape_mode returns 'check_ran_vacuously' when vacuous_pass is True and
+    merge_gate_test_coverage is 'selected', in preference to 'tier_misplaced', so the most specific
+    diagnosis is not shadowed by the canary rule.
+  - >-
+    compute_escape_mode returns 'no_premerge_gate_by_design' when the raw workflow tier is 'not_a_gate',
+    without consulting merge_gate_test_coverage -- the 17 of 42 live abstentions whose
+    actual_gate_that_caught_it is 'unknown'.
+  - >-
+    resolve_workflow_tier's signature and return contract are byte-identical in behaviour for every real
+    workflow name; the new raw resolver is a separate function.
+  - >-
+    The evidence bundle threads the raw tier, so generate_bundles on a not_a_gate workflow emits
+    escape_mode='no_premerge_gate_by_design' rather than 'undetermined'.
+  - >-
+    A source=ci_rca rec whose bundle abstained on escape_mode while the agent set a concrete
+    NON-'undetermined' value is flagged by the portal cross-check spine; a rec that OMITS escape_mode
+    entirely (agent_escape is None -- legal, the field is Optional) raises NO issue.
+  - >-
+    logs/.preflight-report.json carries an escape_mode abstention gauge computed over
+    detection_gap.escape_mode, distinct from the existing rca_confidence gauge, and it reports the true
+    trailing rate rather than 0.0.
+  - >-
+    Both preflight gauge lines name the field each reads: the pre-existing line names rca_confidence
+    (it measures the AGENT's self-rating, not the probe) and the new line names
+    detection_gap.escape_mode, so the two cannot be read as the same quantity at different rates.
+  - >-
+    docs/contracts/ci-rca-lifecycle.yaml declares detection_gap.escape_mode in projection_fields with an
+    enum equal to the live pydantic pattern alternation; validate_ci_rca_lifecycle_projection fails if
+    the two diverge AND still fails if a declared entry whose live field is alternation-shaped drops its
+    enum entirely -- the obligation derives from the live model, so the contract cannot disarm it.
+  - >-
+    T1.13:c9's text carries a one-line re-grounding naming gate_is_postmerge_canary and rec-3666 as the
+    owner of the deferred check_absent value; c9's status stays open; and the roadmap's tier_item id set
+    is byte-identical to origin/main's, asserted by a real id-set diff rather than declared in prose.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      BEFORE, oracle. Pin the defect on the tree as it stands: the canary rule is shadowed by the
+      abstention guard, the raw tier is unreachable, the gauge does not exist, and the contract is silent
+      on escape_mode. Every clause must hold BEFORE the fix, so the AFTER steps are falsifiable.
+    command: >-
+      bin/venv-python -c "from scripts.ci_rca.vacuous_pass import compute_escape_mode as f, _UNDETERMINED
+      as U; import scripts.ci_rca.taxonomy as tx, scripts.ci_rca.probe_health as ph; import yaml;
+      assert f(U,'selected',True,False)==U, 'canary already hoisted';
+      assert f(True,'selected',True,False)=='tier_misplaced', 'vacuous already preferred';
+      assert not hasattr(tx,'resolve_workflow_tier_raw'), 'raw resolver already present';
+      assert not hasattr(ph,'compute_escape_mode_abstention_rate'), 'gauge already present';
+      c=yaml.safe_load(open('docs/contracts/ci-rca-lifecycle.yaml'));
+      assert 'escape_mode' not in str(c.get('projection_fields')), 'contract already declares it';
+      print('BEFORE_OK all-four-defects-present')"
+    expected: Exit 0 and BEFORE_OK all-four-defects-present.
+    fix_if: >-
+      Any AssertionError means part of this repair already landed (a concurrent PR). STOP and re-scope
+      against the tree rather than re-applying a change that is already present.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The premise inverts by construction on merge: every clause asserts the defect is still present, so
+      a graduated shard would sit permanently red the moment this PR lands. The durable half -- that the
+      repaired behaviour holds -- is what step 2 graduates.
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      AFTER, the classifier truth table end to end. Exercises the precedence hoist, the vacuous-first
+      preference, the narrowed guard, rule 5's explicit `canary is False` precondition, the raw-tier
+      rule, and that a taxonomy miss still abstains -- the one case where 'undetermined' remains the
+      honest answer. The last two rows are the NO-REGRESSION half: they are the two cells a
+      guard-narrowing alone would have flipped from abstain to a confident (and unfounded)
+      no_premerge_gate_by_design.
+    command: >-
+      bin/venv-python -c "from scripts.ci_rca.vacuous_pass import compute_escape_mode as f, _UNDETERMINED
+      as U;
+      assert f(U,'selected',True,False)=='tier_misplaced';
+      assert f(False,U,True,False)=='tier_misplaced';
+      assert f(True,'selected',True,False)=='check_ran_vacuously';
+      assert f(True,'selected',False,False)=='check_ran_vacuously';
+      assert f(U,U,False,False,workflow_tier_raw='not_a_gate')=='no_premerge_gate_by_design';
+      assert f(False,'not_selected',False,False)=='no_premerge_gate_by_design';
+      assert f(U,'selected',False,False)==U;
+      assert f(False,'selected',False,False)==U;
+      assert f(False,'selected',False,False,workflow_tier_raw='unknown')==U;
+      assert f(True,'not_selected',U,False)==U;
+      assert f(False,'not_selected',U,False)==U;
+      print('TRUTH_TABLE_OK 11/11')"
+    expected: Exit 0 and TRUTH_TABLE_OK 11/11.
+    fix_if: >-
+      A row asserting tier_misplaced still returning 'undetermined' means the guard was narrowed but the
+      canary rule was not hoisted above it. A row asserting check_ran_vacuously returning tier_misplaced
+      means the canary rule sits above the vacuous rule -- invert them. Rows 7-9 returning a concrete
+      value means the narrowed guard or the miss branch is too permissive: a taxonomy miss and a
+      non-vacuous determinate run must both still abstain, never guess. Rows 10-11 returning
+      'no_premerge_gate_by_design' means the guard was narrowed to
+      vacuous_pass/merge_gate_test_coverage WITHOUT adding `gate_is_postmerge_canary is False` to rule
+      5's own precondition, so an unknown canary is being answered as if it were known false. Rule 2
+      outranks rule 5, so rule 5's correctness consumes the canary even though its body never references
+      it -- restore the precondition, do not widen the guard back. Calibrate the stakes honestly: these
+      two cells are a CONTRACT-level protection on a public function, not a live-bundle regression. The
+      sole production caller sets `gate_is_postmerge_canary = wf_tier == "CI"`
+      (scripts/ci_rca/evidence/_bundle_core.py:68), a plain bool that is never the undetermined
+      sentinel, so rows 10-11 are as unreachable in production as rule 5 itself.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: escape-mode-truth-table-11-rows
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Red-then-green on the repository's own tests, run against the real suites rather than a synthetic
+      driver: all seven touched behaviour suites must pass, and the migration-seam guard on
+      resolve_workflow_tier must still hold unchanged. This is the step every unit test_obligation links to.
+      Deliberately NOT hermetic, against Decision 148 clause 3's restored default, for a mechanism
+      reason rather than convenience: validate_vp_replay's replay time is accounted as replay_s, a term
+      of the quantity Decision 182 asserts its UNWAIVABLE 240s non-test budget over
+      (static_s + replay_s + unattributed_s), so graduating a seven-suite pytest run into replay would
+      move governed TEST time into the one budget no re-scope can fix (verdict non_test_breach:
+      "neither declare nor split"). Measured on this tree: 205 tests in 15.8s, versus 4.7s for this
+      plan's seven other hermetic steps combined and a PER_STEP_TIMEOUT_SECONDS of 30. The planning
+      skill's own Hermetic-authoring paragraph carves pytest steps out for this reason.
+    command: >-
+      bin/venv-python -m pytest tests/test_ci_rca_vacuous_pass.py
+      tests/ci_rca/taxonomy/test_load_and_classify.py tests/ci_rca/evidence/test_generate.py
+      tests/ops_data_portal/test_ci_rca_runtime.py tests/test_ci_rca_probe_health.py
+      tests/session/preflight/test_ci_rca_gauges.py
+      tests/checks/contracts/test_validate_ci_rca_lifecycle_projection.py -q --randomly-seed=20260710
+    expected: >-
+      Exit 0, zero failures. tests/ci_rca/taxonomy/test_load_and_classify.py::TestResolveWorkflowTier
+      passes UNMODIFIED. It holds FOUR test functions carrying SIX assert statements
+      (test_return_contract_unchanged_against_real_taxonomy holds three; the other three hold one each)
+      -- counted by AST over the class body on 2026-09-06, and by `bin/venv-python -m pytest
+      tests/ci_rca/taxonomy/test_load_and_classify.py -k TestResolveWorkflowTier --collect-only -q`,
+      which reports four collected of nineteen. Neither number is a count of rows to ADD: four
+      functions and six asserts are the same set counted two ways, so do not read either as evidence
+      that rows are missing. The only new rows this plan adds to that file cover
+      resolve_workflow_tier_raw.
+    fix_if: >-
+      A failure in TestResolveWorkflowTier means resolve_workflow_tier itself was changed rather than a
+      raw sibling added -- revert and add the sibling. A failure elsewhere is the repair being wrong, not
+      the test being wrong: never relax an assertion to make this pass. An argparse
+      "unrecognized arguments: --randomly-seed=last" error is not a test failure -- it is exit 4 with
+      ZERO tests run: it means the seed selector was replaced by a bare -p no:randomly, which disables
+      the plugin that owns the flag pyproject.toml's addopts still passes. (Pairing it with -o
+      addopts="" also works and exits 0; it is the UNPAIRED form that breaks. Measured both ways on this
+      tree; the two merged plans carrying the unpaired form are routed to rec-3669.) Keep the explicit
+      fixed seed, defined at scripts/checks/_pytest_diff.py:41 and re-exported through
+      scripts/checks/_scaffolding.py:29.
+    hermetic: false
+    graduation: not-applicable
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      The bundle actually threads the raw tier. Generates a bundle for a workflow the live taxonomy
+      declares not_a_gate and asserts the emitted escape_mode is the by-design value, not the abstention
+      sentinel -- the wiring step 2 cannot see because it calls the pure function directly.
+    command: >-
+      bin/venv-python -c "import scripts.ci_rca.evidence as ev, inspect, yaml;
+      src=inspect.getsource(ev._bundle_core._assemble_core) if hasattr(ev,'_bundle_core') else
+      open('scripts/ci_rca/evidence/_bundle_core.py').read();
+      assert 'resolve_workflow_tier_raw' in src, 'raw tier not resolved in _assemble_core';
+      assert 'workflow_tier_raw' in src, 'raw tier not passed to compute_escape_mode';
+      t=yaml.safe_load(open('config/ci_rca_taxonomy.yaml'))['workflows'];
+      ng=sorted(k for k,v in t.items() if v.get('tier')=='not_a_gate');
+      assert len(ng)>=20, ng;
+      from scripts.ci_rca.taxonomy import resolve_workflow_tier_raw as r, resolve_workflow_tier as s;
+      assert all(r(n)=='not_a_gate' for n in ng), [n for n in ng if r(n)!='not_a_gate'];
+      assert all(s(n)=='unknown' for n in ng), 'legacy resolver contract changed';
+      print('BUNDLE_WIRING_OK not_a_gate_workflows='+str(len(ng)))"
+    expected: Exit 0 and BUNDLE_WIRING_OK not_a_gate_workflows=20 (the count rises as workflows are added; read it as evidence, not a constant).
+    fix_if: >-
+      A missing-symbol assertion means _assemble_core still calls the collapsing resolver -- thread the
+      raw one. 'legacy resolver contract changed' means the delegation wrapper altered
+      resolve_workflow_tier's OBSERVABLE return contract: the wrapper must collapse both 'not_a_gate'
+      and a taxonomy miss to 'unknown' and pass every real tier through unchanged.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      This shard mixes two assertion classes and is the weakest of the three: the behavioural half (the
+      resolver contract over the live taxonomy) is durable, but the wiring half asserts SOURCE TEXT
+      ('resolve_workflow_tier_raw' in src), which a refactor renaming the symbol or moving the call
+      breaks with no behaviour change -- exactly the brittleness a standing registry check must not
+      carry. Both halves keep their implement-time value here; the durable behavioural carriers are the
+      test_obligation rows tests/ci_rca/evidence/test_generate.py::TestEscapeMode (bundle threading)
+      and tests/ci_rca/taxonomy/test_load_and_classify.py::TestResolveWorkflowTier (resolver contract),
+      both run by step 3.
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      The gauge reads the field it claims to monitor. Computes the escape_mode abstention rate over the
+      real local read cache and asserts it is derived from detection_gap.escape_mode -- not from
+      rca_confidence -- by cross-checking it against an independently computed rate.
+    command: >-
+      bin/venv-python -c "import json,pathlib;
+      from scripts.ci_rca.probe_health import compute_escape_mode_abstention_rate as g;
+      rows=[json.loads(l) for l in
+      pathlib.Path('logs/.recommendations-log.jsonl').read_text(encoding='utf-8').splitlines() if
+      l.strip()];
+      u,t,r=g(rows,window_days=100000);
+      print('GAUGE', u, t, round(r,4));
+      assert t>=90, t;
+      assert u>=40, u;
+      u2,t2,r2=g([],window_days=14); assert (u2,t2,r2)==(0,0,0.0), (u2,t2,r2);
+      print('GAUGE_OK reads_escape_mode zero_total_guarded')"
+    expected: >-
+      Exit 0, a GAUGE line carrying the counts, then GAUGE_OK reads_escape_mode zero_total_guarded. At
+      the pinned cache the all-time figures are 42/92 (46%). Only NON-RATIO floors are asserted, and
+      deliberately: u and t are monotone in the cache, a RATIO is not. An `r > 0.4` floor would have
+      been self-falsifying -- r = 42/total drops below 0.4 the moment total exceeds 105, about 13 new
+      escape-classified recs away -- so the rate is PRINTED as evidence and never asserted. `u >= 40`
+      is the load-bearing discriminator: a gauge still reading rca_confidence scores u=14 over this same
+      cache (measured 2026-09-06), so the undetermined COUNT separates the two sources with margin and
+      without any denominator dependence. Note u=14, NOT u=0 -- a mis-pointed gauge is not silent, it is
+      merely far below the floor.
+    fix_if: >-
+      u well below 40 over the whole cache means the gauge is still reading rca_confidence, which is
+      exactly the false-green defect this step exists to catch -- point it at
+      context_v2_json.detection_gap.escape_mode. Measured 2026-09-06 for calibration: a gauge reading
+      rca_confidence over this same cache scores u=14 (10 low + 4 undetermined across 181 source=ci_rca
+      rows), against u=42 for the escape_mode gauge -- so the `u >= 40` floor discriminates with margin,
+      but do NOT expect u=0 from a mis-pointed gauge. A ZeroDivisionError on the empty-rows call means the
+      zero-total guard was omitted. If u or t falls BELOW its floor while the printed rate looks sane,
+      the cause is a shrunken local cache (a fresh clone before `sync.ops sync`, or a narrower window),
+      not the gauge -- re-sync and re-run rather than lowering the floor.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Reads logs/.recommendations-log.jsonl, a gitignored read cache whose contents differ per clone and
+      per sync, so a graduated shard would assert over data CI does not have. The durable half -- that
+      the gauge derives from escape_mode and guards the zero-total case -- is carried by the unit rows
+      this plan adds to tests/test_ci_rca_probe_health.py, which run on fixtures.
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      The gauge is actually surfaced. Runs preflight and asserts the report carries the new key beside
+      the existing one, with the two reporting DIFFERENT rates -- the single strongest disproof that the
+      new gauge is a rename of the old.
+    command: >-
+      bin/venv-python -m scripts.session.preflight >/dev/null 2>&1; bin/venv-python -c "import
+      json,pathlib; d=json.loads(pathlib.Path('logs/.preflight-report.json').read_text());
+      a=d.get('ci_rca_abstention_gauge'); e=d.get('ci_rca_escape_mode_gauge'); assert
+      isinstance(e,dict), 'escape_mode gauge absent from the report'; assert 'rate' in e and
+      'total_count' in e, e; assert isinstance(a,dict), 'the rca_confidence gauge was removed rather
+      than kept beside it'; print('PREFLIGHT_OK '+str(a['rate'])+' '+str(e['rate']))"
+    expected: >-
+      Exit 0 and PREFLIGHT_OK naming both rates. At the pinned cache the confidence rate is 0.0 over a
+      14-day window while the escape rate is materially higher -- the two are independent quantities.
+    fix_if: >-
+      An absent key means the gauge was computed but never carried into the report dict. A removed
+      rca_confidence gauge means the change widened the existing gauge instead of adding a second one,
+      which the contract's abstention_surface note forbids -- add, do not widen.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Same disposition and same reason as step 5, which reads the same class of artefact: this step
+      regenerates and reads logs/.preflight-report.json, a gitignored per-clone cache (.gitignore:84,
+      alongside logs/.recommendations-log.jsonl at :131) derived from that same recommendations cache,
+      so a graduated shard would assert over data CI does not have and whose rates differ per clone and
+      per sync. The durable half -- that both gauge keys are present, distinct, and correctly shaped --
+      is carried on fixtures by the unit rows this plan adds to
+      tests/session/preflight/test_ci_rca_gauges.py.
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      Contract and schema are locked together, the check cannot be disarmed BY the contract, and the
+      per-entry loop accumulates rather than returning early. Runs the re-based enforcer against the
+      real contract, then against FOUR deliberately corrupted copies: a WRONG enum on the new dotted
+      entry, a DELETED enum on the new dotted entry, a DELETED enum on the pre-existing escape_class
+      entry, and -- the accumulation arm -- a copy with BOTH enums deleted at once. All four must bite.
+      The deleted-enum arms prove the obligation derives from the live pydantic model and not from the
+      contract's own `enum:` key: without them, "enforce parity for any entry declaring an enum" would
+      let `del entry['enum']` silently switch the check off where it hard-fails today. The fourth arm is
+      the only one that DETECTS a surviving early `return` inside the loop, because each of the first
+      three corrupts exactly ONE entry and therefore bites whether the loop accumulates or returns on
+      first failure; two corrupted entries separate the two behaviours.
+    command: >-
+      bin/venv-python -c "import copy,yaml,pathlib,tempfile;
+      from scripts.checks.contracts.validate_ci_rca_lifecycle_projection import
+      validate_ci_rca_lifecycle_projection as v;
+      f=[]; v(f); assert not f, f;
+      p=pathlib.Path('docs/contracts/ci-rca-lifecycle.yaml');
+      d=yaml.safe_load(p.read_text()); pf=d['projection_fields'];
+      k='detection_gap.escape_mode'; assert k in pf, sorted(pf);
+      assert sorted(pf[k]['enum'])==sorted(['check_ran_vacuously','tier_misplaced','no_premerge_gate_by_design','undetermined']), pf[k];
+      assert 'escape_class' in pf and pf['escape_class'].get('enum'), pf.get('escape_class');
+      t1=tempfile.mkdtemp(); a=copy.deepcopy(d); a['projection_fields'][k]['enum']=['bogus'];
+      pathlib.Path(t1,'ci-rca-lifecycle.yaml').write_text(yaml.safe_dump(a));
+      f1=[]; v(f1, contracts_dir=pathlib.Path(t1)); assert f1, 'wrong-enum did not bite';
+      t2=tempfile.mkdtemp(); b=copy.deepcopy(d); b['projection_fields'][k].pop('enum');
+      pathlib.Path(t2,'ci-rca-lifecycle.yaml').write_text(yaml.safe_dump(b));
+      f2=[]; v(f2, contracts_dir=pathlib.Path(t2)); assert f2, 'deleted enum on the dotted entry did not bite';
+      t3=tempfile.mkdtemp(); c=copy.deepcopy(d); c['projection_fields']['escape_class'].pop('enum');
+      pathlib.Path(t3,'ci-rca-lifecycle.yaml').write_text(yaml.safe_dump(c));
+      f3=[]; v(f3, contracts_dir=pathlib.Path(t3)); assert f3, 'deleted enum on escape_class did not bite';
+      t4=tempfile.mkdtemp(); e=copy.deepcopy(d); e['projection_fields'][k].pop('enum');
+      e['projection_fields']['escape_class'].pop('enum');
+      pathlib.Path(t4,'ci-rca-lifecycle.yaml').write_text(yaml.safe_dump(e));
+      f4=[]; v(f4, contracts_dir=pathlib.Path(t4)); j=' '.join(f4);
+      assert 'escape_class' in j and 'escape_mode' in j, {'accumulation_arm_saw_only':f4};
+      print('CONTRACT_PARITY_OK bites_on_drift bites_on_deletion accumulates 4/4')"
+    expected: Exit 0 and CONTRACT_PARITY_OK bites_on_drift bites_on_deletion accumulates 4/4.
+    fix_if: >-
+      A non-empty failed list on the real contract with a 'not on CiRcaContext' message means dotted-path
+      resolution through the nested _DetectionGap model was not implemented -- escape_mode is not a
+      top-level CiRcaContext field. 'wrong-enum did not bite' means the parity assertion is still
+      hardcoded to escape_class and never reaches the new entry. EITHER deleted-enum arm failing to bite
+      means the obligation was keyed off the contract's own `enum:` key instead of the live model: re-base
+      it -- for every DECLARED entry, resolve the (possibly dotted) key against the live model and, if the
+      resolved field carries an alternation-shaped pattern, REQUIRE a matching enum. The accumulation arm
+      failing with {'accumulation_arm_saw_only': [...]} carrying only ONE message means the existing early
+      `return` at validate_ci_rca_lifecycle_projection.py:44 survived into the per-entry loop: one
+      enum-less entry silently skipped every later entry. Note the first three arms do NOT detect this --
+      each corrupts a single entry, so the first failure IS the one under test and all three bite with the
+      early `return` intact; only the both-enums-deleted arm separates accumulate from return-on-first.
+      Accumulate into failed[] and continue.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ci-rca-contract-escape-mode-enum-parity
+  - step: 8
+    phase: pre-deploy
+    action: >-
+      Roadmap bookkeeping is an amendment, not a row addition, and c9 stays open. Reads
+      docs/ROADMAP-PLATFORM.yaml at origin/main and diffs its tier_item id SET against the working
+      tree's -- the "no roadmap ROW ADDITIONS" constraint made assertable rather than merely asserted
+      (Decision 163: a universal obligation is enforced structurally, not declared in metadata). Also
+      asserts c9 is still open, that its text gained the one-line re-grounding naming both the missing
+      derivation input and the deferred value's owner, and that the three dead files_in_scope entries
+      are gone.
+    command: >-
+      bin/venv-python -c "import subprocess,yaml,pathlib;
+      base=yaml.safe_load(subprocess.run(['git','show','origin/main:docs/ROADMAP-PLATFORM.yaml'],capture_output=True,text=True,check=True).stdout);
+      d=yaml.safe_load(pathlib.Path('docs/ROADMAP-PLATFORM.yaml').read_text(encoding='utf-8'));
+      b={i['id'] for i in base['tier_items']}; n={i['id'] for i in d['tier_items']};
+      assert n==b, {'added':sorted(n-b),'removed':sorted(b-n)};
+      it=[i for i in d['tier_items'] if i['id']=='T1.13'][0];
+      c=[x for x in it['exit_criteria'] if x['id']=='c9'][0];
+      assert c['status']=='open', c['status'];
+      assert 'gate_is_postmerge_canary' in c['text'], 'c9 re-grounding absent';
+      assert 'rec-3666' in c['text'], 'c9 does not name the deferred check_absent owner';
+      dead={'docs/INTENT-ci-rca-methodology.md','scripts/ci_rca/evidence.py','scripts/ci_rca_gate_evidence.py'};
+      assert not (dead & set(it['files_in_scope'])), sorted(dead & set(it['files_in_scope']));
+      print('ROADMAP_OK tier_items='+str(len(n))+' added=0 removed=0 c9=open check_absent_owner=rec-3666')"
+    expected: >-
+      Exit 0 and a `ROADMAP_OK` line carrying the tier_item count, `added=0 removed=0` against
+      origin/main, `c9=open`, and `check_absent_owner=rec-3666`.
+    fix_if: >-
+      A non-empty 'added' list means a roadmap ROW was added -- the human forbade row additions in this
+      run; revert it and express the change as criterion text. A non-empty 'removed' list means an item
+      was deleted, which this plan never sanctions. A c9 status other than open means the criterion was
+      flipped: /plan and /implement never infer 'met', and c9's part (a) throttle is unbuilt by design.
+      A missing rec-3666 means the c9 line named the check_absent deferral without naming its owner --
+      the declared-but-unowned mode this plan exists to stop. A surviving dead path means the
+      files_in_scope re-grounding was skipped. A CalledProcessError on git show means origin/main was
+      never fetched: run git fetch origin main, do not weaken the assertion to a working-tree-only check.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Two of the four clauses are base-relative and invert on merge: once this PR lands, origin/main
+      itself carries the amended c9 text, so the text-delta and owner clauses stop discriminating. The
+      id-set clause does not invert, but as a standing check it would assert "the roadmap never gains a
+      row", which is false of the roadmap in general and true only inside this plan's window. The
+      durable half -- every tier_item id resolves, criteria carry valid statuses, and the file stays
+      under its line ceiling -- is already a registered check running in both tiers
+      (validate_platform_roadmap).
+  - step: 9
+    phase: pre-deploy
+    action: >-
+      Scope boundary, both directions: the working-tree-aware status diff equals exactly this plan's
+      declared scope -- nothing outside it, nothing declared but untouched.
+    command: >-
+      bin/venv-python -c "from scripts.checks import _common; import yaml,pathlib;
+      p=yaml.safe_load(pathlib.Path('docs/plans/PLAN-escape-mode-classifier-repair.yaml').read_text(encoding='utf-8'));
+      e={r['file'] for r in p['scope']}; t={q for _s,q in _common.get_status_aware_diff()};
+      assert t==e, {'outside_declared_scope':sorted(t-e),'declared_but_untouched':sorted(e-t)};
+      print('TOUCHED_SET_EXACT '+str(len(t))+' '+str(sorted(t)))"
+    expected: Exit 0 and TOUCHED_SET_EXACT listing exactly the 18 declared scope paths in sorted order.
+    fix_if: >-
+      outside_declared_scope names a path this plan never declared: revert that edit. Never resolve it by
+      appending the path to scope -- an undeclared touched path is a STOP under the scope-boundary
+      contract's deviation branch b. declared_but_untouched means a scope row was not implemented.
+      Known clone artefact: in a --shared scratch clone a .venv SYMLINK is listed by
+      get_status_aware_diff because .gitignore's .venv/ directory pattern does not match it; this plan's
+      expected set deliberately carries no .venv exemption -- fix the clone, not the assertion.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Asserts this PR's own transient file set, meaningless once merged, and the durable rule it
+      instantiates is already a registered check in both tiers (validate_scope_boundary reading
+      docs/contracts/implement-scope-boundary.yaml).
+  - step: 10
+    phase: pre-deploy
+    action: >-
+      Fast-tier budget prediction against the final scope, and the unwaivable non-test half. Decision 182
+      makes the 240s non-test budget unwaivable, so the plan must clear it as authored, not discover a
+      breach in CI.
+    command: >-
+      bin/venv-python -m scripts.checks.deps.selection_budget --plan
+      docs/plans/PLAN-escape-mode-classifier-repair.yaml --json
+    expected: >-
+      Exit 0 and a JSON record whose predicted_outcome is "within_budget". Re-measured 2026-09-06 after
+      the round-1 scout edits, on this exact scope: n_selected 113 of a 544 census, predicted elapsed
+      98.4-125.6s of which the test half is 47.4-53.8s, leaving a non-test half of 51.0-71.8s against
+      the UNWAIVABLE 240s NON_TEST_BUDGET_SECONDS, with allowance_s 226.0 for the test half. Read every
+      integer as drift-prone: the scout's independent run on a slightly different tree returned
+      n_selected 111 of a 539 census with the same within_budget verdict, and the non-test half is a
+      pair of module constants (_PREDICT_NON_TEST_LOW/HIGH), not a scope-derived quantity.
+    fix_if: >-
+      "breach" means SPLIT the scope into atomic units until the prediction clears -- selection breadth,
+      not the scope-row count, is the quantity to plan against. "breadth_waived" means keep the scope but
+      declare the measured breadth in this plan's context before proceeding. "non_test_breach" is not
+      fixable by re-scoping: stop and open a planning session against the recorded static_s series.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      A plan-time reporter that exits 0 on every path by design ("it is a report, never a gate"), so a
+      graduated command_exit_zero shard would assert nothing. The quantity it reports is already
+      asserted in CI by the fast tier's own two budget checks.
+  - step: 11
+    phase: pre-deploy
+    action: >-
+      Full-tier presubmit before handoff, per the two-tier presubmit model. Runs the complete validator
+      so the registered checks touched by this change -- validate_ci_rca_lifecycle_projection,
+      validate_platform_roadmap, validate_sloc_limits, validate_plan_documents -- all pass on the
+      finished tree.
+    command: bin/venv-python -m scripts.validate
+    expected: Exit 0 with no failed checks.
+    fix_if: >-
+      Read the printed violations. A validate_sloc_limits failure means a touched file crossed 500 SLOC:
+      decompose it into a facade package (Decision 128), never raise the budget. Never edit a check
+      module to clear its own failure.
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/ci_rca/vacuous_pass.py
+    behavior: >-
+      compute_escape_mode prefers check_ran_vacuously over tier_misplaced, returns tier_misplaced on a
+      canary regardless of undetermined siblings, returns no_premerge_gate_by_design on a raw not_a_gate
+      tier, still abstains on a taxonomy miss, and still abstains when coverage is not_selected but the
+      canary is undetermined (rule 5's explicit precondition).
+    verification_step: 3
+    test_selector: tests/test_ci_rca_vacuous_pass.py::TestComputeEscapeMode
+    red_green_expectation: >-
+      red before, green after -- the four new rows all fail on today's ordering (three return the
+      undetermined sentinel, one returns tier_misplaced). The pre-existing rows are green in both states
+      and are the no-regression half: SIX test FUNCTIONS carrying EIGHT assert statements
+      (test_any_undetermined_input_returns_undetermined holds three asserts; the other five hold one
+      each) -- counted by AST over the class body on 2026-09-06, corroborated by `pytest
+      tests/test_ci_rca_vacuous_pass.py -k TestComputeEscapeMode --collect-only -q`, whose summary names
+      six collected of thirty-seven (this tree prints "6/37 tests collected (31 deselected)"; a literal
+      "6 selected" never appears, so do not pin that string). Two further no-regression rows are
+      added for the rule-5 precondition cells (vp=True/False, cov='not_selected', canary=UNDETERMINED),
+      which no existing row covers and which a guard-narrowing alone would silently flip from abstain to
+      no_premerge_gate_by_design.
+  - source: scripts/ci_rca/taxonomy.py
+    behavior: >-
+      resolve_workflow_tier_raw preserves the not_a_gate sentinel and reports a taxonomy miss distinctly,
+      while resolve_workflow_tier's own three-case OBSERVABLE contract is unchanged under the delegation
+      wrapper.
+    verification_step: 3
+    test_selector: tests/ci_rca/taxonomy/test_load_and_classify.py::TestResolveWorkflowTier
+    red_green_expectation: >-
+      red before (the symbol does not exist), green after. The pre-existing TestResolveWorkflowTier rows
+      are the no-regression half and stay UNTOUCHED and green: FOUR test functions carrying SIX assert
+      statements (the migration-seam guard test_return_contract_unchanged_against_real_taxonomy holds
+      three; the other three hold one each), counted by AST over the class body on 2026-09-06 and by
+      `bin/venv-python -m pytest tests/ci_rca/taxonomy/test_load_and_classify.py -k
+      TestResolveWorkflowTier --collect-only -q`, which reports four collected of nineteen. Do not read
+      either count as evidence that rows are missing -- four functions and six asserts are the same set
+      counted two ways. Their staying green unmodified is what proves the delegation wrapper preserved
+      the contract.
+  - source: scripts/ci_rca/evidence/_bundle_core.py
+    behavior: The assembled bundle resolves the raw tier and passes it to compute_escape_mode.
+    verification_step: 3
+    test_selector: tests/ci_rca/evidence/test_generate.py::TestEscapeMode
+    red_green_expectation: red before (a not_a_gate workflow yields undetermined), green after.
+  - source: scripts/ci_rca/probe_health.py
+    behavior: >-
+      compute_escape_mode_abstention_rate counts detection_gap.escape_mode == 'undetermined' over
+      source=ci_rca rows in the trailing window, with a zero-total guard, and never reads rca_confidence.
+    verification_step: 3
+    test_selector: tests/test_ci_rca_probe_health.py::TestEscapeModeAbstentionRate
+    red_green_expectation: >-
+      red before (the symbol does not exist), green after; one fixture row carries rca_confidence=high
+      with escape_mode=undetermined, which the old gauge scores 0% and the new one scores 100%.
+  - source: scripts/preflight/ci_rca_gauges.py
+    behavior: >-
+      The escape_mode gauge is computed from the warm cache and printed, returning None when the cache
+      is absent; AND both printed gauge labels name the field each reads -- the pre-existing line names
+      rca_confidence, the new line names detection_gap.escape_mode.
+    verification_step: 3
+    test_selector: tests/session/preflight/test_ci_rca_gauges.py::TestEscapeModeGauge
+    red_green_expectation: >-
+      red before (the symbol does not exist), green after. The label half is a separate red-before row
+      updating the full-string pin at tests/session/preflight/test_ci_rca_gauges.py:109, which today
+      reads "CI-RCA probe abstention (last 14d): 2/8 low-confidence/undetermined (25%)" and must read
+      the rca_confidence-naming form after. The OUT-OF-SCOPE
+      tests/session/preflight/test_ci_rca_gauges_abstention_label.py:33 asserts only the substring
+      'low-confidence/undetermined', which the new label retains, so it stays green untouched -- if it
+      goes red the label dropped that substring and the widened-set accuracy guard (PLAN-ci-rca-
+      abstention-and-citation AC5) was broken; restore it rather than editing that file, which is
+      outside this plan's declared scope.
+  - source: scripts/session/preflight.py
+    behavior: The preflight report carries ci_rca_escape_mode_gauge beside the existing ci_rca_abstention_gauge.
+    verification_step: 6
+    command: >-
+      bin/venv-python -m scripts.session.preflight >/dev/null 2>&1; bin/venv-python -c "import
+      json,pathlib; d=json.loads(pathlib.Path('logs/.preflight-report.json').read_text());
+      a=d.get('ci_rca_abstention_gauge'); e=d.get('ci_rca_escape_mode_gauge'); assert
+      isinstance(e,dict), 'escape_mode gauge absent from the report'; assert 'rate' in e and
+      'total_count' in e, e; assert isinstance(a,dict), 'the rca_confidence gauge was removed rather
+      than kept beside it'; print('PREFLIGHT_OK '+str(a['rate'])+' '+str(e['rate']))"
+    red_green_expectation: red before (the key is absent), green after.
+  - source: scripts/ops_portal/ci_rca_runtime.py
+    behavior: >-
+      Check-3 flags a bundle abstention on escape_mode that the agent CONTRADICTS with a concrete value,
+      under the predicate `bundle_escape == "undetermined" and agent_escape is not None and agent_escape
+      != "undetermined"` -- and raises NO issue when the agent simply OMITTED the field, which is legal
+      because escape_mode is Optional[str]=None (ci_rca_schema.py:80-83) whereas check-1's
+      earliest_viable_gate is REQUIRED. The existing bundle-wins disagreement branch stays intact as the
+      elif.
+    verification_step: 3
+    test_selector: tests/ops_data_portal/test_ci_rca_runtime.py::TestCrossCheckSpine
+    red_green_expectation: >-
+      Two rows, and the truth table must cover both. (i) RED before, green after: bundle_escape
+      ='undetermined' with agent_escape='tier_misplaced' raises no issue today and must raise one after.
+      (ii) GREEN in both states, and the specific false-positive guard: bundle_escape='undetermined' with
+      agent_escape ABSENT (the key omitted, so `detection_gap.get("escape_mode")` is None) must raise NO
+      issue before OR after -- a naive `agent_escape != "undetermined"` mirror of check-1's shape fires on
+      every such rec, and this row is what fails if that shape is copied.
+  - source: scripts/checks/contracts/validate_ci_rca_lifecycle_projection.py
+    behavior: >-
+      Dotted projection_fields keys resolve through nested BaseModel annotations, and the enum-parity
+      obligation is derived from the LIVE MODEL: every declared entry whose resolved field carries an
+      alternation-shaped pattern MUST declare a matching enum -- so the check stays MANDATORY and the
+      contract cannot disarm it by dropping its own `enum:` key. Measured on this tree 2026-09-06, SEVEN
+      live fields reachable from CiRcaContext are alternation-shaped -- CiRcaContext.{escape_class,
+      recurrence_class, rca_confidence}, _DetectionGap.{earliest_viable_gate,
+      actual_gate_that_caught_it, escape_mode}, and _EvidenceBundleRef.upload_status -- not the four an
+      earlier draft named. The obligation is DECLARATION-GATED: it fires only on keys the contract
+      DECLARES in projection_fields, and of those seven only escape_class is declared today. The other
+      six declared entries are regression_of and fixed_by_sha (non-alternation patterns) plus
+      affected_nodeids, flaky, unobserved_steps and unobserved_steps_authoritative (no pattern at all).
+      So the newly-obligated set is exactly escape_class (already compliant) and the
+      detection_gap.escape_mode entry this plan adds: no currently-passing entry is newly burdened, and
+      the six undeclared alternation-shaped fields stay unobligated until someone declares them. Scope
+      a test off the measured seven, not off the four.
+    verification_step: 3
+    test_selector: tests/checks/contracts/test_validate_ci_rca_lifecycle_projection.py
+    red_green_expectation: >-
+      Three rows. (i) red before -- declaring detection_gap.escape_mode today produces a false 'not on
+      CiRcaContext' failure because escape_mode lives on the nested _DetectionGap model -- green after.
+      (ii) red before, green after: an entry whose live field is alternation-shaped but which declares
+      NO enum must fail; today only the hardcoded escape_class lookup can fail that way. (iii) green in
+      both states, the no-weakening half: deleting escape_class.enum must STILL fail after the
+      generalisation, which is what distinguishes a live-model-derived obligation from a
+      contract-declaration-derived one.
+  - source: docs/contracts/ci-rca-lifecycle.yaml
+    behavior: >-
+      projection_fields declares detection_gap.escape_mode with an enum equal to the live pydantic
+      pattern, and the amendment_log carries this change's entry.
+    verification_step: 3
+    test_selector: tests/checks/contracts/test_validate_ci_rca_lifecycle_projection.py
+    red_green_expectation: red before (the key is absent), green after; step 7's corrupted-copy arm proves the parity assertion bites.
+  - source: docs/ROADMAP-PLATFORM.yaml
+    behavior: >-
+      T1.13:c9 carries the one-line re-grounding, names rec-3666, and stays open; the tier_item id set
+      is unchanged against origin/main; files_in_scope resolves.
+    verification_step: 8
+    command: >-
+      bin/venv-python -c "import subprocess,yaml,pathlib;
+      base=yaml.safe_load(subprocess.run(['git','show','origin/main:docs/ROADMAP-PLATFORM.yaml'],capture_output=True,text=True,check=True).stdout);
+      d=yaml.safe_load(pathlib.Path('docs/ROADMAP-PLATFORM.yaml').read_text(encoding='utf-8'));
+      b={i['id'] for i in base['tier_items']}; n={i['id'] for i in d['tier_items']};
+      assert n==b, {'added':sorted(n-b),'removed':sorted(b-n)};
+      it=[i for i in d['tier_items'] if i['id']=='T1.13'][0];
+      c=[x for x in it['exit_criteria'] if x['id']=='c9'][0];
+      assert c['status']=='open', c['status'];
+      assert 'gate_is_postmerge_canary' in c['text'], 'c9 re-grounding absent';
+      assert 'rec-3666' in c['text'], 'c9 does not name the deferred check_absent owner';
+      dead={'docs/INTENT-ci-rca-methodology.md','scripts/ci_rca/evidence.py','scripts/ci_rca_gate_evidence.py'};
+      assert not (dead & set(it['files_in_scope'])), sorted(dead & set(it['files_in_scope']));
+      print('ROADMAP_OK tier_items='+str(len(n))+' added=0 removed=0 c9=open check_absent_owner=rec-3666')"
+    red_green_expectation: >-
+      red before (the phrase and the rec id are both absent from c9's text), green after; the id-set
+      clause is green in both states and is the no-row-addition half.
+constraints:
+  - >-
+    Decision 182: the 240s non-test fast-tier half is UNWAIVABLE -- no bypass, forced-scope, breadth or
+    fallback path reaches it, and its non_test_breach verdict is explicitly not fixable by re-scoping.
+    Step 10 carries the prediction and must report within_budget; re-measured 2026-09-06 on the final
+    scope: n_selected 113 of 544, elapsed 98.4-125.6s, test half 47.4-53.8s, non-test half 51.0-71.8s.
+    Re-measure at /implement time rather than trusting these integers.
+  - >-
+    Decision 128: decompose, never raise a SLOC budget. Measured headroom to the 500 limit on all EIGHT
+    touched source files, re-measured 2026-09-06: validate_ci_rca_lifecycle_projection 400,
+    _bundle_core 391, vacuous_pass 378, probe_health 265, taxonomy 200, ci_rca_runtime 103,
+    ci_rca_gauges 96, session/preflight 70. None is in config/sloc_budgets.yaml, so the bare 500 limit
+    applies. scripts/ops_portal/ci_rca_schema.py (251 headroom) is NOT in this list -- it is read-only
+    reference, cited for its patterns and never modified. scripts/preflight/ci_rca_signals.py has only
+    28 lines of headroom and is likewise deliberately NOT in scope.
+  - >-
+    Every behaviour change lands with a test that fails without it (Constraint C). The precedence hoist
+    in particular breaks zero existing tests -- TestComputeEscapeMode's SIX test functions / EIGHT
+    assert statements (measured 2026-09-06 by AST over the class body, corroborated by `pytest
+    tests/test_ci_rca_vacuous_pass.py -k TestComputeEscapeMode --collect-only -q`, whose summary names
+    six collected of thirty-seven; this tree prints "6/37 tests collected (31 deselected)", so do not
+    pin a literal "6 selected" -- the earlier "eight rows" phrasing conflated the two counts) were
+    hand-verified to pass under the new ordering -- so its evidence MUST come from newly added
+    failing-first rows, never from the existing suite going green.
+  - >-
+    Decision 84: portal writes only via file_rec/update_rec. logs/.recommendations-log.jsonl is read ONLY
+    (steps 5 and the gauge fixtures read it; nothing writes it, and no read is ever replayed upstream).
+  - >-
+    Decision 55 and Decision 72 -- fail loud, forward-fix, never patch around. A taxonomy miss must keep
+    abstaining rather than guessing a value.
+  - >-
+    Decision 59 scope boundary: out-of-scope defects found during implementation become recommendations
+    via scripts/ops_data_portal, never inline fixes. Step 9 asserts the touched set both directions.
+  - >-
+    resolve_workflow_tier's OBSERVABLE RETURN CONTRACT must not change; its BODY may. The seam guard at
+    tests/ci_rca/taxonomy/test_load_and_classify.py:115-123 is a BEHAVIOUR guard (it compares
+    resolve_workflow_tier's output over every real workflow name), so a delegation wrapper --
+    `return "unknown" if raw in ("not_a_gate", _MISS) else raw` over resolve_workflow_tier_raw -- keeps
+    it green with zero duplicated taxonomy lookup and zero drift surface, and is preferred over two
+    parallel implementations. THE REASON THE FIX IS ADDITIVE IS NOT THE TEST PIN: a test pin is weak
+    grounds (Decision 55/72 says fix the defect and update the test). The real reason is
+    scripts/ci_rca/evidence/_bundle_core.py:67 -- `actual_gate = wf_tier if wf_tier != "unknown" else
+    None` -- so making resolve_workflow_tier itself return 'not_a_gate' would silently give
+    detection_gap.actual_gate_that_caught_it a PATTERN-VIOLATING value: its live pydantic pattern
+    (ci_rca_schema.py:78) admits only pre|presubmit|CI|unknown.
+  - >-
+    Do NOT widen the existing rca_confidence abstention gauge. The contract's abstention_surface note
+    pins that gauge to its preflight twin and warns that moving one without the other relocates the
+    defect. The escape_mode gauge is a SECOND, independent gauge.
+  - >-
+    Sequencing (Constraint G): this slice runs BEFORE the escape-closure-obligation slice. Do not touch
+    scripts/convergence_health/**, config/agent/data_quality/source_registry.yaml, or
+    .github/workflows/convergence-health.yml -- the in-flight sensor-liveness slice (PR #1099) owns those.
+  - >-
+    No new standing prose-architecture doc (Decision 86). The field's semantics go into
+    docs/contracts/ci-rca-lifecycle.yaml beside its enforcement, per the AGENTS.md collocation rule.
+  - >-
+    A content change to docs/contracts/ci-rca-lifecycle.yaml REQUIRES a new amendment_log[] entry
+    (enforced by scripts/checks/contracts/_population.py:374-388).
+  - >-
+    This plan mints NO numbered Decision, and that is an adjudication, not an assumption. Applying
+    docs/contracts/decision-entry.yaml's three routing questions: questions 1 and 2 fail on this plan's
+    own rollback ("reverting the commit restores the prior classifier exactly. No data migration"), and
+    question 3 fails because every element already has an owning row -- the field's meaning routes to
+    field_semantics (the projection_fields entry in docs/contracts/ci-rca-lifecycle.yaml this plan
+    writes), the gauge routes to operational_fact, and the c9 amendment routes to work_item, all three
+    of which read "Never a numbered Decision". Rationale routes to the PR body plus that contract note.
+    Do not draft a `## Decision NNN:` header for any part of this work.
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - >-
+    decision-scout=FLAGS_FOUND. Decisions triaged: 136 of 136. Roadmap items intersected: 6; CONFLICT: 1; RELATED: 4.
+    CITE: Decision 167 (no-numbered-Decision routing, worked in constraints), 168 (Class D clause 2, governs the
+    declare-and-generalise move on validate_ci_rca_lifecycle_projection), 136 (exit-criteria ledger, governs c9),
+    163, 147, 148, 182, 128, 84, 79, 55.
+  - >-
+    gates: decision-scout=FLAGS_FOUND after 1 round (8 flags); plan-critique 2 rounds, split -- constraints=PROCEED (r2);
+    design=REVISE r2 (1 blocking count fix + 12 non-blocking, all applied, none disputed, 2 corrected on re-measurement).
+  - >-
+    Follow-on /plan on T1.13 (in_progress). closes_criteria EMPTY by design: c9 holds open on part (a)'s unbuilt
+    rec-2415 throttle; this repairs part (c). Freshness Gate: silent-completion NO, supersession NO, gating decisions
+    NONE; stale-reference FIRES on three dead files_in_scope paths, so re-grounding is a scope row. Preflight:
+    venv/creds ok, 0 behind 0 ahead, ci_rca_unresolved_recs empty, softcap 966, data_quality null; RCA's PR #797
+    truncation contributor is STALE (PR #849, 07e48c91), none in scope.
+  - >-
+    92 escape-classified recs in logs/.recommendations-log.jsonl: tier_misplaced 50, undetermined 42; monthly 0/3,
+    22/69, 18/18, 2/2 (2026-06..09). Cross-tab actual_gate x escape_mode splits the 42 with zero residue:
+    (CI,undetermined)=25 is the precedence bug, (unknown,undetermined)=17 the erased not_a_gate tier. ATTRIBUTION
+    BASIS -- _DetectionGap stores no classifier INPUTS: the split rests on wf_tier identity (rec-3328, rec-2965).
+  - >-
+    Why vacuous-first, not canary-first: only 2 of 22 taxonomy workflows carry a real tier, so canary-first makes
+    escape_mode a restatement of actual_gate and leaves check_ran_vacuously unreachable. Vacuous-first recovers the
+    same 25, breaking no existing TestComputeEscapeMode row (count/method in `constraints`). Post-fix margin ~0.69
+    bits (basis in `intent`); rule 5 is therefore DEFENSIVE DEAD CODE -- reachable only on a taxonomy miss.
+  - >-
+    Fix 3 adds nothing beyond the deferral: gate_bypassed is real (rec-3570) but underivable from current bundle
+    inputs, and an unemittable enum value recreates this defect. Fix 4 ships the gauge and check-3 but NO escalation
+    -- it counts a trailing window, so post-merge it would file a rec for this PR's own fix.
+  - >-
+    Decision 79/125/126 measured, not assumed: compute_affected_artifacts returns {'data-pipeline':
+    ['docs/ROADMAP-PLATFORM.yaml']} -- ASSET-only affectedness, no handler/include touched, and
+    deploy-prod-lambdas.yml's on.push.paths (mirrored in PROD_SOURCE_PATHSPECS) excludes it: no code ships.
+  - >-
+    followon_recs: rec-3666 (check_absent) and rec-3669 (Decision 59 routing: a VP step passing `-p no:randomly`
+    WITHOUT `-o addopts=""` exits 4 having run ZERO tests) filed at PLAN time; three more at /implement Step 7
+    (text in `execution_steps`), the third being source_registry's ci_rca_probe_health description -- false today and
+    after this PR; Constraint G forbids touching that file here. rec-3669's scale re-measured 2026-09-06, correcting
+    a round-1 "3 plans / 5 invocations" overcount: only the UNPAIRED form breaks
+    (PLAN-dependency-declarations-ci-config.yaml:213, PLAN-aws-test-hermeticity.yaml:124); the 4 others pair it.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - >-
+    Re-read tests/test_ci_rca_vacuous_pass.py TestComputeEscapeMode in full before editing. It holds SIX
+    test functions carrying EIGHT assert statements -- counted by AST over the class body, and
+    corroborated by `bin/venv-python -m pytest tests/test_ci_rca_vacuous_pass.py -k
+    TestComputeEscapeMode --collect-only -q`, whose summary line names six collected of thirty-seven
+    (read the numbers, not a fixed string: this tree prints "6/37 tests collected (31 deselected)", so
+    a literal "6 selected" never appears and must not be verified against). All six must stay green
+    UNMODIFIED; if any needs changing, STOP and re-present. Do not read a count of six as evidence that
+    rows are missing -- six functions and eight asserts are the same set counted two ways.
+execution_steps:
+  - >-
+    scripts/ci_rca/taxonomy.py -- add resolve_workflow_tier_raw(workflow_name, path) returning the raw
+    tier string, preserving 'not_a_gate', and a distinct module-level sentinel for a taxonomy miss (the
+    miss warning log moves here). Then reduce resolve_workflow_tier to a delegation wrapper over it --
+    `return "unknown" if raw in ("not_a_gate", _MISS) else raw` -- so the taxonomy lookup exists once.
+    Its observable return contract must not change; its body may.
+  - >-
+    scripts/ci_rca/vacuous_pass.py -- reorder compute_escape_mode to (1) check_ran_vacuously when
+    vacuous_pass is True and coverage is 'selected', (2) tier_misplaced when gate_is_postmerge_canary is
+    True, (3) no_premerge_gate_by_design on a raw not_a_gate tier, (4) abstain when either of
+    vacuous_pass / merge_gate_test_coverage is the undetermined sentinel, (5) the retained c11
+    not_selected proxy, GUARDED by `gate_is_postmerge_canary is False` -- rule 2 outranks rule 5, so
+    rule 5's correctness consumes the canary even though its body does not reference it; without that
+    precondition an undetermined canary is answered as if it were known false -- (6) abstain. Add
+    workflow_tier_raw as a keyword parameter defaulted to the undetermined sentinel; there is exactly
+    ONE production call site (scripts/ci_rca/evidence/_bundle_core.py:81) and it is already a KEYWORD
+    call, plus eight positional calls in tests/test_ci_rca_vacuous_pass.py, so a trailing
+    keyword-with-default breaks none of them. Update the docstring's decision tree to match, and record
+    there that rule 5 is DEFENSIVE DEAD CODE on the live taxonomy: it is reachable only on a taxonomy
+    MISS (20 of the 22 watched workflows are not_a_gate, caught by rule 3; the other 2 are tier CI,
+    caught by rule 2), and ci-rca only bundles workflows the taxonomy already names, so no live bundle
+    reaches it. Keep it -- it is the honest branch if the taxonomy ever gains a non-CI real tier.
+  - >-
+    scripts/ci_rca/evidence/_bundle_core.py -- resolve the raw tier beside wf_tier and pass it into
+    compute_escape_mode.
+  - >-
+    scripts/ci_rca/probe_health.py -- add compute_escape_mode_abstention_rate beside
+    compute_abstention_rate, returning (undetermined_count, total_count, rate) over
+    context_v2_json.detection_gap.escape_mode with the same window and zero-total guard. Do not modify
+    compute_abstention_rate.
+  - >-
+    scripts/preflight/ci_rca_gauges.py and scripts/session/preflight.py -- compute, print and report the
+    new gauge under a distinct key beside the existing one. No escalation path. ALSO re-word
+    print_ci_rca_abstention_gauge's label (ci_rca_gauges.py:69-76) so both lines name their field:
+    "CI-RCA agent rca_confidence abstention (last {N}d): x/y low-confidence/undetermined (z%)" and
+    "CI-RCA probe escape_mode abstention (last {N}d): x/y detection_gap.escape_mode=undetermined (z%)".
+    The substring 'low-confidence/undetermined' MUST survive in the first label -- the out-of-scope
+    tests/session/preflight/test_ci_rca_gauges_abstention_label.py:33 pins it. Update the in-scope
+    full-string pin at tests/session/preflight/test_ci_rca_gauges.py:109 to match.
+  - >-
+    scripts/ops_portal/ci_rca_runtime.py -- add the check-3 abstention branch under the predicate
+    `bundle_escape == "undetermined" and agent_escape is not None and agent_escape != "undetermined"`,
+    keeping the existing bundle-wins branch as the elif. Do NOT copy check-1's `!= "undetermined"`
+    shape: escape_mode is Optional[str]=None while earliest_viable_gate is required, so that shape
+    false-positives on every rec that legally omitted the field.
+  - >-
+    scripts/checks/contracts/validate_ci_rca_lifecycle_projection.py -- resolve dotted projection_fields
+    keys through nested BaseModel annotations, and re-base the enum-parity obligation on the LIVE MODEL:
+    for each declared entry, resolve its (possibly dotted) key against the live model and, if the
+    resolved field carries an alternation-shaped pattern, REQUIRE a matching enum. Do not key the
+    obligation off the contract's own `enum:` presence -- that would let the contract disarm the check.
+    The current early `return` at line 44 must NOT survive into the per-entry loop: accumulate every
+    entry's problems into failed[] and continue, or one enum-less entry silently skips all later ones.
+  - >-
+    docs/contracts/ci-rca-lifecycle.yaml -- declare detection_gap.escape_mode in projection_fields, add
+    the abstention_surface note recording the second gauge and why it is additive, and add the
+    amendment_log entry.
+  - >-
+    docs/ROADMAP-PLATFORM.yaml -- append exactly ONE re-grounding line to T1.13:c9's text, not a third
+    dated narrative block (Decision 147). Shape: "[RE-GROUNDED 2026-09-06,
+    PLAN-escape-mode-classifier-repair]: part (c)'s derivation omits gate_is_postmerge_canary and
+    erases the not_a_gate tier, which is why escape_mode read undetermined 100% from 2026-08-02; this
+    plan repairs three of the four values and defers check_absent to rec-3666. c9 stays open on part
+    (a)." Then re-ground T1.13's files_in_scope. No row addition, no status flip.
+  - >-
+    Add the failing-first test rows named in test_obligations to each of the SEVEN test files in scope:
+    tests/test_ci_rca_vacuous_pass.py, tests/ci_rca/taxonomy/test_load_and_classify.py,
+    tests/ci_rca/evidence/test_generate.py, tests/ops_data_portal/test_ci_rca_runtime.py,
+    tests/test_ci_rca_probe_health.py, tests/session/preflight/test_ci_rca_gauges.py, and
+    tests/checks/contracts/test_validate_ci_rca_lifecycle_projection.py -- the same seven step 3's
+    command runs. Editing six and stopping leaves one obligation unevidenced.
+  - >-
+    File the THREE remaining deferred halves via scripts.ops_data_portal file_rec -- calling
+    get_rec_write_guidance() first per Decision 66 -- and append the returned ids to this plan's
+    followon_recs at Step 7 closure, before implementation_declared is set true. (i) gate_bypassed plus
+    a deterministic merge-bypass input. Cite this as the rec's quantitative basis (measured 2026-09-06,
+    restored here from an earlier `context` line the 40-line cap displaced): 10 of the 92
+    escape-classified recs in the cache read detection_gap.earliest_viable_gate='pre' while
+    escape_mode='tier_misplaced' -- a pre-merge gate existed and was bypassed, which is exactly what
+    gate_bypassed would name and what tier_misplaced currently mislabels. (ii) Abstention escalation for the new gauge. (iii)
+    config/agent/data_quality/source_registry.yaml's ci_rca_probe_health `description` claims the sensor
+    fires "indicating the probe is systematically unable to classify earliest_viable_gate/escape_mode"
+    -- FALSE today (the sensor measures rca_confidence, not either of those fields) and STILL false
+    after this PR, since this PR adds a second gauge rather than repointing that one. Constraint G
+    forbids this plan touching that file (the in-flight sensor-liveness slice, PR #1099, owns it), so
+    the re-wording is deferred, not fixed here. NOTE the relocation: the rca_confidence GAUGE is not
+    false-green for what it measures -- 0/5 is a true statement about rca_confidence -- so the residue
+    is this registry text plus the ambiguous printed labels, and only the labels are in scope. The
+    fourth half, check_absent, was filed at plan time as rec-3666 precisely so the c9 line above could
+    name a real owner; do not re-file it. rec-3669 (the `-p no:randomly` VP idiom, routed out under
+    Decision 59) was likewise filed at plan time and is already in followon_recs; do not re-file it.
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Every change is additive or a pure reordering inside one function; reverting the commit restores the
+  prior classifier exactly. No data migration, no deploy, no infrastructure. Historical recs are not
+  rewritten -- the repair applies to newly filed recs only, so a revert cannot corrupt stored rows.
