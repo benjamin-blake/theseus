@@ -1,0 +1,172 @@
+name: backlog-health
+
+# Scheduled non-gating backlog-health monitor (PLAN-backlog-health-detection, Decision 62
+# 2026-06-16 amendment / CD.12: alarm-not-gate). Detects four decaying recommendation defect
+# classes against the live warehouse and files at most one deduped rec per class per episode.
+#
+# THREE JOBS, split so the untrusted half holds no credential (a Fable advice-consult rejected
+# env-scrubbing as a security control -- with id-token: write, the ACTIONS_ID_TOKEN_REQUEST_*
+# vars are in every step's environment regardless, so the split is structural, not a scrub):
+#   census   (id-token, reader read only)   -- one structural read + classification, no execution.
+#   probe    (contents: read ONLY, no id-token, persist-credentials: false) -- the ONLY job that
+#            executes rec-authored acceptance commands, under unshare -rmn sandboxed isolation
+#            (see scripts/backlog_health/probe.py). Holds no AWS credential at all: a malicious or
+#            broken acceptance command running here has no network path and only a read-only,
+#            bind-mounted view of the checkout -- other runner paths (e.g. /tmp) are unaffected by
+#            that bind mount and stay writable, but there is nothing of value there (no
+#            credentials, no repo state) on this ephemeral, credential-free runner.
+#   escalate (id-token, portal writes)      -- treats probe's verdict artifact as untrusted input
+#            (schema-validated, rejoined against a fresh read on rec_id + acceptance_sha256),
+#            files/updates/closes the four class-level rollup recs via
+#            scripts.rec_episode.run_episode. Never touches an individual backlog rec by id.
+#
+# Never gates a PR or merge (Decision 83 non-wedging): schedule + workflow_dispatch only,
+# deliberately absent from terraform/github/repo.tf's main-protection required_status_checks.
+#
+# Slot: Monday 10:00 UTC -- 06/07/08/09 Monday are taken by ci-rca-inactivity-sweep + CodeQL,
+# ghas-probe, dependabot-stranded, and dedup-probe (all weekly Monday-morning probes).
+
+on:
+  schedule:
+    - cron: '0 10 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Report findings without filing, updating or closing any rec'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backlog-health
+  cancel-in-progress: false
+
+jobs:
+  census:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout (full history -- census's recent-commit collector is unbounded)
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Activate venv
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+
+      - name: Configure AWS credentials (OIDC -- branch role, reader-only usage)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-branch
+          aws-region: eu-west-2
+
+      - name: Run census (structural read + classification -- executes nothing)
+        run: .venv/bin/python -m scripts.backlog_health census --artifact-dir /tmp/backlog_health
+
+      - name: Upload census artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backlog-health-census-${{ github.run_id }}
+          path: /tmp/backlog_health/census.json
+          retention-days: 1
+
+  probe:
+    needs: census
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout (credential-free)
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Activate venv
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+
+      - name: Download census artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backlog-health-census-${{ github.run_id }}
+          path: /tmp/backlog_health
+
+      - name: Run probe (the sole executor of rec-authored acceptance commands, sandboxed)
+        run: .venv/bin/python -m scripts.backlog_health probe --artifact-dir /tmp/backlog_health
+
+      - name: Upload probe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backlog-health-probe-${{ github.run_id }}
+          path: /tmp/backlog_health/probe.json
+          retention-days: 1
+
+  escalate:
+    needs: [census, probe]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout (credential-free)
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Activate venv
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+
+      - name: Configure AWS credentials (OIDC -- branch role, portal writes)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/agent-platform-github-ci-branch
+          aws-region: eu-west-2
+
+      - name: Download census artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backlog-health-census-${{ github.run_id }}
+          path: /tmp/backlog_health
+
+      - name: Download probe artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: backlog-health-probe-${{ github.run_id }}
+          path: /tmp/backlog_health
+
+      - name: Run escalate (file, update or close the four class-level rollup recs)
+        env:
+          DRY_RUN_FLAG: ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+        run: .venv/bin/python -m scripts.backlog_health escalate --artifact-dir /tmp/backlog_health $DRY_RUN_FLAG

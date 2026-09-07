@@ -4645,6 +4645,21 @@ Key constraints (binding):
   `ops_recommendations` (Decision 84: the ducklake_writer owns the keyspace).
 - Queue-wide relevance surfacing serves the warmed read-cache only -- no per-session warehouse
   re-fetch (Decision 88).
+  [Amendment 2026-09-07, PLAN-backlog-health-detection: this clause is SCOPED to the interactive
+  read-time gate (scripts/session_preflight.py's correlation engine, reading from the warmed local
+  cache) -- it was never a ceiling on every relevance consumer. scripts/backlog_health's scheduled
+  monitor (Decision 62 2026-06-16 amendment / CD.12, alarm-not-gate) is a SECOND, also-sanctioned
+  venue: one structural DuckLake read per episode (census.py's single current_state call, never a
+  per-rec re-fetch), then LOCAL evaluation of exactly two rec_relevance.py signals
+  (target_existence, open_duplicate) per open rec -- a measured two-attach-per-episode pattern
+  with zero incremental warehouse egress, distinct from running the acceptance-probe signal
+  queue-wide (which stays forbidden; see the acceptance_probe signal_definition below).
+  Separately: docs/contracts/recommendation-relevance.yaml's two "never queue-wide (Decision 88)"
+  clauses (signal_definitions.acceptance_probe.signal and constraints[1]) are themselves a
+  MIS-CITE -- Decision 88 is the Neon catalog-EGRESS budget, and the acceptance probe those
+  clauses constrain is a LOCAL `subprocess.run(shell=True)` with no warehouse round-trip at all;
+  the real owner of "on-demand per-rec only, never queue-wide" is THIS decision (Decision 103),
+  not Decision 88. Both clauses are corrected in the same PR as this annotation.]
 
 **Implementation (T3.8, landed 2026-06-30):**
 `scripts/rec_relevance.py` evaluator (deterministic-first: acceptance probe -> target-existence
