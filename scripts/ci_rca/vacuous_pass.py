@@ -132,30 +132,52 @@ def compute_escape_mode(
     merge_gate_test_coverage: str,
     gate_is_postmerge_canary: "bool | str",
     coverage_regression: "bool | str",
+    workflow_tier_raw: str = _UNDETERMINED,
 ) -> str:
     """Compute the gate-escape mode. Returns one of the escape_mode enum values.
 
     escape_mode enum: check_ran_vacuously | no_premerge_gate_by_design | tier_misplaced |
                       undetermined
 
-    Decision tree (applied in order):
-      1. If any primary tri-state input is "undetermined" -> "undetermined" (abstain)
-      2. If gate_is_postmerge_canary is True -> "tier_misplaced" (caught only post-merge)
-      3. If merge_gate_test_coverage == "not_selected" -> "no_premerge_gate_by_design"
-      4. If vacuous_pass is True and merge_gate_test_coverage == "selected" ->
-         "check_ran_vacuously" (test selected, collected 0 items)
-      5. Otherwise -> "undetermined"
+    Decision tree (applied in order -- vacuous-first, not canary-first: only 2 of 22 taxonomy
+    workflows carry a real tier, so a canary-first ordering would make escape_mode a restatement
+    of actual_gate_that_caught_it and leave check_ran_vacuously structurally unreachable):
+      1. If vacuous_pass is True and merge_gate_test_coverage == "selected" ->
+         "check_ran_vacuously" (test selected, collected 0 items) -- outranks rule 2 even when
+         gate_is_postmerge_canary is also True.
+      2. If gate_is_postmerge_canary is True -> "tier_misplaced" (caught only post-merge),
+         regardless of whether vacuous_pass or merge_gate_test_coverage is the undetermined
+         sentinel -- a canary run is a determinate fact independent of those two inputs.
+      3. If workflow_tier_raw == "not_a_gate" -> "no_premerge_gate_by_design", without consulting
+         merge_gate_test_coverage -- the workflow was never a gate at all.
+      4. If vacuous_pass or merge_gate_test_coverage is "undetermined" -> "undetermined" (abstain).
+         Narrowed to these two inputs only: gate_is_postmerge_canary's undetermined case is fully
+         handled by rules 2-3 above running first (canary=True wins immediately; canary=anything
+         with workflow_tier_raw='not_a_gate' also wins immediately), so this guard need not (and
+         must not) re-test canary.
+      5. If merge_gate_test_coverage == "not_selected" and gate_is_postmerge_canary is False ->
+         "no_premerge_gate_by_design" (the retained c11 proxy). DEFENSIVE DEAD CODE on the live
+         taxonomy: reachable only on a taxonomy miss (20 of 22 watched workflows are not_a_gate,
+         caught by rule 3; the other 2 are tier CI, caught by rule 2), kept as the honest branch
+         if the taxonomy ever gains a non-CI real tier. The `gate_is_postmerge_canary is False`
+         precondition is REQUIRED even though this rule's body never references the canary: rule
+         2 outranks this rule, so by the time we reach here an undetermined canary has NOT been
+         proven false -- answering no_premerge_gate_by_design would be a guess.
+      6. Otherwise -> "undetermined"
     """
-    if any(v == _UNDETERMINED for v in [vacuous_pass, merge_gate_test_coverage, gate_is_postmerge_canary]):
-        return _UNDETERMINED
+    if vacuous_pass is True and merge_gate_test_coverage == "selected":
+        return "check_ran_vacuously"
 
     if gate_is_postmerge_canary is True:
         return "tier_misplaced"
 
-    if merge_gate_test_coverage == "not_selected":
+    if workflow_tier_raw == "not_a_gate":
         return "no_premerge_gate_by_design"
 
-    if vacuous_pass is True and merge_gate_test_coverage == "selected":
-        return "check_ran_vacuously"
+    if vacuous_pass == _UNDETERMINED or merge_gate_test_coverage == _UNDETERMINED:
+        return _UNDETERMINED
+
+    if merge_gate_test_coverage == "not_selected" and gate_is_postmerge_canary is False:
+        return "no_premerge_gate_by_design"
 
     return _UNDETERMINED

@@ -145,6 +145,93 @@ class TestDeadPointer:
         assert any("names no top-level key present in" in f for f in failed)
 
 
+_DETECTION_GAP_ESCAPE_MODE_FIELD = {
+    "type": "Optional[str]",
+    "enum": ["check_ran_vacuously", "tier_misplaced", "no_premerge_gate_by_design", "undetermined"],
+    "home": "context_v2_json.detection_gap (CiRcaContext._DetectionGap)",
+}
+
+
+class TestDottedProjectionFieldResolution:
+    """T1.13:c9 repair: dotted projection_fields keys resolve through nested BaseModel
+    annotations -- detection_gap.escape_mode lives on the nested _DetectionGap model, not
+    directly on CiRcaContext, so a top-level-only resolver would false-positive 'not on
+    CiRcaContext' for a perfectly real field."""
+
+    def test_dotted_key_on_nested_model_resolves(self, tmp_path: Path) -> None:
+        fields = dict(_VALID_PROJECTION_FIELDS)
+        fields["detection_gap.escape_mode"] = _DETECTION_GAP_ESCAPE_MODE_FIELD
+        _write_contract(tmp_path, fields, _VALID_WATCHED_WORKFLOW_SET)
+
+        failed: list[str] = []
+        validate_ci_rca_lifecycle_projection(failed, contracts_dir=tmp_path)
+
+        assert failed == []
+
+    def test_dotted_key_not_on_nested_model_fails(self, tmp_path: Path) -> None:
+        fields = dict(_VALID_PROJECTION_FIELDS)
+        fields["detection_gap.not_a_real_nested_field"] = {"type": "Optional[str]", "home": "nowhere"}
+        _write_contract(tmp_path, fields, _VALID_WATCHED_WORKFLOW_SET)
+
+        failed: list[str] = []
+        validate_ci_rca_lifecycle_projection(failed, contracts_dir=tmp_path)
+
+        assert any("not on CiRcaContext" in f for f in failed)
+
+
+class TestGeneralisedEnumParity:
+    """The enum-parity obligation derives from the LIVE PYDANTIC MODEL, not from the contract's
+    own `enum:` key -- so the check stays mandatory and the contract cannot disarm it."""
+
+    def test_alternation_shaped_dotted_field_missing_enum_fails(self, tmp_path: Path) -> None:
+        fields = dict(_VALID_PROJECTION_FIELDS)
+        fields["detection_gap.escape_mode"] = {"type": "Optional[str]", "home": "context_v2_json.detection_gap"}
+        _write_contract(tmp_path, fields, _VALID_WATCHED_WORKFLOW_SET)
+
+        failed: list[str] = []
+        validate_ci_rca_lifecycle_projection(failed, contracts_dir=tmp_path)
+
+        assert any("projection_fields.detection_gap.escape_mode missing a non-empty 'enum'" in f for f in failed)
+
+    def test_alternation_shaped_dotted_field_wrong_enum_fails(self, tmp_path: Path) -> None:
+        fields = dict(_VALID_PROJECTION_FIELDS)
+        fields["detection_gap.escape_mode"] = {**_DETECTION_GAP_ESCAPE_MODE_FIELD, "enum": ["bogus"]}
+        _write_contract(tmp_path, fields, _VALID_WATCHED_WORKFLOW_SET)
+
+        failed: list[str] = []
+        validate_ci_rca_lifecycle_projection(failed, contracts_dir=tmp_path)
+
+        assert any("does not equal the live CiRcaContext.detection_gap.escape_mode pattern alternation" in f for f in failed)
+
+    def test_escape_class_enum_still_required_after_generalisation(self, tmp_path: Path) -> None:
+        """No-weakening half: deleting escape_class.enum must STILL fail post-generalisation --
+        proving the obligation derives from the live model, not merely from the contract's own
+        historical hardcoded escape_class lookup."""
+        fields = {"escape_class": {"type": "Optional[str]", "home": "context_v2_json (CiRcaContext)"}}
+        _write_contract(tmp_path, fields, _VALID_WATCHED_WORKFLOW_SET)
+
+        failed: list[str] = []
+        validate_ci_rca_lifecycle_projection(failed, contracts_dir=tmp_path)
+
+        assert any("missing a non-empty 'enum'" in f for f in failed)
+
+    def test_accumulates_both_missing_enums_rather_than_returning_early(self, tmp_path: Path) -> None:
+        """Two enum-less alternation-shaped entries must BOTH be reported -- an early `return`
+        after the first would silently hide the second."""
+        fields = {
+            "escape_class": {"type": "Optional[str]", "home": "context_v2_json (CiRcaContext)"},
+            "detection_gap.escape_mode": {"type": "Optional[str]", "home": "context_v2_json.detection_gap"},
+        }
+        _write_contract(tmp_path, fields, _VALID_WATCHED_WORKFLOW_SET)
+
+        failed: list[str] = []
+        validate_ci_rca_lifecycle_projection(failed, contracts_dir=tmp_path)
+
+        joined = " ".join(failed)
+        assert "escape_class" in joined
+        assert "detection_gap.escape_mode" in joined
+
+
 class TestFieldPatternHelper:
     def test_returns_none_when_no_pattern_metadata(self) -> None:
         class _NoPatternMeta:

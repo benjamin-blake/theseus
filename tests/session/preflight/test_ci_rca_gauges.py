@@ -106,7 +106,7 @@ class TestAbstentionGauge:
         gauge = {"low_or_undetermined_count": 2, "total_count": 8, "rate": 0.25, "window_days": 14}
         _preflight.print_ci_rca_abstention_gauge(gauge)
         out = capsys.readouterr().out
-        assert "CI-RCA probe abstention (last 14d): 2/8 low-confidence/undetermined (25%)" in out
+        assert "CI-RCA agent rca_confidence abstention (last 14d): 2/8 low-confidence/undetermined (25%)" in out
 
     def test_print_gauge_noop_when_none(self, capsys: pytest.CaptureFixture) -> None:
         _preflight.print_ci_rca_abstention_gauge(None)
@@ -164,6 +164,93 @@ class TestAbstentionGauge:
         assert gauge["low_or_undetermined_count"] == 0
         assert data["ci_rca_probe_health_escalation"] == {"action": "none", "rec_id": None}
         mock_escalate.assert_called_once()
+
+
+class TestEscapeModeGauge:
+    """T1.13:c9 repair: _compute_ci_rca_escape_mode_abstention / print_ci_rca_escape_mode_abstention_gauge
+    -- a SEPARATE gauge from TestAbstentionGauge above (which covers the rca_confidence gauge)."""
+
+    def test_compute_returns_none_when_cache_unavailable(self) -> None:
+        assert _preflight._compute_ci_rca_escape_mode_abstention(None) is None
+
+    def test_compute_delegates_to_ci_rca_probe_health(self) -> None:
+        with patch(
+            "scripts.ci_rca.probe_health.compute_escape_mode_abstention_rate", return_value=(3, 8, 0.375)
+        ) as mock_compute:
+            gauge = _preflight._compute_ci_rca_escape_mode_abstention([{"id": "rec-1"}], window_days=14)
+        mock_compute.assert_called_once_with([{"id": "rec-1"}], window_days=14)
+        assert gauge == {
+            "undetermined_count": 3,
+            "total_count": 8,
+            "rate": 0.375,
+            "window_days": 14,
+        }
+
+    def test_print_gauge_line_format(self, capsys: pytest.CaptureFixture) -> None:
+        gauge = {"undetermined_count": 2, "total_count": 8, "rate": 0.25, "window_days": 14}
+        _preflight.print_ci_rca_escape_mode_abstention_gauge(gauge)
+        out = capsys.readouterr().out
+        assert "CI-RCA probe escape_mode abstention (last 14d): 2/8 detection_gap.escape_mode=undetermined (25%)" in out
+
+    def test_print_gauge_noop_when_none(self, capsys: pytest.CaptureFixture) -> None:
+        _preflight.print_ci_rca_escape_mode_abstention_gauge(None)
+        out = capsys.readouterr().out
+        assert out == ""
+
+    def test_main_report_contains_escape_mode_gauge_at_a_different_rate_than_confidence_gauge(self, tmp_path: Path) -> None:
+        """VP step 6: the report carries BOTH gauge keys, computed from the SAME cache row but
+        reporting DIFFERENT rates -- the single strongest disproof that the new gauge is a rename
+        of the old one."""
+        preflight_report = tmp_path / ".preflight-report.json"
+        cache_rows = [
+            {
+                "id": "rec-1",
+                "source": "ci_rca",
+                "status": "open",
+                "created_timestamp": datetime.now(timezone.utc).isoformat(),
+                "context_v2_json": json.dumps({"rca_confidence": "high", "detection_gap": {"escape_mode": "undetermined"}}),
+            }
+        ]
+        warm_sync_stub = {
+            "drained": {},
+            "pulled": {},
+            "rows": {"ops_recommendations": cache_rows, "ops_decisions": [], "ops_priority_queue": []},
+            "reader_ok": {"ops_recommendations": True, "ops_decisions": True, "ops_priority_queue": True},
+        }
+        with (
+            patch("scripts.preflight.env_git.check_venv", return_value=True),
+            patch("scripts.preflight.env_git.get_git_status", return_value=("main", False, [])),
+            patch("scripts.preflight.aws_infra.check_terraform_pending", return_value=False),
+            patch("scripts.preflight.aws_infra.check_credentials", return_value="ok"),
+            patch("scripts.preflight.context_docs.parse_last_session", return_value=""),
+            patch("scripts.preflight.priority_queue.read_priority_queue", return_value=[]),
+            patch("session_preflight._sync_ops_pull", return_value={}),
+            patch("scripts.sync.ops.warm_sync", return_value=warm_sync_stub),
+            patch(
+                "scripts.preflight.context_docs.read_context_files",
+                return_value={
+                    "roadmap_phase": "Phase 2",
+                    "open_decisions_count": 0,
+                    "recent_sessions": [],
+                    "strategic_review_due": False,
+                    "recommendations_count": 0,
+                },
+            ),
+            patch("scripts.preflight.ci_rca_signals._check_ci_rca_liveness", return_value=None),
+            patch("scripts.ci_rca.probe_health.escalate", return_value={"action": "none", "rec_id": None}),
+            patch("session_preflight.PREFLIGHT_REPORT", preflight_report),
+            patch("builtins.print"),
+        ):
+            _preflight.main()
+
+        data = json.loads(preflight_report.read_text(encoding="utf-8"))
+        assert "ci_rca_escape_mode_gauge" in data
+        escape_gauge = data["ci_rca_escape_mode_gauge"]
+        confidence_gauge = data["ci_rca_abstention_gauge"]
+        assert escape_gauge["total_count"] == 1
+        assert escape_gauge["undetermined_count"] == 1
+        assert confidence_gauge["low_or_undetermined_count"] == 0
+        assert escape_gauge["rate"] != confidence_gauge["rate"]
 
 
 class TestCiRcaTelemetrySection:
