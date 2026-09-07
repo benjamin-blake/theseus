@@ -16,6 +16,11 @@ contract:
     check: validate_ci_rca_lifecycle_projection
 
 amendment_log:
+  - date: "2026-09-07"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-escape-closure-obligation (Decision 184): declared closure_artifact, closure_waiver_category (enum matching closure_gate.WAIVER_CATEGORIES) and closure_waiver_reason in projection_fields; added closure_obligation (kind vocabulary, fix-bound resolution rule, waiver vocabulary, bound statuses, refusal contract); corrected closure_dependency.manual_route and auto_close.timestamp_inactivity.action to name the new flags/kwargs. Wave 0's rows (2026-09-06 entry below) are untouched.
   - date: "2026-09-06"
     semantic_break: false
     change_class: field_add
@@ -201,8 +206,7 @@ auto_close:
       no run-history data source -- so it stays inside Decision 103's deterministic-satisfaction
       boundary (a recorded proof licenses a direct close, no close_proposed needed).
     action: >-
-      scripts.ci_rca.inactivity_sweep closes via update_rec(status=closed,
-      resolution=stale_no_recurrence) with the last_seen/age proof recorded in the resolution text.
+      scripts.ci_rca.inactivity_sweep closes via update_rec(status=closed, resolution=stale_no_recurrence, closure_waiver_category=stale_no_recurrence, closure_waiver_reason=<last_seen/age proof>) -- Decision 184's programmatic waiver, so an escape-classified inactive rec still closes rather than wedging this workflow.
     read_path: >-
       scripts.ops_portal.ci_rca_lifecycle.list_open_ci_rca_recs -- DuckLake reader NAMED VERBS only
       (Decision 84 I-3 / Decision 88); no ad-hoc warehouse re-fetch; never re-stages from a cache.
@@ -357,6 +361,44 @@ projection_fields:
       agent (echoes the evidence bundle's own escape_mode); cross-checked by
       scripts/ops_portal/ci_rca_runtime.py check-3 (abstention-mirror + bundle-wins), never
       overwritten in place -- a disagreement raises an issue rather than silently correcting it.
+  closure_artifact:
+    type: "Optional[str]"
+    pattern: "<kind>:<ref>, kind in {shard, pytest, check, fixture}"
+    home: context_v2_json (CiRcaContext)
+    authored_by: closer (supplied at update_rec closure time via --closure-artifact / the kwarg)
+  closure_waiver_category:
+    type: "Optional[str]"
+    enum: [stale_no_recurrence, environment_only, no_premerge_gate_by_design, risk_accepted]
+    home: context_v2_json (CiRcaContext)
+    authored_by: closer (supplied at update_rec closure time via --closure-waiver-category / the kwarg)
+  closure_waiver_reason:
+    type: "Optional[str]"
+    home: context_v2_json (CiRcaContext)
+    authored_by: closer (free-text proof, supplied alongside closure_waiver_category)
+
+# Decision 184: closure-time artifact obligation for escape-classified recs. Field semantics
+# route here (Decision 86/127); rationale and per-ruling evidence live in the Decision and in
+# PLAN-escape-closure-obligation's context, never restated below.
+closure_obligation:
+  artifact_kinds: [shard, pytest, check, fixture]
+  kind_strength: [shard, pytest, check, fixture]  # strongest first; only shard: is still-red-on-reintroduction (residual rec filed)
+  fix_commit_binding: >-
+    A `<kind>:<ref>` token resolves only when its kind-specific fact holds AND its defining file was added or modified in the closing write's fixed_by_sha (one read-only local `git diff-tree`, no reader egress). check:<name> resolves against the entry's Entry.pre TIER fact, NEVER bare registry._ALL_ENTRIES membership (vacuous for tier_misplaced escapes). No fixed_by_sha, or an unresolvable one, REFUSES (fail closed, Decision 55).
+  per_kind_defining_file:
+    "check:<name>": "The registering scripts/checks/<domain>/_manifest.py line, or the check module -- either satisfies."
+    "shard:<id>": "config/agent/verification_registry/entries/<id>.yaml"
+    "pytest:<nodeid>": "The test file named by the node id."
+    "fixture:<path>": "The fixture path itself."
+  fixture_root_constraint: >-
+    fixture:<path> must be under tests/fixtures/ -- unconstrained, fixture:README.md would resolve while proving nothing and would depress reversal condition (a)'s waiver rate.
+  waiver_categories: [stale_no_recurrence, environment_only, no_premerge_gate_by_design, risk_accepted]
+  waiver_categories_reason: >-
+    Ratified seed set (point 5/8; a new member is a numbered-Decision event). duplicate_of is DELIBERATELY ABSENT -- a waiver asserts no artifact is FEASIBLE, a duplicate asserts one is OWED (cites the class artifact, fix-bound like any other, no promise transfer). Never re-add it.
+  bound_statuses: [closed, declined, superseded]
+  terminal_definition: >-
+    Defined on the FROM side: fires on a transition INTO a bound status FROM one not already bound -- gates open->declined (closing the two-step bypass) while declined->superseded and status-preserving writes stay ungated. `failed` is deliberately NOT bound.
+  refusal_contract: >-
+    Raises ClosureArtifactRequired (ValueError), writing nothing (Decision 55/72). rec-autoclose.yml catches it, prints a Decision-155 marker, skips the rec (left OPEN), exits 0 -- never a propagated exception on this ci_rca:watched workflow.
 
 constraints:
   - "Decision 84/103/63: these fields are a context_v2_json projection only -- ops_recommendations' Class A schema is untouched."
@@ -463,12 +505,7 @@ closure_dependency:
     Watching rec-autoclose is still correct (the alternative is the 2026-07-24 silence), but a
     rec-autoclose-sourced ci_rca rec cannot assume its own closure will auto-stamp fixed_by_sha.
   manual_route: >-
-    Close via `bin/venv-python -m scripts.ops_data_portal --update-rec <rec-id> --status closed
-    --resolution "..."` then stamp explicitly:
-    `bin/venv-python -c "from scripts.ops_portal.ci_rca_lifecycle import stamp_fixed_by_sha;
-    stamp_fixed_by_sha('<rec-id>', '<merge-sha>')"`. This is the closure route for a
-    rec-autoclose-sourced ci_rca rec whenever rec-autoclose itself cannot be trusted to process
-    the Resolves trailer.
+    Close via `bin/venv-python -m scripts.ops_data_portal --update-rec <rec-id> --status closed --resolution "..." --closure-artifact <kind:ref> --closure-fix-sha <merge-sha>` (Decision 184: both closure flags must land in the SAME call -- the gate reads fixed_by_sha from the write it evaluates, so close-then-stamp-separately no longer satisfies the artifact route). --closure-fix-sha stamps the same fixed_by_sha key a separate `stamp_fixed_by_sha('<rec-id>', '<merge-sha>')` call would -- needed only for a non-escape rec or an unsupplied sha. This is the closure route for a rec-autoclose-sourced ci_rca rec whenever rec-autoclose cannot be trusted to process the Resolves trailer.
   rec_2923_precedent: >-
     PLAN-ci-rca-starved-surface (Decision 162) applies this exact manual_route to close rec-2923:
     `--status closed --resolution "<live closure proof, Decision 103>"` then

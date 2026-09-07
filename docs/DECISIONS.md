@@ -2,6 +2,110 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 184: Closure-time artifact obligation for escape-classified recs (Decided)
+
+```yaml
+number: 184
+status: Decided
+decided_date: "2026-09-07"
+amends: [103]
+significance:
+  value: numbered_decision
+  justification: >-
+    A standing precondition on rec closure binding every in-repo closure path, plus a ratchet over its
+    own weakening: an enforcement commitment, a refusal contract and a relaxation asymmetry, none of
+    which a contract row carries.
+```
+
+**Status:** Decided
+**Date:** 2026-09-07
+**Warehouse ID:** dec-184
+
+**Problem:**
+Audit LSA-04 (loop-spec-adoption-4d8bac4a, observed): whether closing an escape-classified rec leaves a
+permanent machine artifact is author convention. rec-3131 closed without the `--pre` iam_tf invariant its
+own RCA named as its preventive action; the class recurred as rec-3328. **0** escape-classified recs name
+an artifact in a machine-resolvable `<kind>:<ref>` form. Graduation registry, dedup and back_validation
+are detection-grade: guarantee (d) has no closure-time obligation.
+
+**Decision:**
+1. PREDICATE. `context_v2_json.escape_class` OR `detection_gap.escape_mode` is SET (`undetermined`
+   counts), evaluated over the pre-write context UNION the post-write one, so a close cannot erase its
+   own obligation. Not `failure_category == "gate_escape"`, which matches zero rows.
+2. ONE ENFORCEMENT SITE. Asserted once in `ops_data_portal.py::update_rec` before `_ducklake_write`,
+   body in `ops_portal/closure_gate.py`. Every path closing a writer-allocated `rec-NNN` funnels through
+   `update_rec`. No second gate.
+3. BINDING. Bound set = Decision 103's resolved set `{closed, declined, superseded}`, terminal DEFINED
+   ON THE FROM SIDE: fires on a transition INTO a bound status FROM one not already bound. `failed` is
+   NOT bound. Status-preserving writes (`stamp_fixed_by_sha`, bumps, corrections) are never gated.
+4. ARTIFACT, FIX-BOUND -- NOT MERELY EXISTENT. Closure names a landed artifact in
+   `context_v2_json.closure_artifact`, resolved at write time to a fact THE FIX CHANGED: its defining
+   file must have been added or modified in the closing write's `fixed_by_sha` -- a local git fact, no
+   reader egress. Bare existence never discharges it: `check:` resolves against the named registry
+   entry's TIER fact, never membership, which for the majority escape mode (`tier_misplaced`) would pass
+   every closure unchanged. Kinds are not interchangeable -- only `shard:` is
+   still-red-on-reintroduction -- and existence is not discrimination, a declared residual. Kind
+   vocabulary, ordering and per-kind resolution: the contract's `closure_obligation` (86/127).
+5. WAIVER, IN TWO FIELDS -- AND `duplicate_of` IS NOT ONE. `closure_waiver_category` carries the
+   category, `closure_waiver_reason` the proof; the split makes MEMBERSHIP, not shape, enum-enforced by
+   the contract evaluator. The seed vocabulary is deliberately not all infeasibility:
+   `stale_no_recurrence`, `environment_only`, `no_premerge_gate_by_design` (an `escape_mode` value,
+   artifact-free by construction) and `risk_accepted` (won't-fix). `duplicate_of` is excluded because a
+   waiver asserts no artifact is FEASIBLE while a duplicate asserts one is OWED: a duplicate cites the
+   CLASS artifact, verified alike, and may NOT inherit its master's obligation. The sweep MAY satisfy the
+   waiver with its `stale_no_recurrence` proof.
+6. STRICT FROM DAY ONE, PROSPECTIVE ONLY. No flag, no warn window. Historical rows are never
+   retro-checked.
+7. REFUSAL IS LOUD, NOT RED. The gate raises `ClosureArtifactRequired` (a ValueError), writing nothing.
+   `rec-autoclose.yml` CATCHES it, prints a Decision-155-shaped marker, skips that rec leaving it OPEN,
+   and EXITS 0; its backfill step's exit-155 is untouched. A refused rec is listed by
+   `print_ci_rca_back_validation`; its unattended tail is (c).
+8. RATCHET ASYMMETRY. Correcting or removing an artifact token is free with a stated reason. WEAKENING
+   -- narrowing the predicate, unbinding a status, adding a waiver category, dropping the fix-commit
+   binding, softening the category pattern -- requires a numbered Decision amending this one.
+9. NEVER REMEDIATES. The gate refuses and surfaces; it never files a rec, synthesizes a fixture,
+   downgrades a status, or retries (55, 72).
+
+**Rationale:**
+A hard gate adds friction to every ci_rca closure, including environment escapes whose honest artifact is
+"none feasible" -- hence a categorised waiver: a declaration is auditable, silence is not. Asserting at
+`update_rec` is what makes it cheap: no writer verb, no column, no check register. The fix-commit binding
+is the load-bearing half; without it any pre-existing artifact discharges it. This narrows Decision 103's
+deterministic-satisfied auto-close, for escape recs only. Counts, per-ruling evidence and rejected
+alternatives: the plan.
+
+**Reversal conditions:** the stanza below is the monitored form; (a), (b) and (e) await a registered
+predicate (filed follow-on).
+
+```yaml reversal-conditions
+decision: 184
+review_by: 2026-12-07
+on_trigger: "re-decide via /plan: re-found or retire it, narrow the sweep exemption, or move it to the writer boundary."
+conditions:
+  - id: waiver-majority
+    kind: repo_state
+    predicate: null
+    description: "(a) >50% of NON-SWEEP gated closures in a rolling quarter take the waiver."
+  - id: sweep-launders
+    kind: repo_state
+    predicate: null
+    description: "(b) programmatic stale_no_recurrence waivers outnumber agent-authored ones >4:1."
+  - id: refused-then-swept
+    kind: manual
+    description: "(c) a rec refused at rec-autoclose is later swept closed, no artifact and no human."
+  - id: client-side-bypass
+    kind: manual
+    description: "(d) a caller closes around the client-side gate."
+  - id: artifact-did-not-discriminate
+    kind: repo_state
+    predicate: null
+    description: "(e) back_validation grades a prior artifact VERIFIED-PRESENT and the same fingerprint recurs."
+```
+
+**Related:** 55/72, 84, 88, 103, 124, 128, 133, 142, 150, 155, 162, 165, 167, 182, 86/127.
+
+---
+
 ## Decision 183: Two heal verbs for a red sandbox record, one routing rule -- the acknowledge-and-retry dispatch becomes total (a guard-routed fresh plan at HEAD reaches tf-gated-apply); Reconcile heals at the red commit (amends Decision 126 point 1's reconcile intent; extends Decision 158's Environment-reach accounting) (Decided)
 
 ```yaml

@@ -250,18 +250,62 @@ def _derive_ci_rca_back_validation(cache_rows: list[dict] | None) -> list[dict] 
     return find_preventive_regressions(cache_rows)
 
 
-def print_ci_rca_back_validation(flags: list[dict] | None) -> None:
-    """Print the CI-RCA Back-Validation (preventive_action did not hold) section (T1.13 c12(iii))."""
+def _derive_open_escape_ci_rca_recs(cache_rows: list[dict] | None) -> list[dict] | None:
+    """OPEN source=ci_rca recs that are escape-classified (Decision 184, the D-B1 mitigation): a
+    rec refused at rec-autoclose is left OPEN with no artifact and no marker, and otherwise
+    invisible until the 30-day inactivity sweep waivers it closed -- this is the one surface
+    that makes that refusal legible to a human before the sweep. Zero new reader egress
+    (Decision 88): reads only the already-loaded warm cache. Returns None when the warm cache is
+    unavailable (reader unreachable / offline)."""
+    if cache_rows is None:
+        return None
+    from scripts.ops_portal.closure_gate import is_escape_classified  # noqa: PLC0415
+
+    open_escape: list[dict] = []
+    for row in cache_rows:
+        if row.get("source") != "ci_rca" or row.get("status") != "open":
+            continue
+        ctx_raw = row.get("context_v2_json") or ""
+        if not ctx_raw:
+            continue
+        try:
+            ctx = json.loads(ctx_raw) if isinstance(ctx_raw, str) else dict(ctx_raw or {})
+        except (TypeError, ValueError):
+            continue
+        if isinstance(ctx, dict) and is_escape_classified(ctx):
+            open_escape.append({"id": row.get("id", ""), "file": row.get("file", "")})
+    return open_escape
+
+
+def print_ci_rca_back_validation(flags: list[dict] | None, open_escape_recs: list[dict] | None = None) -> None:
+    """Print the CI-RCA Back-Validation (preventive_action did not hold) section (T1.13 c12(iii)).
+
+    Decision 184: each flag's own 'grade' (VERIFIED-PRESENT/CONFIRMED-ABSENT/WAIVED/CANDIDATE)
+    replaces the prior blanket '[CANDIDATE] file-only match' banner -- a flag carrying neither
+    new field still grades CANDIDATE, so the display is unchanged for a historical/pre-grading
+    flag shape. open_escape_recs (optional) additionally lists any OPEN escape-classified rec in
+    this same section -- the D-B1 mitigation surface. Stays advisory at every grade and for
+    every listed rec (Decision 55): it surfaces, it never files.
+    """
     print("\n--- CI-RCA Back-Validation (preventive_action did not hold) ---")
     if not flags:
         print("  (none)")
-        print()
-        return
-    print("  [CANDIDATE] file-only match -- treat as a candidate, not a confirmed regression (Decision 55).")
-    for flag in flags:
-        print(f"  {flag['new_rec_id']} recurs on {flag['file']} -- prior {flag['prior_rec_id']} claimed:")
-        print(f"    {flag['preventive_action_excerpt']}")
+    else:
+        for flag in flags:
+            grade = flag.get("grade") or "CANDIDATE"
+            artifact_note = f" artifact={flag['closure_artifact']}" if flag.get("closure_artifact") else ""
+            print(
+                f"  [{grade}]{artifact_note} {flag['new_rec_id']} recurs on {flag['file']} "
+                f"-- prior {flag['prior_rec_id']} claimed:"
+            )
+            print(f"    {flag['preventive_action_excerpt']}")
     print()
+
+    if open_escape_recs:
+        print("  Open escape-classified recs (refused at rec-autoclose; will waiver-close on inactivity):")
+        for rec in open_escape_recs:
+            print(f"    {rec.get('id', '')} ({rec.get('file', '')})")
+        print()
 
 
 # ---------------------------------------------------------------------------

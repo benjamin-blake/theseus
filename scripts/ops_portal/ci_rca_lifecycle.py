@@ -15,12 +15,18 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Decision 155-shaped marker (mirrors decisions.py::_ORPHAN_GUARD_TRANSIENT_MARKER): distinct,
+# greppable, and mirrored to $GITHUB_STEP_SUMMARY when set.
+_ESCAPE_CLOSURE_REFUSAL_MARKER = "[REC-AUTOCLOSE] Decision 184 closure refusal"
 
 # Fail-closed default: a legacy closed head with no fixed_by_sha (every rec closed before this
 # change; manual closures) cannot run the ancestry check -- so it always classifies as a
@@ -353,3 +359,80 @@ def compute_escape_class(failed_nodeid: str, selection_manifest: dict) -> str:
     if test_file not in selected:
         return _ESCAPE_NO_EDGE
     return _ESCAPE_UNKNOWN_DATA_EDGE
+
+
+def _mirror_refusal_to_step_summary(marker: str) -> None:
+    """Best-effort mirror to $GITHUB_STEP_SUMMARY (Decision 155 shape) -- never raises; a CI-only
+    convenience, absent in a local run where the env var is unset."""
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    with open(summary_path, "a", encoding="utf-8") as f:  # noqa: PTH123 -- mirrors decisions.py:183's precedent
+        f.write(f"\n## {_ESCAPE_CLOSURE_REFUSAL_MARKER}\n\n{marker}\n")
+
+
+def close_recs_from_trailer(
+    ids: list[str],
+    commit_sha: str,
+    run_url: str,
+    recs_cache: dict[str, dict],
+    profile: Optional[str] = None,
+) -> int:
+    """Close every rec named in `ids` via the ops portal -- the importable helper
+    rec-autoclose.yml's closure step delegates its loop to (the stamp_fixed_by_sha / Decision 142
+    precedent), so a Decision 184 refusal cannot redden this ci_rca:watched workflow and the
+    workflow body stays under its ratchet ceiling.
+
+    Idempotent: a rec already closed_by the cache is skipped. Passes closure_fix_sha=commit_sha
+    into the closing update_rec call so the fix-commit binding is satisfiable on the automated
+    route in ONE write. Catches ClosureArtifactRequired (Decision 184): prints
+    _ESCAPE_CLOSURE_REFUSAL_MARKER (mirrored to $GITHUB_STEP_SUMMARY when set), skips that rec
+    (left OPEN), and does NOT touch exit_code -- the refusal exits this loop iteration the same
+    way an already-closed rec does, never as an error. Any OTHER exception still sets
+    exit_code=1 and continues (existing behaviour, unchanged). The existing post-close
+    stamp_fixed_by_sha call is kept for non-escape ci_rca recs and is idempotent where both run.
+
+    Returns the exit code sys.exit() should use (0 normally; 1 iff a non-gate exception occurred
+    while closing any rec).
+    """
+    from scripts.ops_data_portal import ClosureArtifactRequired, update_rec  # noqa: PLC0415
+
+    resolution = f"Auto-closed by rec-autoclose workflow: merge commit {commit_sha} (run: {run_url})"
+    exit_code = 0
+
+    for rec_id in ids:
+        existing = recs_cache.get(rec_id)
+        if existing and existing.get("status") == "closed":
+            print(f"rec-autoclose: {rec_id} already closed -- skipping (idempotent)")
+            continue
+        try:
+            update_rec(
+                rec_id,
+                {"status": "closed", "resolution": resolution},
+                profile=profile,
+                closure_fix_sha=commit_sha,
+            )
+            print(f"rec-autoclose: closed {rec_id}")
+        except ClosureArtifactRequired as exc:
+            marker = f"{_ESCAPE_CLOSURE_REFUSAL_MARKER}: {rec_id} left OPEN -- {exc}"
+            print(marker)
+            _mirror_refusal_to_step_summary(marker)
+            continue
+        except RuntimeError as exc:
+            print(f"rec-autoclose: WARN {rec_id} not found in portal ({exc}) -- skipping")
+            continue
+        except Exception as exc:  # noqa: BLE001 -- deliberately broad: any non-gate failure still exits 1
+            print(f"rec-autoclose: ERROR closing {rec_id}: {exc}", file=sys.stderr)
+            exit_code = 1
+            continue
+
+        # ci-rca-identity-lifecycle: record the fix commit for the ancestry check, as before.
+        # No-op for non-ci_rca recs; idempotent alongside closure_fix_sha for ci_rca ones.
+        if existing and existing.get("source") == "ci_rca":
+            try:
+                stamp_fixed_by_sha(rec_id, commit_sha, profile=profile)
+                print(f"rec-autoclose: stamped fixed_by_sha={commit_sha} on {rec_id}")
+            except Exception as exc:  # noqa: BLE001 -- best-effort, mirrors the prior inline behaviour
+                print(f"rec-autoclose: WARN could not stamp fixed_by_sha on {rec_id}: {exc}", file=sys.stderr)
+
+    return exit_code

@@ -467,3 +467,42 @@ class TestCiRcaSchemaEnforcement:
             },
         )
         assert closed is True, f"update_rec failed for {rec_id}"
+
+
+class TestCiRcaClosureFields:
+    """Decision 184: closure_artifact / closure_waiver_category / closure_waiver_reason are
+    Optional[...]=None additions -- backward-compatible (no historical row is retro-rejected)
+    and validated when present."""
+
+    def test_closure_fields_are_optional_and_validated(self) -> None:
+        """A context omitting all three still validates; well-formed values accept; malformed
+        ones (including an off-vocabulary category) reject."""
+        from pydantic import ValidationError
+
+        from scripts.ops_portal.ci_rca_schema import CiRcaContext
+
+        CiRcaContext.model_validate(_VALID_CONTEXT_V2)  # no closure_* fields at all -- must validate
+
+        well_formed = {
+            **_VALID_CONTEXT_V2,
+            "closure_artifact": "shard:some-shard",
+            "closure_waiver_category": "environment_only",
+            "closure_waiver_reason": "sandbox-only failure with no premerge signal",
+        }
+        CiRcaContext.model_validate(well_formed)
+
+        with pytest.raises(ValidationError):
+            CiRcaContext.model_validate({**_VALID_CONTEXT_V2, "closure_waiver_category": "made_up_category"})
+
+        with pytest.raises(ValidationError):
+            CiRcaContext.model_validate({**_VALID_CONTEXT_V2, "closure_artifact": "not-a-kind-shaped-token"})
+
+    def test_closure_waiver_category_duplicate_of_rejected_by_field_pattern(self) -> None:
+        """duplicate_of is not in the field's own alternation pattern -- rejected at the schema
+        layer too, not merely by the gate's membership check."""
+        from pydantic import ValidationError
+
+        from scripts.ops_portal.ci_rca_schema import CiRcaContext
+
+        with pytest.raises(ValidationError):
+            CiRcaContext.model_validate({**_VALID_CONTEXT_V2, "closure_waiver_category": "duplicate_of"})

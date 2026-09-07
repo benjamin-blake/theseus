@@ -15,6 +15,13 @@ match is a heavier heuristic, deferred until a failure_category field lands in
 context_v2_json (a c9-style enrichment). File-only matching over-pairs on high-churn files
 (e.g. scripts/validate.py); callers (/plan) MUST treat flags as CANDIDATES only, never a
 confirmed regression or an automatic action.
+
+Decision 184 upgrade: each flag now also grades the PRIOR rec's own closure -- VERIFIED-PRESENT
+(it named a closure_artifact that still statically exists), CONFIRMED-ABSENT (it named one that
+no longer does -- the known-bad-fixture shape), WAIVED (it named a closure_waiver_category
+instead), or CANDIDATE (neither field -- every historical row, still the file-only fallback).
+Grading calls scripts.ops_portal.closure_gate.artifact_exists, a pure filesystem check -- no
+reader egress, no new DuckLake verb (Decision 88).
 """
 
 from __future__ import annotations
@@ -23,7 +30,14 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from scripts.ops_portal.closure_gate import artifact_exists
+
 DEFAULT_WINDOW_DAYS: int = 14
+
+_GRADE_VERIFIED_PRESENT = "VERIFIED-PRESENT"
+_GRADE_CONFIRMED_ABSENT = "CONFIRMED-ABSENT"
+_GRADE_WAIVED = "WAIVED"
+_GRADE_CANDIDATE = "CANDIDATE"
 
 
 def _parse_ts_utc(ts: str) -> Optional[datetime]:
@@ -73,13 +87,30 @@ def _row_context_v2(row: dict) -> dict:
     return ctx if isinstance(ctx, dict) else {}
 
 
+def _grade_prior_closure(prior_ctx: dict) -> tuple[str, Optional[str], Optional[str]]:
+    """Grade a prior rec's own closure from its parsed context_v2_json. Returns
+    (grade, closure_artifact, artifact_status) -- artifact_status is 'present'/'absent' only
+    when a closure_artifact was actually named, else None (WAIVED/CANDIDATE carry no artifact)."""
+    artifact = prior_ctx.get("closure_artifact")
+    if artifact:
+        present = artifact_exists(artifact)
+        return (
+            (_GRADE_VERIFIED_PRESENT if present else _GRADE_CONFIRMED_ABSENT),
+            artifact,
+            ("present" if present else "absent"),
+        )
+    if prior_ctx.get("closure_waiver_category"):
+        return (_GRADE_WAIVED, None, None)
+    return (_GRADE_CANDIDATE, None, None)
+
+
 def find_preventive_regressions(
     cache_rows: list[dict],
     window_days: int = DEFAULT_WINDOW_DAYS,
     now: Optional[datetime] = None,
 ) -> list[dict]:
-    """Flag OPEN source=ci_rca recs recurring on a file whose prior CLOSED source=ci_rca rec
-    on the same file claimed a preventive_action (T1.13 c12(iii)).
+    """Flag OPEN source=ci_rca recs recurring on a file whose prior CLOSED-OR-SUPERSEDED
+    source=ci_rca rec on the same file claimed a preventive_action (T1.13 c12(iii)).
 
     The window_days filter applies to the NEW (open, recurring) rec's created_timestamp --
     a preventive_action claimed further back than the window still counts as "did not hold"
@@ -91,11 +122,11 @@ def find_preventive_regressions(
         now: Injected clock for deterministic tests; defaults to the real UTC now.
 
     Returns:
-        A list of {new_rec_id, prior_rec_id, file, preventive_action_excerpt} dicts, one per
-        matched pair, newest-open-rec-first. Surfacing-only (Decision 55): never files,
-        updates, or closes a rec. Match key is FILE-ONLY -- a materially weaker heuristic
-        than the roadmap's "failed_check + failure_category" spec (see module docstring) --
-        so callers MUST treat these as candidates, not confirmed regressions.
+        A list of {new_rec_id, prior_rec_id, file, preventive_action_excerpt, closure_artifact,
+        artifact_status, grade} dicts, one per matched pair, newest-open-rec-first.
+        Surfacing-only (Decision 55): never files, updates, or closes a rec. The FILE-ONLY match
+        key and the pairing itself are unchanged and remain the fallback for every historical row
+        (grade CANDIDATE) -- only Decision 184's grading is additive.
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -114,7 +145,9 @@ def find_preventive_regressions(
             if ts is None or ts < cutoff:
                 continue
             open_ci_rca.append(row)
-        elif row.get("status") == "closed":
+        elif row.get("status") in ("closed", "superseded"):
+            # Decision 184 point 3 binds both closed and superseded -- a superseded prior rec
+            # carries the same closure obligation and the same "did the fix hold" question.
             ctx = _row_context_v2(row)
             if ctx.get("preventive_action"):
                 closed_with_prevention.setdefault(file_, []).append(row)
@@ -131,13 +164,18 @@ def find_preventive_regressions(
             priors,
             key=lambda r: _row_ts(r, field="last_updated_timestamp") or datetime.min.replace(tzinfo=timezone.utc),
         )
-        preventive_action = _row_context_v2(prior).get("preventive_action", "")
+        prior_ctx = _row_context_v2(prior)
+        preventive_action = prior_ctx.get("preventive_action", "")
+        grade, closure_artifact, artifact_status = _grade_prior_closure(prior_ctx)
         flags.append(
             {
                 "new_rec_id": new_row.get("id", ""),
                 "prior_rec_id": prior.get("id", ""),
                 "file": file_,
                 "preventive_action_excerpt": preventive_action[:200],
+                "closure_artifact": closure_artifact,
+                "artifact_status": artifact_status,
+                "grade": grade,
             }
         )
     return flags

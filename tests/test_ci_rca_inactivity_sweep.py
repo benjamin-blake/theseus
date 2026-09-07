@@ -69,6 +69,39 @@ class TestCloseInactiveRecs:
             closed = close_inactive_recs(rows)
         assert closed == ["rec-1", "rec-2"]
 
+    def test_sweep_supplies_stale_no_recurrence_waiver(self):
+        """Decision 184: the sweep passes a well-formed stale_no_recurrence waiver through
+        update_rec, so an escape-classified inactive rec still closes rather than wedging this
+        scheduled workflow (the gate's exemption is necessary and kept)."""
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(days=45)).isoformat()
+        rows = [_row("rec-1", old, last_seen=old)]
+        with patch("scripts.ops_data_portal.update_rec") as mock_update:
+            close_inactive_recs(rows)
+        _, call_kwargs = mock_update.call_args
+        assert call_kwargs["closure_waiver_category"] == "stale_no_recurrence"
+        assert call_kwargs["closure_waiver_reason"]
+        assert "stale_no_recurrence" in call_kwargs["closure_waiver_reason"]
+
+    def test_sweep_closes_escape_classified_rec_end_to_end(self, tmp_path):
+        """The scheduled sweep still closes an escape-classified inactive rec THROUGH THE REAL
+        closure gate (update_rec unmocked): the programmatic waiver actually satisfies Decision
+        184, it is not merely threaded and never checked."""
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(days=45)).isoformat()
+        rows = [_row("rec-1", old, last_seen=old)]
+        existing = {"id": "rec-1", "status": "open", "context_v2_json": json.dumps({"escape_class": "no-edge"})}
+        recs_file = tmp_path / "recs.jsonl"
+        with (
+            patch("scripts.ops_data_portal._fetch_rec_from_reader", return_value=existing),
+            patch("scripts.ops_data_portal._ducklake_write", return_value={"ok": True}) as mock_write,
+            patch("scripts.ops_data_portal._sync_table"),
+            patch("scripts.ops_data_portal.RECS_JSONL", recs_file),
+        ):
+            closed = close_inactive_recs(rows)
+        assert closed == ["rec-1"]
+        mock_write.assert_called_once()
+
 
 class TestRunSweep:
     def test_run_sweep_reports_counts(self):

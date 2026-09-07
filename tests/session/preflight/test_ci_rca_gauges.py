@@ -15,6 +15,7 @@ import pytest
 
 boto3 = pytest.importorskip("boto3")
 
+from scripts.preflight import ci_rca_gauges  # noqa: E402
 from tests.fixtures.session_preflight_module import preflight as _preflight  # noqa: E402
 
 # TestAbstentionLabelAccuracy lives in test_ci_rca_gauges_abstention_label.py -- this file's
@@ -452,4 +453,100 @@ class TestCiRcaBackValidationSection:
 
         with patch("src.common.ducklake_reader_client.make_reader", side_effect=_boom):
             result = _preflight._derive_ci_rca_back_validation([])
+        assert result == []
+
+    def test_back_validation_banner_is_grade_aware(self, capsys: pytest.CaptureFixture) -> None:
+        """Decision 184: the printed section carries the per-flag grade and the resolved
+        artifact token, replacing the blanket '[CANDIDATE] file-only match' banner."""
+        flagged = [
+            {
+                "new_rec_id": "rec-2",
+                "prior_rec_id": "rec-1",
+                "file": "scripts/validate.py",
+                "preventive_action_excerpt": "Fix it.",
+                "closure_artifact": "shard:some-shard",
+                "artifact_status": "present",
+                "grade": "VERIFIED-PRESENT",
+            }
+        ]
+        _preflight.print_ci_rca_back_validation(flagged)
+        out = capsys.readouterr().out
+        assert "VERIFIED-PRESENT" in out
+        assert "shard:some-shard" in out
+        assert "file-only match -- treat as a candidate" not in out
+
+    def test_open_escape_recs_are_surfaced(self, capsys: pytest.CaptureFixture) -> None:
+        """Decision 184 D-B1 mitigation: any OPEN escape-classified rec is listed in this same
+        section, making a refusal legible before the 30-day sweep waivers it."""
+        _preflight.print_ci_rca_back_validation([], open_escape_recs=[{"id": "rec-9001", "file": "scripts/foo.py"}])
+        out = capsys.readouterr().out
+        assert "rec-9001" in out
+        assert "scripts/foo.py" in out
+
+    def test_open_escape_recs_omitted_renders_no_extra_section(self, capsys: pytest.CaptureFixture) -> None:
+        """The existing single-arg call site (session/preflight.py) is unaffected -- the second
+        parameter defaults to None and prints nothing extra."""
+        _preflight.print_ci_rca_back_validation([])
+        out = capsys.readouterr().out
+        assert "Open escape-classified recs" not in out
+
+    def test_derive_open_escape_recs_returns_none_when_cache_unavailable(self) -> None:
+        assert ci_rca_gauges._derive_open_escape_ci_rca_recs(None) is None
+
+    def test_derive_open_escape_recs_filters_to_open_escape_classified_ci_rca_only(self) -> None:
+        rows = [
+            {
+                "id": "rec-1",
+                "source": "ci_rca",
+                "status": "open",
+                "file": "a.py",
+                "context_v2_json": json.dumps({"escape_class": "no-edge"}),
+            },
+            {  # closed -- excluded
+                "id": "rec-2",
+                "source": "ci_rca",
+                "status": "closed",
+                "file": "b.py",
+                "context_v2_json": json.dumps({"escape_class": "no-edge"}),
+            },
+            {  # not escape-classified -- excluded
+                "id": "rec-3",
+                "source": "ci_rca",
+                "status": "open",
+                "file": "c.py",
+                "context_v2_json": json.dumps({}),
+            },
+            {  # not source=ci_rca -- excluded
+                "id": "rec-4",
+                "source": "planning",
+                "status": "open",
+                "file": "d.py",
+                "context_v2_json": json.dumps({"escape_class": "no-edge"}),
+            },
+            {  # no context at all -- excluded, never raises
+                "id": "rec-5",
+                "source": "ci_rca",
+                "status": "open",
+                "file": "e.py",
+                "context_v2_json": None,
+            },
+            {  # malformed context -- excluded, never raises
+                "id": "rec-6",
+                "source": "ci_rca",
+                "status": "open",
+                "file": "f.py",
+                "context_v2_json": "not-json",
+            },
+        ]
+        result = ci_rca_gauges._derive_open_escape_ci_rca_recs(rows)
+        assert [r["id"] for r in result] == ["rec-1"]
+
+    def test_derive_open_escape_recs_no_reader_call(self) -> None:
+        """Decision-88 zero-egress guard extends to the new derive: never builds a reader."""
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("_derive_open_escape_ci_rca_recs must not construct a DuckLake reader")
+
+        with patch("src.common.ducklake_reader_client.make_reader", side_effect=_boom):
+            result = ci_rca_gauges._derive_open_escape_ci_rca_recs([])
         assert result == []
