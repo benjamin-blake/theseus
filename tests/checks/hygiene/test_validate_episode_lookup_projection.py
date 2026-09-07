@@ -8,12 +8,19 @@ from VERB_FIELDS; declares on every exit path.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
 
 from scripts.checks import _common, registry
 from scripts.checks.hygiene.validate_episode_lookup_projection import (
+    _iter_source_files,
+    _literal_str,
+    _named_verb_call,
+    _scan_comprehension,
+    _scan_for_loop,
+    _ScanResult,
     scan_paths,
     validate_episode_lookup_projection,
 )
@@ -267,3 +274,71 @@ class TestRegisteredCheckResolvesAndPassesAgainstMigratedTree:
         failed: list[str] = []
         registry.resolve("validate_episode_lookup_projection")(failed)
         assert failed == []
+
+
+class TestIterSourceFilesEdgeCases:
+    def test_absent_scan_root_yields_nothing(self, tmp_path: Path) -> None:
+        assert list(_iter_source_files(tmp_path)) == []
+
+    def test_excluded_dir_part_is_skipped(self, tmp_path: Path) -> None:
+        scripts_dir = tmp_path / "scripts"
+        (scripts_dir / "tests").mkdir(parents=True)
+        (scripts_dir / "tests" / "helper.py").write_text("x = 1\n", encoding="utf-8")
+        (scripts_dir / "real.py").write_text("x = 1\n", encoding="utf-8")
+        found = list(_iter_source_files(tmp_path))
+        assert [p.name for p in found] == ["real.py"]
+
+
+class TestLiteralStrEdgeCases:
+    def test_non_constant_node_returns_none(self) -> None:
+        node = ast.parse("x", mode="eval").body
+        assert _literal_str(node) is None
+
+    def test_none_node_returns_none(self) -> None:
+        assert _literal_str(None) is None
+
+
+class TestNamedVerbCallEdgeCases:
+    def test_named_call_with_no_args_returns_none(self) -> None:
+        call = ast.parse("reader.named()", mode="eval").body
+        assert _named_verb_call(call) is None
+
+
+class TestScanForLoopEdgeCases:
+    def test_tuple_target_is_ignored(self) -> None:
+        tree = ast.parse("for a, b in open_recs:\n    pass\n")
+        for_node = tree.body[0]
+        out = _ScanResult()
+        _scan_for_loop(for_node, {"open_recs": "open_recs"}, "f.py", out)
+        assert out.examined == 0
+        assert out.violations == []
+
+    def test_non_name_iter_is_ignored(self) -> None:
+        tree = ast.parse("for rec in reader.get_rows():\n    pass\n")
+        for_node = tree.body[0]
+        out = _ScanResult()
+        _scan_for_loop(for_node, {}, "f.py", out)
+        assert out.examined == 0
+
+
+class TestScanComprehensionEdgeCases:
+    def test_tuple_generator_target_is_skipped(self) -> None:
+        tree = ast.parse("[a for a, b in open_recs]", mode="eval")
+        out = _ScanResult()
+        _scan_comprehension(tree.body, {"open_recs": "open_recs"}, "f.py", out)
+        assert out.examined == 0
+
+    def test_untracked_iter_variable_is_skipped(self) -> None:
+        tree = ast.parse("[r for r in something_else]", mode="eval")
+        out = _ScanResult()
+        _scan_comprehension(tree.body, {"open_recs": "open_recs"}, "f.py", out)
+        assert out.examined == 0
+
+
+class TestScanPathsSyntaxErrorSkipped:
+    def test_a_file_with_invalid_syntax_is_skipped_not_raised(self, tmp_path: Path) -> None:
+        path = tmp_path / "broken.py"
+        path.write_text("def f(:\n", encoding="utf-8")
+        result = scan_paths([path], tmp_path)
+        assert result.violations == []
+        assert result.examined == 0
