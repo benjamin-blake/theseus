@@ -94,6 +94,17 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_raises_discrimination",
+        module="scripts.checks.hygiene.validate_raises_discrimination",
+        attr="validate_raises_discrimination",
+        pre=True,
+        pre_globs=(
+            "tests/**",
+            "scripts/checks/hygiene/**",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_declaring_coverage",
         module="scripts.checks.hygiene.validate_declaring_coverage",
         attr="validate_declaring_coverage",

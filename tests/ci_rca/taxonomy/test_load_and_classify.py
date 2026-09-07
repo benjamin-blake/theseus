@@ -7,7 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from scripts.ci_rca.taxonomy import classify_failure, enumerate_workflow_names, load_taxonomy, resolve_workflow_tier
+from scripts.ci_rca.taxonomy import (
+    _MISS,
+    classify_failure,
+    enumerate_workflow_names,
+    load_taxonomy,
+    resolve_workflow_tier,
+    resolve_workflow_tier_raw,
+)
 from tests.fixtures.ci_rca.taxonomy_data import FAILED_CHECKS_TAXONOMY, MINIMAL_TAXONOMY, oracle_workflow_names, write_taxonomy
 
 ROOT = Path(__file__).parents[3]
@@ -121,6 +128,38 @@ class TestResolveWorkflowTier:
         assert got["CI"] == "CI"
         assert got["Main Canary"] == "CI"
         assert all(v == "unknown" for k, v in got.items() if k not in ("CI", "Main Canary")), got
+
+
+class TestResolveWorkflowTierRaw:
+    """T1.13:c9 repair: resolve_workflow_tier_raw preserves 'not_a_gate' and distinguishes a
+    taxonomy miss via _MISS, while resolve_workflow_tier's own contract (tested above, left
+    UNMODIFIED) stays byte-identical under the delegation wrapper."""
+
+    def test_ci_maps_to_CI(self, tmp_path):
+        p = write_taxonomy(tmp_path, MINIMAL_TAXONOMY)
+        assert resolve_workflow_tier_raw("CI", p) == "CI"
+
+    def test_not_a_gate_returns_not_a_gate_not_unknown(self, tmp_path):
+        """The raw resolver never collapses not_a_gate -- that collapsing is the wrapper's job."""
+        p = write_taxonomy(tmp_path, MINIMAL_TAXONOMY)
+        assert resolve_workflow_tier_raw("Deploy", p) == "not_a_gate"
+
+    def test_miss_returns_distinct_miss_sentinel(self, tmp_path):
+        """A taxonomy miss returns _MISS, distinguishable from both a real tier and 'not_a_gate'."""
+        p = write_taxonomy(tmp_path, MINIMAL_TAXONOMY)
+        result = resolve_workflow_tier_raw("NotInMap", p)
+        assert result == _MISS
+        assert result not in ("not_a_gate", "unknown", "CI")
+
+    def test_real_taxonomy_not_a_gate_workflows_stay_raw(self):
+        """Wiring check mirrored from VP step 4: every real not_a_gate workflow's raw tier is
+        literally 'not_a_gate', not 'unknown' -- proving the raw resolver is queried directly by
+        the bundle threading, not merely by the collapsing wrapper."""
+        names = enumerate_workflow_names()
+        not_a_gate_names = [n for n in names if resolve_workflow_tier(n) == "unknown"]
+        assert not_a_gate_names, "expected at least one real not_a_gate workflow in the live taxonomy"
+        for name in not_a_gate_names:
+            assert resolve_workflow_tier_raw(name) == "not_a_gate", name
 
 
 class TestEnumerateWorkflowNames:

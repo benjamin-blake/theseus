@@ -339,18 +339,36 @@ def classify_failures(
     return results
 
 
-def resolve_workflow_tier(workflow_name: str, path: Path | None = None) -> str:
-    """Map a workflow name to its tier string. Returns 'unknown' for misses and 'not_a_gate' sentinels."""
+_MISS = "__workflow_tier_miss__"
+
+
+def resolve_workflow_tier_raw(workflow_name: str, path: Path | None = None) -> str:
+    """Map a workflow name to its RAW tier string, never collapsing 'not_a_gate' or a taxonomy
+    miss to 'unknown' -- the two are kept distinguishable so a caller (detection_gap.escape_mode's
+    raw-tier rule) can tell "this workflow was never a gate" apart from "this workflow name is not
+    in the taxonomy at all". A miss returns the internal _MISS sentinel, never 'unknown'.
+
+    resolve_workflow_tier is a thin delegation wrapper over this function that restores the
+    collapsed OBSERVABLE contract ('unknown' for both misses and not_a_gate); this is the one
+    place that queries the taxonomy's `workflows` map, so the two never drift apart.
+    """
     taxonomy = _cached_taxonomy(path)
     workflows_map: dict[str, dict] = taxonomy.get("workflows") or {}
     entry = workflows_map.get(workflow_name)
     if entry is None:
         logger.warning("workflows miss: %r not in taxonomy", workflow_name)
-        return "unknown"
-    tier = entry["tier"]
-    if tier == "not_a_gate":
-        return "unknown"
-    return tier
+        return _MISS
+    return entry["tier"]
+
+
+def resolve_workflow_tier(workflow_name: str, path: Path | None = None) -> str:
+    """Map a workflow name to its tier string. Returns 'unknown' for misses and 'not_a_gate' sentinels.
+
+    Delegation wrapper over resolve_workflow_tier_raw: this function's OBSERVABLE return contract
+    is unchanged by that split -- a miss and a not_a_gate tier both still collapse to 'unknown'.
+    """
+    raw = resolve_workflow_tier_raw(workflow_name, path)
+    return "unknown" if raw in ("not_a_gate", _MISS) else raw
 
 
 def enumerate_workflow_names(workflows_dir: Path | None = None) -> list[str]:

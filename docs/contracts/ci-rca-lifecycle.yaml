@@ -16,6 +16,19 @@ contract:
     check: validate_ci_rca_lifecycle_projection
 
 amendment_log:
+  - date: "2026-09-06"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-escape-mode-classifier-repair: declared detection_gap.escape_mode in projection_fields
+      (type, enum, home, authored_by) now that scripts/ci_rca/vacuous_pass.py's compute_escape_mode
+      and the resolve_workflow_tier_raw split make the field actually classify instead of
+      abstaining 100% of the time since 2026-08-02. Generalised
+      validate_ci_rca_lifecycle_projection's enum-parity check to resolve dotted keys through
+      nested BaseModel annotations and to derive the obligation from the LIVE MODEL rather than
+      the contract's own `enum:` presence, so the contract cannot disarm its own evaluator by
+      deleting an enum. Recorded the new, additive escape_mode_gauge in abstention_surface (never
+      a widening of the pre-existing rca_confidence gauge).
   - date: "2026-08-31"
     semantic_break: false
     change_class: mechanism_narrow
@@ -336,6 +349,14 @@ projection_fields:
     type: "Optional[list[{job_id: int, step_index: int}]]"
     home: context_v2_json (CiRcaContext)
     authored_by: portal (stamped in code from the verified evidence bundle; see evidence_scope.stamp_versus_echo)
+  detection_gap.escape_mode:
+    type: "Optional[str]"
+    enum: [check_ran_vacuously, tier_misplaced, no_premerge_gate_by_design, undetermined]
+    home: context_v2_json.detection_gap (CiRcaContext._DetectionGap)
+    authored_by: >-
+      agent (echoes the evidence bundle's own escape_mode); cross-checked by
+      scripts/ops_portal/ci_rca_runtime.py check-3 (abstention-mirror + bundle-wins), never
+      overwritten in place -- a disagreement raises an issue rather than silently correcting it.
 
 constraints:
   - "Decision 84/103/63: these fields are a context_v2_json projection only -- ops_recommendations' Class A schema is untouched."
@@ -367,6 +388,19 @@ abstention_surface:
     rejected reclassifies non_conformant -> conformant the next time back-validation recomputes
     against the current schema, since back-validation always re-checks against the schema live at
     read time (docstring, ci_rca_runtime.py:264), never the schema live when the rec was filed.
+  escape_mode_gauge: >-
+    T1.13:c9 repair (2026-09-06): detection_gap.escape_mode's own abstention gauge
+    (scripts/ci_rca/probe_health.py compute_escape_mode_abstention_rate; surfaced via
+    scripts/preflight/ci_rca_gauges.py's ci_rca_escape_mode_gauge report key,
+    `undetermined_count`/`total_count`/`rate` shape) is a SEPARATE, ADDITIVE gauge from the
+    rca_confidence widening described in `scope` above -- it counts
+    context_v2_json.detection_gap.escape_mode == 'undetermined' and never reads rca_confidence.
+    It must never be merged into, or substituted for, the rca_confidence gauge: the two measure
+    different failure modes (the agent's self-rated confidence vs. the deterministic probe's own
+    classifier), at materially different rates over the same cache. escape_mode read 100%
+    'undetermined' from 2026-08-02 to 2026-09-06 with no gauge pointed at the field at all --
+    moving this gauge onto rca_confidence's existing key, or widening that gauge's set instead of
+    adding this one, would relocate that dead-field defect rather than fix it.
 
 procedure:
   correct_rec_context: >-
