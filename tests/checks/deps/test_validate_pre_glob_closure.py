@@ -154,8 +154,6 @@ class TestPrunedEdgesRoster:
     _CAP = 4
     _REGISTRY = "scripts.checks.registry"
     _COMMON = "scripts.checks._common"
-    _BUDGET_RECS = "scripts.checks._budget_recs"
-    _PORTAL = "scripts.ops_data_portal"
 
     @staticmethod
     def _dead_rows(roster: dict[str, tuple[str, ...]]) -> list[str]:
@@ -211,28 +209,36 @@ class TestPrunedEdgesRoster:
         )
         return source[node.lineno - 1 : node.end_lineno]
 
-    def test_the_roster_is_the_three_reviewed_hub_rows(self) -> None:
+    def test_the_roster_is_the_two_reviewed_hub_rows(self) -> None:
         """Supersedes test_starts_empty, whose whole contract was the staging precondition (the
         roster is INTENTIONALLY EMPTY until an entry is added with an inline reason) that this
         authorised wave-4b pay-down discharges. Also the NON-VACUITY guard the two staleness
         assertions below lean on -- they iterate the roster and would pass trivially against an
-        emptied one. The _budget_recs row's target tuple is pinned EXACTLY at its single reviewed
-        element: the operator's ceiling counts ROWS, so growing a key's targets would be an
-        unpriced prune, and this pin is what makes the cap unevadable through targets."""
+        emptied one.
+
+        rec-3291 / rec-3563: the former scripts.checks._budget_recs row is RETIRED, not replaced.
+        The migration onto scripts.rec_episode's shared find_rec/run_episode primitive gave
+        _budget_recs a second, independent module-scope path to the rec-filing portal hub
+        (through scripts.rec_episode's own function-scope portal imports), alongside its
+        pre-existing direct one. Pruning either edge alone no longer shrinks any gated closure --
+        the other, unpruned edge keeps the hub reachable regardless -- and a pair of rows that are
+        only JOINTLY sufficient is exactly what the per-row inertness pin below (rec-3553) is
+        built to reject. The advisory audit stays advisory-only (never fails the build); the
+        checks that lose this pruning benefit simply show scripts.ops_data_portal in their closure
+        again, same as any other unreviewed hub edge in the backlog."""
         roster = vpgc._PRUNED_EDGES
-        assert sorted(roster) == [self._BUDGET_RECS, self._COMMON, self._REGISTRY]
-        assert roster[self._BUDGET_RECS] == (self._PORTAL,)
+        assert sorted(roster) == [self._COMMON, self._REGISTRY]
         assert roster[self._COMMON] == ("scripts.roadmap.plan_document",)
         targets = roster[self._REGISTRY]
         assert "scripts.checks._schema" in targets
         assert len([t for t in targets if t.endswith("._manifest")]) == 17
         assert len(targets) == 18
 
-    def test_row_count_is_exactly_the_reviewed_three_and_within_the_cap(self) -> None:
-        """An EXACT pin replacing an exact pin (`== 2` -> `== 3`), never an inequality or a range:
-        the cap records the reviewed wave ceiling and is not permission to fill it. Three of the
-        operator's four allowed rows are spent; one is left."""
-        assert len(vpgc._PRUNED_EDGES) == 3
+    def test_row_count_is_exactly_the_reviewed_two_and_within_the_cap(self) -> None:
+        """An EXACT pin (`== 3` -> `== 2` on the _budget_recs row's retirement), never an
+        inequality or a range: the cap records the reviewed wave ceiling and is not permission to
+        fill it."""
+        assert len(vpgc._PRUNED_EDGES) == 2
         assert len(vpgc._PRUNED_EDGES) <= self._CAP
 
     def test_every_declared_edge_is_live_in_the_import_subgraph(self) -> None:
@@ -259,22 +265,6 @@ class TestPrunedEdgesRoster:
             f"edge {self._REGISTRY} -> scripts.dependency_graph not live",
         ]
         assert len(reports) == 4
-
-    def test_the_budget_recs_row_removes_the_portal_from_every_scaffolded_closure(self) -> None:
-        """The row's EFFECT, asserted on CLOSURES rather than on the auditor's printed finding
-        counts, so the series' later glob widenings cannot silently empty it. Every gated check
-        that reaches the rec-filing hub loses scripts.ops_data_portal from its audited closure and
-        regains it the moment the row is dropped."""
-        view = vpgc._closure_view(_common.ROOT)
-        without = {key: targets for key, targets in vpgc._PRUNED_EDGES.items() if key != self._BUDGET_RECS}
-        scaffolded = [
-            entry.module for entry in vpgc._gated_entries() if self._BUDGET_RECS in vpgc._closure_modules(view, entry.module)
-        ]
-        assert scaffolded, "no gated check reaches the rec-filing hub, so this row prunes nothing"
-        for module in scaffolded:
-            assert self._PORTAL not in vpgc._closure_modules(view, module)
-            with patch.object(vpgc, "_PRUNED_EDGES", without):
-                assert self._PORTAL in vpgc._closure_modules(view, module)
 
     def test_every_row_key_is_reachable_from_a_gated_closure(self) -> None:
         """rec-3553: the liveness pin above accepts a row that is a genuinely live edge and still
