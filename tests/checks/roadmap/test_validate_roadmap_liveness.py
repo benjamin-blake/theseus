@@ -36,6 +36,7 @@ leg_c_blocking_phrase_grammar:
     - "blocked by"
     - "blocked on"
     - "gated on"
+    - "requires .* ratified"
 """
 
 
@@ -379,6 +380,26 @@ class TestLegC:
 
         assert len(violations) == 1
         assert "until: ratified" in violations[0]
+
+    def test_wildcard_phrase_is_matched_as_regex_not_literal_substring(self, tmp_path: Path) -> None:
+        """docs/contracts/roadmap-liveness.yaml declares several phrases with regex wildcards
+        (e.g. "requires .* ratified") -- no real prose contains a literal ".*", so phrase
+        matching must be re.search, never `phrase in text` substring containment."""
+        base_roadmap = _doc_dict(tier_items=[_item("T9.x")])
+        doc = _build(
+            tier_items=[
+                _item("T9.x", exit_criteria=[_criterion("c1", text="This sub-task requires CD.5 to be ratified first.")])
+            ],
+            candidate_decisions=[_cd("CD.5")],
+        )
+        with (
+            patch("scripts.checks._common.ROOT", tmp_path),
+            patch("scripts.checks._marker_guard.default_base_reader", return_value=yaml.safe_dump(base_roadmap)),
+        ):
+            _write_yaml(tmp_path / "docs" / "contracts" / "roadmap-liveness.yaml", _VALID_CONTRACT)
+            violations = _leg_c_prose_blocking_edges(doc)
+
+        assert len(violations) == 1
 
 
 class TestInsertionRobustness:

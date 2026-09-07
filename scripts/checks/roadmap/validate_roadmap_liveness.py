@@ -71,7 +71,10 @@ def _load_baseline_entries(text: str) -> list[str]:
 
 def _load_blocking_phrases() -> list[str]:
     """docs/contracts/roadmap-liveness.yaml's leg_c_blocking_phrase_grammar.phrases -- the SOLE
-    source; this module holds no second copy."""
+    source; this module holds no second copy. Each entry is a regex pattern (matched via
+    re.search against the lowercased criterion text) -- most are plain literals, but several
+    (e.g. "requires .* ratified") are genuinely wildcarded, so the caller must never downgrade
+    this to a literal substring test."""
     contract_path = _common.ROOT / _CONTRACT_REL_PATH
     if not contract_path.exists():
         return []
@@ -151,7 +154,7 @@ def _leg_c_prose_blocking_edges(doc: RoadmapDocument) -> list[str]:
             if crit.text in base_texts:
                 continue  # unchanged text -- out of leg C's diff scope regardless of any id shift
             lowered = crit.text.lower()
-            if not any(phrase in lowered for phrase in phrases):
+            if not any(re.search(phrase, lowered) for phrase in phrases):
                 continue
             mentioned = {m for m in _ID_MENTION_RE.findall(crit.text) if m in non_terminal_ids and m != item.id}
             blocked_refs = {b.ref for b in crit.blocked_by}
