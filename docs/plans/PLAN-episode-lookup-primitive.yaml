@@ -2,6 +2,7 @@ schema_version: 4
 handoff_policy:
   full_validation_required_before_commit: true
   timeout_disposition: blocked
+implementation_declared: false
 slug: "episode-lookup-primitive"
 intent: >-
   Close a documented, partially-repaired defect class: three scheduled-monitor dedup lookups filter
@@ -448,6 +449,24 @@ verification_plan:
     fix_if: "A count above 1 means the population moved between propose and confirm; re-run step 11 and re-confirm -- never re-run this blind."
     hermetic: false
     graduation: not-applicable
+  - step: 15
+    phase: pre-deploy
+    action: >-
+      Scope-amendment companion (added post-review, PR #1113): prove the two consequential
+      non-test scope entries actually work -- the scripts_root_allowlist registration for the two
+      new flat root modules, and the retired-row roster staying internally consistent.
+    command: "bin/venv-python -c \"from scripts.checks import registry; f=[]; registry.resolve('validate_placement')(f); raise SystemExit(1 if f else 0)\" && bin/venv-python -m pytest tests/checks/deps/test_validate_pre_glob_closure.py -q"
+    expected: "Both halves exit 0 -- validate_placement finds no stray scripts/ root file, and the roster's own mirror suite passes in full."
+    fix_if: "A validate_placement failure means the allowlist entry is missing or misspelled; a roster failure means the two-row pin or an inertness/liveness assertion regressed."
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Combines two already-independently-verified behaviors (validate_placement's own registered
+      check, exercised end-to-end by VP step 8's full validate run; and the roster's mirror suite,
+      whose individual assertions are the real discriminating primitives) into one bookkeeping
+      step solely to give the scope amendment's two test_obligations entries a literally-hosting
+      verification_plan step. No new discriminating primitive to graduate beyond what the roster's
+      own tests already are.
 test_obligations:
   - source: scripts/rec_episode.py
     behavior: >-
@@ -526,6 +545,28 @@ test_obligations:
     verification_step: 8
     command: "bin/venv-python -m scripts.validate"
     red_green_expectation: "Red before -- validate_ci_rca_taxonomy fails a registered check with no category row; green after."
+  - source: docs/contracts/file-router.yaml
+    behavior: >-
+      scripts_root_allowlist.allowed_files lists rec_episode.py and rec_episode_dedupe.py, so
+      validate_placement's scripts-root scan does not flag either as a stray depth-1 scripts/ file.
+    verification_step: 15
+    command: "bin/venv-python -c \"from scripts.checks import registry; f=[]; registry.resolve('validate_placement')(f); raise SystemExit(1 if f else 0)\""
+    red_green_expectation: >-
+      Red before this plan's scope amendment (rec_episode.py / rec_episode_dedupe.py exist under
+      scripts/ but are absent from the allowlist -- validate_placement flags them); green after
+      (both allowlisted).
+  - source: scripts/checks/deps/validate_pre_glob_closure.py
+    behavior: >-
+      The retired scripts.checks._budget_recs -> scripts.ops_data_portal _PRUNED_EDGES row no
+      longer appears in the roster, which stays internally consistent at exactly two rows
+      (scripts.checks.registry, scripts.checks._common), each live and non-inert.
+    verification_step: 15
+    test_selector: >-
+      tests/checks/deps/test_validate_pre_glob_closure.py::TestPrunedEdgesRoster::test_the_roster_is_the_two_reviewed_hub_rows
+    red_green_expectation: >-
+      Red before (the roster asserted 3 rows including the now-inert scripts.checks._budget_recs
+      row); green after (asserts exactly the 2 rows that remain independently non-inert per
+      TestPrunedEdgesRoster::test_every_row_key_is_reachable_from_a_gated_closure).
 constraints:
   - No rescue agents or workaround loops (Decision 55).
   - >-
