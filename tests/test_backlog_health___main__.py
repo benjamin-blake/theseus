@@ -42,13 +42,27 @@ class TestBuildParser:
         with pytest.raises(SystemExit):
             parser.parse_args([])
 
+    def test_accepts_the_exact_production_invocation_order(self, tmp_path: Path) -> None:
+        # Regression (code review): the workflow invokes `<subcommand> --artifact-dir PATH`,
+        # subcommand FIRST -- a flag registered only on the top-level parser silently rejects
+        # this exact order with SystemExit(2), which no other test caught because they all
+        # placed --artifact-dir before the subcommand.
+        parser = cli.build_parser()
+        for argv in (
+            ["census", "--artifact-dir", str(tmp_path)],
+            ["probe", "--artifact-dir", str(tmp_path)],
+            ["escalate", "--artifact-dir", str(tmp_path), "--dry-run"],
+        ):
+            args = parser.parse_args(argv)
+            assert args.artifact_dir == tmp_path
+
 
 class TestCmdCensus:
     def test_writes_artifact_and_writes_nothing_upstream(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         fake_result = {"counts": {"probeable": 1}, "buckets": {}, "probe_payload": [], "recent_commits": [], "open_rows": []}
         monkeypatch.setattr(census_mod, "run_census", lambda **kwargs: fake_result)
         parser = cli.build_parser()
-        args = parser.parse_args(["--artifact-dir", str(tmp_path), "census"])
+        args = parser.parse_args(["census", "--artifact-dir", str(tmp_path)])
         exit_code = cli.cmd_census(args)
         assert exit_code == 0
         written = json.loads((tmp_path / cli._CENSUS_ARTIFACT).read_text())
@@ -64,7 +78,7 @@ class TestCmdCensus:
         }
         monkeypatch.setattr(census_mod, "run_census", lambda **kwargs: fake_result)
         parser = cli.build_parser()
-        args = parser.parse_args(["--artifact-dir", str(tmp_path), "census", "--dry-run"])
+        args = parser.parse_args(["census", "--artifact-dir", str(tmp_path), "--dry-run"])
         cli.cmd_census(args)
         assert (tmp_path / cli._CENSUS_ARTIFACT).is_file()
 
@@ -77,7 +91,7 @@ class TestCmdProbe:
         fake_probe_result = {"main_sha": "deadbeef", "isolation_available": True, "verdicts": {"rec-1": probe_mod.PASS}}
         monkeypatch.setattr(probe_mod, "run_all", lambda payload, **kwargs: fake_probe_result)
         parser = cli.build_parser()
-        args = parser.parse_args(["--artifact-dir", str(tmp_path), "probe"])
+        args = parser.parse_args(["probe", "--artifact-dir", str(tmp_path)])
         exit_code = cli.cmd_probe(args)
         assert exit_code == 0
         written = json.loads((tmp_path / cli._PROBE_ARTIFACT).read_text())
@@ -96,12 +110,12 @@ class TestCmdProbe:
         }
         monkeypatch.setattr(probe_mod, "run_all", lambda payload, **kwargs: fake_probe_result)
         parser = cli.build_parser()
-        args = parser.parse_args(["--artifact-dir", str(tmp_path), "probe"])
+        args = parser.parse_args(["probe", "--artifact-dir", str(tmp_path)])
         assert cli.cmd_probe(args) == 1
 
     def test_missing_census_artifact_raises(self, tmp_path: Path) -> None:
         parser = cli.build_parser()
-        args = parser.parse_args(["--artifact-dir", str(tmp_path), "probe"])
+        args = parser.parse_args(["probe", "--artifact-dir", str(tmp_path)])
         with pytest.raises(RuntimeError, match="expected artifact not found"):
             cli.cmd_probe(args)
 
@@ -120,7 +134,7 @@ class TestCmdEscalate:
         run_all_episodes_mock = MagicMock(return_value=fake_results)
         monkeypatch.setattr(escalate_mod, "run_all_episodes", run_all_episodes_mock)
         parser = cli.build_parser()
-        args = parser.parse_args(["--artifact-dir", str(tmp_path), "escalate", "--dry-run"])
+        args = parser.parse_args(["escalate", "--artifact-dir", str(tmp_path), "--dry-run"])
         exit_code = cli.cmd_escalate(args)
         assert exit_code == 0
         run_all_episodes_mock.assert_called_once()
@@ -129,14 +143,14 @@ class TestCmdEscalate:
     def test_missing_probe_artifact_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         (tmp_path / cli._CENSUS_ARTIFACT).write_text(json.dumps({"probe_payload": [], "open_rows": []}))
         parser = cli.build_parser()
-        args = parser.parse_args(["--artifact-dir", str(tmp_path), "escalate"])
+        args = parser.parse_args(["escalate", "--artifact-dir", str(tmp_path)])
         with pytest.raises(RuntimeError, match="expected artifact not found"):
             cli.cmd_escalate(args)
 
 
 class TestMainLoudFailure:
     def test_runtime_error_is_caught_and_reported_nonzero(self, tmp_path: Path) -> None:
-        exit_code = cli.main(["--artifact-dir", str(tmp_path), "probe"])
+        exit_code = cli.main(["probe", "--artifact-dir", str(tmp_path)])
         assert exit_code == 1
 
     def test_default_artifact_dir_is_used_when_unset(self) -> None:

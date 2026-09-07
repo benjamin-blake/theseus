@@ -35,6 +35,23 @@ _SUBPROCESS_DOTTED_SINKS = frozenset(
 # `subprocess.run(...)` call.
 _SINK_BARE_NAMES = frozenset({"runner"})
 
+# The argv/command parameter's KEYWORD name for each sink, per its real stdlib signature --
+# consulted only when a sink call passes its argv as a keyword rather than positionally
+# (code review: `node.args[0]`-only missed a kwargs-only call like
+# `subprocess.run(args=rec['acceptance'], shell=True)`, a real soundness gap in the "sound
+# over-approximation" this invariant claims). `runner` mirrors subprocess.run's `args` name
+# since every call site in this package uses that same positional/keyword convention.
+_SINK_ARGV_KWARG = {
+    "subprocess.run": "args",
+    "subprocess.call": "args",
+    "subprocess.check_call": "args",
+    "subprocess.check_output": "args",
+    "subprocess.Popen": "args",
+    "os.system": "command",
+    "os.popen": "cmd",
+    "runner": "args",
+}
+
 
 def _full_dotted(node: ast.expr) -> str:
     if isinstance(node, ast.Attribute):
@@ -72,9 +89,14 @@ def _find_violations_in_tree(tree: ast.AST, label: str) -> list[str]:
                     literal_false = isinstance(kw.value, ast.Constant) and kw.value.value is False
                     if not literal_false:
                         violations.append(f"{label}: passes run_acceptance_probe as a non-literal-False value")
-            is_sink = dotted in _SUBPROCESS_DOTTED_SINKS or bare_name in _SINK_BARE_NAMES
-            if is_sink and node.args and not _is_constant_foldable(node.args[0]):
-                violations.append(f"{label}: {dotted or bare_name} argv is not constant-foldable")
+            sink_key = dotted if dotted in _SUBPROCESS_DOTTED_SINKS else (bare_name if bare_name in _SINK_BARE_NAMES else "")
+            if sink_key:
+                argv_node = node.args[0] if node.args else None
+                if argv_node is None:
+                    kwarg_name = _SINK_ARGV_KWARG.get(sink_key)
+                    argv_node = next((kw.value for kw in node.keywords if kw.arg == kwarg_name), None)
+                if argv_node is not None and not _is_constant_foldable(argv_node):
+                    violations.append(f"{label}: {dotted or bare_name} argv is not constant-foldable")
     return violations
 
 
@@ -149,6 +171,24 @@ class TestSoleRecAuthoredExecutorFixtures:
 
     def test_permits_indirected_runner_call_with_fixed_literal_argv(self) -> None:
         src = "runner(['git', 'log'], cwd=root, capture_output=True)\n"
+        assert _violations_for_source(src) == []
+
+    def test_flags_subprocess_run_with_rec_derived_argv_passed_as_kwarg(self) -> None:
+        # Regression (code review): a kwargs-only call (subprocess.run's `args=` form) has an
+        # empty node.args -- args[0]-only detection missed this shape entirely.
+        src = "import subprocess\nsubprocess.run(args=rec['acceptance'], shell=True)\n"
+        assert _violations_for_source(src)
+
+    def test_flags_os_system_with_rec_derived_argv_passed_as_kwarg(self) -> None:
+        src = "import os\nos.system(command=rec['acceptance'])\n"
+        assert _violations_for_source(src)
+
+    def test_flags_indirected_runner_call_with_rec_derived_argv_passed_as_kwarg(self) -> None:
+        src = "runner(args=[rec['acceptance']], cwd=root)\n"
+        assert _violations_for_source(src)
+
+    def test_permits_subprocess_run_with_fixed_literal_argv_passed_as_kwarg(self) -> None:
+        src = "import subprocess\nsubprocess.run(args=['git', 'log', '--name-only'], capture_output=True)\n"
         assert _violations_for_source(src) == []
 
 

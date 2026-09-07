@@ -104,12 +104,21 @@ def cmd_escalate(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m scripts.backlog_health")
-    parser.add_argument("--artifact-dir", type=Path, default=None)
+    """`--artifact-dir` and `--dry-run` are declared on a shared, help-suppressed PARENT parser
+    reused by both the top-level parser and every subparser (code review: the production
+    invocation is `<subcommand> --artifact-dir PATH`, subcommand first -- a flag registered only
+    on the top-level parser is a SystemExit(2) on that exact argument order, since argparse
+    resolves an unrecognised trailing option against the subparser, never the parent). Every
+    test in this suite must invoke the CLI in that same subcommand-first order so this contract
+    holds under test, not just in the workflow YAML."""
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--artifact-dir", type=Path, default=None)
+    common.add_argument("--dry-run", action="store_true")
+
+    parser = argparse.ArgumentParser(prog="python -m scripts.backlog_health", parents=[common])
     subparsers = parser.add_subparsers(dest="command", required=True)
     for name, handler in (("census", cmd_census), ("probe", cmd_probe), ("escalate", cmd_escalate)):
-        sub = subparsers.add_parser(name)
-        sub.add_argument("--dry-run", action="store_true")
+        sub = subparsers.add_parser(name, parents=[common])
         sub.set_defaults(handler=handler)
     return parser
 
