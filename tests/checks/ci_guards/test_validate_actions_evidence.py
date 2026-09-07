@@ -70,7 +70,11 @@ class TestActionsEvidenceCounterfactuals:
 def test_real_contract_enumerates_every_upload() -> None:
     subject.validate_contract(ROOT)
     contract = _yaml(ROOT / subject.CONTRACT_PATH)
-    assert len(contract["artifact_uploads"]) == len(subject._actual_uploads(ROOT)) == 7
+    # Cross-checked against the live actual-uploads scan rather than a hardcoded literal -- the
+    # upload count grows as workflows add actions/upload-artifact steps (tests/CLAUDE.md
+    # test-count-coupling rule); validate_contract above is what actually enforces parity.
+    assert len(contract["artifact_uploads"]) == len(subject._actual_uploads(ROOT))
+    assert len(contract["artifact_uploads"]) > 0
 
 
 def test_validation_result_uploads_are_declared_in_the_contract() -> None:
