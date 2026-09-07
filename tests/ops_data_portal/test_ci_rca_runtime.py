@@ -194,6 +194,43 @@ class TestCiRcaCrossCheckSpine:
             with pytest.raises(ValueError, match="check-3"):
                 p._run_ci_rca_cross_check(ctx)
 
+    def test_check3_escape_mode_abstention_mirror_agent_contradicts(self, tmp_path):
+        """Check-3 abstention mirror: bundle.escape_mode='undetermined' (probe abstained) but the
+        agent set a concrete value -> warn/raise. Today this raises NO issue; must raise one after."""
+        import scripts.ops_data_portal as p
+
+        sha, _ = self._make_bundle(tmp_path, escape_mode="undetermined")
+        ctx = self._ctx_v2()
+        ctx["detection_gap"]["escape_mode"] = "tier_misplaced"
+        ctx["evidence_bundle_ref"] = {"sha256": sha, "s3_uri": "", "upload_status": "ok"}
+
+        flags_file = tmp_path / "feature_flags.yaml"
+        flags_file.write_text("CI_RCA_STRICT_MODE: strict\n", encoding="utf-8")
+        with (
+            patch.object(_ci_rca_schema_mod, "ROOT", tmp_path),
+            patch("scripts.ops_data_portal._FEATURE_FLAGS_YAML", flags_file),
+        ):
+            with pytest.raises(ValueError, match="check-3"):
+                p._run_ci_rca_cross_check(ctx)
+
+    def test_check3_escape_mode_abstention_mirror_agent_omitted_field_no_issue(self, tmp_path):
+        """False-positive guard: bundle.escape_mode='undetermined' with the agent's escape_mode
+        OMITTED entirely (legal -- escape_mode is Optional[str]=None) must raise NO issue, before
+        or after. A naive copy of check-1's `!= 'undetermined'` shape would fire here."""
+        import scripts.ops_data_portal as p
+
+        sha, _ = self._make_bundle(tmp_path, escape_mode="undetermined")
+        ctx = self._ctx_v2()  # detection_gap carries no escape_mode key -- agent_escape is None
+        ctx["evidence_bundle_ref"] = {"sha256": sha, "s3_uri": "", "upload_status": "ok"}
+
+        flags_file = tmp_path / "feature_flags.yaml"
+        flags_file.write_text("CI_RCA_STRICT_MODE: strict\n", encoding="utf-8")
+        with (
+            patch.object(_ci_rca_schema_mod, "ROOT", tmp_path),
+            patch("scripts.ops_data_portal._FEATURE_FLAGS_YAML", flags_file),
+        ):
+            p._run_ci_rca_cross_check(ctx)  # must not raise
+
     def test_check4_vacuous_pass_author_discipline_rejection(self, tmp_path):
         """Check-4: vacuous_pass=true + author-discipline attribution -> warn/raise."""
         import scripts.ops_data_portal as p

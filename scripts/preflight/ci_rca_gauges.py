@@ -67,12 +67,55 @@ def _escalate_ci_rca_probe_health(
 
 
 def print_ci_rca_abstention_gauge(gauge: dict | None) -> None:
-    """Print the CI-RCA probe abstention-rate gauge line."""
+    """Print the CI-RCA agent rca_confidence abstention-rate gauge line.
+
+    Re-worded (T1.13:c9 repair) to name the field it reads: this gauge measures the AGENT's own
+    self-rated rca_confidence, not the deterministic probe -- see
+    print_ci_rca_escape_mode_abstention_gauge for the probe-side gauge, a materially different
+    quantity at a materially different rate.
+    """
     if gauge is None:
         return
     print(
-        f"CI-RCA probe abstention (last {gauge['window_days']}d): "
+        f"CI-RCA agent rca_confidence abstention (last {gauge['window_days']}d): "
         f"{gauge['low_or_undetermined_count']}/{gauge['total_count']} low-confidence/undetermined ({gauge['rate']:.0%})"
+    )
+
+
+def _compute_ci_rca_escape_mode_abstention(cache_rows: list[dict] | None, window_days: int = 14) -> dict | None:
+    """Compute the CI-RCA probe escape_mode abstention gauge from the warm cache (T1.13:c9 repair).
+
+    A SEPARATE gauge from _compute_ci_rca_abstention (which reads rca_confidence, the agent's own
+    self-rating): this one reads context_v2_json.detection_gap.escape_mode and never rca_confidence,
+    so a regression back to the field's dead 100%-undetermined state trips a gauge instead of
+    passing silently. Never widens _compute_ci_rca_abstention -- see docs/contracts/ci-rca-
+    lifecycle.yaml's abstention_surface note.
+
+    Returns None when the warm cache is unavailable (reader unreachable / offline) -- zero new
+    reader egress (Decision 88), computed entirely from already-loaded rows.
+    """
+    if cache_rows is None:
+        return None
+    from scripts.ci_rca.probe_health import compute_escape_mode_abstention_rate  # noqa: PLC0415
+
+    undetermined_count, total_count, rate = compute_escape_mode_abstention_rate(cache_rows, window_days=window_days)
+    return {
+        "undetermined_count": undetermined_count,
+        "total_count": total_count,
+        "rate": rate,
+        "window_days": window_days,
+    }
+
+
+def print_ci_rca_escape_mode_abstention_gauge(gauge: dict | None) -> None:
+    """Print the CI-RCA probe escape_mode abstention-rate gauge line -- a SEPARATE quantity from
+    print_ci_rca_abstention_gauge's rca_confidence line (never a widening of that gauge)."""
+    if gauge is None:
+        return
+    print(
+        f"CI-RCA probe escape_mode abstention (last {gauge['window_days']}d): "
+        f"{gauge['undetermined_count']}/{gauge['total_count']} "
+        f"detection_gap.escape_mode=undetermined ({gauge['rate']:.0%})"
     )
 
 

@@ -25,6 +25,10 @@ ABSTENTION_RATE_THRESHOLD: float = 0.3
 ABSTENTION_MIN_SAMPLE: int = 5
 DEFAULT_WINDOW_DAYS: int = 14
 
+# detection_gap.escape_mode's abstention sentinel (mirrors scripts/ci_rca/vacuous_pass._UNDETERMINED
+# -- not imported from there to keep this module's zero-new-reader-egress read path independent).
+_UNDETERMINED_ESCAPE_MODE = "undetermined"
+
 
 # ---------------------------------------------------------------------------
 # Low-level helpers
@@ -80,6 +84,25 @@ def _row_rca_confidence(row: dict) -> Optional[str]:
     return ctx.get("rca_confidence")
 
 
+def _row_escape_mode(row: dict) -> Optional[str]:
+    """Extract context_v2_json.detection_gap.escape_mode from a warm-cache row, or None if
+    absent/malformed. Never reads rca_confidence -- kept separate from _row_rca_confidence so the
+    escape_mode gauge cannot accidentally widen/alias the rca_confidence gauge (T1.13:c9 repair)."""
+    import json  # noqa: PLC0415
+
+    ctx_raw = row.get("context_v2_json") or ""
+    if not ctx_raw:
+        return None
+    try:
+        ctx = json.loads(ctx_raw)
+    except (TypeError, ValueError):
+        return None
+    detection_gap = ctx.get("detection_gap")
+    if not isinstance(detection_gap, dict):
+        return None
+    return detection_gap.get("escape_mode")
+
+
 # ---------------------------------------------------------------------------
 # Abstention rate
 # ---------------------------------------------------------------------------
@@ -112,6 +135,44 @@ def compute_abstention_rate(
             continue
         total_count += 1
         if _row_rca_confidence(row) in ("low", "undetermined"):
+            undetermined_count += 1
+
+    rate = (undetermined_count / total_count) if total_count else 0.0
+    return undetermined_count, total_count, rate
+
+
+def compute_escape_mode_abstention_rate(
+    cache_rows: list[dict],
+    window_days: int = DEFAULT_WINDOW_DAYS,
+    now: Optional[datetime] = None,
+) -> tuple[int, int, float]:
+    """Return (undetermined_count, total_count, rate) for source=ci_rca recs in the trailing
+    window, counting context_v2_json.detection_gap.escape_mode == 'undetermined'.
+
+    A SEPARATE gauge from compute_abstention_rate: that one counts rca_confidence (the agent's
+    self-rated confidence); this one counts the deterministic probe's own escape_mode
+    classification, and never reads rca_confidence (T1.13:c9 repair -- the field was 100%
+    'undetermined' since 2026-08-02 with no gauge pointed at it, so a regression could pass
+    silently). Never widens compute_abstention_rate itself -- see docs/contracts/ci-rca-
+    lifecycle.yaml's abstention_surface note.
+
+    Counts every source=ci_rca row created within the trailing window_days, regardless of status
+    (open/closed). rate is 0.0 when total_count is 0 (zero-total guard).
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=window_days)
+
+    undetermined_count = 0
+    total_count = 0
+    for row in cache_rows:
+        if row.get("source") != "ci_rca":
+            continue
+        ts = _row_ts(row)
+        if ts is None or ts < cutoff:
+            continue
+        total_count += 1
+        if _row_escape_mode(row) == _UNDETERMINED_ESCAPE_MODE:
             undetermined_count += 1
 
     rate = (undetermined_count / total_count) if total_count else 0.0

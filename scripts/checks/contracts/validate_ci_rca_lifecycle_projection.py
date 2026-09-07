@@ -11,6 +11,7 @@ evaluator/evaluator_module) resolve.
 from __future__ import annotations
 
 import re
+import typing
 from pathlib import Path
 
 import yaml
@@ -29,29 +30,67 @@ def _field_pattern(field_info: object) -> str | None:
     return None
 
 
+def _resolve_live_field(live_fields: dict, dotted_key: str) -> object | None:
+    """Resolve a (possibly dotted) projection_fields key through nested BaseModel annotations.
+
+    A single segment (e.g. 'escape_class') resolves directly against `live_fields`. A dotted key
+    (e.g. 'detection_gap.escape_mode') resolves the outer segment's annotation -- unwrapping an
+    Optional[Model] wrapper when present -- to ITS OWN model_fields, then resolves the remaining
+    segment(s) against that, one level at a time. Returns None if any segment fails to resolve, or
+    an intermediate segment's annotation is not a nested pydantic model (no model_fields).
+    """
+    parts = dotted_key.split(".")
+    fields = live_fields
+    field_info = None
+    for i, part in enumerate(parts):
+        field_info = fields.get(part)
+        if field_info is None:
+            return None
+        if i == len(parts) - 1:
+            return field_info
+        annotation = getattr(field_info, "annotation", None)
+        if typing.get_origin(annotation) is typing.Union:
+            non_none = [a for a in typing.get_args(annotation) if a is not type(None)]
+            annotation = non_none[0] if len(non_none) == 1 else None
+        nested_fields = getattr(annotation, "model_fields", None)
+        if not isinstance(nested_fields, dict):
+            return None
+        fields = nested_fields
+    return field_info
+
+
 def _check_projection_fields(failed: list[str], path: Path, projection_fields: dict) -> None:
     from scripts.ops_portal.ci_rca_schema import CiRcaContext  # noqa: PLC0415
 
     live_fields = CiRcaContext.model_fields
-    unknown = sorted(f for f in projection_fields if f not in live_fields)
+    unknown = sorted(f for f in projection_fields if _resolve_live_field(live_fields, f) is None)
     if unknown:
         failed.append(f"CI-RCA lifecycle projection: {_CONTRACT_NAME} projection_fields not on CiRcaContext: {unknown}")
 
-    escape_field = projection_fields.get("escape_class")
-    declared_enum = escape_field.get("enum") if isinstance(escape_field, dict) else None
-    if not isinstance(declared_enum, list) or not declared_enum:
-        failed.append(f"CI-RCA lifecycle projection: {path} projection_fields.escape_class missing a non-empty 'enum'")
-        return
-
-    live_field_info = live_fields.get("escape_class")
-    live_pattern = _field_pattern(live_field_info) if live_field_info is not None else None
-    match = _ALTERNATION_RE.match(live_pattern) if live_pattern else None
-    live_enum = match.group(1).split("|") if match else None
-    if live_enum is None or sorted(declared_enum) != sorted(live_enum):
-        failed.append(
-            f"CI-RCA lifecycle projection: {_CONTRACT_NAME} escape_class.enum={declared_enum} does not equal "
-            f"the live CiRcaContext.escape_class pattern alternation {live_enum}"
-        )
+    # Enum parity is derived from the LIVE MODEL, not from the contract's own `enum:` key: for
+    # every DECLARED entry whose resolved field carries an alternation-shaped pattern, the entry
+    # MUST declare a matching `enum`. Deriving the obligation from the contract's own `enum:` key
+    # would let the contract disarm itself (deleting an enum would silently make a hard-fail
+    # opt-in). Accumulated across every entry -- one enum-less entry must not short-circuit the
+    # loop and hide a later entry's own drift (no early `return`).
+    for key, entry in sorted(projection_fields.items()):
+        field_info = _resolve_live_field(live_fields, key)
+        if field_info is None:
+            continue  # already reported above as unknown
+        live_pattern = _field_pattern(field_info)
+        match = _ALTERNATION_RE.match(live_pattern) if live_pattern else None
+        if match is None:
+            continue  # not alternation-shaped on the live model -- no enum obligation
+        live_enum = match.group(1).split("|")
+        declared_enum = entry.get("enum") if isinstance(entry, dict) else None
+        if not isinstance(declared_enum, list) or not declared_enum:
+            failed.append(f"CI-RCA lifecycle projection: {path} projection_fields.{key} missing a non-empty 'enum'")
+            continue
+        if sorted(declared_enum) != sorted(live_enum):
+            failed.append(
+                f"CI-RCA lifecycle projection: {_CONTRACT_NAME} {key}.enum={declared_enum} does not equal "
+                f"the live CiRcaContext.{key} pattern alternation {live_enum}"
+            )
 
 
 def _check_watched_workflow_set(failed: list[str], watched: dict) -> None:

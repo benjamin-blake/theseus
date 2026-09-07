@@ -253,8 +253,19 @@ def _run_ci_rca_cross_check(
                 "source=ci_rca_evidence_dispute rec."
             )
 
-    # Check 3: escape_mode bundle-wins
-    if bundle_escape not in (None, "undetermined") and agent_escape not in (None, "undetermined"):
+    # Check 3: escape_mode -- abstention mirror (when the bundle abstains, the agent must not
+    # contradict it with a concrete value), else bundle-wins (when both are concrete and disagree).
+    # NOT a copy of check-1's shape: escape_mode is Optional[str]=None (ci_rca_schema.py:80-83)
+    # while earliest_viable_gate is REQUIRED, so a bare `agent_escape != "undetermined"` predicate
+    # would false-positive on every rec that legally OMITTED the optional field (agent_escape is
+    # None) -- the `is not None` guard is what distinguishes "contradicted" from "omitted".
+    if bundle_escape == "undetermined" and agent_escape is not None and agent_escape != "undetermined":
+        issues.append(
+            f"[CI_RCA_CROSS_CHECK check-3] bundle.escape_mode='undetermined' (probe abstained) but "
+            f"agent set escape_mode={agent_escape!r}. Agent MUST mirror 'undetermined' when the probe "
+            "abstains, or file a source=ci_rca_evidence_dispute rec."
+        )
+    elif bundle_escape not in (None, "undetermined") and agent_escape not in (None, "undetermined"):
         if agent_escape != bundle_escape:
             issues.append(
                 f"[CI_RCA_CROSS_CHECK check-3] detection_gap.escape_mode={agent_escape!r} "
