@@ -117,6 +117,46 @@ class TestContractShape:
         entries = doc["amendment_log"]
         assert any("plan-followon-recs-field" in (e.get("summary") or "") for e in entries)
 
+    def test_sanction_row_eligibility_excludes_hand_written_test_files(self) -> None:
+        """AC 3/AC 9: sanction_row_eligibility is a TOP-LEVEL key naming hand-written test files
+        ineligible for a sanction row, citing the rec-3357 residual as the reason and rec-3586's
+        narrowing as the consequence -- and the rule holds executably: no sanction_rows entry may
+        derive a tests/** path."""
+        doc = _load_contract()
+        eligibility = doc["sanction_row_eligibility"]
+        assert "sanction_row_eligibility" not in doc["sanction_rows"], (
+            "sanction_row_eligibility must be a top-level sibling of sanction_rows, never nested inside it"
+        )
+        ineligible = eligibility["ineligible"]
+        assert "hand-written test files" in ineligible.lower() or "hand-written test" in ineligible
+        assert "rec-3357" in ineligible
+        assert "rec-3586" in ineligible
+
+        for name, row in doc["sanction_rows"].items():
+            template = row.get("sanctions", {}).get("path_template", "")
+            assert not template.startswith("tests/"), f"{name} derives a tests/** path despite sanction_row_eligibility"
+            trigger_file = row.get("trigger", {}).get("file", "")
+            assert not trigger_file.startswith("tests/"), f"{name}'s trigger names a tests/** path"
+
+    def test_bookkeeping_row_documents_the_two_act_amendment_procedure(self) -> None:
+        """AC 4/AC 5: the implementing_plan_bookkeeping row's amendment_procedure states the
+        two-act escape (scope amendment lands on main first; a single diff cannot satisfy both
+        invariants), and the amendment_log entry that introduces it records both additions plus
+        the Decision 75 conscious-choice note. Selecting on "Decision 75" alone would be vacuous
+        (the 2026-09-04 secrets_baseline_regeneration entry already carries that phrase) -- select
+        on sanction_row_eligibility, a token unique to this change, first."""
+        doc = _load_contract()
+        row = doc["sanction_rows"]["implementing_plan_bookkeeping"]
+        procedure = row["amendment_procedure"]
+        assert "lands on" in procedure and "main" in procedure
+        assert "single diff" in procedure or "one diff" in procedure
+
+        entries = [e for e in doc["amendment_log"] if "sanction_row_eligibility" in (e.get("summary") or "")]
+        assert len(entries) == 1, "expected exactly one amendment_log entry naming sanction_row_eligibility"
+        summary = entries[0]["summary"]
+        assert "amendment_procedure" in summary
+        assert "Decision 75" in summary and "conscious-choice" in summary
+
     def test_secrets_baseline_retired_from_unmodelled_companions(self) -> None:
         """PLAN-secrets-baseline-sanction-row: .secrets.baseline is no longer an unmodelled
         companion -- it is now the secrets_baseline_regeneration sanction row's own subject --
