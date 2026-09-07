@@ -20,12 +20,12 @@ from scripts.convergence_health import budget_ingest as bi
 
 MARKERS = "Branch: claude/slow-branch. Dominant phase: pytest."
 
-# The columns the `open_recs` named verb ACTUALLY projects -- src/common/ducklake_scd2_schema.py
-# NAMED_READS: "SELECT id, title, context, created_timestamp, automatable ... WHERE status =
-# 'open'". A live open row therefore carries NEITHER `status` (filtered server-side) NOR `source`.
-# Open-rec fixtures are built to exactly this shape: supplying those two keys is what masked the
-# matcher defect that made the OPEN half of the dedupe never fire in production.
-LIVE_OPEN_REC_KEYS = ("id", "title", "context", "created_timestamp", "automatable")
+# The columns a live open row carries (rec-3291 / rec-3563): the open half of the dedupe now reads
+# via scripts.rec_episode.find_recs's source-scoped structural read (current_state on
+# ops_recommendations, row_filter="source = 'budget_breach'"), an UNNARROWED read -- so a live row
+# carries `status`/`source` (and every other column) alongside the five columns the retired
+# `open_recs` named verb used to project alone. Open-rec fixtures are built to this full shape.
+LIVE_OPEN_REC_KEYS = ("id", "title", "context", "created_timestamp", "automatable", "status", "source")
 
 # The title both budget-breach writers produce for the default block below (420s elapsed, outcome
 # "breach", branch claude/slow-branch).
@@ -113,14 +113,19 @@ def _rec(
     title: str = DEFAULT_TITLE,
     created_timestamp: str = DEFAULT_CREATED,
     automatable: bool = False,
+    status: str = "open",
+    source: str = "budget_breach",
 ) -> dict[str, Any]:
-    """An OPEN rec in the shape the `open_recs` verb really returns: the five projected columns."""
+    """An OPEN budget_breach rec in the shape scripts.rec_episode.find_recs's scoped read really
+    returns: full projection, so `status`/`source` are always present."""
     return {
         "id": rec_id,
         "title": title,
         "context": context,
         "created_timestamp": created_timestamp,
         "automatable": automatable,
+        "status": status,
+        "source": source,
     }
 
 
@@ -135,13 +140,15 @@ def _full_rec(
     """A rec in the shape `rec_by_id` (SELECT *) returns -- `status` and `source` included.
 
     What the RESOLVED half of the dedupe consumes: _fetch_resolved_budget_recs hydrates each
-    candidate through `rec_by_id`, so those rows genuinely do carry both keys.
+    candidate through `rec_by_id`. Same shape _rec() now returns by default; kept as a separate
+    name because the two halves of the dedupe hydrate through different reads and default to
+    different statuses (resolved vs open).
     """
     return {**_rec(rec_id, context=context, title=title), "status": status, "source": source}
 
 
 def _live_open(rec: dict[str, Any]) -> dict[str, Any]:
-    """Project a stored (full) rec down to the five columns `open_recs` returns."""
+    """Project a stored (full) rec down to the columns a live open row carries."""
     return {key: rec.get(key) for key in LIVE_OPEN_REC_KEYS}
 
 
@@ -158,9 +165,10 @@ def _ingest_one(**kwargs: Any) -> dict[str, Any]:
 class _ToyWarehouse:
     """A minimal in-memory ops_recommendations stand-in: file allocates an id, update merges.
 
-    `open_recs` deliberately returns the LIVE projection (five columns, no status/source) rather
-    than the stored rows, so a tick loop over this warehouse exercises what the reader really hands
-    the matcher; `resolved_recs` stays full-shaped because its half hydrates through `rec_by_id`.
+    `open_recs` projects the stored rows down to the columns a live scoped read returns (full
+    projection, `status`/`source` included) via `_live_open`/`LIVE_OPEN_REC_KEYS`, so a tick loop
+    over this warehouse exercises what the reader really hands the matcher; `resolved_recs` stays
+    full-shaped because its half hydrates through `rec_by_id`.
     """
 
     def __init__(self) -> None:

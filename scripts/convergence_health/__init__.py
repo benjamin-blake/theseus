@@ -61,8 +61,6 @@ from scripts.convergence_health.code_drift import (
     PROD_SOURCE_PATHSPECS,
     detect_ducklake_code_drift,
     detect_prod_code_drift,
-    find_open_ducklake_drift_rec,
-    find_open_prod_drift_rec,
 )
 from scripts.convergence_health.escalate import (
     _RESOLUTION_PERSISTENTLY_RED,
@@ -71,9 +69,7 @@ from scripts.convergence_health.escalate import (
     _TITLE_PERSISTENTLY_RED,
     _TITLE_STALE_GREEN_BACKLOG,
     _TITLE_STUCK_APPROVAL,
-    _fetch_open_recs,
     escalate,
-    find_open_convergence_stale_rec,
 )
 from scripts.convergence_health.record import (
     CONVERGENCE_BUCKET,
@@ -106,7 +102,6 @@ __all__ = [
     "_TITLE_PERSISTENTLY_RED",
     "_TITLE_STALE_GREEN_BACKLOG",
     "_TITLE_STUCK_APPROVAL",
-    "_fetch_open_recs",
     "_make_github_caller",
     "_parse_utc",
     "assess_health",
@@ -120,9 +115,6 @@ __all__ = [
     "escalation_action",
     "extract_budget_block",
     "filter_stuck_runs",
-    "find_open_convergence_stale_rec",
-    "find_open_ducklake_drift_rec",
-    "find_open_prod_drift_rec",
     "find_reconcile_runs_since",
     "find_stuck_gated_approvals",
     "has_in_flight_reconcile_for_episode",

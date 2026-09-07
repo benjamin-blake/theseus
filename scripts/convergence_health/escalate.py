@@ -6,18 +6,25 @@ tf_convergence_stale rec per red-episode via scripts.ops_data_portal
 terraform apply; never dispatches terraform-apply-sandbox. Part of the
 scripts.convergence_health package -- see scripts/convergence_health/__init__.py
 for the full public surface.
+
+The file/update/close orchestration below is scripts.rec_episode.run_episode (rec-3291 /
+rec-3563): this module used to bulk-fetch every open rec via the `open_recs` named verb and
+filter the result on `source`/`status` -- two columns that verb never projects, so the filter
+always matched nothing and every red episode re-filed a duplicate rec instead of updating the one
+already open. run_episode's find_rec does a source-scoped structural read instead, and raises
+rather than silently returning None if a row is ever missing a key this lookup filters on.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, cast
+from typing import Any, Optional
 
 from scripts.convergence_health.assess import (
     RED_AGE_THRESHOLD_HOURS,
     STALE_GREEN_BACKLOG_THRESHOLD_HOURS,
     HealthVerdict,
-    escalation_action,
 )
+from scripts.rec_episode import run_episode
 
 # Three mutually-branched escalation conditions (T2.35 hardening). A stuck gated-apply approval
 # takes priority in the title/context even when it co-occurs with a persistently-red record --
@@ -47,27 +54,6 @@ _ACCEPTANCE_PERSISTENTLY_RED = (
     "aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json - --profile agent_platform "
     '| grep -q \'"status": "green"\''
 )
-
-
-def find_open_convergence_stale_rec(
-    open_recs: list[dict[str, Any]],
-) -> Optional[dict[str, Any]]:
-    """Return the first open tf_convergence_stale rec from a list of open recs, or None."""
-    for rec in open_recs:
-        if rec.get("source") == "tf_convergence_stale" and rec.get("status") == "open":
-            return rec
-    return None
-
-
-def _fetch_open_recs(profile: Optional[str] = None) -> list[dict[str, Any]]:
-    """Fetch all open recs from the DuckLake reader (live, never the local JSONL cache)."""
-    from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
-
-    # make_reader() is annotated -> Reader (the Protocol, which deliberately does not declare
-    # named()) but only ever constructs a DuckLakeReader; cast narrows the type at this one call
-    # site rather than widening the Protocol by omission.
-    reader = cast(DuckLakeReader, make_reader(profile=profile))
-    return reader.named("open_recs") or []
 
 
 def _condition_for_verdict(verdict: HealthVerdict) -> str:
@@ -160,7 +146,7 @@ def _build_rec_fields(verdict: HealthVerdict, condition: str) -> dict[str, Any]:
 
 def escalate(
     verdict: HealthVerdict,
-    portal_caller: Optional[Callable[[str, dict[str, Any]], Any]] = None,
+    portal_caller: Optional[Any] = None,
     open_recs: Optional[list[dict[str, Any]]] = None,
     threshold_hours: float = RED_AGE_THRESHOLD_HOURS,
     profile: Optional[str] = None,
@@ -172,8 +158,11 @@ def escalate(
         verdict:       HealthVerdict from assess_health.
         portal_caller: Injected callable(action, fields) for testability. When None,
                        uses scripts.ops_data_portal.file_rec / update_rec directly.
-        open_recs:     Pre-fetched open rec list (for testing). When None, fetches live
-                       via the DuckLake reader open_recs named verb (not the JSONL cache).
+        open_recs:     Pre-fetched rows (for testing) -- treated as if they were already the
+                       result of the scoped tf_convergence_stale read. When None, fetches live
+                       via current_state("ops_recommendations", row_filter="source = "
+                       "'tf_convergence_stale'") (not the JSONL cache, and never a bulk fetch of
+                       every open rec).
         threshold_hours: Red-age threshold triggering escalation.
         profile:       AWS profile for the reader / portal.
         reconcile_in_flight: T2.37 c4 -- True when a reconcile.yml Actions run has already
@@ -183,14 +172,9 @@ def escalate(
                        refreshing an existing rec's context is not a double-file.
 
     Returns:
-        {"action": "file"|"update"|"close"|"none"|"skipped"|"skipped_reconcile_in_flight", "rec_id": str|None}
+        {"action": "file"|"update"|"unchanged"|"close"|"none"|"skipped"|"skipped_suppressed",
+         "rec_id": str|None}
     """
-    if open_recs is None:
-        open_recs = _fetch_open_recs(profile=profile)
-
-    existing = find_open_convergence_stale_rec(open_recs)
-    open_rec_exists = existing is not None
-
     stuck_approval_trigger = bool(verdict.stuck_approvals)
     red_age_trigger = verdict.status == "red" and verdict.red_age_hours >= threshold_hours
     stale_green_backlog_trigger = (
@@ -200,56 +184,30 @@ def escalate(
     )
     over_threshold = stuck_approval_trigger or red_age_trigger or stale_green_backlog_trigger
 
-    action = escalation_action(over_threshold=over_threshold, open_rec_exists=open_rec_exists)
-
-    if action == "file" and reconcile_in_flight:
-        # T2.37 c4: a Reconcile dispatch already started (or completed) during this red episode --
-        # do not double-file a NEW tf_convergence_stale rec for the episode Reconcile is already
-        # clearing. The episode either resolves (record returns green, no rec ever needed) or the
-        # reconcile run itself fails, and the next sensor tick re-evaluates from a clean slate.
-        return {"action": "skipped_reconcile_in_flight", "rec_id": None}
-
-    if action == "none":
-        return {"action": "none", "rec_id": None}
-
-    if action == "file":
+    def _build_fields() -> dict[str, Any]:
         condition = _condition_for_verdict(verdict)
-        fields = _build_rec_fields(verdict, condition)
-        if portal_caller is not None:
-            rec_id = portal_caller("file", fields)
-        else:
-            from scripts.ops_data_portal import file_rec  # noqa: PLC0415
+        return _build_rec_fields(verdict, condition)
 
-            rec_id = file_rec(fields, profile=profile)
-        return {"action": "file", "rec_id": rec_id}
-
-    if action == "update" and existing is not None:
+    def _build_update(existing: dict[str, Any]) -> dict[str, Any]:
         condition = _condition_for_verdict(verdict)
-        updates = {"context": _build_context(verdict, condition)}
-        if portal_caller is not None:
-            portal_caller("update", {"id": existing["id"], **updates})
-        else:
-            from scripts.ops_data_portal import update_rec  # noqa: PLC0415
+        return {"context": _build_context(verdict, condition)}
 
-            update_rec(existing["id"], updates, profile=profile)
-        return {"action": "update", "rec_id": existing["id"]}
-
-    if action == "close" and existing is not None:
+    def _build_close(existing: dict[str, Any]) -> dict[str, Any]:
         condition = _condition_from_existing_rec(existing)
         resolution = {
             "stuck_approval": _RESOLUTION_STUCK_APPROVAL,
             "stale_green_backlog": _RESOLUTION_STALE_GREEN_BACKLOG,
         }.get(condition, _RESOLUTION_PERSISTENTLY_RED)
-        updates = {
-            "status": "closed",
-            "resolution": resolution,
-        }
-        if portal_caller is not None:
-            portal_caller("close", {"id": existing["id"], **updates})
-        else:
-            from scripts.ops_data_portal import update_rec  # noqa: PLC0415
+        return {"status": "closed", "resolution": resolution}
 
-            update_rec(existing["id"], updates, profile=profile)
-        return {"action": "close", "rec_id": existing["id"]}
-
-    return {"action": "skipped", "rec_id": None}
+    return run_episode(
+        source="tf_convergence_stale",
+        over_threshold=over_threshold,
+        build_fields=_build_fields,
+        build_update=_build_update,
+        build_close=_build_close,
+        suppress_file=reconcile_in_flight,
+        portal_caller=portal_caller,
+        rows=open_recs,
+        profile=profile,
+    )
