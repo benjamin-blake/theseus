@@ -52,12 +52,18 @@ def is_pytest_command(cmd: str) -> bool:
     return bool(_PYTEST_RE.search(cmd))
 
 
-def isolation_available(runner: Callable[..., Any] = subprocess.run) -> bool:
-    """Probe unshare -rmn plus a read-only self-bind-mount, the exact primitive run_one relies
-    on. Never raises: any exception, timeout, or non-zero exit means unavailable."""
+def isolation_available(repo_root: Path, runner: Callable[..., Any] = subprocess.run) -> bool:
+    """Probe unshare -rmn plus a read-only self-bind-mount of repo_root -- the exact primitive
+    AND the exact target run_one relies on (VP step 11 regression: binding `/` onto itself is
+    NOT a safe proxy for binding a real subdirectory -- `/`'s own mount setup can reject a
+    self-bind-mount for filesystem-specific reasons, e.g. `mount: /: wrong fs type, bad option,
+    bad superblock`, even on a runner where binding repo_root works cleanly. Testing the wrong
+    target produced a false ISOLATION_UNAVAILABLE on both the authoring container and the
+    GitHub-hosted runner). Never raises: any exception, timeout, or non-zero exit means
+    unavailable."""
     try:
         result = runner(
-            ["unshare", "-rmn", "--", "bash", "-c", "mount --bind -o ro / / && true"],
+            ["unshare", "-rmn", "--", "bash", "-c", f"mount --bind -o ro {repo_root} {repo_root} && true"],
             capture_output=True,
             timeout=5,
             encoding="utf-8",
@@ -122,7 +128,7 @@ def run_all(
     main_sha: str,
     global_budget_s: int = _DEFAULT_GLOBAL_BUDGET_S,
     runner: Callable[..., Any] = subprocess.run,
-    isolation_check: Callable[[], bool] = isolation_available,
+    isolation_check: Callable[[Path], bool] = isolation_available,
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, Any]:
     """Run every `probe_payload` entry (as emitted by census.run_census), bounded by a global
@@ -134,7 +140,7 @@ def run_all(
     ISOLATION_UNAVAILABLE. Once the global budget is exhausted, every REMAINING entry (not yet
     started) gets BUDGET_EXHAUSTED rather than being silently dropped.
     """
-    if not isolation_check():
+    if not isolation_check(repo_root):
         return {
             "main_sha": main_sha,
             "isolation_available": False,
