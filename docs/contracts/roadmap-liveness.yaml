@@ -1,0 +1,218 @@
+# Class D contract for the roadmap blocking-graph liveness detector
+# (PLAN-roadmap-blocking-liveness-detector). Holds the node-class / edge-demand semantics the
+# graph module (scripts/platform_roadmap_liveness.py) implements and the registered check
+# (scripts/checks/roadmap/validate_roadmap_liveness.py) enforces -- the two hold no second copy
+# of what is declared here. No numbered Decision backs this contract: it declares mechanism (a
+# detector plus its baseline ratchet), not a reversal-relevant platform commitment (see the
+# plan's Context field for the full non-ratification rationale). Authored at provisional_v0
+# because the toxic-SCC classification and leg C's blocking-phrase grammar are new and
+# unexercised against real roadmap-editing traffic beyond this plan's own authoring pass.
+contract:
+  id: roadmap-liveness
+  class: D
+  contract_version: 1
+  status: provisional_v0
+  description: >-
+    The roadmap blocking-graph liveness detector: NON_TERMINAL node-class semantics, the
+    heterogeneous edge-demand taxonomy (complete/ratified/evidence), the toxic-SCC
+    classification rule, config/roadmap_liveness_baseline.yaml's shrink-only ratchet grammar,
+    leg B's rehome-coverage precision bound, and leg C's diff-scoped blocking-phrase grammar
+    (the check's sole source -- it holds no second copy).
+  subject: roadmap-liveness
+  evaluator:
+    check: validate_roadmap_liveness
+  provisional_v0:
+    authored_at: "2026-09-07"
+    authored_via: "PLAN-roadmap-blocking-liveness-detector"
+    rationale: >-
+      The toxic-SCC rule and leg C's blocking-phrase grammar have been exercised only against
+      the live roadmap's measured 19-id/2-SCC census and this plan's own synthetic fixtures, not
+      real roadmap-editing traffic across many future PRs. provisional_v0 lets both settle (a
+      false-positive blocking phrase, or a completion-demanding edge shape the discriminator
+      misclassifies) before either is treated as stable.
+    re_ratification_trigger:
+      first_of:
+        - "leg_c_false_positive_reports >= 3"
+        - "days_since_authored_at >= 90"
+    re_ratification_owner: "human + plan-critique gate"
+
+amendment_log:
+  - date: "2026-09-07"
+    semantic_break: false
+    change_class: initial_authorship
+    summary: >-
+      PLAN-roadmap-blocking-liveness-detector: initial authorship at provisional_v0. Declares
+      the NON_TERMINAL node classes, the edge-demand taxonomy, the toxic-SCC rule, the baseline
+      shrink-only ratchet grammar, leg B's necessary-but-not-sufficient rehome-coverage bound,
+      leg C's blocking-phrase grammar, and the per-surface Decision 181 clause 2 residual map
+      (leg C's pre-existing prose corpus and the starvation class the toxic-SCC rule structurally
+      excludes).
+
+node_classes:
+  non_terminal_tier_item:
+    statuses: [not_started, in_progress, deferred_post_mvp]
+    rationale: >-
+      Everything not yet 'complete' is live enough to participate in a blocking ring.
+      'deferred_post_mvp' is INCLUDED (not excluded the way
+      scripts.platform_roadmap_gate_rules._INACTIVE_FOR_TIER excludes it from tier-completion
+      arithmetic): a parked item is reactivatable by a single status flip, so a ring passing
+      through one is a latent deadlock, not a moot one. Measured at authoring time: 1 of the 19
+      seed toxic ids (T4.9) is deferred_post_mvp; 0 toxic SCCs owe their existence SOLELY to a
+      parked node (every toxic SCC also contains a not_started/in_progress member).
+  non_terminal_candidate_decision:
+    states: [pending]
+    rationale: A ratified or superseded CD is a terminal graph endpoint; only a pending CD can gate.
+  excluded_reserved:
+    rationale: >-
+      status: reserved tier_items are excluded from NON_TERMINAL entirely (not merely from
+      tier-completion arithmetic, matching _INACTIVE_FOR_TIER's treatment there). Measured: all 8
+      reserved items carry empty depends_on, nothing depends on one, and no criterion's
+      blocked_by names one -- no ring can pass through a reserved node today. Should that measured
+      fact ever change (a future reserved item gains an incoming or outgoing blocking edge), this
+      exclusion needs re-justifying, not silently re-affirming.
+
+edge_taxonomy:
+  - source_field: "TierItem.depends_on"
+    demand: complete
+    direction: "item -> dependency"
+  - source_field: "CandidateDecision.gates"
+    demand: ratified
+    direction: "gated item -> CD"
+  - source_field: "CandidateDecision.gates (Decision 105 reverse edge)"
+    demand: evidence
+    direction: "CD -> gated item"
+    rationale: >-
+      A pending CD accrues realization evidence from the items it gates completing -- modeled as
+      a reverse edge so a benign build-then-ratify 2-cycle (item demands the CD ratified; the CD
+      demands evidence from the item) is visible to the SCC computation without being toxic
+      (neither edge in that 2-cycle demands 'complete').
+  - source_field: "TierItem.decision_required_before"
+    demand: ratified
+    direction: "item -> named CD"
+    rationale: >-
+      A CD id is extracted from each entry via the same regex
+      scripts.platform_roadmap_state.blocked_on_cd() already uses (_CD_REF_RE) -- reused, not
+      re-derived, so the two never drift on what counts as a CD mention.
+  - source_field: "ExitCriterion.blocked_by"
+    demand: "the entry's own literal `until` value"
+    direction: "owning item -> blocked_by.ref"
+    rationale: >-
+      CriterionBlocker.until is already schema-typed to exactly 'complete' (tier_item/tier-
+      shortcut ref) or 'ratified' (CD ref) -- see docs/contracts/exit-criteria-ledger.yaml's
+      blocked_by field. No translation step exists to drift out of sync with that schema.
+  - source_field: "CandidateDecision.affects"
+    demand: EXCLUDED
+    rationale: >-
+      affects is in-scope-of, not completion-blocking (PLAN-roadmap-blocking-edge-semantics split
+      gates from affects for exactly this reason) -- it never enters the blocking graph.
+
+toxicity_rule: >-
+  A strongly connected component (networkx.strongly_connected_components over the directed
+  blocking graph) is TOXIC iff it holds at least one internal edge -- both endpoints inside the
+  same SCC -- demanding 'complete'. A ring built only from 'ratified'/'evidence' edges is benign.
+  This is the COMPLETION-DEMANDING EDGE rule, not an "internal depends_on edge" rule: the latter
+  false-negatives on the rec-3394 shape (T2.51's own depends_on is empty; its blocking relationship
+  to CD.41 runs entirely through cd.gates/blocked_by), which the completion-demanding rule catches
+  because it looks at EVERY edge kind's demand, not one structural field.
+
+baseline_grammar: >-
+  config/roadmap_liveness_baseline.yaml is a frozen, shrink-only roster (Decision 165/166 style,
+  precedent config/check_accounting_baseline.yaml) of the toxic node ids currently measured on the
+  live roadmap -- a flat `entries:` list, one id per tier_item/CD in a toxic SCC. NO marker escape
+  grammar of any kind: scripts/checks/_marker_guard.py is the sole home for any future marker
+  grammar (Decision 165), and this baseline carries none. An entry may be REMOVED (the ratchet
+  tightens as cores drain) but never (re-)ADDED once removed at the diff-base comparison, and no
+  entry outside validate_roadmap_liveness.py's own frozen `_BASELINE_SEED` constant can ever be
+  admitted by a config-file edit alone -- growing the roster past its seed requires editing that
+  constant in a reviewed code change. Owning drain recs: rec-3579 (the T2/T3 core), rec-3580 (the
+  T4 core). REVERSAL CONDITION (Decision 159 style): if no toxic finding drives a drain within two
+  quarters of this contract's authored_at, unwind the ratchet together with the check rather than
+  leaving a permanently exempt roster.
+
+leg_b_rehome_coverage: >-
+  For every exit criterion whose status is 'rehomed', its met_by target must carry at least one
+  OPEN criterion. This is NECESSARY BUT NOT SUFFICIENT for "the rehomed scope actually landed" --
+  live population is 8 rehomed criteria, and a rehome whose scope was never transcribed onto its
+  target would still pass so long as the target holds ANY unrelated open criterion. Recorded here
+  as an ACCEPTED PERMANENT BOUND of this leg, not a residual: no cheap oracle for "the rehomed
+  scope specifically landed on the target" exists (that would require semantic text matching
+  between the rehomed criterion's prose and the target's criteria, which is a judgement call, not
+  a structural check).
+
+leg_c_blocking_phrase_grammar:
+  scope: >-
+    DIFF-SCOPED ONLY: leg C examines exclusively criteria whose TEXT is new or changed relative to
+    the diff base (compared by TEXT, never by synthetic index/id -- an insertion at the head of a
+    bare-string list must never be reported once per downstream sibling whose auto-generated id
+    merely shifted). The pre-existing prose corpus (criteria whose text predates this contract and
+    already names a blocking relationship without a structural blocked_by entry) is a DECLARED
+    RESIDUAL, not covered here -- see residuals.leg_c_prose_corpus below.
+  phrases:
+    - "blocked by"
+    - "blocked on"
+    - "gated on"
+    - "gated by"
+    - "must be ratified"
+    - "requires .* ratified"
+    - "requires .* complete"
+    - "cannot .* until"
+    - "before .* is ratified"
+    - "before .* ratifies"
+    - "before .* completes"
+    - "before .* is complete"
+  precision_recall_basis: >-
+    Phrases were chosen from the verbatim vocabulary already in use across docs/ROADMAP-
+    PLATFORM.yaml's own prose for a genuine blocking relationship (e.g. T2.53 c6's "gated on the
+    deferred T2.51", CD.41's "gates: [T2.51]" prose companions) -- HIGH PRECISION, favoring fewer
+    false positives over exhaustive recall, because a false positive here blocks an author's PR on
+    a phrase that merely LOOKS like a blocking claim (e.g. "not gated on any external decision").
+    Recall is bounded by construction: leg C is diff-scoped (see `scope` above) and defers the
+    full-corpus, high-recall sweep to rec-3581 (residuals.leg_c_prose_corpus) rather than
+    attempting it inline at a precision cost this leg does not accept.
+  id_mention_grammar: >-
+    A NON_TERMINAL id mention is matched via the shape `T-?\d+\.\d+[a-z]?` (tier_item id) or
+    `CD\.\d+` (candidate_decision id) anywhere in the criterion's own text, filtered to the
+    NON_TERMINAL set and excluding a self-reference to the owning item's own id. The phrase and
+    the id mention need not be adjacent -- this trades some precision for implementation
+    simplicity, disclosed here rather than silently assumed.
+  remedy: >-
+    A finding's message always names the in-PR remedy -- add a structured `{ref: <id>, until:
+    <complete|ratified>}` entry to the criterion's blocked_by (re-sequence the edge), or the
+    criterion is genuinely blocked and the finding is a true toxic-SCC candidate once the edge is
+    added. An author is never left with deleting the prose as the only in-PR move (Decision 181
+    clause 1's forbidden weakening is the alternative this remedy exists to head off).
+
+residuals:
+  leg_c_prose_corpus:
+    surface: >-
+      Every pre-existing (not added/changed-this-diff) roadmap criterion whose prose already
+      names a blocking relationship without a structural blocked_by entry -- leg C's diff-scoped
+      design never examines this corpus.
+    owner: rec-3581
+  starvation_class:
+    surface: >-
+      A pending CD whose EVERY gated item is parked (reserved or deferred_post_mvp) can never
+      accrue realization evidence (no gated item will complete to generate it), so criteria
+      blocked_by that CD are STARVED with no path to resolution -- yet the toxic-SCC rule
+      structurally cannot see this: no internal edge demands 'complete' (starvation is a
+      liveness failure with no completion-demanding ring, the exact shape the toxic-SCC rule is
+      blind to by construction). Measured: 5 live instances at authoring time.
+    owner: rec-3582
+  instruction_layer_traceability:
+    surface: >-
+      Clause-to-check traceability across the instruction layer (AGENTS.md/CLAUDE.md/skills) is
+      OUT OF SCOPE here -- T2.54 owns building a general index; this contract carries only the
+      two roadmap-prose-specific residuals above, never a general clause-to-check index.
+    owner: T2.54
+
+governance_note: >-
+  Three heterogeneous invariants (leg A's toxic-SCC ratchet, leg B's rehome coverage, leg C's
+  prose-to-structural diff gate) share ONE registered check name (validate_roadmap_liveness)
+  rather than three separate checks: rec-3395 asked for the bundle, and all three legs load and
+  validate the SAME RoadmapDocument, so splitting them into three checks would triple the
+  roadmap-parse cost for no isolation benefit (none of the three legs' failure conditions
+  interact with or mask each other -- each leg's violations are independently appended). SPLIT
+  TRIGGER: if leg B or leg C proves noisy (a measured false-positive rate that erodes trust in
+  the combined check), split it into its own registered check rather than tuning it in place,
+  so leg A's ratchet -- the check's primary liveness-safety mission -- is never held hostage to
+  a noisier sibling leg's tuning cycle.
