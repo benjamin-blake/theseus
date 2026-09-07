@@ -24,21 +24,32 @@ class TestIsPytestCommand:
 
 
 class TestIsolationAvailable:
-    def test_true_on_zero_exit(self) -> None:
+    def test_true_on_zero_exit(self, tmp_path: Path) -> None:
         runner = MagicMock(return_value=MagicMock(returncode=0))
-        assert probe.isolation_available(runner=runner) is True
+        assert probe.isolation_available(tmp_path, runner=runner) is True
 
-    def test_false_on_nonzero_exit(self) -> None:
+    def test_false_on_nonzero_exit(self, tmp_path: Path) -> None:
         runner = MagicMock(return_value=MagicMock(returncode=1))
-        assert probe.isolation_available(runner=runner) is False
+        assert probe.isolation_available(tmp_path, runner=runner) is False
 
-    def test_false_on_oserror(self) -> None:
+    def test_false_on_oserror(self, tmp_path: Path) -> None:
         runner = MagicMock(side_effect=OSError("unshare not found"))
-        assert probe.isolation_available(runner=runner) is False
+        assert probe.isolation_available(tmp_path, runner=runner) is False
 
-    def test_false_on_timeout(self) -> None:
+    def test_false_on_timeout(self, tmp_path: Path) -> None:
         runner = MagicMock(side_effect=subprocess.TimeoutExpired(cmd="unshare", timeout=5))
-        assert probe.isolation_available(runner=runner) is False
+        assert probe.isolation_available(tmp_path, runner=runner) is False
+
+    def test_binds_repo_root_not_slash(self, tmp_path: Path) -> None:
+        """Regression (VP step 11, live workflow_dispatch): binding `/` onto itself is not a
+        safe proxy for binding a real subdirectory -- some filesystems reject the former while
+        happily accepting the latter, producing a false ISOLATION_UNAVAILABLE."""
+        runner = MagicMock(return_value=MagicMock(returncode=0))
+        probe.isolation_available(tmp_path, runner=runner)
+        argv = runner.call_args.args[0]
+        inner = argv[argv.index("--") + 3]
+        assert str(tmp_path) in inner
+        assert f"mount --bind -o ro {tmp_path} {tmp_path}" in inner
 
 
 class TestRunOne:
@@ -109,7 +120,7 @@ class TestRunAll:
             payload,
             repo_root=tmp_path,
             main_sha="deadbeef",
-            isolation_check=lambda: False,
+            isolation_check=lambda root: False,
             runner=runner,
         )
         assert result["isolation_available"] is False
@@ -117,7 +128,7 @@ class TestRunAll:
         runner.assert_not_called()
 
     def test_stamps_main_sha_unconditionally(self, tmp_path: Path) -> None:
-        result = probe.run_all([], repo_root=tmp_path, main_sha="cafef00d", isolation_check=lambda: True)
+        result = probe.run_all([], repo_root=tmp_path, main_sha="cafef00d", isolation_check=lambda root: True)
         assert result["main_sha"] == "cafef00d"
 
     def test_budget_exhausted_marks_remaining_entries(self, tmp_path: Path) -> None:
@@ -129,7 +140,7 @@ class TestRunAll:
             repo_root=tmp_path,
             main_sha="sha",
             global_budget_s=10,
-            isolation_check=lambda: True,
+            isolation_check=lambda root: True,
             runner=runner,
             clock=lambda: next(clock_values),
         )
@@ -143,6 +154,6 @@ class TestRunAll:
     def test_never_records_a_pass_for_a_failing_probe(self, tmp_path: Path) -> None:
         payload = [{"id": "rec-1", "acceptance": "false"}]
         runner = MagicMock(return_value=MagicMock(returncode=1))
-        result = probe.run_all(payload, repo_root=tmp_path, main_sha="sha", isolation_check=lambda: True, runner=runner)
+        result = probe.run_all(payload, repo_root=tmp_path, main_sha="sha", isolation_check=lambda root: True, runner=runner)
         assert result["verdicts"]["rec-1"] != probe.PASS
         assert result["verdicts"]["rec-1"] == probe.FAIL
