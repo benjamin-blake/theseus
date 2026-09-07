@@ -89,8 +89,12 @@ def _violations_for_file(path: Path) -> list[str]:
 def test_probe_is_sole_rec_authored_executor() -> None:
     """VP step 14: the AST walk finds no rec-authored execution path outside probe.py, and does
     not flag census.py's literal git argv (a positive control -- proves the walk recognises the
-    call as a subprocess sink and verifies it, not merely that it never looked)."""
-    for path in sorted(PACKAGE_ROOT.glob("*.py")):
+    call as a subprocess sink and verifies it, not merely that it never looked).
+
+    Walks scripts/backlog_health/** recursively (rglob, not glob) so the invariant keeps
+    enforcing itself if the package ever grows a subpackage -- the docstrings describing this
+    walk already claim "**" coverage; the walk itself must match that claim."""
+    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         if path.name == "probe.py":
             continue
         assert _violations_for_file(path) == [], f"unexpected violation(s) in {path.name}"
@@ -183,6 +187,18 @@ class TestClassifyAcceptanceQuality:
 
     def test_empty_acceptance_is_skipped(self) -> None:
         rows: list[dict[str, Any]] = [{"id": "rec-1", "acceptance": ""}, {"id": "rec-2", "acceptance": None}]
+        result = classify.classify_acceptance_quality(rows)
+        assert result["lint_reject"] == []
+        assert result["non_discriminating"] == []
+
+    def test_prose_acceptance_is_skipped_not_flagged_non_discriminating(self) -> None:
+        # Regression (code review): a prose command like "N/A" is census.py's PROSE_ONLY
+        # concern -- it must never also land in this class's non_discriminating bucket, which
+        # would double-count the same rec under two defect classes.
+        rows: list[dict[str, Any]] = [
+            {"id": "rec-1", "acceptance": "N/A -- manual review"},
+            {"id": "rec-2", "acceptance": "Manual review by a human"},
+        ]
         result = classify.classify_acceptance_quality(rows)
         assert result["lint_reject"] == []
         assert result["non_discriminating"] == []

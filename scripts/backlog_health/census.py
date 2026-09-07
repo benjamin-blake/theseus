@@ -95,7 +95,11 @@ _MAX_SHAPE_LEN = 500
 _PYTEST_TARGET_RE = re.compile(r"([\w./-]+\.py)(::([\w:.\[\]-]+))?")
 
 
-def _is_prose(cmd: str) -> bool:
+def is_prose(cmd: str) -> bool:
+    """Public (not module-private) because classify.py's acceptance-quality classifier also
+    consults it, to keep the two modules' prose predicate identical -- code-review found that a
+    locally-reimplemented "empty string only" check let a prose command like "N/A" fall through
+    to classify.py's non_discriminating bucket, double-counting a census.py PROSE_ONLY rec."""
     stripped = cmd.strip()
     if not stripped:
         return True
@@ -164,7 +168,7 @@ def classify_command(acceptance: Optional[str], *, repo_root: Path = ROOT) -> st
     executes the command itself. Order matters: an empty/prose command is never also flagged
     unsafe; an unsafe command is never also probed for a missing pytest node."""
     stripped = (acceptance or "").strip()
-    if _is_prose(stripped):
+    if is_prose(stripped):
         return PROSE_ONLY
     if _is_unsafe(stripped):
         return UNPROBEABLE_UNSAFE

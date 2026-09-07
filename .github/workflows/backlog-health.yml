@@ -11,8 +11,10 @@ name: backlog-health
 #   probe    (contents: read ONLY, no id-token, persist-credentials: false) -- the ONLY job that
 #            executes rec-authored acceptance commands, under unshare -rmn sandboxed isolation
 #            (see scripts/backlog_health/probe.py). Holds no AWS credential at all: a malicious or
-#            broken acceptance command running here can reach nothing but a read-only,
-#            network-isolated bind-mount of the checkout.
+#            broken acceptance command running here has no network path and only a read-only,
+#            bind-mounted view of the checkout -- other runner paths (e.g. /tmp) are unaffected by
+#            that bind mount and stay writable, but there is nothing of value there (no
+#            credentials, no repo state) on this ephemeral, credential-free runner.
 #   escalate (id-token, portal writes)      -- treats probe's verdict artifact as untrusted input
 #            (schema-validated, rejoined against a fresh read on rec_id + acceptance_sha256),
 #            files/updates/closes the four class-level rollup recs via
@@ -165,4 +167,6 @@ jobs:
           path: /tmp/backlog_health
 
       - name: Run escalate (file, update or close the four class-level rollup recs)
-        run: .venv/bin/python -m scripts.backlog_health escalate --artifact-dir /tmp/backlog_health ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+        env:
+          DRY_RUN_FLAG: ${{ github.event.inputs.dry_run == 'true' && '--dry-run' || '' }}
+        run: .venv/bin/python -m scripts.backlog_health escalate --artifact-dir /tmp/backlog_health $DRY_RUN_FLAG

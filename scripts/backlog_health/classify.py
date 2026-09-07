@@ -36,6 +36,7 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+from scripts.backlog_health import census
 from scripts.backlog_health import probe as probe_mod
 from scripts.rec_relevance import evaluate_rec_relevance
 
@@ -85,7 +86,7 @@ def classify_acceptance_quality(open_rows: list[dict[str, Any]]) -> dict[str, li
     non_discriminating: list[str] = []
     for row in open_rows:
         acceptance = (row.get("acceptance") or "").strip()
-        if not acceptance:
+        if census.is_prose(acceptance):
             continue
         if _is_lint_reject(acceptance):
             lint_reject.append(row["id"])
