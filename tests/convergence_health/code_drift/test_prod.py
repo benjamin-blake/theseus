@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 # scripts/checks/_scaffolding.py::partition_changed_tests_by_collectability.
 import boto3  # noqa: F401
 
-from scripts.convergence_health import detect_prod_code_drift, find_open_prod_drift_rec
+from scripts.convergence_health import detect_prod_code_drift
 
 from .conftest import GitRunnerStub, _FakeDeployRecordsS3, _RecordingS3
 
@@ -33,22 +33,30 @@ _ALL_PROD_FUNCTIONS = {
 
 
 class TestFindOpenProdDriftRec:
-    def test_returns_first_matching_rec(self) -> None:
-        recs = [
-            {"id": "rec-100", "source": "ci_rca", "status": "open"},
-            {"id": "rec-101", "source": "prod_code_drift", "status": "open"},
-            {"id": "rec-102", "source": "prod_code_drift", "status": "closed"},
-        ]
-        result = find_open_prod_drift_rec(recs)
-        assert result is not None
-        assert result["id"] == "rec-101"
+    """rec-3291 / rec-3563: find_open_prod_drift_rec no longer exists (migrated onto
+    scripts.rec_episode.run_episode's source-scoped find_rec). Re-pointed at
+    detect_prod_code_drift's real dedup behaviour."""
 
-    def test_returns_none_when_no_match(self) -> None:
-        recs = [{"id": "rec-100", "source": "ducklake_code_drift", "status": "open"}]
-        assert find_open_prod_drift_rec(recs) is None
+    def test_matches_the_open_rec_for_this_source(self) -> None:
+        existing = {"id": "rec-101", "source": "prod_code_drift", "status": "open"}
+        stub = GitRunnerStub(head_latest="SHA_NEW", reachable={"SHA_OLD": "SHA_OLD"})
+        result = detect_prod_code_drift(
+            git_runner=stub,
+            s3_client=_FakeDeployRecordsS3(default_sha="SHA_OLD"),
+            portal_caller=lambda a, f: "rec-x",
+            open_recs=[existing],
+        )
+        assert result == {"action": "update", "rec_id": "rec-101"}
 
-    def test_returns_none_on_empty_list(self) -> None:
-        assert find_open_prod_drift_rec([]) is None
+    def test_scoped_read_never_matches_a_different_source(self) -> None:
+        other_source_row = {"id": "rec-100", "source": "ducklake_code_drift", "status": "open"}
+        result = detect_prod_code_drift(
+            git_runner=lambda argv: "SHA_OLD",
+            s3_client=_FakeDeployRecordsS3(default_sha="SHA_OLD"),
+            portal_caller=lambda a, f: "rec-x",
+            open_recs=[other_source_row],
+        )
+        assert result == {"action": "none", "rec_id": None}
 
 
 class TestDetectProdCodeDrift:
@@ -188,14 +196,17 @@ class TestDetectProdCodeDrift:
         assert captured["status"] == "open"
         assert "agent-platform-scheduled-agent-dispatcher" in captured["context"]
 
-    def test_open_recs_none_fetches_live_open_recs(self) -> None:
-        with patch("scripts.convergence_health.code_drift._fetch_open_recs", return_value=[]) as fetch:
+    def test_open_recs_none_fetches_via_scoped_current_state_read(self) -> None:
+        reader = MagicMock()
+        reader.current_state.return_value = []
+        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader) as mk:
             result = detect_prod_code_drift(
                 git_runner=lambda argv: "SHA_OLD",
                 s3_client=_FakeDeployRecordsS3(default_sha="SHA_OLD"),
                 portal_caller=lambda a, f: "rec-x",
             )
-        fetch.assert_called_once()
+        mk.assert_called_once_with(profile=None)
+        reader.current_state.assert_called_once_with("ops_recommendations", row_filter="source = 'prod_code_drift'")
         assert result == {"action": "none", "rec_id": None}
 
     def test_s3_client_none_creates_boto3_session_client(self) -> None:

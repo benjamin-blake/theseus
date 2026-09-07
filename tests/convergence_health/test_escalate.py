@@ -1,7 +1,8 @@
-"""Unit tests for scripts.convergence_health.escalate (rec-2709 Wave 6 package-mirror).
+"""Unit tests for scripts.convergence_health.escalate (rec-2709 Wave 6 package-mirror; migrated
+onto scripts.rec_episode.run_episode by rec-3291 / rec-3563).
 
 Idempotent tf_convergence_stale file/update/close escalation. Free of live dependencies: the
-portal caller and open-recs list are injected (plus a few live-path tests that patch the real
+portal caller and open-recs rows are injected (plus a few live-path tests that patch the real
 ops-portal / DuckLake-reader call sites directly).
 """
 
@@ -13,37 +14,49 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import scripts.convergence_health as ch
-from scripts.convergence_health import HealthVerdict, escalate, find_open_convergence_stale_rec
-from tests.fixtures.reader_rows import verb_rows
+from scripts.convergence_health import HealthVerdict, escalate
 
 
 class TestFindOpenConvergenceStaleRec:
-    @pytest.mark.xfail(strict=True, reason="open_recs never returns source/status -- see rec-3563 (dedup blindness)")
-    def test_returns_first_matching_rec(self) -> None:
-        recs = verb_rows(
-            "open_recs",
-            [
-                {"id": "rec-100", "source": "ci_rca", "status": "open"},
-                {"id": "rec-101", "source": "tf_convergence_stale", "status": "open"},
-                {"id": "rec-102", "source": "tf_convergence_stale", "status": "closed"},
-            ],
-        )
-        result = find_open_convergence_stale_rec(recs)
-        assert result is not None
-        assert result["id"] == "rec-101"
+    """rec-3563: the previously-blind dedup lookup now resolves the already-open rec instead of
+    filing a duplicate. Retained under this class name because rec-3563's acceptance probe names
+    it verbatim (Decision 103) -- re-pointed at escalate()'s real behaviour now that
+    find_open_convergence_stale_rec no longer exists (migrated onto
+    scripts.rec_episode.find_rec's source-scoped structural read)."""
 
-    def test_returns_none_when_no_match(self) -> None:
-        recs = verb_rows(
-            "open_recs",
-            [
-                {"id": "rec-100", "source": "ci_rca", "status": "open"},
-                {"id": "rec-101", "source": "tf_convergence_stale", "status": "closed"},
-            ],
-        )
-        assert find_open_convergence_stale_rec(recs) is None
+    def test_escalate_updates_existing_rec_instead_of_filing_duplicate(self) -> None:
+        calls: list[tuple[str, dict[str, Any]]] = []
 
-    def test_returns_none_on_empty_list(self) -> None:
-        assert find_open_convergence_stale_rec([]) is None
+        def _caller(action: str, fields: dict[str, Any]) -> Any:
+            calls.append((action, fields))
+            return None
+
+        existing_row = {
+            "id": "rec-101",
+            "source": "tf_convergence_stale",
+            "status": "open",
+            "title": ch._TITLE_PERSISTENTLY_RED,
+        }
+        verdict = HealthVerdict(status="red", red_age_hours=10.0, unapplied_backlog=0, severity="high")
+        result = escalate(verdict, portal_caller=_caller, open_recs=[existing_row])
+        assert result == {"action": "update", "rec_id": "rec-101"}
+        assert calls[0][0] == "update"
+
+    def test_scoped_read_never_matches_a_different_source(self) -> None:
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        def _caller(action: str, fields: dict[str, Any]) -> Any:
+            calls.append((action, fields))
+            return "rec-999"
+
+        other_source_row = {"id": "rec-100", "source": "ci_rca", "status": "open"}
+        verdict = HealthVerdict(status="red", red_age_hours=10.0, unapplied_backlog=0, severity="high")
+        result = escalate(verdict, portal_caller=_caller, open_recs=[other_source_row])
+        assert result["action"] == "file"
+
+    def test_scripts_convergence_health_no_longer_exports_fetch_open_recs(self) -> None:
+        assert "_fetch_open_recs" not in ch.__all__
+        assert not hasattr(ch, "_fetch_open_recs")
 
 
 class TestEscalate:
@@ -162,12 +175,13 @@ class TestEscalate:
 
 
 class TestEscalateUnknownActionFallsThroughToSkipped:
-    """escalation_action's truth table has exactly four outcomes (file/update/close/none);
-    this exercises escalate()'s defensive fallback for anything else it might ever return."""
+    """decide()'s truth table has exactly four outcomes (file/update/close/none); this exercises
+    run_episode's (and so escalate()'s) defensive fallback for anything else it might ever
+    return."""
 
     def test_unknown_action_falls_through_to_skipped(self) -> None:
         verdict = HealthVerdict(status="red", red_age_hours=10.0, unapplied_backlog=0, severity="high")
-        with patch("scripts.convergence_health.escalate.escalation_action", return_value="bogus"):
+        with patch("scripts.rec_episode.decide", return_value="bogus"):
             result = escalate(verdict, portal_caller=lambda a, f: None, open_recs=[])
         assert result == {"action": "skipped", "rec_id": None}
 
@@ -191,7 +205,7 @@ class TestEscalateReconcileInFlight:
 
         verdict = self._make_verdict(red_age=10.0)
         result = escalate(verdict, portal_caller=_caller, open_recs=[], reconcile_in_flight=True)
-        assert result["action"] == "skipped_reconcile_in_flight"
+        assert result["action"] == "skipped_suppressed"
         assert result["rec_id"] is None
         assert not calls, "must not file a rec while a Reconcile run is in-flight for this episode"
 
@@ -386,24 +400,6 @@ class TestEscalateGreenStaleBacklog:
         assert calls[0][1]["resolution"] == ch._RESOLUTION_STALE_GREEN_BACKLOG
 
 
-class TestFetchOpenRecs:
-    def test_fetches_via_named_open_recs_verb(self) -> None:
-        reader = MagicMock()
-        reader.named.return_value = [{"id": "rec-1", "source": "tf_convergence_stale", "status": "open"}]
-        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader) as mk:
-            result = ch._fetch_open_recs(profile="agent_platform")
-        mk.assert_called_once_with(profile="agent_platform")
-        reader.named.assert_called_once_with("open_recs")
-        assert result[0]["id"] == "rec-1"
-
-    def test_returns_empty_list_when_verb_returns_none(self) -> None:
-        reader = MagicMock()
-        reader.named.return_value = None
-        with patch("src.common.ducklake_reader_client.make_reader", return_value=reader):
-            result = ch._fetch_open_recs()
-        assert result == []
-
-
 class TestAcceptanceLint:
     """VP step 1 / AC1: every _build_rec_fields acceptance must pass the REAL linter, no mocking."""
 
@@ -460,13 +456,16 @@ class TestEscalateLiveFetchAndPortal:
     def _verdict(self, status: str = "red", red_age: float = 10.0) -> HealthVerdict:
         return HealthVerdict(status=status, red_age_hours=red_age, unapplied_backlog=0, severity="high")
 
-    def test_escalate_fetches_open_recs_when_not_injected(self) -> None:
+    def test_escalate_fetches_via_scoped_current_state_read_when_not_injected(self) -> None:
+        reader = MagicMock()
+        reader.current_state.return_value = []
         with (
-            patch("scripts.convergence_health.escalate._fetch_open_recs", return_value=[]) as fetch,
+            patch("src.common.ducklake_reader_client.make_reader", return_value=reader) as mk,
             patch("scripts.ops_data_portal.file_rec", return_value="rec-live") as fr,
         ):
             result = escalate(self._verdict())
-        fetch.assert_called_once()
+        mk.assert_called_once_with(profile=None)
+        reader.current_state.assert_called_once_with("ops_recommendations", row_filter="source = 'tf_convergence_stale'")
         fr.assert_called_once()
         assert result == {"action": "file", "rec_id": "rec-live"}
 
@@ -483,3 +482,15 @@ class TestEscalateLiveFetchAndPortal:
             result = escalate(self._verdict(status="green", red_age=0.0), open_recs=[existing])
         ur.assert_called_once()
         assert result == {"action": "close", "rec_id": "rec-300"}
+
+    def test_reader_unreachable_raises_instead_of_degrading_to_empty(self) -> None:
+        """rec-3291 / rec-3563: an unreachable reader must raise, never be mistaken for 'no open
+        rec' -- a deliberate divergence from two of the three other current_state call sites in
+        this repo that fail open."""
+        reader = MagicMock()
+        reader.current_state.side_effect = RuntimeError("ducklake_reader unreachable")
+        with (
+            patch("src.common.ducklake_reader_client.make_reader", return_value=reader),
+            pytest.raises(RuntimeError, match="ducklake_reader unreachable"),
+        ):
+            escalate(self._verdict())

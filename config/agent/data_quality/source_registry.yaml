@@ -204,3 +204,38 @@ entries:
     description: "Filed by scripts.executor.branch_lifecycle.file_hotfix_rec() when the autonomous executor applies a mid-flight hotfix to a rec's own working branch during execution."
     signal_interpretation: "Tracks a fix applied outside the rec's original plan, referencing the parent rec_id so the hotfix can be reviewed to determine root-cause vs symptom. Dormant while the executor is frozen (Decision 67) -- no new recs expected from this source until the executor resumes; volume then tracks mid-flight-correction frequency."
     added_date: '2026-08-18'
+
+  - canonical_id: loop_liveness_stale
+    description: "Scheduled-loop liveness backstop (audit finding LSA-02, loop-spec-adoption-4d8bac4a): runs on the convergence-health cron and derives the schedule-bearing peer set from every .github/workflows/*.yml on:.schedule block AT RUN TIME (never a declared register), asserting each peer's newest event=schedule run against a staleness threshold derived from that peer's OWN cron."
+    signal_interpretation: >-
+      Alarm-not-gate (Decision 55) -- one deduped rec per stale-loop episode (update_rec on
+      persistence; the open matcher keys on the loop alone, so a recovery-then-redeath while the rec
+      is open updates it rather than minting a fresh episode) or one collapsed __fleet__ rec when
+      3+ peers are stale simultaneously. FILE/UPDATE ONLY, NEVER auto-closed: restored cadence does
+      not resolve a filed rec; a human investigates and closes it. Three tuning/grain calls, stated
+      here because this leg's own plan (PLAN-sensor-liveness) routes field semantics to the
+      registry and nowhere else: (a) threshold = clamp(2 x nominal cron period, 6h, 45d) -- the
+      floor tolerates GitHub's best-effort scheduled delivery on the two hourly loops (~5 missed
+      runs), the ceiling is the LARGEST threshold whose first staleness bucket [T, 2T) still fits
+      inside the 90-day Actions run-retention horizon (2 x 45d = 90d exactly), so a live run:{id}
+      anchor never flips to an intro:{sha} anchor mid-bucket; this clamp imposes a numeric
+      detection latency per cadence class -- 6 hours to detect a dead hourly loop, 14 days a dead
+      weekly loop, 45 days a dead monthly loop. (b) FLEET_COLLAPSE_MIN_STALE = 3: when 3 or more
+      derived peers are simultaneously stale, per-loop episodes are suppressed (never closed) in
+      favour of one fleet rec, because a correlated outage is one incident with one root cause, not
+      N defects; 3 rather than a 5-of-9 majority because the live threshold classes are 6h x3 (both
+      hourly loops plus the every-3-hours loop), 14d x5 (the weeklies) and 45d x1 (the monthly), so
+      a total delivery outage reaches 3 stale at T+6h but would not reach a majority until T+14d --
+      a majority rule would have missed the 2026-08-15 OIDC-rename incident (Decision 172) entirely,
+      since it resolved within days. (c) Buckets advance on a log2 schedule (1x, 2x, 4x, 8x ... the
+      threshold), bounding recs per EPISODE (~11/year for a permanently-dead loop) but not episode
+      count, so a flap needs a TWO-LEG post-closure dwell: same-anchor mutes while
+      current_bucket <= max_resolved_bucket + 1 (a closure anywhere inside a bucket buys one full
+      bucket-width of quiet); cross-anchor -- needed because a flap changes the anchor, which the
+      same-anchor leg cannot see across -- mutes while now - closed_at < threshold, using the
+      newest resolved rec's closure timestamp (one rec_by_id call, only when the same-anchor leg
+      did not already mute). Priority High, not source=ci_rca -- does NOT hard-block the /plan
+      queue; it escalates visibly without wedging planning. Volume tracks how often a scheduled
+      workflow goes silent (auto-disable, a removed schedule: block, or a delivery drop) rather than
+      merely producing a bad run, which the fleet's other sensors already cover.
+    added_date: '2026-09-07'

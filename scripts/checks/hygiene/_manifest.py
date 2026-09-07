@@ -110,4 +110,15 @@ ENTRIES: tuple[Entry, ...] = (
         attr="validate_declaring_coverage",
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_episode_lookup_projection",
+        module="scripts.checks.hygiene.validate_episode_lookup_projection",
+        attr="validate_episode_lookup_projection",
+        pre=True,
+        pre_globs=(
+            "scripts/**",
+            "src/common/**",
+        ),
+        full_segment="full_after_lint",
+    ),
 )

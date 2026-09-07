@@ -433,32 +433,56 @@ _LIVE_CONTEXT = "Fast-tier budget breach: 8.0 min elapsed (limit 5 min). Branch:
 
 
 def _live_row(**overrides: object) -> dict:
-    """An open rec exactly as the `open_recs` named verb returns it: the five projected columns
-    only (src/common/ducklake_scd2_schema.py). No `status` -- the verb filters it server-side --
-    and no `source`. An override adds or replaces a key, so a richer `rec_by_id` (SELECT *) row is
-    one keyword away."""
+    """An open budget_breach rec exactly as scripts.rec_episode.find_rec's scoped read returns it
+    (rec-3291 / rec-3563): current_state("ops_recommendations", row_filter="source = "
+    "'budget_breach'") is an unnarrowed structural read, so a live row always carries `status` and
+    `source` -- unlike the retired `open_recs` named verb, which projected neither. An override
+    adds or replaces a key."""
     row: dict = {
         "id": "rec-1",
         "title": _LIVE_TITLE,
         "context": _LIVE_CONTEXT,
         "created_timestamp": "2026-08-26T10:00:00+00:00",
         "automatable": False,
+        "status": "open",
+        "source": "budget_breach",
     }
     row.update(overrides)
     return row
 
 
+class TestIsOpenBudgetBreachRow:
+    """_is_open_budget_breach_row is a straight status/source check now that a live row (via
+    scripts.rec_episode.find_rec's scoped read) always carries both (rec-3291 / rec-3563)."""
+
+    def test_open_budget_breach_row_is_true(self) -> None:
+        from scripts.checks._budget_recs import _is_open_budget_breach_row
+
+        assert _is_open_budget_breach_row(_live_row()) is True
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            pytest.param({"status": "closed"}, id="closed"),
+            pytest.param({"source": "budget_bypass"}, id="foreign-source"),
+        ],
+    )
+    def test_non_matching_row_is_false(self, overrides: dict) -> None:
+        from scripts.checks._budget_recs import _is_open_budget_breach_row
+
+        assert _is_open_budget_breach_row(_live_row(**overrides)) is False
+
+
 class TestFindOpenBudgetBreachRec:
-    """Pure matching-logic tests for _find_open_budget_breach_rec (VTS-20).
+    """Pure matching-logic tests for _find_open_budget_breach_rec (VTS-20 / rec-3291 / rec-3563).
 
-    Rows are LIVE-shaped by default. The matcher used to require `source == "budget_breach"` and
-    `status == "open"` -- two keys no live row carries -- so it returned None for every real open
-    rec: the local path re-filed instead of updating, and the hourly budget_ingest tick would file
-    a duplicate for as long as an episode stayed open."""
+    Rows are LIVE-shaped by default (full projection, via scripts.rec_episode.find_rec's rows=
+    test-injection seam). _find_open_budget_breach_rec used to require `source == "budget_breach"`
+    and `status == "open"` against a bulk `open_recs` fetch that projected neither column, so it
+    returned None for every real open rec -- the local path re-filed instead of updating."""
 
-    def test_matches_a_live_row_carrying_only_the_projected_columns(self) -> None:
+    def test_matches_a_live_row(self) -> None:
         row = _live_row()
-        assert "status" not in row and "source" not in row
         assert _find_open_budget_breach_rec([row], "agent/foo", "lint") is row
 
     @pytest.mark.parametrize(
@@ -467,8 +491,6 @@ class TestFindOpenBudgetBreachRec:
             pytest.param({"context": "Branch: agent/bar. Dominant phase: lint. "}, id="other-branch"),
             pytest.param({"context": "Branch: agent/foo. Dominant phase: pytest_diff. "}, id="other-phase"),
             pytest.param({"context": None}, id="no-context"),
-            pytest.param({"title": "Fast-tier budget bypassed on agent/foo"}, id="bypass-title"),
-            pytest.param({"title": "Hotfix applied during rec-9: budget"}, id="foreign-title"),
             pytest.param({"status": "closed"}, id="explicit-closed"),
             pytest.param({"status": "in_progress"}, id="explicit-in-progress"),
             pytest.param({"source": "budget_bypass"}, id="explicit-foreign-source"),
@@ -477,25 +499,24 @@ class TestFindOpenBudgetBreachRec:
     def test_rejects_a_row_that_is_not_this_episodes_open_breach_rec(self, overrides: dict) -> None:
         assert _find_open_budget_breach_rec([_live_row(**overrides)], "agent/foo", "lint") is None
 
-    def test_an_explicitly_open_budget_breach_row_still_matches(self) -> None:
-        row = _live_row(status="open", source="budget_breach")
-        assert _find_open_budget_breach_rec([row], "agent/foo", "lint") is row
-
-    def test_a_row_without_a_title_is_judged_on_its_markers_alone(self) -> None:
-        """An absent key means the projection did not carry it; only an EXPLICIT value is judged."""
-        row = {"id": "rec-1", "context": _LIVE_CONTEXT}
-        assert _find_open_budget_breach_rec([row], "agent/foo", "lint") is row
-
     def test_empty_rows_returns_none(self) -> None:
         assert _find_open_budget_breach_rec([], "agent/foo", "lint") is None
+
+    def test_raises_when_a_row_is_missing_status_or_source(self) -> None:
+        """A row a scoped read hands back without `status`/`source` must raise, never be silently
+        treated as no-match (the exact defect this migration removes) -- scripts.rec_episode.
+        find_recs's runtime assertion, exercised through this matcher."""
+        narrowed_row = {"id": "rec-1", "context": _LIVE_CONTEXT}
+        with pytest.raises(RuntimeError, match="missing filtered key"):
+            _find_open_budget_breach_rec([narrowed_row], "agent/foo", "lint")
 
 
 class TestBudgetBreachRecDedupe:
     """VTS-20 (audit validate-test-suite-4df4d48): a repeated fast-tier budget breach on the
     same (branch, dominant_phase) updates the existing open budget_breach rec instead of filing
-    a duplicate. The dedupe lookup reads the open_recs reader boundary
-    (src.common.ducklake_reader_client.make_reader via _fetch_open_recs), never
-    logs/.recommendations-log.jsonl."""
+    a duplicate. The dedupe lookup reads the DuckLake reader boundary via
+    scripts.rec_episode.find_rec's source-scoped structural read (src.common.
+    ducklake_reader_client.make_reader), never logs/.recommendations-log.jsonl."""
 
     @pytest.fixture(autouse=True)
     def _no_ci(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -510,7 +531,7 @@ class TestBudgetBreachRecDedupe:
         with (
             patch("scripts.checks._common.run", return_value=MagicMock(returncode=0, stdout=f"{branch}\n")),
             patch.dict(sys.modules, {"scripts.ops_data_portal": mock_portal}),
-            patch("scripts.checks._budget_recs._fetch_open_recs", **stub),
+            patch("scripts.checks._budget_recs.find_recs", **stub),
         ):
             _file_budget_breach_rec(400.0, ["scripts/validate.py"], "pytest_diff")
         return mock_portal
@@ -518,8 +539,6 @@ class TestBudgetBreachRecDedupe:
     def test_repeat_breach_same_branch_and_phase_updates_existing_rec(self) -> None:
         existing_rec = _live_row(
             id="rec-9001",
-            source="budget_breach",
-            status="open",
             title="Fast-tier budget breach (8.0 min) on agent/test",
             context=(
                 "Fast-tier budget breach: 8.0 min elapsed (limit 5 min). Branch: agent/test. "
@@ -533,25 +552,10 @@ class TestBudgetBreachRecDedupe:
         assert call_args[0] == "rec-9001"
         assert "pytest_diff" in call_args[1]["context"]
 
-    def test_repeat_breach_updates_from_the_live_projected_row_shape(self) -> None:
-        """The reader hands the matcher only what `open_recs` projects -- no `status`, no
-        `source`. A dedupe predicated on either key matched nothing in production, so every repeat
-        breach re-filed instead of updating."""
-        live_row = _live_row(
-            id="rec-9002",
-            title="Fast-tier budget breach (6.6 min) on agent/test",
-            context=(
-                "Fast-tier budget breach: 6.6 min elapsed (limit 5 min). Branch: agent/test. Dominant phase: pytest_diff. "
-            ),
-        )
-        mock_portal = self._breach([live_row])
-        mock_portal.file_rec.assert_not_called()
-        assert mock_portal.update_rec.call_args[0][0] == "rec-9002"
-
     def test_the_row_this_writer_files_is_matched_on_the_next_breach(self) -> None:
         """Anti-drift pin on the LOCAL writer's half of the marker contract: whatever title and
-        context _file_budget_breach_rec writes, projected down to the columns `open_recs` returns,
-        must be found by the matcher. The ingester writer's half is pinned in
+        context _file_budget_breach_rec writes, projected down to a live row's shape, must be
+        found by the matcher. The ingester writer's half is pinned in
         tests/convergence_health/budget_ingest/test_ingest.py."""
         filed = self._breach([]).file_rec.call_args[0][0]
         row = _live_row(title=filed["title"], context=filed["context"])
@@ -587,7 +591,7 @@ class TestBudgetBreachRecDedupe:
         with (
             patch("scripts.checks._common.run") as mock_run,
             patch.dict(sys.modules, {"scripts.ops_data_portal": mock_portal}),
-            patch("scripts.checks._budget_recs._fetch_open_recs") as mock_fetch,
+            patch("scripts.checks._budget_recs.find_recs") as mock_fetch,
         ):
             _file_budget_breach_rec(400.0, ["scripts/validate.py"], "pytest_diff")
 
