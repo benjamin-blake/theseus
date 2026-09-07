@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from scripts.checks import _common, registry
 from scripts.checks.hygiene.validate_episode_lookup_projection import (
     scan_paths,
@@ -206,6 +208,41 @@ class TestRegisteredCheckDeclaresOnEveryExitPath:
         assert failed == []
         assert declaration is not None
         assert declaration.kind == "skipped"
+
+    def test_clean_pass_with_a_coexisting_unresolved_verb_surfaces_both(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch
+    ) -> None:
+        """A real scan can find BOTH a clean, within-projection named() access AND an unresolved
+        verb elsewhere in the same tree. The unresolved verb must never be silently dropped just
+        because something else in the scan passed -- it is printed, and the declaration still
+        reflects the genuine `examined` work (never mislabeled `skipped` when real work happened)."""
+        monkeypatch.setattr(_common, "ROOT", tmp_path)
+        (tmp_path / "scripts").mkdir()
+        _write(
+            tmp_path / "scripts",
+            "clean.py",
+            "def tally(reader):\n    open_recs = reader.named('open_recs')\n    return [r.get('id') for r in open_recs]\n",
+        )
+        _write(
+            tmp_path / "scripts",
+            "unresolved.py",
+            "def check(reader):\n"
+            "    rows = reader.named('budget_breach_recent')\n"
+            "    for r in rows:\n"
+            "        if r.get('anything') == 'x':\n"
+            "            return r\n"
+            "    return None\n",
+        )
+        failed: list[str] = []
+        with registry.outcome_scope("validate_episode_lookup_projection"):
+            validate_episode_lookup_projection(failed)
+            declaration = registry.pop_declaration()
+        assert failed == []
+        assert declaration is not None
+        assert declaration.kind == "examined"
+        assert declaration.count == 1
+        out = capsys.readouterr().out
+        assert "budget_breach_recent" in out
 
     def test_clean_pass_path_declares_examined_enforced(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setattr(_common, "ROOT", tmp_path)

@@ -249,5 +249,10 @@ def validate_episode_lookup_projection(failed: list[str]) -> None:
             print("  PASS (vacuous): no named() result key-filter found under scripts/.")
         return
 
+    if result.unresolved_verbs:
+        print(
+            f"  NOTE: unresolved verb(s) referenced elsewhere in this scan (not judged, never "
+            f"silently dropped): {sorted(result.unresolved_verbs)}"
+        )
     registry.examined(result.examined, unit="named()_key_accesses")
     print(f"  PASS: {result.examined} named()-result key access(es) examined, all within projection.")
