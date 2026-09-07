@@ -18,7 +18,15 @@ from unittest.mock import patch
 import boto3  # noqa: F401
 import pytest
 
-from scripts.convergence_health import HealthVerdict, main, main_budget_ingest, main_ducklake_drift, main_prod_drift
+from scripts.convergence_health import (
+    HealthVerdict,
+    main,
+    main_budget_ingest,
+    main_ducklake_drift,
+    main_liveness_probe,
+    main_prod_drift,
+    main_sensor_liveness,
+)
 from scripts.convergence_health.__main__ import _dispatch
 
 
@@ -279,6 +287,64 @@ class TestMainBudgetIngest:
         assert "ducklake_writer unreachable" in out
 
 
+class TestMainSensorLiveness:
+    """LSA-02: the scheduled-loop liveness sensor's CLI leg."""
+
+    def test_happy_path_returns_zero(self) -> None:
+        with patch(
+            "scripts.convergence_health.__main__.detect_stale_loops",
+            return_value={
+                "peers": 9,
+                "stale": [],
+                "filed": [],
+                "updated": [],
+                "unchanged": [],
+                "dropped": [],
+                "fleet_collapse": False,
+            },
+        ) as detect:
+            rc = main_sensor_liveness(profile="agent_platform")
+        assert rc == 0
+        detect.assert_called_once_with(profile="agent_platform")
+
+    def test_failure_returns_one_and_says_nothing_was_buffered(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch(
+            "scripts.convergence_health.__main__.detect_stale_loops",
+            side_effect=RuntimeError("ducklake_writer unreachable"),
+        ):
+            rc = main_sensor_liveness()
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "sensor_liveness FAILED" in out
+        assert "nothing buffered" in out
+        assert "ducklake_writer unreachable" in out
+
+
+class TestMainLivenessProbe:
+    """LSA-02: the --liveness-probe acceptance oracle's CLI leg."""
+
+    def test_fresh_returns_zero(self) -> None:
+        with patch("scripts.convergence_health.__main__.stale_peers_for_probe", return_value=[]) as probe:
+            rc = main_liveness_probe("convergence-health.yml")
+        assert rc == 0
+        probe.assert_called_once_with("convergence-health.yml")
+
+    def test_stale_returns_one(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch("scripts.convergence_health.__main__.stale_peers_for_probe", return_value=["convergence-health.yml"]):
+            rc = main_liveness_probe("convergence-health.yml")
+        assert rc == 1
+        assert "STALE" in capsys.readouterr().out
+
+    def test_unknown_workflow_or_dead_query_returns_one(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with patch(
+            "scripts.convergence_health.__main__.stale_peers_for_probe",
+            side_effect=ValueError("'nope.yml' is not a derived scheduled peer"),
+        ):
+            rc = main_liveness_probe("nope.yml")
+        assert rc == 1
+        assert "FAILED" in capsys.readouterr().out
+
+
 class TestDispatch:
     def test_no_flags_runs_the_convergence_sensor(self) -> None:
         with patch("scripts.convergence_health.__main__.main", return_value=0) as entry:
@@ -304,3 +370,18 @@ class TestDispatch:
         with patch("scripts.convergence_health.__main__.main_budget_ingest", return_value=0) as entry:
             assert _dispatch(["--budget-ingest", "--dry-run"]) == 0
         entry.assert_called_once_with(dry_run=True)
+
+    def test_sensor_liveness_flag_routes_to_the_liveness_sensor(self) -> None:
+        with patch("scripts.convergence_health.__main__.main_sensor_liveness", return_value=0) as entry:
+            assert _dispatch(["--sensor-liveness"]) == 0
+        entry.assert_called_once_with()
+
+    def test_liveness_probe_flag_routes_with_the_workflow_argument(self) -> None:
+        with patch("scripts.convergence_health.__main__.main_liveness_probe", return_value=0) as entry:
+            assert _dispatch(["--liveness-probe", "convergence-health.yml"]) == 0
+        entry.assert_called_once_with("convergence-health.yml")
+
+    def test_liveness_probe_flag_without_a_workflow_argument(self) -> None:
+        with patch("scripts.convergence_health.__main__.main_liveness_probe", return_value=0) as entry:
+            assert _dispatch(["--liveness-probe"]) == 0
+        entry.assert_called_once_with(None)
