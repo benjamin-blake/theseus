@@ -28,17 +28,38 @@ scope:
     action: Modify
     purpose: >-
       Add _build_array_element_reference_validator plus its _WRITE_TIME_VALIDATOR_BUILDERS entry, and
-      a module-level _rec_exists indirection resolving through the existing rec_by_id named verb via
-      make_reader; memoised per process, loud-fail on an unreachable reader (Decision 84 I-3/I-4).
+      a module-level _rec_exists indirection. PREFER reusing ops_data_portal._fetch_rec_from_reader
+      (:399) by lazy import (precedent: ci_rca_runtime.py:490) over authoring a second
+      make_reader/rec_by_id path. Memoise POSITIVE results ONLY -- ids are writer-allocated, so a rec
+      absent at T and filed at T+1 must not stay cached absent and reject a legitimate later
+      dependency in the same process. Loud-fail on an unreachable reader (Decision 84 I-3/I-4).
+      Boundary tests patch at scripts.ops_portal.write_validators scope, NOT the facade --
+      validate_ops_portal_patch_targets does not cover file_rec/update_rec, so a facade mispatch
+      would pass silently.
   - file: scripts/ops_portal/maintenance_ops.py
     action: Modify
     purpose: >-
       Add repair_dependency_tokens(dry_run=...) -- the one-shot backfill of the 21 bracket-residue
-      tokens, mirroring purge_postmortems_for's dry-run shape. Reads each row via update_rec's own
-      reader fetch, never from logs/.recommendations-log.jsonl.
+      tokens, mirroring purge_postmortems_for's dry-run shape. ENUMERATION source is
+      DuckLakeReader.current_state("ops_recommendations") -- satisfies the no-new-named-verb constraint
+      without touching the cache; per-row repair values come from update_rec's own reader fetch. Never
+      logs/.recommendations-log.jsonl. Transform: strip surrounding brackets. NOTE rec-011 and rec-016
+      each carry a SPLIT PAIR ('[rec-009' + 'rec-010]'), so a one-token-in/one-token-out assumption
+      must hold across the pair -- 19 recs but 21 tokens.
   - file: scripts/ops_portal/cli.py
     action: Modify
-    purpose: Add the --repair-dependency-tokens action verb dispatching to maintenance_ops.
+    purpose: >-
+      Add the --repair-dependency-tokens action verb dispatching to maintenance_ops, AND widen the
+      --dry-run allowlist at :231 (today it hard-fails for every action except --purge-postmortems-for,
+      so VP step 15 would ERROR without this) plus the module docstring at :13-14.
+  - file: scripts/ops_data_portal.py
+    action: Modify
+    purpose: >-
+      Add "tags" to _UPDATE_CONTENT_VALIDATED_FIELDS (:426). cli.py:45 threads --tags into
+      _UPDATE_REC_FIELD_MAP, so without this an update_rec write admits a non-conforming tag with no
+      validation, permanently -- an unenforced surface Decision 181 clause 2 forbids leaving
+      undeclared. Row-level grandfathering is preserved regardless: validators run only for columns
+      present in `updates`, so updating any OTHER field on a rec carrying a legacy tag still passes.
   - file: config/agent/data_quality/ops.yaml
     action: Modify
     purpose: >-
@@ -70,12 +91,13 @@ scope:
   - file: tests/test_data_quality_compile.py
     action: Modify
     purpose: Assert the new type compiles to no Check and does not raise.
-  - file: config/agent/verification_registry/entries/dependencies-array-element-reference.yaml
-    action: Create
-    purpose: Graduated check slot for the referential validator (Decision 176 one-record-per-file).
-  - file: config/agent/verification_registry/entries/tags-array-element-format.yaml
-    action: Create
-    purpose: Graduated check slot for the tags element-format validator.
+  - file: tests/ops_data_portal/test_cli.py
+    action: Modify
+    purpose: >-
+      Cover the --repair-dependency-tokens verb and its --dry-run acceptance. Required in scope:
+      implement-scope-boundary.yaml's sanction_row_eligibility (2026-09-07) makes hand-written test
+      files ineligible for a mid-implementation sanction row, so validate_scope_boundary fails the
+      PR in both tiers if this is discovered later.
 bundled_recommendations:
   - rec-3364
 followon_recs:
@@ -95,12 +117,16 @@ acceptance_criteria:
     Zero dependencies elements failing ^rec-[0-9]+$ remain in the warehouse after the backfill; the two
     known dangling refs (rec-610, rec-613 -> absent rec-608) are deliberately left and named in the manifest.
   - >-
-    file_rec rejects tags=["T2.56"] and accepts tags=["t2-56"]; update_rec on a rec carrying a legacy
-    non-conforming tag still succeeds (tags is outside _UPDATE_CONTENT_VALIDATED_FIELDS -- structural grandfathering).
+    Both write paths enforce the tags rule: file_rec AND update_rec reject tags=["T2.56"] and accept
+    tags=["t2-56"]. Row-level grandfathering is preserved by mechanism, not by a hole -- validators run
+    only for columns present in `updates`, so updating any other field on a rec carrying a legacy tag
+    still succeeds. No unenforced write surface is left undeclared (Decision 181 clause 2).
   - >-
-    config/agent/data_quality/decisions/ops_recommendations.yaml is net non-increasing in effective lines
-    across the dependencies AND tags edits combined, and docs/contracts/ops_recommendations.yaml is net
-    non-increasing too. No budget raise and no new raise-approved marker.
+    Both governed files stay AT OR UNDER their existing budgets -- the manifest <= 522 (net non-increasing
+    across the dependencies AND tags edits combined) and docs/contracts/ops_recommendations.yaml <= 556.
+    The contract file is NOT required to be net non-increasing; <= 556 is what
+    validate_structural_size_limits enforces, and its 3 lines of headroom do not cover this change, so
+    the compaction lever below is mandatory. No budget raise and no new raise-approved marker.
   - The manifest no longer asserts "No data backfill needed -- no known invalid values in current records".
   - rec-3364 is closed.
 verification_plan:
@@ -153,10 +179,20 @@ verification_plan:
     graduation_check_id: dependencies-reference-reader-loud-fail
   - step: 6
     phase: pre-deploy
-    action: tags element-format is enforced on file_rec and legacy rows stay grandfathered on update_rec.
-    command: bin/venv-python -m pytest tests/ops_data_portal/test_update_rec_content_validation.py::test_legacy_nonconforming_tag_still_updates -q
-    expected: Test passes -- update_rec on a rec carrying "T2.17" succeeds; file_rec with "T2.56" raises.
-    fix_if: update_rec rejects -- tags was wrongly added to _UPDATE_CONTENT_VALIDATED_FIELDS.
+    action: >-
+      tags element-format is enforced on BOTH write paths, while row-level grandfathering survives:
+      an update writing a non-conforming tag is rejected, and an update touching another field on a
+      legacy-tagged rec still succeeds.
+    command: >-
+      bin/venv-python -m pytest
+      tests/ops_data_portal/test_update_rec_content_validation.py::test_update_rec_rejects_nonconforming_tag
+      tests/ops_data_portal/test_update_rec_content_validation.py::test_legacy_nonconforming_tag_still_updates -q
+    expected: >-
+      Both pass -- update_rec with tags=["T2.56"] raises; update_rec setting status on a rec that
+      already carries "T2.17" succeeds because tags is absent from that call's `updates`.
+    fix_if: >-
+      The grandfather test fails -- validators are being run against the merged record rather than
+      only the columns present in `updates`.
     hermetic: true
     graduation: graduate
     graduation_check_id: tags-array-element-format
@@ -197,7 +233,13 @@ verification_plan:
       from scripts.checks.structural.budget_raises import validate_structural_size_budget_raises as b;
       f=[]; s(f); b(f); print(f); raise SystemExit(1 if f else 0)"
     expected: Exit 0 -- manifest <= 522 and docs/contracts/ops_recommendations.yaml <= 556, no raise marker added.
-    fix_if: Fails -- recover lines by tightening the tags decided_action block further (retiring the registry clause frees ~5).
+    fix_if: >-
+      Fails on the MANIFEST -- tighten the tags decided_action further (retiring the tag_registry.yaml
+      clause frees ~5 of its 11 lines). Fails on the CONTRACT -- collapse multi-line folded scalars to
+      single lines, the style the file already uses at :587/:589. Measured levers: :19 description
+      (8 lines -> 1, frees 7), :551 semantics (7 -> 1, frees 6), :58 description (4 -> 1, frees 3);
+      56 such scalars exist and collapsing all would free 85, so the ~13 needed is comfortably
+      available. Max resulting line width 615 against a 2000 max_line_chars limit.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -209,12 +251,14 @@ verification_plan:
     command: >-
       bin/venv-python -c "import json,pathlib; rows=[json.loads(l) for l in
       pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()];
-      d=[len(r.get('dependencies') or []) for r in rows]; n=[x for x in d if x];
-      print('writes_with_deps', len(n), 'of', len(rows), 'max_elems', max(n), 'mean', round(sum(n)/len(n),2))"
+      n=[len(r.get('dependencies') or []) for r in rows]; n=[x for x in n if x];
+      share=len(n)/len(rows); print('writes_with_deps',len(n),'of',len(rows),'max',max(n),'mean',round(sum(n)/len(n),2));
+      raise SystemExit(1 if (max(n)>10 or share>0.25) else 0)"
     expected: >-
-      A recorded figure -- roughly 7% of writes carry dependencies, mean list length under 2, so the
-      worst case is a small bounded number of memoised rec_by_id reads per write.
-    fix_if: Mean or max is far higher than expected -- reconsider batching before landing.
+      writes_with_deps == 163 of 2383 (6.8%), max_elems == 4, mean == 1.33 -- so the worst case is at
+      most 4 memoised rec_by_id reads on fewer than 7% of writes. The step FAILS if max_elems > 10 or
+      the share exceeds 25%, either of which would make per-element probing the wrong shape.
+    fix_if: Bound exceeded -- batch the existence probe or reconsider the per-element design before landing.
     hermetic: true
     graduation: not-applicable
   - step: 11
@@ -312,6 +356,13 @@ test_obligations:
       bin/venv-python -c "from scripts.checks.ops_governance.validate_dq_manifest_gate import
       validate_dq_manifest_gate as g; f=[]; g(f); print(f); raise SystemExit(1 if f else 0)"
     red_green_expectation: red before (tags at NO_TEST_NEEDED against an enforced test fails the gate), green after
+  - source: scripts/ops_data_portal.py
+    behavior: >-
+      tags joins the update_rec content-validated field set, so an update writing a non-conforming tag
+      is rejected while an update touching other fields on a legacy-tagged rec still succeeds.
+    verification_step: 6
+    test_selector: tests/ops_data_portal/test_update_rec_content_validation.py::test_update_rec_rejects_nonconforming_tag
+    red_green_expectation: red before (tags absent from _UPDATE_CONTENT_VALIDATED_FIELDS so the update passes), green after
   - source: docs/contracts/ops_recommendations.yaml
     behavior: States the referential dq_intent and stops asserting consumers and non-enforcement that do not hold.
     verification_step: 13
@@ -348,7 +399,10 @@ context:
   - "L1/L2 split per data_quality_compile.py:356-357; backlog-health #1119 Class 3 is L2, this is L1"
   - "backlog-health Class 3 resolves existence against the OPEN id set only (classify.py:187, __main__.py:96) -- 28 of 42 open recs with deps would be falsely flagged; out of scope here, guarded against by VP step 4"
   - "Measured: 21 malformed tokens / 19 recs, all terminal, 0 open; all strip to existing ids; all 19 pass Recommendation.model_validate"
-  - "Budgets at authoring: manifest 522/522, docs/contracts/ops_recommendations.yaml 553/556, ops.yaml 314/500"
+  - "Budgets at authoring: manifest 522/522 (net non-increasing required), ops.yaml 314/500, docs/contracts/ops_recommendations.yaml 553/556 -- the contract needs ~+13 (mandatory amendment row +7, two dq_intent blocks +6) so folded-scalar collapse at :19/:551/:58 is a REQUIRED prerequisite, not a fallback"
+  - "tags census: 711 of 2383 recs tagged; 41 of 890 distinct tags fail ^[a-z][a-z0-9-]*$ across 89 rows. Non-conformance is a DECAYING 2026-04 backfill artifact -- occurrences by rec creation month Apr 46 / May 5 / Jun 34 / Jul 10 / Aug 5 / Sep 2 against ~260 tag writes per month; 21 of the 41 were last written at the single 2026-04-21T21:52 bulk-backfill stamp. phase-1.5 x15 is in that dead cohort (its open count is lifecycle status, not recency)."
+  - "tags pattern kept UNWIDENED deliberately: widening to admit . and _ would ratify T2.17 and t2.17 as two distinct tags and bless an undocumented convention, and would still reject 12 of the 41. The replacement convention (T2.56 -> t2-56) is stated in the ops.yaml semantics agents read via get_rec_write_guidance, not left implicit."
+  - "tags has NO consumer: no NAMED_READS verb, absent from src/schemas/rec.py (extra=ignore), no skill/workflow/check reads it. The tag_registry.yaml half of the 2026-05-07 decided_action is retired outright, not deferred again."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -371,10 +425,26 @@ execution_steps:
     lines; promote tags to READY_NOW, add resolved_date, retire the tag_registry.yaml clause. Re-measure
     effective lines after EACH edit -- the budget is the binding constraint.
   - >-
-    Edit docs/contracts/ops_recommendations.yaml: add the dq_intent, strike "or tier-item IDs"
-    (rec-3364), correct the three false tags claims. Re-measure against 556.
-  - Add repair_dependency_tokens to maintenance_ops.py and the CLI verb; run the dry-run before any write.
-  - Add the two verification_registry entries (one record per file, filename equal to check_id).
+    Edit docs/contracts/ops_recommendations.yaml. This file needs a MANDATORY new amendment_log[]
+    entry -- check_amendment_log_for_class_d fails any parsed-content change without one (~+7 lines) --
+    plus the dependencies array_element_reference dq_intent (+3) and a tags array_element_format
+    dq_intent (+3, without which the corrected prose would contradict the file's own machine-readable
+    block). The two prose strikes free ~0-1. That is ~+13 against 3 lines of headroom, so FIRST
+    collapse multi-line folded scalars to single lines (:19 frees 7, :551 frees 6, :58 frees 3 -- the
+    style the file already uses at :587/:589, max width 615 vs a 2000 limit), THEN make the additions.
+    Re-measure against 556 after each edit.
+  - >-
+    Add repair_dependency_tokens to maintenance_ops.py, the CLI verb, AND the cli.py:231 --dry-run
+    allowlist widening; run the dry-run before any write.
+  - Add "tags" to _UPDATE_CONTENT_VALIDATED_FIELDS in scripts/ops_data_portal.py.
+  - >-
+    Create SEVEN verification_registry entries -- one record per file, filename equal to check_id,
+    each carrying primitive_slot, guard_target, plan_slug and graduated_at:
+    dq-compiler-array-element-reference-skip, dependencies-array-element-reference,
+    update-rec-dependencies-referential, dependencies-closed-target-accepted,
+    dependencies-reference-reader-loud-fail, tags-array-element-format,
+    repair-dependency-tokens-dry-run-safe. Each must pass the differential admission gate on a
+    reverted origin/main worktree.
   - Execute the Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55).
   - "Report: what was implemented, verification results, and the measured line deltas on both governed files."
 work_areas: []
