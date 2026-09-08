@@ -1,0 +1,385 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: dependency-referential-integrity
+intent: >-
+  Close the never-shipped referential half of rec-3307 by enforcing ops_recommendations.dependencies
+  element existence at the write boundary (L1), repairing the 21 residual malformed tokens through
+  the sanctioned writer, and replacing the manifest's now-false deferral text with the landed state.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-dependency-referential-integrity.yaml
+phase: >-
+  Ad-hoc recommendation-driven forward fix on the ops-portal write surface (soft-warn exception
+  category ad_hoc_rec); claims no tier_item alignment and closes no criteria. Boundary vs T1.6:
+  exit criterion c3 (no new gate-time live-reader round-trip) is SATISFIED, not foreclosed -- the
+  new test type is write-time-only and compiles to no SQL. Boundary vs backlog-health (#1119):
+  that shipped the L2 batch detector (Class 3); this ships the L1 write-time preventer, which does
+  not exist anywhere today. Boundary vs T2.29 c6: this deepens the ops.yaml-side validator surface
+  c6 must later repoint to the Annotated SSOT -- named loudly here so c6 inherits a complete list.
+scope:
+  - file: scripts/data_quality_compile.py
+    action: Modify
+    purpose: >-
+      Add array_element_reference to _WRITE_TIME_ONLY_TEST_TYPES (:18) so the compiler returns None
+      and emits no SQL -- the mechanism that keeps this off the blocking gate (T1.6 c3, Decision 88).
+  - file: scripts/ops_portal/write_validators.py
+    action: Modify
+    purpose: >-
+      Add _build_array_element_reference_validator plus its _WRITE_TIME_VALIDATOR_BUILDERS entry, and
+      a module-level _rec_exists indirection resolving through the existing rec_by_id named verb via
+      make_reader; memoised per process, loud-fail on an unreachable reader (Decision 84 I-3/I-4).
+  - file: scripts/ops_portal/maintenance_ops.py
+    action: Modify
+    purpose: >-
+      Add repair_dependency_tokens(dry_run=...) -- the one-shot backfill of the 21 bracket-residue
+      tokens, mirroring purge_postmortems_for's dry-run shape. Reads each row via update_rec's own
+      reader fetch, never from logs/.recommendations-log.jsonl.
+  - file: scripts/ops_portal/cli.py
+    action: Modify
+    purpose: Add the --repair-dependency-tokens action verb dispatching to maintenance_ops.
+  - file: config/agent/data_quality/ops.yaml
+    action: Modify
+    purpose: >-
+      Declare array_element_reference on dependencies AFTER array_element_format (list order decides
+      evaluation order, so a malformed token never reaches the reader); extend dependencies' semantics
+      to state the referential constraint; add the tags column block with array_element_format
+      ^[a-z][a-z0-9-]*$ plus description and semantics (Decision 66 -- guidance must exist before the
+      write layer starts rejecting).
+  - file: config/agent/data_quality/decisions/ops_recommendations.yaml
+    action: Modify
+    purpose: >-
+      Replace the false dependencies deferral text at :530-533 with the landed state, and promote the
+      tags entry off NO_TEST_NEEDED/deferred-rec-609 to READY_NOW while explicitly retiring its
+      tag_registry.yaml clause. Net non-increasing across BOTH edits (file is at 522/522).
+  - file: docs/contracts/ops_recommendations.yaml
+    action: Modify
+    purpose: >-
+      Add the array_element_reference dq_intent for dependencies; strike the stale "or tier-item IDs"
+      prose (rec-3364); correct the tags semantics block's three false claims (portal filtering,
+      rec-curator ranking, "Not DQ-enforced"). Net non-increasing (file is at 553/556).
+  - file: tests/ops_data_portal/test_update_rec_content_validation.py
+    action: Modify
+    purpose: >-
+      Failing-first update_rec boundary tests -- a dangling reference is rejected, a dependency on a
+      CLOSED rec is accepted, and a legacy non-conforming tag still updates cleanly.
+  - file: tests/test_ops_data_portal_validators.py
+    action: Modify
+    purpose: Bare-validator unit tests for the new builder, including the reader-unavailable loud-fail.
+  - file: tests/test_data_quality_compile.py
+    action: Modify
+    purpose: Assert the new type compiles to no Check and does not raise.
+  - file: config/agent/verification_registry/entries/dependencies-array-element-reference.yaml
+    action: Create
+    purpose: Graduated check slot for the referential validator (Decision 176 one-record-per-file).
+  - file: config/agent/verification_registry/entries/tags-array-element-format.yaml
+    action: Create
+    purpose: Graduated check slot for the tags element-format validator.
+bundled_recommendations:
+  - rec-3364
+followon_recs:
+  - rec-3703
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    update_rec and file_rec both reject a dependencies element that is well-formed but names a rec id
+    absent from the corpus; today update_rec("rec-4001", {"dependencies": ["rec-999999"]}) returns True.
+  - >-
+    A dependency naming a CLOSED or SUPERSEDED rec is ACCEPTED -- existence resolves against the full
+    corpus via rec_by_id, not the open set. This is the invariant backlog-health Class 3 got wrong.
+  - >-
+    The new test type adds no SQL check and no gate-time reader round-trip: load_checks over ops.yaml
+    returns the same check count as before the change.
+  - >-
+    Zero dependencies elements failing ^rec-[0-9]+$ remain in the warehouse after the backfill; the two
+    known dangling refs (rec-610, rec-613 -> absent rec-608) are deliberately left and named in the manifest.
+  - >-
+    file_rec rejects tags=["T2.56"] and accepts tags=["t2-56"]; update_rec on a rec carrying a legacy
+    non-conforming tag still succeeds (tags is outside _UPDATE_CONTENT_VALIDATED_FIELDS -- structural grandfathering).
+  - >-
+    config/agent/data_quality/decisions/ops_recommendations.yaml is net non-increasing in effective lines
+    across the dependencies AND tags edits combined, and docs/contracts/ops_recommendations.yaml is net
+    non-increasing too. No budget raise and no new raise-approved marker.
+  - The manifest no longer asserts "No data backfill needed -- no known invalid values in current records".
+  - rec-3364 is closed.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: The compiler recognises the new write-time-only type and emits no SQL for it.
+    command: bin/venv-python -m pytest tests/test_data_quality_compile.py::test_array_element_reference_compiles_to_no_check -q
+    expected: Test passes; the type is skipped without raising.
+    fix_if: Raises ValueError -- the name was not added to _WRITE_TIME_ONLY_TEST_TYPES.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: dq-compiler-array-element-reference-skip
+  - step: 2
+    phase: pre-deploy
+    action: The bare validator rejects an absent rec id and accepts a present one.
+    command: bin/venv-python -m pytest tests/test_ops_data_portal_validators.py::test_array_element_reference_rejects_absent_rec -q
+    expected: Test passes; ValueError names the offending element.
+    fix_if: No raise -- the builder is not wired into _WRITE_TIME_VALIDATOR_BUILDERS.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: dependencies-array-element-reference
+  - step: 3
+    phase: pre-deploy
+    action: FAILING-FIRST -- update_rec rejects a dangling reference.
+    command: bin/venv-python -m pytest tests/ops_data_portal/test_update_rec_content_validation.py::test_dependencies_reject_dangling_reference -q
+    expected: RED before the change (update_rec returns True today), GREEN after.
+    fix_if: Still green before the change -- the test is not exercising the referential path.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: update-rec-dependencies-referential
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      INVARIANT -- a dependency on a CLOSED rec is accepted. Guards the exact defect found in
+      backlog-health Class 3, whose oracle is the open-id set only.
+    command: bin/venv-python -m pytest tests/ops_data_portal/test_update_rec_content_validation.py::test_dependency_on_closed_rec_is_accepted -q
+    expected: Test passes -- a closed dependency target is valid, not dangling.
+    fix_if: Rejected -- the oracle was narrowed to open recs, repeating the Class 3 mistake.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: dependencies-closed-target-accepted
+  - step: 5
+    phase: pre-deploy
+    action: An unreachable reader loud-fails rather than silently passing the write.
+    command: bin/venv-python -m pytest tests/test_ops_data_portal_validators.py::test_array_element_reference_loud_fails_on_unreachable_reader -q
+    expected: Test passes; the reader error propagates (Decision 55 / 84 I-4).
+    fix_if: The validator swallows the error and admits the write -- a silent gate weakening.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: dependencies-reference-reader-loud-fail
+  - step: 6
+    phase: pre-deploy
+    action: tags element-format is enforced on file_rec and legacy rows stay grandfathered on update_rec.
+    command: bin/venv-python -m pytest tests/ops_data_portal/test_update_rec_content_validation.py::test_legacy_nonconforming_tag_still_updates -q
+    expected: Test passes -- update_rec on a rec carrying "T2.17" succeeds; file_rec with "T2.56" raises.
+    fix_if: update_rec rejects -- tags was wrongly added to _UPDATE_CONTENT_VALIDATED_FIELDS.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: tags-array-element-format
+  - step: 7
+    phase: pre-deploy
+    action: No gate-time reader round-trip was added -- the compiled check count is unchanged.
+    command: >-
+      bin/venv-python -c "from pathlib import Path; from scripts.data_quality_compile import load_checks;
+      r=load_checks(Path('config/agent/data_quality/ops.yaml')); c=r[0] if isinstance(r,tuple) else r; print(len(c))"
+    expected: Same count as before the change (43 at authoring time) -- both new declarations compile to nothing.
+    fix_if: Count rose -- a new type is emitting SQL and would run against the live reader at gate time.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The count is a repo-state-dependent integer that shifts whenever any unrelated ops.yaml check is
+      added or removed, so pinning it as a standing registry assertion would produce a check that fails
+      on unrelated PRs. Step 1 graduates the durable half of this claim (the type compiles to no Check).
+  - step: 8
+    phase: pre-deploy
+    action: The DQ manifest gate accepts both promoted entries.
+    command: >-
+      bin/venv-python -c "from scripts.checks.ops_governance.validate_dq_manifest_gate import
+      validate_dq_manifest_gate as g; f=[]; g(f); print(f); raise SystemExit(1 if f else 0)"
+    expected: Exit 0 -- dependencies stays READY_NOW and tags is promoted off NO_TEST_NEEDED.
+    fix_if: Fails naming tags -- enforcement_ready was not promoted alongside the enforced:true declaration.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      This is an existing registered check (validate_dq_manifest_gate) already running in both tiers;
+      graduating a second registry row pointing at the same check would duplicate a live guard.
+  - step: 9
+    phase: pre-deploy
+    action: >-
+      Both zero-headroom governed files are net non-increasing -- the binding constraint, since the
+      manifest carries two independent edits against a 522/522 budget.
+    command: >-
+      bin/venv-python -c "from scripts.checks.structural.size_limits import validate_structural_size_limits as s;
+      from scripts.checks.structural.budget_raises import validate_structural_size_budget_raises as b;
+      f=[]; s(f); b(f); print(f); raise SystemExit(1 if f else 0)"
+    expected: Exit 0 -- manifest <= 522 and docs/contracts/ops_recommendations.yaml <= 556, no raise marker added.
+    fix_if: Fails -- recover lines by tightening the tags decided_action block further (retiring the registry clause frees ~5).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      validate_structural_size_limits and validate_structural_size_budget_raises are already registered
+      in both presubmit tiers (Decision 166 point 1); a graduated registry row would duplicate them.
+  - step: 10
+    phase: pre-deploy
+    action: Bounded worst-case per-write egress for the new reader probe (Decision 88 measurement obligation).
+    command: >-
+      bin/venv-python -c "import json,pathlib; rows=[json.loads(l) for l in
+      pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()];
+      d=[len(r.get('dependencies') or []) for r in rows]; n=[x for x in d if x];
+      print('writes_with_deps', len(n), 'of', len(rows), 'max_elems', max(n), 'mean', round(sum(n)/len(n),2))"
+    expected: >-
+      A recorded figure -- roughly 7% of writes carry dependencies, mean list length under 2, so the
+      worst case is a small bounded number of memoised rec_by_id reads per write.
+    fix_if: Mean or max is far higher than expected -- reconsider batching before landing.
+    hermetic: true
+    graduation: not-applicable
+  - step: 11
+    phase: pre-deploy
+    action: The backfill helper and its CLI verb behave correctly, and dry_run writes nothing.
+    command: >-
+      bin/venv-python -m pytest
+      tests/test_ops_data_portal_validators.py::test_repair_dependency_tokens_dry_run_writes_nothing
+      tests/ops_data_portal/test_cli.py::test_repair_dependency_tokens_verb_dispatches -q
+    expected: Both tests pass; the dry-run path calls no writer.
+    fix_if: A write occurs under dry_run, or the CLI verb is unrecognised.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: repair-dependency-tokens-dry-run-safe
+  - step: 12
+    phase: pre-deploy
+    action: Fast presubmit tier.
+    command: bin/venv-python -m scripts.validate --pre
+    expected: Exit 0.
+    fix_if: Address the named check before proceeding.
+    graduation: not-applicable
+  - step: 13
+    phase: pre-deploy
+    action: Full validation tier before handoff.
+    command: bin/venv-python -m scripts.validate
+    expected: Exit 0.
+    fix_if: Address the named check before committing.
+    graduation: not-applicable
+  - step: 14
+    phase: post-deploy
+    action: Backfill dry-run enumerates exactly the known malformed population before any write.
+    command: bin/venv-python -m scripts.ops_data_portal --repair-dependency-tokens --dry-run
+    expected: Reports 19 recs / 21 tokens, all terminal-status, with each repaired value shown.
+    fix_if: A different count -- re-derive from the warehouse before writing anything.
+    graduation: not-applicable
+  - step: 15
+    phase: post-deploy
+    action: Execute the backfill, then prove the warehouse is clean from a fresh pull.
+    command: >-
+      bin/venv-python -m scripts.ops_data_portal --repair-dependency-tokens &&
+      bin/venv-python -m scripts.sync.ops pull &&
+      bin/venv-python -c "import json,pathlib,re; p=re.compile(r'^rec-[0-9]+$');
+      rows=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()];
+      bad=[(r['id'],d) for r in rows for d in (r.get('dependencies') or []) if not p.match(str(d))];
+      print(bad); raise SystemExit(1 if bad else 0)"
+    expected: Exit 0 -- zero malformed elements remain across the whole corpus.
+    fix_if: Rows remain -- inspect the per-row failure; do NOT replay the local JSONL upstream.
+    graduation: not-applicable
+  - step: 16
+    phase: post-deploy
+    action: Bundled recommendation closed after merge.
+    command: >-
+      bin/venv-python -m scripts.sync.ops pull && bin/venv-python -c "import json;
+      rows={r['id']: r.get('status') for r in (json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip())};
+      print(rows.get('rec-3364')); raise SystemExit(0 if rows.get('rec-3364')=='closed' else 1)"
+    expected: rec-3364 is closed by the rec-autoclose workflow via the Resolves trailer.
+    fix_if: Still open -- the squash-merge body omitted the Resolves trailer.
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/data_quality_compile.py
+    behavior: array_element_reference is recognised as write-time-only and compiles to no Check rather than raising.
+    verification_step: 1
+    test_selector: tests/test_data_quality_compile.py::test_array_element_reference_compiles_to_no_check
+    red_green_expectation: red before (unrecognised type raises), green after
+  - source: scripts/ops_portal/write_validators.py
+    behavior: >-
+      Referential existence is enforced per element against the FULL corpus via rec_by_id; a closed
+      target is accepted; an unreachable reader loud-fails instead of admitting the write.
+    verification_step: 2
+    test_selector: tests/test_ops_data_portal_validators.py::test_array_element_reference_rejects_absent_rec
+    red_green_expectation: red before (no such builder exists), green after
+  - source: scripts/ops_portal/maintenance_ops.py
+    behavior: >-
+      repair_dependency_tokens enumerates only malformed rows, derives repairs from the warehouse row
+      rather than the local cache, and writes nothing under dry_run.
+    verification_step: 11
+    test_selector: tests/test_ops_data_portal_validators.py::test_repair_dependency_tokens_dry_run_writes_nothing
+    red_green_expectation: red before (function does not exist), green after
+  - source: scripts/ops_portal/cli.py
+    behavior: The --repair-dependency-tokens verb dispatches to maintenance_ops and honours --dry-run.
+    verification_step: 11
+    test_selector: tests/ops_data_portal/test_cli.py::test_repair_dependency_tokens_verb_dispatches
+    red_green_expectation: red before (unknown argument), green after
+  - source: config/agent/data_quality/ops.yaml
+    behavior: >-
+      Declares the referential rule on dependencies after the format rule, and the tags element-format
+      rule, both with description and semantics so write guidance is non-empty.
+    verification_step: 6
+    test_selector: tests/ops_data_portal/test_update_rec_content_validation.py::test_legacy_nonconforming_tag_still_updates
+    red_green_expectation: red before (no tags declaration exists so nothing is enforced), green after
+  - source: config/agent/data_quality/decisions/ops_recommendations.yaml
+    behavior: Both entries sit at an enforcement_ready state the manifest gate admits, at no net line cost.
+    verification_step: 8
+    command: >-
+      bin/venv-python -c "from scripts.checks.ops_governance.validate_dq_manifest_gate import
+      validate_dq_manifest_gate as g; f=[]; g(f); print(f); raise SystemExit(1 if f else 0)"
+    red_green_expectation: red before (tags at NO_TEST_NEEDED against an enforced test fails the gate), green after
+  - source: docs/contracts/ops_recommendations.yaml
+    behavior: States the referential dq_intent and stops asserting consumers and non-enforcement that do not hold.
+    verification_step: 13
+    command: bin/venv-python -m scripts.validate
+    waiver_reason: >-
+      Prose contract with no runtime consumer -- nothing imports or parses these description and
+      semantics strings at write time, so no test can bind them red-green. The behavioural claims the
+      text makes are each covered by steps 2, 4 and 6 against the code that implements them.
+constraints:
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    The backfill goes through update_rec ONLY and derives repaired values from the warehouse row
+    update_rec itself fetches. Reading logs/.recommendations-log.jsonl and writing it back is the
+    replay-from-cache anti-pattern (Decision 84; data-modeling-standard read-cache-never-write-source).
+  - >-
+    No budget raise. Both governed files are net non-increasing; adding a raise-approved marker instead
+    of decomposing or compacting is forbidden by Decision 128 / 165 / 166.
+  - >-
+    No new reader named verb and no ducklake_reader change -- that would escalate to V3 (Decision 79)
+    and add a verb against Decision 88. Use the existing rec_by_id.
+  - >-
+    Do not fix the backlog-health Class 3 open-id-oracle defect inline (Decision 59 scope boundary);
+    it is out of scope and separately owned.
+  - The two known dangling refs (rec-610, rec-613) are left in place by operator decision, not repaired.
+context:
+  - "decision-scout verdict: FLAGS_FOUND (136 of 136 triaged; 13 roadmap items, 2 CONFLICT)"
+  - "CITE: Decision 62 (+2026-06-16 amendment), 84, 70, 65, 64, 61, 124, 176, 170, 55"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "Option (a) (compiler UNNEST) foreclosed on four blockers -- see rec-3307 history and data_quality_execute.py:73-79"
+  - "D66 flag folded in: a tags block with no description/semantics leaves get_rec_write_guidance() empty while the write layer rejects"
+  - "D181 flag: array_element_reference is named out-of-vocabulary deliberately; settled by rec-3703"
+  - "D177 flag: manifest text is replaced in place because the 522/522 ceiling forbids a dated annotation; git history carries provenance"
+  - "T2.29 c6 debt named loudly: its repoint scope now includes array_element_reference and the tags block"
+  - "L1/L2 split per data_quality_compile.py:356-357; backlog-health #1119 Class 3 is L2, this is L1"
+  - "backlog-health Class 3 resolves existence against the OPEN id set only (classify.py:187, __main__.py:96) -- 28 of 42 open recs with deps would be falsely flagged; out of scope here, guarded against by VP step 4"
+  - "Measured: 21 malformed tokens / 19 recs, all terminal, 0 open; all strip to existing ids; all 19 pass Recommendation.model_validate"
+  - "Budgets at authoring: manifest 522/522, docs/contracts/ops_recommendations.yaml 553/556, ops.yaml 314/500"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - Add array_element_reference to _WRITE_TIME_ONLY_TEST_TYPES in scripts/data_quality_compile.py.
+  - >-
+    Add _rec_exists (lazy make_reader, rec_by_id, per-process memo, no error swallowing) and
+    _build_array_element_reference_validator to scripts/ops_portal/write_validators.py; register it.
+  - >-
+    Write the failing-first tests FIRST and observe them red -- dangling rejected, closed-target
+    accepted, reader-unavailable loud-fail, legacy tag grandfathered.
+  - >-
+    Declare the rule on dependencies in ops.yaml after array_element_format; extend its semantics; add
+    the tags column block with pattern, description and semantics.
+  - >-
+    Edit the DQ decision manifest: replace the dependencies decided_action within its existing 7 content
+    lines; promote tags to READY_NOW, add resolved_date, retire the tag_registry.yaml clause. Re-measure
+    effective lines after EACH edit -- the budget is the binding constraint.
+  - >-
+    Edit docs/contracts/ops_recommendations.yaml: add the dq_intent, strike "or tier-item IDs"
+    (rec-3364), correct the three false tags claims. Re-measure against 556.
+  - Add repair_dependency_tokens to maintenance_ops.py and the CLI verb; run the dry-run before any write.
+  - Add the two verification_registry entries (one record per file, filename equal to check_id).
+  - Execute the Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55).
+  - "Report: what was implemented, verification results, and the measured line deltas on both governed files."
+work_areas: []
+rollback: >-
+  Code and config changes revert by reverting the squash-merge commit. The backfill is NOT reverted by
+  that: it is 19 SCD2 revisions through the writer, so the prior values remain in history and a
+  re-repair (or a deliberate re-write of the original bracketed values) would itself be a new write.
+  Take the dry-run output as the record of pre-change state before executing step 14.
