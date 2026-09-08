@@ -113,6 +113,29 @@ def test_compute_automatable_valid():
     assert result is True
 
 
+@pytest.mark.parametrize(
+    "file_path",
+    [
+        "src/executor_loop/rendered/executor_loop.asl.json",
+        "docs/contracts/personas/plan_agent.yaml",
+        "docs/contracts/executor-loop-policy.yaml",
+        "config/agent/executor/personas.yaml",
+        ".github/CODEOWNERS",
+        "scripts/ci/executor_boundary_guard.py",
+        "scripts/checks/executor/validate_executor_boundary.py",
+    ],
+)
+def test_compute_automatable_executor_loop_kernel_path_is_never_automatable(file_path):
+    """The executor loop kernel, its rendered ASL, its contracts and its own boundary-guard
+    implementation (Decision 185 clause 3) never derive automatable. The risk score is patched
+    to 0.0 so a boundary_patterns hit is the ONLY path to False -- an unpatched score would
+    already be low for a tiny new file, which would pass vacuously without exercising the
+    boundary check at all."""
+    with patch("scripts.ops_portal.risk_scoring._compute_risk_score", return_value=0.0):
+        result = compute_automatable(file_path, "XS")
+    assert result is False
+
+
 # ---------------------------------------------------------------------------
 # automatable override warning in file_rec
 # ---------------------------------------------------------------------------
