@@ -11,8 +11,8 @@ called -- it is never silently accepted and dropped. The sole exception is the
 formula-derived field group (risk on --file-rec), which is accepted advisorily because
 _derive_computed_fields always overwrites it (Decision 66 Tier B places its value under
 the portal's control, not the caller's). --dry-run is honoured only for
---purge-postmortems-for, the only action that implements it, and loud-fails for every
-other action. --update-rec threads every genuinely mutable field via a module-level
+--purge-postmortems-for and --repair-dependency-tokens, the two actions that implement it,
+and loud-fails for every other action. --update-rec threads every genuinely mutable field via a module-level
 dest-to-field map and loud-fails the flags that are not updatable via that path
 (_UPDATE_REC_REJECTIONS below), so every dest registered on the two rec argument groups
 is classified by exactly one of the two tables.
@@ -89,6 +89,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     action.add_argument(
         "--purge-postmortems-for", metavar="REC_ID", help="Supersede all executor postmortems for REC_ID (SCD2)"
+    )
+    action.add_argument(
+        "--repair-dependency-tokens",
+        action="store_true",
+        help="Strip bracket-residue from malformed ops_recommendations.dependencies tokens (one-shot backfill)",
     )
     action.add_argument(
         "--backfill-decisions-md",
@@ -218,6 +223,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         file_rec,
         find_open_ci_rca_rec_by_fingerprint,
         purge_postmortems_for,
+        repair_dependency_tokens,
         selftest_read,
         selftest_roundtrip,
         sync,
@@ -228,9 +234,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    if args.dry_run and not args.purge_postmortems_for:
+    if args.dry_run and not (args.purge_postmortems_for or args.repair_dependency_tokens):
         print(
-            "ERROR: --dry-run is supported only with --purge-postmortems-for; every other action writes for real",
+            "ERROR: --dry-run is supported only with --purge-postmortems-for and "
+            "--repair-dependency-tokens; every other action writes for real",
             file=sys.stderr,
         )
         return 1
@@ -370,6 +377,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     if args.purge_postmortems_for:
         result = purge_postmortems_for(args.purge_postmortems_for, dry_run=args.dry_run, profile=args.profile)
+        print(json.dumps(result, indent=2))
+        return 0
+
+    if args.repair_dependency_tokens:
+        result = repair_dependency_tokens(dry_run=args.dry_run, profile=args.profile)
         print(json.dumps(result, indent=2))
         return 0
 

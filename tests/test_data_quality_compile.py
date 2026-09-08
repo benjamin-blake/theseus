@@ -68,6 +68,14 @@ def test_write_time_only_types_skip_without_raising():
     assert _compile_column_test("db.t", "t", "c", {"acceptance_lint": {"write_time": True}}) is None
 
 
+def test_array_element_reference_compiles_to_no_check():
+    """array_element_reference is declared write-time-only -- the compiler recognises it and
+    emits no SQL, rather than raising the unrecognised-test-type ValueError (rec-3307 referential
+    half, PLAN-dependency-referential-integrity)."""
+    assert _compile_column_test("db.t", "t", "c", {"array_element_reference": {"write_time": True}}) is None
+    assert _compile_column_test("db.t", "t", "c", "array_element_reference") is None
+
+
 def test_write_time_only_string_form_also_skips():
     """The bare-string test-name branch also recognises the declared write-time-only set (not
     just the dict-test branch) -- config never uses string form for these types today, but the

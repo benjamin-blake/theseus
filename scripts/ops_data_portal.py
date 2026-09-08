@@ -90,6 +90,7 @@ from scripts.ops_portal.maintenance_ops import (  # noqa: F401
     enqueue_findings,
     find_open_postmortem_for,
     purge_postmortems_for,
+    repair_dependency_tokens,
     selftest_read,
     selftest_roundtrip,
 )
@@ -423,7 +424,7 @@ def _fetch_rec_from_reader(rec_id: str, profile: Optional[str] = None) -> Option
     return _sanitize_record(coerced) if coerced is not None else None
 
 
-_UPDATE_CONTENT_VALIDATED_FIELDS = frozenset({"context", "title", "acceptance", "file", "dependencies"})
+_UPDATE_CONTENT_VALIDATED_FIELDS = frozenset({"context", "title", "acceptance", "file", "dependencies", "tags"})
 
 
 def update_rec(rec_id: str, updates: dict, profile: Optional[str] = None) -> bool:
@@ -446,7 +447,7 @@ def update_rec(rec_id: str, updates: dict, profile: Optional[str] = None) -> boo
 
     Raises:
         ValueError: If 'status' in updates is not a valid status value, or an updated
-            content-validated field (context/title/acceptance/file/dependencies) fails its
+            content-validated field (context/title/acceptance/file/dependencies/tags) fails its
             write-time gate.
         ValidationError: If the merged record fails schema validation.
         RuntimeError: If the warehouse is unreachable for the read step or the write fails.
