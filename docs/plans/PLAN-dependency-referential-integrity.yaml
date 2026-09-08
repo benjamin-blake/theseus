@@ -95,7 +95,12 @@ scope:
       instead captures its own reader at import, this test breaks. Do not lose that property.
   - file: tests/test_ops_data_portal_validators.py
     action: Modify
-    purpose: Bare-validator unit tests for the new builder, including the reader-unavailable loud-fail.
+    purpose: >-
+      Bare-validator unit tests for the new builder, including the reader-unavailable loud-fail, AND
+      test_repair_dependency_tokens_dry_run_writes_nothing. The backfill test lives here rather than in
+      a tests/ops_data_portal/ mirror home deliberately: every module there carries a module-scope
+      pytest.importorskip("duckdb"), which would make the node unreplayable in the venv-less --pre
+      tier; this file carries no import guard.
   - file: tests/test_data_quality_compile.py
     action: Modify
     purpose: Assert the new type compiles to no Check and does not raise.
@@ -272,41 +277,61 @@ verification_plan:
   - step: 11
     phase: pre-deploy
     action: >-
-      The backfill helper and its CLI verb behave correctly, and dry_run writes nothing. BOTH node ids
-      are MODULE-LEVEL, not class-nested -- tests/ops_data_portal/test_cli.py is currently entirely
-      `class TestCLI:`, so following local convention would yield a class-qualified id and break both
-      this command and the repair-dependency-tokens-dry-run-safe registry row.
+      The backfill helper writes nothing under dry_run. Node id is MODULE-LEVEL. This step is kept
+      SEPARATE from the CLI step below and hermetic, because tests/test_ops_data_portal_validators.py
+      carries no import guard and so replays cleanly in the venv-less --pre tier.
     command: >-
       bin/venv-python -m pytest
-      tests/test_ops_data_portal_validators.py::test_repair_dependency_tokens_dry_run_writes_nothing
-      tests/ops_data_portal/test_cli.py::test_repair_dependency_tokens_verb_dispatches -q
-    expected: Both tests pass; the dry-run path calls no writer.
-    fix_if: A write occurs under dry_run, or the CLI verb is unrecognised.
+      tests/test_ops_data_portal_validators.py::test_repair_dependency_tokens_dry_run_writes_nothing -q
+    expected: Passes; the dry-run path calls no writer.
+    fix_if: A write occurs under dry_run.
     hermetic: true
     graduation: graduate
     graduation_check_id: repair-dependency-tokens-dry-run-safe
   - step: 12
+    phase: pre-deploy
+    action: >-
+      The --repair-dependency-tokens CLI verb dispatches and honours --dry-run. Node id is
+      MODULE-LEVEL, not class-nested -- tests/ops_data_portal/test_cli.py is currently entirely
+      `class TestCLI:`, so following local convention would yield a class-qualified id and break both
+      this command and its registry row. MUST be hermetic:false: that module carries a module-scope
+      pytest.importorskip("duckdb") at :14, and the --pre PR job installs only requirements-fast.txt
+      and requirements-dev.txt, neither of which carries duckdb. validate_vp_replay replays every
+      pre-deploy hermetic step, and selecting an explicit node id from a module that skips at
+      collection exits 4 ("found no collectors"), which would red the gate. Unanimous precedent:
+      every merged plan selecting a node from this file marks it hermetic:false
+      (PLAN-ops-portal-write-fidelity steps 1-4/6, PLAN-portal-update-rec-context step 1,
+      PLAN-escape-closure-obligation step 3).
+    command: >-
+      bin/venv-python -m pytest
+      tests/ops_data_portal/test_cli.py::test_repair_dependency_tokens_verb_dispatches -q
+    expected: Passes; the verb dispatches to maintenance_ops and --dry-run is accepted.
+    fix_if: The CLI verb is unrecognised, or --dry-run is rejected by the :231 allowlist.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: cli-repair-dependency-tokens-verb
+  - step: 13
     phase: pre-deploy
     action: Fast presubmit tier.
     command: bin/venv-python -m scripts.validate --pre
     expected: Exit 0.
     fix_if: Address the named check before proceeding.
     graduation: not-applicable
-  - step: 13
+  - step: 14
     phase: pre-deploy
     action: Full validation tier before handoff.
     command: bin/venv-python -m scripts.validate
     expected: Exit 0.
     fix_if: Address the named check before committing.
     graduation: not-applicable
-  - step: 14
+  - step: 15
     phase: post-deploy
     action: Backfill dry-run enumerates exactly the known malformed population before any write.
     command: bin/venv-python -m scripts.ops_data_portal --repair-dependency-tokens --dry-run
     expected: Reports 19 recs / 21 tokens, all terminal-status, with each repaired value shown.
     fix_if: A different count -- re-derive from the warehouse before writing anything.
     graduation: not-applicable
-  - step: 15
+  - step: 16
     phase: post-deploy
     action: Execute the backfill, then prove the warehouse is clean from a fresh pull.
     command: >-
@@ -319,7 +344,7 @@ verification_plan:
     expected: Exit 0 -- zero malformed elements remain across the whole corpus.
     fix_if: Rows remain -- inspect the per-row failure; do NOT replay the local JSONL upstream.
     graduation: not-applicable
-  - step: 16
+  - step: 17
     phase: post-deploy
     action: Bundled recommendation closed after merge.
     command: >-
@@ -351,7 +376,7 @@ test_obligations:
     red_green_expectation: red before (function does not exist), green after
   - source: scripts/ops_portal/cli.py
     behavior: The --repair-dependency-tokens verb dispatches to maintenance_ops and honours --dry-run.
-    verification_step: 11
+    verification_step: 12
     test_selector: tests/ops_data_portal/test_cli.py::test_repair_dependency_tokens_verb_dispatches
     red_green_expectation: red before (unknown argument), green after
   - source: config/agent/data_quality/ops.yaml
@@ -464,13 +489,13 @@ execution_steps:
     allowlist widening; run the dry-run before any write.
   - Add "tags" to _UPDATE_CONTENT_VALIDATED_FIELDS in scripts/ops_data_portal.py.
   - >-
-    Create SEVEN verification_registry entries -- one record per file, filename equal to check_id,
+    Create EIGHT verification_registry entries -- one record per file, filename equal to check_id,
     each carrying primitive_slot, guard_target, plan_slug and graduated_at:
     dq-compiler-array-element-reference-skip, dependencies-array-element-reference,
     update-rec-dependencies-referential, dependencies-closed-target-accepted,
     dependencies-reference-reader-loud-fail, tags-array-element-format,
-    repair-dependency-tokens-dry-run-safe. Each must pass the differential admission gate on a
-    reverted origin/main worktree.
+    repair-dependency-tokens-dry-run-safe, cli-repair-dependency-tokens-verb. Each must pass the
+    differential admission gate on a reverted origin/main worktree.
   - Execute the Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55).
   - "Report: what was implemented, verification results, and the measured line deltas on both governed files."
 work_areas: []
