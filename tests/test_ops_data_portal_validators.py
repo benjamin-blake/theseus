@@ -312,6 +312,46 @@ def test_array_element_reference_memoises_positive_results_only():
     _write_validators._rec_exists_memo.clear()
 
 
+def test_array_element_reference_holds_one_reader_per_write():
+    """Decision 88 invariant (i): a single write's dependencies list with N distinct,
+    not-yet-memoised elements constructs exactly ONE reader (make_reader called once), never one
+    per element -- the array_element_reference validator's _check closure shares a single reader
+    across the whole list, not _rec_exists constructing its own per call."""
+    _write_time_validators_cache.clear()
+    _write_validators._rec_exists_memo.clear()
+    dep_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "dependencies"]
+
+    fake_reader = MagicMock()
+    fake_reader.named.side_effect = lambda verb, id: [{"id": id}]  # noqa: A006
+
+    with patch("src.common.ducklake_reader_client.make_reader", return_value=fake_reader) as mock_make_reader:
+        for fn in dep_validators:
+            fn(["rec-10", "rec-11", "rec-12", "rec-13"], "dependencies")  # must not raise
+
+    assert mock_make_reader.call_count == 1, (
+        f"expected exactly one make_reader() call for a 4-element write, got {mock_make_reader.call_count}"
+    )
+    assert fake_reader.named.call_count == 4
+    _write_validators._rec_exists_memo.clear()
+
+
+def test_array_element_reference_skips_reader_when_all_elements_memoised():
+    """When every element of a write is already positively memoised, the validator never
+    constructs a reader at all (not even one)."""
+    _write_time_validators_cache.clear()
+    _write_validators._rec_exists_memo.clear()
+    _write_validators._rec_exists_memo["rec-20"] = True
+    _write_validators._rec_exists_memo["rec-21"] = True
+    dep_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "dependencies"]
+
+    with patch("src.common.ducklake_reader_client.make_reader") as mock_make_reader:
+        for fn in dep_validators:
+            fn(["rec-20", "rec-21"], "dependencies")  # must not raise
+
+    mock_make_reader.assert_not_called()
+    _write_validators._rec_exists_memo.clear()
+
+
 # ---------------------------------------------------------------------------
 # repair_dependency_tokens dry-run (PLAN-dependency-referential-integrity)
 # ---------------------------------------------------------------------------
