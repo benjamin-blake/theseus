@@ -391,3 +391,22 @@ class TestCLI:
         assert rc == 0
         _, written_rec = mock_write.call_args[0]
         assert written_rec["risk"] == expected_risk
+
+
+def test_repair_dependency_tokens_verb_dispatches(capsys: pytest.CaptureFixture) -> None:
+    """CLI --repair-dependency-tokens dispatches to maintenance_ops and honours --dry-run.
+
+    Module-level (not class-nested): tests/ops_data_portal/test_cli.py is currently entirely
+    `class TestCLI:`, so a class-qualified node id here would not match the plan's verification
+    command (PLAN-dependency-referential-integrity)."""
+    with patch(
+        "scripts.ops_data_portal.repair_dependency_tokens",
+        return_value={"matched": [], "repaired": 0},
+    ) as mock_repair:
+        from scripts.ops_data_portal import main
+
+        rc = main(["--repair-dependency-tokens", "--dry-run"])
+
+    assert rc == 0
+    mock_repair.assert_called_once_with(dry_run=True, profile=None)
+    assert '"repaired": 0' in capsys.readouterr().out

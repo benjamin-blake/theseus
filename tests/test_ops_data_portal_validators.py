@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -16,6 +16,7 @@ from scripts.ops_data_portal import (
     compute_automatable,
     file_rec,
 )
+from scripts.ops_portal import write_validators as _write_validators
 
 # ---------------------------------------------------------------------------
 # _validate_file_path
@@ -238,6 +239,150 @@ def test_array_element_format_rejects_malformed_element():
     with patch("scripts.ops_data_portal.validate_source"):
         with pytest.raises(ValueError, match="dependencies"):
             file_rec(fields)
+
+
+# ---------------------------------------------------------------------------
+# array_element_reference (rec-3307 referential half, PLAN-dependency-referential-integrity)
+# ---------------------------------------------------------------------------
+
+
+def test_array_element_reference_rejects_absent_rec():
+    """array_element_reference resolves existence against the FULL corpus via its own
+    make_reader/rec_by_id call (scripts.ops_portal may not import scripts.ops_data_portal,
+    .importlinter no-cycles-ops-data-portal-executor); a well-formed-but-absent id is rejected
+    while a present id is accepted."""
+    _write_time_validators_cache.clear()
+    _write_validators._rec_exists_memo.clear()
+    dep_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "dependencies"]
+    assert len(dep_validators) >= 2, "expected both array_element_format and array_element_reference validators"
+
+    fake_reader = MagicMock()
+    fake_reader.named.side_effect = lambda verb, id: [{"id": id}] if id == "rec-1" else []  # noqa: A006
+
+    with patch("src.common.ducklake_reader_client.make_reader", return_value=fake_reader):
+        raised = []
+        for fn in dep_validators:
+            try:
+                fn(["rec-1", "rec-999999"], "dependencies")
+            except ValueError as exc:
+                raised.append(str(exc))
+        assert any("rec-999999" in msg for msg in raised), raised
+
+        for fn in dep_validators:
+            fn(["rec-1"], "dependencies")  # must not raise
+        for fn in dep_validators:
+            fn(None, "dependencies")  # must not raise
+    _write_validators._rec_exists_memo.clear()
+
+
+def test_array_element_reference_loud_fails_on_unreachable_reader():
+    """An unreachable reader propagates (Decision 55 / 84 I-4) rather than being swallowed into
+    a silent pass that would admit the write."""
+    _write_time_validators_cache.clear()
+    _write_validators._rec_exists_memo.clear()
+    dep_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "dependencies"]
+
+    with (
+        patch("src.common.ducklake_reader_client.make_reader", side_effect=RuntimeError("reader unreachable")),
+        pytest.raises(RuntimeError, match="unreachable"),
+    ):
+        for fn in dep_validators:
+            fn(["rec-1"], "dependencies")
+    _write_validators._rec_exists_memo.clear()
+
+
+def test_array_element_reference_memoises_positive_results_only():
+    """Positive existence results are memoised (bounding repeated Neon egress, Decision 88); the
+    memo is never used to cache an absent verdict, so a later-filed id is still accepted."""
+    _write_time_validators_cache.clear()
+    _write_validators._rec_exists_memo.clear()
+    calls: list[str] = []
+
+    def _fake_named(verb, id):  # noqa: A002
+        calls.append(id)
+        return [{"id": id}]
+
+    fake_reader = MagicMock()
+    fake_reader.named.side_effect = _fake_named
+
+    with patch("src.common.ducklake_reader_client.make_reader", return_value=fake_reader):
+        assert _write_validators._rec_exists("rec-1") is True
+        assert _write_validators._rec_exists("rec-1") is True
+    assert calls == ["rec-1"], "second call for the same id must be served from the positive memo, not re-fetched"
+    _write_validators._rec_exists_memo.clear()
+
+
+def test_array_element_reference_holds_one_reader_per_write():
+    """Decision 88 invariant (i): a single write's dependencies list with N distinct,
+    not-yet-memoised elements constructs exactly ONE reader (make_reader called once), never one
+    per element -- the array_element_reference validator's _check closure shares a single reader
+    across the whole list, not _rec_exists constructing its own per call."""
+    _write_time_validators_cache.clear()
+    _write_validators._rec_exists_memo.clear()
+    dep_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "dependencies"]
+
+    fake_reader = MagicMock()
+    fake_reader.named.side_effect = lambda verb, id: [{"id": id}]  # noqa: A006
+
+    with patch("src.common.ducklake_reader_client.make_reader", return_value=fake_reader) as mock_make_reader:
+        for fn in dep_validators:
+            fn(["rec-10", "rec-11", "rec-12", "rec-13"], "dependencies")  # must not raise
+
+    assert mock_make_reader.call_count == 1, (
+        f"expected exactly one make_reader() call for a 4-element write, got {mock_make_reader.call_count}"
+    )
+    assert fake_reader.named.call_count == 4
+    _write_validators._rec_exists_memo.clear()
+
+
+def test_array_element_reference_skips_reader_when_all_elements_memoised():
+    """When every element of a write is already positively memoised, the validator never
+    constructs a reader at all (not even one)."""
+    _write_time_validators_cache.clear()
+    _write_validators._rec_exists_memo.clear()
+    _write_validators._rec_exists_memo["rec-20"] = True
+    _write_validators._rec_exists_memo["rec-21"] = True
+    dep_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "dependencies"]
+
+    with patch("src.common.ducklake_reader_client.make_reader") as mock_make_reader:
+        for fn in dep_validators:
+            fn(["rec-20", "rec-21"], "dependencies")  # must not raise
+
+    mock_make_reader.assert_not_called()
+    _write_validators._rec_exists_memo.clear()
+
+
+# ---------------------------------------------------------------------------
+# repair_dependency_tokens dry-run (PLAN-dependency-referential-integrity)
+# ---------------------------------------------------------------------------
+
+
+def test_repair_dependency_tokens_dry_run_writes_nothing():
+    """The backfill helper enumerates malformed dependencies rows via current_state, reports the
+    strip-bracket repair per row, and calls update_rec zero times under dry_run."""
+    from scripts.ops_portal.maintenance_ops import repair_dependency_tokens
+
+    rows = [
+        {"id": "rec-100", "dependencies": ["[rec-1]"]},
+        {"id": "rec-101", "dependencies": ["rec-2", "rec-3"]},  # already well-formed
+        {"id": "rec-102", "dependencies": None},
+        {"id": "rec-103", "dependencies": ["[rec-4", "rec-5]"]},  # split-pair shape
+    ]
+    fake_reader = MagicMock()
+    fake_reader.current_state.return_value = rows
+
+    with (
+        patch("src.common.ducklake_reader_client.make_reader", return_value=fake_reader),
+        patch("scripts.ops_data_portal.update_rec") as mock_update,
+    ):
+        result = repair_dependency_tokens(dry_run=True)
+
+    mock_update.assert_not_called()
+    assert result["repaired"] == 0
+    assert result["matched"] == [
+        {"id": "rec-100", "before": ["[rec-1]"], "after": ["rec-1"]},
+        {"id": "rec-103", "before": ["[rec-4", "rec-5]"], "after": ["rec-4", "rec-5"]},
+    ]
 
 
 # ---------------------------------------------------------------------------

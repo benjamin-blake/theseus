@@ -233,3 +233,41 @@ def purge_postmortems_for(failed_rec_id: str, dry_run: bool = False, profile: Op
 
     logger.info("[PURGE] Complete for %s: %d postmortems superseded.", failed_rec_id, result["superseded"])
     return result
+
+
+def repair_dependency_tokens(dry_run: bool = False, profile: Optional[str] = None) -> dict:
+    """One-shot backfill: strip bracket-residue from malformed ops_recommendations.dependencies
+    tokens (e.g. '[rec-009' -> 'rec-009'), through the sanctioned writer only.
+
+    Enumeration source is DuckLakeReader.current_state("ops_recommendations") -- no new named
+    verb (Decision 88). Per-row repair values come from update_rec's own reader fetch, never from
+    logs/.recommendations-log.jsonl (Decision 84: a read cache is never a write source).
+
+    Returns:
+        {"matched": [{"id", "before", "after"}, ...], "repaired": N}
+    """
+    from scripts.ops_data_portal import update_rec  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
+
+    rows = make_reader(profile=profile).current_state("ops_recommendations") or []
+    result: dict = {"matched": [], "repaired": 0}
+
+    for row in rows:
+        deps = row.get("dependencies") or []
+        if not isinstance(deps, list):
+            continue
+        fixed = [d.strip("[]") if isinstance(d, str) else d for d in deps]
+        if fixed == deps:
+            continue
+        result["matched"].append({"id": row["id"], "before": deps, "after": fixed})
+
+    if dry_run:
+        logger.info("[REPAIR] Dry-run: %d recs with malformed dependency tokens would be repaired.", len(result["matched"]))
+        return result
+
+    for entry in result["matched"]:
+        update_rec(entry["id"], {"dependencies": entry["after"]}, profile=profile)
+        result["repaired"] += 1
+
+    logger.info("[REPAIR] Complete: %d recs repaired.", result["repaired"])
+    return result
