@@ -86,6 +86,36 @@ Two capability notes, so they cost you minutes rather than hours: anything routi
 `scripts/ops_data_portal.py` (`file_rec`, `update_rec`) needs an AWS profile you do not have, and
 several skills assume fresh-context subagents. Both are capability deviations (Section 2.4).
 
+### 3.1 What enforces what -- and what does not enforce you
+
+Norms in this repository sit in four enforcement channels. You face two of them. Knowing which is
+which is a fairness matter, not a hint, because a Claude session in this repository is mechanically
+prevented from breaking things you are merely asked not to break.
+
+1. **Harness hooks** (`.claude/hooks/`, fired before every edit or shell command). **You have none
+   of these.** Three would otherwise be guarding you:
+   - `never_on_main.py` -- blocks any mutation while the current branch is `main`.
+   - `fresh_branch_base.py` -- keeps a new branch cut from a fresh `origin/main`.
+   - `edit_scope_guard.py` -- blocks edits to files outside the active plan's declared scope.
+
+   Read that list as the set of disciplines you must now impose on yourself. The third is the one
+   that will bite hardest here: this task touches selection machinery, the check corpus, workflows
+   and the test suite, and nothing will stop you sprawling beyond what you declared.
+
+2. **Git pre-commit hooks** (`.pre-commit-config.yaml`) -- available to you, but only if you install
+   them. They are installed automatically for a Claude session and not for you. Run
+   `pre-commit install` early; among other things they block commits to protected branches and
+   scan for secrets and sensitive identifiers. Do this before your first commit, not after.
+
+3. **CI** (`validate.py --pre` via `pr-validate`) -- applies to you identically. No asymmetry.
+
+4. **Prose only** -- everything asserted in `AGENTS.md`, the `CLAUDE.md` files, the skills and the
+   contracts that no hook and no check mechanically verifies.
+
+Your reviewer knows which channel each norm sits in and will not credit or penalise you for the
+machinery. Channel 3 says nothing about you either way. Channels 1 and 4 are where your judgment is
+actually visible -- which is the point of telling you they are unguarded.
+
 ## 4. THE MEASUREMENT SURFACE
 
 The subject is `bin/venv-python -m scripts.validate --pre`, which gates every pull request via the
