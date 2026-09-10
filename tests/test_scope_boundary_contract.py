@@ -157,6 +157,41 @@ class TestContractShape:
         assert "amendment_procedure" in summary
         assert "Decision 75" in summary and "conscious-choice" in summary
 
+    def test_roadmap_liveness_baseline_row_declared_and_argued(self) -> None:
+        """AC 1-6 (PLAN-roadmap-liveness-baseline-companion): the roadmap_liveness_baseline_shrink
+        row's trigger/sanctions shape, and its amendment_log entry's determinism argument
+        (leg A(a)/A(d)), Decision 75 conscious-choice note, and all three named residuals --
+        pinned WITHOUT the literal token sanction_row_eligibility (that token is pinned to exactly
+        the 2026-09-07 entry above; a token-based selector here would add a second entry carrying
+        it and trip that pin)."""
+        doc = _load_contract()
+        row = doc["sanction_rows"]["roadmap_liveness_baseline_shrink"]
+        assert row["trigger"]["kind"] == "scope_contains_file"
+        assert row["trigger"]["file"] == "docs/ROADMAP-PLATFORM.yaml"
+        assert row["sanctions"]["path_template"] == "config/roadmap_liveness_baseline.yaml"
+        assert row.get("prohibited_field_edits") == []
+
+        entries = [e for e in doc["amendment_log"] if e.get("date") == "2026-09-08"]
+        assert len(entries) == 1, "expected exactly one amendment_log entry dated 2026-09-08"
+        summary = entries[0]["summary"]
+        assert "sanction_row_eligibility" not in summary, (
+            "the new entry must argue ineligibility descriptively, never with the literal token"
+        )
+
+        # Determinism/latitude argument (leg A(a) + leg A(d) jointly pin entries).
+        assert "leg A(a)" in summary and "leg A(d)" in summary
+        assert "toxic_node_ids" in summary
+
+        # Decision 75 conscious-choice note.
+        assert "Decision 75" in summary and "conscious-choice" in summary
+
+        # Three named residuals, scoped to this entry's own summary (never a whole-document
+        # search -- "a path a tool mechanically regenerates" is also a verbatim substring of the
+        # eligibility clause itself, which would make a doc-wide search vacuous).
+        assert "header" in summary.lower() and "unpinned" in summary.lower()
+        assert "_BASELINE_SEED" in summary
+        assert "a path a tool mechanically regenerates" in summary
+
     def test_secrets_baseline_retired_from_unmodelled_companions(self) -> None:
         """PLAN-secrets-baseline-sanction-row: .secrets.baseline is no longer an unmodelled
         companion -- it is now the secrets_baseline_regeneration sanction row's own subject --

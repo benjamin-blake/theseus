@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -61,10 +61,21 @@ def test_dependencies_reject_malformed_element(tmp_path: Path) -> None:
 
 
 def test_dependencies_accept_valid_list(tmp_path: Path) -> None:
-    """The same write-time gate accepts a well-formed dependencies list through update_rec."""
+    """The same write-time gate accepts a well-formed dependencies list through update_rec.
+
+    array_element_reference resolves existence via its own make_reader/rec_by_id call (not the
+    facade -- scripts.ops_portal may not import scripts.ops_data_portal, .importlinter
+    no-cycles-ops-data-portal-executor), so a well-formed list also needs a reachable reader
+    reporting both elements present."""
+    from scripts.ops_portal.write_validators import _rec_exists_memo
+
+    _rec_exists_memo.clear()
     recs_file = tmp_path / "recs.jsonl"
+    fake_reader = MagicMock()
+    fake_reader.named.return_value = [{"id": "present"}]
     with (
         patch("scripts.ops_data_portal._fetch_rec_from_reader", return_value=dict(_EXISTING)),
+        patch("src.common.ducklake_reader_client.make_reader", return_value=fake_reader),
         patch("scripts.ops_data_portal._ducklake_write", return_value={"ok": True}) as mock_write,
         patch("scripts.ops_data_portal._sync_table"),
         patch("scripts.ops_data_portal.RECS_JSONL", recs_file),
@@ -72,6 +83,98 @@ def test_dependencies_accept_valid_list(tmp_path: Path) -> None:
         from scripts.ops_data_portal import update_rec
 
         result = update_rec("rec-4001", {"dependencies": ["rec-1", "rec-2"]})
+
+    assert result is True
+    mock_write.assert_called_once()
+    _rec_exists_memo.clear()
+
+
+def test_dependencies_reject_dangling_reference(tmp_path: Path) -> None:
+    """FAILING-FIRST: update_rec rejects a dependencies element that is well-formed but names a
+    rec id absent from the corpus (rec-3307 referential half, PLAN-dependency-referential-integrity).
+
+    Referential existence resolves via its own make_reader/rec_by_id call, independent of the
+    _fetch_rec_from_reader patch used for update_rec's own current-record fetch (see
+    test_dependencies_accept_valid_list for why)."""
+    from scripts.ops_portal.write_validators import _rec_exists_memo
+
+    _rec_exists_memo.clear()
+    recs_file = tmp_path / "recs.jsonl"
+    fake_reader = MagicMock()
+    fake_reader.named.return_value = []  # every dependency target is absent
+
+    with (
+        patch("scripts.ops_data_portal._fetch_rec_from_reader", return_value=dict(_EXISTING)),
+        patch("src.common.ducklake_reader_client.make_reader", return_value=fake_reader),
+        patch("scripts.ops_data_portal._ducklake_write") as mock_write,
+        patch("scripts.ops_data_portal._sync_table"),
+        patch("scripts.ops_data_portal.RECS_JSONL", recs_file),
+    ):
+        from scripts.ops_data_portal import update_rec
+
+        with pytest.raises(ValueError, match="dependencies"):
+            update_rec("rec-4001", {"dependencies": ["rec-999999"]})
+    mock_write.assert_not_called()
+    _rec_exists_memo.clear()
+
+
+def test_dependency_on_closed_rec_is_accepted(tmp_path: Path) -> None:
+    """INVARIANT: a dependency naming a CLOSED rec is accepted -- existence resolves against the
+    full corpus via rec_by_id, not the open set (guards the backlog-health Class 3 mistake)."""
+    from scripts.ops_portal.write_validators import _rec_exists_memo
+
+    _rec_exists_memo.clear()
+    recs_file = tmp_path / "recs.jsonl"
+    fake_reader = MagicMock()
+    fake_reader.named.return_value = [{"id": "rec-1", "status": "closed"}]
+
+    with (
+        patch("scripts.ops_data_portal._fetch_rec_from_reader", return_value=dict(_EXISTING)),
+        patch("src.common.ducklake_reader_client.make_reader", return_value=fake_reader),
+        patch("scripts.ops_data_portal._ducklake_write", return_value={"ok": True}) as mock_write,
+        patch("scripts.ops_data_portal._sync_table"),
+        patch("scripts.ops_data_portal.RECS_JSONL", recs_file),
+    ):
+        from scripts.ops_data_portal import update_rec
+
+        result = update_rec("rec-4001", {"dependencies": ["rec-1"]})
+
+    assert result is True
+    mock_write.assert_called_once()
+    _rec_exists_memo.clear()
+
+
+def test_update_rec_rejects_nonconforming_tag(tmp_path: Path) -> None:
+    """tags joins _UPDATE_CONTENT_VALIDATED_FIELDS -- a non-conforming tag element is rejected
+    through update_rec's write-time gate (Decision 181 clause 2)."""
+    recs_file = tmp_path / "recs.jsonl"
+    with (
+        patch("scripts.ops_data_portal._fetch_rec_from_reader", return_value=dict(_EXISTING)),
+        patch("scripts.ops_data_portal._ducklake_write") as mock_write,
+        patch("scripts.ops_data_portal._sync_table"),
+        patch("scripts.ops_data_portal.RECS_JSONL", recs_file),
+    ):
+        from scripts.ops_data_portal import update_rec
+
+        with pytest.raises(ValueError, match="tags"):
+            update_rec("rec-4001", {"tags": ["T2.56"]})
+    mock_write.assert_not_called()
+
+
+def test_legacy_nonconforming_tag_still_updates(tmp_path: Path) -> None:
+    """Row-level grandfathering: an update touching another field on a rec that already carries a
+    legacy non-conforming tag still succeeds, because tags is absent from that call's `updates`."""
+    recs_file = tmp_path / "recs.jsonl"
+    legacy = {**_EXISTING, "tags": ["T2.17"]}
+    with (
+        patch("scripts.ops_data_portal._fetch_rec_from_reader", return_value=dict(legacy)),
+        patch("scripts.ops_data_portal._ducklake_write", return_value={"ok": True}) as mock_write,
+        patch("scripts.ops_data_portal._sync_table"),
+        patch("scripts.ops_data_portal.RECS_JSONL", recs_file),
+    ):
+        from scripts.ops_data_portal import update_rec
+
+        result = update_rec("rec-4001", {"status": "closed"})
 
     assert result is True
     mock_write.assert_called_once()

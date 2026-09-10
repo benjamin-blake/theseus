@@ -8,7 +8,7 @@ facade) runs before any write reaches the DuckLake writer.
 from __future__ import annotations
 
 import re
-from typing import Callable
+from typing import Callable, cast
 
 import yaml
 
@@ -90,6 +90,60 @@ def _build_array_element_format_validator(params: dict) -> Callable:
     return _check
 
 
+_rec_exists_memo: dict[str, bool] = {}
+
+
+def _rec_exists(rec_id: str, reader: object | None = None) -> bool:
+    """True iff rec_id resolves against the full corpus via rec_by_id (open, closed, or
+    superseded alike -- existence, not open-set membership; PLAN-dependency-referential-integrity).
+
+    Memoises POSITIVE results only: ids are writer-allocated, so an id absent at T and filed
+    at T+1 must not stay cached absent and reject a legitimate later dependency in the same
+    process. `_rec_exists_memo` is module-level and directly clearable by tests.
+
+    Reuses its own make_reader/rec_by_id shape (mirrors ops_data_portal._fetch_rec_from_reader's
+    shape) rather than importing that facade function: scripts.ops_portal is not allowed to
+    import scripts.ops_data_portal (.importlinter no-cycles-ops-data-portal-executor), so reusing
+    the facade helper here would be an out-of-scope-boundary edit to add a new ignore_imports
+    carve-out. `reader`, when supplied, is used as-is (Decision 88 invariant (i): the caller holds
+    ONE reader across a whole write's element list rather than one per element) -- a fresh reader
+    is constructed only when the caller has none to share. Loud-fails on an unreachable reader
+    (Decision 84 I-3/I-4) -- no error handling here, propagates as-is.
+    """
+    if _rec_exists_memo.get(rec_id):
+        return True
+    if reader is None:
+        from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
+
+        reader = cast(DuckLakeReader, make_reader())
+    found = bool(reader.named("rec_by_id", id=rec_id))  # type: ignore[attr-defined]
+    if found:
+        _rec_exists_memo[rec_id] = True
+    return found
+
+
+def _build_array_element_reference_validator(params: dict) -> Callable:
+    def _check(v: object, col: str) -> None:
+        if v is None:
+            return
+        if not isinstance(v, list):
+            raise ValueError(f"{col} must be a list of strings, got {type(v).__name__}")
+        elements = [str(x) for x in v]
+        # Decision 88 invariant (i): hold ONE reader across this whole element list rather than
+        # constructing one per element -- built only if at least one element isn't already
+        # positively memoised, so an all-memoised write never touches the reader at all.
+        reader = None
+        if any(not _rec_exists_memo.get(e) for e in elements):
+            from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
+
+            reader = cast(DuckLakeReader, make_reader())
+        absent = [e for e in elements if not _rec_exists(e, reader=reader)]
+        if absent:
+            raise ValueError(f"{col} elements must reference existing recs; absent: {absent!r}")
+
+    return _check
+
+
 def _build_min_length_validator(params: dict) -> Callable:
     bound = params.get("value")
     if not isinstance(bound, int):
@@ -131,6 +185,7 @@ _WRITE_TIME_VALIDATOR_BUILDERS: dict[str, Callable[[dict], Callable | None]] = {
     "path_syntax": _build_path_syntax_validator,
     "acceptance_lint": _build_acceptance_lint_validator,
     "array_element_format": _build_array_element_format_validator,
+    "array_element_reference": _build_array_element_reference_validator,
     "min_length": _build_min_length_validator,
     "expression": _build_expression_validator,
 }

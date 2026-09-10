@@ -98,6 +98,7 @@ from scripts.ops_portal.maintenance_ops import (  # noqa: F401
     enqueue_findings,
     find_open_postmortem_for,
     purge_postmortems_for,
+    repair_dependency_tokens,
     selftest_read,
     selftest_roundtrip,
 )
@@ -431,7 +432,7 @@ def _fetch_rec_from_reader(rec_id: str, profile: Optional[str] = None) -> Option
     return _sanitize_record(coerced) if coerced is not None else None
 
 
-_UPDATE_CONTENT_VALIDATED_FIELDS = frozenset({"context", "title", "acceptance", "file", "dependencies"})
+_UPDATE_CONTENT_VALIDATED_FIELDS = frozenset({"context", "title", "acceptance", "file", "dependencies", "tags"})
 
 
 def update_rec(
@@ -461,7 +462,8 @@ def update_rec(
         True on success.
 
     Raises:
-        ValueError: Invalid status, a content-validated field failing its write-time gate, or a
+        ValueError: Invalid status, an updated content-validated field
+            (context/title/acceptance/file/dependencies/tags) failing its write-time gate, or a
             closure_* kwarg supplied for a rec with no existing context_v2_json to stamp into.
         ClosureArtifactRequired: This write closes (bound set: closed/declined/superseded, from a
             not-already-bound status) an escape-classified rec with no resolvable

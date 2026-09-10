@@ -106,6 +106,99 @@ conditions:
 
 ---
 
+## Decision 185: The executor loop is a repo-owned ASL-subset definition; Step Functions is its cloud host; the leash is staged (amends Decision 39 and Decision 117) (Decided)
+
+```yaml
+number: 185
+status: Decided
+decided_date: "2026-09-04"
+amends: [39, 117]
+significance:
+  value: numbered_decision
+  justification: "Durable, reversal-relevant architecture commitment spanning CD.27, T4.1 and T4.15; a contract note cannot scope Decision 39; amendment_forms cannot amend two entries at once"
+```
+
+**Status:** Decided
+**Date:** 2026-09-04
+**Warehouse ID:** dec-185 (per Decision 84 backfill)
+
+**Problem:** The corpus reads Step Functions as the executor loop's DEFINITION (CD.27, T4.1, T4.11, CD.44), so the loop can only run on AWS, which Decision 184 forbids for the free tier. Decisions 39 and 75 read a repo-owned loop as frame-lock because the portability requirement was never recorded, and the rules that leash the executor live inside that AWS-side definition.
+
+**Intent:** The loop's definition is a committed document the repository owns; Step Functions executes it in the cloud tier and a repo-owned interpreter in the free tier; the executor cannot loosen its own leash on either.
+
+**Decision:** Amends Decision 39 (scoped) and amends Decision 117.
+1. Loop model. A typed Python builder renders a committed Amazon States Language document restricted to the named subset T4.19's contract records (Retry and Catch on deterministic states only, Decision 55; JSONPath only; lambda:invoke with waitForTaskToken; one named .sync long-task port; no Map, JSONata or intrinsics), enforced by a registered check. Two engines execute it: Step Functions natively in the cloud tier; a repo-owned Python interpreter with a restart-tolerant journal in the free tier (T4.22). The definition and its moto-oracle harness (T4.20) precede the T4.1 host. Python for both.
+2. Decision 39 scoped; Decision 100 read. Decision 39 governs the cloud host: Step Functions is the sole cloud-tier engine and its custom-DAG-engine rejection stands there; the free-tier interpreter is a scoped supersession admitted only where no managed orchestrator exists. Decision 100's premise, a reachable managed primitive, is absent on user-owned substrate, so it is not overridden. The definition is a literal committed document, the conscious frame Decision 75's constraints clause licenses.
+3. Leash, staged. The kernel path, rendered ASL, persona contracts and the leash's own implementation join Decision 117 boundary_patterns; a base-ref required check on a pull_request_target workflow that never checks out the PR head refuses executor-authored diffs to them (T4.21; Decision 143); kernel-side hard ceilings bound loop-policy values behind a raise-approved marker (Decision 128); the executor's file_pr and merge identity is a GitHub App absent from branch-protection bypass_actors (Decision 83). The released-version rule (the executor runs an installed kernel, never the tree it edits) binds at first_of(concurrency above 1, free-tier package ships) (T4.24).
+
+**Options considered:** Rust, Go, TypeScript, a CDK/jsii-authored definition, compiled-engine hybrids, Java Step Functions Local and the TestState API -- rejected: every loop call crosses into Python (LiteLLM, DuckDB, moto), the governance net is Python-only, only Python has a maintained ASL interpreter, the Rust audit's RLE-02/03 apply, and as oracles neither runs in-process under --disable-socket without AWS credentials (T4.20 c7). moto's interpreter as the free-tier engine behind a journal wrapper -- deferred to T4.22: a test double with mock-config semantics, antlr and jsonpath runtime dependencies for end users, and no restart journal. Hand-authored ASL in Terraform -- rejected: untestable before deploy, free to use AWS-only constructs. A local engine before T4.1 -- rejected: M-L delay for no MVP benefit. Full record in the plan PR.
+
+```yaml reversal-conditions
+decision: 185
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: subset-outgrown
+    kind: manual
+    description: "A construct outside the subset is needed: amend the allowlist, engine follows."
+  - id: app-identity-infeasible
+    kind: manual
+    description: "Non-bypass App identity infeasible: base-ref check is audit-only; released-version rule moves into MVP."
+  - id: moto-engine-adoptable
+    kind: manual
+    description: "A maintained standalone Python ASL interpreter becomes adoptable: T4.22 is an adoption, not a build."
+```
+
+**Related:** Decision 184 (the boundary this architecture serves), Decision 39 (amended, scoped), Decision 117 (amended), Decisions 55, 75, 83, 100, 128, 143, 173; CD.27, CD.38, CD.44; rec-2827, rec-3218; audits ad02653, 7d57a0d, 842ff92.
+
+---
+
+## Decision 184: Open-core local-first platform -- the free tier is this repository, cloud services are adapters behind ports, GitHub Actions is the verdict plane and never persona compute (Decided)
+
+```yaml
+number: 184
+status: Decided
+decided_date: "2026-09-04"
+significance:
+  value: numbered_decision
+  justification: "Durable, reversal-relevant product-boundary commitment (open-core, ports, Actions class, credential policy); no contract owns the boundary and no single prior entry can be amended to carry it"
+```
+
+**Status:** Decided
+**Date:** 2026-09-04
+**Warehouse ID:** dec-184 (per Decision 84 backfill)
+
+**Problem:** rec-3386 records the operator's product direction: an open-core platform whose governed loop runs on user-owned substrate with no Theseus cloud, so that a user with an LLM API key and a GitHub token can install it and go. No entry records that requirement, so the corpus optimised every substrate choice for the operator's cloud deployment alone, and hosted GitHub runners were still a candidate for persona compute.
+
+**Intent:** Theseus is open-core: this repository is the free tier and runs the full governed loop locally; the operator's cloud deployment runs the same loop through adapters; the paid management plane is a separate repository importing the platform.
+
+**Decision:**
+1. Boundary. The free tier IS the platform (this repository, BUSL-1.1); the paid management plane is a separate repository importing it (Decision 178). The AWS adapters stay here today; whether they remain open or move private is OPEN (reversal stanza), never pre-decided.
+2. Port rule. Every cloud service is reached through a named port; the AWS implementation is one adapter; each port has a tracked local-adapter item (T4.23, T4.24). DuckLake stays the sole ops-store backend per deployment (Decision 84 I-1; a local file catalog is the same format, Decision 78); the closed named-verb boundary (Decision 81) becomes a module boundary locally. NS.3's cloud-for-orchestration detail and NS.5's Function URL transport describe the cloud tier; the typed-verb surface and compute-where-it-belongs principle are what both tiers keep (north_star as amended).
+3. Actions workload class. GitHub Actions is the verdict plane in all modes (CD.38) and never persona compute: persona sessions are general-computing-shaped workloads under the Actions usage policy's burden clause, with suspension risk; the safe set is event-triggered repo-lifecycle work. hosted_cli_runner leaves T4.15's arms. Scheduled-agent placement stays T4.12 cD's call. Developing commercial software ON Actions does not engage the reselling clause; customer workloads on Actions minutes would.
+4. Credential policy. Consumer-subscription OAuth is not a Theseus product credential in any tier; API keys via LiteLLM are the only product inference lane (roles per Decision 173). Operator use of Claude Code surfaces is first-party, out of product scope; Decision 116's scheduled-agent lane is unchanged.
+5. Licence. BUSL-1.1 stands (Decision 171); the Additional Use Grant's production carve-out for the free tier is undecided and precedes any free-tier release.
+
+```yaml reversal-conditions
+decision: 184
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: adapter-residency
+    kind: manual
+    description: "Adapter residency decided: amend clause 1 and the Decision 171 grant."
+  - id: no-free-tier
+    kind: manual
+    description: "No free-tier work within two quarters: drop T4.22-T4.24; Decision 185 stands as Decision 39 future-state."
+  - id: actions-policy
+    kind: manual
+    description: "GitHub allows agent sessions explicitly, or CI leaves hosted runners: reopen clause 3 and T4.15 c10."
+```
+
+**Related:** Decision 185 (the loop definition and leash this boundary requires), Decisions 78, 81, 84, 116, 171, 173, 178; CD.38, CD.44; rec-3386.
+
+---
+
 ## Decision 183: Two heal verbs for a red sandbox record, one routing rule -- the acknowledge-and-retry dispatch becomes total (a guard-routed fresh plan at HEAD reaches tf-gated-apply); Reconcile heals at the red commit (amends Decision 126 point 1's reconcile intent; extends Decision 158's Environment-reach accounting) (Decided)
 
 ```yaml
@@ -4209,6 +4302,8 @@ closure session), audits/unclosed-loops-44ef5c6.yaml ULF-05.
 > (`terraform/`, `.tf`, `.github/workflows/`, etc.) added to `capabilities.yaml` since. Recorded per
 > this Decision's own condition; routed to the operator for the lockstep fix, not resolved here.
 
+> **Amended by Decision 185 (2026-09-04):** the enforcement mechanism is no longer "unchanged from Decision 44": boundary_patterns gain the executor loop kernel path (src/executor_loop/), the rendered ASL, docs/contracts/personas/, docs/contracts/executor-loop-policy.yaml, docs/contracts/executor-personas.yaml, config/agent/executor/personas.yaml, .github/CODEOWNERS and the leash's own implementation (executor_boundary_guard, scripts/checks/executor/); a base-ref required check refuses executor-authored diffs to them (T4.21); validate_executor_boundary is to become diff-seeded and fail-closed (T4.21 c5; rec-3218); and the executor's merge identity must be a GitHub App absent from branch-protection bypass_actors (Decision 83), an invariant of this boundary.
+
 ---
 
 ## Decision 116: Scheduled-agent provider routing -- routine/non-agentic agents to LiteLLM (DeepSeek), judgment/agentic agents to claude -p (Supersedes Decision 49; amends CD.28's scheduled-agent clause) (Decided)
@@ -4749,6 +4844,21 @@ Key constraints (binding):
   `ops_recommendations` (Decision 84: the ducklake_writer owns the keyspace).
 - Queue-wide relevance surfacing serves the warmed read-cache only -- no per-session warehouse
   re-fetch (Decision 88).
+  [Amendment 2026-09-07, PLAN-backlog-health-detection: this clause is SCOPED to the interactive
+  read-time gate (scripts/session_preflight.py's correlation engine, reading from the warmed local
+  cache) -- it was never a ceiling on every relevance consumer. scripts/backlog_health's scheduled
+  monitor (Decision 62 2026-06-16 amendment / CD.12, alarm-not-gate) is a SECOND, also-sanctioned
+  venue: one structural DuckLake read per episode (census.py's single current_state call, never a
+  per-rec re-fetch), then LOCAL evaluation of exactly two rec_relevance.py signals
+  (target_existence, open_duplicate) per open rec -- a measured two-attach-per-episode pattern
+  with zero incremental warehouse egress, distinct from running the acceptance-probe signal
+  queue-wide (which stays forbidden; see the acceptance_probe signal_definition below).
+  Separately: docs/contracts/recommendation-relevance.yaml's two "never queue-wide (Decision 88)"
+  clauses (signal_definitions.acceptance_probe.signal and constraints[1]) are themselves a
+  MIS-CITE -- Decision 88 is the Neon catalog-EGRESS budget, and the acceptance probe those
+  clauses constrain is a LOCAL `subprocess.run(shell=True)` with no warehouse round-trip at all;
+  the real owner of "on-demand per-rec only, never queue-wide" is THIS decision (Decision 103),
+  not Decision 88. Both clauses are corrected in the same PR as this annotation.]
 
 **Implementation (T3.8, landed 2026-06-30):**
 `scripts/rec_relevance.py` evaluator (deterministic-first: acceptance probe -> target-existence
@@ -6864,6 +6974,8 @@ This scales from the current 5 agents to 30+ workflows without architectural cha
 **Decision status:** Decided — April 2026
 
 > **Update (2026-08-02):** ESB-10 (audit ad02653) -- CD.27's "Regular Lambdas are deterministic-only" discipline point is scoped to the executor's ITERATIVE persona loops (CD.27 personas satisfying P1/P2/P3); it does not narrow this Decision's `agent` state type for single-shot LLM-backed regular Lambdas, which continues to govern unchanged. This annotation does not amend the Decision above.
+
+> **Amended by Decision 185 (2026-09-04):** scoped, not superseded. "Custom DAG engine: Rejected" and "Each workflow is a Step Function state machine" govern the CLOUD host only: the executor loop's definition is a repo-authored ASL-subset document (the "Terraform-generated from YAML registry" future-state above, realised as a typed Python builder), executed natively by Step Functions in the cloud tier; a repo-owned interpreter is admitted solely as the free-tier host where no managed orchestrator exists (Decision 185 clause 2). Step Functions remains the sole cloud-tier engine.
 
 ---
 

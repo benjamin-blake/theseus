@@ -28,6 +28,7 @@ SCANNED_PATHS: tuple[str, ...] = (
     "scripts/executor/jsonl_store.py",
     "scripts/executor/branch_lifecycle.py",
     "scripts/ducklake_smoke/lambda_ops_gates.py",
+    "scripts/backlog_health/escalate.py",
 )
 
 

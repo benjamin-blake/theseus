@@ -150,6 +150,20 @@ class TestMapSourceToTest:
         assert map_source_to_test(ROOT / "scripts" / "roadmap" / "plan_audit.py") == ROOT / "tests" / "test_plan_audit.py"
         assert map_source_to_test(ROOT / "scripts" / "roadmap" / "find_plan.py") == ROOT / "tests" / "test_find_plan.py"
 
+    def test_maps_backlog_health_package_to_flat_homes(self) -> None:
+        """scripts/backlog_health/<stem>.py (a new nested subpackage, PLAN-backlog-health-detection)
+        resolves to tests/test_backlog_health_<stem>.py via _NESTED_SUBPACKAGE_TEST_PREFIX -- the
+        FLAT-HOME family map, not the _ALL_MIRROR_TARGET_HOMES mirror-package route (that
+        membership is a frozenset documented as never mutated)."""
+        assert (
+            map_source_to_test(ROOT / "scripts" / "backlog_health" / "census.py")
+            == ROOT / "tests" / "test_backlog_health_census.py"
+        )
+        assert (
+            map_source_to_test(ROOT / "scripts" / "backlog_health" / "probe.py")
+            == ROOT / "tests" / "test_backlog_health_probe.py"
+        )
+
     def test_returns_none_for_unmapped_path(self, tmp_path: Path) -> None:
         """Paths not under src/ or scripts/ return None."""
         source = tmp_path / "docs" / "README.py"

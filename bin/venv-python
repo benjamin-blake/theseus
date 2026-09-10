@@ -7,13 +7,35 @@
 # run venv-less (requirements-fast.txt into a hosted interpreter, to avoid installing
 # the full dependency set on disk), so a hard .venv-or-fail-loud wrapper was
 # incompatible with those CI jobs' deliberate design. When .venv is absent, fall back to the first
-# PATH interpreter that can import the sentinel dep (pydantic, shipped by both
-# requirements.txt and requirements-fast.txt); if none qualifies, stay fail-loud
-# (Decision 55) -- never silently substitute a depless interpreter.
+# PATH interpreter that BOTH imports the sentinel dep (pydantic, shipped by
+# requirements.txt and requirements-fast.txt) AND runs the repo's target minor
+# version; if none qualifies, stay fail-loud (Decision 55) -- never silently
+# substitute a depless OR off-version interpreter.
+#
+# Why the version half exists: the sentinel alone admits ANY interpreter carrying
+# pydantic, and a fresh cloud dev container (a GitHub Codespace, observed at 3.14.2)
+# ships a default python far ahead of the 3.12 that every CI job pins. That
+# interpreter imports pydantic happily, so the pre-existing sentinel-only fallback
+# selected it silently and every downstream ruff/mypy/pytest divergence from the
+# gate read as a code defect rather than an environment one. The .venv path is
+# deliberately NOT probed: it is a deliberate operator artifact rather than an
+# automatic choice, and this wrapper is on the hook path fired for every harness
+# edit, where an extra interpreter start-up per invocation is not free.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SENTINEL_DEP="pydantic"
+
+# The repo's target minor. Single source of truth for the FALLBACK gate only; pinned
+# to pyproject.toml's [tool.mypy] python_version and the setup-python pins in
+# .github/workflows/*.yml by tests/test_venv_python.py, so bumping the repo's Python
+# without bumping this line fails that test rather than drifting silently.
+REQUIRED_PYTHON_MINOR="3.12"
+
+# Exit code the qualify-probe uses for "sentinel imports, but wrong minor" -- distinct
+# from any nonzero pytest/python status, so the two failure modes stay separable in a
+# single probe rather than costing every candidate two interpreter start-ups.
+_WRONG_VERSION_STATUS=3
 
 case "$(uname -s)" in
     MINGW*|MSYS*|CYGWIN*)
@@ -28,16 +50,26 @@ esac
 
 if [ ! -f "$PYTHON" ]; then
     RESOLVED=""
+    OFF_VERSION=""
     for candidate in "${FALLBACK_CANDIDATES[@]}"; do
-        if command -v "$candidate" >/dev/null 2>&1; then
-            if "$candidate" -c "import $SENTINEL_DEP" >/dev/null 2>&1; then
-                RESOLVED="$candidate"
-                break
-            fi
+        command -v "$candidate" >/dev/null 2>&1 || continue
+        probe_status=0
+        "$candidate" -c "import sys, $SENTINEL_DEP; raise SystemExit(0 if '%d.%d' % sys.version_info[:2] == '$REQUIRED_PYTHON_MINOR' else $_WRONG_VERSION_STATUS)" >/dev/null 2>&1 || probe_status=$?
+        if [ "$probe_status" -eq 0 ]; then
+            RESOLVED="$candidate"
+            break
+        fi
+        if [ "$probe_status" -eq "$_WRONG_VERSION_STATUS" ]; then
+            found_minor="$("$candidate" -c "import sys; print('%d.%d' % sys.version_info[:2])" 2>/dev/null || true)"
+            OFF_VERSION="$OFF_VERSION $candidate=${found_minor:-unknown}"
         fi
     done
     if [ -z "$RESOLVED" ]; then
-        echo "ERROR: venv Python not found at $PYTHON, and no PATH interpreter can import '$SENTINEL_DEP' -- run: pip install -r requirements.txt in $REPO_ROOT" >&2
+        if [ -n "$OFF_VERSION" ]; then
+            echo "ERROR: venv Python not found at $PYTHON, and no PATH interpreter runs Python $REQUIRED_PYTHON_MINOR (the version every CI job pins). Found:${OFF_VERSION}. Create a matching venv -- e.g. uv venv --python $REQUIRED_PYTHON_MINOR .venv && uv pip install -r requirements.txt -- in $REPO_ROOT" >&2
+        else
+            echo "ERROR: venv Python not found at $PYTHON, and no PATH interpreter can import '$SENTINEL_DEP' -- run: pip install -r requirements.txt in $REPO_ROOT" >&2
+        fi
         exit 1
     fi
     PYTHON="$RESOLVED"

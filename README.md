@@ -6,9 +6,9 @@ This file is a curated projection of `CLAUDE.md` and `docs/ROADMAP-PLATFORM.yaml
 
 - **NS.1 - Storage is durable; compute is interchangeable.** S3 + open table format at every scale from GB to PB (DuckLake for the operational data plane per Decision 78). Engines are swappable per workload; data is not migrated to swap engines.
 - **NS.2 - Account ownership reflects IP ownership.** Personal AWS account, not shared work account. AUP, IP, and business-continuity reasons; cost is a tiebreaker.
-- **NS.3 - Compute lives where it economically belongs.** Hybrid by design. Cloud for orchestration and state; local rig for CPU-bound batch where home hardware otherwise idles.
+- **NS.3 - Compute lives where it economically belongs.** Hybrid by design. Cloud for orchestration and state; local rig for CPU-bound batch where home hardware otherwise idles. (cloud tier; the free tier runs orchestration and state locally, Decision 184 clause 2)
 - **NS.4 - The repo is for agents.** Documentation, configuration, and tooling are optimised for agent consumption. Narrative prose is a side effect, not an output.
-- **NS.5 - Self-describing typed tools over HTTPS, schema-as-code.** Agent surface is verbs (log, update, query, describe) exposed via Lambda Function URLs with AWS_IAM auth. Schema is Pydantic; YAML is generated where needed.
+- **NS.5 - Self-describing typed tools over HTTPS, schema-as-code.** Agent surface is verbs (log, update, query, describe) exposed via Lambda Function URLs with AWS_IAM auth. Schema is Pydantic; YAML is generated where needed. (cloud-tier adapter; the free tier reaches the same verbs in-process, Decision 184 clause 2)
 
 ## What This Repo Is
 
@@ -24,9 +24,9 @@ The operational data plane is a single lakehouse; tenants are distinguished by a
 | CI / OIDC | [live] | GitHub-hosted runners; OIDC to personal AWS account; validate.py is the single gate |
 | Instruction Architecture (5-layer) | [live] | CLAUDE.md -> PROJECT_CONTEXT.md -> commands -> skills -> executor prompts |
 | Environment Taxonomy | [live] | Platform environments (sandbox/SIT/PROD) and their apply guards; defined by Decision 77 |
-| Autonomous Executor | [partial] | Step Functions + Lambda recommendation-queue consumer; executor freeze active pending CD.17 / T4.2 reversal |
+| Autonomous Executor | [partial] | repo-owned loop definition (ASL subset) hosted on Step Functions; executor freeze active pending CD.17 / T4.2 reversal |
 | Scheduled Agents | [partial] | Lambda dispatcher disabled May 2026; migrating to Claude Code scheduled-agent model |
-| Lambda Tooling Platform | [planned - T0.7+] | Per-Lambda manifests, Function URL auth, Step Functions state machine per rec |
+| Lambda Tooling Platform | [planned - T0.7+] | Per-Lambda manifests, Function URL auth, rendered loop definition per rec on Step Functions |
 | DuckLake Lakehouse | [planned - T2.16+] | DuckDB + DuckLake catalog on Neon; sole backend for the ops query path |
 | Verification / Validation Kernel | [planned - T3.1+] | Cross-session test harness with VP results tracked in ops telemetry |
 
