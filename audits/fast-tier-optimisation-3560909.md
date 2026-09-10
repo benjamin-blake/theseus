@@ -2,6 +2,41 @@
 
 Base SHA: `35609091fd8482d3116e4b360c6ec2bc9ab25b90`
 
+## Established context
+
+- The working branch is `claude/fast-tier-optimisation`. It was rebased onto `origin/main` at
+  `a740b93` before Phase 1 began. The audit base remains pinned at
+  `35609091fd8482d3116e4b360c6ec2bc9ab25b90`; rebasing the working branch does not move the corpus.
+- This file is the cross-session state file. The committed Phase 0 section is complete and
+  authoritative, so later phases must not re-derive, re-measure or re-verify it. Each phase ends in
+  a commit pushed to draft PR #1131, and a session assigned one phase stops at that checkpoint.
+- Root `AGENTS.md`, `scripts/CLAUDE.md`, `tests/CLAUDE.md`, `docs/contracts/git-ops.yaml`, and the
+  audit brief bind this work. In particular: use `bin/venv-python`; keep public-repository data free
+  of credentials and operational identifiers; place the standalone harness below
+  `scripts/checks/deps/` with a mirrored test; keep it out of the registered validation-check
+  surfaces; remain within the 500-SLOC limit; and add an automated test for every behavior change.
+- The pre-commit hook is installed. The repository Python 3.12 environment works, and the harness
+  builds content-addressed environments from each replay tree's `requirements-fast.txt` and
+  `requirements-dev.txt` to reproduce the dependency boundary of `pr-validate`. GitHub PR,
+  workflow and artifact reads worked through the GitHub MCP surface; Phase 1 required no AWS
+  access.
+- The Phase 1 corpus and its SHA evidence live in
+  `scripts/checks/deps/fast_tier_corpus.yaml`. Stratum I is the 16 most recent first-parent merged
+  PRs strictly before the pinned base whose diff contains Python below `scripts/`, `src/` or
+  `tests/`. Stratum P is eight plan-to-implementation pairs with the plan-time prediction and the
+  implementation run's archived `budget.test_s` and `n_selected` recorded separately.
+- Historical replay means the pinned PR diff is applied to a worktree at that PR's merge parent,
+  then passed as status/path tuples to that tree's selector. Replaying the same paths against the
+  current tree is explicitly not equivalent. The harness invokes that tree's real
+  `run_pytest_diff`, adds JUnit and native node-ID capture externally, and compares the union with
+  `deferred` and `not-collected` as distinct verdicts.
+- The mutation probe is not a Phase 1 deliverable. Section 8.3 defers it until a candidate first
+  edits a test or drops an executed node. Phase 1 contains no performance diagnosis and changes no
+  fast-tier behavior.
+- The Phase 0 capability deviation remains durable context: the `agent_platform` AWS assume-role
+  chain was unavailable. AWS and warehouse operations remain out of scope, and no Phase 1 evidence
+  depends on them.
+
 ## Phase 0 baseline
 
 The baseline uses 13 implementation-oriented `pr-validate` runs from 2026-09-07 through
@@ -57,6 +92,26 @@ Evidence came from GitHub Actions job and step timestamps, all 13 `selection-man
 the 30 most recent reachable job logs for pip-cache classification, and the recursive Git tree at
 each artifact SHA for the historical corpus census. The governing formula was checked against
 `scripts/checks/deps/selection_budget.py` and the job structure against `.github/workflows/ci.yml`.
+
+## Phase 1 harness
+
+Complete. `scripts/checks/deps/fast_tier_harness.py` validates the pinned two-stratum manifest,
+reconstructs each Stratum I implementation tree from its merge parent and merge diff, builds the
+tree's fast-tier dependency environment, drives the historical selector and real pytest-diff path,
+records JUnit plus native pytest node IDs, and compares baseline/candidate verdicts across the union
+of nodes. Per-side captures also retain the selection manifest, deferral map, gate failures,
+commands, requirement hashes, environment fingerprint and interpreter. Gate-failure changes are
+included in the reported difference count.
+
+Stratum I's same-ref smoke replay of `pr-1120` exercised the real path twice in the isolated
+environment, captured 100 union node IDs and both JUnit reports, and reported zero node or gate
+differences. Stratum P is emitted separately: all eight pinned plan-to-implementation pairs are
+reported, two predicted the observed selection breadth exactly, and none contained the observed
+`budget.test_s` within its recorded predicted test-half range. These are calibration outputs, not a
+performance diagnosis.
+
+The focused harness suite passes 56 tests with 100% source coverage. This is an instrumentation
+check only; no candidate exists in Phase 1, so no optimisation or recall conclusion is drawn here.
 
 ## Phase 2 diagnosis
 
