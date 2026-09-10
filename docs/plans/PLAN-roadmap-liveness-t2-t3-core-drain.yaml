@@ -1,0 +1,242 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "roadmap-liveness-t2-t3-core-drain"
+intent: >-
+  Drain the T2/T3 roadmap-liveness toxic core (rec-3579) by correcting the three stale blocking
+  relations that close it, so the DuckLake-maintenance -> ops-table -> telemetry critical path can be
+  planned against again and the shrink-only ratchet tightens by seven ids.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-roadmap-liveness-t2-t3-core-drain.yaml
+phase: >-
+  Soft-warn exception category ad_hoc_rec -- resolves rec-3579 and claims no tier_item slice.
+  Corrects declared blocking edges on in_progress items T2.18 and T2.26 and not_started item
+  T3.20. closes_criteria is EMPTY and no criterion is closed: this plan removes stale blocking
+  edges and re-grounds criterion text, both sanctioned roadmap-data edits, and flips exactly one
+  criterion status (T3.20 c5 -> rehomed; precedent PLAN-t5-3-scheduled-surface-rehome.yaml, a
+  closes_criteria-empty roadmap-only plan whose met_by is likewise a tier_item id, so no plan slug
+  is misattributed). T2.18 c2 stays OPEN -- see constraints.
+scope:
+  - file: docs/ROADMAP-PLATFORM.yaml
+    action: Modify
+    purpose: "Drop T2.18 c2's stale blocked_by and re-ground its text (status stays open, no split); drop the T2.26 c2/c3/c8 back edges; rehome T3.20 c5; annotate CD.40 with affects plus a discipline_point"
+  - file: config/roadmap_liveness_baseline.yaml
+    action: Modify
+    purpose: Shrink by the seven drained ids; refresh the header count and owning-drain-rec prose
+  - file: docs/contracts/roadmap-liveness.yaml
+    action: Modify
+    purpose: amendment_log entry and the now-stale owning-drain-rec prose in baseline_grammar
+  - file: docs/contracts/exit-criteria-ledger.yaml
+    action: Modify
+    purpose: blocked_by governance note (foreign-ratification anti-pattern) with a declared residual
+  - file: tests/checks/roadmap/test_validate_roadmap_liveness.py
+    action: Modify
+    purpose: Live-roadmap regression asserting the seven drained ids appear in no toxic SCC
+bundled_recommendations:
+  - rec-3579
+followon_recs:
+  - rec-3717
+  - rec-3713
+  - rec-3714
+  - rec-3715
+  - rec-3716
+infrastructure_dependencies: []
+acceptance_criteria:
+  - The live roadmap reports exactly one toxic SCC of eleven ids; none of CD.40, T2.18, T2.19, T2.26, T2.36, T3.2, T3.20 appears in any toxic SCC
+  - config/roadmap_liveness_baseline.yaml carries exactly the eleven T4-core ids and validate_roadmap_liveness reports no violation on any of legs A(a), A(b), A(c), A(d), B or C
+  - Every removed edge passes the harm-sentence test in its own criterion text -- the text names the artefact that supersedes the original citation, so removal is evidenced re-sequencing and not deletion of an inconvenient constraint (VP step 6 asserts each citation literal; VP step 4 proves no re-grounded text merely dodged a leg C phrase)
+  - T2.18 c2 carries no blocked_by and remains status open with no met_by; T2.26 c2/c3/c8 carry no blocked_by; T3.20 c5 is rehomed with met_by T2.26; CD.40 carries affects [T2.26] and a partial-realization discipline_point but stays state pending with no realization_evidence
+  - Superseded re-grounding clauses are REPLACED, never appended to, and docs/ROADMAP-PLATFORM.yaml stays under the Decision 114 10,000-line ceiling with headroom to spare (VP step 10 asserts growth <= 40 lines against origin/main; 9,678 lines today, 322 of headroom)
+  - No tier_item status changes and no criterion is closed; the ONLY criterion status change in the whole diff is T3.20 c5 -> rehomed -- asserted as an exact set against origin/main by VP step 10, which also proves T2.18 c2 kept status open with no met_by and CD.40 gained no realization_evidence
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Census the live blocking graph after the re-sequencing
+    command: bin/venv-python -m scripts.platform_roadmap_liveness --report
+    expected: "Output reads 'Toxic SCCs: 1' and 'Toxic node ids (11): CD.11, CD.27, CD.38, CD.43, T4.1, T4.13, T4.2, T4.3, T4.4, T4.9, T4.9a'. Exit status 0."
+    fix_if: Any of the seven T2/T3 ids still appears -- a back edge survives. Re-run the per-edge ablation to find which criterion still carries a blocked_by into the ring; note that a criterion marked met or rehomed still emits its edge today (rec-3713), so a status flip alone never prunes one.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: The eleven-id census is the transient measured stock of rec-3580's still-undrained T4 core and will shrink when that core drains. Pinning it as a standing guard would red the build on exactly the progress this ratchet exists to reward. Step 2 graduates the durable half of this assertion.
+  - step: 2
+    phase: pre-deploy
+    action: Exercise the live-roadmap drain regression -- none of the seven drained ids may reappear in a toxic SCC
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_roadmap_liveness.py -k DrainedCores -q
+    expected: All selected tests pass, exit status 0, and at least one test is selected.
+    fix_if: The new case fails, meaning a later roadmap edit re-closed the ring. Find the completion-demanding edge and re-sequence it against documentary evidence; never satisfy this by editing the baseline, which leg A(c) refuses anyway.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: roadmap-liveness-t2-t3-core-drained
+  - step: 3
+    phase: pre-deploy
+    action: Run the registered check against the working tree, exercising legs A(a), A(b), A(d) and B
+    command: bin/venv-python -c "from scripts.checks.roadmap.validate_roadmap_liveness import validate_roadmap_liveness; f=[]; validate_roadmap_liveness(f); raise SystemExit(1 if f else 0)"
+    expected: "Prints 'PASS: 11 measured toxic id(s), 11 baselined.' and exits 0."
+    fix_if: Leg A(d) names a drained id still present in the baseline (remove it), or leg B names T3.20 c5's rehome target as carrying no open criterion (T2.26 must retain c2/c3/c7/c8 open). If the output carries a check-wide SKIP, the roadmap did not load and this step proved nothing -- exit status alone is not sufficient evidence here.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: This invokes validate_roadmap_liveness, already a --pre-tier registered check gated on docs/ROADMAP-* and config/roadmap_liveness_baseline.yaml. Graduating it would register a second standing invocation of the same check rather than a discrimination this plan newly introduces.
+  - step: 4
+    phase: pre-deploy
+    action: Exercise leg C against origin/main as diff base -- no re-grounded criterion text may pair a blocking phrase with an unstructured live id mention
+    command: git fetch origin main --quiet && bin/venv-python -c "from scripts.checks.roadmap.validate_roadmap_liveness import _leg_c_prose_blocking_edges; from scripts.platform_roadmap_state import load; from scripts.checks import _common; v=_leg_c_prose_blocking_edges(load(_common.ROOT / 'docs/ROADMAP-PLATFORM.yaml')); print(v); raise SystemExit(1 if v else 0)"
+    expected: Prints [] and exits 0, with NO 'SKIP (leg C only)' line in the output -- a skip returns [] identically and would prove nothing (Decision 170).
+    fix_if: "A violation names a re-grounded criterion -- its new text pairs a grammar phrase with a NON_TERMINAL id. All twelve phrases: 'blocked by', 'blocked on', 'gated on', 'gated by', 'must be ratified', 'requires .* ratified', 'requires .* complete', 'cannot .* until', 'before .* is ratified', 'before .* ratifies', 'before .* completes', 'before .* is complete'. They are REGEXES applied with re.search against the ENTIRE lowercased criterion text, and a folded YAML scalar collapses to one line -- so 'requires .* complete' can match across an arbitrarily long clause whose two halves look unrelated. Rewrite the note to state ownership and disposition without a blocking phrase; do NOT re-add a blocked_by to silence it. If the SKIP line appears instead, origin/main was unreachable and this step proved nothing -- restore the ref and re-run."
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: The command is a command_exit_zero shape, but it is a second invocation of leg C inside the already-registered validate_roadmap_liveness, which PR CI runs against this diff via its docs/ROADMAP-* pre_glob. Graduating it would register a duplicate standing guard over the same leg rather than a new discrimination.
+  - step: 5
+    phase: pre-deploy
+    action: Assert rec-3579's own acceptance predicate over the shrunken baseline
+    command: "! grep -qE '^  - (T2\\.18|T2\\.19|T2\\.26|T2\\.36|T3\\.2|T3\\.20|CD\\.40)$' config/roadmap_liveness_baseline.yaml"
+    expected: Exit status 0 -- no drained id matches.
+    fix_if: "A drained id is still listed. Remove it; the ratchet is shrink-only so removal is always permitted and leg A(d) fails the PR until it happens. GRADUATION-TIME NOTE: this command's leading ! is NOT expressible in the command_exit_zero slot (CommandExitZeroCheck runs argv with no shell), so the registry shard must use grep_count with operator eq and count 0 -- and its pattern needs a (?m) prefix, because GrepCountCheck calls re.findall without re.M, so the ^...$ anchors would otherwise match zero unconditionally and produce a vacuously green guard."
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: roadmap-liveness-t2-t3-core-absent-from-baseline
+  - step: 6
+    phase: pre-deploy
+    action: Harm-sentence evidence sweep -- the superseded blocking claim is gone and every removed edge's criterion cites the artefact that supersedes it
+    command: "! grep -q 'not yet decided' docs/ROADMAP-PLATFORM.yaml && [ \"$(grep -c 'CD.40 binding disposition: retire; T2.26 doer' docs/ROADMAP-PLATFORM.yaml)\" = 3 ] && grep -q 'cleared gate: T2.26 c1 met 2026-07-04' docs/ROADMAP-PLATFORM.yaml && grep -q 'ops_session_log clause realizes early via T2.26' docs/ROADMAP-PLATFORM.yaml"
+    expected: Exit status 0 -- the superseded phrase is absent, the disposition citation appears on exactly the three T2.26 criteria, T2.18 c2 carries its cleared-gate citation, and CD.40's discipline_point carries its partial-realization citation.
+    fix_if: The count is not 3, or a citation is missing. An edge was removed without recording the evidence that supersedes its original citation, which is the exact shape leg C's remedy text calls forbidden weakening -- add the citation rather than relaxing this assertion.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: The literals asserted here are this diff's own citation tokens. A standing guard on their spelling would not catch a future recurrence phrased differently, and would fail any legitimate later compaction of these same criteria under Decision 147. Step 2 carries the durable structural guard instead.
+  - step: 7
+    phase: pre-deploy
+    action: Roadmap schema, referential integrity and the Decision 114 line ceiling still hold
+    command: bin/venv-python -c "from scripts.checks.roadmap.validate_platform_roadmap import validate_platform_roadmap; f=[]; validate_platform_roadmap(f); raise SystemExit(1 if f else 0)"
+    expected: Exit status 0 with no failures reported.
+    fix_if: "A load-time _validate_graph failure, an unresolvable affects ref, or a line-ceiling breach -- compact the criterion prose in place, never raise the ceiling. NOTE on which rule fires: check (i) is guarded by crit.status == 'met' and never examines a rehomed criterion, so T3.20 c5's met_by is gated ONLY by _validate_graph rule (h), which requires merely 'resolves to a known tier_item id' -- a wrong value such as T2.19 would pass here. VP step 10 is the only gate that pins it to T2.26."
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: validate_platform_roadmap is already a registered --pre check gated on docs/ROADMAP-*. Graduating a second invocation adds no discrimination beyond what PR CI already applies to this diff.
+  - step: 8
+    phase: pre-deploy
+    action: Roadmap-domain and detector suites still pass against the edited YAML
+    command: bin/venv-python -m pytest tests/checks/roadmap tests/test_platform_roadmap_liveness.py -q
+    expected: All tests pass, exit status 0, no skips.
+    fix_if: A roadmap-domain test regressed. The failure names the assertion -- fix the roadmap data, never the assertion.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: A test_selector shape, but both suites already run in the registered pytest tier on every PR touching them. Graduating a whole-directory selector would register a standing duplicate of that tier rather than guard a behaviour this plan introduces; step 2 graduates the one new assertion.
+  - step: 9
+    phase: pre-deploy
+    action: Contract drift -- both amended contracts carry a matching amendment_log entry and stay conformant
+    command: 'git fetch origin main --quiet && bin/venv-python -c "import subprocess,yaml; from scripts.checks.contracts.validate_contract_drift import validate_contract_drift; f=[]; validate_contract_drift(f); L=lambda s: len((yaml.safe_load(s)[''fields''][''blocked_by''].get(''amendment_log'') or [])); base=L(subprocess.run([''git'',''show'',''origin/main:docs/contracts/exit-criteria-ledger.yaml''],capture_output=True,text=True).stdout); head=L(open(''docs/contracts/exit-criteria-ledger.yaml'').read()); f += [] if head > base else [''exit-criteria-ledger fields.blocked_by.amendment_log did not grow: %d -> %d'' % (base, head)]; print(f); raise SystemExit(1 if f else 0)"'
+    expected: Exit status 0 with no failures reported.
+    fix_if: "validate_contract_drift names roadmap-liveness.yaml -- it is Class D, so check_amendment_log_for_class_d gates any baseline_grammar change on a NEW top-level amendment_log entry; add it. If instead the second assertion fires, fields.blocked_by.amendment_log did not GROW relative to origin/main (a count comparison, not a date match -- the field already carries 2026-09 entries from earlier plans, so a date test would be vacuous): exit-criteria-ledger.yaml is Class A (ritual), and check_amendment_for_diff compares only contract.description and per-field description/semantics -- it never reads governance_notes, so the field-level entry this plan requires is NOT otherwise enforced and this assertion is its only gate."
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: "The validate_contract_drift half is a duplicate of an already-registered check, but the amendment_log-growth half is genuinely new -- this step's own fix_if records that nothing else enforces it. It is still not graduable: the assertion is base-relative (head log length > origin/main log length) and true only for THIS PR, so post-merge it inverts to permanently false and would red every subsequent build. Same transience as step 10."
+  - step: 10
+    phase: pre-deploy
+    action: Assert the ONLY status changes are the three declared ones, that CD.40 gains no realization_evidence, and that the roadmap net line delta is <= 0
+    command: git fetch origin main --quiet && bin/venv-python -c "import subprocess,yaml; B=yaml.safe_load(subprocess.run(['git','show','origin/main:docs/ROADMAP-PLATFORM.yaml'],capture_output=True,text=True).stdout); H=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml')); M=lambda d:{**{(i['id'],c['id']):(c['status'],c.get('met_by')) for i in d['tier_items'] for c in (i.get('exit_criteria') or []) if isinstance(c,dict)},**{('ITEM',i['id']):i['status'] for i in d['tier_items']},**{('CD',x['id']):(x['state'],bool(x.get('realization_evidence')),tuple(x.get('affects') or ())) for x in d['candidate_decisions']}}; b,h=M(B),M(H); delta={k:(b.get(k),h.get(k)) for k in set(b)|set(h) if b.get(k)!=h.get(k)}; assert delta=={('T3.20','c5'):(('open',None),('rehomed','T2.26')),('CD','CD.40'):(('pending',False,()),('pending',False,('T2.26',)))}, delta; print('OK', delta)" && [ "$(git diff --numstat origin/main -- docs/ROADMAP-PLATFORM.yaml | awk '{print $1-$2}')" -le 40 ]
+    expected: "Prints OK with exactly two entries -- T3.20 c5 open->rehomed with met_by T2.26, and CD.40 gaining affects [T2.26] -- then exits 0 because the roadmap grew by at most 40 lines. T2.18 c2 must NOT appear in the delta: it keeps status open and gains no met_by."
+    fix_if: "The assertion prints an unexpected delta. If T2.18 c2 appears, its status or met_by was touched -- it must stay open with no met_by; VP step 7 would ACCEPT a wrong met_by -- for the rehomed c5 only _validate_graph rule (h) runs, and it requires merely 'resolves to a known tier_item id' -- so this step is the only gate pinning it to T2.26. Other causes: any other criterion flipped, a tier_item status moved, or CD.40 gaining realization_evidence or losing affects -- neither the census nor the registered check would catch either, since _non_terminal_cd_ids filters on state alone and the graph ignores affects entirely. If the line-delta test fails, a superseded clause was appended to rather than replaced -- compact in place."
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: The assertion is base-relative and true only for THIS PR -- post-merge origin/main equals HEAD, the delta reads empty and the expected-value comparison inverts to permanently false. Graduating it would register a standing check that reds every subsequent build. The compound shape (a python assertion chained to a git/awk line-delta test) also maps to no single CANONICAL_SLOTS argv. Step 2 graduates the durable invariant instead.
+  - step: 11
+    phase: pre-deploy
+    action: Confirm rec-3579 actually reads closed in the warehouse, not merely that its predicate passes
+    command: bin/venv-python -c "from scripts.ops_data_portal import sync; sync(); import json,pathlib; rows=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()]; r=next(x for x in rows if x['id']=='rec-3579'); assert r['status']=='closed', r['status']; print('rec-3579', r['status'])"
+    expected: "Prints 'rec-3579 closed' and exits 0."
+    fix_if: The rec still reads open -- the update_rec call in execution_steps was skipped or failed. Step 5 proves the acceptance predicate holds, which is NOT the same as the rec being closed; run update_rec and re-run this step. A portal failure fails loudly (Decision 84 I-4) -- re-file after restoring connectivity, never edit the local cache.
+    hermetic: false
+    graduation: not-applicable
+  - step: 12
+    phase: pre-deploy
+    action: Pre-handoff full-tier validation completes green before commit
+    command: bin/venv-python -m scripts.validate
+    expected: Exit status 0 with no failed checks.
+    fix_if: Any check fails -- fix it before commit. A timeout is handoff_policy timeout_disposition blocked, not a pass; resume later and rerun the full tier from the start.
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: docs/ROADMAP-PLATFORM.yaml
+    behavior: The three back edges that closed the T2/T3 core stay removed -- no criterion re-introduces a completion-demanding or CD-ratification blocking edge into the ring.
+    verification_step: 2
+    test_selector: tests/checks/roadmap/test_validate_roadmap_liveness.py::TestDrainedCores::test_t2_t3_core_absent_from_live_toxic_set
+    red_green_expectation: red before (the live roadmap reports all seven ids toxic), green after; and red again if any of the three blocked_by declarations is restored.
+  - source: config/roadmap_liveness_baseline.yaml
+    behavior: The baseline carries exactly the eleven undrained T4-core ids and none of the seven drained ids.
+    verification_step: 5
+    command: "! grep -qE '^  - (T2\\.18|T2\\.19|T2\\.26|T2\\.36|T3\\.2|T3\\.20|CD\\.40)$' config/roadmap_liveness_baseline.yaml"
+    red_green_expectation: red before (all seven ids are listed), green after; and red again if a drained id is re-added, which leg A(c) independently refuses.
+  - source: docs/contracts/roadmap-liveness.yaml
+    behavior: baseline_grammar's owning-drain-rec prose names only the still-undrained T4 core, and the amendment_log records this drain.
+    verification_step: 9
+    command: 'git fetch origin main --quiet && bin/venv-python -c "import subprocess,yaml; from scripts.checks.contracts.validate_contract_drift import validate_contract_drift; f=[]; validate_contract_drift(f); L=lambda s: len((yaml.safe_load(s)[''fields''][''blocked_by''].get(''amendment_log'') or [])); base=L(subprocess.run([''git'',''show'',''origin/main:docs/contracts/exit-criteria-ledger.yaml''],capture_output=True,text=True).stdout); head=L(open(''docs/contracts/exit-criteria-ledger.yaml'').read()); f += [] if head > base else [''exit-criteria-ledger fields.blocked_by.amendment_log did not grow: %d -> %d'' % (base, head)]; print(f); raise SystemExit(1 if f else 0)"'
+    waiver_reason: The edit is contract prose plus an amendment_log row; the enforcement it describes lives entirely in validate_roadmap_liveness.py, which this plan does not touch. validate_contract_drift already fails a contract edit shipped without a matching amendment_log entry, so a bespoke test would duplicate a registered check.
+  - source: docs/contracts/exit-criteria-ledger.yaml
+    behavior: The blocked_by field carries a governance note forbidding an until-ratified edge to a CD whose realization evidence the criterion's own item cannot supply, with its enforcement coverage and residual owner declared.
+    verification_step: 9
+    command: 'git fetch origin main --quiet && bin/venv-python -c "import subprocess,yaml; from scripts.checks.contracts.validate_contract_drift import validate_contract_drift; f=[]; validate_contract_drift(f); L=lambda s: len((yaml.safe_load(s)[''fields''][''blocked_by''].get(''amendment_log'') or [])); base=L(subprocess.run([''git'',''show'',''origin/main:docs/contracts/exit-criteria-ledger.yaml''],capture_output=True,text=True).stdout); head=L(open(''docs/contracts/exit-criteria-ledger.yaml'').read()); f += [] if head > base else [''exit-criteria-ledger fields.blocked_by.amendment_log did not grow: %d -> %d'' % (base, head)]; print(f); raise SystemExit(1 if f else 0)"'
+    waiver_reason: The note is field-semantics prose routed to the owning contract by Decision 86 clause 2; it constrains a human author at roadmap-authoring time and has no runtime consumer to exercise. Its mechanical arm is leg A's ratchet, which already refuses the ring the note describes, and its unenforced authoring-time arm is a declared residual owned by rec-3715.
+constraints:
+  - No rescue agents or workaround loops (Decision 55)
+  - "Remove ONLY the blocked_by entries named in execution_steps 1-2: seven entries across four criteria (T2.18 c2 carries one; T2.26 c2, c3 and c8 carry two each), forming the three blocking RELATIONS T2.18->T2.26, T2.26->CD.40 and T2.26->T3.20. Every other blocked_by entry stays exactly as transcribed by PLAN-roadmap-blocking-edge-semantics."
+  - Removal standard is symmetric fidelity -- an edge may be removed only with the same documentary evidence its insertion required, recorded in the criterion text. Never delete a blocking phrase to silence leg C while leaving the edge's claim true.
+  - Never add an id to config/roadmap_liveness_baseline.yaml, and never edit validate_roadmap_liveness.py's frozen _BASELINE_SEED constant -- the ratchet is shrink-only and the seed is an upper bound a shrink never needs.
+  - Do not flip any tier_item status. Exactly ONE criterion status change is permitted in the whole diff -- T3.20 c5 -> rehomed -- and it is a declared deliverable here, never inferred from prose or commit activity (Status-Trusted-Never-Inferred, T2.20). No criterion is closed.
+  - Do NOT add T2.26 to CD.40's gates -- that re-creates the ring through the Decision 105 reverse evidence edge. affects is the non-blocking field for this relationship.
+  - Do NOT set realization_evidence on CD.40. It is truthiness-filtered by ratifiable_cds(), so any value would surface CD.40 to /orient as ready to ratify while four of its five clauses remain unbuilt behind T3.20. Record partial realization as a discipline_point instead; CD.40 stays state pending.
+  - "Replace superseded re-grounding clauses in place; never append a further dated narrative clause to a criterion that already carries two. NOTE ON AUTHORITY: Decision 147 governs TERMINAL content (ratified CDs, complete/reserved items) and deliberately did not touch live items, so it is the spirit here, not the rule -- the binding constraint is Decision 114's 10,000-line ceiling. Net delta <= 0 was over-tight: this plan must ADD three progress_note clauses, an affects list and a discipline_point while recording every removal's evidence. The bound is growth <= 40 lines, which leaves the ceiling 280+ lines of headroom."
+  - Mint NO numbered Decision. decision-entry.yaml routes the ownership re-sequencing to work_item/operational_fact (criterion text and progress_note) and the blocked_by anti-pattern to field_semantics (the owning contract).
+  - "T2.18 c2 STAYS status: open and gains no met_by. Delete its blocked_by and re-ground its text, nothing more. Decisive verified reason: PLAN-ducklake-maintenance-smoke-split.yaml's closes_criteria is [T2.18:c1, c3, c5, c6, c7, c9] -- it closed six criteria and DELIBERATELY left c2 open, re-grounding it as half-met instead. Stamping met_by: ducklake-maintenance-smoke-split on c2 would retro-attribute a closure that plan explicitly declined to declare. c2 closes honestly later, in the T2.18 follow-on plan that lands production GC, whose own slug is then the true met_by."
+  - "Override no skill rule and split no criterion in order to reach a status flip. A plan needing a rule suspended is either on the wrong path or the rule needs amending at its home (skill text or contract, with an amendment_log entry) -- file a rec, never carve a per-plan hole the next agent reading that rule cannot see."
+  - The /implement Outcome-rules walk must NOT stage T3.20 not_started -> in_progress off c5's rehome. A rehome moves scope out of T3.20; it is not progress on T3.20, and no tier_item status changes in this plan.
+  - Ship no detector, check-module or _BASELINE_SEED change here -- those are rec-3713/rec-3714/rec-3715, deliberately split so this diff stays pure ledger fidelity.
+context:
+  - "decision-scout: FLAGS_FOUND, 138 of 138 triaged. CITE: Decision 105, Decision 136, Decision 165, Decision 114, Decision 86, Decision 167, Decision 55. RELATED: 110, 128, 168, 59, 163."
+  - "gates: decision-scout=FLAGS_FOUND (138/138); plan-critique=REVISE x4, all findings applied, merged on human accept-with-deferral -- rounds 3-4 independently re-verified design/ablation/VP commands; their residue class is owned by rec-3717"
+  - "rec-3579 is the owning drain rec seeded by PLAN-roadmap-blocking-liveness-detector; its acceptance predicate is VP step 5. Name Resolves: rec-3579 in the squash-merge body."
+  - "Measured ablation: dropping T2.18 c2's edge alone leaves {CD.40, T2.26, T2.36, T3.2, T3.20} toxic; dropping T2.26 c2/c3/c8's edges alone leaves {T2.18, T2.19, T2.26} toxic. Both are required and jointly sufficient."
+  - "Harm-sentence test (Fable consult, adopted): an edge is honest to remove iff 'if <source> completed before <target> reached <until>, the artefact that breaks is ___' fills only with ownership or 'the roadmap says so'. Knot A fills with ownership; Knot B with 'not yet decided', which CD.40's detail contradicts."
+  - "Superseded edge citations are verbatim in PLAN-roadmap-blocking-edge-semantics.yaml execution_steps; c2 keeps the shape that plan chose, losing only its now-stale blocker."
+  - "Decision 181 clause 1: removing edges while rewriting the same texts is indistinguishable from phrase-dodging without the citations VP step 6 asserts -- hence a hard gate."
+  - "Leg C gotcha: re-grounded texts must not pair a roadmap-liveness.yaml blocking phrase with a live id mention -- avoid the phrases outright."
+  - "check_amendment_for_diff reads only contract.description and per-field description/semantics -- never governance_notes -- so exit-criteria-ledger.yaml's amendment_log entry is unenforced except by VP step 9."
+  - "config/roadmap_liveness_baseline.yaml is sanctioned by implement-scope-boundary.yaml's roadmap_liveness_baseline_shrink row; docs/contracts/roadmap-liveness.yaml is explicitly NOT and must stay declared in scope. Graduated registry shards are sanctioned by graduated_registry_shard."
+  - "docs/ROADMAP-PLATFORM.yaml resolves to the data-pipeline Lambda as a bundled assets entry only. validate_tier_floor scans handlers+includes only and validate_lambda_deploy_gating is advisory, so no build/deploy/smoke step is owed and V2 stands (rec-2910)."
+  - "T2.26 c9's met note retains a historical '(CD.40 / T3.20 pending)' parenthetical. It stays factually true and is deliberately NOT rewritten -- Decision 147 discourages churning terminal narrative, and editing its text would pull it into leg C's diff scope."
+  - "ops_session_log is status: dormant in field_semantics, no live writer or agent-facing reader. The downstream T2.26 retirement plan must query information_schema before claiming the sweep is code-only."
+  - "Simulated pre-authoring against the real check: PASS, 11/11, no leg A/B/C violation. Fable preferred two PRs (Knot A first); human chose one -- rec-3579's acceptance spans all seven ids."
+  - "T3.20 c5's rehome is NOT rec-3716's stranded shape: T2.26 c2/c8 already carry the ops_session_log scope, so the rehomed scope demonstrably landed on the target."
+  - "Main-divergence assessment: 0 commits behind origin/main, no scope-file overlap."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - "docs/ROADMAP-PLATFORM.yaml, T2.18 c2: delete its blocked_by and REPLACE its bracketed re-grounding clause. Do NOT change status (stays open), do NOT add met_by, do NOT split the criterion. The replacement records: the smoke half is met via the c9 CI gate; the production-catalog destructive GC + N-cycle S3-stability half returns to T2.18, where the ducklake_maintenance Lambdas sit in files_in_scope; T2.26's 2026-08-26 closeout scopes its residual to ops_session_log plus c7, so T2.26 does not own this half. Must contain the literal 'cleared gate: T2.26 c1 met 2026-07-04' and no leg C phrase."
+  - "docs/ROADMAP-PLATFORM.yaml, T2.26 c2/c3/c8: delete BOTH blocked_by entries from each. Replace (do not append to) each superseded re-grounding clause with one containing the literal 'CD.40 binding disposition: retire; T2.26 doer', kept on ONE unwrapped line per criterion -- VP step 6 counts matching LINES and expects exactly 3, so a hard-wrap through the middle of the literal silently reads low. The phrase 'not yet decided' must not survive anywhere in the file. LEG C WARNING for c3 specifically: its text names a THIRD live id, T2.36 ('required telemetry retirement (T2.36 / Phase 4)'), alongside CD.40 and T3.20. c3 will carry no blocked_by for any of them, so its replacement clause must state that the telemetry half is discharged (the 2026-08-26 cleanse removed the Lambda) WITHOUT a blocking phrase."
+  - "docs/ROADMAP-PLATFORM.yaml, T3.20 c5: status open -> rehomed, met_by: T2.26. Leave c6 and c7 untouched -- SESSION_LOG.md retirement and the schema-accuracy pass are different surfaces and stay with T3.20."
+  - "docs/ROADMAP-PLATFORM.yaml, CD.40: add affects: [T2.26] and one discipline_point containing the literal 'ops_session_log clause realizes early via T2.26' (VP step 6 greps for it), recording that the CD's remaining clauses stay gated on T3.20. Do NOT touch state, gates or realization_evidence."
+  - "docs/ROADMAP-PLATFORM.yaml: append one dated clause to T2.18's and T2.26's progress_note STRING (TierItem.progress_note is str | None, a scalar -- never author a YAML list) recording the re-sequencing and citing rec-3579. T3.20 has no progress_note today -- create one rather than leaving the c5 rehome unexplained. None of the three notes may repeat the literal 'CD.40 binding disposition: retire; T2.26 doer' -- VP step 6 asserts exactly 3 matching lines, so a fourth occurrence fails it."
+  - "config/roadmap_liveness_baseline.yaml: remove CD.40, T2.18, T2.19, T2.26, T2.36, T3.2, T3.20 from entries, leaving 11. Rewrite the header comment so its census and its OWNING DRAIN RECS roster name the 11 ids ACTUALLY PRESENT (CD.11, CD.27, CD.38, CD.43, T4.1, T4.13, T4.2, T4.3, T4.4, T4.9, T4.9a) and record that rec-3579's core drained. Do NOT transcribe the existing header forward: it already misstates itself, claiming '19 node ids total' over 18 entries and naming T4.10a in rec-3580's core although T4.10a is neither an entry nor measured toxic. T4.10a's presence in validate_roadmap_liveness.py's frozen _BASELINE_SEED is correct and stays -- the seed is an upper bound, not a census."
+  - "docs/contracts/roadmap-liveness.yaml: update baseline_grammar's owning-drain-rec sentence to name only the undrained core, and add a top-level amendment_log entry (date, semantic_break: false, change_class, summary citing this plan and rec-3579). Also correct provisional_v0.rationale's stale census (it says '19-id/2-SCC', the same arithmetic error execution step 6 refuses to carry forward in the baseline header -- live is 18 ids today, 11 after this drain) and name that correction in the same amendment_log summary. Leave provisional_v0's authored_at, re_ratification_trigger, the toxicity rule and every leg's grammar untouched."
+  - "docs/contracts/exit-criteria-ledger.yaml: extend fields.blocked_by.governance_notes with the foreign-ratification anti-pattern -- never carry until: ratified on a CD whose gates do not name this criterion's own item, because under Decision 105 that item cannot supply the evidence it waits on. Declare coverage per Decision 181 clause 2: leg A's toxic-SCC ratchet is the mechanical arm; the authoring-time rule is an unenforced residual owned by rec-3715. Add the amendment_log entry under fields.blocked_by.amendment_log, NOT top-level."
+  - "tests/checks/roadmap/test_validate_roadmap_liveness.py: add class TestDrainedCores with test_t2_t3_core_absent_from_live_toxic_set, loading the live roadmap and asserting none of the seven ids appears in any toxic_sccs member -- mirroring the existing TestTranscription live-roadmap shape. File is ~415 SLOC of 500, so no budget raise (Decision 128)."
+  - "Close rec-3579 via update_rec once VP step 5 passes, and name 'Resolves: rec-3579' in the squash-merge body so rec-autoclose.yml fires."
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Single data-only commit touching no runtime code. Revert restores all three blocking edges and
+  the seven baseline ids together; leg A(a) then re-requires exactly those ids, so the pre-drain
+  state is self-consistent and CI-green on revert. ACCEPTED CONSEQUENCE, by design and named here
+  so a future author recognises it: forward of this commit the drain is one-way and triple-pinned.
+  Leg A(c) refuses re-adding any drained id while leg A(a) would demand exactly that if one ever
+  measured toxic again, and VP steps 2 and 5 graduate two further independent pins on the same
+  fact. A legitimately re-discovered blocking relationship on these seven ids therefore has NO
+  in-PR path and needs a reviewed change to validate_roadmap_liveness.py. That is the shrink-only
+  ratchet working as specified (Decision 165/166), not a defect -- and it is why every edge removed
+  here is gated on documentary evidence by VP step 6 rather than on the author's judgement.
