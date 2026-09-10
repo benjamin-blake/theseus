@@ -59,6 +59,39 @@ into two classes that are read very differently:
 
 A recorded deviation is an acceptable outcome. A silent one is a failed run.
 
+### 2.5 The state file, and resuming across sessions
+
+This brief is more work than one session's budget. It is designed to be executed across several,
+and the findings document is the state file that makes that possible.
+
+The phases are separately resumable, in this order:
+
+| Phase | Deliverable | Section |
+|---|---|---|
+| 0 | Measured baseline, draft PR opened | 5 |
+| 1 | Corpus and executed-node differ | 8 |
+| 2 | Written diagnosis, committed before any change | 10 |
+| 3 | Changes and the ledger | 10 |
+| 4 | A/B evidence against the noise floor | 12 |
+| 5 | Handback: review, PR promoted to ready | 14 |
+
+The rules that make that work:
+
+- **Read the state file first, every session.** A phase whose section is committed with real
+  content is COMPLETE and its findings are authoritative. Do not re-derive, re-measure or
+  re-verify it. Budget spent rebuilding finished work is budget not spent on the phase you are on.
+- **Each phase ends with a commit and a push to the draft PR.** That push is the checkpoint;
+  nothing before it survives a session ending. Prefer committing a partial section over holding
+  work in the session.
+- **Record durable context in the `Established context` section as you establish it** -- the
+  governance you read and what it bound you to, the environment setup that worked, the capability
+  deviations you hit, the base SHA you pinned. A later session reads that instead of rediscovering
+  it. Discovering this repository's governance once is the assignment; discovering it four times
+  is waste.
+- **A session that ends mid-phase resumes that phase from its last commit**, not from Phase 0.
+- Your operator may hand you a single phase rather than the whole brief. That is expected. Do the
+  phase you were given, commit it, and stop -- do not run ahead into the next one.
+
 ## 3. GOVERNANCE: HOW TO FIND IT
 
 A Claude Code session carries `AGENTS.md` in context at all times, has the nearest `CLAUDE.md`
@@ -225,6 +258,12 @@ For non-test changes that drop nodes, the mutation probe remains the escalation 
 synthetic breaking changes into a sample of source files and show the post-change selection still
 executes a test that fails.
 
+**Build the probe when a change first needs it, not in Phase 1.** The differ is the Phase 1
+deliverable because every change is measured against it; the probe is only reachable once a
+candidate exists that drops nodes or edits a test. Building it speculatively spends a session's
+budget on an instrument that may never be used, and the candidate it must judge would not yet
+exist to shape it.
+
 ### 8.4 The corpus
 Pin a base SHA and record it -- merges move "most recently merged" under you.
 
@@ -364,8 +403,10 @@ a replacement runner (under Section 11); CI workflow structure, caching and inst
 
 1. **The branch**, with the PR promoted from draft to ready.
 2. **A findings document** at `audits/fast-tier-optimisation-<sha>.md`, containing as separately
-   identifiable sections: the Phase 0 baseline; the Phase 2 diagnosis as committed before the
-   changes; the Section 10 ledger; the Phase 4 evidence; and the two-class `DEVIATIONS` register.
+   identifiable sections: an `Established context` block (Section 2.5); the Phase 0 baseline; the
+   Phase 2 diagnosis as committed before the changes; the Section 10 ledger; the Phase 4 evidence;
+   and the two-class `DEVIATIONS` register. This document is also the state file that carries work
+   across sessions, so it is written as you go rather than assembled at the end.
 3. **The harness**, committed and runnable by someone else, with its corpus and base SHA recorded.
    Put it under `scripts/ci/` (exists) or alongside `scripts/checks/deps/`. Do not create new
    depth-1 files under `docs/` or `scripts/` -- both roots carry allowlists enforced by
