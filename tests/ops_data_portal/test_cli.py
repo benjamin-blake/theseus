@@ -331,9 +331,63 @@ class TestCLI:
         assert "priority" in out
         assert "status" in out
 
+    # -- Decision 186 closure_* kwarg threading (ops-portal-write-fidelity, third table) --
+
+    def test_cli_update_rec_closure_artifact_reaches_update_rec_kwarg(self) -> None:
+        """--closure-artifact/--closure-fix-sha thread into update_rec's own keyword parameters,
+        never into the merged `updates` dict (the write-fidelity contract's kwarg table)."""
+        with patch("scripts.ops_data_portal.update_rec", return_value=True) as mock_update:
+            from scripts.ops_data_portal import main
+
+            rc = main(
+                [
+                    "--update-rec",
+                    "rec-042",
+                    "--closure-artifact",
+                    "shard:some-shard",
+                    "--closure-fix-sha",
+                    "deadbeef",
+                ]
+            )
+
+        assert rc == 0
+        mock_update.assert_called_once_with(
+            "rec-042",
+            {},
+            profile=None,
+            closure_artifact="shard:some-shard",
+            closure_fix_sha="deadbeef",
+        )
+
+    def test_cli_update_rec_kwarg_only_invocation_accepted(self, capsys: pytest.CaptureFixture) -> None:
+        """A --update-rec call carrying ONLY closure_* flags (no ordinary update field) is accepted
+        -- the 'at least one update field' guard must not wedge the pre-merge closure stamp."""
+        with patch("scripts.ops_data_portal.update_rec", return_value=True):
+            from scripts.ops_data_portal import main
+
+            rc = main(
+                [
+                    "--update-rec",
+                    "rec-042",
+                    "--closure-waiver-category",
+                    "environment_only",
+                    "--closure-waiver-reason",
+                    "sandbox-only failure, no premerge signal",
+                ]
+            )
+
+        assert rc == 0
+        assert "ERROR" not in capsys.readouterr().err
+
     def test_cli_update_rec_flag_dest_classification_is_exhaustive(self) -> None:
-        """Every dest in the two rec argument groups is classified by exactly one table."""
-        from scripts.ops_portal.cli import _UPDATE_REC_FIELD_MAP, _UPDATE_REC_REJECTIONS, _build_parser
+        """Every dest in the two rec argument groups is classified by exactly one of the THREE
+        tables (threaded | rejected | kwarged) -- pairwise disjoint, and their union is exhaustive."""
+        from scripts.ops_portal.cli import (
+            _UPDATE_REC_FIELD_MAP,
+            _UPDATE_REC_KWARG_MAP,
+            _UPDATE_REC_REJECTIONS,
+            _build_parser,
+        )
 
         parser = _build_parser()
         rec_group_dests: set[str] = set()
@@ -343,10 +397,14 @@ class TestCLI:
 
         threaded = set(_UPDATE_REC_FIELD_MAP)
         rejected = set(_UPDATE_REC_REJECTIONS)
+        kwarged = set(_UPDATE_REC_KWARG_MAP)
 
         assert threaded & rejected == set(), f"overlap between threaded and rejected: {threaded & rejected}"
-        assert rec_group_dests == threaded | rejected, (
-            f"unclassified: {rec_group_dests - (threaded | rejected)}; stale: {(threaded | rejected) - rec_group_dests}"
+        assert threaded & kwarged == set(), f"overlap between threaded and kwarged: {threaded & kwarged}"
+        assert rejected & kwarged == set(), f"overlap between rejected and kwarged: {rejected & kwarged}"
+        assert rec_group_dests == threaded | rejected | kwarged, (
+            f"unclassified: {rec_group_dests - (threaded | rejected | kwarged)}; "
+            f"stale: {(threaded | rejected | kwarged) - rec_group_dests}"
         )
 
     # -- --file-rec risk-optional (ops-portal-write-fidelity, rec-2826) --

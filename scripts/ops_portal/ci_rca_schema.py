@@ -145,6 +145,18 @@ class CiRcaContext(BaseModel):
     # historical rec.
     unobserved_steps: Optional[list[_UnobservedStep]] = None
     unobserved_steps_authoritative: Optional[list[_UnobservedStep]] = None
+    # Decision 186 (closure-time artifact obligation): THREE more Optional[...]=None additions,
+    # same backward-compatible pattern as the ci-rca-identity-lifecycle block above -- NO
+    # schema_version ceiling raise. closure_waiver_category is deliberately a BARE ALTERNATION
+    # pattern (not a single "^(<cat>):\s*\S.*$" shape) so validate_ci_rca_lifecycle_projection's
+    # live-model-derived enum obligation forces docs/contracts/ci-rca-lifecycle.yaml to declare a
+    # matching enum:, making WAIVER_CATEGORIES schema-enforced in both --pre and full tiers.
+    closure_artifact: Optional[str] = Field(default=None, pattern=r"^(shard|pytest|check|fixture):.+$")
+    closure_waiver_category: Optional[str] = Field(
+        default=None,
+        pattern=r"^(stale_no_recurrence|environment_only|no_premerge_gate_by_design|risk_accepted)$",
+    )
+    closure_waiver_reason: Optional[str] = Field(default=None, min_length=1)
 
     @field_validator("why_chain")
     @classmethod

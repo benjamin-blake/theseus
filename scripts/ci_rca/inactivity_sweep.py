@@ -63,6 +63,12 @@ def close_inactive_recs(rows: list[dict[str, Any]], *, profile: str | None = Non
                 "resolution": f"CI-RCA inactivity sweep: resolution=stale_no_recurrence. Proof: {proof}.",
             },
             profile=profile,
+            # Decision 186: the programmatic waiver -- without it the closure gate wedges this
+            # scheduled workflow on any escape-classified inactive rec. Necessary and kept; the
+            # D-B1 mitigation is the preflight gauge surfacing OPEN escape recs, not a narrowing
+            # of this exemption.
+            closure_waiver_category="stale_no_recurrence",
+            closure_waiver_reason=f"stale_no_recurrence: {proof}",
         )
         logger.info("Closed %s (stale_no_recurrence; %s)", rec_id, proof)
         closed.append(rec_id)

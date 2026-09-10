@@ -12,10 +12,12 @@ formula-derived field group (risk on --file-rec), which is accepted advisorily b
 _derive_computed_fields always overwrites it (Decision 66 Tier B places its value under
 the portal's control, not the caller's). --dry-run is honoured only for
 --purge-postmortems-for and --repair-dependency-tokens, the two actions that implement it,
-and loud-fails for every other action. --update-rec threads every genuinely mutable field via a module-level
-dest-to-field map and loud-fails the flags that are not updatable via that path
-(_UPDATE_REC_REJECTIONS below), so every dest registered on the two rec argument groups
-is classified by exactly one of the two tables.
+and loud-fails for every other action. --update-rec threads every genuinely mutable field
+via a module-level dest-to-field map (_UPDATE_REC_FIELD_MAP) and loud-fails the flags that
+are not updatable via that path (_UPDATE_REC_REJECTIONS below); Decision 186's four
+closure_* flags thread into update_rec's own keyword parameters instead, via a THIRD table
+(_UPDATE_REC_KWARG_MAP) -- so every dest registered on the two rec argument groups is
+classified by exactly one of the three tables.
 """
 
 from __future__ import annotations
@@ -46,6 +48,17 @@ _UPDATE_REC_FIELD_MAP: dict[str, str] = {
     "dependencies": "dependencies",
     "verification": "verification",
     "verification_tier": "verification_tier",
+}
+
+# --update-rec flags that thread straight into update_rec()'s own keyword-only parameters
+# (Decision 186) rather than into the merged rec fields _UPDATE_REC_FIELD_MAP targets. Keys are
+# argparse dests; values are the corresponding update_rec() keyword parameter names -- the THIRD
+# classification table the write-fidelity contract's docstring paragraph above names.
+_UPDATE_REC_KWARG_MAP: dict[str, str] = {
+    "closure_artifact": "closure_artifact",
+    "closure_waiver_category": "closure_waiver_category",
+    "closure_waiver_reason": "closure_waiver_reason",
+    "closure_fix_sha": "closure_fix_sha",
 }
 
 _DERIVED_FIELD_REASON = (
@@ -196,6 +209,16 @@ def _build_parser() -> argparse.ArgumentParser:
     upd.add_argument("--execution_branch")
     upd.add_argument("--execution_pr_url")
     upd.add_argument("--resolution")
+    upd.add_argument(
+        "--closure-artifact",
+        help="Decision 186: <kind>:<ref> closure artifact token (shard:/pytest:/check:/fixture:)",
+    )
+    upd.add_argument(
+        "--closure-waiver-category",
+        help="Decision 186: closure waiver category (one of scripts.ops_portal.closure_gate.WAIVER_CATEGORIES)",
+    )
+    upd.add_argument("--closure-waiver-reason", help="Decision 186: free-text proof for --closure-waiver-category")
+    upd.add_argument("--closure-fix-sha", help="Decision 186: fix-commit sha (stamps the existing fixed_by_sha key)")
 
     # file-decision fields
     dec = parser.add_argument_group("--file-decision fields")
@@ -314,12 +337,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             for dest, field in _UPDATE_REC_FIELD_MAP.items()
             if getattr(args, dest, None) is not None
         }
-        if not updates:
+        kwargs: dict = {
+            kwarg: getattr(args, dest)
+            for dest, kwarg in _UPDATE_REC_KWARG_MAP.items()
+            if getattr(args, dest, None) is not None
+        }
+        if not updates and not kwargs:
             print("ERROR: --update-rec requires at least one update field (e.g. --status)", file=sys.stderr)
             return 1
         try:
-            update_rec(args.update_rec, updates, profile=args.profile)
-            print(f"Updated {args.update_rec}: {', '.join(sorted(updates))}")
+            update_rec(args.update_rec, updates, profile=args.profile, **kwargs)
+            print(f"Updated {args.update_rec}: {', '.join(sorted({*updates, *kwargs}))}")
             return 0
         except (ValidationError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)

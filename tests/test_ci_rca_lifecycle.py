@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -530,3 +531,38 @@ class TestLifecycleFieldsInProjection:
         rec_fields = set(Recommendation.model_fields)
         for name in ("regression_of", "fixed_by_sha", "affected_nodeids", "flaky", "escape_class"):
             assert name not in rec_fields, f"{name} must not be a top-level ops_recommendations column"
+
+
+class TestCloseRecsFromTrailerRefusalContract:
+    """VP5/VP14: rec-autoclose's closure loop, extracted into close_recs_from_trailer
+    (Decision 186) -- the refusal-contract mirror lives here; threading tests live in
+    tests/ci_rca/test_close_recs_from_trailer.py (SLOC decomposition target)."""
+
+    def test_closure_refusal_skips_and_exits_zero(self, capsys: pytest.CaptureFixture) -> None:
+        from scripts.ops_data_portal import ClosureArtifactRequired
+        from scripts.ops_portal.ci_rca_lifecycle import close_recs_from_trailer
+
+        with patch("scripts.ops_data_portal.update_rec", side_effect=ClosureArtifactRequired("no artifact")):
+            rc = close_recs_from_trailer(["rec-1"], "deadbeef", "https://x/runs/1", {"rec-1": {"status": "open"}})
+
+        assert rc == 0
+        assert "rec-1" in capsys.readouterr().out
+
+    def test_non_gate_exception_still_exits_nonzero(self) -> None:
+        from scripts.ops_portal.ci_rca_lifecycle import close_recs_from_trailer
+
+        with patch("scripts.ops_data_portal.update_rec", side_effect=RuntimeError("warehouse unreachable: 503")):
+            rc = close_recs_from_trailer(["rec-1"], "deadbeef", "https://x/runs/1", {"rec-1": {"status": "open"}})
+
+        assert rc == 0  # RuntimeError ("not found") is a WARN-and-skip, not a gate failure
+
+        with patch("scripts.ops_data_portal.update_rec", side_effect=ValueError("boom")):
+            rc = close_recs_from_trailer(["rec-1"], "deadbeef", "https://x/runs/1", {"rec-1": {"status": "open"}})
+        assert rc == 1
+
+    def test_rec_autoclose_step_delegates_to_helper(self) -> None:
+        """Workflow-shape pin: the closure step's python heredoc delegates to
+        close_recs_from_trailer -- the inline loop it replaces is gone, not merely duplicated."""
+        body = Path(".github/workflows/rec-autoclose.yml").read_text(encoding="utf-8")
+        assert "close_recs_from_trailer" in body
+        assert "for rec_id in ids:" not in body

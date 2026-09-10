@@ -116,6 +116,17 @@ class TestProposeOrCloseRec:
         assert result is not None
         assert "duplicate" in result
 
+    def test_duplicate_proposal_names_closure_artifact_flag(self, monkeypatch) -> None:
+        """Decision 186 duplicate-ruling fallout: the printed command names --closure-artifact,
+        so an operator handed a duplicate verdict on an escape-classified rec is told how to
+        satisfy the gate rather than the command silently reading as a bug."""
+        import scripts.ops_data_portal as p
+
+        monkeypatch.setattr(p, "update_rec", lambda *a, **k: None)
+        result = p.propose_or_close_rec("rec-003", "duplicate", "semantic: open duplicate rec-999 title similarity >= 0.7")
+        assert result is not None
+        assert "--closure-artifact" in result
+
     def test_contradicted_yields_proposal(self, monkeypatch) -> None:
         """Contradicted verdict => proposal string."""
         import scripts.ops_data_portal as p
@@ -167,6 +178,25 @@ class TestProposeOrCloseRec:
         result = p.propose_or_close_rec("rec-009", "superseded", 'evidence with "quotes" inside')
         assert result is not None
         assert '\\"quotes\\"' in result
+
+    def test_deterministic_close_on_escape_rec_raises(self) -> None:
+        """The fourth path: the deterministic-satisfied auto-close (which calls update_rec
+        directly) RAISES ClosureArtifactRequired on an escape-classified rec rather than closing
+        it silently, and performs no write."""
+        import scripts.ops_data_portal as p
+
+        existing = {
+            "id": "rec-010",
+            "status": "open",
+            "context_v2_json": json.dumps({"escape_class": "no-edge"}),
+        }
+        with (
+            patch("scripts.ops_data_portal._fetch_rec_from_reader", return_value=existing),
+            patch("scripts.ops_data_portal._ducklake_write") as mock_write,
+        ):
+            with pytest.raises(p.ClosureArtifactRequired):
+                p.propose_or_close_rec("rec-010", "satisfied", "acceptance probe passed: echo ok", deterministic=True)
+        mock_write.assert_not_called()
 
 
 class TestBundleAbsentFailLoud:

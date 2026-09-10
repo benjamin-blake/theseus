@@ -86,6 +86,14 @@ from scripts.ops_portal.ci_rca_schema import (  # noqa: F401
     _validate_ci_rca_dispute,
 )
 from scripts.ops_portal.cli import main
+from scripts.ops_portal.closure_gate import (  # noqa: F401
+    ARTIFACT_KINDS,
+    KIND_STRENGTH,
+    WAIVER_CATEGORIES,
+    ClosureArtifactRequired,
+    assert_closure_obligation,
+    parse_context_json,
+)
 from scripts.ops_portal.maintenance_ops import (  # noqa: F401
     enqueue_findings,
     find_open_postmortem_for,
@@ -427,30 +435,41 @@ def _fetch_rec_from_reader(rec_id: str, profile: Optional[str] = None) -> Option
 _UPDATE_CONTENT_VALIDATED_FIELDS = frozenset({"context", "title", "acceptance", "file", "dependencies", "tags"})
 
 
-def update_rec(rec_id: str, updates: dict, profile: Optional[str] = None) -> bool:
+def update_rec(
+    rec_id: str,
+    updates: dict,
+    profile: Optional[str] = None,
+    *,
+    closure_artifact: Optional[str] = None,
+    closure_waiver_category: Optional[str] = None,
+    closure_waiver_reason: Optional[str] = None,
+    closure_fix_sha: Optional[str] = None,
+) -> bool:
     """Merge update fields into an existing recommendation and write via the DuckLake closed boundary.
 
-    Reads the current record via the DuckLake reader, its sole backend. Raises
-    RuntimeError if the warehouse is unreachable. Merges updates,
-    validates the merged record -- including, for any updated field in
-    _UPDATE_CONTENT_VALIDATED_FIELDS, the same write-time content-quality gate file_rec applies
-    (Decision 66) -- routes the write to _ducklake_write, writes through to local JSONL, then
-    triggers _sync_table to refresh the read cache.
+    Reads the current record via the DuckLake reader, its sole backend. Raises RuntimeError if
+    the warehouse is unreachable. Merges updates, validates the merged record (write-time content
+    gate, Decision 66), asserts the Decision 186 closure obligation (see Raises), routes the
+    write to _ducklake_write, writes through to local JSONL, then refreshes the read cache.
 
-    Args:
-        rec_id: Recommendation ID to update (e.g. 'rec-042').
-        updates: Fields to merge into the existing record.
-        profile: Optional AWS profile override.
+    The four closure_* kwargs (Decision 186) are keyword-only and shallow-merge into the written
+    context_v2_json: closure_artifact/closure_waiver_category/closure_waiver_reason write their
+    own keys; closure_fix_sha writes the EXISTING fixed_by_sha key (no new schema field --
+    mirrors ci_rca_lifecycle.stamp_fixed_by_sha's target). Supplying closure_fix_sha in the SAME
+    call as a closing write is what makes the artifact route satisfiable in one write.
 
     Returns:
         True on success.
 
     Raises:
-        ValueError: If 'status' in updates is not a valid status value, or an updated
-            content-validated field (context/title/acceptance/file/dependencies/tags) fails its
-            write-time gate.
-        ValidationError: If the merged record fails schema validation.
-        RuntimeError: If the warehouse is unreachable for the read step or the write fails.
+        ValueError: Invalid status, an updated content-validated field
+            (context/title/acceptance/file/dependencies/tags) failing its write-time gate, or a
+            closure_* kwarg supplied for a rec with no existing context_v2_json to stamp into.
+        ClosureArtifactRequired: This write closes (bound set: closed/declined/superseded, from a
+            not-already-bound status) an escape-classified rec with no resolvable
+            closure_artifact and no well-formed waiver pair. Writes nothing on this path.
+        ValidationError: The merged record fails schema validation.
+        RuntimeError: The warehouse is unreachable for the read step or the write fails.
     """
     if "status" in updates and updates["status"] not in _VALID_STATUSES:
         raise ValueError(f"Invalid status '{updates['status']}'. Must be one of: {', '.join(sorted(_VALID_STATUSES))}")
@@ -466,11 +485,40 @@ def update_rec(rec_id: str, updates: dict, profile: Optional[str] = None) -> boo
     merged = {**existing, **updates}
     merged["id"] = rec_id  # always preserve the ID
 
+    # Decision 186: stamp the closure_* kwargs into the MERGED context_v2_json blob before the
+    # gate reads it -- closure_fix_sha writes the pre-existing fixed_by_sha key, never a new one.
+    closure_stamps = {
+        "closure_artifact": closure_artifact,
+        "closure_waiver_category": closure_waiver_category,
+        "closure_waiver_reason": closure_waiver_reason,
+        "fixed_by_sha": closure_fix_sha,
+    }
+    closure_stamps = {k: v for k, v in closure_stamps.items() if v is not None}
+    if closure_stamps:
+        if not merged.get("context_v2_json"):
+            raise ValueError(
+                f"update_rec: a closure_* kwarg was supplied for {rec_id}, which carries no existing "
+                "context_v2_json to stamp into."
+            )
+        ctx_for_stamp = parse_context_json(merged.get("context_v2_json"))
+        ctx_for_stamp.update(closure_stamps)
+        merged["context_v2_json"] = json.dumps(ctx_for_stamp)
+
     for _col, _validator in _load_write_time_validators("ops_recommendations"):
         if _col in updates and _col in _UPDATE_CONTENT_VALIDATED_FIELDS:
             _validator(merged[_col], _col)
 
     Recommendation.model_validate(merged)  # raises on failure
+
+    # Decision 186: the predicate reads existing UNION merged context -- context_v2_json is not in
+    # _UPDATE_CONTENT_VALIDATED_FIELDS and carries no monotonicity guard, so a closing write that
+    # blanks it must not thereby erase its own obligation. Asserted immediately before the write.
+    assert_closure_obligation(
+        existing.get("status"),
+        merged.get("status"),
+        parse_context_json(existing.get("context_v2_json")),
+        parse_context_json(merged.get("context_v2_json")),
+    )
 
     # ops_recommendations always routes to DuckLake (Decision 81 cl.7 / T2.19).
     response = _ducklake_write("ops_recommendations", merged, action="update_ops", profile=profile)
@@ -505,6 +553,11 @@ def propose_or_close_rec(
         None when the rec is auto-closed (deterministic satisfied) or no action is warranted
         (verdict is 'relevant' or 'unknown').
         A close_proposed command string for all other verdicts -- print this for the operator.
+
+    Raises:
+        ClosureArtifactRequired: Decision 186 point 2 narrows the deterministic-satisfied
+            auto-close for an escape-classified rec: update_rec raises rather than closing
+            silently, and this propagates unchanged to this function's only callers (agents).
     """
     if verdict in ("relevant", "unknown"):
         return None
@@ -514,7 +567,9 @@ def propose_or_close_rec(
     safe_evidence = evidence.replace('"', '\\"')
     return (
         f"bin/venv-python -m scripts.ops_data_portal --update-rec {rec_id}"
-        f' --status closed --resolution "{safe_evidence}"  # relevance={verdict}'
+        f' --status closed --resolution "{safe_evidence}"'
+        f"  # relevance={verdict}; if refused (escape-classified, Decision 186), add --closure-artifact "
+        "<kind:ref> --closure-fix-sha <sha>, or --closure-waiver-category <cat> --closure-waiver-reason <text>"
     )
 
 
