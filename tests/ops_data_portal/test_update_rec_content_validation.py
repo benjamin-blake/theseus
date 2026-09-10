@@ -364,6 +364,30 @@ def test_closure_fix_sha_stamps_fixed_by_sha_in_the_gated_write(tmp_path: Path) 
     assert written_ctx["fixed_by_sha"] == fix_sha
 
 
+def test_closure_kwarg_on_a_rec_without_context_v2_json_refuses_before_any_write(tmp_path: Path) -> None:
+    """The closure_* kwargs stamp INTO an existing context_v2_json blob; they never mint one.
+
+    A rec with no context blob has nothing to stamp into, so supplying any closure_* kwarg for it
+    is a caller error, not a silent no-op -- if it were tolerated the stamp would vanish and the
+    gate would then evaluate a rec whose closure evidence was never recorded. update_rec raises
+    before reaching _ducklake_write, so the refusal costs no write.
+    """
+    recs_file = tmp_path / "recs.jsonl"
+    with (
+        patch("scripts.ops_data_portal._fetch_rec_from_reader", return_value=dict(_EXISTING)),
+        patch("scripts.ops_data_portal._ducklake_write") as mock_write,
+        patch("scripts.ops_data_portal._sync_table"),
+        patch("scripts.ops_data_portal.RECS_JSONL", recs_file),
+    ):
+        from scripts.ops_data_portal import update_rec
+
+        assert not _EXISTING.get("context_v2_json")
+        with pytest.raises(ValueError, match="no existing context_v2_json"):
+            update_rec("rec-4001", {"status": "closed"}, closure_fix_sha="cafef00dcafef00d")
+
+    mock_write.assert_not_called()
+
+
 def test_resolvable_artifact_closes(tmp_path: Path) -> None:
     """A closure supplying a resolvable artifact succeeds and writes."""
     recs_file = tmp_path / "recs.jsonl"
