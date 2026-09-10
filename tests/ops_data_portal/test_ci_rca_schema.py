@@ -470,7 +470,7 @@ class TestCiRcaSchemaEnforcement:
 
 
 class TestCiRcaClosureFields:
-    """Decision 184: closure_artifact / closure_waiver_category / closure_waiver_reason are
+    """Decision 186: closure_artifact / closure_waiver_category / closure_waiver_reason are
     Optional[...]=None additions -- backward-compatible (no historical row is retro-rejected)
     and validated when present."""
 

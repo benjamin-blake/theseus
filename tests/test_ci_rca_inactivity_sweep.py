@@ -70,7 +70,7 @@ class TestCloseInactiveRecs:
         assert closed == ["rec-1", "rec-2"]
 
     def test_sweep_supplies_stale_no_recurrence_waiver(self):
-        """Decision 184: the sweep passes a well-formed stale_no_recurrence waiver through
+        """Decision 186: the sweep passes a well-formed stale_no_recurrence waiver through
         update_rec, so an escape-classified inactive rec still closes rather than wedging this
         scheduled workflow (the gate's exemption is necessary and kept)."""
         now = datetime.now(timezone.utc)
@@ -86,7 +86,7 @@ class TestCloseInactiveRecs:
     def test_sweep_closes_escape_classified_rec_end_to_end(self, tmp_path):
         """The scheduled sweep still closes an escape-classified inactive rec THROUGH THE REAL
         closure gate (update_rec unmocked): the programmatic waiver actually satisfies Decision
-        184, it is not merely threaded and never checked."""
+        186, it is not merely threaded and never checked."""
         now = datetime.now(timezone.utc)
         old = (now - timedelta(days=45)).isoformat()
         rows = [_row("rec-1", old, last_seen=old)]

@@ -140,7 +140,7 @@ class TestFindPreventiveRegressions:
             flags = find_preventive_regressions(rows, now=NOW)
         assert len(flags) == 1
 
-    # -- Decision 184 artifact-existence grading (PLAN-escape-closure-obligation) ---------------
+    # -- Decision 186 artifact-existence grading (PLAN-escape-closure-obligation) ---------------
 
     def test_verified_present_grades_existing_artifact(self) -> None:
         """A prior rec naming a closure_artifact that still statically exists grades
@@ -199,7 +199,7 @@ class TestFindPreventiveRegressions:
 
     def test_historical_row_with_neither_field_grades_candidate(self) -> None:
         """A prior rec carrying neither closure_artifact nor closure_waiver_category (every
-        historical row filed before Decision 184) still grades CANDIDATE -- the unchanged
+        historical row filed before Decision 186) still grades CANDIDATE -- the unchanged
         file-only pairing fallback."""
         rows = [
             _rec("rec-100", status="closed", closed_days_ago=10, preventive_action="Promote the check to --pre tier."),
@@ -210,7 +210,7 @@ class TestFindPreventiveRegressions:
         assert flags[0]["grade"] == "CANDIDATE"
 
     def test_superseded_prior_rec_now_pairs(self) -> None:
-        """D-N6: Decision 184 point 3 binds closed AND superseded -- a superseded prior rec
+        """D-N6: Decision 186 point 3 binds closed AND superseded -- a superseded prior rec
         carrying a preventive_action now pairs too (widened from closed-only)."""
         rows = [
             _rec("rec-100", status="superseded", closed_days_ago=10, preventive_action="Superseded, but claimed a fix."),
@@ -246,7 +246,7 @@ class TestFindPreventiveRegressions:
 class TestTimestampParseFallbacksAndMalformedContext:
     """Closes this module's pre-existing 79.7% coverage gap (unbaselined 100% standard): the
     timestamp-parse fallback branches and the malformed-context branch, none of which the
-    Decision 184 grading tests above happen to exercise."""
+    Decision 186 grading tests above happen to exercise."""
 
     def test_parse_ts_utc_naive_datetime_treated_as_utc(self) -> None:
         assert _parse_ts_utc("2026-01-01 00:00:00") == datetime(2026, 1, 1, tzinfo=timezone.utc)

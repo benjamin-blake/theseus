@@ -456,7 +456,7 @@ class TestCiRcaBackValidationSection:
         assert result == []
 
     def test_back_validation_banner_is_grade_aware(self, capsys: pytest.CaptureFixture) -> None:
-        """Decision 184: the printed section carries the per-flag grade and the resolved
+        """Decision 186: the printed section carries the per-flag grade and the resolved
         artifact token, replacing the blanket '[CANDIDATE] file-only match' banner."""
         flagged = [
             {
@@ -476,7 +476,7 @@ class TestCiRcaBackValidationSection:
         assert "file-only match -- treat as a candidate" not in out
 
     def test_open_escape_recs_are_surfaced(self, capsys: pytest.CaptureFixture) -> None:
-        """Decision 184 D-B1 mitigation: any OPEN escape-classified rec is listed in this same
+        """Decision 186 D-B1 mitigation: any OPEN escape-classified rec is listed in this same
         section, making a refusal legible before the 30-day sweep waivers it."""
         _preflight.print_ci_rca_back_validation([], open_escape_recs=[{"id": "rec-9001", "file": "scripts/foo.py"}])
         out = capsys.readouterr().out

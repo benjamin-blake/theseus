@@ -117,7 +117,7 @@ class TestProposeOrCloseRec:
         assert "duplicate" in result
 
     def test_duplicate_proposal_names_closure_artifact_flag(self, monkeypatch) -> None:
-        """Decision 184 duplicate-ruling fallout: the printed command names --closure-artifact,
+        """Decision 186 duplicate-ruling fallout: the printed command names --closure-artifact,
         so an operator handed a duplicate verdict on an escape-classified rec is told how to
         satisfy the gate rather than the command silently reading as a bug."""
         import scripts.ops_data_portal as p

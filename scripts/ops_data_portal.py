@@ -448,10 +448,10 @@ def update_rec(
 
     Reads the current record via the DuckLake reader, its sole backend. Raises RuntimeError if
     the warehouse is unreachable. Merges updates, validates the merged record (write-time content
-    gate, Decision 66), asserts the Decision 184 closure obligation (see Raises), routes the
+    gate, Decision 66), asserts the Decision 186 closure obligation (see Raises), routes the
     write to _ducklake_write, writes through to local JSONL, then refreshes the read cache.
 
-    The four closure_* kwargs (Decision 184) are keyword-only and shallow-merge into the written
+    The four closure_* kwargs (Decision 186) are keyword-only and shallow-merge into the written
     context_v2_json: closure_artifact/closure_waiver_category/closure_waiver_reason write their
     own keys; closure_fix_sha writes the EXISTING fixed_by_sha key (no new schema field --
     mirrors ci_rca_lifecycle.stamp_fixed_by_sha's target). Supplying closure_fix_sha in the SAME
@@ -483,7 +483,7 @@ def update_rec(
     merged = {**existing, **updates}
     merged["id"] = rec_id  # always preserve the ID
 
-    # Decision 184: stamp the closure_* kwargs into the MERGED context_v2_json blob before the
+    # Decision 186: stamp the closure_* kwargs into the MERGED context_v2_json blob before the
     # gate reads it -- closure_fix_sha writes the pre-existing fixed_by_sha key, never a new one.
     closure_stamps = {
         "closure_artifact": closure_artifact,
@@ -508,7 +508,7 @@ def update_rec(
 
     Recommendation.model_validate(merged)  # raises on failure
 
-    # Decision 184: the predicate reads existing UNION merged context -- context_v2_json is not in
+    # Decision 186: the predicate reads existing UNION merged context -- context_v2_json is not in
     # _UPDATE_CONTENT_VALIDATED_FIELDS and carries no monotonicity guard, so a closing write that
     # blanks it must not thereby erase its own obligation. Asserted immediately before the write.
     assert_closure_obligation(
@@ -553,7 +553,7 @@ def propose_or_close_rec(
         A close_proposed command string for all other verdicts -- print this for the operator.
 
     Raises:
-        ClosureArtifactRequired: Decision 184 point 2 narrows the deterministic-satisfied
+        ClosureArtifactRequired: Decision 186 point 2 narrows the deterministic-satisfied
             auto-close for an escape-classified rec: update_rec raises rather than closing
             silently, and this propagates unchanged to this function's only callers (agents).
     """
@@ -566,7 +566,7 @@ def propose_or_close_rec(
     return (
         f"bin/venv-python -m scripts.ops_data_portal --update-rec {rec_id}"
         f' --status closed --resolution "{safe_evidence}"'
-        f"  # relevance={verdict}; if refused (escape-classified, Decision 184), add --closure-artifact "
+        f"  # relevance={verdict}; if refused (escape-classified, Decision 186), add --closure-artifact "
         "<kind:ref> --closure-fix-sha <sha>, or --closure-waiver-category <cat> --closure-waiver-reason <text>"
     )
 

@@ -331,7 +331,7 @@ class TestCLI:
         assert "priority" in out
         assert "status" in out
 
-    # -- Decision 184 closure_* kwarg threading (ops-portal-write-fidelity, third table) --
+    # -- Decision 186 closure_* kwarg threading (ops-portal-write-fidelity, third table) --
 
     def test_cli_update_rec_closure_artifact_reaches_update_rec_kwarg(self) -> None:
         """--closure-artifact/--closure-fix-sha thread into update_rec's own keyword parameters,

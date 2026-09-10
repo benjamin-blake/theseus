@@ -251,7 +251,7 @@ def _derive_ci_rca_back_validation(cache_rows: list[dict] | None) -> list[dict] 
 
 
 def _derive_open_escape_ci_rca_recs(cache_rows: list[dict] | None) -> list[dict] | None:
-    """OPEN source=ci_rca recs that are escape-classified (Decision 184, the D-B1 mitigation): a
+    """OPEN source=ci_rca recs that are escape-classified (Decision 186, the D-B1 mitigation): a
     rec refused at rec-autoclose is left OPEN with no artifact and no marker, and otherwise
     invisible until the 30-day inactivity sweep waivers it closed -- this is the one surface
     that makes that refusal legible to a human before the sweep. Zero new reader egress
@@ -280,7 +280,7 @@ def _derive_open_escape_ci_rca_recs(cache_rows: list[dict] | None) -> list[dict]
 def print_ci_rca_back_validation(flags: list[dict] | None, open_escape_recs: list[dict] | None = None) -> None:
     """Print the CI-RCA Back-Validation (preventive_action did not hold) section (T1.13 c12(iii)).
 
-    Decision 184: each flag's own 'grade' (VERIFIED-PRESENT/CONFIRMED-ABSENT/WAIVED/CANDIDATE)
+    Decision 186: each flag's own 'grade' (VERIFIED-PRESENT/CONFIRMED-ABSENT/WAIVED/CANDIDATE)
     replaces the prior blanket '[CANDIDATE] file-only match' banner -- a flag carrying neither
     new field still grades CANDIDATE, so the display is unchanged for a historical/pre-grading
     flag shape. open_escape_recs (optional) additionally lists any OPEN escape-classified rec in

@@ -16,7 +16,7 @@ context_v2_json (a c9-style enrichment). File-only matching over-pairs on high-c
 (e.g. scripts/validate.py); callers (/plan) MUST treat flags as CANDIDATES only, never a
 confirmed regression or an automatic action.
 
-Decision 184 upgrade: each flag now also grades the PRIOR rec's own closure -- VERIFIED-PRESENT
+Decision 186 upgrade: each flag now also grades the PRIOR rec's own closure -- VERIFIED-PRESENT
 (it named a closure_artifact that still statically exists), CONFIRMED-ABSENT (it named one that
 no longer does -- the known-bad-fixture shape), WAIVED (it named a closure_waiver_category
 instead), or CANDIDATE (neither field -- every historical row, still the file-only fallback).
@@ -126,7 +126,7 @@ def find_preventive_regressions(
         artifact_status, grade} dicts, one per matched pair, newest-open-rec-first.
         Surfacing-only (Decision 55): never files, updates, or closes a rec. The FILE-ONLY match
         key and the pairing itself are unchanged and remain the fallback for every historical row
-        (grade CANDIDATE) -- only Decision 184's grading is additive.
+        (grade CANDIDATE) -- only Decision 186's grading is additive.
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -146,7 +146,7 @@ def find_preventive_regressions(
                 continue
             open_ci_rca.append(row)
         elif row.get("status") in ("closed", "superseded"):
-            # Decision 184 point 3 binds both closed and superseded -- a superseded prior rec
+            # Decision 186 point 3 binds both closed and superseded -- a superseded prior rec
             # carries the same closure obligation and the same "did the fix hold" question.
             ctx = _row_context_v2(row)
             if ctx.get("preventive_action"):

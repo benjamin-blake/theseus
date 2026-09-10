@@ -134,7 +134,7 @@ def test_update_rec_acceptance_requires_discrimination(tmp_path: Path) -> None:
     mock_write3.assert_called_once()
 
 
-# -- Decision 184 closure-time artifact obligation (PLAN-escape-closure-obligation) -------------
+# -- Decision 186 closure-time artifact obligation (PLAN-escape-closure-obligation) -------------
 
 _ESCAPE_EXISTING = {
     **_EXISTING,
@@ -147,7 +147,7 @@ _ESCAPE_EXISTING = {
 def test_rec_3131_replay_is_refused(tmp_path: Path) -> None:
     """The historical rec-3131 case, replayed verbatim: status closed, resolution 'Duplicate of
     rec-3132...', no closure_artifact, no waiver. Refused -- this single refusal IS audit finding
-    LSA-04, not a defect in the mechanism (Decision 184 Problem statement)."""
+    LSA-04, not a defect in the mechanism (Decision 186 Problem statement)."""
     existing = {
         **_EXISTING,
         "id": "rec-3131",

@@ -2,10 +2,10 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
-## Decision 184: Closure-time artifact obligation for escape-classified recs (Decided)
+## Decision 186: Closure-time artifact obligation for escape-classified recs (Decided)
 
 ```yaml
-number: 184
+number: 186
 status: Decided
 decided_date: "2026-09-07"
 amends: [103]
@@ -19,7 +19,7 @@ significance:
 
 **Status:** Decided
 **Date:** 2026-09-07
-**Warehouse ID:** dec-184
+**Warehouse ID:** dec-186
 
 **Problem:**
 Audit LSA-04 (loop-spec-adoption-4d8bac4a, observed): whether closing an escape-classified rec leaves a
@@ -78,7 +78,7 @@ alternatives: the plan.
 predicate (filed follow-on).
 
 ```yaml reversal-conditions
-decision: 184
+decision: 186
 review_by: 2026-12-07
 on_trigger: "re-decide via /plan: re-found or retire it, narrow the sweep exemption, or move it to the writer boundary."
 conditions:

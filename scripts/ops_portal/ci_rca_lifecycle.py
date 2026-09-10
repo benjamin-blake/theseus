@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # Decision 155-shaped marker (mirrors decisions.py::_ORPHAN_GUARD_TRANSIENT_MARKER): distinct,
 # greppable, and mirrored to $GITHUB_STEP_SUMMARY when set.
-_ESCAPE_CLOSURE_REFUSAL_MARKER = "[REC-AUTOCLOSE] Decision 184 closure refusal"
+_ESCAPE_CLOSURE_REFUSAL_MARKER = "[REC-AUTOCLOSE] Decision 186 closure refusal"
 
 # Fail-closed default: a legacy closed head with no fixed_by_sha (every rec closed before this
 # change; manual closures) cannot run the ancestry check -- so it always classifies as a
@@ -380,12 +380,12 @@ def close_recs_from_trailer(
 ) -> int:
     """Close every rec named in `ids` via the ops portal -- the importable helper
     rec-autoclose.yml's closure step delegates its loop to (the stamp_fixed_by_sha / Decision 142
-    precedent), so a Decision 184 refusal cannot redden this ci_rca:watched workflow and the
+    precedent), so a Decision 186 refusal cannot redden this ci_rca:watched workflow and the
     workflow body stays under its ratchet ceiling.
 
     Idempotent: a rec already closed_by the cache is skipped. Passes closure_fix_sha=commit_sha
     into the closing update_rec call so the fix-commit binding is satisfiable on the automated
-    route in ONE write. Catches ClosureArtifactRequired (Decision 184): prints
+    route in ONE write. Catches ClosureArtifactRequired (Decision 186): prints
     _ESCAPE_CLOSURE_REFUSAL_MARKER (mirrored to $GITHUB_STEP_SUMMARY when set), skips that rec
     (left OPEN), and does NOT touch exit_code -- the refusal exits this loop iteration the same
     way an already-closed rec does, never as an error. Any OTHER exception still sets

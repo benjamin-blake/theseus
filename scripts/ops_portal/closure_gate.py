@@ -1,4 +1,4 @@
-"""Closure-time artifact obligation for escape-classified recs (Decision 184).
+"""Closure-time artifact obligation for escape-classified recs (Decision 186).
 
 Owner-concern: the escape-classified predicate, the `<kind>:<ref>` artifact grammar and its
 FIX-BOUND resolver for the four kinds, the categorised waiver vocabulary, and the single
@@ -7,7 +7,7 @@ had 78 SLOC of headroom, not enough for this body) and called from
 scripts.ops_data_portal::update_rec immediately before _ducklake_write -- the single enforcement
 site every path closing a writer-allocated rec-NNN funnels through.
 
-RESOLUTION IS FIX-BOUND, NOT EXISTENCE-ONLY (Decision 184 point 4): a `<kind>:<ref>` token
+RESOLUTION IS FIX-BOUND, NOT EXISTENCE-ONLY (Decision 186 point 4): a `<kind>:<ref>` token
 resolves only when (i) its kind-specific fact holds AND (ii) its defining file was added or
 modified in the closing write's `fixed_by_sha`. `check:<name>` resolves against the named
 registry entry's TIER fact (scripts.checks._schema.Entry.pre is True), NEVER bare membership in
@@ -35,7 +35,7 @@ from scripts.ops_portal._common import ROOT
 KIND_STRENGTH: tuple[str, ...] = ("shard", "pytest", "check", "fixture")
 ARTIFACT_KINDS: frozenset[str] = frozenset(KIND_STRENGTH)
 
-# The ratified FOUR-MEMBER seed vocabulary (Decision 184 point 5/8). duplicate_of is DELIBERATELY
+# The ratified FOUR-MEMBER seed vocabulary (Decision 186 point 5/8). duplicate_of is DELIBERATELY
 # ABSENT -- human ruling: a duplicate asserts an artifact is OWED (cites the class artifact,
 # fix-bound like any other), never that one is infeasible. Adding, dropping or renaming a member
 # is a numbered-Decision event (point 8) -- hand back, never edit this set at implement time.
@@ -78,7 +78,7 @@ def parse_context_json(raw: object) -> dict:
 def is_escape_classified(ctx: dict) -> bool:
     """True when ctx['escape_class'] OR ctx['detection_gap']['escape_mode'] is SET.
 
-    'undetermined' counts as set for detection_gap.escape_mode (Decision 184 point 1) -- this is
+    'undetermined' counts as set for detection_gap.escape_mode (Decision 186 point 1) -- this is
     the probe's own abstention value, not an absence. Never keys on failure_category ==
     'gate_escape', which config/ci_rca_taxonomy.yaml's agent_only_categories means is never
     actually emitted (matches zero rows).
@@ -224,7 +224,7 @@ def artifact_exists(token: Optional[str], root: Optional[Path] = None) -> bool:
 def is_valid_waiver(category: Optional[str], reason: Optional[str]) -> bool:
     """True iff category is a MEMBER of WAIVER_CATEGORIES (not merely well-shaped) and reason is
     non-empty. An unknown category is REFUSED here -- membership is the acceptance bar, or
-    Decision 184 point 8's ratchet is defeatable by typing a new category into a string."""
+    Decision 186 point 8's ratchet is defeatable by typing a new category into a string."""
     if not isinstance(category, str) or category not in WAIVER_CATEGORIES:
         return False
     return isinstance(reason, str) and bool(reason.strip())
@@ -241,7 +241,7 @@ def assert_closure_obligation(
     resolvable closure_artifact and no well-formed waiver. No-op (returns None) otherwise.
 
     Fires on a transition INTO a bound status ({closed, declined, superseded}) FROM a status not
-    already bound ('terminal' defined on the FROM side, Decision 184 point 3) -- this is what
+    already bound ('terminal' defined on the FROM side, Decision 186 point 3) -- this is what
     gates the first hop of an `open -> declined -> superseded` route while leaving
     `declined -> superseded` and every status-preserving write (stamp_fixed_by_sha, bumps,
     corrections) ungated, since the obligation was already discharged at the first hop. `failed`
@@ -273,5 +273,5 @@ def assert_closure_obligation(
         "waiver. Supply --closure-artifact <shard:id|pytest:nodeid|check:name|fixture:path> together "
         "with --closure-fix-sha <sha> (the fix commit that touches the artifact's defining file), or "
         f"--closure-waiver-category <one of {sorted(WAIVER_CATEGORIES)}> plus --closure-waiver-reason "
-        '"<proof>". See docs/contracts/ci-rca-lifecycle.yaml::closure_obligation (Decision 184).'
+        '"<proof>". See docs/contracts/ci-rca-lifecycle.yaml::closure_obligation (Decision 186).'
     )

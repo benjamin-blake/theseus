@@ -535,7 +535,7 @@ class TestLifecycleFieldsInProjection:
 
 class TestCloseRecsFromTrailerRefusalContract:
     """VP5/VP14: rec-autoclose's closure loop, extracted into close_recs_from_trailer
-    (Decision 184) -- the refusal-contract mirror lives here; threading tests live in
+    (Decision 186) -- the refusal-contract mirror lives here; threading tests live in
     tests/ci_rca/test_close_recs_from_trailer.py (SLOC decomposition target)."""
 
     def test_closure_refusal_skips_and_exits_zero(self, capsys: pytest.CaptureFixture) -> None:

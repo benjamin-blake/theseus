@@ -1,4 +1,4 @@
-"""PRE-DECLARED decomposition target (Decision 184 / PLAN-escape-closure-obligation): hosts the
+"""PRE-DECLARED decomposition target (Decision 186 / PLAN-escape-closure-obligation): hosts the
 new close_recs_from_trailer threading tests from the start, keeping tests/test_ci_rca_lifecycle.py
 (431 SLOC pre-plan, 69 headroom) clear of its 500-SLOC ceiling. The refusal-contract mirror
 (catch-skip-mark, exit-code behaviour, the workflow-delegation shape pin) lives in

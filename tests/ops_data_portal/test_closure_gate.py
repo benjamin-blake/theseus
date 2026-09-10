@@ -1,4 +1,4 @@
-"""Mirror home for scripts/ops_portal/closure_gate.py (Decision 184, PLAN-escape-closure-obligation).
+"""Mirror home for scripts/ops_portal/closure_gate.py (Decision 186, PLAN-escape-closure-obligation).
 
 Exercises the gate body directly: the escape-classified predicate over existing UNION merged
 context, the four `<kind>:<ref>` artifact kinds resolving present/absent, the FIX-BOUND leg (a
@@ -80,7 +80,7 @@ class TestArtifactResolution:
     def test_fixture_kind_requires_tests_fixtures_root(self) -> None:
         """fixture:<path> must name a path under tests/fixtures/; fixture:README.md resolves as
         a path on disk but does not discharge the obligation -- unconstrained, it would DEPRESS
-        the Decision 184 reversal-condition (a) waiver rate by counting on the artifact side for
+        the Decision 186 reversal-condition (a) waiver rate by counting on the artifact side for
         free."""
         assert (ROOT / "README.md").is_file()
         holds, defining = _fixture_kind_fact("README.md", ROOT)
@@ -102,7 +102,7 @@ class TestArtifactResolution:
 class TestWaiverGrammar:
     def test_unknown_waiver_category_is_refused(self) -> None:
         """Membership, not shape, is the acceptance bar -- a well-shaped but off-vocabulary
-        category is refused, or Decision 184 point 8's ratchet is defeatable by typing a new
+        category is refused, or Decision 186 point 8's ratchet is defeatable by typing a new
         category into a string."""
         assert is_valid_waiver("made_up_category_nobody_ratified", "a perfectly good reason string") is False
 
@@ -122,7 +122,7 @@ class TestWaiverGrammar:
     def test_waiver_vocabulary_is_the_ratified_seed_set(self) -> None:
         """WAIVER_CATEGORIES is EXACTLY the four-member ratified seed set -- an exact-set
         assertion, not a superset check, so a fifth category cannot be added without failing this
-        test (Decision 184 point 8: adding a category is a numbered-Decision event)."""
+        test (Decision 186 point 8: adding a category is a numbered-Decision event)."""
         assert WAIVER_CATEGORIES == frozenset(
             {"stale_no_recurrence", "environment_only", "no_premerge_gate_by_design", "risk_accepted"}
         )

@@ -145,7 +145,7 @@ class CiRcaContext(BaseModel):
     # historical rec.
     unobserved_steps: Optional[list[_UnobservedStep]] = None
     unobserved_steps_authoritative: Optional[list[_UnobservedStep]] = None
-    # Decision 184 (closure-time artifact obligation): THREE more Optional[...]=None additions,
+    # Decision 186 (closure-time artifact obligation): THREE more Optional[...]=None additions,
     # same backward-compatible pattern as the ci-rca-identity-lifecycle block above -- NO
     # schema_version ceiling raise. closure_waiver_category is deliberately a BARE ALTERNATION
     # pattern (not a single "^(<cat>):\s*\S.*$" shape) so validate_ci_rca_lifecycle_projection's
