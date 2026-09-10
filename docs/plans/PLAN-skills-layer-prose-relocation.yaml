@@ -98,6 +98,13 @@ scope:
   - file: tests/checks/contracts/test_validate_skill_prose_relocation.py
     action: Create
     purpose: Mirror test for the new check module (red before the module lands, green after).
+  - file: .claude/skills/orient/SKILL.md
+    action: Modify
+    purpose: >-
+      Re-point line 66, which calls the planning skill "the single authoritative definition of
+      the Tier Item Freshness Gate" -- that body relocates, so the sentence must name the
+      destination contract anchor instead. Pointer-swap only; the file measures 23,258 b against
+      a 23,278 b budget, so the edit must not grow it.
   - file: config/prose_budgets.yaml
     action: Modify
     purpose: >-
@@ -158,6 +165,11 @@ acceptance_criteria:
     full_sequence(), carries a config/ci_rca_taxonomy.yaml row, and fails on a re-inlined
     relocation (proved red-then-green by the mirror test).
   - >-
+    docs/contracts/tier-item-lifecycle.yaml's {check: validate_skill_prose_relocation} evaluator
+    RESOLVES under scripts/checks/contracts/_population.py::_evaluator_resolves -- the check
+    module carries the contract's path as an executable-context literal, and the mirror test has
+    a case asserting the resolver returns True for it.
+  - >-
     Every edited and created contract stays at or under 500 effective lines with no new entry in
     config/structural_size_budgets.yaml -- docs/contracts/file-router.yaml specifically, whose
     route plus amendment_log entry is paid for by amendment_log compaction in the same edit.
@@ -196,7 +208,8 @@ verification_plan:
   - step: 2
     phase: pre-deploy
     action: Assert both S4 budget entries equal measured bytes and carry no raise marker.
-    command: "bin/venv-python -m scripts.checks.prose.prose_limits 2>&1 | tail -20; grep -E '^  \\.claude/skills/(planning|implement)/SKILL\\.md:' config/prose_budgets.yaml"
+    command: >-
+      bin/venv-python -c "from scripts.checks.prose.prose_limits import validate_prose_limits as f; e=[]; f(e); print(e); raise SystemExit(1 if e else 0)" && grep -E '^  [.]claude/skills/(planning|implement)/SKILL[.]md:' config/prose_budgets.yaml
     expected: >-
       prose_limits reports no over-budget surface and no under-budget advisory for either entry;
       the two grep lines show the measured byte counts with no trailing raise-approved comment.
@@ -236,25 +249,38 @@ verification_plan:
       rather than add a new guard.
   - step: 5
     phase: pre-deploy
-    action: Run the graduated registry checks that guard these two skills.
-    command: "bin/venv-python -m scripts.checks.verification.validate_verification_registry && for e in planning-skill-lambda-deploy-channel-guidance-present planning-skill-surfaces-fallback-reevaluation scope-boundary-deviation-trigger-adds-no-auto-file-path scope-boundary-relocations-not-reinlined implement-flow-sets-declaration; do echo \"== $e\"; bin/venv-python -c \"import yaml,pathlib,subprocess,sys; s=yaml.safe_load(pathlib.Path(f'config/agent/verification_registry/entries/$e.yaml').read_text()); sys.exit(0)\"; done"
+    action: >-
+      Execute the check_spec of every graduated registry shard that guards either skill, so the
+      step proves their assertions still hold rather than only that the shards parse.
+    command: >-
+      bin/venv-python -c "from scripts.checks.verification.validate_verification_registry import validate_verification_registry as f; e=[]; f(e); print(e); raise SystemExit(1 if e else 0)" && bin/venv-python -c "import yaml,pathlib,subprocess,sys,re;
+      ids=['planning-skill-lambda-deploy-channel-guidance-present','planning-skill-surfaces-fallback-reevaluation','scope-boundary-deviation-trigger-adds-no-auto-file-path','scope-boundary-relocations-not-reinlined','implement-flow-sets-declaration','prose-allowlist-matcher-honors-recursive-double-star'];
+      bad=[];
+      spec=lambda i: yaml.safe_load(pathlib.Path(f'config/agent/verification_registry/entries/{i}.yaml').read_text());
+      run=lambda c: subprocess.run(c,capture_output=True,text=True).returncode;
+      [bad.append(i) for i in ids if (lambda s: (run(s['check_spec']['command'])!=0) if s['primitive_slot']=='command_exit_zero'
+      else (len(re.findall(s['check_spec']['pattern'], pathlib.Path(s['check_spec']['path']).read_text()))<s['check_spec']['count'])) (spec(i))];
+      print('shards failing:',bad); sys.exit(1 if bad else 0)"
     expected: >-
-      The registry validates and each of the five named shards is present and parseable; their
-      pinned subjects are separately asserted by steps 1-4 and 6.
+      exit 0 -- the registry validates and all SIX shards guarding these skills still pass their
+      own assertions, including the two with real teeth against this plan
+      (planning-skill-surfaces-fallback-reevaluation's budget + PLAN-template-section + fifteen
+      field names, and scope-boundary-relocations-not-reinlined's surviving pointer and
+      "### Pre-Push Rebase" heading).
     fix_if: >-
-      A missing or unparseable shard means a relocation deleted or corrupted a graduated guard.
-      Restore the shard; never delete a registry entry to make a relocation pass.
-    hermetic: true
+      A named shard means a relocation broke a graduated guard. Restore the asserted content in
+      the surviving stub; never delete or edit a registry shard to make a relocation pass.
+    hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
-      This step is a loop over five shard identities that exists only to prove none was dropped
-      during this session's edit; validate_verification_registry already guards shard integrity
-      corpus-wide in both tiers, so a second registry row asserting the same thing for five
-      named ids would be duplicate coverage tied to this plan's transient state.
+      This step re-executes six EXISTING graduated records by id; a new registry row wrapping
+      them would be a check whose whole content is "run these six checks", which the differential
+      admission gate would correctly reject as adding no discrimination beyond its own members.
   - step: 6
     phase: pre-deploy
     action: Prove the new check discriminates, and that its registration surfaces resolve.
-    command: "bin/venv-python -m pytest tests/checks/contracts/test_validate_skill_prose_relocation.py tests/checks/contracts/test__manifest.py -q && bin/venv-python -m scripts.checks.contracts.validate_skill_prose_relocation && bin/venv-python -m scripts.checks.ci_guards.validate_ci_rca_taxonomy"
+    command: >-
+      bin/venv-python -m pytest tests/checks/contracts/test_validate_skill_prose_relocation.py tests/checks/contracts/test__manifest.py -q && bin/venv-python -c "from scripts.checks.contracts.validate_skill_prose_relocation import validate_skill_prose_relocation as f; e=[]; f(e); print(e); raise SystemExit(1 if e else 0)" && bin/venv-python -c "from scripts.checks.ci_guards.validate_ci_rca_taxonomy import validate_ci_rca_taxonomy as f; e=[]; f(e); print(e); raise SystemExit(1 if e else 0)"
     expected: >-
       Mirror test passes (including its negative case re-inlining a relocated sentence into a
       fixture skill), the contracts-domain Entry aggregation test passes, the check exits 0
@@ -268,7 +294,8 @@ verification_plan:
   - step: 7
     phase: pre-deploy
     action: Assert the layer4_relocation_map is complete in both directions.
-    command: "bin/venv-python -c \"import yaml,pathlib,sys; m=yaml.safe_load(pathlib.Path('docs/contracts/instruction-architecture.yaml').read_text())['layer4_relocation_map']; p=pathlib.Path('.claude/skills/planning/SKILL.md').read_text(); i=pathlib.Path('.claude/skills/implement/SKILL.md').read_text(); bad=[r for r in m if r['stub_heading'] not in p and r['stub_heading'] not in i]; bad+= [r for r in m if '#' not in r['destination'] or not pathlib.Path(r['destination'].split('#')[0]).exists()]; bad+=[r for r in m if r.get('enforcing_check')!='validate_skill_prose_relocation']; bad+=[r for r in m if r.get('tier') not in ('mandatory','conditional')]; print('unresolved map rows:',[r.get('stub_heading') for r in bad]); sys.exit(1 if bad else 0)\""
+    command: >-
+      bin/venv-python -c "import yaml,pathlib,sys; m=yaml.safe_load(pathlib.Path('docs/contracts/instruction-architecture.yaml').read_text())['layer4_relocation_map']; p=pathlib.Path('.claude/skills/planning/SKILL.md').read_text(); i=pathlib.Path('.claude/skills/implement/SKILL.md').read_text(); bad=[r for r in m if r['stub_heading'] not in p and r['stub_heading'] not in i]; bad+= [r for r in m if '#' not in r['destination'] or not pathlib.Path(r['destination'].split('#')[0]).exists()]; bad+=[r for r in m if r.get('enforcing_check')!='validate_skill_prose_relocation']; bad+=[r for r in m if r.get('tier') not in ('mandatory','conditional')]; print('unresolved map rows:',[r.get('stub_heading') for r in bad]); sys.exit(1 if bad else 0)"
     expected: >-
       exit 0 -- every map row names a live stub heading, an existing destination file with a
       "#anchor", the registered check, and a valid tier.
@@ -281,18 +308,22 @@ verification_plan:
   - step: 8
     phase: pre-deploy
     action: Assert the mandatory-read tier counts match the confirmed two-tier grammar.
-    command: "bin/venv-python -c \"import yaml,pathlib,sys; m=yaml.safe_load(pathlib.Path('docs/contracts/instruction-architecture.yaml').read_text())['layer4_relocation_map']; p=sum(1 for r in m if r['tier']=='mandatory' and 'planning' in r['surface']); i=sum(1 for r in m if r['tier']=='mandatory' and 'implement' in r['surface']); print('mandatory planning/implement:',p,i); sys.exit(0 if (p==3 and i==2) else 1)\""
+    command: >-
+      bin/venv-python -c "import yaml,pathlib,sys; m=yaml.safe_load(pathlib.Path('docs/contracts/instruction-architecture.yaml').read_text())['layer4_relocation_map']; p=sum(1 for r in m if r['tier']=='mandatory' and 'planning' in r['surface']); i=sum(1 for r in m if r['tier']=='mandatory' and 'implement' in r['surface']); print('mandatory planning/implement:',p,i); sys.exit(0 if (p==3 and i==2) else 1)"
     expected: "exit 0 -- exactly 3 mandatory stubs in planning and 2 in implement."
     fix_if: >-
-      A fourth mandatory read in either skill is the designed signal that the section should not
-      have moved -- restore it inline rather than raising the cap.
+      The 3/2 split is a RATCHET against further mandatory-read growth, not evidence the moved
+      sections belonged elsewhere -- the byte arithmetic in context forces every one of them.
+      A FOURTH mandatory read in either skill is the signal to stop: restore that section inline
+      rather than raising the cap.
     hermetic: true
     graduation: graduate
     graduation_check_id: layer4-mandatory-read-cap-holds
   - step: 9
     phase: pre-deploy
     action: Assert no content was lost in transit.
-    command: "git fetch origin main --quiet; bin/venv-python -c \"import re,subprocess,pathlib,sys; base=subprocess.run(['git','show','origin/main:.claude/skills/planning/SKILL.md'],capture_output=True,text=True).stdout + subprocess.run(['git','show','origin/main:.claude/skills/implement/SKILL.md'],capture_output=True,text=True).stdout; paths=set(re.findall(r'[A-Za-z0-9_./-]+\\.(?:yaml|yml|py|md|json)', base)); head=''.join(pathlib.Path(f).read_text() for f in ['.claude/skills/planning/SKILL.md','.claude/skills/implement/SKILL.md']+[str(q) for q in pathlib.Path('docs/contracts').glob('*.yaml')]); lost=sorted(x for x in paths if x not in head); print('paths lost in transit:',lost); sys.exit(1 if lost else 0)\""
+    command: >-
+      git fetch origin main --quiet; bin/venv-python -c "import re,subprocess,pathlib,sys; base=subprocess.run(['git','show','origin/main:.claude/skills/planning/SKILL.md'],capture_output=True,text=True).stdout + subprocess.run(['git','show','origin/main:.claude/skills/implement/SKILL.md'],capture_output=True,text=True).stdout; paths=set(re.findall(r'[A-Za-z0-9_./-]+\\.(?:yaml|yml|py|md|json)', base)); head=''.join(pathlib.Path(f).read_text() for f in ['.claude/skills/planning/SKILL.md','.claude/skills/implement/SKILL.md']+[str(q) for q in pathlib.Path('docs/contracts').glob('*.yaml')]); lost=sorted(x for x in paths if x not in head); print('paths lost in transit:',lost); sys.exit(1 if lost else 0)"
     expected: >-
       exit 0 -- every repo path named in either skill at origin/main is still named in the
       post-relocation skills or in some contract.
@@ -310,7 +341,7 @@ verification_plan:
     phase: pre-deploy
     action: Assert every contract loads, drift-validates, and stays inside the contracts size class.
     command: >-
-      bin/venv-python -m scripts.checks.contracts.validate_contract_drift &&
+      bin/venv-python -c "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as f; e=[]; f(e); print(e); raise SystemExit(1 if e else 0)" &&
       bin/venv-python -c "from scripts.contracts import load_contract;
       load_contract('docs/contracts/exit-criteria-ledger.yaml');
       load_contract('docs/contracts/verification-registry.yaml')" &&
@@ -333,7 +364,8 @@ verification_plan:
   - step: 11
     phase: pre-deploy
     action: Assert the roadmap bookkeeping declaration is coherent before /implement flips it.
-    command: "bin/venv-python -m scripts.roadmap.platform_roadmap > /dev/null && bin/venv-python -c \"import yaml,pathlib,sys; d=yaml.safe_load(pathlib.Path('docs/ROADMAP-PLATFORM.yaml').read_text()); it=[x for x in d['tier_items'] if x['id']=='T2.56'][0]; fis=' '.join(it['files_in_scope']); note=it.get('progress_note',''); bad=[]; bad+=['skills layer absent from files_in_scope'] if '.claude/skills' not in fis else []; bad+=['progress_note does not name rec-3718'] if 'rec-3718' not in note else []; bad+=['progress_note does not state the Layer 5 boundary'] if 'config/agent/executor' not in note else []; print('roadmap gaps:',bad); sys.exit(1 if bad else 0)\""
+    command: >-
+      bin/venv-python -m scripts.roadmap.platform_roadmap > /dev/null && bin/venv-python -c "import yaml,pathlib,sys; d=yaml.safe_load(pathlib.Path('docs/ROADMAP-PLATFORM.yaml').read_text()); it=[x for x in d['tier_items'] if x['id']=='T2.56'][0]; fis=' '.join(it['files_in_scope']); note=it.get('progress_note',''); bad=[]; bad+=['skills layer absent from files_in_scope'] if '.claude/skills' not in fis else []; bad+=['progress_note does not name rec-3718'] if 'rec-3718' not in note else []; bad+=['progress_note does not state the Layer 5 boundary'] if 'config/agent/executor' not in note else []; print('roadmap gaps:',bad); sys.exit(1 if bad else 0)"
     expected: >-
       exit 0 -- files_in_scope is re-grounded to include the skills layer and the progress note
       records both rec-3718 and the Layer 5 out-of-scope statement.
@@ -356,15 +388,36 @@ verification_plan:
       acceptance to be exercised under its own identity.
   - step: 13
     phase: pre-deploy
-    action: Stale-reference sweep -- confirm no live pointer still names a retired stub body.
-    command: "! grep -rn 'planning/SKILL.md#\\|implement/SKILL.md#' --include='*.py' --include='*.yaml' --include='*.md' .claude .github config docs/contracts scripts tests | grep -v 'layer4_relocation_map'"
+    action: >-
+      Stale-reference sweep over the NON-anchored surface -- every artefact that names either
+      skill by path, plus the skills' own intra-file cross-references, must still be true.
+    command: >-
+      grep -q 'tier-item-lifecycle.yaml' .claude/skills/orient/SKILL.md &&
+      bin/venv-python -c "import pathlib,sys; P=pathlib.Path;
+      sk={q: P(q).read_text() for q in ['.claude/skills/planning/SKILL.md','.claude/skills/implement/SKILL.md']};
+      refs=[q for q in list(P('config/agent/verification_registry/entries').glob('*.yaml'))+[P('.claude/skills/orient/SKILL.md')]
+      if 'skills/planning/SKILL.md' in q.read_text() or 'skills/implement/SKILL.md' in q.read_text()];
+      blob=''.join(sk.values());
+      heads=['Tier Item Freshness Gate','Parallel-with-code-review state machine','Deploy channel by artifact class','Decomposition-hint exemption inheritance','Pre-Push Rebase','Candidate Decision Ratification','Data-Model Assessment','Recommendation Relevance Gate','Main Divergence Assessment','Follow-on /plan mode','Tier_item bookkeeping','CD Ratification Bookkeeping'];
+      lost=[h for h in heads if h not in blob];
+      orient=P('.claude/skills/orient/SKILL.md').read_text();
+      bad=list(lost)+(['orient/SKILL.md still claims the planning skill is the authoritative Freshness Gate definition']
+      if 'tier-item-lifecycle.yaml' not in orient else []);
+      print('artefacts naming a scoped skill:',len(refs));
+      print('stub headings lost:',lost); print('failures:',bad); sys.exit(1 if bad else 0)"
     expected: >-
-      exit 0 -- no surface outside the relocation map deep-links into a relocated SKILL.md
-      section that no longer carries its body.
-    fix_if: Re-point the offending reference at the destination contract anchor.
+      exit 0 -- seven artefacts enumerated (six registry shards plus orient/SKILL.md), every
+      relocated section's stub heading still present so intra-file "see ... below" references
+      still resolve (M7: the bookkeeping preamble points at Parallel-with-code-review state
+      machine), and orient/SKILL.md names the destination contract. This step is RED on the
+      unchanged tree, because orient does not name tier-item-lifecycle.yaml today.
+    fix_if: >-
+      A lost stub heading means a section was deleted rather than stubbed -- restore the heading.
+      The orient failure means line 66's "single authoritative definition ... lives in the
+      planning skill" was not re-pointed at the contract anchor.
     hermetic: true
     graduation: graduate
-    graduation_check_id: no-stale-deeplinks-into-relocated-skill-sections
+    graduation_check_id: no-stale-references-into-relocated-skill-sections
   - step: 14
     phase: pre-deploy
     action: Run the fast presubmit tier.
@@ -388,7 +441,8 @@ verification_plan:
   - step: 16
     phase: post-deploy
     action: Confirm rec-3378 closed after the squash-merge.
-    command: "bin/venv-python -m scripts.ops_data_portal --sync && grep -c '\"id\": \"rec-3378\", .*\"status\": \"closed\"' logs/.recommendations-log.jsonl"
+    command: >-
+      bin/venv-python -m scripts.ops_data_portal --sync && grep -c '"id": "rec-3378", .*"status": "closed"' logs/.recommendations-log.jsonl
     expected: >-
       rec-3378 reads status closed, driven by the Resolves: rec-3378 trailer in the squash-merge
       commit body via rec-autoclose.
@@ -453,58 +507,75 @@ test_obligations:
   - source: config/ci_rca_taxonomy.yaml
     behavior: The new check name resolves to a function_to_category row, as every registered check must.
     verification_step: 6
-    command: "bin/venv-python -m scripts.checks.ci_guards.validate_ci_rca_taxonomy"
+    command: >-
+      bin/venv-python -c "from scripts.checks.ci_guards.validate_ci_rca_taxonomy import validate_ci_rca_taxonomy as f; e=[]; f(e); print(e); raise SystemExit(1 if e else 0)"
     red_green_expectation: red before the row lands, green after
   - source: docs/contracts/file-router.yaml
     behavior: >-
       tier-item-lifecycle is routed with topic equal to its subject, and the file stays at or
       under 500 effective lines after the route plus its amendment_log entry.
     verification_step: 10
-    command: "bin/venv-python -m scripts.checks.contracts.validate_contract_drift"
+    command: >-
+      bin/venv-python -c "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as f; e=[]; f(e); print(e); raise SystemExit(1 if e else 0)"
     red_green_expectation: red before the route lands, green after
   - source: docs/contracts/exit-criteria-ledger.yaml
     behavior: >-
       The criterion-level flip and truth-maintenance rules live in the status/met_by field
       entries and audit_invariants, with no new top-level key added to this Class A document.
     verification_step: 10
-    command: "bin/venv-python -c \"from scripts.contracts import load_contract; load_contract('docs/contracts/exit-criteria-ledger.yaml');\
-  \ load_contract('docs/contracts/verification-registry.yaml')\""
+    command: >-
+      bin/venv-python -c "from scripts.contracts import load_contract;
+      load_contract('docs/contracts/exit-criteria-ledger.yaml');
+      load_contract('docs/contracts/verification-registry.yaml')"
     red_green_expectation: red if a new top-level key is added (extra=forbid), green as authored
   - source: docs/contracts/candidate-decision-ratification.yaml
     behavior: >-
       lane_steps.plan.draft and lane_steps.implement.execute carry the relocated protocols with
       scalar leaves, so smuggling_detection does not reject the body by shape.
     verification_step: 10
-    command: "bin/venv-python -m scripts.checks.contracts.validate_contract_drift"
+    command: >-
+      bin/venv-python -c "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as f; e=[]; f(e); print(e); raise SystemExit(1 if e else 0)"
     red_green_expectation: red before the amendment_log entry lands, green after
   - source: docs/contracts/data-modeling-standard.yaml
     behavior: The design-time walk sits beside the rules it already enumerates, under one amendment_log entry.
     verification_step: 10
-    command: "bin/venv-python -m scripts.checks.contracts.validate_contract_drift"
+    command: >-
+      bin/venv-python -c "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as f; e=[]; f(e); print(e); raise SystemExit(1 if e else 0)"
     red_green_expectation: red before the amendment_log entry lands, green after
   - source: docs/contracts/recommendation-relevance.yaml
     behavior: The planning-gate protocol sits beside the verdict enum, under one amendment_log entry.
     verification_step: 10
-    command: "bin/venv-python -m scripts.checks.contracts.validate_contract_drift"
+    command: >-
+      bin/venv-python -c "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as f; e=[]; f(e); print(e); raise SystemExit(1 if e else 0)"
     red_green_expectation: red before the amendment_log entry lands, green after
   - source: docs/contracts/git-ops.yaml
     behavior: The main-divergence assessment sits beside rebase_phase_distinction, under one amendment_log entry.
     verification_step: 10
-    command: "bin/venv-python -m scripts.checks.contracts.validate_contract_drift"
+    command: >-
+      bin/venv-python -c "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as f; e=[]; f(e); print(e); raise SystemExit(1 if e else 0)"
     red_green_expectation: red before the amendment_log entry lands, green after
   - source: docs/contracts/build-lambda.yaml
     behavior: >-
       The whole Infrastructure & Lambda assessment lands here as a single destination, under one
       amendment_log entry.
     verification_step: 10
-    command: "bin/venv-python -m scripts.checks.contracts.validate_contract_drift"
+    command: >-
+      bin/venv-python -c "from scripts.checks.contracts.validate_contract_drift import validate_contract_drift as f; e=[]; f(e); print(e); raise SystemExit(1 if e else 0)"
     red_green_expectation: red before the amendment_log entry lands, green after
+  - source: .claude/skills/orient/SKILL.md
+    behavior: >-
+      The Freshness Gate authority sentence names the destination contract, not the planning
+      skill section, and the file stays at or under its 23,278 b prose budget.
+    verification_step: 13
+    command: "grep -q 'tier-item-lifecycle.yaml' .claude/skills/orient/SKILL.md"
+    red_green_expectation: red before the re-point, green after
   - source: config/prose_budgets.yaml
     behavior: >-
       Both S4 entries equal the measured post-relocation bytes with no raise marker, so the
       ratchet locks the shrink in.
     verification_step: 2
-    command: "bin/venv-python -m scripts.checks.prose.prose_limits"
+    command: >-
+      bin/venv-python -c "from scripts.checks.prose.prose_limits import validate_prose_limits as f; e=[]; f(e); print(e); raise SystemExit(1 if e else 0)"
     red_green_expectation: red before the re-seed, green after
   - source: docs/ROADMAP-PLATFORM.yaml
     behavior: >-
@@ -544,6 +615,22 @@ constraints:
     (mandatory | conditional) comes from layer4_relocation_map -- the check reads the map, not
     hardcoded sentences, so a later re-wording is a map edit rather than a ratchet fight.
   - >-
+    scripts/checks/contracts/validate_skill_prose_relocation.py MUST carry the literal
+    "docs/contracts/tier-item-lifecycle.yaml" as a module-level executable-context string --
+    the _CONTRACT_REL_PATH idiom at validate_git_ops_contract.py:18. This is not stylistic:
+    _population.py's _evaluator_resolves calls module_contains_literal(module, basename) and
+    excludes docstrings and # comments, so a purely map-driven module (whose only literal is
+    instruction-architecture.yaml, with tier-item-lifecycle.yaml appearing solely as YAML data
+    in a destination value) makes the new contract's evaluator UNRESOLVABLE and fails
+    validate_contract_drift. Reconcile with the map-driven rule by reading the map FROM the
+    named literal path constants -- the map still supplies tiers and destinations; only the two
+    contract paths are literals.
+  - >-
+    file-router.yaml amendment_log compaction is date-and-citation preserving: compact the four
+    OLDEST entries (2026-08-13 and earlier) by shortening their summary bodies, never by
+    deleting an entry, and keep every date and every Decision/plan citation intact. Governance
+    history is compacted, never dropped.
+  - >-
     T2.56 c1 covers Layer 1 (both consumers) and Layer 4 (interactive only). Layer 5
     (config/agent/executor/**) is outside c1 by instruction-architecture.yaml's consumer table
     and is owned by rec-3718 -- do not shrink executor prompts in this plan.
@@ -555,10 +642,11 @@ context:
   - "T2.54 ROADMAP CONFLICT: dispositioned defer-with-note per human direction. layer4_relocation_map is authored as data so it seeds T2.54's clause-to-check index rather than diverging from it; name T2.54 as successor in the new contract."
   - "Predecessors: PLAN-ambient-prose-contract-relocation (c1 Layer 1 conjuncts, 2026-09-01); PLAN-decision-corpus-stock-ceiling-retirement (c2, Decision 179); PLAN-decision-scout-roadmap-projection (heading-kept/body-pointered precedent, instruction-architecture.yaml gate_subagent_retrieval)."
   - "Owner rec: rec-3378 (acceptance is the byte thresholds). Follow-on: rec-3718 (Layer 5 prose governance, sequence behind T4.10a)."
-  - "Stub grammar precedent: AGENTS.md:141 carries the imperative form once. Mandatory tiers: planning = data-model grain, ratification draft, tier-item freshness gate; implement = bookkeeping walk, ratification execute."
-  - "Measured baselines: planning 55,757 b; implement 47,735 b; relocation sources 18,043 b and 16,086 b. Untouched Layer 4: audit-prompt 25,754; orient 23,258; plan-critique 18,621; overseer 12,688; code-review 12,605; decision-scout 11,293; executor-rca 1,919 (AGENTS.md is 18,898)."
-  - "Contract headroom at authoring time (effective lines / 500): file-router 478; verification-registry 354; environment-taxonomy 279; exit-criteria-ledger 259; candidate-decision-ratification 219; git-ops 196; instruction-architecture 173; build-lambda 139; recommendation-relevance 113; data-modeling-standard 79."
-  - "Main was 1 commit ahead at authoring time with no overlap against this plan's scope; ordinary commit-flow rebase applies."
+  - "Stub grammar precedent: AGENTS.md:141 carries the imperative form once. Mandatory: planning = data-model grain, ratification draft, freshness gate; implement = bookkeeping walk, ratification execute."
+  - "Baselines: planning 55,757 b, implement 47,735 b; relocation sources 18,043 and 16,086. Untouched Layer 4 (all at or under AGENTS.md 18,898 except the first two): audit-prompt 25,754; orient 23,258; plan-critique 18,621; overseer 12,688; code-review 12,605; decision-scout 11,293; executor-rca 1,919."
+  - "Effective lines /500 at authoring, edited files only: file-router 478 (tightest); exit-criteria-ledger 259; candidate-decision-ratification 219; git-ops 196; instruction-architecture 173; build-lambda 139; recommendation-relevance 113; data-modeling-standard 79."
+  - "Lambda assessment: compute_affected_artifacts(scope) == {'data-pipeline': ['docs/ROADMAP-PLATFORM.yaml']}; that artifact is status: active, but the roadmap file is an ASSETS entry, not a handler or includes member -- asset-only doc change, no build/deploy/smoke step, infrastructure_dependencies stays empty (precedent: PLAN-step-functions-executor-host.yaml)."
+  - "Mandatory-read economics: implement's 7,735 b gap is UNREACHABLE from conditional-only sections (0 b), and planning's conditional-only 8,655 b lands at 47,102 against 45,000. Every mandatory-tier relocation is forced by arithmetic, not chosen -- step 8's 3/2 cap is a ratchet against further growth. For those five stubs the win is de-duplication, not ambient-load reduction; the load win rides on the conditional stubs."
   - "Overflow valve if a threshold is missed: relocate Preflight Constraints out of BOTH skills into a second Class D contract, keeping the venv_ok row verbatim in each."
 pre_implementation_checklist:
   - Branch confirmed not on main
