@@ -32,7 +32,7 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.hygiene.validate_no_cross_test_imports",
         attr="validate_no_cross_test_imports",
         pre=True,
-        pre_globs=("tests/**",),
+        pre_globs=("tests/**", "scripts/checks/hygiene/validate_no_cross_test_imports.py"),
         full_segment="full_after_lint",
     ),
     Entry(

@@ -11,17 +11,31 @@ autonomous executor runs ONLY --pre, so a full-tier-only check is structurally g
 discovered after merge). It lives HERE rather than in a file of its own because a fifth
 registry-importing test module is a fifth transitive-residue member competing for the CAP=35
 affected-set budget that TestAffectedSetSurvival pins in test_manifest_contracts.py.
+
+PLAN-verifier-weakening-guards (LSA-01 leg a, Decision 187) retires the four same-PR-editable
+roster constants the promotion wave above left behind (a 22-name gated-check roster, a 2-name
+ungated-check roster, a 2-name newly-promoted-domain roster, and a 3-name pre-only-check roster,
+named in the plan and in git history, deliberately not respelled here) -- see TestDerivedGateShape
+and TestOD5's own docstrings for the five-property disposition. NO ROSTER REPLACES THEM: the
+protected set (which entries may
+not be demoted without a marker) is derived from the git base ref by
+scripts/checks/verification/validate_tier_demotion_markers.py at check time, and TestWeakeningGateFixedPoint
+below pins the fixed point that makes deleting or demoting THAT gate itself impossible to do
+silently -- a hand-written name list here would just be a sixth roster in a file about retiring
+the first five.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import importlib
 from fnmatch import fnmatch
+from unittest.mock import patch
 
 import pytest
 
 import scripts.checks.registry as registry
 
-_PRE_ONLY_CHECKS = ("validate_prose_budget_raises", "validate_sloc_budget_raises", "validate_vp_replay")
 _UNSEQUENCED_CHECKS = ("validate_terraform_try",)
 
 
@@ -145,12 +159,13 @@ class TestOD4ScaffoldAdjacentChecksStayInTheirSegments:
 
 
 class TestOD5PreOnlyAndUnsequencedChecks:
-    def test_pre_only_checks_stay_pre_only(self) -> None:
-        pre_names = {step.name for step in registry.pre_sequence() if step.kind == "check"}
-        full_names = {step.name for step in registry.full_sequence() if step.kind == "check"}
-        for name in _PRE_ONLY_CHECKS:
-            assert name in pre_names
-            assert name not in full_names
+    """test_pre_only_checks_stay_pre_only (the retired 3-name pre-only-check roster's
+    parameterized leg) is RETIRED with the roster it read -- its `name not in full_names`
+    property is LOST, routed to rec-3728 (Decision 187 scope row 11 property (iv)): that
+    direction is a TIGHTENING guard (a pre-only check gaining a full_segment is never gated by
+    this plan's own direction rule), so the gate that enforces direction cannot itself own it.
+    test_terraform_try_stays_unsequenced is untouched -- _UNSEQUENCED_CHECKS is a different
+    constant, not one of the four retired."""
 
     def test_terraform_try_stays_unsequenced(self) -> None:
         pre_names = {step.name for step in registry.pre_sequence() if step.kind == "check"}
@@ -192,77 +207,29 @@ class TestMembershipFloors:
         assert not (full_names <= removed)
 
 
-# Promoted with a pre_globs input-closure gate. Per-glob closure adequacy is asserted in each
-# domain's own tests/checks/<domain>/test__manifest.py, next to the manifest it mirrors.
-PROMOTED_GATED: tuple[str, ...] = (
-    "validate_sys_executable",
-    "validate_recommendations_schema",
-    "validate_rec_write_paths",
-    "validate_decisions_local_writes",
-    "validate_warehouse_write_sources",
-    "validate_pydantic_yaml_drift",
-    "validate_dq_manifest_gate",
-    "validate_rec_relevance_contract",
-    "validate_executor_boundary",
-    "validate_invariants",
-    "validate_scheduled_agent_logs",
-    "validate_ci_rca_trigger",
-    "validate_supersession_annotations",
-    "validate_lambda_manifests",
-    "validate_lambda_manifest_coverage",
-    "validate_hermeticity_flags",
-    "validate_verifier_hermeticity",
-    "validate_differential_gate_baseline",
-    "validate_no_underscore_instructions",
-    "validate_claude_md_pointer_invariant",
-    "validate_prompt_compliance",
-    "validate_instruction_architecture_layers",
-)
-
-# Promoted UNGATED (pre_globs=None, runs on every diff). Reserved for checks whose read set is
-# driven by data they parse at runtime (an answer-locus path, a diff-derived file list), so no
-# static glob can enclose it -- gating those would silently re-open the very gap the promotion
-# closes. Each costs single-digit milliseconds of body time.
-PROMOTED_UNGATED: tuple[str, ...] = (
-    "validate_portal_drift",
-    "validate_environment_taxonomy",
-)
-
-# Domains with no --pre member before this wave: `by_domain.get(domain, [])` in pre_sequence()
-# only visits DECLARED domains, so an undeclared domain's promoted entries silently never run.
-NEWLY_PRE_DOMAINS: tuple[str, ...] = ("executor", "lambda_pkg")
-
-
 def _pre_steps() -> dict[str, registry.Step]:
     return {step.name: step for step in registry.pre_sequence() if step.kind == "check"}
 
 
-class TestPromotedRosterIsDispatchedInPre:
-    @pytest.mark.parametrize("name", PROMOTED_GATED + PROMOTED_UNGATED)
-    def test_promoted_check_runs_in_the_pre_tier(self, name: str) -> None:
-        assert name in _pre_steps()
+class TestDerivedGateShape:
+    """Decision 187 (LSA-01 leg a) retires the 22-name gated-check roster, the 2-name
+    ungated-check roster and the 2-name newly-promoted-domain roster along with the 3-name
+    pre-only-check roster (see TestOD5's docstring) -- four same-PR-editable rosters that pinned
+    27 check names + 2 domains, replaced by NOTHING (the protected set is derived from the git
+    base ref by validate_tier_demotion_markers, never re-enumerated here). FIVE-PROPERTY
+    DISPOSITION, none assumed: this class RE-POINTS two surviving properties at the FULL derived
+    population (i, ii below) and RETAINS one VERBATIM (iii); properties (iv) and (v) are LOST --
+    both are TIGHTENINGS the new gate's own direction rule declares free, so the gate that
+    enforces direction cannot itself own them -- and are routed to rec-3728 rather than silently
+    dropped."""
 
-    @pytest.mark.parametrize("name", PROMOTED_GATED + PROMOTED_UNGATED)
-    def test_promoted_check_still_runs_in_the_full_tier(self, name: str) -> None:
-        """Promotion is additive: the full tier keeps every promoted check."""
-        full_names = {step.name for step in registry.full_sequence() if step.kind == "check"}
-        assert name in full_names
-
-
-class TestPromotedGateShape:
-    @pytest.mark.parametrize("name", PROMOTED_GATED)
-    def test_gated_promotion_declares_globs(self, name: str) -> None:
-        assert _pre_steps()[name].pre_globs
-
-    @pytest.mark.parametrize("name", PROMOTED_UNGATED)
-    def test_ungated_promotion_declares_no_globs(self, name: str) -> None:
-        assert _pre_steps()[name].pre_globs is None
-
-    @pytest.mark.parametrize("name", PROMOTED_GATED)
-    def test_gated_promotion_covers_its_own_defining_module(self, name: str) -> None:
-        """A gated check whose own module holds its roster/allowlist/regexes must match its own
-        globs, or editing the rule alone skips the check that enforces it (the recall defect the
-        registry audit found on seven pre-existing gates).
+    def test_every_gated_pre_entry_covers_its_own_defining_module(self) -> None:
+        """(i) RE-POINTED: every gated pre entry's globs must match its own defining module, now
+        over the full derived population (51 entries at head) rather than the retired 22-name
+        gated-check roster -- this is what surfaces the two scope-row-5/6 misses
+        (validate_no_cross_test_imports, validate_terraform_tag_charset). RED before those two
+        widenings land, GREEN after: the first live demonstration that the direction rule this
+        plan installs points the right way (a glob WIDENING is a tightening, and free).
 
         Bare fnmatch, not scripts.validate._pre_glob_match, for the reason tests/checks/
         ops_governance/test__manifest.py::TestClosureMembersAreCovered states: an import edge from
@@ -270,37 +237,74 @@ class TestPromotedGateShape:
         direction -- the production matcher is fnmatch PLUS a leading-'**/' retry that can only
         ADD matches, so anything green here is green there too.
         """
-        entry = registry._ALL_ENTRIES[name]
-        own_path = entry.module.replace(".", "/") + ".py"
-        globs = _pre_steps()[name].pre_globs or ()
-        assert any(fnmatch(own_path, glob) for glob in globs), f"{name}: {own_path} unmatched by {globs}"
+        misses = []
+        for name, step in _pre_steps().items():
+            if step.pre_globs is None:
+                continue
+            entry = registry._ALL_ENTRIES[name]
+            own_path = entry.module.replace(".", "/") + ".py"
+            if not any(fnmatch(own_path, glob) for glob in step.pre_globs):
+                misses.append(name)
+        assert not misses, f"{len(misses)} gated pre entries do not cover their own defining module: {misses}"
 
-
-class TestNewlyPreDomainsAreDeclared:
-    @pytest.mark.parametrize("domain", NEWLY_PRE_DOMAINS)
-    def test_domain_is_declared_in_pre_domain_order(self, domain: str) -> None:
-        assert domain in registry._PRE_DOMAIN_ORDER
-
-    @pytest.mark.parametrize("domain", NEWLY_PRE_DOMAINS)
-    def test_domain_actually_contributes_a_check_to_pre(self, domain: str) -> None:
-        """Declaring the domain is necessary but not sufficient -- assert the derived sequence
-        really carries a member from it, so a declaration without a promoted entry cannot pass."""
-        contributed = {
-            step.name
-            for step in registry.pre_sequence()
-            if step.kind == "check" and registry._ALL_ENTRIES[step.name].module.split(".")[2] == domain
-        }
-        assert contributed
+    def test_every_domain_contributing_a_pre_entry_is_declared_in_pre_domain_order(self) -> None:
+        """(ii) RE-POINTED: a domain contributing a pre entry must be declared in
+        _PRE_DOMAIN_ORDER, now over every domain rather than the retired 2-name
+        newly-promoted-domain roster. Does NOT catch a domain declared-but-NOT-contributing
+        (e.g. `product`, OBSERVED stale at
+        plan time but not fixed here, Decision 59) -- that is declaration-implies-contribution's
+        converse, a different direction this property does not claim."""
+        by_domain = registry._entries_by_domain()
+        contributing = {entry.module.split(".")[2] for entries in by_domain.values() for entry in entries if entry.pre}
+        assert contributing <= set(registry._PRE_DOMAIN_ORDER)
 
     def test_pre_domain_order_has_no_duplicates(self) -> None:
-        """Regression pin: passes unchanged before and after this diff -- guards future duplicate appends, not this wave's."""
+        """(iii) RETAINED VERBATIM from the retired TestNewlyPreDomainsAreDeclared: passes
+        unchanged before and after this plan -- guards future duplicate appends, not this wave's."""
         assert len(registry._PRE_DOMAIN_ORDER) == len(set(registry._PRE_DOMAIN_ORDER))
 
 
-class TestNoAccidentalUngatedPromotion:
-    def test_promoted_roster_ungated_members_are_exactly_the_declared_ones(self) -> None:
-        """An ungated check runs on EVERY diff, so it is a budget decision, not a default. Any
-        promoted name that loses its globs must be moved into PROMOTED_UNGATED deliberately."""
+class TestWeakeningGateFixedPoint:
+    """VP step 3: the self-reference hole Decision 187's design named as its sharpest structural
+    finding -- without this, the PR that demotes the check-fleet tier-demotion gate is the PR
+    under which the gate does not run."""
+
+    def test_live_gate_entry_is_present_and_ungated_in_pre_sequence(self) -> None:
         steps = _pre_steps()
-        ungated = {name for name in PROMOTED_GATED + PROMOTED_UNGATED if steps[name].pre_globs is None}
-        assert ungated == set(PROMOTED_UNGATED)
+        assert registry._WEAKENING_GATE in steps
+        assert steps[registry._WEAKENING_GATE].pre_globs is None
+
+    def test_pre_sequence_raises_when_gate_entry_is_absent(self) -> None:
+        patched = dict(registry._ALL_ENTRIES)
+        del patched[registry._WEAKENING_GATE]
+        with patch.object(registry, "_ALL_ENTRIES", patched), pytest.raises(registry.WeakeningGateError):
+            registry.pre_sequence()
+
+    def test_full_sequence_raises_when_gate_entry_is_absent(self) -> None:
+        patched = dict(registry._ALL_ENTRIES)
+        del patched[registry._WEAKENING_GATE]
+        with patch.object(registry, "_ALL_ENTRIES", patched), pytest.raises(registry.WeakeningGateError):
+            registry.full_sequence()
+
+    def test_pre_sequence_raises_when_gate_entry_is_glob_gated(self) -> None:
+        patched = dict(registry._ALL_ENTRIES)
+        original = patched[registry._WEAKENING_GATE]
+        patched[registry._WEAKENING_GATE] = dataclasses.replace(original, pre_globs=("scripts/checks/verification/**",))
+        with patch.object(registry, "_ALL_ENTRIES", patched), pytest.raises(registry.WeakeningGateError):
+            registry.pre_sequence()
+
+    def test_weakening_gate_constant_resolves_to_the_token_owning_module_callable(self) -> None:
+        """The carrier-constant pin (scope row 4 / VP step 3): registry._WEAKENING_GATE's VALUE
+        is checked against whichever module owns a constant equal to the "tier-demotion-approved"
+        token string -- DERIVED from the token's own value, never compared to a spelled-out
+        check-name literal. Without this pin, a PR could re-point _WEAKENING_GATE at any other
+        ungated pre entry AND delete the gate's own Entry in the same diff, and the two
+        raise-based tests above -- which only see a present, ungated Step under whatever name the
+        constant currently holds -- would not catch it."""
+        owners = []
+        for name, entry in registry._ALL_ENTRIES.items():
+            module = importlib.import_module(entry.module)
+            if any(value == "tier-demotion-approved" for value in vars(module).values() if isinstance(value, str)):
+                owners.append(getattr(module, entry.attr))
+        assert len(owners) == 1, owners
+        assert registry.resolve(registry._WEAKENING_GATE) is owners[0]

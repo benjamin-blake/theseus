@@ -11,7 +11,12 @@ Registering a new check touches SEVEN surfaces, not merely this package (retract
 "touches ONLY this package" claim -- three of the seven sit outside scripts/checks entirely; plan-
 obligation-closure / docs/contracts/plan-obligations.yaml): (1) the check module under
 scripts/checks/<domain>/; (2) its ``@register(...)`` decoration; (3) an ``Entry`` literal (bare
-string-literal module=/attr=) in that domain's ``_manifest.py``; (4) a
+string-literal module=/attr=) in that domain's ``_manifest.py`` -- an Entry's tier fields
+(``pre``, ``full_segment``, ``pre_globs``) are now a DIRECTION-GATED transition, not a frictionless
+edit: demoting one (losing ``pre``, losing ``full_segment``, or narrowing ``pre_globs`` below its
+prior coverage) requires a ``# tier-demotion-approved: dec-NNN <reason>`` marker, enforced by
+``validate_tier_demotion_markers`` (scripts/checks/verification/validate_tier_demotion_markers.py,
+Decision 187, audit finding LSA-01 leg a) against the git base ref, never a committed roster; (4) a
 config/ci_rca_taxonomy.yaml ``function_to_category`` row; (5) a
 config/agent/verification_registry/entries/<check_id>.yaml shard per GRADUATED verification_plan
 step (not per check); (6) the mirror test at tests/<mirrored>/test_<module>.py -- which must ALSO
@@ -392,6 +397,38 @@ _FULL_TIER_SKELETON: tuple[tuple[str, str | None], ...] = (
 _PRE_TIER_LEADING_SCAFFOLDS: tuple[str, ...] = ("lint", "precommit_changed", "mypy_diff", "pytest_diff")
 _PRE_TIER_TRAILING_SCAFFOLDS: tuple[str, ...] = ("verifier_coverage_report", "budget_assertion")
 
+# Names the MECHANISM (the check-fleet tier-demotion gate), never the protected set -- so this is
+# not a roster. Closes the self-reference hole Decision 187's design named as its sharpest
+# structural finding: without _assert_weakening_gate_intact below, the PR that demotes this gate
+# out of its own sequence (or, in --pre, glob-gates it) is the PR under which the gate does not
+# run. tests/checks/registry/test_sequences.py::TestWeakeningGateFixedPoint additionally pins
+# this constant's VALUE by derivation (resolve(_WEAKENING_GATE) is the callable defined in the
+# module that owns the tier-demotion-approved token), never by a literal comparison -- otherwise a
+# PR could re-point this string at any other ungated pre entry and delete the gate's own Entry
+# while every assertion below still passes.
+_WEAKENING_GATE: str = "validate_tier_demotion_markers"
+
+
+class WeakeningGateError(RuntimeError):
+    """Raised by pre_sequence()/full_sequence() when the check-fleet tier-demotion gate
+    (registry._WEAKENING_GATE) is absent from the derived sequence, or (--pre only) glob-gated."""
+
+
+def _assert_weakening_gate_intact(steps: list[Step], *, pre_tier: bool) -> None:
+    gate = next((step for step in steps if step.kind == "check" and step.name == _WEAKENING_GATE), None)
+    if gate is None:
+        raise WeakeningGateError(
+            f"the check-fleet tier-demotion gate ({_WEAKENING_GATE!r}) is absent from this derived "
+            "sequence -- the PR that demotes it out of the sequence would be the PR under which it "
+            "stops running."
+        )
+    if pre_tier and gate.pre_globs is not None:
+        raise WeakeningGateError(
+            f"the check-fleet tier-demotion gate ({_WEAKENING_GATE!r}) is glob-gated in --pre "
+            f"(pre_globs={gate.pre_globs!r}) -- a gated gate is one narrow-the-globs edit away from "
+            "not running on the diff that demotes it; it must stay ungated."
+        )
+
 
 def _entries_by_domain() -> dict[str, list[Entry]]:
     by_domain: dict[str, list[Entry]] = {}
@@ -410,6 +447,7 @@ def pre_sequence() -> list[Step]:
             if entry.pre:
                 steps.append(_c(entry.name, pre_globs=entry.pre_globs))
     steps.extend(_s(name) for name in _PRE_TIER_TRAILING_SCAFFOLDS)
+    _assert_weakening_gate_intact(steps, pre_tier=True)
     return steps
 
 
@@ -430,4 +468,5 @@ def full_sequence() -> list[Step]:
             for entry in by_domain.get(domain, []):
                 if entry.full_segment == segment:
                     steps.append(_c(entry.name))
+    _assert_weakening_gate_intact(steps, pre_tier=False)
     return steps

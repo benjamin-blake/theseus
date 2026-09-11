@@ -123,4 +123,12 @@ ENTRIES: tuple[Entry, ...] = (
         ),
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_tier_demotion_markers",
+        module="scripts.checks.verification.validate_tier_demotion_markers",
+        attr="validate_tier_demotion_markers",
+        pre=True,
+        pre_globs=None,
+        full_segment="full_after_lint",
+    ),
 )

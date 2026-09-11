@@ -31,12 +31,13 @@ from typing import NamedTuple
 from scripts.checks import _common
 from scripts.decisions_md import extract_superseded_by, iter_decision_sections
 
-# Bounds this module's public surface to exactly the eight names
-# docs/contracts/marker-grammar.yaml's binding_surface.exports promises Slice B -- VP step 1 only
-# pins that these eight are PRESENT; __all__ additionally keeps the surface from silently growing
-# past what the contract documents (e.g. MarkerEntry, RETRO_SCAN_GRANDFATHER, and the two
-# re-exported scripts.decisions_md names stay importable by explicit dotted access, but are not
-# part of the promised star-import / documented surface).
+# Bounds this module's public surface to exactly the nine names
+# docs/contracts/marker-grammar.yaml's binding_surface.exports promises (eight at Slice B, plus
+# check_state_diff added by PLAN-verifier-weakening-guards) -- validate_marker_grammar_exports
+# pins that these nine are PRESENT and no more; __all__ additionally keeps the surface from
+# silently growing past what the contract documents (e.g. MarkerEntry, StateEntry,
+# RETRO_SCAN_GRANDFATHER, and the two re-exported scripts.decisions_md names stay importable by
+# explicit dotted access, but are not part of the promised star-import / documented surface).
 __all__ = [
     "RegistrySpec",
     "make_flat_extractor",
@@ -45,6 +46,7 @@ __all__ = [
     "load_decision_bodies",
     "authorization_failure",
     "check_diff",
+    "check_state_diff",
     "check_present_markers",
 ]
 
@@ -68,6 +70,18 @@ _ENTRY_RE = re.compile(r'^"?(?P<key>[^"]+?)"?:\s*(?P<value>[\d.]+)\s*(?P<comment
 
 class MarkerEntry(NamedTuple):
     value: float
+    marker: str | None
+    reason: str | None
+
+
+class StateEntry(NamedTuple):
+    """The check_state_diff counterpart of MarkerEntry, for a registry whose governed value is a
+    STRENGTH (an arbitrary, spec-defined object compared via RegistrySpec.weakened), not a
+    number. Deliberately OUT of __all__ -- importable by explicit dotted access only, mirroring
+    the deliberate exclusion this module already records for MarkerEntry (both are constructor
+    outputs of an extractor, never something a caller builds directly)."""
+
+    state: object
     marker: str | None
     reason: str | None
 
@@ -104,6 +118,16 @@ class RegistrySpec:
         field exists so a spec's policy is testable/documented in one place, mirroring
         moved_from_relief. Default False (sloc/prose/coverage/mypy never required a reason);
         True on the composite R3 spec alone.
+    state_extractor: builds a dict[str, StateEntry] from raw text, for a registry whose governed
+        value is a STRENGTH rather than a number -- the check_state_diff counterpart of
+        `extractor`. None (default) on every one of the nine incumbent bindings; set together
+        with weakened/gates_deletion, never alone.
+    weakened: Callable[[state, state], bool] -- True iff the transition from a BASE state to a
+        HEAD state is a weakening along the spec's own strength relation (tightening and no-change
+        both return False). None (default) on every incumbent binding.
+    gates_deletion: Callable[[state], bool] -- True iff a base state, once its entry is REMOVED at
+        head, must be gated (no marker can rescue a deletion -- see check_state_diff). None
+        (default) on every incumbent binding.
     """
 
     rel_path: str
@@ -116,6 +140,9 @@ class RegistrySpec:
     moved_from_relief: bool = False
     mention_candidates: Callable[[str], list[str]] | None = None
     reason_required: bool = False
+    state_extractor: Callable[[str], dict[str, StateEntry]] | None = None
+    weakened: Callable[[object, object], bool] | None = None
+    gates_deletion: Callable[[object], bool] | None = None
 
 
 def _parse_marker(
@@ -368,6 +395,80 @@ def check_diff(spec: RegistrySpec, base_reader: Callable[[str], str | None] | No
                 f"(mention `{key}` or a >=2-segment ancestor)."
             )
             violations.append(f"{msg} {spec.relief_text}".rstrip() if spec.relief_text else msg)
+
+    return violations
+
+
+def check_state_diff(spec: RegistrySpec, base_reader: Callable[[str], str | None] | None = None) -> list[str]:
+    """Diff-based gate for a STRENGTH-valued registry (spec.state_extractor / weakened /
+    gates_deletion) -- the check_diff sibling for the two holes that shape does not fit:
+
+    base_reader's contract here is STRICTER than check_diff's: it must return "" (never None)
+    for a base ref that IS reachable but does not carry spec.rel_path at all (a brand-new
+    manifest domain has no base entries, not an unreachable base) -- None is reserved for "the
+    base ref itself is unreachable", which SKIPs loudly (prints, never an affirmative pass) and
+    returns []. Defaults to default_base_reader, which does not preserve this distinction (every
+    real caller wires its own base_reader, e.g. a batched `git cat-file --batch` closure, so this
+    default exists for direct/unit-test callers only).
+
+    A HEAD file absent from disk reads as "every base entry deleted" (each walked through
+    spec.gates_deletion), never as "nothing to check" -- check_diff's five incumbent registries
+    never have their whole file deleted mid-diff, but a whole check-domain manifest can be.
+
+    Authorization mirrors check_diff's: a weakening transition needs a marker on the HEAD entry
+    that (a) is present, (b) differs from the base entry's own marker (a marker byte-identical to
+    the base entry's never re-authorizes -- it was written for a PRIOR transition, not this one),
+    and (c) names (via spec.mention_candidates, or the bare key) an authorizing Decision. A
+    deletion is gated unconditionally when spec.gates_deletion(base state) is True -- there is no
+    head line to carry a marker, so none is ever consulted on that branch.
+    """
+    if spec.state_extractor is None or spec.weakened is None or spec.gates_deletion is None:
+        raise ValueError(f"{spec.rel_path}: check_state_diff requires state_extractor/weakened/gates_deletion")
+
+    reader = base_reader or default_base_reader
+    base_text = reader(spec.rel_path)
+    if base_text is None:
+        print(f"  SKIP: origin/main unreachable for {spec.rel_path} (advisory locally, authoritative in CI).")
+        return []
+    base_entries = spec.state_extractor(base_text)
+
+    current_path = _common.ROOT / spec.rel_path
+    current_entries = spec.state_extractor(current_path.read_text(encoding="utf-8")) if current_path.exists() else {}
+
+    bodies = load_decision_bodies()
+    violations: list[str] = []
+
+    for key in sorted(set(base_entries) | set(current_entries)):
+        base_entry = base_entries.get(key)
+        head_entry = current_entries.get(key)
+
+        if head_entry is None:
+            if base_entry is not None and spec.gates_deletion(base_entry.state):
+                violations.append(
+                    f"{key}: removed while still sequenced -- deletion has no marker escape "
+                    "(retirement is mark-then-drop across two PRs)."
+                )
+            continue
+
+        if base_entry is None:
+            continue  # brand-new entry -- always free, regardless of any marker.
+
+        if not spec.weakened(base_entry.state, head_entry.state):
+            continue  # tightening or no state change -- always free, regardless of any marker.
+
+        marker = head_entry.marker
+        if marker is None or marker == base_entry.marker:
+            violations.append(
+                f"{key}: unauthorized weakening with no fresh `# {spec.token}: dec-NNN <reason>` "
+                "marker on the entry's own line span (a marker identical to the base entry's "
+                "never re-authorizes)."
+            )
+            continue
+
+        if authorization_failure(marker, key, bodies, spec.mention_candidates):
+            violations.append(
+                f"{key}: {spec.token} marker cites {marker}, but its body does not authorize this entry (mention `{key}`)."
+            )
 
     return violations
 
