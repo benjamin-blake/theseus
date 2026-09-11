@@ -72,17 +72,21 @@ acceptance_criteria:
     enumeration (no "six"/"seven registration surfaces" literal) and points at
     scripts/checks/registry.py as the authoritative enumeration.
   - >-
-    An enforced_elsewhere entry is admissible only when all four guards hold: G1 it carries no
+    An enforced_elsewhere entry is admissible only when all FIVE guards hold: G1 it carries no
     path_template (a derivable companion path makes it a requires row); G2 enforced_by resolves
     in registry.all_checks(); G3 enforced_by appears in registry.pre_sequence() or
-    full_sequence(); G4 why_not_a_scope_row is present and non-empty.
+    full_sequence(); G4 why_not_a_scope_row is present and non-empty; G5 the entry's declared
+    fires_on list contains the enclosing rule's trigger.action, so an enforcer that cannot fire
+    for this trigger shape is rejected as inert coverage.
   - >-
-    Every registry.py surface the map does not express as a requires row is placed in exactly one
-    of the two remaining buckets: an enforced_elsewhere row for surface 5 (graduated
-    verification-registry shard -> validate_graduation_completeness), surface 3b (Entry tier-field
-    demotion marker -> validate_tier_demotion_markers) and surface 7 (dec-170 accounting
-    declaration -> validate_check_accounting); and a named unenforced residual in purpose for
-    surface 2 (the @register decoration), which has no enforcer satisfying G2+G3 (dec-181 point 2).
+    Under the new_check_module rule each of registry.py's seven surfaces sits in exactly one
+    bucket, with no surface in two: surface 1 is the triggering row itself; surfaces 3, 4 and 6
+    are the existing requires rows; surfaces 5 (graduated verification-registry shard ->
+    validate_graduation_completeness) and 7 (dec-170 accounting declaration ->
+    validate_check_accounting) are enforced_elsewhere rows; surface 2 (the @register decoration)
+    is a named UNENFORCED residual in purpose, having no enforcer that satisfies G2+G3 (dec-181
+    point 2). registry.py's own numbering is used verbatim -- the contract mints no sub-numbering
+    of its own.
   - >-
     Violating any of the four guards fails validate_plan_scope_closure on a contract-only diff,
     with no plan file present in the diff.
@@ -210,11 +214,17 @@ verification_plan:
   - step: 10
     phase: pre-deploy
     action: rec-3726 oracle -- the restated count is gone and the authoritative pointer is present
-    command: bash -c '! grep -qiE "\b(one|two|three|four|five|six|seven|eight|nine|ten|[0-9]+)\b[^,]{0,40}registration surfaces" docs/contracts/plan-obligations.yaml && grep -q "enumerated in scripts/checks/registry.py" docs/contracts/plan-obligations.yaml'
+    command: bash -c 'F=docs/contracts/plan-obligations.yaml; N=$(tr "\n" " " < $F); ! grep -qiE "\b(one|two|three|four|five|six|seven|eight|nine|ten|[0-9]+)[[:space:]]+registration surfaces\b" <<<"$N" && grep -q "registration surfaces enumerated in scripts/checks/registry.py" <<<"$N"'
     expected: >-
-      exit 0. Note the second conjunct already matches the live contract at line 55, so only the
-      negated first conjunct discriminates -- it must catch ANY numeric qualifier preceding
-      "registration surfaces", not one fixed phrase
+      exit 0. The second conjunct is rec-3726's EXACT filed oracle string (a plan closing a rec
+      "as filed" must run the filed oracle, not a weaker substring); it already matches the live
+      contract, so only the negated first conjunct discriminates -- it must catch ANY numeric
+      qualifier IMMEDIATELY qualifying "registration surfaces" (whitespace only between), and
+      newlines are folded first so a count split across a YAML wrap cannot evade it. Verified at
+      plan time against three cases: reds on the live pre-fix contract, greens on a count-removed
+      sample, and reds on the "3 of seven registration surfaces" paraphrase. The adjacency matters
+      -- a looser "number within 40 chars" form also matches the legitimate "This is 3 of the ..."
+      count of obligations THIS map models, making the guard unpassable
     fix_if: >-
       A count literal survives anywhere in the contract. Correcting six to seven is NOT the fix --
       it resets the drift clock for surface 8. Remove the count; point at registry.py.
@@ -261,11 +271,16 @@ verification_plan:
     action: >-
       Rec closure -- oracle updates land in portal calls separate from and prior to closure, then
       the bundled recs read back closed
-    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib; rows=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()]; ids={'rec-3747','rec-3726','rec-2736','rec-2672'}; bad=[r['id'] for r in rows if r.get('id') in ids and r.get('status')!='closed']; print('not closed:',bad); raise SystemExit(1 if bad else 0)"
-    expected: exit 0 -- all four bundled recs read back closed from the warehouse
+    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib; want={'rec-3747':'closed','rec-3726':'closed','rec-2736':'closed','rec-2672':'superseded'}; rows=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()]; got={r['id']:r.get('status') for r in rows if r.get('id') in want}; bad={k:(want[k],got.get(k)) for k in want if got.get(k)!=want[k]}; print('wrong status (want,got):',bad); raise SystemExit(1 if bad else 0)"
+    expected: >-
+      exit 0 -- rec-3747, rec-3726 and rec-2736 read back `closed`; rec-2672 reads back
+      `superseded`, its substantively correct terminal status (canonical set: open, closed,
+      failed, declined, superseded)
     fix_if: >-
-      A rec is still open. Do NOT edit logs/.recommendations-log.jsonl -- it is a read cache.
-      Re-issue the update_rec/close through scripts.ops_data_portal.
+      A rec carries the wrong terminal status. Do NOT edit logs/.recommendations-log.jsonl -- it is
+      a read cache; re-issue through scripts.ops_data_portal. Do NOT "fix" a red here by closing
+      rec-2672 as `closed`: its supersession by dec-169 is the correct resolution, and weakening
+      the oracle to match a wrong write violates constraint 2 (dec-181 CONTENT invariant).
     graduation: not-applicable
     hermetic: false
   - step: 14
@@ -295,7 +310,7 @@ verification_plan:
       dodge leg (a), and do NOT edit the frozen _BASELINE_SEED.
     graduation: graduate
     graduation_check_id: check-accounting-ratchet-green-post-strike
-    hermetic: true
+    hermetic: false
   - step: 16
     phase: pre-deploy
     action: Full-tier validation before handoff, as handoff_policy declares
@@ -408,23 +423,23 @@ context:
     rec-3738 DEFERRAL -- Related-Work Check fails all three conditions (different file, Decision,
     failure category); 0 prior deferrals; deferred at operator direction, another agent
     investigating. Consequence handled: it reddens rec-autoclose for any trailer-named rec lacking
-    context_v2_json and all four bundled recs qualify, so this plan omits the Resolves trailer and
-    closes via portal calls.
+    context_v2_json and all four bundled recs qualify, so this plan omits the Resolves trailer.
   - >-
-    Critique r1 F1 (the plan turned on its own subject): editing validate_plan_scope_closure.py
-    reds validate_check_accounting leg (d) -- baselined at config/check_accounting_baseline.yaml:78,
-    declares nothing, hygiene pre_globs covers the diff. Handled by VP 14/15. Correction:
-    enforced_elsewhere entries are rows WITHIN a rule, so surfaces 5 and 3b leave
-    registration_surfaces_rule_count at 2 and dec-118's >= 3 arm unmet (90-day arm fires
-    2026-11-09). dec-128 -- plan_obligations.py 212 SLOC, unregistered, ample headroom.
+    Critique history (full account in the commit bodies). r2 B3 is why G5 exists: r2 caught an
+    inert row here -- validate_tier_demotion_markers derives its protected set from the git base
+    ref, so it can never fire under a Create trigger, yet G3 admitted it; row dropped as a
+    modify-Entry obligation AND G5 added. r1 F1: editing validate_plan_scope_closure.py reds
+    validate_check_accounting leg (d) (baselined at line 78, declares nothing) -- handled by VP
+    14/15. Accepted cost: a malformed-contract red attributes to validate_plan_scope_closure in
+    the ci_rca taxonomy, preferred over minting an eighth registration surface.
   - >-
-    scripts/checks/roadmap/_manifest.py:128 already lists the contract in pre_globs -- no manifest
-    edit needed. Class D bodies escape extra="forbid" (only the `contract:` envelope is validated),
-    so an unrecognised enforced_elsewhere key is silently dropped today; the grammar validator
-    closes that. dec-168 -- ONE new amendment_log entry must cover every body edit. Full
-    derivation from the check fleet is OUT of scope (nothing declares "I obligate X on new-check
-    plans") -- that inversion is T2.54, effort L. Branch 1 commit behind origin/main at planning
-    time; sole diverging file PLAN-skills-layer-prose-relocation.yaml, no Scope overlap.
+    _manifest.py:128 already lists the contract in pre_globs -- no manifest edit needed. Class D
+    bodies escape extra="forbid" (only the `contract:` envelope is validated), so an unrecognised
+    enforced_elsewhere key is silently dropped today; the grammar validator closes that. dec-168 --
+    ONE amendment_log entry covers every body edit. dec-128 -- plan_obligations.py 212 SLOC,
+    unregistered, ample headroom. Full derivation from the check fleet is OUT of scope (nothing
+    declares "I obligate X on new-check plans") -- that inversion is T2.54, effort L. Branch 1
+    behind origin/main; sole diverging file PLAN-skills-layer-prose-relocation.yaml, no overlap.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -440,7 +455,11 @@ execution_steps:
     list[str], never raising, applying G1 (a requires entry MUST carry path_template; an
     enforced_elsewhere entry MUST NOT), G2 (enforced_by in registry.all_checks()), G3 (enforced_by
     in the names of registry.pre_sequence() + full_sequence()), G4 (why_not_a_scope_row present
-    and non-empty). Keep the module's exception-contained contract -- a malformed contract yields
+    and non-empty), G5 (the entry's declared `fires_on` list contains the enclosing rule's
+    trigger.action). G5 is the reachability guard: G3 only asks whether an enforcer RUNS, never
+    whether it can fire for THIS trigger shape, and without it a check that fires only on Modify
+    is admissible under a Create rule as inert coverage. Keep the module's exception-contained
+    contract -- a malformed contract yields
     findings, never an exception. Call registry.all_checks()/pre_sequence()/full_sequence() at
     CHECK-BODY time only, never at plan_obligations module-import time: every check module does
     `from scripts.checks import registry`, so an import-time call is a genuine circular import
@@ -459,14 +478,19 @@ execution_steps:
   - >-
     docs/contracts/plan-obligations.yaml -- rewrite new_check_module.purpose to drop the count and
     point at scripts/checks/registry.py; add the enforced_elsewhere entry for the dec-170
-    accounting declaration (enforced_by validate_check_accounting, why_not_a_scope_row naming the
-    shrink-only no-admission-path baseline), for surface 5, the per-graduated-step
-    verification-registry shard (enforced_by validate_graduation_completeness), and for surface 3b,
-    the Entry tier-field demotion marker (enforced_by validate_tier_demotion_markers) -- all three
-    verified registered AND sequenced, so they satisfy G2+G3. Name surface 2 (the @register
-    decoration) in purpose as an UNENFORCED residual: no check satisfies G2+G3 for it, so it
-    belongs in the third bucket, not enforced_elsewhere (dec-181 point 2). Add the
-    new_workflow_file rule and ONE amendment_log entry covering every body edit.
+    accounting declaration (enforced_by validate_check_accounting, fires_on [Create, Modify]) and
+    for surface 5, the per-graduated-step verification-registry shard (enforced_by
+    validate_graduation_completeness, fires_on [Create]) -- both verified registered AND sequenced.
+    Do NOT add a row for the Entry tier-field demotion marker: validate_tier_demotion_markers
+    derives its protected set from the git base ref and fires only on losing pre, losing
+    full_segment, or narrowing pre_globs relative to base, so a net-new check has no base Entry and
+    it can never fire under a Create trigger -- it is an obligation of MODIFYING an existing Entry,
+    belonging to a future modify-Entry rule. Name surface 2 (the @register decoration) in purpose
+    as an UNENFORCED residual: no check satisfies G2+G3 for it (dec-181 point 2). Add the
+    new_workflow_file rule and ONE amendment_log entry covering every body edit, which must also
+    record the dec-118 re_ratification_trigger decision: state why rule-count remains the right
+    "has the shape settled" proxy now that the map gains a section kind and a five-guard grammar,
+    or widen the trigger in the same edit.
   - >-
     tests/test_plan_obligations.py and tests/checks/roadmap/test_validate_plan_scope_closure.py --
     add the classes named in the Verification Plan, each with at least one failing path.
@@ -476,8 +500,13 @@ execution_steps:
   - >-
     Close bundled recs via scripts.ops_data_portal -- for rec-3747 and rec-2736 issue update_rec
     with the replacement acceptance oracle FIRST, as its own call, then close in a separate call.
-    rec-3726 closes against its filed oracle. rec-2672 closes as superseded citing dec-169 and the
-    strengthened gate. Omit the Resolves trailer from the squash-merge commit.
+    rec-3726 closes against its filed oracle (VP 10 runs that oracle's exact filed string).
+    rec-2672 closes as SUPERSEDED -- not closed -- citing dec-169 and the strengthened gate. Then
+    audit the discipline with the `mcp__ducklake-reads__rec_history` verb for rec-3747 and
+    rec-2736: each must show an acceptance-changing event while still open, followed by a LATER
+    status transition. This is an MCP tool call, not a shell command -- `rec_history` is a named
+    read verb and is deliberately absent from scripts.ops_data_portal's Python surface, so it
+    cannot be a VP step. Omit the Resolves trailer from the squash-merge commit.
   - "Report: what was implemented, verification results"
 work_areas: []
 rollback: >-
