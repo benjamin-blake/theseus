@@ -1,0 +1,306 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "closure-stamp-applicability"
+intent: >-
+  Restore the Layer-2 durable closure edge (rec-autoclose) so an ordinary recommendation named in a
+  Resolves trailer closes instead of reddening main, give the closure-stamp precondition one
+  exported definition every caller consults rather than one each re-derives, and stop the same loop
+  silently swallowing writer-transport failures as "not found in portal".
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-closure-stamp-applicability.yaml
+phase: >-
+  CI-RCA forward-fix for rec-3738 (soft-warn category ci_rca; no tier_item claimed, Freshness Gate
+  skipped). Touches T1.13's contract surface (docs/contracts/ci-rca-lifecycle.yaml
+  closure_obligation) without claiming the item; the new stamp_precondition clause is authored
+  mappable to its enforcing check per T2.54 c1.
+scope:
+  - file: scripts/ops_portal/closure_gate.py
+    action: Modify
+    purpose: >-
+      Export closure_stamps_applicable(context_v2_json) -- the STAMPABILITY precondition (blob
+      present), explicitly NOT Decision 186 point 1's escape-class predicate. Kept out of
+      assert_closure_obligation's call path so it can never read as a second gate.
+  - file: scripts/ops_data_portal.py
+    action: Modify
+    purpose: >-
+      update_rec consumes the shared predicate at its existing assertion site (behaviour-identical
+      refactor of the inline `if not merged.get("context_v2_json")`); the ValueError message names
+      the predicate so a human learns the sha was inapplicable, not malformed. Must retain the
+      substring "no existing context_v2_json" (pinned by an existing test, see scope row below).
+  - file: scripts/ops_portal/ci_rca_lifecycle.py
+    action: Modify
+    purpose: >-
+      close_recs_from_trailer builds closure_* kwargs conditionally via the shared predicate (line
+      ~413); on a cache miss it omits the stamp (a later refusal is loud-not-red, Decision 186 pt 7).
+      Separately, split `except RuntimeError` (line ~421) so writer-transport failure sets
+      exit_code=1 instead of printing "not found in portal" and exiting 0.
+  - file: scripts/ci_rca/inactivity_sweep.py
+    action: Modify
+    purpose: >-
+      close_inactive_recs adopts the same predicate for its closure_waiver_* kwargs (line ~70).
+      Latent today (every open ci_rca rec carries a blob) -- REQUIRED, not optional: the point of
+      this plan is one definition, not one fixed caller (Decision 163).
+  - file: tests/ci_rca/test_close_recs_from_trailer.py
+    action: Modify
+    purpose: >-
+      Seam contract tests driving close_recs_from_trailer against the REAL update_rec with only the
+      warehouse boundary stubbed. Splits test_trailer_closure_passes_commit_sha_into_the_gated_write,
+      which pins the unconditional pass, into blob / no-blob cases (a strengthening, never a
+      relaxation -- Decision 181). Adds the RuntimeError-split case.
+  - file: tests/ops_data_portal/test_closure_gate.py
+    action: Modify
+    purpose: >-
+      Pin the containment property is_escape_classified(ctx) implies closure_stamps_applicable(ctx),
+      so a future widening of the predicate cannot silently drop a required fix-commit binding.
+  - file: tests/ops_data_portal/test_update_rec_content_validation.py
+    action: Modify
+    purpose: >-
+      Permission row for strengthening test_closure_kwarg_on_a_rec_without_context_v2_json_refuses_
+      before_any_write to also match the predicate name. No change required if the message retains
+      its pinned substring.
+  - file: tests/test_ci_rca_inactivity_sweep.py
+    action: Modify
+    purpose: >-
+      Its waiver-kwarg assertion (line ~82) reads call_kwargs["closure_waiver_category"]; the
+      fixture rec must carry a context_v2_json blob once the sweep gates on the predicate.
+  - file: .github/workflows/rec-autoclose.yml
+    action: Modify
+    purpose: >-
+      Decouple the DECISIONS.md ETL from closure failure -- the backfill step's if condition becomes
+      "!cancelled() && steps.detect-decisions.outputs.changed == 'true'". !cancelled(), NOT always(),
+      which would also run on cancellation. Touches no run-body, so the R3 ratchet is unaffected.
+  - file: tests/ops_data_portal/test_decisions_divergence_guard.py
+    action: Modify
+    purpose: >-
+      Update the single assertion at line ~269 that pins the backfill step's if condition verbatim, keeping
+      the DCG-03 co-gating property that pin exists for.
+  - file: docs/contracts/ci-rca-lifecycle.yaml
+    action: Modify
+    purpose: >-
+      Add stamp_precondition under the existing closure_obligation section -- names the predicate,
+      states it is stampability and not the gate predicate, and ENUMERATES the sanctioned consumer
+      call sites (Decision 155's adopt-with-a-clause rule). File is at 464/500 effective; keep short.
+  - file: config/agent/verification_registry/entries/closure-stamp-applicable-seam.yaml
+    action: Create
+    purpose: >-
+      Graduate VP step 3 to a standing regression guard (Decision 176 one-record-per-file shard).
+      REQUIRED, not optional -- the standing guard is what makes the duplication unrepeatable.
+bundled_recommendations: ["rec-3738", "rec-3730"]
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - close_recs_from_trailer closes a rec carrying no context_v2_json with exit code 0 and exactly one warehouse write
+  - The same seam test fails against the pre-fix tree at origin/main (differential red-before proof)
+  - update_rec, close_recs_from_trailer and close_inactive_recs all consult closure_stamps_applicable; no call site re-derives the precondition
+  - is_escape_classified(ctx) implies closure_stamps_applicable(ctx) is pinned by test
+  - A writer-transport RuntimeError during closure sets exit_code=1 rather than printing "not found in portal" and exiting 0
+  - The backfill step runs when a prior step fails but not when the job is cancelled, and the divergence-guard co-gating pin still passes
+  - After merge, rec-3730 is closed in the warehouse with a resolution beginning "Auto-closed by rec-autoclose workflow"
+  - After merge, rec-3738 is closed with a resolvable fix-bound closure_artifact
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Seam contract suite passes against the real update_rec
+    command: bin/venv-python -m pytest tests/ci_rca/test_close_recs_from_trailer.py -q
+    expected: all tests pass, 0 failures
+    fix_if: non-zero exit; a failure here means the caller still threads an inapplicable kwarg
+    graduation: waive
+    graduation_waiver_reason: >-
+      Whole-file selector; the discriminating single-nodeid case is step 3, which graduates. Two
+      registry shards over the same file would duplicate one guard.
+  - step: 2
+    phase: pre-deploy
+    action: Differential red-before -- the new seam test must FAIL on the pre-fix tree
+    command: >-
+      git worktree add -f /tmp/prefix-cs origin/main >/dev/null 2>&1 && cp
+      tests/ci_rca/test_close_recs_from_trailer.py /tmp/prefix-cs/tests/ci_rca/ && (cd /tmp/prefix-cs
+      && bin/venv-python -m pytest
+      tests/ci_rca/test_close_recs_from_trailer.py::test_closes_rec_lacking_context_v2_json -q;
+      echo "PREFIX_EXIT=$?") ; git worktree remove --force /tmp/prefix-cs
+    expected: PREFIX_EXIT=1
+    fix_if: PREFIX_EXIT=0 means the test passes without the fix and is not an oracle -- rewrite it
+    graduation: not-applicable
+  - step: 3
+    phase: pre-deploy
+    action: rec-3738's own acceptance command, verbatim
+    command: bin/venv-python -m pytest tests/ci_rca/test_close_recs_from_trailer.py::test_closes_rec_lacking_context_v2_json -q
+    expected: 1 passed
+    fix_if: the rec's acceptance predicate is unsatisfied; the rec cannot be closed
+    graduation: graduate
+    graduation_check_id: closure-stamp-applicable-seam
+  - step: 4
+    phase: pre-deploy
+    action: Containment pin, plus the invariant's own refusal test must stay green through the refactor
+    command: >-
+      bin/venv-python -m pytest tests/ops_data_portal/test_closure_gate.py
+      tests/ops_data_portal/test_update_rec_content_validation.py::test_closure_kwarg_on_a_rec_without_context_v2_json_refuses_before_any_write
+      -q
+    expected: all pass, including the is_escape_classified implies closure_stamps_applicable case
+    fix_if: a failure means the predicate could drop a required fix-commit binding (Decision 186 pt 8)
+    graduation: waive
+    graduation_waiver_reason: >-
+      Property is asserted inside the module's existing mirror test, whose whole-file selector is
+      already run by the full tier; a shard would re-run one assertion of it.
+  - step: 5
+    phase: pre-deploy
+    action: Single-definition proof -- no call site re-derives the precondition
+    command: >-
+      grep -c closure_stamps_applicable scripts/ops_data_portal.py
+      scripts/ops_portal/ci_rca_lifecycle.py scripts/ci_rca/inactivity_sweep.py
+    expected: each of the three files reports a count of 1 or more
+    fix_if: a count of 0 means that call site still re-derives the invariant by hand
+    graduation: graduate
+    graduation_check_id: closure-stamp-single-definition
+  - step: 6
+    phase: pre-deploy
+    action: Writer-transport failure reddens instead of being labelled "not found"
+    command: bin/venv-python -m pytest tests/ci_rca/test_close_recs_from_trailer.py -q -k transport
+    expected: the transport-failure case passes, asserting exit_code 1
+    fix_if: exit_code 0 means a writer 502 still silently drops a closure (Decision 55 fail-open)
+    graduation: not-applicable
+  - step: 7
+    phase: pre-deploy
+    action: Backfill step is decoupled from closure failure but not from cancellation
+    command: >-
+      bin/venv-python -c "import yaml;s=[x for x in
+      yaml.safe_load(open('.github/workflows/rec-autoclose.yml'))['jobs']['autoclose']['steps'] if
+      x.get('name')=='Backfill decisions to warehouse'][0]['if'];print(s);assert '!cancelled()' in s
+      and \"steps.detect-decisions.outputs.changed == 'true'\" in s and 'always()' not in s"
+    expected: "the if expression prints and the assertion holds"
+    fix_if: always() present, or the DCG-03 co-gating clause dropped
+    graduation: graduate
+    graduation_check_id: rec-autoclose-backfill-not-cancelled
+  - step: 8
+    phase: pre-deploy
+    action: DCG-03 co-gating pin and the R3 workflow ratchet both still hold
+    command: >-
+      bin/venv-python -m pytest tests/ops_data_portal/test_decisions_divergence_guard.py
+      tests/checks/ci_guards/test__workflow_shell_bodies.py -q
+    expected: "all pass; the ratchet is untouched because no run-body changed"
+    fix_if: "a ratchet failure means a run body was edited -- revert that; the if edit alone is intended"
+    graduation: not-applicable
+  - step: 9
+    phase: pre-deploy
+    action: The sweep's waiver path is unchanged in behaviour by the predicate adoption
+    command: bin/venv-python -m pytest tests/test_ci_rca_inactivity_sweep.py -q
+    expected: all pass, waiver kwargs still threaded for blob-carrying ci_rca recs
+    fix_if: a regression here means the predicate suppressed a waiver the gate requires
+    graduation: not-applicable
+  - step: 10
+    phase: pre-deploy
+    action: Fast tier
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: address each reported check; never bypass with --ignore-budget
+    graduation: not-applicable
+  - step: 11
+    phase: pre-deploy
+    action: Full tier (handoff_policy gate -- must complete before commit)
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: on timeout the disposition is blocked -- resume later and rerun full from the start
+    graduation: not-applicable
+  - step: 12
+    phase: post-deploy
+    action: The live post-merge rec-autoclose run closed rec-3730 end-to-end
+    command: >-
+      bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib;r=[json.loads(l)
+      for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if
+      l.strip()];x=next(y for y in r if y['id']=='rec-3730');print(x['status'],'|',x['resolution']);assert
+      x['status']=='closed' and x['resolution'].startswith('Auto-closed by rec-autoclose workflow')"
+    expected: closed, with the workflow-authored resolution -- not a hand-written one
+    fix_if: >-
+      still open means the fix did not take on the live path; read the run's closure step. A
+      hand-written resolution means someone closed it manually and the end-to-end leg is unproven.
+    graduation: not-applicable
+  - step: 13
+    phase: post-deploy
+    action: Close rec-3738 with a fix-bound artifact (autoclose structurally cannot -- it supplies no closure_artifact)
+    command: >-
+      bin/venv-python -m scripts.ops_portal.cli --update-rec rec-3738 --status closed --resolution
+      "Resolved by PLAN-closure-stamp-applicability: closure-stamp precondition exported and adopted
+      at every call site; seam contract test added." --closure-artifact
+      "pytest:tests/ci_rca/test_close_recs_from_trailer.py::test_closes_rec_lacking_context_v2_json"
+      --closure-fix-sha "$(git rev-parse origin/main)" --profile agent_platform
+    expected: the write succeeds; the artifact resolves because the merge commit touches that test file
+    fix_if: >-
+      ClosureArtifactRequired means the fix sha does not touch the artifact's defining file -- pass
+      the squash-merge sha that carries the test, not an earlier one.
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/ops_portal/ci_rca_lifecycle.py
+    behavior: a trailer-named rec carrying no context_v2_json closes cleanly, exit 0, one warehouse write
+    verification_step: 3
+    test_selector: tests/ci_rca/test_close_recs_from_trailer.py::test_closes_rec_lacking_context_v2_json
+    red_green_expectation: red before (ValueError, exit 1, zero writes), green after
+  - source: scripts/ops_portal/closure_gate.py
+    behavior: closure_stamps_applicable is total over escape-classified recs and never suppresses the gate
+    verification_step: 4
+    test_selector: tests/ops_data_portal/test_closure_gate.py
+    red_green_expectation: red before (predicate absent), green after
+  - source: scripts/ops_data_portal.py
+    behavior: update_rec still refuses an inapplicable closure_* kwarg before reaching _ducklake_write
+    verification_step: 4
+    test_selector: tests/ops_data_portal/test_update_rec_content_validation.py::test_closure_kwarg_on_a_rec_without_context_v2_json_refuses_before_any_write
+    red_green_expectation: >-
+      green before and after by design -- this row guards against the refactor WEAKENING the
+      invariant, so its value is that it must not go red.
+  - source: scripts/ci_rca/inactivity_sweep.py
+    behavior: waiver kwargs are still threaded for blob-carrying ci_rca recs after predicate adoption
+    verification_step: 9
+    test_selector: tests/test_ci_rca_inactivity_sweep.py
+    red_green_expectation: >-
+      waiver_reason: latent path -- no live rec reaches the blob-less branch today (every open
+      ci_rca rec carries a blob), so a red-before is not reproducible without a synthetic row. The
+      obligation is that the existing waiver assertions stay green through the adoption.
+  - source: .github/workflows/rec-autoclose.yml
+    behavior: the DECISIONS.md ETL runs despite a closure-step failure, but not on cancellation
+    verification_step: 8
+    test_selector: tests/ops_data_portal/test_decisions_divergence_guard.py
+    red_green_expectation: "red before (the if condition lacks !cancelled()), green after"
+constraints:
+  - No rescue agents or workaround loops (Decision 55); the broad except-Exception stays fail-loud
+  - Decision 186 point 8 ratchet -- do NOT narrow the gate predicate, unbind a status, add a waiver category, or drop the fix-commit binding; this plan changes none of them
+  - Decision 186 point 2 -- assert_closure_obligation remains the SOLE enforcement site; the exported predicate must not enter its call path
+  - Decision 84 single-portal invariant -- callers select kwargs, never open a second write path
+  - Decision 181 -- existing tests may be strengthened or split, never relaxed to obtain green
+  - Decision 128 -- scripts/ops_data_portal.py has ~30 effective lines of headroom against the implicit 500; the refactor must be net-neutral or negative, never a budget raise
+  - docs/contracts/ci-rca-lifecycle.yaml is at 464/500 effective -- the stamp_precondition key must stay short
+context:
+  - "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND -- 186, 103, 142, 84, 55, 48, 132, 128, 165, 181. Decisions triaged: 140 of 140. Roadmap items intersected: 16; CONFLICT: 0; RELATED: 13."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "Scout flags applied: 186 NOTE (predicate named for stampability, kept out of the gate's call path); 163 WARN (sweep adoption and shard graduation promoted from optional to required); 155 NOTE (stamp_precondition enumerates sanctioned call sites); 48 NOTE (dissolved -- tier raised to V3 with live post-merge steps 12/13)."
+  - "Root cause: the precondition update_rec asserts is not exported, so callers re-derive it; the same function re-derived it twice inconsistently 18 lines apart (ci_rca_lifecycle.py:413 unconditional vs :431 gated on source)."
+  - "Detection gap: all three existing tests patch scripts.ops_data_portal.update_rec with a bare MagicMock; one passes the exact blob-less shape that fails in production and is green. Both halves of the seam were separately tested in #1133 at 100% statement coverage. Mock at the process boundary, not an in-repo function seam."
+  - "Blast radius: 1147 of 1152 open recs carry no context_v2_json. Since #1133 (2026-09-10) two trailers fired -- rec-3730 reddened, rec-3579 passed only via the idempotent already-closed skip."
+  - "Fable advice-consult: Fork 1 Option A adopted (reject B/C -- RFC 9413 against Postel at internal boundaries; B trades a loud failure for a silent one on the CLI path). Fork 2 escalated back to the human with corrected costs and decided against Fable's call -- see next line."
+  - "Fork 2 cost correction (verified): scan_workflow_bodies measures run-body effective lines only (_workflow_shell_bodies.py:141), so an if-condition edit does NOT trip config/composite_action_body_baseline.yaml. Cost is one assertion at test_decisions_divergence_guard.py:269. The #1133 stall came from shrinking a body."
+  - "rec-3738 is escape-classified (escape_class: no-edge), so close_recs_from_trailer cannot discharge its artifact obligation -- it threads closure_fix_sha but never closure_artifact. By design (Decision 186 pt 7), hence VP step 13."
+  - "Follow-on recs to file at implement time: the close_rec portal verb (Decision 163-shaped -- worth it only if it also absorbs the sibling stamp_fixed_by_sha call), and job-decomposition of rec-autoclose.yml into one job per write responsibility."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read (186, 103, 142, 84, 55, 181, 163)
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - scripts/ops_portal/closure_gate.py -- add closure_stamps_applicable(context_v2_json) with a docstring stating it is the stampability precondition, NOT Decision 186 point 1's escape-class predicate, and naming its sanctioned consumers
+  - scripts/ops_data_portal.py -- replace update_rec's inline blob check with the shared predicate; extend the ValueError message to name it while retaining the pinned substring "no existing context_v2_json"
+  - scripts/ops_portal/ci_rca_lifecycle.py -- build closure_* kwargs conditionally in close_recs_from_trailer; omit the stamp on a cache miss; update the docstring's threading claim
+  - scripts/ops_portal/ci_rca_lifecycle.py -- split except RuntimeError so only the absent-rec case is a skip; a writer-transport failure sets exit_code=1 with an honest message
+  - scripts/ci_rca/inactivity_sweep.py -- adopt the same predicate for the closure_waiver_* kwargs
+  - tests -- add the seam contract cases (real update_rec, warehouse boundary stubbed); split the test that pins the unconditional pass; add the transport case; add the containment pin; repair the sweep fixture
+  - .github/workflows/rec-autoclose.yml + tests/ops_data_portal/test_decisions_divergence_guard.py -- the !cancelled() if condition and its pinned assertion
+  - docs/contracts/ci-rca-lifecycle.yaml -- stamp_precondition under closure_obligation, enumerating sanctioned call sites, authored mappable to its enforcing check
+  - config/agent/verification_registry/entries/closure-stamp-applicable-seam.yaml -- graduate VP step 3 via the real differential gate (must fail on an origin/main worktree)
+  - File the two follow-on recs named in context via scripts.ops_data_portal file_rec, and record their ids in followon_recs
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Every change is additive or behaviour-preserving except the two intended behaviour flips (kwarg
+  gating, RuntimeError split). Reverting the commit restores the pre-fix state; no warehouse
+  migration, no infrastructure change, and no Decision amendment to unwind.
