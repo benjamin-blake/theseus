@@ -2,6 +2,114 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 187: Verifier-weakening control derives its protected set from the git base ref, never from a roster -- check-fleet tier demotion binds to the shared marker-authorization mechanism at check-NAME level (extends Decision 165) (Decided)
+
+```yaml
+number: 187
+status: Decided
+decided_date: "2026-09-11"
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable architectural commitment with reversal-relevant consequences -- the protected set is
+    the BASE REF, authorization is check-NAME-level -- binding every future author of a weakening
+    gate, not one field's meaning. Contract-first rejected: marker-grammar.yaml owns the
+    token/authorization field semantics and the mechanics here, but cannot carry a standing
+    repo-wide prohibition on HOW such a gate is built (the Decision 181 precedent).
+    amendment_forms rejected: no prior body is amended -- this negates no clause of Decision 104
+    or Decision 169, and no Decision body names any of the four retired constants.
+```
+
+**Status:** Decided
+**Date:** 2026-09-11
+**Warehouse ID:** dec-187
+
+**Problem:**
+Audit finding LSA-01 (audits/loop-spec-adoption-4d8bac4a.yaml): flipping `pre=True` to `pre=False`
+on a manifest Entry, or narrowing its `pre_globs`, merges with nothing firing. The only pins were
+four hand-written rosters in `tests/checks/registry/test_sequences.py`, same-PR-editable, covering
+27 of 110 pre entries. A roster is the wrong shape twice: it needs hand-syncing as the fleet grows,
+and the PR weakening a check may edit the roster pinning it.
+
+**Decision:**
+1. DERIVE, DO NOT ENUMERATE. The protected set is the check manifests at the GIT BASE REF, never a
+   committed roster or snapshot file. Direction is computed base-vs-head, so a check added
+   tomorrow is protected the moment it merges.
+2. The four roster constants are RETIRED, not frozen, and every property they held is
+   dispositioned, not assumed. RE-POINTED at the full derived population: a gated pre entry's
+   globs must match its own defining module; a domain contributing a pre entry must be declared in
+   `_PRE_DOMAIN_ORDER`. RETAINED: that tuple's duplicate-append pin, which read no roster. LOST,
+   owned by rec-3728: the pre-only pin and the ungated-promotion pin, which guard TIGHTENINGS that
+   point 3 rules free -- their subject is fast-tier BUDGET, so the instrument belongs beside the
+   budget constants, never in a reinstated name list. Retiring a pin whose property is unreplaced
+   requires a filed carrier; silence is not a disposition.
+3. Tier membership is a DIRECTION-GATED TRANSITION, not a state invariant, because a legitimate
+   weaker state exists (12 entries are deliberately full-only). Weakening -- losing `pre`, losing
+   `full_segment`, or narrowing `pre_globs` -- requires a `# tier-demotion-approved: dec-NNN
+   <reason>` marker. Tightening is always free and unmarked. `pre_globs` direction is a MEASURED
+   fnmatch COVERAGE SUPERSET over `git ls-files`, never None-vs-tuple: `pre_globs=("never/**",)`
+   is a demotion, not a re-gating.
+4. Authorization is at CHECK-NAME level. The cited Decision's body must contain the check's own
+   name; module paths and their ancestors never authorize: `scripts/checks` appears in dozens of
+   Decision bodies and would be a skeleton key.
+5. DELETION HAS NO MARKER ESCAPE. Removing a still-sequenced Entry fails unconditionally -- there
+   is no head line to carry a marker. Retirement is MARK-THEN-DROP across two PRs: demote to
+   unsequenced with a marker, merge, then delete (deleting an unsequenced Entry is free).
+6. SELF-REFERENCE IS CLOSED BY A RAISE. `registry.pre_sequence()` and `full_sequence()` raise when
+   the gate's own Entry is absent, and `pre_sequence()` additionally when it is glob-gated --
+   otherwise the PR that demotes the guard is the PR under which the guard does not run. The
+   constant names the MECHANISM, not the protected set, so it is not a roster.
+7. This lands as a further binding of `scripts/checks/_marker_guard.py` (Decision 165 point 1's
+   consolidation), never a copy of it, and ships with NO grandfather hook.
+
+**Rationale:**
+Enumeration answers "which names?"; the right question is "which DIRECTION?", and direction is
+computable. That dissolves the future-additions problem and the same-PR-editable name list. The
+finding's two legs differ in shape deliberately: a test has no legitimate absent state, so
+mirror-test presence is a state invariant at head, discharged by `validate_red_case_floor`.
+
+```yaml reversal-conditions
+decision: 187
+review_by: "2027-03-10"
+on_trigger: "Re-audit the mechanism in /plan; never widen the grammar to relieve pressure."
+conditions:
+  - id: c1
+    kind: repo_state
+    predicate: null
+    description: >-
+      Live tier-demotion markers exceed 5 -- demotion is routine and the gate is ritual.
+  - id: c2
+    kind: repo_state
+    predicate: null
+    description: >-
+      An unsequenced Entry lingers past one merge, or two-PR retirement is hit about monthly --
+      add a tombstone form, never a marker escape on deletion.
+  - id: c3
+    kind: repo_state
+    predicate: null
+    description: >-
+      A tier demotion reaches main unmarked -- the gate did not run or did not discriminate.
+  - id: c4
+    kind: repo_state
+    predicate: null
+    description: >-
+      Common-path cost exceeds 1s, or check names stop being unique ids -- move the
+      coverage-superset leg to the full tier, or key on the exact module path.
+  - id: c5
+    kind: repo_state
+    predicate: null
+    description: >-
+      A declared `Governs:` marker lands, or CI stops checking out the merge ref -- fleet tokens
+      go declared-first; read the merge-base, not the origin/main tip.
+```
+
+**Related:** Decision 165 (the shared mechanism this binds as a new kind, whose grandfather-hook
+reversal condition it satisfies by shipping none), Decision 169 (the manifest surface gated),
+Decision 104 (registration surfaces), Decision 181 (declare-your-coverage), Decision 135 (why the
+gate is ungated in `--pre`), Decision 55 (a missing and a passing oracle must never look alike).
+
+---
+
 ## Decision 186: Closure-time artifact obligation for escape-classified recs (Decided)
 
 ```yaml
