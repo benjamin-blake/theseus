@@ -371,18 +371,36 @@ def resolve_workflow_tier(workflow_name: str, path: Path | None = None) -> str:
     return "unknown" if raw in ("not_a_gate", _MISS) else raw
 
 
-def enumerate_workflow_names(workflows_dir: Path | None = None) -> list[str]:
-    """Return sorted list of 'name:' values from .github/workflows/*.yml files."""
+def enumerate_workflow_name_paths(workflows_dir: Path | None = None) -> list[tuple[str, Path]]:
+    """Return sorted list of (name, path) pairs from .github/workflows/*.yml files.
+
+    The single-source enumeration: the agent-loop cap census
+    (scripts/checks/ci_guards/_agent_loop_caps.py) keys on FILE PATH while
+    config/ci_rca_taxonomy.yaml's workflow rows key on display NAME, so this is the one place that
+    maps one to the other -- a second independent glob would be a second surface that could drift
+    from this one. enumerate_workflow_names is now a name-only projection over this function and
+    must stay bit-identical to it: same sorted(glob) order, same "append only when the parsed
+    mapping has a name key" rule, same broad except/logger.warning on an unparseable file.
+    """
     import yaml
 
     wdir = workflows_dir if workflows_dir is not None else (ROOT / ".github" / "workflows")
-    names = []
+    pairs: list[tuple[str, Path]] = []
     for wf_path in sorted(Path(wdir).glob("*.yml")):
         try:
             with wf_path.open("r", encoding="utf-8") as f:
                 data = yaml.safe_load(f)
             if isinstance(data, dict) and "name" in data:
-                names.append(str(data["name"]))
+                pairs.append((str(data["name"]), wf_path))
         except Exception:
             logger.warning("Could not extract name from %s", wf_path)
-    return names
+    return pairs
+
+
+def enumerate_workflow_names(workflows_dir: Path | None = None) -> list[str]:
+    """Return sorted list of 'name:' values from .github/workflows/*.yml files.
+
+    Name-only projection over enumerate_workflow_name_paths -- see that function's docstring for
+    the shared enumeration/skip rules this must stay behaviour-identical to.
+    """
+    return [name for name, _ in enumerate_workflow_name_paths(workflows_dir)]

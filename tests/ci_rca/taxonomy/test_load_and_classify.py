@@ -10,6 +10,7 @@ import pytest
 from scripts.ci_rca.taxonomy import (
     _MISS,
     classify_failure,
+    enumerate_workflow_name_paths,
     enumerate_workflow_names,
     load_taxonomy,
     resolve_workflow_tier,
@@ -190,3 +191,53 @@ class TestEnumerateWorkflowNames:
 
         (tmp_path / "b.yml").unlink()
         assert set(enumerate_workflow_names(tmp_path)) == {"Alpha", "Charlie"}
+
+
+class TestEnumerateWorkflowNamePaths:
+    """Single-source parity: enumerate_workflow_names must be an exact name projection over
+    enumerate_workflow_name_paths, order included -- the mapping the agent-loop cap census
+    (scripts/checks/ci_guards/_agent_loop_caps.py) relies on to resolve a taxonomy row's display
+    NAME to its FILE PATH, so a second independent glob never exists for that mapping."""
+
+    def test_name_projection_matches_enumerate_workflow_names_order_included(self, tmp_path):
+        (tmp_path / "a.yml").write_text("name: Alpha\non:\n  push:\n", encoding="utf-8")
+        (tmp_path / "b.yml").write_text("name: Bravo\non:\n  push:\n", encoding="utf-8")
+        (tmp_path / "c.yml").write_text("name: Charlie\non:\n  push:\n", encoding="utf-8")
+
+        pairs = enumerate_workflow_name_paths(tmp_path)
+        assert [name for name, _ in pairs] == enumerate_workflow_names(tmp_path)
+
+    def test_nameless_yml_omitted_from_both(self, tmp_path):
+        (tmp_path / "nameless.yml").write_text("on:\n  push:\n", encoding="utf-8")
+        (tmp_path / "named.yml").write_text("name: Named\non:\n  push:\n", encoding="utf-8")
+
+        pairs = enumerate_workflow_name_paths(tmp_path)
+        assert [name for name, _ in pairs] == ["Named"]
+        assert enumerate_workflow_names(tmp_path) == ["Named"]
+
+    def test_unparseable_yml_skipped_by_both_without_raising(self, tmp_path):
+        (tmp_path / "bad.yml").write_text("key: [unclosed", encoding="utf-8")
+        (tmp_path / "good.yml").write_text("name: Good\non:\n  push:\n", encoding="utf-8")
+
+        pairs = enumerate_workflow_name_paths(tmp_path)
+        assert [name for name, _ in pairs] == ["Good"]
+        assert enumerate_workflow_names(tmp_path) == ["Good"]
+
+    def test_each_returned_path_exists_and_is_the_source_file(self, tmp_path):
+        wf = tmp_path / "solo.yml"
+        wf.write_text("name: Solo\non:\n  push:\n", encoding="utf-8")
+
+        pairs = enumerate_workflow_name_paths(tmp_path)
+        assert len(pairs) == 1
+        name, path = pairs[0]
+        assert name == "Solo"
+        assert path == wf
+        assert path.is_file()
+
+    def test_real_workflows_dir_matches_enumerate_workflow_names(self):
+        """Wiring check against the live tree: the real .github/workflows/ directory's name
+        projection equals enumerate_workflow_names' own real-tree output exactly."""
+        pairs = enumerate_workflow_name_paths()
+        assert [name for name, _ in pairs] == enumerate_workflow_names()
+        for name, path in pairs:
+            assert path.is_file(), (name, path)

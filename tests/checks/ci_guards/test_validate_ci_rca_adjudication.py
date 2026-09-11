@@ -10,9 +10,17 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scripts.checks.ci_guards.validate_ci_rca_adjudication import validate_ci_rca_adjudication
+from scripts.checks import registry
+from scripts.checks.ci_guards.validate_ci_rca_adjudication import _check_agent_loop_caps, validate_ci_rca_adjudication
 
 _VALID_ENTRY = {"tier": "not_a_gate", "ci_rca": "excluded", "owner": "platform", "rationale": "test fixture"}
+
+_VALID_CAP_ENTRY = {
+    "kind": "max_turns",
+    "value": 30,
+    "on_exhaustion": "the mask lifts, the deterministic gate then fires and reddens the build",
+    "rationale": "thirty turns because this agent is multi-bundle read-write, unlike a reviewer",
+}
 
 
 def _write_ci_rca_yml(root: Path, workflows: list[str]) -> None:
@@ -35,6 +43,20 @@ def _patch_taxonomy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, workflows_m
     monkeypatch.setattr("scripts.ci_rca.taxonomy.load_taxonomy", lambda: taxonomy)
     monkeypatch.setattr("scripts.ci_rca.taxonomy.enumerate_workflow_names", lambda: names)
     monkeypatch.setattr("scripts.ci_rca.taxonomy.ROOT", tmp_path)
+
+
+def _write_cap_workflow(tmp_path: Path, filename: str, max_turns_value: int | None) -> Path:
+    """Write a synthetic workflow .yml (under tmp_path/.github/workflows/) carrying a
+    `--max-turns <value>` literal in a real `run: |` block, or no cap literal at all when
+    `max_turns_value` is None."""
+    wf_dir = tmp_path / ".github" / "workflows"
+    wf_dir.mkdir(parents=True, exist_ok=True)
+    path = wf_dir / filename
+    text = "name: CI\non:\n  push: {}\n"
+    if max_turns_value is not None:
+        text += f"jobs:\n  j:\n    steps:\n      - run: |\n          foo --max-turns {max_turns_value}\n"
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 class TestWorkflowCoverageBidirectional:
@@ -180,3 +202,147 @@ class TestSharedAccumulatorIsolation:
         failed: list[str] = ["some unrelated check already failed"]
         validate_ci_rca_adjudication(failed)
         assert any("'CI'" in f and "absent from ci-rca.yml" in f for f in failed), failed
+
+
+class TestAgentLoopCapsGroup:
+    """Assertion group (d) (audit finding LSA-05): a workflow row's optional agent_loop_caps
+    list, derive-and-asserted against the live workflow-region agent-loop cap census."""
+
+    def _setup(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        *,
+        row_caps: list[dict] | None,
+        max_turns_value: int | None,
+    ) -> None:
+        entry = dict(_VALID_ENTRY)
+        if row_caps is not None:
+            entry["agent_loop_caps"] = row_caps
+        _patch_taxonomy(monkeypatch, tmp_path, {"CI": entry}, ["CI"])
+        _write_ci_rca_yml(tmp_path, [])
+        wf_path = _write_cap_workflow(tmp_path, "ci.yml", max_turns_value)
+        monkeypatch.setattr("scripts.ci_rca.taxonomy.enumerate_workflow_name_paths", lambda: [("CI", wf_path)])
+
+    def test_matching_row_and_literal_passes(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._setup(monkeypatch, tmp_path, row_caps=[dict(_VALID_CAP_ENTRY)], max_turns_value=30)
+
+        failed: list[str] = []
+        validate_ci_rca_adjudication(failed)
+        assert not failed, failed
+
+    def test_literal_only_bump_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._setup(monkeypatch, tmp_path, row_caps=[dict(_VALID_CAP_ENTRY)], max_turns_value=31)
+
+        failed: list[str] = []
+        validate_ci_rca_adjudication(failed)
+        assert any("drift" in f for f in failed), failed
+
+    def test_row_only_bump_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        bumped_row = {**_VALID_CAP_ENTRY, "value": 31}
+        self._setup(monkeypatch, tmp_path, row_caps=[bumped_row], max_turns_value=30)
+
+        failed: list[str] = []
+        validate_ci_rca_adjudication(failed)
+        assert any("drift" in f for f in failed), failed
+
+    def test_cap_with_no_declared_row_fails_as_undeclared(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._setup(monkeypatch, tmp_path, row_caps=None, max_turns_value=30)
+
+        failed: list[str] = []
+        validate_ci_rca_adjudication(failed)
+        assert any("undeclared" in f for f in failed), failed
+
+    def test_declared_row_whose_file_carries_no_literal_fails_as_stale(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._setup(monkeypatch, tmp_path, row_caps=[dict(_VALID_CAP_ENTRY)], max_turns_value=None)
+
+        failed: list[str] = []
+        validate_ci_rca_adjudication(failed)
+        assert any("stale" in f for f in failed), failed
+
+    def test_nameless_workflow_with_cap_fails_rather_than_escaping(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A workflow .yml with NO `name:` key can never be a taxonomy row (rows key on display
+        name), but a live cap literal inside it must still be discovered and reddened as
+        undeclared -- namelessness is not an escape from the census."""
+        self._setup(monkeypatch, tmp_path, row_caps=None, max_turns_value=None)
+        nameless = tmp_path / ".github" / "workflows" / "nameless.yml"
+        nameless.write_text(
+            "on:\n  push: {}\njobs:\n  j:\n    steps:\n      - run: |\n          foo --max-turns 7\n",
+            encoding="utf-8",
+        )
+
+        failed: list[str] = []
+        validate_ci_rca_adjudication(failed)
+        assert any("undeclared" in f and "nameless.yml" in f for f in failed), failed
+
+    def test_preexisting_groups_still_pass_with_new_group_present(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No agent_loop_caps anywhere -- the three pre-existing assertion groups (coverage,
+        filter, entry-shape) stay green with group (d) present but vacuous for this row."""
+        self._setup(monkeypatch, tmp_path, row_caps=None, max_turns_value=None)
+
+        failed: list[str] = []
+        validate_ci_rca_adjudication(failed)
+        assert not failed, failed
+
+    def test_non_mapping_row_entry_skipped_directly(self, tmp_path: Path) -> None:
+        """Defensive branch, exercised directly since group (c) upstream already guarantees every
+        workflows_map entry reaching this helper is a mapping (see the module's own comment) --
+        a non-mapping entry here must be silently skipped, never crash."""
+        failures, examined = _check_agent_loop_caps({"CI": "not-a-dict"}, tmp_path)
+        assert failures == []
+        assert examined == 0
+
+    def test_agent_loop_caps_not_a_list_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        entry = {**_VALID_ENTRY, "agent_loop_caps": "not-a-list"}
+        _patch_taxonomy(monkeypatch, tmp_path, {"CI": entry}, ["CI"])
+        _write_ci_rca_yml(tmp_path, [])
+        wf_path = _write_cap_workflow(tmp_path, "ci.yml", None)
+        monkeypatch.setattr("scripts.ci_rca.taxonomy.enumerate_workflow_name_paths", lambda: [("CI", wf_path)])
+
+        failed: list[str] = []
+        validate_ci_rca_adjudication(failed)
+        assert any("agent_loop_caps must be a list" in f for f in failed), failed
+
+    def test_agent_loop_caps_shape_invalid_entry_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A shape-invalid cap entry (here: unknown kind) must fail via check_cap_entry_shape and
+        must not be added to the declared map (the `continue` on a non-empty shape_failures)."""
+        bad_row = [{**_VALID_CAP_ENTRY, "kind": "bogus_kind"}]
+        self._setup(monkeypatch, tmp_path, row_caps=bad_row, max_turns_value=30)
+
+        failed: list[str] = []
+        validate_ci_rca_adjudication(failed)
+        assert any("kind" in f and "bogus_kind" in f for f in failed), failed
+
+    def test_row_name_missing_from_name_to_path_fails(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Defensive branch: even though group (a)'s coverage check guards this in normal
+        operation, a row whose name does not resolve through enumerate_workflow_name_paths must
+        fail rather than silently drop the row's cap declaration from the comparison."""
+        entry = {**_VALID_ENTRY, "agent_loop_caps": [dict(_VALID_CAP_ENTRY)]}
+        _patch_taxonomy(monkeypatch, tmp_path, {"CI": entry}, ["CI"])
+        _write_ci_rca_yml(tmp_path, [])
+        monkeypatch.setattr("scripts.ci_rca.taxonomy.enumerate_workflow_name_paths", list)
+
+        failed: list[str] = []
+        validate_ci_rca_adjudication(failed)
+        assert any("'CI'" in f and "does not resolve to a workflow file" in f for f in failed), failed
+
+    def test_accounting_declares_nonzero_examined_count_on_green_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Decision 170: the green path declares examined(n) with n > 0 -- examined(0) derives to
+        'vacuous', which would register this newly-adopted group as a vacuous pass."""
+        self._setup(monkeypatch, tmp_path, row_caps=[dict(_VALID_CAP_ENTRY)], max_turns_value=30)
+
+        failed: list[str] = []
+        validate_ci_rca_adjudication(failed)
+        assert not failed, failed
+        declaration = registry.pop_declaration()
+        assert declaration is not None
+        assert declaration.kind == "examined"
+        assert declaration.count > 0

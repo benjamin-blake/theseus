@@ -190,6 +190,7 @@ log_pattern_to_category:
     category: code_regression
     check_name: assertion_error
 
+# Field semantics for a workflow row's optional agent_loop_caps live in ci-rca-lifecycle.yaml's watched_workflow_set -- not restated here.
 workflows:
   CI:
     tier: CI
@@ -241,6 +242,19 @@ workflows:
       CI RCA is ci-rca.yml itself, self-excluded as a structural loop guard (documented at
       ci-rca.yml:41-42): if CI RCA were watched, its own failed run would re-trigger CI RCA,
       an infinite loop. Decision 72 is this mechanism's origin.
+    agent_loop_caps:
+      - kind: max_turns
+        value: 30
+        on_exhaustion: >-
+          The claude_p_retry.sh invocation is piped through `|| true`, so an exhausted run's own
+          nonzero exit never fails the step directly -- the deterministic gate is the immediately
+          following `scripts.ci_rca.filing --all` check: when it finds no FILED: marker the step
+          explicitly `exit 1`s, so a turn-exhausted run that filed nothing still reddens the job.
+        rationale: >-
+          30, not review.sh's 5, because this agent is multi-bundle and read-write: it reads the
+          failed run's logs, greps evidence across potentially several distinct failure
+          categories, and files a recommendation for each through the ops portal in one run --
+          against a five-turn, read-only, single-verdict reviewer with no filing to perform.
   terraform-apply-sandbox:
     tier: not_a_gate
     ci_rca: watched
