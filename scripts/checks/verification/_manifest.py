@@ -111,4 +111,16 @@ ENTRIES: tuple[Entry, ...] = (
         pre=True,
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_red_case_floor",
+        module="scripts.checks.verification.validate_red_case_floor",
+        attr="validate_red_case_floor",
+        pre=True,
+        pre_globs=(
+            "scripts/checks/**",
+            "tests/checks/**",
+            "scripts/test_coverage_checker.py",
+        ),
+        full_segment="full_after_lint",
+    ),
 )

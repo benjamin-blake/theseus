@@ -14,6 +14,7 @@ import pytest
 from tests.fixtures.coverage_checker_module import _ALL_MIRROR_TARGET_HOMES, _RETIRING_GRANDFATHER_HOMES, ROOT
 from tests.fixtures.coverage_checker_module import checker as _checker
 
+check_test_file_exists = _checker.check_test_file_exists
 map_source_to_test = _checker.map_source_to_test
 
 
@@ -452,3 +453,25 @@ class TestPlatformRoadmapModelsConcernSplitRegistration:
 
     def test_platform_roadmap_models_pre_decomposition_single_file_module_is_gone(self) -> None:
         assert not (ROOT / "tests" / "test_platform_roadmap_models.py").exists()
+
+
+class TestValidatePlacementConcernSplitRegistration:
+    """scripts/checks/hygiene/validate_placement.py's tests were concern-split into
+    tests/checks/hygiene/validate_placement/ (three test modules) at #1037 without registering
+    the split, so map_source_to_test computed the non-existent FLAT file
+    tests/checks/hygiene/test_validate_placement.py and check_test_file_exists returned
+    (False, "missing test file") for it -- a live latent false negative for validate_test_coverage
+    (PLAN-red-case-floor's precondition fix: this is the one Entry of 123 the red-case floor's
+    canonical-map dependency could not resolve)."""
+
+    def test_maps_validate_placement_to_concern_split_package_directory(self) -> None:
+        source = ROOT / "scripts" / "checks" / "hygiene" / "validate_placement.py"
+        result = map_source_to_test(source)
+        assert result is not None
+        assert result == ROOT / "tests" / "checks" / "hygiene" / "validate_placement"
+
+    def test_check_test_file_exists_finds_the_package(self) -> None:
+        source = ROOT / "scripts" / "checks" / "hygiene" / "validate_placement.py"
+        ok, why = check_test_file_exists(source)
+        assert ok is True
+        assert why == "test package found"
