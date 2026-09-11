@@ -14,7 +14,12 @@ scripts/checks/<domain>/; (2) its ``@register(...)`` decoration; (3) an ``Entry`
 string-literal module=/attr=) in that domain's ``_manifest.py``; (4) a
 config/ci_rca_taxonomy.yaml ``function_to_category`` row; (5) a
 config/agent/verification_registry/entries/<check_id>.yaml shard per GRADUATED verification_plan
-step (not per check); (6) the mirror test at tests/<mirrored>/test_<module>.py; (7) an ``examined()``/
+step (not per check); (6) the mirror test at tests/<mirrored>/test_<module>.py -- which must ALSO
+exercise at least one FAILING path, enforced by ``validate_red_case_floor``
+(scripts/checks/verification/validate_red_case_floor.py, audit finding LSA-03), which proves
+red-case SHAPE (at least one assertion expects the check under test to fail), never EFFICACY (that
+the fixture would genuinely catch a broken check) -- execution-grade proof of efficacy is an
+unenforced residual owned by T3.7's scheduled alarm lane (CD.12); (7) an ``examined()``/
 ``skipped()`` declaration on every reachable exit path of the check body itself (Decision 170,
 docs/contracts/check-accounting.yaml) -- the accounting channel below, so the check's own run
 evidence distinguishes a vacuous pass, a skip and an enforced pass instead of collapsing all
