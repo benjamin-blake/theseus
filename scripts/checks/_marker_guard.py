@@ -416,9 +416,11 @@ def check_state_diff(spec: RegistrySpec, base_reader: Callable[[str], str | None
     never have their whole file deleted mid-diff, but a whole check-domain manifest can be.
 
     Authorization mirrors check_diff's: a weakening transition needs a marker on the HEAD entry
-    that (a) is present, (b) differs from the base entry's own marker (a marker byte-identical to
-    the base entry's never re-authorizes -- it was written for a PRIOR transition, not this one),
-    and (c) names (via spec.mention_candidates, or the bare key) an authorizing Decision. A
+    that (a) is present, (b) differs from the base entry's own marker, and (c) names (via
+    spec.mention_candidates, or the bare key) an authorizing Decision. The value compared in (b)
+    is the marker's normalized `dec-NNN` id, NOT its raw text: a head marker citing the same
+    Decision as the base entry's never re-authorizes, however its reason text is reworded, because
+    that authorization was spent on a PRIOR transition rather than this one. A
     deletion is gated unconditionally when spec.gates_deletion(base state) is True -- there is no
     head line to carry a marker, so none is ever consulted on that branch.
     """
@@ -433,7 +435,8 @@ def check_state_diff(spec: RegistrySpec, base_reader: Callable[[str], str | None
     base_entries = spec.state_extractor(base_text)
 
     current_path = _common.ROOT / spec.rel_path
-    current_entries = spec.state_extractor(current_path.read_text(encoding="utf-8")) if current_path.exists() else {}
+    current_text = current_path.read_text(encoding="utf-8", errors="replace") if current_path.exists() else None
+    current_entries = spec.state_extractor(current_text) if current_text is not None else {}
 
     bodies = load_decision_bodies()
     violations: list[str] = []
@@ -460,8 +463,8 @@ def check_state_diff(spec: RegistrySpec, base_reader: Callable[[str], str | None
         if marker is None or marker == base_entry.marker:
             violations.append(
                 f"{key}: unauthorized weakening with no fresh `# {spec.token}: dec-NNN <reason>` "
-                "marker on the entry's own line span (a marker identical to the base entry's "
-                "never re-authorizes)."
+                "marker on the entry's own line span (a marker citing the same decision as the "
+                "base entry's never re-authorizes)."
             )
             continue
 

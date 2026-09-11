@@ -22,19 +22,25 @@ not be demoted without a marker) is derived from the git base ref by
 scripts/checks/verification/validate_tier_demotion_markers.py at check time, and TestWeakeningGateFixedPoint
 below pins the fixed point that makes deleting or demoting THAT gate itself impossible to do
 silently -- a hand-written name list here would just be a sixth roster in a file about retiring
-the first five.
+the first five. TestNoTierRosterReturns is the STANDING enforcement of that retirement: the plan's
+own verification step proving the four names are gone is a one-time, implementation-time proof
+whose graduation was waived (a stored shard would contain the very names it greps for), so without
+that class nothing stops a sixth roster landing next quarter.
 """
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import importlib
 from fnmatch import fnmatch
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 import scripts.checks.registry as registry
+from scripts.checks import _common
 
 _UNSEQUENCED_CHECKS = ("validate_terraform_try",)
 
@@ -308,3 +314,67 @@ class TestWeakeningGateFixedPoint:
                 owners.append(getattr(module, entry.attr))
         assert len(owners) == 1, owners
         assert registry.resolve(registry._WEAKENING_GATE) is owners[0]
+
+
+def _tier_shape(entry: registry.Entry) -> tuple[bool, bool]:
+    """An entry's TIER-MEMBERSHIP shape -- the only property the four retired rosters enumerated."""
+    return (entry.pre, entry.full_segment is not None)
+
+
+def _module_level_check_name_collections(path: Path) -> dict[str, set[str]]:
+    """Every module-level collection-shaped constant in `path` whose string literals are ALL live
+    check names, as {constant name: the names it enumerates}. Module level only, mirroring
+    validate_tier_demotion_markers' own guard-module pin: a check name used INSIDE a test body
+    (an ordering assertion naming the two checks it orders) is a fixture, not a roster."""
+    literal_types = (ast.Set, ast.SetComp, ast.List, ast.ListComp, ast.Tuple, ast.Dict, ast.DictComp)
+    live = set(registry._ALL_ENTRIES)
+    found: dict[str, set[str]] = {}
+    for node in ast.parse(path.read_text(encoding="utf-8", errors="replace")).body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+            continue
+        if not isinstance(node.value, literal_types):
+            continue
+        names = {n.value for n in ast.walk(node.value) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+        if not names or not names <= live:
+            continue
+        target = node.targets[0] if isinstance(node, ast.Assign) else node.target
+        found[ast.unparse(target)] = names
+    return found
+
+
+class TestNoTierRosterReturns:
+    """Standing enforcement of Decision 187 point 1 (derive, do not enumerate) on the two modules
+    the retirement touched. The four retired constants are NOT named here -- naming them would put
+    the very strings the plan's own repo-wide grep searches for into a file that grep scans, and
+    would be a roster of retired rosters besides. The property is derived instead."""
+
+    _SCANNED = ("scripts/checks/registry.py", "tests/checks/registry/test_sequences.py")
+
+    def test_every_module_level_check_name_collection_is_tier_shape_closed(self) -> None:
+        """A module-level constant listing check names is admissible ONLY if it is CLOSED under the
+        tier-membership shape of its own members -- i.e. it enumerates every live entry sharing
+        that shape, so it cannot silently cover a subset. That is exactly how the four retired
+        rosters failed: they pinned 27 of 110 pre entries while reading as coverage. A derived,
+        complete set (the sole survivor names the one deliberately-unsequenced check) passes; a
+        hand-picked subset of the gated, promoted or pre-only entries cannot."""
+        gaps: dict[str, list[str]] = {}
+        for rel in self._SCANNED:
+            for constant, names in _module_level_check_name_collections(_common.ROOT / rel).items():
+                shapes = {_tier_shape(registry._ALL_ENTRIES[name]) for name in names}
+                missing = sorted(n for n, e in registry._ALL_ENTRIES.items() if _tier_shape(e) in shapes and n not in names)
+                if missing:
+                    gaps[f"{rel}::{constant}"] = missing
+        assert not gaps, f"check-name roster(s) covering only a subset of their own tier shape: {gaps}"
+
+    def test_the_closure_rule_rejects_a_synthetic_subset_roster(self) -> None:
+        """Teeth: a synthetic module whose constant lists SOME of the gated pre entries is
+        rejected, proving the rule above is not vacuously satisfied by the live tree."""
+        gated = sorted(n for n, e in registry._ALL_ENTRIES.items() if e.pre and e.pre_globs is not None)
+        assert len(gated) > 1, "the closure rule needs at least two same-shape entries to have teeth"
+        tree = ast.parse(f'PROMOTED = (\n    "{gated[0]}",\n)\n')
+        node = tree.body[0]
+        assert isinstance(node, ast.Assign) and isinstance(node.value, ast.Tuple)
+        names = {n.value for n in ast.walk(node.value) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+        shapes = {_tier_shape(registry._ALL_ENTRIES[name]) for name in names}
+        missing = [n for n, e in registry._ALL_ENTRIES.items() if _tier_shape(e) in shapes and n not in names]
+        assert missing

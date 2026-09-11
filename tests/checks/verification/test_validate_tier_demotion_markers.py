@@ -82,6 +82,11 @@ def _manifest_src(*entries_src: str) -> str:
     return "from scripts.checks._schema import Entry\n\nENTRIES = (\n" + "".join(entries_src) + ")\n"
 
 
+def _alt_form_manifest_src(call: str) -> str:
+    """ONE Entry spelled a legal-but-non-canonical way -- attribute form or positional name."""
+    return f"from scripts.checks import _schema\nfrom scripts.checks._schema import Entry\n\nENTRIES = (\n{call}\n)\n"
+
+
 def _repo(
     tmp_path: Path,
     base_manifest: str | None,
@@ -132,8 +137,28 @@ def _run(repo: Path) -> list[str]:
     return failed
 
 
+def _run_with_failing_git(repo: Path, failing: tuple[str, ...]) -> tuple[list[str], registry._Declaration | None]:
+    """Run the gate with exactly ONE git subcommand forced to fail -- every other probe runs for
+    real. It reproduces git's real failure shape (non-zero rc AND empty stdout)."""
+    original_run = _common.run
+
+    def _selective(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        result = original_run(cmd, **kwargs)
+        if tuple(cmd[1 : 1 + len(failing)]) == failing:
+            empty = b"" if isinstance(result.stdout, bytes) else ""
+            return subprocess.CompletedProcess(cmd, 128, empty, result.stderr)
+        return result
+
+    failed: list[str] = []
+    with patch.object(_common, "ROOT", repo), patch.object(_common, "run", _selective):
+        with registry.outcome_scope("validate_tier_demotion_markers"):
+            gate.validate_tier_demotion_markers(failed, root=repo)
+            declaration = registry.pop_declaration()
+    return failed, declaration
+
+
 class TestKnownBadFixtures:
-    """VP step 1: eleven known-bad fixtures, each a genuine weakening the gate must catch."""
+    """VP step 1's eleven known-bad fixtures plus three from code review -- each a real weakening."""
 
     def test_unmarked_pre_true_to_false_fails(self, tmp_path: Path) -> None:
         base = _manifest_src(_entry("synthetic_check_a", pre=True, full_segment=None, pre_globs=None))
@@ -207,6 +232,28 @@ class TestKnownBadFixtures:
         )
         head = _manifest_src(_entry("synthetic_check_a", pre=True, full_segment=None, pre_globs=None, marker=marker))
         assert _run(_repo(tmp_path, base, head)) != []
+
+    def test_stale_marker_reworded_but_citing_the_same_decision_fails(self, tmp_path: Path) -> None:
+        """DEC-ID-LEVEL, not byte-level: rewording a spent marker's reason never makes it fresh."""
+        spent = "tier-demotion-approved: dec-501 already used once"
+        reworded = "tier-demotion-approved: dec-501 a completely different reason, same decision"
+        base = _manifest_src(
+            _entry("synthetic_check_a", pre=True, full_segment="full_after_lint", pre_globs=None, marker=spent)
+        )
+        head = _manifest_src(_entry("synthetic_check_a", pre=True, full_segment=None, pre_globs=None, marker=reworded))
+        assert _run(_repo(tmp_path, base, head)) != []
+
+    def test_attribute_form_entry_demoted_unmarked_fails(self, tmp_path: Path) -> None:
+        """Bare-`Entry`-Name-only detection leaves these invisible at BOTH base and head."""
+        call = '    _schema.Entry(name="synthetic_check_a", module="m", attr="a", pre={0}),'
+        repo = _repo(tmp_path, _alt_form_manifest_src(call.format(True)), _alt_form_manifest_src(call.format(False)))
+        assert _run(repo) != []
+
+    def test_positional_name_entry_demoted_unmarked_fails(self, tmp_path: Path) -> None:
+        """`name` is Entry's FIRST field: a positional call is as grammar-legal as the keyword one."""
+        call = '    Entry("synthetic_check_a", "m", "a", pre={0}),'
+        repo = _repo(tmp_path, _alt_form_manifest_src(call.format(True)), _alt_form_manifest_src(call.format(False)))
+        assert _run(repo) != []
 
     def test_deletion_with_marker_in_header_and_vacated_span_still_fails(self, tmp_path: Path) -> None:
         """The eleventh fixture: a valid, authorized, reason-bearing marker placed as plausibly
@@ -308,14 +355,22 @@ class TestCleanOnLiveFleet:
         gate.validate_tier_demotion_markers(failed)
         assert failed == []
 
-    def test_examined_count_equals_live_manifest_entry_count(self) -> None:
+    def test_examined_count_covers_every_live_manifest_entry(self) -> None:
+        """`examined` counts BASE-UNION-HEAD keys, so it is `>=` the live (head-only) count, never
+        `==`: mark-then-drop retirement deletes a base key with no head counterpart, so `==` reds
+        on the second PR of the workflow this gate prescribes. Head parity is pinned below."""
         failed: list[str] = []
         with registry.outcome_scope("validate_tier_demotion_markers"):
             gate.validate_tier_demotion_markers(failed)
             declaration = registry.pop_declaration()
         assert declaration is not None
         assert declaration.kind == "examined"
-        assert declaration.count == len(registry._ALL_ENTRIES)
+
+        head_keys: set[str] = set()
+        for manifest in sorted((_common.ROOT / "scripts" / "checks").glob("*/_manifest.py")):
+            head_keys |= set(gate.extract_tier_states(manifest.read_text(encoding="utf-8", errors="replace")))
+        assert head_keys == set(registry._ALL_ENTRIES)
+        assert declaration.count is not None and declaration.count >= len(head_keys)
 
     def test_no_grandfather_shaped_constant_in_the_guard_module(self) -> None:
         """AST scan, module-level only: no frozenset/set/tuple/list/dict constant of check
@@ -453,6 +508,13 @@ class TestInternalHelperEdgeCases:
     def test_extract_tier_states_malformed_syntax_returns_empty(self) -> None:
         assert gate.extract_tier_states("def broken(:\n") == {}
 
+    def test_extract_tier_states_null_byte_source_returns_empty(self) -> None:
+        """ast.parse raises ValueError, not SyntaxError, on embedded null bytes."""
+        assert gate.extract_tier_states("ENTRIES = ()\x00\n") == {}
+
+    def test_extract_tier_states_ignores_calls_that_are_not_entry(self) -> None:
+        assert gate.extract_tier_states("import os\n\nf = os.getcwd()\ng = len([])\n") == {}
+
     def test_extract_tier_states_non_literal_name_is_skipped(self) -> None:
         text = "from scripts.checks._schema import Entry\nNAME = 'x'\nENTRIES = (\n    Entry(name=NAME, pre=True),\n)\n"
         assert gate.extract_tier_states(text) == {}
@@ -474,10 +536,68 @@ class TestInternalHelperEdgeCases:
 
     def test_batched_base_reader_empty_paths_returns_blank_reader(self) -> None:
         reader = gate._batched_base_reader(Path("."), [])
+        assert reader is not None
         assert reader("anything") == ""
 
-    def test_batched_base_reader_truncated_output_defaults_to_blank(self) -> None:
-        fake_result = type("FakeResult", (), {"stdout": b"no newline in this buffer at all"})()
+    def test_batched_base_reader_failed_subprocess_returns_no_reader(self) -> None:
+        """A failed `git cat-file --batch` must yield NO reader: a blank-string one is a fail-open
+        (check_state_diff reads "" as "reachable base, no entries"). Stdout here is WELL-FORMED."""
+        fake_result = subprocess.CompletedProcess(["git", "cat-file", "--batch"], 128, b"a blob 2\nx\n", b"fatal")
         with patch.object(_common, "run", return_value=fake_result):
+            assert gate._batched_base_reader(Path("."), ["a"]) is None
+
+    def test_batched_base_reader_truncated_output_on_a_successful_call_reads_blank(self) -> None:
+        """Record robustness, NOT a fail-open: rc is zero, so a newline-less record is an empty blob."""
+        with patch.object(_common, "run", return_value=subprocess.CompletedProcess(["git"], 0, b"no newline here", b"")):
             reader = gate._batched_base_reader(Path("."), ["a"])
+        assert reader is not None
         assert reader("a") == ""
+
+
+class TestGitProbesFailLoudNeverOpen:
+    """Decision 55 on this gate's own oracles: a probe that cannot run must never degrade into one
+    that runs and finds nothing. Both legs printed an affirmative PASS before this class existed."""
+
+    def test_cat_file_failure_skips_instead_of_reading_an_empty_base(self, tmp_path: Path) -> None:
+        base = _manifest_src(_entry("synthetic_check_a", pre=True, full_segment=None, pre_globs=None))
+        head = _manifest_src(_entry("synthetic_check_a", pre=False, full_segment=None, pre_globs=None))
+        failed, declaration = _run_with_failing_git(_repo(tmp_path, base, head), ("cat-file", "--batch"))
+        assert failed == []
+        assert declaration is not None and declaration.kind == "skipped"
+
+    def test_ls_files_failure_skips_instead_of_disabling_the_coverage_leg(self, tmp_path: Path) -> None:
+        """Caught by TestKnownBadFixtures with a working probe; without one, unmeasurable."""
+        files = {"scripts/fake/only.py": "x = 1\n", "scripts/fake/other.py": "x = 1\n"}
+        base = _manifest_src(_entry("synthetic_check_a", pre=True, full_segment=None, pre_globs=("scripts/fake/**",)))
+        head = _manifest_src(_entry("synthetic_check_a", pre=True, full_segment=None, pre_globs=("scripts/fake/only.py",)))
+        repo = _repo(tmp_path, base, head, extra_base=files, extra_head=files)
+        failed, declaration = _run_with_failing_git(repo, ("ls-files",))
+        assert failed == []
+        assert declaration is not None and declaration.kind == "skipped"
+
+    def test_an_empty_head_file_list_cannot_see_a_narrowing(self) -> None:
+        """Why that SKIP is mandatory: with no head file list the measured superset degenerates to
+        `set() <= set()`, so EVERY narrowing (Decision 187 point 3's bypass included) reads free."""
+        assert gate._globs_narrowed(("scripts/fake/**",), ("scripts/fake/only.py",), []) is False
+        assert gate._globs_narrowed(("scripts/fake/a.py",), ("never/**",), []) is False
+        assert gate._globs_narrowed(("scripts/fake/a.py",), ("never/**",), ["scripts/fake/a.py"]) is True
+        assert gate._globs_narrowed(("scripts/fake/a.py",), None, []) is False  # gaining ungated is a tightening
+
+
+class TestCommonPathCost:
+    """Decision 187 reversal c4 ("common-path cost exceeds 1s"): UNGATED in --pre, so every
+    unchanged entry's cost is paid on every diff. Measured 0.884s -> 0.091s on the live tree."""
+
+    def test_identical_globs_short_circuit_before_any_fnmatch_scan(self) -> None:
+        base_globs = ("scripts/checks/**", "tests/checks/**")
+        head_globs = base_globs[:1] + base_globs[1:]
+        assert head_globs is not base_globs, "the short circuit must key on equality, not identity"
+        with patch.object(gate, "fnmatch") as fake_fnmatch:
+            assert gate._globs_narrowed(base_globs, head_globs, [f"scripts/pkg/f{i}.py" for i in range(400)]) is False
+        assert fake_fnmatch.call_count == 0
+
+    def test_differing_globs_still_measure_coverage_by_fnmatch(self) -> None:
+        """Teeth: the short circuit is keyed on glob EQUALITY, not on a disabled measured leg."""
+        with patch.object(gate, "fnmatch", return_value=False) as fake_fnmatch:
+            gate._globs_narrowed(("scripts/checks/**",), ("scripts/checks/deps/**",), ["scripts/checks/a.py"])
+        assert fake_fnmatch.call_count > 0

@@ -17,6 +17,11 @@ level: every key this gate hands to the shared mechanism is a bare check name (n
 `_expand_ancestor_candidates` yields only the name itself -- a Decision naming `scripts/checks`
 generically can never authorize a specific check's demotion.
 
+Every git probe this module makes is FAIL-LOUD, never fail-open: a non-zero `git cat-file --batch`
+(no base blob was read) or `git ls-files` (the coverage-superset leg is unmeasurable) SKIPs via
+registry.skipped rather than degrading to an empty base or an empty head file list -- either of
+which would print an affirmative PASS over an oracle that never ran (Decision 55).
+
 Deletion has no marker escape by construction: a removed entry has no head line to carry one, and
 check_state_diff's deletion branch never consults any marker text. Retirement is mark-then-drop
 across two PRs (demote-with-marker, merge, then delete the now-unsequenced entry for free).
@@ -101,22 +106,35 @@ def _marker_on_span(lines: list[str], start: int, end: int) -> tuple[str | None,
     return None, None
 
 
+def _is_entry_call(func: ast.expr) -> bool:
+    """Entry-call acceptance, MIRRORING scripts/checks/deps/validate_check_manifests.py's
+    `_entry_calls`: a bare `Entry(...)` or any attribute form (`_schema.Entry(...)`). Detection
+    narrower than the manifest GRAMMAR validator's would leave an Entry spelled the other legal
+    way invisible to this gate at BOTH base and head -- that is, permanently demotable."""
+    if isinstance(func, ast.Name):
+        return func.id == "Entry"
+    return isinstance(func, ast.Attribute) and func.attr == "Entry"
+
+
 def extract_tier_states(text: str) -> dict[str, _marker_guard.StateEntry]:
     """spec.state_extractor: one StateEntry per `Entry(...)` call found anywhere in `text` (a
-    domain _manifest.py's content), keyed by its own `name=` literal. Never raises on malformed
-    input -- an unparseable file, or an Entry call whose `name=` is not a bare string literal,
-    contributes no entries rather than crashing the gate."""
+    domain _manifest.py's content), keyed by its own name literal -- read from `name=`, or failing
+    that from the first positional argument (Entry's own first field), so neither spelling the
+    grammar validator accepts escapes this gate. Never raises on malformed input -- an unparseable
+    file (SyntaxError, or ValueError on embedded null bytes), or an Entry call whose name is not a
+    bare string literal, contributes no entries rather than crashing the gate."""
     try:
         tree = ast.parse(text)
-    except SyntaxError:
+    except (SyntaxError, ValueError):
         return {}
     lines = text.splitlines()
     entries: dict[str, _marker_guard.StateEntry] = {}
     for node in ast.walk(tree):
-        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Entry"):
+        if not (isinstance(node, ast.Call) and _is_entry_call(node.func)):
             continue
         kwargs = {kw.arg: kw.value for kw in node.keywords if kw.arg}
-        name = _str_or_none_literal(kwargs.get("name"))
+        name_node = kwargs["name"] if "name" in kwargs else (node.args[0] if node.args else None)
+        name = _str_or_none_literal(name_node)
         if not name:
             continue
         state = TierState(
@@ -145,7 +163,16 @@ def _globs_narrowed(base_globs: tuple[str, ...] | None, head_globs: tuple[str, .
     unmarked: the base glob's matched set, evaluated against files that exist at HEAD, is empty
     once the old directory is gone, and the empty set is trivially a subset of anything). `None`
     is maximal coverage (ungated matches everything): losing it (some tuple replacing `None`) is
-    always a narrowing; gaining it (`None` replacing some tuple) is never one."""
+    always a narrowing; gaining it (`None` replacing some tuple) is never one.
+
+    The identical-globs short circuit is not a micro-optimisation: unchanged entries are the COMMON
+    path on every diff, and without it each one pays two full fnmatch sweeps of the whole
+    `git ls-files` list. Measured on the live tree, 124 of 125 entries take this branch and the
+    check costs 0.089s instead of 0.884s with identical verdicts. The check runs UNGATED in --pre
+    by design, so that cost is paid on every diff and was already within 7% of Decision 187's own
+    reversal condition c4 ("common-path cost exceeds 1s")."""
+    if base_globs == head_globs:
+        return False
     if head_globs is None:
         return False
     if base_globs is None:
@@ -189,6 +216,7 @@ def _base_manifest_paths(root: Path) -> list[str]:
         capture_output=True,
         text=True,
         encoding="utf-8",
+        errors="replace",
         cwd=root,
     )
     if result.returncode != 0:
@@ -196,16 +224,26 @@ def _base_manifest_paths(root: Path) -> list[str]:
     return sorted({line.strip() for line in result.stdout.splitlines() if _MANIFEST_PATH_RE.fullmatch(line.strip())})
 
 
-def _batched_base_reader(root: Path, rel_paths: list[str]) -> Callable[[str], str]:
+def _batched_base_reader(root: Path, rel_paths: list[str]) -> Callable[[str], str] | None:
     """ONE `git cat-file --batch` call fetching every `rel_paths` entry's origin/main blob (or ""
     when the path does not exist at that ref -- a brand-new manifest domain, not an unreachable
     base) -- so the subprocess count check_state_diff pays does not fan out with the domain count.
     Byte-precise slicing (bytes in, bytes out, decoded per-blob) so a multi-byte UTF-8 character
-    straddling a chunk boundary is never mis-sliced."""
+    straddling a chunk boundary is never mis-sliced.
+
+    Returns None -- never a reader -- when that subprocess ITSELF fails (non-zero return code).
+    git's stdout is empty then, which is byte-for-byte indistinguishable from "every path is absent
+    at the base ref": mapping it to "" would make every head entry read as brand-new (free) and
+    every deletion invisible, and the gate would print an affirmative PASS having read no base at
+    all -- Decision 55's missing-oracle-looks-like-a-passing-oracle shape exactly. The caller turns
+    this None into a loud SKIP. A path genuinely absent at a REACHABLE base ref is NOT this case:
+    git reports it as a `missing` line with a zero return code, and still reads as ""."""
     if not rel_paths:
         return lambda _rel_path: ""
     stdin_payload = "".join(f"origin/main:{p}\n" for p in rel_paths).encode("utf-8")
     result = _common.run(["git", "cat-file", "--batch"], input=stdin_payload, capture_output=True, cwd=root)
+    if result.returncode != 0:
+        return None
     output = result.stdout if isinstance(result.stdout, bytes) else b""
     contents: dict[str, str] = {}
     pos = 0
@@ -241,17 +279,26 @@ def validate_tier_demotion_markers(failed: list[str], root: Path | None = None) 
 
     all_paths = sorted(set(_head_manifest_paths(target_root)) | set(_base_manifest_paths(target_root)))
     base_reader = _batched_base_reader(target_root, all_paths)
+    if base_reader is None:
+        print("  SKIP: `git cat-file --batch` failed -- no base blob was read (advisory locally, authoritative in CI).")
+        registry.skipped("git cat-file --batch failed")
+        return
 
-    ls_files = _common.run(["git", "ls-files"], capture_output=True, text=True, encoding="utf-8", cwd=target_root)
-    head_files = ls_files.stdout.splitlines() if ls_files.returncode == 0 else []
-    weakened = _make_weakened(head_files)
+    ls_files = _common.run(
+        ["git", "ls-files"], capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=target_root
+    )
+    if ls_files.returncode != 0:
+        print("  SKIP: `git ls-files` failed -- the pre_globs coverage-superset leg is unmeasurable.")
+        registry.skipped("git ls-files failed")
+        return
+    weakened = _make_weakened(ls_files.stdout.splitlines())
 
     violations: list[str] = []
     union_of_keys: set[str] = set()
 
     for rel_path in all_paths:
         current_path = target_root / rel_path
-        current_text = current_path.read_text(encoding="utf-8") if current_path.exists() else ""
+        current_text = current_path.read_text(encoding="utf-8", errors="replace") if current_path.exists() else ""
         base_text = base_reader(rel_path)
         union_of_keys |= set(extract_tier_states(current_text)) | set(extract_tier_states(base_text))
 
