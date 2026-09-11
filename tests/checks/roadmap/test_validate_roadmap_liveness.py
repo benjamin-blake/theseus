@@ -485,6 +485,17 @@ class TestTranscription:
             assert "CD.41" not in scc
 
 
+class TestDrainedCores:
+    def test_t2_t3_core_absent_from_live_toxic_set(self) -> None:
+        from scripts.platform_roadmap_liveness import toxic_sccs
+        from scripts.platform_roadmap_state import load
+
+        drained_ids = {"CD.40", "T2.18", "T2.19", "T2.26", "T2.36", "T3.2", "T3.20"}
+        doc = load(_common.ROOT / "docs" / "ROADMAP-PLATFORM.yaml")
+        for scc in toxic_sccs(doc):
+            assert not (drained_ids & scc), f"drained id(s) resurfaced in a toxic SCC: {drained_ids & scc}"
+
+
 class TestUnloadableRoadmapSkips:
     def test_skips_when_roadmap_is_unloadable(self, tmp_path: Path, capsys) -> None:
         _write_yaml(tmp_path / "docs" / "ROADMAP-PLATFORM.yaml", "not: [valid, yaml")
