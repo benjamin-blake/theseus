@@ -43,7 +43,8 @@ scope:
       tests/ops_data_portal/test_update_rec_content_validation.py:367-374's own docstring. Treating a
       blob that parses to nothing as "no blob" is a consistency fix under that contract. (2) Add
       RecNotFound(RuntimeError) and raise it at the referential-existence check (line ~482) so the
-      trailer loop can discriminate an absent rec from a transport failure.
+      trailer loop can discriminate an absent rec from a transport failure. 470/500 effective SLOC
+      measured, ~481 projected -- no budget raise (Decision 128/165).
   - file: scripts/ops_portal/ci_rca_lifecycle.py
     action: Modify
     purpose: >-
@@ -52,8 +53,10 @@ scope:
       Decision 186 pt 7). (2) Narrow `except RuntimeError` (line ~421) to `except RecNotFound` so
       only an absent rec is a skip; every other RuntimeError -- reader-unreachable,
       writer_transport.py:164 referential 409, writer_transport.py:181 HTTP failure -- falls
-      through to exit_code=1. NEVER match on a message substring: that is the fragility this plan
-      exists to cure.
+      through to exit_code=1. The broad `except Exception` at line 425 keeps its stderr marker
+      "rec-autoclose: ERROR closing <rec-id>" unchanged; VP step 2's oracle matches on that
+      RUNTIME line, so do not reword it. NEVER match on a message substring to classify an
+      exception: that is the fragility this plan exists to cure.
   - file: scripts/ci_rca/inactivity_sweep.py
     action: Modify
     purpose: >-
@@ -70,7 +73,15 @@ scope:
       already established as this repo's precedent. Splits
       test_trailer_closure_passes_commit_sha_into_the_gated_write, which pins the unconditional
       pass, into blob / no-blob cases (a strengthening, never a relaxation -- Decision 181). Adds
-      the RecNotFound-vs-transport split cases.
+      test_writer_transport_failure_sets_exit_code and test_absent_rec_skips_without_exit_code.
+      HARD REQUIREMENT (critique round 3, B1): this file MUST STAY IMPORTABLE ON origin/main. VP
+      step 2 copies it onto a pre-fix worktree, so RecNotFound must be resolved LAZILY -- inside
+      the test body, or via getattr(portal, "RecNotFound", RuntimeError) -- never as a module-level
+      `from scripts.ops_data_portal import RecNotFound`, which is an ImportError there and makes
+      pytest exit 4 under a nodeid selector (measured), destroying the oracle. The literal
+      "rec-autoclose: ERROR closing rec-" must NOT appear anywhere in this file's source: VP step 2
+      refuses to run if it does, because a source match would make its signature conjunct true for
+      any assertion failure.
   - file: tests/test_ci_rca_lifecycle.py
     action: Modify
     purpose: >-
@@ -80,24 +91,37 @@ scope:
       mislabels that fixture as 'not found', which is the conflation bug written into the test. The
       narrowing inverts it to rc == 1. Flip that arm and ADD a RecNotFound arm retaining rc == 0, so
       both halves are pinned separately. Without this row the implementer hits a
-      validate_scope_boundary LOCATION STOP mid-flight. 457 effective SLOC, 43 headroom.
+      validate_scope_boundary LOCATION STOP mid-flight. 457 effective SLOC measured, ~463 projected.
   - file: tests/ops_data_portal/test_closure_gate.py
     action: Modify
     purpose: >-
-      Two pins. (1) The containment property is_escape_classified(parse_context_json(raw)) implies
-      closure_stamps_applicable(raw), so a future widening of the predicate cannot silently drop a
-      required fix-commit binding (Decision 186 point 8's fourth weakening form). (2) Extend the
-      existing TestContractParity (:131-141), which already asserts contract-to-code parity over this
-      same closure_obligation block, to assert stamp_precondition's enumerated call-site list equals
-      the set of files importing the predicate -- without it the enumeration is unenforced prose,
-      which is the Decision 163 point 2 declared-vs-executed shape in a clause justified by T2.54 c1
-      mappability (critique round 2, S3).
+      TWO NEW TEST METHODS, each its own nodeid and its own shard (critique round 3, B2 -- one
+      node_id slot cannot carry two properties, and a whole-file selector over a file that is
+      byte-identical to origin/main is rejected by run_differential as tautological). (1)
+      TestStampApplicability::test_escape_classified_implies_stampable pins the containment property
+      is_escape_classified(parse_context_json(raw)) implies closure_stamps_applicable(raw), so a
+      future widening cannot silently drop a required fix-commit binding (Decision 186 point 8's
+      fourth weakening form). (2) TestContractParity::test_stamp_precondition_call_sites_match_importers
+      is a NEW method -- do NOT extend the existing
+      TestContractParity::test_closure_vocabularies_match_contract (:131-141), which passes on
+      origin/main and is therefore unadmittable, leaving the Decision 163 remedy with no standing
+      guard. Specification (critique round 3, S5): search domain is scripts/**/*.py (walked from the
+      repo root, excluding __pycache__); the contract clause key read is
+      closure_obligation.stamp_precondition.call_sites; and the membership predicate is an IMPORT of
+      the symbol resolved by ast.parse -- an ImportFrom naming closure_stamps_applicable, or an
+      Import of scripts.ops_portal.closure_gate paired with an attribute reference -- NEVER a
+      textual mention, which would make the parity test itself and every docstring a false member.
+      Assert set equality in both directions so an unlisted importer and a listed non-importer each
+      fail.
   - file: tests/ops_data_portal/test_update_rec_content_validation.py
     action: Modify
     purpose: >-
-      Add the newly-refusing case (a blob of "{}" / malformed JSON now raises) as a red-before
-      test, and strengthen the existing refusal test to also match the predicate name. Its pinned
-      substring "no existing context_v2_json" is at line ~385 and must survive.
+      Add the newly-refusing case as its OWN new nodeid --
+      test_closure_kwarg_on_a_blob_parsing_to_nothing_refuses_before_any_write -- covering "{}",
+      "null" and malformed JSON, mirroring
+      test_closure_kwarg_on_a_rec_without_context_v2_json_refuses_before_any_write (:367). Also
+      strengthen that pre-existing refusal test to match the predicate name. Its pinned substring
+      "no existing context_v2_json" is at line ~385 and must survive.
   - file: tests/test_ci_rca_inactivity_sweep.py
     action: Modify
     purpose: >-
@@ -124,47 +148,69 @@ scope:
   - file: tests/ops_data_portal/test_decisions_divergence_guard.py
     action: Modify
     purpose: >-
-      Update the single assertion at line ~269 that pins the backfill step's if condition. It MUST
+      Update the single assertion at line 269 that pins the backfill step's if condition. It MUST
       stay an exact-equality pin against the new full string -- do NOT degrade it to substring
       containment, which is Decision 181 point 3's dominant residual weakening arm (unenforced,
-      rec-3357). The DCG-03 co-gating property the pin exists for must remain asserted.
+      rec-3357). CRITICAL (critique round 3, S7): line 269 sits INSIDE
+      TestSubstantiveSignalPin::test_rec_autoclose_exits_nonzero_on_failed_rows, which is verbatim
+      the check_spec.node_id of the already-graduated shard
+      config/agent/verification_registry/entries/rec-autoclose-failed-counter-exit-present.yaml --
+      Decision 155's mechanically enforced reversal condition (c). Editing this nodeid's body is
+      therefore editing a live shard's enforcement surface. The sibling assertions at lines 267-268
+      (no `continue-on-error` key on the step; no `|| true` in its run) and the sys.exit AST walk
+      below MUST survive untouched, and the whole test must still pass so the shard stays admitted;
+      change only the expected if-string on line 269.
   - file: docs/contracts/ci-rca-lifecycle.yaml
     action: Modify
     purpose: >-
       Add stamp_precondition under the existing closure_obligation section -- names the predicate,
       states its parsed-dict domain, states it is stampability and not the gate predicate, and
-      ENUMERATES the sanctioned consumer call sites (Decision 155's adopt-with-a-clause rule), bound
-      to reality by the parity assertion in tests/ops_data_portal/test_closure_gate.py rather than
-      left as prose. ALSO add the companion amendment_log entry (change_class: field_add) -- omitting
-      it fails check_amendment_log_for_class_d, whose canonical-dump diff fires on any contract field
-      addition (critique round 2, S1). Budget: 464/500 effective now, the clause plus a 5-9 line
-      amendment_log entry lands near 487/500 -- tight but no raise, which the constraints forbid.
+      ENUMERATES the sanctioned consumer call sites under the key `call_sites:` (Decision 155's
+      adopt-with-a-clause rule), bound to reality by the parity assertion in
+      tests/ops_data_portal/test_closure_gate.py rather than left as prose. ALSO add the companion
+      amendment_log entry ('change_class: field_add') -- omitting it fails
+      check_amendment_log_for_class_d, whose canonical-dump diff fires on any contract field
+      addition (critique round 2, S1). Budget: 464/500 effective measured; ~483 projected, and that
+      margin HOLDS ONLY IF the amendment_log entry's `summary:` is one long folded line, this
+      file's existing convention (see the 2026-09-11 and 2026-09-07 entries) -- a hand-wrapped
+      multi-line summary blows the budget, and no raise is permitted.
   - file: config/agent/verification_registry/entries/closure-stamp-applicable-seam.yaml
     action: Create
     purpose: Standing guard for VP step 3 (blob-less trailer rec closes cleanly). Decision 176 one-record-per-file shard.
   - file: config/agent/verification_registry/entries/closure-stamp-containment.yaml
     action: Create
-    purpose: Standing guard for VP step 4 (escape-classified implies stampable -- the Decision 186 point 8 containment property, plus the contract parity assertion).
+    purpose: Standing guard for VP step 4 (escape-classified implies stampable -- the Decision 186 point 8 containment property). One nodeid, one property.
+  - file: config/agent/verification_registry/entries/closure-stamp-contract-parity.yaml
+    action: Create
+    purpose: Standing guard for VP step 5 (the contract's stamp_precondition.call_sites list equals the set of scripts/**/*.py files importing the predicate -- the Decision 163 remedy's own guard).
   - file: config/agent/verification_registry/entries/closure-stamp-empty-parse-refusal.yaml
     action: Create
-    purpose: Standing guard for VP step 5 (a context_v2_json blob that parses to nothing refuses a closure_* kwarg).
+    purpose: Standing guard for VP step 6 (a context_v2_json blob that parses to nothing refuses a closure_* kwarg).
   - file: config/agent/verification_registry/entries/closure-stamp-single-definition.yaml
     action: Create
-    purpose: Standing guard for VP step 6 (every call site consults the predicate; none re-derives it).
+    purpose: Standing guard for VP step 7 (every call site consults the predicate; none re-derives it).
   - file: config/agent/verification_registry/entries/closure-transport-failure-reddens.yaml
     action: Create
-    purpose: Standing guard for VP step 7 (a writer-transport RuntimeError sets exit_code=1 instead of being skipped).
+    purpose: Standing guard for VP step 8 (a writer-transport RuntimeError sets exit_code=1 instead of being skipped).
   - file: config/agent/verification_registry/entries/rec-autoclose-backfill-not-cancelled.yaml
     action: Create
-    purpose: Standing guard for VP step 8 (the backfill if condition survives closure failure but not cancellation or a failed install/creds step).
+    purpose: Standing guard for VP step 9 (the backfill if condition survives closure failure but not cancellation or a failed install/creds step).
 bundled_recommendations: ["rec-3738", "rec-3730"]
 followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
   - close_recs_from_trailer closes a rec carrying no context_v2_json with exit code 0 and exactly one warehouse write
-  - The same seam test exits non-zero against the pre-fix tree at origin/main (differential red-before proof)
+  - >-
+    The differential against origin/main is an ORACLE, not merely non-zero (critique round 3, S10):
+    on a worktree at origin/main carrying the copied seam test, pytest exits EXACTLY 1 AND the run
+    output carries the runtime marker "rec-autoclose: ERROR closing rec-". A collection exit (4 or
+    5) is an environment refusal reported as SETUP_FAILED_COLLECTION, never a red
   - update_rec, close_recs_from_trailer and close_inactive_recs each consult closure_stamps_applicable; a zero count in any one of the three fails the check
-  - is_escape_classified(parse_context_json(raw)) implies closure_stamps_applicable(raw) is pinned by test
+  - is_escape_classified(parse_context_json(raw)) implies closure_stamps_applicable(raw) is pinned by its own test nodeid
+  - >-
+    The contract's closure_obligation.stamp_precondition.call_sites list equals, in both
+    directions, the set of scripts/**/*.py files that IMPORT the predicate, pinned by its own new
+    test nodeid rather than left as unenforced prose
   - A context_v2_json blob of "{}" or malformed JSON now refuses a closure_* kwarg, pinned by a red-before test
   - A writer-transport RuntimeError during closure sets exit_code=1, while an absent rec (RecNotFound) still skips with exit code unchanged
   - The backfill step runs when the closure step fails, but not on cancellation nor after a failed install or credentials step, and the divergence-guard pin remains an exact equality
@@ -181,30 +227,58 @@ verification_plan:
     graduation: waive
     graduation_waiver_reason: >-
       Concrete duplication, not a general excuse: this whole-file selector is a strict superset of
-      steps 3 and 7, which each graduate their own discriminating nodeid over this same file. A
-      third shard here would re-run those two guards under a broader selector.
+      steps 3 and 8, which each graduate their own discriminating nodeid over this same file. A
+      third shard here would re-run those two guards under a broader selector -- and a whole-file
+      selector is in any case unadmittable, since run_differential rejects a check that passes on
+      an origin/main worktree.
   - step: 2
     phase: pre-deploy
     action: Differential red-before -- the new seam test must FAIL on the pre-fix tree
     command: >-
       W="${TMPDIR:-/tmp}/prefix-cs"; git worktree remove --force "$W" 2>/dev/null; git worktree
       prune; git worktree add -f "$W" origin/main >/dev/null || { echo SETUP_FAILED_WORKTREE; exit
-      2; }; ln -s "$PWD/.venv" "$W/.venv" || { echo SETUP_FAILED_VENV; exit 2; }; cp
+      2; }; ln -s "$PWD/.venv" "$W/.venv" || { echo SETUP_FAILED_SYMLINK; exit 2; }; test -x
+      "$W/.venv/bin/python" || { echo SETUP_FAILED_VENV; exit 2; }; cp
       tests/ci_rca/test_close_recs_from_trailer.py "$W/tests/ci_rca/" || { echo SETUP_FAILED_COPY;
-      exit 2; }; out=$(cd "$W" && bin/venv-python -m pytest
+      exit 2; }; if grep -q "rec-autoclose: ERROR closing rec-"
+      "$W/tests/ci_rca/test_close_recs_from_trailer.py"; then echo SETUP_FAILED_SENTINEL_IN_SOURCE;
+      exit 2; fi; out=$(cd "$W" && bin/venv-python -m pytest
       tests/ci_rca/test_close_recs_from_trailer.py::test_closes_rec_lacking_context_v2_json -q
-      2>&1); rc=$?; git worktree remove --force "$W"; printf '%s\n' "$out" | tail -5; test "$rc" -eq
-      1 && printf '%s' "$out" | grep -q "no existing context_v2_json" && echo PREFIX_RED_CONFIRMED
+      2>&1); rc=$?; git worktree remove --force "$W"; printf '%s\n' "$out" | tail -5; case "$rc" in
+      4|5) echo "SETUP_FAILED_COLLECTION rc=$rc"; exit 2;; esac; test "$rc" -eq 1 && printf '%s'
+      "$out" | grep -q "rec-autoclose: ERROR closing rec-" && echo PREFIX_RED_CONFIRMED
     expected: PREFIX_RED_CONFIRMED printed, exit 0
     fix_if: >-
-      SETUP_FAILED_* is an ENVIRONMENT failure and must never be read as red -- a bare worktree has
-      no .venv, so bin/venv-python falls back to a PATH interpreter that cannot import pydantic and
-      exits non-zero without running one test (the vacuous-pass this step's first draft shipped;
-      mirrors verification_graduation._provision_venv_symlink and _probe_environment_on_fail). Any
-      other non-zero exit means rc was not exactly 1 or the pre-fix failure signature was absent:
-      the run failed for a reason other than the defect (rc 2 is a collection error, e.g. the copied
-      file importing a not-yet-existing RecNotFound), so the test is not an oracle.
-    graduation: not-applicable
+      Every SETUP_FAILED_* marker is an ENVIRONMENT refusal and must NEVER be read as red.
+      SETUP_FAILED_SYMLINK/SETUP_FAILED_VENV: a bare worktree has no .venv (gitignored, never
+      checked out), so bin/venv-python falls back to a PATH interpreter that cannot import pydantic
+      and exits non-zero having run no test -- the vacuous pass this step's first draft shipped; the
+      `test -x` arm exists because `ln -s` succeeds on a DANGLING target, so the symlink's own exit
+      status proves nothing (critique round 3, S2). Mirrors
+      verification_graduation._provision_venv_symlink / _probe_environment_on_fail.
+      SETUP_FAILED_COLLECTION means rc was 4 or 5: under a NODEID selector both a missing nodeid and
+      a module-level ImportError yield 4, not 2 -- measured, and the round-2 fix_if's "rc 2" claim
+      was wrong (critique round 3, B1). Its usual cause is a module-level
+      `from scripts.ops_data_portal import RecNotFound` in the copied file; resolve RecNotFound
+      lazily instead. SETUP_FAILED_SENTINEL_IN_SOURCE means the copied file's source contains the
+      runtime marker this step greps for, which would make the signature conjunct true for ANY
+      assertion failure in that nodeid -- remove the literal from the test source (critique round 3,
+      S1). Only rc == 1 PLUS the runtime marker "rec-autoclose: ERROR closing rec-" (written to
+      stderr by ci_rca_lifecycle.py:425's broad except and captured in the failure report) is a
+      genuine red; the old conjunct matched "no existing context_v2_json", which the copied file's
+      own docstrings and pytest.raises(match=...) carry, so it was not runtime-only.
+    graduation: waive
+    graduation_waiver_reason: >-
+      NOT a duplication waiver and NOT not-applicable (critique round 3, S3 -- the round-2
+      reclassification of steps 10/11 one step away makes not-applicable the 12o suspect shape
+      here). This step is a ONE-SHOT differential whose polarity INVERTS the moment this plan
+      merges: it asserts a FAILURE on origin/main, and after the squash-merge origin/main carries
+      the fix, so the same command returns rc 0 forever after. A standing shard over it would fail
+      permanently -- graduation is impossible in principle, not merely duplicative. The property it
+      proves once is carried forward by step 3's shard, whose differential admission
+      (run_differential: FAIL on an origin/main worktree, PASS on HEAD) re-derives the same
+      red-before fact against a moving base on every run. This step is also deliberately NOT
+      hermetic, for the same inversion reason -- see the Decision 148 point 3 constraint.
   - step: 3
     phase: pre-deploy
     hermetic: true
@@ -218,27 +292,54 @@ verification_plan:
     phase: pre-deploy
     hermetic: true
     action: Containment pin -- every escape-classified rec is stampable
-    command: bin/venv-python -m pytest tests/ops_data_portal/test_closure_gate.py -q
-    expected: all pass, including the containment case and the contract parity case
+    command: >-
+      bin/venv-python -m pytest
+      "tests/ops_data_portal/test_closure_gate.py::TestStampApplicability::test_escape_classified_implies_stampable"
+      -q
+    expected: 1 passed
     fix_if: >-
-      a containment failure means the predicate could drop a required fix-commit binding (Decision
-      186 pt 8); a parity failure means the contract's enumerated call sites drifted from the files
-      that actually import the predicate
+      a failure means the predicate could drop a required fix-commit binding (Decision 186 pt 8's
+      fourth weakening form). Exit 4 means the nodeid does not exist -- author it exactly as named.
+      This step selects ONE NEW nodeid, not the whole file: a whole-file selector over a file
+      byte-identical to origin/main is rejected by run_differential as tautological, so the shard
+      would never be admitted (critique round 3, B2).
     graduation: graduate
     graduation_check_id: closure-stamp-containment
   - step: 5
     phase: pre-deploy
     hermetic: true
+    action: Contract parity -- the enumerated call_sites equal the set of files importing the predicate
+    command: >-
+      bin/venv-python -m pytest
+      "tests/ops_data_portal/test_closure_gate.py::TestContractParity::test_stamp_precondition_call_sites_match_importers"
+      -q
+    expected: 1 passed
+    fix_if: >-
+      a failure means the contract's closure_obligation.stamp_precondition.call_sites list drifted
+      from the scripts/**/*.py files that actually IMPORT the predicate (ast-resolved, never a
+      textual mention). This is a NEW nodeid, deliberately not an extension of the pre-existing
+      TestContractParity::test_closure_vocabularies_match_contract, which passes on origin/main and
+      would therefore be unadmittable -- leaving the Decision 163 remedy with no standing guard at
+      all (critique round 3, B2).
+    graduation: graduate
+    graduation_check_id: closure-stamp-contract-parity
+  - step: 6
+    phase: pre-deploy
+    hermetic: true
     action: The strengthened refusal -- a blob that parses to nothing is refused, as an absent one already was
     command: >-
-      bin/venv-python -m pytest tests/ops_data_portal/test_update_rec_content_validation.py -q
-    expected: all pass, including the new empty-parse/malformed refusal case and the pre-existing absent-blob refusal
+      bin/venv-python -m pytest
+      "tests/ops_data_portal/test_update_rec_content_validation.py::test_closure_kwarg_on_a_blob_parsing_to_nothing_refuses_before_any_write"
+      -q
+    expected: 1 passed
     fix_if: >-
-      a failure on the new case means the strengthening did not land; a failure on the pre-existing
-      case means the refactor WEAKENED the invariant, which Decision 181 forbids
+      a failure means the strengthening did not land. The full tier (step 13) still runs this whole
+      file, so a WEAKENING of the pre-existing absent-blob refusal (Decision 181) surfaces there;
+      this step names one NEW nodeid because a whole-file selector cannot be admitted as a shard
+      (critique round 3, B2).
     graduation: graduate
     graduation_check_id: closure-stamp-empty-parse-refusal
-  - step: 6
+  - step: 7
     phase: pre-deploy
     hermetic: true
     action: Single-definition proof -- every call site consults the predicate, none re-derives it
@@ -253,7 +354,7 @@ verification_plan:
       partial adoption would pass unnoticed.
     graduation: graduate
     graduation_check_id: closure-stamp-single-definition
-  - step: 7
+  - step: 8
     phase: pre-deploy
     hermetic: true
     action: A writer-transport failure reddens; an absent rec still skips
@@ -263,12 +364,12 @@ verification_plan:
       "tests/ci_rca/test_close_recs_from_trailer.py::test_absent_rec_skips_without_exit_code" -q
     expected: 2 passed
     fix_if: >-
-      exit code 5 means the nodeids do not exist -- name them exactly as authored. A transport
+      exit code 4 means the nodeids do not exist -- name them exactly as authored. A transport
       failure leaving exit_code 0 means a writer 502 still silently drops a closure (Decision 55
       fail-open).
     graduation: graduate
     graduation_check_id: closure-transport-failure-reddens
-  - step: 8
+  - step: 9
     phase: pre-deploy
     hermetic: true
     action: The backfill if condition survives closure failure but not cancellation or a failed install/creds step
@@ -290,7 +391,7 @@ verification_plan:
       install/credentials outcome guards are missing.
     graduation: graduate
     graduation_check_id: rec-autoclose-backfill-not-cancelled
-  - step: 9
+  - step: 10
     phase: pre-deploy
     hermetic: true
     action: DCG-03 co-gating pin and the R3 workflow ratchet both still hold
@@ -300,14 +401,19 @@ verification_plan:
     expected: 'all pass; the ratchet is untouched because no run-body changed'
     fix_if: >-
       a ratchet failure means a run-body was edited -- revert that; the if-condition edit alone is
-      intended. A divergence-guard failure means the pin was not updated to the new full string.
+      intended. A divergence-guard failure means the pin was not updated to the new full string, or
+      that the line-269 edit disturbed a sibling assertion inside the ALREADY-GRADUATED nodeid
+      TestSubstantiveSignalPin::test_rec_autoclose_exits_nonzero_on_failed_rows (shard
+      rec-autoclose-failed-counter-exit-present, Decision 155 reversal condition (c)) -- restore
+      the :267-268 continue-on-error / `|| true` assertions and the sys.exit AST walk untouched.
     graduation: waive
     graduation_waiver_reason: >-
-      Concrete duplication against step 8's shard, which graduates the new if-condition property
-      itself. What remains here is two PRE-EXISTING suites (the DCG-03 pin and the R3 ratchet) the
-      full tier already owns; graduating them would register a second guard over properties this
-      plan did not create.
-  - step: 10
+      Concrete duplication against step 9's shard, which graduates the new if-condition property
+      itself. What remains here is two PRE-EXISTING suites (the DCG-03 pin, already covered by the
+      graduated shard rec-autoclose-failed-counter-exit-present, and the R3 ratchet) that the full
+      tier already owns; graduating them would register a second guard over properties this plan
+      did not create.
+  - step: 11
     phase: pre-deploy
     hermetic: true
     action: The sweep's waiver path is unchanged in behaviour by the predicate adoption
@@ -320,26 +426,26 @@ verification_plan:
       assertions and its real-gate end-to-end case both pre-date this work and the full tier already
       owns them. This step is a no-op permission check confirming the predicate adoption did not
       disturb them; a shard would register a second guard over behaviour this plan did not create --
-      the same reasoning step 9 carries (critique round 2, S5).
-  - step: 11
+      the same reasoning step 10 carries (critique round 2, S5).
+  - step: 12
     phase: pre-deploy
     action: Fast tier
     command: bin/venv-python -m scripts.validate --pre
     expected: exit 0
     fix_if: address each reported check; never bypass with --ignore-budget
     graduation: not-applicable
-  - step: 12
+  - step: 13
     phase: pre-deploy
     action: Full tier (handoff_policy gate -- must complete before commit)
     command: bin/venv-python -m scripts.validate
     expected: exit 0
     fix_if: on timeout the disposition is blocked -- resume later and rerun full from the start
     graduation: not-applicable
-  - step: 13
+  - step: 14
     phase: post-deploy
     action: The live post-merge rec-autoclose run closed rec-3730 end-to-end
     command: >-
-      bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib;r=[json.loads(l)
+      bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json,pathlib;r=[json.loads(l)
       for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if
       l.strip()];x=next(y for y in r if y['id']=='rec-3730');print(x['status'],'|',x['resolution']);assert
       x['status']=='closed' and x['resolution'].startswith('Auto-closed by rec-autoclose workflow')"
@@ -347,30 +453,37 @@ verification_plan:
     fix_if: >-
       still open means the fix did not take on the live path; read the run's closure step. A
       hand-written resolution means someone closed it manually and the end-to-end leg is unproven.
+      Use the portal's own --sync flag, never `scripts.sync.ops sync`: AGENTS.md reserves the pull
+      CLI for operators and the agent surface is the portal (critique round 3, S6).
     graduation: not-applicable
-  - step: 14
+  - step: 15
     phase: post-deploy
     action: Close rec-3738 with a fix-bound artifact (autoclose structurally cannot -- it supplies no closure_artifact)
     command: >-
       git fetch origin main --quiet && bin/venv-python -m scripts.ops_data_portal --update-rec
       rec-3738 --status closed --resolution "Resolved by PLAN-closure-stamp-applicability:
       closure-stamp precondition exported and adopted at every call site; seam contract test added."
-      --closure-artifact
-      "pytest:tests/ci_rca/test_close_recs_from_trailer.py::test_closes_rec_lacking_context_v2_json"
+      --closure-artifact "shard:closure-stamp-applicable-seam"
       --closure-fix-sha "$(git rev-parse origin/main)" --profile agent_platform && bin/venv-python -m
-      scripts.sync.ops sync && bin/venv-python -c "import json,pathlib;r=[json.loads(l) for l in
+      scripts.ops_data_portal --sync && bin/venv-python -c "import json,pathlib;r=[json.loads(l) for l in
       pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if
       l.strip()];x=next(y for y in r if
       y['id']=='rec-3738');c=json.loads(x['context_v2_json']);print(x['status'],'|',c.get('closure_artifact'),'|',c.get('fixed_by_sha'));assert
       x['status']=='closed' and c.get('closure_artifact') and c.get('fixed_by_sha')"
     expected: the write succeeds AND the read-back shows closed with both closure_artifact and fixed_by_sha stamped
     fix_if: >-
-      a silent exit 0 with no output means the wrong entrypoint was used -- scripts.ops_portal.cli
-      has no __main__ guard and does nothing (critique round 2, B3); scripts.ops_data_portal is the
+      The artifact kind is `shard:`, the STRONGEST member of closure_gate.KIND_STRENGTH (shard,
+      pytest, check, fixture) and per Decision 186 point 4 the only kind carrying the
+      still-red-on-reintroduction property -- the same squash-merge commit creates
+      config/agent/verification_registry/entries/closure-stamp-applicable-seam.yaml, so it resolves
+      fix-bound identically to the pytest form the earlier drafts used (critique round 3, S9). A
+      silent exit 0 with no output means the wrong entrypoint was used -- scripts.ops_portal.cli has
+      no __main__ guard and does nothing (critique round 2, B3); scripts.ops_data_portal is the
       sanctioned one. ClosureArtifactRequired means the fix sha does not touch the artifact's
-      defining file -- the leading git fetch exists because a stale origin/main ref is the usual
-      cause; confirm git rev-parse origin/main is the squash-merge sha that carries the test. A
-      read-back assertion failure means the write landed the wrong status or lost its stamps.
+      defining file (for shard:<id> that is the entry YAML itself) -- the leading git fetch exists
+      because a stale origin/main ref is the usual cause; confirm git rev-parse origin/main is the
+      squash-merge sha. A read-back assertion failure means the write landed the wrong status or
+      lost its stamps.
     graduation: not-applicable
 test_obligations:
   - source: scripts/ops_portal/ci_rca_lifecycle.py
@@ -381,47 +494,50 @@ test_obligations:
   - source: scripts/ops_portal/closure_gate.py
     behavior: closure_stamps_applicable is total over escape-classified recs and never suppresses the gate
     verification_step: 4
-    test_selector: tests/ops_data_portal/test_closure_gate.py
-    red_green_expectation: red before (predicate absent), green after
+    test_selector: tests/ops_data_portal/test_closure_gate.py::TestStampApplicability::test_escape_classified_implies_stampable
+    red_green_expectation: red before (nodeid absent, pytest exit 4), green after
   - source: scripts/ops_data_portal.py
     behavior: >-
       a context_v2_json blob that parses to nothing (empty object, null, malformed) refuses a
       closure_* kwarg before any write, as an absent blob already does
-    verification_step: 5
-    test_selector: tests/ops_data_portal/test_update_rec_content_validation.py
+    verification_step: 6
+    test_selector: tests/ops_data_portal/test_update_rec_content_validation.py::test_closure_kwarg_on_a_blob_parsing_to_nothing_refuses_before_any_write
     red_green_expectation: >-
       red before -- an empty-object blob is truthy today so the stamp is accepted and mints the very
       blob the ratified never-mint-one contract forbids; green after the parsed-dict predicate
       refuses it
   - source: scripts/ci_rca/inactivity_sweep.py
     behavior: waiver kwargs are still threaded for blob-carrying ci_rca recs after predicate adoption
-    verification_step: 10
+    verification_step: 11
     test_selector: tests/test_ci_rca_inactivity_sweep.py
     waiver_reason: >-
       Latent path with no reachable red-before: no live rec reaches the blob-less branch (every
       open ci_rca rec carries a blob) and both existing waiver tests build rows via
       _row(..., last_seen=old), so `_ctx` is already non-empty under the parsed-dict predicate. The
       obligation waived is a NEW guard; the existing waiver assertions must stay green through the
-      adoption, which step 9 verifies.
+      adoption, which this step's own suite verifies.
   - source: .github/workflows/rec-autoclose.yml
     behavior: the DECISIONS.md ETL runs despite a closure-step failure, but not on cancellation nor after a failed install or credentials step
-    verification_step: 9
+    verification_step: 10
     test_selector: tests/ops_data_portal/test_decisions_divergence_guard.py
     red_green_expectation: red before (the if condition lacks !cancelled() and the outcome guards), green after
   - source: docs/contracts/ci-rca-lifecycle.yaml
-    behavior: the stamp_precondition clause names the predicate, its parsed-dict domain and its sanctioned call sites
-    verification_step: 11
-    command: bin/venv-python -m scripts.validate --pre
-    waiver_reason: >-
-      A contract clause carries no behaviour of its own to guard -- its enforcement is the check it
-      maps to, and the three call sites it enumerates are guarded by VP step 5's graduated
-      single-definition shard. The clause's own structural validity is asserted by the contract
-      validators the fast tier already runs. A dedicated test would assert the presence of prose.
+    behavior: >-
+      the stamp_precondition clause names the predicate, its parsed-dict domain and its sanctioned
+      call_sites, and that enumeration equals the set of files importing the predicate
+    verification_step: 5
+    test_selector: tests/ops_data_portal/test_closure_gate.py::TestContractParity::test_stamp_precondition_call_sites_match_importers
+    red_green_expectation: >-
+      red before (both the clause and the nodeid are absent, pytest exit 4), green after. This
+      row is DISCHARGED, not waived (critique round 3, S8): the round-2 text claimed "a dedicated
+      test would assert the presence of prose" while this plan adds exactly such a test, and cited
+      a step number that no longer held the single-definition shard. The enumeration is now bound
+      to reality by a set-equality assertion; the single-definition proof is step 7.
   - source: tests/test_ci_rca_lifecycle.py
     behavior: >-
       the refusal contract distinguishes an absent rec from a transport failure -- RecNotFound keeps
       rc 0, every other RuntimeError now yields rc 1
-    verification_step: 7
+    verification_step: 8
     test_selector: tests/ci_rca/test_close_recs_from_trailer.py::test_writer_transport_failure_sets_exit_code
     red_green_expectation: >-
       red before -- test_non_gate_exception_still_exits_nonzero asserts rc == 0 for a
@@ -440,41 +556,50 @@ test_obligations:
   - source: config/agent/verification_registry/entries/closure-stamp-containment.yaml
     behavior: the escape-classified-implies-stampable containment property runs as a standing registry check
     verification_step: 4
-    test_selector: tests/ops_data_portal/test_closure_gate.py
+    test_selector: tests/ops_data_portal/test_closure_gate.py::TestStampApplicability::test_escape_classified_implies_stampable
     waiver_reason: >-
       Same non-discrimination as the sibling shard rows: discharged by validate_verification_registry
       plus real differential admission, not by the linked selector, which passes on HEAD regardless
       of whether this shard file exists (critique round 2, S2).
+  - source: config/agent/verification_registry/entries/closure-stamp-contract-parity.yaml
+    behavior: the contract call_sites parity assertion runs as a standing registry check
+    verification_step: 5
+    test_selector: tests/ops_data_portal/test_closure_gate.py::TestContractParity::test_stamp_precondition_call_sites_match_importers
+    waiver_reason: >-
+      Same non-discrimination as the sibling shard rows: discharged by validate_verification_registry
+      plus real differential admission. This shard exists because the parity property needs its OWN
+      nodeid -- a single check_spec.node_id slot cannot carry both containment and parity (critique
+      round 3, B2).
   - source: config/agent/verification_registry/entries/closure-stamp-empty-parse-refusal.yaml
     behavior: the empty-parse refusal guard runs as a standing registry check
-    verification_step: 5
-    test_selector: tests/ops_data_portal/test_update_rec_content_validation.py
+    verification_step: 6
+    test_selector: tests/ops_data_portal/test_update_rec_content_validation.py::test_closure_kwarg_on_a_blob_parsing_to_nothing_refuses_before_any_write
     waiver_reason: >-
       Same non-discrimination as the sibling shard rows: discharged by validate_verification_registry
       plus real differential admission, not by the linked selector, which passes on HEAD regardless
       of whether this shard file exists (critique round 2, S2).
   - source: config/agent/verification_registry/entries/closure-stamp-single-definition.yaml
     behavior: the all-three-call-sites-adopted proof runs as a standing registry check
-    verification_step: 6
+    verification_step: 7
     command: grep -q closure_stamps_applicable "$f"
     waiver_reason: >-
       Same non-discrimination as the sibling shard rows: discharged by validate_verification_registry
-      plus real differential admission. The command is the real VP step 6 loop body, not the bare
+      plus real differential admission. The command is the real VP step 7 loop body, not the bare
       fragment the first draft carried (critique round 2, S2).
   - source: config/agent/verification_registry/entries/closure-transport-failure-reddens.yaml
     behavior: the transport-failure-reddens guard runs as a standing registry check
-    verification_step: 7
+    verification_step: 8
     test_selector: tests/ci_rca/test_close_recs_from_trailer.py::test_writer_transport_failure_sets_exit_code
     waiver_reason: >-
       Same non-discrimination as the sibling shard rows: discharged by validate_verification_registry
       plus real differential admission, not by the linked selector (critique round 2, S2).
   - source: config/agent/verification_registry/entries/rec-autoclose-backfill-not-cancelled.yaml
     behavior: the backfill if-condition guard runs as a standing registry check
-    verification_step: 8
+    verification_step: 9
     command: yaml.safe_load(open('.github/workflows/rec-autoclose.yml'))
     waiver_reason: >-
       Same non-discrimination as the sibling shard rows: discharged by validate_verification_registry
-      plus real differential admission. The command is the substring of VP step 8's real assertion
+      plus real differential admission. The command is the substring of VP step 9's real assertion
       that names the file under inspection (critique round 2, S2).
 constraints:
   - No rescue agents or workaround loops (Decision 55); the broad except-Exception stays fail-loud
@@ -486,34 +611,61 @@ constraints:
   - Decision 186 point 2 -- assert_closure_obligation remains the SOLE enforcement site; the exported predicate must not enter its call path
   - Decision 84 single-portal invariant -- callers select kwargs, never open a second write path
   - Decision 181 -- existing tests may be strengthened or split, never relaxed to obtain green; the divergence-guard pin stays an exact equality, never a substring
-  - Decision 148 point 3 -- hermetic is declared on every creds-free deterministic pre-deploy step so validate_vp_replay independently re-executes it; never on the scripts.validate steps (recursion)
+  - >-
+    Decision 148 point 3 -- hermetic is declared on every creds-free deterministic pre-deploy step
+    so validate_vp_replay independently re-executes it, with exactly three named carve-outs: the
+    two scripts.validate steps (12 and 13 -- recursion), and STEP 2 (critique round 3, S4). Step 2
+    is creds-free and deterministic but its assertion is a FAILURE on origin/main, which inverts
+    once this plan merges: a replay on the post-merge main run would find the fix present, get rc 0
+    and report red for a step that is working exactly as designed. Step 2 must therefore stay
+    non-hermetic, and the constraint is written to carve it out BY NAME rather than by a rule that
+    silently readmits it
   - Never discriminate exceptions by message substring -- add a typed exception instead
   - >-
-    TRANSIENT-READER DISPOSITION (critique round 2, S7): after the narrowing, a DuckLake reader
-    502/503/504 inside the closure loop reaches except Exception and reddens main. That is CHOSEN,
-    not overlooked -- Decision 55 loudness over a silent drop, and a dropped closure on this
-    ci_rca:watched workflow is the very fail-open the plan repairs. Decision 155 documents this
-    transient in THIS workflow (run 30101021966) and ships
+    Contract call_sites enumeration is authored under the key `call_sites:` inside
+    closure_obligation.stamp_precondition, and its parity test resolves membership by IMPORT
+    (ast.parse over scripts/**/*.py), never by textual mention -- a textual predicate would count
+    the parity test itself and every docstring as a member (critique round 3, S5)
+  - >-
+    TRANSIENT-READER DISPOSITION (critique round 2, S7; SIZED in round 3, Strategic Risk 3): after
+    the narrowing, a DuckLake reader 502/503/504 inside the closure loop reaches except Exception
+    and reddens main. That is CHOSEN, not overlooked -- Decision 55 loudness over a silent drop,
+    and a dropped closure on this ci_rca:watched workflow is the very fail-open the plan repairs.
+    SECOND-ORDER COST, now sized: this workflow is ci_rca:watched, so the red is not merely noise --
+    classify_closed_head can file a FALSE Critical REGRESSION rec off a transient (Decision 155's
+    Problem section records exactly this), which then consumes a /plan slot and can itself be
+    forward-fixed into a workaround. Expected frequency is the observed transient rate on this one
+    loop (Decision 155 cites run 30101021966 as the single observed instance), so the accepted cost
+    is roughly one false Critical per transient, each dismissible in triage. Decision 155 ships
     scripts/ops_portal/reader_transient.py::is_reader_unavailable; adopting that skip-with-marker
     here would need its own clause naming this call site (155 clause 3), so it is deliberately NOT
-    imported. Decision 155's reversal condition (a) is operator-observed: if this reddens main on
-    transients in practice, revisit via /plan rather than widening the except in place
-  - Decision 128 -- scripts/ops_data_portal.py has ~30 effective lines of headroom against the implicit 500; the predicate adoption plus RecNotFound must fit, never a budget raise
-  - docs/contracts/ci-rca-lifecycle.yaml is at 464/500 effective -- the stamp_precondition key must stay short
+    imported. A contract edit adding this to closure_obligation.refusal_contract was CONSIDERED and
+    REJECTED on the SLOC margin -- ci-rca-lifecycle.yaml is at 464/500 with the stamp_precondition
+    clause plus its amendment_log entry already projected to ~483, so a second clause would force a
+    forbidden raise. Recorded instead as a follow-on rec (see context) plus Decision 155's reversal
+    condition (a), which is operator-observed: if this reddens main on transients in practice,
+    revisit via /plan rather than widening the except in place
+  - Decision 128 -- scripts/ops_data_portal.py is at 470/500 effective (measured), projected ~481; the predicate adoption plus RecNotFound must fit, never a budget raise
+  - >-
+    docs/contracts/ci-rca-lifecycle.yaml is at 464/500 effective (measured) and projects to ~483
+    ONLY IF the new amendment_log entry's `summary:` is a SINGLE long folded line, this file's
+    existing convention (2026-09-11 and 2026-09-07 entries) -- a hand-wrapped summary adds 6-10
+    lines and blows the budget. tests/test_ci_rca_lifecycle.py is at 457, projected ~463. No budget
+    raise is permitted for any of the three (Decision 128/165)
 context:
   - "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND -- 186, 103, 142, 84, 55, 48, 132, 128, 165, 181. Decisions triaged: 140 of 140. Roadmap items intersected: 16; CONFLICT: 0; RELATED: 13."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
-  - "Scout flags applied: 186 NOTE (predicate named for stampability, kept out of the gate's call path); 163 WARN (sweep adoption and shard graduation promoted from optional to required); 155 NOTE (stamp_precondition enumerates sanctioned call sites); 48 NOTE (dissolved -- tier raised to V3 with live post-merge steps 12/13)."
+  - "Scout flags applied: 186 NOTE (predicate named for stampability, kept out of the gate's call path); 163 WARN (sweep adoption and shard graduation promoted from optional to required, and the contract enumeration now carries its own graduated parity shard); 155 NOTE (stamp_precondition enumerates sanctioned call sites; reversal condition (c)'s shard nodeid is edited only on its if-string line); 48 NOTE (dissolved -- tier raised to V3 with live post-merge steps 14/15)."
   - "Root cause (corrected in critique round 2): the precondition update_rec asserts is not exported, so ci_rca_lifecycle.py:413 consults NOTHING -- it threads the kwarg unconditionally with no caller-side check at all. The sibling :431 source==ci_rca gate is a DIFFERENT invariant (which rec gets a Decision 142 ancestry stamp); stamp_fixed_by_sha writes context_v2_json through `updates`, never a closure_* kwarg, so it is not subject to the stamp precondition. That asymmetry misled the auto-generated RCA and this plan's first two drafts; it is a red herring, not the defect."
   - "Detection gap: all three existing tests patch scripts.ops_data_portal.update_rec with a bare MagicMock; one passes the exact blob-less shape that fails in production and is green. Both halves of the seam were separately tested in #1133 at 100% statement coverage. Mock at the process boundary, not an in-repo function seam."
   - "Blast radius: 1147 of 1152 open recs carry no context_v2_json. Since #1133 (2026-09-10) two trailers fired -- rec-3730 reddened, rec-3579 passed only via the idempotent already-closed skip."
   - "Fable advice-consult: Fork 1 Option A adopted (reject B/C -- RFC 9413 against Postel at internal boundaries; B trades a loud failure for a silent one on the CLI path). Fork 2 escalated back to the human with corrected costs and decided against Fable's call."
-  - "Fork 2 cost correction (verified): scan_workflow_bodies measures run-body effective lines only (_workflow_shell_bodies.py:141), so an if-condition edit does NOT trip config/composite_action_body_baseline.yaml. Cost is one pinned assertion at test_decisions_divergence_guard.py:269. The #1133 stall came from shrinking a body."
-  - "rec-3738 is escape-classified (escape_class: no-edge), so close_recs_from_trailer cannot discharge its artifact obligation -- it threads closure_fix_sha but never closure_artifact. By design (Decision 186 pt 7), hence VP step 13."
+  - "Fork 2 cost correction (verified): scan_workflow_bodies measures run-body effective lines only (_workflow_shell_bodies.py:141), so an if-condition edit does NOT trip config/composite_action_body_baseline.yaml. Cost is one pinned assertion at test_decisions_divergence_guard.py:269 -- which sits inside the graduated shard rec-autoclose-failed-counter-exit-present's own nodeid, so the :267-268 asserts and the sys.exit AST walk must survive untouched (critique round 3, S7)."
+  - "rec-3738 is escape-classified (escape_class: no-edge), so close_recs_from_trailer cannot discharge its artifact obligation -- it threads closure_fix_sha but never closure_artifact. By design (Decision 186 pt 7), hence VP step 15, which supplies shard:closure-stamp-applicable-seam -- the strongest KIND_STRENGTH member (Decision 186 pt 4)."
   - "RESIDUAL, narrowed not eliminated: the trailer path decides applicability from recs_cache while update_rec re-fetches authoritatively, and the workflow tolerates a failed sync. Cache-stale-BEHIND is benign (stamp omitted, gate refuses, loud-not-red, exit 0). Cache-stale-AHEAD (cache has a blob the warehouse lacks) still reaches the retained ValueError and reddens main. Low probability -- blobs are never removed -- but this plan narrows rec-3738's failure mode rather than eliminating it."
   - "Predicate-domain disposition: the critique recommended the parsed-dict domain and it is adopted, but for a reason it did not name -- the two callers hold different shapes (raw cell vs parsed dict), so a raw bool() would disagree between them. The consequent behaviour change for empty-parse blobs is therefore owned as a deliberate strengthening with its own red-before test, not disclaimed as behaviour-identical."
-  - "Follow-on recs to file at implement time: the close_rec portal verb (Decision 163-shaped -- worth it only if it also absorbs the sibling stamp_fixed_by_sha call); job-decomposition of rec-autoclose.yml into one job per write responsibility; and RecNotFound adoption at the three sibling bare-RuntimeError absent-rec sites (ci_rca_lifecycle.py:231, :265, ci_rca_runtime.bump_ci_rca_occurrence) -- subclassing keeps them backward-compatible today, so this plan converts only the site its except narrowing reads."
-  - "VP step 13 is RECOVERY, not acceptance: rec-3730's own acceptance grep still fails on HEAD, but PR #1141 already authorized its closure via a Resolves trailer that reddened on this very defect. The trailer path performs no acceptance check, so step 13 proves the closure edge works -- never read it as acceptance evidence for rec-3730."
+  - "Follow-on recs to file at implement time: (1) the close_rec portal verb (Decision 163-shaped -- worth it only if it also absorbs the sibling stamp_fixed_by_sha call); (2) job-decomposition of rec-autoclose.yml into one job per write responsibility; (3) RecNotFound adoption at the three sibling bare-RuntimeError absent-rec sites (ci_rca_lifecycle.py:231, :265, ci_rca_runtime.bump_ci_rca_occurrence) -- subclassing keeps them backward-compatible today, so this plan converts only the site its except narrowing reads; (4) NEW in round 3: transient-reader classification in the closure loop -- adopt Decision 155's is_reader_unavailable behind its own contract clause once ci-rca-lifecycle.yaml has SLOC headroom, sized in the transient-reader constraint as roughly one false Critical REGRESSION rec per reader transient."
+  - "VP step 14 is RECOVERY, not acceptance: rec-3730's own acceptance grep still fails on HEAD, but PR #1141 already authorized its closure via a Resolves trailer that reddened on this very defect. The trailer path performs no acceptance check, so step 14 proves the closure edge works -- never read it as acceptance evidence for rec-3730."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -524,14 +676,45 @@ execution_steps:
   - scripts/ops_portal/closure_gate.py -- add closure_stamps_applicable(raw) returning bool(parse_context_json(raw)), with a docstring stating the parsed-dict domain, that it is the stampability precondition and NOT Decision 186 point 1's escape-class predicate, and naming its three sanctioned consumers
   - scripts/ops_data_portal.py -- add RecNotFound(RuntimeError) and raise it at the referential-existence check (line ~482); replace update_rec's inline blob check with the shared predicate; extend the ValueError message to name the predicate while retaining the pinned substring "no existing context_v2_json"
   - scripts/ops_portal/ci_rca_lifecycle.py -- build closure_* kwargs conditionally in close_recs_from_trailer; omit the stamp on a cache miss; update the docstring's threading claim
-  - scripts/ops_portal/ci_rca_lifecycle.py -- narrow `except RuntimeError` to `except RecNotFound` so reader-unreachable, referential-409 and HTTP failures all reach exit_code=1; never match on a message substring
+  - >-
+    scripts/ops_portal/ci_rca_lifecycle.py -- narrow `except RuntimeError` to `except RecNotFound`
+    so reader-unreachable, referential-409 and HTTP failures all reach exit_code=1; never match on
+    a message substring. Leave line 425's stderr marker "rec-autoclose: ERROR closing <rec-id>"
+    verbatim -- VP step 2's oracle greps for it
   - scripts/ci_rca/inactivity_sweep.py -- adopt the same predicate for the closure_waiver_* kwargs, passing the already-parsed ctx
-  - tests -- add the seam contract cases (real update_rec, warehouse boundary stubbed); split the test that pins the unconditional pass; add the transport-vs-absent split cases; add the containment pin; add the empty-parse refusal case
-  - .github/workflows/rec-autoclose.yml -- add id install-deps and id aws-creds to the two steps that lack them, then set the backfill step's YAML-QUOTED if condition to the four-clause form in that file's scope row; update the exact-equality pin in tests/ops_data_portal/test_decisions_divergence_guard.py to the new full string
-  - 'docs/contracts/ci-rca-lifecycle.yaml -- stamp_precondition under closure_obligation, naming the predicate, its parsed-dict domain and its sanctioned call sites, authored mappable to its enforcing check, PLUS the companion amendment_log entry (change_class field_add) that check_amendment_log_for_class_d requires'
-  - config/agent/verification_registry/entries/ -- author all five shards (closure-stamp-applicable-seam, closure-stamp-containment, closure-stamp-single-definition, closure-transport-failure-reddens, rec-autoclose-backfill-not-cancelled), each admitted via the real differential gate (must fail on an origin/main worktree, pass on HEAD)
-  - 'Squash-merge body MUST carry: Resolves: rec-3730 -- VP step 13 is the end-to-end proof and rec-autoclose only fires on that trailer'
-  - File the follow-on recs named in context via scripts.ops_data_portal file_rec, and record their ids in followon_recs
+  - >-
+    tests/ci_rca/test_close_recs_from_trailer.py -- add the seam contract cases (real update_rec,
+    warehouse boundary stubbed); split the test that pins the unconditional pass; add
+    test_writer_transport_failure_sets_exit_code and test_absent_rec_skips_without_exit_code. TWO
+    HARD OBLIGATIONS (critique round 3, B1/S1): resolve RecNotFound LAZILY -- inside the test body,
+    or getattr(portal, "RecNotFound", RuntimeError) -- so this module still IMPORTS on origin/main,
+    where the symbol does not exist and a module-level import makes pytest exit 4 under a nodeid
+    selector; and keep the literal "rec-autoclose: ERROR closing rec-" out of this file's source,
+    since VP step 2 refuses (SETUP_FAILED_SENTINEL_IN_SOURCE) if a source match could satisfy its
+    runtime conjunct
+  - >-
+    tests/ops_data_portal/test_closure_gate.py -- add TWO NEW nodeids, one property each:
+    TestStampApplicability::test_escape_classified_implies_stampable (containment) and
+    TestContractParity::test_stamp_precondition_call_sites_match_importers (parity; a NEW method,
+    NOT an extension of test_closure_vocabularies_match_contract, which passes on origin/main and
+    could never be admitted as a shard). The parity test reads
+    closure_obligation.stamp_precondition.call_sites, walks scripts/**/*.py, resolves importers via
+    ast.parse, and asserts set equality in both directions
+  - tests/ops_data_portal/test_update_rec_content_validation.py -- add test_closure_kwarg_on_a_blob_parsing_to_nothing_refuses_before_any_write ("{}", "null", malformed) and strengthen the pre-existing absent-blob refusal test to also match the predicate name
+  - .github/workflows/rec-autoclose.yml -- add id install-deps and id aws-creds to the two steps that lack them, then set the backfill step's YAML-QUOTED if condition to the four-clause form in that file's scope row; update ONLY the expected if-string on line 269 of tests/ops_data_portal/test_decisions_divergence_guard.py, leaving the :267-268 continue-on-error / `|| true` assertions and the sys.exit AST walk inside that same graduated nodeid untouched
+  - 'docs/contracts/ci-rca-lifecycle.yaml -- stamp_precondition under closure_obligation, naming the predicate, its parsed-dict domain and its sanctioned call_sites, authored mappable to its enforcing check, PLUS the companion amendment_log entry (change_class field_add) that check_amendment_log_for_class_d requires, whose summary MUST be one long folded line to stay inside the 500-line budget'
+  - >-
+    config/agent/verification_registry/entries/ -- author all SEVEN shards
+    (closure-stamp-applicable-seam, closure-stamp-containment, closure-stamp-contract-parity,
+    closure-stamp-empty-parse-refusal, closure-stamp-single-definition,
+    closure-transport-failure-reddens, rec-autoclose-backfill-not-cancelled), one per graduate step
+    (3, 4, 5, 6, 7, 8, 9), each admitted via the real differential gate (must FAIL on an
+    origin/main worktree, PASS on HEAD). Every test_selector shard names a NEW nodeid, never a
+    whole file: run_differential rejects a whole-file selector over a file byte-identical to
+    origin/main as tautological, and validate_verification_registry then hard-fails (critique
+    round 3, B2/B3 -- the round-2 list named only five)
+  - 'Squash-merge body MUST carry: Resolves: rec-3730 -- VP step 14 is the end-to-end proof and rec-autoclose only fires on that trailer'
+  - File the four follow-on recs named in context via scripts.ops_data_portal file_rec, and record their ids in followon_recs
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - 'Report: what was implemented, verification results'
 work_areas: []
