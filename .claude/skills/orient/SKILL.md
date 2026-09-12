@@ -63,9 +63,10 @@ Trust roadmap `status` exactly as authored in `docs/ROADMAP-PLATFORM.yaml` (via 
 
 ## Tier Item Freshness Gate -- Reference
 
-The single authoritative definition of the Tier Item Freshness Gate lives in the **planning skill** (`.claude/skills/planning/SKILL.md`, section "Tier Item Freshness Gate"). Orient uses the eligible candidates from the preflight cache as its input list. Freshness adjudication (the four checks: silent-completion, stale-reference, supersession, gating-decision) fires per-item inside `/plan` at commitment time, not during orientation.
+The single authoritative definition of the Tier Item Freshness Gate lives in
+`docs/contracts/tier-item-lifecycle.yaml#tier_item_freshness_gate`. Orient uses the eligible candidates from the preflight cache as its input list. Freshness adjudication (the four checks: silent-completion, stale-reference, supersession, gating-decision) fires per-item inside `/plan` at commitment time, not during orientation.
 
-Do not re-author the four checks here -- that would be drift by design. `/orient` references the planning skill's section; it does not duplicate it.
+Do not re-author the four checks here -- that would be drift by design. `/orient` references the contract; it does not duplicate it.
 
 ## Deliverable Shape
 
@@ -90,7 +91,7 @@ Compact table of tier_items currently `in_progress` or eligible (`not_started` w
 ```
 Ratifiable CDs: CD.6 (realized: <first ~80 chars of realization_evidence>) | CD.34 (realized: ...)
 ```
-A CD appearing here is a candidate for a `/plan` session that drafts its ratifying Decision text (see the planning skill's "Candidate Decision Ratification" section) -- ratification itself never happens in `/orient` (read-only) or without human sign-off. Do NOT surface a pending CD with no `realization_evidence` here even if it looks plausibly realized -- absence of the field means nobody has corroborated it yet (Decision 55: no unilateral judgement calls in a read-only surface).
+A CD appearing here is a candidate for a `/plan` session that drafts its ratifying Decision text (see `docs/contracts/candidate-decision-ratification.yaml#lane_steps.plan.draft`) -- ratification itself never happens in `/orient` (read-only) or without human sign-off. Do NOT surface a pending CD with no `realization_evidence` here even if it looks plausibly realized -- absence of the field means nobody has corroborated it yet (Decision 55: no unilateral judgement calls in a read-only surface).
 
 **Realized-but-pending CDs** (close-audit-ulf-02 amendment, building on Decision 105): read `platform_roadmap.realized_but_pending_cds` from the preflight cache -- pending CDs whose free-text `detail` carries a `[Realized` prose marker but which have NOT (yet) been given a structured `realization_evidence` value. This is a lower-confidence, "needs corroboration/ratification-review" tier that sits BELOW the Ratifiable CDs list above: a prose annotation is not the same as someone deliberately corroborating the CD as ready (Decision 55). List each as:
 ```
@@ -102,7 +103,7 @@ Realized-but-pending (needs corroboration): CD.2 (hint: <realized_hint>) | CD.21
 ```
 Realization candidates (derived): CD.4 (gates: ...) | CD.5 (gates: ...)
 ```
-`/orient` stays read-only here exactly as elsewhere in this section -- it never writes `realization_evidence`; a human-confirmed `/plan` session is what would draft the evidence text (and, separately, the ratifying Decision, per the planning skill's ratification section).
+`/orient` stays read-only here exactly as elsewhere in this section -- it never writes `realization_evidence`; a human-confirmed `/plan` session is what would draft the evidence text (and, separately, the ratifying Decision, per `docs/contracts/candidate-decision-ratification.yaml#lane_steps.plan.draft`).
 
 **Blocked-on-CD annotation**: for each item in `platform_roadmap.blocked_on_cd`, add a "gated by CD.NN" note in the Notes column including the relationship type (`gates`, `related`, or `decision_required_before`) and whether the item carries `bootstrap_completion_exempt: true` (in which case it may start/complete despite the pending CD). An item can be eligible-to-start while still annotated as gated-by-CD; the annotation informs planning, it is not a hard block on eligibility.
 

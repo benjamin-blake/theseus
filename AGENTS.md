@@ -133,9 +133,9 @@ If a clone or runner shows stale data, an operator may rebuild that environment'
 ## Data-modeling default
 Before designing any table, decide **grain first** -- "one row per ___" -- before picking a write
 mode; never design "one row per entity, mutate in place." Full rules (write-mode branch, identity,
-merge-on-business-key, partitioning) live in `docs/contracts/data-modeling-standard.yaml` -- this
-is the ambient trigger; read the contract at design time. The `planning` skill's Data-Model
-Assessment walks the full checklist.
+merge-on-business-key, partitioning) live in `docs/contracts/data-modeling-standard.yaml`'s
+`#design_time_walk` -- this is the ambient trigger; read the contract at design time. The
+planning skill's Data-Model Assessment section is only the read-trigger stub.
 
 ## Git-ops procedure
 Read `docs/contracts/git-ops.yaml` before any push/PR/CI/merge action -- it carries the full

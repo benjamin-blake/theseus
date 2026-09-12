@@ -2468,6 +2468,19 @@ CD.16/CD.24 -> dec-079 precedent the batch-wave form codifies forward).
 > machine-enforced routing claim (the required envelope `significance` field) and a routing
 > rule / standing-commitment pair in `docs/contracts/decision-entry.yaml`.
 
+> **2026-09-12 amendment (PLAN-skills-layer-prose-relocation):** clause 1's "Decision
+> Significance Gate" note (`.claude/skills/planning/SKILL.md`, the section immediately before
+> Step 5b's Candidate Decision Ratification step) is NOT touched by this plan's relocation --
+> only its location is named here for precision, since its phrasing now sits beside a
+> relocated neighbour. Clause 2's body DOES relocate: the implement skill's CD Ratification
+> Bookkeeping batch-wave clause (entry-authoring/ETL once per wave, the three per-CD sub-steps
+> repeating per bundled CD) now lives at
+> `docs/contracts/candidate-decision-ratification.yaml#lane_steps.implement.execute`, with only
+> the step's heading and firing-condition preamble staying inline as a mandatory read-trigger.
+> The Decision's own routing already named `candidate-decision-ratification.yaml` as the
+> mechanism's home, so intent survives the move (decision-entry.yaml amendment_forms).
+> Amendment-only -- no new numbered Decision.
+
 ---
 
 ## Decision 149: Number-preserving decision-compaction lifecycle -- compact-in-place stub grammar, never-remove-headers, and the DCG-03 orphan-divergence guard (DCG-02/DCG-03, compact-in-place sibling of Decision 146's archival policy) (Decided)

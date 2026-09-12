@@ -101,8 +101,9 @@ matrix (Section 6's own spec, in the skill) -- additive to and NEVER consuming t
 `/plan` prompt slots. The ad-hoc prompts sit OUTSIDE the overlap matrix and the keystone ranking:
 they are rec-grain and carry no `files_in_scope`/`depends_on` to project (Decision 90; audit
 B1-R4 (b) "never competing for the five roadmap slots"). The lane renders id/title/parent only --
-relevance is judged by `/plan`'s Recommendation Relevance Gate when a prompt is RUN; no relevance
-verdict is computed or cached at preflight (Decision 55 surfacing-only, Decision 103).
+relevance is judged by `/plan`'s Recommendation Relevance Gate
+(`docs/contracts/recommendation-relevance.yaml#planning_gate_protocol`) when a prompt is RUN; no
+relevance verdict is computed or cached at preflight (Decision 55 surfacing-only, Decision 103).
 
 Cache-only: render from this Step's `followon_recs`, `open_critical_recs` and `priority_queue`
 plus `recs_read_status` -- never a rec-cache read or a DuckLake reader call. An absent key means
