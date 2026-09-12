@@ -247,6 +247,55 @@ class TestBuildReport:
         assert "config/ci_rca_taxonomy.yaml" in report
 
 
+class TestEnforcedElsewherePointerEdgeCases:
+    """Defensive-branch coverage for _derive_enforced_elsewhere_pointers (via build_report) --
+    a malformed rule among several must never crash the report, and a genuinely well-formed
+    sibling rule still produces its pointer."""
+
+    def _write_contract(self, tmp_path: Path, surfaces: dict) -> Path:
+        path = tmp_path / "contract.yaml"
+        path.write_text(yaml.safe_dump({"registration_surfaces": surfaces}), encoding="utf-8")
+        return path
+
+    def test_malformed_sibling_rules_never_crash_and_good_rule_still_reported(self, tmp_path: Path) -> None:
+        good_entry = {
+            "label": "good enforcer",
+            "enforced_by": "validate_check_accounting",
+            "why_not_a_scope_row": "fixture reason.",
+            "fires_on": ["Create"],
+        }
+        surfaces = {
+            "bad_rule_not_dict": "oops",
+            "bad_trigger_not_dict": {"trigger": "nope", "enforced_elsewhere": [good_entry]},
+            "bad_pattern_missing": {"trigger": {"action": "Create"}, "enforced_elsewhere": [good_entry]},
+            "bad_regex": {"trigger": {"file_pattern": "(", "action": "Create"}, "enforced_elsewhere": [good_entry]},
+            "bad_entry_not_dict": {
+                "trigger": {"file_pattern": r"^x/(?P<n>.+)\.py$", "action": "Create"},
+                "enforced_elsewhere": ["not-a-dict"],
+            },
+            "good_rule": {
+                "trigger": {"file_pattern": r"^x/(?P<n>.+)\.py$", "action": "Create"},
+                "enforced_elsewhere": [good_entry],
+            },
+        }
+        contract_path = self._write_contract(tmp_path, surfaces)
+        plan_data = _base_scope()
+        plan_data["scope"] = [{"file": "x/thing.py", "action": "Create", "purpose": "p"}]
+        plan_path = _write(tmp_path, plan_data)
+        with patch.object(plan_obligations, "_CONTRACT_PATH", contract_path):
+            report = plan_obligations.build_report(plan_path)
+        assert "good enforcer" in report
+        assert "good_rule" in report
+
+    def test_build_report_pointer_section_absent_on_malformed_contract(self, tmp_path: Path) -> None:
+        bad_contract = tmp_path / "bad-contract.yaml"
+        bad_contract.write_text("key: [unterminated", encoding="utf-8")
+        plan_path = _write(tmp_path, _base_scope())
+        with patch.object(plan_obligations, "_CONTRACT_PATH", bad_contract):
+            report = plan_obligations.build_report(plan_path)
+        assert "enforced elsewhere" not in report
+
+
 class TestObligationGrammar:
     """Coverage for validate_obligation_grammar's five enforced_elsewhere admission guards."""
 
@@ -317,6 +366,63 @@ class TestObligationGrammar:
         bad.write_text("key: [unterminated", encoding="utf-8")
         findings = plan_obligations.validate_obligation_grammar(bad)
         assert findings and "could not parse" in findings[0]
+
+    def test_non_mapping_top_level_reports_finding(self, tmp_path: Path) -> None:
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("- 1\n- 2\n", encoding="utf-8")
+        findings = plan_obligations.validate_obligation_grammar(bad)
+        assert findings and "not a YAML mapping" in findings[0]
+
+    def test_missing_registration_surfaces_key_reports_finding(self, tmp_path: Path) -> None:
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("contract:\n  id: x\n", encoding="utf-8")
+        findings = plan_obligations.validate_obligation_grammar(bad)
+        assert findings and "registration_surfaces" in findings[0]
+
+    def test_rule_value_not_a_mapping_rejected(self, tmp_path: Path) -> None:
+        path = self._contract(tmp_path, {"bad_rule": "not-a-dict"})
+        findings = plan_obligations.validate_obligation_grammar(path)
+        assert any("bad_rule" in f and "not a mapping" in f for f in findings)
+
+    def test_requires_entry_missing_path_template_rejected(self, tmp_path: Path) -> None:
+        rule = {
+            "trigger": {"file_pattern": r"^fixture/(?P<n>.+)\.py$", "action": "Create"},
+            "requires": [{"label": "some companion", "path_template": ""}],
+        }
+        path = self._contract(tmp_path, {"fixture_rule": rule})
+        findings = plan_obligations.validate_obligation_grammar(path)
+        assert any("some companion" in f and "G1" in f for f in findings)
+
+    def test_requires_non_list_skipped_without_finding(self, tmp_path: Path) -> None:
+        rule = {"trigger": {"file_pattern": r"^fixture/(?P<n>.+)\.py$", "action": "Create"}, "requires": "not-a-list"}
+        path = self._contract(tmp_path, {"fixture_rule": rule})
+        assert plan_obligations.validate_obligation_grammar(path) == []
+
+    def test_requires_list_with_non_dict_entry_skipped(self, tmp_path: Path) -> None:
+        rule = {
+            "trigger": {"file_pattern": r"^fixture/(?P<n>.+)\.py$", "action": "Create"},
+            "requires": ["not-a-dict"],
+        }
+        path = self._contract(tmp_path, {"fixture_rule": rule})
+        assert plan_obligations.validate_obligation_grammar(path) == []
+
+    def test_enforced_by_absent_entirely_rejected(self, tmp_path: Path) -> None:
+        entry = self._entry()
+        del entry["enforced_by"]
+        surfaces = {"fixture_rule": self._rule(entry)}
+        path = self._contract(tmp_path, surfaces)
+        findings = plan_obligations.validate_obligation_grammar(path)
+        assert any("names no enforced_by" in f and "G2" in f for f in findings)
+
+    def test_enforced_elsewhere_entry_not_a_mapping_rejected(self, tmp_path: Path) -> None:
+        rule = {
+            "trigger": {"file_pattern": r"^fixture/(?P<n>.+)\.py$", "action": "Create"},
+            "requires": [],
+            "enforced_elsewhere": ["not-a-dict"],
+        }
+        path = self._contract(tmp_path, {"fixture_rule": rule})
+        findings = plan_obligations.validate_obligation_grammar(path)
+        assert any("fixture_rule" in f and "not a mapping" in f for f in findings)
 
 
 class TestEnforcedElsewhereReport:
