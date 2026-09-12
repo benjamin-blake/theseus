@@ -19,7 +19,7 @@ bin/venv-python -m scripts.session.preflight
 
 stdout is a one-line summary; Read logs/.preflight-report.json for the full constraint surface.
 
-Preflight runs `git fetch origin main` and emits `main_freshness` (status, commits_behind, commits_ahead, main_files_changed_since_branch). Do NOT manually `git pull --rebase origin main` here -- that's a destructive operation on a feature branch and should only happen via the Step 4 Main Divergence Assessment after Scope is known and the human has chosen to rebase.
+Preflight runs `git fetch origin main` and emits `main_freshness` (status, commits_behind, commits_ahead, main_files_changed_since_branch). Do NOT manually `git pull --rebase origin main` here -- that's a destructive operation on a feature branch and should only happen via the Step 4 Main Divergence Assessment (`docs/contracts/git-ops.yaml#rebase_phase_distinction.assessment_time`) after Scope is known and the human has chosen to rebase.
 
 The report is slim by design: `platform_roadmap` carries only `next_eligible` + `strategic_pending`, and `non_automatable_details` is dropped (Decision 73 suspends per-rec review). If you need the dropped detail, call the underlying module directly (e.g., `bin/venv-python -m scripts.roadmap.platform_roadmap`).
 
@@ -53,7 +53,7 @@ Suggest 3-5 open recommendations from `logs/.recommendations-log.jsonl` that ali
 3. Conduct an Infrastructure Assessment if `.tf` files are in scope.
 4. Conduct a Lambda Deployment Assessment if Lambda-packaged files are in scope.
 5. Conduct a Complexity Assessment to determine if this is STRATEGIC or IMPLEMENTATION.
-6. Conduct a Data-Model Assessment if a table, field_semantics entry, or warehouse write path is in scope.
+6. Conduct a Data-Model Assessment (`docs/contracts/data-modeling-standard.yaml`) if a table, field_semantics entry, or warehouse write path is in scope.
 7. Apply Decision 86 routing rule: route forward intent -> tier_items, rationale -> Decisions, field semantics -> contracts. No new standing prose-architecture docs under docs/. Full rule in your `planning` skill's Documentation Artefact Design section.
 *(Apply the exact assessment rules from your `planning` skill).*
 

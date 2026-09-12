@@ -191,52 +191,17 @@ If the gate subagent errors or returns output missing the required Verdict/Recom
 
 ## Tier_item bookkeeping (post-verification, pre-merge)
 
-After the verification-pass gate fires and BEFORE code-review is dispatched (or GATE_REQUESTed --
-see Parallel-with-code-review state machine below), walk the tier_items referenced by the current
-plan and stage YAML status updates.
-
-### Trigger
-Fires once the VP Compliance Gate table shows all rows PASS. Does not fire on FAIL or BLOCKED.
-
-### Walk
-Identify tier_item ids to check via (in order of precedence):
-1. Any `roadmap-touched: [T-X.Y, ...]` directive in the plan's Context section.
-2. Any tier_item id mentioned in the plan's Phase field (e.g., `T-1` entries named in the scope).
-3. Any tier_item id explicitly named in the plan's Acceptance Criteria.
-
-For each identified tier_item, load its `exit_criteria[]` from `docs/ROADMAP-PLATFORM.yaml` and evaluate each criterion:
-- **Executable criteria** (shell one-liners, `grep`, `test -f`, `pytest`, `bin/venv-python -c "..."`) -- run via subprocess; pass if exit code is 0.
-- **Prose criteria** -- fall through to agent judgement with a **conservative bias**: when in doubt about whether a prose criterion is satisfied, do NOT count it as passing. This produces under-counting (false in_progress) rather than over-counting (false complete), which is the safer failure mode. Never auto-flip a prose-gated item to `complete` without explicit evidence in the current session's artefacts.
-
-### closes_criteria flip (T-1.23)
-
-Before evaluating Outcome rules, flip the criterion statuses declared in the plan's
-`closes_criteria` field. This step fires ONLY on a verified VP pass; never on FAIL or BLOCKED.
-
-1. **Read the plan's `closes_criteria` list** (each entry `"<item-id>:<crit-id>"`). If the list is
-   empty or absent, skip this step.
-2. **For each ref**, locate the named criterion in `docs/ROADMAP-PLATFORM.yaml`:
-   - Set `status: met`
-   - Set `met_by: <plan-slug>` (the current plan's slug, e.g. `exit-criteria-ledger-orient-followon`)
-3. **Stage these criterion flips** in the same YAML edit as the subsequent Outcome rules (single
-   staged edit). The criterion flips happen BEFORE the whole-item Outcome rules run -- so that the
-   Outcome rules read the updated `criterion.status == met` values (not a fresh prose re-adjudication).
-4. **Only declared criteria flip.** Never flip criteria not named in `closes_criteria`. Never infer
-   `met` from prose, file existence, or commit activity (Status-Trusted-Never-Inferred / T2.20).
-5. **All-criteria-met after the flip?** An item whose ALL criteria are now `status: met` (or `rehomed`)
-   QUALIFIES for the completion gate -- do NOT auto-flip it to `status: complete`. Surface it to the
-   operator: "All criteria on <item-id> are now met or rehomed -- QUALIFIES for status: complete via
-   the bookkeeping Outcome rules (manual confirmation required, per Status-Trusted-Never-Inferred)."
-   The operator then confirms, and the Outcome rules stage `status: complete`.
-
-### Outcome rules
-- **All criteria pass** -> stage `status: complete` + `completed_at: "<today ISO date>"` in `docs/ROADMAP-PLATFORM.yaml`.
-  For `in_progress` items with a structured ledger: "all criteria pass" means every ExitCriterion has
-  `status: met` or `status: rehomed` after applying the closes_criteria flip above. Prose re-adjudication
-  on the updated statuses confirms; do NOT re-adjudicate the raw criterion text if the status already
-  reads `met`.
-- **Strict subset pass (>=1 but not all)** -> stage `status: in_progress` + `progress_note: "<one-line description of what shipped this session>"`. If the item already has a `progress_note`, append a dated bullet (e.g., `"- 2026-05-20: shipped criteria 1, 3"`) rather than overwriting.
-- **Zero criteria pass** -> no YAML change.
+MANDATORY read-trigger: after the verification-pass gate fires and BEFORE code-review is
+dispatched (or GATE_REQUESTed), read `docs/contracts/tier-item-lifecycle.yaml#bookkeeping_walk`
+in full -- the single authoritative definition of the walk (trigger, tier_item identification
+precedence, executable-vs-prose criterion evaluation with a conservative bias, and the
+whole-item Outcome rules), the replacement closure check
+(`docs/contracts/tier-item-lifecycle.yaml#replacement_closure_check`), and the
+parallel-with-code-review state machine
+(`docs/contracts/tier-item-lifecycle.yaml#parallel_with_code_review_state_machine`). The
+criterion-level field semantics (the closes_criteria flip and the exit-criteria truth-maintenance
+rule) live in `docs/contracts/exit-criteria-ledger.yaml#fields.status` instead -- read that too.
+Do not re-author any of this here.
 
 ### Decomposition-hint exemption inheritance (T-1.12 subset g)
 
@@ -253,85 +218,21 @@ decomposition_hints:
 ```
 When the bookkeeping walk files a status outcome for the current plan, resolve the plan's
 effective `bootstrap_completion_exempt` by INHERITANCE from its parent -- do NOT read it from
-the child's own (often absent) flag:
-
-1. **Find the parent.** Scan `docs/ROADMAP-PLATFORM.yaml` `tier_items[]` for an item whose
-   `decomposition_hints.atomic_plans[]` names the current plan. Match on the `PLAN-{slug}` token
-   at the head of each entry (`entry.strip().split()[0] == "PLAN-{slug}"`). Some parents enumerate
-   their children as prose descriptions rather than `PLAN-{slug}` tokens (e.g. T1.12's
-   "Ratify lambda-*.yaml" entries, T1.6's phase descriptions); when no head-token match exists,
-   map the current plan to its parent via the plan's Phase field / the decomposition rationale.
-2. **Inherit the flag.** The child's effective exemption is the PARENT's live
-   `bootstrap_completion_exempt` value. The per-item flag is the single source of truth -- the
-   document-level "Bootstrap clause (COMPLETION exemption)" prose enumeration is documentation
-   only. A child of an exempt parent (`true`) MAY stage `status: complete` on its slice even while
-   the parent's gating CD is still `state: pending`; a child of a non-exempt parent (`false`)
-   follows the normal flow and stays gated on CD ratification. Canonical examples: T-1.12 is
-   `bootstrap_completion_exempt: true`, so its subset children inherit `true` (they may complete
-   ahead of CD.25); T1.12 is `false`, so its per-Lambda children inherit `false` and ratify
-   post-CD.16 under the normal flow.
-3. **Read-only resolution.** Inheritance never writes the parent's `decomposition_hints` or the
-   child's flag during bookkeeping -- it is read-only resolution at filing time. Record the
-   inheritance in the bookkeeping output (e.g. "PLAN-<child-slug> inherits
-   bootstrap_completion_exempt=true from parent T-1.12"). This is not a license to author STRATEGIC
-   children: the freeze stays in force and atomic children remain IMPLEMENTATION plans.
-
-### Replacement closure check (cutover / supersession items)
-Runs during the same bookkeeping walk for any checked tier_item whose name or intent implies a
-replacement: cutover, migration, backend swap, retirement, supersession, "replaces X". A
-replacement is CLOSED only when the old path is dead -- "new path works" is not closure
-(2026-06-09 roadmap audit, dimension D11). Before staging `complete` on such an item:
-
-1. **Name the replaced surface.** From the item text and the plan, identify the old path
-   explicitly (file, Lambda, view, write path, profile, config flag). If neither the item
-   nor the plan names it, derive it from the diff (what does the new code stop calling /
-   start replacing?); if no old surface is derivable, record "no replaced surface
-   identified -- closure check N/A" in the bookkeeping output rather than guessing.
-   This check is per-touched-item: it closes the replacement THIS plan performed, not a
-   repo-wide retirement sweep.
-2. **Verify the old path is dead or designed-rollback-only.** Run the greps/commands that prove
-   the old surface is deleted, fails closed, or is reachable ONLY behind the documented rollback
-   flag. An unconditional fallback to a retired backend (e.g. a direct-SQL fallback on a table cut
-   over to the DuckLake closed boundary) is a FAIL: do not count the cutover criterion as
-   passing; surface the fallback as a finding and add its closure to the plan or stage a
-   criterion for it on the open item.
-3. **Verify a named owner for any surviving old path.** Partial cutovers are legitimate ONLY
-   while a tier_item (or an explicit exit criterion elsewhere) owns the survivor's retirement.
-   If none exists, stage one in the same YAML edit (a new criterion on the open item, or
-   surface to the human that a successor item is needed). Deferred work with no carrier is
-   invisible to eligibility computation and rots (audit finding F-018).
-4. **Close out superseded predecessors.** If the completed work absorbs an older tier_item's
-   scope, reconcile that older item in the same staged edit: `status: reserved` with a
-   supersession note (preserving the id, per the T1.8 precedent), or re-home its still-live
-   criteria onto the owning item. Never leave two items claiming the same future work.
-
-### Exit-criteria truth maintenance (realized-differently rule)
-When the session satisfied an item's INTENT via a different mechanism than its written exit
-criteria describe (different filename, different substrate, a criterion superseded by a
-ratified decision), do NOT flip the item complete over criteria that no longer adjudicate
-true -- and do NOT leave the criteria stale with the truth buried in a note. In the same
-staged YAML edit, rewrite the affected criteria to the realized mechanism (preserve the
-original wording inside the item's note when the history matters) so the item re-adjudicates
-true against the repo today. A `complete` item whose criteria cannot be re-run is an audit
-finding (2026-06-09 audit, F-006/F-014), not a convenience. This rule applies the same way
-when the bookkeeping walk runs against items completed in EARLIER sessions: discovering a
-criteria-vs-reality mismatch on an already-complete item stages a criteria rewrite, never a
-silent pass.
+the child's own (often absent) flag. The three-step inheritance body (find the parent by
+matching `decomposition_hints.atomic_plans[]` against the `PLAN-{slug}` token / inherit the
+PARENT's live `bootstrap_completion_exempt` value as the single source of truth / read-only
+resolution that never writes the parent's `decomposition_hints` or the child's flag) lives at
+`docs/contracts/tier-item-lifecycle.yaml#decomposition_hint_inheritance` -- read it in full.
+Canonical examples: T-1.12 is `bootstrap_completion_exempt: true` (inherit `true`, T1.12 is
+`false` (inherit `false`). This is not a license to author STRATEGIC children: the freeze stays
+in force and atomic children remain IMPLEMENTATION plans.
 
 ### Parallel-with-code-review state machine
-**Subagent-dispatch mode:** no local step-1 dispatch -- return `GATE_REQUEST` (gate: code-review)
-and pause instead. Steps 2-3 MUST complete BEFORE that pause, in the same turn -- there is no
-concurrency to run them against once paused. Steps 4-5 apply after `SendMessage`-resume with the
-verdict.
 
-1. Dispatch the code-review subagent (Step 5 above).
-2. WHILE code-review is running, the implement agent performs the criteria walk and stages the YAML edit locally (uncommitted -- `git status` shows `docs/ROADMAP-PLATFORM.yaml` as modified).
-3. **Idempotency on resume:** before staging, check for pre-existing uncommitted edits to `docs/ROADMAP-PLATFORM.yaml`. If present and matching what the bookkeeping rule would produce, no-op. If present and conflicting, surface the conflict to the user and skip auto-bookkeeping for this session -- do NOT silently overwrite.
-4. **Code-review verdict handling:** the `code-review` skill ends its report with a deterministic `Verdict: PROCEED | REVISE` line -- REVISE iff any Critical or High finding, else PROCEED. Branch on it:
-   - `PROCEED` -> commit the staged edit as a follow-up commit: `git commit docs/ROADMAP-PLATFORM.yaml -m "roadmap(<tier-ids>): bookkeeping after <slug>"`. Push.
-   - `REVISE` -> discard the staged edit: `git checkout -- docs/ROADMAP-PLATFORM.yaml`. Address code-review findings. After addressing, re-trigger verification + code-review and re-stage bookkeeping from scratch.
-5. **Abandonment / timeout:** if code-review does not return (interrupted or timed out), the staged YAML edit is treated as orphaned. On next session entry, the idempotency check detects the orphaned stage and reports it to the user for explicit accept/reject -- the implement skill does not auto-commit bookkeeping that lacks a verdict-attested verification pass.
-6. **Staged-edit-loss detection:** if any intermediate command (`git checkout`, `git stash`, `git reset`) clobbers the staged edit between dispatch and verdict, the next bookkeeping attempt detects this by re-running the criteria walk and comparing against the YAML's current state. Loss is observable, not silent.
+Read `docs/contracts/tier-item-lifecycle.yaml#parallel_with_code_review_state_machine` in full --
+it defines how the criteria walk above stages its YAML edit WHILE the code-review subagent runs
+(not after), the idempotency-on-resume check, the PROCEED/REVISE branch, and the
+abandonment/staged-edit-loss detection. Do not re-author it here.
 
 ## Verification Graduation (VF-05, T3.18/T3.21 -- fires on VP Compliance Gate all-PASS, before the commit flow)
 
@@ -412,57 +313,16 @@ the legacy best-effort walk in step 1 below.
 Fires only when the approved plan carries a ratification block (see the planning skill's
 "Candidate Decision Ratification" section). This step's authoritative shape is
 `docs/contracts/candidate-decision-ratification.yaml`. Ratification is the user's call --
-this step NEVER runs without the explicit execution-time confirmation in step 2 below.
+this step NEVER runs without the explicit execution-time confirmation it requires.
 
-### Protocol
-1. **Locate the ratification block** in the approved plan (drafted Decision text, reversal
-   conditions if applicable, and the exact portal + roadmap-flip commands).
-2. **STOP and obtain explicit execution-time human confirmation** of the Decision text before
-   any write. Plan approval (the planning skill's Step 6b + Critique Gate) is sign-off on the
-   *drafted text*; it is NOT authorization to execute the write. Re-present the drafted Decision
-   text verbatim and wait for an explicit go-ahead in THIS session. Do not proceed on an assumed
-   or inferred yes.
-3. **Author the DECISIONS.md entry** using the confirmed text. Before assigning the number,
-   re-check the current max `## Decision NNN:` header (numbering-race note: a concurrent PR may
-   have claimed the drafted number since `/plan` ran -- shift to the next free number if so, and
-   update the ratified_as/filed_via targets in the same edit).
-4. **ETL via the Single Portal Invariant** (Decision 84): `bin/venv-python -m
-   scripts.ops_data_portal --backfill-decisions-md` (the `--file-decision` single-row form is
-   the alternative for a single entry). Confirm the new dec-NNN row(s) are present in
-   `logs/.decisions-index.jsonl` after the sync. NEVER edit the JSONL cache directly.
-5. **Flip the CD** in `docs/ROADMAP-PLATFORM.yaml` to the canonical shape: `state: ratified` +
-   `ratified_as: dec-NNN` + `filed_via: ops_decisions:dec-NNN` (same NNN in both fields). If the
-   plan's ratification block calls for truth-maintenance edits to the CD's body (e.g. a stale
-   mechanism description contradicted by the ratified reality), apply them in the SAME edit --
-   do not leave the body describing a superseded mechanism after the flip (mirrors the
-   exit-criteria "realized-differently" rule above).
-6. **Re-run `bin/venv-python -m scripts.session.preflight`** (or `-m scripts.roadmap.platform_roadmap`
-   for the full dict if the slim preflight payload omits the field you need) and confirm the
-   ratified CD no longer appears in `blocked_on_cd` / `completion_blocked_on_cd` for any item it
-   was gating.
-7. **Run `bin/venv-python -m scripts.validate --pre`** -- the diff selects
-   `validate_candidate_decision_ratification`, which must pass against the new dec-NNN header.
-8. **Do NOT flip any tier_item status as part of this step.** An item that fully unparks
-   (every gating CD ratified AND zero open criteria) is a separate Tier_item bookkeeping
-   decision (the section above) -- note in the PR body which items became unpark-eligible, if
-   any, but let the normal bookkeeping walk decide status flips (Decision 90).
-
-### Batch-wave bundling (Decision 150, >=2 same-session PURE gate-clear CDs)
-When the ratification block bundles >=2 same-session PURE gate-clear CDs (no content beyond "this
-CD's work is realized"; a content-bearing ratification is never bundled), steps 3 (author ONE
-`## Decision N` wave entry, one clause per CD) and 4 (ETL) above run ONCE FOR THE WHOLE WAVE, but
-the three PER-CD sub-steps -- step 5's roadmap-flip (each CD's own ratified_as/filed_via pointing
-at the SHARED dec-NNN), the marking-convention obligation, and the pending-window prose sweep
-(candidate-decision-ratification.yaml `lane_steps.implement.execute` sub-steps 5-6) -- REPEAT ONCE
-PER BUNDLED CD. Steps 6 (preflight) and 7 (validate) run once over all bundled CDs. Step 8
-(Decision 90: tier_item status flips stay a separate bookkeeping step) is unchanged.
-
-### Rejection handling
-If the human declines to confirm the Decision text in step 2 (asks for edits, defers, or says
-no), do NOT proceed to steps 3-8. Either incorporate the requested edits and re-present, or stop
-the ratification portion of the plan entirely and report which steps were skipped. A plan whose
-non-ratification scope is otherwise complete may still commit/merge without the ratification
-having executed -- ratification is additive, not a blocking prerequisite for the rest of the plan.
+MANDATORY read-trigger: read
+`docs/contracts/candidate-decision-ratification.yaml#lane_steps.implement.execute` in full before
+executing -- the single authoritative definition of the eight-step protocol (locate the
+ratification block; STOP for explicit execution-time human confirmation of the Decision text;
+author the DECISIONS.md entry; ETL via the Single Portal Invariant; flip the CD to the canonical
+ratified shape; re-run preflight; run `bin/venv-python -m scripts.validate --pre`; never flip a
+tier_item status here), the batch-wave bundling rule (Decision 150), and the rejection-handling
+rule. Do not re-author it here.
 
 ## Strategic Scoping Rules (Workflow Step 3 -- STRATEGIC Plans only)
 
