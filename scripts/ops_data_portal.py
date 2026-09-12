@@ -92,6 +92,7 @@ from scripts.ops_portal.closure_gate import (  # noqa: F401
     WAIVER_CATEGORIES,
     ClosureArtifactRequired,
     assert_closure_obligation,
+    closure_stamps_applicable,
     parse_context_json,
 )
 from scripts.ops_portal.maintenance_ops import (  # noqa: F401
@@ -123,6 +124,17 @@ from scripts.ops_portal.writer_transport import (  # noqa: F401
 )
 
 logger = logging.getLogger(__name__)
+
+
+class RecNotFound(RuntimeError):
+    """Raised by update_rec when rec_id does not exist in the current DuckLake projection.
+
+    Distinguishes an absent rec (a referential-existence miss) from every other RuntimeError
+    update_rec can raise (reader-unreachable, a writer-transport failure) -- callers that need to
+    treat "no such rec" as a benign skip, while any other RuntimeError must still surface loudly,
+    catch this subclass specifically rather than discriminating on the exception's message text.
+    """
+
 
 _LAZY_DECISIONS_NAMES = frozenset(
     {
@@ -478,7 +490,7 @@ def update_rec(
     # permissive `existing or {}` upsert-on-absent, which silently created a partial record.
     existing = _fetch_rec_from_reader(rec_id, profile=profile)
     if existing is None:
-        raise RuntimeError(
+        raise RecNotFound(
             f"update_rec: {rec_id} does not exist in the current projection -- an absent rec cannot be "
             "updated (referential, CD.33 cl.8 / D-5). File it first via file_rec."
         )
@@ -495,10 +507,10 @@ def update_rec(
     }
     closure_stamps = {k: v for k, v in closure_stamps.items() if v is not None}
     if closure_stamps:
-        if not merged.get("context_v2_json"):
+        if not closure_stamps_applicable(merged.get("context_v2_json")):
             raise ValueError(
-                f"update_rec: a closure_* kwarg was supplied for {rec_id}, which carries no existing "
-                "context_v2_json to stamp into."
+                f"update_rec: a closure_* kwarg was supplied for {rec_id}, which is not stampable per "
+                "closure_stamps_applicable -- it carries no existing context_v2_json to stamp into."
             )
         ctx_for_stamp = parse_context_json(merged.get("context_v2_json"))
         ctx_for_stamp.update(closure_stamps)

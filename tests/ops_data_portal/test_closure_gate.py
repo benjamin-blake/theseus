@@ -10,6 +10,9 @@ module's vocabularies equal docs/contracts/ci-rca-lifecycle.yaml::closure_obliga
 
 from __future__ import annotations
 
+import ast
+import json
+
 import yaml
 
 from scripts.ops_portal._common import ROOT
@@ -18,8 +21,10 @@ from scripts.ops_portal.closure_gate import (
     KIND_STRENGTH,
     WAIVER_CATEGORIES,
     _fixture_kind_fact,
+    closure_stamps_applicable,
     is_escape_classified,
     is_valid_waiver,
+    parse_context_json,
     resolve_closure_artifact,
 )
 
@@ -128,6 +133,32 @@ class TestWaiverGrammar:
         )
 
 
+class TestStampApplicability:
+    def test_escape_classified_implies_stampable(self) -> None:
+        """CONTAINMENT (Decision 186 point 8's fourth weakening form): every raw context_v2_json
+        cell that parses to an escape-classified ctx is stampable -- so the fix-commit binding a
+        closing update_rec threads can never be silently dropped for an escape-classified rec. A
+        future widening of closure_stamps_applicable that drops this containment would defeat the
+        ratchet by letting an escape-classified rec's own closing write skip closure_fix_sha.
+        Checked over both raw-string and already-parsed-dict inputs (the two call-site shapes)
+        and both is_escape_classified triggers (escape_class and detection_gap.escape_mode)."""
+        escape_classified_raws = [
+            json.dumps({"escape_class": "no-edge"}),
+            json.dumps({"detection_gap": {"escape_mode": "undetermined"}}),
+            {"escape_class": "capped"},
+            {"detection_gap": {"escape_mode": "tier_misplaced"}},
+        ]
+        for raw in escape_classified_raws:
+            assert is_escape_classified(parse_context_json(raw)) is True
+            assert closure_stamps_applicable(raw) is True
+
+        # The converse does not hold -- stampable never implies escape-classified; this is a
+        # one-directional containment, not an equivalence.
+        non_escape_raw = json.dumps({"last_seen": "2026-01-01"})
+        assert closure_stamps_applicable(non_escape_raw) is True
+        assert is_escape_classified(parse_context_json(non_escape_raw)) is False
+
+
 class TestContractParity:
     def test_closure_vocabularies_match_contract(self) -> None:
         """The kind, kind-strength and category vocabularies in closure_gate.py equal those
@@ -140,3 +171,43 @@ class TestContractParity:
         assert list(obligation["kind_strength"]) == list(KIND_STRENGTH)
         assert set(obligation["waiver_categories"]) == WAIVER_CATEGORIES
         assert "duplicate_of" not in obligation["waiver_categories"]
+
+    def test_stamp_precondition_call_sites_match_importers(self) -> None:
+        """The contract's closure_obligation.stamp_precondition.call_sites list equals, in BOTH
+        directions, the set of scripts/**/*.py files that IMPORT closure_stamps_applicable --
+        resolved via ast.parse (an ImportFrom naming the symbol, or an Import of
+        scripts.ops_portal.closure_gate paired with an attribute reference), NEVER a textual
+        mention -- which would count this very test and every docstring as a false member."""
+        contract = yaml.safe_load((ROOT / "docs" / "contracts" / "ci-rca-lifecycle.yaml").read_text(encoding="utf-8"))
+        declared = set(contract["closure_obligation"]["stamp_precondition"]["call_sites"])
+
+        importers: set[str] = set()
+        for path in sorted((ROOT / "scripts").rglob("*.py")):
+            if "__pycache__" in path.parts:
+                continue
+            rel = path.relative_to(ROOT).as_posix()
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=rel)
+            except SyntaxError:
+                continue
+            imports_symbol = False
+            imports_module = False
+            uses_module_attr = False
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    if node.module == "scripts.ops_portal.closure_gate" and any(
+                        alias.name == "closure_stamps_applicable" for alias in node.names
+                    ):
+                        imports_symbol = True
+                elif isinstance(node, ast.Import):
+                    if any(alias.name == "scripts.ops_portal.closure_gate" for alias in node.names):
+                        imports_module = True
+                elif isinstance(node, ast.Attribute) and node.attr == "closure_stamps_applicable":
+                    uses_module_attr = True
+            if imports_symbol or (imports_module and uses_module_attr):
+                importers.add(rel)
+
+        assert importers == declared, (
+            f"declared-but-not-importing: {sorted(declared - importers)}; "
+            f"importing-but-undeclared: {sorted(importers - declared)}"
+        )

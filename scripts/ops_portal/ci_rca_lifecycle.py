@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from scripts.ops_portal.closure_gate import closure_stamps_applicable
+
 logger = logging.getLogger(__name__)
 
 # Decision 155-shaped marker (mirrors decisions.py::_ORPHAN_GUARD_TRANSIENT_MARKER): distinct,
@@ -384,18 +386,25 @@ def close_recs_from_trailer(
     workflow body stays under its ratchet ceiling.
 
     Idempotent: a rec already closed_by the cache is skipped. Passes closure_fix_sha=commit_sha
-    into the closing update_rec call so the fix-commit binding is satisfiable on the automated
-    route in ONE write. Catches ClosureArtifactRequired (Decision 186): prints
-    _ESCAPE_CLOSURE_REFUSAL_MARKER (mirrored to $GITHUB_STEP_SUMMARY when set), skips that rec
-    (left OPEN), and does NOT touch exit_code -- the refusal exits this loop iteration the same
-    way an already-closed rec does, never as an error. Any OTHER exception still sets
-    exit_code=1 and continues (existing behaviour, unchanged). The existing post-close
+    into the closing update_rec call, CONDITIONALLY on closure_stamps_applicable over the cached
+    row's context_v2_json cell, so the fix-commit binding is satisfiable on the automated route in
+    ONE write when applicable, and simply omitted (never threaded) when it is not -- a rec with no
+    stampable blob (the common case: 1147 of 1152 open recs carry no context_v2_json) closes
+    cleanly instead of hitting update_rec's closure-stamp precondition. A cache miss (rec_id absent
+    from recs_cache) is treated the same as an inapplicable blob: the stamp is omitted, and a later
+    refusal for a genuinely absent rec is loud-not-red (Decision 186 pt 7), not silently dropped.
+    Catches ClosureArtifactRequired (Decision 186): prints _ESCAPE_CLOSURE_REFUSAL_MARKER (mirrored
+    to $GITHUB_STEP_SUMMARY when set), skips that rec (left OPEN), and does NOT touch exit_code --
+    the refusal exits this loop iteration the same way an already-closed rec does, never as an
+    error. RecNotFound (an absent rec) is the ONLY RuntimeError treated as a skip; every other
+    RuntimeError (reader-unreachable, a writer-transport failure) falls through to the broad except
+    below and sets exit_code=1 -- never discriminated by message substring. The existing post-close
     stamp_fixed_by_sha call is kept for non-escape ci_rca recs and is idempotent where both run.
 
     Returns the exit code sys.exit() should use (0 normally; 1 iff a non-gate exception occurred
     while closing any rec).
     """
-    from scripts.ops_data_portal import ClosureArtifactRequired, update_rec  # noqa: PLC0415
+    from scripts.ops_data_portal import ClosureArtifactRequired, RecNotFound, update_rec  # noqa: PLC0415
 
     resolution = f"Auto-closed by rec-autoclose workflow: merge commit {commit_sha} (run: {run_url})"
     exit_code = 0
@@ -405,12 +414,15 @@ def close_recs_from_trailer(
         if existing and existing.get("status") == "closed":
             print(f"rec-autoclose: {rec_id} already closed -- skipping (idempotent)")
             continue
+        stamp_kwargs: dict = {}
+        if closure_stamps_applicable(existing.get("context_v2_json") if existing else None):
+            stamp_kwargs["closure_fix_sha"] = commit_sha
         try:
             update_rec(
                 rec_id,
                 {"status": "closed", "resolution": resolution},
                 profile=profile,
-                closure_fix_sha=commit_sha,
+                **stamp_kwargs,
             )
             print(f"rec-autoclose: closed {rec_id}")
         except ClosureArtifactRequired as exc:
@@ -418,7 +430,7 @@ def close_recs_from_trailer(
             print(marker)
             _mirror_refusal_to_step_summary(marker)
             continue
-        except RuntimeError as exc:
+        except RecNotFound as exc:
             print(f"rec-autoclose: WARN {rec_id} not found in portal ({exc}) -- skipping")
             continue
         except Exception as exc:  # noqa: BLE001 -- deliberately broad: any non-gate failure still exits 1

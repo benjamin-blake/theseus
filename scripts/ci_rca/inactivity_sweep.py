@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from scripts.ops_portal.ci_rca_lifecycle import is_inactive, list_open_ci_rca_recs
+from scripts.ops_portal.closure_gate import closure_stamps_applicable
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -56,6 +57,18 @@ def close_inactive_recs(rows: list[dict[str, Any]], *, profile: str | None = Non
         if dry_run:
             logger.info("[DRY-RUN] would close %s (stale_no_recurrence; %s)", rec_id, proof)
             continue
+        # Decision 186: the programmatic waiver -- without it the closure gate wedges this
+        # scheduled workflow on any escape-classified inactive rec. Necessary and kept; the
+        # D-B1 mitigation is the preflight gauge surfacing OPEN escape recs, not a narrowing
+        # of this exemption. Threaded only when closure_stamps_applicable(ctx) -- the already-
+        # parsed context this row holds -- so a blob-less row omits the stamp instead of hitting
+        # update_rec's closure-stamp precondition.
+        kwargs: dict[str, str] = {}
+        if closure_stamps_applicable(ctx):
+            kwargs = {
+                "closure_waiver_category": "stale_no_recurrence",
+                "closure_waiver_reason": f"stale_no_recurrence: {proof}",
+            }
         update_rec(
             rec_id,
             {
@@ -63,12 +76,7 @@ def close_inactive_recs(rows: list[dict[str, Any]], *, profile: str | None = Non
                 "resolution": f"CI-RCA inactivity sweep: resolution=stale_no_recurrence. Proof: {proof}.",
             },
             profile=profile,
-            # Decision 186: the programmatic waiver -- without it the closure gate wedges this
-            # scheduled workflow on any escape-classified inactive rec. Necessary and kept; the
-            # D-B1 mitigation is the preflight gauge surfacing OPEN escape recs, not a narrowing
-            # of this exemption.
-            closure_waiver_category="stale_no_recurrence",
-            closure_waiver_reason=f"stale_no_recurrence: {proof}",
+            **kwargs,
         )
         logger.info("Closed %s (stale_no_recurrence; %s)", rec_id, proof)
         closed.append(rec_id)

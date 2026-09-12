@@ -549,16 +549,32 @@ class TestCloseRecsFromTrailerRefusalContract:
         assert "rec-1" in capsys.readouterr().out
 
     def test_non_gate_exception_still_exits_nonzero(self) -> None:
+        """PLAN-closure-stamp-applicability: the except clause narrows from bare RuntimeError to
+        RecNotFound -- a warehouse-unreachable RuntimeError is no longer conflated with an absent
+        rec (the pre-fix fixture's own comment mislabelled it 'not found'; it is a transport
+        failure) and now falls through to the broad except, exiting 1. The RecNotFound-only skip
+        is pinned separately by test_rec_not_found_still_exits_zero below."""
         from scripts.ops_portal.ci_rca_lifecycle import close_recs_from_trailer
 
         with patch("scripts.ops_data_portal.update_rec", side_effect=RuntimeError("warehouse unreachable: 503")):
             rc = close_recs_from_trailer(["rec-1"], "deadbeef", "https://x/runs/1", {"rec-1": {"status": "open"}})
 
-        assert rc == 0  # RuntimeError ("not found") is a WARN-and-skip, not a gate failure
+        assert rc == 1  # a non-RecNotFound RuntimeError is a transport failure, not a benign skip
 
         with patch("scripts.ops_data_portal.update_rec", side_effect=ValueError("boom")):
             rc = close_recs_from_trailer(["rec-1"], "deadbeef", "https://x/runs/1", {"rec-1": {"status": "open"}})
         assert rc == 1
+
+    def test_rec_not_found_still_exits_zero(self) -> None:
+        """RecNotFound (an absent rec) remains the ONLY RuntimeError treated as a benign skip --
+        pinned separately now that the except clause narrows from RuntimeError to RecNotFound."""
+        from scripts.ops_data_portal import RecNotFound
+        from scripts.ops_portal.ci_rca_lifecycle import close_recs_from_trailer
+
+        with patch("scripts.ops_data_portal.update_rec", side_effect=RecNotFound("rec-1 does not exist")):
+            rc = close_recs_from_trailer(["rec-1"], "deadbeef", "https://x/runs/1", {"rec-1": {"status": "open"}})
+
+        assert rc == 0
 
     def test_rec_autoclose_step_delegates_to_helper(self) -> None:
         """Workflow-shape pin: the closure step's python heredoc delegates to
