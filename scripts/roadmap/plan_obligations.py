@@ -30,7 +30,7 @@ import argparse
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import yaml
 
@@ -105,7 +105,10 @@ def _derive_findings(scope: list[dict[str, str]], rules: list[dict[str, Any]]) -
     Each rule names a `trigger.file_pattern` (matched against a scope row's `file`, optionally
     gated by `trigger.action`) and a `requires` list of `path_template` strings formatted with
     the trigger's regex capture groups. A required path missing from the scope's file set is one
-    finding, naming the missing path and the triggering row.
+    finding, naming the missing path and the triggering row. `rule.reason` (falling back to "a
+    new check module" for a rule that omits it) is formatted into the finding message so a
+    non-check-module trigger (e.g. new_workflow_file) reads correctly -- purely a message
+    parameter over rule-structural fields, never file-content inspection.
     """
     scope_files = {row["file"] for row in scope}
     findings: list[str] = []
@@ -124,6 +127,9 @@ def _derive_findings(scope: list[dict[str, str]], rules: list[dict[str, Any]]) -
         requirements = rule.get("requires")
         if not isinstance(requirements, list):
             continue
+        reason = rule.get("reason")
+        if not isinstance(reason, str) or not reason:
+            reason = "a new check module"
         for row in scope:
             if required_action and row.get("action") != required_action:
                 continue
@@ -143,10 +149,197 @@ def _derive_findings(scope: list[dict[str, str]], rules: list[dict[str, Any]]) -
                     continue
                 if required_path not in scope_files:
                     label = requirement.get("label", required_path)
-                    findings.append(
-                        f"missing {label} ({required_path}) -- required because {row['file']} is a new check module"
-                    )
+                    findings.append(f"missing {label} ({required_path}) -- required because {row['file']} is {reason}")
     return findings
+
+
+def _iter_enforced_elsewhere_entries(
+    rules: dict[str, Any],
+) -> Iterator[tuple[str, dict[str, Any], Any]]:
+    """Yield (rule_name, rule, raw_entry) for every rule's `enforced_elsewhere` list member,
+    whatever its shape -- callers validate/format the entry, this only walks the contract."""
+    for rule_name, rule in rules.items():
+        if not isinstance(rule, dict):
+            continue
+        entries = rule.get("enforced_elsewhere")
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            yield rule_name, rule, entry
+
+
+def _requires_grammar_findings(rule_name: str, rule: dict[str, Any]) -> list[str]:
+    """G1 (requires side): every `requires` entry carries a non-empty `path_template`."""
+    findings: list[str] = []
+    requirements = rule.get("requires")
+    if not isinstance(requirements, list):
+        return findings
+    for requirement in requirements:
+        if not isinstance(requirement, dict):
+            continue
+        label = requirement.get("label", "<unlabeled>")
+        if not requirement.get("path_template"):
+            findings.append(
+                f"{rule_name}: requires entry {label!r} carries no path_template "
+                "(G1: a requires row must name a derivable companion path)"
+            )
+    return findings
+
+
+def _enforced_by_grammar_findings(
+    rule_name: str, label: str, enforced_by: Any, all_checks: Any, sequenced_names: set[str]
+) -> list[str]:
+    """G2/G3: `enforced_by` must resolve in registry.all_checks() AND be dispatched."""
+    if not isinstance(enforced_by, str) or not enforced_by:
+        return [
+            f"{rule_name}: enforced_elsewhere entry {label!r} names no enforced_by "
+            "(G2: enforced_by must resolve in registry.all_checks())"
+        ]
+    if enforced_by not in all_checks:
+        return [
+            f"{rule_name}: enforced_elsewhere entry {label!r} names enforced_by={enforced_by!r}, "
+            "which is not a registered check (G2: enforced_by must resolve in registry.all_checks())"
+        ]
+    if enforced_by not in sequenced_names:
+        return [
+            f"{rule_name}: enforced_elsewhere entry {label!r} names enforced_by={enforced_by!r}, "
+            "which is registered but dispatched in neither pre_sequence() nor full_sequence() "
+            "(G3: an enforcer that never runs can never fail anything)"
+        ]
+    return []
+
+
+def _enforced_elsewhere_entry_findings(
+    rule_name: str, trigger_action: Any, entry: Any, all_checks: Any, sequenced_names: set[str]
+) -> list[str]:
+    """G1 (enforced_elsewhere side) + G2 + G3 + G4 + G5 for one enforced_elsewhere entry."""
+    if not isinstance(entry, dict):
+        return [f"{rule_name}: enforced_elsewhere entry is not a mapping"]
+    label = entry.get("label", "<unlabeled>")
+    findings: list[str] = []
+
+    # G1: an enforced_elsewhere entry must carry no path_template.
+    if entry.get("path_template"):
+        findings.append(
+            f"{rule_name}: enforced_elsewhere entry {label!r} carries a path_template "
+            "(G1: a derivable companion path makes it a requires row, not enforced_elsewhere)"
+        )
+
+    findings.extend(_enforced_by_grammar_findings(rule_name, label, entry.get("enforced_by"), all_checks, sequenced_names))
+
+    # G4: why_not_a_scope_row present and non-empty.
+    why = entry.get("why_not_a_scope_row")
+    if not isinstance(why, str) or not why.strip():
+        findings.append(f"{rule_name}: enforced_elsewhere entry {label!r} carries no non-empty why_not_a_scope_row (G4)")
+
+    # G5: declared fires_on must contain the enclosing rule's trigger.action -- a
+    # declaration-consistency guard, not a reachability proof (see validate_obligation_grammar's
+    # own docstring): it only checks what the author states, not whether an enforcer satisfying
+    # G2/G3 can actually fire for this trigger's action.
+    fires_on = entry.get("fires_on")
+    if not isinstance(fires_on, list) or trigger_action not in fires_on:
+        findings.append(
+            f"{rule_name}: enforced_elsewhere entry {label!r} declares fires_on={fires_on!r}, "
+            f"which omits the enclosing rule's trigger.action={trigger_action!r} "
+            "(G5: a Modify-only enforcer is not admissible under a Create-only rule)"
+        )
+
+    return findings
+
+
+def validate_obligation_grammar(contract_path: Path | None = None) -> list[str]:
+    """Validate docs/contracts/plan-obligations.yaml's own grammar -- never raises; a malformed
+    contract yields findings, never an exception.
+
+    Two shapes are checked (delegated to helpers to keep this function's own branch count low):
+      - every `requires` entry carries a non-empty `path_template` (it names a derivable
+        companion path) -- `_requires_grammar_findings`;
+      - every `enforced_elsewhere` entry is admissible only when all FIVE guards hold: G1 it
+        carries NO `path_template` (a derivable companion path makes it a requires row instead);
+        G2 `enforced_by` names a check that resolves in `registry.all_checks()`; G3 `enforced_by`
+        is actually dispatched (present in `registry.pre_sequence()` or `registry.full_sequence()`
+        -- an enforcer that never runs can never fail anything, so "enforced elsewhere" would be a
+        false claim); G4 `why_not_a_scope_row` is present and non-empty; G5 the entry's declared
+        `fires_on` list contains the enclosing rule's `trigger.action` -- a DECLARATION-CONSISTENCY
+        guard (not a reachability proof) -- `_enforced_elsewhere_entry_findings`.
+
+    `registry` is imported here, at CHECK-BODY time, never at this module's own import time:
+    every check module does `from scripts.checks import registry`, so an import-time call from
+    this module (imported by scripts.checks.roadmap.validate_plan_scope_closure) would be a
+    genuine circular import.
+    """
+    from scripts.checks import registry  # noqa: PLC0415
+
+    path = contract_path if contract_path is not None else _CONTRACT_PATH
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return [f"could not read {path}: {exc}"]
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as exc:
+        return [f"could not parse {path}: {exc}"]
+    if not isinstance(data, dict):
+        return [f"{path} is not a YAML mapping"]
+    surfaces = data.get("registration_surfaces")
+    if not isinstance(surfaces, dict) or not surfaces:
+        return [f"{path} is missing a non-empty 'registration_surfaces' mapping"]
+
+    findings: list[str] = []
+    for rule_name, rule in surfaces.items():
+        if not isinstance(rule, dict):
+            findings.append(f"{rule_name}: rule is not a mapping")
+            continue
+        findings.extend(_requires_grammar_findings(rule_name, rule))
+
+    all_checks = registry.all_checks()
+    sequenced_names = {step.name for step in registry.pre_sequence()} | {step.name for step in registry.full_sequence()}
+
+    for rule_name, rule, entry in _iter_enforced_elsewhere_entries(surfaces):
+        trigger = rule.get("trigger")
+        trigger_action = trigger.get("action") if isinstance(trigger, dict) else None
+        findings.extend(_enforced_elsewhere_entry_findings(rule_name, trigger_action, entry, all_checks, sequenced_names))
+
+    return findings
+
+
+def _derive_enforced_elsewhere_pointers(scope: list[dict[str, str]], rules: dict[str, Any]) -> list[str]:
+    """Pure derivation: for every scope row whose trigger fires, name the rule's declared
+    `enforced_elsewhere` pointers -- report-only, NEVER a `failed` finding (the obligation is file
+    content inside the triggering row's own file, so no scope row could ever satisfy it)."""
+    pointers: list[str] = []
+    for rule_name, rule in rules.items():
+        if not isinstance(rule, dict):
+            continue
+        trigger = rule.get("trigger")
+        if not isinstance(trigger, dict):
+            continue
+        pattern = trigger.get("file_pattern")
+        required_action = trigger.get("action")
+        if not isinstance(pattern, str) or not pattern:
+            continue
+        try:
+            compiled = re.compile(pattern)
+        except re.error:
+            continue
+        entries = rule.get("enforced_elsewhere")
+        if not isinstance(entries, list) or not entries:
+            continue
+        for row in scope:
+            if required_action and row.get("action") != required_action:
+                continue
+            if not compiled.match(row["file"]):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                label = entry.get("label", "<unlabeled>")
+                enforced_by = entry.get("enforced_by", "<unknown>")
+                pointers.append(
+                    f"{row['file']} ({rule_name}) obligates {label!r}, enforced elsewhere by "
+                    f"{enforced_by} -- not a scope-row requirement, see docs/contracts/plan-obligations.yaml"
+                )
+    return pointers
 
 
 def evaluate_plan(path: Path, rules: list[dict[str, Any]] | None = None) -> list[str]:
@@ -186,15 +379,39 @@ def net_new_v4_implementation_plan_paths() -> list[Path]:
 
 
 def build_report(path: Path) -> str:
-    """Advisory, human-readable report for one plan path. Never raises."""
+    """Advisory, human-readable report for one plan path. Never raises.
+
+    Always emits both sections: the gating `requires` findings (or "no unmet ... obligations"),
+    PLUS an `enforced_elsewhere` pointer section whenever a rule's trigger matches a scope row --
+    including when the plan has zero unmet `requires` findings, since a closure-complete plan can
+    still owe a non-scope-row obligation (e.g. the Decision 170 accounting declaration). The
+    pointer section is report-only: it never feeds the registered check's gating verdict.
+    """
     findings = evaluate_plan(path)
     if not findings:
-        return (
+        lines = [
             f"{path}: no unmet registration obligations "
             f"(or plan is grandfathered / below schema_version {MIN_SCHEMA_VERSION})."
-        )
-    lines = [f"{path}: {len(findings)} unmet registration obligation(s):"]
-    lines.extend(f"  - {finding}" for finding in findings)
+        ]
+    else:
+        lines = [f"{path}: {len(findings)} unmet registration obligation(s):"]
+        lines.extend(f"  - {finding}" for finding in findings)
+
+    data, error = _read_plan_dict(path)
+    if not error and data is not None and not _is_grandfathered(data):
+        rules_path = _CONTRACT_PATH
+        try:
+            contract_text = rules_path.read_text(encoding="utf-8")
+            contract_data = yaml.safe_load(contract_text)
+        except (OSError, yaml.YAMLError):
+            contract_data = None
+        surfaces = contract_data.get("registration_surfaces") if isinstance(contract_data, dict) else None
+        if isinstance(surfaces, dict) and surfaces:
+            pointers = _derive_enforced_elsewhere_pointers(_scope_rows(data), surfaces)
+            if pointers:
+                lines.append(f"{path}: {len(pointers)} obligation(s) enforced elsewhere (never gating):")
+                lines.extend(f"  - {pointer}" for pointer in pointers)
+
     return "\n".join(lines)
 
 
