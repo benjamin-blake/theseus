@@ -1,0 +1,431 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "production-catalog-gc-guardrail-repair"
+intent: >-
+  Make DuckLake production maintenance real: repair a GC guardrail that fails open, restore
+  compaction coverage to all live ops_* tables, and schedule guarded destructive GC against the
+  production catalog so catalog metadata (the Neon read-egress driver) stops growing unbounded.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-production-catalog-gc-guardrail-repair.yaml
+phase: T2.18
+closes_criteria:
+  - T2.18:c2
+  - T2.18:c6
+  - T2.18:c8
+scope:
+  - file: src/common/ducklake_maintenance.py
+    action: Modify
+    purpose: >-
+      Retire file_fraction; replace check_gc_breaker with fail-CLOSED structural guards (G1-G4);
+      stop swallowing introspection exceptions; retire the smoke-only GC_TABLE_SCOPE/HOT_TABLE_SCOPE
+      constants in favour of the shared registry resolver.
+  - file: src/common/ducklake_maintenance_ops.py
+    action: Create
+    purpose: >-
+      Production-catalog orchestration: registry-driven table resolution, gc_ops, gc_ops_preview,
+      batched expiry, per-pass deletion throttle, and the maintenance self-report payload.
+  - file: src/lambdas/ducklake_maintenance/handler.py
+    action: Modify
+    purpose: >-
+      Add gc_ops / gc_ops_preview / maintenance_report actions; repoint action_merge_ops at the
+      registry resolver; emit the self-report payload in every merge_ops return.
+  - file: src/lambdas/ducklake_maintenance/manifest.yaml
+    action: Modify
+    purpose: Bundle ducklake_maintenance_ops.py into the deployed zip.
+  - file: scripts/ducklake_smoke/lambda_maintenance_gates.py
+    action: Modify
+    purpose: >-
+      Make the gc gate capable of failing -- pre-age a fixture so files_cleaned > 0 is asserted, and
+      add a negative case that must trip the breaker. Audit the other three gates for the same shape.
+  - file: terraform/personal/ducklake_maintenance.tf
+    action: Modify
+    purpose: >-
+      EventBridge rules/targets/permissions for gc_ops_preview (enabled) and gc_ops (DISABLED);
+      counters merge as its own invocation; Errors/Throttles/Duration alarms and a merge heartbeat.
+  - file: terraform/personal/main.tf
+    action: Modify
+    purpose: S3 lifecycle configuration filtered to the ducklake/ prefix ONLY (never tfstate/ or convergence/).
+  - file: tests/test_ducklake_maintenance.py
+    action: Modify
+    purpose: Discriminating guardrail tests, including the fail-open regression (rec-3764).
+  - file: tests/common/test_ducklake_maintenance_ops.py
+    action: Create
+    purpose: Unit coverage for registry resolution, throttle, batched expiry and the self-report.
+  - file: tests/lambdas/ducklake_maintenance/handler/test_gc_ops.py
+    action: Create
+    purpose: Handler dispatch, guard refusal and self-report coverage for the new actions.
+  - file: tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py
+    action: Create
+    purpose: Assert discovery COVERAGE over every registry table, not convergence of those examined.
+  - file: docs/ROADMAP-PLATFORM.yaml
+    action: Modify
+    purpose: Reopen c8, rewrite c6 (its text pins the retired metric), re-ground c2 to a bounded observable.
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: New Decision amending Decision 81 clause 6 / CD.33 H1, plus a dated Decision 88 D3b clearance line.
+bundled_recommendations:
+  - rec-3764
+  - rec-3762
+  - rec-3760
+  - rec-3761
+  - rec-3759
+  - rec-2216
+  - rec-2218
+  - rec-2220
+followon_recs:
+  - rec-3763
+infrastructure_dependencies:
+  - >-
+    terraform/personal EventBridge rules/targets + aws_lambda_permission use the guard's known-safe
+    shape (principal events.amazonaws.com, lambda:InvokeFunction, agent-platform-* function) and the
+    S3 lifecycle rule rides s3:PutLifecycleConfiguration already scoped to agent-platform-data-lake
+    in github_ci_apply_policy.tf -- no IAM role or trust change, so the apply stays auto-apply
+    (Decision 77). Verification is CI-delegated per Decision 119; never a local terraform plan.
+  - >-
+    The gc_ops EventBridge rule ships state = "DISABLED". Enabling it is an operator action, not an
+    agent action, and no CI identity gains invoke on the admin-gated function (Decision 143).
+acceptance_criteria:
+  - >-
+    check_gc_breaker's replacement RAISES DuckLakeMaintenanceError when any catalog-introspection
+    query fails, instead of returning breaker_tripped=False with a zero denominator (rec-3764).
+  - >-
+    file_fraction is gone from src/common/ducklake_maintenance.py; the guard set is G1 reachability
+    (would_delete intersect live == empty), G2 retention-floor re-assertion, G3 catalog-sanity
+    precondition, G4 a per-pass deletion THROTTLE (bounded work, remainder next pass) -- not an abort.
+  - >-
+    merge and GC table scope resolve from config/lambda/ducklake/field_semantics.yaml's ops_tables
+    registry, with a coverage assertion that fails on a non-empty unexamined set; a LIKE pattern is
+    no longer the source of scope, and GC_TABLE_SCOPE/HOT_TABLE_SCOPE no longer carry a second scope.
+  - >-
+    ops_entity_counters is compacted by its OWN invocation on a quiet cadence, never inside the
+    every-6h merge_ops pass, and a test asserts rec-id allocation still succeeds under a concurrent merge.
+  - >-
+    The gc smoke gate fails when run against a build carrying the pre-fix breaker (it can no longer
+    pass vacuously on a freshly-recreated catalog).
+  - >-
+    An S3 lifecycle rule expires noncurrent versions under the ducklake/ prefix ONLY; tfstate/,
+    convergence/ and tfplan/ carry no rule.
+  - >-
+    expire_snapshots runs in bounded batches, never one transaction over ~13,848 snapshots.
+  - >-
+    A maintenance_report read-only action returns per-table live-file counts, deletion-queue depth
+    and last-pass outcome from catalog metadata, and the same payload rides every merge_ops return.
+  - >-
+    A merge_ops failure or timeout files a recommendation through the portal (Decision 62 alarm-not-gate
+    shape, Decision 61 source-discriminated), so the signal is agent-readable without the rec-3763 grant.
+  - >-
+    One guarded production GC pass has completed with files_cleaned > 0, the reachability invariant
+    satisfied, and prefix object count/bytes recorded before and after.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Prove the fail-open regression is closed -- introspection failure must raise, not pass.
+    command: bin/venv-python -m pytest tests/test_ducklake_maintenance.py::test_breaker_raises_when_catalog_introspection_fails -q
+    expected: PASSES after the fix; FAILS against current main (today the breaker returns breaker_tripped=False)
+    fix_if: Breaker still returns a permissive dict on a raising connection -- remove the bare except and re-raise.
+    graduation: graduate
+    graduation_check_id: gc-breaker-fails-closed-on-introspection-error
+  - step: 2
+    phase: pre-deploy
+    action: Prove the reachability invariant (G1) aborts when a would-delete path is still live.
+    command: bin/venv-python -m pytest tests/test_ducklake_maintenance.py::test_g1_aborts_when_would_delete_intersects_live -q
+    expected: Raises DuckLakeMaintenanceError naming the intersecting path; zero destructive calls issued.
+    fix_if: Destructive calls appear in the recorded SQL after an intersection -- move the assertion before them.
+    graduation: graduate
+    graduation_check_id: gc-reachability-invariant-empty-intersection
+  - step: 3
+    phase: pre-deploy
+    action: Prove file_fraction is retired and no percentage abort survives.
+    command: "! rg -n 'file_fraction|GC_BREAKER_FILE_FRACTION' src/common/ducklake_maintenance.py src/lambdas/ducklake_maintenance_smoke/handler.py"
+    expected: No matches (exit 0 via the negation).
+    fix_if: A percentage survives -- retire it; do not re-baseline the denominator.
+    graduation: graduate
+    graduation_check_id: gc-file-fraction-retired
+  - step: 4
+    phase: pre-deploy
+    action: Prove the per-pass throttle bounds deletions and defers the remainder.
+    command: bin/venv-python -m pytest tests/common/test_ducklake_maintenance_ops.py -k throttle -q
+    expected: A 24000-candidate pass deletes at most the cap and reports a non-zero deferred remainder.
+    fix_if: The pass deletes everything or raises -- the throttle is an abort, not a bound; make it bound.
+    graduation: graduate
+    graduation_check_id: gc-per-pass-deletion-throttle
+  - step: 5
+    phase: pre-deploy
+    action: Prove scope COVERAGE over the registry, not convergence of what the predicate returned.
+    command: bin/venv-python -m pytest tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py -q
+    expected: >-
+      Resolver returns every live ops_tables entry; a catalog table absent from the examined set fails
+      the coverage assertion (the rec-3762 class, per Decision 170 examined-vs-skipped).
+    fix_if: The test passes with a table missing -- assert over the registry, not over the returned list.
+    graduation: graduate
+    graduation_check_id: merge-scope-registry-coverage
+  - step: 6
+    phase: pre-deploy
+    action: Prove rec-id allocation survives a concurrent compaction of the counter table.
+    command: bin/venv-python -m pytest tests/common/test_ducklake_maintenance_ops.py -k counters_occ -q
+    expected: Allocation returns a unique id under a simulated concurrent merge; no duplicate ids.
+    fix_if: Allocation fails or duplicates -- the counters merge must not share the hot cadence.
+    graduation: graduate
+    graduation_check_id: entity-counters-merge-occ-safe
+  - step: 7
+    phase: pre-deploy
+    action: Prove expiry is batched, never one transaction over the whole snapshot set.
+    command: bin/venv-python -m pytest tests/common/test_ducklake_maintenance_ops.py -k batched_expiry -q
+    expected: A 13848-snapshot fixture issues multiple bounded expire calls, none unbounded.
+    fix_if: A single unbounded expire call is issued -- add the batch loop.
+    graduation: graduate
+    graduation_check_id: expire-snapshots-batched
+  - step: 8
+    phase: pre-deploy
+    action: Anchor the fake's semantics against the real engine on the pinned runtime.
+    command: bin/venv-python -m pytest tests/common/test_ducklake_maintenance_ops.py -k real_catalog -q
+    expected: >-
+      Against a file-backed DuckLake catalog on the pinned duckdb version, list_files returns
+      current-snapshot only, merge converges to ~2 files/partition, and the deletion queue does not
+      drain after cleanup -- the three semantics the unit fakes encode.
+    fix_if: >-
+      Engine behaviour differs from the fakes -- correct the FAKES, never the assertions. If the test
+      SKIPS for a missing extension in every context, that is the rec-3759 false-green shape: record
+      where it must run and fail the plan's VP rather than accepting a universal skip.
+    graduation: waive
+    graduation_waiver_reason: >-
+      Needs the ducklake extension installed at test time, so it can skip in a constrained runner.
+      Graduating a check that may skip would register a guard whose green is not evidence -- exactly
+      the rec-3759 defect this plan exists to fix. The always-running unit checks (steps 1-7) carry
+      the regression guard; this step is their truth-anchor.
+  - step: 9
+    phase: pre-deploy
+    action: Prove the lifecycle rule is prefix-scoped and cannot touch the platform's integrity anchor.
+    command: "rg -n 'ducklake/' terraform/personal/main.tf && ! rg -n 'noncurrent_version_expiration' terraform/personal/main.tf | rg -v 'ducklake'"
+    expected: The lifecycle rule carries a ducklake/ prefix filter; no unfiltered rule exists.
+    fix_if: >-
+      A rule lacks a prefix filter -- add it. The bucket also holds tfstate/, convergence/ and tfplan/;
+      an unfiltered rule would expire the platform's own recovery substrate (Decision 92).
+    graduation: graduate
+    graduation_check_id: ducklake-lifecycle-prefix-scoped
+  - step: 10
+    phase: pre-deploy
+    action: Prove the destructive rule ships disabled and CI gains no invoke on the admin function.
+    command: "rg -n 'state *= *\"DISABLED\"' terraform/personal/ducklake_maintenance.tf && ! rg -n 'github_ci' terraform/personal/ducklake_maintenance.tf"
+    expected: The gc_ops rule is DISABLED; no CI principal appears in the admin function's file.
+    fix_if: The rule ships ENABLED or a CI principal appears -- revert both (Decision 143 blast radius).
+    graduation: graduate
+    graduation_check_id: gc-ops-rule-ships-disabled
+  - step: 11
+    phase: pre-deploy
+    action: Run the handler, smoke-gate and terraform-artifact test set.
+    command: bin/venv-python -m pytest tests/lambdas/ducklake_maintenance/handler/test_gc_ops.py tests/test_ducklake_artifacts.py -q
+    expected: >-
+      All pass, including the gate-discrimination case, the DISABLED-rule and no-CI-invoke assertions,
+      the lifecycle prefix-scoping assertion and the manifest bundling assertion.
+    fix_if: >-
+      A terraform assertion fails -- fix the .tf, never the assertion. A gate assertion fails -- the
+      gate is still vacuous; make it exercise a catalog holding superseded files.
+    graduation: graduate
+    graduation_check_id: maintenance-handler-and-artifact-suite
+  - step: 12
+    phase: pre-deploy
+    action: Full presubmit before handoff.
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: Any check fails -- fix at source; never weaken an assertion to obtain green (Decision 181).
+    graduation: not-applicable
+  - step: 13
+    phase: post-deploy
+    action: Confirm the governed CD channel deployed the maintenance artifacts.
+    command: bin/venv-python -m scripts.ci_status --workflow deploy-ducklake-lambdas.yml --latest
+    expected: deploy-maintenance and maintenance-smoke jobs green on the merge commit.
+    fix_if: Red -- read the job log and fix forward; never re-run hoping for green (Decision 55).
+  - step: 14
+    phase: post-deploy
+    action: OPERATOR (admin session) -- read-only preview of what a production GC pass would do.
+    command: aws lambda invoke --function-name agent-platform-ducklake-maintenance --profile agent_platform_admin --region eu-west-2 --cli-binary-format raw-in-base64-out --payload '{"action":"gc_ops_preview","meta_schema":"ducklake_ops"}' /tmp/gc_preview.json && cat /tmp/gc_preview.json
+    expected: >-
+      Reports live files, deletion-queue depth, orphan candidates and the throttle's planned batch;
+      reachability intersection is empty. No destructive call issued.
+    fix_if: >-
+      Non-empty intersection, or the action errors -- STOP and RCA. Do not enable the gc_ops rule.
+  - step: 15
+    phase: post-deploy
+    action: OPERATOR -- take a fresh catalog DR dump, then run ONE throttled production GC pass.
+    command: aws lambda invoke --function-name agent-platform-ducklake-maintenance --profile agent_platform_admin --region eu-west-2 --cli-binary-format raw-in-base64-out --payload '{"action":"gc_ops","meta_schema":"ducklake_ops","data_path":"s3://agent-platform-data-lake/ducklake/","confirm":"ducklake_ops"}' /tmp/gc_pass.json && cat /tmp/gc_pass.json
+    expected: files_cleaned > 0, breaker not tripped, deferred remainder reported, no live file deleted.
+    fix_if: >-
+      Breaker raises -- that is the guard working; RCA the reported reason. Never relax a threshold or
+      pass a force_* override to obtain a pass (Decision 55 / Decision 181).
+  - step: 16
+    phase: post-deploy
+    action: Record prefix storage before/after the pass as c2's bounded evidence.
+    command: aws s3 ls --recursive --summarize s3://agent-platform-data-lake/ducklake/ --profile agent_platform | tail -3
+    expected: >-
+      Current-version object count falls materially from the 37,322 baseline measured 2026-09-12.
+      Billed bytes only fall after the lifecycle noncurrent window elapses -- record both, and do not
+      read a delete-marker-only drop as reclaimed storage.
+    fix_if: Object count unchanged -- the pass deleted nothing; re-read the gc_ops return before rerunning.
+test_obligations:
+  - source: src/common/ducklake_maintenance.py
+    behavior: >-
+      The guardrail fails CLOSED -- an introspection failure raises instead of yielding a zero
+      denominator and a permissive verdict.
+    verification_step: 1
+    test_selector: tests/test_ducklake_maintenance.py::test_breaker_raises_when_catalog_introspection_fails
+    red_green_expectation: >-
+      Red before (today the shipped function returns breaker_tripped=False on a raising connection --
+      demonstrated 2026-09-12), green after.
+  - source: src/common/ducklake_maintenance_ops.py
+    behavior: >-
+      Deletion is bounded per pass with the remainder deferred, and expiry is batched rather than one
+      unbounded transaction.
+    verification_step: 4
+    test_selector: tests/common/test_ducklake_maintenance_ops.py::test_throttle_bounds_pass_and_defers_remainder
+    red_green_expectation: Red before (module absent), green after.
+  - source: src/lambdas/ducklake_maintenance/handler.py
+    behavior: >-
+      Table scope resolves from the ops_tables registry and coverage is asserted over the registry,
+      so a table the old LIKE predicate missed fails the check.
+    verification_step: 5
+    test_selector: tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py::test_discovery_covers_every_registry_table
+    red_green_expectation: >-
+      Red before (the LIKE predicate omits ops_entity_counters -- 3,418 live files, measured), green after.
+  - source: scripts/ducklake_smoke/lambda_maintenance_gates.py
+    behavior: The gc gate discriminates -- it fails against a build carrying the pre-fix breaker.
+    verification_step: 11
+    test_selector: tests/lambdas/ducklake_maintenance/handler/test_gc_ops.py::test_gc_gate_fails_on_prefix_breaker
+    red_green_expectation: >-
+      Red before (force_recreate_tables=True makes breaker_tripped=False true by construction -- five
+      consecutive green CD runs while four defects were live), green after.
+  - source: terraform/personal/main.tf
+    behavior: The lifecycle rule is prefix-filtered to ducklake/ and never reaches tfstate/ or convergence/.
+    verification_step: 11
+    test_selector: tests/test_ducklake_artifacts.py::test_lifecycle_rule_is_ducklake_prefix_scoped
+    red_green_expectation: Red before (no rule exists), green after.
+  - source: terraform/personal/ducklake_maintenance.tf
+    behavior: The destructive rule ships DISABLED and no CI principal reaches the admin function.
+    verification_step: 11
+    test_selector: tests/test_ducklake_artifacts.py::test_gc_ops_rule_disabled_and_no_ci_invoke
+    red_green_expectation: Red before (no gc_ops rule exists), green after.
+  - source: src/lambdas/ducklake_maintenance/manifest.yaml
+    behavior: The new module is bundled into the deployed artifact.
+    verification_step: 11
+    test_selector: tests/test_ducklake_artifacts.py::test_maintenance_manifest_includes_ops_module
+    red_green_expectation: Red before, green after.
+  - source: docs/ROADMAP-PLATFORM.yaml
+    behavior: Roadmap bookkeeping only -- no runtime behaviour.
+    verification_step: 12
+    command: bin/venv-python -m scripts.validate
+    red_green_expectation: >-
+      Waived -- data edit, not behaviour. Criterion truth-maintenance is enforced by
+      validate_platform_roadmap and the plan-critique gate, not by a new test.
+  - source: docs/DECISIONS.md
+    behavior: Decision-record content only -- no runtime behaviour.
+    verification_step: 12
+    command: bin/venv-python -m scripts.validate
+    red_green_expectation: >-
+      Waived -- prose artefact. Envelope/field grammar is enforced by the existing decisions-md
+      validators, not by a new behavioural test.
+constraints:
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    NEVER relax a guardrail, threshold or assertion to obtain green (Decision 55 / Decision 181).
+    This plan RETIRES a metric that cannot pass in steady state; it does not raise one. Any temptation
+    to pass force_file_fraction / force_byte_budget against production is out of bounds.
+  - >-
+    The lifecycle rule MUST carry a ducklake/ prefix filter. agent-platform-data-lake also holds
+    tfstate/, convergence/ and tfplan/ -- an unfiltered rule would expire the platform's own recovery
+    substrate (Decision 92; the bootstrap policy already names this bucket the integrity anchor).
+  - >-
+    ops_entity_counters is the writer's OCC keyspace serialization row (Decision 84 I-2). It must not
+    be compacted inside the every-6h merge_ops pass: 3,418 tiny files would push the invocation past
+    the 300s timeout and take the other tables with it, and the merge commit conflicts with in-flight
+    rec-id allocation while the maintenance path has no retry budget.
+  - >-
+    No CI identity gains invoke on the admin-gated ducklake_maintenance function (Decision 143).
+    Enabling the gc_ops rule is an operator action, recorded in VP steps 13-14.
+  - >-
+    terraform/personal is CI-delegated: no local terraform init/validate/plan (Decision 119). Code
+    deploys ride the governed CD channel, never build_lambda --deploy (Decision 125/126).
+  - >-
+    Decision 177: Decision 81 and Decision 88 bodies are append-only -- both edits land as dated
+    appended lines, never an in-place body rewrite.
+  - >-
+    SLOC governance -- decompose into the new module rather than raising a budget (Decision 128).
+context:
+  - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 88, Decision 81, Decision 84, Decision 143, Decision 62, Decision 61, Decision 186, Decision 177, Decision 167, Decision 136, Decision 128, Decision 55, Decision 99, Decision 126, Decision 125, Decision 79, Decision 131, Decision 100, Decision 137, Decision 170, Decision 155, Decision 92, CD.33, CD.34"
+  - "Decisions triaged: 140 of 140; Roadmap items intersected: 7; CONFLICT: 1; RELATED: 6"
+  - "gates: decision-scout=FLAGS_FOUND (3 rounds, flags dispositioned); plan-critique=<verdict> after <N> round(s)"
+  - "Measured 2026-09-12 (catalog_stats, production ducklake_ops): live tracked files 12,887; scheduled_for_deletion 22,044; S3 current objects 37,322 (241 MiB) => 2,391 untracked; file_column_stats 196,051 rows / 36.6 MB (~15.2/live file); snapshots 13,848."
+  - "Per-table live/partition: ops_decisions_current 3909/9; ops_recommendations_current 3011/9; ops_recommendations_history 2493/32; ops_decisions_history 79/30; ops_entity_counters 3418/unpartitioned."
+  - "Lab results, pinned duckdb 1.5.4 / ducklake v1.0 (Decision 99): ducklake_list_files returns current-snapshot files only; merge never crosses a partition; a working cadence converges to ~2 live files/partition; the deletion queue is NOT drained by cleanup, so dry-run counts are cumulative; steady-state file_fraction 0.67/0.81/0.92 vs a 0.20 threshold."
+  - "Decision 88 clause 1(iii) requires merge on ALL live ops_* tables -- the LIKE predicate has been non-conformant since inception. Clause 4's D3b gate is CLEARED (rec-2113 closed; T2.26 c1 met 2026-07-04); record the clearance as a dated appended line."
+  - "T2.18:c2 was already re-grounded 2026-09-10 (rec-3579). This plan re-grounds it a SECOND time, so c2 retains one EXECUTED production pass (VP14-15) as bounded evidence; only the open-ended soak moves to a monitor plus rec-3763's successor. Naming the prior re-grounding is required (Decision 181)."
+  - "T2.18:c6 is status met and its text pins the retired '>20% files or >10GB' metric -- rewrite it in the same staged edit or it becomes a met criterion that no longer adjudicates true (Decision 136)."
+  - "T2.18:c8 (breaker co-tuning) is status rehomed, met_by T2.26 -- flip to open and clear met_by. NOT T2.26:c8, which is the ops_session_log view retirement."
+  - "_dep_satisfied requires status == complete; T2.36 depends_on [T2.26, T2.18] and gates T3.2->T3.3->T3.4->T4.x. A wall-clock soak inside c2 would stall the critical path on a clock, not on engineering."
+  - "The self-report duplicates data CloudWatch holds but no identity can read; Decision 88 clause 2 already ratifies the read-only psycopg2 catalog path as the supported measurement route (direct CloudWatch reads are IAM-blocked by design). rec-3763 is the named dependency that would retire it."
+  - "Deferred deliberately: the rec-3763 IAM grant (PlatformAdmin/PlatformDev are outside the agent-platform- in-budget prefix, so it routes to human-gated apply); replacing the counter row with a Postgres sequence; making the DECISIONS.md backfill diff-only; auditing the other three maintenance gates for vacuous green."
+  - "Lifecycle retention is set to 30 days, derived from the catalog-DR bucket's 30-day dump expiry: a restore of the oldest retained dump must not reference hard-expired versions. A Fable consult independently suggested 14 days without engaging that constraint -- flagged for plan-critique."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read (81 cl.6, 88 cl.1(iii)+cl.2+cl.4, 84 I-2, 143, 55, 177, 136)
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - config/lambda/ducklake/field_semantics.yaml ops_tables read as the scope registry
+execution_steps:
+  - >-
+    Replace check_gc_breaker in src/common/ducklake_maintenance.py: delete file_fraction and the bare
+    except blocks in _collect_file_paths/_dry_run_*/_count_files/_sum_file_bytes so introspection
+    failure RAISES; implement G1 reachability (would_delete intersect live must be empty), G2
+    retention-floor re-assertion after expiry, G3 catalog-sanity precondition (abort if a table's live
+    set is empty or live bytes dropped beyond an absolute bound vs the last recorded pass), and G4 a
+    per-pass deletion throttle that bounds work and defers the remainder. Take would-delete byte sizes
+    from the dry-run's own size column, never from the current-snapshot dict.
+  - >-
+    Create src/common/ducklake_maintenance_ops.py: resolve table scope from field_semantics.yaml
+    ops_tables (live entries), expose a coverage assertion over the registry, implement batched
+    expire_snapshots, the throttled destructive pass, the read-only preview, and the self-report
+    payload. Retire GC_TABLE_SCOPE/HOT_TABLE_SCOPE as a second scope source.
+  - >-
+    Modify src/lambdas/ducklake_maintenance/handler.py: add gc_ops (confirm=<meta_schema> guard
+    mirroring catalog_reinit), gc_ops_preview and maintenance_report; repoint action_merge_ops at the
+    registry resolver and the public file-count accessors (rec-2216/2218/2220); compact
+    ops_entity_counters only via its own invocation; attach the self-report payload to every
+    merge_ops return; file a rec through the portal on merge failure or timeout (Decision 62/61).
+  - >-
+    Update src/lambdas/ducklake_maintenance/manifest.yaml to bundle the new module.
+  - >-
+    Rewrite scripts/ducklake_smoke/lambda_maintenance_gates.py's gc gate to pre-age a fixture and
+    assert files_cleaned > 0 plus a negative case that must trip; note in-code which of the other
+    three gates share the vacuous-green shape.
+  - >-
+    Terraform: add the gc_ops_preview rule (ENABLED), the gc_ops rule (state = "DISABLED"), the
+    counters-merge invocation, Errors/Throttles/Duration alarms and a merge heartbeat in
+    ducklake_maintenance.tf; add the ducklake/-prefix-filtered lifecycle configuration (30d
+    noncurrent, expired_object_delete_marker, 7d abort_incomplete_multipart_upload) in main.tf.
+  - >-
+    Write the tests named in test_obligations, each failing against current main before the fix.
+  - >-
+    Author the new Decision in docs/DECISIONS.md amending Decision 81 clause 6 / CD.33 H1, with the
+    typed significance envelope (Decision 167), the measured 0.67/0.81/0.92 evidence, the fail-open
+    demonstration, dispositions for ops_entity_counters partitioning (Decision 137) and the
+    partial-completion contract (Decision 155), and the clause "this does not raise a threshold; it
+    replaces a metric that could never pass in steady state with one whose healthy value is zero".
+    Append the dated Decision 88 D3b clearance line (Decision 177 -- append, never rewrite).
+  - >-
+    Stage docs/ROADMAP-PLATFORM.yaml: flip c8 rehomed->open clearing met_by; rewrite c6 to the new
+    guard set; re-ground c2 naming the 2026-09-10 re-grounding and retaining one executed pass.
+  - >-
+    Execute the Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop
+    and RCA (Decision 55).
+  - 'Report: what was implemented, verification results, and which acceptance criteria are evidenced.'
+work_areas: []
+rollback: >-
+  The gc_ops EventBridge rule ships DISABLED, so no scheduled destructive pass exists until an
+  operator enables it -- rollback is disabling that rule. Deletions performed by an executed pass are
+  recoverable for the lifecycle noncurrent window (bucket versioning is ENABLED and the maintenance
+  role holds s3:DeleteObject but NOT s3:DeleteObjectVersion, so a pass creates delete markers and
+  cannot destroy a version); recovery is removing the delete markers under ducklake/. The guardrail
+  and merge-scope changes are pure code and revert with the commit.
