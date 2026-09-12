@@ -1,0 +1,576 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: plan-obligations-surface-completeness
+intent: >-
+  Stop the plan-scope registration-closure gate actively misinforming planning agents: give
+  docs/contracts/plan-obligations.yaml a closed, mechanically-admitted grammar for the
+  registration surfaces it cannot express as companion scope rows, so a planner composing a
+  new-check or new-workflow plan is told what landing it mechanically requires at compose time
+  rather than at critique round 4.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-plan-obligations-surface-completeness.yaml
+phase: >-
+  Platform governance hardening -- plan-time obligation surfacing. Names NO tier_item and adds no
+  roadmap row (soft-warn exception category ad_hoc_rec), so the Tier Item Freshness Gate is
+  skipped. RELATED (not targeted): T2.54 (not_started -- bidirectional clause-to-check
+  traceability; this plan's enforced_elsewhere rows are clause-to-check edges that seed its
+  index rather than adding orphan-clause debt), T2.56 (in_progress -- skills-layer shrink; this
+  plan routes two rec-requested obligations into the contract instead of .claude/skills/
+  planning/SKILL.md prose, moving toward T2.56:c1).
+scope:
+  - file: docs/contracts/plan-obligations.yaml
+    action: Modify
+    purpose: >-
+      Remove the restated surface count; name the unmodeled surfaces and why; add the
+      enforced_elsewhere section (accounting declaration -> validate_check_accounting) and the
+      second registration_surfaces rule (new workflow -> ci_rca_taxonomy row); one amendment_log
+      entry covering every body edit.
+  - file: scripts/roadmap/plan_obligations.py
+    action: Modify
+    purpose: >-
+      Add the five-guard grammar validator (validate_obligation_grammar) and emit the
+      enforced_elsewhere pointer section from build_report. _derive_findings and evaluate_plan
+      stay scope-row-only so the registered check's gating behaviour is unchanged.
+  - file: scripts/checks/roadmap/validate_plan_scope_closure.py
+    action: Modify
+    purpose: >-
+      Add the unconditional grammar-validation leg so a contract-only edit fails CI even when no
+      plan appears in the diff (no manifest change needed -- pre_globs already carries
+      docs/contracts/plan-obligations.yaml, scripts/checks/roadmap/_manifest.py:128), AND adopt
+      the dec-170 examined()/skipped() declaration on every reachable exit path, which editing
+      this baselined module obliges in the same PR.
+  - file: config/check_accounting_baseline.yaml
+    action: Modify
+    purpose: >-
+      Strike the validate_plan_scope_closure entry (line 78) as that module adopts its dec-170
+      declaration. The baseline is shrink-only, so removal is always permitted; the frozen
+      _BASELINE_SEED ceiling is deliberately left untouched (a stale seed name is harmless -- arm
+      (b) tests current_baseline - _BASELINE_SEED, i.e. growth only; pruning it is rec-3622).
+  - file: tests/test_plan_obligations.py
+    action: Modify
+    purpose: >-
+      Red-before/green-after coverage for each of the five admission guards, the
+      enforced_elsewhere report section, and the new workflow rule.
+  - file: tests/checks/roadmap/test_validate_plan_scope_closure.py
+    action: Modify
+    purpose: >-
+      Mirror-test coverage that the grammar leg fails a malformed contract and that an
+      enforced_elsewhere entry never reaches `failed` (the gate stays scope-row-only).
+bundled_recommendations:
+  - rec-3747
+  - rec-3726
+  - rec-2736
+  - rec-2672
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    docs/contracts/plan-obligations.yaml states no restated count of registry.py's surface
+    enumeration (no "six"/"seven registration surfaces" literal) and points at
+    scripts/checks/registry.py as the authoritative enumeration.
+  - >-
+    An enforced_elsewhere entry is admissible only when all FIVE guards hold: G1 it carries no
+    path_template (a derivable companion path makes it a requires row); G2 enforced_by resolves
+    in registry.all_checks(); G3 enforced_by appears in registry.pre_sequence() or
+    full_sequence(); G4 why_not_a_scope_row is present and non-empty; G5 the entry's declared
+    fires_on list contains the enclosing rule's trigger.action. G1-G4 rest on facts external to
+    the author (the live registry and tier sequences); G5 is a DECLARATION-CONSISTENCY guard that
+    makes the reachability question visible and reviewable, NOT a proof of reachability -- an
+    author who writes a wrong fires_on still passes it. Verifying an arbitrary enforcer's real
+    trigger reachability is unmechanised and belongs to T2.54's clause-to-check inversion; that
+    residual is named in the contract rather than implied away (dec-181 declare-your-coverage).
+  - >-
+    Under the new_check_module rule each of registry.py's seven surfaces sits in exactly one
+    bucket, with no surface in two: surface 1 is the triggering row itself; surfaces 3, 4 and 6
+    are the existing requires rows; surfaces 5 (graduated verification-registry shard ->
+    validate_graduation_completeness) and 7 (dec-170 accounting declaration ->
+    validate_check_accounting) are enforced_elsewhere rows; surface 2 (the @register decoration)
+    is a named UNENFORCED residual in purpose, having no enforcer that satisfies G2+G3 (dec-181
+    point 2). registry.py's own numbering is used verbatim -- the contract mints no sub-numbering
+    of its own.
+  - >-
+    Violating any of the five guards fails validate_plan_scope_closure on a contract-only diff,
+    with no plan file present in the diff.
+  - >-
+    build_report emits the enforced_elsewhere pointer section whenever a rule's trigger fires,
+    naming validate_check_accounting for the Decision 170 accounting declaration.
+  - >-
+    An enforced_elsewhere entry never reaches `failed`: for a frozen set of scope tables,
+    validate_plan_scope_closure's `failed` list is asserted equal to an explicit expected list,
+    unchanged from its pre-change values.
+  - >-
+    A plan scope row creating .github/workflows/*.yml without a config/ci_rca_taxonomy.yaml row
+    is reported as an unmet obligation.
+  - >-
+    rec-3747 and rec-2736 acceptance oracles are updated in a portal call separate from and prior
+    to their closure, and each of the three replacement oracle probes (grammar symbol, accounting
+    pointer, workflow rule) is demonstrated absent at the merge-base commit.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: G1 red case -- an enforced_elsewhere entry carrying a path_template is rejected
+    command: bin/venv-python -m pytest tests/test_plan_obligations.py::TestObligationGrammar::test_enforced_elsewhere_rejects_path_template -q
+    expected: PASS -- the validator returns a finding naming the offending entry and G1
+    fix_if: >-
+      Validator ignores path_template on enforced_elsewhere entries, so an obligation with a
+      derivable companion path can be misfiled into the non-gating section.
+    graduation: graduate
+    graduation_check_id: plan-obligations-grammar-guard-g1
+    hermetic: true
+  - step: 2
+    phase: pre-deploy
+    action: G2 red case -- enforced_by naming a non-registered check is rejected
+    command: bin/venv-python -m pytest tests/test_plan_obligations.py::TestObligationGrammar::test_enforced_by_must_be_registered -q
+    expected: PASS -- finding names the unresolvable check and G2
+    fix_if: enforced_by accepts arbitrary prose, making the pointer unverifiable.
+    graduation: graduate
+    graduation_check_id: plan-obligations-grammar-guard-g2
+    hermetic: true
+  - step: 3
+    phase: pre-deploy
+    action: G3 red case -- enforced_by naming a registered but undispatched check is rejected
+    command: bin/venv-python -m pytest tests/test_plan_obligations.py::TestObligationGrammar::test_enforced_by_must_be_dispatched -q
+    expected: PASS -- finding names the check and that it appears in no tier sequence
+    fix_if: >-
+      A check absent from both pre_sequence() and full_sequence() is accepted as an enforcer.
+      It can never fail anything, so "enforced elsewhere" would be a false claim -- this is the
+      guard that makes the section's name true rather than asserted.
+    graduation: graduate
+    graduation_check_id: plan-obligations-grammar-guard-g3
+    hermetic: true
+  - step: 4
+    phase: pre-deploy
+    action: G4 red case -- a missing or empty why_not_a_scope_row is rejected
+    command: bin/venv-python -m pytest tests/test_plan_obligations.py::TestObligationGrammar::test_why_not_a_scope_row_required -q
+    expected: PASS -- finding names the entry and G4
+    fix_if: Entries admissible with no justification, reopening the catch-all failure mode.
+    graduation: graduate
+    graduation_check_id: plan-obligations-grammar-guard-g4
+    hermetic: true
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      G5 red case -- an enforced_elsewhere entry whose fires_on omits the enclosing rule's
+      trigger.action is rejected
+    command: bin/venv-python -m pytest tests/test_plan_obligations.py::TestObligationGrammar::test_fires_on_must_cover_rule_trigger_action -q
+    expected: PASS -- finding names the entry, its declared fires_on, the rule's trigger.action and G5
+    fix_if: >-
+      A Modify-only enforcer is admissible under a Create rule. This is the round-2 defect shape:
+      validate_tier_demotion_markers is registered and sequenced (so G1-G4 all pass) yet cannot
+      fire for a net-new check, because it derives its protected set from the git base ref.
+    graduation: graduate
+    graduation_check_id: plan-obligations-grammar-guard-g5
+    hermetic: true
+  - step: 6
+    phase: pre-deploy
+    action: Green case -- the live contract satisfies all five guards
+    command: bin/venv-python -m pytest tests/test_plan_obligations.py::TestObligationGrammar::test_live_contract_is_admissible -q
+    expected: PASS -- validate_obligation_grammar returns an empty finding list for the shipped contract
+    fix_if: The shipped contract violates its own grammar -- fix the contract, never the guard.
+    graduation: graduate
+    graduation_check_id: plan-obligations-live-contract-grammar-clean
+    hermetic: true
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      Contract-only diff fails CI -- the grammar leg runs with no plan file in the diff
+      (the registered check, not just the engine)
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_plan_scope_closure.py::TestGrammarLeg::test_malformed_contract_fails_with_no_plans_in_diff -q
+    expected: PASS -- `failed` is non-empty for a malformed contract and an empty plan_paths list
+    fix_if: >-
+      The grammar leg is gated behind plan discovery, so an agent can add a bad enforced_elsewhere
+      row and nothing fires until someone later authors a new-check plan.
+    graduation: graduate
+    graduation_check_id: plan-obligations-grammar-leg-unconditional
+    hermetic: true
+  - step: 8
+    phase: pre-deploy
+    action: >-
+      rec-3747 behavioural oracle -- the CLI report on a fixture plan creating a new check module
+      names validate_check_accounting
+    command: bin/venv-python -m pytest tests/test_plan_obligations.py::TestEnforcedElsewhereReport::test_new_check_module_report_names_accounting_enforcer -q
+    expected: PASS -- report text contains validate_check_accounting and the Decision 170 surface label
+    fix_if: >-
+      The pointer section is omitted or fires only when `requires` findings exist; it must fire
+      whenever the rule's trigger matches, including on an otherwise closure-complete plan --
+      that closure-complete case is exactly the live miss rec-3747 recorded.
+    graduation: graduate
+    graduation_check_id: plan-obligations-accounting-pointer-reported
+    hermetic: true
+  - step: 9
+    phase: pre-deploy
+    action: >-
+      rec-2736 behavioural oracle -- a new .github/workflows/*.yml scope row without a
+      ci_rca_taxonomy row is reported as an unmet obligation
+    command: bin/venv-python -m pytest tests/test_plan_obligations.py::TestWorkflowRule::test_new_workflow_requires_taxonomy_row -q
+    expected: PASS -- finding names config/ci_rca_taxonomy.yaml and the triggering workflow row
+    fix_if: >-
+      Trigger pattern misses .yaml (only .yml) or matches nested paths; validate_ci_rca_taxonomy
+      enumerates .github/workflows/*.yml display names, so the pattern must match what that check
+      actually reads.
+    graduation: graduate
+    graduation_check_id: plan-obligations-workflow-taxonomy-rule
+    hermetic: true
+  - step: 10
+    phase: pre-deploy
+    action: >-
+      Gating behaviour unchanged -- an enforced_elsewhere entry never reaches `failed`
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_plan_scope_closure.py::TestGatingUnchanged -q
+    expected: >-
+      PASS -- `failed` is asserted EQUAL to an explicit expected list (not merely empty/non-empty)
+      for both fixtures: empty for a scope table whose only omission is an enforced_elsewhere
+      surface, and the same per-omission label strings as before for one omitting a requires path
+    fix_if: >-
+      The pointer section leaks into the gate, producing an unpassable gate (the obligation is
+      file content inside the triggering row's own file, so no scope row can ever satisfy it).
+    graduation: graduate
+    graduation_check_id: plan-obligations-enforced-elsewhere-never-gates
+    hermetic: true
+  - step: 11
+    phase: pre-deploy
+    action: rec-3726 oracle -- the restated count is gone and the authoritative pointer is present
+    command: bash -c 'F=docs/contracts/plan-obligations.yaml; N=$(tr "\n" " " < $F); ! grep -qiE "\b(one|two|three|four|five|six|seven|eight|nine|ten|[0-9]+)[[:space:]]+registration surfaces\b" <<<"$N" && grep -q "registration surfaces enumerated in scripts/checks/registry.py" <<<"$N"'
+    expected: >-
+      exit 0. The second conjunct is rec-3726's EXACT filed oracle string (a plan closing a rec
+      "as filed" must run the filed oracle, not a weaker substring); it already matches the live
+      contract, so only the negated first conjunct discriminates -- it must catch ANY numeric
+      qualifier IMMEDIATELY qualifying "registration surfaces" (whitespace only between), and
+      newlines are folded first so a count split across a YAML wrap cannot evade it. Verified at
+      plan time against three cases: reds on the live pre-fix contract, greens on a count-removed
+      sample, and reds on the "3 of seven registration surfaces" paraphrase. The adjacency matters
+      -- a looser "number within 40 chars" form also matches the legitimate "This is 3 of the ..."
+      count of obligations THIS map models, making the guard unpassable
+    fix_if: >-
+      A count literal survives anywhere in the contract. Correcting six to seven is NOT the fix --
+      it resets the drift clock for surface 8. Remove the count; point at registry.py.
+    graduation: graduate
+    graduation_check_id: plan-obligations-no-restated-count
+    hermetic: true
+  - step: 12
+    phase: pre-deploy
+    action: >-
+      Oracle monotonicity -- all three replacement oracle probes are absent at the merge-base
+      commit (a replacement oracle that already passes pre-fix is a rubber stamp by construction)
+    command: bash -c 'B=$(git merge-base HEAD origin/main); ! git show "$B:scripts/roadmap/plan_obligations.py" | grep -q "validate_obligation_grammar" && ! git show "$B:docs/contracts/plan-obligations.yaml" | grep -q "enforced_elsewhere" && ! git show "$B:docs/contracts/plan-obligations.yaml" | grep -q "github/workflows"'
+    expected: >-
+      exit 0 -- none of the three probed symbols (grammar validator, enforced_elsewhere section,
+      workflow rule) exists at the merge base, proving each replacement oracle discriminates
+      pre-fix from post-fix state
+    fix_if: >-
+      A probe already matches at the merge base, so that oracle proves nothing about this change --
+      re-scope it to the mechanism its rec actually complains about. Read-only by construction:
+      `git show` never touches the working tree, so this step must NEVER be written with
+      git stash/git stash pop (a failed stash short-circuits into a false green, and an
+      unguarded pop can restore an unrelated stash over the work).
+    graduation: waive
+    graduation_waiver_reason: >-
+      Discriminates only across this one merge-base transition and is false by design once merged,
+      so a standing regression guard would assert a permanently-failing condition. The durable
+      guards are steps 1-11, 15 and 16.
+    hermetic: false
+  - step: 13
+    phase: pre-deploy
+    action: Full fast-tier presubmit over the change
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: >-
+      Any check red. Likely responders: validate_check_accounting (leg (d) touch-it-fix-it fires
+      the moment validate_plan_scope_closure.py is edited while still baselined, and leg (a) the
+      moment it is struck from the baseline without declaring -- see steps 15/16),
+      validate_check_manifests, validate_ci_rca_taxonomy and validate_contract_drift (the contract
+      gains a section and an amendment_log entry).
+    graduation: not-applicable
+    hermetic: false
+  - step: 14
+    phase: pre-deploy
+    action: >-
+      Rec closure -- oracle updates land in portal calls separate from and prior to closure, then
+      the bundled recs read back closed
+    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib; want={'rec-3747':'closed','rec-3726':'closed','rec-2736':'closed','rec-2672':'superseded'}; rows=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()]; got={r['id']:r.get('status') for r in rows if r.get('id') in want}; bad={k:(want[k],got.get(k)) for k in want if got.get(k)!=want[k]}; print('wrong status (want,got):',bad); raise SystemExit(1 if bad else 0)"
+    expected: >-
+      exit 0 -- rec-3747, rec-3726 and rec-2736 read back `closed`; rec-2672 reads back
+      `superseded`, its substantively correct terminal status (canonical set: open, closed,
+      failed, declined, superseded)
+    fix_if: >-
+      A rec carries the wrong terminal status. Do NOT edit logs/.recommendations-log.jsonl -- it is
+      a read cache; re-issue through scripts.ops_data_portal. Do NOT "fix" a red here by closing
+      rec-2672 as `closed`: its supersession by dec-169 is the correct resolution, and weakening
+      the oracle to match a wrong write violates constraint 2 (dec-181 CONTENT invariant).
+    graduation: not-applicable
+    hermetic: false
+  - step: 15
+    phase: pre-deploy
+    action: >-
+      dec-170 declaration adopted on every reachable exit path of validate_plan_scope_closure
+    command: bin/venv-python -m pytest tests/checks/roadmap/test_validate_plan_scope_closure.py::TestAccountingDeclaration -q
+    expected: >-
+      PASS -- EXACTLY ONE declaration per reachable exit, and no skipped() anywhere. The grammar
+      leg runs first and always examines the contract, so the no-plans exit declares
+      examined(1, unit="artefacts") and the evaluating exit declares
+      examined(1 + len(paths), unit="artefacts"). A contract-only diff has zero plans but is NOT a
+      vacuous run, and skipped() is reserved for "could not examine", never "examined nothing"
+      (registry.skipped docstring / check-accounting.yaml discrimination rule). An unreadable
+      contract is a FINDING, not a skip, so no could-not-examine path exists to declare
+    fix_if: >-
+      A reachable exit declares nothing (derive_status yields "undeclared"), declares twice (the
+      slot is last-write-wins -- examined()/skipped() each assign _CURRENT_DECLARATION outright
+      and pop_declaration() harvests one value, so two calls on one path silently collapse), or
+      declares skipped() on the grammar-leg-only exit (which reports "skipped" for a run that DID
+      examine the contract -- the vacuous/enforced conflation dec-170 exists to prevent).
+    graduation: graduate
+    graduation_check_id: plan-scope-closure-accounting-declared
+    hermetic: true
+  - step: 16
+    phase: pre-deploy
+    action: >-
+      The accounting ratchet is green with validate_plan_scope_closure struck from the baseline
+    command: bin/venv-python -c "from scripts.checks.hygiene.validate_check_accounting import validate_check_accounting; f=[]; validate_check_accounting(f); print(f); raise SystemExit(1 if f else 0)"
+    expected: exit 0 -- leg (a) satisfied by the new declaration; shrink-only arms (b)/(c) unbothered by a removal
+    fix_if: >-
+      Leg (a) red means the declaration is missing or unreachable. Arm (c) red would mean the
+      baseline GREW -- never the case for a strike; re-read the diff. Do NOT re-add the entry to
+      dodge leg (a), and do NOT edit the frozen _BASELINE_SEED.
+    graduation: graduate
+    graduation_check_id: check-accounting-ratchet-green-post-strike
+    hermetic: false
+  - step: 17
+    phase: pre-deploy
+    action: Full-tier validation before handoff, as handoff_policy declares
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0 -- completed full tier, no failed checks
+    fix_if: >-
+      Any check red at the full tier that the fast tier did not select. Do not commit on a timeout
+      (handoff_policy.timeout_disposition is blocked -- resume later and rerun full from the start).
+    graduation: not-applicable
+    hermetic: false
+test_obligations:
+  - source: scripts/roadmap/plan_obligations.py
+    behavior: >-
+      The five admission guards reject an inadmissible enforced_elsewhere entry, and the pointer
+      section is emitted without ever entering the gating finding list.
+    verification_step: 1
+    test_selector: tests/test_plan_obligations.py::TestObligationGrammar::test_enforced_elsewhere_rejects_path_template
+    red_green_expectation: >-
+      red before (validate_obligation_grammar does not exist; enforced_elsewhere keys are
+      silently ignored by load_obligation_map), green after
+  - source: scripts/roadmap/plan_obligations.py
+    behavior: >-
+      G5 rejects an enforced_elsewhere entry whose declared fires_on omits the enclosing rule's
+      trigger.action, so a Modify-only enforcer cannot be admitted under a Create rule.
+    verification_step: 5
+    test_selector: tests/test_plan_obligations.py::TestObligationGrammar::test_fires_on_must_cover_rule_trigger_action
+    red_green_expectation: >-
+      red before (no fires_on key is read at all -- load_obligation_map ignores unrecognised keys
+      and _derive_findings never inspects them), green after
+  - source: scripts/checks/roadmap/validate_plan_scope_closure.py
+    behavior: >-
+      The grammar leg runs unconditionally, so a contract-only diff with no plan file present
+      still fails on a malformed obligation map.
+    verification_step: 7
+    test_selector: tests/checks/roadmap/test_validate_plan_scope_closure.py::TestGrammarLeg::test_malformed_contract_fails_with_no_plans_in_diff
+    red_green_expectation: >-
+      red before (the check returns early with "no net-new IMPLEMENTATION plan" and never reads
+      the contract), green after
+  - source: scripts/checks/roadmap/validate_plan_scope_closure.py
+    behavior: >-
+      Every reachable exit declares examined() exactly once (never twice, never skipped()), so the
+      check can never report an undeclared or falsely-skipped outcome once struck from the
+      shrink-only accounting baseline.
+    verification_step: 15
+    test_selector: tests/checks/roadmap/test_validate_plan_scope_closure.py::TestAccountingDeclaration
+    red_green_expectation: >-
+      red before (the module declares nothing -- 0 examined()/skipped() call sites -- and rides
+      config/check_accounting_baseline.yaml:78), green after
+  - source: config/check_accounting_baseline.yaml
+    behavior: >-
+      Striking validate_plan_scope_closure leaves the ratchet green -- leg (a) satisfied by the
+      module's new declaration, and the shrink-only arms unbothered because a removal never grows
+      the roster.
+    verification_step: 16
+    command: bin/venv-python -c "from scripts.checks.hygiene.validate_check_accounting import validate_check_accounting; f=[]; validate_check_accounting(f); print(f); raise SystemExit(1 if f else 0)"
+    red_green_expectation: >-
+      red before (striking the entry without adopting the declaration reds leg (a); editing the
+      module while baselined reds leg (d)), green after
+  - source: docs/contracts/plan-obligations.yaml
+    behavior: >-
+      The shipped obligation map satisfies its own grammar and carries no restated surface count.
+    verification_step: 6
+    test_selector: tests/test_plan_obligations.py::TestObligationGrammar::test_live_contract_is_admissible
+    red_green_expectation: >-
+      red before (the live contract has no enforced_elsewhere section and states "of the six
+      registration surfaces"), green after
+constraints:
+  - Only modify files in the Scope table (Decision 59 LOCATION invariant).
+  - >-
+    Decision 181 CONTENT invariant -- no assertion, VP step, or acceptance oracle is weakened to
+    obtain green. Replacement oracles must be demonstrably stronger (step 12).
+  - >-
+    Do NOT add a new registered check. Seven registration surfaces to fix a seven-surface
+    omission is the wrong trade; the grammar leg attaches to the existing
+    validate_plan_scope_closure.
+  - >-
+    Do NOT make _derive_findings, evaluate_plan, or the registered check's gating verdict
+    content-aware. The seventh surface is content inside the triggering row's own file; gating on
+    it would be an unpassable gate.
+  - >-
+    Do NOT add prose to .claude/skills/planning/SKILL.md or .claude/commands/plan.md -- both
+    already invoke the advisory CLI, which is where the new output lands (Decision 86 routing,
+    T2.56:c1).
+  - >-
+    Do NOT promote plan-obligations.yaml out of provisional_v0 and do NOT draft a numbered
+    Decision -- this is mechanism plus data, which the contract header routes away from Decisions.
+    Record the design in one amendment_log entry.
+  - >-
+    Oracle discipline -- an acceptance-oracle update is a separate, prior portal call from the
+    close (so rec_history shows the goalpost move as its own event), never a single
+    update_rec(status=closed, acceptance=...) write.
+  - >-
+    Striking validate_plan_scope_closure from config/check_accounting_baseline.yaml is a SHRINK,
+    the only sanctioned direction. Never re-add an entry, never grow the baseline, never edit the
+    frozen _BASELINE_SEED, and never dodge leg (a) by leaving the module baselined.
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    Omit the `Resolves:` trailer from the squash-merge commit; close the four recs via explicit
+    portal calls instead (see context -- rec-3738).
+context:
+  - >-
+    Decision-scout FLAGS_FOUND. CITE -- dec-168, dec-170, dec-181, dec-66, dec-86, dec-169,
+    dec-132, dec-48. RELATED -- dec-60, dec-128, dec-165, dec-187, dec-59, dec-118, dec-103,
+    dec-163. Decisions triaged 140 of 140. Roadmap intersected 3; CONFLICT 1 (T2.54); RELATED 1.
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 4 round(s); round 4 autonomous"
+  - >-
+    Design premise (verified) -- all three existing `requires:` rows are ALREADY hard-enforced
+    elsewhere (validate_check_manifests, validate_ci_rca_taxonomy 1b, validate_red_case_floor).
+    The gate never enforced anything; it mirrors PR-time walls at compose time (dec-66), so the
+    unmodeled surfaces are the same row kind with a non-path shape. dec-163 SPIRIT and the T2.54
+    CONFLICT both resolve via G3 (enforced_by must be sequenced): an entry cannot point at a check
+    that never runs, and each row is a clause-to-check edge seeding T2.54 rather than orphan debt.
+  - >-
+    dec-103 -- rec-3747's filed oracle demands the literal "seven registration surfaces" (the drift
+    rec-3726 objects to); rec-2736's demands SKILL.md prose (against T2.56:c1). Both replaced with
+    stronger mechanism-probing oracles (VP 8, 9) under the separate-call + monotonicity discipline
+    (VP 12). rec-3726 satisfied as filed. rec-2672 is SUPERSEDE not fix (oracle names "registry.py
+    imports", retired by dec-169); no code here targets it.
+  - >-
+    rec-3738 DEFERRAL -- Related-Work Check fails all three conditions (different file, Decision,
+    failure category); 0 prior deferrals; deferred at operator direction, another agent
+    investigating. Consequence handled: it reddens rec-autoclose for any trailer-named rec lacking
+    context_v2_json and all four bundled recs qualify, so this plan omits the Resolves trailer.
+  - >-
+    Critique history (full account in the commit bodies). r2 B3 is why G5 exists: r2 caught an
+    inert row here -- validate_tier_demotion_markers derives its protected set from the git base
+    ref, so it can never fire under a Create trigger, yet G3 admitted it; row dropped as a
+    modify-Entry obligation AND G5 added. r1 F1: editing validate_plan_scope_closure.py reds
+    validate_check_accounting leg (d) (baselined at line 78, declares nothing) -- handled by VP
+    15/16. Accepted cost: a malformed-contract red attributes to validate_plan_scope_closure in
+    the ci_rca taxonomy, preferred over minting an eighth registration surface.
+  - >-
+    _manifest.py:128 already lists the contract in pre_globs -- no manifest edit needed. Class D
+    bodies escape extra="forbid" (only the `contract:` envelope is validated), so an unrecognised
+    enforced_elsewhere key is silently dropped today; the grammar validator closes that. dec-168 --
+    ONE amendment_log entry covers every body edit. dec-128 -- plan_obligations.py 212 SLOC,
+    unregistered, ample headroom. Full derivation from the check fleet is OUT of scope (nothing
+    declares "I obligate X on new-check plans") -- that inversion is T2.54, effort L. Branch 1
+    behind origin/main; sole diverging file PLAN-skills-layer-prose-relocation.yaml, no overlap.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - >-
+    scripts/checks/registry.py module docstring read (the authoritative seven-surface enumeration
+    this contract must stop restating)
+execution_steps:
+  - >-
+    scripts/roadmap/plan_obligations.py -- add validate_obligation_grammar(contract_path) ->
+    list[str], never raising, applying G1 (a requires entry MUST carry path_template; an
+    enforced_elsewhere entry MUST NOT), G2 (enforced_by in registry.all_checks()), G3 (enforced_by
+    in the names of registry.pre_sequence() + full_sequence()), G4 (why_not_a_scope_row present
+    and non-empty), G5 (the entry's declared `fires_on` list contains the enclosing rule's
+    trigger.action). G5 is a declaration-consistency guard, not a reachability proof: G3 only asks
+    whether an enforcer RUNS, never whether it can fire for THIS trigger shape, so G5 forces the
+    author to state fires_on and makes a Modify-only enforcer under a Create rule reviewable. It
+    does NOT detect a mis-declared fires_on -- that residual is plan-critique's and T2.54's, and
+    the contract must say so rather than imply the question is settled. Keep the module's
+    exception-contained contract -- a malformed contract yields
+    findings, never an exception. Call registry.all_checks()/pre_sequence()/full_sequence() at
+    CHECK-BODY time only, never at plan_obligations module-import time: every check module does
+    `from scripts.checks import registry`, so an import-time call is a genuine circular import
+    (registry.py docstring).
+  - >-
+    scripts/roadmap/plan_obligations.py -- extend build_report with the enforced_elsewhere pointer
+    section, emitted whenever a rule's trigger matches a scope row, INCLUDING when the plan has no
+    unmet requires findings. Do not touch _derive_findings or evaluate_plan.
+  - >-
+    scripts/checks/roadmap/validate_plan_scope_closure.py -- add the grammar leg BEFORE the
+    plan-discovery early return, so it runs on a contract-only diff; append its findings to
+    `failed`. In the SAME edit adopt the dec-170 declaration: enumerate the reachable exits AFTER
+    the restructure and give each EXACTLY ONE. With the grammar leg first, the contract is always
+    examined, so the no-plans exit declares examined(1, unit="artefacts") and the evaluating exit
+    examined(1 + len(paths), unit="artefacts"). Do not call skipped() -- an unreadable contract is
+    a finding, not a could-not-examine. Then strike the module from
+    config/check_accounting_baseline.yaml:78. Leave the frozen _BASELINE_SEED untouched.
+  - >-
+    docs/contracts/plan-obligations.yaml -- rewrite new_check_module.purpose to drop the count and
+    point at scripts/checks/registry.py; add the enforced_elsewhere entry for the dec-170
+    accounting declaration (enforced_by validate_check_accounting, fires_on [Create, Modify]) and
+    for surface 5, the per-graduated-step verification-registry shard (enforced_by
+    validate_graduation_completeness, fires_on [Create]) -- both verified registered AND sequenced.
+    Do NOT add a row for the Entry tier-field demotion marker: validate_tier_demotion_markers
+    derives its protected set from the git base ref and fires only on losing pre, losing
+    full_segment, or narrowing pre_globs relative to base, so a net-new check has no base Entry and
+    it can never fire under a Create trigger -- it is an obligation of MODIFYING an existing Entry,
+    belonging to a future modify-Entry rule. Name surface 2 (the @register decoration) in purpose
+    as an UNENFORCED residual: no check satisfies G2+G3 for it (dec-181 point 2). Add the
+    new_workflow_file rule and ONE amendment_log entry covering every body edit, which must also
+    record the dec-118 re_ratification_trigger decision: state why rule-count remains the right
+    "has the shape settled" proxy now that the map gains a section kind and a five-guard grammar,
+    or widen the trigger in the same edit.
+  - >-
+    tests/test_plan_obligations.py and tests/checks/roadmap/test_validate_plan_scope_closure.py --
+    add the classes named in the Verification Plan, each with at least one failing path.
+  - >-
+    BEFORE the graduation walk, flip step 16 from graduate to waive and drop its
+    graduation_check_id. Reason to record: "asserts a post-condition that already holds on the
+    pre-change tree (measured: exit 0 on origin/main), so it cannot satisfy VF-06's differential
+    admission gate; retained as a regression sanity check". scripts/verification_checks.py's
+    is_admitted rejects a check that passes both before and after, so leaving it graduate fails the
+    walk mid-implement. graduation/graduation_waiver_reason are permitted in-flight field edits for
+    the resolved plan's own path (implement-scope-boundary.yaml permitted_field_edits).
+  - >-
+    When adding the new_workflow_file rule, carry a per-rule `reason` string in the contract and
+    format it into the finding message. scripts/roadmap/plan_obligations.py:147 hardcodes
+    "-- required because {file} is a new check module", so a workflow finding would otherwise read
+    ".github/workflows/foo.yml is a new check module". Parameterising a message is NOT the
+    content-awareness constraint 4 prohibits. Label the obligated artefact a `workflows:` map row,
+    never a function_to_category row -- the first leg of validate_ci_rca_taxonomy is what fires.
+  - >-
+    File ONE follow-on rec owning surface 2's unenforced @register-decoration residual, name its id
+    in the contract beside the residual declaration, and add it to followon_recs (a permitted
+    in-flight field edit). dec-181 point 2 requires an unenforced residual to carry an owning rec
+    id, and the plan currently names the residual without one -- the baseline-seed residual in
+    scope[3] already does this correctly, citing rec-3622.
+  - >-
+    Execute the Verification Plan -- run each step; loop until pass; on unrecoverable failure stop
+    and RCA (Decision 55).
+  - >-
+    Close bundled recs via scripts.ops_data_portal -- for rec-3747 and rec-2736 issue update_rec
+    with the replacement acceptance oracle FIRST, as its own call, then close in a separate call.
+    rec-3726 closes against its filed oracle (VP 11 runs its filed second conjunct verbatim; the
+    first conjunct is strictly stronger, so its pass implies the filed conjunct passes).
+    rec-2672 closes as SUPERSEDED -- not closed -- citing dec-169 and the strengthened gate. Then
+    audit the discipline with the `mcp__ducklake-reads__rec_history` verb for rec-3747 and
+    rec-2736: each must show an acceptance-changing event while still open, followed by a LATER
+    status transition. This is an MCP tool call, not a shell command -- `rec_history` is a named
+    read verb and is deliberately absent from scripts.ops_data_portal's Python surface, so it
+    cannot be a VP step. Omit the Resolves trailer from the squash-merge commit.
+  - "Report: what was implemented, verification results"
+work_areas: []
+rollback: >-
+  Additive and independently revertable. Reverting the contract's enforced_elsewhere section and
+  the engine's grammar validator restores the prior behaviour exactly, because _derive_findings,
+  evaluate_plan and the registered check's gating verdict are unchanged by this plan.
