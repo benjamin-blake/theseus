@@ -147,10 +147,15 @@ verification_plan:
   action: 'Decomposition is address-preserving: platform_roles.tf keeps both roles and no policy, and
     the five policy addresses are declared exactly once across the root.'
   command: '! grep -q ''resource "aws_iam_role_policy"'' terraform/personal/platform_roles.tf && test
-    "$(grep -ho ''resource "aws_iam_role_policy" "[a-z_]*"'' terraform/personal/*.tf | grep -o ''"[a-z_]*"$''
-    | tr -d ''\"'' | sort -u | tr ''\n'' '','')" = "platform_admin_bootstrap_state,platform_admin_datalake,platform_admin_ducklake_breakglass,platform_admin_ops,platform_dev_runtime,"'
-  expected: 'exit 0 -- no policy resource remains in platform_roles.tf and the five address NAMES are
-    exactly the pre-move set (an exact-set assertion, not a count: a rename keeps the cardinality at 5)'
+    "$(grep -ho ''resource "aws_iam_role_policy" "platform_[a-z_]*"'' terraform/personal/platform_dev_policies.tf
+    terraform/personal/platform_admin_policies.tf terraform/personal/platform_admin_data_policies.tf |
+    grep -o ''"platform_[a-z_]*"$'' | tr -d ''"'' | sort | tr ''\n'' '','')" = "platform_admin_bootstrap_state,platform_admin_datalake,platform_admin_ducklake_breakglass,platform_admin_ops,platform_dev_runtime,"'
+  expected: 'exit 0 -- no policy resource remains in platform_roles.tf, and the five platform_* address
+    NAMES across the three new files are exactly the pre-move set. An exact-set assertion, not a count:
+    a rename preserves cardinality. The glob is scoped to the three policy files on purpose -- terraform/personal/*.tf
+    holds 16 aws_iam_role_policy resources in total (oidc.tf, ducklake_lambdas.tf and others), so a root-wide
+    glob here would compare against the wrong population. `sort` rather than `sort -u` so an accidental
+    duplicate also reds.'
   fix_if: a name differs -- a Terraform address was renamed, which turns the no-op move into a destroy/create
     pair at apply. Restore the exact original resource names.
   hermetic: true
@@ -205,17 +210,21 @@ verification_plan:
   action: rec-2851 acceptance -- PlatformDev carries cloudwatch and logs reads AND both explicit state/convergence
     Denies survive the move SEMANTICALLY (Effect plus all three prefixes), not merely as Sid strings.
     T2.44 c3 is MET and live-proven; this plan must not silently un-meet it.
-  command: grep -q 'cloudwatch:' terraform/personal/platform_dev_policies.tf && grep -q 'logs:FilterLogEvents'
-    terraform/personal/platform_dev_policies.tf && bin/venv-python -c "import re,pathlib;t=pathlib.Path('terraform/personal/platform_dev_policies.tf').read_text();blocks=[b
-    for b in re.split(r'(?=Sid\s*=)', t) if re.match(r'Sid\s*=\s*\"DenyState', b)];assert len(blocks)==2,
-    f'expected 2 DenyState* statements, found {len(blocks)}';joined=''.join(blocks);assert joined.count('Effect')
-    == 2 and 'Allow' not in joined, 'a DenyState* statement is no longer Effect=Deny';[__import__('sys').exit(1)
-    for p in ['convergence/personal/*','tfplan/personal/*','tfstate/personal/*'] if p not in joined]"
-  expected: exit 0 -- reads added, exactly two DenyState* statements present, both still Effect=Deny,
-    and all three protected prefixes (convergence/personal/*, tfplan/personal/*, tfstate/personal/*) still
-    named
-  fix_if: an Effect flipped to Allow, a prefix was dropped, or a statement was lost in the move -- restore
-    it verbatim. These Denies are the DEP-13 fence that makes T2.44 c3 met.
+  command: 'grep -q ''cloudwatch:'' terraform/personal/platform_dev_policies.tf && grep -q ''logs:FilterLogEvents''
+    terraform/personal/platform_dev_policies.tf && bin/venv-python -c ''import re,pathlib;t=pathlib.Path("terraform/personal/platform_dev_policies.tf").read_text();w=[p
+    for p in re.split(r"(?=Sid\s*=)",t) if re.match(r"Sid\s*=\s*.DenyState",p)];assert len(w)==2,f"expected
+    2 DenyState statements, got {len(w)}";e=[re.search(r"Effect\s*=\s*.(\w+).",x) for x in w];assert all(m
+    is not None and m.group(1)=="Deny" for m in e),"a DenyState statement first Effect is not Deny";j="".join(w);miss=[p
+    for p in ("convergence/personal/*","tfplan/personal/*","tfstate/personal/*") if p not in j];assert
+    not miss,f"protected prefixes dropped: {miss}"'''
+  expected: 'exit 0 -- reads present, exactly two DenyState* statements, the FIRST Effect inside each
+    is "Deny", and all three protected prefixes still named. Verified green against a simulated post-split
+    tree and red against three mutations: Effect flipped to Allow, a prefix dropped, and a whole DenyState
+    statement removed. It tests each statement''s own first Effect rather than counting Effect occurrences
+    -- a naive count reds the known-good file, because the last split window extends into the following
+    statement.'
+  fix_if: an Effect flipped, a prefix was dropped, or a statement was lost in the move -- restore it verbatim.
+    These Denies are the DEP-13 fence that makes T2.44 c3 met and live-proven.
   hermetic: true
   graduation: graduate
   graduation_check_id: platformdev-state-convergence-denies-intact
