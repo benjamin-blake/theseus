@@ -382,10 +382,37 @@ def test_closure_kwarg_on_a_rec_without_context_v2_json_refuses_before_any_write
         from scripts.ops_data_portal import update_rec
 
         assert not _EXISTING.get("context_v2_json")
-        with pytest.raises(ValueError, match="no existing context_v2_json"):
+        with pytest.raises(ValueError, match="closure_stamps_applicable.*no existing context_v2_json"):
             update_rec("rec-4001", {"status": "closed"}, closure_fix_sha="cafef00dcafef00d")
 
     mock_write.assert_not_called()
+
+
+def test_closure_kwarg_on_a_blob_parsing_to_nothing_refuses_before_any_write(tmp_path: Path) -> None:
+    """A context_v2_json blob that PARSES TO NOTHING ("{}", "null", or malformed JSON) refuses a
+    closure_* kwarg exactly as an absent blob already does. A STRENGTHENING, never a relaxation
+    (Decision 186 pt 8 is not engaged here -- the precondition's acceptance domain narrows, it
+    does not widen): before this plan, "{}" was truthy under a bare `if not
+    merged.get("context_v2_json")` check, so the stamp was accepted and {}.update(stamps) would
+    have minted a valid blob -- violating the ratified never-mint-one contract this file's own
+    docstring states (see test_closure_kwarg_on_a_rec_without_context_v2_json_refuses_before_any_write,
+    :367-374). The parsed-dict predicate (closure_stamps_applicable) treats a blob that parses to
+    nothing as equivalent to no blob at all."""
+    recs_file = tmp_path / "recs.jsonl"
+    for blob in ("{}", "null", "not json at all {"):
+        existing = {**_EXISTING, "context_v2_json": blob}
+        with (
+            patch("scripts.ops_data_portal._fetch_rec_from_reader", return_value=existing),
+            patch("scripts.ops_data_portal._ducklake_write") as mock_write,
+            patch("scripts.ops_data_portal._sync_table"),
+            patch("scripts.ops_data_portal.RECS_JSONL", recs_file),
+        ):
+            from scripts.ops_data_portal import update_rec
+
+            with pytest.raises(ValueError, match="closure_stamps_applicable.*no existing context_v2_json"):
+                update_rec("rec-4001", {"status": "closed"}, closure_fix_sha="cafef00dcafef00d")
+
+        mock_write.assert_not_called()
 
 
 def test_resolvable_artifact_closes(tmp_path: Path) -> None:

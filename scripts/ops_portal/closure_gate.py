@@ -75,6 +75,22 @@ def parse_context_json(raw: object) -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def closure_stamps_applicable(raw: object) -> bool:
+    """True iff raw parses (via parse_context_json) to a non-empty dict -- the STAMPABILITY
+    precondition for a closure_* kwarg, evaluated in the PARSED-DICT domain. This is deliberately
+    NOT Decision 186 point 1's escape-class predicate (is_escape_classified): a rec can be
+    stampable without being escape-classified, and vice versa is never asserted here. Kept out of
+    assert_closure_obligation's call path so it never reads as a second gate.
+
+    The parsed domain is the only one consistent across this predicate's three sanctioned
+    consumers -- scripts/ops_data_portal.py (update_rec), scripts/ops_portal/ci_rca_lifecycle.py
+    (close_recs_from_trailer) and scripts/ci_rca/inactivity_sweep.py (close_inactive_recs) --
+    since the trailer path holds a raw JSON cell while the sweep holds an already-parsed dict, and
+    a bare bool() over the raw cell would disagree between them ("{}" is truthy, {} is not).
+    """
+    return bool(parse_context_json(raw))
+
+
 def is_escape_classified(ctx: dict) -> bool:
     """True when ctx['escape_class'] OR ctx['detection_gap']['escape_mode'] is SET.
 
