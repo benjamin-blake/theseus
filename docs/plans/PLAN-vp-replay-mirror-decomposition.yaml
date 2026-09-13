@@ -96,9 +96,12 @@ verification_plan:
       is wrong, not the assertion.
     graduation: waive
     graduation_waiver_reason: >-
-      A directory-wide selector is unadmittable by construction: run_differential rejects a check
-      that also passes on an origin/main worktree, and these tests pass there today under their
-      old path. Steps 3 and 4 graduate the two discriminating node_ids instead.
+      Redundancy, not unadmittability -- the earlier draft's reason was factually wrong about the
+      mechanism. run_differential materializes the row's OWN check_spec in an origin/main
+      worktree, where this package does not exist, so a directory selector would exit 4 and be
+      admitted BY ABSENCE. It is waived because it is a strict superset of steps 3-8, each of which
+      already pins a discriminating selector over these same modules; a ninth row asserting their
+      union adds a check_id and no discrimination.
   - step: 2
     phase: pre-deploy
     hermetic: true
@@ -127,8 +130,12 @@ verification_plan:
       pytest exits 4 for a missing nodeid, which run_differential would misread. The shard
       root-scoped-diff-base-vp-replay-root-scoping pins this exact path; it and the YAML must move
       together in one commit.
-    graduation: graduate
-    graduation_check_id: vp-replay-root-scoped-base-node-resolves
+    graduation: waive
+    graduation_waiver_reason: >-
+      The incumbent shard root-scoped-diff-base-vp-replay-root-scoping is re-pointed by this very
+      plan to this exact node_id, so a new row would carry an identical check_spec under a
+      different check_id. _validate_entry_schema dedupes check_id only, so nothing would block it
+      -- the registry would simply gain a second row asserting what the first already asserts.
   - step: 4
     phase: pre-deploy
     hermetic: true
@@ -137,8 +144,11 @@ verification_plan:
       -q
     expected: all tests in the class pass
     fix_if: Same failure mode as step 3, for shard vp-replay-content-keyed-can-still-fail.
-    graduation: graduate
-    graduation_check_id: vp-replay-content-keyed-node-resolves
+    graduation: waive
+    graduation_waiver_reason: >-
+      Same as step 3: vp-replay-content-keyed-can-still-fail is re-pointed by this plan to this
+      exact node_id, so a new row would duplicate its check_spec under a fresh check_id and add no
+      discrimination.
   - step: 5
     phase: pre-deploy
     hermetic: true
@@ -161,39 +171,55 @@ verification_plan:
     phase: pre-deploy
     hermetic: true
     action: The coverage-checker mirror covers the new concern-split member
-    command: bin/venv-python -m pytest tests/test_coverage_checker/test_coverage_checker_map.py -q
-    expected: all tests pass
+    command: bin/venv-python -m pytest tests/test_coverage_checker/test_coverage_checker_map.py::test_vp_replay_resolves_to_concern_split_package
+      -q
+    expected: 1 passed
     fix_if: >-
       _CONCERN_SPLIT_TEST_PACKAGES is a hardcoded frozenset, so its own mirror is the only guard
-      that a member was added deliberately rather than by an unrelated edit.
+      that a member was added deliberately rather than by an unrelated edit. The selector is the
+      single new nodeid, never the whole file: the file passes on origin/main today, so a
+      file-level selector would be refused as tautological at admission.
     graduation: graduate
     graduation_check_id: coverage-checker-map-covers-vp-replay-split
   - step: 7
     phase: pre-deploy
     hermetic: true
     action: The deleted flat mirror leaves no stale reference behind
-    command: 'test ! -e tests/checks/verification/test_validate_vp_replay.py && ! rg -n "test_validate_vp_replay"
-      --glob "!docs/plans/**" . && echo NO_STALE_REFERENCES'
+    command: >-
+      bin/venv-python -c "import subprocess; from pathlib import Path; assert not
+      Path('tests/checks/verification/test_validate_vp_replay.py').exists(), 'flat mirror still
+      present'; r=subprocess.run(['git','grep','-l','test_validate_vp_replay','--','.',':!docs/plans'],
+      capture_output=True, text=True); assert r.returncode == 1, (r.returncode, r.stdout,
+      r.stderr); print('NO_STALE_REFERENCES')"
     expected: NO_STALE_REFERENCES printed, exit 0
     fix_if: >-
       The Delete row fires the surface-retiring closure obligation. Measured reference set is
-      exactly three: the two shard node_ids and validate_scope_boundary/test_plan_legs.py:6. Note
-      the negation hazard -- a negated rg over a missing path exits 0 for the wrong reason, so the
-      `test ! -e` conjunct comes first and the rg is rooted at `.`, which always exists.
+      exactly three: the two shard node_ids and validate_scope_boundary/test_plan_legs.py:6.
+      Deliberately NOT a negated rg: `! rg` maps rg's error exit 2 to success, so a missing path or
+      an absent binary reads as a clean sweep -- the exact hazard the sibling plan exists to lint.
+      git grep is present wherever the differential runs and returns 1 for no-match versus >1 for
+      error, so `returncode == 1` asserts absence rather than merely non-success. The existence
+      conjunct comes first so the sweep cannot pass while the file is still there.
     graduation: graduate
     graduation_check_id: vp-replay-flat-mirror-fully-retired
   - step: 8
     phase: pre-deploy
     hermetic: true
     action: No package module approaches the SLOC ceiling
-    command: 'bin/venv-python -c "from pathlib import Path; bad=[(str(p), n) for p in Path(''tests/checks/verification/validate_vp_replay'').glob(''*.py'')
-      for n in [sum(1 for l in p.read_text().splitlines() if l.strip() and not l.strip().startswith(''#''))]
-      if n >= 500]; assert not bad, bad; print(''ALL_MODULES_UNDER_LIMIT'')"'
+    command: >-
+      bin/venv-python -c "from pathlib import Path;
+      mods=list(Path('tests/checks/verification/validate_vp_replay').glob('*.py')); assert mods,
+      'package absent -- glob on a missing directory returns [] and would pass vacuously';
+      bad=[(str(p), n) for p in mods for n in [sum(1 for l in p.read_text().splitlines() if
+      l.strip() and not l.strip().startswith('#'))] if n >= 500]; assert not bad, bad;
+      print('ALL_MODULES_UNDER_LIMIT')"
     expected: ALL_MODULES_UNDER_LIMIT printed, exit 0
     fix_if: >-
-      The flat file was 483 SLOC across four classes; a 1:1 class-to-module split puts each well
-      under the limit. A module at the ceiling means the split was uneven, not that the limit is
-      wrong.
+      The `assert mods` conjunct is load-bearing and must come FIRST: Path.glob on a missing
+      directory returns [], so without it `assert not bad` passes vacuously on an origin/main
+      worktree where the package does not exist, run_differential refuses the row as tautological,
+      and the PR reddens. That is this plan family's own defect class turned on itself. A module at
+      the ceiling means the split was uneven, not that the limit is wrong.
     graduation: graduate
     graduation_check_id: vp-replay-package-modules-under-sloc-limit
   - step: 9
@@ -256,9 +282,12 @@ constraints:
     renames of test functions or classes. If a relocated test fails, the relocation is wrong. New
     cases belong to the follow-on gate plan, which is authored against the package this creates.
   - >-
-    The shard YAML re-points and the module creations must land in the SAME commit: a commit where
-    the node_id names a path that does not yet exist leaves run_differential reading pytest exit 4
-    as a content failure.
+    The shard YAML re-points, the module creations AND the _CONCERN_SPLIT_TEST_PACKAGES
+    registration must all land in the SAME commit as the delete. A commit where a node_id names a
+    path that does not yet exist leaves run_differential reading pytest exit 4 as a content
+    failure; a commit that deletes the flat mirror without the registration leaves
+    validate_red_case_floor unable to resolve the mirror at all, which it treats as a hard failure
+    rather than a skip.
   - >-
     Do NOT add a config/sloc_budgets.yaml entry for the deleted file or any new module. Decision
     128 makes decomposition the response to a file at its ceiling; a raise here would be the
@@ -267,7 +296,10 @@ context:
   - "Decision-scout verdict + CITE list: inherited from PLAN-vp-red-before-gate round 2
     (FLAGS_FOUND; Decisions triaged: 140 of 140; Roadmap items intersected: 7; CONFLICT: 0;
     RELATED: 6). Of that CITE list only 128 (decompose-not-raise), 163 (full-tier obligation) and
-    169 bear on this refactor; the rest governed the gate half and travel with it."
+    169 bear on this refactor; the rest governed the gate half and travel with it. ADDED here:
+    Decision 176, which concern-split test_validate_graduation_completeness.py into the very
+    package this plan cites as its model, and Decision 131 clauses 2-4 (conftest re-export,
+    __init__.py, no cross-test imports)."
   - "gates: decision-scout=FLAGS_FOUND (inherited); plan-critique=<verdict> after <N> round(s)"
   - >-
     Split rationale: this is slice 1 of 2, carved out of PLAN-vp-red-before-gate on the round-3
