@@ -1,0 +1,864 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: agent-observability-read-axis
+intent: Close the agent-identity observability read axis so an agent can read CloudWatch metrics, CloudTrail
+  events and S3 bucket inventory from AWS, making alarm triage and billed-storage measurement possible
+  from the platform itself rather than only from GitHub Actions job logs. Unblocks the measurement half
+  of T2.18 c2.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-agent-observability-read-axis.yaml
+phase: T2.48
+scope:
+- file: terraform/personal/platform_roles.tf
+  action: Modify
+  purpose: Decompose (Decision 128/166). RETAIN both aws_iam_role resources and their IMPORT-BEFORE-APPLY
+    banners here; move the five aws_iam_role_policy resources to the three sibling files below. Keeping
+    the roles here preserves the graduated check platformdev-bounded-platformadmin-excluded, whose command
+    greps this path for both roles.
+- file: terraform/personal/platform_dev_policies.tf
+  action: Create
+  purpose: aws_iam_role_policy.platform_dev_runtime (DailyOps) plus the new PlatformDev observability
+    read statements (rec-2851). Preserves DenyStateAndConvergenceWrite / DenyStateRead verbatim.
+- file: terraform/personal/platform_admin_policies.tf
+  action: Create
+  purpose: aws_iam_role_policy.platform_admin_ops (AdminOps) plus the new PlatformAdmin metric, alarm-history,
+    CloudTrail and bucket-inventory read statements (rec-3763, rec-2906).
+- file: terraform/personal/platform_admin_data_policies.tf
+  action: Create
+  purpose: 'platform_admin_datalake, platform_admin_bootstrap_state and platform_admin_ducklake_breakglass,
+    moved with NO statement added, removed or reordered and NO locals hoist -- this file grows no grant,
+    so it takes no byte precondition (rec-3765 covers the root-wide sweep). rec-2696''s reorder is deliberately
+    NOT performed: live order was measured 2026-09-13 and already matches repo order, so the swap would
+    write drift rather than remove it.'
+- file: scripts/checks/iam_tf/validate_agent_observability_read_coverage.py
+  action: Create
+  purpose: Lever B. Observability-read coverage gate that CONSUMES _read_coverage.py's existing resource-type
+    census as the single classification table (Decision 129 pt4 already owns that census; a second independent
+    census would be the two-surfaces-one-subject anti-pattern and a drift seam). This module adds only
+    the per-agent-identity observability READ-GRANT map on top of it, and fails loud when a managed observability
+    resource has no covering agent-identity grant.
+- file: scripts/checks/iam_tf/_manifest.py
+  action: Modify
+  purpose: register the new check (pre=True, full_segment="full_after_lint"), matching its siblings
+- file: config/ci_rca_taxonomy.yaml
+  action: Modify
+  purpose: function_to_category row mapping the new check to iam_gap (Decision 142)
+- file: config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml
+  action: Create
+  purpose: The graduated row for VP step 4 (Decision 132/176). Must carry check_id cloudtrail-read-only-no-write-verbs
+    AND plan_slug agent-observability-read-axis -- validate_graduation_completeness reds --pre on a plan_slug
+    mismatch.
+- file: tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py
+  action: Create
+  purpose: negative + positive mirror tests for the new check (Decision 131)
+- file: config/structural_size_budgets.yaml
+  action: Modify
+  purpose: 'Set the terraform/personal/platform_roles.tf roster value to 500 (the governing class default,
+    so the entry grants no raise) and RETAIN both the key and its ''# raise-approved: dec-166'' marker,
+    updating the marker text to record the post-split measurement. The key is asserted by the graduated
+    check structural-registry-section-scoped-extraction; retention is safe because dec-166 names this
+    path verbatim (Decision 165 cl2) and decreases are unrestricted. Do NOT set it below 500 -- that would
+    make the entry a tighter-than-class-default ratchet.'
+- file: terraform/CLAUDE.md
+  action: Modify
+  purpose: re-ground its two "CODIFIED in terraform/personal/platform_roles.tf" references to the new
+    policy files
+- file: docs/contracts/terraform-cc-web-operations.yaml
+  action: Modify
+  purpose: Re-ground admin_tier_only (~:139-140), which states verbatim that PlatformDev is denied s3:GetObject
+    on tfstate/personal/* by "the DenyStateRead statement in terraform/personal/platform_roles.tf's DailyOps
+    policy". After the move that sentence is false, and validate_terraform_cc_web_operations only asserts
+    referenced_repo_paths EXIST (platform_roles.tf survives), so no check catches it. Locations only --
+    never restate apply-model procedure (Decision 127).
+- file: docs/contracts/iam-simulate-fixture.yaml
+  action: Modify
+  purpose: 'Re-ground the p0-4-logs-tag-resource row''s why (~:299-308) IN PLACE. It justifies a live
+    deliberate over-grant of both CloudWatch Logs tagging families on the grounds that "cloudtrail:LookupEvents
+    is AccessDenied to PlatformAdmin ... the concrete case for the CloudTrail-observability follow-on"
+    -- a premise this plan falsifies and a follow-on it lands. An in-place why rewrite is net-zero-or-negative
+    on lines, so the 598/600 effective-line cap is not a bar. Do NOT add PlatformAdmin-as-principal rows:
+    the fixture is single-principal (principal.role_name: agent-platform-github-ci-apply) and PlatformAdmin
+    carries no boundary, so there is no identity-boundary intersection to simulate.'
+- file: config/agent/verification_registry/entries/platformdev-state-convergence-denies-intact.yaml
+  action: Create
+  purpose: Graduated row for VP step 5 (plan-critique F-1). Must carry check_id platformdev-state-convergence-denies-intact
+    and plan_slug agent-observability-read-axis -- a plan_slug mismatch reds --pre via validate_graduation_completeness.
+- file: config/agent/verification_registry/entries/platformadmin-metric-read-verbs-present.yaml
+  action: Create
+  purpose: 'Graduated row for VP step 3 (critique F-11: step 4 graduated a structurally identical literal
+    grep, so these two must be dispositioned alike). check_id platformadmin-metric-read-verbs-present,
+    plan_slug agent-observability-read-axis.'
+- file: config/agent/verification_registry/entries/personal-policies-carry-byte-preconditions.yaml
+  action: Create
+  purpose: Graduated row for VP step 11 (critique F-4). The only standing guard that the three terraform/personal
+    byte preconditions exist, since validate_iam_policy_size is bootstrap-scoped until rec-3765 lands.
+    check_id personal-policies-carry-byte-preconditions, plan_slug agent-observability-read-axis.
+- file: docs/ROADMAP-PLATFORM.yaml
+  action: Modify
+  purpose: 'Tier Item Freshness Gate re-grounding for the phase item T2.48 (and sibling T2.44): its files_in_scope
+    names ''scripts/checks/iam_tf.py'', which is a PACKAGE now, and references platform_roles.tf for content
+    this plan relocates. Roadmap-bookkeeping only -- no criterion status flips. Requires explicit human
+    confirmation before landing (planning-skill sole exception).'
+bundled_recommendations:
+- rec-3763
+- rec-2906
+- rec-2851
+followon_recs:
+- rec-3765
+- rec-3766
+infrastructure_dependencies:
+- SPLIT-APPLY required (docs/contracts/deploy-paths.yaml#admin_out_of_band.procedure). Decision 180 clause
+  3 permanently excludes PlatformAdmin from every CI-writable Resource pattern, and IAMRoleWriteBounded
+  scopes iam:PutRolePolicy to role/agent-platform-* only (the sole role/PlatformDev grant, IAMRoleMetadataWrite,
+  is metadata-only), so the governed CD gated-apply path cannot apply an inline-policy write on either
+  role. Never widen the CI role to avoid this.
+- 'ADMIN container precondition: INSTALL_TERRAFORM=1 bin/setup-cloud-env.sh must have synced the S3 provider
+  filesystem_mirror and exported TF_CLI_CONFIG_FILE (Decision 119/120), else terraform -chdir=terraform/personal
+  init cannot resolve the kislerdm/neon provider. Each Bash call is independent, so inline TF_CLI_CONFIG_FILE
+  on every terraform invocation.'
+- 'Ordering: admin split-apply FIRST, then push to the PR head so the speculative-plan job saves a post-apply
+  plan.bin showing zero diff; merging a pre-apply plan.bin AccessDenies at apply and latches a red convergence
+  record (Decision 77 no-re-plan).'
+- The four no-default tfvars (account_id, owner_email, platform_dev_external_id, platform_admin_external_id)
+  come from remote state; never paste their values anywhere.
+- 'LAMBDA DEPLOY ASSESSMENT (Decision 79 / CD.16), explicit waiver: compute_affected_artifacts over this
+  Scope returns {''data-pipeline'': [''docs/ROADMAP-PLATFORM.yaml'']} because that file is an assets:
+  member of src/lambdas/data-pipeline/manifest.yaml, which is status: active. NO build/deploy/smoke-test
+  step is included, deliberately: the edit re-grounds two stale path STRINGS in a roadmap asset, changes
+  no handler code and no runtime behaviour, and the scheduled-agent surface that reads it is disabled
+  (T4.12 tracks re-enabling). The asset refreshes on the artifact''s next deploy through its governed
+  decoupled_build_pipeline channel. If the roadmap row is dropped from Scope at implement time, this waiver
+  becomes moot -- re-run compute_affected_artifacts and confirm the set is empty.'
+acceptance_criteria:
+- terraform/personal/platform_roles.tf retains both aws_iam_role resources (platform_dev with its permissions_boundary,
+  platform_admin with none) and declares no aws_iam_role_policy; the five policy resources live in the
+  three new sibling files with their Terraform addresses unchanged.
+- 'PlatformAdmin AdminOps grants cloudwatch:GetMetricStatistics, GetMetricData, ListMetrics and DescribeAlarmsForMetric
+  plus cloudtrail:LookupEvents and s3:ListAllMyBuckets on Resource "*", each with a collocated comment
+  stating the API supports no resource-level scoping; cloudwatch:DescribeAlarmHistory on arn:aws:cloudwatch:${var.aws_region}:${var.account_id}:alarm:*
+  -- the SAME Resource the existing CloudWatchAlarmManagement Sid uses (platform_roles.tf:330). NOT an
+  agent-platform-* prefix: measured 2026-09-13, zero alarms carry that prefix (all four are ducklake-*),
+  so such a grant would be present-but-inert, the rec-2882 shape.'
+- PlatformAdmin grants s3:ListBucket + s3:ListBucketVersions on the arn:aws:s3:::agent-platform-* prefix
+  (Lever A), not an enumerated bucket list.
+- The repo grants NO cloudtrail Create/Delete/Update/Put verb anywhere (rec-2906 is read-only), and no
+  cloudwatch write verb beyond the alarm lifecycle AdminOps already held.
+- PlatformDev DailyOps grants the CloudWatch metric read verbs and cloudwatch:DescribeAlarms plus logs:DescribeLogGroups
+  on "*" and logs:DescribeLogStreams/GetLogEvents/FilterLogEvents on the /aws/lambda/agent-platform-*
+  prefix, and still carries DenyStateAndConvergenceWrite and DenyStateRead verbatim (T2.44 c3). PlatformDev
+  gets no cloudtrail grant.
+- 'platform_admin_data_policies.tf carries platform_admin_datalake with no statement added, removed or
+  reordered relative to origin/main, and no locals hoist (DataLakeBucketManage, DataLakeObjectIO, DynamoDBCountersTable,
+  CatalogDrBucketManage, CatalogDrObjectRead, AlertsTopicManage). Measured live 2026-09-13: that is also
+  the live order, so the policy shows no diff at apply. rec-2696''s reorder is NOT performed -- its drift
+  premise is stale.'
+- validate_agent_observability_read_coverage FAILS LOUD on an unmapped managed resource type and on a
+  managed observability resource with no covering agent-identity read grant; it passes on the fixed tree,
+  runs in both --pre and full tiers, and declares accounting via registry.examined.
+- config/structural_size_budgets.yaml still contains the terraform/personal/platform_roles.tf roster key
+  (the graduated check structural-registry-section-scoped-extraction asserts it), and every touched .tf
+  file measures under its governing effective-line limit.
+- 'Live behavioural proof (Decision 48): under agent_platform_admin, metric reads, cloudtrail:LookupEvents,
+  s3:ListBucketVersions and s3:ListAllMyBuckets return data instead of AccessDenied; under agent_platform,
+  metric reads and log reads return data.'
+- The AGGREGATE of all inline policies per role stays under 10,240 B whitespace-stripped -- the AWS quota
+  is per-ROLE, not per-policy. PlatformAdmin carries FOUR inline policies measuring 7,575 B today (AdminOps
+  3619, PlatformDataLakeProvisioning 2843, BootstrapStateProvisioning 571, DuckLakeBreakGlass 542), so
+  real headroom is 2,665 B, not the 6,621 B an AdminOps-only reading implies. PlatformDev carries two,
+  3,222 B aggregate. The two documents this plan GROWS -- platform_admin_ops and platform_dev_runtime
+  -- each carry a hoisted locals block and a lifecycle precondition using the minified measure; the untouched
+  documents do not, and rec-3765 covers extending that sweep root-wide.
+- All three bundled recommendations (rec-3763, rec-2906, rec-2851) are closed in the warehouse after merge.
+- 'The Decision 79 waiver for data-pipeline is recorded in infrastructure_dependencies and still accurate:
+  re-running compute_affected_artifacts over the final Scope returns either an empty set or only data-pipeline
+  via docs/ROADMAP-PLATFORM.yaml.'
+- rec-2696 is closed out-of-band via update_rec citing the 2026-09-13 live order measurement, not bundled
+  into this plan's Resolves trailer -- its acceptance probe can never flip because the reorder is not
+  performed.
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: 'Decomposition is address-preserving: platform_roles.tf keeps both roles and no policy, and
+    the five policy addresses are declared exactly once across the root.'
+  command: '! grep -q ''resource "aws_iam_role_policy"'' terraform/personal/platform_roles.tf && test
+    "$(grep -ho ''resource "aws_iam_role_policy" "platform_[a-z_]*"'' terraform/personal/platform_dev_policies.tf
+    terraform/personal/platform_admin_policies.tf terraform/personal/platform_admin_data_policies.tf |
+    grep -o ''"platform_[a-z_]*"$'' | tr -d ''"'' | sort | tr ''\n'' '','')" = "platform_admin_bootstrap_state,platform_admin_datalake,platform_admin_ducklake_breakglass,platform_admin_ops,platform_dev_runtime,"'
+  expected: 'exit 0 -- no policy resource remains in platform_roles.tf, and the five platform_* address
+    NAMES across the three new files are exactly the pre-move set. An exact-set assertion, not a count:
+    a rename preserves cardinality. The glob is scoped to the three policy files on purpose -- terraform/personal/*.tf
+    holds 16 aws_iam_role_policy resources in total (oidc.tf, ducklake_lambdas.tf and others), so a root-wide
+    glob here would compare against the wrong population. `sort` rather than `sort -u` so an accidental
+    duplicate also reds.'
+  fix_if: a name differs -- a Terraform address was renamed, which turns the no-op move into a destroy/create
+    pair at apply. Restore the exact original resource names.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: This asserts a one-time refactor shape, not a durable invariant -- a future
+    legitimate policy addition to platform_roles.tf would red it for the wrong reason. The durable half
+    (both roles stay here, boundary present/absent) is already graduated as platformdev-bounded-platformadmin-excluded
+    and re-run by VP step 2.
+- step: 2
+  phase: pre-deploy
+  action: 'The existing graduated boundary check still holds after the move: PlatformDev carries the permissions
+    boundary, PlatformAdmin does not (Decision 144 cl3 / 180 cl3).'
+  command: grep -A3 'resource "aws_iam_role" "platform_dev"' terraform/personal/platform_roles.tf | grep
+    -q 'permissions_boundary' && ! grep -A3 'resource "aws_iam_role" "platform_admin"' terraform/personal/platform_roles.tf
+    | grep -q 'permissions_boundary'
+  expected: exit 0 -- byte-identical to the command in config/agent/verification_registry/entries/platformdev-bounded-platformadmin-excluded.yaml
+  fix_if: the roles were moved out of platform_roles.tf; move them back -- the graduated row greps this
+    path
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Already graduated as platformdev-bounded-platformadmin-excluded; this step
+    re-runs that exact command to prove the decomposition did not break it. A second registry row with
+    the same command would duplicate an existing standing guard.
+- step: 3
+  phase: pre-deploy
+  action: rec-3763 acceptance -- the three CloudWatch metric read verbs are present in the PlatformAdmin
+    AdminOps policy file.
+  command: grep -q 'cloudwatch:GetMetricStatistics' terraform/personal/platform_admin_policies.tf && grep
+    -q 'cloudwatch:GetMetricData' terraform/personal/platform_admin_policies.tf && grep -q 'cloudwatch:ListMetrics'
+    terraform/personal/platform_admin_policies.tf
+  expected: 'exit 0 -- all three verbs present. Three grep -q conjuncts, NOT grep -c: grep -c counts matching
+    LINES, so a single-line Action list (a form platform_roles.tf already uses) would return 1 and false-red
+    a correct implementation.'
+  fix_if: a verb is missing, or landed in the data-policies file instead of AdminOps
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: platformadmin-metric-read-verbs-present
+- step: 4
+  phase: pre-deploy
+  action: rec-2906 acceptance -- cloudtrail:LookupEvents is granted and no cloudtrail write verb exists
+    anywhere in the repo's terraform.
+  command: grep -rq '"cloudtrail:LookupEvents"' terraform/personal/ && ! grep -rq -e '"cloudtrail:Create'
+    -e '"cloudtrail:Delete' -e '"cloudtrail:Update' -e '"cloudtrail:Put' terraform/
+  expected: exit 0 -- the read verb is present and no trail-mutating verb leaked in
+  fix_if: a write verb is present; rec-2906 is explicitly read-only scope, remove it
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: cloudtrail-read-only-no-write-verbs
+- step: 5
+  phase: pre-deploy
+  action: rec-2851 acceptance -- PlatformDev carries cloudwatch and logs reads AND both explicit state/convergence
+    Denies survive the move SEMANTICALLY (Effect plus all three prefixes), not merely as Sid strings.
+    T2.44 c3 is MET and live-proven; this plan must not silently un-meet it.
+  command: 'grep -q ''cloudwatch:'' terraform/personal/platform_dev_policies.tf && grep -q ''logs:FilterLogEvents''
+    terraform/personal/platform_dev_policies.tf && bin/venv-python -c ''import re,pathlib;t=pathlib.Path("terraform/personal/platform_dev_policies.tf").read_text();w=[p
+    for p in re.split(r"(?=Sid\s*=)",t) if re.match(r"Sid\s*=\s*.DenyState",p)];assert len(w)==2,f"expected
+    2 DenyState statements, got {len(w)}";e=[re.search(r"Effect\s*=\s*.(\w+).",x) for x in w];assert all(m
+    is not None and m.group(1)=="Deny" for m in e),"a DenyState statement first Effect is not Deny";j="".join(w);miss=[p
+    for p in ("convergence/personal/*","tfplan/personal/*","tfstate/personal/*") if p not in j];assert
+    not miss,f"protected prefixes dropped: {miss}"'''
+  expected: 'exit 0 -- reads present, exactly two DenyState* statements, the FIRST Effect inside each
+    is "Deny", and all three protected prefixes still named. Verified green against a simulated post-split
+    tree and red against three mutations: Effect flipped to Allow, a prefix dropped, and a whole DenyState
+    statement removed. It tests each statement''s own first Effect rather than counting Effect occurrences
+    -- a naive count reds the known-good file, because the last split window extends into the following
+    statement.'
+  fix_if: an Effect flipped, a prefix was dropped, or a statement was lost in the move -- restore it verbatim.
+    These Denies are the DEP-13 fence that makes T2.44 c3 met and live-proven.
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: platformdev-state-convergence-denies-intact
+- step: 6
+  phase: pre-deploy
+  action: 'The platform_admin_datalake move is VERBATIM: its statement Sid order in the new file is identical
+    to origin/main''s. Guards the F-A risk directly -- live order already matches repo order, so any reorder
+    introduces drift into an IAM policy inside the human-gated apply window.'
+  command: 'grep -q ''platform_admin_datalake'' terraform/personal/platform_admin_data_policies.tf &&
+    bin/venv-python -c ''import re,subprocess,pathlib;base=subprocess.run(["git","show","origin/main:terraform/personal/platform_roles.tf"],capture_output=True,text=True,check=True).stdout;cur=pathlib.Path("terraform/personal/platform_admin_data_policies.tf").read_text();grab=lambda
+    t:re.findall(r"Sid\s*=\s*.([A-Za-z]+).",re.search(r"platform_admin_datalake.*?(?=resource \"aws_iam_role_policy\"
+    \"platform_admin_bootstrap_state)",t,re.S).group(0));b,c=grab(base),grab(cur);assert b==c,f"statement
+    order changed: origin/main {b} -> current {c}"'''
+  expected: 'exit 0 -- the Sid order is byte-identical to origin/main. Expected order: DataLakeBucketManage,
+    DataLakeObjectIO, DynamoDBCountersTable, CatalogDrBucketManage, CatalogDrObjectRead, AlertsTopicManage.'
+  fix_if: the order differs -- the move was not verbatim. Restore origin/main's order; do NOT apply rec-2696's
+    reorder, which was filed 2026-07-14 against a drift that has since been reconciled.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: 'One-time proof that a specific refactor was verbatim, not a durable invariant:
+    a future legitimate statement addition to this policy would red it for the wrong reason.'
+- step: 7
+  phase: pre-deploy
+  action: S3 list grants use the account-scoped prefix rather than an enumerated bucket list (Lever A,
+    Decision 129 pt1 / 144 cl2).
+  command: grep -q 's3:ListBucketVersions' terraform/personal/platform_admin_policies.tf && grep -q 'arn:aws:s3:::agent-platform-\*'
+    terraform/personal/platform_admin_policies.tf
+  expected: exit 0 -- the verb is present and expressed at the prefix
+  fix_if: buckets were enumerated individually, which re-creates the one-cycle lag class Decision 129
+    retired
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Lever B asserts bucket read-coverage per managed aws_s3_bucket resource, which
+    is the property this grep approximates; the structural check supersedes a literal-prefix grep.
+- step: 8
+  phase: pre-deploy
+  action: Lever B red-green -- the new check fails loud on an unmapped type and on an uncovered observability
+    resource, and passes on the fixed tree.
+  command: bin/venv-python -m pytest tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py
+    -q
+  expected: all tests pass, including an unmapped-type fixture and an uncovered-log-group fixture that
+    each FAIL LOUD
+  fix_if: only a positive test exists -- a check with no negative proof has not been shown to discriminate
+    (Decision 129 pt4)
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: This selector is the registered check's own mirror-test suite, which scripts.validate
+    already runs in the full tier through the check registry; a registry row pointing at the same selector
+    would duplicate an existing standing guard rather than add one.
+- step: 9
+  phase: pre-deploy
+  action: 'Structural-size governance holds: every touched .tf file is under its limit and the platform_roles.tf
+    roster key survives.'
+  command: 'bin/venv-python -c "from pathlib import Path; from scripts.checks.structural._classify import
+    effective_lines; import sys,re; paths=[''terraform/personal/platform_roles.tf'',''terraform/personal/platform_dev_policies.tf'',''terraform/personal/platform_admin_policies.tf'',''terraform/personal/platform_admin_data_policies.tf''];
+    rows=[(p, effective_lines(Path(p).read_text())) for p in paths]; print(rows); b=Path(''config/structural_size_budgets.yaml'').read_text();
+    assert ''terraform/personal/platform_roles.tf'' in b, ''roster key removed'';assert re.search(r''terraform/personal/platform_roles\\.tf:\\s*\\d+\\s*#.*raise-approved:
+    dec-166'', b), ''the platform_roles.tf entry lost its own dec-166 marker''; m=re.search(r''terraform/personal/platform_roles\.tf:\s*(\d+)'',
+    b); print(''roster value'', m.group(1)); assert 500 <= int(m.group(1)) < 587, ''roster value must
+    be ratcheted to the class default, not raised or over-tightened''; sys.exit(0 if all(n<=500 for _,n
+    in rows) else 1)"'
+  expected: 'every file at or under 500 effective lines; the roster key present; its OWN dec-166 marker
+    still present (line-scoped: the file carries four dec-166 markers, so a file-global substring test
+    is satisfied by the siblings and cannot discriminate) (asserted, not merely claimed -- a marker deletion
+    beside an unrestricted decrease would otherwise be caught by nothing); and the value ratcheted into
+    [500, 587).'
+  fix_if: a sibling exceeds 500 -- split it further (Decision 128 decompose, never a raise). If the roster
+    key or its marker was deleted while the entry survives, restore it -- removal of a marker under a
+    surviving entry is the un-freezing escape the raises check exists to catch.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: validate_structural_size_limits already enforces per-file effective-line limits
+    repo-wide in both tiers, and the roster-key half is already graduated as structural-registry-section-scoped-extraction;
+    this step only proves the refactor landed inside both existing guards.
+- step: 10
+  phase: pre-deploy
+  action: HCL formatting is clean across the four touched files. Provider-free and local per Decision
+    119; the authoritative validate/plan verifier is CI's REQUIRED terraform-validate check, which runs
+    scripts.validate --terraform-only (init -backend=false + validate + fmt -check) over all three live
+    roots.
+  command: terraform fmt -check -diff terraform/personal/platform_roles.tf terraform/personal/platform_dev_policies.tf
+    terraform/personal/platform_admin_policies.tf terraform/personal/platform_admin_data_policies.tf
+  expected: exit 0 with no diff emitted; CI terraform-validate then confirms init/validate across the
+    root
+  fix_if: run terraform fmt on the four files; never hand-align. A validate error that only CI can see
+    means the move broke a reference -- read the terraform-validate job log, do not author a local init
+    for terraform/personal outside the step-16 break-glass tier.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Formatting is already gated repo-wide by CI's required terraform-validate
+    check via scripts.validate --terraform-only; a registry row would duplicate a standing required check,
+    and the terraform binary is absent from the venv-only registry runner.
+- step: 11
+  phase: pre-deploy
+  action: Each of the TWO policy documents this plan grows is hoisted to a locals block and carries a
+    lifecycle precondition naming the correct 10,240 B inline limit via the minified measure. validate_iam_policy_size
+    is bootstrap-scoped (_BOOTSTRAP_DIR_REL), so no registered check asserts this for terraform/personal
+    (rec-3765).
+  command: 'bin/venv-python -c ''import pathlib,re;paths=["terraform/personal/platform_dev_policies.tf","terraform/personal/platform_admin_policies.tf"];missing=[p
+    for p in paths if not pathlib.Path(p).exists()];assert not missing,f"scope files absent, cannot assert
+    preconditions: {missing}";t={p:pathlib.Path(p).read_text() for p in paths};bad=[p for p,v in t.items()
+    if len(re.findall(r"length\(jsonencode\(jsondecode\(local\.",v))!=1];assert not bad,f"files without
+    exactly one minified-measure precondition: {bad}";repl=[p for p,v in t.items() if re.search(r"replace\([^)]*\"
+    \"",v)];assert not repl,f"files using the space-stripping replace() measure: {repl}"'''
+  expected: 'exit 0 -- both grown files exist, each carries exactly one minified-measure precondition,
+    and none uses the space-stripping replace() form. FAIL-CLOSED on an absent file: the earlier shell
+    form used `! grep -rq` over the three paths, which returns TRUE when they do not exist, so it passed
+    vacuously before the files were even created. Verified red on absent files, red on a missing precondition,
+    green on a correct tree.'
+  fix_if: 'a file has none -- the hoist was skipped and the precondition cannot reference self, so terraform
+    validate will error in CI (step 10''s fix_if routes that into a CI round-trip rather than catching
+    it locally). A raw length() or a replace()-based measure is wrong: AWS excludes whitespace from the
+    limit. platform_admin_data_policies.tf is deliberately NOT in this list: it grows no grant, so it
+    carries no precondition and stays a literal verbatim move.'
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: personal-policies-carry-byte-preconditions
+- step: 12
+  phase: pre-deploy
+  action: 'Record the LIVE per-role inline-policy aggregate as a baseline, fail-closed. This is a measurement,
+    NOT a quota gate: AWS enforces the 10,240 B per-role aggregate at write time, so the live sum is under
+    it by construction and this command can never red on a quota breach. The gate that CAN red is the
+    PROJECTED aggregate computed from the plan artifact in the split-apply step, before the human accepts.'
+  command: 'for role in PlatformAdmin PlatformDev; do pns=$(aws iam list-role-policies --role-name $role
+    --profile agent_platform_admin --query ''PolicyNames[]'' --output text) || exit 1; test -n "$pns"
+    || { echo "$role: no inline policies enumerated -- credential or role failure, not a zero aggregate";
+    exit 1; }; tot=0; for pn in $pns; do n=$(aws iam get-role-policy --role-name $role --policy-name "$pn"
+    --profile agent_platform_admin | bin/venv-python -c "import sys,json;d=json.load(sys.stdin);print(len(json.dumps(d[''PolicyDocument''],separators=('','','':''))))")
+    || exit 1; tot=$((tot+n)); done; echo "$role aggregate=$tot headroom=$((10240-tot))"; test $tot -gt
+    0 || exit 1; done'
+  expected: 'both roles print an aggregate and headroom, and a zero/empty enumeration exits 1 rather than
+    reporting a green aggregate=0. Baseline 2026-09-13: PlatformAdmin 7575 (headroom 2665) across four
+    inline policies, PlatformDev 3222 (headroom 7018) across two.'
+  fix_if: 'exit 1 with ''no inline policies enumerated'' -- the profile or role name is wrong; this used
+    to report a green aggregate=0 (verified: a typo''d role name exited 0). Do not proceed on a zero.'
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: Requires live AWS credentials and reflects account state rather than repo
+    state, so it is not replayable as a standing repo guard; the structural half (preconditions present)
+    is graduated at step 11 instead.
+- step: 13
+  phase: pre-deploy
+  action: The four location re-groundings actually happened. Negative greps, because a --pre green is
+    otherwise equally consistent with none of these edits being made (critique F-10).
+  command: '! { grep -A1 ''DenyStateRead'' docs/contracts/terraform-cc-web-operations.yaml | grep -q ''platform_roles.tf'';
+    } && ! grep -q ''cloudtrail:LookupEvents is AccessDenied to PlatformAdmin'' docs/contracts/iam-simulate-fixture.yaml
+    && ! grep -q ''CODIFIED 2026-05-29 in .terraform/personal/platform_roles.tf'' terraform/CLAUDE.md
+    && ! grep -q ''scripts/checks/iam_tf.py'' docs/ROADMAP-PLATFORM.yaml'
+  expected: 'exit 0 -- all four stale locators are gone. Each anchor was calibrated against the pre-change
+    tree and confirmed PRESENT there, so this is genuinely red-before. Note the shapes: the cc-web one
+    spans two lines (hence grep -A1 on DenyStateRead), and the CLAUDE.md one uses ''.'' for the backtick
+    before the path. It asserts only that the falsehood is gone, not the replacement text.'
+  fix_if: a clause fails -- that file was not re-grounded. If the docs/ROADMAP-PLATFORM.yaml row was dropped
+    from Scope, drop its clause from this command too rather than leaving an assertion nothing will satisfy.
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: 'One-time re-grounding of four specific stale strings, not a durable invariant:
+    once they are gone the assertion can never fail again, and a registry row asserting the permanent
+    absence of a string nobody will retype is dead weight in the standing gate.'
+- step: 14
+  phase: pre-deploy
+  action: The new check is registered and executes, and the full fast gate is green end to end.
+  command: bin/venv-python -m scripts.validate --pre && bin/venv-python -c "from scripts.checks import
+    registry; assert 'validate_agent_observability_read_coverage' in registry.all_checks(), 'check has
+    no _manifest.py Entry -- it is invisible to every gate'"
+  expected: 'exit 0 AND the new check is a member of registry.all_checks(). The membership assertion is
+    load-bearing: an unregistered check module is invisible to validate_ci_rca_taxonomy (registry->taxonomy
+    only), validate_check_accounting and validate_check_manifests (Entry->module only), so a missing _manifest.py
+    Entry otherwise ships GREEN.'
+  fix_if: the check is absent from the run -- the _manifest.py Entry is missing, or the ci_rca_taxonomy
+    row is absent and the taxonomy completeness assertion is red
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: 'Kernel-expressible as command_exit_zero, but graduating it would make the
+    verification registry invoke scripts.validate --pre from inside a check that --pre itself runs: unbounded
+    recursion. The planning skill names that recursion explicitly; this is an impracticality waiver, not
+    a not-applicable classification.'
+- step: 15
+  phase: pre-deploy
+  action: Full-tier validation before any commit or handoff, as handoff_policy.full_validation_required_before_commit
+    demands. --pre is the PR gate; the full tier is the pre-handoff gate (AGENTS.md two-tier model).
+  command: bin/venv-python -m scripts.validate
+  expected: completed exit 0. A timeout is NOT a pass -- handoff_policy.timeout_disposition is blocked,
+    so resume later and rerun the full tier from the start rather than committing on a partial run.
+  fix_if: a check red here but green under --pre means it is a full-tier-only check (e.g. a mirror-test
+    or coverage assertion). Fix it before committing; never downgrade to --pre to get a green.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: 'Kernel-expressible as command_exit_zero, but graduating it would have the
+    verification registry invoke the full scripts.validate tier from inside a check that the full tier
+    itself runs: unbounded recursion, the same reason step 14 is waived rather than graduated.'
+- step: 16
+  phase: post-deploy
+  action: 'SPLIT-APPLY, human-gated. Sync the provider mirror, MATERIALISE the gitignored tfvars from
+    Secrets Manager, init the PARTIAL S3 backend with its config file, then run a TARGETED plan, PRESENT
+    the output, and apply ONLY after explicit human acceptance. Never self-directed (Decision 126/180/183).
+    Three preconditions are easy to miss and each fails the step outright: terraform/personal declares
+    `backend "s3" { use_lockfile = true }` (main.tf:45) with bucket/key/region/encrypt supplied ONLY by
+    -backend-config=backend-sandbox.hcl, so init without that flag errors under -input=false; terraform.personal.tfvars
+    is gitignored and absent from a fresh clone, recovered exactly as .github/actions/materialise-tfvars
+    does; and TF_CLI_CONFIG_FILE must be inlined on EVERY terraform call, because setup-cloud-env.sh exports
+    it only inside its own process tree. Two further mechanics are folded in here because both fail late
+    and expensively. (a) `terraform init` PRUNES the stale hashicorp/null block from the git-TRACKED terraform/personal/.terraform.lock.hcl
+    (null is unused in this root), so the command restores it immediately -- otherwise step 18''s ''commit
+    and push'' would commit a file absent from Scope and trip validate_scope_boundary on a PR whose apply
+    has ALREADY happened. (b) The plan is written to /tmp/agent-obs-plan.bin so the PROJECTED per-role
+    byte aggregate can be measured from it before the human accepts -- the live aggregate alone cannot
+    red, since AWS enforces the 10,240 B quota at write time and the live sum is therefore under it by
+    construction.'
+  command: "INSTALL_TERRAFORM=1 bin/setup-cloud-env.sh && aws secretsmanager get-secret-value --secret-id\
+    \ agent-platform-terraform-personal-tfvars --query SecretString --output text --profile agent_platform_admin\
+    \ > terraform/personal/terraform.personal.tfvars && TF_CLI_CONFIG_FILE=\"$HOME/.terraform-mirror.tfrc\"\
+    \ terraform -chdir=terraform/personal init -input=false -backend-config=backend-sandbox.hcl && TF_CLI_CONFIG_FILE=\"\
+    $HOME/.terraform-mirror.tfrc\" terraform -chdir=terraform/personal plan -var-file=terraform.personal.tfvars\
+    \ -target=aws_iam_role_policy.platform_admin_ops -target=aws_iam_role_policy.platform_dev_runtime\
+    \ -target=aws_iam_role_policy.platform_admin_datalake -out=/tmp/agent-obs-plan.bin && git checkout\
+    \ -- terraform/personal/.terraform.lock.hcl && TF_CLI_CONFIG_FILE=\"$HOME/.terraform-mirror.tfrc\"\
+    \ terraform -chdir=terraform/personal show -json /tmp/agent-obs-plan.bin > /tmp/agent-obs-plan.json\
+    \ && bin/venv-python -c 'import json,subprocess as sp\np=json.load(open(\"/tmp/agent-obs-plan.json\"\
+    ));P={}\nfor c in p.get(\"resource_changes\",[]):\n    if c.get(\"type\")==\"aws_iam_role_policy\"\
+    \ and \"update\" in (c.get(\"change\",{}).get(\"actions\") or []):\n        a=c[\"change\"][\"after\"\
+    ];P.setdefault(a[\"role\"],{})[a[\"name\"]]=len(json.dumps(json.loads(a[\"policy\"]),separators=(\"\
+    ,\",\":\")))\nassert P,\"no aws_iam_role_policy update in the plan -- nothing to project\"\nfor role,pol\
+    \ in P.items():\n    ns=sp.run([\"aws\",\"iam\",\"list-role-policies\",\"--role-name\",role,\"--profile\"\
+    ,\"agent_platform_admin\",\"--query\",\"PolicyNames[]\",\"--output\",\"text\"],capture_output=True,text=True,check=True).stdout.split()\n\
+    \    assert ns,role+\": no inline policies enumerated -- credential or role failure, not a zero aggregate\"\
+    \n    t=sum(pol[n] if n in pol else len(json.dumps(json.loads(sp.run([\"aws\",\"iam\",\"get-role-policy\"\
+    ,\"--role-name\",role,\"--policy-name\",n,\"--profile\",\"agent_platform_admin\",\"--query\",\"PolicyDocument\"\
+    ,\"--output\",\"json\"],capture_output=True,text=True,check=True).stdout),separators=(\",\",\":\"\
+    ))) for n in ns)\n    print(role,\"projected aggregate=\"+str(t),\"headroom=\"+str(10240-t))\n   \
+    \ assert 0<t<=10240,role+\": projected aggregate \"+str(t)+\" breaches the 10240 B per-role quota\"\
+    '"
+  expected: exactly TWO in-place inline-policy updates (platform_admin_ops, platform_dev_runtime) with
+    platform_admin_datalake showing NO diff -- config already matches live (measured 2026-09-13), so its
+    verbatim move contributes nothing. Its -target is retained only to prove that. No role/trust/destroy
+    diff and no resource replacement. Then, after explicit human acceptance, the same targeted apply succeeds.
+    The projection then prints a projected aggregate and headroom per role and fails if either breaches
+    10,240 B or enumerates zero inline policies. Present BOTH the plan diff and the projection for acceptance.
+  fix_if: init errors on missing backend attributes -- the -backend-config flag was dropped. A missing-variable
+    prompt means the tfvars fetch failed; never hand-type those values (Decision 101). THREE updates means
+    platform_admin_datalake was NOT moved verbatim -- a statement was reordered or altered; restore origin/main's
+    order rather than applying the diff. Any assume_role_policy diff -- STOP and reconcile the ExternalIds
+    per the IMPORT BEFORE APPLY banner; never apply a trust diff. Any create/destroy pair means an address
+    changed.
+- step: 17
+  phase: post-deploy
+  action: 'Live behavioural proof for EVERY granted verb under both profiles (Decision 48 -- invoke, do
+    not grep). Several grants are resource-scoped rather than "*": cloudwatch:DescribeAlarmHistory at
+    the alarm prefix, s3:ListBucket/ListBucketVersions at arn:aws:s3:::agent-platform-*, and PlatformDev''s
+    three logs stream verbs at /aws/lambda/agent-platform-*. Each is a place a verb can be present-but-inert
+    (the rec-2882 shape), so each must be invoked against a real ARN.'
+  command: set -e; ALARM=$(aws cloudwatch describe-alarms --alarm-name-prefix ducklake- --profile agent_platform_admin
+    --region eu-west-2 --query 'MetricAlarms[0].AlarmName' --output text); test -n "$ALARM" && test "$ALARM"
+    != None || { echo 'no ducklake-* alarm found; the four live alarms were ducklake-catalog-dr-freshness,
+    ducklake-maintenance-circuit-breaker, ducklake-maintenance-smoke-circuit-breaker, ducklake-writer-errors
+    on 2026-09-13 -- re-list and name one explicitly; an empty result must not silently pass this step';
+    exit 1; }; STREAM=$(aws logs describe-log-streams --log-group-name /aws/lambda/agent-platform-ducklake-writer
+    --order-by LastEventTime --descending --limit 1 --profile agent_platform --region eu-west-2 --query
+    'logStreams[0].logStreamName' --output text); test -n "$STREAM" && test "$STREAM" != None || { echo
+    'no log stream found under the writer log group'; exit 1; }; aws cloudwatch get-metric-statistics
+    --namespace DuckLakeMaintenance --metric-name MergeOpsFilesBeforeTotal --start-time "$(date -u -d
+    '14 days ago' +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --period 86400 --statistics
+    Sum --profile agent_platform_admin --region eu-west-2; aws cloudwatch get-metric-data --metric-data-queries
+    '[{"Id":"m1","MetricStat":{"Metric":{"Namespace":"AWS/Lambda","MetricName":"Invocations"},"Period":86400,"Stat":"Sum"}}]'
+    --start-time "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    --profile agent_platform_admin --region eu-west-2; aws cloudwatch list-metrics --namespace DuckLakeMaintenance
+    --profile agent_platform_admin --region eu-west-2; aws cloudwatch describe-alarm-history --alarm-name
+    "$ALARM" --max-records 1 --profile agent_platform_admin --region eu-west-2; aws cloudwatch describe-alarms-for-metric
+    --namespace DuckLakeMaintenance --metric-name MergeOpsFilesBeforeTotal --profile agent_platform_admin
+    --region eu-west-2; aws cloudtrail lookup-events --max-results 1 --profile agent_platform_admin --region
+    eu-west-2; aws s3api list-object-versions --bucket agent-platform-data-lake --max-keys 1 --profile
+    agent_platform_admin --region eu-west-2; aws s3api list-objects-v2 --bucket agent-platform-data-lake
+    --max-keys 1 --profile agent_platform_admin --region eu-west-2; aws s3api list-buckets --profile agent_platform_admin;
+    aws cloudwatch get-metric-statistics --namespace DuckLakeMaintenance --metric-name MergeOpsFilesBeforeTotal
+    --start-time "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    --period 86400 --statistics Sum --profile agent_platform --region eu-west-2; aws cloudwatch get-metric-data
+    --metric-data-queries '[{"Id":"m1","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"MergeOpsFilesBeforeTotal"},"Period":86400,"Stat":"Sum"}}]'
+    --start-time "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    --profile agent_platform --region eu-west-2; aws cloudwatch list-metrics --namespace DuckLakeMaintenance
+    --profile agent_platform --region eu-west-2; aws cloudwatch describe-alarms --profile agent_platform
+    --region eu-west-2; aws logs describe-log-groups --log-group-name-prefix /aws/lambda/agent-platform-
+    --profile agent_platform --region eu-west-2; aws logs describe-log-streams --log-group-name /aws/lambda/agent-platform-ducklake-writer
+    --limit 1 --profile agent_platform --region eu-west-2; aws logs get-log-events --log-group-name /aws/lambda/agent-platform-ducklake-writer
+    --log-stream-name "$STREAM" --limit 1 --profile agent_platform --region eu-west-2; aws logs filter-log-events
+    --log-group-name /aws/lambda/agent-platform-ducklake-writer --limit 1 --profile agent_platform --region
+    eu-west-2
+  expected: 'every call returns data instead of AccessDenied, under BOTH profiles. The alarm name and
+    log stream are resolved at runtime and explicitly guarded against an empty/None result, so a missing
+    fixture fails the step rather than skipping the one verb it exists to prove. Note --limit 1, NOT --max-items
+    1: the latter is a CLI pagination flag that appends a second line carrying the token (verified byte-for-byte:
+    ''...6e10\nNone\n''), which both guards pass and which then makes get-log-events fail ResourceNotFoundException
+    for a reason unrelated to IAM -- masking the two stream-scoped verbs this step exists to prove.'
+  fix_if: 'a verb is denied despite being present in the policy -- it was granted at the wrong resource
+    axis, the rec-2882 shape (a verb present in a policy and structurally unable to authorize). DescribeAlarmHistory
+    is the likeliest instance here: confirm with aws iam simulate-principal-policy against a real alarm
+    ARN, rescope, and re-apply. Never conclude from the policy text that a verb can authorize.'
+- step: 18
+  phase: post-deploy
+  action: 'Global convergence before merge (Decision 98 pt4c). Then, as an AGENT OBLIGATION rather than
+    a shell check: re-plan the PR head so the saved plan.bin reflects converged state. If an uncommitted
+    edit remains, commit and push it; if nothing remains to push, re-run the terraform-apply-sandbox speculative-plan
+    job on the SAME head sha -- digest-safe, because persist and digest both re-run and the combined status
+    is overwritten. Then read the terraform-plan-digest status via mcp__github__get_commit / pull_request_read
+    (never gh -- AGENTS.md) and confirm it reports no change BEFORE merging.'
+  command: TF_CLI_CONFIG_FILE="$HOME/.terraform-mirror.tfrc" terraform -chdir=terraform/personal plan
+    -var-file=terraform.personal.tfvars -detailed-exitcode
+  expected: exit code 0 (no changes). Exit 2 means changes are still pending. The re-plan and digest-confirm
+    described in `action` are the agent's obligation after this command passes -- they are deliberately
+    NOT wrapped into this command, because a shell line that only prints instructions is not a check.
+    TF_CLI_CONFIG_FILE is inlined as the literal path bin/setup-cloud-env.sh:201 writes ($HOME/.terraform-mirror.tfrc);
+    "$TF_CLI_CONFIG_FILE" would expand empty, since the export lives only in that script's own process
+    tree. Reuses step 16's initialised .terraform/ and materialised tfvars IN THE SAME CONTAINER; if this
+    runs in a fresh one, repeat step 16's mirror sync, tfvars fetch and -backend-config init first.
+  fix_if: 'exit 2 with OUR three addresses pending -- the apply did not converge; do not merge. exit 2
+    from PRE-EXISTING unrelated drift elsewhere in the root (not our addresses) -- do NOT treat as a dead
+    end and do NOT widen this plan: route it to the heal verb docs/contracts/deploy-paths.yaml''s reconcile
+    row selects, and file a rec if it is not already tracked. If nothing remains to push, do not invent
+    an empty commit before checking whether re-running the speculative-plan job on the same head sha suffices
+    -- it does.'
+- step: 19
+  phase: post-deploy
+  action: Inline-policy AGGREGATE is still within quota after the apply (the per-role quota, re-measured
+    live).
+  command: 'for role in PlatformAdmin PlatformDev; do pns=$(aws iam list-role-policies --role-name $role
+    --profile agent_platform_admin --query ''PolicyNames[]'' --output text) || exit 1; test -n "$pns"
+    || { echo "$role: no inline policies enumerated -- credential or role failure, not a zero aggregate";
+    exit 1; }; tot=0; for pn in $pns; do n=$(aws iam get-role-policy --role-name $role --policy-name "$pn"
+    --profile agent_platform_admin | bin/venv-python -c "import sys,json;d=json.load(sys.stdin);print(len(json.dumps(d[''PolicyDocument''],separators=('','','':''))))")
+    || exit 1; tot=$((tot+n)); done; echo "$role aggregate=$tot headroom=$((10240-tot))"; test $tot -gt
+    0 && test $tot -le 10240 || exit 1; done'
+  expected: both roles report a non-zero aggregate at or under 10,240 B, confirming the applied grants
+    did not breach the per-role quota. Fail-closed on an empty enumeration.
+  fix_if: over quota -- relocate the read grants into a customer-managed *-reads policy and re-apply (Decision
+    156's ratified remedy, already precedented for github_ci_apply). A fifth inline policy does not help
+    an aggregate quota.
+- step: 20
+  phase: post-deploy
+  action: Answer the question the gap blocked -- is the every-6h merge_ops cadence actually running?
+  command: aws cloudwatch get-metric-statistics --namespace DuckLakeMaintenance --metric-name MergeOpsFilesBeforeTotal
+    --start-time "$(date -u -d '14 days ago' +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    --period 21600 --statistics Sum SampleCount --profile agent_platform_admin --region eu-west-2
+  expected: a datapoint series reported in the handoff. A sparse or empty series IS the finding and must
+    be filed as a recommendation, not repaired here -- the cadence is outside this plan's scope boundary
+    (Decision 59).
+  fix_if: the series is empty -- distinguish "metric never emitted" from "cadence not firing" before concluding,
+    and do not repair the cadence in this plan
+- step: 21
+  phase: post-deploy
+  action: 'Closure sweep -- the three bundled recommendations are closed in the warehouse. rec-2696 is
+    NOT here: it is closed separately via update_rec citing the live reconciliation, which its own context
+    prescribes.'
+  command: bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json;rows=dict((r['id'],r['status'])
+    for r in (json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip()));want=['rec-3763','rec-2906','rec-2851'];print([(k,rows.get(k))
+    for k in want]);assert all(rows.get(k)=='closed' for k in want)"
+  expected: all three report status closed after the Resolves trailer fires rec-autoclose
+  fix_if: 'any still open -- the squash-merge commit body is missing its "Resolves: rec-NNNN" trailer'
+test_obligations:
+- source: terraform/personal/platform_roles.tf
+  behavior: Both aws_iam_role resources stay in this file with PlatformDev boundary-carrying and PlatformAdmin
+    boundary-free, so the graduated boundary check keeps resolving.
+  verification_step: 2
+  command: grep -A3 'resource "aws_iam_role" "platform_dev"' terraform/personal/platform_roles.tf | grep
+    -q 'permissions_boundary'
+  red_green_expectation: red if the roles are moved out (the grep finds nothing at this path); green on
+    the intended split
+- source: terraform/personal/platform_dev_policies.tf
+  behavior: PlatformDev holds the CloudWatch/Logs observability reads in this file. The companion property
+    -- both DenyState* statements surviving with Effect=Deny and all three protected prefixes -- is carried
+    by the same linked step and graduated as platformdev-state-convergence-denies-intact.
+  verification_step: 5
+  command: grep -q 'cloudwatch:' terraform/personal/platform_dev_policies.tf
+  red_green_expectation: 'red before -- PlatformDev has zero cloudwatch grants anywhere today (measured:
+    0 matches in its policy range); green once the read statements land in this file'
+- source: terraform/personal/platform_admin_policies.tf
+  behavior: PlatformAdmin holds the three CloudWatch metric read verbs
+  verification_step: 3
+  command: grep -q 'cloudwatch:GetMetricStatistics' terraform/personal/platform_admin_policies.tf
+  red_green_expectation: red before -- no cloudwatch metric verb exists anywhere in the tree today; green
+    once the AdminOps read statements land. The linked step asserts all three verbs as separate grep -q
+    conjuncts.
+- source: terraform/personal/platform_admin_data_policies.tf
+  behavior: platform_admin_datalake lands in this file with its statement order unchanged from origin/main
+    (a verbatim move -- rec-2696's reorder is deliberately not performed, its premise being stale)
+  verification_step: 6
+  command: grep -q 'platform_admin_datalake' terraform/personal/platform_admin_data_policies.tf
+  red_green_expectation: red before -- the file does not exist yet; green once the resource is moved here
+    with its order intact, which the linked step asserts against origin/main
+- source: scripts/checks/iam_tf/validate_agent_observability_read_coverage.py
+  behavior: fails loud on an unmapped managed resource type and on an uncovered observability resource
+  verification_step: 8
+  test_selector: tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py
+  red_green_expectation: the negative fixtures are red before the check discriminates, green once it does
+- source: scripts/checks/iam_tf/_manifest.py
+  behavior: the new check is registered and actually executes in the --pre and full tiers
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: the check is absent from the --pre run before the Entry lands and named in it
+    afterwards
+- source: config/ci_rca_taxonomy.yaml
+  behavior: the new registered check maps to the iam_gap failure category so a red main routes correctly
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: validate_ci_rca_taxonomy is red for a registered-but-unmapped check and green
+    once the row lands
+- source: config/structural_size_budgets.yaml
+  behavior: The platform_roles.tf roster key survives the decomposition (the graduated extraction check
+    depends on it) while its value stops overstating a file that is now a fraction of its old size.
+  verification_step: 9
+  command: assert 'terraform/personal/platform_roles.tf' in b, 'roster key removed'
+  red_green_expectation: red if the key is deleted or the value left at 587; green once the key is retained
+    at a lowered value
+- source: config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml
+  behavior: the one graduate-dispositioned VP step has its matching registry row
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: validate_graduation_completeness is red while the row is missing and green once
+    it lands
+- source: docs/ROADMAP-PLATFORM.yaml
+  behavior: Tier-item files_in_scope path strings for T2.48/T2.44 name surfaces that still exist after
+    the split
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: Roadmap bookkeeping only -- re-grounding two stale files_in_scope path strings. It changes
+    no runtime or agent behavior, so there is no behavior for a new test to guard; validate_platform_roadmap
+    already schema-gates this file in both tiers and is re-run by the linked step.
+- source: docs/contracts/terraform-cc-web-operations.yaml
+  behavior: admin_tier_only locates the DenyStateRead statement at a path that actually contains it
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: Contract prose re-grounding of one location sentence. validate_terraform_cc_web_operations
+    asserts referenced_repo_paths EXISTENCE only and cannot assert which file holds a given Sid, so there
+    is no machine behavior a new test could guard here; the linked step re-runs that existence check.
+    The semantic half is exactly why this row is in scope rather than left to a check.
+- source: docs/contracts/iam-simulate-fixture.yaml
+  behavior: the p0-4-logs-tag-resource over-grant justification states a premise that is still true
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate --pre
+  waiver_reason: 'An in-place why rewrite carries no machine behavior: validate_iam_simulate_fixture_shape
+    is a structural check over expected_decision_values and the per-verb placeholder shape, never the
+    prose justification, and the fixture''s runner is deliberately POST-APPLY-only and not a validate.py
+    check. The linked step re-runs the shape check to prove the edit did not break the envelope.'
+- source: config/agent/verification_registry/entries/platformdev-state-convergence-denies-intact.yaml
+  behavior: VP step 5's graduate disposition has its matching registry row, with plan_slug pinned
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: validate_graduation_completeness is red while the row is missing or its plan_slug
+    mismatches, and green once it lands
+- source: config/agent/verification_registry/entries/platformadmin-metric-read-verbs-present.yaml
+  behavior: the graduate-dispositioned VP step backed by platformadmin-metric-read-verbs-present has its
+    matching registry row with plan_slug pinned
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: validate_graduation_completeness is red while the row is missing or its plan_slug
+    mismatches, green once it lands
+- source: config/agent/verification_registry/entries/personal-policies-carry-byte-preconditions.yaml
+  behavior: the graduate-dispositioned VP step backed by personal-policies-carry-byte-preconditions has
+    its matching registry row with plan_slug pinned
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate --pre
+  red_green_expectation: validate_graduation_completeness is red while the row is missing or its plan_slug
+    mismatches, green once it lands
+- source: terraform/CLAUDE.md
+  behavior: its two CODIFIED location references name files that actually hold the policies
+  verification_step: 13
+  command: '! grep -q ''CODIFIED 2026-05-29 in .terraform/personal/platform_roles.tf'' terraform/CLAUDE.md'
+  waiver_reason: Documentation prose re-grounding with no runtime or agent behavior to guard; .md carries
+    no executable surface here (it is not a prompt file). The linked step's clause C asserts the stale
+    locator is gone, which is the only machine-checkable half, and both CODIFIED lines carry the identical
+    string so a half-done re-grounding also reds.
+constraints:
+- No rescue agents or workaround loops (Decision 55); out-of-scope findings become recommendations, not
+  inline fixes (Decision 59).
+- NEVER widen the CI apply role to avoid the split-apply. Decision 180 clauses 2-3 are permanent and reversing
+  clause 3 requires re-deciding Decision 113's two-principal split.
+- Agents never self-direct terraform apply (Decision 126). Step 16 applies only after the plan output
+  is presented and a human explicitly accepts it.
+- 'Public-repo boundary (Decision 101): use ${var.account_id} / ${var.aws_region} in HCL; never put the
+  account id, either ExternalId, or an account-bearing ARN in a commit, PR body or chat.'
+- Read-only scope. No trail creation or mutation, no cloudwatch:PutMetricData, no new alarm writes, no
+  widening of any existing write grant.
+- Do not attach a permissions boundary to PlatformAdmin and do not remove PlatformDev's (Decision 144
+  cl3 / 180 cl3) -- PlatformAdmin must stay able to amend the boundary.
+- The decomposition must not change any Terraform resource address, and must retain the config/structural_size_budgets.yaml
+  roster key for platform_roles.tf.
+- Decompose rather than raise any size budget (Decision 128/165/166); every new .tf file stays under 500
+  effective lines.
+context:
+- 'decision-scout: FLAGS_FOUND, 2 rounds, 140/140 triaged each. CITE: 48, 55/72, 92pt5, 98pt1/pt4c, 101,
+  103, 113, 119/120, 126, 127, 128, 129(pt1/pt4/pt5), 131, 132/176, 136, 142, 143, 144(cl2/cl3), 150,
+  156, 157, 165/166, 169, 170, 177, 180(cl3/cl6), 181, 183pt4, 186, 187.'
+- 'gates: decision-scout=FLAGS_FOUND after 2 round(s); plan-critique=<verdict> after <N> round(s). Adopted
+  from round 2: Lever B reuses _read_coverage.py''s census; Decision 156 preconditions; budgets entry
+  keeps key+marker at 500. The iam-simulate-fixture flag was disputed (single-principal, 598/600) and
+  plan-critique corrected the remedy to re-grounding p0-4-logs-tag-resource''s why -- now in scope.'
+- 'Apply path is forced, not chosen: IAMRoleWriteBounded (github_ci_apply_policy.tf:206) scopes iam:PutRolePolicy
+  to role/agent-platform-* only; the sole role/PlatformDev grant is metadata-only. Decision 180 cl3; deploy-paths.yaml#admin_out_of_band.procedure.'
+- Measured in the ADMIN container 2026-09-12, all four recs live. PlatformAdmin denied GetMetricStatistics/GetMetricData/ListMetrics,
+  cloudtrail:LookupEvents, s3:ListAllMyBuckets/ListBucketVersions; PlatformDev denied ListMetrics, DescribeAlarms,
+  logs:DescribeLogGroups/FilterLogEvents. rec-3763's "needs logs verbs" claim is WRONG for PlatformAdmin
+  (platform_roles.tf:359,367 grant them); the logs half is PlatformDev-only.
+- 'Shape pre-validated with iam:SimulateCustomPolicy before authoring: all nine verbs allowed at their
+  intended axis; s3 list verbs implicitDeny off-prefix; cloudtrail/cloudwatch write verbs implicitDeny.'
+- 'Lever coverage is deliberately partial: unscopable Resource "*" verbs have no managed resource type
+  to hang a coverage row on, so Lever B covers only the prefix-scoped residue and the live proof (step
+  17) carries the rest. Empirical closure for an unknown provider verb is rec-2906''s CloudTrail.'
+- 'Phase T2.48 is uniquely correct (sole item whose files_in_scope names platform_roles.tf AND related_decisions
+  carry 129). Freshness Gate: in_progress, c1-c5 met, sole open c6 is a standing recurring review an atomic
+  plan cannot close -- hence empty closes_criteria. T2.18 c2 is the motivating consumer; neither T2.48
+  c6 nor T2.44 c2 closes here. depends_on T2.45 is a pre-existing Decision-144-pt7 gap, not deepened.'
+- 'Decomposition is path-safe: every iam_tf check globs the root (_read_coverage.py:125,332; validate_boundary_attached.py:56;
+  validate_convergence_writer_isolation.py:137), never a filename. Two graduated rows DO grep platform_roles.tf
+  by path: platformdev-bounded-platformadmin-excluded (both roles stay) and structural-registry-section-scoped-extraction
+  (roster key must survive).'
+- 'The four recs'' acceptance strings name platform_roles.tf and are NOT rewritten: probes are never machine-run
+  (run_acceptance_probe defaults False; graduated row preflight-never-runs-acceptance-probes) and closure
+  rides the Resolves trailer. Relevance gate 2026-09-12: all four ''unknown'' (no signals) -- bundleable.'
+- Decision 180 cl6 rejected relocating platform_roles.tf to the BOOTSTRAP TIER; same-root siblings are
+  not that, so cl6 does not bar the split. rec-2906 is class-closing, so Decision 186 makes the Lever
+  B check plus its graduated row that rec's named closure artifact.
+- 'Byte quota is AGGREGATE PER ROLE, not per policy (measured 2026-09-12): PlatformAdmin 7575 B across
+  FOUR inline policies, headroom 2665; PlatformDev 3222 B across two. An AdminOps-only reading (3619 B)
+  overstates headroom 2.5x. Decision 156''s remedy if it tightens is a customer-managed *-reads policy.
+  rec-3765 widens validate_iam_policy_size to this root; rec-3766 fixes seven stale cross-references.'
+- 'Roadmap re-grounding in scope for T2.48/T2.44 (files_in_scope names scripts/checks/iam_tf.py, now a
+  package). The roadmap edit is operator-gated at implement time: present the diff, land only on an explicit
+  yes.'
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- only the plan-cited decision sections (129, 143, 144, 156, 157, 165, 166, 180, 183, 186, 113, 92, 101,
+  119, 120, 126, 127, 128, 132)
+- docs/contracts/deploy-paths.yaml#admin_out_of_band.procedure read in full before step 16
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+execution_steps:
+- 'Decompose first, as a pure move with NO content edits, so the grant diff is reviewable on its own:
+  move platform_dev_runtime to terraform/personal/platform_dev_policies.tf, platform_admin_ops to terraform/personal/platform_admin_policies.tf,
+  and platform_admin_datalake + platform_admin_bootstrap_state + platform_admin_ducklake_breakglass to
+  terraform/personal/platform_admin_data_policies.tf. platform_roles.tf keeps both aws_iam_role resources
+  and their banners. Carry each resource''s leading comment block with it. Run VP steps 1-2 before editing
+  any policy body.'
+- 'platform_admin_policies.tf -- add to AdminOps: one Sid granting cloudwatch:GetMetricStatistics, GetMetricData,
+  ListMetrics, DescribeAlarmsForMetric, cloudtrail:LookupEvents and s3:ListAllMyBuckets on Resource "*"
+  with a collocated comment naming each as unscopable (the CloudWatchAlarmDescribe / LambdaLogGroupDescribe
+  / SSMDescribeParameters idiom); one Sid granting cloudwatch:DescribeAlarmHistory on alarm:* (the CloudWatchAlarmManagement
+  idiom at platform_roles.tf:330) -- never alarm:agent-platform-*, which matches zero live alarms; one
+  Sid granting s3:ListBucket + s3:ListBucketVersions on arn:aws:s3:::agent-platform-*.'
+- 'Byte-limit preconditions (Decision 156). A precondition CANNOT reference `self` -- that is postcondition-only
+  -- so each of the TWO policy documents this plan grows -- platform_admin_ops and platform_dev_runtime
+  -- must first be HOISTED out of its inline `policy = jsonencode({...})` attribute into a `locals` block,
+  exactly as terraform/bootstrap does (github_ci_apply_policy.tf:7, github_ci_apply_boundary.tf:8). The
+  resource then reads `policy = local.<name>` and its lifecycle precondition uses the canonical minified
+  measure `length(jsonencode(jsondecode(local.<name>))) <= 10240` -- never a raw `length()` and never
+  `replace(..., " ", "")`, which strips spaces inside string values and under-counts. This hoist restructures
+  platform_dev_policies.tf and platform_admin_policies.tf ONLY. Do NOT hoist anything in platform_admin_data_policies.tf:
+  it grows no grant, so it needs no byte precondition, and leaving it unhoisted is what makes its ''no
+  statement added, removed or reordered'' claim literally true. (It also false-reds VP step 6, but only
+  when platform_admin_bootstrap_state is ALSO hoisted: step 6''s regex window runs to the `resource "aws_iam_role_policy"
+  "platform_admin_bootstrap_state"` terminator, and that resource''s locals block then falls INSIDE the
+  window, leaking its Sids into the extracted order. A datalake-only hoist does not trigger it -- which
+  is why an earlier simulation wrongly exonerated it.) This hoist restructures the two grown files, so
+  do it as part of the move (before adding grants) and re-run VP steps 1, 9 and 14. Widening validate_iam_policy_size
+  to this root is deferred to rec-3765, so NOTHING else asserts these three preconditions exist -- VP
+  step 11 does.'
+- 'platform_dev_policies.tf -- add to DailyOps: one Sid granting the CloudWatch metric read verbs plus
+  cloudwatch:DescribeAlarms and logs:DescribeLogGroups on Resource "*"; one Sid granting logs:DescribeLogStreams/GetLogEvents/FilterLogEvents
+  on the /aws/lambda/agent-platform-* log-group and log-stream ARNs. Grant no cloudtrail verb here --
+  the permissions boundary''s DataPlaneAllow has no cloudtrail entry, so it would be inert. Leave both
+  Deny Sids untouched.'
+- platform_admin_data_policies.tf -- move platform_admin_datalake, platform_admin_bootstrap_state and
+  platform_admin_ducklake_breakglass VERBATIM. Do NOT reorder any statement. rec-2696 asked for an AlertsTopicManage/CatalogDrObjectRead
+  swap; its premise is stale (live order was re-measured 2026-09-13 and already matches repo order), so
+  the swap would introduce the very drift it was filed to remove.
+- 'scripts/checks/iam_tf/validate_agent_observability_read_coverage.py -- new check reusing _read_coverage.py''s
+  existing primitives: _read_root_text, _scan_resources, _action_matches, _resource_covered, and _parse_bootstrap_statements
+  for the per-role statement lists. Do NOT use _resolve_role_statements -- it loops a hardcoded (ROLE_PLANNER,
+  _PLANNER_ROLE_POLICY_NAME) tuple and returns None for any other role. _parse_bootstrap_statements is
+  despite its name a generic locator and already resolves BOTH the inline jsonencode shape and the hoisted
+  `policy = local.<name>` shape this plan introduces (_read_coverage.py:200-228) rather than reimplementing
+  HCL parsing. Mandatory-declaration classification map over every managed terraform/personal resource
+  type; unmapped type FAILS LOUD. Declare accounting via registry.examined. Keep under 500 SLOC.'
+- scripts/checks/iam_tf/_manifest.py -- add the Entry (pre=True, full_segment="full_after_lint").
+- config/ci_rca_taxonomy.yaml -- add the function_to_category row mapping the new check to iam_gap.
+- config/agent/verification_registry/entries/cloudtrail-read-only-no-write-verbs.yaml -- the graduated
+  row for VP step 4, following the sibling entry shape (check_id, primitive_slot, guard_target, guard_symbol,
+  plan_slug, graduated_at, graduated_by, check_spec).
+- tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py -- unmapped-type fixture, uncovered-log-group
+  fixture, and a real-tree positive, patching scripts.checks._common.ROOT per validate_boundary_attached's
+  convention.
+- terraform/CLAUDE.md -- re-ground its two "CODIFIED in terraform/personal/platform_roles.tf" references.
+- docs/ROADMAP-PLATFORM.yaml -- re-ground T2.48's and T2.44's stale files_in_scope references (scripts/checks/iam_tf.py
+  -> the package; platform_roles.tf -> the new policy files). Bookkeeping only; land only after the human
+  confirms.
+- Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA
+  (Decision 55)
+- '''Report: what was implemented, verification results, the step-20 cadence finding, and any recommendation
+  filed for out-of-scope findings'''
+rollback: Revert the commit and re-run the same targeted split-apply to restore the prior inline policies.
+  The grants are purely additive and read-only and the decomposition changes no Terraform address, so
+  a revert removes capability without breaking any write path; the Lever B check and its registry row
+  are removed with it, leaving no orphan gate.
