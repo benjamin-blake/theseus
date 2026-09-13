@@ -542,3 +542,45 @@ class TestDerivedSemverClassFromVersions:
         assert result.returncode == 0
         assert f"update-type '{MAJOR_UPDATE}' is not patch or minor (derived=no)" in harness.summary_text
         assert "derived class" not in harness.summary_text, "branch 2 must not run when the primitive spoke"
+
+
+class TestDeriverDiagnosticIsSurfaced:
+    """REGRESSION (code-review round 1, Medium): the deriver fails closed and still exits 0, so its
+    stderr is the ONLY signal distinguishing a crashed derivation from one that legitimately
+    returned unknown. Discarding it left that case invisible in a file whose header cites
+    Decision 155 observability."""
+
+    @staticmethod
+    def _delegate_copy_with_stub_deriver(tmp_path: Path, deriver_body: str) -> Path:
+        """A copy of the real delegate beside a stub deriver, so `dirname $0` resolves to the stub."""
+        ci_dir = tmp_path / "scripts" / "ci"
+        ci_dir.mkdir(parents=True, exist_ok=True)
+        delegate = ci_dir / "dependabot_auto_merge.sh"
+        delegate.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        (ci_dir / "dependabot_semver_class.py").write_text(deriver_body, encoding="utf-8")
+        return delegate
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_a_crashing_deriver_surfaces_its_stderr_and_still_denies(self, tmp_path: Path, argv_name: str) -> None:
+        stub = "import sys\nsys.stderr.write('derivation failed (RuntimeError()); failing closed\\n')\nprint('unknown')\n"
+        delegate = self._delegate_copy_with_stub_deriver(tmp_path, stub)
+        harness = _harness(tmp_path, _MERGE_FORBIDDEN, UPDATE_TYPE="", DEPENDENCY_NAMES="sympy")
+        result = harness.run(ARGVS[argv_name], script=delegate)
+
+        assert harness.calls == [], "a crashed derivation must never arm auto-merge"
+        assert result.returncode == 0
+        assert "semver deriver diagnostic" in result.stdout, result.stdout
+        assert "failing closed" in result.stdout
+        assert "semver deriver diagnostic" in harness.summary_text
+        assert "derived class 'unknown'" in harness.summary_text
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_a_quiet_deriver_emits_no_diagnostic_line(self, tmp_path: Path, argv_name: str) -> None:
+        """Control: the diagnostic line appears only when the deriver actually wrote to stderr."""
+        delegate = self._delegate_copy_with_stub_deriver(tmp_path, "print('patch')\n")
+        harness = _harness(tmp_path, _MERGE_OK, UPDATE_TYPE="", DEPENDENCY_NAMES="sympy")
+        result = harness.run(ARGVS[argv_name], script=delegate)
+
+        assert harness.calls == [("merge", EXPECTED_MERGE_ARGV)]
+        assert result.returncode == 0
+        assert "semver deriver diagnostic" not in result.stdout

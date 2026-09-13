@@ -81,6 +81,12 @@ def parse_declared_requirements(
     declared: dict[str, Requirement] = {}
     unparseable: list[str] = []
     for path in declaration_paths:
+        # A missing input is SKIPPED here, never raised: check_lockfile_sync hard-fails on it
+        # before ever calling this (see its `absent` guard), and the registered wrapper calls this
+        # helper for its accounting count on exactly that failure path -- raising would abort the
+        # check before it could append to `failed`.
+        if not path.exists():
+            continue
         for raw_line in path.read_text(encoding="utf-8").splitlines():
             line = _REQUIREMENT_COMMENT_RE.sub("", raw_line).strip()
             if not line or line.startswith("-"):
@@ -95,7 +101,11 @@ def parse_declared_requirements(
 
 
 def count_declared_requirements() -> int:
-    """Number of floors the live .in inputs declare -- the unit validate_lockfile_sync reports."""
+    """Number of floors the live .in inputs declare -- the unit validate_lockfile_sync reports.
+
+    Never raises on a missing input: returns the count of what is actually readable (0 when no .in
+    input exists), so the registered check can still report and append its failure.
+    """
     return len(parse_declared_requirements()[0])
 
 

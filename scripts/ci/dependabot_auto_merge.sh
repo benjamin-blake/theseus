@@ -113,7 +113,17 @@ if [ -n "$UPDATE_TYPE" ]; then
   fi
 else
   derived="yes"
-  semver_class=$(python3 "$_SEMVER_CLASS_SCRIPT" 2>/dev/null)
+  # python3, not bin/venv-python: this runs on a GitHub runner with no repo venv, and the deriver
+  # is stdlib-only by construction (same rationale as scripts/ci/branch_cleanup.sh:11).
+  _semver_stderr=$(mktemp)
+  semver_class=$(python3 "$_SEMVER_CLASS_SCRIPT" 2>"$_semver_stderr")
+  # The deriver fails closed and still exits 0, so its stderr is the ONLY signal distinguishing a
+  # crashed derivation from one that legitimately returned unknown. Discarding it would leave that
+  # case indistinguishable in the run log, which is the opposite of this file's Decision 155 intent.
+  if [ -s "$_semver_stderr" ]; then
+    _decision "semver deriver diagnostic: $(tr '\n' ' ' < "$_semver_stderr")"
+  fi
+  rm -f "$_semver_stderr"
   if [ -z "$semver_class" ]; then
     semver_class="unknown"
   fi

@@ -24,11 +24,12 @@ def validate_ducklake_version_lockstep(failed: list[str]) -> None:
     injected = root_str not in sys.path
     if injected:
         sys.path.insert(0, root_str)
+    floor_surfaces = 0
+    read_surfaces = 0
     try:
         import re as _re  # noqa: PLC0415
 
         # (a) requirements.in floor check, then the compiled requirements.txt pin against it
-        floor_surfaces = 0
         try:
             import scripts.sync.ducklake_version as _sdv  # noqa: PLC0415
 
@@ -51,7 +52,6 @@ def validate_ducklake_version_lockstep(failed: list[str]) -> None:
             _common.ROOT / "src" / "common" / "ducklake_runtime.py",
             _common.ROOT / "scripts" / "build_lambda.py",
         ]
-        read_surfaces = 0
         for surface in derive_surfaces:
             try:
                 text = surface.read_text(encoding="utf-8")
@@ -74,10 +74,13 @@ def validate_ducklake_version_lockstep(failed: list[str]) -> None:
                 print(f"  FAIL: hardcoded version literal in {surface.name}.")
             else:
                 print(f"  PASS: no hardcoded version literal assignment in {surface.name}.")
-        # Single terminal declaration (registry is last-call-wins): the requirements.in floor plus
-        # every derive surface actually read.
-        registry.examined(floor_surfaces + read_surfaces, unit="ducklake_derive_surfaces")
     finally:
+        # Single terminal declaration (registry is last-call-wins): the requirements.in floor plus
+        # every derive surface actually read. In `finally` so that an unexpected exception anywhere
+        # above -- e.g. a derive surface that is not decodable UTF-8, which is a ValueError and so
+        # escapes the OSError arm -- still leaves exactly one accounting declaration (Decision 170:
+        # EVERY exit path declares).
+        registry.examined(floor_surfaces + read_surfaces, unit="ducklake_derive_surfaces")
         if injected and root_str in sys.path:
             sys.path.remove(root_str)
 

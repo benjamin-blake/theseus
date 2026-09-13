@@ -20,10 +20,12 @@ from scripts.import_governance import (
     count_declared_requirements,
     evaluate_bazel_revisit_trigger,
     main,
+    parse_declared_requirements,
     run_import_contracts,
 )
 
 ROOT = Path(__file__).parent.parent
+_FOUR_NAMES = ("requirements.in", "requirements-dev.in", "requirements.txt", "requirements-dev.txt")
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +313,21 @@ class TestCheckLockfileSync:
         in_sync, msg = self._gate(tmp_path, floors, pins)
         assert in_sync, msg
         assert "pins all 4 declared floors" in msg, msg
+
+    def test_a_missing_in_input_is_skipped_by_the_parser_not_raised(self, tmp_path: Path) -> None:
+        """REGRESSION (code-review round 1, Medium): the parser must SKIP a missing input rather than
+        raise. check_lockfile_sync hard-fails on it separately (its `absent` guard), but the
+        registered wrapper calls the shared count helper for its accounting declaration on exactly
+        that failure path -- raising there aborts the check before it can append to `failed`."""
+        present = tmp_path / "requirements-dev.in"
+        present.write_text("pytest>=9.0\n", encoding="utf-8")
+        declared, unparseable = parse_declared_requirements((tmp_path / "requirements.in", present))
+        assert set(declared) == {"pytest"}
+        assert unparseable == []
+
+    def test_the_count_helper_is_zero_when_no_input_exists(self, tmp_path: Path) -> None:
+        with patch("scripts.import_governance._LOCKFILE_PATHS", tuple(tmp_path / n for n in _FOUR_NAMES)):
+            assert count_declared_requirements() == 0
 
     def test_live_declarations_all_parsed(self) -> None:
         """Every declaration in the live .in inputs is parsed: declared count == gate-reported count."""

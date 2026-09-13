@@ -101,22 +101,81 @@ class TestUpdatedDependenciesJson:
         )
         assert derive(_env(UPDATED_DEPENDENCIES_JSON=payload)) == MAJOR
 
-    def test_an_unclassifiable_member_fails_the_whole_group_closed(self) -> None:
-        """unknown outranks major: a group is only as classifiable as its least-classifiable member."""
+    def test_camel_and_snake_version_keys_are_both_accepted(self) -> None:
+        payload = self._json({"dependency_name": "mcp", "prev_version": "0.8.0", "new_version": "0.8.1"})
+        assert derive(_env(UPDATED_DEPENDENCIES_JSON=payload)) == PATCH
+
+    def test_a_mixed_group_fails_closed(self) -> None:
+        """Some members carrying evidence and others silent is a PARTIAL payload -- worse evidence
+        than none -- so it fails closed rather than falling through to a weaker precedence."""
         payload = self._json(
             {"dependencyName": "a", "updateType": "version-update:semver-patch"},
             {"dependencyName": "b"},
         )
-        assert derive(_env(UPDATED_DEPENDENCIES_JSON=payload)) == UNKNOWN
+        assert derive(_env(UPDATED_DEPENDENCIES_JSON=payload, PR_TITLE=PYTEST_SOCKET_TITLE)) == UNKNOWN
 
-    @pytest.mark.parametrize("payload", ["not json", "{}", "[]", '"a string"', "[1, 2]"])
+    def test_a_member_whose_versions_do_not_parse_fails_closed(self) -> None:
+        """Unparseable evidence is not the same as absent evidence: it stays unknown."""
+        payload = self._json({"dependencyName": "a", "prevVersion": "latest", "newVersion": "newest"})
+        assert derive(_env(UPDATED_DEPENDENCIES_JSON=payload, PR_TITLE=PYTEST_SOCKET_TITLE)) == UNKNOWN
+
+    def test_a_non_mapping_entry_fails_closed(self) -> None:
+        """A corrupt list (entries that are not objects) is never silently ignored."""
+        assert derive(_env(UPDATED_DEPENDENCIES_JSON="[1, 2]", PR_TITLE=PYTEST_SOCKET_TITLE)) == UNKNOWN
+
+    @pytest.mark.parametrize("payload", ["not json", "{}", "[]", '"a string"'])
     def test_unusable_payloads_fall_through_to_the_next_precedence(self, payload: str) -> None:
         env = _env(UPDATED_DEPENDENCIES_JSON=payload, PR_TITLE=PYTEST_SOCKET_TITLE)
         assert derive(env) == PATCH
 
-    def test_camel_and_snake_version_keys_are_both_accepted(self) -> None:
-        payload = self._json({"dependency_name": "mcp", "prev_version": "0.8.0", "new_version": "0.8.1"})
-        assert derive(_env(UPDATED_DEPENDENCIES_JSON=payload)) == PATCH
+
+class TestLiveDependabotPayloadShape:
+    """REGRESSION (code-review round 1, High): the workflow ALWAYS supplies
+    updated-dependencies-json, and on the empty-UPDATE_TYPE branch no member can carry an
+    updateType by definition. For the `update <x> requirement from <spec> to <spec>` shape
+    fetch-metadata extracts no versions either, so every member is SILENT. Returning unknown for
+    that payload short-circuited precedence 2 and made the PR-title fallback dead code on every
+    real dependabot range-update PR -- the exact shape the deriver was built for."""
+
+    LIVE_SILENT_MEMBER = '[{"dependencyName": "pytest-socket", "directory": "/"}]'
+
+    def test_pr_981_shape_with_a_populated_silent_payload_derives_patch(self) -> None:
+        env = _env(
+            UPDATED_DEPENDENCIES_JSON=self.LIVE_SILENT_MEMBER,
+            DEPENDENCY_NAMES="pytest-socket",
+            PR_TITLE=PYTEST_SOCKET_TITLE,
+        )
+        assert derive(env) == PATCH
+
+    def test_pr_980_shape_with_a_populated_silent_payload_derives_major(self) -> None:
+        env = _env(
+            UPDATED_DEPENDENCIES_JSON='[{"dependencyName": "mcp", "directory": "/"}]',
+            DEPENDENCY_NAMES="mcp",
+            PR_TITLE=MCP_TITLE,
+        )
+        assert derive(env) == MAJOR
+
+    def test_a_populated_silent_payload_still_reaches_the_scalar_pair_precedence(self) -> None:
+        """Precedence 3 must be reachable too, not just the title."""
+        env = _env(
+            UPDATED_DEPENDENCIES_JSON=self.LIVE_SILENT_MEMBER,
+            DEPENDENCY_NAMES="pytest-socket",
+            PREVIOUS_VERSION="0.8.0",
+            NEW_VERSION="0.9.0",
+        )
+        assert derive(env) == MINOR
+
+    def test_a_populated_silent_payload_with_nothing_below_it_is_unknown(self) -> None:
+        """Falling through is not the same as allowing: with no other evidence it still denies."""
+        assert derive(_env(UPDATED_DEPENDENCIES_JSON=self.LIVE_SILENT_MEMBER)) == UNKNOWN
+
+    def test_a_silent_payload_never_overrules_the_managed_primitive(self) -> None:
+        env = _env(
+            UPDATE_TYPE="version-update:semver-major",
+            UPDATED_DEPENDENCIES_JSON=self.LIVE_SILENT_MEMBER,
+            PR_TITLE=PYTEST_SOCKET_TITLE,
+        )
+        assert derive(env) == MAJOR
 
 
 class TestScalarVersionPair:

@@ -123,17 +123,38 @@ def _riskiest(classes: list[str]) -> str:
     return max(classes, key=lambda value: _RANK[value])
 
 
-def _member_class(member: Mapping[str, object]) -> str:
+def _member_class(member: Mapping[str, object]) -> str | None:
+    """Classify one member, or None when it carries NO version evidence at all.
+
+    The None case is the load-bearing distinction. A member with no updateType and no version pair
+    is SILENT -- it says nothing about the bump -- which is not the same as a member whose evidence
+    could not be classified. The live dependabot payload for a range update is silent in exactly
+    this way, and treating it as unclassifiable is what made the PR-title precedence unreachable.
+    """
     declared = str(member.get("updateType") or member.get("update_type") or "").strip()
     if declared:
         return _UPDATE_TYPE_CLASSES.get(declared, UNKNOWN)
     previous = str(member.get("prevVersion") or member.get("prev_version") or "")
     new = str(member.get("newVersion") or member.get("new_version") or "")
+    if not previous and not new:
+        return None
     return _class_between(previous, new) or UNKNOWN
 
 
 def _from_updated_dependencies(payload: str) -> str | None:
-    """Classify from fetch-metadata's updated-dependencies-json, or None if it is unusable."""
+    """Classify from fetch-metadata's updated-dependencies-json.
+
+    Returns None -- FALL THROUGH to the next precedence -- when the payload is unusable, or when
+    EVERY member is silent (no updateType, no version pair). The workflow always supplies this
+    variable, and on the empty-UPDATE_TYPE branch no member can carry an updateType by definition;
+    for the `update <x> requirement from <spec> to <spec>` shape fetch-metadata extracts no
+    versions either, so an all-silent payload is the LIVE shape and must not short-circuit the
+    PR-title precedence below it.
+
+    Returns UNKNOWN -- fail closed -- when the members are MIXED (some carry evidence, some are
+    silent) or when the list holds a non-mapping entry: a partial or corrupt payload is worse
+    evidence than none, and the caller denies unknown.
+    """
     try:
         parsed = json.loads(payload)
     except (ValueError, TypeError):
@@ -142,8 +163,13 @@ def _from_updated_dependencies(payload: str) -> str | None:
         return None
     members = [member for member in parsed if isinstance(member, Mapping)]
     if len(members) != len(parsed):
+        return UNKNOWN
+    classes = [_member_class(member) for member in members]
+    if all(member_class is None for member_class in classes):
         return None
-    return _riskiest([_member_class(member) for member in members])
+    if any(member_class is None for member_class in classes):
+        return UNKNOWN
+    return _riskiest([member_class for member_class in classes if member_class is not None])
 
 
 def _from_scalar_pair(env: Mapping[str, str]) -> str | None:

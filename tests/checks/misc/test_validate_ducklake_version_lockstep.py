@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from scripts.checks.misc.validate_ducklake_version_lockstep import validate_ducklake_version_lockstep
 
 
@@ -188,3 +190,33 @@ class TestAccountingDeclaration:
         assert declaration.kind == "examined"
         assert declaration.unit == "ducklake_derive_surfaces"
         assert declaration.count == 3, "1 requirements.in floor + 2 derive surfaces"
+
+
+class TestEveryExitPathDeclares:
+    """REGRESSION (code-review round 1, Medium): the terminal declaration used to sit after block
+    (b) inside the try, so an unexpected exception in the derive-surface loop escaped with no
+    accounting declaration at all -- breaking the plan's own every-exit-path criterion."""
+
+    def test_an_undecodable_derive_surface_still_leaves_a_declaration(self, tmp_path: Path) -> None:
+        """Invalid UTF-8 raises UnicodeDecodeError (a ValueError), which escapes the OSError arm."""
+        import scripts.sync.ducklake_version as _sdv_inner  # noqa: PLC0415
+        from scripts.checks import registry  # noqa: PLC0415
+
+        (tmp_path / "requirements.in").write_text(_sdv_inner._expected_floor_line("1.5.4") + "\n", encoding="utf-8")
+        (tmp_path / "requirements.txt").write_text("duckdb==1.5.4\n", encoding="utf-8")
+        (tmp_path / "src" / "common").mkdir(parents=True)
+        (tmp_path / "src" / "common" / "ducklake_runtime.py").write_text("# no literal\n", encoding="utf-8")
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "build_lambda.py").write_bytes(b"\xff\xfe not utf-8\n")
+
+        registry.examined(-1, unit="sentinel")
+        failed: list[str] = []
+        with patch.object(_sdv_inner, "_get_pinned_version", return_value="1.5.4"):
+            with patch("scripts.checks._common.ROOT", tmp_path):
+                with pytest.raises(UnicodeDecodeError):
+                    validate_ducklake_version_lockstep(failed)
+
+        declaration = registry._CURRENT_DECLARATION
+        assert declaration.kind == "examined"
+        assert declaration.unit == "ducklake_derive_surfaces"
+        assert declaration.count == 2, "1 requirements.in floor + the 1 surface read before the raise"
