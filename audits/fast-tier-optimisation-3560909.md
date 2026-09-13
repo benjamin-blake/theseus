@@ -5,7 +5,7 @@ Base SHA: `35609091fd8482d3116e4b360c6ec2bc9ab25b90`
 ## Established context
 
 - The working branch is `claude/fast-tier-optimisation`. It was rebased onto `origin/main` at
-  `a740b93` before Phase 1 began. The audit base remains pinned at
+  `a740b93` before Phase 1 began and at `6b6df4d` before Phase 2 began. The audit base remains pinned at
   `35609091fd8482d3116e4b360c6ec2bc9ab25b90`; rebasing the working branch does not move the corpus.
 - This file is the cross-session state file. The committed Phase 0 section is complete and
   authoritative, so later phases must not re-derive, re-measure or re-verify it. Each phase ends in
@@ -115,13 +115,114 @@ check only; no candidate exists in Phase 1, so no optimisation or recall conclus
 
 ## Phase 2 diagnosis
 
-Pending the Phase 1 executed-node harness. This section will be committed before optimisation code.
+Complete. This diagnosis uses the committed Phase 0 population and Phase 1 harness as fixed inputs. No
+baseline or harness replay was rerun, and no tier behavior changed in this phase.
+
+### Cost location
+
+The fast tier has two different latency regimes rather than one general slowdown:
+
+| Regime | Authoritative evidence | Diagnosis |
+|---|---|---|
+| Broad diffs | `pytest_diff` is the largest named phase in all sampled runs selecting at least 103 modules. It accounts for 1,943.136s of 2,888.640s of artifact-timed work (67.3%). | Selection breadth and execution of the selected tests are the dominant real work. The breadth is intentional recall, not waste. The addressable part is orchestration paid around the fixed executed-node set. |
+| Small diffs | Static work dominates all four low-breadth runs. `static_s` has a 68.572s median (54.021-84.706s IQR); the complete non-test half has a 73.220s median. | Once pytest is small, the serial static floor is exposed. Its assertions stay; repeated discovery, parsing and subprocess setup within those assertions are the target. |
+| Outside `--pre` | The job-minus-tier median is 70s; pip-cache restore is 25s and dependency installation is 30s. All 30 inspected runs were cache hits. | This is a separate job-clock target. The existing cache avoids downloads but does not avoid reconstructing the installed environment. It cannot improve the governed tier clock and must be reported separately. |
+
+The 67.3% pytest share is an addressable *envelope*, not an estimated saving. It contains both the actual
+execution that supplies the gate's recall and orchestration whose fraction is not yet separately timed.
+Likewise, the 73.220s non-test median is not all removable: it includes the checks themselves, replay and
+unattributed setup. Phase 1's Stratum P timing predictions did not bracket any of the eight observed test
+halves, so they are not used to manufacture a savings estimate. Savings remain unknown until same-ref
+local A/B and fresh CI runs exist.
+
+### Addressable mechanisms
+
+The first test-half candidate will remove duplicate collection, not selected tests. Every non-empty
+affected set currently enters one whole-selection `pytest --collect-only` process to classify
+module-scope excluded-heavy-dependency cases. When at least one module is runnable, the primary pytest
+process then collects those modules again before executing them. The intended candidate moves that
+narrow deferral classification into the primary collection/execution session: suppress only a collection
+result that positively identifies a deliberately excluded and genuinely absent dependency, record the
+same per-file reason, and leave every other collection error hard-red. Lazy runtime imports retain the
+current reactive fallback. This attacks process startup plus the second import/collection pass while
+preserving the selected node set, markers, fixed seed, xdist, timeouts, socket isolation, scoped coverage,
+deferral map and failure semantics. It survives only if the Phase 1 differ reports zero node-verdict and
+gate-verdict changes over the corpus, including distinct deferred and not-collected outcomes.
+
+The first static-half candidates will reuse immutable work within one validation process. The current
+source has concrete duplication independent of timings: the fast-tier SLOC and cyclomatic-complexity
+checks walk and read the same repository independently; the complexity pass parses Python files already
+parsed while constructing the selector/import graph; and self-scoping checks issue fresh changed-file
+git queries after `validate.main` has already derived both diff views. The intended mechanism is a
+run-scoped file/diff inventory with shared text and AST results, starting with the shared SLOC/CC file
+population and the repeated changed-file queries. Each registered check still dispatches in the same
+order and produces its own outcome. Nothing is persisted between runs, and fixture roots and push-
+context bases remain part of the cache key or are passed explicitly. Broader shared parsing proceeds
+only where a local A/B attributes a material saving; this diagnosis does not assume the entire static
+median is redundant I/O.
+
+The workflow-level candidate is a content-addressed installed-environment cache keyed by the runner,
+Python version and an exact resolved fast/dev environment, with an ordinary install on a miss. The
+declaration files contain ranges, so caching an environment indefinitely from their hashes alone is
+ruled out: it would silently freeze a formerly fresh resolution. A safe candidate first needs an exact
+resolution fingerprint or equivalently bounded invalidation. A wheel-cache hit still leaves the observed
+30s installation median, so tuning the existing download cache is not the mechanism. This candidate is
+retained only if fresh CI demonstrates that the larger restore is faster than restore plus install. Its
+evidence must state both `--pre` and whole-job clocks; moving work outside the governed timer is not a
+tier saving.
+
+These are Class 2 optimisations: they change redundant orchestration while keeping the executed node set,
+per-node verdicts, asserted static work and emitted artifacts identical. No Class 1 skip is claimed:
+closure-backed precision has not been proved for an eligible cost. No Class 3 recall reduction is
+intended. The ordered attack is (1) pytest's second collection pass, because broad diffs dominate the
+population; (2) same-run static reuse, because it controls the small-diff floor; and (3) installed-
+environment reuse, because it affects only the job clock.
+
+### Mechanisms ruled out
+
+- **Selector narrowing, demotion and promotion rollback:** ruled out. PR #723 repaired additive selector
+  recall, and PR #966 added protected channels and promoted 25 checks for a measured aggregate cost of
+  only 1.56s. The affected-set breadth is deliberate work. Optimisation will not change which tests or
+  checks qualify.
+- **CAP reduction, protected-channel deferral and silent skipping:** ruled out. The cap applies only to
+  transitive residue, while changed tests, direct importers, cochanged-source mirrors and incident
+  channels are protected. Current deferral is bounded, loud and observable; weakening it exchanges
+  latency for missed pre-merge signal.
+- **Persistent selection, import-graph or coverage caches:** ruled out in this audit. The selector is
+  intentionally live and cacheless, and a persisted cache is a Decision-level change with invalidation
+  and staleness risk. Run-scoped reuse of immutable inputs is deliberately narrower.
+- **New or narrower `pre_globs`:** ruled out while closure validation is advisory. A glob omission is
+  fail-open and skips the exact check that would expose its own incomplete dependency declaration.
+  Existing glob gates remain unchanged.
+- **Overlapping the static and pytest halves:** ruled out. The budgets are a serial partition. Hiding
+  static work under a longer pytest process makes the non-test term vacuous unless critical-path
+  accounting and the synthetic 300s static-sleep probe are preserved. No such budget reinterpretation
+  is needed for the identified duplication.
+- **More pytest workers:** ruled out. The primary path already uses `-n auto`; a fixed seed addresses the
+  cross-worker collection hazard. Worker-count retuning is not a mechanism supported by this baseline.
+- **Dropping scoped coverage:** ruled out. Diff coverage consumes its artifact, and the current
+  include-scoped sysmon configuration has already reduced a measured 4.3x whole-tree tracing penalty to
+  a 2.4% proxy overhead. Removing that remaining work would remove evidence rather than redundant work.
+- **Removing `-v` or test/deferral artifacts:** ruled out for the first candidate. The verbose stream is
+  consumed by `_attribute_failed_test_files` and ci-rca, while the coverage and deferral maps feed
+  `validate_diff_coverage`. The candidate therefore changes neither output. If later measurement makes
+  verbosity material, replacements for every consumer and an artifact upload must land before it changes.
+- **Optimising the reactive heavy-dependency probes first:** ruled out. They occur only after a primary
+  failure with a matching excluded-dependency signature, are already restricted to implicated files and
+  run with bounded concurrency. They do not explain passing-run latency.
+- **Editing tests or replacing pytest:** ruled out at this stage. The baseline identifies breadth, not a
+  particular slow test body, and pytest currently supplies autouse fixtures, socket denial, recursion
+  checks, marker policy, heavy-dependency handling, fixed ordering, timeouts and coverage. A replacement
+  runner would owe equivalence for all of them. Test edits would additionally trigger the deferred
+  mutation probe; neither risk is justified before orchestration-only candidates are exhausted.
+- **Budget increases or relabeling:** ruled out. No sampled non-test half breached 240s, and two test-half
+  breaches are observations to improve, not reasons to weaken the threshold.
 
 ## Change ledger
 
 | Change | Class | Mechanism | Estimated saving | What no longer runs | What is no longer produced | Proof | Residual risk |
 |---|---|---|---|---|---|---|---|
-| Pending | Pending | Pending | Pending | Pending | Pending | Pending | Pending |
+| Phase 2 diagnosis only | N/A | Documentation checkpoint before code | 0s | Nothing | Nothing | Diff limited to this findings document | None; candidate rows begin in the implementation phase |
 
 ## Phase 4 evidence
 
