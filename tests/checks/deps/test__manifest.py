@@ -57,20 +57,14 @@ class TestGatedEntryInputClosures:
             "scripts/dependency_graph.py",
         } <= self._globs("validate_check_manifests")
 
-    def test_pre_glob_closure_is_gated_on_its_own_closure(self) -> None:
-        """Dogfood: the closure auditor audits its own Entry, so its globs must cover its own
-        transitive first-party import closure -- the manifest roster it reads through the
-        registry, the graph oracle it traverses, and the two hub modules those pull in
-        (scripts.lambda_manifest via _gather_roots, scripts.roadmap.plan_document via
-        scripts.checks._common's function-scope import)."""
-        assert {
-            "scripts/checks/**",
-            "scripts/checks/*/_manifest.py",
-            "scripts/dependency_graph.py",
-            "scripts/extract_imports.py",
-            "scripts/lambda_manifest.py",
-            "scripts/roadmap/plan_document.py",
-        } <= self._globs("validate_pre_glob_closure")
+    def test_pre_glob_closure_is_gated_on_the_full_py_union(self) -> None:
+        """LSA-06 flip (PLAN-loop-spec-audit-tail): the closure auditor is now BLOCKING, so its
+        own Entry must stay at or above the ('**/*.py', 'scripts/checks/**') union --
+        registry._assert_pre_glob_closure_gate_intact (scripts/checks/registry.py) refuses to
+        assemble pre_sequence() otherwise. A curated closure-specific glob list (the pre-flip
+        shape this test used to pin) is no longer expressive enough to prove coverage on its own,
+        since the auditor's own closure can grow with every new check the fleet registers."""
+        assert {"**/*.py", "scripts/checks/**"} <= self._globs("validate_pre_glob_closure")
 
 
 class TestPreGlobClosureEntry:

@@ -490,3 +490,48 @@ class TestVpReplayConcernSplitRegistration:
         result = map_source_to_test(source)
         assert result is not None
         assert result == ROOT / "tests" / "checks" / "verification" / "validate_vp_replay"
+
+
+class TestRedCaseFloorConcernSplitRegistration:
+    """scripts/checks/verification/validate_red_case_floor.py (PLAN-loop-spec-audit-tail, rec-3727)
+    is registered directly in _CONCERN_SPLIT_TEST_PACKAGES: its tests were concern-split into
+    tests/checks/verification/validate_red_case_floor/ (test_red_case_signal.py, relocated
+    unchanged, plus the new test_within_package_file_deletion.py) alongside the deletion of the
+    former flat single-file mirror. Without this registration map_source_to_test resolves the
+    deleted flat file, and the red-case floor's own OWN Entry fails on an unresolvable mirror
+    rather than clearing itself -- the exact self-hosting property TestSelfApplication pins."""
+
+    def test_maps_red_case_floor_to_concern_split_package(self) -> None:
+        source = ROOT / "scripts" / "checks" / "verification" / "validate_red_case_floor.py"
+        result = map_source_to_test(source)
+        assert result is not None
+        assert result == ROOT / "tests" / "checks" / "verification" / "validate_red_case_floor"
+
+    def test_check_test_file_exists_finds_the_package(self) -> None:
+        source = ROOT / "scripts" / "checks" / "verification" / "validate_red_case_floor.py"
+        ok, why = check_test_file_exists(source)
+        assert ok is True
+        assert why == "test package found"
+
+
+class TestPreGlobClosureConcernSplitRegistration:
+    """scripts/checks/deps/validate_pre_glob_closure.py (PLAN-loop-spec-audit-tail, LSA-06/rec-3558)
+    is registered directly in _CONCERN_SPLIT_TEST_PACKAGES: its tests were concern-split into
+    tests/checks/deps/validate_pre_glob_closure/ (test_closure_and_floor.py, test_pruned_edges_
+    roster.py, test_blocking_contract.py) alongside the deletion of the former flat single-file
+    mirror (414 SLOC; new tests would have crossed 500). Without this registration
+    map_source_to_test resolves the deleted flat file, and this auditor's own dogfooded Entry
+    (TestLiveTreeSmoke::test_its_own_entry_is_one_of_the_audited_ones) would fail on an
+    unresolvable mirror the moment the auditor became blocking."""
+
+    def test_maps_pre_glob_closure_to_concern_split_package(self) -> None:
+        source = ROOT / "scripts" / "checks" / "deps" / "validate_pre_glob_closure.py"
+        result = map_source_to_test(source)
+        assert result is not None
+        assert result == ROOT / "tests" / "checks" / "deps" / "validate_pre_glob_closure"
+
+    def test_check_test_file_exists_finds_the_package(self) -> None:
+        source = ROOT / "scripts" / "checks" / "deps" / "validate_pre_glob_closure.py"
+        ok, why = check_test_file_exists(source)
+        assert ok is True
+        assert why == "test package found"
