@@ -1,0 +1,180 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: smoke-catalog-seed-and-mirror-mapping
+intent: 'Restore the two CI gates left red by PR #1157 -- the T2.18 autonomous GC smoke gate and the full-tier test-coverage check -- by repairing an unrepresentative smoke fixture and a stale source-to-test
+  mapping, without altering any ratified guard.'
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-smoke-catalog-seed-and-mirror-mapping.yaml
+phase: T2.18
+scope:
+- file: src/lambdas/ducklake_maintenance_smoke/handler.py
+  action: Modify
+  purpose: seed the smoke catalog in action_gc so the pre-GC live set is non-empty and G3 is exercised non-vacuously
+- file: tests/test_ducklake_maintenance_smoke_handler.py
+  action: Modify
+  purpose: red-then-green coverage that action_gc seeds before run_gc
+- file: scripts/ducklake_smoke/lambda_maintenance_gates.py
+  action: Modify
+  purpose: re-ground the now-false structurally-zero docstring and cover the files_before>0 branch seeding makes live
+- file: scripts/test_coverage_checker.py
+  action: Modify
+  purpose: mirror-resolve a source whose grandfathered flat home does not exist on disk
+- file: tests/test_coverage_checker/test_coverage_checker_grandfather.py
+  action: Modify
+  purpose: red-then-green mapping coverage plus the repo-wide non-regression pin
+- file: docs/ROADMAP-PLATFORM.yaml
+  action: Modify
+  purpose: compact dated regression annotation on T2.18 c6/c9 naming rec-3802 as carrier; no status flips
+bundled_recommendations:
+- rec-3802
+- rec-3783
+followon_recs:
+- rec-3846
+closes_criteria: []
+infrastructure_dependencies: []
+acceptance_criteria:
+- action_gc seeds at least one row before run_gc so the pre-GC live file set is non-empty
+- src/common/ducklake_maintenance_ops.py is unmodified -- Decision 188 clause 2 stands untouched
+- the repo-wide unmapped-source set drops from 3 to exactly 2, turning no currently-green source red
+- scripts/test_coverage_checker.py stays at or under 500 SLOC with no budget raise
+- T2.18 c6 and c9 carry a dated regression annotation naming rec-3802 and still read status met
+- the maintenance-gc smoke gate passes in the governed deploy workflow
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: action_gc seeds the catalog before running GC
+  command: bin/venv-python -m pytest tests/test_ducklake_maintenance_smoke_handler.py -q
+  expected: all pass including the new seeding assertion
+  fix_if: run_gc is still reached against an empty catalog
+  graduation: graduate
+  graduation_check_id: smoke-gc-seeds-before-run
+- step: 2
+  phase: pre-deploy
+  action: the smoke gate's newly-reachable storage-growth branch is covered
+  command: bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py -q
+  expected: all pass, including coverage of the files_before>0 branch that seeding makes live
+  fix_if: the branch is still unreachable or the gate accepts a grown-storage body
+  graduation: graduate
+  graduation_check_id: maintenance-gc-gate-growth-branch-live
+- step: 3
+  phase: pre-deploy
+  action: the ratified G3 guard module is untouched
+  command: test -z "$(git diff origin/main -- src/common/ducklake_maintenance_ops.py)"
+  expected: exit 0, empty diff
+  fix_if: the guard module was modified -- revert; the repair belongs in the smoke fixture, not the guard
+  graduation: graduate
+  graduation_check_id: g3-guard-module-untouched
+- step: 4
+  phase: pre-deploy
+  action: the checker resolves the mirror target for the previously-misrouted source
+  command: '! bin/venv-python -m scripts.test_coverage_checker --check-tests --files src/common/ducklake_maintenance_ops.py 2>&1 | grep -q ''missing test file'''
+  expected: exit 0 -- no missing-test-file line (this command exits 1 on the pre-fix tree)
+  fix_if: still reports missing tests/test_ducklake_maintenance_ops.py
+  graduation: graduate
+  graduation_check_id: mirror-map-new-src-common
+- step: 5
+  phase: pre-deploy
+  action: repo-wide mapping non-regression -- no currently-green source turns red
+  command: bin/venv-python -m pytest tests/test_coverage_checker/test_coverage_checker_grandfather.py -q
+  expected: passes, including a test pinning the unmapped set to exactly the two scripts/checks/*/_shared.py files
+  fix_if: any other source became unmapped -- the predicate is too wide; gate on flat-home absence only
+  graduation: graduate
+  graduation_check_id: mapping-repo-wide-non-regression
+- step: 6
+  phase: pre-deploy
+  action: full mapping suite still green
+  command: bin/venv-python -m pytest tests/test_coverage_checker/ -q
+  expected: all pass
+  fix_if: a legacy-roster or concern-split mapping regressed
+  graduation: graduate
+  graduation_check_id: coverage-checker-mapping-suite
+- step: 7
+  phase: pre-deploy
+  action: SLOC stays under the limit without a budget raise
+  command: bin/venv-python -c 'import sys; from pathlib import Path; n=len([l for l in Path("scripts/test_coverage_checker.py").read_text().splitlines() if l.strip() and not l.strip().startswith("#")]);
+    print("sloc",n); sys.exit(0 if n<=500 else 1)'
+  expected: prints a count at or under 500 and exits 0 (validate_sloc_limits metric, 475 at plan time)
+  fix_if: over 500 -- decompose into the existing tests/test_coverage_checker concern-split package per Decision 128; a raise is unavailable, no Decision authorizes this path
+  graduation: graduate
+  graduation_check_id: test-coverage-checker-sloc-under-limit
+- step: 8
+  phase: pre-deploy
+  action: no T2.18 criterion status was flipped by the re-grounding
+  command: bin/venv-python -c 'import yaml,sys; t=[i for i in yaml.safe_load(open("docs/ROADMAP-PLATFORM.yaml"))["tier_items"] if i["id"]=="T2.18"][0]; s={c["id"]:c["status"] for c in t["exit_criteria"]
+    if c["id"] in ("c6","c9")}; print(s); sys.exit(0 if s=={"c6":"met","c9":"met"} else 1)'
+  expected: 'prints {''c6'': ''met'', ''c9'': ''met''} and exits 0'
+  fix_if: a status changed -- revert; only /implement's bookkeeping walk flips criterion status
+  graduation: graduate
+  graduation_check_id: t218-c6-c9-status-unflipped
+- step: 9
+  phase: pre-deploy
+  action: full-tier validation (the tier that caught rec-3783; --pre alone cannot prove it fixed)
+  command: bin/venv-python -m scripts.validate
+  expected: exit 0 with no Test coverage check failure
+  fix_if: any check fails -- fix forward, never weaken or skip a check
+  graduation: not-applicable
+- step: 10
+  phase: post-deploy
+  action: governed CD channel maintenance-gc smoke gate
+  command: grep -q 'maintenance-smoke' .github/workflows/deploy-ducklake-lambdas.yml
+  expected: the maintenance-gc gate passes in the governed deploy-ducklake-lambdas.yml run (CI-delegated authoritative verifier, Decision 119/125)
+  fix_if: gate still returns breaker_tripped -- re-diagnose before any further deploy
+test_obligations:
+- source: src/lambdas/ducklake_maintenance_smoke/handler.py
+  behavior: action_gc seeds the smoke catalog before run_gc so G3 sees a populated before-state
+  verification_step: 1
+  test_selector: tests/test_ducklake_maintenance_smoke_handler.py::test_action_gc_seeds_catalog_before_gc
+  red_green_expectation: red before, green after
+- source: scripts/test_coverage_checker.py
+  behavior: a source whose grandfathered flat home is absent resolves to its mirror target, and no other source remaps
+  verification_step: 5
+  test_selector: tests/test_coverage_checker/test_coverage_checker_grandfather.py
+  red_green_expectation: red before, green after
+- source: scripts/ducklake_smoke/lambda_maintenance_gates.py
+  behavior: the files_before>0 storage-growth branch, dead while the catalog was empty, is reachable and correct
+  verification_step: 2
+  test_selector: tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py
+  red_green_expectation: red before, green after
+constraints:
+- No rescue agents or workaround loops (Decision 55)
+- Never weaken or skip a check to obtain green (Decision 59 / Decision 181)
+- Decision 188 clause 2 is not amended -- the repair is the fixture, not the guard
+- Decompose rather than raise if SLOC crosses 500 (Decision 128 / Decision 165)
+- Lambda deploy rides the governed CD channel, never a local break-glass deploy (Decision 125 / Decision 126)
+- No exit-criterion status is flipped during planning (Status-Trusted-Never-Inferred)
+- ROADMAP-PLATFORM.yaml is at 9885 of its 10000-line ceiling -- annotations must be compact (Decision 114 / Decision 147)
+context:
+- 'Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 188, 181, 131, 128, 165, 79, 186, 143, 136, 159, 163, 132, 125, 126'
+- 'gates: decision-scout=FLAGS_FOUND (re-dispatched after human pivot); plan-critique=<verdict> after <N> round(s)'
+- 'Decisions triaged: 141 of 141'
+- 'Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3'
+- 'rec-3802 re-grounded 2026-09-13: file and acceptance moved off src/common/ducklake_maintenance_ops.py to the smoke handler after the human-directed pivot away from narrowing G3'
+- 'Decision 59 divergence, deliberate: rec-3802 originally cited src/common/ducklake_maintenance_ops.py; the revised approach excludes it, and VP step 2 asserts that exclusion'
+- rec-3809 is the ci-rca chain re-report of rec-3783 (Decision 142) -- resolve the chain, do not close it independently
+- 'rec-3802 carries escape_class no-edge / escape_mode no_premerge_gate_by_design, so the Decision 186 closure gate fires: closing needs a fix-bound artifact or the no_premerge_gate_by_design waiver'
+- 'Mapping predicate is flat-home-absence only. Measured repo-wide at plan time: the naive home-on-neither-roster predicate remaps 130 sources and turns 50 green files red; the family-table variant rec-3783
+  itself proposes turns 7 red. Both rejected.'
+- 'Mapping baseline at plan time: 3 unmapped of 374 sources (scripts/checks/ci_guards/_shared.py, scripts/checks/sloc/_shared.py, src/common/ducklake_maintenance_ops.py). Target post-fix: exactly 2.'
+- 'Decision 79 asset-gating: docs/ROADMAP-PLATFORM.yaml is an asset of the active data-pipeline artifact, so a strict reading obliges a data-pipeline deploy. This plan follows established precedent (217fc78e/#1150,
+  08a9457c/#1159, 699425ab/#1157) and omits it explicitly; the unratified gap is filed as rec-3846.'
+- 'Root cause of the #1157 escape was NOT tier placement: pr-validate failed at 16:48:06 on the budget assertion and the PR merged at 16:49:48. rec-3240 (open, Critical) is the carrier.'
+- T2.18 c6 met_by gc-guardrail-fail-closed -- the PR that introduced rec-3802; c9 met while its gate is red. Annotate, never flip.
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- Only the plan-cited decision sections read
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+execution_steps:
+- Seed the smoke catalog in action_gc via rt.write_scd2 after create_scd2_tables and before run_gc
+- Re-ground the lambda_maintenance_gates.py docstring and cover the newly-live files_before>0 branch
+- In map_source_to_test, resolve to the mirror target only when the grandfathered flat home does not exist on disk
+- Add the repo-wide non-regression test pinning the unmapped set to exactly two files
+- Append the compact dated c6/c9 re-grounding annotation naming rec-3802, flipping no status
+- Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+- 'Report: what was implemented, verification results'
+work_areas: []
+rollback: Every change is additive or textual and revertable by reverting the squash commit; no schema, no infrastructure, and no ratified guard is altered.
