@@ -380,23 +380,22 @@ verification_plan:
   graduation_check_id: personal-policies-carry-byte-preconditions
 - step: 12
   phase: pre-deploy
-  action: AGGREGATE inline-policy headroom check BEFORE the human approval is spent. Decision 156's whole
-    point is that a LimitExceeded is invisible to terraform plan and surfaces at apply -- inside the gated
-    window. The per-policy preconditions (step 11) structurally cannot see the per-ROLE aggregate, so
-    measure it here.
-  command: for role in PlatformAdmin PlatformDev; do tot=0; for pn in $(aws iam list-role-policies --role-name
-    $role --profile agent_platform_admin --query 'PolicyNames[]' --output text); do n=$(aws iam get-role-policy
-    --role-name $role --policy-name "$pn" --profile agent_platform_admin | bin/venv-python -c "import
-    sys,json;d=json.load(sys.stdin);print(len(json.dumps(d['PolicyDocument'],separators=(',',':'))))");
-    tot=$((tot+n)); done; echo "$role aggregate=$tot headroom=$((10240-tot))"; test $tot -le 10240 ||
-    exit 1; done
-  expected: 'both roles report an aggregate under 10,240 B. Baseline measured 2026-09-12: PlatformAdmin
-    7575 (headroom 2665), PlatformDev 3222 (headroom 7018). The projected additions are roughly 600-900
-    B, so PlatformAdmin should land near 8.2-8.5 KB.'
-  fix_if: headroom is insufficient -- apply Decision 156's ratified remedy and relocate the READ grants
-    to a customer-managed *-reads policy attached to the role, which is what the bootstrap tier already
-    did for github_ci_apply. Do NOT trim comments, and do NOT add a fifth inline policy (that does not
-    help an aggregate quota).
+  action: 'Record the LIVE per-role inline-policy aggregate as a baseline, fail-closed. This is a measurement,
+    NOT a quota gate: AWS enforces the 10,240 B per-role aggregate at write time, so the live sum is under
+    it by construction and this command can never red on a quota breach. The gate that CAN red is the
+    PROJECTED aggregate computed from the plan artifact in the split-apply step, before the human accepts.'
+  command: 'for role in PlatformAdmin PlatformDev; do pns=$(aws iam list-role-policies --role-name $role
+    --profile agent_platform_admin --query ''PolicyNames[]'' --output text) || exit 1; test -n "$pns"
+    || { echo "$role: no inline policies enumerated -- credential or role failure, not a zero aggregate";
+    exit 1; }; tot=0; for pn in $pns; do n=$(aws iam get-role-policy --role-name $role --policy-name "$pn"
+    --profile agent_platform_admin | bin/venv-python -c "import sys,json;d=json.load(sys.stdin);print(len(json.dumps(d[''PolicyDocument''],separators=('','','':''))))")
+    || exit 1; tot=$((tot+n)); done; echo "$role aggregate=$tot headroom=$((10240-tot))"; test $tot -gt
+    0 || exit 1; done'
+  expected: 'both roles print an aggregate and headroom, and a zero/empty enumeration exits 1 rather than
+    reporting a green aggregate=0. Baseline 2026-09-13: PlatformAdmin 7575 (headroom 2665) across four
+    inline policies, PlatformDev 3222 (headroom 7018) across two.'
+  fix_if: 'exit 1 with ''no inline policies enumerated'' -- the profile or role name is wrong; this used
+    to report a green aggregate=0 (verified: a typo''d role name exited 0). Do not proceed on a zero.'
   hermetic: false
   graduation: waive
   graduation_waiver_reason: Requires live AWS credentials and reflects account state rather than repo
@@ -424,8 +423,13 @@ verification_plan:
 - step: 14
   phase: pre-deploy
   action: The new check is registered and executes, and the full fast gate is green end to end.
-  command: bin/venv-python -m scripts.validate --pre
-  expected: exit 0, and the output names validate_agent_observability_read_coverage as an executed check
+  command: bin/venv-python -m scripts.validate --pre && bin/venv-python -c "from scripts.checks import
+    registry; assert 'validate_agent_observability_read_coverage' in registry.all_checks(), 'check has
+    no _manifest.py Entry -- it is invisible to every gate'"
+  expected: 'exit 0 AND the new check is a member of registry.all_checks(). The membership assertion is
+    load-bearing: an unregistered check module is invisible to validate_ci_rca_taxonomy (registry->taxonomy
+    only), validate_check_accounting and validate_check_manifests (Entry->module only), so a missing _manifest.py
+    Entry otherwise ships GREEN.'
   fix_if: the check is absent from the run -- the _manifest.py Entry is missing, or the ci_rca_taxonomy
     row is absent and the taxonomy completeness assertion is red
   hermetic: false
@@ -458,17 +462,43 @@ verification_plan:
     -backend-config=backend-sandbox.hcl, so init without that flag errors under -input=false; terraform.personal.tfvars
     is gitignored and absent from a fresh clone, recovered exactly as .github/actions/materialise-tfvars
     does; and TF_CLI_CONFIG_FILE must be inlined on EVERY terraform call, because setup-cloud-env.sh exports
-    it only inside its own process tree.'
-  command: INSTALL_TERRAFORM=1 bin/setup-cloud-env.sh && aws secretsmanager get-secret-value --secret-id
-    agent-platform-terraform-personal-tfvars --query SecretString --output text --profile agent_platform_admin
-    > terraform/personal/terraform.personal.tfvars && TF_CLI_CONFIG_FILE="$HOME/.terraform-mirror.tfrc"
-    terraform -chdir=terraform/personal init -input=false -backend-config=backend-sandbox.hcl && TF_CLI_CONFIG_FILE="$HOME/.terraform-mirror.tfrc"
-    terraform -chdir=terraform/personal plan -var-file=terraform.personal.tfvars -target=aws_iam_role_policy.platform_admin_ops
-    -target=aws_iam_role_policy.platform_dev_runtime -target=aws_iam_role_policy.platform_admin_datalake
+    it only inside its own process tree. Two further mechanics are folded in here because both fail late
+    and expensively. (a) `terraform init` PRUNES the stale hashicorp/null block from the git-TRACKED terraform/personal/.terraform.lock.hcl
+    (null is unused in this root), so the command restores it immediately -- otherwise step 18''s ''commit
+    and push'' would commit a file absent from Scope and trip validate_scope_boundary on a PR whose apply
+    has ALREADY happened. (b) The plan is written to /tmp/agent-obs-plan.bin so the PROJECTED per-role
+    byte aggregate can be measured from it before the human accepts -- the live aggregate alone cannot
+    red, since AWS enforces the 10,240 B quota at write time and the live sum is therefore under it by
+    construction.'
+  command: "INSTALL_TERRAFORM=1 bin/setup-cloud-env.sh && aws secretsmanager get-secret-value --secret-id\
+    \ agent-platform-terraform-personal-tfvars --query SecretString --output text --profile agent_platform_admin\
+    \ > terraform/personal/terraform.personal.tfvars && TF_CLI_CONFIG_FILE=\"$HOME/.terraform-mirror.tfrc\"\
+    \ terraform -chdir=terraform/personal init -input=false -backend-config=backend-sandbox.hcl && TF_CLI_CONFIG_FILE=\"\
+    $HOME/.terraform-mirror.tfrc\" terraform -chdir=terraform/personal plan -var-file=terraform.personal.tfvars\
+    \ -target=aws_iam_role_policy.platform_admin_ops -target=aws_iam_role_policy.platform_dev_runtime\
+    \ -target=aws_iam_role_policy.platform_admin_datalake -out=/tmp/agent-obs-plan.bin && git checkout\
+    \ -- terraform/personal/.terraform.lock.hcl && TF_CLI_CONFIG_FILE=\"$HOME/.terraform-mirror.tfrc\"\
+    \ terraform -chdir=terraform/personal show -json /tmp/agent-obs-plan.bin > /tmp/agent-obs-plan.json\
+    \ && bin/venv-python -c 'import json,subprocess as sp\np=json.load(open(\"/tmp/agent-obs-plan.json\"\
+    ));P={}\nfor c in p.get(\"resource_changes\",[]):\n    if c.get(\"type\")==\"aws_iam_role_policy\"\
+    \ and \"update\" in (c.get(\"change\",{}).get(\"actions\") or []):\n        a=c[\"change\"][\"after\"\
+    ];P.setdefault(a[\"role\"],{})[a[\"name\"]]=len(json.dumps(json.loads(a[\"policy\"]),separators=(\"\
+    ,\",\":\")))\nassert P,\"no aws_iam_role_policy update in the plan -- nothing to project\"\nfor role,pol\
+    \ in P.items():\n    ns=sp.run([\"aws\",\"iam\",\"list-role-policies\",\"--role-name\",role,\"--profile\"\
+    ,\"agent_platform_admin\",\"--query\",\"PolicyNames[]\",\"--output\",\"text\"],capture_output=True,text=True,check=True).stdout.split()\n\
+    \    assert ns,role+\": no inline policies enumerated -- credential or role failure, not a zero aggregate\"\
+    \n    t=sum(pol[n] if n in pol else len(json.dumps(json.loads(sp.run([\"aws\",\"iam\",\"get-role-policy\"\
+    ,\"--role-name\",role,\"--policy-name\",n,\"--profile\",\"agent_platform_admin\",\"--query\",\"PolicyDocument\"\
+    ,\"--output\",\"json\"],capture_output=True,text=True,check=True).stdout),separators=(\",\",\":\"\
+    ))) for n in ns)\n    print(role,\"projected aggregate=\"+str(t),\"headroom=\"+str(10240-t))\n   \
+    \ assert 0<t<=10240,role+\": projected aggregate \"+str(t)+\" breaches the 10240 B per-role quota\"\
+    '"
   expected: exactly TWO in-place inline-policy updates (platform_admin_ops, platform_dev_runtime) with
     platform_admin_datalake showing NO diff -- config already matches live (measured 2026-09-13), so its
     verbatim move contributes nothing. Its -target is retained only to prove that. No role/trust/destroy
     diff and no resource replacement. Then, after explicit human acceptance, the same targeted apply succeeds.
+    The projection then prints a projected aggregate and headroom per role and fails if either breaches
+    10,240 B or enumerates zero inline policies. Present BOTH the plan diff and the projection for acceptance.
   fix_if: init errors on missing backend attributes -- the -backend-config flag was dropped. A missing-variable
     prompt means the tfvars fetch failed; never hand-type those values (Decision 101). THREE updates means
     platform_admin_datalake was NOT moved verbatim -- a statement was reordered or altered; restore origin/main's
@@ -554,13 +584,15 @@ verification_plan:
   phase: post-deploy
   action: Inline-policy AGGREGATE is still within quota after the apply (the per-role quota, re-measured
     live).
-  command: for role in PlatformAdmin PlatformDev; do tot=0; for pn in $(aws iam list-role-policies --role-name
-    $role --profile agent_platform_admin --query 'PolicyNames[]' --output text); do n=$(aws iam get-role-policy
-    --role-name $role --policy-name "$pn" --profile agent_platform_admin | bin/venv-python -c "import
-    sys,json;d=json.load(sys.stdin);print(len(json.dumps(d['PolicyDocument'],separators=(',',':'))))");
-    tot=$((tot+n)); done; echo "$role aggregate=$tot"; test $tot -le 10240 || exit 1; done
-  expected: both aggregates under 10,240 B, confirming the applied grants did not breach the per-role
-    quota
+  command: 'for role in PlatformAdmin PlatformDev; do pns=$(aws iam list-role-policies --role-name $role
+    --profile agent_platform_admin --query ''PolicyNames[]'' --output text) || exit 1; test -n "$pns"
+    || { echo "$role: no inline policies enumerated -- credential or role failure, not a zero aggregate";
+    exit 1; }; tot=0; for pn in $pns; do n=$(aws iam get-role-policy --role-name $role --policy-name "$pn"
+    --profile agent_platform_admin | bin/venv-python -c "import sys,json;d=json.load(sys.stdin);print(len(json.dumps(d[''PolicyDocument''],separators=('','','':''))))")
+    || exit 1; tot=$((tot+n)); done; echo "$role aggregate=$tot headroom=$((10240-tot))"; test $tot -gt
+    0 && test $tot -le 10240 || exit 1; done'
+  expected: both roles report a non-zero aggregate at or under 10,240 B, confirming the applied grants
+    did not breach the per-role quota. Fail-closed on an empty enumeration.
   fix_if: over quota -- relocate the read grants into a customer-managed *-reads policy and re-apply (Decision
     156's ratified remedy, already precedented for github_ci_apply). A fifth inline policy does not help
     an aggregate quota.
@@ -785,12 +817,14 @@ execution_steps:
   `replace(..., " ", "")`, which strips spaces inside string values and under-counts. This hoist restructures
   platform_dev_policies.tf and platform_admin_policies.tf ONLY. Do NOT hoist anything in platform_admin_data_policies.tf:
   it grows no grant, so it needs no byte precondition, and leaving it unhoisted is what makes its ''no
-  statement added, removed or reordered'' claim literally true. (A plan-critique round predicted that
-  hoisting there would also false-red VP step 6 by moving the terminator its order assertion scans to;
-  that mechanism did NOT reproduce under simulation, so it is recorded as unconfirmed and is not the reason
-  for this instruction.) This hoist restructures the two grown files, so do it as part of the move (before
-  adding grants) and re-run VP steps 1, 9 and 14. Widening validate_iam_policy_size to this root is deferred
-  to rec-3765, so NOTHING else asserts these three preconditions exist -- VP step 11 does.'
+  statement added, removed or reordered'' claim literally true. (It also false-reds VP step 6, but only
+  when platform_admin_bootstrap_state is ALSO hoisted: step 6''s regex window runs to the `resource "aws_iam_role_policy"
+  "platform_admin_bootstrap_state"` terminator, and that resource''s locals block then falls INSIDE the
+  window, leaking its Sids into the extracted order. A datalake-only hoist does not trigger it -- which
+  is why an earlier simulation wrongly exonerated it.) This hoist restructures the two grown files, so
+  do it as part of the move (before adding grants) and re-run VP steps 1, 9 and 14. Widening validate_iam_policy_size
+  to this root is deferred to rec-3765, so NOTHING else asserts these three preconditions exist -- VP
+  step 11 does.'
 - 'platform_dev_policies.tf -- add to DailyOps: one Sid granting the CloudWatch metric read verbs plus
   cloudwatch:DescribeAlarms and logs:DescribeLogGroups on Resource "*"; one Sid granting logs:DescribeLogStreams/GetLogEvents/FilterLogEvents
   on the /aws/lambda/agent-platform-* log-group and log-stream ARNs. Grant no cloudtrail verb here --
