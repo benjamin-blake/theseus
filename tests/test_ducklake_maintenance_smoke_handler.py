@@ -8,7 +8,6 @@ operational verb is reachable. Action logic mirrors the admin handler's former s
 
 from __future__ import annotations
 
-import importlib
 import json
 from unittest.mock import MagicMock, patch
 
@@ -167,49 +166,11 @@ def test_action_gc_ok():
             "snapshots_expired": 2,
             "files_cleaned": 1,
             "orphans_deleted": 0,
-            "breaker_stats": {"breaker_tripped": False, "total_files": 5},
+            "guard_stats": {"g4_bounded": False},
         }
         result = h.action_gc({}, con)
     assert result["ok"] is True
     assert result["action"] == "gc"
-
-
-def test_action_gc_force_file_fraction():
-    con = _gc_con()
-    with patch.object(h.maint, "run_gc") as mock_gc:
-        mock_gc.return_value = {
-            "ok": True,
-            "action": "gc",
-            "tables": [],
-            "files_before": 0,
-            "files_after": 0,
-            "snapshots_expired": 0,
-            "files_cleaned": 0,
-            "orphans_deleted": 0,
-            "breaker_stats": {},
-        }
-        h.action_gc({"force_file_fraction": 0.5}, con)
-        _, kwargs = mock_gc.call_args
-        assert kwargs["file_fraction"] == 0.5
-
-
-def test_action_gc_force_byte_budget():
-    con = _gc_con()
-    with patch.object(h.maint, "run_gc") as mock_gc:
-        mock_gc.return_value = {
-            "ok": True,
-            "action": "gc",
-            "tables": [],
-            "files_before": 0,
-            "files_after": 0,
-            "snapshots_expired": 0,
-            "files_cleaned": 0,
-            "orphans_deleted": 0,
-            "breaker_stats": {},
-        }
-        h.action_gc({"force_byte_budget": 1024}, con)
-        _, kwargs = mock_gc.call_args
-        assert kwargs["byte_budget"] == 1024
 
 
 def test_action_gc_force_recreate_calls_create_tables():
@@ -225,7 +186,7 @@ def test_action_gc_force_recreate_calls_create_tables():
                 "snapshots_expired": 0,
                 "files_cleaned": 0,
                 "orphans_deleted": 0,
-                "breaker_stats": {},
+                "guard_stats": {},
             }
             h.action_gc({"force_recreate_tables": True}, con)
     mock_create.assert_called_once_with(con, force_recreate=True)
@@ -243,7 +204,7 @@ def test_action_gc_emits_metrics():
             "snapshots_expired": 1,
             "files_cleaned": 1,
             "orphans_deleted": 0,
-            "breaker_stats": {},
+            "guard_stats": {},
         }
         with patch.object(h, "_emit_maintenance_metric") as mock_emit:
             h.action_gc({}, con)
@@ -259,18 +220,19 @@ def test_action_gc_emits_metrics():
 # ---------------------------------------------------------------------------
 
 
-def test_action_breaker_probe_raises_when_files_present():
+def test_breaker_probe_forces_g1_trip():
+    """The probe's whole purpose is a guaranteed trip -- it must raise regardless of the smoke
+    catalog's real contents (an empty catalog must not silently no-op it)."""
     con = FakeCon()
-    with patch.object(h.maint, "check_gc_breaker", side_effect=DuckLakeMaintenanceError("tripped")):
-        with pytest.raises(DuckLakeMaintenanceError):
-            h.action_breaker_probe({}, con)
+    with pytest.raises(DuckLakeMaintenanceError, match="G1 reachability"):
+        h.action_breaker_probe({}, con)
 
 
-def test_action_breaker_probe_returns_ok_when_no_deletable_files():
-    con = FakeCon()
-    with patch.object(h.maint, "check_gc_breaker", return_value={"breaker_tripped": False}):
-        result = h.action_breaker_probe({}, con)
-    assert result["breaker_tripped"] is False
+def test_breaker_probe_non_forcing_input_does_not_trip():
+    """Red case for the forcing mechanism itself: gcops.assert_reachability with disjoint sets and
+    no force_conflict must NOT raise -- proving the NAMED FORCING CONSTANT (not an unconditional
+    raise) is what trips the probe, so the two directions are actually distinguishable."""
+    h.gcops.assert_reachability({"a"}, {"b"})  # no raise
 
 
 def test_action_breaker_probe_does_not_emit_metric_directly():
@@ -278,11 +240,10 @@ def test_action_breaker_probe_does_not_emit_metric_directly():
     The handler's outer DuckLakeMaintenanceError catch is the single emit point.
     """
     con = FakeCon()
-    with patch.object(h.maint, "check_gc_breaker", side_effect=DuckLakeMaintenanceError("trip")):
-        with patch.object(h, "_emit_maintenance_metric") as mock_emit:
-            with pytest.raises(DuckLakeMaintenanceError):
-                h.action_breaker_probe({}, con)
-        assert mock_emit.call_count == 0, "action_breaker_probe must not emit metrics -- handler outer catch does it"
+    with patch.object(h, "_emit_maintenance_metric") as mock_emit:
+        with pytest.raises(DuckLakeMaintenanceError):
+            h.action_breaker_probe({}, con)
+    assert mock_emit.call_count == 0, "action_breaker_probe must not emit metrics -- handler outer catch does it"
 
 
 def test_handler_breaker_probe_emits_metric_exactly_once():
@@ -290,9 +251,8 @@ def test_handler_breaker_probe_emits_metric_exactly_once():
     with patch.object(h, "_open_connection") as mock_open:
         mock_con = MagicMock()
         mock_open.return_value = mock_con
-        with patch.object(h.maint, "check_gc_breaker", side_effect=DuckLakeMaintenanceError("tripped")):
-            with patch.object(h, "_emit_maintenance_metric") as mock_emit:
-                r = h.handler({"action": "breaker_probe"})
+        with patch.object(h, "_emit_maintenance_metric") as mock_emit:
+            r = h.handler({"action": "breaker_probe"})
     assert r["statusCode"] == 500
     trip_emits = [c for c in mock_emit.call_args_list if c.args[0] == "MaintenanceBreakerTrip"]
     assert len(trip_emits) == 1, f"MaintenanceBreakerTrip must be emitted exactly once, got {len(trip_emits)}"
@@ -414,58 +374,3 @@ def test_handler_runtime_error_maps_to_500():
     assert r["statusCode"] == 500
     body = _response_body(r)
     assert body["error_type"] == "runtime"
-
-
-# ---------------------------------------------------------------------------
-# Env-sourced breaker thresholds pass-through to run_gc
-# ---------------------------------------------------------------------------
-
-
-def test_env_gc_breaker_file_fraction_passed_to_run_gc(monkeypatch):
-    """GC_BREAKER_FILE_FRACTION env var flows through the handler into run_gc."""
-    monkeypatch.setenv("GC_BREAKER_FILE_FRACTION", "0.35")
-    importlib.reload(h)
-
-    con = _gc_con()
-    with patch.object(h.maint, "run_gc") as mock_gc:
-        mock_gc.return_value = {
-            "ok": True,
-            "action": "gc",
-            "tables": [],
-            "files_before": 0,
-            "files_after": 0,
-            "snapshots_expired": 0,
-            "files_cleaned": 0,
-            "orphans_deleted": 0,
-            "breaker_stats": {},
-        }
-        h.action_gc({}, con)
-        _, kwargs = mock_gc.call_args
-    assert kwargs["file_fraction"] == pytest.approx(0.35)
-    monkeypatch.delenv("GC_BREAKER_FILE_FRACTION", raising=False)
-    importlib.reload(h)
-
-
-def test_env_gc_breaker_bytes_passed_to_run_gc(monkeypatch):
-    """GC_BREAKER_BYTES env var flows through the handler into run_gc."""
-    monkeypatch.setenv("GC_BREAKER_BYTES", "5368709120")
-    importlib.reload(h)
-
-    con = _gc_con()
-    with patch.object(h.maint, "run_gc") as mock_gc:
-        mock_gc.return_value = {
-            "ok": True,
-            "action": "gc",
-            "tables": [],
-            "files_before": 0,
-            "files_after": 0,
-            "snapshots_expired": 0,
-            "files_cleaned": 0,
-            "orphans_deleted": 0,
-            "breaker_stats": {},
-        }
-        h.action_gc({}, con)
-        _, kwargs = mock_gc.call_args
-    assert kwargs["byte_budget"] == 5368709120
-    monkeypatch.delenv("GC_BREAKER_BYTES", raising=False)
-    importlib.reload(h)

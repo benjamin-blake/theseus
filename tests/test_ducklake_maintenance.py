@@ -9,15 +9,12 @@ import pytest
 
 import src.common.ducklake_maintenance as maint
 from src.common.ducklake_maintenance import (
-    GC_BREAKER_BYTES,
-    GC_BREAKER_FILE_FRACTION,
     GC_TABLE_SCOPE,
     HOT_TABLE_SCOPE,
     SNAPSHOT_FLOOR,
     SNAPSHOT_RETAIN_DAYS,
     DuckLakeMaintenanceError,
     catalog_stats,
-    check_gc_breaker,
     cleanup_old_files,
     delete_orphaned_files,
     expire_snapshots,
@@ -64,6 +61,13 @@ class FakeCon:
         pass
 
 
+class RaisingCon:
+    """Connection double whose execute() always raises -- fail-closed anchor (rec-3772)."""
+
+    def execute(self, sql: str, params: Any = None) -> "RaisingCon":
+        raise RuntimeError("connection lost")
+
+
 def _ts(y: int, m: int, d: int) -> datetime:
     return datetime(y, m, d, tzinfo=timezone.utc)
 
@@ -77,8 +81,6 @@ def test_guardrail_constants():
     assert SNAPSHOT_RETAIN_DAYS == 30
     assert maint.FILE_CLEANUP_GRACE_DAYS == 7
     assert SNAPSHOT_FLOOR == 2
-    assert GC_BREAKER_FILE_FRACTION == pytest.approx(0.20)
-    assert GC_BREAKER_BYTES == 10 * 1024 * 1024 * 1024
     assert len(GC_TABLE_SCOPE) >= 2
 
 
@@ -96,6 +98,34 @@ def test_ts_str_format():
     dt = datetime(2026, 1, 15, 8, 30, 0, tzinfo=timezone.utc)
     s = maint._ts_str(dt)
     assert s == "2026-01-15 08:30:00+00"
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed introspection helpers (rec-3772): each of the five helpers must RAISE when its
+# connection raises -- none may return a permissive default (0, {}, []).
+# ---------------------------------------------------------------------------
+
+
+class TestHelpersFailClosed:
+    def test_count_files_raises_on_connection_error(self):
+        with pytest.raises(RuntimeError, match="connection lost"):
+            maint._count_files(RaisingCon(), "cat", "t1")
+
+    def test_sum_file_bytes_raises_on_connection_error(self):
+        with pytest.raises(RuntimeError, match="connection lost"):
+            maint._sum_file_bytes(RaisingCon(), "cat", "t1")
+
+    def test_collect_file_paths_raises_on_connection_error(self):
+        with pytest.raises(RuntimeError, match="connection lost"):
+            maint._collect_file_paths(RaisingCon(), "cat", "t1")
+
+    def test_dry_run_cleanup_paths_raises_on_connection_error(self):
+        with pytest.raises(RuntimeError, match="connection lost"):
+            maint._dry_run_cleanup_paths(RaisingCon(), "cat", _NOW)
+
+    def test_dry_run_orphan_paths_raises_on_connection_error(self):
+        with pytest.raises(RuntimeError, match="connection lost"):
+            maint._dry_run_orphan_paths(RaisingCon(), "cat", _NOW)
 
 
 # ---------------------------------------------------------------------------
@@ -241,85 +271,6 @@ def test_rewrite_calls_per_table():
 
 
 # ---------------------------------------------------------------------------
-# tests for check_gc_breaker
-# ---------------------------------------------------------------------------
-
-
-def _con_with_files(
-    file_map: dict[str, list[tuple[str, int]]], cleanup_paths: list[str] = None, orphan_paths: list[str] = None
-) -> FakeCon:
-    """Build a FakeCon whose fetchall results match ducklake_list_files, cleanup, orphan queries."""
-    fetchall_map: dict[str, list[Any]] = {}
-    for table, files in file_map.items():
-        fetchall_map[f"ducklake_list_files('ops_catalog', '{table}')"] = [(p, s) for p, s in files]
-    if cleanup_paths is not None:
-        fetchall_map["ducklake_cleanup_old_files"] = [(p,) for p in cleanup_paths]
-    if orphan_paths is not None:
-        fetchall_map["ducklake_delete_orphaned_files"] = [(p,) for p in orphan_paths]
-    return FakeCon(fetchall_map=fetchall_map)
-
-
-def test_breaker_no_trip_empty_catalog():
-    con = FakeCon()
-    stats = check_gc_breaker(con, ["t1"], _now=_NOW)
-    assert stats["breaker_tripped"] is False
-    assert stats["total_files"] == 0
-
-
-def test_breaker_no_trip_below_threshold():
-    files = [(f"s3://b/f{i}", 100) for i in range(10)]
-    con = _con_with_files({"t1": files}, cleanup_paths=["s3://b/f0"], orphan_paths=[])
-    stats = check_gc_breaker(con, ["t1"], _now=_NOW)
-    assert stats["breaker_tripped"] is False
-    assert stats["total_files"] == 10
-    assert stats["would_delete_files"] == 1
-    assert stats["file_fraction"] == pytest.approx(0.10)
-
-
-def test_breaker_trips_on_high_file_fraction():
-    files = [(f"s3://b/f{i}", 100) for i in range(5)]
-    con = _con_with_files({"t1": files}, cleanup_paths=[f"s3://b/f{i}" for i in range(5)], orphan_paths=[])
-    with pytest.raises(DuckLakeMaintenanceError, match="circuit breaker tripped"):
-        check_gc_breaker(con, ["t1"], _now=_NOW)
-
-
-def test_breaker_trips_on_high_byte_budget():
-    large_file_size = 11 * 1024 * 1024 * 1024
-    files = [("s3://b/big.parquet", large_file_size)]
-    con = _con_with_files({"t1": files}, cleanup_paths=["s3://b/big.parquet"], orphan_paths=[])
-    with pytest.raises(DuckLakeMaintenanceError, match="GiB"):
-        check_gc_breaker(con, ["t1"], _now=_NOW, file_fraction=1.0)
-
-
-def test_breaker_deletes_nothing_on_trip():
-    files = [(f"s3://b/f{i}", 100) for i in range(3)]
-    con = _con_with_files({"t1": files}, cleanup_paths=[f"s3://b/f{i}" for i in range(3)], orphan_paths=[])
-    with pytest.raises(DuckLakeMaintenanceError):
-        check_gc_breaker(con, ["t1"], _now=_NOW)
-    delete_stmts = [s for s in con.executed if "dry_run=False" in s]
-    assert delete_stmts == [], "breaker must not issue any destructive call"
-
-
-def test_breaker_aggregates_across_tables():
-    files_t1 = [(f"s3://b/t1/f{i}", 100) for i in range(5)]
-    files_t2 = [(f"s3://b/t2/f{i}", 100) for i in range(5)]
-    con = _con_with_files({"t1": files_t1, "t2": files_t2}, cleanup_paths=[], orphan_paths=[])
-    stats = check_gc_breaker(con, ["t1", "t2"], _now=_NOW)
-    assert stats["total_files"] == 10
-
-
-def test_breaker_returns_stats_dict():
-    con = FakeCon()
-    stats = check_gc_breaker(con, ["t1"], _now=_NOW)
-    assert "total_files" in stats
-    assert "total_bytes" in stats
-    assert "would_delete_files" in stats
-    assert "would_delete_bytes" in stats
-    assert "file_fraction" in stats
-    assert "breaker_tripped" in stats
-
-
-# ---------------------------------------------------------------------------
 # run_merge
 # ---------------------------------------------------------------------------
 
@@ -353,29 +304,32 @@ def test_run_merge_calls_flush_and_merge():
 
 
 # ---------------------------------------------------------------------------
-# run_gc
+# run_gc -- behind the G1-G4 guard set (src/common/ducklake_maintenance_ops.py)
 # ---------------------------------------------------------------------------
 
 
 def _gc_con(*, file_count: int = 10, cleanup_count: int = 1, orphan_count: int = 0, snapshot_count: int = 5) -> FakeCon:
-    files = [(f"s3://b/f{i}", 100) for i in range(file_count)]
-    cleanup_paths = [f"s3://b/f{i}" for i in range(cleanup_count)]
-    orphan_paths = [f"s3://b/o{i}" for i in range(orphan_count)]
-
+    """A GC-pass fixture where the live set and the would-delete set are DISJOINT (the happy path
+    -- would-delete paths are files already superseded/expired, so they never appear in the live
+    ducklake_list_files view; see rec-3773)."""
+    live_files = [(f"s3://b/live{i}", 100) for i in range(file_count)]
+    cleanup_paths = [f"s3://b/cleanup{i}" for i in range(cleanup_count)]
+    orphan_paths = [f"s3://b/orphan{i}" for i in range(orphan_count)]
     snap_rows = [(i, _ts(2025, 1, i + 1)) for i in range(snapshot_count)]
 
     fetchall_map: dict[str, list[Any]] = {
-        "ducklake_list_files": [(p, s) for p, s in files],
+        "ducklake_list_files": [(p, s) for p, s in live_files],
         "ducklake_cleanup_old_files": [(p,) for p in cleanup_paths],
         "ducklake_delete_orphaned_files": [(p,) for p in orphan_paths],
         "ducklake_snapshots": snap_rows,
         "ducklake_expire_snapshots": [],
     }
     fetchone_map = {
+        "ducklake_list_files": (file_count,),
         "ducklake_cleanup_old_files": (cleanup_count,),
         "ducklake_delete_orphaned_files": (orphan_count,),
         "ducklake_expire_snapshots": (2,),
-        "count(*)": (file_count,),
+        "ducklake_snapshots": (max(snapshot_count - 2, SNAPSHOT_FLOOR),),
     }
     return FakeCon(fetchall_map=fetchall_map, fetchone_map=fetchone_map)
 
@@ -390,27 +344,28 @@ def test_run_gc_returns_ok():
 def test_run_gc_includes_all_result_keys():
     con = _gc_con()
     result = run_gc(con, ["t1"], _now=_NOW)
-    for key in ("files_before", "files_after", "snapshots_expired", "files_cleaned", "orphans_deleted", "breaker_stats"):
+    for key in ("files_before", "files_after", "snapshots_expired", "files_cleaned", "orphans_deleted", "guard_stats"):
         assert key in result, f"missing key {key!r}"
+    assert "breaker_stats" not in result
+    assert "file_fraction" not in result["guard_stats"]
 
 
-def test_run_gc_breaker_trip_raises_and_no_destructive():
-    files = [(f"s3://b/f{i}", 100) for i in range(3)]
-    cleanup_paths = [f"s3://b/f{i}" for i in range(3)]
-
+def test_run_gc_g1_violation_raises_and_no_destructive():
+    """G1: a would-delete path that is ALSO in the live set must raise, before any destructive call."""
+    live_files = [(f"s3://b/f{i}", 100) for i in range(3)]
     con = FakeCon(
         fetchall_map={
-            "ducklake_list_files": [(p, s) for p, s in files],
-            "ducklake_cleanup_old_files": [(p,) for p in cleanup_paths],
+            "ducklake_list_files": [(p, s) for p, s in live_files],
+            "ducklake_cleanup_old_files": [("s3://b/f0",)],  # f0 is BOTH live and would-delete
             "ducklake_delete_orphaned_files": [],
             "ducklake_snapshots": [(1, _ts(2025, 1, 1)), (2, _ts(2025, 2, 1)), (3, _ts(2025, 3, 1))],
         },
-        fetchone_map={"ducklake_expire_snapshots": (0,), "ducklake_cleanup_old_files": (3,), "count(*)": (3,)},
+        fetchone_map={"ducklake_list_files": (3,), "ducklake_expire_snapshots": (0,)},
     )
-    with pytest.raises(DuckLakeMaintenanceError, match="circuit breaker"):
+    with pytest.raises(DuckLakeMaintenanceError, match="G1 reachability"):
         run_gc(con, ["t1"], _now=_NOW)
     destructive = [s for s in con.executed if "dry_run=False" in s]
-    assert destructive == [], "run_gc must not issue destructive calls after breaker trip"
+    assert destructive == [], "run_gc must not issue destructive calls after a G1 violation"
 
 
 def test_run_gc_calls_all_five_steps():
@@ -422,24 +377,16 @@ def test_run_gc_calls_all_five_steps():
     assert "ducklake_expire_snapshots" in stmts
     assert "ducklake_cleanup_old_files" in stmts
     assert "ducklake_delete_orphaned_files" in stmts
+    destructive = [s for s in con.executed if "dry_run=False" in s]
+    assert destructive, "a within-budget pass must issue the destructive cleanup/orphan calls"
 
 
-def test_run_gc_respects_custom_thresholds():
-    con = FakeCon(
-        fetchall_map={
-            "ducklake_list_files": [("s3://b/f0", 100)],
-            "ducklake_cleanup_old_files": [("s3://b/f0",)],
-            "ducklake_delete_orphaned_files": [],
-            "ducklake_snapshots": [],
-        },
-        fetchone_map={
-            "ducklake_cleanup_old_files": (1,),
-            "ducklake_delete_orphaned_files": (0,),
-            "ducklake_expire_snapshots": (0,),
-        },
-    )
-    with pytest.raises(DuckLakeMaintenanceError):
-        run_gc(con, ["t1"], file_fraction=0.0, _now=_NOW)
+def test_run_gc_g2_violation_raises():
+    """G2: if the engine's post-expiry snapshot count is below the floor, raise."""
+    con = _gc_con(snapshot_count=5)
+    con._fetchone_map["ducklake_snapshots"] = (SNAPSHOT_FLOOR - 1,)  # engine under-retained
+    with pytest.raises(DuckLakeMaintenanceError, match="G2 retention floor"):
+        run_gc(con, ["t1"], _now=_NOW, floor=SNAPSHOT_FLOOR)
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +441,7 @@ def test_run_hot_merge_calls_merge_adjacent_files():
 
 
 def test_run_hot_merge_no_gc_breaker_check():
-    """hot_merge skips the circuit-breaker check (merge-only path has no destructions)."""
+    """hot_merge skips the guard-set check entirely (merge-only path has no destructions)."""
     con = FakeCon()
     run_hot_merge(con, ["t1"])
     breaker_stmts = [s for s in con.executed if "ducklake_cleanup_old_files" in s and "dry_run=True" in s]
@@ -506,35 +453,6 @@ def test_run_hot_merge_tables_in_result():
     result = run_hot_merge(con, ["ta", "tb"])
     assert "ta" in result["tables"]
     assert "tb" in result["tables"]
-
-
-# ---------------------------------------------------------------------------
-# Env-sourced breaker thresholds (FP-B co-tuning mechanism)
-# ---------------------------------------------------------------------------
-
-
-def test_env_sourced_defaults_are_fp_a_values():
-    """The env-sourced defaults must match the FP-A shipped values (Decision 55 invariant)."""
-    assert GC_BREAKER_FILE_FRACTION == pytest.approx(0.20)
-    assert GC_BREAKER_BYTES == 10 * 1024 * 1024 * 1024  # 10 GiB
-
-
-def test_env_sourced_file_fraction_controls_breaker():
-    """Passing a custom file_fraction to check_gc_breaker overrides the default."""
-    # 1 file, all deleted -> 100% > 0% threshold -> trips
-    files = [("s3://b/f0", 100)]
-    con = _con_with_files({"t1": files}, cleanup_paths=["s3://b/f0"], orphan_paths=[])
-    with pytest.raises(DuckLakeMaintenanceError):
-        check_gc_breaker(con, ["t1"], file_fraction=0.0, _now=_NOW)
-
-
-def test_env_sourced_byte_budget_controls_breaker():
-    """Passing a custom byte_budget to check_gc_breaker overrides the default."""
-    large_bytes = 1024 * 1024  # 1 MiB would-delete
-    files = [("s3://b/big.parquet", large_bytes)]
-    con = _con_with_files({"t1": files}, cleanup_paths=["s3://b/big.parquet"], orphan_paths=[])
-    with pytest.raises(DuckLakeMaintenanceError, match="GiB"):
-        check_gc_breaker(con, ["t1"], file_fraction=1.0, byte_budget=512 * 1024, _now=_NOW)  # 512 KiB budget
 
 
 # ---------------------------------------------------------------------------

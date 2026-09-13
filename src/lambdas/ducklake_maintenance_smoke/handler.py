@@ -26,24 +26,16 @@ import time
 from typing import Any
 
 from src.common import ducklake_maintenance as maint
+from src.common import ducklake_maintenance_ops as gcops
 from src.common import ducklake_runtime as rt
 
 DATA_PATH = os.environ.get("DUCKLAKE_DATA_PATH", rt.SMOKE_DATA_PATH)
 META_SCHEMA = os.environ.get("DUCKLAKE_META_SCHEMA", rt.SMOKE_META_SCHEMA)
 EXTENSION_DIRECTORY = os.environ.get("DUCKLAKE_EXTENSION_DIRECTORY", rt.LAMBDA_EXTENSION_DIRECTORY)
 
-# GC circuit-breaker thresholds: sourced from env when set (FP-B co-tuning, CD.34), mirroring the
-# admin handler. Tuning these to make a gate pass is a Decision-55 violation.
-_ENV_GC_BREAKER_FILE_FRACTION: float = float(os.environ.get("GC_BREAKER_FILE_FRACTION", maint.GC_BREAKER_FILE_FRACTION))
-_ENV_GC_BREAKER_BYTES: int = int(os.environ.get("GC_BREAKER_BYTES", maint.GC_BREAKER_BYTES))
-
 # Table scope: ducklake_smoke_* only (this Lambda never targets the production catalog).
 _SCOPE_TABLES = maint.GC_TABLE_SCOPE
 _HOT_SCOPE_TABLES = maint.HOT_TABLE_SCOPE
-
-# Forced-threshold breaker_probe: guaranteed-trip values (mirrors the admin handler).
-_BREAKER_PROBE_FILE_FRACTION = 0.0  # 0% -> any 1 deletable file trips it
-_BREAKER_PROBE_BYTE_BUDGET = 0  # 0 bytes -> any file trips it
 
 
 def _open_connection() -> Any:
@@ -82,21 +74,15 @@ def action_merge(event: dict[str, Any], con: Any) -> dict[str, Any]:
 
 
 def action_gc(event: dict[str, Any], con: Any) -> dict[str, Any]:
-    """Weekly guarded GC: full five-step sequence with circuit breaker.
+    """Weekly guarded GC: full five-step sequence behind the G1-G4 guard set.
 
-    Accepts force_* event fields per Lambda convention:
-      force_recreate_tables -- drop/recreate smoke tables before GC (test harness)
-      force_file_fraction   -- override GC_BREAKER_FILE_FRACTION (test; not used in scheduled runs)
-      force_byte_budget     -- override GC_BREAKER_BYTES (test; not used in scheduled runs)
+    Accepts force_recreate_tables=True (drop/recreate smoke tables before GC; test harness).
     """
     if event.get("force_recreate_tables"):
         rt.create_scd2_tables(con, force_recreate=True)
 
-    file_fraction = float(event.get("force_file_fraction", _ENV_GC_BREAKER_FILE_FRACTION))
-    byte_budget = int(event.get("force_byte_budget", _ENV_GC_BREAKER_BYTES))
-
     t0 = time.perf_counter()
-    result = maint.run_gc(con, _SCOPE_TABLES, file_fraction=file_fraction, byte_budget=byte_budget)
+    result = maint.run_gc(con, _SCOPE_TABLES)
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     result["elapsed_ms"] = round(elapsed_ms, 2)
 
@@ -130,25 +116,20 @@ def action_hot_merge(event: dict[str, Any], con: Any) -> dict[str, Any]:
     return result
 
 
-def action_breaker_probe(event: dict[str, Any], con: Any) -> dict[str, Any]:
-    """Forced-threshold circuit-breaker test.
+def action_breaker_probe(event: dict[str, Any], _con: Any) -> dict[str, Any]:
+    """Forced G1 trip: guaranteed independent of the smoke catalog's real contents.
 
-    Overrides thresholds to zero so the breaker ALWAYS trips on any deletable file. Asserts that
-    check_gc_breaker raises DuckLakeMaintenanceError and that no files are deleted.
+    Successor to the retired forced-zero-threshold probe: that probe only tripped when at least
+    one deletable file existed, so an empty smoke catalog silently no-op'd it.
+    gcops.probe_g1_trip() forces a G1 reachability violation via an internal module-level
+    constant, independent of catalog contents -- it always raises.
 
     On trip: re-raises DuckLakeMaintenanceError. The handler's outer catch emits
     MaintenanceBreakerTrip=1 exactly once -- do NOT emit it here (single emit point, no double-emit).
 
-    Returns {"ok": False, "breaker_tripped": True, "error_type": "breaker", "error": ...}
-    with status 500 so the smoke-test gate can assert the loud-fail.
+    Returns 500 with breaker_tripped=True so the smoke-test gate can assert the loud-fail.
     """
-    maint.check_gc_breaker(
-        con,
-        _SCOPE_TABLES,
-        file_fraction=_BREAKER_PROBE_FILE_FRACTION,
-        byte_budget=_BREAKER_PROBE_BYTE_BUDGET,
-    )
-    return {"ok": True, "breaker_tripped": False, "message": "Breaker did NOT trip (no deletable files in probe)"}
+    gcops.probe_g1_trip()
 
 
 # ---------------------------------------------------------------------------

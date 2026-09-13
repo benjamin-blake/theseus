@@ -170,9 +170,9 @@ resource "aws_lambda_function" "ducklake_maintenance" {
       # The operational actions target production via explicit event params (catalog_reinit,
       # reconcile_columns, merge_ops, clone_catalog); EXTENSION_DIRECTORY and
       # FIELD_SEMANTICS_PATH are the only env-pinned values this function still reads --
-      # DUCKLAKE_DATA_PATH/DUCKLAKE_META_SCHEMA/GC_BREAKER_* were only consumed by the scheduled
-      # smoke cadences (merge/gc/hot_merge/breaker_probe), which moved to
-      # ducklake_maintenance_smoke.tf in the T2.18 c9 split.
+      # DUCKLAKE_DATA_PATH/DUCKLAKE_META_SCHEMA were only consumed by the scheduled smoke
+      # cadences (merge/gc/hot_merge/breaker_probe), which moved to ducklake_maintenance_smoke.tf
+      # in the T2.18 c9 split.
       DUCKLAKE_EXTENSION_DIRECTORY = local.ducklake_extension_dir
       # catalog_reinit's create_scd2_tables + reconcile_columns/restore_drill's field-spec
       # resolution load the field-semantics contract bundled into the zip (manifest assets[]).
@@ -259,7 +259,7 @@ resource "aws_lambda_permission" "ducklake_maintenance_merge_ops" {
 
 resource "aws_cloudwatch_metric_alarm" "ducklake_maintenance_breaker" {
   alarm_name          = "ducklake-maintenance-circuit-breaker"
-  alarm_description   = "DuckLake maintenance GC circuit breaker tripped (>20% files or >10 GiB). T2.18 / CD.33 H1."
+  alarm_description   = "DuckLake maintenance GC fail-closed guard-set trip (reachability, retention floor, or catalog sanity). T2.18 / CD.33 H1."
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
   metric_name         = "MaintenanceBreakerTrip"

@@ -157,10 +157,6 @@ resource "aws_lambda_function" "ducklake_maintenance_smoke" {
       DUCKLAKE_META_SCHEMA          = "ducklake_smoke"
       DUCKLAKE_EXTENSION_DIRECTORY  = local.ducklake_extension_dir
       DUCKLAKE_FIELD_SEMANTICS_PATH = "/var/task/config/lambda/ducklake/field_semantics.yaml"
-      # Same FP-A defaults as the admin function's former smoke cadence (CD.34 co-tuning). Tuning
-      # to make a gate pass is a Decision-55 violation.
-      GC_BREAKER_FILE_FRACTION = "0.20"
-      GC_BREAKER_BYTES         = "10737418240" # 10 GiB
     }
   }
 
@@ -310,7 +306,7 @@ resource "aws_lambda_permission" "ducklake_maintenance_smoke_hot_merge" {
 
 resource "aws_cloudwatch_metric_alarm" "ducklake_maintenance_smoke_breaker" {
   alarm_name          = "ducklake-maintenance-smoke-circuit-breaker"
-  alarm_description   = "DuckLake maintenance SMOKE GC circuit breaker tripped (>20% files or >10 GiB). T2.18 c9 / CD.33 H1."
+  alarm_description   = "DuckLake maintenance SMOKE GC fail-closed guard-set trip (reachability, retention floor, or catalog sanity). T2.18 c9 / CD.33 H1."
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
   metric_name         = "MaintenanceBreakerTrip"

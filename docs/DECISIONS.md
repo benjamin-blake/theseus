@@ -2,6 +2,81 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 188: Retire the GC file-fraction breaker for fail-closed structural guards; the lakehouse GC safety property is reachability, not volume (amends Decision 81 clause 6) (Decided)
+
+```yaml
+number: 188
+status: Decided
+decided_date: "2026-09-13"
+amends: [81]
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable reversal of Decision 81 clause 6's safety mechanism -- the verb contract carries no
+    authority to retire a ratified clause on its own (rec-3015), and amendment_forms annotates
+    rather than negates a prior Decision's substance (rec-3016, Decision 180), so the replacement
+    of the circuit-breaker safety property itself needs a numbered entry, not a contract edit.
+```
+
+**Status:** Decided
+**Date:** 2026-09-13
+**Warehouse ID:** dec-188
+
+**Problem:**
+Decision 81 clause 6's GC circuit breaker aborts a pass that would delete >20% of tracked files or
+>10 GiB. Measured 2026-09-12: every catalog-introspection helper it depends on swallows its
+connection exception and returns an empty default, so a raising connection collapses the
+denominator to 0 and yields `breaker_tripped: False` -- fail-OPEN on exactly the failure it exists
+to guard against, silently. Separately (rec-3761 / now rec-3773), the byte-budget half sums a
+live-file inventory taken AFTER `merge_adjacent_files` already superseded the candidates, so
+`delete_bytes` is always 0 regardless of real volume. Both share a root cause: the safety property
+is a VOLUME threshold computed from data the mechanism can silently fail to produce, not a
+structural invariant. A third defect (rec-3759 / now rec-3774) left both CI smoke gates unable to
+detect either: the gc gate only checked `breaker_tripped is not True` against a fresh empty
+catalog (vacuous every push), and the breaker gate early-returned OK on an untripped probe -- five
+consecutive green CD runs certified a fail-open, byte-blind, unfalsifiable mechanism.
+
+**Decision:**
+1. RETIRE the file-fraction/byte-budget breaker (`check_gc_breaker`, `GC_BREAKER_FILE_FRACTION`,
+   `GC_BREAKER_BYTES`, the `>20% files`/`>10 GiB` language) in full -- a retirement, not a
+   re-baseline: a volume threshold over optionally-absent data can never be a safety property.
+2. REPLACE it with four fail-closed guards (`src/common/ducklake_maintenance_ops.py`): **G1
+   reachability** (would-delete and live sets disjoint, checked before and after any destructive
+   call -- the actual property GC needs, independent of volume); **G2 retention floor**
+   (re-asserts, from a fresh post-expiry read, that the engine honoured the computed cutoff); **G3
+   catalog sanity** (aborts on an empty live set or a live-byte drop past an absolute bound); **G4
+   deletion bound** (an absolute per-pass file/byte cap, sized from a live inventory captured
+   BEFORE merge can supersede a candidate -- closing rec-3773's dead byte budget). A G1/G2/G3
+   violation raises; an over-budget G4 pass defers the WHOLE pass instead (a backlog is safe to
+   leave for next run; catalog distrust is not) -- G4 is the retired byte budget's filed successor
+   (Decision 187 pt 2: no property is left silently unreplaced).
+3. Every guard-path introspection helper RAISES on failure (rec-3772); no permissive default
+   remains. The sole exception is `action_merge_ops`'s two `_count_files` sites: that is the
+   every-6h non-destructive production cadence (Decision 88 cl.1(iii)), so a transient failure
+   there degrades LOUDLY (null counts, `count_unavailable: true`) rather than aborting it.
+4. `breaker_probe` is re-homed onto a named internal forcing constant (`G1_PROBE_FORCE_CONFLICT`,
+   never an event field) that trips G1 independently of the smoke catalog's real contents -- the
+   retired probe only tripped when a deletable file existed, so an empty catalog silently no-op'd it.
+5. Both CI smoke gates now discriminate on RESPONSE SHAPE, not deletion volume or an untripped-
+   probe early return: the gc gate asserts the `guard_stats` shape and the absence of
+   `file_fraction`/`breaker_stats`; the breaker gate's early-return-OK branch is gone entirely.
+6. Amends clause 6's safety MECHANISM only -- `GC_TABLE_SCOPE`, the two cadences, and the
+   retention-floor/grace-period concepts are unchanged; `MaintenanceBreakerTrip` is retained as
+   the metric both alarms fire on. Per Decision 177, this lands as a dated append to Decision 81.
+
+**Rationale:**
+A breaker whose trip condition depends on successfully reading the exact data whose absence is its
+own failure mode is not a safety mechanism. The fix reframes the property away from a volume
+threshold and onto structural invariants that either hold or raise, keeping an absolute bound only
+where volume still matters (G4), sized from data that cannot silently vanish out from under it.
+
+**Related:** Decision 81 (clause 6 amended), Decision 88 (cl.1(iii) merge_ops split; cl.4
+`GC_TABLE_SCOPE` untouched), Decision 55 (the fail-open defect this closes), Decision 128 (guard
+set lands in a new module), Decision 177 (append-only amendment), Decision 187 pt 2 (G4 is the
+byte budget's filed successor), Decision 181 (retires a metric that cannot pass, never raises one).
+
+---
+
 ## Decision 187: Verifier-weakening control derives its protected set from the git base ref, never from a roster -- check-fleet tier demotion binds to the shared marker-authorization mechanism at check-NAME level (extends Decision 165) (Decided)
 
 ```yaml
@@ -6158,6 +6233,13 @@ Decision 78 (adopted DuckLake; deferred this runtime architecture; superseded De
 invariant preserved as carried forward by Decision 78),
 CD.15 (typed query reader -- refined), CD.8 (DuckDB engine -- unchanged), CD.9 (partitioning via ALTER),
 CD.24 (per-Lambda manifests), OQ.7 / OQ.10 / OQ.11 (resolved), OQ.12 (left to T2.17).
+
+> **Amended by Decision 188 (2026-09-13):** clause 6's circuit breaker (the `>20% files or >10 GiB`
+> file-fraction/byte-budget abort) is retired and replaced by four fail-closed structural guards
+> (G1 reachability, G2 retention floor, G3 catalog sanity, G4 an absolute per-pass deletion bound;
+> `src/common/ducklake_maintenance_ops.py`). Clause 6's other content -- the two scheduled cadences,
+> `GC_TABLE_SCOPE`, the retention floor and cleanup grace period as concepts -- is unchanged, and
+> `MaintenanceBreakerTrip` is retained as the metric both alarms fire on.
 
 ---
 

@@ -13,7 +13,7 @@ sections:
     title: OQ.12 DuckLake/DuckDB version-bump clone-rehearsal policy
     control: OQ.12
   - id: 3
-    title: Maintenance pipeline -- cadences, guardrails, circuit breaker, manual invoke
+    title: Maintenance pipeline -- cadences, guardrails, fail-closed guard set, manual invoke
     control: CD.33 clause 5-6 / Decision 81 clause 6
   - id: 4
     title: Catalog disaster-recovery (CD.34) -- DR Lambda, SNS alert wiring, co-tuning knobs
@@ -191,7 +191,7 @@ maintenance_cadences:
   weekly_gc:
     schedule: "cron(0 5 ? * SUN *)"  # 05:00 UTC Sunday
     action: gc
-    description: "Guarded destructive: full 5-step sequence with circuit breaker"
+    description: "Guarded destructive: full 5-step sequence behind the G1-G4 fail-closed guard set"
     destructive: true
     mechanism: EventBridge rule -> agent-platform-ducklake-maintenance Lambda (action=gc)
 ```
@@ -212,23 +212,36 @@ guardrails:
   snapshot_retain_days: 30        # expire_snapshots: older_than = now - 30 days
   file_cleanup_grace_days: 7      # cleanup_old_files + delete_orphaned_files: older_than = now - 7 days
   snapshot_floor: 2               # never expire below the 2 most-recent snapshots
-  gc_breaker_file_fraction: 0.20  # abort if would-delete > 20% of tracked files
-  gc_breaker_bytes: 10_737_418_240  # 10 GiB -- abort if would-delete > 10 GiB
   cleanup_all_in_scheduled_runs: never  # NEVER pass cleanup_all=True in scheduled runs
+  g4_max_delete_files: 20_000        # G4: absolute per-pass file-count bound; over-budget defers the whole pass
+  g4_max_delete_bytes: 10_737_418_240  # G4: absolute per-pass byte bound (10*1024^3 bytes)
 ```
 
-These are module-level constants in `src/common/ducklake_maintenance.py`. They are tunable knobs
-but NEVER relaxed to make a gate pass (Decision 55). Changing them requires a Decision superseding CD.33.
+These are module-level constants in `src/common/ducklake_maintenance.py` (guardrails) and
+`src/common/ducklake_maintenance_ops.py` (G3/G4 bounds). They are tunable knobs but NEVER relaxed
+to make a gate pass (Decision 55). Changing them requires a Decision superseding CD.33.
 
-### Circuit breaker (CD.33 H1)
+### Fail-closed guard set (T2.18, Decision 188 amending Decision 81 clause 6 / CD.33 H1)
 
-The circuit breaker runs PRE-DESTRUCTIVE (before any `CALL` that deletes S3 objects):
+Four guards run PRE- and POST-destructive (src/common/ducklake_maintenance_ops.py), replacing the
+retired file-fraction/byte-budget circuit breaker:
 
-1. Aggregate all tracked files across scoped tables (via `ducklake_list_files`).
-2. Dry-run `ducklake_cleanup_old_files` + `ducklake_delete_orphaned_files` to count would-be deletions.
-3. If `(would_delete / total) > 20%` OR `would_delete_bytes > 10 GiB`, raise `DuckLakeMaintenanceError`
-   and abort (no destructive call is issued).
-4. On abort, emit `MaintenanceBreakerTrip=1` to the `DuckLakeMaintenance` CloudWatch namespace.
+1. **G1 reachability** -- the would-delete set (dry-run `ducklake_cleanup_old_files` +
+   `ducklake_delete_orphaned_files`) and the live set (`ducklake_list_files`) must be disjoint,
+   checked before any destructive `CALL` and re-checked after.
+2. **G2 retention floor** -- re-asserts, from a fresh post-expiry read, that `expire_snapshots`
+   actually left at least the configured floor of snapshots.
+3. **G3 catalog sanity** -- aborts on an empty live set, or a live-byte drop past an absolute
+   bound, after the pass.
+4. **G4 deletion bound** -- an absolute per-pass file-count/byte cap (g4_max_delete_files /
+   g4_max_delete_bytes above); an over-budget pass defers the WHOLE pass (nothing is deleted this
+   run) rather than raising, and reports the deferred count/bytes.
+
+A G1/G2/G3 violation raises `DuckLakeMaintenanceError` and aborts (no destructive call is issued
+beyond what already ran); on abort, emit `MaintenanceBreakerTrip=1` to the `DuckLakeMaintenance`
+CloudWatch namespace. A G4 violation is different: the whole pass is deferred (nothing is deleted
+this run) but the response is still a 200 -- `MaintenanceBreakerTrip` stays 0, and the deferral is
+visible in the response body's `guard_stats.g4_bounded` / `guard_stats.g4_deferred_files` fields.
 
 **Reading the alarm (FP-B):** the `ducklake-maintenance-circuit-breaker` CloudWatch alarm fires
 when `MaintenanceBreakerTrip >= 1` in a 5-minute window. As of T2.18 FP-B, `alarm_actions` is
@@ -241,7 +254,7 @@ aws sns list-subscriptions-by-topic \
   --profile agent_platform
 ```
 
-When the breaker fires, do NOT raise the threshold to pass. RCA the file accumulation:
+When a guard fires, do NOT relax it to pass. RCA the file accumulation:
 - Is the expiry cutoff too recent (< 30 days)?
 - Did a previous cleanup run fail silently, leaving many expired-but-not-cleaned files?
 - Is there a bug in the orphan path producing large volumes of orphaned files?
@@ -265,14 +278,14 @@ aws lambda invoke \
   --region eu-west-2 \
   /tmp/gc-response.json && cat /tmp/gc-response.json
 
-# Forced-threshold breaker probe (VP step 11 / diagnostic):
+# Forced G1-trip probe, via the G1_PROBE_FORCE_CONFLICT constant (VP step 11 / diagnostic):
 aws lambda invoke \
   --function-name agent-platform-ducklake-maintenance \
   --payload '{"action":"breaker_probe"}' \
   --profile agent_platform \
   --region eu-west-2 \
   /tmp/breaker-response.json && cat /tmp/breaker-response.json
-# Expect: statusCode=500, breaker_tripped=true (if any deletable files exist).
+# Expect: statusCode=500, breaker_tripped=true.
 
 # Check singleton concurrency (reserved_concurrent_executions must be 1):
 aws lambda get-function-concurrency \
@@ -376,29 +389,6 @@ aws sns list-subscriptions-by-topic \
   --profile agent_platform
 # Subscription SubscriptionArn must be a real ARN (not "PendingConfirmation").
 ```
-
-### Co-tuning knobs (T2.18 FP-B / CD.34)
-
-The GC circuit-breaker thresholds are env-configurable on the maintenance Lambda:
-
-```yaml
-co_tuning_knobs:
-  GC_BREAKER_FILE_FRACTION:
-    default: "0.20"  # FP-A shipped value; DO NOT change without a Decision superseding CD.33
-    env_var: GC_BREAKER_BYTES
-    purpose: "Abort GC if would-delete fraction exceeds this threshold"
-  GC_BREAKER_BYTES:
-    default: "10737418240"  # 10 GiB
-    env_var: GC_BREAKER_BYTES
-    purpose: "Abort GC if would-delete bytes exceed this threshold"
-```
-
-These are a **tunability mechanism, not a relaxation**. The FP-A defaults (>20% files / >10 GiB)
-remain the shipped values. Changing them to make a gate pass is a Decision-55 violation.
-
-At T2.19, when the real `ops_*` tables are in DuckLake and actual dead-file rates are observable,
-the numeric tuning is reviewed and a Decision filed if adjustment is warranted. FP-B lands the
-mechanism; the numeric tuning is a T2.19 carry item.
 
 ### Manual invoke
 

@@ -257,6 +257,38 @@ def test_action_merge_ops_handler_receives_no_connection():
     assert action_mock.call_args.args[1] is None
 
 
+def test_merge_ops_reports_count_unavailable_when_introspection_raises():
+    """Guard vs observability split: a transient _count_files failure must degrade LOUDLY (null
+    counts + count_unavailable) rather than aborting the every-6h production compaction cadence
+    (Decision 88 cl.1(iii)) -- merge_adjacent_files still runs for every table regardless."""
+    discovered = ["ops_recommendations_history", "ops_recommendations_current"]
+    con = MagicMock()
+    con.execute.return_value.fetchall.return_value = [(t,) for t in discovered]
+
+    with (
+        patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
+        patch.object(h.rt, "open_connection", return_value=con),
+        patch.object(h.maint, "_count_files", side_effect=RuntimeError("connection lost")),
+        patch.object(h.maint, "merge_adjacent_files") as mock_merge,
+        patch.object(h, "_emit_maintenance_metric") as mock_emit,
+    ):
+        result = h.action_merge_ops({"data_path": "s3://b/ducklake/", "meta_schema": "ducklake_ops"}, None)
+
+    assert result["ok"] is True
+    assert result["files_before"] is None
+    assert result["files_after"] is None
+    assert result["count_unavailable"] is True
+    assert mock_merge.call_count == len(discovered), "merge must still run for every table despite the count failure"
+    for entry in result["per_table"]:
+        assert entry["count_unavailable"] is True
+        assert entry["files_before"] is None
+        assert entry["files_after"] is None
+    metric_names = [c.args[0] for c in mock_emit.call_args_list]
+    assert "MergeOpsFilesBeforeTotal" not in metric_names
+    assert "MergeOpsFilesAfterTotal" not in metric_names
+    con.close.assert_called_once()
+
+
 def test_action_merge_ops_no_destructive_primitives():
     """merge_ops must not dispatch expire_snapshots, cleanup_old_files, or delete_orphaned_files."""
     con = MagicMock()

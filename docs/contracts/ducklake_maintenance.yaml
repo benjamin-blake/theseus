@@ -28,7 +28,7 @@ contract:
     PRODUCTION catalog with explicit data_path + meta_schema event params (no-arg invokes refused). No
     LLM / agent invocation anywhere in this path (CD.33 cl.5 / Decision 81 cl.6). Singleton via
     reserved_concurrent_executions=1. This contract documents the SCHEDULED + OPERATIONAL verb surface
-    only; the forced-threshold circuit-breaker test action breaker_probe is VP instrumentation
+    only; the forced-trip guard-set test action breaker_probe is VP instrumentation
     (analogous to the writer/reader probes), NOT an operational verb, and is out of contract scope.
   governance:
     auth_type: >-
@@ -82,21 +82,22 @@ verbs:
       smoke catalog). Daily non-destructive merge (flush_inlined_data + merge_adjacent_files).
     response_codes:
       200: "merged; body {ok, files_before, files_after_merge, elapsed_ms, ...}"
-      500: "DuckLakeMaintenanceError (breaker) / DuckLakeRuntimeError / VersionMismatchError"
+      500: "DuckLakeMaintenanceError (guard trip) / DuckLakeRuntimeError / VersionMismatchError"
     typed_errors:
-      breaker: "circuit-breaker trip; emits MaintenanceBreakerTrip=1; deletes nothing (500)"
+      breaker: "guard-set trip; emits MaintenanceBreakerTrip=1; deletes nothing (500)"
       runtime: "runtime loud-fail (500)"
       version_mismatch: "DuckDB/extension version mismatch (500)"
   gc:
     payload_schema_ref: >-
-      event envelope {action: "gc", force_recreate_tables?, force_file_fraction?, force_byte_budget?}.
+      event envelope {action: "gc", force_recreate_tables?}.
       SCHEDULED (EventBridge weekly 05:00 UTC Sun, smoke catalog). Weekly guarded GC (five-step
-      sequence); circuit-breaker guarded.
+      sequence); protected by the G1-G4 fail-closed guard set (reachability, retention floor,
+      catalog sanity, an absolute per-pass deletion bound).
     response_codes:
-      200: "gc complete; body {ok, files_before, files_after, snapshots_expired, files_cleaned, orphans_deleted, elapsed_ms}"
-      500: "DuckLakeMaintenanceError (breaker trip; deletes nothing) / DuckLakeRuntimeError / VersionMismatchError"
+      200: "gc complete; body {ok, files_before, files_after, snapshots_expired, files_cleaned, orphans_deleted, guard_stats, elapsed_ms}"
+      500: "DuckLakeMaintenanceError (G1/G2/G3 guard-set trip; deletes nothing) / DuckLakeRuntimeError / VersionMismatchError"
     typed_errors:
-      breaker: "file-fraction or byte-budget breaker trip; emits MaintenanceBreakerTrip=1; deletes nothing (500)"
+      breaker: "G1 reachability, G2 retention-floor, or G3 catalog-sanity guard trip; emits MaintenanceBreakerTrip=1; deletes nothing (500)"
       runtime: "runtime loud-fail (500)"
       version_mismatch: "DuckDB/extension version mismatch (500)"
   hot_merge:
@@ -106,9 +107,9 @@ verbs:
       scope; no expiry, no deletion (T2.18 FP-B / CD.34).
     response_codes:
       200: "merged; body {ok, files_before, files_after, elapsed_ms}"
-      500: "DuckLakeMaintenanceError (breaker) / DuckLakeRuntimeError / VersionMismatchError"
+      500: "DuckLakeMaintenanceError (guard trip) / DuckLakeRuntimeError / VersionMismatchError"
     typed_errors:
-      breaker: "circuit-breaker trip (500)"
+      breaker: "guard-set trip (500)"
       runtime: "runtime loud-fail (500)"
       version_mismatch: "DuckDB/extension version mismatch (500)"
   merge_ops:
@@ -118,7 +119,12 @@ verbs:
       human-invokable. Non-destructive merge over ALL live ops_* SCD2 table pairs in the production
       catalog (discovered via information_schema). No expire/cleanup/orphan.
     response_codes:
-      200: "merged; body {ok, tables, files_before, files_after, elapsed_ms, per_table}"
+      200: >-
+        merged; body {ok, tables, files_before, files_after, elapsed_ms, per_table, count_unavailable}.
+        files_before/files_after and each per_table entry's files_before/files_after are null and
+        count_unavailable is true when a file-count introspection read failed for any table -- the
+        merge itself still ran for every table (guard vs observability split: a transient count
+        failure degrades loudly rather than aborting this every-6h production cadence).
       500: "DuckLakeRuntimeError: missing/non-s3 data_path, missing meta_schema, or no ops_* pairs discovered / VersionMismatchError"
     typed_errors:
       runtime: "missing s3:// data_path / meta_schema, or no ops_* table pairs discovered (500)"
@@ -171,8 +177,8 @@ audit_invariants:
   - "Singleton: reserved_concurrent_executions=1 enforces a single concurrent maintenance run (Decision 81 cl.6)."
   - "No LLM / agent invocation anywhere in this path (CD.33 cl.5 / Decision 81 cl.6)."
   - "Scheduled merge/gc/hot_merge operate on the SMOKE catalog (ducklake_smoke); merge_ops is ALSO EventBridge-scheduled (every 6h) but targets the PRODUCTION catalog (ducklake_ops) with data_path+meta_schema supplied by the EventBridge target. The human-invoked operational actions (catalog_reinit/restore_drill/catalog_stats/reconcile_columns) target production via explicit params and refuse no-arg invokes."
-  - "GC is circuit-breaker guarded (file-fraction + byte-budget); a trip raises DuckLakeMaintenanceError, emits MaintenanceBreakerTrip=1, and deletes nothing. The forced-threshold breaker_probe action (out of contract scope) exists to prove this guard."
-  - "Two destructive paths exist: catalog_reinit is CATALOG-STRUCTURE destructive (meta-schema drop + reinit; confirm=<meta_schema>-guarded; IRREVERSIBLE), and gc is DATA-FILE destructive (snapshot expiry + orphan-file deletion on the happy path), guarded by the circuit-breaker, not a confirm token."
+  - "GC is guarded by the fail-closed G1-G4 guard set (reachability, retention floor, catalog sanity, an absolute per-pass deletion bound); a G1/G2/G3 trip raises DuckLakeMaintenanceError, emits MaintenanceBreakerTrip=1, and deletes nothing, while a G4 over-budget pass defers the whole destructive step instead. The forced-trip breaker_probe action (out of contract scope) exists to prove G1."
+  - "Two destructive paths exist: catalog_reinit is CATALOG-STRUCTURE destructive (meta-schema drop + reinit; confirm=<meta_schema>-guarded; IRREVERSIBLE), and gc is DATA-FILE destructive (snapshot expiry + orphan-file deletion on the happy path), guarded by the G1-G4 guard set, not a confirm token."
   - "An unknown `action` returns 400 with the sorted action allow-list (dispatcher-level; not a per-verb outcome)."
 amendment_log: []
 previous_versions: []

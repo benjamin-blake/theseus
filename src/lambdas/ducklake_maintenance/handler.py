@@ -380,29 +380,52 @@ def action_merge_ops(event: dict[str, Any], _con: Any) -> dict[str, Any]:
 
         t0 = time.perf_counter()
         per_table: list[dict[str, Any]] = []
-        files_before = 0
-        files_after = 0
+        files_before_total = 0
+        files_after_total = 0
+        any_count_unavailable = False
         for table in tables:
-            before = maint._count_files(con, catalog, table)
+            count_unavailable = False
+            try:
+                before = maint._count_files(con, catalog, table)
+            except Exception:  # noqa: BLE001 -- guard vs observability split: a transient introspection
+                # failure degrades LOUDLY (null count + count_unavailable) rather than aborting the
+                # every-6h non-destructive production compaction cadence (Decision 88 cl.1(iii)).
+                before = None
+                count_unavailable = True
+
             maint.merge_adjacent_files(con, [table], catalog=catalog)
-            after = maint._count_files(con, catalog, table)
-            files_before += before
-            files_after += after
-            per_table.append({"table": table, "files_before": before, "files_after": after})
+
+            try:
+                after = maint._count_files(con, catalog, table)
+            except Exception:  # noqa: BLE001 -- see above
+                after = None
+                count_unavailable = True
+
+            if count_unavailable:
+                any_count_unavailable = True
+            else:
+                assert before is not None and after is not None  # count_unavailable is False here
+                files_before_total += before
+                files_after_total += after
+            per_table.append(
+                {"table": table, "files_before": before, "files_after": after, "count_unavailable": count_unavailable}
+            )
 
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
 
         _emit_maintenance_metric("MergeOpsDurationMs", elapsed_ms)
-        _emit_maintenance_metric("MergeOpsFilesBeforeTotal", float(files_before))
-        _emit_maintenance_metric("MergeOpsFilesAfterTotal", float(files_after))
+        if not any_count_unavailable:
+            _emit_maintenance_metric("MergeOpsFilesBeforeTotal", float(files_before_total))
+            _emit_maintenance_metric("MergeOpsFilesAfterTotal", float(files_after_total))
         _emit_maintenance_metric("MergeOpsTablesCount", float(len(tables)))
 
         return {
             "ok": True,
             "action": "merge_ops",
             "tables": tables,
-            "files_before": files_before,
-            "files_after": files_after,
+            "files_before": None if any_count_unavailable else files_before_total,
+            "files_after": None if any_count_unavailable else files_after_total,
+            "count_unavailable": any_count_unavailable,
             "elapsed_ms": round(elapsed_ms, 2),
             "per_table": per_table,
         }
