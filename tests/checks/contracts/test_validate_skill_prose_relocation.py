@@ -154,6 +154,34 @@ class TestReInlinedRelocationRedPath:
 
         assert any("re-inlines relocated content" in f for f in failed)
 
+    def test_vp_red_before_stub_reinline_reddens(self, tmp_path: Path) -> None:
+        """PLAN-vp-red-before-gate: the Hermetic authoring stub (relocated to
+        docs/contracts/vp-red-before.yaml) re-inlining its own giveaway phrase must redden, same
+        genuinely-exercised-module-dict shape as the Data-Model Assessment case above."""
+        real_heading = "## Hermetic authoring (T3.15 / VF-01, amended by Decision 148/plan-resolution-content-keyed)"
+        relocation_map = [
+            {
+                "stub_heading": real_heading,
+                "surface": "planning",
+                "destination": f"{_WIDGET_REL_PATH}#widget_walk",
+                "enforcing_check": "validate_skill_prose_relocation",
+                "tier": "mandatory",
+            },
+        ]
+        planning_text = (
+            "# Planning\n\n"
+            f"{real_heading}\n"
+            "See `docs/contracts/widget-contract.yaml#widget_walk` (mandatory read-trigger).\n"
+            "Never mark a step hermetic if it invokes scripts.validate -- re-inlined verbatim here.\n\n"
+            "## Next Section\n"
+        )
+        _write_repo(tmp_path, relocation_map=relocation_map, planning_text=planning_text)
+
+        failed: list[str] = []
+        validate_skill_prose_relocation(failed, repo_root=tmp_path)
+
+        assert any("re-inlines relocated content" in f for f in failed)
+
     def test_same_heading_without_giveaway_phrase_passes(self, tmp_path: Path) -> None:
         """Non-vacuity companion: the SAME real heading, genuinely relocated (no giveaway
         phrase), passes -- proves the red case above is about the phrase, not the heading."""

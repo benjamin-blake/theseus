@@ -154,6 +154,7 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.verification.validate_vp_replay",
         attr="validate_vp_replay",
         pre=True,
+        full_segment="full_after_lint",
     ),
     Entry(
         name="validate_scope_boundary",

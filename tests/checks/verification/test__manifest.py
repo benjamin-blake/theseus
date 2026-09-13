@@ -37,6 +37,15 @@ class TestVerificationManifest:
         module = importlib.import_module(entry.module)
         assert registry.resolve(entry.name) is getattr(module, entry.attr)
 
+    def test_vp_replay_entry_runs_in_both_tiers(self) -> None:
+        """PLAN-vp-red-before-gate: validate_vp_replay's Entry gains full_segment (a tightening,
+        free and unmarked under Decision 187 point 3) so the check and its in-dispatch classifier
+        self-test also run in the full tier, not --pre alone."""
+        pre_names = {step.name for step in registry.pre_sequence() if step.kind == "check"}
+        full_names = {step.name for step in registry.full_sequence() if step.kind == "check"}
+        assert "validate_vp_replay" in pre_names
+        assert "validate_vp_replay" in full_names
+
 
 class TestGatedEntryInputClosures:
     """A gated check's pre_globs must cover EVERY path its implementation reads. Under-inclusion
