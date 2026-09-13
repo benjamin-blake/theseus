@@ -2,7 +2,7 @@
 
 Canonical Layer 2 project knowledge base for Claude Code. This file is loaded on demand by workflows; keep rules in `CLAUDE.md` / `AGENTS.md`, workflow method in `.claude/commands/` and `.claude/skills/`, and machine semantics in `docs/contracts/*.yaml`.
 
-Source stamp: ROADMAP-PLATFORM.yaml @ 722df8501dc9d717ead5bf70691bd646839be5d0; roadmap_tier_id_set sha256: 5ce59be4136f4c884d0aa427c09f29ed728e5192f41da0f2128fb02a60dc7307
+Source stamp: ROADMAP-PLATFORM.yaml @ 59b72172301b536cbf080e07c7c6242909b01e92; roadmap_tier_id_set sha256: 2fdd9e1f0d84a6b5423cbe77884ba19837d678135bd77c14400c0269295724cb
 
 ## Operating contract
 
@@ -90,7 +90,7 @@ T2.18 DuckLake maintenance
   -> T3.2 telemetry causal-chain verifier
   -> T3.3 telemetry cloud analysis
   -> T3.4 control-plane loop closure
-  -> T4.1 Step Functions executor substrate
+  -> T4.19-21 then T4.1 (definition, guard, SFN host)
   -> T4.2 Lambda Durable Function agent personas
 ```
 
@@ -156,7 +156,7 @@ The older local executor is frozen pending Decision 67 reversal. `config/agent/e
 ```text
 DuckLake queue
   -> pick_rec admission guard
-  -> Step Functions orchestration
+  -> loop definition (SFN host)
   -> prepare_workspace
   -> plan_agent
   -> plan_critic + decision_scout
@@ -172,7 +172,7 @@ DuckLake queue
   -> autonomy gate ratchet
 ```
 
-T4.1 owns Step Functions and deterministic glue Lambdas. T4.2 owns Lambda Durable Function personas and LiteLLM transport. T4.9a owns the MVP GitHub Actions callback handshake. T4.10a owns persona contracts. T4.13/T4.14 add prompt-injection threat modeling and offline prompt/model regression tests.
+T4.19 owns the loop definition; T4.1 its SFN host and glue. T4.2 owns Lambda Durable Function personas and LiteLLM transport. T4.9a owns the MVP GitHub Actions callback handshake. T4.10a owns persona contracts. T4.13/T4.14 add prompt-injection threat modeling and offline prompt/model regression tests.
 
 Authority increases only when evidence supports it. The end-state minimises routine oversight while preserving human policy control, auditability, escape hatches, and explicit boundaries for high-consequence actions.
 

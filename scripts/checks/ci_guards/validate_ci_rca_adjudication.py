@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from scripts.checks import registry
 
 _VALID_CI_RCA_VALUES = ("watched", "excluded")
@@ -68,17 +70,73 @@ def _check_filter_equals_watched(filter_set: set[str], watched: set[str]) -> lis
     return failures
 
 
+def _check_agent_loop_caps(workflows_map: dict[str, object], root: Path) -> tuple[list[str], int]:
+    """Assertion group (d): each workflow row's optional agent_loop_caps list, resolved to its
+    file through enumerate_workflow_name_paths (the row key already is the site -- no site or
+    pattern is ever named in the row itself), shape-and-floor validated, then derived-and-asserted
+    against the live workflow-region cap census. Returns (failures, examined_count)."""
+    from scripts.checks.ci_guards._agent_loop_caps import check_cap_entry_shape, compare_caps, scan_cap_literals
+    from scripts.ci_rca.taxonomy import enumerate_workflow_name_paths
+
+    failures: list[str] = []
+    declared: dict[str, dict[str, int]] = {}
+    examined = 0
+
+    name_to_path = dict(enumerate_workflow_name_paths())
+    for row_name, entry in workflows_map.items():
+        # Guarded upstream by group (c)'s own shape check (returns before this group runs on a
+        # non-mapping entry); re-checked here only for mypy's narrowing, never expected to skip.
+        if not isinstance(entry, dict):
+            continue
+        caps = entry.get("agent_loop_caps")
+        if caps is None:
+            continue
+        if not isinstance(caps, list):
+            failures.append(f"agent-loop cap (workflow): {row_name!r} agent_loop_caps must be a list")
+            continue
+        wf_path = name_to_path.get(row_name)
+        if wf_path is None:
+            # Guarded upstream by group (a)'s coverage check; defensive only.
+            failures.append(f"agent-loop cap (workflow): {row_name!r} does not resolve to a workflow file")
+            continue
+        rel = wf_path.relative_to(root).as_posix()
+        for cap in caps:
+            examined += 1
+            shape_failures, kind, value = check_cap_entry_shape(cap, context=f"workflow {row_name!r}")
+            failures.extend(shape_failures)
+            if shape_failures:
+                continue
+            assert kind is not None and value is not None  # guaranteed by check_cap_entry_shape's own contract
+            declared.setdefault(rel, {})[kind] = value
+
+    discovered, scan_errors = scan_cap_literals(root)
+    failures.extend(scan_errors)
+    workflow_discovered = {f: kinds for f, kinds in discovered.items() if f.startswith(".github/workflows/")}
+    failures.extend(compare_caps(declared, workflow_discovered, "workflow"))
+
+    return failures, examined
+
+
 @registry.register("validate_ci_rca_adjudication", owner="platform")
 def validate_ci_rca_adjudication(failed: list[str]) -> None:
     """Fail unless every workflow is adjudicated and the ci-rca.yml filter matches the watched set.
 
-    Three assertion groups, all against config/ci_rca_taxonomy.yaml's `workflows:` map:
+    Four assertion groups, all against config/ci_rca_taxonomy.yaml's `workflows:` map:
     (a) the map's key set equals .github/workflows/*.yml display names, in both directions;
     (b) .github/workflows/ci-rca.yml's on.workflow_run.workflows list equals exactly the entries
         marked ci_rca: watched, in both directions;
-    (c) every entry declares a valid ci_rca value, a non-empty owner, and a non-empty rationale.
+    (c) every entry declares a valid ci_rca value, a non-empty owner, and a non-empty rationale;
+    (d) every entry's optional agent_loop_caps list is shape-valid and DERIVED-AND-ASSERTED equal
+        to the live workflow-region agent-loop cap census (scripts/checks/ci_guards/
+        _agent_loop_caps.py), in both directions -- see docs/plans/PLAN-declared-caps.yaml.
 
     Pure file-glob + YAML parse (no subprocess, no network); --pre eligible (Decision 60).
+
+    Decision 170 accounting: this check was a baselined, undeclared entry in
+    config/check_accounting_baseline.yaml until this plan's edit made adoption mandatory
+    (touch-it-fix-it). All four groups' existing early returns append to `failed` first, so no
+    early-return path is observable as vacuous or undeclared; one registry.examined() on the
+    single non-failing exit, aggregating all four groups' counts, covers every reachable outcome.
     """
     from scripts.ci_rca.taxonomy import ROOT, enumerate_workflow_names, load_taxonomy  # noqa: PLC0415
 
@@ -114,5 +172,11 @@ def validate_ci_rca_adjudication(failed: list[str]) -> None:
     filter_failures = _check_filter_equals_watched(filter_set, watched)
     failed.extend(filter_failures)
 
-    if not filter_failures:
+    cap_failures, cap_examined = _check_agent_loop_caps(workflows_map, ROOT)
+    failed.extend(cap_failures)
+
+    total_examined = len(actual_names) + len(filter_set | watched) + len(workflows_map) + cap_examined
+    registry.examined(total_examined, unit="adjudication_assertions")
+
+    if not filter_failures and not cap_failures:
         print(f"All {len(actual_names)} workflow(s) adjudicated; filter == watched set ({len(watched)} entries).")

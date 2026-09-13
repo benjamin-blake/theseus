@@ -171,4 +171,12 @@ ENTRIES: tuple[Entry, ...] = (
         pre_globs=None,
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_skill_prose_relocation",
+        module="scripts.checks.contracts.validate_skill_prose_relocation",
+        attr="validate_skill_prose_relocation",
+        pre=True,
+        pre_globs=None,
+        full_segment="full_after_lint",
+    ),
 )

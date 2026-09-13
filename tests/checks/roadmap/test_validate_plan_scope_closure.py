@@ -100,3 +100,77 @@ class TestClosure:
         assert failed
         assert all(a["check"] == "validate_plan_scope_closure" for a in validation_result._ATTRIBUTIONS)
         validation_result._ATTRIBUTIONS.clear()
+
+
+class TestGrammarLeg:
+    """The grammar leg runs unconditionally, BEFORE plan discovery -- a contract-only diff (no
+    plan file present) still fails on a malformed docs/contracts/plan-obligations.yaml body."""
+
+    def test_malformed_contract_fails_with_no_plans_in_diff(self, tmp_path: Path) -> None:
+        bad_contract = tmp_path / "bad-contract.yaml"
+        bad_contract.write_text("key: [unterminated", encoding="utf-8")
+        with patch.object(plan_obligations, "_CONTRACT_PATH", bad_contract):
+            failed: list[str] = []
+            validate_plan_scope_closure(failed, plan_paths=[])
+        assert failed
+        assert any("could not parse" in entry for entry in failed)
+
+    def test_live_contract_never_fails_the_grammar_leg(self) -> None:
+        failed: list[str] = []
+        validate_plan_scope_closure(failed, plan_paths=[])
+        assert failed == []
+
+
+class TestAccountingDeclaration:
+    """dec-170: every reachable exit of validate_plan_scope_closure declares examined() exactly
+    once, never skipped() -- the grammar leg makes the contract always-examined, so there is no
+    could-not-examine path to declare skipped() on."""
+
+    def test_no_plans_exit_declares_examined_once(self) -> None:
+        with patch.object(registry, "examined") as mock_examined, patch.object(registry, "skipped") as mock_skipped:
+            failed: list[str] = []
+            validate_plan_scope_closure(failed, plan_paths=[])
+        mock_examined.assert_called_once_with(1, unit="artefacts")
+        mock_skipped.assert_not_called()
+
+    def test_evaluating_exit_declares_examined_with_full_count(self, tmp_path: Path) -> None:
+        path = _write(tmp_path, _base_scope())
+        with patch.object(registry, "examined") as mock_examined, patch.object(registry, "skipped") as mock_skipped:
+            failed: list[str] = []
+            validate_plan_scope_closure(failed, plan_paths=[path])
+        mock_examined.assert_called_once_with(2, unit="artefacts")
+        mock_skipped.assert_not_called()
+
+    def test_malformed_contract_still_declares_examined_not_skipped(self, tmp_path: Path) -> None:
+        bad_contract = tmp_path / "bad-contract.yaml"
+        bad_contract.write_text("key: [unterminated", encoding="utf-8")
+        with patch.object(plan_obligations, "_CONTRACT_PATH", bad_contract):
+            with patch.object(registry, "examined") as mock_examined, patch.object(registry, "skipped") as mock_skipped:
+                failed: list[str] = []
+                validate_plan_scope_closure(failed, plan_paths=[])
+        mock_examined.assert_called_once_with(1, unit="artefacts")
+        mock_skipped.assert_not_called()
+
+
+class TestGatingUnchanged:
+    """An enforced_elsewhere entry never reaches `failed` -- the registered check's gating verdict
+    is frozen at its pre-change values (Decision 181 CONTENT invariant: never weakened, and never
+    silently strengthened into an unpassable gate either)."""
+
+    def test_enforced_elsewhere_omission_alone_never_fails(self, tmp_path: Path) -> None:
+        path = _write(tmp_path, _base_scope())
+        failed: list[str] = []
+        validate_plan_scope_closure(failed, plan_paths=[path])
+        assert failed == []
+
+    def test_requires_omission_matches_pre_change_label(self, tmp_path: Path) -> None:
+        data = _base_scope()
+        data["scope"] = [r for r in data["scope"] if r["file"] != "config/ci_rca_taxonomy.yaml"]
+        path = _write(tmp_path, data)
+        failed: list[str] = []
+        validate_plan_scope_closure(failed, plan_paths=[path])
+        assert failed == [
+            "PLAN-fixture-probe.yaml: missing ci_rca_taxonomy function_to_category row "
+            "(config/ci_rca_taxonomy.yaml) -- required because scripts/checks/roadmap/validate_x.py "
+            "is a new check module"
+        ]

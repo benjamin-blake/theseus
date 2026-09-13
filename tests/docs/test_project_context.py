@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,7 +19,10 @@ def test_project_context_preserves_roadmap_end_state_orientation() -> None:
     assert "T2.36 telemetry rebuild on DuckLake" in text
     assert "T4.2 Lambda Durable Function agent personas" in text
     assert "T4.3 priority-queue producer repoint to DuckLake" in text
-    assert "roadmap_tier_id_set sha256: 5ce59be4136f4c884d0aa427c09f29ed728e5192f41da0f2128fb02a60dc7307" in text
+    # The fingerprint value legitimately changes whenever a roadmap tier_item is added or removed
+    # (context_docs._check_endstate_drift resynthesizes it from the live tier_item ID set); pin the
+    # stamp grammar it actually consumes, never the derived value itself.
+    assert re.search(r"roadmap_tier_id_set sha256:\s*[0-9a-f]{64}", text) is not None
 
 
 def test_project_context_keeps_operational_boundaries_actionable() -> None:

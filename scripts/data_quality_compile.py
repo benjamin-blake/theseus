@@ -15,7 +15,9 @@ from scripts.data_quality_models import _TOMBSTONES_PATH, Check
 # check, not a column predicate. _compile_column_test recognises and skips these by design
 # rather than loud-failing; any OTHER unrecognised test type is a silent-drop bug (Decision 55)
 # and raises instead (rec-3308).
-_WRITE_TIME_ONLY_TEST_TYPES = frozenset({"path_syntax", "acceptance_lint", "array_element_format", "min_length"})
+_WRITE_TIME_ONLY_TEST_TYPES = frozenset(
+    {"path_syntax", "acceptance_lint", "array_element_format", "min_length", "array_element_reference"}
+)
 
 # ---------------------------------------------------------------------------
 # Tombstone resurrection checks

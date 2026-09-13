@@ -214,3 +214,50 @@ class TestComputeEscapeMode:
     def test_postmerge_canary_takes_precedence_over_not_selected(self):
         result = compute_escape_mode(False, "not_selected", True, False)
         assert result == "tier_misplaced"
+
+    # -----------------------------------------------------------------
+    # Precedence-hoist repair (T1.13:c9): the four rows below all fail on the pre-repair
+    # ordering -- three return the undetermined sentinel (rows 1, 2, and the raw-tier row),
+    # one returns tier_misplaced (row 3, since the pre-repair canary rule sat above the
+    # vacuous-pass rule). The pre-existing rows above are the no-regression half and stay
+    # untouched.
+    # -----------------------------------------------------------------
+
+    def test_canary_true_overrides_undetermined_vacuous_pass(self):
+        """AC1: gate_is_postmerge_canary=True wins even when vacuous_pass is undetermined."""
+        result = compute_escape_mode(_UNDETERMINED, "selected", True, False)
+        assert result == "tier_misplaced"
+
+    def test_canary_true_overrides_undetermined_coverage(self):
+        """AC1: gate_is_postmerge_canary=True wins even when merge_gate_test_coverage is undetermined."""
+        result = compute_escape_mode(False, _UNDETERMINED, True, False)
+        assert result == "tier_misplaced"
+
+    def test_vacuous_pass_preferred_over_canary_when_both_determinate(self):
+        """AC2: check_ran_vacuously is preferred over tier_misplaced when both rules could fire --
+        the most specific diagnosis must not be shadowed by the canary rule."""
+        result = compute_escape_mode(True, "selected", True, False)
+        assert result == "check_ran_vacuously"
+
+    def test_raw_tier_not_a_gate_returns_no_premerge_gate_by_design(self):
+        """AC3: a raw not_a_gate workflow tier yields the by-design value without consulting
+        merge_gate_test_coverage, even when both other tri-state inputs are undetermined."""
+        result = compute_escape_mode(_UNDETERMINED, _UNDETERMINED, False, False, workflow_tier_raw="not_a_gate")
+        assert result == "no_premerge_gate_by_design"
+
+    # -----------------------------------------------------------------
+    # Rule-5 precondition (no-regression half): narrowing the abstention guard to
+    # vacuous_pass/merge_gate_test_coverage only must NOT let an undetermined canary be
+    # silently answered as if it were known false. Neither existing row covers this cell --
+    # a guard-narrowing alone (without threading `gate_is_postmerge_canary is False` onto rule
+    # 5's own precondition) would flip both of these from abstain to a confident, unfounded
+    # no_premerge_gate_by_design.
+    # -----------------------------------------------------------------
+
+    def test_rule5_precondition_still_abstains_with_undetermined_canary_vacuous_true(self):
+        result = compute_escape_mode(True, "not_selected", _UNDETERMINED, False)
+        assert result == _UNDETERMINED
+
+    def test_rule5_precondition_still_abstains_with_undetermined_canary_vacuous_false(self):
+        result = compute_escape_mode(False, "not_selected", _UNDETERMINED, False)
+        assert result == _UNDETERMINED

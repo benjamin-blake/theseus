@@ -117,6 +117,81 @@ class TestContractShape:
         entries = doc["amendment_log"]
         assert any("plan-followon-recs-field" in (e.get("summary") or "") for e in entries)
 
+    def test_sanction_row_eligibility_excludes_hand_written_test_files(self) -> None:
+        """AC 3/AC 9: sanction_row_eligibility is a TOP-LEVEL key naming hand-written test files
+        ineligible for a sanction row, citing the rec-3357 residual as the reason and rec-3586's
+        narrowing as the consequence -- and the rule holds executably: no sanction_rows entry may
+        derive a tests/** path."""
+        doc = _load_contract()
+        eligibility = doc["sanction_row_eligibility"]
+        assert "sanction_row_eligibility" not in doc["sanction_rows"], (
+            "sanction_row_eligibility must be a top-level sibling of sanction_rows, never nested inside it"
+        )
+        ineligible = eligibility["ineligible"]
+        assert "hand-written test files" in ineligible.lower() or "hand-written test" in ineligible
+        assert "rec-3357" in ineligible
+        assert "rec-3586" in ineligible
+
+        for name, row in doc["sanction_rows"].items():
+            template = row.get("sanctions", {}).get("path_template", "")
+            assert not template.startswith("tests/"), f"{name} derives a tests/** path despite sanction_row_eligibility"
+            trigger_file = row.get("trigger", {}).get("file", "")
+            assert not trigger_file.startswith("tests/"), f"{name}'s trigger names a tests/** path"
+
+    def test_bookkeeping_row_documents_the_two_act_amendment_procedure(self) -> None:
+        """AC 4/AC 5: the implementing_plan_bookkeeping row's amendment_procedure states the
+        two-act escape (scope amendment lands on main first; a single diff cannot satisfy both
+        invariants), and the amendment_log entry that introduces it records both additions plus
+        the Decision 75 conscious-choice note. Selecting on "Decision 75" alone would be vacuous
+        (the 2026-09-04 secrets_baseline_regeneration entry already carries that phrase) -- select
+        on sanction_row_eligibility, a token unique to this change, first."""
+        doc = _load_contract()
+        row = doc["sanction_rows"]["implementing_plan_bookkeeping"]
+        procedure = row["amendment_procedure"]
+        assert "lands on" in procedure and "main" in procedure
+        assert "single diff" in procedure or "one diff" in procedure
+
+        entries = [e for e in doc["amendment_log"] if "sanction_row_eligibility" in (e.get("summary") or "")]
+        assert len(entries) == 1, "expected exactly one amendment_log entry naming sanction_row_eligibility"
+        summary = entries[0]["summary"]
+        assert "amendment_procedure" in summary
+        assert "Decision 75" in summary and "conscious-choice" in summary
+
+    def test_roadmap_liveness_baseline_row_declared_and_argued(self) -> None:
+        """AC 1-6 (PLAN-roadmap-liveness-baseline-companion): the roadmap_liveness_baseline_shrink
+        row's trigger/sanctions shape, and its amendment_log entry's determinism argument
+        (leg A(a)/A(d)), Decision 75 conscious-choice note, and all three named residuals --
+        pinned WITHOUT the literal token sanction_row_eligibility (that token is pinned to exactly
+        the 2026-09-07 entry above; a token-based selector here would add a second entry carrying
+        it and trip that pin)."""
+        doc = _load_contract()
+        row = doc["sanction_rows"]["roadmap_liveness_baseline_shrink"]
+        assert row["trigger"]["kind"] == "scope_contains_file"
+        assert row["trigger"]["file"] == "docs/ROADMAP-PLATFORM.yaml"
+        assert row["sanctions"]["path_template"] == "config/roadmap_liveness_baseline.yaml"
+        assert row.get("prohibited_field_edits") == []
+
+        entries = [e for e in doc["amendment_log"] if e.get("date") == "2026-09-08"]
+        assert len(entries) == 1, "expected exactly one amendment_log entry dated 2026-09-08"
+        summary = entries[0]["summary"]
+        assert "sanction_row_eligibility" not in summary, (
+            "the new entry must argue ineligibility descriptively, never with the literal token"
+        )
+
+        # Determinism/latitude argument (leg A(a) + leg A(d) jointly pin entries).
+        assert "leg A(a)" in summary and "leg A(d)" in summary
+        assert "toxic_node_ids" in summary
+
+        # Decision 75 conscious-choice note.
+        assert "Decision 75" in summary and "conscious-choice" in summary
+
+        # Three named residuals, scoped to this entry's own summary (never a whole-document
+        # search -- "a path a tool mechanically regenerates" is also a verbatim substring of the
+        # eligibility clause itself, which would make a doc-wide search vacuous).
+        assert "header" in summary.lower() and "unpinned" in summary.lower()
+        assert "_BASELINE_SEED" in summary
+        assert "a path a tool mechanically regenerates" in summary
+
     def test_secrets_baseline_retired_from_unmodelled_companions(self) -> None:
         """PLAN-secrets-baseline-sanction-row: .secrets.baseline is no longer an unmodelled
         companion -- it is now the secrets_baseline_regeneration sanction row's own subject --

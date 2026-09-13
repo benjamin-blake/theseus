@@ -52,6 +52,11 @@ _DEFAULT_SANCTION_ROWS = {
         "sanctions": {"path_template": ".secrets.baseline"},
         "prohibited_field_edits": [],
     },
+    "roadmap_liveness_baseline_shrink": {
+        "trigger": {"kind": "scope_contains_file", "file": "docs/ROADMAP-PLATFORM.yaml"},
+        "sanctions": {"path_template": "config/roadmap_liveness_baseline.yaml"},
+        "prohibited_field_edits": [],
+    },
 }
 
 

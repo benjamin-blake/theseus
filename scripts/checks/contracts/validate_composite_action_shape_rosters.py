@@ -13,6 +13,9 @@ evaluator.none_grandfathered debt record to a machine-enforced check:
      scripts/checks/ci_guards/_workflow_shell_bodies.py's frozen _KNOWN_BASELINE_SECTIONS
      constant.
   4. known_r1_conformant[].delegate and closing_instance.script resolve to real files on disk.
+  5. agent_loop_caps[] (audit finding LSA-05): each entry's explicit `site` carries a shape-and-
+     floor-valid cap DERIVED-AND-ASSERTED equal to the live action-region agent-loop cap census
+     (scripts/checks/ci_guards/_agent_loop_caps.py), in both directions.
 
 DELIBERATE DEVIATION from the contract's own recorded (now-retired) enforcement route, which
 proposed having the guard read known_r1_violators FROM the contract instead of its hardcoded
@@ -142,6 +145,50 @@ def _check_known_r1_conformant(data: dict) -> tuple[list[str], int]:
     return failed, len(conformant)
 
 
+def _check_agent_loop_caps(data: dict, repo_root: Path) -> tuple[list[str], int]:
+    """Assertion group 5 (audit finding LSA-05): the contract's own top-level agent_loop_caps
+    entries (each explicit about its `site`, unlike the taxonomy row's implied-by-key site) are
+    shape-and-floor valid and DERIVED-AND-ASSERTED equal to the live action-region cap census.
+    """
+    from scripts.checks.ci_guards._agent_loop_caps import (  # noqa: PLC0415
+        check_cap_entry_shape,
+        compare_caps,
+        scan_cap_literals,
+    )
+
+    failed: list[str] = []
+    declared: dict[str, dict[str, int]] = {}
+    examined = 0
+
+    caps = data.get("agent_loop_caps")
+    if caps is not None:
+        if not isinstance(caps, list):
+            failed.append(f"Composite-action-shape roster parity: {_CONTRACT_NAME} agent_loop_caps must be a list")
+        else:
+            for entry in caps:
+                examined += 1
+                if not isinstance(entry, dict) or not entry.get("site"):
+                    failed.append(
+                        f"Composite-action-shape roster parity: {_CONTRACT_NAME} agent_loop_caps "
+                        f"entry is missing a non-empty 'site': {entry!r}"
+                    )
+                    continue
+                site = str(entry["site"])
+                shape_failed, kind, value = check_cap_entry_shape(entry, context=f"action site {site!r}")
+                failed.extend(shape_failed)
+                if shape_failed:
+                    continue
+                assert kind is not None and value is not None  # guaranteed by check_cap_entry_shape's own contract
+                declared.setdefault(site, {})[kind] = value
+
+    discovered, scan_errors = scan_cap_literals(repo_root)
+    failed.extend(scan_errors)
+    action_discovered = {f: kinds for f, kinds in discovered.items() if f.startswith(".github/actions/")}
+    failed.extend(compare_caps(declared, action_discovered, "action"))
+
+    return failed, examined
+
+
 def _check_closing_instance(data: dict) -> tuple[list[str], int]:
     """closing_instance.script resolves on disk."""
     failed: list[str] = []
@@ -165,13 +212,16 @@ def validate_composite_action_shape_rosters(
     *,
     contracts_dir: Path | None = None,
     baseline_config_path: Path | None = None,
+    repo_root: Path | None = None,
 ) -> None:
     """Fail if composite-action-shape.yaml's declared rosters diverge from the live guard/config
     surfaces, or if a declared delegate/script does not resolve on disk.
 
     `baseline_config_path` overrides config/composite_action_body_baseline.yaml's location for
     test isolation -- it is a SEPARATE file from `contracts_dir`, injected independently so a
-    red-path test can perturb either surface without touching the real repo tree.
+    red-path test can perturb either surface without touching the real repo tree. `repo_root`
+    likewise overrides the tree assertion group 5's agent-loop cap census scans (.github/**) --
+    independent again, so a synthetic action tree need not share a directory with either.
     """
     # Lazy in-function import so registry.all_checks() stays cheap (module import graph stays
     # small) -- these two modules are only needed when this check actually runs.
@@ -207,12 +257,14 @@ def validate_composite_action_shape_rosters(
     baseline_failed, baseline_examined = _check_baseline_file(data, _BASELINE_REL_PATH, _KNOWN_BASELINE_SECTIONS)
     conformant_failed, conformant_examined = _check_known_r1_conformant(data)
     closing_failed, closing_examined = _check_closing_instance(data)
+    caps_failed, caps_examined = _check_agent_loop_caps(data, repo_root if repo_root is not None else _common.ROOT)
 
     failed.extend(violators_failed)
     failed.extend(baseline_failed)
     failed.extend(conformant_failed)
     failed.extend(closing_failed)
-    examined_count = violators_examined + baseline_examined + conformant_examined + closing_examined
+    failed.extend(caps_failed)
+    examined_count = violators_examined + baseline_examined + conformant_examined + closing_examined + caps_examined
 
     registry.examined(examined_count, unit="roster_entries")
 

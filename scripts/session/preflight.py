@@ -81,6 +81,7 @@ from scripts.preflight.ci_rca_gauges import (  # noqa: F401
     DEDUP_EFFECTIVENESS_MIN_SAMPLE,
     DEDUP_EFFECTIVENESS_THRESHOLD,
     _compute_ci_rca_abstention,
+    _compute_ci_rca_escape_mode_abstention,
     _compute_ci_rca_telemetry,
     _compute_dedup_effectiveness,
     _derive_ci_rca_back_validation,
@@ -90,6 +91,7 @@ from scripts.preflight.ci_rca_gauges import (  # noqa: F401
     find_open_dedup_effectiveness_rec,
     print_ci_rca_abstention_gauge,
     print_ci_rca_back_validation,
+    print_ci_rca_escape_mode_abstention_gauge,
     print_ci_rca_telemetry,
     print_dedup_effectiveness_gauge,
 )
@@ -302,6 +304,9 @@ def main(roadmap_detail: str = "slim") -> int:
     )
     ci_rca_gauges.print_ci_rca_abstention_gauge(ci_rca_abstention_gauge)
 
+    ci_rca_escape_mode_gauge = ci_rca_gauges._compute_ci_rca_escape_mode_abstention(recs_rows_cache)
+    ci_rca_gauges.print_ci_rca_escape_mode_abstention_gauge(ci_rca_escape_mode_gauge)
+
     ci_rca_telemetry = ci_rca_gauges._compute_ci_rca_telemetry(recs_rows_cache)
     ci_rca_back_validation = ci_rca_gauges._derive_ci_rca_back_validation(recs_rows_cache)
     ci_rca_gauges.print_ci_rca_telemetry(ci_rca_telemetry)
@@ -370,6 +375,7 @@ def main(roadmap_detail: str = "slim") -> int:
         "ci_rca_undetermined_recs": ci_rca_undetermined_recs[:5],
         "ci_rca_undetermined_total": len(ci_rca_undetermined_recs),
         "ci_rca_abstention_gauge": ci_rca_abstention_gauge,
+        "ci_rca_escape_mode_gauge": ci_rca_escape_mode_gauge,
         "ci_rca_probe_health_escalation": ci_rca_probe_health_escalation,
         "ci_rca_telemetry": ci_rca_telemetry,
         "ci_rca_back_validation": ci_rca_back_validation,

@@ -21,6 +21,7 @@ from scripts.ci_rca.probe_health import (
     _row_ts,
     assert_clear_exit_code,
     compute_abstention_rate,
+    compute_escape_mode_abstention_rate,
     escalate,
     escalation_action,
     find_open_probe_health_rec,
@@ -31,13 +32,21 @@ from scripts.executor.acceptance_lint import lint_acceptance_command
 NOW = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc)
 
 
-def _rec(source: str, created_days_ago: float, rca_confidence: str | None = None, status: str = "open") -> dict:
+def _rec(
+    source: str,
+    created_days_ago: float,
+    rca_confidence: str | None = None,
+    status: str = "open",
+    escape_mode: str | None = None,
+) -> dict:
     ts = NOW.replace(hour=0) - __import__("datetime").timedelta(days=created_days_ago)
-    ctx = {}
+    ctx: dict = {}
     if rca_confidence is not None:
         ctx["rca_confidence"] = rca_confidence
+    if escape_mode is not None:
+        ctx["detection_gap"] = {"escape_mode": escape_mode}
     return {
-        "id": f"rec-{hash((source, created_days_ago, rca_confidence)) % 10000}",
+        "id": f"rec-{hash((source, created_days_ago, rca_confidence, escape_mode)) % 10000}",
         "source": source,
         "status": status,
         "created_timestamp": ts.isoformat(),
@@ -161,6 +170,70 @@ class TestComputeAbstentionRate:
         undetermined, total, rate = compute_abstention_rate(rows, window_days=14, now=NOW)
         assert total == 1
         assert undetermined == 0
+
+
+# ---------------------------------------------------------------------------
+# compute_escape_mode_abstention_rate (T1.13:c9 repair -- a SEPARATE gauge from
+# compute_abstention_rate above; reads detection_gap.escape_mode, never rca_confidence)
+# ---------------------------------------------------------------------------
+
+
+class TestComputeEscapeModeAbstentionRate:
+    def test_zero_total_guard(self) -> None:
+        undetermined, total, rate = compute_escape_mode_abstention_rate([], window_days=14, now=NOW)
+        assert (undetermined, total, rate) == (0, 0, 0.0)
+
+    def test_counts_escape_mode_undetermined_within_window(self) -> None:
+        rows = [
+            _rec("ci_rca", 1, escape_mode="undetermined"),
+            _rec("ci_rca", 2, escape_mode="tier_misplaced"),
+            _rec("ci_rca", 3, escape_mode="undetermined"),
+            _rec("ci_rca", 5, escape_mode=None),
+        ]
+        undetermined, total, rate = compute_escape_mode_abstention_rate(rows, window_days=14, now=NOW)
+        assert undetermined == 2
+        assert total == 4
+        assert rate == pytest.approx(0.5)
+
+    def test_window_filtering_excludes_old_rows(self) -> None:
+        rows = [
+            _rec("ci_rca", 1, escape_mode="undetermined"),
+            _rec("ci_rca", 30, escape_mode="undetermined"),  # outside 14d window
+        ]
+        undetermined, total, rate = compute_escape_mode_abstention_rate(rows, window_days=14, now=NOW)
+        assert total == 1
+        assert undetermined == 1
+
+    def test_ignores_non_ci_rca_source(self) -> None:
+        rows = [
+            _rec("ci_rca_probe_health", 1, escape_mode="undetermined"),
+            _rec("manual", 1, escape_mode="undetermined"),
+        ]
+        undetermined, total, rate = compute_escape_mode_abstention_rate(rows, window_days=14, now=NOW)
+        assert (undetermined, total, rate) == (0, 0, 0.0)
+
+    def test_malformed_context_v2_json_treated_as_not_undetermined(self) -> None:
+        rows = [
+            {
+                "source": "ci_rca",
+                "status": "open",
+                "created_timestamp": NOW.isoformat(),
+                "context_v2_json": "{not valid json",
+            }
+        ]
+        undetermined, total, rate = compute_escape_mode_abstention_rate(rows, window_days=14, now=NOW)
+        assert total == 1
+        assert undetermined == 0
+
+    def test_never_reads_rca_confidence(self) -> None:
+        """Load-bearing discriminator: a row with rca_confidence='high' (the OLD gauge scores
+        this 0%) but escape_mode='undetermined' (the NEW gauge scores this 100%) -- proves the
+        new gauge is pointed at detection_gap.escape_mode, never a rename of the old one."""
+        rows = [_rec("ci_rca", 1, rca_confidence="high", escape_mode="undetermined")]
+        old = compute_abstention_rate(rows, window_days=14, now=NOW)
+        new = compute_escape_mode_abstention_rate(rows, window_days=14, now=NOW)
+        assert old == (0, 1, 0.0)
+        assert new == (1, 1, 1.0)
 
 
 # ---------------------------------------------------------------------------

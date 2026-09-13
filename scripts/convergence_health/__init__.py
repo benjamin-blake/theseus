@@ -25,12 +25,20 @@ X` and existing call/patch sites keep resolving unchanged.
   escalate.py      -- idempotent tf_convergence_stale file/update/close.
   code_drift.py    -- DuckLake + prod-class code-drift alarms.
   budget_ingest.py -- CI fast-tier budget-block warehouse ingester (rec-3288).
+  sensor_liveness.py -- scheduled-loop liveness backstop (audit finding LSA-02).
   __main__.py      -- CLI dispatch (python -m scripts.convergence_health).
 """
 
 from __future__ import annotations
 
-from scripts.convergence_health.__main__ import main, main_budget_ingest, main_ducklake_drift, main_prod_drift
+from scripts.convergence_health.__main__ import (
+    main,
+    main_budget_ingest,
+    main_ducklake_drift,
+    main_liveness_probe,
+    main_prod_drift,
+    main_sensor_liveness,
+)
 from scripts.convergence_health.approvals import (
     STUCK_APPROVAL_THRESHOLD_HOURS,
     _make_github_caller,
@@ -61,8 +69,6 @@ from scripts.convergence_health.code_drift import (
     PROD_SOURCE_PATHSPECS,
     detect_ducklake_code_drift,
     detect_prod_code_drift,
-    find_open_ducklake_drift_rec,
-    find_open_prod_drift_rec,
 )
 from scripts.convergence_health.escalate import (
     _RESOLUTION_PERSISTENTLY_RED,
@@ -71,9 +77,7 @@ from scripts.convergence_health.escalate import (
     _TITLE_PERSISTENTLY_RED,
     _TITLE_STALE_GREEN_BACKLOG,
     _TITLE_STUCK_APPROVAL,
-    _fetch_open_recs,
     escalate,
-    find_open_convergence_stale_rec,
 )
 from scripts.convergence_health.record import (
     CONVERGENCE_BUCKET,
@@ -86,11 +90,22 @@ from scripts.convergence_health.record import (
     record_age_hours,
     red_age_hours,
 )
+from scripts.convergence_health.sensor_liveness import (
+    FLEET_COLLAPSE_MIN_STALE,
+    cron_period_seconds,
+    derive_scheduled_peers,
+    detect_stale_loops,
+    fleet_threshold_seconds,
+    peers_from_workflow_docs,
+    stale_peers_for_probe,
+    staleness_threshold_seconds,
+)
 
 __all__ = [
     "ARTIFACT_NAME",
     "CONVERGENCE_BUCKET",
     "CONVERGENCE_KEY",
+    "FLEET_COLLAPSE_MIN_STALE",
     "INGESTED_OUTCOMES",
     "MANIFEST_MEMBER",
     "RED_AGE_THRESHOLD_HOURS",
@@ -106,23 +121,23 @@ __all__ = [
     "_TITLE_PERSISTENTLY_RED",
     "_TITLE_STALE_GREEN_BACKLOG",
     "_TITLE_STUCK_APPROVAL",
-    "_fetch_open_recs",
     "_make_github_caller",
     "_parse_utc",
     "assess_health",
     "collect_budget_episodes",
     "count_unapplied_tf_commits",
+    "cron_period_seconds",
     "derive_red_since",
+    "derive_scheduled_peers",
     "detect_ducklake_code_drift",
     "detect_prod_code_drift",
+    "detect_stale_loops",
     "diagnose_stuck_approvals",
     "escalate",
     "escalation_action",
     "extract_budget_block",
     "filter_stuck_runs",
-    "find_open_convergence_stale_rec",
-    "find_open_ducklake_drift_rec",
-    "find_open_prod_drift_rec",
+    "fleet_threshold_seconds",
     "find_reconcile_runs_since",
     "find_stuck_gated_approvals",
     "has_in_flight_reconcile_for_episode",
@@ -130,9 +145,14 @@ __all__ = [
     "main",
     "main_budget_ingest",
     "main_ducklake_drift",
+    "main_liveness_probe",
     "main_prod_drift",
+    "main_sensor_liveness",
+    "peers_from_workflow_docs",
     "read_convergence_record",
     "read_infra_error_marker",
     "record_age_hours",
     "red_age_hours",
+    "stale_peers_for_probe",
+    "staleness_threshold_seconds",
 ]

@@ -74,8 +74,8 @@ class TestIngestBudgetBreaches:
         """The whole dedupe contract: the title and context this ingester writes must be findable
         by the SAME (branch, dominant_phase) matcher scripts/checks/_budget_recs.py uses locally,
         so a repeat breach updates one rec instead of filing a second. The row fed back in is
-        LIVE-shaped (the five columns `open_recs` projects, no status/source) -- the shape the
-        reader really returns, and the anti-drift pin on THIS writer's half of the contract."""
+        LIVE-shaped (a full-projection row, as scripts.rec_episode.find_recs's scoped read really
+        returns it) -- the anti-drift pin on THIS writer's half of the contract."""
         from scripts.checks._budget_recs import _find_open_budget_breach_rec
 
         captured: dict[str, Any] = {}
@@ -89,7 +89,7 @@ class TestIngestBudgetBreaches:
         def _explode(*_args: Any, **_kwargs: Any) -> Any:
             raise AssertionError("no episode -- nothing may be filed and no reader call is warranted")
 
-        with patch("scripts.convergence_health.budget_ingest._fetch_open_recs", side_effect=_explode):
+        with patch("scripts.convergence_health.budget_ingest.find_recs", side_effect=_explode):
             result = bi.ingest_budget_breaches(
                 gh_caller=_caller_for([_artifact(1)]),
                 artifact_fetcher=_fetcher_for({1: {"budget": _budget_block(outcome="within_budget")}}),
@@ -148,7 +148,7 @@ class TestIngestLivePaths:
 
     def test_fetches_open_recs_and_files_via_the_real_portal_when_not_injected(self) -> None:
         with (
-            patch("scripts.convergence_health.budget_ingest._fetch_open_recs", return_value=[]) as fetch,
+            patch("scripts.convergence_health.budget_ingest.find_recs", return_value=[]) as fetch,
             patch("scripts.convergence_health.budget_ingest._fetch_resolved_budget_recs", return_value=[]) as resolved,
             patch("scripts.ops_data_portal.file_rec", return_value="rec-live") as file_rec,
         ):
@@ -157,14 +157,14 @@ class TestIngestLivePaths:
                 artifact_fetcher=_fetcher_for({1: {"budget": _budget_block()}}),
                 profile="agent_platform",
             )
-        fetch.assert_called_once_with(profile="agent_platform")
+        fetch.assert_called_once_with("budget_breach", profile="agent_platform")
         resolved.assert_called_once_with("claude/slow-branch", profile="agent_platform")
         file_rec.assert_called_once()
         assert result["actions"][0]["rec_id"] == "rec-live"
 
     def test_a_live_resolved_match_drops_the_episode_without_touching_the_portal(self) -> None:
         with (
-            patch("scripts.convergence_health.budget_ingest._fetch_open_recs", return_value=[]),
+            patch("scripts.convergence_health.budget_ingest.find_recs", return_value=[]),
             patch(
                 "scripts.convergence_health.budget_ingest._fetch_resolved_budget_recs",
                 return_value=[_full_rec()],
@@ -199,9 +199,10 @@ class TestIngestLivePaths:
 
 class TestHourlyTickIdempotence:
     """The no-op-update guard is only REACHABLE when the open half of the dedupe matches a
-    LIVE-shaped row. _ToyWarehouse.open_recs projects to the five columns the `open_recs` verb
-    returns (no `status`, no `source`) -- exactly what production hands the matcher -- so this is
-    the end-to-end cost check the hourly cron actually pays."""
+    LIVE-shaped row. _ToyWarehouse.open_recs projects to the full-projection columns
+    scripts.rec_episode.find_recs's scoped read returns (`status`/`source` included) -- exactly
+    what production hands the matcher -- so this is the end-to-end cost check the hourly cron
+    actually pays."""
 
     def test_a_day_of_hourly_ticks_files_once_and_writes_nothing_after(self) -> None:
         warehouse = _ToyWarehouse()

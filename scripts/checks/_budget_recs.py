@@ -10,21 +10,28 @@ those two names (sourced from _scaffolding) is likewise untouched.
 
 VTS-20 (audit validate-test-suite-4df4d48): a repeated fast-tier budget breach on the same
 (branch, dominant_phase) now UPDATES the existing open budget_breach rec instead of filing a
-duplicate. The dedupe lookup reads the open_recs reader boundary
-(src.common.ducklake_reader_client.make_reader -- Decision 84 warehouse-SoT), never
-logs/.recommendations-log.jsonl (a read cache is never a write source). A reader failure
-loud-warns and falls through to filing a new rec -- the breach itself is always recorded; only
-the dedupe is best-effort (Decision 55: no silent skip). Decision 142 is the closest prior art
-for a non-LLM, reader-verb-based update-instead-of-insert dedupe.
+duplicate. The dedupe lookup reads the DuckLake reader boundary via scripts.rec_episode.find_rec's
+source-scoped structural read (src.common.ducklake_reader_client.make_reader -- Decision 84
+warehouse-SoT), never logs/.recommendations-log.jsonl (a read cache is never a write source). A
+reader failure loud-warns and falls through to filing a new rec -- the breach itself is always
+recorded; only the dedupe is best-effort (Decision 55: no silent skip). Decision 142 is the
+closest prior art for a non-LLM, reader-verb-based update-instead-of-insert dedupe.
+
+rec-3291 / rec-3563: this module used to carry its own duplicate `_fetch_open_recs` (a bulk fetch
+of the `open_recs` named verb, which projects neither `status` nor `source`) and an
+absent-key-means-satisfied inversion in `_is_open_budget_breach_row` to work around it. Both are
+gone -- the dedupe lookup now goes through scripts.rec_episode.find_rec, whose source-scoped
+current_state read returns every column, so a live row always carries both keys.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-from typing import Any, cast
+from typing import Any
 
 from scripts.checks import _common
+from scripts.rec_episode import find_rec, find_recs
 
 # Shared truncation for the diff manifest, in both the human diagnostics below and the machine
 # record build_budget_record emits -- so a reader comparing the two never sees two lengths.
@@ -37,16 +44,6 @@ _PHASE_TIMES_KEPT = 10
 # Outcomes whose branch attempts a recommendation write at all. The other three
 # ("within_budget", "forced_waived", "forced_ceiling_breach") are notice-only by construction.
 _REC_FILING_OUTCOMES = ("breach", "bypass")
-
-# The title shape BOTH budget-breach writers emit, and the only part of it a live open row can be
-# judged on: _file_budget_breach_rec below writes "Fast-tier budget breach ({m} min) on {branch}"
-# and scripts/convergence_health/budget_ingest._build_ingest_rec_fields writes "Fast-tier budget
-# {outcome_label} ({m} min) on {branch}". The prefix alone is shared with the budget_BYPASS rec
-# ("Fast-tier budget bypassed on {branch}"), which the infix excludes; that rec's context is
-# independently excluded by the "Branch: {branch}." marker, which it never writes ("...on branch
-# {branch}."). Both writers are pinned against this pair by test.
-_BREACH_TITLE_PREFIX = "Fast-tier budget "
-_BREACH_TITLE_INFIX = " min) on "
 
 
 def _mirror_to_step_summary(title: str, message: str) -> None:
@@ -115,67 +112,37 @@ def build_budget_record(
     }
 
 
-def _fetch_open_recs(profile: str | None = None) -> list[dict]:
-    """Fetch all open recs from the DuckLake reader (live, never the local JSONL cache).
-
-    Mirrors the established open_recs reader-boundary precedent (scripts.convergence_health.
-    escalate._fetch_open_recs, scripts.preflight.recs_cache._derive_open_recs's server-side
-    counterpart) -- the named verb returns every open rec; callers filter client-side.
-    """
-    from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
-
-    # make_reader() is annotated -> Reader (the Protocol, which deliberately does not declare
-    # named()) but only ever constructs a DuckLakeReader; cast narrows the type at this one call
-    # site rather than widening the Protocol by omission.
-    reader = cast(DuckLakeReader, make_reader(profile=profile))
-    return reader.named("open_recs") or []
-
-
 def _is_open_budget_breach_row(rec: dict) -> bool:
-    """Is *rec* an open budget_breach row, judged against the shape LIVE rows actually have?
+    """Straight status/source check.
 
-    The `open_recs` named verb projects id/title/context/created_timestamp/automatable ONLY and
-    filters `status = 'open'` SERVER-side (src/common/ducklake_scd2_schema.py NAMED_READS), so a
-    live row carries NEITHER `status` NOR `source`. Predicating on those two keys made the matcher
-    below return None for every real open rec: the local path re-filed instead of updating, and
-    scripts/convergence_health/budget_ingest's hourly tick would file a fresh duplicate (and never
-    reach its no-op-update guard) for as long as an episode stayed open.
-
-    So an ABSENT key means "the verb already guaranteed it", while an EXPLICIT value is still
-    honoured -- a caller passing a richer row (rec_by_id's SELECT *) keeps the stricter check. The
-    population itself is identified by what a live row does carry: the shared breach title shape,
-    plus the two context markers the caller matches.
+    A live row now always carries both keys: the dedupe lookup reads via
+    scripts.rec_episode.find_rec's source-scoped structural read (current_state on
+    ops_recommendations, unnarrowed), not the retired `open_recs` named verb, which projected
+    neither. Kept as a small readable predicate rather than folded inline.
     """
-    status = rec.get("status")
-    if status is not None and status != "open":
-        return False
-    source = rec.get("source")
-    if source is not None and source != "budget_breach":
-        return False
-    title = rec.get("title")
-    if title is None:
-        return True
-    title = str(title)
-    return title.startswith(_BREACH_TITLE_PREFIX) and _BREACH_TITLE_INFIX in title
+    return rec.get("status") == "open" and rec.get("source") == "budget_breach"
 
 
 def _find_open_budget_breach_rec(open_recs: list[dict], branch: str, dedup_phase: str) -> dict | None:
     """Return the open budget_breach rec matching (branch, dedup_phase), or None (VTS-20).
 
-    Matches on the same context substrings both breach writers put in a fresh rec
-    ("Branch: {branch}." / "Dominant phase: {dedup_phase}."), so a rec filed before this dedupe
-    landed still matches correctly on its next repeat breach. Population membership is
-    _is_open_budget_breach_row's job -- see it for why status/source are not required here.
+    `open_recs` is scripts.rec_episode.find_rec's `rows` test-injection seam -- treated as if it
+    were already the result of the scoped source="budget_breach" read, so this stays a pure
+    function over a supplied list for its own mirror tests. Matches on the same context
+    substrings both breach writers put in a fresh rec ("Branch: {branch}." / "Dominant phase:
+    {dedup_phase}."), so a rec filed before this dedupe landed still matches correctly on its
+    next repeat breach.
     """
     branch_marker = f"Branch: {branch}."
     phase_marker = f"Dominant phase: {dedup_phase}."
-    for rec in open_recs:
+
+    def _matches(rec: dict) -> bool:
         if not _is_open_budget_breach_row(rec):
-            continue
+            return False
         context = rec.get("context") or ""
-        if branch_marker in context and phase_marker in context:
-            return rec
-    return None
+        return branch_marker in context and phase_marker in context
+
+    return find_rec("budget_breach", sub_key=_matches, sub_key_fields=("context",), rows=open_recs)
 
 
 def _file_budget_breach_rec(elapsed_s: float, diff_manifest: list[str], dominant_phase: str | None) -> None:
@@ -217,15 +184,16 @@ def _file_budget_breach_rec(elapsed_s: float, diff_manifest: list[str], dominant
         title = f"Fast-tier budget breach ({elapsed_min:.1f} min) on {branch}"
 
         # VTS-20 dedupe: look up an existing open budget_breach rec for (branch, dedup_phase) via
-        # the open_recs reader boundary -- never logs/.recommendations-log.jsonl. A reader
-        # exception here degrades to "no match" (loud warning, fall through to file_rec below) --
-        # it must never crash the breach-recording path itself.
+        # scripts.rec_episode.find_recs's source-scoped reader boundary -- never
+        # logs/.recommendations-log.jsonl. A reader exception here degrades to "no match" (loud
+        # warning, fall through to file_rec below) -- it must never crash the breach-recording
+        # path itself.
         existing = None
         try:
             from scripts.aws_profile import resolve_aws_profile  # noqa: PLC0415
 
             profile = resolve_aws_profile(default="agent_platform")
-            existing = _find_open_budget_breach_rec(_fetch_open_recs(profile=profile), branch, dedup_phase)
+            existing = _find_open_budget_breach_rec(find_recs("budget_breach", profile=profile), branch, dedup_phase)
         except Exception as reader_exc:  # noqa: BLE001
             print(
                 f"WARNING: budget-breach dedupe lookup failed (filing a new rec instead): {reader_exc}",

@@ -1,12 +1,14 @@
 """Tests for scripts/checks/_marker_guard.py -- the shared raise-marker authorization module
-(Decision 165, audit finding SGE-07, PLAN-size-gov-marker-guard).
+(Decision 165, audit finding SGE-07, PLAN-size-gov-marker-guard; check_state_diff sibling added
+by PLAN-verifier-weakening-guards, LSA-01 leg a, Decision 187).
 
 Carries the BULK of the new coverage this plan introduces: extractor shapes (class-table
 exclusion, comment immunity), the authorization rule (bare-root negative, band positive, no
 body tokenization), composite `dir::step-id` keys, the supersession hop, moved-from, the empty
 grandfather hook, and the cross-registry live-marker invariant + an independent-scan population
 cross-check. Thin binding assertions for each of the five consumer guards live alongside their
-own tests instead (mirror convention, Decision 131)."""
+own tests instead (mirror convention, Decision 131). TestCheckStateDiff exercises the new
+sibling against a minimal synthetic strength grammar (never TierState, the gate's own concern)."""
 
 from __future__ import annotations
 
@@ -14,12 +16,15 @@ import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from scripts.checks import _common, _marker_guard
 from scripts.checks._marker_guard import (
     RegistrySpec,
     authorization_failure,
     check_diff,
     check_present_markers,
+    check_state_diff,
     load_decision_bodies,
     make_flat_extractor,
     make_section_extractor,
@@ -257,14 +262,10 @@ class TestLiveMarkerCorpusInvariant:
 
 
 class TestRetroactiveScanWiredIntoAllFourGenericConsumers:
-    """Medium finding: pins that each of the four generic (check_diff/check_present_markers)
-    consumers actually WIRES IN the retroactive scan, not just that check_present_markers itself
-    works in isolation. Fixture shape per test: base == current (no diff-side violation --
-    check_diff alone finds nothing), but the current entry carries an unauthorized marker --
-    only check_present_markers can catch it. If a future refactor drops
-    `+ _marker_guard.check_present_markers(_SPEC)` from any of the four consumers, that
-    consumer's test below reds while the other four (and check_present_markers' own unit tests)
-    stay green -- the exact mutation this class exists to catch."""
+    """Pins that each of the four generic consumers WIRES IN the retroactive scan, not just that
+    check_present_markers works in isolation: base == current (check_diff alone finds nothing),
+    but the current entry carries an unauthorized marker -- only check_present_markers catches
+    it. A dropped `+ check_present_markers(_SPEC)` call reds exactly that consumer's test."""
 
     def test_sloc_wires_in_retroactive_scan(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "config"
@@ -389,9 +390,8 @@ class TestDefaultBaseReader:
 
 class TestCheckDiffAndCheckPresentMarkersDirectly:
     """Direct coverage of check_diff/check_present_markers' own branches -- the five consumer
-    guards exercise these indirectly via their own test suites, but this module's coverage
-    threshold is measured against tests/checks/test__marker_guard.py alone (Decision 131 mirror
-    convention)."""
+    guards exercise these indirectly, but this file's own coverage threshold needs direct
+    branch coverage too (Decision 131 mirror convention)."""
 
     _UP_SPEC = RegistrySpec(
         rel_path="config/fake_up.yaml",
@@ -473,6 +473,118 @@ class TestCheckDiffAndCheckPresentMarkersDirectly:
         with patch("scripts.checks._common.ROOT", tmp_path):
             violations = check_present_markers(self._UP_SPEC)
         assert violations and "retroactive scan" in violations[0]
+
+
+def _synthetic_state_extractor(text: str) -> dict[str, _marker_guard.StateEntry]:
+    """Minimal `key=STRENGTH  # fake-approved: dec-N <reason>` grammar -- self-contained, never
+    TierState (the gate module's own concern)."""
+    entries: dict[str, _marker_guard.StateEntry] = {}
+    for line in text.splitlines():
+        key_part, _, comment = line.partition("#")
+        key, sep, state = key_part.strip().partition("=")
+        if not sep:
+            continue
+        match = re.match(r"\s*fake-approved:\s*(dec-\d+)\s*(.*)$", comment)
+        marker = match.group(1) if match else None
+        reason = (match.group(2).strip() or None) if match else None
+        entries[key.strip()] = _marker_guard.StateEntry(state=state.strip(), marker=marker, reason=reason)
+    return entries
+
+
+_STATE_SPEC = RegistrySpec(
+    rel_path="config/fake_state.yaml",
+    token="fake-approved",
+    gated_direction="down",
+    extractor=lambda _text: {},
+    gates_new_entry=lambda _value: False,
+    label="fake state guard",
+    reason_required=True,
+    state_extractor=_synthetic_state_extractor,
+    weakened=lambda base, head: base == "strong" and head == "weak",
+    gates_deletion=lambda base: base == "strong",
+)
+
+
+class TestCheckStateDiff:
+    """check_state_diff's own seams (test_obligations), at a level the gate's mirror test
+    cannot reach -- a minimal synthetic strength grammar, never TierState."""
+
+    def _write(self, tmp_path: Path, body: str) -> None:
+        target = tmp_path / _STATE_SPEC.rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(body, encoding="utf-8")
+
+    def test_missing_hooks_are_refused_rather_than_silently_passed(self) -> None:
+        """Every one of the nine incumbent bindings (e.g. sloc_module._SPEC) has all three new
+        fields None -- refused outright, never silently treated as clean."""
+        with pytest.raises(ValueError):
+            check_state_diff(sloc_module._SPEC)
+
+    def test_base_unreachable_skips_loudly_never_an_affirmative_pass(self, capsys: pytest.CaptureFixture[str]) -> None:
+        violations = check_state_diff(_STATE_SPEC, base_reader=lambda _rel: None)
+        assert violations == []
+        assert "SKIP" in capsys.readouterr().out
+
+    def test_absent_head_file_walks_every_base_key_as_a_deletion(self, tmp_path: Path) -> None:
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            violations = check_state_diff(_STATE_SPEC, base_reader=lambda _rel: "a=strong\n")
+        assert violations and "a" in violations[0]
+
+    def test_absent_head_file_with_an_unsequenced_base_entry_deletes_for_free(self, tmp_path: Path) -> None:
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            violations = check_state_diff(_STATE_SPEC, base_reader=lambda _rel: "a=weak\n")
+        assert violations == []
+
+    def test_stale_marker_identical_to_base_does_not_reauthorize(self, tmp_path: Path) -> None:
+        marker = "  # fake-approved: dec-1 already used once\n"
+        self._write(tmp_path, f"a=weak{marker}")
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            violations = check_state_diff(_STATE_SPEC, base_reader=lambda _rel: f"a=strong{marker}")
+        assert violations and "never re-authorizes" in violations[0]
+
+    def test_fresh_marker_differing_from_base_still_needs_real_authorization(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "a=weak  # fake-approved: dec-999999 brand new\n")
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            violations = check_state_diff(_STATE_SPEC, base_reader=lambda _rel: "a=strong\n")
+        assert violations and "does not authorize" in violations[0]
+
+    def test_tightening_is_free_even_with_no_marker(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "a=strong\n")
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            violations = check_state_diff(_STATE_SPEC, base_reader=lambda _rel: "a=weak\n")
+        assert violations == []
+
+    def test_new_entry_is_free_regardless_of_marker(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "a=weak\n")
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            violations = check_state_diff(_STATE_SPEC, base_reader=lambda _rel: "")
+        assert violations == []
+
+
+class TestIncumbentSpecsUnaffectedByStateFields:
+    """Regression (test_obligations): RegistrySpec's three new fields are purely additive, so
+    every directly-importable incumbent binding round-trips through check_diff unchanged."""
+
+    _SPECS = (sloc_module._SPEC, prose_module._SPEC, coverage_module._SPEC, mypy_module._SPEC, composite_module._R3_SPEC)
+
+    def test_five_directly_importable_specs_carry_no_state_fields(self) -> None:
+        for spec in self._SPECS:
+            assert spec.state_extractor is None
+            assert spec.weakened is None
+            assert spec.gates_deletion is None
+
+    def test_five_directly_importable_specs_round_trip_check_diff_against_their_own_current_text(self) -> None:
+        for spec in self._SPECS:
+            path = _common.ROOT / spec.rel_path
+            if not path.exists():
+                continue
+            current_text = path.read_text(encoding="utf-8")
+
+            def _reader(_rel: str, _text: str = current_text) -> str:
+                return _text
+
+            violations = check_diff(spec, base_reader=_reader)
+            assert violations == [], (spec.rel_path, violations)
 
 
 class TestCoverageGrandfatheredCommentsAreNotMarkers:

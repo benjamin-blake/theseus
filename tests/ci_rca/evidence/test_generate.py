@@ -10,6 +10,8 @@ marker (preserves the monolith's no-marker state).
 import json
 from unittest.mock import patch
 
+import yaml
+
 from scripts.ci_rca.evidence import _sha256_of, generate_bundles
 
 
@@ -464,3 +466,57 @@ class TestSchemaVersion3:
         b = bundles[0]
         assert "escape_mode" in b
         assert b["escape_mode"] == "undetermined"
+
+
+class TestEscapeMode:
+    """T1.13:c9 repair: the bundle resolves the raw workflow tier and threads it into
+    compute_escape_mode -- the wiring the pure-function truth table cannot see, since it calls
+    compute_escape_mode directly."""
+
+    def test_not_a_gate_workflow_yields_no_premerge_gate_by_design(self, tmp_path, log_file):
+        """AC5 / red-before: prior to threading the raw tier, a not_a_gate workflow's escape_mode
+        stays 'undetermined' (the abstention guard fires on the default vacuous_pass/coverage
+        sentinels, and workflow_tier_raw was never populated with the real 'not_a_gate' value)."""
+        taxonomy_path = tmp_path / "taxonomy.yaml"
+        taxonomy_path.write_text(
+            yaml.dump(
+                {
+                    "schema_version": 1,
+                    "taxonomy_version": 1,
+                    "function_to_category": {"validate_sloc_limits": "sloc_violation"},
+                    "log_pattern_to_category": [],
+                    "workflows": {
+                        "CI": {"tier": "CI", "ci_rca": "watched", "owner": "platform", "rationale": "test fixture"},
+                        "CodeQL": {
+                            "tier": "not_a_gate",
+                            "ci_rca": "excluded",
+                            "owner": "platform",
+                            "rationale": "test fixture",
+                        },
+                    },
+                }
+            )
+        )
+        with patch("scripts.ci_rca.tier_map.probe_runtime", return_value=("median=50ms", 0.05)):
+            with patch("scripts.ci_rca.tier_map.build_tier_membership", return_value={}):
+                bundles = generate_bundles(
+                    log_file=log_file,
+                    workflow_name="CodeQL",
+                    workflow_run_id=1,
+                    taxonomy_path=taxonomy_path,
+                )
+        assert bundles[0]["escape_mode"] == "no_premerge_gate_by_design"
+
+    def test_ci_workflow_escape_mode_uses_canary_rule(self, log_file, taxonomy_file):
+        """No-regression companion: a REAL tier (CI) must not be mistaken for not_a_gate by the
+        threading -- its raw tier is 'CI', so rule 3 does not fire and the canary rule (rule 2)
+        resolves it to tier_misplaced end-to-end through the bundle, not just the pure function."""
+        with patch("scripts.ci_rca.tier_map.probe_runtime", return_value=("median=50ms", 0.05)):
+            with patch("scripts.ci_rca.tier_map.build_tier_membership", return_value={}):
+                bundles = generate_bundles(
+                    log_file=log_file,
+                    workflow_name="CI",
+                    workflow_run_id=1,
+                    taxonomy_path=taxonomy_file,
+                )
+        assert bundles[0]["escape_mode"] == "tier_misplaced"

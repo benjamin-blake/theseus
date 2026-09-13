@@ -52,7 +52,7 @@ def _assemble_core(
     error_signature: str = "",
     affected_nodeids: list[str] | None = None,
 ) -> dict[str, Any]:
-    from scripts.ci_rca.taxonomy import load_taxonomy, resolve_workflow_tier
+    from scripts.ci_rca.taxonomy import load_taxonomy, resolve_workflow_tier, resolve_workflow_tier_raw
     from scripts.ci_rca.tier_map import (
         AST_WALKER_VERSION,
         build_tier_membership,
@@ -64,6 +64,7 @@ def _assemble_core(
     taxonomy = load_taxonomy(taxonomy_path)
     taxonomy_version = taxonomy.get("taxonomy_version", 1)
     wf_tier = resolve_workflow_tier(workflow_name, taxonomy_path)
+    wf_tier_raw = resolve_workflow_tier_raw(workflow_name, taxonomy_path)
     actual_gate = wf_tier if wf_tier != "unknown" else None
     gate_is_postmerge_canary = wf_tier == "CI"
 
@@ -83,6 +84,7 @@ def _assemble_core(
         merge_gate_test_coverage=merge_gate_test_coverage,
         gate_is_postmerge_canary=gate_is_postmerge_canary,
         coverage_regression=coverage_regression,
+        workflow_tier_raw=wf_tier_raw,
     )
 
     check_tiers = None

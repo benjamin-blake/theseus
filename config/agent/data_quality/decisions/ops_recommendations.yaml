@@ -526,11 +526,11 @@ fields:
     decided_action: >
       Nullable array<string> -- no not_null check (null means no dependencies, which is
       the valid common case for most recs). When non-null, each element must match
-      ^rec-[0-9]+$, enforced write-time via array_element_format in write_validators.py
-      (rec-3307), landed through both file_rec and update_rec. Referential integrity
-      (relationships check to_table=ops_recommendations severity=warn) remains future
-      work -- not part of this element-format enforcement. No data backfill needed -- no
-      known invalid values in current records.
+      ^rec-[0-9]+$ (array_element_format) AND reference an existing rec of any status
+      via rec_by_id (array_element_reference), enforced write-time through both file_rec
+      and update_rec (PLAN-dependency-referential-integrity). The 21 legacy bracket-residue
+      tokens (19 recs) were repaired via update_rec; rec-610/613 -> absent rec-608 are
+      deliberately left dangling.
     enforcement_ready: READY_NOW
     phase4_session: dq-write-enforcement-unification
     resolved_date: '2026-09-01'
@@ -538,8 +538,8 @@ fields:
       Truly optional array field (array<string>). Most recommendations have no
       inter-rec dependencies. A not_null check would be semantically wrong -- null
       dependencies means no dependencies, which is the expected state. Element-format
-      enforced write-time (rec-3307); no check needed for nullability.
-    current_test: "array_element_format (enforced: true, write_time: true)"
+      AND referential existence enforced write-time; no check needed for nullability.
+    current_test: "array_element_format + array_element_reference (enforced: true, write_time: true)"
     last_verdict: PASS
 
   tags:
@@ -547,21 +547,17 @@ fields:
     human_decision: approved
     decided_date: '2026-05-07'
     decided_action: >
-      Tags are an analytical dimension requiring a canonical allowed list, not a free-form
-      array. Create config/agent/data_quality/tag_registry.yaml as the authoritative tag taxonomy.
-      Each entry carries the canonical kebab-case value, description of what it categorises,
-      and added_date. Portal validates each element of the tags array against the registry
-      at write time -- unregistered tag triggers a warning that prompts the agent to
-      register or use an existing tag (softer governance than source, which is a CI gate,
-      because tag vocabulary grows faster than agent types). DQ runner: expression check
-      validating all elements match ^[a-z][a-z0-9-]*$ (format backstop, blocked on rec-609
-      array<string> fix). Registry is the semantic gate; regex is the structural gate.
-      Future: auto-tagging by agents via content analysis is compatible with the registry
-      pattern -- auto-generated tags still require registry membership.
-    enforcement_ready: NO_TEST_NEEDED
+      Tags are a free-form categorisation array<string>, not a registry-backed vocabulary --
+      the tag_registry.yaml semantic-gate clause of this decision is RETIRED (tags has no
+      consumer: no NAMED_READS verb, absent from src/schemas/rec.py, no skill/workflow/check
+      reads it). Structural gate only: array_element_format enforces ^[a-z][a-z0-9-]*$
+      (kebab-case, e.g. T2.56 -> t2-56) write-time through both file_rec and update_rec
+      (PLAN-dependency-referential-integrity).
+    enforcement_ready: READY_NOW
     phase4_session: deferred-rec-609
+    resolved_date: '2026-09-08'
     notes: >
       Truly optional array field (array<string>). Categorisation tags are not required
-      by any workflow. A not_null check would be semantically wrong. No check needed.
-    current_test: none
-    last_verdict: no test
+      by any workflow. Element-format (kebab-case) enforced write-time; no check needed for nullability.
+    current_test: "array_element_format (enforced: true, write_time: true)"
+    last_verdict: PASS

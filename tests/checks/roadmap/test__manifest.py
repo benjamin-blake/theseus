@@ -38,6 +38,20 @@ class TestRoadmapManifest:
         module = importlib.import_module(entry.module)
         assert registry.resolve(entry.name) is getattr(module, entry.attr)
 
+    def test_roadmap_liveness_entry_covers_its_contract_and_baseline(self) -> None:
+        """Not the parametrized test_entry_resolves_to_a_callable_named_its_own_attr above: that
+        one iterates _manifest.ENTRIES, so an absent Entry simply fails to parametrize and the
+        suite stays green before this Entry existed -- a vacuous red/green claim. This test
+        resolves the Entry by name so it is genuinely red before the Entry exists."""
+        entry = next(e for e in _manifest.ENTRIES if e.name == "validate_roadmap_liveness")
+        assert entry.pre is True
+        assert entry.full_segment == "full_after_lint"
+        assert {
+            "docs/contracts/roadmap-liveness.yaml",
+            "config/roadmap_liveness_baseline.yaml",
+            "scripts/platform_roadmap_liveness.py",
+        } <= set(entry.pre_globs or ())
+
 
 class TestGatedEntryInputClosures:
     """A gated check's pre_globs must cover EVERY path its implementation reads, not just its
@@ -152,6 +166,17 @@ _CLOSURE_INPUTS: dict[str, tuple[str, ...]] = {
         "scripts/roadmap/plan_obligations.py",
         "scripts/checks/_common.py",
         "scripts/checks/registry.py",
+    ),
+    "validate_roadmap_liveness": (
+        "docs/contracts/roadmap-liveness.yaml",
+        "config/roadmap_liveness_baseline.yaml",
+        "scripts/platform_roadmap_liveness.py",
+        "scripts/platform_roadmap_models.py",
+        "scripts/platform_roadmap_state.py",
+        "scripts/platform_roadmap_gate_rules.py",
+        "scripts/checks/_common.py",
+        "scripts/checks/registry.py",
+        "scripts/checks/_marker_guard.py",
     ),
 }
 

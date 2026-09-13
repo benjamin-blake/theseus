@@ -2,6 +2,311 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 187: Verifier-weakening control derives its protected set from the git base ref, never from a roster -- check-fleet tier demotion binds to the shared marker-authorization mechanism at check-NAME level (extends Decision 165) (Decided)
+
+```yaml
+number: 187
+status: Decided
+decided_date: "2026-09-11"
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable architectural commitment with reversal-relevant consequences -- the protected set is
+    the BASE REF, authorization is check-NAME-level -- binding every future author of a weakening
+    gate, not one field's meaning. Contract-first rejected: marker-grammar.yaml owns the
+    token/authorization field semantics and the mechanics here, but cannot carry a standing
+    repo-wide prohibition on HOW such a gate is built (the Decision 181 precedent).
+    amendment_forms rejected: no prior body is amended -- this negates no clause of Decision 104
+    or Decision 169, and no Decision body names any of the four retired constants.
+```
+
+**Status:** Decided
+**Date:** 2026-09-11
+**Warehouse ID:** dec-187
+
+**Problem:**
+Audit finding LSA-01 (audits/loop-spec-adoption-4d8bac4a.yaml): flipping `pre=True` to `pre=False`
+on a manifest Entry, or narrowing its `pre_globs`, merges with nothing firing. The only pins were
+four hand-written rosters in `tests/checks/registry/test_sequences.py`, same-PR-editable, covering
+27 of 110 pre entries. A roster is the wrong shape twice: it needs hand-syncing as the fleet grows,
+and the PR weakening a check may edit the roster pinning it.
+
+**Decision:**
+1. DERIVE, DO NOT ENUMERATE. The protected set is the check manifests at the GIT BASE REF, never a
+   committed roster or snapshot file. Direction is computed base-vs-head, so a check added
+   tomorrow is protected the moment it merges.
+2. The four roster constants are RETIRED, not frozen, and every property they held is
+   dispositioned, not assumed. RE-POINTED at the full derived population: a gated pre entry's
+   globs must match its own defining module; a domain contributing a pre entry must be declared in
+   `_PRE_DOMAIN_ORDER`. RETAINED: that tuple's duplicate-append pin, which read no roster. LOST,
+   owned by rec-3728: the pre-only pin and the ungated-promotion pin, which guard TIGHTENINGS that
+   point 3 rules free -- their subject is fast-tier BUDGET, so the instrument belongs beside the
+   budget constants, never in a reinstated name list. Retiring a pin whose property is unreplaced
+   requires a filed carrier; silence is not a disposition.
+3. Tier membership is a DIRECTION-GATED TRANSITION, not a state invariant, because a legitimate
+   weaker state exists (12 entries are deliberately full-only). Weakening -- losing `pre`, losing
+   `full_segment`, or narrowing `pre_globs` -- requires a `# tier-demotion-approved: dec-NNN
+   <reason>` marker. Tightening is always free and unmarked. `pre_globs` direction is a MEASURED
+   fnmatch COVERAGE SUPERSET over `git ls-files`, never None-vs-tuple: `pre_globs=("never/**",)`
+   is a demotion, not a re-gating.
+4. Authorization is at CHECK-NAME level. The cited Decision's body must contain the check's own
+   name; module paths and their ancestors never authorize: `scripts/checks` appears in dozens of
+   Decision bodies and would be a skeleton key.
+5. DELETION HAS NO MARKER ESCAPE. Removing a still-sequenced Entry fails unconditionally -- there
+   is no head line to carry a marker. Retirement is MARK-THEN-DROP across two PRs: demote to
+   unsequenced with a marker, merge, then delete (deleting an unsequenced Entry is free).
+6. SELF-REFERENCE IS CLOSED BY A RAISE. `registry.pre_sequence()` and `full_sequence()` raise when
+   the gate's own Entry is absent, and `pre_sequence()` additionally when it is glob-gated --
+   otherwise the PR that demotes the guard is the PR under which the guard does not run. The
+   constant names the MECHANISM, not the protected set, so it is not a roster.
+7. This lands as a further binding of `scripts/checks/_marker_guard.py` (Decision 165 point 1's
+   consolidation), never a copy of it, and ships with NO grandfather hook.
+
+**Rationale:**
+Enumeration answers "which names?"; the right question is "which DIRECTION?", and direction is
+computable. That dissolves the future-additions problem and the same-PR-editable name list. The
+finding's two legs differ in shape deliberately: a test has no legitimate absent state, so
+mirror-test presence is a state invariant at head, discharged by `validate_red_case_floor`.
+
+```yaml reversal-conditions
+decision: 187
+review_by: "2027-03-10"
+on_trigger: "Re-audit the mechanism in /plan; never widen the grammar to relieve pressure."
+conditions:
+  - id: c1
+    kind: repo_state
+    predicate: null
+    description: >-
+      Live tier-demotion markers exceed 5 -- demotion is routine and the gate is ritual.
+  - id: c2
+    kind: repo_state
+    predicate: null
+    description: >-
+      An unsequenced Entry lingers past one merge, or two-PR retirement is hit about monthly --
+      add a tombstone form, never a marker escape on deletion.
+  - id: c3
+    kind: repo_state
+    predicate: null
+    description: >-
+      A tier demotion reaches main unmarked -- the gate did not run or did not discriminate.
+  - id: c4
+    kind: repo_state
+    predicate: null
+    description: >-
+      Common-path cost exceeds 1s, or check names stop being unique ids -- move the
+      coverage-superset leg to the full tier, or key on the exact module path.
+  - id: c5
+    kind: repo_state
+    predicate: null
+    description: >-
+      A declared `Governs:` marker lands, or CI stops checking out the merge ref -- fleet tokens
+      go declared-first; read the merge-base, not the origin/main tip.
+```
+
+**Related:** Decision 165 (the shared mechanism this binds as a new kind, whose grandfather-hook
+reversal condition it satisfies by shipping none), Decision 169 (the manifest surface gated),
+Decision 104 (registration surfaces), Decision 181 (declare-your-coverage), Decision 135 (why the
+gate is ungated in `--pre`), Decision 55 (a missing and a passing oracle must never look alike).
+
+---
+
+## Decision 186: Closure-time artifact obligation for escape-classified recs (Decided)
+
+```yaml
+number: 186
+status: Decided
+decided_date: "2026-09-07"
+amends: [103]
+significance:
+  value: numbered_decision
+  justification: >-
+    A standing precondition on rec closure binding every in-repo closure path, plus a ratchet over its
+    own weakening: an enforcement commitment, a refusal contract and a relaxation asymmetry, none of
+    which a contract row carries.
+```
+
+**Status:** Decided
+**Date:** 2026-09-07
+**Warehouse ID:** dec-186
+
+**Problem:**
+Audit LSA-04 (loop-spec-adoption-4d8bac4a, observed): whether closing an escape-classified rec leaves a
+permanent machine artifact is author convention. rec-3131 closed without the `--pre` iam_tf invariant its
+own RCA named as its preventive action; the class recurred as rec-3328. **0** escape-classified recs name
+an artifact in a machine-resolvable `<kind>:<ref>` form. Graduation registry, dedup and back_validation
+are detection-grade: guarantee (d) has no closure-time obligation.
+
+**Decision:**
+1. PREDICATE. `context_v2_json.escape_class` OR `detection_gap.escape_mode` is SET (`undetermined`
+   counts), evaluated over the pre-write context UNION the post-write one, so a close cannot erase its
+   own obligation. Not `failure_category == "gate_escape"`, which matches zero rows.
+2. ONE ENFORCEMENT SITE. Asserted once in `ops_data_portal.py::update_rec` before `_ducklake_write`,
+   body in `ops_portal/closure_gate.py`. Every path closing a writer-allocated `rec-NNN` funnels through
+   `update_rec`. No second gate.
+3. BINDING. Bound set = Decision 103's resolved set `{closed, declined, superseded}`, terminal DEFINED
+   ON THE FROM SIDE: fires on a transition INTO a bound status FROM one not already bound. `failed` is
+   NOT bound. Status-preserving writes (`stamp_fixed_by_sha`, bumps, corrections) are never gated.
+4. ARTIFACT, FIX-BOUND -- NOT MERELY EXISTENT. Closure names a landed artifact in
+   `context_v2_json.closure_artifact`, resolved at write time to a fact THE FIX CHANGED: its defining
+   file must have been added or modified in the closing write's `fixed_by_sha` -- a local git fact, no
+   reader egress. Bare existence never discharges it: `check:` resolves against the named registry
+   entry's TIER fact, never membership, which for the majority escape mode (`tier_misplaced`) would pass
+   every closure unchanged. Kinds are not interchangeable -- only `shard:` is
+   still-red-on-reintroduction -- and existence is not discrimination, a declared residual. Kind
+   vocabulary, ordering and per-kind resolution: the contract's `closure_obligation` (86/127).
+5. WAIVER, IN TWO FIELDS -- AND `duplicate_of` IS NOT ONE. `closure_waiver_category` carries the
+   category, `closure_waiver_reason` the proof; the split makes MEMBERSHIP, not shape, enum-enforced by
+   the contract evaluator. The seed vocabulary is deliberately not all infeasibility:
+   `stale_no_recurrence`, `environment_only`, `no_premerge_gate_by_design` (an `escape_mode` value,
+   artifact-free by construction) and `risk_accepted` (won't-fix). `duplicate_of` is excluded because a
+   waiver asserts no artifact is FEASIBLE while a duplicate asserts one is OWED: a duplicate cites the
+   CLASS artifact, verified alike, and may NOT inherit its master's obligation. The sweep MAY satisfy the
+   waiver with its `stale_no_recurrence` proof.
+6. STRICT FROM DAY ONE, PROSPECTIVE ONLY. No flag, no warn window. Historical rows are never
+   retro-checked.
+7. REFUSAL IS LOUD, NOT RED. The gate raises `ClosureArtifactRequired` (a ValueError), writing nothing.
+   `rec-autoclose.yml` CATCHES it, prints a Decision-155-shaped marker, skips that rec leaving it OPEN,
+   and EXITS 0; its backfill step's exit-155 is untouched. A refused rec is listed by
+   `print_ci_rca_back_validation`; its unattended tail is (c).
+8. RATCHET ASYMMETRY. Correcting or removing an artifact token is free with a stated reason. WEAKENING
+   -- narrowing the predicate, unbinding a status, adding a waiver category, dropping the fix-commit
+   binding, softening the category pattern -- requires a numbered Decision amending this one.
+9. NEVER REMEDIATES. The gate refuses and surfaces; it never files a rec, synthesizes a fixture,
+   downgrades a status, or retries (55, 72).
+
+**Rationale:**
+A hard gate adds friction to every ci_rca closure, including environment escapes whose honest artifact is
+"none feasible" -- hence a categorised waiver: a declaration is auditable, silence is not. Asserting at
+`update_rec` is what makes it cheap: no writer verb, no column, no check register. The fix-commit binding
+is the load-bearing half; without it any pre-existing artifact discharges it. This narrows Decision 103's
+deterministic-satisfied auto-close, for escape recs only. Counts, per-ruling evidence and rejected
+alternatives: the plan.
+
+**Reversal conditions:** the stanza below is the monitored form; (a), (b) and (e) await a registered
+predicate (filed follow-on).
+
+```yaml reversal-conditions
+decision: 186
+review_by: 2026-12-07
+on_trigger: "re-decide via /plan: re-found or retire it, narrow the sweep exemption, or move it to the writer boundary."
+conditions:
+  - id: waiver-majority
+    kind: repo_state
+    predicate: null
+    description: "(a) >50% of NON-SWEEP gated closures in a rolling quarter take the waiver."
+  - id: sweep-launders
+    kind: repo_state
+    predicate: null
+    description: "(b) programmatic stale_no_recurrence waivers outnumber agent-authored ones >4:1."
+  - id: refused-then-swept
+    kind: manual
+    description: "(c) a rec refused at rec-autoclose is later swept closed, no artifact and no human."
+  - id: client-side-bypass
+    kind: manual
+    description: "(d) a caller closes around the client-side gate."
+  - id: artifact-did-not-discriminate
+    kind: repo_state
+    predicate: null
+    description: "(e) back_validation grades a prior artifact VERIFIED-PRESENT and the same fingerprint recurs."
+```
+
+**Related:** 55/72, 84, 88, 103, 124, 128, 133, 142, 150, 155, 162, 165, 167, 182, 86/127.
+
+---
+
+## Decision 185: The executor loop is a repo-owned ASL-subset definition; Step Functions is its cloud host; the leash is staged (amends Decision 39 and Decision 117) (Decided)
+
+```yaml
+number: 185
+status: Decided
+decided_date: "2026-09-04"
+amends: [39, 117]
+significance:
+  value: numbered_decision
+  justification: "Durable, reversal-relevant architecture commitment spanning CD.27, T4.1 and T4.15; a contract note cannot scope Decision 39; amendment_forms cannot amend two entries at once"
+```
+
+**Status:** Decided
+**Date:** 2026-09-04
+**Warehouse ID:** dec-185 (per Decision 84 backfill)
+
+**Problem:** The corpus reads Step Functions as the executor loop's DEFINITION (CD.27, T4.1, T4.11, CD.44), so the loop can only run on AWS, which Decision 184 forbids for the free tier. Decisions 39 and 75 read a repo-owned loop as frame-lock because the portability requirement was never recorded, and the rules that leash the executor live inside that AWS-side definition.
+
+**Intent:** The loop's definition is a committed document the repository owns; Step Functions executes it in the cloud tier and a repo-owned interpreter in the free tier; the executor cannot loosen its own leash on either.
+
+**Decision:** Amends Decision 39 (scoped) and amends Decision 117.
+1. Loop model. A typed Python builder renders a committed Amazon States Language document restricted to the named subset T4.19's contract records (Retry and Catch on deterministic states only, Decision 55; JSONPath only; lambda:invoke with waitForTaskToken; one named .sync long-task port; no Map, JSONata or intrinsics), enforced by a registered check. Two engines execute it: Step Functions natively in the cloud tier; a repo-owned Python interpreter with a restart-tolerant journal in the free tier (T4.22). The definition and its moto-oracle harness (T4.20) precede the T4.1 host. Python for both.
+2. Decision 39 scoped; Decision 100 read. Decision 39 governs the cloud host: Step Functions is the sole cloud-tier engine and its custom-DAG-engine rejection stands there; the free-tier interpreter is a scoped supersession admitted only where no managed orchestrator exists. Decision 100's premise, a reachable managed primitive, is absent on user-owned substrate, so it is not overridden. The definition is a literal committed document, the conscious frame Decision 75's constraints clause licenses.
+3. Leash, staged. The kernel path, rendered ASL, persona contracts and the leash's own implementation join Decision 117 boundary_patterns; a base-ref required check on a pull_request_target workflow that never checks out the PR head refuses executor-authored diffs to them (T4.21; Decision 143); kernel-side hard ceilings bound loop-policy values behind a raise-approved marker (Decision 128); the executor's file_pr and merge identity is a GitHub App absent from branch-protection bypass_actors (Decision 83). The released-version rule (the executor runs an installed kernel, never the tree it edits) binds at first_of(concurrency above 1, free-tier package ships) (T4.24).
+
+**Options considered:** Rust, Go, TypeScript, a CDK/jsii-authored definition, compiled-engine hybrids, Java Step Functions Local and the TestState API -- rejected: every loop call crosses into Python (LiteLLM, DuckDB, moto), the governance net is Python-only, only Python has a maintained ASL interpreter, the Rust audit's RLE-02/03 apply, and as oracles neither runs in-process under --disable-socket without AWS credentials (T4.20 c7). moto's interpreter as the free-tier engine behind a journal wrapper -- deferred to T4.22: a test double with mock-config semantics, antlr and jsonpath runtime dependencies for end users, and no restart journal. Hand-authored ASL in Terraform -- rejected: untestable before deploy, free to use AWS-only constructs. A local engine before T4.1 -- rejected: M-L delay for no MVP benefit. Full record in the plan PR.
+
+```yaml reversal-conditions
+decision: 185
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: subset-outgrown
+    kind: manual
+    description: "A construct outside the subset is needed: amend the allowlist, engine follows."
+  - id: app-identity-infeasible
+    kind: manual
+    description: "Non-bypass App identity infeasible: base-ref check is audit-only; released-version rule moves into MVP."
+  - id: moto-engine-adoptable
+    kind: manual
+    description: "A maintained standalone Python ASL interpreter becomes adoptable: T4.22 is an adoption, not a build."
+```
+
+**Related:** Decision 184 (the boundary this architecture serves), Decision 39 (amended, scoped), Decision 117 (amended), Decisions 55, 75, 83, 100, 128, 143, 173; CD.27, CD.38, CD.44; rec-2827, rec-3218; audits ad02653, 7d57a0d, 842ff92.
+
+---
+
+## Decision 184: Open-core local-first platform -- the free tier is this repository, cloud services are adapters behind ports, GitHub Actions is the verdict plane and never persona compute (Decided)
+
+```yaml
+number: 184
+status: Decided
+decided_date: "2026-09-04"
+significance:
+  value: numbered_decision
+  justification: "Durable, reversal-relevant product-boundary commitment (open-core, ports, Actions class, credential policy); no contract owns the boundary and no single prior entry can be amended to carry it"
+```
+
+**Status:** Decided
+**Date:** 2026-09-04
+**Warehouse ID:** dec-184 (per Decision 84 backfill)
+
+**Problem:** rec-3386 records the operator's product direction: an open-core platform whose governed loop runs on user-owned substrate with no Theseus cloud, so that a user with an LLM API key and a GitHub token can install it and go. No entry records that requirement, so the corpus optimised every substrate choice for the operator's cloud deployment alone, and hosted GitHub runners were still a candidate for persona compute.
+
+**Intent:** Theseus is open-core: this repository is the free tier and runs the full governed loop locally; the operator's cloud deployment runs the same loop through adapters; the paid management plane is a separate repository importing the platform.
+
+**Decision:**
+1. Boundary. The free tier IS the platform (this repository, BUSL-1.1); the paid management plane is a separate repository importing it (Decision 178). The AWS adapters stay here today; whether they remain open or move private is OPEN (reversal stanza), never pre-decided.
+2. Port rule. Every cloud service is reached through a named port; the AWS implementation is one adapter; each port has a tracked local-adapter item (T4.23, T4.24). DuckLake stays the sole ops-store backend per deployment (Decision 84 I-1; a local file catalog is the same format, Decision 78); the closed named-verb boundary (Decision 81) becomes a module boundary locally. NS.3's cloud-for-orchestration detail and NS.5's Function URL transport describe the cloud tier; the typed-verb surface and compute-where-it-belongs principle are what both tiers keep (north_star as amended).
+3. Actions workload class. GitHub Actions is the verdict plane in all modes (CD.38) and never persona compute: persona sessions are general-computing-shaped workloads under the Actions usage policy's burden clause, with suspension risk; the safe set is event-triggered repo-lifecycle work. hosted_cli_runner leaves T4.15's arms. Scheduled-agent placement stays T4.12 cD's call. Developing commercial software ON Actions does not engage the reselling clause; customer workloads on Actions minutes would.
+4. Credential policy. Consumer-subscription OAuth is not a Theseus product credential in any tier; API keys via LiteLLM are the only product inference lane (roles per Decision 173). Operator use of Claude Code surfaces is first-party, out of product scope; Decision 116's scheduled-agent lane is unchanged.
+5. Licence. BUSL-1.1 stands (Decision 171); the Additional Use Grant's production carve-out for the free tier is undecided and precedes any free-tier release.
+
+```yaml reversal-conditions
+decision: 184
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: adapter-residency
+    kind: manual
+    description: "Adapter residency decided: amend clause 1 and the Decision 171 grant."
+  - id: no-free-tier
+    kind: manual
+    description: "No free-tier work within two quarters: drop T4.22-T4.24; Decision 185 stands as Decision 39 future-state."
+  - id: actions-policy
+    kind: manual
+    description: "GitHub allows agent sessions explicitly, or CI leaves hosted runners: reopen clause 3 and T4.15 c10."
+```
+
+**Related:** Decision 185 (the loop definition and leash this boundary requires), Decisions 78, 81, 84, 116, 171, 173, 178; CD.38, CD.44; rec-3386.
+
+---
+
 ## Decision 183: Two heal verbs for a red sandbox record, one routing rule -- the acknowledge-and-retry dispatch becomes total (a guard-routed fresh plan at HEAD reaches tf-gated-apply); Reconcile heals at the red commit (amends Decision 126 point 1's reconcile intent; extends Decision 158's Environment-reach accounting) (Decided)
 
 ```yaml
@@ -2163,6 +2468,19 @@ CD.16/CD.24 -> dec-079 precedent the batch-wave form codifies forward).
 > machine-enforced routing claim (the required envelope `significance` field) and a routing
 > rule / standing-commitment pair in `docs/contracts/decision-entry.yaml`.
 
+> **2026-09-12 amendment (PLAN-skills-layer-prose-relocation):** clause 1's "Decision
+> Significance Gate" note (`.claude/skills/planning/SKILL.md`, the section immediately before
+> Step 5b's Candidate Decision Ratification step) is NOT touched by this plan's relocation --
+> only its location is named here for precision, since its phrasing now sits beside a
+> relocated neighbour. Clause 2's body DOES relocate: the implement skill's CD Ratification
+> Bookkeeping batch-wave clause (entry-authoring/ETL once per wave, the three per-CD sub-steps
+> repeating per bundled CD) now lives at
+> `docs/contracts/candidate-decision-ratification.yaml#lane_steps.implement.execute`, with only
+> the step's heading and firing-condition preamble staying inline as a mandatory read-trigger.
+> The Decision's own routing already named `candidate-decision-ratification.yaml` as the
+> mechanism's home, so intent survives the move (decision-entry.yaml amendment_forms).
+> Amendment-only -- no new numbered Decision.
+
 ---
 
 ## Decision 149: Number-preserving decision-compaction lifecycle -- compact-in-place stub grammar, never-remove-headers, and the DCG-03 orphan-divergence guard (DCG-02/DCG-03, compact-in-place sibling of Decision 146's archival policy) (Decided)
@@ -4105,6 +4423,8 @@ closure session), audits/unclosed-loops-44ef5c6.yaml ULF-05.
 > (`terraform/`, `.tf`, `.github/workflows/`, etc.) added to `capabilities.yaml` since. Recorded per
 > this Decision's own condition; routed to the operator for the lockstep fix, not resolved here.
 
+> **Amended by Decision 185 (2026-09-04):** the enforcement mechanism is no longer "unchanged from Decision 44": boundary_patterns gain the executor loop kernel path (src/executor_loop/), the rendered ASL, docs/contracts/personas/, docs/contracts/executor-loop-policy.yaml, docs/contracts/executor-personas.yaml, config/agent/executor/personas.yaml, .github/CODEOWNERS and the leash's own implementation (executor_boundary_guard, scripts/checks/executor/); a base-ref required check refuses executor-authored diffs to them (T4.21); validate_executor_boundary is to become diff-seeded and fail-closed (T4.21 c5; rec-3218); and the executor's merge identity must be a GitHub App absent from branch-protection bypass_actors (Decision 83), an invariant of this boundary.
+
 ---
 
 ## Decision 116: Scheduled-agent provider routing -- routine/non-agentic agents to LiteLLM (DeepSeek), judgment/agentic agents to claude -p (Supersedes Decision 49; amends CD.28's scheduled-agent clause) (Decided)
@@ -4645,6 +4965,21 @@ Key constraints (binding):
   `ops_recommendations` (Decision 84: the ducklake_writer owns the keyspace).
 - Queue-wide relevance surfacing serves the warmed read-cache only -- no per-session warehouse
   re-fetch (Decision 88).
+  [Amendment 2026-09-07, PLAN-backlog-health-detection: this clause is SCOPED to the interactive
+  read-time gate (scripts/session_preflight.py's correlation engine, reading from the warmed local
+  cache) -- it was never a ceiling on every relevance consumer. scripts/backlog_health's scheduled
+  monitor (Decision 62 2026-06-16 amendment / CD.12, alarm-not-gate) is a SECOND, also-sanctioned
+  venue: one structural DuckLake read per episode (census.py's single current_state call, never a
+  per-rec re-fetch), then LOCAL evaluation of exactly two rec_relevance.py signals
+  (target_existence, open_duplicate) per open rec -- a measured two-attach-per-episode pattern
+  with zero incremental warehouse egress, distinct from running the acceptance-probe signal
+  queue-wide (which stays forbidden; see the acceptance_probe signal_definition below).
+  Separately: docs/contracts/recommendation-relevance.yaml's two "never queue-wide (Decision 88)"
+  clauses (signal_definitions.acceptance_probe.signal and constraints[1]) are themselves a
+  MIS-CITE -- Decision 88 is the Neon catalog-EGRESS budget, and the acceptance probe those
+  clauses constrain is a LOCAL `subprocess.run(shell=True)` with no warehouse round-trip at all;
+  the real owner of "on-demand per-rec only, never queue-wide" is THIS decision (Decision 103),
+  not Decision 88. Both clauses are corrected in the same PR as this annotation.]
 
 **Implementation (T3.8, landed 2026-06-30):**
 `scripts/rec_relevance.py` evaluator (deterministic-first: acceptance probe -> target-existence
@@ -6760,6 +7095,8 @@ This scales from the current 5 agents to 30+ workflows without architectural cha
 **Decision status:** Decided — April 2026
 
 > **Update (2026-08-02):** ESB-10 (audit ad02653) -- CD.27's "Regular Lambdas are deterministic-only" discipline point is scoped to the executor's ITERATIVE persona loops (CD.27 personas satisfying P1/P2/P3); it does not narrow this Decision's `agent` state type for single-shot LLM-backed regular Lambdas, which continues to govern unchanged. This annotation does not amend the Decision above.
+
+> **Amended by Decision 185 (2026-09-04):** scoped, not superseded. "Custom DAG engine: Rejected" and "Each workflow is a Step Function state machine" govern the CLOUD host only: the executor loop's definition is a repo-authored ASL-subset document (the "Terraform-generated from YAML registry" future-state above, realised as a typed Python builder), executed natively by Step Functions in the cloud tier; a repo-owned interpreter is admitted solely as the free-tier host where no managed orchestrator exists (Decision 185 clause 2). Step Functions remains the sole cloud-tier engine.
 
 ---
 

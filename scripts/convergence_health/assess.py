@@ -18,6 +18,7 @@ from scripts.convergence_health.record import (
     record_age_hours,
     red_age_hours,
 )
+from scripts.rec_episode import decide as escalation_action  # noqa: F401
 
 RED_AGE_THRESHOLD_HOURS: float = 6.0
 # Must exceed normal apply latency (an apply advances the record within minutes) so a healthy
@@ -50,24 +51,6 @@ class HealthVerdict:
     # scripts/convergence_health/__main__.py; escalate.py never reads it, and preflight does not
     # read it at all, so this floor files nothing on its own.
     infra_error: Optional[dict[str, Any]] = None
-
-
-def escalation_action(over_threshold: bool, open_rec_exists: bool) -> str:
-    """Return the action to take given red-age and existing-rec state.
-
-    Returns:
-        "file"   -- new rec should be filed (over threshold, no open rec yet)
-        "update" -- existing open rec should be updated (still over threshold)
-        "close"  -- existing open rec should be closed (under threshold / green)
-        "none"   -- nothing to do (under threshold, no open rec)
-    """
-    if over_threshold and not open_rec_exists:
-        return "file"
-    if over_threshold and open_rec_exists:
-        return "update"
-    if not over_threshold and open_rec_exists:
-        return "close"
-    return "none"
 
 
 def assess_health(

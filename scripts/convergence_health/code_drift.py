@@ -7,10 +7,10 @@ source_git_sha equals the latest such commit on HEAD -- not bare equality,
 so a deploy from a later, non-source-touching commit (e.g. a workflow_dispatch
 recovery run) is correctly reported fresh. A null/empty/unresolvable recorded
 sha is always stale (fail closed). Mirrors escalate()'s idempotent
-file/update/close pattern, but ANY stale function triggers exactly ONE
-deduped rec (never one per function). Never writes a deploy record; never
-redeploys; never runs build_lambda. Alarm-not-gate (priority High, never
-source=ci_rca). Part of the scripts.convergence_health package -- see
+file/update/close pattern via scripts.rec_episode.run_episode, but ANY stale
+function triggers exactly ONE deduped rec (never one per function). Never
+writes a deploy record; never redeploys; never runs build_lambda. Alarm-not-gate (priority High,
+never source=ci_rca). Part of the scripts.convergence_health package -- see
 scripts/convergence_health/__init__.py for the full public surface.
 """
 
@@ -19,8 +19,7 @@ from __future__ import annotations
 import subprocess
 from typing import Any, Callable, Optional
 
-from scripts.convergence_health.assess import escalation_action
-from scripts.convergence_health.escalate import _fetch_open_recs
+from scripts.rec_episode import run_episode
 
 DUCKLAKE_SOURCE_PATHSPECS: tuple[str, ...] = (
     "src/lambdas/ducklake_writer",
@@ -81,16 +80,6 @@ def _is_fresh(
     return bool(reachable) and reachable == latest_sha
 
 
-def find_open_ducklake_drift_rec(
-    open_recs: list[dict[str, Any]],
-) -> Optional[dict[str, Any]]:
-    """Return the first open ducklake_code_drift rec from a list of open recs, or None."""
-    for rec in open_recs:
-        if rec.get("source") == "ducklake_code_drift" and rec.get("status") == "open":
-            return rec
-    return None
-
-
 def _build_ducklake_drift_context(stale_functions: list[str], latest_sha: str) -> str:
     fn_list = ", ".join(sorted(stale_functions))
     return (
@@ -144,7 +133,7 @@ def _build_ducklake_drift_rec_fields(stale_functions: list[str], latest_sha: str
 def detect_ducklake_code_drift(
     git_runner: Optional[Callable[[list[str]], str]] = None,
     s3_client: Any = None,
-    portal_caller: Optional[Callable[[str, dict[str, Any]], Any]] = None,
+    portal_caller: Optional[Any] = None,
     open_recs: Optional[list[dict[str, Any]]] = None,
     profile: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -158,13 +147,14 @@ def detect_ducklake_code_drift(
                        (never at import time).
         portal_caller: Injected callable(action, fields) for testability, mirroring escalate().
                        When None, uses scripts.ops_data_portal.file_rec / update_rec directly.
-        open_recs:     Pre-fetched open rec list (for testing). When None, fetches live via the
-                       DuckLake reader open_recs named verb (not the JSONL cache) -- mirrors
-                       escalate()'s default.
+        open_recs:     Pre-fetched rows (for testing) -- treated as if they were already the
+                       result of the scoped ducklake_code_drift read. When None, fetches live via
+                       current_state("ops_recommendations", row_filter="source = "
+                       "'ducklake_code_drift'") (never a bulk fetch of every open rec).
         profile:       AWS profile for the reader / portal / S3 client.
 
     Returns:
-        {"action": "file"|"update"|"close"|"none"|"skipped", "rec_id": str|None}
+        {"action": "file"|"update"|"unchanged"|"close"|"none"|"skipped", "rec_id": str|None}
     """
     from scripts.build_lambda_config import _build_ducklake_function_zip_keys  # noqa: PLC0415
     from scripts.build_lambda_deploy import read_deploy_record  # noqa: PLC0415
@@ -194,54 +184,30 @@ def detect_ducklake_code_drift(
         if not _is_fresh(record, latest_sha, runner, DUCKLAKE_SOURCE_PATHSPECS):
             stale_functions.append(function)
 
-    if open_recs is None:
-        open_recs = _fetch_open_recs(profile=profile)
+    def _build_fields() -> dict[str, Any]:
+        return _build_ducklake_drift_rec_fields(stale_functions, latest_sha)
 
-    existing = find_open_ducklake_drift_rec(open_recs)
-    open_rec_exists = existing is not None
-    over_threshold = bool(stale_functions)
+    def _build_update(existing: dict[str, Any]) -> dict[str, Any]:
+        return {"context": _build_ducklake_drift_context(stale_functions, latest_sha)}
 
-    action = escalation_action(over_threshold=over_threshold, open_rec_exists=open_rec_exists)
-
-    if action == "none":
-        return {"action": "none", "rec_id": None}
-
-    if action == "file":
-        fields = _build_ducklake_drift_rec_fields(stale_functions, latest_sha)
-        if portal_caller is not None:
-            rec_id = portal_caller("file", fields)
-        else:
-            from scripts.ops_data_portal import file_rec  # noqa: PLC0415
-
-            rec_id = file_rec(fields, profile=profile)
-        return {"action": "file", "rec_id": rec_id}
-
-    if action == "update" and existing is not None:
-        updates = {"context": _build_ducklake_drift_context(stale_functions, latest_sha)}
-        if portal_caller is not None:
-            portal_caller("update", {"id": existing["id"], **updates})
-        else:
-            from scripts.ops_data_portal import update_rec  # noqa: PLC0415
-
-            update_rec(existing["id"], updates, profile=profile)
-        return {"action": "update", "rec_id": existing["id"]}
-
-    if action == "close" and existing is not None:
-        updates = {
+    def _build_close(existing: dict[str, Any]) -> dict[str, Any]:
+        return {
             "status": "closed",
             "resolution": (
                 "All DuckLake deploy records match the latest main commit touching ducklake source; drift resolved."
             ),
         }
-        if portal_caller is not None:
-            portal_caller("close", {"id": existing["id"], **updates})
-        else:
-            from scripts.ops_data_portal import update_rec  # noqa: PLC0415
 
-            update_rec(existing["id"], updates, profile=profile)
-        return {"action": "close", "rec_id": existing["id"]}
-
-    return {"action": "skipped", "rec_id": None}  # pragma: no cover -- unreachable, escalation_action() is exhaustive
+    return run_episode(
+        source="ducklake_code_drift",
+        over_threshold=bool(stale_functions),
+        build_fields=_build_fields,
+        build_update=_build_update,
+        build_close=_build_close,
+        portal_caller=portal_caller,
+        rows=open_recs,
+        profile=profile,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -274,16 +240,6 @@ _PROD_FUNCTION_NAMES: tuple[str, ...] = (
     "agent-platform-scheduled-agent-dispatcher",
     "agent-platform-findings-processor",
 )
-
-
-def find_open_prod_drift_rec(
-    open_recs: list[dict[str, Any]],
-) -> Optional[dict[str, Any]]:
-    """Return the first open prod_code_drift rec from a list of open recs, or None."""
-    for rec in open_recs:
-        if rec.get("source") == "prod_code_drift" and rec.get("status") == "open":
-            return rec
-    return None
 
 
 def _build_prod_drift_context(stale_functions: list[str], latest_sha: str) -> str:
@@ -319,7 +275,7 @@ def _build_prod_drift_rec_fields(stale_functions: list[str], latest_sha: str) ->
 def detect_prod_code_drift(
     git_runner: Optional[Callable[[list[str]], str]] = None,
     s3_client: Any = None,
-    portal_caller: Optional[Callable[[str, dict[str, Any]], Any]] = None,
+    portal_caller: Optional[Any] = None,
     open_recs: Optional[list[dict[str, Any]]] = None,
     profile: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -331,7 +287,7 @@ def detect_prod_code_drift(
     "ducklake_code_drift"), and read_deploy_record(..., channel="prod") (vs the ducklake default).
 
     Returns:
-        {"action": "file"|"update"|"close"|"none"|"skipped", "rec_id": str|None}
+        {"action": "file"|"update"|"unchanged"|"close"|"none"|"skipped", "rec_id": str|None}
     """
     from scripts.build_lambda_deploy import read_deploy_record  # noqa: PLC0415
 
@@ -360,49 +316,25 @@ def detect_prod_code_drift(
         if not _is_fresh(record, latest_sha, runner, PROD_SOURCE_PATHSPECS):
             stale_functions.append(function)
 
-    if open_recs is None:
-        open_recs = _fetch_open_recs(profile=profile)
+    def _build_fields() -> dict[str, Any]:
+        return _build_prod_drift_rec_fields(stale_functions, latest_sha)
 
-    existing = find_open_prod_drift_rec(open_recs)
-    open_rec_exists = existing is not None
-    over_threshold = bool(stale_functions)
+    def _build_update(existing: dict[str, Any]) -> dict[str, Any]:
+        return {"context": _build_prod_drift_context(stale_functions, latest_sha)}
 
-    action = escalation_action(over_threshold=over_threshold, open_rec_exists=open_rec_exists)
-
-    if action == "none":
-        return {"action": "none", "rec_id": None}
-
-    if action == "file":
-        fields = _build_prod_drift_rec_fields(stale_functions, latest_sha)
-        if portal_caller is not None:
-            rec_id = portal_caller("file", fields)
-        else:
-            from scripts.ops_data_portal import file_rec  # noqa: PLC0415
-
-            rec_id = file_rec(fields, profile=profile)
-        return {"action": "file", "rec_id": rec_id}
-
-    if action == "update" and existing is not None:
-        updates = {"context": _build_prod_drift_context(stale_functions, latest_sha)}
-        if portal_caller is not None:
-            portal_caller("update", {"id": existing["id"], **updates})
-        else:
-            from scripts.ops_data_portal import update_rec  # noqa: PLC0415
-
-            update_rec(existing["id"], updates, profile=profile)
-        return {"action": "update", "rec_id": existing["id"]}
-
-    if action == "close" and existing is not None:
-        updates = {
+    def _build_close(existing: dict[str, Any]) -> dict[str, Any]:
+        return {
             "status": "closed",
             "resolution": ("All prod-class deploy records match the latest main commit touching prod source; drift resolved."),
         }
-        if portal_caller is not None:
-            portal_caller("close", {"id": existing["id"], **updates})
-        else:
-            from scripts.ops_data_portal import update_rec  # noqa: PLC0415
 
-            update_rec(existing["id"], updates, profile=profile)
-        return {"action": "close", "rec_id": existing["id"]}
-
-    return {"action": "skipped", "rec_id": None}  # pragma: no cover -- unreachable, escalation_action() is exhaustive
+    return run_episode(
+        source="prod_code_drift",
+        over_threshold=bool(stale_functions),
+        build_fields=_build_fields,
+        build_update=_build_update,
+        build_close=_build_close,
+        portal_caller=portal_caller,
+        rows=open_recs,
+        profile=profile,
+    )

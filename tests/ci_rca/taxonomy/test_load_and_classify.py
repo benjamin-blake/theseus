@@ -7,7 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from scripts.ci_rca.taxonomy import classify_failure, enumerate_workflow_names, load_taxonomy, resolve_workflow_tier
+from scripts.ci_rca.taxonomy import (
+    _MISS,
+    classify_failure,
+    enumerate_workflow_name_paths,
+    enumerate_workflow_names,
+    load_taxonomy,
+    resolve_workflow_tier,
+    resolve_workflow_tier_raw,
+)
 from tests.fixtures.ci_rca.taxonomy_data import FAILED_CHECKS_TAXONOMY, MINIMAL_TAXONOMY, oracle_workflow_names, write_taxonomy
 
 ROOT = Path(__file__).parents[3]
@@ -123,6 +131,38 @@ class TestResolveWorkflowTier:
         assert all(v == "unknown" for k, v in got.items() if k not in ("CI", "Main Canary")), got
 
 
+class TestResolveWorkflowTierRaw:
+    """T1.13:c9 repair: resolve_workflow_tier_raw preserves 'not_a_gate' and distinguishes a
+    taxonomy miss via _MISS, while resolve_workflow_tier's own contract (tested above, left
+    UNMODIFIED) stays byte-identical under the delegation wrapper."""
+
+    def test_ci_maps_to_CI(self, tmp_path):
+        p = write_taxonomy(tmp_path, MINIMAL_TAXONOMY)
+        assert resolve_workflow_tier_raw("CI", p) == "CI"
+
+    def test_not_a_gate_returns_not_a_gate_not_unknown(self, tmp_path):
+        """The raw resolver never collapses not_a_gate -- that collapsing is the wrapper's job."""
+        p = write_taxonomy(tmp_path, MINIMAL_TAXONOMY)
+        assert resolve_workflow_tier_raw("Deploy", p) == "not_a_gate"
+
+    def test_miss_returns_distinct_miss_sentinel(self, tmp_path):
+        """A taxonomy miss returns _MISS, distinguishable from both a real tier and 'not_a_gate'."""
+        p = write_taxonomy(tmp_path, MINIMAL_TAXONOMY)
+        result = resolve_workflow_tier_raw("NotInMap", p)
+        assert result == _MISS
+        assert result not in ("not_a_gate", "unknown", "CI")
+
+    def test_real_taxonomy_not_a_gate_workflows_stay_raw(self):
+        """Wiring check mirrored from VP step 4: every real not_a_gate workflow's raw tier is
+        literally 'not_a_gate', not 'unknown' -- proving the raw resolver is queried directly by
+        the bundle threading, not merely by the collapsing wrapper."""
+        names = enumerate_workflow_names()
+        not_a_gate_names = [n for n in names if resolve_workflow_tier(n) == "unknown"]
+        assert not_a_gate_names, "expected at least one real not_a_gate workflow in the live taxonomy"
+        for name in not_a_gate_names:
+            assert resolve_workflow_tier_raw(name) == "not_a_gate", name
+
+
 class TestEnumerateWorkflowNames:
     def test_extracts_names(self, tmp_path):
         wf = tmp_path / "test.yml"
@@ -151,3 +191,53 @@ class TestEnumerateWorkflowNames:
 
         (tmp_path / "b.yml").unlink()
         assert set(enumerate_workflow_names(tmp_path)) == {"Alpha", "Charlie"}
+
+
+class TestEnumerateWorkflowNamePaths:
+    """Single-source parity: enumerate_workflow_names must be an exact name projection over
+    enumerate_workflow_name_paths, order included -- the mapping the agent-loop cap census
+    (scripts/checks/ci_guards/_agent_loop_caps.py) relies on to resolve a taxonomy row's display
+    NAME to its FILE PATH, so a second independent glob never exists for that mapping."""
+
+    def test_name_projection_matches_enumerate_workflow_names_order_included(self, tmp_path):
+        (tmp_path / "a.yml").write_text("name: Alpha\non:\n  push:\n", encoding="utf-8")
+        (tmp_path / "b.yml").write_text("name: Bravo\non:\n  push:\n", encoding="utf-8")
+        (tmp_path / "c.yml").write_text("name: Charlie\non:\n  push:\n", encoding="utf-8")
+
+        pairs = enumerate_workflow_name_paths(tmp_path)
+        assert [name for name, _ in pairs] == enumerate_workflow_names(tmp_path)
+
+    def test_nameless_yml_omitted_from_both(self, tmp_path):
+        (tmp_path / "nameless.yml").write_text("on:\n  push:\n", encoding="utf-8")
+        (tmp_path / "named.yml").write_text("name: Named\non:\n  push:\n", encoding="utf-8")
+
+        pairs = enumerate_workflow_name_paths(tmp_path)
+        assert [name for name, _ in pairs] == ["Named"]
+        assert enumerate_workflow_names(tmp_path) == ["Named"]
+
+    def test_unparseable_yml_skipped_by_both_without_raising(self, tmp_path):
+        (tmp_path / "bad.yml").write_text("key: [unclosed", encoding="utf-8")
+        (tmp_path / "good.yml").write_text("name: Good\non:\n  push:\n", encoding="utf-8")
+
+        pairs = enumerate_workflow_name_paths(tmp_path)
+        assert [name for name, _ in pairs] == ["Good"]
+        assert enumerate_workflow_names(tmp_path) == ["Good"]
+
+    def test_each_returned_path_exists_and_is_the_source_file(self, tmp_path):
+        wf = tmp_path / "solo.yml"
+        wf.write_text("name: Solo\non:\n  push:\n", encoding="utf-8")
+
+        pairs = enumerate_workflow_name_paths(tmp_path)
+        assert len(pairs) == 1
+        name, path = pairs[0]
+        assert name == "Solo"
+        assert path == wf
+        assert path.is_file()
+
+    def test_real_workflows_dir_matches_enumerate_workflow_names(self):
+        """Wiring check against the live tree: the real .github/workflows/ directory's name
+        projection equals enumerate_workflow_names' own real-tree output exactly."""
+        pairs = enumerate_workflow_name_paths()
+        assert [name for name, _ in pairs] == enumerate_workflow_names()
+        for name, path in pairs:
+            assert path.is_file(), (name, path)
