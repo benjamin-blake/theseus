@@ -46,7 +46,9 @@ class TestValidateLockfileSync:
         declaration = registry._CURRENT_DECLARATION
         assert declaration.kind == "examined"
         assert declaration.unit == "declared_requirements"
-        assert declaration.count == import_governance.count_declared_requirements() > 0
+        declared = import_governance.count_declared_requirements()
+        assert declared > 0, "the live tree must declare at least one floor"
+        assert declaration.count == declared
 
     @pytest.mark.parametrize("absent_index", [0, 1, 2, 3])
     def test_a_missing_requirements_file_fails_without_raising(self, tmp_path: Path, absent_index: int) -> None:
