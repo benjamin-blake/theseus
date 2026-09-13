@@ -197,7 +197,10 @@ scope:
     purpose: >-
       Fail-path fixtures and negative cases for each new guard assertion, plus a mirror assertion
       that the Entry's pre_globs cover requirements*.in and requirements*.txt (G4) and that the
-      examined() workflow count stays 2 (F10/G8).
+      examined() workflow count stays 2 (F10/G8). IMPLEMENTER NOTE (A5): the pre_globs half may
+      belong instead in tests/checks/ci_guards/test__manifest.py, whose
+      TestGatedEntryInputClosures (:42-48) already owns exactly that property -- if you put it
+      there, add that file to Scope in the same commit.
   - file: tests/test_import_governance.py
     action: Modify
     purpose: >-
@@ -360,7 +363,7 @@ verification_plan:
       individually in the PR body. Strict equality is NOT asserted, because one combined resolve
       is being replaced by two, and the seeding step makes movement rare rather than impossible.
     command: |-
-      bash -c 'set -e; git show origin/main:requirements.lock | grep -E "^[A-Za-z0-9]" | sed "s/[[:space:]]*#.*//" | sort > /tmp/pins-before.txt; cat requirements.txt requirements-dev.txt | grep -E "^[A-Za-z0-9]" | sed "s/[[:space:]]*#.*//" | sort -u > /tmp/pins-after.txt; cut -d= -f1 /tmp/pins-before.txt | sort -u > /tmp/names-before.txt; cut -d= -f1 /tmp/pins-after.txt | sort -u > /tmp/names-after.txt; lost=$(comm -23 /tmp/names-before.txt /tmp/names-after.txt); gained=$(comm -13 /tmp/names-before.txt /tmp/names-after.txt); echo "LOST (absolute, must be empty): ${lost:-none}"; echo "GAINED (absolute, must be empty): ${gained:-none}"; echo "--- VERSION MOVEMENT (reviewed: justify each in the PR body) ---"; comm -3 /tmp/pins-before.txt /tmp/pins-after.txt || true; dupes=$(cut -d= -f1 /tmp/pins-after.txt | sort | uniq -d); echo "CROSS-OUTPUT DISAGREEMENTS (absolute, must be none): ${dupes:-none}"; [ -z "$lost" ] && [ -z "$gained" ] && [ -z "$dupes" ]'
+      bash -c 'set -e; d=$(mktemp -d); git show origin/main:requirements.lock | grep -E "^[A-Za-z0-9]" | sed "s/[[:space:]]*#.*//" | sort > "$d/pins-before"; cat requirements.txt requirements-dev.txt | grep -E "^[A-Za-z0-9]" | sed "s/[[:space:]]*#.*//" | sort -u > "$d/pins-after"; cut -d= -f1 "$d/pins-before" | sort -u > "$d/names-before"; cut -d= -f1 "$d/pins-after" | sort -u > "$d/names-after"; lost=$(comm -23 "$d/names-before" "$d/names-after"); gained=$(comm -13 "$d/names-before" "$d/names-after"); echo "LOST (absolute, must be empty): ${lost:-none}"; echo "GAINED (absolute, must be empty): ${gained:-none}"; echo "--- VERSION MOVEMENT (reviewed: justify each in the PR body) ---"; comm -3 "$d/pins-before" "$d/pins-after" || true; dupes=$(sed "s/[[:space:]]*;.*//" "$d/pins-after" | sort -u | cut -d= -f1 | sort | uniq -d); echo "CROSS-OUTPUT DISAGREEMENTS (absolute, must be none): ${dupes:-none}"; [ -z "$lost" ] && [ -z "$gained" ] && [ -z "$dupes" ]'
     expected: >-
       'LOST ... none', 'GAINED ... none' and 'CROSS-OUTPUT DISAGREEMENTS ... none', exit 0. The
       version-movement section is expected EMPTY after a correct seeding step; a non-empty one
@@ -370,7 +373,11 @@ verification_plan:
       neither .in file (the pytz regression class, tests/test_import_governance.py:242). A GAINED
       name means a new transitive arrived, legitimate only if a floor moved in the same commit. A
       non-empty dupes list means the two outputs pin one distribution at two versions -- recompile
-      requirements-dev.txt under `-c requirements.txt`. Unexpected version movement means the
+      requirements-dev.txt under `-c requirements.txt`. NOTE (A7): the dupes test strips any
+      environment marker and de-duplicates before counting names, so two IDENTICAL-version pins
+      differing only by marker do not false-positive. No such pair exists in today's lock; if
+      pip-compile emits one, confirm the versions really are equal before treating it as a
+      disagreement. Unexpected version movement means the
       seeding step of execution step "Defect A step 2" was skipped or partial -- re-seed from
       origin/main:requirements.lock and recompile, rather than accepting the drift. If
       `pip-compile requirements-dev.in` FAILS outright under `-c requirements.txt`, a dev
@@ -504,9 +511,10 @@ verification_plan:
       `=== SLOC limits (Decision 43) ===`, NOT under the structural-size banner, because
       structural_size_budgets.yaml:43 excludes .py -- names the Python file that crossed 500:
       decompose it (Decision 131 mirror package for a tests/ file), never register it and never
-      thin the test. A validate_test_coverage failure names one of the nine touched Python files: none is in
-      config/coverage_baseline.yaml, so each keeps the 100% per-file standard once changed --
-      cover the new branch rather than adding a baseline entry.
+      thin the test. A validate_test_coverage failure names one of the TEN touched Python source
+      files under scripts/ (nine modified plus the created scripts/ci/dependabot_semver_class.py):
+      none is in config/coverage_baseline.yaml, so each keeps the 100% per-file standard once
+      changed -- cover the new branch rather than adding a baseline entry.
     hermetic: false
     graduation: not-applicable
   - step: 12
@@ -760,7 +768,7 @@ constraints:
   - >-
     LAMBDA GATING WAIVER (F3, reviewed, explicit -- silence is not an option).
     compute_affected_artifacts flags the active data-pipeline artifact SOLELY because
-    docs/ROADMAP-PLATFORM.yaml is a packaged include at src/lambdas/data-pipeline/manifest.yaml:39.
+    docs/ROADMAP-PLATFORM.yaml is a packaged asset entry at src/lambdas/data-pipeline/manifest.yaml:41.
     Grounds for the waiver: the edit is inert criterion TEXT with no handler, config or runtime
     change, and scheduled agents are disabled (PROJECT_CONTEXT; T4.12 pending). Therefore NO
     build/deploy/smoke step is required, verification_tier stays V2, and
@@ -798,7 +806,7 @@ context:
     (check_roadmap_regrowth.py) and Decision 188; requirements.lock is byte-identical from
     ac32677c through 75e34b64, so VP step 4's baseline is stable. check_roadmap_regrowth's
     _ITEM_PROSE_FIELDS:71 flags any complete/reserved item carrying a note or progress_note -- why
-    T3.11 c2 is re-worded with none added; roadmap headroom 153 lines (9,847 of 10,000) is under
+    T3.11 c2 is re-worded with none added; roadmap headroom 147 lines (9,853 of 10,000) is under
     _ESCALATE_HEADROOM_LINES=500, so it must not add net lines. Required checks: pr-validate,
     terraform-validate (repo.tf:85-99)."
   - "Decision-scout FLAGS_FOUND (gate-ds-r1-dependabot-automation-root-fix). CITE: Decision 80,
@@ -816,7 +824,7 @@ context:
     where the failure mode is a silent never-merge with no operator-visible reason. #977 and #981
     are BOTH armed today and merge unattended once Defect A greens their regenerated heads."
   - "gates: decision-scout=FLAGS_FOUND (round 1, every flag resolved in-plan);
-    plan-critique=<verdict> after <N> round(s)"
+    plan-critique=PROCEED after 4 round(s); round 4 autonomous"
   - "Blast radius beyond the brief: _pytest_diff.py:351, validate_requirements.py:13,
     test_import_governance.py:223 and :249, test_pytest_diff.py:35-83, and Decision 170
     touch-it-fix-it on check_accounting_baseline.yaml:59, :70 and :88 (THREE checks).
@@ -898,10 +906,11 @@ execution_steps:
     does today and needs no separate skipped(). Add an accounting-declaration test per exit path
     to all THREE mirror test files."
   - "Defect A step 5b (Decision 135) -- tests/validate/test_pytest_diff.py must additionally
-    assert the excluded-heavy set is UNCHANGED across the migration: record the set derived from
-    today's requirements.txt floors before the move and assert the post-move set (derived from
-    requirements.in) equals it, plus a negative case that a transitive-only pin present in the
-    compiled requirements.txt never enters the set."
+    assert the excluded-heavy set is UNCHANGED across the migration. IMPLEMENTER NOTE (A6): the
+    before/after EQUALITY comparison is inherently one-shot -- it needs the pre-migration tree --
+    so run it in the VP/PR body, and commit to tests/validate/test_pytest_diff.py only the durable
+    half: a negative case proving a transitive-only pin present in the compiled requirements.txt
+    never enters the set. That also protects the file's 42 lines of SLOC headroom."
   - "Defect A step 5 -- repoint the test files, writing each red-before assertion first:
     tests/test_import_governance.py, tests/checks/deps/test_validate_requirements.py,
     tests/validate/test_pytest_diff.py, tests/verify_ci_workflow/test_ci_data_guards.py,
@@ -1001,7 +1010,8 @@ work_areas: []
 rollback: >-
   Revert is COMPLETE at the git level and needs no out-of-band action: one revert commit restores
   requirements.lock, the floor-bearing requirements.txt / requirements-dev.txt, .python-version
-  3.11.9, both delegates, the two check_accounting baseline entries and the T3.11 c2 wording. The
+  3.11.9, both delegates, the THREE check_accounting baseline entries (:59, :70, :88) and the
+  T3.11 c2 wording. The
   completeness claim is checkable rather than asserted -- this plan touches no terraform root,
   deploys no Lambda (see the F3 waiver constraint), writes no warehouse row, mints no IAM and
   creates no external state. The only residue outside git is a dependabot PR already recreated
