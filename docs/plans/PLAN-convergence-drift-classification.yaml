@@ -1,0 +1,494 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "convergence-drift-classification"
+intent: >-
+  Stop the sandbox convergence record red-latching on a delta that is not drift, and make every
+  surface that reports a red record name the cause it actually measured -- so an operator-sanctioned
+  split-apply no longer blocks the deployment pipeline and no longer sends agents hunting a rogue
+  writer that does not exist.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-convergence-drift-classification.yaml
+phase: T2.47
+scope:
+  - file: scripts/convergence_health/classify.py
+    action: Create
+    purpose: >-
+      Classifier delegate. Parses `terraform show -json` output and returns an explicit verdict from
+      the exhaustive route set (out_of_band_drift | pending_codification | converged), derived from
+      resource_drift vs resource_changes. Hosts the marker read/write helpers and the refusal-cause
+      renderer both workflows call, keeping logic out of shell bodies already at their R3 ceilings
+      (Decision 162) and out of the zero-headroom apply workflow (Decision 128/166).
+  - file: tests/convergence_health/test_classify.py
+    action: Create
+    purpose: >-
+      Red-before-green coverage for the classifier: drift-present, code-behind-state, converged, the
+      malformed/empty-JSON degrade path, and a route-exhaustiveness assertion that no fourth verdict
+      can be produced (Decision 158 terminal-route accounting).
+  - file: .github/workflows/terraform-drift.yml
+    action: Modify
+    purpose: >-
+      Emit plan JSON and classify instead of treating bare exit 2 as drift. On pending_codification
+      write a non-status marker (status stays green, mirroring the pending_gated / infra_error
+      read-modify-write shape) and file an honestly-worded rec; on out_of_band_drift keep today's
+      red-flip. Narrow the dedup invariant so it dedups TICKETING but no longer suppresses
+      MEASUREMENT, and self-clear the marker with a durable closure stamp when a later cycle
+      measures no delta. Delegate the handle-drift body (currently 89 effective lines).
+  - file: .github/workflows/terraform-apply-sandbox.yml
+    action: Modify
+    purpose: >-
+      Make the CONVERGENCE_RED refusal name the measured cause (red_cause, drift_reason,
+      drift_run_url, drift_detected_at) and the correct acknowledge token, instead of printing only
+      commit_sha -- which on a drift-flip is stale provenance merge-preserved from the last
+      successful apply. Emission delegates to scripts/convergence_health/classify.py; this file is
+      at 550/550 effective lines and MUST NOT grow (Decision 128/166 decompose, never raise).
+  - file: scripts/ci/convergence_advisory.py
+    action: Modify
+    purpose: >-
+      Second misattribution site. The advisory commit status asserts "last sandbox apply RED at
+      {commit}" for every red record; on a drift-caused red that commit is the last SUCCESSFUL
+      apply. Report the measured cause, and surface a pending_codification marker the way the
+      existing pending_gated branch already does.
+  - file: tests/test_convergence_advisory.py
+    action: Modify
+    purpose: >-
+      Cover the drift-caused-red wording (must not claim the stale commit was the failing apply) and
+      the pending_codification marker branch.
+  - file: scripts/convergence_health/record.py
+    action: Modify
+    purpose: >-
+      Add read_pending_codification_marker mirroring read_infra_error_marker's degrade-to-None
+      contract (Decision 154), plus a red_cause derivation that reads the SAME drift markers
+      scripts/ci_rca/convergence_dedup.py already discriminates on -- one authority, never a second
+      divergent classifier (Decision 142).
+  - file: tests/convergence_health/test_record.py
+    action: Modify
+    purpose: Cover the new marker reader, its malformed-input degrade path, and red_cause derivation.
+  - file: scripts/convergence_health/assess.py
+    action: Modify
+    purpose: >-
+      Let blocked-apply impact raise severity on a RED record. unapplied_backlog is already computed
+      but only reaches severity on the green branch (stale_green_backlog), so a red record blocking
+      three applies for 2.6h scored "low" while a green record with one unapplied commit at 2h
+      scores "high". Preserve Decision 154 point 7's floor property: the infra_error floor only ever
+      raises none->low and never lowers a higher value.
+  - file: tests/convergence_health/test_assess.py
+    action: Modify
+    purpose: >-
+      Pin the new red+backlog severity raise, and pin the preserved floor property (a red+backlog
+      high is not lowered by a present infra_error marker).
+  - file: scripts/convergence_health/escalate.py
+    action: Modify
+    purpose: >-
+      Ticket the pending_codification episode and write the durable closure stamp on self-clear, so
+      the benign case leaves a trace rather than silently reverting (Decision 55 anti-hiding).
+  - file: tests/convergence_health/test_escalate.py
+    action: Modify
+    purpose: Cover the pending_codification file/update/close episode and the closure stamp.
+  - file: scripts/convergence_health/__init__.py
+    action: Modify
+    purpose: Re-export the new classify surface and marker reader through the package facade.
+  - file: scripts/preflight/ci_rca_signals.py
+    action: Modify
+    purpose: >-
+      Add a client-side infra-signal derivation so source=tf_drift / tf_convergence_stale recs reach
+      preflight. Today the filter is `source == "ci_rca"` exactly, which is why rec-3797 was
+      invisible to the triage surface that gates /plan and /orient. Add a sibling derivation; do NOT
+      broaden ci_rca_open's meaning (Decision 84 I-3).
+  - file: tests/session/preflight/test_ci_rca_signals.py
+    action: Modify
+    purpose: Pin that a tf_drift rec reaches the new infra-signal surface and does NOT leak into ci_rca_open.
+  - file: src/common/ducklake_scd2_schema.py
+    action: Modify
+    purpose: >-
+      Register the new server-side named verb for infra signals, in lockstep with the client
+      derivation (Decision 84 I-3 closed named-verb boundary). File is at 474/500 effective lines --
+      if the addition crosses 500, decompose, never raise (Decision 128).
+  - file: src/common/ducklake_reader_client.py
+    action: Modify
+    purpose: Declare the new verb's projected column tuple alongside ci_rca_open's.
+  - file: docs/contracts/read-engine.yaml
+    action: Modify
+    purpose: Register the new named verb so its pointers resolve under the read-boundary contract.
+  - file: docs/contracts/environment-taxonomy.yaml
+    action: Modify
+    purpose: >-
+      Convergence-record marker vocabulary is this contract's owning home (Decision 77 clause 1;
+      Decision 92 point 5 sole SoT). Declare pending_codification alongside pending_gated and
+      infra_error, and the route-exhaustiveness table for the new state. Add the amendment_log entry
+      its Class D drift gate requires.
+  - file: docs/contracts/deploy-paths.yaml
+    action: Modify
+    purpose: >-
+      The reconcile row's heal_verb_selection tells an operator to dispatch after reviewing the rec;
+      point it at the measured red_cause so the right verb is chosen from evidence. Amendment_log
+      entry required.
+  - file: config/composite_action_body_baseline.yaml
+    action: Modify
+    purpose: Re-baseline the shell bodies shrunk by delegation (Decision 162 R3 ratchet).
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      Decision 189: drift is measured, never inferred from an exit code. Records that a red
+      convergence record now carries a measured red_cause, that code-behind-state is a non-status
+      marker rather than a red latch, and that the drift dedup invariant dedups ticketing rather
+      than measurement.
+bundled_recommendations:
+  - rec-3797
+  - rec-3800
+followon_recs:
+  - rec-3838
+  - rec-3839
+infrastructure_dependencies:
+  - >-
+    terraform/personal sandbox root: no HCL change. This plan changes only how the drift and apply
+    workflows CLASSIFY and REPORT a plan result; no resource, IAM grant, or provider version moves.
+  - >-
+    S3 convergence record (convergence/personal/sandbox.json): gains one additive non-status marker
+    (pending_codification) and one additive discriminator (red_cause). Top-level commit_sha, run_id,
+    run_url, timestamp and plan_sha MUST keep their current names and nesting.
+  - >-
+    No terraform apply is required to land this plan; the first scheduled drift cycle after merge is
+    the live exercise.
+acceptance_criteria:
+  - >-
+    A drift cycle whose plan shows resource_changes but empty resource_drift leaves status green,
+    writes a pending_codification marker, and refuses to red-latch.
+  - >-
+    A drift cycle whose plan shows non-empty resource_drift still writes status red exactly as today.
+  - >-
+    A pending_codification marker self-clears on a later cycle that measures no delta, and that
+    self-clear writes a durable closure stamp rather than silently removing the marker.
+  - >-
+    The convergence record's top-level commit_sha, run_id, run_url, timestamp and plan_sha are
+    unmoved and unnested, so reconcile_target.py still resolves a red record as actionable.
+  - >-
+    The apply-sandbox CONVERGENCE_RED refusal names the measured red_cause and, on a drift-caused
+    red, does not present the last-successful-apply commit as the cause.
+  - >-
+    scripts/ci/convergence_advisory.py no longer asserts "last sandbox apply RED at {commit}" for a
+    red whose cause was drift.
+  - >-
+    A red convergence record with a non-zero unapplied backlog escalates on impact rather than only
+    on age, and a present infra_error marker never lowers that severity.
+  - >-
+    A source=tf_drift rec reaches the preflight infra-signal surface, and ci_rca_open's meaning is
+    unchanged (no tf_drift row appears in it).
+  - >-
+    .github/workflows/terraform-apply-sandbox.yml is still at or below its 550 effective-line budget
+    with no new raise marker.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Classifier distinguishes code-behind-state from genuine drift on real plan-JSON shapes, and
+      the advisory surface reports the cause it measured rather than the last successful apply
+    command: bin/venv-python -m pytest tests/convergence_health/test_classify.py tests/test_convergence_advisory.py -q
+    expected: >-
+      All tests pass, including the drift-present, code-behind-state, converged and malformed-JSON
+      cases, and the advisory wording case for a drift-caused red
+    fix_if: >-
+      A plan with empty resource_drift and non-empty resource_changes classifies as drift (core
+      defect unfixed), or the advisory still blames the last-successful-apply commit
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      A whole-file pytest run is not one of the six canonical primitive slots; the discriminating
+      behaviours are graduated individually by steps 2 and 3 with their own node-level selectors.
+  - step: 2
+    phase: pre-deploy
+    action: Assert the route set is exhaustive -- no fourth verdict can be produced
+    command: bin/venv-python -m pytest tests/convergence_health/test_classify.py::test_verdict_route_set_is_exhaustive -q
+    expected: Passes; the classifier's verdict enum has exactly three members and every input path maps to one
+    fix_if: A fourth or unmapped verdict exists, reproducing the Decision 158 open-route shape
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: convergence-verdict-routes-exhaustive
+  - step: 3
+    phase: pre-deploy
+    action: Code-behind-state must never write status red
+    command: bin/venv-python -m pytest tests/convergence_health/test_classify.py::test_pending_codification_never_sets_status_red -q
+    expected: Passes; the pending_codification write path leaves status at its prior value
+    fix_if: The marker path writes red, reproducing the incident this plan exists to prevent
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: pending-codification-never-red
+  - step: 4
+    phase: pre-deploy
+    action: Confirm no consumer of the record's top-level commit_sha was broken by the schema addition
+    command: bin/venv-python -m pytest tests/convergence_health/test_record.py tests/test_reconcile_target.py -q
+    expected: All pass; reconcile_target still resolves a red record with top-level commit_sha as actionable
+    fix_if: commit_sha was moved or nested, silently disabling the Reconcile heal verb (Decision 183 point 1)
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Spans two pre-existing suites as a regression sweep; the load-bearing single assertion is
+      graduated separately as step 5.
+  - step: 5
+    phase: pre-deploy
+    action: Assert commit_sha remains a top-level key on every record-writing path
+    command: grep -rn "existing\[.commit_sha.\]\|'commit_sha':" scripts/convergence_health/classify.py | grep -cv "existing\['red_cause'\]"
+    expected: Non-zero count, and no occurrence writes commit_sha inside a nested marker dict
+    fix_if: A write path nests commit_sha under a marker, breaking reconcile_target.py:87-96
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: convergence-commit-sha-stays-top-level
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      Severity rises on blocked-apply impact, the infra_error floor still never lowers it, and a
+      self-cleared pending_codification episode leaves a durable closure stamp
+    command: bin/venv-python -m pytest tests/convergence_health/test_assess.py tests/convergence_health/test_escalate.py -q
+    expected: >-
+      Passes, including a red+backlog case scoring high below the 6h age threshold, a
+      floor-does-not-lower case, and a self-clear that writes a closure stamp
+    fix_if: >-
+      A red record with a blocked-apply backlog still scores low (D3 gap open), or a self-clear
+      removes the marker without leaving a trace (Decision 55 anti-hiding)
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Whole-suite run; the two discriminating assertions are node-level and already covered by this
+      file's own red-before-green obligation rather than by a standing kernel slot.
+  - step: 7
+    phase: pre-deploy
+    action: tf_drift recs reach the infra-signal surface without changing ci_rca_open's meaning
+    command: bin/venv-python -m pytest tests/session/preflight/test_ci_rca_signals.py -q
+    expected: Passes; a tf_drift row appears in the infra-signal derivation and is absent from ci_rca_open
+    fix_if: tf_drift leaks into ci_rca_open, broadening a named verb's meaning under its existing name (Decision 84 I-3)
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: tf-drift-visible-not-in-ci-rca-open
+  - step: 8
+    phase: pre-deploy
+    action: The zero-headroom apply workflow did not grow
+    command: bin/venv-python -m scripts.validate --pre
+    expected: Exit 0; validate_structural_size_budget_raises passes with no new raise marker on terraform-apply-sandbox.yml
+    fix_if: The workflow exceeded 550 effective lines -- move the added emission into the classifier delegate rather than raising the budget
+    hermetic: false
+    graduation: not-applicable
+  - step: 9
+    phase: pre-deploy
+    action: Client and server halves of the new named verb agree
+    command: bin/venv-python -m pytest tests/common/test_ducklake_reads.py -q
+    expected: Passes; the new verb's server-side registration and client-side column tuple match
+    fix_if: Only one half landed, forking the read boundary (Decision 84 I-3)
+    hermetic: false
+    graduation: not-applicable
+  - step: 10
+    phase: pre-deploy
+    action: Full presubmit before handoff
+    command: bin/venv-python -m scripts.validate
+    expected: Exit 0 across the full tier
+    fix_if: Any check fails -- fix on the branch before commit (handoff_policy requires a completed full run)
+    hermetic: false
+    graduation: not-applicable
+  - step: 11
+    phase: post-deploy
+    action: First scheduled drift cycle after merge classifies and reports correctly
+    command: bin/venv-python -m scripts.convergence_health
+    expected: >-
+      HealthVerdict prints a status and, if a marker is present, names pending_codification with a
+      measured cause rather than an unexplained red
+    fix_if: The live cycle still red-latches a code-behind-state delta, or reports a cause it did not measure
+    hermetic: false
+    graduation: not-applicable
+  - step: 12
+    phase: post-deploy
+    action: Confirm the live convergence record still parses for every existing reader
+    command: bin/venv-python -m scripts.ci.reconcile_target
+    expected: Resolves a clean no-op against the live green record, with no malformed-record error
+    fix_if: The additive fields broke a reader -- revert the record-shape change and re-approach additively
+    hermetic: false
+    graduation: not-applicable
+  - step: 13
+    phase: post-deploy
+    action: Bundled recs closed by the Resolves trailer
+    command: bin/venv-python -m scripts.sync.ops sync && grep rec-3797 logs/.recommendations-log.jsonl | grep -c closed
+    expected: Non-zero; rec-3797 and rec-3800 both read closed after the post-merge sync
+    fix_if: The Resolves trailer was omitted from the squash-merge body -- update the recs via the portal
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/convergence_health/classify.py
+    behavior: >-
+      A plan with empty resource_drift and non-empty resource_changes classifies as
+      pending_codification and never writes status red
+    verification_step: 3
+    test_selector: tests/convergence_health/test_classify.py::test_pending_codification_never_sets_status_red
+    red_green_expectation: red before (file does not exist), green after
+  - source: scripts/convergence_health/record.py
+    behavior: >-
+      read_pending_codification_marker degrades a malformed marker to None rather than raising, and
+      red_cause derives from the same drift markers convergence_dedup.py uses
+    verification_step: 4
+    test_selector: tests/convergence_health/test_record.py::test_read_pending_codification_marker_degrades
+    red_green_expectation: red before, green after
+  - source: scripts/convergence_health/assess.py
+    behavior: >-
+      A red record with a non-zero unapplied backlog scores high below the 6h age threshold, and a
+      present infra_error marker never lowers an already-high severity
+    verification_step: 6
+    test_selector: tests/convergence_health/test_assess.py::test_red_backlog_raises_severity_before_age_threshold
+    red_green_expectation: red before, green after
+  - source: scripts/convergence_health/escalate.py
+    behavior: A self-cleared pending_codification episode writes a durable closure stamp
+    verification_step: 6
+    test_selector: tests/convergence_health/test_escalate.py::test_pending_codification_selfclear_writes_closure_stamp
+    red_green_expectation: red before, green after
+  - source: scripts/ci/convergence_advisory.py
+    behavior: >-
+      A drift-caused red does not render "last sandbox apply RED at {commit}" naming the last
+      successful apply
+    verification_step: 1
+    test_selector: tests/test_convergence_advisory.py::test_drift_red_does_not_blame_last_apply_commit
+    red_green_expectation: red before, green after
+  - source: scripts/preflight/ci_rca_signals.py
+    behavior: tf_drift recs reach the infra-signal derivation and do not appear in ci_rca_open
+    verification_step: 7
+    test_selector: tests/session/preflight/test_ci_rca_signals.py::test_tf_drift_reaches_infra_signal_surface_only
+    red_green_expectation: red before, green after
+  - source: .github/workflows/terraform-drift.yml
+    behavior: >-
+      The dedup invariant no longer suppresses measurement, and a non-drift delta takes the marker
+      branch rather than the red-flip branch
+    verification_step: 1
+    test_selector: tests/convergence_health/test_classify.py::test_dedup_narrowing_keeps_ticket_dedup
+    red_green_expectation: >-
+      red before, green after -- the workflow's branch selection is exercised through the delegate
+      it calls, since a YAML workflow body is not directly unit-testable
+  - source: .github/workflows/terraform-apply-sandbox.yml
+    behavior: The refusal message emits the measured cause and the file stays within its 550-line budget
+    verification_step: 8
+    command: bin/venv-python -m scripts.validate --pre
+    red_green_expectation: >-
+      red before, green after on the budget assertion; the message content itself is exercised
+      through the classifier delegate's renderer tests
+  - source: src/common/ducklake_scd2_schema.py
+    behavior: The new infra-signal named verb is registered server-side and matches the client tuple
+    verification_step: 9
+    test_selector: tests/common/test_ducklake_reads.py::test_infra_signals_verb_registered
+    red_green_expectation: red before, green after
+  - source: src/common/ducklake_reader_client.py
+    behavior: The new verb declares its projected column tuple
+    verification_step: 9
+    test_selector: tests/common/test_ducklake_reads.py::test_infra_signals_verb_registered
+    red_green_expectation: red before, green after
+constraints:
+  - >-
+    STRICTLY ADDITIVE record schema. Top-level commit_sha, run_id, run_url, timestamp and plan_sha
+    must not move or nest. reconcile_target.py:87-96 treats a red record with no top-level
+    commit_sha as malformed and non-actionable, silently disabling the Reconcile heal verb;
+    aws_infra.py:140 and convergence_health/record.py:102 read the same field.
+  - >-
+    NO third status value. Every consumer is red-vs-not-red binary and the safety-critical one --
+    terraform-apply-sandbox.yml's `if [ "$STATUS" != "red" ]` -- FAILS OPEN, admitting the apply.
+    Ten measured readers depend on this. Use a non-status marker, as pending_gated and infra_error
+    already do.
+  - >-
+    .github/workflows/terraform-apply-sandbox.yml is at 550/550 effective lines. Decompose into the
+    delegate; do NOT add a budget raise marker (Decision 128/166, and Decision 165 requires an
+    authorizing Decision for any raise).
+  - >-
+    red_cause must derive from the SAME drift markers scripts/ci_rca/convergence_dedup.py already
+    discriminates on, or that module must read the new field. One authority, never two classifiers
+    that can diverge (Decision 142).
+  - >-
+    Preserve Decision 154 point 7's floor property exactly: the infra_error floor raises none->low
+    and never overrides a higher value.
+  - >-
+    Decision 154 point 6's anti-masking accounting rests on stale_green_backlog firing at ~2h on a
+    green record. The marker design keeps status green, so that trigger stays live -- do not gate it
+    behind the new marker.
+  - >-
+    The self-clear must write a durable closure stamp, never silently revert the record (Decision 55
+    anti-hiding).
+  - >-
+    Per Decision 119, terraform/personal cannot be locally init'd on CC-web. No VP step may run
+    terraform init/plan/apply locally; CI is the authoritative verifier.
+  - No rescue agents or workaround loops (Decision 55).
+context:
+  - >-
+    Decision-scout verdict FLAGS_FOUND (round 2, after the approach changed materially). CITE:
+    Decision 183, 180, 77, 92, 154, 155, 162, 166, 165, 128, 142, 72, 84, 187, 181, 119, 158, 163,
+    55, 126, 186, 61. Decisions triaged: 141 of 141. Roadmap items intersected: 10; CONFLICT: 0;
+    RELATED: 10.
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - >-
+    Scout WARNs on Decision 92 and 154 are resolved by the design, not by amendment: a third status
+    value would have amended Decision 92 point 2's refusal predicate and clearing rule, and would
+    fire neither the red_age nor the stale_green_backlog trigger, voiding Decision 154 point 6's
+    accounting. The non-status marker amends neither. Decision 163 SPIRIT: this design claims no new
+    refusal, so none is advertised that the precondition does not enforce.
+  - >-
+    The "one red = one signal" dedup invariant lives only in terraform-drift.yml comments (12, 219,
+    234, 301) -- no numbered Decision established it. Decision 187 governs pinning the narrowing.
+  - >-
+    Root cause evidence: drift run 34768446706's plan output carries NO "Objects have changed
+    outside of Terraform" banner (resource_drift empty), and PR #1159's VP step 18 returned exit 0
+    post-split-apply on its branch. Incident: red 16:24:36Z, #1159 merged 16:46:48Z, applies refused
+    (34769604207, 34769752713, 34774573576), unlatched by 34776183397 at 19:00:32Z. Prior
+    occurrence 2026-09-04 (Decision 183).
+  - >-
+    scripts/convergence_health/record.py::derive_red_since already encodes that drift_detected_at
+    supersedes a stale timestamp on a drift-flip; the reporting surfaces never used it.
+  - >-
+    Marker precedent to mirror verbatim: write-convergence-record/action.yml:126-157 (pending_gated)
+    and 160-195 (infra_error) -- read EXISTING, capture PRIOR_STATUS, setdefault status, set the
+    marker dict, write, read-back-verify status UNCHANGED.
+  - >-
+    SLOC headroom: ci_rca_signals.py 472/500, ducklake_scd2_schema.py 474/500. Crossing 500 means
+    decompose (Decision 128), never a raise.
+  - >-
+    rec-3800 duplicates this misdiagnosis and its acceptance greps git log for a workflow_dispatch
+    input that never reaches git history -- unsatisfiable by construction. Close as superseded with
+    a closure artifact (Decision 186), not by satisfying it.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read (not all of DECISIONS.md)
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - >-
+    Re-read the two marker precedents in write-convergence-record/action.yml BEFORE writing the
+    pending_codification path -- mirror the read-back-verify, do not invent a new write shape
+execution_steps:
+  - >-
+    Create scripts/convergence_health/classify.py with an explicit three-member verdict enum and a
+    pure classifier over parsed plan JSON; write tests/convergence_health/test_classify.py first and
+    confirm it fails against the un-implemented tree
+  - >-
+    Add read_pending_codification_marker and the red_cause derivation to
+    scripts/convergence_health/record.py, deriving from the markers convergence_dedup.py already
+    uses; export through the package facade
+  - >-
+    Modify .github/workflows/terraform-drift.yml to emit plan JSON, call the delegate, branch to the
+    marker write on pending_codification and the existing red-flip on out_of_band_drift, narrow the
+    dedup to ticketing, and self-clear with a closure stamp
+  - >-
+    Modify .github/workflows/terraform-apply-sandbox.yml so the refusal renders the measured cause
+    via the delegate -- verify the file did not grow past 550 effective lines before committing
+  - Modify scripts/ci/convergence_advisory.py so a drift-caused red stops blaming the last successful apply commit
+  - Modify scripts/convergence_health/assess.py so blocked-apply backlog raises severity on red, preserving the Decision 154 floor property
+  - Modify scripts/convergence_health/escalate.py for the pending_codification episode and closure stamp
+  - >-
+    Add the infra-signal derivation to scripts/preflight/ci_rca_signals.py and the matching named
+    verb to src/common/ducklake_scd2_schema.py + ducklake_reader_client.py + read-engine.yaml, in
+    lockstep
+  - >-
+    Update docs/contracts/environment-taxonomy.yaml (marker vocabulary + route-exhaustiveness table)
+    and docs/contracts/deploy-paths.yaml, each with the amendment_log entry its Class D drift gate
+    requires
+  - Author Decision 189 in docs/DECISIONS.md with its significance envelope
+  - Re-baseline config/composite_action_body_baseline.yaml for the shrunk shell bodies
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - "Report: what was implemented, verification results"
+work_areas: []
+rollback: >-
+  The record-shape change is purely additive, so a rollback is a code revert with no data migration:
+  existing readers ignore unknown keys, and a stale pending_codification marker left behind is
+  inert once the code that reads it is gone. The drift workflow's classification can be reverted to
+  the bare exit-code branch independently of the reporting changes in apply-sandbox and
+  convergence_advisory, since they share only the read-side delegate.
