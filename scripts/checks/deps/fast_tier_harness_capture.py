@@ -20,6 +20,10 @@ import os
 from pathlib import Path
 
 
+def pytest_configure(config):
+    Path(os.environ["FAST_TIER_NODE_EVENTS"]).touch()
+
+
 def pytest_runtest_logreport(report):
     payload = {
         "nodeid": report.nodeid,
@@ -83,7 +87,8 @@ def event_verdict(event: dict[str, Any]) -> str | None:
     if when == "call":
         if wasxfail:
             return "xfailed" if outcome == "skipped" else "xpassed"
-        return {"passed": "pass", "failed": "fail", "skipped": "skipped"}.get(outcome)
+        verdicts: dict[Any, str] = {"passed": "pass", "failed": "fail", "skipped": "skipped"}
+        return verdicts.get(outcome)
     if when in {"setup", "teardown"} and outcome == "failed":
         return "fail"
     if when == "setup" and outcome == "skipped":
