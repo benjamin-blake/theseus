@@ -1,5 +1,5 @@
 """TestRootScopedBase (PLAN-vp-replay-mirror-decomposition concern-split decomposition of the
-former tests/checks/verification/test_validate_vp_replay.py monolith), relocated verbatim.
+former flat single-file mirror), relocated verbatim.
 
 rec-3166 class: content-keyed plan resolution must read its base from the INJECTED `root`'s
 repository, never from `_common.ROOT` (patched to an unrelated DECOY repo in every test here). A

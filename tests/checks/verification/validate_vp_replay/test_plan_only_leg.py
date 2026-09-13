@@ -1,5 +1,5 @@
 """TestPlanOnlyLeg (PLAN-vp-replay-mirror-decomposition concern-split decomposition of the former
-tests/checks/verification/test_validate_vp_replay.py monolith), relocated verbatim.
+flat single-file mirror), relocated verbatim.
 
 Covers the DEFER path via the changed_files/root injection seams -- a diff-present plan whose
 implementation_declared did not newly flip true DEFERs.

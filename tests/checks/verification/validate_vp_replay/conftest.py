@@ -1,7 +1,6 @@
 """Package conftest for tests/checks/verification/validate_vp_replay/ (PLAN-vp-replay-mirror-
-decomposition concern-split decomposition of the former
-tests/checks/verification/test_validate_vp_replay.py monolith, SLOC decompose-by-default -- see
-AGENTS.md SLOC governance; sibling precedents:
+decomposition concern-split decomposition of the former flat single-file mirror, SLOC
+decompose-by-default -- see AGENTS.md SLOC governance; sibling precedents:
 tests/checks/verification/validate_graduation_completeness/{conftest.py,test_implement_leg.py},
 tests/checks/verification/validate_scope_boundary/{conftest.py,test_plan_legs.py}).
 

@@ -1,5 +1,5 @@
 """TestContentKeyedResolution (PLAN-vp-replay-mirror-decomposition concern-split decomposition of
-the former tests/checks/verification/test_validate_vp_replay.py monolith), relocated verbatim.
+the former flat single-file mirror), relocated verbatim.
 
 The defect this re-key closes: a branch whose only content commit is an automated checkpoint (no
 feat({slug}) commit subject) still resolves and replays, because resolution is keyed off

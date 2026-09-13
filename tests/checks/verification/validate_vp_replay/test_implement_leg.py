@@ -1,5 +1,5 @@
 """TestImplementLeg (PLAN-vp-replay-mirror-decomposition concern-split decomposition of the
-former tests/checks/verification/test_validate_vp_replay.py monolith), relocated verbatim.
+former flat single-file mirror), relocated verbatim.
 
 Exercises the replay path against a real git fixture whose plan resolves via
 `implementation_declared`.
