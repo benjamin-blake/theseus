@@ -500,7 +500,12 @@ class TestRegistrationSurfaces:
         assert entry.module == "scripts.checks.hygiene.validate_raises_discrimination"
         assert entry.attr == _CHECK
         assert entry.pre is True
-        assert entry.pre_globs == ("tests/**", "scripts/checks/hygiene/**")
+        assert entry.pre_globs == (
+            "tests/**",
+            "scripts/checks/hygiene/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        )
         assert entry.full_segment == "full_after_lint"
         dispatched = [step.name for step in registry.pre_sequence() + registry.full_sequence()]
         assert dispatched.count(_CHECK) >= 2

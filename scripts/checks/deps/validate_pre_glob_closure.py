@@ -1,4 +1,4 @@
-"""ADVISORY auditor: does each glob-gated --pre check's pre_globs cover its own code closure?
+"""BLOCKING auditor: does each glob-gated --pre check's pre_globs cover its own code closure?
 
 Motivating defect class (D2-3 Finding 4, rec-3289): a `--pre` Entry declares `pre_globs`, the
 check's implementation then grows a transitive first-party import that none of those globs match,
@@ -21,22 +21,31 @@ hand-maintained surface (`_PRUNED_EDGES`) for part of another. It is justified b
 is a tested declaration carrying a stated reason per entry, and because a wrong entry reddens a
 build rather than silently narrowing selection.
 
-Staging (D2-3 migration path). Wave 4a -- THIS stage -- is ADVISORY on BOTH channels: it prints
-findings, declares Decision 170 accounting, NEVER appends to `failed`, and never lets an exception
-escape (nothing wraps a check body, so a raise here would abort --pre; see the entry point's
-Decision 55 loud-skip guard). Wave 4b pays the backlog down: a genuinely missing glob gets added,
-an Entry.module naming no graph node gets corrected, a hub artefact gets a reviewed `_PRUNED_EDGES`
-entry. Wave 4c flips it to blocking once the backlog is zero, at which point adding an uncovered
-import to a check module fails the PR that adds it, with the glob to add printed.
+Staging (D2-3 migration path, now COMPLETE -- LSA-06). Wave 4a was ADVISORY on both channels
+(printed findings, declared Decision 170 accounting, never appended to `failed`). Wave 4b paid the
+backlog down: a genuinely missing glob got added, an Entry.module naming no graph node got
+corrected, a hub artefact got a reviewed `_PRUNED_EDGES` entry, and a derived structural floor
+(see `_module_body_is_trivial`) excluded modules with nothing to declare. Wave 4c -- THIS module,
+now -- is the flip: an uncovered closure path APPENDS to `failed`, the same as any other --pre
+gate. The genuine backlog measured zero across all seven affected domain manifests before this
+flip landed (see the seven `scripts/checks/*/_manifest.py` paydowns in the same diff).
+
+_PRUNED_EDGES additions are themselves change-controlled (rec-3558): a brand-new row, or an
+existing row's target count growing, requires a `# pruned-edge-approved: dec-NNN <reason>` marker
+on the row's own line span, checked by `_marker_guard.check_diff` against a `RegistrySpec` declared
+in THIS module (never `_marker_guard.py` itself -- a new binding needs no edit there). Removing a
+row, or shrinking one, is always free -- only WIDENING the auditor's blind spot is gated.
 """
 
 from __future__ import annotations
 
+import ast
 import fnmatch
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from scripts.checks import _common, registry
+from scripts.checks import _common, _marker_guard, registry
 from scripts.checks._schema import Entry
 
 if TYPE_CHECKING:  # networkx is imported only by the deferred scripts.dependency_graph import
@@ -51,7 +60,9 @@ if TYPE_CHECKING:  # networkx is imported only by the deferred scripts.dependenc
 # below are the one-time allowance that measurement authorised -- never the pay-down method, which
 # is ADDING GLOBS to the checks that under-declare them. Add an entry only with an inline comment
 # stating why the edge has no behavioural bearing on the importing check, and naming the condition
-# that would remove the row again.
+# that would remove the row again. A NEW row, or an existing row's target count growing, now needs
+# a `# pruned-edge-approved: dec-NNN <reason>` marker on the row's own line span (rec-3558) --
+# removing a row, or shrinking one, stays free.
 _PRUNED_EDGES: dict[str, tuple[str, ...]] = {
     # 17 _manifest targets: Decision 169 registration fan-out -- registry imports each only to assemble _ALL_ENTRIES.
     # The _schema target is a DISTINCT argument: a pure declaration module (Entry, SEGMENT_TOKENS) with no first-party
@@ -91,9 +102,9 @@ _PRUNED_EDGES: dict[str, tuple[str, ...]] = {
     # (as two rows) fails the roster's own per-row inertness pin (rec-3553's
     # test_every_row_key_is_reachable_from_a_gated_closure), which judges each row ALONE and
     # deliberately rejects a pair of rows that are only JOINTLY sufficient. Retired rather than
-    # replaced: the audit stays advisory-only (never fails the build) and the checks that lose this
-    # pruning benefit simply show scripts.ops_data_portal in their closure again, same as any
-    # other unreviewed hub edge in the backlog the wave-4b/4c program is paying down.
+    # replaced: the checks that lose this pruning benefit simply show scripts.ops_data_portal in
+    # their closure again, same as any other unreviewed hub edge in the backlog the wave-4b/4c
+    # program paid down.
 }
 
 # Per-check cap on printed paths; the count is always reported in full.
@@ -102,6 +113,12 @@ _MAX_PRINTED_PATHS = 8
 # Rendered in place of a path when an Entry.module names no node in the import graph -- a finding
 # in its own right (see _unmatched_paths), not a silently empty closure.
 _UNRESOLVABLE_TEMPLATE = "<module not in the import graph: {module}>"
+
+# The marker token this module's own _PRUNED_EDGES row-addition gate binds to (rec-3558) --
+# field semantics live in docs/contracts/marker-grammar.yaml, not restated here.
+_PRUNED_EDGE_TOKEN = "pruned-edge-approved"
+_PRUNED_EDGE_MARKER_RE = re.compile(rf"#\s*{re.escape(_PRUNED_EDGE_TOKEN)}:\s*dec-(\d+)\s*(.*)$")
+_SELF_REL_PATH = "scripts/checks/deps/validate_pre_glob_closure.py"
 
 
 def _glob_match(path: str, glob: str) -> bool:
@@ -112,7 +129,8 @@ def _glob_match(path: str, glob: str) -> bool:
     pins the no-scripts.validate-dependency rule (validate.py imports scripts.checks.*, so the
     reverse edge is a cycle); and an import edge to scripts.validate would drag validate.py's
     entire closure into THIS module's closure, which this very check then audits. Equivalence is
-    pinned by tests/checks/deps/test_validate_pre_glob_closure.py::TestGlobMatcherEquivalence.
+    pinned by tests/checks/deps/validate_pre_glob_closure/test_closure_and_floor.py::
+    TestGlobMatcherEquivalence.
     """
     if fnmatch.fnmatch(path, glob):
         return True
@@ -127,6 +145,32 @@ def _module_to_repo_path(module: str, root: Path) -> str | None:
         if (root / candidate).is_file():
             return candidate
     return None
+
+
+def _module_body_is_trivial(repo_path: str, root: Path) -> bool:
+    """The derived structural floor (wave 4b pay-down): True iff the module at `repo_path` has an
+    AST body that is EMPTY, or contains ONLY a single docstring `Expr` statement -- no other
+    executable statement of any kind.
+
+    Keyed on the AST body alone, NEVER on the filename: a non-`__init__.py` module with the same
+    trivial shape is excluded too, and a `__init__.py` facade carrying real code (even a single
+    `from __future__ import annotations`, itself an executable Import statement) is NOT excluded.
+    A module whose sole statement is ONE executable statement with no docstring (`len(body) == 1`
+    but that one statement is not a docstring `Expr`) is deliberately NOT trivial -- this is what
+    separates the rule from a naive `len(tree.body) <= 1` heuristic, which would wrongly exclude
+    it. Never raises: an unreadable or unparseable module is not trivial (so it stays reported,
+    matching the fail-loud posture of everything else in this module)."""
+    try:
+        tree = ast.parse((root / repo_path).read_text(encoding="utf-8"), filename=repo_path)
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return False
+    body = tree.body
+    if not body:
+        return True
+    if len(body) != 1:
+        return False
+    stmt = body[0]
+    return isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and isinstance(stmt.value.value, str)
 
 
 def _closure_view(root: Path) -> nx.DiGraph:
@@ -172,81 +216,196 @@ def _gated_entries() -> list[Entry]:
     )
 
 
-def _unmatched_paths(entry: Entry, view: nx.DiGraph, root: Path) -> list[str]:
-    """Repo-relative closure paths of `entry.module` that none of `entry.pre_globs` matches.
+def _uncovered_and_suppressed(entry: Entry, view: nx.DiGraph, root: Path) -> tuple[list[str], list[str]]:
+    """Repo-relative closure paths of `entry.module` that none of `entry.pre_globs` matches,
+    split by the derived inert-module floor into (reported, suppressed). `reported` is what the
+    gate acts on; `suppressed` is PRINTED as a count only, never asserted -- the floor narrows the
+    glob-coverage OBLIGATION, it never removes a node from the import graph itself (Decision 135
+    point 2(i) keeps __init__.py facades as graph nodes).
 
     A module ABSENT from the view (a typo'd or relocated `Entry.module`) has NO computable
     closure, so no glob can be shown to cover it -- and the reflexivity guarantee `_closure_modules`
     documents is exactly what a wrong module identity forfeits. Reporting the module itself as the
-    single unresolvable finding keeps that case out of the "clean" bucket: auditing it CLEAN would
-    reproduce, inside this auditor, the same fail-open shape it exists to catch.
+    single unresolvable finding keeps that case out of the "clean" bucket, and it is never
+    eligible for the inert-module floor (an unresolvable identity is not a trivial module).
     """
     if entry.module not in view:
-        return [_UNRESOLVABLE_TEMPLATE.format(module=entry.module)]
+        return [_UNRESOLVABLE_TEMPLATE.format(module=entry.module)], []
     globs = entry.pre_globs or ()
     paths = sorted(filter(None, (_module_to_repo_path(m, root) for m in _closure_modules(view, entry.module))))
-    return [path for path in paths if not any(_glob_match(path, glob) for glob in globs)]
+    uncovered = [path for path in paths if not any(_glob_match(path, glob) for glob in globs)]
+    reported = [path for path in uncovered if not _module_body_is_trivial(path, root)]
+    suppressed = [path for path in uncovered if _module_body_is_trivial(path, root)]
+    return reported, suppressed
 
 
-def _audit() -> None:
+def _unmatched_paths(entry: Entry, view: nx.DiGraph, root: Path) -> list[str]:
+    """Post-floor reported closure paths -- see `_uncovered_and_suppressed`. Kept as its own
+    function (rather than inlined at each call site) because it is the direct target of VP step
+    10's per-domain residual measurement and several test call sites."""
+    reported, _suppressed = _uncovered_and_suppressed(entry, view, root)
+    return reported
+
+
+def _pruned_edges_node(tree: ast.Module) -> ast.AnnAssign | None:
+    return next(
+        (
+            n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name) and n.target.id == "_PRUNED_EDGES"
+        ),
+        None,
+    )
+
+
+def _pruned_edge_marker_on_span(lines: list[str], start: int, end: int) -> tuple[str | None, str | None]:
+    """Scan a row's own line span [start, end] (1-indexed, inclusive -- the dict key's line
+    through its value tuple's closing line, which for a real multi-line tuple is the same
+    physical line as the trailing `),`) for a `# pruned-edge-approved: dec-NNN <reason>` marker.
+    Mirrors validate_tier_demotion_markers.py's `_marker_on_span` entry-line-span placement rule.
+    A marker with no reason text parses as no marker at all (this token's reason_required: true)."""
+    for lineno in range(start, end + 1):
+        if not (1 <= lineno <= len(lines)):
+            continue
+        match = _PRUNED_EDGE_MARKER_RE.search(lines[lineno - 1])
+        if not match:
+            continue
+        reason = match.group(2).strip()
+        if not reason:
+            continue
+        return f"dec-{match.group(1)}", reason
+    return None, None
+
+
+def _pruned_edges_entries(text: str) -> dict[str, _marker_guard.MarkerEntry]:
+    """spec.extractor for the _PRUNED_EDGES row-addition gate (rec-3558): one MarkerEntry per row
+    of the `_PRUNED_EDGES` dict literal found in `text` (this module's own source, at either base
+    or head), keyed by the row's key string and valued by its TARGET COUNT. A brand-new row, or an
+    existing row's target count growing, is what `_marker_guard.check_diff`'s gated_direction="up"
+    comparison catches; a row or a target REMOVED shrinks the count (or removes the key entirely,
+    which check_diff never even visits) and is never gated. Never raises: an unparseable `text`
+    (base ref content that predates this module, or a malformed fixture) yields an empty map."""
+    try:
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError):
+        return {}
+    node = _pruned_edges_node(tree)
+    if node is None or not isinstance(node.value, ast.Dict):
+        return {}
+    lines = text.splitlines()
+    entries: dict[str, _marker_guard.MarkerEntry] = {}
+    for key_node, value_node in zip(node.value.keys, node.value.values):
+        if not (isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)):
+            continue
+        target_count = len(value_node.elts) if isinstance(value_node, ast.Tuple) else 0
+        end = getattr(value_node, "end_lineno", None) or key_node.lineno
+        marker, reason = _pruned_edge_marker_on_span(lines, key_node.lineno, end)
+        entries[key_node.value] = _marker_guard.MarkerEntry(float(target_count), marker, reason)
+    return entries
+
+
+_PRUNED_EDGE_SPEC = _marker_guard.RegistrySpec(
+    rel_path=_SELF_REL_PATH,
+    token=_PRUNED_EDGE_TOKEN,
+    gated_direction="up",
+    extractor=_pruned_edges_entries,
+    gates_new_entry=lambda _value: True,
+    label="_PRUNED_EDGES row addition (rec-3558)",
+    reason_required=True,
+)
+
+
+def _pruned_edges_row_addition_violations() -> list[str]:
+    """Violation strings for an unauthorized _PRUNED_EDGES row addition or target-count growth --
+    empty when clean. A thin call-site wrapper around `_marker_guard.check_diff` so the audit body
+    stays a plain call, matching every other marker-gated registry's own check function shape."""
+    return _marker_guard.check_diff(_PRUNED_EDGE_SPEC)
+
+
+def _audit() -> tuple[list[str], int]:
     """The audit proper. Split out so the registered check can wrap it in the Decision 55
-    loud-skip guard, and so the banner still prints when that guard fires."""
+    loud-skip guard, and so the banner still prints when that guard fires. Returns
+    (findings, suppressed_count): `findings` is what the caller appends to `failed` (BLOCKING,
+    LSA-06); `suppressed_count` is printed as pure telemetry, never asserted."""
     entries = _gated_entries()
+    findings: list[str] = []
     if not entries:
         print("  PASS: no --pre entry declares pre_globs.")
         registry.examined(0, unit="gated_pre_checks")
-        return
+        return findings, 0
 
     root = _common.ROOT
     view = _closure_view(root)
 
-    total_unmatched = 0
+    total_reported = 0
+    total_suppressed = 0
     with_findings = 0
     for entry in entries:
-        unmatched = _unmatched_paths(entry, view, root)
-        if not unmatched:
+        reported, suppressed = _uncovered_and_suppressed(entry, view, root)
+        total_suppressed += len(suppressed)
+        if not reported:
             continue
         with_findings += 1
-        total_unmatched += len(unmatched)
-        print(f"  {entry.name}: {len(unmatched)} closure path(s)/module(s) not matched by its declared pre_globs")
-        for path in unmatched[:_MAX_PRINTED_PATHS]:
+        total_reported += len(reported)
+        findings.append(f"{entry.name}: {len(reported)} closure path(s)/module(s) not matched by its declared pre_globs")
+        print(f"  {entry.name}: {len(reported)} closure path(s)/module(s) not matched by its declared pre_globs")
+        for path in reported[:_MAX_PRINTED_PATHS]:
             print(f"      - {path}")
-        if len(unmatched) > _MAX_PRINTED_PATHS:
-            print(f"      ... and {len(unmatched) - _MAX_PRINTED_PATHS} more")
+        if len(reported) > _MAX_PRINTED_PATHS:
+            print(f"      ... and {len(reported) - _MAX_PRINTED_PATHS} more")
 
     if with_findings:
         print(
-            f"  ADVISORY: {with_findings} of {len(entries)} glob-gated --pre check(s) have at least one uncovered "
-            f"closure path or unresolvable module ({total_unmatched} finding(s) total). Add the missing glob to the "
+            f"  FAIL: {with_findings} of {len(entries)} glob-gated --pre check(s) have at least one uncovered "
+            f"closure path or unresolvable module ({total_reported} finding(s) total). Add the missing glob to the "
             "check's Entry, fix the Entry.module that names no graph node, or record a reviewed hub-artefact edge in "
-            "validate_pre_glob_closure._PRUNED_EDGES. Never fails the build at this stage."
+            "validate_pre_glob_closure._PRUNED_EDGES (row/target additions are themselves marker-gated)."
         )
     else:
         print(f"  PASS: all {len(entries)} glob-gated --pre check(s) declare globs covering their own import closure.")
+
+    print(
+        f"  {total_suppressed} closure path(s) suppressed by the derived inert-module floor (informational, never asserted)."
+    )
+
+    row_violations = _pruned_edges_row_addition_violations()
+    if row_violations:
+        print("  _PRUNED_EDGES row-addition violations:")
+        for v in row_violations:
+            print(f"    - {v}")
+        findings.extend(row_violations)
+
     registry.examined(len(entries), unit="gated_pre_checks")
+    return findings, total_suppressed
 
 
 @registry.register("validate_pre_glob_closure", owner="platform")
 def validate_pre_glob_closure(failed: list[str]) -> None:
-    """Report, per glob-gated --pre check, the import-closure paths its pre_globs do not cover.
+    """Fail, per glob-gated --pre check, when its pre_globs do not cover its own import closure
+    (D2-3, LSA-06). Also gates an unauthorized _PRUNED_EDGES row addition or target-count growth
+    (rec-3558).
 
-    ADVISORY at this stage on BOTH channels: `failed` is never appended to (see the module
-    docstring's staging paragraph), and no exception escapes. The second half is not decoration --
-    nothing wraps a check body (scripts/checks/validation_result.py's dispatch_recording calls
-    fn(failed) bare, and validate.py's --pre loop does not wrap the dispatch either), so a raise
-    from here would abort the whole fast tier before its summary ever printed. Same loud-skip
-    shape as derive_affected_tests (Decision 55): print the error, declare it, carry on.
+    BLOCKING on both channels since the wave-4c flip: `failed` gains one entry when any glob-gated
+    check under-declares its closure or the _PRUNED_EDGES roster grows without authorization, and
+    `registry.failure_detail` carries the itemized list. The Decision 55 loud-skip guard is
+    unchanged -- nothing wraps a check body (scripts/checks/validation_result.py's
+    dispatch_recording calls fn(failed) bare, and validate.py's --pre loop does not wrap the
+    dispatch either), so an internal error here must SKIP rather than raise or silently pass.
 
     Decision 170 accounting on all three reachable exits -- examined(0) for an empty gated roster
     (an empty DOMAIN, not a skip, per check-accounting.yaml's discrimination rule),
     examined(len(entries)) for a real run, and skipped(reason) when the audit could not complete.
     """
-    print("\n=== Pre-glob closure audit (ADVISORY, D2-3 / rec-3289) ===")
+    print("\n=== Pre-glob closure audit (D2-3 / rec-3289, LSA-06) ===")
     try:
-        _audit()
-    except Exception as exc:  # noqa: BLE001 -- Decision 55: an ADVISORY check must never abort --pre
+        findings, _suppressed = _audit()
+    except Exception as exc:  # noqa: BLE001 -- Decision 55: a probe failure must SKIP loudly, never raise or silently pass
         print(
             f"  SKIP (LOUD, Decision 55): the pre-glob closure audit raised {exc!r} and was abandoned. "
             "Nothing was audited this run; the gate is NOT failed and the fast tier continues."
         )
         registry.skipped(f"pre-glob closure audit raised {exc!r}")
+        return
+    if findings:
+        failed.append(f"Pre-glob closure audit: {len(findings)} finding(s)")
+        registry.failure_detail(findings)

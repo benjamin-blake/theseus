@@ -316,6 +316,60 @@ class TestWeakeningGateFixedPoint:
         assert registry.resolve(registry._WEAKENING_GATE) is owners[0]
 
 
+class TestAuditorClosureFixedPoint:
+    """VP step 9 (LSA-06, Decision 187 point 6 form): the self-reference hole for the pre-glob
+    closure auditor's OWN Entry -- without _assert_pre_glob_closure_gate_intact, the PR that
+    narrows this auditor's own globs below its real import closure is the PR under which it stops
+    seeing part of the tree it audits. Sibling of TestWeakeningGateFixedPoint above; same guard
+    module (registry.py), same mechanism-not-roster shape, a different fixed point."""
+
+    def test_live_fleet_assembles_normally(self) -> None:
+        """The real tree's Entry, exactly as committed, must not raise."""
+        registry.pre_sequence()
+
+    def test_pre_sequence_raises_when_the_auditors_entry_globs_are_narrowed(self) -> None:
+        patched = dict(registry._ALL_ENTRIES)
+        original = patched[registry._PRE_GLOB_CLOSURE_GATE]
+        patched[registry._PRE_GLOB_CLOSURE_GATE] = dataclasses.replace(original, pre_globs=("docs/**",))
+        with patch.object(registry, "_ALL_ENTRIES", patched), pytest.raises(registry.AuditorClosureError):
+            registry.pre_sequence()
+
+    def test_ungated_entry_is_a_free_no_op(self) -> None:
+        """pre_globs=None is maximal coverage (always runs) -- nothing to narrow, so nothing to
+        gate here; this fixed point governs a narrowed TUPLE, not the ungated state."""
+        patched = dict(registry._ALL_ENTRIES)
+        original = patched[registry._PRE_GLOB_CLOSURE_GATE]
+        patched[registry._PRE_GLOB_CLOSURE_GATE] = dataclasses.replace(original, pre_globs=None)
+        with patch.object(registry, "_ALL_ENTRIES", patched):
+            registry.pre_sequence()
+
+    def test_absent_entry_is_a_free_no_op(self) -> None:
+        """A missing auditor Entry is a DIFFERENT defect (the auditor stops running at all) than
+        the one this fixed point closes (it runs but under-covers itself) -- out of scope here."""
+        patched = dict(registry._ALL_ENTRIES)
+        del patched[registry._PRE_GLOB_CLOSURE_GATE]
+        with patch.object(registry, "_ALL_ENTRIES", patched):
+            registry.pre_sequence()
+
+    def test_git_ls_files_failure_is_a_free_no_op(self) -> None:
+        """An unmeasurable corpus must not be treated as an uncovered one (Decision 55) --
+        pre_sequence() has no accounting channel of its own to declare a loud skip through, and
+        the live registered check sharing this exact `git ls-files` dependency is the surface that
+        owns reporting a git-unavailable environment."""
+        import subprocess as _subprocess
+
+        with patch.object(_common, "run", return_value=_subprocess.CompletedProcess(["git"], 128, "", "fatal")):
+            registry.pre_sequence()
+
+    def test_pre_glob_match_leading_double_star_retry(self) -> None:
+        """Same leading-`**/` retry as the two sibling replicas (scripts/validate.py::
+        _pre_glob_match, validate_pre_glob_closure._glob_match) -- a top-level file must still
+        match a `**/`-prefixed glob."""
+        assert registry._pre_glob_match("setup.py", "**/*.py") is True
+        assert registry._pre_glob_match("scripts/validate.py", "**/*.py") is True
+        assert registry._pre_glob_match("AGENTS.md", "**/*.py") is False
+
+
 def _tier_shape(entry: registry.Entry) -> tuple[bool, bool]:
     """An entry's TIER-MEMBERSHIP shape -- the only property the four retired rosters enumerated."""
     return (entry.pre, entry.full_segment is not None)

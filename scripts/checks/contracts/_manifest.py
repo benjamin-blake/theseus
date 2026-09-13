@@ -23,6 +23,7 @@ ENTRIES: tuple[Entry, ...] = (
             "scripts/checks/contracts/**",
             "scripts/checks/_common.py",
             "scripts/checks/registry.py",
+            "scripts/s3_log_store.py",
         ),
         full_segment="full_after_dependency_health",
     ),
