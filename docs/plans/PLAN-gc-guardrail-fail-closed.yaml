@@ -67,8 +67,12 @@ scope:
       Make both gates capable of failing WITHOUT requiring deletion, since the deployed gate runs on
       every push against a fresh catalog. lambda_maintenance_gc asserts the guard-stats response shape
       and the absence of file_fraction / breaker_stats; lambda_maintenance_breaker loses its
-      early-return OK on 200 + breaker_tripped False and must see the probe trip. The
-      force_recreate_tables=True call is removed as the thing that made the old assertion vacuous.
+      early-return OK on 200 + breaker_tripped False and must see the probe trip.
+      force_recreate_tables=True is RETAINED in the gc payload: it exists so the gate does not 502 on
+      a fresh smoke catalog (rec-2115 gap-1), and once _count_files RAISES, run_gc's first statement
+      (files_before over GC_TABLE_SCOPE) would 500 on an absent table without it. The old vacuity came
+      from asserting on the breaker numerator right after recreating the tables, not from the recreate
+      itself -- and the shape assertion does not depend on the numerator at all.
   - file: terraform/personal/ducklake_maintenance.tf
     action: Modify
     purpose: Rewrite the alarm description pinning the retired ">20% files or >10 GiB" thresholds.
@@ -86,13 +90,14 @@ scope:
       line 174 audit_invariants "GC is circuit-breaker guarded (file-fraction + byte-budget)" -- a
       governance invariant that becomes FALSE -- and line 175 "guarded by the circuit-breaker, not a
       confirm token", plus the circuit-breaker prose at lines 31, 87 and 111. Also update merge_ops'
-      response_codes (line 121) for the count_unavailable / null-count degradation this plan
-      introduces. Record the Decision 155 partial-completion disposition here rather than in the
-      Decision body (Decision 167 clause 3 byte cap).
+      response_codes (line 121) for the count_unavailable / null-count degradation, AND the gc verb's
+      own response_codes (lines 95-97), whose 200 entry enumerates the body the shape assertion now
+      checks and whose 500 entry still reads "breaker trip". Neither carries a retired name, so the
+      sweep cannot see them.
   - file: docs/runbooks/ducklake-catalog-operations.md
     action: Modify
     purpose: >-
-      Retire the 9 sweep-visible references (10 under the wider round-1 pattern) AND the prose the sweep cannot see: the
+      Retire the 9 sweep-visible reference lines AND the prose the sweep cannot see: the
       "### Circuit breaker (CD.33 H1)" section header and its lead-in narrative, which would otherwise
       document a deleted mechanism. Grandfathered runbook (Decision 127) -- edit in place, do not add.
   - file: tests/test_ducklake_maintenance.py
@@ -119,9 +124,11 @@ scope:
   - file: tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py
     action: Modify
     purpose: >-
-      test_lambda_maintenance_gc_ok pins the payload {"action": "gc", "force_recreate_tables": True}
-      and test_lambda_maintenance_gc_fresh_smoke_catalog_ok asserts the gate PASSES on
-      files_cleaned 0 -- exactly what the discrimination fix makes impossible.
+      Re-point both gc tests at the response-shape assertion. test_lambda_maintenance_gc_ok pins the
+      payload, which keeps force_recreate_tables=True (see the gates scope row);
+      test_lambda_maintenance_gc_fresh_smoke_catalog_ok is RETAINED unchanged in intent -- a
+      files_cleaned 0 body must still pass, because that is the fresh-catalog case the deployed gate
+      hits on every push.
   - file: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py
     action: Create
     purpose: >-
@@ -155,7 +162,7 @@ infrastructure_dependencies:
   - >-
     Affected active Lambda artifacts (compute_affected_artifacts, measured): ducklake_maintenance,
     ducklake_maintenance_smoke, data-pipeline. The first two deploy through the governed CD channel
-    .github/workflows/deploy-ducklake-lambdas.yml and are verified by VP10. data-pipeline is affected
+    .github/workflows/deploy-ducklake-lambdas.yml and are verified by VP12. data-pipeline is affected
     ONLY because docs/ROADMAP-PLATFORM.yaml is a declared asset of it; its channel
     (deploy-prod-lambdas.yml) has a push paths filter that does not include the roadmap, so a
     roadmap-only edit never redeploys it. That divergence is pre-existing and systemic -- filed as
@@ -192,7 +199,9 @@ acceptance_criteria:
     files_cleaned is structurally 0 -- action_gc forwards only the two retired knobs and run_gc's
     retain_days / grace_days / _now are unreachable over the Function URL. A live files_cleaned > 0
     assertion would therefore turn every subsequent DuckLake deploy red and regress c9. The
-    zero-rejection logic is unit-tested here and activates live only when Plan C supplies aging.
+    zero-rejection logic is NOT introduced by this plan at all: with no aging reachable, a fresh
+    catalog and a nothing-due catalog are indistinguishable, so there is no predicate that could
+    safely gate it. Plan C adds it together with the forcing input that makes the two distinguishable.
   - >-
     Neither CloudWatch alarm description pins a numeric threshold, asserted by a block-scoped test
     over each aws_cloudwatch_metric_alarm resource, with a red-case fixture that must fail.
@@ -254,7 +263,7 @@ verification_plan:
   - step: 5
     phase: pre-deploy
     action: Prove G2, G3 and G4 each abort on their own trigger and pass otherwise.
-    command: bin/venv-python -m pytest tests/common/test_ducklake_maintenance_ops.py -k "g2_ or g3_ or g4_" -q
+    command: bin/venv-python -m pytest tests/common/test_ducklake_maintenance_ops.py -k "g2_ or g3_ or g4_ or real_dry_run_size" -q
     expected: >-
       G2 raises when the post-expiry snapshot count is below the floor; G3 raises on an empty live set
       and on an out-of-bound live-byte drop; G4 bounds a 24,435-candidate pass and reports a non-zero
@@ -268,7 +277,7 @@ verification_plan:
     phase: pre-deploy
     action: >-
       Sweep all SIX surfaces carrying the retired names or threshold prose. Verified 2026-09-13 that
-      this pattern currently matches on every one (24/11/1/4/1/10) and does NOT match
+      this pattern currently matches on every one -- measured lines 16/10/1/3/1/9 and does NOT match
       MaintenanceBreakerTrip, which must survive.
     command: "for f in src/common/ducklake_maintenance.py src/lambdas/ducklake_maintenance_smoke/handler.py terraform/personal/ducklake_maintenance.tf terraform/personal/ducklake_maintenance_smoke.tf docs/contracts/ducklake_maintenance.yaml docs/runbooks/ducklake-catalog-operations.md; do test -f \"$f\" || { echo \"MISSING SWEEP SURFACE: $f\"; exit 1; }; done; ! rg -n 'file_fraction|GC_BREAKER_FILE_FRACTION|GC_BREAKER_BYTES|force_file_fraction|force_byte_budget|check_gc_breaker|20% files|10 GiB' src/common/ducklake_maintenance.py src/lambdas/ducklake_maintenance_smoke/handler.py terraform/personal/ducklake_maintenance.tf terraform/personal/ducklake_maintenance_smoke.tf docs/contracts/ducklake_maintenance.yaml docs/runbooks/ducklake-catalog-operations.md"
     expected: No matches on any of the six surfaces (exit 0 via the negation).
@@ -297,13 +306,16 @@ verification_plan:
   - step: 8
     phase: pre-deploy
     action: Prove both smoke gates discriminate against a pre-fix build.
-    command: bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_gc_gate_fails_on_zero_files_cleaned tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_breaker_gate_fails_when_probe_does_not_trip -q
+    command: bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_gc_gate_fails_on_pre_fix_breaker_stats_shape tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_breaker_gate_fails_when_probe_does_not_trip -q
     expected: >-
-      The gc gate fails on a files_cleaned 0 response; the breaker gate fails when the probe returns
-      200 with breaker_tripped False. Both pass on a correct build.
+      The gc gate fails on a pre-fix body (one carrying breaker_stats / file_fraction) and PASSES on a
+      post-fix body carrying guard stats, including when files_cleaned is 0 -- the fresh-catalog case
+      the deployed gate hits on every push. The breaker gate fails when the probe returns 200 with
+      breaker_tripped False.
     fix_if: >-
-      A gate passes on the pre-fix response shape -- it is still unfailable. The gc gate must not
-      recreate the tables immediately before the pass.
+      A gate passes on the pre-fix response shape -- it is still unfailable. Do NOT reach for a
+      files_cleaned > 0 assertion: the deployed gate runs on a fresh catalog where that is
+      structurally 0, and asserting it reds every DuckLake deploy.
     graduation: graduate
     graduation_check_id: maintenance-smoke-gates-discriminate
   - step: 9
@@ -389,6 +401,18 @@ test_obligations:
     red_green_expectation: >-
       Red before -- _count_files currently swallows and returns 0, so a failed read is indistinguishable
       from an empty table; after the helper raises, an unguarded call site would abort the cadence instead.
+  - source: src/common/ducklake_maintenance_ops.py
+    behavior: >-
+      G4's byte accounting reads a REAL size column from the dry-run rows, not a mock-supplied one.
+      Every existing test of cleanup_old_files / delete_orphaned_files in this repo is a FakeCon tuple
+      mock, so without this anchor G4 can be green on a mock and byte-blind in production --
+      reproducing rec-3761 under a new name, which Decision 187 pt 2 forbids.
+    verification_step: 5
+    test_selector: tests/common/test_ducklake_maintenance_ops.py::test_g4_reads_real_dry_run_size_column_on_pinned_engine
+    red_green_expectation: >-
+      Red before (module absent). The test builds a file-backed DuckLake catalog on the pinned
+      duckdb version, supersedes files via merge, and asserts the dry-run rows expose a non-null size
+      that G4 sums to a NON-ZERO total -- the exact property rec-3761 says is dead today.
   - source: src/lambdas/ducklake_maintenance_smoke/handler.py
     behavior: The handler runs against the guard set and breaker_probe still forces a trip.
     verification_step: 7
@@ -397,17 +421,18 @@ test_obligations:
   - source: scripts/ducklake_smoke/lambda_maintenance_gates.py
     behavior: Both gates fail against a pre-fix build instead of passing by construction.
     verification_step: 8
-    test_selector: tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_gc_gate_fails_on_zero_files_cleaned
+    test_selector: tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_gc_gate_fails_on_pre_fix_breaker_stats_shape
     red_green_expectation: >-
       Red before -- force_recreate_tables True and the breaker gate's early-return OK make both
       unfailable; five consecutive green CD runs while four defects were live. Green after.
   - source: tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py
     behavior: The gate tests assert discrimination rather than pinning the vacuous payload.
     verification_step: 8
-    test_selector: tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_gc_gate_fails_on_zero_files_cleaned
+    test_selector: tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_gc_gate_fails_on_pre_fix_breaker_stats_shape
     red_green_expectation: >-
-      Red before -- test_lambda_maintenance_gc_fresh_smoke_catalog_ok asserts the gate PASSES on
-      files_cleaned 0, which the fix makes impossible. Green after.
+      Red before -- no test asserts the response shape at all, so a pre-fix body passes. The existing
+      test_lambda_maintenance_gc_fresh_smoke_catalog_ok is RETAINED and re-pointed at the shape
+      assertion: files_cleaned 0 must keep passing, since that is the fresh-catalog case.
   - source: tests/test_ducklake_maintenance_smoke_handler.py
     behavior: The 25 retired-name bindings are re-pointed at the guard set.
     verification_step: 7
@@ -461,7 +486,7 @@ test_obligations:
     command: "for f in src/common/ducklake_maintenance.py src/lambdas/ducklake_maintenance_smoke/handler.py terraform/personal/ducklake_maintenance.tf terraform/personal/ducklake_maintenance_smoke.tf docs/contracts/ducklake_maintenance.yaml docs/runbooks/ducklake-catalog-operations.md; do test -f \"$f\" || { echo \"MISSING SWEEP SURFACE: $f\"; exit 1; }; done; ! rg -n 'file_fraction|GC_BREAKER_FILE_FRACTION|GC_BREAKER_BYTES|force_file_fraction|force_byte_budget|check_gc_breaker|20% files|10 GiB' src/common/ducklake_maintenance.py src/lambdas/ducklake_maintenance_smoke/handler.py terraform/personal/ducklake_maintenance.tf terraform/personal/ducklake_maintenance_smoke.tf docs/contracts/ducklake_maintenance.yaml docs/runbooks/ducklake-catalog-operations.md"
     red_green_expectation: Red before, green after.
   - source: docs/runbooks/ducklake-catalog-operations.md
-    behavior: The 10 references to the retired thresholds and parameters are gone.
+    behavior: The 9 sweep-visible reference lines plus the Circuit breaker section prose are gone.
     verification_step: 6
     command: "for f in src/common/ducklake_maintenance.py src/lambdas/ducklake_maintenance_smoke/handler.py terraform/personal/ducklake_maintenance.tf terraform/personal/ducklake_maintenance_smoke.tf docs/contracts/ducklake_maintenance.yaml docs/runbooks/ducklake-catalog-operations.md; do test -f \"$f\" || { echo \"MISSING SWEEP SURFACE: $f\"; exit 1; }; done; ! rg -n 'file_fraction|GC_BREAKER_FILE_FRACTION|GC_BREAKER_BYTES|force_file_fraction|force_byte_budget|check_gc_breaker|20% files|10 GiB' src/common/ducklake_maintenance.py src/lambdas/ducklake_maintenance_smoke/handler.py terraform/personal/ducklake_maintenance.tf terraform/personal/ducklake_maintenance_smoke.tf docs/contracts/ducklake_maintenance.yaml docs/runbooks/ducklake-catalog-operations.md"
     red_green_expectation: Red before, green after.
@@ -508,24 +533,24 @@ constraints:
     SLOC governance -- the guard set lands in the new module (Decision 128). ducklake_maintenance.py
     has 57 lines of headroom and its test file 72; this plan NET REMOVES from both.
 context:
-  - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 81, Decision 88, Decision 84, Decision 143, Decision 55, Decision 99, Decision 125, Decision 126, Decision 128, Decision 136, Decision 155, Decision 167, Decision 170, Decision 177, Decision 181, Decision 187, Decision 119, Decision 79, CD.33, CD.34"
+  - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 81, Decision 88, Decision 84, Decision 143, Decision 55, Decision 99, Decision 125, Decision 126, Decision 128, Decision 136, Decision 167, Decision 170, Decision 177, Decision 181, Decision 187, Decision 119, Decision 79, CD.33, CD.34"
   - "Decisions triaged: 140 of 140; Roadmap items intersected: 7; CONFLICT: 1; RELATED: 6"
-  - "gates: decision-scout=FLAGS_FOUND (3 rounds, superseded combined plan); plan-critique=REVISE round 1 (16 findings, all dispositioned); plan-critique=<verdict> after <N> round(s)"
-  - "Plan A of a three-way split of PLAN-production-catalog-gc-guardrail-repair (deleted; REVISE at 21 then 16 findings, root cause was arm coupling). Plan B owns compaction coverage and the table-scope constants; Plan C owns GC scheduling, lifecycle and the c2/c10 disposition."
+  - "gates: decision-scout=FLAGS_FOUND (3 rounds, superseded combined plan); plan-critique=REVISE rounds 1-3 (16, 14, 12 findings; all dispositioned); plan-critique=<verdict> after <N> round(s)"
+  - "Plan A of a three-way split of PLAN-production-catalog-gc-guardrail-repair (deleted; REVISE at 21 then 16 findings, root cause was arm coupling). Plan B owns compaction coverage and the table-scope constants; Plan C owns GC scheduling, lifecycle and the c2 disposition."
   - "Evidence: rec-3764 (fail-open), rec-3761 (dead byte budget), rec-3759 (gate vacuity). Measurement detail lives in this plan commit body."
-  - "Residues dispositioned, not silently left: ROADMAP lines 1296/1308/5440/9617 and runbook lines 16/194 assert the breaker as live but sit outside T2.18's criteria and this plan's six swept surfaces -- file a follow-on rec at implement time rather than widening scope. rec-3761's stored acceptance probe names a node on the deleted check_gc_breaker; repoint it to the G4 byte-budget test as part of its closure."
-  - "closes_criteria is EMPTY deliberately (12l). T2.18's sole open criterion c2 is Plan C's. c6 and c8 have TEXTS rewritten (both pin the retired metric) with NO status change: c6 stays met with met_by repointed to the new Decision; c8 stays rehomed to T2.26, premise unchanged. c9 gets a dated superseded-by note. progress_note lines are history and stay verbatim."
+  - "Residues: ROADMAP 1296/1308/5440/9617 and runbook 16/194 assert the breaker as live but sit outside T2.18 and the six swept surfaces -- file a follow-on rec at implement time. rec-3761's stored acceptance probe names a node on the deleted check_gc_breaker; repoint it to the G4 byte test at closure."
+  - "closes_criteria is EMPTY deliberately (12l). T2.18's sole open criterion c2 is Plan C's. c6 and c8 have TEXTS rewritten (both pin the retired metric) with NO status change: c6 stays met with met_by repointed to this plan's slug; c8 stays rehomed to T2.26, premise unchanged. c9 is NOT edited -- its text carries no GC_BREAKER_* assertion. progress_note lines are history and stay verbatim."
   - "Decision 88 clause 4 is NOT amended and need not be: its latch is GC_TABLE_SCOPE, which Plan A does not delete -- scope constants move to Plan B with the resolver that replaces them."
-  - "Guard vs observability split (implementer gotcha): every catalog read on the GUARD path raises; action_merge_ops' two _count_files call sites must degrade LOUDLY (null counts plus count_unavailable) so a transient error cannot abort the every-6h production compaction Decision 88 cl.1(iii) mandates."
-  - "Sweep pattern deliberately EXCLUDES bare 'circuit breaker'/'circuit-breaker': alarm_name is a resource identifier (ducklake-maintenance-circuit-breaker), and matching it would force destroying and recreating both alarms. It also excludes MaintenanceBreakerTrip, which is retained. Hyphenated contract/runbook prose is handled by named edits, not the pattern."
-  - "Fast-tier selection breadth MEASURED 2026-09-13: 85 of 565 modules, predicted 79-100s against the 420s floor. Affected artifacts measured: ducklake_maintenance, ducklake_maintenance_smoke (governed CD channel, VP11) and data-pipeline (five scope paths; its channel paths filter covers none, so no edit reaches its zip -- pre-existing, rec-3768)."
+  - "Guard vs observability split (gotcha): guard-path catalog reads RAISE; action_merge_ops' two _count_files sites must degrade LOUDLY (null counts + count_unavailable), or a transient error aborts the every-6h compaction Decision 88 cl.1(iii) mandates. Same reason the gc gate keeps force_recreate_tables (rec-2115 gap-1)."
+  - "Sweep EXCLUDES bare circuit-breaker: alarm_name is a resource identifier, so matching it would force destroying both alarms. It also excludes MaintenanceBreakerTrip (retained). Hyphenated contract/runbook prose gets named edits, not the pattern."
+  - "Breadth MEASURED 2026-09-13: 85/565 modules, 79-100s vs the 420s floor. Affected artifacts measured: maintenance, maintenance-smoke (CD channel, VP12) and data-pipeline (5 paths; its channel filter covers none, so nothing reaches its zip -- rec-3768)."
   - "All nine graduated pre-deploy VP commands were EXECUTED against the unfixed tree 2026-09-13 and each exits non-zero (pytest exit 4 = target absent; sweep and manifest checks exit 1). rec-3770 tracks making this red-before check mechanical rather than authorial."
-  - "DRAFTED DECISION (Decision 167 cl.2 adjudication). Heading: '## Decision NNN: Retire the GC file-fraction breaker for fail-closed structural guards; the lakehouse GC safety property is reachability, not volume (Decided)'. significance: numbered_decision. Rejected alternatives, per rec-3015/rec-3016: the verb contract carries no authority to retire a ratified clause, and amendment_forms annotates rather than negates (Decision 180 precedent). Body sentence: 'The >20% file-fraction abort is retired, not re-baselined -- it replaces a metric that could never pass in steady state, and whose failure mode was silent success, with guards whose healthy value is zero and whose failure mode is a raise.' Decision 155 disposition routes to the verb contract (cl.3 byte cap); Decision 187 pt 2 cited for the byte-budget successor."
-  - "Sibling boundary (claude/ops-entity-counters-partition-y55yzj, PLAN-control-table-class-and-counter-conformance, T2.26): owns the counter-advance fix, control table class, ops_entity_counters registration, validate_table_registration. File intersection with Plan A: {docs/DECISIONS.md, docs/ROADMAP-PLATFORM.yaml} only, different sections."
+  - "DRAFTED DECISION (Decision 167 cl.2). Heading: '## Decision NNN: Retire the GC file-fraction breaker for fail-closed structural guards; the lakehouse GC safety property is reachability, not volume (Decided)'. significance: numbered_decision -- the verb contract carries no authority to retire a ratified clause (rec-3015) and amendment_forms annotates rather than negates (rec-3016, Decision 180). Body: 'The >20% file-fraction abort is retired, not re-baselined -- it replaces a metric that could never pass in steady state, and whose failure mode was silent success, with guards whose healthy value is zero and whose failure mode is a raise.' Decision 187 pt 2 cited for the byte-budget successor (G4)."
+  - "Sibling boundary (claude/ops-entity-counters-partition-y55yzj, T2.26): owns the counter fix, control table class, ops_entity_counters registration, validate_table_registration. Intersects Plan A only on DECISIONS.md + ROADMAP-PLATFORM.yaml, different sections."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
-  - Only the plan-cited decision sections read (81 cl.6, 88 cl.1(iii), 55, 136, 155, 167, 177, 181, 187)
+  - Only the plan-cited decision sections read (81 cl.6, 88 cl.1(iii)+cl.4, 55, 119, 128, 136, 167, 177, 181, 187)
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
   - The sibling plan on claude/ops-entity-counters-partition-y55yzj read, and its scope confirmed disjoint
@@ -551,14 +576,13 @@ execution_steps:
     Add the new module to both maintenance manifests' includes, and add it plus
     src/lambdas/ducklake_maintenance_smoke to data-pipeline's excludes.
   - >-
-    Rewrite both smoke gates so they can fail without requiring deletion: the gc gate drops
-    force_recreate_tables=True and asserts the guard-stats response shape plus the absence of
-    file_fraction / breaker_stats; the breaker gate loses its unconditional early-return OK and must
+    Rewrite both smoke gates so they can fail without requiring deletion: the gc gate KEEPS
+    force_recreate_tables=True (rec-2115 gap-1; mandatory once _count_files raises) and asserts the
+    guard-stats response shape plus the absence of file_fraction / breaker_stats; the breaker gate loses its unconditional early-return OK and must
     see the probe trip. Do NOT add a live files_cleaned > 0 assertion -- see the AC and F7.
   - >-
     Rewrite the two alarm descriptions and remove the two env vars in the terraform files; retire the
-    gc verb's force_* fields and file-fraction typed_error in the contract and record the Decision 155
-    partial-completion disposition there; sweep the runbook's 9 sweep-visible references plus its Circuit breaker section header and lead-in.
+    gc verb's force_* fields and file-fraction typed_error in the contract; sweep the runbook's 9 sweep-visible references plus its Circuit breaker section header and lead-in.
   - >-
     Write the tests named in test_obligations, each failing against current main, and give the
     terraform assertion BOTH red cases: an alarm description carrying a threshold (must trip) and a
