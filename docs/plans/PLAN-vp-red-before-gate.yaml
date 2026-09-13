@@ -348,7 +348,8 @@ verification_plan:
       c=yaml.safe_load(Path('docs/contracts/vp-red-before.yaml').read_text())['contract']; assert
       c['class']=='D' and c['status']=='provisional_v0', c; assert c['evaluator']['check']=='validate_vp_replay',
       c; r=yaml.safe_load(Path('docs/contracts/file-router.yaml').read_text()); assert
-      any(row.get('topic')=='vp-red-before' for row in r['routes']), 'no route row';
+      any(row.get('topic')=='vp-red-before' and 'docs/contracts/vp-red-before.yaml' in
+      row.get('targets', []) for row in r['routes']), 'no route row pointing at the contract';
       print('CONTRACT_LIVE_AND_ROUTED')"
     expected: CONTRACT_LIVE_AND_ROUTED printed, exit 0
     fix_if: >-
@@ -360,7 +361,10 @@ verification_plan:
       resolve. The route conjunct matches r['routes'] rows on topic, NEVER any('vp-red-before' in
       str(v) for v in r.values()): file-router.yaml carries a top-level amendment_log whose
       summaries name the topic of every edit by convention, so the loose form would pass with no
-      route row present -- green by construction, in the plan that exists to refuse that.
+      route row present -- green by construction, in the plan that exists to refuse that. The
+      targets conjunct matters too: validate_placement only checks that a route's targets exist,
+      never that a given contract is routed, so a row with the right topic and the wrong targets
+      would otherwise pass.
     graduation: graduate
     graduation_check_id: vp-red-before-contract-live-and-routed
   - step: 14
@@ -516,7 +520,7 @@ test_obligations:
   - source: docs/contracts/file-router.yaml
     behavior: The new contract is discoverable under topic vp-red-before.
     verification_step: 13
-    command: any(row.get('topic')=='vp-red-before' for row in r['routes'])
+    command: row.get('topic')=='vp-red-before'
     waiver_reason: >-
       Index DATA. Its only assertable property is presence of the route row, which step 13's second
       conjunct executes; a mirror test over the router index belongs to the router's own check.
@@ -535,7 +539,15 @@ constraints:
     chain (six returns, three registry.skipped) that would mask an appended leg under an unrelated
     worktree skip reason -- the Decision 170 status-collapse recreated inside one check; and
     validate_graduation_completeness, which reads the same graduation field but owns none of the
-    replay instrument, per-step timeout or aggregate budget this work extends.
+    replay instrument, per-step timeout or aggregate budget this work extends. A third candidate
+    deserves naming because rec-3770 itself proposes it: scripts/roadmap/plan_obligations.py, whose
+    net_new_v4_implementation_plan_paths already derives this exact eligible population and is
+    already dispatched at plan-PR time via validate_plan_scope_closure. It fails the same charter
+    test for the same reason -- it owns no replay instrument, no per-step timeout and no aggregate
+    budget, and it is a read-only registration-closure engine that executes nothing. The eligibility
+    predicate itself is the one piece that could live in scripts/checks/_common.py, the sole home
+    Decision 148 established for plan-resolution helpers; it is kept inline here deliberately, since
+    _common.py is not in scope and a one-call predicate does not yet have a second consumer.
   - >-
     Do NOT rename any registered check -- authorization is at check-NAME level (Decision 187) and
     the registry shard linkage matches on the (plan_slug, check_id) pair.
@@ -543,12 +555,13 @@ constraints:
     The eligibility predicate is diff status (added: A or ??) AND implementation_declared falsy.
     Never resolve_declared_plans' edge-trigger, and never implementation_declared alone. The
     negated-sweep lint binds the SAME plan set -- it widens the step disposition, never the plan
-    population. Measured why that matters: 123 of 418 plans carry a negated rg/grep pre-deploy
-    command, so an unscoped lint would hard-fail any PR merely editing one of them, which is this
+    population. Measured why that matters: 117-126 of 418 plans carry a negated rg/grep
+    pre-deploy command depending on the command-boundary rule, so an unscoped lint would hard-fail any PR merely editing one of them, which is this
     same defect class on the second leg. Measured:
     that field landed 2026-08-17 and 335 of 418 plans do not carry it, so it reads falsy forever
-    on every legacy plan; 80 of those carry graduate pre-deploy steps and 55 name a tests/ path
-    that exists today. Keying on the field alone would route every one of them into the inverted
+    on every legacy plan; 80 of those carry graduate pre-deploy steps, and 53-56 name a tests/ path
+    that exists today (the range is the token-extraction rule: 53 requiring a .py suffix, 56 on a
+    loose path token -- re-measure with one stated rule rather than trusting a pinned digit). Keying on the field alone would route every one of them into the inverted
     leg and hard-fail any PR that edits them. resolve_declared_plans stays the implement leg's
     predicate, unchanged.
   - >-
