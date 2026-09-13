@@ -40,13 +40,20 @@ scope:
       the every-6h NON-DESTRUCTIVE production compaction cadence that Decision 88 clause 1(iii)
       mandates. Split the contract: guards raise, observability degrades LOUDLY -- merge_ops catches
       at the call site and reports files_before/files_after as null with count_unavailable true,
-      never a silent 0. Also repoint the line-24 docstring pointer to MAINTENANCE_SCOPE_NOTE.
+      never a silent 0. Also retire the module-docstring prose the sweep pattern cannot see: line 11
+      ("weekly guarded destructive (all five steps, circuit-breaker protected)") and lines 18-19
+      ("Circuit breaker aborts the entire GC pass ... file-count or byte budget"), which assert the
+      deleted mechanism as live. Leave the line-24 T2.19 forward pointer and MAINTENANCE_SCOPE_NOTE
+      untouched -- they are Plan B's scope surface and both already read correctly.
   - file: src/lambdas/ducklake_maintenance_smoke/handler.py
     action: Modify
     purpose: >-
       Rebind off the five retired names and the two retired run_gc/check_gc_breaker parameters, and
-      re-home action_breaker_probe onto a named G1 forcing input -- the probe exists ONLY to force
-      file_fraction=0.0/byte_budget=0, so retiring those would leave the fourth c9 CD gate with no subject.
+      re-home action_breaker_probe onto a named G1 forcing input -- an INTERNAL module-level constant
+      replacing _BREAKER_PROBE_FILE_FRACTION / _BREAKER_PROBE_BYTE_BUDGET (lines 44-46), never an event
+      field. The probe exists ONLY to force file_fraction=0.0/byte_budget=0, so retiring those would
+      leave the fourth c9 CD gate with no subject. The successor constant must force a G1 trip
+      independently of catalog contents, so the gate cannot pass vacuously on an empty smoke catalog.
   - file: src/lambdas/ducklake_maintenance_smoke/manifest.yaml
     action: Modify
     purpose: >-
@@ -97,9 +104,19 @@ scope:
   - file: docs/runbooks/ducklake-catalog-operations.md
     action: Modify
     purpose: >-
-      Retire the 9 sweep-visible reference lines AND the prose the sweep cannot see: the
-      "### Circuit breaker (CD.33 H1)" section header and its lead-in narrative, which would otherwise
-      document a deleted mechanism. Grandfathered runbook (Decision 127) -- edit in place, do not add.
+      Retire the 9 sweep-visible reference lines (measured: 215, 216, 229, 386, 388, 390, 391, 392,
+      396) AND the prose the sweep cannot see, which is the larger half. Sweep-invisible named edits,
+      each verified against the file: (a) the "### Circuit breaker (CD.33 H1)" section -- header 223
+      and body 225-228, 230-231, the surviving narrative of a deleted mechanism once 229 goes;
+      (b) the "### Co-tuning knobs (T2.18 FP-B / CD.34)" section -- header 380, lead-in 382, the
+      tunability sentence tail 397, and the T2.19 carry-item paragraph 399-401, all of which dangle
+      over nothing once the sweep removes the GC_BREAKER_* yaml block at 385-393 from inside them;
+      (c) lines 16 and 194, bare "circuit breaker" in a title and a step description, asserting the
+      mechanism as live -- retitled here, not deferred. NOT edited: the "### Guardrail constants"
+      yaml block survives the removal of 215-216 intact (snapshot_retain_days, file_cleanup_grace_days,
+      snapshot_floor, cleanup_all_in_scheduled_runs are all retained), so its lead-out at 220-221 still
+      reads correctly and G4's absolute byte bound is ADDED there rather than replacing the section.
+      Grandfathered runbook (Decision 127) -- edit in place, do not add.
   - file: tests/test_ducklake_maintenance.py
     action: Modify
     purpose: >-
@@ -132,9 +149,12 @@ scope:
   - file: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py
     action: Create
     purpose: >-
-      Block-scoped assertion that neither alarm description pins a numeric threshold, using the
-      resource-header slice pattern from tests/checks/iam_tf/test_oidc_trust_slug_invariants.py, with
-      a red-case fixture. A line grep over the retired NAMES cannot see these prose descriptions.
+      Block-scoped assertion that neither alarm description pins a THRESHOLD SHAPE -- a percentage
+      bound (>\s*\d+\s*%) or a byte bound (\d+\s*(GiB|GB|MB|bytes)) -- using the resource-header slice
+      pattern from tests/checks/iam_tf/test_oidc_trust_slug_invariants.py, with a red-case fixture.
+      Shape, not any-digit: the REWRITTEN description still carries the provenance tag "T2.18 / CD.33
+      H1", so a bare \d assertion is unsatisfiable by the very text this plan lands. A line grep over
+      the retired NAMES cannot see these prose descriptions.
   - file: docs/DECISIONS.md
     action: Modify
     purpose: New Decision amending Decision 81 clause 6 / CD.33 H1 (drafted inline in context).
@@ -187,9 +207,16 @@ acceptance_criteria:
     src/lambdas/ducklake_maintenance_smoke/handler.py, both terraform files,
     docs/contracts/ducklake_maintenance.yaml and the runbook. MaintenanceBreakerTrip survives unchanged.
   - >-
-    action_breaker_probe forces a guaranteed G1 trip via a NAMED forcing input documented in the verb
-    contract, so the fourth c9 CD smoke gate retains a subject; a test asserts it raises and a red
-    case asserts a non-forcing input does NOT raise.
+    action_breaker_probe forces a guaranteed G1 trip via a NAMED forcing input that is an INTERNAL
+    module-level constant in src/lambdas/ducklake_maintenance_smoke/handler.py -- the successor to
+    _BREAKER_PROBE_FILE_FRACTION / _BREAKER_PROBE_BYTE_BUDGET (lines 44-46) -- NOT an event field and
+    NOT a contract-documented parameter. docs/contracts/ducklake_maintenance.yaml lines 31-32 and
+    audit_invariant 174 declare breaker_probe VP instrumentation and OUT of contract scope; that
+    declaration STANDS and this plan does not widen it. The forcing constant must trip G1
+    INDEPENDENTLY of catalog contents -- the retired file_fraction=0.0 probe trips only when at least
+    one deletable file exists, so an empty smoke catalog silently no-ops it and the unattended c9 gate
+    passes vacuously on every push. A test asserts it raises and a red case asserts a non-forcing
+    input does NOT raise.
   - >-
     Both smoke gates discriminate a pre-fix build on RESPONSE SHAPE, not on deletion volume:
     lambda_maintenance_gc asserts the body carries the guard-stats shape and NO file_fraction /
@@ -203,8 +230,11 @@ acceptance_criteria:
     catalog and a nothing-due catalog are indistinguishable, so there is no predicate that could
     safely gate it. Plan C adds it together with the forcing input that makes the two distinguishable.
   - >-
-    Neither CloudWatch alarm description pins a numeric threshold, asserted by a block-scoped test
-    over each aws_cloudwatch_metric_alarm resource, with a red-case fixture that must fail.
+    Neither CloudWatch alarm description pins a THRESHOLD SHAPE -- a percentage bound (>\s*\d+\s*%)
+    or a byte bound (\d+\s*(GiB|GB|MB|bytes)) -- asserted by a block-scoped test over each
+    aws_cloudwatch_metric_alarm resource, with a red-case fixture that must fail. The assertion is
+    shape-scoped, never any-digit: the rewritten descriptions retain the "T2.18 / CD.33 H1" provenance
+    tag, which an any-digit assertion would reject.
   - >-
     ducklake_maintenance_ops.py is bundled into BOTH maintenance manifests and excluded from
     data-pipeline, alongside the pre-existing ducklake_maintenance_smoke leak.
@@ -299,8 +329,10 @@ verification_plan:
     command: bin/venv-python -m pytest tests/test_ducklake_maintenance_smoke_handler.py::test_breaker_probe_forces_g1_trip tests/test_ducklake_maintenance_smoke_handler.py::test_breaker_probe_non_forcing_input_does_not_trip -q
     expected: The forcing input raises DuckLakeMaintenanceError; the non-forcing red case does not.
     fix_if: >-
-      The probe raises unconditionally (a mock satisfies it trivially) or never raises -- name a real
-      forcing input against G1 and assert both directions.
+      The probe never raises, or the non-forcing red case ALSO raises so the two directions cannot be
+      told apart -- name a real forcing input against G1 and assert both directions. A raise that
+      occurs on every invocation carrying the forcing constant, whatever the catalog holds, is the
+      INTENDED production behaviour of this probe, not a failure condition.
     graduation: graduate
     graduation_check_id: breaker-probe-retains-forcing-subject
   - step: 8
@@ -321,20 +353,26 @@ verification_plan:
   - step: 9
     phase: pre-deploy
     action: >-
-      Prove neither alarm description pins a numeric threshold, block-scoped per resource. A line grep
-      over the retired NAMES cannot see this prose -- verified: the names pattern returns zero matches
-      on ducklake_maintenance.tf while its alarm description carries ">20% files or >10 GiB".
+      Prove neither alarm description pins a THRESHOLD SHAPE (percentage bound or byte bound),
+      block-scoped per resource. A line grep over the retired NAMES cannot see this prose -- verified:
+      the names pattern returns zero matches on ducklake_maintenance.tf while its alarm description
+      carries ">20% files or >10 GiB". Shape and not any-digit, because the rewritten description
+      keeps its "T2.18 / CD.33 H1" provenance tag.
     command: bin/venv-python -m pytest tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py -q
     expected: >-
       Each aws_cloudwatch_metric_alarm block is sliced by resource header and asserted free of a
-      numeric threshold. Block-scoping is required NOT because a file holds two alarms -- measured,
-      each file holds exactly one -- but because sibling non-alarm description fields carry LEGITIMATE
-      numerics (e.g. "every 6h" on the EventBridge rules), which a whole-file numeric assertion would
-      false-positive on. The red-case fixture is therefore a non-alarm description carrying a number,
-      which must NOT trip, plus an alarm description carrying one, which must.
+      threshold SHAPE. Block-scoping is required NOT because a file holds two alarms -- measured, each
+      file holds exactly one -- but because sibling non-alarm description fields carry LEGITIMATE
+      numerics (e.g. "every 6h" on the EventBridge rules), which a whole-file assertion would
+      false-positive on. THREE red-case fixtures, all required: (a) a non-alarm description carrying a
+      number, which must NOT trip; (b) an alarm description carrying ">20% files or >10 GiB", which
+      MUST trip; (c) an alarm description carrying only the "T2.18 / CD.33 H1" provenance tag, which
+      must NOT trip -- (c) is what distinguishes a shape assertion from an any-digit one, and without
+      it the assertion this plan lands would reject its own output.
     fix_if: >-
-      The non-alarm fixture trips -- the assertion is whole-file, not block-scoped. Do not graduate
-      until both directions hold.
+      The non-alarm fixture trips (the assertion is whole-file, not block-scoped) or the
+      provenance-tag fixture trips (the assertion is any-digit, not shape-scoped). Do not graduate
+      until all three fixtures land as specified.
     graduation: graduate
     graduation_check_id: maintenance-alarm-descriptions-threshold-free
   - step: 10
@@ -439,14 +477,17 @@ test_obligations:
     test_selector: tests/test_ducklake_maintenance_smoke_handler.py::test_breaker_probe_forces_g1_trip
     red_green_expectation: Red before (the module under test binds names that no longer exist), green after.
   - source: terraform/personal/ducklake_maintenance.tf
-    behavior: The alarm description carries no numeric threshold.
+    behavior: The alarm description carries no threshold SHAPE (no percentage bound, no byte bound); its
+      retained "T2.18 / CD.33 H1" provenance tag is explicitly permitted.
     verification_step: 9
     test_selector: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::test_alarm_descriptions_pin_no_threshold
     red_green_expectation: >-
       Red before -- the description reads ">20% files or >10 GiB". Each file holds exactly ONE alarm
-      block (measured), so the discriminating red case is a NON-alarm description carrying a
+      block (measured), so the discriminating red cases are (a) a NON-alarm description carrying a
       legitimate number (e.g. "every 6h" on an EventBridge rule), which must NOT trip a block-scoped
-      assertion but would trip a whole-file numeric one.
+      assertion but would trip a whole-file one, and (b) an alarm description carrying only the
+      "T2.18 / CD.33 H1" provenance tag, which must NOT trip a shape assertion but would trip an
+      any-digit one.
   - source: terraform/personal/ducklake_maintenance_smoke.tf
     behavior: The two retired env vars and the threshold-pinning alarm description are gone.
     verification_step: 9
@@ -538,7 +579,7 @@ context:
   - "gates: decision-scout=FLAGS_FOUND (3 rounds, superseded combined plan); plan-critique=REVISE rounds 1-3 (16, 14, 12 findings; all dispositioned); plan-critique=<verdict> after <N> round(s)"
   - "Plan A of a three-way split of PLAN-production-catalog-gc-guardrail-repair (deleted; REVISE at 21 then 16 findings, root cause was arm coupling). Plan B owns compaction coverage and the table-scope constants; Plan C owns GC scheduling, lifecycle and the c2 disposition."
   - "Evidence: rec-3764 (fail-open), rec-3761 (dead byte budget), rec-3759 (gate vacuity). Measurement detail lives in this plan commit body."
-  - "Residues: ROADMAP 1296/1308/5440/9617 and runbook 16/194 assert the breaker as live but sit outside T2.18 and the six swept surfaces -- file a follow-on rec at implement time. rec-3761's stored acceptance probe names a node on the deleted check_gc_breaker; repoint it to the G4 byte test at closure."
+  - "Residues: ROADMAP 1296/1308/5440/9617 assert the breaker as live and sit outside this plan's scope rows entirely -- file a follow-on rec at implement time. Runbook 16/194 and the module docstring 11/18-19 are NOT residues: the runbook and ducklake_maintenance.py are two of the six swept surfaces, so those lines sit INSIDE the swept surface set but OUTSIDE the sweep PATTERN, and are named edits in their own scope rows. rec-3761's stored acceptance probe names a node on the deleted check_gc_breaker; repoint it to the G4 byte test at closure."
   - "closes_criteria is EMPTY deliberately (12l). T2.18's sole open criterion c2 is Plan C's. c6 and c8 have TEXTS rewritten (both pin the retired metric) with NO status change: c6 stays met with met_by repointed to this plan's slug; c8 stays rehomed to T2.26, premise unchanged. c9 is NOT edited -- its text carries no GC_BREAKER_* assertion. progress_note lines are history and stay verbatim."
   - "Decision 88 clause 4 is NOT amended and need not be: its latch is GC_TABLE_SCOPE, which Plan A does not delete -- scope constants move to Plan B with the resolver that replaces them."
   - "Guard vs observability split (gotcha): guard-path catalog reads RAISE; action_merge_ops' two _count_files sites must degrade LOUDLY (null counts + count_unavailable), or a transient error aborts the every-6h compaction Decision 88 cl.1(iii) mandates. Same reason the gc gate keeps force_recreate_tables (rec-2115 gap-1)."
@@ -570,8 +611,12 @@ execution_steps:
     the deletion guards have no subject there. Retain MaintenanceBreakerTrip and every primitive.
   - >-
     Modify src/lambdas/ducklake_maintenance_smoke/handler.py: rebind off the retired names and the two
-    retired parameters; re-home action_breaker_probe onto a named G1 forcing input and document that
-    input in the verb contract.
+    retired parameters; re-home action_breaker_probe onto a named G1 forcing input expressed as an
+    INTERNAL module-level constant (the successor to _BREAKER_PROBE_FILE_FRACTION /
+    _BREAKER_PROBE_BYTE_BUDGET at lines 44-46), whose trip is independent of catalog contents. Do NOT
+    add that input to docs/contracts/ducklake_maintenance.yaml: lines 31-32 and audit_invariant 174
+    declare breaker_probe out of contract scope and that declaration is RETAINED -- only its
+    "forced-threshold" wording is repointed at the G1 forcing constant.
   - >-
     Add the new module to both maintenance manifests' includes, and add it plus
     src/lambdas/ducklake_maintenance_smoke to data-pipeline's excludes.
@@ -582,12 +627,14 @@ execution_steps:
     see the probe trip. Do NOT add a live files_cleaned > 0 assertion -- see the AC and F7.
   - >-
     Rewrite the two alarm descriptions and remove the two env vars in the terraform files; retire the
-    gc verb's force_* fields and file-fraction typed_error in the contract; sweep the runbook's 9 sweep-visible references plus its Circuit breaker section header and lead-in.
+    gc verb's force_* fields and file-fraction typed_error in the contract; sweep the runbook's 9 sweep-visible references (215/216/229/386/388/390/391/392/396) plus the sweep-invisible named edits its scope row enumerates: the Circuit breaker section (223, 225-228, 230-231), the Co-tuning knobs section (380, 382, 397, 399-401) and the bare-"circuit breaker" lines 16 and 194; ADD G4's byte bound into the surviving Guardrail constants block.
   - >-
     Write the tests named in test_obligations, each failing against current main, and give the
-    terraform assertion BOTH red cases: an alarm description carrying a threshold (must trip) and a
-    non-alarm description carrying a legitimate number such as "every 6h" (must NOT trip). Each file
-    holds exactly one alarm block, so a whole-file numeric assertion would false-positive on siblings.
+    terraform assertion ALL THREE red cases: an alarm description carrying a threshold shape (must
+    trip), a non-alarm description carrying a legitimate number such as "every 6h" (must NOT trip),
+    and an alarm description carrying only the "T2.18 / CD.33 H1" provenance tag (must NOT trip). Each
+    file holds exactly one alarm block, so a whole-file assertion would false-positive on siblings;
+    and an any-digit assertion would reject the rewritten description this plan itself lands.
   - >-
     Author the new Decision in docs/DECISIONS.md from the drafted text in this plan's context, with
     significance numbered_decision, landing Decision 81's amendment as a dated appended line.
