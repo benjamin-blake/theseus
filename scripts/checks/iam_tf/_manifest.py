@@ -49,6 +49,13 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_agent_observability_read_coverage",
+        module="scripts.checks.iam_tf.validate_agent_observability_read_coverage",
+        attr="validate_agent_observability_read_coverage",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_iam_policy_size",
         module="scripts.checks.iam_tf.validate_iam_policy_size",
         attr="validate_iam_policy_size",
