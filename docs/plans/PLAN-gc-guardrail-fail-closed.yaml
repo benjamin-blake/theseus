@@ -32,6 +32,14 @@ scope:
       with the live-catalog resolver. run_merge and run_hot_merge are merge-only paths with no
       deletion, so the deletion guards have no subject there and their signatures are unchanged.
       MaintenanceBreakerTrip and every maintenance primitive are retained.
+      Also retire THIS FILE's module-docstring prose, which the sweep pattern cannot see: line 11
+      ("run_gc: weekly guarded destructive (all five steps, circuit-breaker protected)") and lines
+      18-19 ("Circuit breaker aborts the entire GC pass (raises, deletes nothing) when a single pass
+      would exceed the file-count or byte budget. The abort is the safety-critical invariant."), both
+      of which assert the deleted mechanism as live -- repoint them at the guard set. Leave lines
+      16-17 (guardrails are module-level constants, never relaxed to pass a gate) and the line-24
+      T2.19 expansion forward pointer untouched: both still read correctly after the retirement, and
+      the T2.19 pointer is Plan B's surface.
   - file: src/lambdas/ducklake_maintenance/handler.py
     action: Modify
     purpose: >-
@@ -40,11 +48,9 @@ scope:
       the every-6h NON-DESTRUCTIVE production compaction cadence that Decision 88 clause 1(iii)
       mandates. Split the contract: guards raise, observability degrades LOUDLY -- merge_ops catches
       at the call site and reports files_before/files_after as null with count_unavailable true,
-      never a silent 0. Also retire the module-docstring prose the sweep pattern cannot see: line 11
-      ("weekly guarded destructive (all five steps, circuit-breaker protected)") and lines 18-19
-      ("Circuit breaker aborts the entire GC pass ... file-count or byte budget"), which assert the
-      deleted mechanism as live. Leave the line-24 T2.19 forward pointer and MAINTENANCE_SCOPE_NOTE
-      untouched -- they are Plan B's scope surface and both already read correctly.
+      never a silent 0. This file's own module docstring needs NO edit: verified, it carries no
+      breaker prose (only line 5's action=breaker_probe verb name, which survives), and its line-24
+      pointer already reads "See src/common/ducklake_maintenance.py::MAINTENANCE_SCOPE_NOTE".
   - file: src/lambdas/ducklake_maintenance_smoke/handler.py
     action: Modify
     purpose: >-
@@ -106,11 +112,23 @@ scope:
     purpose: >-
       Retire the 9 sweep-visible reference lines (measured: 215, 216, 229, 386, 388, 390, 391, 392,
       396) AND the prose the sweep cannot see, which is the larger half. Sweep-invisible named edits,
-      each verified against the file: (a) the "### Circuit breaker (CD.33 H1)" section -- header 223
-      and body 225-228, 230-231, the surviving narrative of a deleted mechanism once 229 goes;
+      each verified against the file: (a) the "### Circuit breaker (CD.33 H1)" section is REPLACED,
+      not deleted -- header 223 becomes a fail-closed-guard-set header; body 225-228 and 230 are
+      deleted with 229; line 231 ("On abort, emit MaintenanceBreakerTrip=1") is REWRITTEN to attribute
+      the emit to the guard set, never removed, because it is the only documentation of the RETAINED
+      metric that the retained alarms fire on; the "Reading the alarm (FP-B)" narrative at 233-243
+      documents those retained alarms and their SNS wiring and is re-homed under the replacement
+      header UNCHANGED; and line 244 ("When the breaker fires, do NOT raise the threshold to pass")
+      is sweep-invisible, asserts the deleted mechanism as live, and is re-worded to the guard set --
+      its Decision-55 point survives verbatim, only its subject changes. Deleting header 223 outright
+      would orphan 233-247 under no header at all;
       (b) the "### Co-tuning knobs (T2.18 FP-B / CD.34)" section -- header 380, lead-in 382, the
       tunability sentence tail 397, and the T2.19 carry-item paragraph 399-401, all of which dangle
-      over nothing once the sweep removes the GC_BREAKER_* yaml block at 385-393 from inside them;
+      over nothing once the GC_BREAKER_* fenced yaml block at 384-394 is deleted WHOLE, fences
+      included. Delete the fence, not the matched lines: the sweep pattern sees only 386/388/390/391
+      /392 inside that block, so a match-only deletion leaves "co_tuning_knobs:" with two orphan
+      purpose: keys and a malformed fence. The sweep is a post-condition ASSERTION, never an edit
+      instruction -- this holds for every surface, not just here;
       (c) lines 16 and 194, bare "circuit breaker" in a title and a step description, asserting the
       mechanism as live -- retitled here, not deferred. NOT edited: the "### Guardrail constants"
       yaml block survives the removal of 215-216 intact (snapshot_retain_days, file_cleanup_grace_days,
@@ -233,8 +251,9 @@ acceptance_criteria:
     Neither CloudWatch alarm description pins a THRESHOLD SHAPE -- a percentage bound (>\s*\d+\s*%)
     or a byte bound (\d+\s*(GiB|GB|MB|bytes)) -- asserted by a block-scoped test over each
     aws_cloudwatch_metric_alarm resource, with a red-case fixture that must fail. The assertion is
-    shape-scoped, never any-digit: the rewritten descriptions retain the "T2.18 / CD.33 H1" provenance
-    tag, which an any-digit assertion would reject.
+    shape-scoped, never any-digit: the rewritten descriptions retain their provenance tags -- measured,
+    "T2.18 / CD.33 H1" on ducklake_maintenance.tf:262 and "T2.18 c9 / CD.33 H1" on
+    ducklake_maintenance_smoke.tf:313 -- which an any-digit assertion would reject.
   - >-
     ducklake_maintenance_ops.py is bundled into BOTH maintenance manifests and excluded from
     data-pipeline, alongside the pre-existing ducklake_maintenance_smoke leak.
@@ -579,7 +598,7 @@ context:
   - "gates: decision-scout=FLAGS_FOUND (3 rounds, superseded combined plan); plan-critique=REVISE rounds 1-3 (16, 14, 12 findings; all dispositioned); plan-critique=<verdict> after <N> round(s)"
   - "Plan A of a three-way split of PLAN-production-catalog-gc-guardrail-repair (deleted; REVISE at 21 then 16 findings, root cause was arm coupling). Plan B owns compaction coverage and the table-scope constants; Plan C owns GC scheduling, lifecycle and the c2 disposition."
   - "Evidence: rec-3764 (fail-open), rec-3761 (dead byte budget), rec-3759 (gate vacuity). Measurement detail lives in this plan commit body."
-  - "Residues: ROADMAP 1296/1308/5440/9617 assert the breaker as live and sit outside this plan's scope rows entirely -- file a follow-on rec at implement time. Runbook 16/194 and the module docstring 11/18-19 are NOT residues: the runbook and ducklake_maintenance.py are two of the six swept surfaces, so those lines sit INSIDE the swept surface set but OUTSIDE the sweep PATTERN, and are named edits in their own scope rows. rec-3761's stored acceptance probe names a node on the deleted check_gc_breaker; repoint it to the G4 byte test at closure."
+  - "Residues: ROADMAP 1296/1308/5440/9617 assert the breaker as live but sit outside T2.18 and outside this plan's only roadmap edits (the c6 and c8 criterion texts) -- file a follow-on rec at implement time. Runbook 16/194 and the module docstring 11/18-19 are NOT residues: the runbook and ducklake_maintenance.py are two of the six swept surfaces, so those lines sit INSIDE the swept surface set but OUTSIDE the sweep PATTERN, and are named edits in their own scope rows. rec-3761's stored acceptance probe names a node on the deleted check_gc_breaker; repoint it to the G4 byte test at closure."
   - "closes_criteria is EMPTY deliberately (12l). T2.18's sole open criterion c2 is Plan C's. c6 and c8 have TEXTS rewritten (both pin the retired metric) with NO status change: c6 stays met with met_by repointed to this plan's slug; c8 stays rehomed to T2.26, premise unchanged. c9 is NOT edited -- its text carries no GC_BREAKER_* assertion. progress_note lines are history and stay verbatim."
   - "Decision 88 clause 4 is NOT amended and need not be: its latch is GC_TABLE_SCOPE, which Plan A does not delete -- scope constants move to Plan B with the resolver that replaces them."
   - "Guard vs observability split (gotcha): guard-path catalog reads RAISE; action_merge_ops' two _count_files sites must degrade LOUDLY (null counts + count_unavailable), or a transient error aborts the every-6h compaction Decision 88 cl.1(iii) mandates. Same reason the gc gate keeps force_recreate_tables (rec-2115 gap-1)."
@@ -627,7 +646,7 @@ execution_steps:
     see the probe trip. Do NOT add a live files_cleaned > 0 assertion -- see the AC and F7.
   - >-
     Rewrite the two alarm descriptions and remove the two env vars in the terraform files; retire the
-    gc verb's force_* fields and file-fraction typed_error in the contract; sweep the runbook's 9 sweep-visible references (215/216/229/386/388/390/391/392/396) plus the sweep-invisible named edits its scope row enumerates: the Circuit breaker section (223, 225-228, 230-231), the Co-tuning knobs section (380, 382, 397, 399-401) and the bare-"circuit breaker" lines 16 and 194; ADD G4's byte bound into the surviving Guardrail constants block.
+    gc verb's force_* fields and file-fraction typed_error in the contract; sweep the runbook's 9 sweep-visible references (215/216/229/386/388/390/391/392/396) plus the sweep-invisible named edits its scope row enumerates, which are REPLACEMENTS not deletions: the Circuit breaker section (223 rehead, 225-228/230 delete, 231 rewrite, 233-243 rehome unchanged, 244 reword), the Co-tuning knobs section (380, 382, 397, 399-401 delete, with the fenced block at 384-394 removed WHOLE rather than by matched line) and the bare-"circuit breaker" lines 16 and 194; ADD G4's byte bound into the surviving Guardrail constants block.
   - >-
     Write the tests named in test_obligations, each failing against current main, and give the
     terraform assertion ALL THREE red cases: an alarm description carrying a threshold shape (must
