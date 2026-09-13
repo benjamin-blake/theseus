@@ -232,9 +232,9 @@ scope:
       No status flips. Residual roadmap references at lines 1296, 1308, 5440 and 9617 assert the
       breaker as live but sit outside T2.18 -- dispositioned as a follow-on rec, not edited here.
 bundled_recommendations:
-  - rec-3764
-  - rec-3761
-  - rec-3759
+  - rec-3772
+  - rec-3773
+  - rec-3774
 followon_recs:
   - rec-3768
 infrastructure_dependencies:
@@ -254,7 +254,7 @@ acceptance_criteria:
   - >-
     The guard set RAISES DuckLakeMaintenanceError when any catalog-introspection query fails. Today
     every helper swallows the exception and returns empty, collapsing total_files to 0, computing
-    file_fraction 0.0 and returning breaker_tripped False while seeing nothing (rec-3764).
+    file_fraction 0.0 and returning breaker_tripped False while seeing nothing (rec-3764 (now rec-3772)).
   - >-
     G1: the would-delete set and the live set are asserted disjoint before any destructive call and
     re-asserted after; a non-empty intersection raises and issues zero destructive SQL.
@@ -262,7 +262,7 @@ acceptance_criteria:
     G2 re-asserts the snapshot floor AFTER expiry (today expire_snapshots computes the floor and
     nothing verifies the engine honoured it); G3 aborts on an empty live set or a live-byte drop past
     an absolute bound; G4 bounds deletions per pass with byte sizes taken from the dry-run's own size
-    column, closing rec-3761's dead byte budget rather than leaving the pin unreplaced (Decision 187 pt 2).
+    column, closing rec-3761 (now rec-3773)'s dead byte budget rather than leaving the pin unreplaced (Decision 187 pt 2).
   - >-
     check_gc_breaker, file_fraction, GC_BREAKER_FILE_FRACTION, GC_BREAKER_BYTES,
     force_file_fraction, force_byte_budget and the ">20% files" / "10 GiB" threshold prose are absent
@@ -361,7 +361,7 @@ verification_plan:
     expected: >-
       G2 raises when the post-expiry snapshot count is below the floor; G3 raises on an empty live set
       and on an out-of-bound live-byte drop; G4 bounds a 24,435-candidate pass and reports a non-zero
-      deferred remainder with NON-ZERO would-delete bytes (rec-3761's dead path). Each has a green case.
+      deferred remainder with NON-ZERO would-delete bytes (rec-3761 (now rec-3773)'s dead path). Each has a green case.
     fix_if: >-
       G4 reports zero bytes -- it is still summing over the current-snapshot dict instead of the
       dry-run's size column.
@@ -469,7 +469,7 @@ verification_plan:
   - step: 13
     phase: post-deploy
     action: Verify the bundled recommendations closed. Sync the read cache, then assert terminal status.
-    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib,sys; rows=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()]; want={'rec-3764','rec-3761','rec-3759'}; seen={r['id'] for r in rows if r['id'] in want}; missing=want-seen; still={r['id'] for r in rows if r['id'] in want and r.get('status')=='open'}; print('missing from cache:', sorted(missing), '| still open:', sorted(still)); sys.exit(1 if (missing or still) else 0)"
+    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json,pathlib,sys; rows=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()]; want={'rec-3772','rec-3773','rec-3774'}; seen={r['id'] for r in rows if r['id'] in want}; missing=want-seen; still={r['id'] for r in rows if r['id'] in want and r.get('status')=='open'}; print('missing from cache:', sorted(missing), '| still open:', sorted(still)); sys.exit(1 if (missing or still) else 0)"
     expected: exit 0 -- none of the three remains open after the Resolves trailer fires.
     fix_if: >-
       A rec is still open -- either the Resolves trailer omitted it or its acceptance probe does not
@@ -486,7 +486,7 @@ test_obligations:
       total_files 0 against a raising connection (2026-09-12). Green after.
   - source: src/common/ducklake_maintenance.py
     behavior: >-
-      The five introspection helpers RAISE instead of swallowing -- the defect rec-3764 names. The
+      The five introspection helpers RAISE instead of swallowing -- the defect rec-3764 (now rec-3772) names. The
       retired-name removal is separately swept by step 6.
     verification_step: 2
     test_selector: tests/test_ducklake_maintenance.py::TestHelpersFailClosed::test_count_files_raises_on_connection_error
@@ -508,13 +508,13 @@ test_obligations:
       G4's byte accounting reads a REAL size column from the dry-run rows, not a mock-supplied one.
       Every existing test of cleanup_old_files / delete_orphaned_files in this repo is a FakeCon tuple
       mock, so without this anchor G4 can be green on a mock and byte-blind in production --
-      reproducing rec-3761 under a new name, which Decision 187 pt 2 forbids.
+      reproducing rec-3761 (now rec-3773) under a new name, which Decision 187 pt 2 forbids.
     verification_step: 5
     test_selector: tests/common/test_ducklake_maintenance_ops.py::test_g4_reads_real_dry_run_size_column_on_pinned_engine
     red_green_expectation: >-
       Red before (module absent). The test builds a file-backed DuckLake catalog on the pinned
       duckdb version, supersedes files via merge, and asserts the dry-run rows expose a non-null size
-      that G4 sums to a NON-ZERO total -- the exact property rec-3761 says is dead today.
+      that G4 sums to a NON-ZERO total -- the exact property rec-3761 (now rec-3773) says is dead today.
   - source: src/lambdas/ducklake_maintenance_smoke/handler.py
     behavior: The handler runs against the guard set and breaker_probe still forces a trip.
     verification_step: 7
@@ -642,8 +642,9 @@ context:
   - "Decisions triaged: 140 of 140; Roadmap items intersected: 7; CONFLICT: 1; RELATED: 6"
   - "gates: decision-scout=FLAGS_FOUND (3 rounds, superseded combined plan); plan-critique=REVISE rounds 1-3 (16, 14, 12 findings; all dispositioned); plan-critique=<verdict> after <N> round(s)"
   - "Plan A of a three-way split of PLAN-production-catalog-gc-guardrail-repair (deleted; REVISE at 21 then 16 findings, root cause was arm coupling). Plan B owns compaction coverage and the table-scope constants; Plan C owns GC scheduling, lifecycle and the c2 disposition."
-  - "Evidence: rec-3764 (fail-open), rec-3761 (dead byte budget), rec-3759 (gate vacuity). Measurement detail lives in this plan commit body."
-  - "Residues (TWO, both filed as follow-on recs at implement time, neither edited here): (1) ROADMAP 1296/1308/5440/9617 assert the breaker as live but sit outside T2.18 and outside this plan's only roadmap edits (the c6 and c8 criterion texts). (2) The runbook's four Manual-invoke commands at 254/262/270/416 (merge, gc, breaker_probe, hot_merge) all target the admin function agent-platform-ducklake-maintenance for actions the c9 split moved to agent-platform-ducklake-maintenance-smoke, so all four return 400 unknown action today; the runbook names the smoke function nowhere. That is a pre-existing c9-split residue with its own blast radius and zero overlap with retired breaker semantics -- repointing only the breaker_probe one, inside a block this plan does edit, would make a uniformly-stale block self-contradictory and leave an identical decoy at 262, so all four stay. Runbook 16/194 and the module docstring 11/18-19 are NOT residues: the runbook and ducklake_maintenance.py are two of the six swept surfaces, so those lines sit INSIDE the swept surface set but OUTSIDE the sweep PATTERN, and are named edits in their own scope rows. rec-3761's stored acceptance probe names a node on the deleted check_gc_breaker; repoint it to the G4 byte test at closure."
+  - "REC IDS: the originally bundled rec-3764 / rec-3761 / rec-3759 were auto-closed IN ERROR by the plan merge (aba764c7) -- the Resolves: trailer belongs on the feat(...) implement merge, never on a plan(...) merge. Decision 103 forbids closed->open, so the live defects are rec-3772 / rec-3773 / rec-3774, which this plan now bundles. The closed rows carry a resolution pointing here and are closure artifacts only, not evidence of a fix. Narrative citations below keep the original id with the live id in parentheses so the measurement provenance stays traceable."
+  - "Evidence: rec-3764 (now rec-3772) (fail-open), rec-3761 (now rec-3773) (dead byte budget), rec-3759 (now rec-3774) (gate vacuity). Measurement detail lives in this plan commit body."
+  - "Residues (TWO, both filed as follow-on recs at implement time, neither edited here): (1) ROADMAP 1296/1308/5440/9617 assert the breaker as live but sit outside T2.18 and outside this plan's only roadmap edits (the c6 and c8 criterion texts). (2) The runbook's four Manual-invoke commands at 254/262/270/416 (merge, gc, breaker_probe, hot_merge) all target the admin function agent-platform-ducklake-maintenance for actions the c9 split moved to agent-platform-ducklake-maintenance-smoke, so all four return 400 unknown action today; the runbook names the smoke function nowhere. That is a pre-existing c9-split residue with its own blast radius and zero overlap with retired breaker semantics -- repointing only the breaker_probe one, inside a block this plan does edit, would make a uniformly-stale block self-contradictory and leave an identical decoy at 262, so all four stay. Runbook 16/194 and the module docstring 11/18-19 are NOT residues: the runbook and ducklake_maintenance.py are two of the six swept surfaces, so those lines sit INSIDE the swept surface set but OUTSIDE the sweep PATTERN, and are named edits in their own scope rows. rec-3761 (now rec-3773)'s stored acceptance probe names a node on the deleted check_gc_breaker; repoint it to the G4 byte test at closure."
   - "closes_criteria is EMPTY deliberately (12l). T2.18's sole open criterion c2 is Plan C's. c6 and c8 have TEXTS rewritten (both pin the retired metric) with NO status change: c6 stays met with met_by repointed to this plan's slug; c8 stays rehomed to T2.26, premise unchanged. c9 is NOT edited -- its text carries no GC_BREAKER_* assertion. progress_note lines are history and stay verbatim."
   - "Decision 88 clause 4 is NOT amended and need not be: its latch is GC_TABLE_SCOPE, which Plan A does not delete -- scope constants move to Plan B with the resolver that replaces them."
   - "Guard vs observability split (gotcha): guard-path catalog reads RAISE; action_merge_ops' two _count_files sites must degrade LOUDLY (null counts + count_unavailable), or a transient error aborts the every-6h compaction Decision 88 cl.1(iii) mandates. Same reason the gc gate keeps force_recreate_tables (rec-2115 gap-1)."
