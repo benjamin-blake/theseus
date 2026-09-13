@@ -174,8 +174,8 @@ resource "aws_lambda_function" "ducklake_maintenance" {
       # asserts invariants and never mutates -- see src/lambdas/ducklake_maintenance/handler.py's
       # DATA_PATH comment. DUCKLAKE_META_SCHEMA/GC_BREAKER_* remain consumed only by the scheduled
       # smoke cadences (merge/gc/hot_merge/breaker_probe) on ducklake_maintenance_smoke.tf's sibling.
-      DUCKLAKE_DATA_PATH            = local.ducklake_prod_data_path
-      DUCKLAKE_EXTENSION_DIRECTORY  = local.ducklake_extension_dir
+      DUCKLAKE_DATA_PATH           = local.ducklake_prod_data_path
+      DUCKLAKE_EXTENSION_DIRECTORY = local.ducklake_extension_dir
       # catalog_reinit's create_scd2_tables + reconcile_columns/restore_drill's field-spec
       # resolution load the field-semantics contract bundled into the zip (manifest assets[]).
       DUCKLAKE_FIELD_SEMANTICS_PATH = "/var/task/config/lambda/ducklake/field_semantics.yaml"
