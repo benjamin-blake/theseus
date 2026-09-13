@@ -54,8 +54,10 @@ CODIFIED bullets below). The only item still applied out-of-band via the `platfo
 user (full admin) and NOT codified in `terraform/personal/` is the redundant `AgentPlatformRuntime`
 inline policy (slated for removal) -- re-creating infra elsewhere will not restore it; reapply manually if needed.
 
-- **`PlatformAdmin` + `PlatformDataLakeProvisioning` (CODIFIED 2026-05-29 in `terraform/personal/platform_roles.tf`;
-  datalake policy narrowed to least-privilege 2026-05-30):**
+- **`PlatformAdmin` + `PlatformDataLakeProvisioning` (CODIFIED 2026-05-29; split 2026-09-13 into
+  `terraform/personal/platform_admin_policies.tf` (`AdminOps`) and
+  `terraform/personal/platform_admin_data_policies.tf` (`PlatformDataLakeProvisioning`); datalake
+  policy narrowed to least-privilege 2026-05-30):**
   `aws_iam_role.platform_admin` (import ID `PlatformAdmin`, `max_session_duration = 3600`) plus its two inline
   policies -- `aws_iam_role_policy.platform_admin_ops` (`AdminOps`: identity admin -- `iam:*` + admin Lambda +
   secretsmanager) and `aws_iam_role_policy.platform_admin_datalake` (`PlatformDataLakeProvisioning`: the data-plane
@@ -71,7 +73,8 @@ inline policy (slated for removal) -- re-creating infra elsewhere will not resto
   assumes). If a future module addition needs a new data-plane action, expect the FIRST `plan` after the apply to
   surface it as an AccessDenied refresh read; add it (scoped) and re-apply with `-refresh=false` (state is fresh
   from the apply), then a full `plan` converges.
-- **PlatformDev runtime grant (CODIFIED 2026-05-29 in `terraform/personal/platform_roles.tf`):** the
+- **PlatformDev runtime grant (CODIFIED 2026-05-29; `DailyOps` moved 2026-09-13 to
+  `terraform/personal/platform_dev_policies.tf`):** the
   `agent_platform` (PlatformDev) runtime role is now Terraform-managed. `aws_iam_role.platform_dev`
   (imported, ID `PlatformDev`) sets `max_session_duration = 36000` (was 3600 -- the 3600 max blocked
   CC-web's 10h unattended sessions); `aws_iam_role_policy.platform_dev_runtime` codifies the `DailyOps`
@@ -79,13 +82,12 @@ inline policy (slated for removal) -- re-creating infra elsewhere will not resto
   DynamoDB on `agent-platform-counters`; DuckLake verb invokes). Applied via `platform_breakglass`
   with `-target` on the two role resources. Trust policy verified unchanged at apply time.
   Reconciliation at import time (the role was NOT permissionless, contrary to the prior PENDING note):
-    - A stale pre-rename `DailyOps` (dead `bblake-*` targets + a live Bedrock invoke-model grant) already
-      existed and was imported; the apply overwrote it with the agent-platform grant. Net live capability
-      dropped: the Bedrock invoke-model grant (treated as unused -- `AgentPlatformRuntime` never granted Bedrock
-      and ops works without it; no Bedrock consumer was found for this role, but no exhaustive audit was run).
+    - A stale pre-rename `DailyOps` (dead `bblake-*` targets + a live Bedrock invoke-model grant) was
+      imported and overwritten by the apply. Capability dropped: Bedrock invoke-model (treated as unused --
+      `AgentPlatformRuntime` never granted it and ops works without it; no exhaustive audit was run).
     - A separate out-of-band `AgentPlatformRuntime` inline policy already granted the same agent-platform
       ops set, so ops calls succeeded both before and after this change. It is now a redundant duplicate of
-      the codified `DailyOps`. FOLLOW-UP: remove `AgentPlatformRuntime` via `platform_breakglass`.
+      the codified `DailyOps` (see Follow-up below).
 
 Follow-up (remaining): remove the now-redundant `AgentPlatformRuntime` inline policy via `platform_breakglass`
 (its grants are fully covered by the codified `DailyOps`). A formal Decision recording the static-key credential
