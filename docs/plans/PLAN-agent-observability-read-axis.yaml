@@ -340,12 +340,17 @@ verification_plan:
     precondition naming the correct 10,240 B inline limit via the minified measure. validate_iam_policy_size
     is bootstrap-scoped (_BOOTSTRAP_DIR_REL), so no registered check asserts this for terraform/personal
     (rec-3765).
-  command: test "$(grep -c 'length(jsonencode(jsondecode(local\.' terraform/personal/platform_dev_policies.tf
-    terraform/personal/platform_admin_policies.tf terraform/personal/platform_admin_data_policies.tf |
-    grep -c ':1$')" = "3" && ! grep -rq 'replace(.*\" \".*\"\")' terraform/personal/platform_dev_policies.tf
-    terraform/personal/platform_admin_policies.tf terraform/personal/platform_admin_data_policies.tf
-  expected: each of the three files contains exactly one minified-measure precondition condition, and
-    none uses the space-stripping replace() form
+  command: 'bin/venv-python -c ''import pathlib,re;paths=["terraform/personal/platform_dev_policies.tf","terraform/personal/platform_admin_policies.tf","terraform/personal/platform_admin_data_policies.tf"];missing=[p
+    for p in paths if not pathlib.Path(p).exists()];assert not missing,f"scope files absent, cannot assert
+    preconditions: {missing}";t={p:pathlib.Path(p).read_text() for p in paths};bad=[p for p,v in t.items()
+    if len(re.findall(r"length\(jsonencode\(jsondecode\(local\.",v))!=1];assert not bad,f"files without
+    exactly one minified-measure precondition: {bad}";repl=[p for p,v in t.items() if re.search(r"replace\([^)]*\"
+    \"",v)];assert not repl,f"files using the space-stripping replace() measure: {repl}"'''
+  expected: 'exit 0 -- all three files exist, each carries exactly one minified-measure precondition,
+    and none uses the space-stripping replace() form. FAIL-CLOSED on an absent file: the earlier shell
+    form used `! grep -rq` over the three paths, which returns TRUE when they do not exist, so it passed
+    vacuously before the files were even created. Verified red on absent files, red on a missing precondition,
+    green on a correct tree.'
   fix_if: 'a file has none -- the hoist was skipped and the precondition cannot reference self, so terraform
     validate will error in CI (step 14''s fix_if routes that into a CI round-trip rather than catching
     it locally). A raw length() or a replace()-based measure is wrong: AWS excludes whitespace from the
