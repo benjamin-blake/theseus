@@ -159,6 +159,12 @@ scope:
   - file: config/agent/verification_registry/entries/verifier-same-pr-guard-concrete-only.yaml
     action: Create
     purpose: graduated shard -- rec-3721 acceptance
+  - file: config/agent/verification_registry/entries/pre-glob-closure-self-gate-fixed-point.yaml
+    action: Create
+    purpose: >-
+      graduated shard for VP step 9. MUST pin the NEW TestAuditorClosureFixedPoint class, never the
+      whole file, so the whole-tree revert produces FAIL and the differential admits it (mirrors
+      entries/tier-demotion-gate-fixed-point-raise.yaml).
   - file: config/agent/verification_registry/entries/pre-glob-closure-no-repo-wide-glob-gained.yaml
     action: Create
     purpose: graduated shard for VP step 12 -- the paydown's DIRECTION bound
@@ -204,8 +210,10 @@ acceptance_criteria:
     Deleting a non-last mirror test file from a concern-split package fires validate_red_case_floor
     for that Entry, closing the 20-of-25-files escape rec-3727 measured. No marker, waiver or
     grandfather escape is added to the floor -- it stays exceptionless (Decision 163 point 1). The
-    concern-split population grows from 5 to 7 entries via the two decompositions this plan makes,
-    and the new guard covers all 7.
+    _CONCERN_SPLIT_TEST_PACKAGES population grows from 34 to 36 source paths via the two
+    decompositions this plan makes, and the new guard must cover all 36. The separate 5 -> 7 figure is
+    the count of REGISTERED CHECK Entries whose mirror resolves to a package -- the population behind
+    rec-3727's 20-of-25-files measurement -- and the two must not be conflated.
   - >-
     Removing or commenting out an on:.schedule block on any of the 10 schedule-bearing workflows
     fails --pre without a marker and passes with a `# schedule-removal-approved: dec-NNN <reason>`
@@ -367,21 +375,20 @@ verification_plan:
     action: >-
       The self-gate fixed point -- the auditor cannot be narrowed out of its own way. Asserts
       registry.pre_sequence() raises when the auditor's Entry globs fail to cover every tracked .py
-      file, and that no per-check roster constant was introduced to express it.
-    command: "bin/venv-python -m pytest tests/checks/registry/test_sequences.py -q"
-    expected: "Exit 0; the raise fires on a narrowed-Entry fixture and the live fleet assembles normally."
+      file, and that no per-check roster constant was introduced to express it. The assertions live in
+      a NEW class, TestAuditorClosureFixedPoint, and this step pins THAT CLASS, never the whole file:
+      the differential's revert runs over the WHOLE TREE, so a class absent at origin/main yields a
+      collection error, the revert side sees FAIL, and the shard is admitted. Exact precedent -- same
+      guard_target, same test file, same Decision -- entries/tier-demotion-gate-fixed-point-raise.yaml
+      pins test_sequences.py::TestWeakeningGateFixedPoint.
+    command: "bin/venv-python -m pytest tests/checks/registry/test_sequences.py::TestAuditorClosureFixedPoint -q"
+    expected: "Exit 0; the raise fires on a narrowed-Entry fixture and the live fleet assembles normally. The class must NOT exist at origin/main, or its shard is refused as tautological."
     fix_if: >-
       If the raise does not fire, a future PR can narrow the auditor's globs and silently stop the
       gate running on the diff that breaks it -- the Decision 187 point 6 defect, reintroduced.
     hermetic: true
-    graduation: waive
-    graduation_waiver_reason: >-
-      NOT graduatable as written and the reason is mechanical, not preference: a shard derived from
-      this step would pin tests/checks/registry/test_sequences.py, an EXISTING file that passes at
-      origin/main, so validate_verification_registry's fail-on-revert differential refuses it as
-      "not admitted -- revert did not produce FAIL (tautological)". The standing owner is the raise
-      itself: registry.pre_sequence() already fails closed at the same call site
-      (_assert_weakening_gate_intact), and that raise runs on every --pre and full-tier assembly.
+    graduation: graduate
+    graduation_check_id: pre-glob-closure-self-gate-fixed-point
   - step: 10
     phase: pre-deploy
     action: >-
@@ -428,8 +435,9 @@ verification_plan:
       repo-wide glob on all 19 Entries would turn every obligation green while destroying fast-tier
       selectivity, and selection_budget cannot see it (widened pre_globs change which CHECKS run on
       FUTURE diffs, not this diff's module selection). So assert no Entry except the auditor NEWLY
-      GAINS a repo-wide glob. Base-vs-head is necessary, not merely tidy: TWELVE gated Entries
-      already declare a repo-wide glob at base (measured), so an absolute ban would flag all of them.
+      GAINS a repo-wide glob. Base-vs-head is necessary, not merely tidy: SEVENTEEN gated Entries
+      already declare a repo-wide glob at base, measured against THIS step's forbidden set (it was
+      twelve before scripts/checks/** joined that set), so an absolute ban would flag all of them.
       The forbidden set MUST include `scripts/checks/**` -- for the tail Entries it is the cheapest
       over-broad shortcut, since it subsumes the _common.py + registry.py pair they actually need.
     command: "bin/venv-python -m pytest tests/checks/deps/validate_pre_glob_closure/test_pruned_edges_roster.py::TestPaydownDirection -q"
@@ -553,7 +561,7 @@ verification_plan:
     phase: pre-deploy
     action: >-
       Full tier before handoff, as handoff_policy.full_validation_required_before_commit declares.
-      This is the run that exercises validate_graduation_completeness over all twelve new shards and
+      This is the run that exercises validate_graduation_completeness over all eleven new shards and
       validate_verification_registry over the two relocated ones.
     command: "bin/venv-python -m scripts.validate"
     expected: "Exit 0 on a completed run; no check reports a missing or unadmitted graduation shard."
@@ -713,6 +721,19 @@ test_obligations:
       and validate_verification_registry, both of which run in the linked full tier. Asserting a separate
       red case here would assert that a file contains what this plan just wrote into it. The scope row exists
       because the LOCATION invariant is exact path equality, not because the shard is behaviour-capable.'
+  - source: config/agent/verification_registry/entries/pre-glob-closure-self-gate-fixed-point.yaml
+    behavior: Derived record of verification_plan step 9.
+    verification_step: 9
+    command: "bin/venv-python -m pytest tests/checks/registry/test_sequences.py::TestAuditorClosureFixedPoint -q"
+    waiver_reason: >-
+      WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step, authored b
+      y scripts.verification_graduation from that step's own command -- it carries no behaviour of it
+      s own, so it has no red case distinct from the step it records. Its correctness (node_id resolv
+      es, plan_slug and check_id match, the differential admits it) is owned by validate_graduation_c
+      ompleteness and validate_verification_registry, both of which run in the linked full tier. Asse
+      rting a separate red case here would assert that a file contains what this plan just wrote into
+      it. The scope row exists because the LOCATION invariant is exact path equality, not because th
+      e shard is behaviour-capable.
   - source: config/agent/verification_registry/entries/pre-glob-closure-no-repo-wide-glob-gained.yaml
     behavior: Derived record of verification_plan step 12.
     verification_step: 12
@@ -730,7 +751,7 @@ test_obligations:
     verification_step: 13
     command: test ! -f tests/checks/deps/test_validate_pre_glob_closure.py && test ! -f tests/checks/verification/test_validate_red_case_floor.py
       && ! git grep -F -e 'test_validate_pre_glob_closure.py' -e 'test_validate_red_case_floor.py' -- ':!audits'
-      ':!docs/plans'
+      ':!docs/plans' ':!config/agent/verification_registry/entries/deprecated'
     waiver_reason: 'WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step,
       authored by scripts.verification_graduation from that step''s own command -- it carries no behaviour
       of its own, so it has no red case distinct from the step it records. Its correctness (node_id resolves,
@@ -808,7 +829,7 @@ test_obligations:
       pre_sequence() raises when the auditor's Entry globs do not cover every tracked .py file; the
       raise names the mechanism and introduces no per-check roster constant.
     verification_step: 9
-    test_selector: tests/checks/registry/test_sequences.py
+    test_selector: tests/checks/registry/test_sequences.py::TestAuditorClosureFixedPoint
     red_green_expectation: red before (no such raise exists), green after
   - source: scripts/checks/deps/_manifest.py
     behavior: >-
@@ -888,7 +909,7 @@ context:
   - "NEW BOUND ON AN EXISTING MARKER: post-flip the auditor is an exceptionless closure floor, so tier-demotion-approved can no longer authorize narrowing a check's pre_globs BELOW its own import closure -- only down to it. Measured: only 3 of 52 gated checks sit at that floor today. Record this in marker-grammar.yaml's tier-demotion-approved row."
   - "rec-3558 WAS RE-SCOPED THROUGH THE PORTAL on 2026-09-13 before implementation, by explicit human confirmation (Decision 103). Its original acceptance (empty _PRUNED_EDGES at the flip) was falsified by measurement: 292 -> 997 findings emptied, registry row 670, _common row 35, and two live tests assert the roster non-empty. Do not re-introduce it."
   - "FILE AT IMPLEMENT TIME (Decision 59 / implement.md Step 7): the 3 remaining dangling shards (ci-rca-close-then-recur-reopen-backstop, convergence-dedup-drift-cause-match, and a decisions-size shard); the 4 concern-split mirror files carrying no red case; the stale `validate_imports` row in config/ci_rca_taxonomy.yaml; and the Decision 163 residual that a future marker-authorized _PRUNED_EDGES row inherits no structural rationale test."
-  - "VP REPLAY BUDGET: this plan declares 10 hermetic pre-deploy steps, which validate_vp_replay replays at implement time against MAX_REPLAYED_STEPS 20 (safe) and MAX_AGGREGATE_SECONDS 120 (not automatically safe -- the closure-view and pytest steps dominate). If the aggregate trips, narrow a step rather than marking it non-hermetic to dodge the replay."
+  - "VP REPLAY BUDGET: this plan declares 12 hermetic pre-deploy steps, which validate_vp_replay replays at implement time against MAX_REPLAYED_STEPS 20 (safe) and MAX_AGGREGATE_SECONDS 120 (not automatically safe -- the closure-view and pytest steps dominate). If the aggregate trips, narrow a step rather than marking it non-hermetic to dodge the replay."
   - "MERGE-RACE GATE (unmitigated otherwise): step 10 measures zero on the BRANCH. origin/main can gain an uncovered import between the branch's last CI run and the squash-merge -- the exact PR #1115 mechanism this plan documents -- and after the flip that reds main AND every subsequent PR's --pre. Re-run VP step 10 after the final pre-merge rebase and require the branch up to date before merging. Do not merge a stale branch."
   - "rec-3780 (RCA: a guard did not follow the refactor that emptied its governed population) was filed this session. It is NOT bundled and NOT resolved here -- rec-3721 fixes the symptom, rec-3780 owns the class."
   - "T2.54 owns bidirectional clause-to-check traceability: land the SINGLE implement-scope-boundary.yaml enforcement_coverage row as the interim form, never a general traceability index."
@@ -909,12 +930,12 @@ execution_steps:
   - "Pay the backlog down: add globs to 19 Entries across 7 _manifest.py files, and add the derived inert-module floor to the auditor. Re-run VP step 1 until it reports zero findings while STILL ADVISORY."
   - "Only once the backlog reads zero: flip the auditor to blocking, widen its own Entry to the ('**/*.py', 'scripts/checks/**') union, and add the registry.py fixed-point raise. Correct the auditor Entry's now-false comment in scripts/checks/deps/_manifest.py (it claims the globs are 'exactly this check's own closure' and names a wave-4b _PRUNED_EDGES candidate -- both clauses die with this change), and repoint validate_pre_glob_closure.py:115's TestGlobMatcherEquivalence pointer at the new package path."
   - "Update docs/contracts/marker-grammar.yaml (two token rows plus the new tier-demotion-approved floor note) and docs/contracts/implement-scope-boundary.yaml (one CONTENT row)."
-  - "git mv the dangling shard to entries/deprecated/, relocate the two sibling shards' node_ids into the new package (VP step 14 proves admissibility), and create the TWELVE graduated shards -- one per `graduation: graduate` VP step. Cross-check the count against the VP before pushing: validate_graduation_completeness requires a NEW-in-diff registry row with matching plan_slug and check_id for every graduate step, and a miscount reds the PR."
+  - "git mv the dangling shard to entries/deprecated/, relocate the two sibling shards' node_ids into the new package (VP step 14 proves admissibility), and create the ELEVEN graduated shards -- one per `graduation: graduate` VP step. Cross-check the count against the VP before pushing: validate_graduation_completeness requires a NEW-in-diff registry row with matching plan_slug and check_id for every graduate step, and a miscount reds the PR."
   - "Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)."
   - "File the four follow-on recommendations named in context via scripts.ops_data_portal."
   - "Put `Resolves: rec-3558, rec-3727, rec-3721` in the SQUASH-MERGE COMMIT BODY so rec-autoclose.yml fires (AGENTS.md Git-ops). Name only these three -- rec-3722 is declined, not resolved, and rec-3780 owns a different class."
   - "Record the rec-3722 decline and its rationale in the PR body; leave rec-3722 OPEN."
-  - "Re-measure the non-test half before re-asserting the budget claim: the declared figures predate this PR's 12 new verification-registry shards, each firing a real git-worktree differential inside validate_verification_registry in --pre, plus a new check and an auditor now selected on every .py diff. Headroom is large (~72s of the unwaivable 240) but the claim must rest on post-change numbers."
+  - "Re-measure the non-test half before re-asserting the budget claim: the declared figures predate this PR's 11 new verification-registry shards, each firing a real git-worktree differential inside validate_verification_registry in --pre, plus a new check and an auditor now selected on every .py diff. Headroom is large (~72s of the unwaivable 240) but the claim must rest on post-change numbers."
   - "Declare the measured breadth waiver in the PR body so it is reviewed rather than discovered in CI."
   - "Report: what was implemented, verification results, final backlog count, and the measured --pre selection breadth."
 work_areas: []
