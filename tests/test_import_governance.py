@@ -6,7 +6,6 @@ import re
 import runpy
 import subprocess
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -18,6 +17,7 @@ from scripts.import_governance import (
     _normalize_pkg,
     _read_executor_concurrency,
     check_lockfile_sync,
+    count_declared_requirements,
     evaluate_bazel_revisit_trigger,
     main,
     run_import_contracts,
@@ -95,132 +95,135 @@ class TestRunImportContracts:
 
 
 class TestCheckLockfileSync:
-    @pytest.fixture(autouse=True)
-    def _isolate_dev_requirements(self, tmp_path: Path) -> Iterator[None]:
-        with patch("scripts.import_governance._REQUIREMENTS_DEV", tmp_path / "requirements-dev.txt"):
-            yield
+    """The gate reads FLOORS from the requirements*.in inputs and PINS from the compiled
+    requirements*.txt outputs, driven through the public `paths` parameter (declarations first,
+    compiled outputs second)."""
 
-    def test_passes_on_committed_lockfile(self) -> None:
-        """check_lockfile_sync passes when requirements.lock is in sync with requirements.txt."""
+    @staticmethod
+    def _paths(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+        return (
+            tmp_path / "requirements.in",
+            tmp_path / "requirements-dev.in",
+            tmp_path / "requirements.txt",
+            tmp_path / "requirements-dev.txt",
+        )
+
+    def _gate(
+        self,
+        tmp_path: Path,
+        floors: str,
+        pins: str,
+        dev_floors: str = "",
+        dev_pins: str = "",
+    ) -> tuple[bool, str]:
+        paths = self._paths(tmp_path)
+        for path, text in zip(paths, (floors, dev_floors, pins, dev_pins), strict=True):
+            path.write_text(text, encoding="utf-8")
+        return check_lockfile_sync(paths=paths)
+
+    def test_passes_on_committed_outputs(self) -> None:
+        """check_lockfile_sync passes against the live tree with no arguments."""
         in_sync, message = check_lockfile_sync()
-        assert in_sync, f"Expected lockfile to be in sync, got: {message}"
+        assert in_sync, f"Expected the compiled outputs to be in sync, got: {message}"
         assert "pins all" in message
-
-    def test_committed_lockfile_covers_runtime_and_dev_requirements(self) -> None:
-        with patch("scripts.import_governance._REQUIREMENTS_DEV", ROOT / "requirements-dev.txt"):
-            in_sync, message = check_lockfile_sync()
-        assert in_sync, message
-        assert "across 2 files" in message
+        assert "requirements.in" in message and "requirements-dev.in" in message, message
+        assert "requirements.txt" in message and "requirements-dev.txt" in message, message
 
     def test_missing_dev_pin_fails(self, tmp_path: Path) -> None:
-        req_txt = tmp_path / "requirements.txt"
-        req_txt.write_text("requests>=2.0\n", encoding="utf-8")
-        req_dev = tmp_path / "requirements-dev.txt"
-        req_dev.write_text("pytest>=9.0\n", encoding="utf-8")
-        req_lock = tmp_path / "requirements.lock"
-        req_lock.write_text("requests==2.31.0\n", encoding="utf-8")
-
-        with (
-            patch("scripts.import_governance._REQUIREMENTS_TXT", req_txt),
-            patch("scripts.import_governance._REQUIREMENTS_DEV", req_dev),
-            patch("scripts.import_governance._REQUIREMENTS_LOCK", req_lock),
-        ):
-            in_sync, message = check_lockfile_sync()
-
+        in_sync, message = self._gate(tmp_path, "requests>=2.0\n", "requests==2.31.0\n", dev_floors="pytest>=9.0\n")
         assert not in_sync
         assert "pytest" in message
 
     def test_extras_pin_fails(self, tmp_path: Path) -> None:
-        """A lock pin carrying extras fails: pip rejects extras in constraints files."""
-        req_txt = tmp_path / "requirements.txt"
-        req_txt.write_text("requests>=2.0\n", encoding="utf-8")
-        req_lock = tmp_path / "requirements.lock"
-        req_lock.write_text("requests==2.31.0\npyjwt[crypto]==2.13.0\n", encoding="utf-8")
-
-        with (
-            patch("scripts.import_governance._REQUIREMENTS_TXT", req_txt),
-            patch("scripts.import_governance._REQUIREMENTS_LOCK", req_lock),
-        ):
-            in_sync, message = check_lockfile_sync()
-
+        """A compiled pin carrying extras fails: pip rejects extras in constraints files."""
+        in_sync, message = self._gate(tmp_path, "requests>=2.0\n", "requests==2.31.0\npyjwt[crypto]==2.13.0\n")
         assert not in_sync
         assert "extras" in message
         assert "pyjwt[crypto]==2.13.0" in message
 
-    def test_missing_lock_fails(self, tmp_path: Path) -> None:
-        """check_lockfile_sync fails when requirements.lock is absent."""
-        req_txt = tmp_path / "requirements.txt"
-        req_txt.write_text("requests>=2.0\n", encoding="utf-8")
+    @pytest.mark.parametrize("absent_index", [0, 1, 2, 3])
+    def test_every_one_of_the_four_files_is_required(self, tmp_path: Path, absent_index: int) -> None:
+        """All FOUR files are required -- a missing one is a hard failure, not an optional-dev skip.
 
-        with (
-            patch("scripts.import_governance._REQUIREMENTS_TXT", req_txt),
-            patch("scripts.import_governance._REQUIREMENTS_LOCK", tmp_path / "requirements.lock"),
-        ):
-            in_sync, msg = check_lockfile_sync()
+        The `-c requirements.txt` constraint form makes requirements-dev.txt a committed compiled
+        output that is always present, so the pre-migration optional-dev tolerance is gone.
+        """
+        paths = self._paths(tmp_path)
+        for index, path in enumerate(paths):
+            if index != absent_index:
+                path.write_text("", encoding="utf-8")
+        in_sync, msg = check_lockfile_sync(paths=paths)
+        assert not in_sync, msg
+        assert "not found" in msg and paths[absent_index].name in msg, msg
 
+    def test_cross_output_disagreement_fails(self, tmp_path: Path) -> None:
+        """One distribution pinned at two versions across the compiled outputs is a hard failure.
+
+        This replaces the coherence the retired single-resolve lockfile provided: anyio is reached
+        by mcp on the prod side and by httpx/openai on the dev side, so a one-sided recompile would
+        otherwise install two versions of one distribution without any gate noticing.
+        """
+        in_sync, msg = self._gate(
+            tmp_path,
+            "mcp>=1.28.0\n",
+            "mcp==1.28.1\nanyio==4.14.2\n",
+            dev_floors="litellm>=1.0\n",
+            dev_pins="litellm==1.93.0\nanyio==4.0.0\n",
+        )
+        assert not in_sync, msg
+        assert "disagree across outputs" in msg and "anyio" in msg, msg
+        assert "4.14.2" in msg and "4.0.0" in msg, msg
+
+    def test_cross_output_agreement_passes(self, tmp_path: Path) -> None:
+        """Control: the same distribution at the SAME version in both outputs is not a disagreement."""
+        in_sync, msg = self._gate(
+            tmp_path,
+            "mcp>=1.28.0\n",
+            "mcp==1.28.1\nanyio==4.14.2\n",
+            dev_floors="litellm>=1.0\n",
+            dev_pins="litellm==1.93.0\nanyio==4.14.2\n",
+        )
+        assert in_sync, msg
+
+    def test_wrong_path_count_fails(self, tmp_path: Path) -> None:
+        in_sync, msg = check_lockfile_sync(paths=(tmp_path / "requirements.in",))
         assert not in_sync
-        assert "not found" in msg or "requirements.lock" in msg
+        assert "expects 4 paths" in msg, msg
 
     def test_missing_top_level_package_fails(self, tmp_path: Path) -> None:
-        """check_lockfile_sync fails when a top-level package from requirements.txt is absent from the lock."""
-        req_txt = tmp_path / "requirements.txt"
-        req_txt.write_text("requests>=2.0\nmypackage>=1.0\n", encoding="utf-8")
-        req_lock = tmp_path / "requirements.lock"
-        # Lock only pins requests, missing mypackage
-        req_lock.write_text("requests==2.31.0\n", encoding="utf-8")
-
-        with (
-            patch("scripts.import_governance._REQUIREMENTS_TXT", req_txt),
-            patch("scripts.import_governance._REQUIREMENTS_LOCK", req_lock),
-        ):
-            in_sync, msg = check_lockfile_sync()
-
+        """A declared floor with no compiled pin fails."""
+        in_sync, msg = self._gate(tmp_path, "requests>=2.0\nmypackage>=1.0\n", "requests==2.31.0\n")
         assert not in_sync
-        assert "mypackage" in msg or "missing" in msg.lower()
-
-    def test_missing_requirements_txt_fails(self, tmp_path: Path) -> None:
-        """check_lockfile_sync fails gracefully when requirements.txt is absent."""
-        with patch("scripts.import_governance._REQUIREMENTS_TXT", tmp_path / "requirements.txt"):
-            in_sync, msg = check_lockfile_sync()
-        assert not in_sync
-        assert "not found" in msg or "requirements.txt" in msg
+        assert "mypackage" in msg and "missing" in msg.lower()
 
     def test_extras_are_normalized(self, tmp_path: Path) -> None:
-        """A requirements.txt entry with extras matches its stripped lock pin.
+        """A floor with extras matches its stripped compiled pin.
 
-        The lock side must be extras-free (pip rejects extras in constraints files; see
-        test_extras_pin_fails) -- pip-compile --strip-extras pins the bare name, and the
-        sync check matches it against the extras-carrying requirement.
+        The pin side must be extras-free (pip rejects extras in constraints files; see
+        test_extras_pin_fails) -- pip-compile --strip-extras pins the bare name, and the sync
+        check matches it against the extras-carrying declaration.
         """
-        req_txt = tmp_path / "requirements.txt"
-        req_txt.write_text("uvicorn[standard,http2]>=0.11.1\n", encoding="utf-8")
-        req_lock = tmp_path / "requirements.lock"
-        req_lock.write_text("uvicorn==0.11.1\n", encoding="utf-8")
-
-        with (
-            patch("scripts.import_governance._REQUIREMENTS_TXT", req_txt),
-            patch("scripts.import_governance._REQUIREMENTS_LOCK", req_lock),
-        ):
-            in_sync, msg = check_lockfile_sync()
-
+        in_sync, msg = self._gate(tmp_path, "uvicorn[standard,http2]>=0.11.1\n", "uvicorn==0.11.1\n")
         assert in_sync, f"Expected extras-normalized package to be found; got: {msg}"
 
     def test_incompatible_major_pin_fails(self, tmp_path: Path) -> None:
-        req_txt = tmp_path / "requirements.txt"
-        req_txt.write_text("mcp>=1.28.0,<2\n", encoding="utf-8")
-        req_lock = tmp_path / "requirements.lock"
-        req_lock.write_text("mcp==2.0.0\n", encoding="utf-8")
-
-        with (
-            patch("scripts.import_governance._REQUIREMENTS_TXT", req_txt),
-            patch("scripts.import_governance._REQUIREMENTS_LOCK", req_lock),
-        ):
-            in_sync, msg = check_lockfile_sync()
-
+        in_sync, msg = self._gate(tmp_path, "mcp>=1.28.0,<2\n", "mcp==2.0.0\n")
         assert not in_sync
         assert "mcp<2,>=1.28.0 rejects 2.0.0" in msg
 
-    @pytest.mark.parametrize("requirements_file", ["requirements.txt", "requirements-fast.txt"])
+    def test_constraint_option_line_is_not_a_declaration(self, tmp_path: Path) -> None:
+        """requirements-dev.in's leading `-c requirements.txt` is an option, never a floor."""
+        in_sync, msg = self._gate(
+            tmp_path,
+            "requests>=2.0\n",
+            "requests==2.31.0\n",
+            dev_floors="-c requirements.txt\npytest>=9.0\n",
+            dev_pins="pytest==9.1.1\n",
+        )
+        assert in_sync, msg
+        assert "pins all 2 declared floors" in msg, msg
+
+    @pytest.mark.parametrize("requirements_file", ["requirements.in", "requirements-fast.txt"])
     def test_mcp_declaration_rejects_major_two(self, requirements_file: str) -> None:
         from packaging.requirements import Requirement
         from packaging.version import Version
@@ -232,74 +235,45 @@ class TestCheckLockfileSync:
         assert Version("2.0.0") not in Requirement(declaration).specifier
 
     def test_pytz_is_a_direct_requirement_not_a_transitive_survivor(self) -> None:
-        """pytz must be declared in requirements.txt and pinned in the lock as a DIRECT dependency.
+        """pytz must be DECLARED in requirements.in and pinned in the compiled requirements.txt.
 
         duckdb soft-imports pytz when it converts tz-aware timestamps (the DuckLake read path
         scripts/session/preflight.py serves from cache), but declares no hard dependency on it --
         the same soft-import scripts/build_lambda_config.py's DUCKLAKE_DEPS already pins for the
-        Lambda layer. While pytz survived in the lock only as another package's transitive pin, the
-        repo cleanse that removed that parent silently deleted pytz too, and every `pip install -c
-        requirements.lock` CI install lost the module (red main-validate on c19328d). Asserting the
-        `-r requirements.txt` provenance -- not merely the pin's presence -- is what stops pytz from
+        Lambda layer. While pytz survived in the pinned closure only as another package's
+        transitive pin, the repo cleanse that removed that parent silently deleted pytz too, and
+        every CI install lost the module (red main-validate on c19328d). Asserting the
+        `-r requirements.in` provenance -- not merely the pin's presence -- is what stops pytz from
         regressing back to a transitive survivor.
         """
         from packaging.requirements import Requirement
         from packaging.version import Version
 
         declaration = next(
-            line for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines() if line.startswith("pytz")
+            line for line in (ROOT / "requirements.in").read_text(encoding="utf-8").splitlines() if line.startswith("pytz")
         )
         specifier = Requirement(declaration.split("#")[0].strip()).specifier
 
-        lock_lines = (ROOT / "requirements.lock").read_text(encoding="utf-8").splitlines()
-        pin_index = next(i for i, line in enumerate(lock_lines) if line.startswith("pytz=="))
-        pinned = Version(lock_lines[pin_index].split("==")[1].strip())
-        assert pinned in specifier, f"lock pin {pinned} does not satisfy requirements.txt {specifier}"
-        assert lock_lines[pin_index + 1].strip() == "# via -r requirements.txt", (
-            f"pytz must be pinned as a direct requirement, not a transitive survivor: got {lock_lines[pin_index + 1]!r}"
+        compiled = (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        pin_index = next(i for i, line in enumerate(compiled) if line.startswith("pytz=="))
+        pinned = Version(compiled[pin_index].split("==")[1].strip())
+        assert pinned in specifier, f"compiled pin {pinned} does not satisfy requirements.in {specifier}"
+        assert compiled[pin_index + 1].strip() == "# via -r requirements.in", (
+            f"pytz must be pinned as a direct requirement, not a transitive survivor: got {compiled[pin_index + 1]!r}"
         )
 
     def test_comments_and_blanks_skipped(self, tmp_path: Path) -> None:
-        """Comments and blank lines in requirements.txt are ignored."""
-        req_txt = tmp_path / "requirements.txt"
-        req_txt.write_text("# core\nrequests>=2.0\n\n# dev\npytest>=7.0\n", encoding="utf-8")
-        req_lock = tmp_path / "requirements.lock"
-        req_lock.write_text("requests==2.31.0\npytest==7.4.0\n", encoding="utf-8")
-
-        with (
-            patch("scripts.import_governance._REQUIREMENTS_TXT", req_txt),
-            patch("scripts.import_governance._REQUIREMENTS_LOCK", req_lock),
-        ):
-            in_sync, msg = check_lockfile_sync()
-
+        """Comments and blank lines in the .in inputs are ignored."""
+        in_sync, msg = self._gate(
+            tmp_path, "# core\nrequests>=2.0\n\n# dev\npytest>=7.0\n", "requests==2.31.0\npytest==7.4.0\n"
+        )
         assert in_sync
 
-    @pytest.mark.parametrize("invalid_lock_line", ["not a requirement", "requests==not-a-version", "requests==1.*"])
-    def test_invalid_lock_entries_do_not_count_as_pins(self, tmp_path: Path, invalid_lock_line: str) -> None:
-        req_txt = tmp_path / "requirements.txt"
-        req_txt.write_text("requests>=2.0\n", encoding="utf-8")
-        req_lock = tmp_path / "requirements.lock"
-        req_lock.write_text(f"{invalid_lock_line}\n", encoding="utf-8")
-
-        with (
-            patch("scripts.import_governance._REQUIREMENTS_TXT", req_txt),
-            patch("scripts.import_governance._REQUIREMENTS_LOCK", req_lock),
-        ):
-            in_sync, msg = check_lockfile_sync()
-
+    @pytest.mark.parametrize("invalid_pin_line", ["not a requirement", "requests==not-a-version", "requests==1.*"])
+    def test_invalid_compiled_entries_do_not_count_as_pins(self, tmp_path: Path, invalid_pin_line: str) -> None:
+        in_sync, msg = self._gate(tmp_path, "requests>=2.0\n", f"{invalid_pin_line}\n")
         assert not in_sync
         assert "missing pins for: requests" in msg
-
-    def _gate(self, tmp_path: Path, req_text: str, lock_text: str) -> tuple[bool, str]:
-        req_txt = tmp_path / "requirements.txt"
-        req_txt.write_text(req_text, encoding="utf-8")
-        req_lock = tmp_path / "requirements.lock"
-        req_lock.write_text(lock_text, encoding="utf-8")
-        with (
-            patch("scripts.import_governance._REQUIREMENTS_TXT", req_txt),
-            patch("scripts.import_governance._REQUIREMENTS_LOCK", req_lock),
-        ):
-            return check_lockfile_sync()
 
     def test_absurd_bump_with_trailing_comment_fails(self, tmp_path: Path) -> None:
         """An inline comment must not hide an absurd floor from the gate (the pre-fix silent skip)."""
@@ -327,30 +301,30 @@ class TestCheckLockfileSync:
 
     def test_commented_declarations_are_counted(self, tmp_path: Path) -> None:
         """The four real inline-comment shapes are parsed and counted, not skipped."""
-        req = (
+        floors = (
             "psycopg2-binary>=2.9.12  # Neon catalog connections\n"
             "duckdb>=1.5.4  # generated by scripts/sync/ducklake_version.py\n"
             "python-ulid>=3.1.0  # monotonic ULID generation\n"
             "pytz>=2026.2  # duckdb soft-imports pytz\n"
         )
-        lock = "psycopg2-binary==2.9.12\nduckdb==1.5.4\npython-ulid==3.1.0\npytz==2026.2\n"
-        in_sync, msg = self._gate(tmp_path, req, lock)
+        pins = "psycopg2-binary==2.9.12\nduckdb==1.5.4\npython-ulid==3.1.0\npytz==2026.2\n"
+        in_sync, msg = self._gate(tmp_path, floors, pins)
         assert in_sync, msg
-        assert "4 top-level packages" in msg, msg
+        assert "pins all 4 declared floors" in msg, msg
 
     def test_live_declarations_all_parsed(self) -> None:
-        """Every declaration in the live requirements files is parsed: declared count == gate-reported count."""
+        """Every declaration in the live .in inputs is parsed: declared count == gate-reported count."""
         comment = re.compile(r"(^|\s+)#.*$")
         declared = 0
-        for name in ("requirements.txt", "requirements-dev.txt"):
+        for name in ("requirements.in", "requirements-dev.in"):
             for raw in (ROOT / name).read_text(encoding="utf-8").splitlines():
                 line = comment.sub("", raw).strip()
                 if line and not line.startswith("-"):
                     declared += 1
-        with patch("scripts.import_governance._REQUIREMENTS_DEV", ROOT / "requirements-dev.txt"):
-            in_sync, msg = check_lockfile_sync()
+        in_sync, msg = check_lockfile_sync()
         assert in_sync, msg
-        assert f"{declared} top-level packages" in msg, f"declared {declared}: {msg}"
+        assert f"pins all {declared} declared floors" in msg, f"declared {declared}: {msg}"
+        assert count_declared_requirements() == declared, "the shared helper must agree with the gate"
 
 
 # ---------------------------------------------------------------------------

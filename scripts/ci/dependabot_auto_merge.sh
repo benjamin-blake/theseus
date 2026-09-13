@@ -13,12 +13,19 @@
 # derivation as scripts/ci/pr_conflict_signal.sh's header.
 #
 # WHY EACH GATE EXISTS:
-#   1. Update type. Only patch and minor bumps are auto-merged. A major bump is a real
-#      behaviour-change risk (an exact GitHub Actions major, or a pip floor crossing a breaking
-#      release), and dependabot's minor-and-patch groups mean majors always arrive as their own
-#      ungrouped PR -- they are left for human review and for the dependabot-stranded sweep to
-#      surface. An empty update type means fetch-metadata could not classify the bump, which is
-#      indistinguishable from "unknown risk" and is treated the same way.
+#   1. Update type, in TWO branches. Only patch and minor bumps are auto-merged. A major bump is a
+#      real behaviour-change risk (an exact GitHub Actions major, or a pip floor crossing a
+#      breaking release), and dependabot's minor-and-patch groups mean majors always arrive as
+#      their own ungrouped PR -- they are left for human review and for the dependabot-stranded
+#      sweep to surface.
+#      Branch 1 (UPDATE_TYPE non-empty): compare against _ALLOWED_PATCH_UPDATE /
+#      _ALLOWED_MINOR_UPDATE exactly as before. dependabot/fetch-metadata is the managed primitive
+#      and always wins (Decision 100); the deriver is never invoked on this path.
+#      Branch 2 (UPDATE_TYPE empty): fetch-metadata could not classify the bump -- which used to be
+#      an unconditional deny, a silent never-merge with no operator-visible reason. ONLY THEN does
+#      scripts/ci/dependabot_semver_class.py derive a class from the bump's own version evidence;
+#      patch/minor are allowed and major/unknown denied, so the fallback can only ever classify
+#      what the primitive declined to classify, never overrule it.
 #   2. Denylist. duckdb / DuckLake versions are under an SSOT lockstep regime (the client pin and
 #      the catalog version must move together), so a bump of either is never a standalone
 #      auto-merge candidate regardless of its semver class.
@@ -28,8 +35,10 @@
 #      approves. A terminal failure here (e.g. the repo-level "Allow auto-merge" toggle is off)
 #      exits non-zero so it is visible in the Actions tab rather than silently doing nothing.
 #
-# Contract with dependabot-auto-merge.yml: cwd is the repo root; UPDATE_TYPE, DEPENDENCY_NAMES,
-# PACKAGE_ECOSYSTEM, PR_URL, PR_NUMBER and GH_TOKEN are set in the step's env: block.
+# Contract with dependabot-auto-merge.yml: UPDATE_TYPE, DEPENDENCY_NAMES, PACKAGE_ECOSYSTEM,
+# PR_URL, PR_NUMBER, GH_TOKEN and -- for the branch-2 derivation -- PREVIOUS_VERSION,
+# NEW_VERSION, UPDATED_DEPENDENCIES_JSON and PR_TITLE are set in the step's env: block. The
+# deriver is resolved relative to THIS FILE, not cwd, so the delegate is cwd-independent.
 
 set -uo pipefail
 set +e
@@ -48,6 +57,14 @@ DEPENDENCY_NAMES="${DEPENDENCY_NAMES:-}"
 PACKAGE_ECOSYSTEM="${PACKAGE_ECOSYSTEM:-}"
 PR_URL="${PR_URL:-}"
 PR_NUMBER="${PR_NUMBER:-}"
+PREVIOUS_VERSION="${PREVIOUS_VERSION:-}"
+NEW_VERSION="${NEW_VERSION:-}"
+UPDATED_DEPENDENCIES_JSON="${UPDATED_DEPENDENCIES_JSON:-}"
+PR_TITLE="${PR_TITLE:-}"
+export PREVIOUS_VERSION NEW_VERSION UPDATED_DEPENDENCIES_JSON PR_TITLE
+export UPDATE_TYPE DEPENDENCY_NAMES
+
+_SEMVER_CLASS_SCRIPT="$(cd "$(dirname "$0")" && pwd)/dependabot_semver_class.py"
 
 # Every gate decision is mirrored to $GITHUB_STEP_SUMMARY so the reason a PR was or was not armed
 # is operator-observable from the run page, not buried in the step log (Decision 155 marker shape,
@@ -87,9 +104,23 @@ _denied_dependency() {
   return 1
 }
 
-if [ "$UPDATE_TYPE" != "$_ALLOWED_PATCH_UPDATE" ] && [ "$UPDATE_TYPE" != "$_ALLOWED_MINOR_UPDATE" ]; then
-  _decision "update-type '${UPDATE_TYPE:-<empty>}' is not patch or minor -- left for human review / stranded-sweep."
-  exit 0
+if [ -n "$UPDATE_TYPE" ]; then
+  semver_class="$UPDATE_TYPE"
+  derived="no"
+  if [ "$UPDATE_TYPE" != "$_ALLOWED_PATCH_UPDATE" ] && [ "$UPDATE_TYPE" != "$_ALLOWED_MINOR_UPDATE" ]; then
+    _decision "update-type '${UPDATE_TYPE}' is not patch or minor (derived=no) -- left for human review / stranded-sweep."
+    exit 0
+  fi
+else
+  derived="yes"
+  semver_class=$(python3 "$_SEMVER_CLASS_SCRIPT" 2>/dev/null)
+  if [ -z "$semver_class" ]; then
+    semver_class="unknown"
+  fi
+  if [ "$semver_class" != "patch" ] && [ "$semver_class" != "minor" ]; then
+    _decision "update-type '<empty>' derived class '${semver_class}' (derived=yes) -- left for human review / stranded-sweep."
+    exit 0
+  fi
 fi
 
 denied_token=$(_denied_dependency "$DEPENDENCY_NAMES")
@@ -111,8 +142,8 @@ while [ "$attempt" -le "$_MERGE_ATTEMPTS" ]; do
   merge_rc=$?
 
   if [ "$merge_rc" -eq 0 ]; then
-    _decision "armed GitHub-native auto-merge (squash) for a ${UPDATE_TYPE} bump of \
-'${DEPENDENCY_NAMES}'; required checks still gate the merge."
+    _decision "armed GitHub-native auto-merge (squash) for a ${semver_class} bump of \
+'${DEPENDENCY_NAMES}' (update-type '${UPDATE_TYPE:-<empty>}', derived=${derived}); required checks still gate the merge."
     exit 0
   fi
 

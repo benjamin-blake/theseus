@@ -1,4 +1,9 @@
-"""Requirements.txt PyPI-existence validation (Decision 104)."""
+"""requirements.in PyPI-existence validation (Decision 104).
+
+The DECLARED floors are the domain, never the compiled closure: probing requirements.txt would
+fire one `pip index versions` subprocess per transitive pin (108 today, unbounded later) to
+re-prove existence pip-compile already proved when it resolved them.
+"""
 
 from __future__ import annotations
 
@@ -10,9 +15,10 @@ from scripts.checks import _common, registry
 @registry.register("validate_requirements", owner="platform")
 def validate_requirements(failed: list[str]) -> None:
     print("\n=== Requirements validation ===")
-    req_file = _common.ROOT / "requirements.txt"
+    req_file = _common.ROOT / "requirements.in"
     if not req_file.exists():
-        print(f"requirements.txt not found at {req_file}")
+        print(f"requirements.in not found at {req_file}")
+        registry.skipped("requirements.in not found")
         failed.append("Requirements validation")
         return
 
@@ -31,7 +37,8 @@ def validate_requirements(failed: list[str]) -> None:
             packages.append(match.group(1))
 
     if not packages:
-        print("requirements.txt has no packages to validate.")
+        print("requirements.in has no packages to validate.")
+        registry.examined(0, unit="declared_packages")
         return
 
     errors: list[str] = []
@@ -62,6 +69,10 @@ def validate_requirements(failed: list[str]) -> None:
             else:
                 errors.append(f"{pkg} — not found on PyPI (pip index versions returned non-zero)")
 
+    # Declared AFTER the probe loop so it is the surviving last-call-wins declaration: a network
+    # warning does not convert the run to skipped, because those packages were examined.
+    registry.examined(len(packages), unit="declared_packages")
+
     if warnings:
         print("Requirements validation warnings (network -- not treated as failures):")
         for w in warnings:
@@ -73,4 +84,4 @@ def validate_requirements(failed: list[str]) -> None:
             print(f"  - {e}")
         failed.append("Requirements validation")
     elif not warnings:
-        print(f"All {len(packages)} packages in requirements.txt found on PyPI.")
+        print(f"All {len(packages)} packages in requirements.in found on PyPI.")

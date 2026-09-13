@@ -22,7 +22,18 @@
 #     the current base -- the only actor that can rewrite a dependabot branch cleanly. The same
 #     fallback also covers a BEHIND PR whose update-branch call simply failed (permissions, a race
 #     with a concurrent push), so a single failure mode never strands a PR for another week.
-#   - Anything else (CLEAN, BLOCKED, UNSTABLE, UNKNOWN): reported in the summary table, untouched.
+#   - UNKNOWN: NOT a settled state. GitHub computes mergeability LAZILY, so a PR that has not been
+#     visited recently reports UNKNOWN at list time while the background job runs; the very act of
+#     asking is what schedules it. Treating that as "nothing needed" is what stranded every PR the
+#     sweep listed cold. The listed UNKNOWN is therefore RE-READ through a bounded poll before the
+#     BEHIND/DIRTY test, and the settled value drives the decision. Only UNKNOWN is polled -- a
+#     settled list value is never re-read.
+#   - Still UNKNOWN after the poll bound: no action, but NOT silent (Decision 155 skip-with-marker).
+#     An indeterminate state must not read byte-identically to "nothing needed", so it emits the
+#     distinct greppable marker `[DEPENDABOT-STRANDED] UNKNOWN-AFTER-POLL: PR #N`, mirrored to
+#     GITHUB_STEP_SUMMARY, and rows the action `poll-exhausted` rather than `none`. A genuine call
+#     FAILURE during the poll is a different outcome: _signal_failure and a FAILED row.
+#   - Anything else (CLEAN, BLOCKED, UNSTABLE): reported in the summary table, untouched.
 #     BLOCKED is usually a CODEOWNERS-protected path awaiting a human code-owner approval that no
 #     bot can supply, and updating the branch would not change that.
 #
@@ -45,6 +56,11 @@ set +e
 _GH_RETRY_ATTEMPTS=3
 _GH_RETRY_SLEEP="${DEPENDABOT_STRANDED_RETRY_SLEEP:-5}"
 
+# Mergeability is computed lazily -- see the UNKNOWN note in the header.
+_MERGEABLE_POLL_ATTEMPTS=5
+_MERGEABLE_POLL_SLEEP="${DEPENDABOT_STRANDED_POLL_SLEEP:-5}"
+_UNKNOWN_STATE="UNKNOWN"
+
 _DEPENDABOT_AUTHOR="app/dependabot"
 _REBASE_COMMAND="@dependabot rebase"
 
@@ -60,17 +76,23 @@ _signal_failure() {
 }
 
 # Bounded retry shared by every retried gh call site, so retry policy and exit-status handling live
-# in exactly one place (the rec-2735 defect class). Prints the last observed stdout and returns the
-# last attempt's status. `gh pr update-branch` deliberately does NOT go through this: it has an
-# explicit fallback, and retrying first would only delay reaching it.
+# in exactly one place (the rec-2735 defect class). retry_on_value: a value that, when the call
+# SUCCEEDS but its captured stdout equals it, is ALSO retried (the mergeability poll passes
+# "UNKNOWN"); pass "" to retry on call failure only. Prints the last observed stdout (possibly
+# empty or stale) and returns 0 only when the final attempt both succeeded AND (retry_on_value is
+# "" or stdout != retry_on_value) -- so a caller can always distinguish "call failed" from "call
+# succeeded but returned the retry sentinel" by inspecting the printed value. Mirrors
+# scripts/ci/pr_conflict_signal.sh's own copy; each delegate stays a single self-contained file.
+# `gh pr update-branch` deliberately does NOT go through this: it has an explicit fallback, and
+# retrying first would only delay reaching it.
 _gh_bounded_retry() {
-  local max_attempts="$1" sleep_secs="$2"
-  shift 2
+  local max_attempts="$1" sleep_secs="$2" retry_on_value="$3"
+  shift 3
   local attempt out rc
   for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     out=$("$@")
     rc=$?
-    if [ "$rc" -eq 0 ]; then
+    if [ "$rc" -eq 0 ] && { [ -z "$retry_on_value" ] || [ "$out" != "$retry_on_value" ]; }; then
       printf '%s' "$out"
       return 0
     fi
@@ -80,6 +102,16 @@ _gh_bounded_retry() {
   done
   printf '%s' "$out"
   return 1
+}
+
+# Decision 155 skip-with-marker: an indeterminate mergeability must not read byte-identically to
+# "nothing needed", so it gets its own greppable marker mirrored to the run summary.
+_signal_unknown_after_poll() {
+  local msg="[DEPENDABOT-STRANDED] UNKNOWN-AFTER-POLL: PR #$1"
+  echo "$msg"
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    printf '\n## dependabot-stranded UNKNOWN-AFTER-POLL\n\n%s\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
+  fi
 }
 
 # Age in whole days from an ISO-8601 createdAt. `date -d` is GNU-only, which the ubuntu-latest
@@ -119,7 +151,7 @@ _write_summary() {
   } >> "$GITHUB_STEP_SUMMARY"
 }
 
-prs=$(_gh_bounded_retry "$_GH_RETRY_ATTEMPTS" "$_GH_RETRY_SLEEP" \
+prs=$(_gh_bounded_retry "$_GH_RETRY_ATTEMPTS" "$_GH_RETRY_SLEEP" "" \
   gh pr list --author "$_DEPENDABOT_AUTHOR" --state open \
   --json number,title,headRefName,mergeStateStatus,createdAt,autoMergeRequest \
   --jq '.[] | [.number, .title, .mergeStateStatus, .createdAt, (if .autoMergeRequest == null then "no" else "yes" end)] | @tsv')
@@ -134,6 +166,27 @@ else
   while IFS=$'\t' read -r number title merge_state created_at auto_merge; do
     [ -z "$number" ] && continue
     age_days=$(_age_days "$created_at")
+
+    if [ "$merge_state" = "$_UNKNOWN_STATE" ]; then
+      echo "PR #$number: mergeStateStatus=UNKNOWN at list time; re-reading until GitHub settles it."
+      settled=$(_gh_bounded_retry "$_MERGEABLE_POLL_ATTEMPTS" "$_MERGEABLE_POLL_SLEEP" "$_UNKNOWN_STATE" \
+        gh pr view "$number" --json mergeStateStatus --jq '.mergeStateStatus')
+      poll_rc=$?
+
+      if [ "$poll_rc" -ne 0 ] && [ "$settled" != "$_UNKNOWN_STATE" ]; then
+        _signal_failure "PR #$number: gh pr view failed after $_MERGEABLE_POLL_ATTEMPTS attempts; mergeability unknown -- PR left for the next sweep."
+        _add_row "$number" "$title" "$age_days" "$merge_state" "$auto_merge" "FAILED"
+        continue
+      fi
+
+      if [ "$settled" = "$_UNKNOWN_STATE" ]; then
+        _signal_unknown_after_poll "$number"
+        _add_row "$number" "$title" "$age_days" "$_UNKNOWN_STATE" "$auto_merge" "poll-exhausted"
+        continue
+      fi
+
+      merge_state="$settled"
+    fi
 
     if [ "$merge_state" != "BEHIND" ] && [ "$merge_state" != "DIRTY" ]; then
       echo "PR #$number: mergeStateStatus=$merge_state, no sweep action needed."
@@ -151,7 +204,7 @@ else
     fi
 
     echo "PR #$number: gh pr update-branch failed (exit $update_rc); asking dependabot to rebase."
-    _gh_bounded_retry "$_GH_RETRY_ATTEMPTS" "$_GH_RETRY_SLEEP" \
+    _gh_bounded_retry "$_GH_RETRY_ATTEMPTS" "$_GH_RETRY_SLEEP" "" \
       gh pr comment "$number" --body "$_REBASE_COMMAND" > /dev/null
     comment_rc=$?
 

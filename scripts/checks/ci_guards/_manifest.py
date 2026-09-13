@@ -133,6 +133,10 @@ ENTRIES: tuple[Entry, ...] = (
             ".github/workflows/**",
             "scripts/ci/**",
             "scripts/checks/ci_guards/validate_dependabot_automation.py",
+            # A requirements-only PR is the dependabot pip-bump class this guard exists to unblock;
+            # without these, assert_lockfile_is_dependabot_visible would only fire in the full tier.
+            "requirements*.in",
+            "requirements*.txt",
         ),
         full_segment="full_after_lint",
     ),

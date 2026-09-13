@@ -52,7 +52,7 @@ def test_expected_floor_line_format():
 
 def test_sync_rewrites_old_floor(tmp_path, monkeypatch):
     _mock_version(monkeypatch)
-    req = tmp_path / "requirements.txt"
+    req = tmp_path / "requirements.in"
     req.write_text("requests>=2.0\nduckdb>=1.5.3  # old comment\nboto3>=1.0\n", encoding="utf-8")
     result = sdv.sync(check_only=False, requirements_path=req)
     assert result is True
@@ -65,7 +65,7 @@ def test_sync_rewrites_old_floor(tmp_path, monkeypatch):
 
 def test_sync_idempotent_when_already_in_sync(tmp_path, monkeypatch):
     _mock_version(monkeypatch)
-    req = tmp_path / "requirements.txt"
+    req = tmp_path / "requirements.in"
     expected_line = sdv._expected_floor_line(_PIN)
     req.write_text(f"requests>=2.0\n{expected_line}\nboto3>=1.0\n", encoding="utf-8")
     original = req.read_text(encoding="utf-8")
@@ -76,7 +76,7 @@ def test_sync_idempotent_when_already_in_sync(tmp_path, monkeypatch):
 
 def test_sync_rewrites_exact_pin_to_floor(tmp_path, monkeypatch):
     _mock_version(monkeypatch)
-    req = tmp_path / "requirements.txt"
+    req = tmp_path / "requirements.in"
     req.write_text("duckdb==1.5.3\n", encoding="utf-8")
     result = sdv.sync(check_only=False, requirements_path=req)
     assert result is True
@@ -87,7 +87,7 @@ def test_sync_rewrites_exact_pin_to_floor(tmp_path, monkeypatch):
 def test_sync_with_inline_comment_rewrites_version_token_only(tmp_path, monkeypatch):
     """A line with inline comment (today's format) is rewritten on the version token only."""
     _mock_version(monkeypatch)
-    req = tmp_path / "requirements.txt"
+    req = tmp_path / "requirements.in"
     req.write_text(
         "duckdb>=1.5.3  # floor is load-bearing: >=1.5.3 ships the ducklake-extension-capable runtime"
         " (src/common/ducklake_spike.py INSTALL ducklake); Lambda layer pins ==1.5.3 lockstep"
@@ -103,7 +103,7 @@ def test_sync_with_inline_comment_rewrites_version_token_only(tmp_path, monkeypa
 
 def test_sync_appends_when_no_duckdb_line(tmp_path, monkeypatch):
     _mock_version(monkeypatch)
-    req = tmp_path / "requirements.txt"
+    req = tmp_path / "requirements.in"
     req.write_text("requests>=2.0\n", encoding="utf-8")
     result = sdv.sync(check_only=False, requirements_path=req)
     assert result is True
@@ -118,7 +118,7 @@ def test_sync_appends_when_no_duckdb_line(tmp_path, monkeypatch):
 
 def test_check_passes_when_in_sync(tmp_path, monkeypatch):
     _mock_version(monkeypatch)
-    req = tmp_path / "requirements.txt"
+    req = tmp_path / "requirements.in"
     expected_line = sdv._expected_floor_line(_PIN)
     req.write_text(f"{expected_line}\n", encoding="utf-8")
     result = sdv.sync(check_only=True, requirements_path=req)
@@ -127,7 +127,7 @@ def test_check_passes_when_in_sync(tmp_path, monkeypatch):
 
 def test_check_detects_drift(tmp_path, monkeypatch):
     _mock_version(monkeypatch)
-    req = tmp_path / "requirements.txt"
+    req = tmp_path / "requirements.in"
     req.write_text("duckdb>=1.5.3  # old\n", encoding="utf-8")
     result = sdv.sync(check_only=True, requirements_path=req)
     assert result is False
@@ -135,7 +135,7 @@ def test_check_detects_drift(tmp_path, monkeypatch):
 
 def test_check_detects_missing_line(tmp_path, monkeypatch):
     _mock_version(monkeypatch)
-    req = tmp_path / "requirements.txt"
+    req = tmp_path / "requirements.in"
     req.write_text("requests>=2.0\n", encoding="utf-8")
     result = sdv.sync(check_only=True, requirements_path=req)
     assert result is False
@@ -143,7 +143,7 @@ def test_check_detects_missing_line(tmp_path, monkeypatch):
 
 def test_check_does_not_write_file(tmp_path, monkeypatch):
     _mock_version(monkeypatch)
-    req = tmp_path / "requirements.txt"
+    req = tmp_path / "requirements.in"
     req.write_text("duckdb>=1.5.3\n", encoding="utf-8")
     original_mtime = req.stat().st_mtime
     sdv.sync(check_only=True, requirements_path=req)
@@ -157,7 +157,7 @@ def test_check_does_not_write_file(tmp_path, monkeypatch):
 
 def test_main_rewrite_returns_0(tmp_path, monkeypatch):
     _mock_version(monkeypatch)
-    req = tmp_path / "requirements.txt"
+    req = tmp_path / "requirements.in"
     req.write_text("duckdb>=1.5.3\n", encoding="utf-8")
     monkeypatch.setattr(sdv, "REQUIREMENTS_PATH", req)
     assert sdv.main([]) == 0
@@ -165,7 +165,7 @@ def test_main_rewrite_returns_0(tmp_path, monkeypatch):
 
 def test_main_check_passes_returns_0(tmp_path, monkeypatch):
     _mock_version(monkeypatch)
-    req = tmp_path / "requirements.txt"
+    req = tmp_path / "requirements.in"
     req.write_text(sdv._expected_floor_line(_PIN) + "\n", encoding="utf-8")
     monkeypatch.setattr(sdv, "REQUIREMENTS_PATH", req)
     assert sdv.main(["--check"]) == 0
@@ -173,7 +173,7 @@ def test_main_check_passes_returns_0(tmp_path, monkeypatch):
 
 def test_main_check_fails_returns_1(tmp_path, monkeypatch):
     _mock_version(monkeypatch)
-    req = tmp_path / "requirements.txt"
+    req = tmp_path / "requirements.in"
     req.write_text("duckdb>=1.5.3\n", encoding="utf-8")
     monkeypatch.setattr(sdv, "REQUIREMENTS_PATH", req)
     assert sdv.main(["--check"]) == 1
