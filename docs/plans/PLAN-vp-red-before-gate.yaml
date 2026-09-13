@@ -26,14 +26,15 @@ scope:
   - file: tests/checks/verification/test_validate_vp_replay.py
     action: Modify
     purpose: Red cases for every new path (Decision 187 mirror-test state invariant).
-  - file: scripts/checks/verification/validate_differential_gate_baseline.py
+  - file: scripts/checks/verification/_manifest.py
     action: Modify
     purpose: >-
-      Third leg -- the red-before classifier efficacy canary; widened docstring charter; examined
-      unit count 2 -> 3.
-  - file: tests/checks/verification/test_validate_differential_gate_baseline.py
+      Add full_segment="full_after_lint" to the validate_vp_replay Entry so the check and its
+      in-dispatch classifier self-test also run in the full tier (a tightening, free under
+      Decision 187 point 3).
+  - file: tests/checks/verification/test__manifest.py
     action: Modify
-    purpose: Mirror test for the third leg.
+    purpose: Assert the validate_vp_replay Entry is dispatched in both tiers.
   - file: docs/contracts/vp-red-before.yaml
     action: Create
     purpose: >-
@@ -72,8 +73,10 @@ acceptance_criteria:
     The terminal accounting declaration counts plans acted on in EITHER leg, so a plan-only PR
     carrying graduate steps declares enforced, never vacuous.
   - >-
-    validate_differential_gate_baseline carries a third leg asserting the classifier labels one
-    fixture step of each of the four classes correctly.
+    validate_vp_replay classifies four fixture steps, one per outcome class, as a precondition of
+    its own verdict on every dispatch; a mislabel appends to failed, so the check cannot report
+    enforced while its classifier is broken. The self-test contributes to failed only, never to
+    examined, so the terminal declaration keeps one homogeneous unit.
   - >-
     .claude/skills/planning/SKILL.md is strictly smaller than at origin/main and needs no
     raise-approved marker.
@@ -88,7 +91,7 @@ verification_plan:
     graduation: waive
     graduation_waiver_reason: >-
       Concrete duplication, not an excuse: this whole-file selector is a strict superset of steps
-      2-8, each of which graduates its own discriminating nodeid over this same file. A whole-file
+      2-11, each of which graduates its own discriminating nodeid over this same file. A whole-file
       selector is in any case unadmittable, since run_differential rejects a check that passes on
       an origin/main worktree.
   - step: 2
@@ -189,18 +192,34 @@ verification_plan:
   - step: 9
     phase: pre-deploy
     hermetic: true
-    action: The efficacy canary classifies one fixture step of each of the four classes correctly
-    command: bin/venv-python -m pytest tests/checks/verification/test_validate_differential_gate_baseline.py::TestRedBeforeCanary
+    action: A broken classifier reddens the check that depends on it, in the same dispatch
+    command: bin/venv-python -m pytest tests/checks/verification/test_validate_vp_replay.py::TestClassifierSelfTest
       -q
     expected: all tests in the class pass
     fix_if: >-
-      This is the only leg that proves the classifier still works: a classifier that mislabels
-      every step as target_absent still exits 0 and still declares examined(n>0), so no other
-      mechanism would notice. Hosted here rather than in a new module so it shares an existing
-      maintenance path instead of creating one that can rot.
+      This is the only guard that proves the classifier still works: one that mislabels every step
+      as target_absent still exits 0 and still declares examined(n>0), so nothing else would
+      notice. The class must include a red case that patches the classifier to mislabel and
+      asserts the self-test reddens -- otherwise the self-test is itself a tautology. Run the
+      fixtures UNCONDITIONALLY, before the first real step is classified and before any
+      precondition early-return, so no unrelated skip reason can mask them.
     graduation: graduate
-    graduation_check_id: vp-red-before-classifier-efficacy-canary
+    graduation_check_id: vp-red-before-classifier-self-test
   - step: 10
+    phase: pre-deploy
+    hermetic: true
+    action: validate_vp_replay is dispatched in the full tier as well as --pre
+    command: bin/venv-python -m pytest tests/checks/verification/test__manifest.py::test_vp_replay_entry_runs_in_both_tiers
+      -q
+    expected: 1 passed
+    fix_if: >-
+      The Entry is currently pre=True with no full_segment, so the check and its self-test run
+      only in --pre. Adding full_segment is a tightening (free and unmarked under Decision 187
+      point 3) and gives the classifier self-test a post-merge surface on main, so environment
+      drift surfaces there rather than at the next affected PR.
+    graduation: graduate
+    graduation_check_id: vp-replay-registered-in-both-tiers
+  - step: 11
     phase: pre-deploy
     hermetic: true
     action: An independent count of graduate steps equals what the check declared examined
@@ -213,7 +232,7 @@ verification_plan:
       derived without reference to the check's own resolution path.
     graduation: graduate
     graduation_check_id: vp-red-before-vacuity-cross-check
-  - step: 11
+  - step: 12
     phase: pre-deploy
     hermetic: true
     action: The planning skill shrank and needs no raise-approved marker
@@ -235,7 +254,7 @@ verification_plan:
       command returns non-zero forever after. A standing shard over it would fail permanently.
       The durable property -- that the file stays within budget -- is already owned by the
       standing validate_prose_budget_raises check.
-  - step: 12
+  - step: 13
     phase: pre-deploy
     hermetic: true
     action: The new Class D contract conforms and its evaluator resolves
@@ -251,7 +270,7 @@ verification_plan:
       Duplicative by construction: validate_contract_drift already runs over every contract in
       both tiers, so a shard replaying a -k subset of its own mirror suite would add no guard the
       standing check does not already provide on every dispatch.
-  - step: 13
+  - step: 14
     phase: pre-deploy
     hermetic: true
     action: The new Decision carries a significance envelope and an amends field
@@ -267,7 +286,7 @@ verification_plan:
     graduation_waiver_reason: >-
       Duplicative by construction: validate_decision_entry_conformance and
       validate_decisions_size already gate every diff touching docs/DECISIONS.md in both tiers.
-  - step: 14
+  - step: 15
     phase: pre-deploy
     hermetic: false
     action: Fast tier is green end to end and the non-test half stays within budget
@@ -278,7 +297,7 @@ verification_plan:
       timeout is being multiplied across legs. Decision 182 derived 240 specifically to dominate
       this check's 150s maximum as the only in-tier allowance across all 112 --pre steps.
     graduation: not-applicable
-  - step: 15
+  - step: 16
     phase: pre-deploy
     hermetic: false
     action: rec-3770 is closeable against a reconciled acceptance command
@@ -300,12 +319,12 @@ test_obligations:
     verification_step: 2
     test_selector: tests/checks/verification/test_validate_vp_replay.py::TestRedBeforeLeg::test_graduate_step_exiting_zero_reddens
     red_green_expectation: red before, green after
-  - source: scripts/checks/verification/validate_differential_gate_baseline.py
+  - source: scripts/checks/verification/_manifest.py
     behavior: >-
-      The red-before classifier is exercised against one fixture step of each of the four outcome
-      classes, so a classifier that silently collapses them cannot pass.
-    verification_step: 9
-    test_selector: tests/checks/verification/test_validate_differential_gate_baseline.py::TestRedBeforeCanary::test_all_four_classes_classified_correctly
+      The validate_vp_replay Entry is dispatched in both tiers, so the classifier self-test has a
+      post-merge surface on main and not only a PR-gate one.
+    verification_step: 10
+    test_selector: tests/checks/verification/test__manifest.py::test_vp_replay_entry_runs_in_both_tiers
     red_green_expectation: red before, green after
 constraints:
   - No rescue agents or workaround loops (Decision 55); an unmeasurable outcome fails loudly.
@@ -313,9 +332,13 @@ constraints:
     Only files in the Scope table may be modified; out-of-scope defects become recommendations
     via scripts.ops_data_portal, never inline fixes (Decision 59).
   - >-
-    Do NOT create a new check module. The canary is a third leg on the existing
-    validate_differential_gate_baseline; a new module would install a second in-tier budget
-    allowance and falsify Decision 182 point 2.
+    Do NOT create a new check module, and do NOT host the classifier self-test in another check.
+    A new module would install a second in-tier budget allowance and falsify Decision 182 point 2;
+    validate_differential_gate_baseline was considered and REJECTED as a host because its body is
+    a serial early-return chain (six returns, three of them registry.skipped) whose unrelated
+    preconditions would mask an appended leg and report it under a worktree skip reason -- the
+    Decision 170 status-collapse recreated inside one check. The self-test belongs in
+    validate_vp_replay's own dispatch, as a precondition of its own verdict.
   - >-
     Do NOT rename any registered check -- authorization is at check-NAME level (Decision 187) and
     the registry shard linkage matches on the (plan_slug, check_id) pair.
@@ -333,37 +356,40 @@ context:
     165, 181, 128, 169."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
   - >-
-    Flag dispositions: D148 CONTRADICT -> new numbered Decision, amends: [148] (Decision 182 is
-    the on-point precedent; measured 178 B headroom on 148 forced it). D88 CONTRADICT -> the
-    unmeasurable class covers credential absence and hard-fails. D132 NOTE -> cited for the
-    two-leg model and the disposition schema only; its residual limitation A names the
-    not-applicable seam and is NOT discharged here. D187 SPIRIT -> dissolved once plan-critique
-    left scope.
+    Flag dispositions: D148 -> new numbered Decision, amends: [148] (Decision 182 precedent; 148
+    has 178 B headroom under its 6144 cap, forcing a number over an annotation). D88 -> credential
+    absence is unmeasurable and hard-fails. D132 -> cited for the two-leg model and disposition
+    schema only; its residual limitation A (the not-applicable seam) is NOT discharged. D187 ->
+    dissolved when plan-critique left scope.
   - >-
-    Decided forks (record_grammar): graduate-only partition | class consistency-only: no |
-    precedent: fable-consult + measurement || extend vs new module | chosen extend | precedent:
-    Decision 182 point 2 | reversible: yes || canary host | chosen validate_differential_gate_baseline
-    | precedent: its existing self-test charter | reversible: yes.
+    Forks (record_grammar), all class: asked, all reversible: graduate-only partition (precedent:
+    none) || extend vs new module -> extend (precedent: Decision 182 point 2, decision) ||
+    classifier self-test home -> in-dispatch precondition of validate_vp_replay (precedent: none).
   - >-
-    Why the plan-only leg is the right place: a plan-only PR's tree IS the pre-implementation tree
-    (Decision 76 two-PR flow, strictly observed -- 18 of the last 40 relevant commits are plan
-    commits merging before their feat counterpart), so red-before needs no worktree, no revert and
-    no .venv provisioning.
+    The self-test-home fork was first decided as a third leg on
+    validate_differential_gate_baseline and REVERSED on consult: that host is a serial
+    early-return chain (6 returns, 3 of them registry.skipped) whose unrelated preconditions would
+    mask the leg and report it under a worktree skip reason, and its
+    unit="differential_gate_self_checks" would have had to lie or be renamed.
   - >-
-    Prior art this replaces: 9 merged plans hand-roll a worktree red-before inside a VP command;
-    the most recent (PLAN-closure-stamp-applicability step 2) is ~30 lines of inline shell whose
-    own fix_if records three critique rounds of defects found in the red-before step itself.
+    Charter-widening test from that reversal, reusable: a leg may join an existing check only if
+    ALL of -- same instrument, same preconditions, same lifetime profile, no obligation evasion;
+    thematic kinship satisfies none. Bound on the precedent set: a check may self-test ITS OWN
+    instrument as a precondition of its verdict; any other module's self-test goes to that
+    module's check.
   - >-
-    Honest limitation to preserve in the contract: red-before on a plan-only tree proves only
-    "not green by construction". A selector naming an unwritten test is red for free, which is why
-    target_absent and assertion_failed stay distinct and neither fails.
+    Why the plan-only leg: that PR's tree IS the pre-implementation tree (Decision 76, strictly
+    observed -- 18 of the last 40 relevant commits are plan commits merging before their feat
+    counterpart), so red-before needs no worktree/revert/.venv. Replaces hand-rolled prior art in
+    9 merged plans; see PLAN-closure-stamp-applicability step 2.
   - >-
-    Neither this gate nor the registry differential catches a new test whose assertions are
-    themselves vacuous; that needs mutation-grade efficacy (T3.7, deferred, CD.12 alarm lane).
+    Limitation, carried into the contract: red-before here proves only "not green by construction"
+    -- a selector naming an unwritten test is red for free, hence two distinct red classes,
+    neither failing. Nor does this gate or the registry differential catch a new test whose
+    assertions are vacuous (needs T3.7 mutation-grade efficacy, deferred, CD.12 alarm lane).
   - >-
-    followon_recs rationale: rec-3776 carries the registry-admission half (is_admitted accepts
-    FAIL-by-absence for test_selector rows); rec-3777 carries the disposition-drift monitor for
-    the waive/not-applicable population this check never executes.
+    followon_recs: rec-3776 (admission accepts FAIL-by-absence for test_selector rows); rec-3777
+    (disposition-drift monitor for the population this check never executes).
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -383,16 +409,19 @@ execution_steps:
     steps; add the outcome classifier, the negated-sweep lint, the shared cross-leg budget
     counter, the grammar-pinned per-class summary line, and the widened terminal declaration. Keep
     the DEFER branch for a plan that declares its implementation in the same diff.
+    Run the four fixture classifications unconditionally at the top of the dispatch, before any
+    precondition early-return, appending to failed only -- never to examined.
   - >-
-    scripts/checks/verification/validate_differential_gate_baseline.py -- add the third leg and
-    widen the docstring charter to name both self-tests; raise the examined unit count to 3.
+    scripts/checks/verification/_manifest.py -- add full_segment="full_after_lint" to the
+    validate_vp_replay Entry, keeping the Entry's values bare string literals (Decision 169).
   - >-
-    Both mirror tests -- add a red case for every new path; validate_red_case_floor requires at
-    least one positive-outcome assertion derived from an invocation of the check under test.
+    Mirror tests -- add a red case for every new path, including one that patches the classifier
+    to mislabel and asserts the self-test reddens; validate_red_case_floor requires at least one
+    positive-outcome assertion derived from an invocation of the check under test.
   - >-
     .claude/skills/planning/SKILL.md -- collapse the Hermetic authoring and Graduation disposition
     authoring blocks to a read-trigger stub pointing at the contract; verify the net byte delta is
-    negative (step 11) before committing.
+    negative (step 12) before committing.
   - >-
     docs/DECISIONS.md -- draft the new numbered Decision with amends: [148], a significance
     envelope naming why a contract governance note was rejected (only a Decision can negate a
