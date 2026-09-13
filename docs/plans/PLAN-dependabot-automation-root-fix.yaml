@@ -79,8 +79,8 @@ scope:
       the same distribution at different versions -- the replacement for the single-lock coherence
       the retired requirements.lock provided, and a live risk because anyio is reached by mcp on
       the prod side and by httpx/openai on the dev side; (b) all FOUR files become REQUIRED, a
-      missing one a hard failure -- today's optional-dev tolerance (`if _REQUIREMENTS_DEV.exists()`
-      at :75-76) is dropped because the `-c requirements.txt` constraint form makes
+      missing one a hard failure -- today's optional-dev tolerance (`if _REQUIREMENTS_DEV.exists():`
+      at :77) is dropped because the `-c requirements.txt` constraint form makes
       requirements-dev.txt a committed compiled output that is always present. Also gains a public
       `paths` keyword parameter so callers and VP step 2 drive it through a public signature
       rather than private module constants.
@@ -97,12 +97,22 @@ scope:
       fires one `pip index versions` subprocess per transitive pin (108 today, unbounded later)
       instead of per declared package. Also adopt registry.examined()/skipped() per Decision 170's
       touch-it-fix-it clause (declared packages examined; network-warning packages skipped).
+  - file: scripts/checks/ci_guards/_manifest.py
+    action: Modify
+    purpose: >-
+      Extend validate_dependabot_automation's pre_globs with `requirements*.in` and
+      `requirements*.txt` (G4). Today they are .github/workflows/**, scripts/ci/** and the check's
+      own module, so a requirements-only PR -- exactly the dependabot pip-bump class this plan
+      exists to unblock -- never dispatches the guard in --pre, and
+      assert_lockfile_is_dependabot_visible would only ever fire in the full tier.
   - file: config/check_accounting_baseline.yaml
     action: Modify
     purpose: >-
-      Shrink-only removal of validate_lockfile_sync (:70) and validate_requirements (:89), whose
-      modules adopt the examined()/skipped() declaration in this same PR. Removal only -- the
-      roster can never regrow, and no marker grammar is added (Decision 170 / Decision 165).
+      Shrink-only removal of ALL THREE baselined checks this plan edits --
+      validate_ducklake_version_lockstep (:59), validate_lockfile_sync (:70) and
+      validate_requirements (:88) -- whose modules adopt the examined()/skipped() declaration in
+      this same PR. Removal only: the roster can never regrow, and no marker grammar is added
+      (Decision 170 / Decision 165).
   - file: scripts/checks/_pytest_diff.py
     action: Modify
     purpose: >-
@@ -123,7 +133,9 @@ scope:
     action: Modify
     purpose: >-
       Check (a) reads the requirements.in floor, and additionally asserts the compiled
-      requirements.txt duckdb pin satisfies that floor.
+      requirements.txt duckdb pin satisfies that floor. ALSO adopts registry.examined()/skipped():
+      this is the THIRD baselined check this plan edits (config/check_accounting_baseline.yaml:59),
+      so Decision 170's touch-it-fix-it clause fires here exactly as it does on the other two (G1).
   - file: scripts/checks/ci_guards/validate_dependabot_automation.py
     action: Modify
     purpose: >-
@@ -179,7 +191,10 @@ scope:
       UNKNOWN leaves TestCleanPrIsLeftAlone's parametrisation.
   - file: tests/checks/ci_guards/test_validate_dependabot_automation.py
     action: Modify
-    purpose: Fail-path fixtures and negative cases for each new guard assertion.
+    purpose: >-
+      Fail-path fixtures and negative cases for each new guard assertion, plus a mirror assertion
+      that the Entry's pre_globs cover requirements*.in and requirements*.txt (G4) and that the
+      examined() workflow count stays 2 (F10/G8).
   - file: tests/test_import_governance.py
     action: Modify
     purpose: >-
@@ -240,13 +255,18 @@ acceptance_criteria:
   - The fast-tier excluded-heavy set derived by scripts/checks/_pytest_diff.py is IDENTICAL before
     and after the layout change (it derives from the .in floors, not the compiled closure), proven
     by an explicit assertion over the live files rather than by inspection.
-  - validate_lockfile_sync and validate_requirements declare registry.examined()/skipped() and are
-    removed from config/check_accounting_baseline.yaml, leaving the roster strictly smaller.
+  - All three baselined checks this plan edits -- validate_ducklake_version_lockstep,
+    validate_lockfile_sync and validate_requirements -- declare registry.examined()/skipped() on
+    every exit path and are removed from config/check_accounting_baseline.yaml, leaving the roster
+    strictly smaller by three.
   - A still-UNKNOWN PR after the poll bound emits a distinct greppable marker mirrored to
     GITHUB_STEP_SUMMARY and rows `poll-exhausted`, never the silent `none` action.
-  - The union of the two compiled outputs' pins equals the pin set requirements.lock holds today
-    -- no distribution gained, lost or version-changed -- and no distribution is pinned at two
-    different versions across them; check_lockfile_sync fails a cross-output disagreement.
+  - No distribution is gained or lost relative to the pin set requirements.lock holds today, and
+    the seeding procedure holds every existing pin; any residual version change is listed
+    individually in the PR body with its justification, never waved through in aggregate.
+  - No distribution is pinned at two different versions across the two compiled outputs, and
+    check_lockfile_sync fails a cross-output disagreement -- this one is an absolute gate, not a
+    reviewed report.
   - scripts/verify_ci_workflow.py is at or below 500 effective lines after the repoint (it sits at
     exactly 500 today), with no budget raise marker added anywhere.
 verification_plan:
@@ -272,10 +292,12 @@ verification_plan:
     graduation: waive
     graduation_waiver_reason: >-
       Duplicates assert_lockfile_is_dependabot_visible, which this plan adds to
-      validate_dependabot_automation -- registered pre=True with pre_globs covering
-      .github/workflows/** and scripts/ci/** (scripts/checks/ci_guards/_manifest.py:127-138), so
-      the identical assertion already runs as a standing gate. This step is the implement-time
-      proof; the registered check is the standing guard.
+      validate_dependabot_automation. The duplication is exact in BOTH tiers only because this
+      plan also widens that Entry's pre_globs to requirements*.in / requirements*.txt (G4) -- the
+      guard is pre=True (scripts/checks/ci_guards/_manifest.py:127-138) but its current globs
+      (.github/workflows/**, scripts/ci/**) match no requirements file, so without the widening a
+      requirements-only PR would reach the assertion only in the full tier. With it, the
+      registered check is the standing guard and this step is the implement-time proof.
   - step: 2
     phase: pre-deploy
     action: >-
@@ -322,29 +344,41 @@ verification_plan:
   - step: 4
     phase: pre-deploy
     action: >-
-      Prove the migration is environment-equivalent and the two compiled outputs are coherent --
-      the union of their pins equals the pin set requirements.lock holds today (no package gained,
-      lost or moved), and no distribution is pinned at two different versions across them. This is
-      the executable form of the "identical resolved set" claim and the replacement for the
-      single-lock coherence the retired requirements.lock used to provide.
+      Prove the migration is environment-equivalent and the two compiled outputs are coherent.
+      Two assertions of DIFFERENT strength, deliberately (G3). ABSOLUTE, hard-fails: no
+      distribution is gained or lost relative to today's requirements.lock, and no distribution is
+      pinned at two different versions across the two outputs -- the replacement for the
+      single-lock coherence the retired lock provided. REVIEWED, reported not hard-failed: any
+      residual version movement, printed as a per-package list so each entry is justified
+      individually in the PR body. Strict equality is NOT asserted, because one combined resolve
+      is being replaced by two, and the seeding step makes movement rare rather than impossible.
     command: |-
-      bash -c 'set -e; git show origin/main:requirements.lock | grep -E "^[A-Za-z0-9]" | sed "s/[[:space:]]*#.*//" | sort > /tmp/pins-before.txt; cat requirements.txt requirements-dev.txt | grep -E "^[A-Za-z0-9]" | sed "s/[[:space:]]*#.*//" | sort -u > /tmp/pins-after.txt; echo "--- pins only in the retired lock ---"; comm -23 /tmp/pins-before.txt /tmp/pins-after.txt; echo "--- pins only in the compiled outputs ---"; comm -13 /tmp/pins-before.txt /tmp/pins-after.txt; diff -q /tmp/pins-before.txt /tmp/pins-after.txt; dupes=$(cut -d= -f1 /tmp/pins-after.txt | sort | uniq -d); echo "cross-output disagreements: ${dupes:-none}"; [ -z "$dupes" ]'
+      bash -c 'set -e; git show origin/main:requirements.lock | grep -E "^[A-Za-z0-9]" | sed "s/[[:space:]]*#.*//" | sort > /tmp/pins-before.txt; cat requirements.txt requirements-dev.txt | grep -E "^[A-Za-z0-9]" | sed "s/[[:space:]]*#.*//" | sort -u > /tmp/pins-after.txt; cut -d= -f1 /tmp/pins-before.txt | sort -u > /tmp/names-before.txt; cut -d= -f1 /tmp/pins-after.txt | sort -u > /tmp/names-after.txt; lost=$(comm -23 /tmp/names-before.txt /tmp/names-after.txt); gained=$(comm -13 /tmp/names-before.txt /tmp/names-after.txt); echo "LOST (absolute, must be empty): ${lost:-none}"; echo "GAINED (absolute, must be empty): ${gained:-none}"; echo "--- VERSION MOVEMENT (reviewed: justify each in the PR body) ---"; comm -3 /tmp/pins-before.txt /tmp/pins-after.txt || true; dupes=$(cut -d= -f1 /tmp/pins-after.txt | sort | uniq -d); echo "CROSS-OUTPUT DISAGREEMENTS (absolute, must be none): ${dupes:-none}"; [ -z "$lost" ] && [ -z "$gained" ] && [ -z "$dupes" ]'
     expected: >-
-      both comm sections empty, `diff -q` silent, and 'cross-output disagreements: none'; exit 0.
+      'LOST ... none', 'GAINED ... none' and 'CROSS-OUTPUT DISAGREEMENTS ... none', exit 0. The
+      version-movement section is expected EMPTY after a correct seeding step; a non-empty one
+      does not fail the step but every line in it must be reproduced and justified in the PR body.
     fix_if: >-
-      A pin only in the retired lock means the migration dropped a package -- most likely a direct
-      floor that did not make it into either .in file (the pytz regression class,
-      tests/test_import_governance.py:242). A pin only in the compiled outputs means a new
-      transitive arrived, which is legitimate only if a floor moved in the same commit. A
+      A LOST name means the migration dropped a package -- most likely a direct floor that reached
+      neither .in file (the pytz regression class, tests/test_import_governance.py:242). A GAINED
+      name means a new transitive arrived, legitimate only if a floor moved in the same commit. A
       non-empty dupes list means the two outputs pin one distribution at two versions -- recompile
-      requirements-dev.txt under `-c requirements.txt`.
+      requirements-dev.txt under `-c requirements.txt`. Unexpected version movement means the
+      seeding step of execution step "Defect A step 2" was skipped or partial -- re-seed from
+      origin/main:requirements.lock and recompile, rather than accepting the drift. If
+      `pip-compile requirements-dev.in` FAILS outright under `-c requirements.txt`, a dev
+      requirement genuinely conflicts with a prod pin: do NOT relax the constraint to make it
+      compile. Record the conflicting pair, and resolve it by raising the prod floor in
+      requirements.in so both sides can agree -- or, if that is not possible without a behaviour
+      change, stop and escalate rather than letting the two outputs diverge.
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
-      The union-equality half is a ONE-SHOT migration comparison against a blob
-      (origin/main:requirements.lock) that ceases to exist after this plan merges, so it cannot be
-      a standing guard. Its durable half -- cross-output pin agreement -- is graduated instead as
-      part of check_lockfile_sync itself (step 3), which is where it belongs permanently.
+      The gained/lost/movement halves are a ONE-SHOT migration comparison against a blob
+      (origin/main:requirements.lock) that ceases to exist after this plan merges, so they cannot
+      be a standing guard. The durable half -- cross-output pin agreement -- is not graduated
+      separately either: it becomes part of check_lockfile_sync itself (VP step 3), which is where
+      it belongs permanently and where validate_lockfile_sync already runs it ungated on --pre.
   - step: 5
     phase: pre-deploy
     action: >-
@@ -410,6 +444,10 @@ verification_plan:
     hermetic: true
     graduation: graduate
     graduation_check_id: python-version-file-matches-required-minor
+    # GRADUATED, unlike step 9's waive, on a real distinction rather than an inconsistency (G7):
+    # tests/test_venv_python.py runs only when Decision 135's affected-set selection reaches it,
+    # so a PR editing .python-version alone is not guaranteed to execute it in --pre. A registry
+    # row runs unconditionally. The standing pytest suite covers the full tier; this covers --pre.
   - step: 9
     phase: pre-deploy
     action: >-
@@ -452,10 +490,13 @@ verification_plan:
     fix_if: >-
       A validate_requirements failure naming dozens of packages means it is still reading the
       compiled closure rather than requirements.in. A check-accounting failure names
-      validate_lockfile_sync or validate_requirements -- adopt examined()/skipped() in that module
-      and drop its name from config/check_accounting_baseline.yaml in the same commit. A
-      structural-size failure on scripts/verify_ci_workflow.py means the repoint added net lines
-      to a file already at exactly 500.
+      validate_ducklake_version_lockstep, validate_lockfile_sync or validate_requirements -- adopt
+      examined()/skipped() on every exit path of that module and drop its name from
+      config/check_accounting_baseline.yaml in the same commit. A structural-size failure on
+      scripts/verify_ci_workflow.py means the repoint added net lines to a file already at exactly
+      500. A validate_test_coverage failure names one of the nine touched Python files: none is in
+      config/coverage_baseline.yaml, so each keeps the 100% per-file standard once changed --
+      cover the new branch rather than adding a baseline entry.
     hermetic: false
     graduation: not-applicable
   - step: 12
@@ -558,10 +599,14 @@ test_obligations:
     test_selector: tests/test_sync_ducklake_version.py
     red_green_expectation: red before (default path is requirements.txt), green after
   - source: scripts/checks/misc/validate_ducklake_version_lockstep.py
-    behavior: The lockstep gate checks the requirements.in floor and that the compiled requirements.txt pin satisfies it.
+    behavior: >-
+      The lockstep gate checks the requirements.in floor, asserts the compiled requirements.txt
+      pin satisfies it, and declares registry.examined() on its terminal path (Decision 170
+      touch-it-fix-it -- this is the third baselined check this plan edits, G1).
     verification_step: 9
     test_selector: tests/checks/misc/test_validate_ducklake_version_lockstep.py
-    red_green_expectation: red before (fixture writes requirements.txt only), green after
+    red_green_expectation: >-
+      red before (fixture writes requirements.txt only; module declares nothing), green after
   - source: scripts/checks/deps/validate_lockfile_sync.py
     behavior: >-
       Thin registered wrapper naming the live files, which now declares registry.examined() with
@@ -569,6 +614,13 @@ test_obligations:
     verification_step: 9
     test_selector: tests/checks/deps/test_validate_lockfile_sync.py
     red_green_expectation: red before (no examined() declaration in the module), green after
+  - source: scripts/checks/ci_guards/_manifest.py
+    behavior: >-
+      validate_dependabot_automation's pre_globs reach requirements*.in and requirements*.txt, so
+      a requirements-only PR dispatches the guard in the fast tier.
+    verification_step: 9
+    test_selector: tests/checks/ci_guards/test_validate_dependabot_automation.py
+    red_green_expectation: red before (globs match no requirements file), green after
   - source: config/check_accounting_baseline.yaml
     behavior: >-
       The grandfather roster no longer exempts validate_lockfile_sync or validate_requirements,
@@ -579,7 +631,7 @@ test_obligations:
     waiver_reason: >-
       A roster data file with no branch of its own. Both directions are already enforced by
       validate_check_accounting -- the shrink-only diff, the frozen _BASELINE_SEED cross-check and
-      the touch-it-fix-it clause all fail loudly on a wrong edit, and VP step 10 runs that gate.
+      the touch-it-fix-it clause all fail loudly on a wrong edit, and VP step 11 runs that gate.
   - source: .github/workflows/ci.yml
     behavior: main-validate installs from the compiled outputs and hashes them in the cache key.
     verification_step: 9
@@ -638,7 +690,7 @@ test_obligations:
       bash -c '! grep -rIn "requirements\.lock" bin scripts src tests config .github docs/contracts docs/ROADMAP-PLATFORM.yaml requirements.in requirements-dev.in requirements.txt requirements-dev.txt requirements-fast.txt .pre-commit-config.yaml pyproject.toml'
     waiver_reason: >-
       Roadmap bookkeeping data, not behaviour. Freshness is already gated by
-      validate_platform_roadmap and by VP step 6's stale-reference sweep, which includes this
+      validate_platform_roadmap and by VP step 7's stale-reference sweep, which includes this
       file's path explicitly.
 constraints:
   - Do NOT weaken check_lockfile_sync. Every property it asserts today (extras-free pins, every
@@ -671,9 +723,13 @@ constraints:
     validate_dependabot_automation.py:210-224 still asserts against (F11).
   - Decision 177 -- docs/DECISIONS.md bodies are append-only and waiver-free. Do NOT edit
     Decision 80's text; the re-grounding belongs to T3.11 c2 and this plan's PR body.
-  - Decision 170 touch-it-fix-it -- both baselined checks this plan edits must adopt
-    registry.examined()/skipped() in the SAME PR that removes them from
-    config/check_accounting_baseline.yaml. Removal only; never re-add, never add a marker grammar.
+  - >-
+    Decision 170 touch-it-fix-it -- ALL THREE baselined checks this plan edits
+    (validate_ducklake_version_lockstep :59, validate_lockfile_sync :70, validate_requirements
+    :88) must adopt registry.examined()/skipped() in the SAME PR that removes them from
+    config/check_accounting_baseline.yaml. validate_check_accounting is pre=True with pre_globs
+    ("scripts/checks/**", "config/check_accounting_baseline.yaml"), so a missed one reds --pre,
+    not just the full tier. Removal only; never re-add, never add a marker grammar.
   - >-
     LAMBDA GATING WAIVER (F3, reviewed, explicit -- silence is not an option).
     compute_affected_artifacts flags the active data-pipeline artifact SOLELY because
@@ -688,14 +744,20 @@ constraints:
     PLAN-ambient-prose-contract-relocation.yaml:465. Do NOT add a deploy step on the strength of
     the manifest match alone.
   - >-
-    NATIVE-FIX REJECTION for Defect B (F4, Decision 100). .github/dependabot.yml carries no
-    commit-message block, so the `chore(deps):` prefix that defeats fetch-metadata's anchored
-    parser is dependabot's auto-detected convention and a `commit-message.prefix` pin is the
-    native lever. It is REJECTED and .github/dependabot.yml stays OUT of scope: fetch-metadata v3
-    (on main since #982) already relaxes that parser, so pinning a prefix would rewrite every
-    dependabot title convention repo-wide to fix a parse v3 handles; and the deriver grants no
-    authority the primitive lacks, sitting strictly behind first-precedence UPDATE_TYPE. Do not
-    re-open this without new evidence from the Q4 pre-check run.
+    NATIVE-FIX REJECTION for Defect B (F4/G2, Decision 100). .github/dependabot.yml carries no
+    commit-message block, so the `chore(deps):` prefix is dependabot's auto-detected convention
+    and a `commit-message.prefix` pin is the native lever. It is REJECTED and
+    .github/dependabot.yml stays OUT of scope on ONE ground, chosen because it survives either
+    outcome of the v3 question: the deriver grants no authority the managed primitive lacks --
+    it sits strictly behind first-precedence UPDATE_TYPE and can only ever classify a bump the
+    primitive declined to classify, so it substitutes for nothing. Pinning a prefix would instead
+    rewrite every dependabot title convention repo-wide. DEFECT B STATUS, now that the Q4
+    pre-check has resolved: v3 populates update-type for the range-update shape, so the deriver is
+    defence-in-depth rather than the live fix -- it covers the empty values dependabot-core can
+    still emit (grouped PRs without per-member versions, title shapes the relaxed regex misses),
+    where the failure mode is a silent never-merge with no operator-visible reason. Had v3 left it
+    empty, the same code would have been the live fix; the design is invariant under both, which
+    is why it is built either way.
   - >-
     config/composite_action_body_baseline.yaml is deliberately NOT in Scope -- the
     dependabot-auto-merge step's run body must stay a one-line delegate so its 1-line entry
@@ -703,52 +765,51 @@ constraints:
 context:
   - "Operator brief (confirmed intent; verified facts not to be re-derived): scratchpad
     BRIEF-dependabot-automation-root-fix.md. Shipped in PR #967 (418715ef), never merged a PR.
-    Root causes, full derivation -> PR body. A: dependabot-core file_updater.rb:66 regenerates a
-    pip-compile lock only for a requirement in a .in file. B: fetch-metadata v2's anchored
-    `^Update ... requirement from` regex misses `chore(deps): update ...`, so update-type is empty
-    at dependabot_auto_merge.sh:90-93. C: dependabot_stranded_sweep.sh:138 treats UNKNOWN as none."
-  - "REBASE TARGET is origin/main ac32677c (PR #1158), NOT 8cc0f3f4 (F13); branch is 3 behind.
-    ac32677c landed check_roadmap_regrowth.py, whose _ITEM_PROSE_FIELDS flags any
-    complete/reserved item carrying a progress_note -- why this plan re-words T3.11 c2 and adds no
-    note (exit-criteria-ledger.yaml:63; Decision 147 points 2 and 4). Roadmap headroom is 145
-    lines, under _ESCALATE_HEADROOM_LINES=500, so the c2 rewrite must be net-neutral-or-shrinking.
-    8cc0f3f4 (#982) bumped fetch-metadata v2 -> v3 (upstream half of Defect B; all 15 output names
-    kept). Required checks (terraform/github/repo.tf:85-99): pr-validate, terraform-validate."
+    Root causes (full derivation -> PR body): A dependabot-core file_updater.rb:66; B
+    fetch-metadata v2's anchored regex, see the Q4 entry; C dependabot_stranded_sweep.sh:138."
+  - "REBASE TARGET was origin/main ac32677c (#1158); the branch IS rebased onto it (0 behind).
+    ac32677c landed check_roadmap_regrowth.py, whose _ITEM_PROSE_FIELDS flags any complete/reserved
+    item carrying a progress_note -- why this plan re-words T3.11 c2 and adds none
+    (exit-criteria-ledger.yaml:63; Decision 147 points 2 and 4). Roadmap headroom 153 lines (9,847
+    of 10,000) is under _ESCALATE_HEADROOM_LINES=500, so the c2 rewrite must not add net lines.
+    Required checks (repo.tf:85-99): pr-validate, terraform-validate."
   - "Decision-scout FLAGS_FOUND (gate-ds-r1-dependabot-automation-root-fix). CITE: Decision 80,
     136, 167, 177, 48, 148, 162 R2/R3, 170, 181, 163, 132, 176, plus 147 and 100 from critique
     round 1. Decisions triaged: 140 of 140. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4.
-    Adjudication: retiring the file NAMED requirements.lock owes nothing beyond this PR body plus
+    Adjudication: retiring the file NAMED requirements.lock owes nothing beyond this PR body and
     the c2 re-grounding (Decision 80 cl.2 names no file; Decision 177 forbids body edits)."
-  - "Two reviewed dispositions are recorded as binding constraints below, not here: the Lambda
-    gating waiver for data-pipeline (F3) and the rejection of the native
-    .github/dependabot.yml commit-message.prefix fix (F4, Decision 100)."
-  - "Q4 EMPIRICAL PRE-CHECK (pending relay): the orchestrator is running `@dependabot recreate` on
-    #981 so the auto-merge job runs under v3 and logs its update-type. Defect B's premise was
-    derived against v2; the implementer MUST read that run's [DEPENDABOT-AUTO-MERGE] decision line
-    before writing the deriver and record what v3 actually emitted."
+  - "Q4 EMPIRICAL PRE-CHECK, RESOLVED -- a verified fact, not a pending observable (G2).
+    update-branch on #981 (12cb6d4c -> 4f49c7f4) fired dependabot-auto-merge under fetch-metadata
+    v3 (actions/runs/34769707725, job auto-merge, success): update-type=version-update:semver-patch,
+    previous-version=0.8.0, new-version=0.8.1, dependency-names=pytest-socket, and it armed
+    native squash auto-merge. v3 POPULATES update-type for this repo's range-update shape, so
+    Defect B is fixed UPSTREAM there and the deriver ships as fail-closed defence-in-depth for the
+    empty values still possible (grouped PRs without per-member versions; shapes the relaxed regex
+    misses), where the failure mode is a silent never-merge with no operator-visible reason. #977
+    (grouped minor) and #981 (patch) are BOTH armed today and merge unattended once Defect A makes
+    pr-validate green on their regenerated heads."
   - "gates: decision-scout=FLAGS_FOUND (round 1, every flag resolved in-plan);
     plan-critique=<verdict> after <N> round(s)"
   - "Blast radius beyond the brief, verified this session: _pytest_diff.py:351 (493 eff lines),
     validate_requirements.py:13, test_import_governance.py:223 and :249, test_pytest_diff.py:35-83,
-    Decision 170 touch-it-fix-it on check_accounting_baseline.yaml:70 and :89, and
-    scripts/verify_ci_workflow.py at EXACTLY 500 effective lines -- zero headroom (F12).
+    Decision 170 touch-it-fix-it on check_accounting_baseline.yaml:59, :70 and :88 (THREE checks),
+    and verify_ci_workflow.py at EXACTLY 500 effective lines -- zero headroom (F12).
     .python-version (3.11.9) is a rec-153-era pyenv artifact read by nothing in bin/, scripts/,
-    .github/, .claude/ or config/; tests/test_venv_python.py:202-218 already ties 3.12 to
-    pyproject.toml and every workflow pin."
-  - "Out of scope: bin/sync-deps.sh (fingerprints both .txt files, so the first post-merge session
-    pays one full reinstall -- expected); scripts/executor/postflight_gates.py:80 (inert under the
-    Decision 67 freeze); rec-3794 (sweep never re-arms auto-merge on a CLEAN/BLOCKED PR), filed.
-    pr-validate's install SET (ci.yml:69-72) is unchanged -- only its pinning becomes
-    deterministic (Decision 153/182)."
+    .github/, .claude/ or config/ (tests/test_venv_python.py:202-218 ties 3.12 to pyproject.toml
+    and every workflow pin). The Lambda waiver (F3) and native-lever rejection (F4/G2) are
+    binding constraints, not context."
+  - "Out of scope: bin/sync-deps.sh (one full reinstall on the first post-merge session --
+    expected); scripts/executor/postflight_gates.py:80 (inert under the Decision 67 freeze);
+    rec-3794 (sweep never re-arms auto-merge on a CLEAN/BLOCKED PR), filed. pr-validate's install
+    SET (ci.yml:69-72) is unchanged -- only its pinning becomes deterministic (Decision 153/182)."
 pre_implementation_checklist:
   - Branch confirmed not on main, and rebased onto origin/main at ac32677c or later (carrying
     both PR #982's fetch-metadata v3 and PR #1158's check_roadmap_regrowth.py)
   - >-
-    Read the Q4 empirical pre-check BEFORE writing scripts/ci/dependabot_semver_class.py: the
-    dependabot-auto-merge run triggered by `@dependabot recreate` on #981 under fetch-metadata v3,
-    and specifically its [DEPENDABOT-AUTO-MERGE] decision line, which records what v3 emitted for
-    update-type on this repo's title shape. Record the observed value in the implementation PR
-    body. Defect B's premise was derived against v2 and must not be carried forward unverified
+    Q4 pre-check already RESOLVED in context -- read it before writing the deriver. v3 populates
+    update-type for the range-update shape, so every derived-class test fixture must set
+    UPDATE_TYPE explicitly EMPTY: the deriver guards the empty path, not the populated one, and a
+    fixture that leaves update-type populated would exercise branch 1 and prove nothing
   - docs/PROJECT_CONTEXT.md read
   - only the plan-cited decision sections
   - All files in scope located and readable
@@ -758,12 +819,17 @@ execution_steps:
   - "Defect A step 1 -- git mv the floors: create requirements.in from today's requirements.txt
     verbatim (comments included) and requirements-dev.in from today's requirements-dev.txt, with
     `-c requirements.txt` as requirements-dev.in's first line."
-  - "Defect A step 2 -- compile: `pip-compile --strip-extras --output-file=requirements.txt
-    requirements.in` and `pip-compile --strip-extras --output-file=requirements-dev.txt
-    requirements-dev.in` (NO --no-header -- the header is what makes the output
-    dependabot-visible), then `git rm requirements.lock`. The union-equals-today's-lock
-    confirmation is NOT eyeballed -- VP step 4 executes it against origin/main:requirements.lock
-    and also fails a cross-output pin disagreement."
+  - "Defect A step 2 -- SEED BEFORE COMPILING (G3). Today's requirements.lock is ONE combined
+    resolve; this plan replaces it with two independent resolves, and pip-compile preserves an
+    existing pin only if it finds one in the output file it is writing. So FIRST populate
+    requirements.txt and requirements-dev.txt with today's requirements.lock pins, split prod/dev
+    (a package reached only by dev inputs goes to the dev file; everything else to prod), and only
+    THEN compile: `pip-compile --strip-extras --output-file=requirements.txt requirements.in` and
+    `pip-compile --strip-extras --output-file=requirements-dev.txt requirements-dev.in` (NO
+    --no-header -- the header is what makes the output dependabot-visible). pip-compile's
+    conservative mode then holds every seeded pin and only moves one it genuinely cannot satisfy.
+    Finally `git rm requirements.lock`. VP step 4 executes the comparison against
+    origin/main:requirements.lock -- it is never eyeballed."
   - "Defect A step 3 -- repoint every live consumer: ci.yml (cache key + two installs),
     main-canary.yml (same), scripts/verify_ci_workflow.py::_assert_runtime_lock,
     scripts/import_governance.py (constants, check_lockfile_sync sources, messages, CLI help),
@@ -792,8 +858,14 @@ execution_steps:
     skipped('requirements.in not found'); the no-packages early return (:33-35) declares
     examined(0, unit='declared_packages') -- an empty domain, NOT skipped; the normal path declares
     examined(len(packages), unit='declared_packages') AFTER the probe loop so it is the last call.
-    A network warning does NOT convert the run to skipped: those packages were examined. Add an
-    accounting-declaration test per exit path to both mirror test files."
+    A network warning does NOT convert the run to skipped: those packages were examined.
+    validate_ducklake_version_lockstep (G1 -- the THIRD baselined check, baseline :59, today zero
+    declarations) -- its exits are the import/raise guard, the (a) floor branch and the (b)
+    derive-surface loop, and only ONE terminal declaration survives, so end the check with
+    examined(n, unit='ducklake_derive_surfaces') where n is 1 (the requirements.in floor) plus the
+    number of derive surfaces actually read; the unreadable-surface path appends to `failed` as it
+    does today and needs no separate skipped(). Add an accounting-declaration test per exit path
+    to all THREE mirror test files."
   - "Defect A step 5b (Decision 135) -- tests/validate/test_pytest_diff.py must additionally
     assert the excluded-heavy set is UNCHANGED across the migration: record the set derived from
     today's requirements.txt floors before the move and assert the post-move set (derived from
@@ -881,13 +953,18 @@ execution_steps:
     is summed into registry.examined(examined, unit='dependabot_automation_workflows')
     (validate_dependabot_automation.py:291-304) and the module docstring (:28-30) pins one
     function per workflow, so adding it would report 3 workflows where 2 exist. Give it its own
-    call site with its own counter under a DISTINCT unit (e.g. 'dependabot_visible_lockfiles'),
-    and add a test asserting the workflow count stays 2. The last-call-wins rule from step 4c
-    applies here too -- the module must end with ONE declaration, so combine the two counts
-    deliberately rather than letting a second examined() silently overwrite the first."
+    call site with its own counter, and add a test asserting the workflow count stays 2. Because
+    registry.py is last-call-wins, exactly ONE declaration survives, so name it here rather than
+    leaving 'combine deliberately' to interpretation (G8): the module ends with exactly one
+    terminal call, registry.examined(workflow_count + lockfile_pair_count,
+    unit='dependabot_automation_surfaces') -- workflow_count is the existing
+    _WORKFLOW_ASSERTIONS sum (2) and lockfile_pair_count is the number of compiled-output/.in
+    pairs the new assertion examined (2). The unit is RENAMED off
+    'dependabot_automation_workflows' precisely because the total is no longer a workflow count;
+    the test pins both the terminal unit string and the summands."
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop
     and RCA (Decision 55)
-  - "Report: what was implemented, verification results, and the VP step 10 post-merge action the
+  - "Report: what was implemented, verification results, and the VP step 12 post-merge action the
     orchestrator must run (@dependabot recreate on #981, then dispatch dependabot-stranded.yml)."
 work_areas: []
 rollback: >-
