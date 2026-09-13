@@ -107,7 +107,9 @@ class _ResolvedFixture:
     """Shared repo builder: a base commit (origin/main), then a second commit declaring the
     plan's implementation_declared true -- the resolvable, replayable shape."""
 
-    def build(self, tmp_path: Path, slug: str, verification_plan: list[dict], commit_message: str = "checkpoint") -> Path:
+    def build(
+        self, tmp_path: Path, slug: str, verification_plan: list[dict], commit_message: str = "checkpoint"
+    ) -> tuple[Path, str]:
         repo = tmp_path / "repo"
         _init_repo(repo)
         (repo / "README.md").write_text("base\n", encoding="utf-8")
@@ -116,4 +118,57 @@ class _ResolvedFixture:
 
         rel = _write_vp_replay_plan(repo, slug, verification_plan, declared=True)
         _commit_all(repo, commit_message)
+        return repo, rel
+
+
+class _RedBeforeFixture:
+    """Shared repo builder for PLAN-vp-red-before-gate's inverted-polarity leg (slice 2 of the
+    mirror decomposition, carried by this conftest per its module docstring): a base commit
+    (origin/main), then a second commit ADDING a new, undeclared plan -- the red-before-ELIGIBLE
+    shape (added in this diff AND implementation_declared falsy)."""
+
+    def build(self, tmp_path: Path, slug: str, verification_plan: list[dict]) -> tuple[Path, str]:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        (repo / "README.md").write_text("base\n", encoding="utf-8")
+        base_sha = _commit_all(repo, "base")
+        _git(repo, ["update-ref", "refs/remotes/origin/main", base_sha])
+
+        rel = _write_vp_replay_plan(repo, slug, verification_plan, declared=False)
+        _commit_all(repo, "add plan")
+        return repo, rel
+
+
+class _ModifiedPlanFixture:
+    """Shared repo builder for the eligibility predicate's exempt shapes: a plan already present
+    at the base commit (so it is MODIFIED, never ADDED, in the diff), then a second commit that
+    genuinely modifies it. ``declared`` sets implementation_declared true/false;
+    ``omit_declared_field`` drops the field entirely (the field-absent legacy-plan shape -- 335 of
+    422 real plans predate the field and read falsy forever)."""
+
+    def build(
+        self,
+        tmp_path: Path,
+        slug: str,
+        verification_plan: list[dict],
+        *,
+        declared: bool = False,
+        omit_declared_field: bool = False,
+    ) -> tuple[Path, str]:
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        plan_dict = _vp_replay_plan_dict(slug, verification_plan, declared)
+        if omit_declared_field:
+            del plan_dict["implementation_declared"]
+        rel = f"docs/plans/PLAN-{slug}.yaml"
+        plans_dir = repo / "docs" / "plans"
+        plans_dir.mkdir(parents=True, exist_ok=True)
+        (plans_dir / f"PLAN-{slug}.yaml").write_text(_yaml.dump(plan_dict), encoding="utf-8")
+        _commit_all(repo, "base with plan")
+        base_sha = _git(repo, ["rev-parse", "HEAD"]).stdout.strip()
+        _git(repo, ["update-ref", "refs/remotes/origin/main", base_sha])
+
+        plan_dict["phase"] = "modified in this diff"
+        (plans_dir / f"PLAN-{slug}.yaml").write_text(_yaml.dump(plan_dict), encoding="utf-8")
+        _commit_all(repo, "modify plan and unrelated file")
         return repo, rel

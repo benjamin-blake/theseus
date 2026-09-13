@@ -191,44 +191,19 @@ existence-only ("Confirm the table was created" doesn't confirm correct data); i
 apply` succeeded" -- infra existing isn't enough); prose-only (no executable command -- the
 implement agent will substitute a weaker check).
 
-**Hermetic authoring (T3.15 / VF-01, amended by Decision 148/plan-resolution-content-keyed):**
-`hermetic: true` is the correct default again for `pre-deploy` feature-verification steps --
-narrow, deterministic, creds-free commands. Steps are replayed at implement time by
-`validate_vp_replay`, not plan time: a plan-only PR defers with a printed reason
-(`implementation_declared` not newly true); the implement PR resolves plans via
-`_common.resolve_declared_plans` and replays their hermetic steps against the complete tree.
-Advisory-SKIPs on unreachable `origin/main`. `bin/venv-python` is now safe here -- it falls back
-to a sentinel-dep-importing interpreter when `.venv` is absent, resolving in venv-less CI too.
-Never mark a step hermetic if it invokes `scripts/validate.py --pre` (recursion). Steps needing
-pytest/deploys stay `hermetic: false`, excluded with a printed reason.
+## Hermetic authoring (T3.15 / VF-01, amended by Decision 148/plan-resolution-content-keyed)
 
-**Graduation disposition authoring (T3.21, enforced VF-05):** every `phase: pre-deploy` VP step
-must carry a `graduation` field -- one of `graduate`, `waive`, or `not-applicable`.
-`validate_graduation_completeness`'s plan-PR leg (`--pre` and full tiers) fails a diff-added or
-diff-modified `PLAN-*.yaml` that leaves any pre-deploy step's disposition unset (see the
-implement skill's Bundled Recommendation Relevance Re-check-adjacent "Verification Graduation"
-section for what happens with each disposition at implement time). Classify each pre-deploy step
-at plan-authoring time:
-- **`graduate`** -- the step's command is expressible as one of the six canonical primitive
-  slots in `scripts.verification_checks.CANONICAL_SLOTS` (command_exit_zero,
-  command_output_matches, file_presence, grep_count, test_selector, metric_under_threshold) AND
-  is hermetic-or-cheap enough to run as a standing regression guard. Requires
-  `graduation_check_id`: a stable, human-readable slug (e.g. `"kernel-slot-count-eq-6"`,
-  matching the registry's `check_id` convention) that the implementing session will use verbatim
-  as the registry row's identity -- pick it now so the plan-implement-registry linkage is fixed
-  at plan time, not improvised later.
-- **`waive`** -- the step is kernel-expressible in principle but graduating it now is
-  impractical (e.g. it depends on this session's transient repo state, or duplicates an
-  already-graduated check). Requires `graduation_waiver_reason`: a substantive, specific reason
-  (not "not needed" or "skip") -- the plan-critique gate reviews this reason for honesty.
-- **`not-applicable`** -- the step is NOT kernel-expressible: it requires multiple commands,
-  human/LLM judgement, live infrastructure (a V3 deploy/invoke), or wall-clock/credential state.
-  No extra field required.
+See `docs/contracts/vp-red-before.yaml#hermetic_authoring` for the full walk (MANDATORY
+read-trigger -- read this before setting `hermetic:` on any pre-deploy step): the two replay
+polarities a pre-deploy step is now subject to, `bin/venv-python`'s venv-less-CI safety, and the
+scripts.validate recursion hazard.
 
-Plan critique is the honesty check on this call, applied before the fix exists (so there is no
-pressure to wave through a finished implementation). When unsure, prefer `not-applicable`: a false
-`not-applicable` is a missed regression guard, a false `graduate` only a mandatory
-`waive`-with-reason detour at implement time.
+## Graduation disposition authoring (T3.21, enforced VF-05)
+
+See `docs/contracts/vp-red-before.yaml#graduation_disposition_authoring` for the full
+three-way classification rubric (MANDATORY read-trigger -- read this before leaving any
+pre-deploy step's `graduation` field unset): `graduate` / `waive` / `not-applicable`, their
+required companion fields, and which disposition to prefer when unsure.
 
 ## Decision Significance Gate (before drafting any numbered Decision -- fresh or CD ratification)
 

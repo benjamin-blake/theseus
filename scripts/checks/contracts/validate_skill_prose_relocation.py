@@ -60,6 +60,10 @@ _REINLINE_MARKERS: dict[str, tuple[str, ...]] = {
     "## CD Ratification Bookkeeping (Workflow Step 6 -- CONDITIONAL, fires when the plan has a ratification block)": (
         "Re-present the drafted Decision text verbatim and wait for an explicit go-ahead",
     ),
+    "## Hermetic authoring (T3.15 / VF-01, amended by Decision 148/plan-resolution-content-keyed)": (
+        "Never mark a step hermetic if it invokes",
+    ),
+    "## Graduation disposition authoring (T3.21, enforced VF-05)": ("plan-critique gate reviews",),
 }
 
 # The two agent_surface evaluator anchors a surviving stub must keep resolvable (Decision 181):

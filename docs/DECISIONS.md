@@ -2,6 +2,92 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 189: Plan-only PRs execute a graduate pre-deploy step under inverted (red-before) polarity -- Decision 148 point 1's no-execution ruling is negated for this population (amends Decision 148) (Decided)
+
+```yaml
+number: 189
+status: Decided
+decided_date: "2026-09-13"
+amends: [148]
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable reversal of Decision 148 point 1's no-execution-against-an-implementation-less-tree
+    ruling for a defined population (added, undeclared plans), plus a new frozen four-class
+    outcome vocabulary and two enforcement mechanisms (a static lint, a recursion refusal) --
+    reversal-relevant for every future graduate VP step. Not a CD state-flip, operational fact, or
+    field-semantics change: mechanism/field detail routes to docs/contracts/vp-red-before.yaml
+    (Decision 86/127 routing), not restated here.
+```
+
+**Status:** Decided
+**Date:** 2026-09-13
+**Warehouse ID:** dec-189
+
+**Problem:**
+rec-3770: nothing mechanically checked that a plan's own `verification_plan` commands actually
+FAIL against the tree they are written against. A step whose command passes on the UNFIXED tree
+could carry `graduation: graduate` and be registered as a standing guard that is green by
+construction. Measured across one planning session (2026-09-12/13): four steps shipped in drafts
+that could not discriminate, two marked graduate; a separate shell defect in the same family --
+`! rg PATTERN <path>` exits 0 when `<path>` is missing (rg/grep exit 2, negated to false success)
+-- silently greens a sweep a rename or a Decision 128 decomposition should have broken.
+
+**Decision:**
+1. Decision 148 point 1's ruling ("no execution against an implementation-less tree") is NEGATED
+   for a newly-defined population: an ADDED (never a modified) `docs/plans/PLAN-*.yaml` whose
+   `implementation_declared` reads falsy now has its `graduation: graduate` pre-deploy steps
+   dynamically replayed by `validate_vp_replay` under INVERTED polarity -- the step must genuinely
+   fail (classified `target_absent` or `assertion_failed`); an exit-0 (`tautological`) or an
+   `unmeasurable` outcome hard-fails the check. Point 1's ruling is UNCHANGED for the GREEN-AFTER
+   (implement leg) case -- a resolved plan's hermetic steps are still never replayed before the
+   implementation exists.
+2. Point 3's RATIONALE clause ("since they are replayed at implement time (not plan time)") is
+   RETRACTED -- no longer universally true, since an eligible plan's graduate steps are now also
+   replayed at plan time, under inverted polarity. Point 3's RULING (`hermetic: true` is the
+   correct pre-deploy default) SURVIVES unchanged: hermetic still governs the implement leg's own
+   green-after replay.
+3. New mechanism, `docs/contracts/vp-red-before.yaml` (Class D, provisional_v0): the frozen
+   four-class outcome vocabulary (`tautological`/`target_absent`/`assertion_failed`/
+   `unmeasurable`, the last subsuming five arms including a subprocess timeout), the added-plan
+   eligibility predicate, a static negated-rg/grep absent-path sweep (every pre-deploy step, any
+   disposition), and a static graduate-partition `scripts.validate` recursion refusal (keyed on
+   invocation shape, never a bare substring).
+4. The planning skill's "Hermetic authoring" and "Graduation disposition authoring" sections
+   relocate into that contract as read-trigger stubs -- REWRITTEN, not copied verbatim, since each
+   ended on a sentence this Decision negates (the plan-time/implement-time split; "when unsure,
+   prefer not-applicable", now "prefer waive or not-applicable" since a false `graduate` is a hard
+   plan-PR failure under this gate, not merely an implement-time detour).
+
+**Rationale:**
+A newly-added plan's tree IS the pre-implementation tree by construction (of the last 40 commits
+that add a `docs/plans/PLAN-*.yaml`, 40 of 40 touch no non-plan file at all) -- red-before needs no
+worktree/revert/`.venv`, unlike `run_differential`'s admission-time check, which it complements
+rather than replaces (that gate already refuses a tautological row at REGISTRY ADMISSION; this
+gate refuses one at PLAN-PR time, before the implementation exists, and reaches the
+waive/not-applicable population `run_differential` never sees). The hazard this negation opens is
+disclosed, not hidden: a plan-only PR now shell-executes every graduate step, including the
+population never marked hermetic -- measured empty today (0 of 775 merged graduate pre-deploy
+steps invoke `scripts.validate`) and refused prophylactically, not remedially.
+
+**Reversal conditions:** if the two-PR plan/implement flow (Decision 76) is ever replaced by
+co-present plan+code PRs as the norm, a plan is never "plan-only" and this negation's own
+population is empty by construction -- the inverted leg becomes dead code (mirrors Decision 148's
+own reversal condition verbatim). If the recursion refusal's measured-empty partition (0 of 775)
+is later found non-empty against real plan traffic and a legitimate graduate-scripts.validate
+shape is refused, widen the invocation-shape rule rather than relaxing it to a substring match.
+
+**Related:** Decision 148 (amended -- points 1 and 3), Decision 132 (the two-leg replay/enforcement
+model this mirrors), Decision 76 (the two-PR flow this negation's population depends on), Decision
+55 (fail-loud -- an unmeasurable outcome is a hard failure, never a rescue loop), Decision 163
+(the declared-vs-executed failure mode this gate closes a second instance of), Decision 170 (the
+widened accounting declaration), Decision 182 (the shared cross-leg budget constants, unchanged),
+Decision 187 (the tier-demotion marker regime `full_segment`'s addition here is a tightening
+under, needing none). Roadmap ref: rec-3770 (resolved by this Decision's carrying merge via the
+Resolves trailer); rec-3776 / rec-3777 (follow-on, not discharged here).
+
+---
+
 ## Decision 188: Retire the GC file-fraction breaker for fail-closed structural guards; the lakehouse GC safety property is reachability, not volume (amends Decision 81 clause 6) (Decided)
 
 ```yaml
@@ -2619,6 +2705,15 @@ This Decision is the structural mechanism Decision 145's own reversal conditions
 ---
 
 ## Decision 148: VF-01 hermetic VP-replay: replay at implement-time, not plan-time; hermetic-default restored (amends Decision 104, mirrors Decision 132) (Decided)
+
+> **Amended by Decision 189 (2026-09-13):** point 1's "no execution against an implementation-less
+> tree" ruling is negated for a newly-defined population (an added, undeclared plan's `graduate`
+> pre-deploy steps, now dynamically replayed under inverted/red-before polarity) -- unchanged for
+> the green-after implement-leg case this point otherwise still governs. Point 3's rationale
+> clause ("since they are replayed at implement time (not plan time)") is retracted as no longer
+> universally true; point 3's ruling (`hermetic: true` is the correct pre-deploy default) survives
+> unchanged. The Hermetic authoring guidance this point 3 names is relocated, rewritten, to
+> `docs/contracts/vp-red-before.yaml#hermetic_authoring`; see Decision 189 for the full derivation.
 
 **Status:** Decided
 **Date:** 2026-07-22
