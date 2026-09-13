@@ -212,107 +212,7 @@ class TestGitAndWorktree:
                 harness._overlay_delta(tmp_path, tmp_path, "a", "b")
 
 
-class TestNodeCapture:
-    def test_pytest_command_detection_and_instrumentation(self, tmp_path: Path, monkeypatch) -> None:
-        assert harness._is_pytest_execution([sys.executable, "-m", "pytest", "tests/x.py"])
-        assert not harness._is_pytest_execution([sys.executable, "-m", "pytest", "--collect-only", "tests/x.py"])
-        assert not harness._is_pytest_execution(["git", "status"])
-        monkeypatch.setenv("KEEP", "outer")
-        stale = tmp_path / "pytest-0-nodes.jsonl"
-        stale.write_text("stale", encoding="utf-8")
-        command, env, junit, events = harness._instrumented_pytest_command(
-            [sys.executable, "-m", "pytest", "tests/x.py"], tmp_path, 0, {"KEEP": "inner"}
-        )
-        assert command[-3:] == [f"--junitxml={junit}", "-p", harness.PLUGIN_NAME]
-        assert env["KEEP"] == "inner"
-        assert env["PYTHONPATH"].split(os.pathsep)[0] == str(tmp_path)
-        assert events == stale
-        assert not stale.exists()
-
-    def test_generated_plugin_preserves_native_parameterized_nodeid(self, tmp_path: Path) -> None:
-        test_file = tmp_path / "test_sample.py"
-        test_file.write_text(
-            "import pytest\n\n@pytest.mark.parametrize('value', [1])\ndef test_value(value):\n    assert value\n",
-            encoding="utf-8",
-        )
-        (tmp_path / f"{harness.PLUGIN_NAME}.py").write_text(harness.PLUGIN_SOURCE, encoding="utf-8")
-        command, env, junit, events = harness._instrumented_pytest_command(
-            [sys.executable, "-m", "pytest", str(test_file), "-q"], tmp_path, 0, None
-        )
-        result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
-        assert result.returncode == 0, result.stdout + result.stderr
-        harness._validate_junit(junit)
-        captured = harness._read_events(events)
-        assert any(row["nodeid"].endswith("test_sample.py::test_value[1]") for row in captured)
-
-    def test_junit_and_event_validation_fail_loudly(self, tmp_path: Path) -> None:
-        missing = tmp_path / "missing"
-        with pytest.raises(harness.HarnessError, match="required JUnit"):
-            harness._validate_junit(missing)
-        bad_xml = tmp_path / "bad.xml"
-        bad_xml.write_text("<bad", encoding="utf-8")
-        with pytest.raises(harness.HarnessError, match="invalid JUnit"):
-            harness._validate_junit(bad_xml)
-        with pytest.raises(harness.HarnessError, match="native node events"):
-            harness._read_events(missing)
-        bad_events = tmp_path / "bad.jsonl"
-        bad_events.write_text("[]\n", encoding="utf-8")
-        with pytest.raises(harness.HarnessError, match="invalid native node events"):
-            harness._read_events(bad_events)
-
-    @pytest.mark.parametrize(
-        ("event", "verdict"),
-        [
-            ({"when": "call", "outcome": "passed"}, "pass"),
-            ({"when": "call", "outcome": "failed"}, "fail"),
-            ({"when": "call", "outcome": "skipped"}, "skipped"),
-            ({"when": "call", "outcome": "skipped", "wasxfail": True}, "xfailed"),
-            ({"when": "call", "outcome": "passed", "wasxfail": True}, "xpassed"),
-            ({"when": "setup", "outcome": "failed"}, "fail"),
-            ({"when": "teardown", "outcome": "failed"}, "fail"),
-            ({"when": "setup", "outcome": "skipped"}, "skipped"),
-            ({"when": "setup", "outcome": "passed"}, None),
-        ],
-    )
-    def test_event_verdict_vocabulary(self, event: dict, verdict: str | None) -> None:
-        assert harness._event_verdict(event) == verdict
-
-    def test_consolidation_and_union_comparison_keep_missing_and_deferred_distinct(self) -> None:
-        events = [
-            {"nodeid": "tests/a.py::test_a", "when": "call", "outcome": "passed"},
-            {"nodeid": "tests/a.py::test_a", "when": "call", "outcome": "failed"},
-            {"nodeid": "tests/b.py::test_b", "when": "call", "outcome": "passed"},
-            {"nodeid": "tests/ignored.py::test_x", "when": "setup", "outcome": "passed"},
-        ]
-        nodes = harness.consolidate_nodes(events, {"tests/b.py": "duckdb"})
-        assert nodes == {"tests/a.py::test_a": "fail", "tests/b.py::test_b": "deferred"}
-        baseline = {"nodes": nodes, "deferred_modules": {"tests/b.py": "duckdb"}, "gate_failures": []}
-        candidate = {
-            "nodes": {"tests/c.py::test_c": "pass"},
-            "deferred_modules": {"tests/a.py": "numpy"},
-            "gate_failures": ["Tests (pytest)"],
-        }
-        compared = harness.compare_captures(baseline, candidate)
-        assert compared["union_node_count"] == 3
-        assert compared["changed_node_count"] == 3
-        assert compared["gate_failures_changed"] is True
-        assert compared["difference_count"] == 4
-        by_id = {row["nodeid"]: row for row in compared["nodes"]}
-        assert by_id["tests/a.py::test_a"] == {
-            "nodeid": "tests/a.py::test_a",
-            "baseline": "fail",
-            "candidate": "deferred",
-        }
-        assert by_id["tests/c.py::test_c"]["baseline"] == "not-collected"
-
-
 class TestWorkerAndOrchestration:
-    def test_environment_wrapper_delegates_to_support(self, tmp_path: Path) -> None:
-        expected = (Path(sys.executable), "key")
-        with patch("scripts.checks.deps.fast_tier_harness_support.ensure_fast_environment", return_value=expected) as ensure:
-            assert harness._ensure_fast_environment(tmp_path, tmp_path / "cache") == expected
-        ensure.assert_called_once_with(tmp_path, tmp_path / "cache")
-
     def test_worker_drives_real_seams_and_emits_capture(self, tmp_path: Path, monkeypatch) -> None:
         repo = tmp_path / "repo"
         (repo / "tests").mkdir(parents=True)
@@ -366,8 +266,10 @@ class TestWorkerAndOrchestration:
         assert payload["nodes"] == {"tests/test_sample.py::test_sample": "pass"}
         assert payload["gate_failures"] == []
         assert payload["commands"][0]["junit"] == "pytest-0.xml"
-        assert payload["environment"]["requirements_sha256"] == harness._file_sha256(repo / "requirements.txt")
-        assert harness._file_sha256(repo / "absent") is None
+        assert payload["environment"]["requirements_sha256"] == harness.fast_tier_harness_capture.file_sha256(
+            repo / "requirements.txt"
+        )
+        assert harness.fast_tier_harness_capture.file_sha256(repo / "absent") is None
 
     def test_worker_requires_the_real_deferral_artifact(self, tmp_path: Path, monkeypatch) -> None:
         repo = tmp_path / "repo"
@@ -422,7 +324,11 @@ class TestWorkerAndOrchestration:
             return subprocess.CompletedProcess(command, 0, "", "")
 
         with patch.object(harness, "_prepared_worktree", prepared), patch.object(harness.subprocess, "run", successful_run):
-            with patch.object(harness, "_ensure_fast_environment", return_value=(Path(sys.executable), "env-key")):
+            with patch.object(
+                harness.fast_tier_harness_support,
+                "ensure_fast_environment",
+                return_value=(Path(sys.executable), "env-key"),
+            ):
                 capture = harness.capture_case(
                     tmp_path, case, [("M", "tests/x.py")], "base", "base", output, tmp_path / "environments"
                 )
@@ -431,7 +337,11 @@ class TestWorkerAndOrchestration:
             assert json.loads(output.read_text(encoding="utf-8"))["environment"]["fingerprint"] == "env-key"
         with (
             patch.object(harness, "_prepared_worktree", prepared),
-            patch.object(harness, "_ensure_fast_environment", return_value=(Path(sys.executable), "env-key")),
+            patch.object(
+                harness.fast_tier_harness_support,
+                "ensure_fast_environment",
+                return_value=(Path(sys.executable), "env-key"),
+            ),
             patch.object(harness.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "out", "err")),
         ):
             with pytest.raises(harness.HarnessError, match="worker failed.*outerr"):
@@ -439,11 +349,38 @@ class TestWorkerAndOrchestration:
         output.write_text("bad", encoding="utf-8")
         with (
             patch.object(harness, "_prepared_worktree", prepared),
-            patch.object(harness, "_ensure_fast_environment", return_value=(Path(sys.executable), "env-key")),
+            patch.object(
+                harness.fast_tier_harness_support,
+                "ensure_fast_environment",
+                return_value=(Path(sys.executable), "env-key"),
+            ),
             patch.object(harness.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, "", "")),
         ):
             with pytest.raises(harness.HarnessError, match="cannot read"):
                 harness.capture_case(tmp_path, case, [], "base", "head", output, tmp_path / "environments")
+
+    def test_capture_case_launches_the_worker_with_the_harness_import_root(self, tmp_path: Path) -> None:
+        case = harness.CorpusCase("case", 1, "a" * 40, "b" * 40, "c" * 64, ("tests/x.py",))
+        output = tmp_path / "capture.json"
+
+        @contextlib.contextmanager
+        def prepared(*args):
+            yield tmp_path
+
+        def successful_run(command, **kwargs):
+            assert command[:3] == [sys.executable, str(Path(harness.__file__).resolve()), "_worker"]
+            assert kwargs["env"]["PYTHONPATH"].split(harness.os.pathsep)[0] == str(tmp_path)
+            output.write_text('{"nodes": {}, "deferred_modules": {}, "environment": {}}', encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with (
+            patch.object(harness, "_prepared_worktree", prepared),
+            patch.object(
+                harness.fast_tier_harness_support, "ensure_fast_environment", return_value=(Path(sys.executable), "key")
+            ),
+            patch.object(harness.subprocess, "run", successful_run),
+        ):
+            harness.capture_case(tmp_path, case, [], "base", "base", output, tmp_path / "environments")
 
     def test_run_comparison_filters_cases_and_writes_union(self, tmp_path: Path) -> None:
         corpus = harness.load_corpus(CORPUS_PATH)
