@@ -53,6 +53,17 @@ to config/check_accounting_baseline.yaml, which is shrink-only.
 Efficacy is explicitly OUT OF SCOPE: this floor proves red-case SHAPE (at least one assertion
 expects a failing outcome), never that the fixture is a genuinely effective one that would catch a
 broken check (that is P4 leg 3, T3.7's scheduled alarm lane, per CD.12).
+
+Within-package mirror-file-SET guard (rec-3727, LSA-01 leg a sub-part 2 residue). The
+existence/red-case checks above judge an Entry whose mirror resolves to a concern-split PACKAGE
+DIRECTORY by ANY() over that directory's test_*.py files -- so deleting a non-last mirror file (one
+that is not the only file carrying a red case) is invisible as long as a sibling file still stands
+and still carries one. This closes that escape with an independent check: every `test_*.py` path
+this diff DELETES (via `_common.get_status_aware_diff`, whose "D" status is never existence-
+filtered) that sits inside a resolved package mirror is a violation regardless of whether the
+package's red-case floor still clears -- the file SET may not shrink, never mind whether the
+disjunction still passes. No marker, waiver or grandfather escape exists for this guard either
+(Decision 163 point 1: both floors this module owns are exceptionless by design).
 """
 
 from __future__ import annotations
@@ -63,6 +74,7 @@ from pathlib import Path
 
 from scripts import test_coverage_checker as tcc
 from scripts.checks import _common, registry
+from scripts.checks._schema import Entry
 
 _ANY_ALL_NAMES = ("any", "all")
 
@@ -408,6 +420,44 @@ def red_case_hits(mirror_path: Path, attr_name: str, *, _cache: dict[str, ast.Mo
     return hits
 
 
+def _mirror_package_dir(entry_module: str) -> Path | None:
+    """The resolved mirror's PACKAGE directory for `entry_module`, or None when the mirror
+    resolves to a single file (already covered by `_mirror_test_files`' own existence check) or
+    cannot be resolved at all. Reached through the same canonical map as `_mirror_test_files`."""
+    source_path = _common.ROOT / Path(*entry_module.split(".")).with_suffix(".py")
+    mirror = tcc.map_source_to_test(source_path)
+    if mirror is None or mirror.suffix == ".py":
+        return None
+    return mirror
+
+
+def _deleted_package_mirror_files(entries: dict[str, Entry], root: Path | None = None) -> dict[str, list[str]]:
+    """{entry name: [deleted test_*.py path, ...]} for every entry whose mirror resolves to a
+    concern-split package directory AND whose diff deletes at least one of that package's own
+    test_*.py files -- fired even when a sibling file in the same package still stands and still
+    carries a red case (rec-3727: the any()-over-package-files disjunction cannot see this alone).
+    Deletion status comes from `_common.get_status_aware_diff`, never existence-filtered for "D"
+    entries, so a deleted path is seen even though it no longer exists on disk."""
+    deleted = [path for status, path in _common.get_status_aware_diff(root) if status == "D"]
+    if not deleted:
+        return {}
+    scan_root = root if root is not None else _common.ROOT
+    hits: dict[str, list[str]] = {}
+    for name, entry in entries.items():
+        package_dir = _mirror_package_dir(entry.module)
+        if package_dir is None:
+            continue
+        try:
+            rel_dir = package_dir.relative_to(scan_root).as_posix()
+        except ValueError:
+            continue
+        prefix = f"{rel_dir}/"
+        matches = sorted(p for p in deleted if p.startswith(prefix) and Path(p).name.startswith("test_") and p.endswith(".py"))
+        if matches:
+            hits[name] = matches
+    return hits
+
+
 def _mirror_test_files(entry_module: str) -> list[Path]:
     """Resolve `entry_module`'s mirror via the CANONICAL map, reached through the module OBJECT
     (never a `from ... import map_source_to_test` binding -- see module docstring) so a test can
@@ -423,15 +473,17 @@ def _mirror_test_files(entry_module: str) -> list[Path]:
 
 
 @registry.register("validate_red_case_floor", owner="platform")
-def validate_red_case_floor(failed: list[str]) -> None:
-    """Every registered check's mirror test must exercise at least one FAILING path (LSA-03).
+def validate_red_case_floor(failed: list[str], root: Path | None = None) -> None:
+    """Every registered check's mirror test must exercise at least one FAILING path (LSA-03), and
+    a concern-split package mirror's test_*.py file SET may never shrink mid-diff (rec-3727).
 
-    See the module docstring for the population/mirror-resolution/red-case-signal rules. This
-    function's only job is to WIRE them together and CONSULT `red_case_hits`' verdict -- it never
-    re-derives the signal inline, so a test that starves `red_case_hits` (patches it to return
-    `[]`) must starve this function's outcome too.
+    See the module docstring for the population/mirror-resolution/red-case-signal rules and the
+    within-package deletion guard. The first half's only job is to WIRE together
+    `_mirror_test_files`/`red_case_hits` and CONSULT their verdict -- it never re-derives the
+    signal inline, so a test that starves `red_case_hits` (patches it to return `[]`) must starve
+    this function's outcome too. `root` defaults to `_common.ROOT`; tests pass a synthetic repo.
     """
-    entries = dict(registry._ALL_ENTRIES)
+    entries: dict[str, Entry] = dict(registry._ALL_ENTRIES)
     cache: dict[str, ast.Module | None] = {}
     non_conforming: list[str] = []
 
@@ -443,6 +495,10 @@ def validate_red_case_floor(failed: list[str]) -> None:
             continue
         if not any(red_case_hits(test_file, entry.attr, _cache=cache) for test_file in test_files):
             non_conforming.append(f"{name}: mirror carries no red-case assertion for {entry.attr}")
+
+    deleted_hits = _deleted_package_mirror_files(entries, root)
+    for name in sorted(deleted_hits):
+        non_conforming.append(f"{name}: mirror-test file(s) deleted from its concern-split package: {deleted_hits[name]}")
 
     if non_conforming:
         failed.append(f"red-case floor: {len(non_conforming)} registered check(s) with no failing-path mirror assertion")

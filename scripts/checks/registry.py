@@ -62,9 +62,11 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import fnmatch
 import importlib
 from typing import Callable, Iterator
 
+from scripts.checks import _common
 from scripts.checks._schema import Entry
 from scripts.checks.ci_guards._manifest import ENTRIES as _CI_GUARDS_ENTRIES
 from scripts.checks.contracts._manifest import ENTRIES as _CONTRACTS_ENTRIES
@@ -430,6 +432,65 @@ def _assert_weakening_gate_intact(steps: list[Step], *, pre_tier: bool) -> None:
         )
 
 
+# Second fixed point (Decision 187 point 6 form, LSA-06): the pre-glob closure auditor
+# (scripts/checks/deps/validate_pre_glob_closure.py) is now BLOCKING, so the same self-reference
+# hole the tier-demotion gate closed above exists for its OWN Entry -- a PR that narrows this
+# check's own pre_globs below its real import closure is the PR under which the auditor stops
+# seeing part of the tree it exists to audit. Names the MECHANISM, never a protected set: no
+# per-check roster constant is introduced (Decision 187 points 1/2/6; Decision 169's OD invariants
+# stay count-independent) -- the raise below re-derives "every tracked .py file" from git on each
+# call rather than snapshotting a list.
+_PRE_GLOB_CLOSURE_GATE: str = "validate_pre_glob_closure"
+
+
+class AuditorClosureError(RuntimeError):
+    """Raised by pre_sequence() when the pre-glob closure auditor's own Entry
+    (registry._PRE_GLOB_CLOSURE_GATE) declares pre_globs that do not cover every git-tracked .py
+    file."""
+
+
+def _pre_glob_match(path: str, glob: str) -> bool:
+    """Replica of scripts/validate.py::_pre_glob_match / scripts.checks.deps.
+    validate_pre_glob_closure._glob_match, scoped to this one fixed-point assertion. Not imported:
+    registry.py must not depend on either module (validate.py imports registry.py for dispatch,
+    and validate_pre_glob_closure imports registry.py to read _ALL_ENTRIES), so a third import
+    edge from here would each be a cycle."""
+    if fnmatch.fnmatch(path, glob):
+        return True
+    return glob.startswith("**/") and fnmatch.fnmatch(path, glob[3:])
+
+
+def _assert_pre_glob_closure_gate_intact(entries: dict[str, Entry]) -> None:
+    """No-op when the auditor's Entry is absent or ungated (pre_globs=None already covers
+    everything) -- this fixed point only governs a NARROWED glob tuple. A `git ls-files` failure
+    SKIPS this assertion rather than raising: an unmeasurable corpus must not be treated as an
+    uncovered one (Decision 55), and pre_sequence() has no accounting channel of its own to
+    declare a loud skip through -- the live gate itself (validate_pre_glob_closure, which shares
+    this exact `git ls-files` dependency) is what surfaces a git-unavailable environment."""
+    gate = entries.get(_PRE_GLOB_CLOSURE_GATE)
+    if gate is None or gate.pre_globs is None:
+        return
+    tracked = _common.run(
+        ["git", "ls-files", "--", "*.py"], capture_output=True, text=True, encoding="utf-8", cwd=_common.ROOT
+    )
+    if tracked.returncode != 0:
+        return
+    globs = gate.pre_globs
+    # Filtered client-side to `.py`-suffixed paths, never trusting the pathspec alone -- an
+    # unrelated caller's mocked `_common.run` (many exist across the suite, stubbing git for their
+    # OWN unrelated purpose) can return arbitrary stdout regardless of the argv this call passed,
+    # and this assertion must not misread that as a real uncovered .py file.
+    tracked_py = [path for path in tracked.stdout.splitlines() if path.endswith(".py")]
+    uncovered = [path for path in tracked_py if not any(_pre_glob_match(path, g) for g in globs)]
+    if uncovered:
+        raise AuditorClosureError(
+            f"the pre-glob closure auditor's own Entry ({_PRE_GLOB_CLOSURE_GATE!r}) declares pre_globs="
+            f"{globs!r}, which do not cover {len(uncovered)} tracked .py file(s) (e.g. {uncovered[:5]}) -- "
+            "widen it back to at least the ('**/*.py', 'scripts/checks/**') union. A narrower Entry here is "
+            "the PR under which this closure floor stops seeing part of the tree it audits."
+        )
+
+
 def _entries_by_domain() -> dict[str, list[Entry]]:
     by_domain: dict[str, list[Entry]] = {}
     for entry in _ALL_ENTRIES.values():
@@ -448,6 +509,7 @@ def pre_sequence() -> list[Step]:
                 steps.append(_c(entry.name, pre_globs=entry.pre_globs))
     steps.extend(_s(name) for name in _PRE_TIER_TRAILING_SCAFFOLDS)
     _assert_weakening_gate_intact(steps, pre_tier=True)
+    _assert_pre_glob_closure_gate_intact(_ALL_ENTRIES)
     return steps
 
 

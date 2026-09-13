@@ -44,6 +44,8 @@ ENTRIES: tuple[Entry, ...] = (
             "scripts/checks/**",
             "docs/contracts/check-manifest.yaml",
             "scripts/dependency_graph.py",
+            "scripts/extract_imports.py",
+            "scripts/lambda_manifest.py",
         ),
         full_segment="full_after_lint",
     ),
@@ -52,19 +54,11 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.deps.validate_pre_glob_closure",
         attr="validate_pre_glob_closure",
         pre=True,
-        # Dogfood: these are exactly this check's own transitive first-party import closure. The
-        # last two are hubs its direct imports pull in -- scripts.lambda_manifest via
-        # dependency_graph._gather_roots, scripts.roadmap.plan_document via scripts.checks.
-        # _common's function-scope import -- and are the standing candidates for a reviewed
-        # _PRUNED_EDGES entry at the wave-4b pay-down.
-        pre_globs=(
-            "scripts/checks/**",
-            "scripts/checks/*/_manifest.py",
-            "scripts/dependency_graph.py",
-            "scripts/extract_imports.py",
-            "scripts/lambda_manifest.py",
-            "scripts/roadmap/plan_document.py",
-        ),
+        # This check's own Entry glob MUST cover its own import closure over the FULL union of
+        # tracked .py files -- registry.py's fixed-point raise (Decision 187 point 6 form) refuses
+        # to assemble pre_sequence() otherwise. Never narrow this below ("**/*.py",
+        # "scripts/checks/**") -- see registry._assert_pre_glob_closure_gate_intact.
+        pre_globs=("**/*.py", "scripts/checks/**"),
         full_segment="full_after_lint",
     ),
 )

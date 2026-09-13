@@ -24,6 +24,8 @@ ENTRIES: tuple[Entry, ...] = (
         pre_globs=(
             "tests/**",
             "scripts/checks/hygiene/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
         ),
         full_segment="full_after_lint",
     ),
@@ -32,7 +34,12 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.hygiene.validate_no_cross_test_imports",
         attr="validate_no_cross_test_imports",
         pre=True,
-        pre_globs=("tests/**", "scripts/checks/hygiene/validate_no_cross_test_imports.py"),
+        pre_globs=(
+            "tests/**",
+            "scripts/checks/hygiene/validate_no_cross_test_imports.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -69,7 +76,7 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.hygiene.validate_check_accounting",
         attr="validate_check_accounting",
         pre=True,
-        pre_globs=("scripts/checks/**", "config/check_accounting_baseline.yaml"),
+        pre_globs=("scripts/checks/**", "config/check_accounting_baseline.yaml", "scripts/decisions_md.py"),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -101,6 +108,8 @@ ENTRIES: tuple[Entry, ...] = (
         pre_globs=(
             "tests/**",
             "scripts/checks/hygiene/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
         ),
         full_segment="full_after_lint",
     ),

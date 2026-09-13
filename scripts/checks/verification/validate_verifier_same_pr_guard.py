@@ -1,4 +1,21 @@
-"""Verifier same-PR guard (T3.1, Decision 104)."""
+"""Verifier same-PR guard (T3.1, Decision 104; narrowed to concrete subclasses per rec-3721).
+
+Scans only CONCRETE subclasses of `scripts.verifiers.harness.Verifier` -- a ClassDef whose bases
+include a name or attribute access resolving to `Verifier`. The six FRAMEWORK classes
+`scripts/verifiers/harness.py` itself declares (VerifierStatus, VerifierSeverity, VerifierTier,
+Hermeticity, VerifierResult, and Verifier itself, the abstract base) are never scanned: none of
+them is a subclass of Verifier, so editing harness.py alongside any other file no longer produces
+a violation. Before this narrowing, EVERY top-level class in a changed `scripts/verifiers/*.py`
+file was scanned, and a class with no explicit `covers` defaulted to `["**"]` -- so the six
+framework classes alone produced six violations against harness.py, a governed population that
+was never really there (LSA-01 leg c / rec-3721: the audit's own evidence string was wrong too --
+there is no `REGISTRY` constant in this module; it AST-scans class definitions directly).
+
+The `scanned`/`examined()` count is over CONCRETE-SUBCLASS-BEARING FILES, not every file present
+in the diff -- a changed verifier file contributing zero concrete subclasses (the framework-only
+case) does not increment it, so a diff touching only harness.py declares `examined(0)`: a real,
+declared vacuity (Decision 170), never a silent pass hiding behind a nonzero file count.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +23,21 @@ import ast
 import fnmatch
 
 from scripts.checks import _common, registry
+
+_VERIFIER_BASE_NAME = "Verifier"
+
+
+def _is_concrete_verifier_subclass(class_node: ast.ClassDef) -> bool:
+    """True iff `class_node` declares `Verifier` (bare name or `<module>.Verifier` attribute
+    access) among its own bases -- purely syntactic, no import execution. The base class itself
+    (`class Verifier(ABC):`) never matches its own name here, so it is never treated as its own
+    concrete subclass."""
+    for base in class_node.bases:
+        if isinstance(base, ast.Name) and base.id == _VERIFIER_BASE_NAME:
+            return True
+        if isinstance(base, ast.Attribute) and base.attr == _VERIFIER_BASE_NAME:
+            return True
+    return False
 
 
 def _extract_verifier_covers(class_node: ast.ClassDef) -> list[str] | None:
@@ -85,8 +117,10 @@ def validate_verifier_same_pr_guard(failed: list[str]) -> None:
     this check runs. This REFINES what counts as covered and is not a further exception beside
     (b) and (c): a verifier changed alongside any real covered source file still violates.
 
-    AST-scan scripts/verifiers/*.py to extract the ``covers`` class attribute.
-    Classes without an explicit ``covers`` default to ["**"] (matches everything).
+    AST-scan scripts/verifiers/*.py for CONCRETE Verifier subclasses only (see module docstring)
+    to extract the ``covers`` class attribute. A concrete subclass without an explicit ``covers``
+    default to ["**"] (matches everything); a framework class (no Verifier base) is never scanned
+    at all, regardless of what it declares.
     """
     print("\n=== Verifier same-PR guard (T3.1) ===")
     verifiers_dir = _common.ROOT / "scripts" / "verifiers"
@@ -114,7 +148,6 @@ def validate_verifier_same_pr_guard(failed: list[str]) -> None:
         rel = str(py_file.relative_to(_common.ROOT))
         if rel not in changed_set:
             continue
-        scanned += 1
 
         try:
             source = py_file.read_text(encoding="utf-8")
@@ -122,9 +155,10 @@ def validate_verifier_same_pr_guard(failed: list[str]) -> None:
         except SyntaxError:
             continue
 
-        classes = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]
+        classes = [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and _is_concrete_verifier_subclass(n)]
         if not classes:
             continue
+        scanned += 1
 
         is_new = rel in new_files
 
