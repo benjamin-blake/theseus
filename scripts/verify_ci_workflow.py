@@ -179,13 +179,11 @@ def _check_canary() -> None:
 
 def _assert_runtime_lock(job: dict[str, Any], job_name: str) -> None:
     steps_text = _get_steps_text(job)
-    for requirements_file in ("requirements.txt", "requirements-dev.txt"):
-        expected = f"pip install -c requirements.lock -r {requirements_file}"
-        assert expected in steps_text, f"{job_name} does not constrain {requirements_file} with requirements.lock"
-
     cache_steps = [step for step in job.get("steps", []) if str(step.get("uses", "")).startswith("actions/cache")]
     cache_keys = "\n".join(str(step.get("with", {}).get("key", "")) for step in cache_steps)
-    assert "requirements.lock" in cache_keys, f"{job_name} dependency cache key does not include requirements.lock"
+    for compiled in ("requirements.txt", "requirements-dev.txt"):
+        assert f"pip install -r {compiled}" in steps_text, f"{job_name} does not install compiled {compiled}"
+        assert compiled in cache_keys, f"{job_name} dependency cache key omits {compiled}"
 
 
 def _check_full_tier_runtime_lock() -> None:

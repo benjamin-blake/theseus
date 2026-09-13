@@ -63,6 +63,8 @@ def _classify(argv):
             return f"update:{{argv[2]}}"
         if sub == "comment" and len(argv) > 2:
             return f"comment:{{argv[2]}}"
+        if sub == "view" and len(argv) > 2 and "mergeStateStatus" in " ".join(argv):
+            return f"mergeable:{{argv[2]}}"
     return "unknown:" + " ".join(argv)
 
 
@@ -137,6 +139,7 @@ class _Harness:
         env["GH_SHIM_STATE_DIR"] = str(state_dir)
         env["GITHUB_STEP_SUMMARY"] = str(self.step_summary)
         env["DEPENDABOT_STRANDED_RETRY_SLEEP"] = "0"
+        env["DEPENDABOT_STRANDED_POLL_SLEEP"] = "0"
         self.env = env
 
     def run(
@@ -276,11 +279,12 @@ class TestRebaseFallback:
 
 
 class TestCleanPrIsLeftAlone:
-    """Everything that is not BEHIND or DIRTY is reported and untouched -- BLOCKED in particular
-    is a code-owner wait that updating the branch would not change."""
+    """Every SETTLED state that is not BEHIND or DIRTY is reported and untouched -- BLOCKED in
+    particular is a code-owner wait that updating the branch would not change. UNKNOWN is
+    deliberately absent: it is not settled, and TestUnknownIsPolledUntilSettled owns it."""
 
     @pytest.mark.parametrize("argv_name", sorted(ARGVS))
-    @pytest.mark.parametrize("merge_state", ["CLEAN", "BLOCKED", "UNSTABLE", "UNKNOWN"])
+    @pytest.mark.parametrize("merge_state", ["CLEAN", "BLOCKED", "UNSTABLE"])
     def test_no_action_taken(self, tmp_path: Path, argv_name: str, merge_state: str) -> None:
         control = {"list": {"exit_code": 0, "stdout": _pr_row("106", "Bump pip-tools", merge_state)}}
         harness = _Harness(tmp_path, control)
@@ -428,3 +432,90 @@ class TestRealWorkflowBodyWiring:
             f"the sweep. stdout={result.stdout!r} stderr={result.stderr!r}"
         )
         assert result.returncode == 0
+
+
+class TestUnknownIsPolledUntilSettled:
+    """Defect C: GitHub computes mergeability lazily, so a PR listed cold reports UNKNOWN while the
+    background job runs. Treating that as "nothing needed" stranded every such PR; the sweep now
+    re-reads it through a bounded poll BEFORE the BEHIND/DIRTY test and acts on the settled value."""
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_unknown_then_behind_still_gets_update_branch(self, tmp_path: Path, argv_name: str) -> None:
+        """The load-bearing case: today this PR is listed UNKNOWN and never swept."""
+        control = {
+            "list": {"exit_code": 0, "stdout": _pr_row("501", "Bump sympy", "UNKNOWN")},
+            "mergeable:501": [
+                {"exit_code": 0, "stdout": "UNKNOWN"},
+                {"exit_code": 0, "stdout": "BEHIND"},
+            ],
+            "update:501": {"exit_code": 0, "stdout": ""},
+        }
+        harness = _Harness(tmp_path, control)
+        result = harness.run(ARGVS[argv_name])
+        assert harness.call_count("update:501") == 1, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        assert harness.call_count("mergeable:501") == 2, "the poll must stop as soon as the state settles"
+        assert result.returncode == 0
+        assert "| update-branch |" in harness.summary_text
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_unknown_then_dirty_reaches_the_rebase_fallback(self, tmp_path: Path, argv_name: str) -> None:
+        control = {
+            "list": {"exit_code": 0, "stdout": _pr_row("502", "Bump ruff", "UNKNOWN")},
+            "mergeable:502": {"exit_code": 0, "stdout": "DIRTY"},
+            "update:502": {"exit_code": 1, "stdout": "", "stderr": "merge conflict"},
+            "comment:502": {"exit_code": 0, "stdout": ""},
+        }
+        harness = _Harness(tmp_path, control)
+        result = harness.run(ARGVS[argv_name])
+        assert harness.comment_bodies("502") == ["pr comment 502 --body @dependabot rebase"]
+        assert result.returncode == 0
+        assert "| rebase-comment |" in harness.summary_text
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_unknown_for_the_whole_poll_bound_takes_no_action_but_is_not_silent(self, tmp_path: Path, argv_name: str) -> None:
+        """Decision 155 skip-with-marker: an indeterminate state must not read byte-identically to
+        "nothing needed", so it emits a DISTINCT marker and rows poll-exhausted, never none."""
+        control = {
+            "list": {"exit_code": 0, "stdout": _pr_row("503", "Bump boto3", "UNKNOWN")},
+            "mergeable:503": {"exit_code": 0, "stdout": "UNKNOWN"},
+        }
+        harness = _Harness(tmp_path, control)
+        result = harness.run(ARGVS[argv_name])
+        assert harness.call_count("update:503") == 0
+        assert harness.comment_bodies("503") == []
+        assert harness.call_count("mergeable:503") == 5, "the poll bound is 5 attempts"
+        assert result.returncode == 0
+        assert "[DEPENDABOT-STRANDED] UNKNOWN-AFTER-POLL: PR #503" in result.stdout
+        assert "UNKNOWN-AFTER-POLL" in harness.summary_text, "the marker must be mirrored to the run summary"
+        assert "| poll-exhausted |" in harness.summary_text
+        assert "| none |" not in harness.summary_text
+        assert "FAILURE" not in harness.summary_text, "poll exhaustion is a skip, not a failure"
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_settled_list_value_is_not_re_polled(self, tmp_path: Path, argv_name: str) -> None:
+        """Only UNKNOWN is polled. The shim has no mergeable: entry, so any poll would exit 99."""
+        control = {
+            "list": {"exit_code": 0, "stdout": _pr_row("504", "Bump networkx", "BEHIND")},
+            "update:504": {"exit_code": 0, "stdout": ""},
+        }
+        harness = _Harness(tmp_path, control)
+        result = harness.run(ARGVS[argv_name])
+        assert harness.call_count("mergeable:504") == 0
+        assert harness.call_count("update:504") == 1
+        assert result.returncode == 0
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_poll_call_failure_is_recorded_not_actioned(self, tmp_path: Path, argv_name: str) -> None:
+        """A genuine `gh pr view` failure is a different outcome from poll exhaustion: FAILED."""
+        control = {
+            "list": {"exit_code": 0, "stdout": _pr_row("505", "Bump pytz", "UNKNOWN")},
+            "mergeable:505": {"exit_code": 1, "stdout": "", "stderr": "gh: API rate limit"},
+        }
+        harness = _Harness(tmp_path, control)
+        result = harness.run(ARGVS[argv_name])
+        assert harness.call_count("update:505") == 0
+        assert harness.comment_bodies("505") == []
+        assert "| FAILED |" in harness.summary_text
+        assert "UNKNOWN-AFTER-POLL" not in harness.summary_text, "a call failure is not poll exhaustion"
+        assert "FAILURE" in harness.summary_text
+        assert result.returncode == 0, "a per-PR failure never reds the sweep -- only a failed list does"

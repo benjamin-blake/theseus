@@ -144,6 +144,10 @@ class _Harness:
         env["PACKAGE_ECOSYSTEM"] = "pip"
         env["UPDATE_TYPE"] = ""
         env["DEPENDENCY_NAMES"] = ""
+        env["PREVIOUS_VERSION"] = ""
+        env["NEW_VERSION"] = ""
+        env["UPDATED_DEPENDENCIES_JSON"] = ""
+        env["PR_TITLE"] = ""
         env.update(metadata)
         self.env = env
 
@@ -257,11 +261,13 @@ class TestRejectedUpdateTypesNeverMerge:
         assert FAILURE_MARKER not in harness.summary_text
 
     @pytest.mark.parametrize("argv_name", sorted(ARGVS))
-    def test_empty_update_type_never_invokes_gh(self, tmp_path: Path, argv_name: str) -> None:
+    def test_empty_update_type_with_no_derivable_versions_never_invokes_gh(self, tmp_path: Path, argv_name: str) -> None:
+        """Empty AND no derivable version evidence: branch 2 derives `unknown` and denies."""
         harness = _harness(tmp_path, _MERGE_FORBIDDEN, UPDATE_TYPE="", DEPENDENCY_NAMES="")
         result = harness.run(ARGVS[argv_name])
         assert harness.calls == []
         assert result.returncode == 0
+        assert "derived class 'unknown'" in harness.summary_text
 
     @pytest.mark.parametrize("argv_name", sorted(ARGVS))
     def test_unrecognised_update_type_never_invokes_gh(self, tmp_path: Path, argv_name: str) -> None:
@@ -376,6 +382,205 @@ class TestRealWorkflowBodyWiring:
         every bump look unclassifiable and silently disable auto-merge."""
         _, delegating_step = self._delegating_step()
         env = delegating_step["env"]
-        assert {"UPDATE_TYPE", "DEPENDENCY_NAMES", "PACKAGE_ECOSYSTEM", "PR_URL", "PR_NUMBER", "GH_TOKEN"} <= set(env)
+        assert {
+            "UPDATE_TYPE",
+            "DEPENDENCY_NAMES",
+            "PACKAGE_ECOSYSTEM",
+            "PR_URL",
+            "PR_NUMBER",
+            "GH_TOKEN",
+            "PREVIOUS_VERSION",
+            "NEW_VERSION",
+            "UPDATED_DEPENDENCIES_JSON",
+            "PR_TITLE",
+        } <= set(env)
         assert "steps.metadata.outputs.update-type" in env["UPDATE_TYPE"]
         assert "steps.metadata.outputs.dependency-names" in env["DEPENDENCY_NAMES"]
+        assert "steps.metadata.outputs.previous-version" in env["PREVIOUS_VERSION"]
+        assert "steps.metadata.outputs.new-version" in env["NEW_VERSION"]
+        assert "steps.metadata.outputs.updated-dependencies-json" in env["UPDATED_DEPENDENCIES_JSON"]
+        assert "github.event.pull_request.title" in env["PR_TITLE"]
+
+
+class TestDerivedSemverClassFromVersions:
+    """Branch 2 (Defect B): when fetch-metadata leaves update-type EMPTY, the class is derived from
+    the bump's own version evidence and patch/minor arm while major/unknown deny.
+
+    Every fixture here sets UPDATE_TYPE explicitly empty on purpose -- fetch-metadata v3 populates
+    it for this repo's range-update shape, so a fixture that left it populated would exercise
+    branch 1 and prove nothing about the fallback.
+    """
+
+    MCP_MAJOR_TITLE = "chore(deps): update mcp requirement from <2,>=1.28.0 to >=2.1.1,<3"
+    SOCKET_PATCH_TITLE = "chore(deps): update pytest-socket requirement from >=0.8.0 to >=0.8.1"
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_derived_patch_arms_auto_merge(self, tmp_path: Path, argv_name: str) -> None:
+        """PR #981's shape: today this exits at gate 1 without ever reaching gh."""
+        harness = _harness(
+            tmp_path,
+            _MERGE_OK,
+            UPDATE_TYPE="",
+            DEPENDENCY_NAMES="pytest-socket",
+            PREVIOUS_VERSION="0.8.0",
+            NEW_VERSION="0.8.1",
+        )
+        result = harness.run(ARGVS[argv_name])
+        assert harness.calls == [("merge", EXPECTED_MERGE_ARGV)], f"stderr={result.stderr!r}"
+        assert result.returncode == 0
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_derived_minor_arms_auto_merge(self, tmp_path: Path, argv_name: str) -> None:
+        harness = _harness(
+            tmp_path,
+            _MERGE_OK,
+            UPDATE_TYPE="",
+            DEPENDENCY_NAMES="networkx",
+            PREVIOUS_VERSION="3.5.0",
+            NEW_VERSION="3.6.1",
+        )
+        result = harness.run(ARGVS[argv_name])
+        assert harness.calls == [("merge", EXPECTED_MERGE_ARGV)]
+        assert result.returncode == 0
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_derived_major_never_merges(self, tmp_path: Path, argv_name: str) -> None:
+        """PR #980's shape: a comma-joined range pair whose lower bound crosses a major."""
+        harness = _harness(tmp_path, _MERGE_FORBIDDEN, UPDATE_TYPE="", DEPENDENCY_NAMES="mcp", PR_TITLE=self.MCP_MAJOR_TITLE)
+        result = harness.run(ARGVS[argv_name])
+        assert harness.calls == []
+        assert result.returncode == 0
+        assert "derived class 'major'" in harness.summary_text
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_denied_dependency_still_never_merges_on_a_derived_class(self, tmp_path: Path, argv_name: str) -> None:
+        """Gate 2 is downstream of gate 1: a derived patch on duckdb is still denied."""
+        harness = _harness(
+            tmp_path,
+            _MERGE_FORBIDDEN,
+            UPDATE_TYPE="",
+            DEPENDENCY_NAMES="duckdb",
+            PREVIOUS_VERSION="1.5.3",
+            NEW_VERSION="1.5.4",
+        )
+        result = harness.run(ARGVS[argv_name])
+        assert harness.calls == []
+        assert result.returncode == 0
+        assert "lockstep" in harness.summary_text
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_unparsable_versions_fail_closed(self, tmp_path: Path, argv_name: str) -> None:
+        harness = _harness(
+            tmp_path,
+            _MERGE_FORBIDDEN,
+            UPDATE_TYPE="",
+            DEPENDENCY_NAMES="sympy",
+            PREVIOUS_VERSION="latest",
+            NEW_VERSION="newest",
+        )
+        result = harness.run(ARGVS[argv_name])
+        assert harness.calls == []
+        assert result.returncode == 0
+        assert "derived class 'unknown'" in harness.summary_text
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_multi_name_group_with_one_scalar_pair_fails_closed(self, tmp_path: Path, argv_name: str) -> None:
+        """A grouped PR carrying several names but a single scalar pair is not guessed at."""
+        harness = _harness(
+            tmp_path,
+            _MERGE_FORBIDDEN,
+            UPDATE_TYPE="",
+            DEPENDENCY_NAMES="boto3, networkx, sympy",
+            PREVIOUS_VERSION="1.0.0",
+            NEW_VERSION="1.0.1",
+        )
+        result = harness.run(ARGVS[argv_name])
+        assert harness.calls == []
+        assert result.returncode == 0
+        assert "derived class 'unknown'" in harness.summary_text
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_pr_title_fallback_arms_when_no_version_outputs_exist(self, tmp_path: Path, argv_name: str) -> None:
+        harness = _harness(
+            tmp_path, _MERGE_OK, UPDATE_TYPE="", DEPENDENCY_NAMES="pytest-socket", PR_TITLE=self.SOCKET_PATCH_TITLE
+        )
+        result = harness.run(ARGVS[argv_name])
+        assert harness.calls == [("merge", EXPECTED_MERGE_ARGV)]
+        assert result.returncode == 0
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_derived_class_and_provenance_appear_in_the_step_summary(self, tmp_path: Path, argv_name: str) -> None:
+        """The _decision line names the raw update-type, the class used, and whether it was derived."""
+        harness = _harness(
+            tmp_path,
+            _MERGE_OK,
+            UPDATE_TYPE="",
+            DEPENDENCY_NAMES="pytest-socket",
+            PREVIOUS_VERSION="0.8.0",
+            NEW_VERSION="0.8.1",
+        )
+        harness.run(ARGVS[argv_name])
+        summary = harness.summary_text
+        assert "patch bump" in summary
+        assert "update-type '<empty>'" in summary
+        assert "derived=yes" in summary
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_populated_update_type_never_consults_the_deriver(self, tmp_path: Path, argv_name: str) -> None:
+        """Decision 100: the managed primitive wins, so a populated MAJOR is denied even though
+        the version evidence below it would derive patch."""
+        harness = _harness(
+            tmp_path,
+            _MERGE_FORBIDDEN,
+            UPDATE_TYPE=MAJOR_UPDATE,
+            DEPENDENCY_NAMES="sympy",
+            PREVIOUS_VERSION="1.0.0",
+            NEW_VERSION="1.0.1",
+        )
+        result = harness.run(ARGVS[argv_name])
+        assert harness.calls == []
+        assert result.returncode == 0
+        assert f"update-type '{MAJOR_UPDATE}' is not patch or minor (derived=no)" in harness.summary_text
+        assert "derived class" not in harness.summary_text, "branch 2 must not run when the primitive spoke"
+
+
+class TestDeriverDiagnosticIsSurfaced:
+    """REGRESSION (code-review round 1, Medium): the deriver fails closed and still exits 0, so its
+    stderr is the ONLY signal distinguishing a crashed derivation from one that legitimately
+    returned unknown. Discarding it left that case invisible in a file whose header cites
+    Decision 155 observability."""
+
+    @staticmethod
+    def _delegate_copy_with_stub_deriver(tmp_path: Path, deriver_body: str) -> Path:
+        """A copy of the real delegate beside a stub deriver, so `dirname $0` resolves to the stub."""
+        ci_dir = tmp_path / "scripts" / "ci"
+        ci_dir.mkdir(parents=True, exist_ok=True)
+        delegate = ci_dir / "dependabot_auto_merge.sh"
+        delegate.write_text(SCRIPT.read_text(encoding="utf-8"), encoding="utf-8")
+        (ci_dir / "dependabot_semver_class.py").write_text(deriver_body, encoding="utf-8")
+        return delegate
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_a_crashing_deriver_surfaces_its_stderr_and_still_denies(self, tmp_path: Path, argv_name: str) -> None:
+        stub = "import sys\nsys.stderr.write('derivation failed (RuntimeError()); failing closed\\n')\nprint('unknown')\n"
+        delegate = self._delegate_copy_with_stub_deriver(tmp_path, stub)
+        harness = _harness(tmp_path, _MERGE_FORBIDDEN, UPDATE_TYPE="", DEPENDENCY_NAMES="sympy")
+        result = harness.run(ARGVS[argv_name], script=delegate)
+
+        assert harness.calls == [], "a crashed derivation must never arm auto-merge"
+        assert result.returncode == 0
+        assert "semver deriver diagnostic" in result.stdout, result.stdout
+        assert "failing closed" in result.stdout
+        assert "semver deriver diagnostic" in harness.summary_text
+        assert "derived class 'unknown'" in harness.summary_text
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_a_quiet_deriver_emits_no_diagnostic_line(self, tmp_path: Path, argv_name: str) -> None:
+        """Control: the diagnostic line appears only when the deriver actually wrote to stderr."""
+        delegate = self._delegate_copy_with_stub_deriver(tmp_path, "print('patch')\n")
+        harness = _harness(tmp_path, _MERGE_OK, UPDATE_TYPE="", DEPENDENCY_NAMES="sympy")
+        result = harness.run(ARGVS[argv_name], script=delegate)
+
+        assert harness.calls == [("merge", EXPECTED_MERGE_ARGV)]
+        assert result.returncode == 0
+        assert "semver deriver diagnostic" not in result.stdout

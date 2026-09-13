@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scripts.checks._scaffolding import (
+    _dist_to_import_name,
     _excluded_and_absent,
     _excluded_heavy_import_names,
     _match_changed_test_path,
@@ -18,6 +19,7 @@ from scripts.checks._scaffolding import (
 from tests.fixtures.validate_module import _validate
 
 run_pytest_diff = _validate.run_pytest_diff
+ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def _collect_error_block(path: str, missing_module: str) -> str:
@@ -43,14 +45,18 @@ class TestExcludedHeavyDeps:
     """Excluded-heavy import-name set derivation from the REAL requirements files (rec-2485).
 
     Option-A coupling invariant (VTS-16 / dependency-declarations-ci-config): the set is
-    derived as (requirements.txt distributions) - (requirements-fast.txt distributions), so
-    moving ruff/mypy/pytest* into requirements-dev.txt does not affect it -- those tools stay
-    declared in requirements-fast.txt too, and requirements-dev.txt is not a term in the
-    derivation at all. The one exception is pytest-cov: it was requirements.txt-only (never
-    in requirements-fast.txt) and moved to requirements-dev.txt, so it drops out of "full" and
-    therefore out of the excluded set. This single-member pytest_cov delta is intended and
-    harmless -- pytest-cov is a coverage-report tool, not a heavy runtime import any test
-    module needs deferred at collection time, and every heavy runtime dep stays excluded.
+    derived as (requirements.in distributions) - (requirements-fast.txt distributions), so
+    moving ruff/mypy/pytest* into requirements-dev.in does not affect it -- those tools stay
+    declared in requirements-fast.txt too, and requirements-dev.in is not a term in the
+    derivation at all. The one exception is pytest-cov: it was prod-only (never in
+    requirements-fast.txt) and moved to the dev floors, so it drops out of "full" and therefore
+    out of the excluded set. This single-member pytest_cov delta is intended and harmless --
+    pytest-cov is a coverage-report tool, not a heavy runtime import any test module needs
+    deferred at collection time, and every heavy runtime dep stays excluded.
+
+    The `full` term is the DECLARED floor file, never the compiled closure: sourcing it from
+    requirements.txt would admit every transitive pin into the excluded set (see
+    test_transitive_only_pin_never_enters_the_excluded_set).
     """
 
     def test_heavy_deps_in_excluded_set(self) -> None:
@@ -63,7 +69,7 @@ class TestExcludedHeavyDeps:
             "ulid",
             "radon",
         ):
-            assert name in excluded, f"{name} should be excluded (heavy, requirements.txt-only)"
+            assert name in excluded, f"{name} should be excluded (heavy, requirements.in-only)"
 
     def test_fast_tier_deps_not_in_excluded_set(self) -> None:
         excluded = _excluded_heavy_import_names()
@@ -72,12 +78,36 @@ class TestExcludedHeavyDeps:
 
     def test_moved_dev_tools_not_in_excluded_set_post_move(self) -> None:
         """Regression (VTS-16 / Option A): pytest/ruff/mypy moved from requirements.txt to
-        requirements-dev.txt must stay OUT of the excluded set -- they remain declared in
+        the dev floors must stay OUT of the excluded set -- they remain declared in
         requirements-fast.txt, which is the only thing that keeps a name out of the
-        (requirements.txt - requirements-fast.txt) difference."""
+        (requirements.in - requirements-fast.txt) difference."""
         excluded = _excluded_heavy_import_names()
         for name in ("pytest", "ruff", "mypy"):
-            assert name not in excluded, f"{name} moved to requirements-dev.txt but must still not be excluded"
+            assert name not in excluded, f"{name} moved to the dev floors but must still not be excluded"
+
+    def test_transitive_only_pin_never_enters_the_excluded_set(self) -> None:
+        """Regression: the derivation reads requirements.in (floors), never requirements.txt (the
+        compiled closure). A distribution that exists ONLY as a transitive pin in the compiled
+        output -- here `certifi`, pulled in by requests/httpx and declared by nothing -- must stay
+        out of the excluded set, or affected-set selection stops being strictly additive
+        (Decision 135)."""
+        compiled = _parse_requirement_dist_names(ROOT / "requirements.txt")
+        declared = _parse_requirement_dist_names(ROOT / "requirements.in")
+        transitive_only = compiled - declared
+        assert "certifi" in transitive_only, "fixture assumption: certifi is a transitive-only pin"
+        excluded = _excluded_heavy_import_names()
+        leaked = sorted(name for name in transitive_only if _dist_to_import_name(name) in excluded)
+        assert not leaked, f"transitive-only pins leaked into the excluded-heavy set: {leaked}"
+
+    def test_excluded_set_is_derived_from_the_declared_floor_file(self) -> None:
+        """The set equals (requirements.in - requirements-fast.txt) exactly -- pinning the terms,
+        not just their consequences, so a repoint at either term is caught here."""
+        expected = {
+            _dist_to_import_name(dist)
+            for dist in _parse_requirement_dist_names(ROOT / "requirements.in")
+            - _parse_requirement_dist_names(ROOT / "requirements-fast.txt")
+        }
+        assert _excluded_heavy_import_names() == expected
 
     def test_parse_requirement_dist_names_missing_file_returns_empty_set(self, tmp_path: Path) -> None:
         assert _parse_requirement_dist_names(tmp_path / "nonexistent-requirements.txt") == set()

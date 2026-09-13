@@ -205,6 +205,15 @@ class TestRequiredMinorPinnedToSources:
         pyproject = tomllib.loads((_WRAPPER_SRC.parent.parent / "pyproject.toml").read_text(encoding="utf-8"))
         assert pyproject["tool"]["mypy"]["python_version"] == _required_minor()
 
+    def test_matches_dot_python_version(self) -> None:
+        """.python-version is what dependabot resolves the pip-compile closure under, so a closure
+        compiled against a different minor would not match the interpreter CI installs it on."""
+        declared = (_WRAPPER_SRC.parent.parent / ".python-version").read_text(encoding="utf-8").strip()
+        minor = _required_minor()
+        assert declared == minor or declared.startswith(f"{minor}."), (
+            f".python-version {declared!r} does not name REQUIRED_PYTHON_MINOR {minor!r}"
+        )
+
     def test_matches_every_setup_python_pin_in_workflows(self) -> None:
         workflows = sorted((_WRAPPER_SRC.parent.parent / ".github" / "workflows").glob("*.yml"))
         assert workflows, "no workflow files found"

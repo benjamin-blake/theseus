@@ -1,11 +1,18 @@
-"""Sync the duckdb floor line in requirements.txt from the SSOT (config/lambda/ducklake/version.yaml).
+"""Sync the duckdb floor line in requirements.in from the SSOT (config/lambda/ducklake/version.yaml).
 
 Usage:
   bin/venv-python -m scripts.sync.ducklake_version          # rewrite mode (idempotent)
   bin/venv-python -m scripts.sync.ducklake_version --check  # exit non-zero if drift detected
 
-The duckdb line in requirements.txt is DERIVED from the SSOT version. This script keeps it in sync.
+The duckdb line in requirements.in is DERIVED from the SSOT version. This script keeps it in sync.
 The floor pattern (>=<pin>) is preserved (not an exact pin) per human decision 2026-06-25.
+
+Bump cascade (Decision 99) -- all three steps, in order:
+  1. edit config/lambda/ducklake/version.yaml (the SSOT)
+  2. bin/venv-python -m scripts.sync.ducklake_version        # moves the requirements.in FLOOR
+  3. pip-compile --strip-extras --output-file=requirements.txt requirements.in   # moves the PIN
+Step 3 is not optional: the floor lives in the .in input, the pin lives in the compiled output,
+and validate_lockfile_sync fails a floor raised above its pin.
 """
 
 from __future__ import annotations
@@ -15,7 +22,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
-REQUIREMENTS_PATH = ROOT / "requirements.txt"
+REQUIREMENTS_PATH = ROOT / "requirements.in"
 
 
 def _get_pinned_version() -> str:
@@ -49,7 +56,7 @@ _DUCKDB_LINE_RE = re.compile(r"^duckdb[><=!]+[^\s#]*.*$", re.MULTILINE)
 
 
 def sync(check_only: bool = False, requirements_path: Path | None = None) -> bool:
-    """Sync the duckdb floor in requirements.txt.
+    """Sync the duckdb floor in requirements.in.
 
     Returns True if the file is already in sync (or was successfully rewritten).
     Returns False (and exits non-zero in --check mode) if drift is detected.
@@ -73,18 +80,18 @@ def sync(check_only: bool = False, requirements_path: Path | None = None) -> boo
     in_sync = existing_is_floor
 
     if in_sync:
-        print(f"sync_ducklake_version: requirements.txt is in sync (duckdb>={version}). No change.")
+        print(f"sync_ducklake_version: requirements.in is in sync (duckdb>={version}). No change.")
         return True
 
     if check_only:
         if match:
             print(
-                f"sync_ducklake_version: DRIFT DETECTED -- requirements.txt has {existing_line!r}, "
+                f"sync_ducklake_version: DRIFT DETECTED -- requirements.in has {existing_line!r}, "
                 f"expected floor duckdb>={version}. Run without --check to fix."
             )
         else:
             print(
-                f"sync_ducklake_version: DRIFT DETECTED -- no duckdb line found in requirements.txt. "
+                f"sync_ducklake_version: DRIFT DETECTED -- no duckdb line found in requirements.in. "
                 f"Expected floor duckdb>={version}."
             )
         return False
@@ -103,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="Exit non-zero if requirements.txt drifts from the SSOT")
+    parser.add_argument("--check", action="store_true", help="Exit non-zero if requirements.in drifts from the SSOT")
     args = parser.parse_args(argv)
 
     ok = sync(check_only=args.check)

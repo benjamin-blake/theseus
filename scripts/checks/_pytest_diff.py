@@ -345,10 +345,12 @@ def _dist_to_import_name(dist_name: str) -> str:
 def _excluded_heavy_import_names() -> set[str]:
     """Import names deliberately excluded from the fast tier.
 
-    Derived at runtime as (requirements.txt distributions) - (requirements-fast.txt
-    distributions), no hard-coded dep list (rec-2485 acceptance).
+    Derived at runtime as (requirements.in distributions) - (requirements-fast.txt
+    distributions), no hard-coded dep list (rec-2485 acceptance). The `full` term is the DECLARED
+    floor set, never the compiled closure -- every transitive pin would otherwise join the excluded
+    set and defer far more than Decision 135's strictly-additive selection intends.
     """
-    full = _parse_requirement_dist_names(_common.ROOT / "requirements.txt")
+    full = _parse_requirement_dist_names(_common.ROOT / "requirements.in")
     fast = _parse_requirement_dist_names(_common.ROOT / "requirements-fast.txt")
     return {_dist_to_import_name(dist) for dist in full - fast}
 

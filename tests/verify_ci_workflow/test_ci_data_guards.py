@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from unittest.mock import patch
 
@@ -22,6 +23,10 @@ from scripts.verify_ci_workflow import (
 # Shared fixture data for the five guards below
 # ---------------------------------------------------------------------------
 
+_COMPILED_CACHE_KEY = (
+    "pip-${{ hashFiles('requirements.in', 'requirements-dev.in', 'requirements.txt', 'requirements-dev.txt') }}"
+)
+
 _VALID_CI_DATA: dict[str, Any] = {
     "jobs": {
         "pr-validate": {
@@ -38,11 +43,11 @@ _VALID_CI_DATA: dict[str, Any] = {
             "runs-on": "ubuntu-latest",
             "steps": [
                 {"uses": "actions/checkout@v4", "with": {"fetch-depth": 2}},
-                {"uses": "actions/cache@v6", "with": {"key": "pip-${{ hashFiles('requirements.lock') }}"}},
                 {
-                    "run": "pip install -c requirements.lock -r requirements.txt\n"
-                    "pip install -c requirements.lock -r requirements-dev.txt"
+                    "uses": "actions/cache@v6",
+                    "with": {"key": _COMPILED_CACHE_KEY},
                 },
+                {"run": "pip install -r requirements.txt\npip install -r requirements-dev.txt"},
                 {"run": "bin/venv-python -m scripts.validate"},
             ],
         },
@@ -53,15 +58,15 @@ _VALID_CI_DATA: dict[str, Any] = {
     }
 }
 
-_VALID_CANARY_LOCK_DATA = {
+_VALID_CANARY_COMPILED_DATA = {
     "jobs": {
         "canary": {
             "steps": [
-                {"uses": "actions/cache@v6", "with": {"key": "pip-${{ hashFiles('requirements.lock') }}"}},
                 {
-                    "run": "pip install -c requirements.lock -r requirements.txt\n"
-                    "pip install -c requirements.lock -r requirements-dev.txt"
+                    "uses": "actions/cache@v6",
+                    "with": {"key": _COMPILED_CACHE_KEY},
                 },
+                {"run": "pip install -r requirements.txt\npip install -r requirements-dev.txt"},
             ]
         }
     }
@@ -69,24 +74,27 @@ _VALID_CANARY_LOCK_DATA = {
 
 
 class TestFullTierRuntimeLock:
-    def test_accepts_lock_constrained_jobs(self) -> None:
+    def test_accepts_compiled_output_jobs(self) -> None:
         with patch("scripts.verify_ci_workflow._load") as mock_load:
-            mock_load.side_effect = [_VALID_CI_DATA, _VALID_CANARY_LOCK_DATA]
+            mock_load.side_effect = [_VALID_CI_DATA, _VALID_CANARY_COMPILED_DATA]
             _check_full_tier_runtime_lock()
 
-    @pytest.mark.parametrize("missing", ["constraint", "cache"])
-    def test_rejects_missing_main_validate_lock_contract(self, missing: str) -> None:
+    @pytest.mark.parametrize(
+        ("missing", "expected"),
+        [("install", "does not install compiled requirements-dev.txt"), ("cache", "cache key omits requirements.txt")],
+    )
+    def test_rejects_missing_main_validate_compiled_contract(self, missing: str, expected: str) -> None:
         import copy
 
         ci_data = copy.deepcopy(_VALID_CI_DATA)
         steps = ci_data["jobs"]["main-validate"]["steps"]
-        if missing == "constraint":
-            steps[2]["run"] = "pip install -r requirements.txt\npip install -c requirements.lock -r requirements-dev.txt"
+        if missing == "install":
+            steps[2]["run"] = "pip install -r requirements.txt"
         else:
             steps[1]["with"]["key"] = "pip-runtime"
         with patch("scripts.verify_ci_workflow._load") as mock_load:
-            mock_load.side_effect = [ci_data, _VALID_CANARY_LOCK_DATA]
-            with pytest.raises(AssertionError, match="requirements.lock"):
+            mock_load.side_effect = [ci_data, _VALID_CANARY_COMPILED_DATA]
+            with pytest.raises(AssertionError, match=re.escape(expected)):
                 _check_full_tier_runtime_lock()
 
 
@@ -133,15 +141,13 @@ class TestCheckJobsAndFlagsFailPath:
             with pytest.raises(AssertionError, match="--pre"):
                 _check_jobs_and_flags()
 
-    def test_fails_when_main_validate_lock_constraint_is_missing(self) -> None:
+    def test_fails_when_main_validate_compiled_install_is_missing(self) -> None:
         import copy
 
         data = copy.deepcopy(_VALID_CI_DATA)
-        data["jobs"]["main-validate"]["steps"][2]["run"] = (
-            "pip install -r requirements.txt\npip install -c requirements.lock -r requirements-dev.txt"
-        )
+        data["jobs"]["main-validate"]["steps"][2]["run"] = "pip install -r requirements.txt"
         with patch("scripts.verify_ci_workflow._load", return_value=data):
-            with pytest.raises(AssertionError, match="requirements.lock"):
+            with pytest.raises(AssertionError, match="requirements-dev.txt"):
                 _check_jobs_and_flags()
 
 

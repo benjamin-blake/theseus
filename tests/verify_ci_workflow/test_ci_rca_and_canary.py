@@ -23,6 +23,10 @@ _REAL_RCA_IF = (
     "&& github.event.workflow_run.head_branch == github.event.repository.default_branch)"
 )
 
+_COMPILED_CACHE_KEY = (
+    "pip-${{ hashFiles('requirements.in', 'requirements-dev.in', 'requirements.txt', 'requirements-dev.txt') }}"
+)
+
 _REQUIRED_WORKFLOWS = ["CI", "Main Canary", "terraform-apply-sandbox", "rec-autoclose", "deploy-ducklake-lambdas"]
 
 _REAL_RCA_DATA = {
@@ -156,11 +160,11 @@ _VALID_CANARY_DATA: dict[str, Any] = {
         "canary": {
             "runs-on": "ubuntu-latest",
             "steps": [
-                {"uses": "actions/cache@v6", "with": {"key": "pip-${{ hashFiles('requirements.lock') }}"}},
                 {
-                    "run": "pip install -c requirements.lock -r requirements.txt\n"
-                    "pip install -c requirements.lock -r requirements-dev.txt"
+                    "uses": "actions/cache@v6",
+                    "with": {"key": _COMPILED_CACHE_KEY},
                 },
+                {"run": "pip install -r requirements.txt\npip install -r requirements-dev.txt"},
                 {"run": "bin/venv-python -m scripts.validate"},
             ],
         }

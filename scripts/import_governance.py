@@ -3,7 +3,7 @@
 
 Three checks, each callable as a function or via __main__ CLI:
   run_import_contracts()          -- run import-linter against .importlinter; non-zero exit on violation
-  check_lockfile_sync()           -- verify requirements.lock pins every top-level requirements.txt package
+  check_lockfile_sync()           -- verify the compiled requirements*.txt outputs pin every requirements*.in floor
   evaluate_bazel_revisit_trigger() -- evaluate Decision 80 cl.4 predicate; advisory only, never auto-acts
 
 CLI flags (mutually exclusive):
@@ -19,15 +19,25 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.version import InvalidVersion, Version
 
 ROOT = Path(__file__).parent.parent
+_REQUIREMENTS_IN = ROOT / "requirements.in"
+_REQUIREMENTS_DEV_IN = ROOT / "requirements-dev.in"
 _REQUIREMENTS_TXT = ROOT / "requirements.txt"
-_REQUIREMENTS_DEV = ROOT / "requirements-dev.txt"
-_REQUIREMENTS_LOCK = ROOT / "requirements.lock"
+_REQUIREMENTS_DEV_TXT = ROOT / "requirements-dev.txt"
+# Declaration sources first, compiled outputs second -- the order check_lockfile_sync's public
+# `paths` parameter takes, so callers never have to know which half is which.
+_LOCKFILE_PATHS: tuple[Path, ...] = (
+    _REQUIREMENTS_IN,
+    _REQUIREMENTS_DEV_IN,
+    _REQUIREMENTS_TXT,
+    _REQUIREMENTS_DEV_TXT,
+)
 # pip's requirement-file comment rule (the value of pip._internal.req.req_file.COMMENT_RE, copied rather than
 # imported from a private API): '#' starts a comment only at line start or after whitespace, so `pkg>=1.0#x`
 # stays part of the requirement exactly as pip sees it.
@@ -57,80 +67,137 @@ def run_import_contracts() -> tuple[bool, str]:
     return result.returncode == 0, output
 
 
-def check_lockfile_sync() -> tuple[bool, str]:
-    """Verify requirements.lock pins every top-level package declared in requirements.txt.
+def parse_declared_requirements(
+    paths: Sequence[Path] | None = None,
+) -> tuple[dict[str, Requirement], list[str]]:
+    """Parse dependency FLOORS from the pip-compile .in inputs.
 
-    "Top-level" is every parseable non-comment, non-empty, non-option line.
+    A declaration is every parseable non-comment, non-empty, non-option line -- the leading
+    `-c requirements.txt` constraint line of requirements-dev.in is an option and is skipped.
 
-    Returns (in_sync, message). Source-identity of requirements.txt is recorded
-    in the message so callers can surface it in audit trails.
+    Returns (declarations by normalized name, unparseable raw lines).
     """
-    if not _REQUIREMENTS_TXT.exists():
-        return False, f"requirements.txt not found at {_REQUIREMENTS_TXT}"
-    if not _REQUIREMENTS_LOCK.exists():
+    declaration_paths = list(paths) if paths is not None else list(_LOCKFILE_PATHS[:2])
+    declared: dict[str, Requirement] = {}
+    unparseable: list[str] = []
+    for path in declaration_paths:
+        # A missing input is SKIPPED here, never raised: check_lockfile_sync hard-fails on it
+        # before ever calling this (see its `absent` guard), and the registered wrapper calls this
+        # helper for its accounting count on exactly that failure path -- raising would abort the
+        # check before it could append to `failed`.
+        if not path.exists():
+            continue
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = _REQUIREMENT_COMMENT_RE.sub("", raw_line).strip()
+            if not line or line.startswith("-"):
+                continue
+            try:
+                requirement = Requirement(line)
+            except InvalidRequirement:
+                unparseable.append(raw_line.strip())
+                continue
+            declared[_normalize_pkg(requirement.name)] = requirement
+    return declared, unparseable
+
+
+def count_declared_requirements() -> int:
+    """Number of floors the live .in inputs declare -- the unit validate_lockfile_sync reports.
+
+    Never raises on a missing input: returns the count of what is actually readable (0 when no .in
+    input exists), so the registered check can still report and append its failure.
+    """
+    return len(parse_declared_requirements()[0])
+
+
+def check_lockfile_sync(paths: Sequence[Path] | None = None) -> tuple[bool, str]:
+    """Verify the compiled pip-compile outputs pin every floor the .in inputs declare.
+
+    `paths` is (requirements.in, requirements-dev.in, requirements.txt, requirements-dev.txt) and
+    defaults to the live repo files. ALL FOUR ARE REQUIRED -- a missing one is a hard failure,
+    because the `-c requirements.txt` constraint form makes both compiled outputs committed
+    artifacts that are always present.
+
+    Returns (in_sync, message). The declaration and pin sources are named in the message so
+    callers can surface them in audit trails.
+    """
+    resolved = tuple(paths) if paths is not None else _LOCKFILE_PATHS
+    if len(resolved) != 4:
         return False, (
-            f"requirements.lock not found at {_REQUIREMENTS_LOCK}; "
-            "regenerate with: pip-compile requirements.txt -o requirements.lock"
+            "check_lockfile_sync expects 4 paths (requirements.in, requirements-dev.in, "
+            f"requirements.txt, requirements-dev.txt); got {len(resolved)}"
         )
 
-    requirement_files = [_REQUIREMENTS_TXT]
-    if _REQUIREMENTS_DEV.exists():
-        requirement_files.append(_REQUIREMENTS_DEV)
-    requirement_texts = [path.read_text(encoding="utf-8") for path in requirement_files]
-    req_text = "\n".join(requirement_texts)
-    top_level: dict[str, Requirement] = {}
-    unparseable: list[str] = []
-    for raw_line in req_text.splitlines():
-        line = _REQUIREMENT_COMMENT_RE.sub("", raw_line).strip()
-        if not line or line.startswith("-"):
-            continue
-        try:
-            requirement = Requirement(line)
-        except InvalidRequirement:
-            unparseable.append(raw_line.strip())
-            continue
-        top_level[_normalize_pkg(requirement.name)] = requirement
+    absent = [str(path) for path in resolved if not path.exists()]
+    if absent:
+        return False, (
+            f"requirements files not found: {', '.join(absent)}; regenerate with: "
+            "pip-compile --strip-extras --output-file=requirements.txt requirements.in"
+        )
 
-    req_identity = f"{len(req_text)} bytes, {len(top_level)} top-level packages across {len(requirement_files)} files"
+    declaration_paths, output_paths = resolved[:2], resolved[2:]
+    declared, unparseable = parse_declared_requirements(declaration_paths)
+    identity = (
+        f"floors from {', '.join(path.name for path in declaration_paths)}; "
+        f"pins from {', '.join(path.name for path in output_paths)}"
+    )
     if unparseable:
         return False, (
             "requirements declarations cannot be parsed (the gate cannot check what it cannot parse): "
-            f"{', '.join(repr(entry) for entry in unparseable)} (requirements.txt: {req_identity})"
+            f"{', '.join(repr(entry) for entry in unparseable)} ({identity})"
         )
 
-    pinned, extras_pins = _parse_lock_pins(_REQUIREMENTS_LOCK.read_text(encoding="utf-8"))
+    per_output: list[dict[str, Version]] = []
+    pinned: dict[str, Version] = {}
+    extras_pins: list[str] = []
+    for path in output_paths:
+        output_pins, output_extras = _parse_compiled_pins(path.read_text(encoding="utf-8"))
+        per_output.append(output_pins)
+        extras_pins.extend(output_extras)
+        pinned.update(output_pins)
 
-    # CI consumes the lock as a pip constraints file (pip install -c requirements.lock ...), and
-    # pip hard-rejects constraints carrying extras ("ERROR: Constraints cannot have extras") -- a
-    # lock regenerated without pip-compile's --strip-extras breaks every lock-constrained install.
+    # CI installs the compiled outputs directly, and pip hard-rejects extras in a constraints
+    # file -- an output regenerated without pip-compile's --strip-extras breaks every install.
     if extras_pins:
         return False, (
-            f"requirements.lock pins carry extras (pip rejects extras in constraints files): "
-            f"{', '.join(extras_pins)}; regenerate with pip-compile --strip-extras"
+            f"compiled pins carry extras (pip rejects extras in constraints files): "
+            f"{', '.join(extras_pins)}; regenerate with pip-compile --strip-extras ({identity})"
         )
 
-    missing = [pkg for pkg in top_level if pkg not in pinned]
+    # Cross-output coherence replaces the coherence the retired single-resolve lockfile provided:
+    # anyio is reached by mcp on the prod side and by httpx/openai on the dev side, so regenerating
+    # only one output would silently pin one distribution at two versions.
+    shared = per_output[0].keys() & per_output[1].keys()
+    disagreements = sorted(
+        f"{name} is {per_output[0][name]} in {output_paths[0].name} but {per_output[1][name]} in {output_paths[1].name}"
+        for name in shared
+        if per_output[0][name] != per_output[1][name]
+    )
+    if disagreements:
+        return False, (
+            f"compiled outputs disagree across outputs: {'; '.join(disagreements)}; "
+            f"recompile requirements-dev.txt under -c requirements.txt ({identity})"
+        )
+
+    missing = [pkg for pkg in declared if pkg not in pinned]
     if missing:
-        return False, f"requirements.lock missing pins for: {', '.join(missing)} (requirements.txt: {req_identity})"
+        return False, f"compiled outputs missing pins for: {', '.join(missing)} ({identity})"
 
     incompatible = [
         f"{requirement.name}{requirement.specifier} rejects {pinned[name]}"
-        for name, requirement in top_level.items()
+        for name, requirement in declared.items()
         if requirement.specifier and pinned[name] not in requirement.specifier
     ]
     if incompatible:
-        return False, f"requirements.lock incompatible pins: {', '.join(incompatible)} (requirements.txt: {req_identity})"
+        return False, f"compiled outputs incompatible pins: {', '.join(incompatible)} ({identity})"
 
-    return True, (
-        f"requirements.lock pins all {len(top_level)} top-level packages compatibly (requirements.txt: {req_identity})"
-    )
+    return True, f"pins all {len(declared)} declared floors compatibly ({identity})"
 
 
-def _parse_lock_pins(lock_text: str) -> tuple[dict[str, Version], list[str]]:
-    """Parse lock lines into (exact pins by normalized name, extras-carrying pin strings)."""
+def _parse_compiled_pins(compiled_text: str) -> tuple[dict[str, Version], list[str]]:
+    """Parse compiled-output lines into (exact pins by normalized name, extras-carrying pin strings)."""
     pinned: dict[str, Version] = {}
     extras_pins: list[str] = []
-    for raw_line in lock_text.splitlines():
+    for raw_line in compiled_text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -246,7 +313,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Import governance checks (Decision 80 / T3.11)")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--check-contracts", action="store_true", help="Run import-linter contracts (exit 0=pass)")
-    group.add_argument("--check-lockfile", action="store_true", help="Verify requirements.lock sync (exit 0=pass)")
+    group.add_argument(
+        "--check-lockfile", action="store_true", help="Verify compiled-output sync with the .in floors (exit 0=pass)"
+    )
     group.add_argument(
         "--revisit-trigger",
         action="store_true",
