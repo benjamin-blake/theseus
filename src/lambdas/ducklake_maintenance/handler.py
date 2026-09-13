@@ -32,11 +32,16 @@ import re
 import time
 from typing import Any
 
-from src.common import catalog_dr
+from src.common import catalog_dr, ducklake_control_health
 from src.common import ducklake_maintenance as maint
 from src.common import ducklake_runtime as rt
 
 EXTENSION_DIRECTORY = os.environ.get("DUCKLAKE_EXTENSION_DIRECTORY", rt.LAMBDA_EXTENSION_DIRECTORY)
+# T2.26: control_health is read-mostly (asserts invariants, never mutates), so -- unlike the
+# production-destructive/operational actions below, which all REQUIRE an explicit event data_path
+# (no-arg invokes refused, Decision 84/81) -- it may fall back to an env-pinned production default
+# so a scheduled EventBridge target's static input (or a manual smoke invoke) need not repeat it.
+DATA_PATH = os.environ.get("DUCKLAKE_DATA_PATH")
 
 # A SQL identifier (meta-schema name) -- guards the few f-string-interpolated DDL sites below.
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -433,6 +438,40 @@ def action_merge_ops(event: dict[str, Any], _con: Any) -> dict[str, Any]:
         con.close()
 
 
+def action_control_health(event: dict[str, Any], _con: Any) -> dict[str, Any]:
+    """OPERATIONAL: assert control-class table invariants (row count, counter floor, live-file
+    ceiling) -- the periodic health assertion docs/contracts/ops_entity_counters.yaml's dq_scope
+    exemption names as its substitute for DQ-runner coverage (T2.26).
+
+    Unlike the other operational actions above, `data_path` falls back to the env-pinned
+    DATA_PATH (see its module-level comment) since this action only reads and never mutates.
+
+    Expected event: {"action": "control_health", "meta_schema": "ducklake_ops"} (data_path
+    optional when DUCKLAKE_DATA_PATH is set on the function).
+    """
+    data_path = event.get("data_path") or DATA_PATH
+    if not isinstance(data_path, str) or not data_path.startswith("s3://"):
+        raise rt.DuckLakeRuntimeError(
+            "control_health requires a 'data_path' s3:// URI (the production DuckLake path) -- "
+            "pass it explicitly, or set DUCKLAKE_DATA_PATH on the function"
+        )
+    raw_schema = event.get("meta_schema")
+    if not raw_schema:
+        raise rt.DuckLakeRuntimeError("control_health requires an explicit 'meta_schema' (e.g. 'ducklake_ops')")
+    meta_schema = _require_identifier(raw_schema)
+
+    con = rt.open_connection(
+        dsn=rt.fetch_dsn(), data_path=data_path, meta_schema=meta_schema, extension_directory=EXTENSION_DIRECTORY
+    )
+    try:
+        result = ducklake_control_health.control_health(
+            con, metric_sink=lambda name, value: _emit_maintenance_metric(name, value)
+        )
+    finally:
+        con.close()
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -444,6 +483,7 @@ _ACTIONS: dict[str, Any] = {
     "catalog_stats": action_catalog_stats,
     "reconcile_columns": action_reconcile_columns,
     "clone_catalog": action_clone_catalog,
+    "control_health": action_control_health,
 }
 
 

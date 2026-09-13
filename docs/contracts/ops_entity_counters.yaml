@@ -1,0 +1,134 @@
+---
+# Class A data contract for ops_entity_counters (DuckLake control-class table).
+# T2.26 control-table-class-and-counter-conformance: the writer-owned entity-id allocation
+# counter (Decision 84 I-2), registered and partitioned for the first time -- previously an
+# ungoverned ad-hoc table created only via a bare CREATE TABLE IF NOT EXISTS, absent from every
+# table-driven governance surface (3,418 unpartitioned live files for ONE row, measured
+# 2026-09-12).
+#
+# table_class: control -- the third write mode alongside scd2/append_only
+# (docs/contracts/data-modeling-standard.yaml write_modes.control): ONE physical table, no
+# history/current SCD2 pair, partitioned on its own key column (counter_name). Writer-internal:
+# read_boundary NONE, write_boundary WRITER_INTERNAL -- never reachable through the generic ops
+# read/write verbs. query_ops / named_read / read_ops_current / read_ops_history refuse it at the
+# reader boundary (src/lambdas/ducklake_reader/handler.py's _require_ops_table call sites and
+# src/common/ducklake_reads.py's named_read); write_ops / file_ops / update_ops refuse it via
+# src/common/ducklake_scd2_schema.py resolve_table_spec's directed raise on write_mode=control. It
+# is provisioned only via create_ops_tables (src/common/ducklake_tables.py create_control_table)
+# and mutated only by the writer's own in-transaction allocate/advance calls
+# (src/common/ducklake_writes.py _allocate_entity_id / _advance_entity_counter) -- Decision 84 I-2
+# is PRESERVED: allocation stays writer-owned, inside the write transaction; only the counter
+# table's SHAPE, GOVERNANCE and EXPOSURE change.
+#
+# dq_scope: EXEMPT. The DQ runner (scripts/data_quality_runner.py) has no reachable read path to
+# this table (read_boundary: none), so DQ coverage is structurally impossible here, not merely
+# deferred. The health binding that substitutes for it is the ducklake_maintenance control_health
+# verb (scheduled every 6h, terraform/personal/ducklake_maintenance.tf), which asserts three
+# invariants directly against the live catalog as FAILING conditions (Decision 55, never a
+# report): row count equals the writer-keyspace table count, each counter's current_value is at or
+# above the max allocated id in its owning history table, and the live-file count stays below
+# health.live_file_ceiling: 200 (src/common/ducklake_maintenance.py CONTROL_LIVE_FILE_CEILING -- a
+# Python guardrail constant, mirroring every other maintenance threshold in that module, e.g.
+# SNAPSHOT_RETAIN_DAYS / GC_BREAKER_FILE_FRACTION; not itself a schema-validated contract field,
+# since ContractGovernance -- scripts/contracts_schema.py -- is a closed field enumeration and that
+# module is out of this plan's scope). A violation emits the ControlTableInvariantViolation metric
+# and raises; the CloudWatch alarm mirrors the existing GC circuit-breaker alarm shape.
+contract:
+  id: ops_entity_counters
+  class: A
+  contract_version: 1
+  status: ratified
+  ratified_at: "2026-09-13"
+  ratified_via: >-
+    PLAN-control-table-class-and-counter-conformance (T2.26): decision-scout + plan-critique
+    review, merge to main. NO new numbered Decision (decision-entry.yaml routing_rule question 3
+    fails -- the control-class invariants are field_semantics-contract-owned, not Decision-owned).
+  description: >-
+    Class A schema contract for ops_entity_counters, the writer-owned entity-id allocation counter
+    (Decision 84 I-2). Governs the one control-class table in the platform today: a single
+    physical table (no history/current SCD2 pair) holding one row per writer-keyspace ops table
+    (currently ops_recommendations only), partitioned on counter_name. Writer-internal:
+    read_boundary none, write_boundary writer_internal -- see the file header comment above for
+    the full boundary-refusal wiring and the dq_scope health-binding substitute.
+  projects_to:
+    artifact: config/lambda/ducklake/field_semantics.yaml
+    table: ops_entity_counters
+    generator: scripts/schema_to_field_semantics.py
+fields:
+  counter_name:
+    type: str
+    iceberg_type: string
+    nullable: false
+    description: >-
+      The writer-keyspace ops table this counter row tracks (e.g. "ops_recommendations") -- the
+      table field_semantics' contract_table_ops declares entity_id_prefix + id_keyspace: writer
+      for. One row per such table; also this table's partition key and row identity.
+    semantics: >-
+      Natural key and row identity. NOT a merge_key in the SCD2 sense (there is no history/current
+      pair to merge into) -- it is also the partition column, asserted by control_health to
+      number exactly len(writer-keyspace tables) rows, never more, never fewer.
+    populated_by: >-
+      create_ops_tables' control-class branch does not itself insert a row; bootstrap_entity_counter
+      (src/common/ducklake_control_tables.py, invoked by create_ops_tables for a writer-keyspace
+      table) DELETE+INSERTs the row keyed by the owning table's own name.
+    dq_intent:
+      not_null:
+        enforced: true
+
+  current_value:
+    type: int
+    iceberg_type: long
+    nullable: false
+    description: >-
+      The highest entity id currently allocated (or advanced to) for the owning writer-keyspace
+      table's keyspace.
+    semantics: >-
+      Serialization point for entity-id allocation (Decision 84 I-2): every file_ops allocation
+      and every write_ops caller-keyed advance for the owning table UPDATEs this SAME row, which
+      is the write-write conflict DuckLake's OCC detects. No-op-free (Decision 55, T2.26): a
+      write_ops advance whose candidate id does not exceed the stored value issues NO UPDATE at
+      all -- an earlier unconditional GREATEST(...) UPDATE minted a new DuckLake data file on every
+      write regardless of whether the value actually moved, which is the bug this contract's
+      landing fixes (src/common/ducklake_writes.py _advance_entity_counter).
+    populated_by: >-
+      bootstrap_entity_counter seeds it from the owning history table's numeric max (one-time,
+      serial, create_ops_tables only -- never the allocation hot path). _allocate_entity_id
+      (file_ops) increments it in-transaction; _advance_entity_counter (write_ops/update_ops on a
+      caller-keyed id) advances it to the candidate only when the candidate exceeds the stored
+      value.
+    dq_intent:
+      not_null:
+        enforced: true
+
+governance:
+  table_class: control
+  partition_by: counter_name
+  write_path: >-
+    ducklake_writer Lambda create_ops_tables (control branch) -> src/common/ducklake_tables.py
+    create_control_table (one CREATE + one SET PARTITIONED BY, T2.26). Row-level mutation happens
+    ONLY inside the SAME transaction as a write_scd2/file_scd2 call on a writer-keyspace table
+    (src/common/ducklake_writes.py _allocate_entity_id / _advance_entity_counter) -- there is no
+    standalone write path, and the generic write_ops/file_ops/update_ops verbs refuse this table
+    (ducklake_scd2_schema.resolve_table_spec raises a directed error on write_mode=control).
+  id_allocator: >-
+    None -- this table has no writer-owned entity keyspace of its own (it IS the keyspace
+    bookkeeping for other tables). entity_id_prefix / id_keyspace are absent from its
+    field_semantics projection (scripts/schema_to_field_semantics.py omits them for the control
+    class).
+  merge_key: counter_name
+
+governance_notes: >-
+  dq_scope: exempt. See the file header comment for the full read_boundary/write_boundary/
+  dq_scope/health-binding rationale and health.live_file_ceiling: 200
+  (src/common/ducklake_maintenance.py CONTROL_LIVE_FILE_CEILING) -- reproduced here since
+  ContractGovernance (scripts/contracts_schema.py) has no read_boundary/write_boundary/dq_scope
+  slot and that module is out of this plan's scope. Decision 84 I-2 is PRESERVED by this
+  contract: allocation stays writer-owned, inside the write transaction; only the counter
+  table's SHAPE, GOVERNANCE and EXPOSURE change.
+audit_invariants:
+  - "Never reachable through query_ops, named_read, read_ops_current, or read_ops_history (read_boundary: none) -- registering this table for governance does not grant application read access (T2.26)."
+  - "Never reachable through write_ops, file_ops, or update_ops (write_boundary: writer_internal) -- ducklake_scd2_schema.resolve_table_spec raises a directed SchemaGateError on write_mode=control before any of those verbs could fall through into the SCD2 branch against current_table=None."
+  - "dq_scope: exempt -- there is no DQ-runner coverage for this table (no reachable read path); the ducklake_maintenance control_health verb (every 6h) is the health binding that substitutes for it, asserting row count, counter floor, and live-file ceiling as failing conditions (Decision 55), never a report."
+  - "Row count invariant: exactly one row per writer-keyspace ops table (id_keyspace: writer in field_semantics contract_table_ops) -- today ops_recommendations only."
+amendment_log: []
+previous_versions: []

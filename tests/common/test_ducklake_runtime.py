@@ -345,13 +345,16 @@ def test_build_merge_sql_ops_recommendations_uses_id_key():
     assert "id = s.id" not in curr_sql.split("WHEN MATCHED THEN UPDATE SET")[1].split("WHEN NOT MATCHED")[0]
 
 
-def test_ops_table_names_lists_all_six():
+def test_ops_table_names_lists_all_seven():
+    """T2.26: ops_entity_counters (control class) joins the registry -- refused at both
+    boundaries via resolve_table_spec's directed raise, never removed from ops_table_names()."""
     names = rt.ops_table_names()
     assert "ops_recommendations" in names
     assert "ops_decisions" in names
     assert "ops_priority_queue" in names
     assert "ops_smoke_events" in names
-    assert len(names) == 6
+    assert "ops_entity_counters" in names
+    assert len(names) == 7
 
 
 def test_split_smoke_merge_history_sql_byte_identical():

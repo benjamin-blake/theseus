@@ -7,6 +7,7 @@ Functions copied VERBATIM; _restore_drill_patches stays LOCAL to this module.
 
 from __future__ import annotations
 
+import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -16,6 +17,53 @@ from src.common.ducklake_runtime import DuckLakeRuntimeError
 from tests.fixtures.ducklake_maintenance_handler import _FULL_DSN, _response_body
 
 pytestmark = pytest.mark.unit
+
+
+# ---------------------------------------------------------------------------
+# _drop_meta_schema / subprocess_run (real bodies, psycopg2/subprocess mocked at the boundary)
+# ---------------------------------------------------------------------------
+
+
+def test_drop_meta_schema_drops_only():
+    mock_conn = MagicMock()
+    mock_cursor = mock_conn.cursor.return_value.__enter__.return_value
+    with (
+        patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
+        patch.object(h.rt, "libpq_conninfo", return_value="conninfo"),
+        patch("psycopg2.connect", return_value=mock_conn),
+    ):
+        result = h._drop_meta_schema("ducklake_ops")
+    assert result is True
+    executed_sql = [c.args[0] for c in mock_cursor.execute.call_args_list]
+    assert any(s.startswith("DROP SCHEMA IF EXISTS ducklake_ops") for s in executed_sql)
+    assert not any(s.startswith("CREATE SCHEMA") for s in executed_sql)
+    mock_conn.close.assert_called_once()
+
+
+def test_drop_meta_schema_recreate_also_creates():
+    mock_conn = MagicMock()
+    mock_cursor = mock_conn.cursor.return_value.__enter__.return_value
+    with (
+        patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
+        patch.object(h.rt, "libpq_conninfo", return_value="conninfo"),
+        patch("psycopg2.connect", return_value=mock_conn),
+    ):
+        h._drop_meta_schema("ducklake_ops", recreate=True)
+    executed_sql = [c.args[0] for c in mock_cursor.execute.call_args_list]
+    assert any(s.startswith("CREATE SCHEMA IF NOT EXISTS ducklake_ops") for s in executed_sql)
+
+
+def test_drop_meta_schema_rejects_bad_identifier():
+    with pytest.raises(DuckLakeRuntimeError, match="invalid SQL identifier"):
+        h._drop_meta_schema("bad-name;DROP")
+
+
+def test_subprocess_run_real_invocation():
+    """subprocess_run's own thin wrapper body (not the mocked injection point used elsewhere in
+    this file) -- a trivial real subprocess call."""
+    result = h.subprocess_run([sys.executable, "-c", "print('ok')"])
+    assert result.returncode == 0
+    assert "ok" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -374,3 +422,39 @@ def test_handler_catalog_stats_listed_in_actions():
     """catalog_stats must appear in the actions list returned on an unknown action."""
     body = _response_body(h.handler({"action": "bad"}))
     assert "catalog_stats" in body["actions"]
+
+
+# ---------------------------------------------------------------------------
+# action_reconcile_columns (non-destructive ALTER TABLE ADD COLUMN)
+# ---------------------------------------------------------------------------
+
+
+def test_action_reconcile_columns_requires_s3_data_path():
+    with pytest.raises(DuckLakeRuntimeError, match="data_path"):
+        h.action_reconcile_columns({"meta_schema": "ducklake_ops", "table": "ops_recommendations"}, None)
+
+
+def test_action_reconcile_columns_requires_meta_schema():
+    with pytest.raises(DuckLakeRuntimeError, match="meta_schema"):
+        h.action_reconcile_columns({"data_path": "s3://b/ducklake/", "table": "ops_recommendations"}, None)
+
+
+def test_action_reconcile_columns_requires_table():
+    with pytest.raises(DuckLakeRuntimeError, match="'table'"):
+        h.action_reconcile_columns({"data_path": "s3://b/ducklake/", "meta_schema": "ducklake_ops"}, None)
+
+
+def test_action_reconcile_columns_success():
+    con = MagicMock()
+    with (
+        patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
+        patch.object(h.rt, "open_connection", return_value=con),
+        patch.object(h.rt, "reconcile_table_columns", return_value={"added_history": ["x"], "added_current": []}),
+    ):
+        result = h.action_reconcile_columns(
+            {"data_path": "s3://b/ducklake/", "meta_schema": "ducklake_ops", "table": "ops_recommendations"}, None
+        )
+    assert result["ok"] is True
+    assert result["action"] == "reconcile_columns"
+    assert result["added_history"] == ["x"]
+    con.close.assert_called_once()

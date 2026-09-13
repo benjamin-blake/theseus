@@ -54,7 +54,7 @@ _GENERATED_HEADER = """\
 # Drift gate: bin/venv-python -m scripts.schema_to_field_semantics --check (non-zero on drift)
 """
 
-_CONTRACT_TABLE_IDS = ("ops_recommendations", "ops_decisions")
+_CONTRACT_TABLE_IDS = ("ops_recommendations", "ops_decisions", "ops_entity_counters")
 _DORMANT_TABLE_IDS = ("ops_priority_queue", "ops_session_log", "ops_execution_plans")
 # Append-only smoke tables (T1.14): no Class A contract, no current projection
 # (write_mode: append_only -> current_table absent); spliced verbatim from the sidecar.
@@ -168,16 +168,17 @@ def _project_contract_table(
     merge_key: str,
     ops_config: dict[str, Any],
     *,
+    table_class: str = "scd2",
     include_prose: bool = False,
 ) -> dict[str, Any]:
-    """Project a Class A contract's resolved fields into an ops_tables entry."""
-    history_table = f"{table_id}_history"
-    current_table = f"{table_id}_current"
-    partition: dict[str, str] = {
-        "history": "day(created_timestamp)",
-        "current": f"bucket(8, {merge_key})",
-    }
+    """Project a Class A contract's resolved fields into an ops_tables entry.
 
+    table_class="control" (T2.26) projects the CONTROL shape instead of the SCD2 shape: a single
+    physical table (no history_table/current_table pair, no bucket-partition), write_mode:
+    control explicit (the SCD2 projection emits no write_mode key at all, so consumers default to
+    scd2 -- the control class must be unambiguous), and entity_id_prefix/id_keyspace OMITTED
+    entirely rather than defaulted (a control table has no writer-owned entity keyspace).
+    """
     columns: dict[str, Any] = {}
     for fname, fspec in resolved_fields.items():
         derivation = fspec.derivation if hasattr(fspec, "derivation") else fspec.get("derivation")
@@ -201,11 +202,33 @@ def _project_contract_table(
     if migration_columns:
         _enforce_migration_columns_subset(table_id, migration_columns, columns)
 
-    entry: dict[str, Any] = {
+    if table_class == "control":
+        entry: dict[str, Any] = {
+            "status": ops_config["status"],
+            "merge_key": merge_key,
+            "write_mode": "control",
+            "partition": {"table": merge_key},
+            "columns": columns,
+        }
+        if ops_config.get("entity_id_prefix"):
+            entry["entity_id_prefix"] = ops_config["entity_id_prefix"]
+        if ops_config.get("id_keyspace"):
+            entry["id_keyspace"] = ops_config["id_keyspace"]
+        if migration_columns:
+            entry["migration_columns"] = migration_columns
+        return entry
+
+    history_table = f"{table_id}_history"
+    current_table = f"{table_id}_current"
+    partition = {
+        "history": "day(created_timestamp)",
+        "current": f"bucket(8, {merge_key})",
+    }
+    entry = {
         "status": ops_config["status"],
         "merge_key": merge_key,
-        "entity_id_prefix": ops_config["entity_id_prefix"],
-        "id_keyspace": ops_config["id_keyspace"],
+        "entity_id_prefix": ops_config.get("entity_id_prefix"),
+        "id_keyspace": ops_config.get("id_keyspace"),
         "history_table": history_table,
         "current_table": current_table,
         "partition": partition,
@@ -244,9 +267,14 @@ def generate(*, include_prose: bool = False) -> dict[str, Any]:
                 "Add merge_key to the top-level governance block in the contract before running the generator."
             )
 
+        raw_table_class = (contract_doc.governance and contract_doc.governance.table_class) or "scd2"
+        table_class = raw_table_class.lower()
+
         resolved = resolve_refs(contract_doc, _CONTRACTS_DIR)
         ops_config = contract_table_ops.get(table_id, {})
-        ops_tables[table_id] = _project_contract_table(table_id, resolved, merge_key, ops_config, include_prose=include_prose)
+        ops_tables[table_id] = _project_contract_table(
+            table_id, resolved, merge_key, ops_config, table_class=table_class, include_prose=include_prose
+        )
 
     dormant = sidecar.get("dormant_ops_tables", {})
     for table_id in _DORMANT_TABLE_IDS:

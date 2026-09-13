@@ -228,6 +228,39 @@ class TestDiffAddedColumnGap:
         assert failed == []
 
 
+def test_generated_ops_tables_injects_and_restores_sys_path(tmp_path: Path) -> None:
+    """_generated_ops_tables inserts the given root into sys.path only if absent, and always
+    removes it again afterward -- it must not leave a residual sys.path entry."""
+    import sys
+
+    root_str = str(tmp_path)
+    assert root_str not in sys.path
+    generated = gate._generated_ops_tables(tmp_path)
+    assert "ops_entity_counters" in generated  # the real generator is importable regardless of root
+    assert root_str not in sys.path  # removed again in the finally block
+
+
+def test_control_class_needs_no_reconcile_sides() -> None:
+    """A control-class contract (ops_entity_counters, T2.26) needs no history/current reconcile
+    sides. Exercises the REAL _write_mode/generated wiring (not a mocked _write_mode): before the
+    fix, _write_mode defaulted to scd2 for a contract-backed table absent from the dormant/smoke
+    sidecar blocks, and _check_diff_added_column_gap demanded BOTH sides -- which the new
+    contract's empty pending_reconcile could never satisfy, so it would fail --pre on arrival."""
+    sidecar = gate._load_sidecar(gate._common.ROOT)
+    generated = gate._generated_ops_tables(gate._common.ROOT)
+    assert generated["ops_entity_counters"]["write_mode"] == "control"
+    assert gate._write_mode("ops_entity_counters", sidecar, generated) == "control"
+
+    with mock.patch.object(
+        gate,
+        "_diff_added_columns",
+        return_value={"ops_entity_counters": {"counter_name", "current_value"}},
+    ):
+        failed: list[str] = []
+        gate._check_diff_added_column_gap(gate._common.ROOT, sidecar, "reconcile-pending-gate:", failed, generated=generated)
+    assert failed == []
+
+
 class TestOriginMainAdvisorySkip:
     def test_unreachable_origin_main_advisory_skips_without_failing(self, capsys) -> None:
         sidecar = _sidecar(
@@ -420,6 +453,7 @@ class TestRealRepoIntegration:
         assert set(ids) == {
             "ops_recommendations",
             "ops_decisions",
+            "ops_entity_counters",
             "ops_priority_queue",
             "ops_session_log",
             "ops_execution_plans",

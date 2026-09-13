@@ -21,6 +21,19 @@ pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
+# _emit_maintenance_metric
+# ---------------------------------------------------------------------------
+
+
+def test_emit_maintenance_metric_forwards_to_rt_emit_metric():
+    with patch.object(h.rt, "emit_metric") as mock_emit:
+        h._emit_maintenance_metric("SomeMetric", 3.0, profile="agent_platform_admin")
+    mock_emit.assert_called_once_with(
+        "SomeMetric", 3.0, namespace=h.maint.MAINTENANCE_CLOUDWATCH_NAMESPACE, profile="agent_platform_admin"
+    )
+
+
+# ---------------------------------------------------------------------------
 # _parse_event / _response
 # ---------------------------------------------------------------------------
 

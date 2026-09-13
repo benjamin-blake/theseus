@@ -51,7 +51,11 @@ contract:
       write-through projection); schema-gated, bounded-OCC retried, inlining disabled.
     id_allocator: >-
       file_ops allocates the entity id (e.g. rec-NNNN) atomically inside the write transaction
-      (Decision 84 I-2); update_ops / write_ops require the caller to supply an existing key.
+      (Decision 84 I-2); update_ops / write_ops require the caller to supply an existing key. The
+      allocation counter itself (ops_entity_counters) is a control-class table (T2.26,
+      docs/contracts/ops_entity_counters.yaml): it is read and mutated ONLY inside that same
+      write transaction, or via the admin ducklake_maintenance control_health verb -- never
+      through any agent-facing verb on this contract.
     merge_key: >-
       Per-table merge key (e.g. id for ops_recommendations); the writer is the keyspace owner.
   provisional_v0:
@@ -162,5 +166,6 @@ audit_invariants:
   - "_contract_version is stamped on every record at write time (default '1' when absent), per CD.25."
   - "KNOWN GAP: no delete_ops verb yet (rec-2158); postmortem DELETE cannot transit the closed boundary. A future delete_ops verb is a field_add amendment to this contract."
   - "update_ops against a write_mode: append_only ops table raises AppendOnlyUpdateError (a DuckLakeRuntimeError subclass) -> 500 (require_exists=True; Decision 70 write-once). write_ops (require_exists=False) and file_ops do NOT raise -- write_ops performs a bare history append with no current-projection MERGE. The production scd2 ops tables are not append_only, so this is a latent path today (e.g. ops_smoke_events)."
+  - "T2.26: write_ops / file_ops / update_ops each refuse a control-class table (write_boundary=writer_internal, e.g. ops_entity_counters) -- resolve_table_spec raises a directed SchemaGateError before any of them could fall through into the SCD2 branch against current_table=None. create_ops_tables is the ONE legitimate provisioning path for a control-class table (a single CREATE + SET PARTITIONED BY, no history/current pair, no counter_seed)."
 amendment_log: []
 previous_versions: []

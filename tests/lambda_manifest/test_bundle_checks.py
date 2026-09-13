@@ -16,6 +16,7 @@ from scripts.lambda_manifest import (
     check_handler_imports,
     compute_affected_artifacts,
     derive_lambda_file_patterns,
+    load_all,
 )
 
 pytestmark = pytest.mark.unit
@@ -251,3 +252,39 @@ class TestComputeAffectedArtifacts:
         ):
             result = compute_affected_artifacts(["src/lambdas/myfunc/manifest.yaml"])
         assert result == {"myfunc": ["src/lambdas/myfunc/manifest.yaml"]}
+
+
+# ---------------------------------------------------------------------------
+# Two-sided bundling invariant (T2.26 control-table-class-and-counter-conformance): every
+# artifact that bundles ducklake_scd2_schema.py also bundles the new control module, AND every
+# artifact that excludes it also excludes the control module. Asserted against the REAL manifests
+# (not a tmp_path fixture) -- this runs in --pre; --check-bundles (validate_lambda_bundle_completeness)
+# does not, which is why this standing assertion is needed rather than relying on the staged-import
+# oracle to gate the PR.
+# ---------------------------------------------------------------------------
+
+
+def test_new_ducklake_modules_track_scd2_schema_membership():
+    scd2_module = "src/common/ducklake_scd2_schema.py"
+    control_module = "src/common/ducklake_control_tables.py"
+    manifests = load_all()
+    assert manifests, "expected at least one real src/lambdas/*/manifest.yaml"
+
+    checked_include = 0
+    checked_exclude = 0
+    for slug, manifest in manifests.items():
+        includes = set(manifest.includes)
+        excludes = set(manifest.excludes)
+        if scd2_module in includes:
+            checked_include += 1
+            assert control_module in includes, f"{slug}: bundles {scd2_module} but not {control_module} -- add an includes row"
+        if scd2_module in excludes:
+            checked_exclude += 1
+            assert control_module in excludes, (
+                f"{slug}: excludes {scd2_module} but not {control_module} -- add an excludes row"
+            )
+    # Growth-safe (never a hardcoded count): both sides of the invariant must have been exercised
+    # at least once, or this test would vacuously pass if every manifest happened to reference
+    # neither module.
+    assert checked_include > 0
+    assert checked_exclude > 0

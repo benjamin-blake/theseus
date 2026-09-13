@@ -179,4 +179,17 @@ ENTRIES: tuple[Entry, ...] = (
         pre_globs=None,
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_table_registration",
+        module="scripts.checks.contracts.validate_table_registration",
+        attr="validate_table_registration",
+        pre=True,
+        pre_globs=(
+            "src/**",
+            "scripts/checks/contracts/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
 )

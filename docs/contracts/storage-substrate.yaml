@@ -43,6 +43,17 @@ amendment_log:
       outbox, ops compaction, legacy workgroup IAM) were deleted, and this contract's
       references to them were removed in the same change. No live DuckLake field or verb
       semantics changed.
+  - date: "2026-09-13"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-control-table-class-and-counter-conformance (T2.26): register ops_entity_counters, the
+      first (and so far only) control-class table, with its write_boundary/read_boundary/
+      maintenance_binding/dq_scope. No existing table entry changed.
+    migration_story: >-
+      Additive registration entry; every existing table entry is unchanged. Satisfies
+      scripts/checks/contracts/validate_data_model_standard.py's merge_key-bearing-table gate
+      (grain + write_mode both present).
 
 version: 1
 updated_at: "2026-06-24"
@@ -80,6 +91,34 @@ tables:
     field_semantics: config/lambda/ducklake/field_semantics.yaml#ops_tables.ops_execution_plans
     read_engine_ref: docs/contracts/read-engine.yaml
     graduation_blocker: CD.17 reversal + executor resume (table lands empty until then)
+
+  # ---------------------------------------------------------------------------
+  # DuckLake control-class table (T2.26 control-table-class-and-counter-conformance): writer-
+  # internal bookkeeping, never an application table. See docs/contracts/ops_entity_counters.yaml
+  # (Class A contract) and data-modeling-standard.yaml write_modes.control for the full invariant
+  # set.
+  # ---------------------------------------------------------------------------
+  ops_entity_counters:
+    substrate: DuckLake-on-Neon
+    status: live
+    reason: >-
+      T2.26: the writer-owned entity-id allocation counter (Decision 84 I-2), registered and
+      partitioned for the first time -- previously an ungoverned ad-hoc table (3,418 unpartitioned
+      live files for ONE row, measured 2026-09-12).
+    write_boundary: >-
+      ducklake_writer Lambda, writer_internal ONLY -- create_ops_tables provisioning plus the
+      writer's own in-transaction allocate/advance calls; NOT reachable through
+      write_ops/file_ops/update_ops (ducklake_scd2_schema.resolve_table_spec refuses it).
+    read_boundary: >-
+      none -- writer-owned, in-transaction only. Periodic health assertion via the admin
+      ducklake_maintenance control_health verb (maintenance_binding below); not an application
+      read path (never reachable through query_ops/named_read/read_ops_current/read_ops_history).
+    merge_key: counter_name
+    grain: one row per writer-keyspace ops table (id_keyspace=writer; today ops_recommendations only)
+    write_mode: control
+    field_semantics: config/lambda/ducklake/field_semantics.yaml#ops_tables.ops_entity_counters
+    maintenance_binding: control_health (ducklake_maintenance, every 6h)
+    dq_scope: exempt -- see docs/contracts/ops_entity_counters.yaml's dq_scope rationale
 
   # ---------------------------------------------------------------------------
   # DuckLake append-only tables (event-journal write mode, T1.14)

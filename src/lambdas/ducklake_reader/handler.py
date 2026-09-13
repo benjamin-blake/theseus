@@ -210,7 +210,20 @@ def action_reset_warm_connection(event: dict[str, Any], _con: Any) -> dict[str, 
 
 
 def _require_ops_table(table: Any) -> None:
-    """Loud-fail if *table* is not a configured ops_* table (closed-boundary table allow-list)."""
+    """Loud-fail if *table* is not a configured ops_* table, or is a control-class table not
+    reachable through any reader verb (closed-boundary table allow-list).
+
+    The symmetric partner of the writer-side refusal (src/lambdas/ducklake_writer/handler.py):
+    control-class tables (read_boundary=none, T2.26) are refused HERE -- narrow and
+    class-specific, never a general per-direction capability field (rec-3771, deliberately out of
+    this plan) -- so registering a table for governance never grants application read access.
+    """
+    if rt.is_control_table(table):
+        raise rt.DuckLakeRuntimeError(
+            f"{table!r} is a control-class table (read_boundary=none): not reachable through any "
+            "reader verb (docs/contracts/ops_entity_counters.yaml) -- readable only in-transaction "
+            "by its owning writer, or via the admin ducklake_maintenance control_health verb"
+        )
     if not isinstance(table, str) or table not in rt.ops_table_names():
         raise rt.DuckLakeRuntimeError(f"unknown or missing ops table {table!r}: expected one of {list(rt.ops_table_names())}")
 

@@ -221,6 +221,19 @@ class TestReconcileScopeSubset:
                 "scd2",
             )
 
+    def test_undeclared_column_under_current_side_raises(self) -> None:
+        with pytest.raises(ValueError, match="not a declared column"):
+            _enforce_reconcile_pending_subset(
+                "ops_decisions",
+                {
+                    "reconcile_scope": "ducklake",
+                    "pending_reconcile": {"history": [], "current": ["typo"]},
+                    "reconciled": {"history": {}, "current": {}},
+                },
+                self._declared(),
+                "scd2",
+            )
+
     def test_current_side_entry_on_append_only_table_raises(self) -> None:
         with pytest.raises(ValueError, match="append_only"):
             _enforce_reconcile_pending_subset(
@@ -407,6 +420,56 @@ class TestGenerateIntegration:
         assert cols["execution_steps"]["sql_type"] == "BIGINT"
         assert cols["created_timestamp"]["sql_type"] == "TIMESTAMP WITH TIME ZONE"
         assert cols["dependencies"]["sql_type"] == "VARCHAR[]"
+
+
+# ---------------------------------------------------------------------------
+# Control-class projection (T2.26 control-table-class-and-counter-conformance)
+# ---------------------------------------------------------------------------
+def test_control_class_projection() -> None:
+    """A control contract (ops_entity_counters) projects without SCD2 assumptions: a single
+    table, partition on the key column, write_mode: control explicit (the SCD2 projection emits
+    no write_mode key at all, so consumers default to scd2), and no entity_id_prefix / id_keyspace."""
+    doc = generate()
+    entry = doc["ops_tables"]["ops_entity_counters"]
+    assert entry["write_mode"] == "control"
+    assert entry["status"] == "live"
+    assert entry["merge_key"] == "counter_name"
+    assert entry["partition"] == {"table": "counter_name"}
+    assert "history_table" not in entry
+    assert "current_table" not in entry
+    assert "entity_id_prefix" not in entry
+    assert "id_keyspace" not in entry
+    cols = entry["columns"]
+    assert set(cols) == {"counter_name", "current_value"}
+    assert cols["counter_name"]["sql_type"] == "VARCHAR"
+    assert cols["counter_name"]["nullable"] is False
+    assert cols["current_value"]["sql_type"] == "BIGINT"
+    assert cols["current_value"]["nullable"] is False
+
+
+def test_control_class_projection_carries_optional_fields_when_present() -> None:
+    """_project_contract_table's control-class branch is written generally (entity_id_prefix /
+    id_keyspace / migration_columns are OMITTED, never defaulted, per the docstring) -- exercise
+    the carry-if-present branches directly, even though no live control contract sets them today."""
+    resolved_fields = {
+        "counter_name": {"derivation": None, "iceberg_type": "string", "nullable": False},
+    }
+    migration_columns = {"history": {"counter_name": {"role": "input", "sql_type": "VARCHAR", "nullable": False}}}
+    entry = _project_contract_table(
+        "ops_entity_counters",
+        resolved_fields,
+        "counter_name",
+        {
+            "status": "live",
+            "entity_id_prefix": "cnt-",
+            "id_keyspace": "writer",
+            "migration_columns": migration_columns,
+        },
+        table_class="control",
+    )
+    assert entry["entity_id_prefix"] == "cnt-"
+    assert entry["id_keyspace"] == "writer"
+    assert entry["migration_columns"] == migration_columns
 
 
 # ---------------------------------------------------------------------------

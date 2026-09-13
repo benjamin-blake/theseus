@@ -243,49 +243,13 @@ def write_scd2(
 # Plain (non-SCD2) DuckLake bookkeeping table. The counter row is the keyspace serialization
 # point: a concurrent file_scd2 pair both UPDATE the same row, which is a guaranteed write-write
 # catalog conflict -- one commits, the other OCC-retries and re-allocates. Internal to the writer;
-# never exposed through the read boundary.
+# never exposed through the read boundary. The table itself is a governed control-class table
+# (T2.26): its DDL, partitioning, and provisioning are WHOLLY owned by
+# src/common/ducklake_control_tables.py (bootstrap_entity_counter and ensure_entity_counters_table
+# moved there with it) -- this module keeps only the intra-transaction allocate/advance primitives
+# write_scd2/file_scd2 call directly, so the table NAME below is a local literal (not imported),
+# keeping this module's dependency on ducklake_scd2_schema (+ stdlib) only, unchanged.
 ENTITY_COUNTERS_TABLE = "ops_entity_counters"
-
-
-def ensure_entity_counters_table(con: Any) -> None:
-    """Idempotently create the entity-counters bookkeeping table."""
-    con.execute(
-        f"CREATE TABLE IF NOT EXISTS {CATALOG_ALIAS}.{ENTITY_COUNTERS_TABLE} "
-        "(counter_name VARCHAR NOT NULL, current_value BIGINT NOT NULL)"
-    )
-
-
-def bootstrap_entity_counter(con: Any, spec: Any) -> int:
-    """Serially (re)seed the counter row for *spec* from the history-table numeric max.
-
-    MUST run as a one-time serial bootstrap (create_ops_tables), never on the allocation hot
-    path: a concurrent self-seed INSERT race under snapshot isolation creates duplicate counter
-    rows that each transaction increments privately -- observed live 2026-06-11 as four
-    concurrent file_ops all allocating the same id. DELETE + single INSERT here is idempotent
-    and also repairs that duplicate-row state. Returns the seeded value.
-    """
-    if not spec.entity_id_prefix or spec.id_keyspace != "writer":
-        raise DuckLakeRuntimeError(
-            f"table {spec.table!r} has no writer-owned keyspace (id_keyspace={spec.id_keyspace!r}): "
-            "it has no allocation counter to seed"
-        )
-    prefix = spec.entity_id_prefix
-    ensure_entity_counters_table(con)
-    con.execute("BEGIN TRANSACTION")
-    try:
-        seed_row = con.execute(
-            f"SELECT coalesce(max(CAST(regexp_extract({spec.merge_key}, '^{prefix}([0-9]+)$', 1) AS BIGINT)), 0) "
-            f"FROM {CATALOG_ALIAS}.{spec.history_table} "
-            f"WHERE {spec.merge_key} LIKE '{prefix}%' AND regexp_matches({spec.merge_key}, '^{prefix}[0-9]+$')"
-        ).fetchone()
-        seed = int(seed_row[0]) if seed_row and seed_row[0] is not None else 0
-        con.execute(f"DELETE FROM {CATALOG_ALIAS}.{ENTITY_COUNTERS_TABLE} WHERE counter_name = ?", [spec.table])
-        con.execute(f"INSERT INTO {CATALOG_ALIAS}.{ENTITY_COUNTERS_TABLE} VALUES (?, ?)", [spec.table, seed])
-        con.execute("COMMIT")
-    except Exception:
-        _safe_rollback(con)
-        raise
-    return seed
 
 
 def _allocate_entity_id(con: Any, spec: Any) -> str:
@@ -332,17 +296,31 @@ def _advance_entity_counter(con: Any, spec: Any, key: Any) -> None:
     write_ops accepts caller-keyed <prefix>NNN ids (backfill; pre-merge main clients on the old
     allocator). Without this, any such id above the counter strands file_ops on the terminal
     "counter behind table max" guard until an operator re-bootstraps. No-op when the table has no
-    writer-owned keyspace, the key is non-canonical, or the counter row is absent (not bootstrapped).
+    writer-owned keyspace, the key is non-canonical, the counter row is absent (not bootstrapped),
+    or the candidate does not exceed the stored value.
+
+    No-op-free (Decision 55): read-then-conditional-write, deliberately. An earlier unconditional
+    `UPDATE ... SET current_value = GREATEST(...)` issued a write -- and so minted a new DuckLake
+    data file -- on EVERY write_scd2 call regardless of whether the counter needed to move,
+    turning the counter row into a serialization point for writes that touched it in name only.
+    Reading first and skipping the UPDATE when the candidate does not exceed the stored value
+    removes that write entirely on the (overwhelmingly common) no-op path.
     """
     if spec.id_keyspace != "writer" or not spec.entity_id_prefix:
         return
     m = re.fullmatch(re.escape(spec.entity_id_prefix) + r"([0-9]+)", str(key))
     if not m:
         return
+    candidate = int(m.group(1))
+    rows = con.execute(
+        f"SELECT current_value FROM {CATALOG_ALIAS}.{ENTITY_COUNTERS_TABLE} WHERE counter_name = ?",
+        [spec.table],
+    ).fetchall()
+    if not rows or candidate <= rows[0][0]:
+        return
     con.execute(
-        f"UPDATE {CATALOG_ALIAS}.{ENTITY_COUNTERS_TABLE} SET current_value = GREATEST(current_value, ?) "
-        "WHERE counter_name = ?",
-        [int(m.group(1)), spec.table],
+        f"UPDATE {CATALOG_ALIAS}.{ENTITY_COUNTERS_TABLE} SET current_value = ? WHERE counter_name = ?",
+        [candidate, spec.table],
     )
 
 

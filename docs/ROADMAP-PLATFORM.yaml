@@ -4865,6 +4865,10 @@ tier_items:
           CD.40 binding disposition: retire; T2.26 doer -- CD.40 records the destination decision and
           stays state pending on its own unbuilt T3.20 clauses; this item owns and executes the
           ops_session_log retirement independently of CD.40's ratification.
+          Re-grounded 2026-09-13 (PLAN-control-table-class-and-counter-conformance): "ops tables"
+          here means the four APPLICATION tables named above -- it does not include writer-internal
+          control substrate (ops_entity_counters), which is a distinct concern closed by new
+          criterion c10 below, not by this one.
         status: open
       - id: c3
         text: >-
@@ -4921,6 +4925,18 @@ tier_items:
           half (CD.40 / T3.20 pending).
         status: met
         met_by: 222dd67c56f59f5d19311c53b109716fbb2b306c
+      - id: c10
+        text: >-
+          The last ungoverned ops-substrate table -- ops_entity_counters, the writer-owned entity-id
+          allocation counter (Decision 84 I-2) -- is registered (Class A contract, control write
+          mode), partitioned (on counter_name, before first write), and class-governed (control-
+          class: refused at both the write and read boundaries, provisioned only via
+          create_ops_tables, health-asserted by the ducklake_maintenance control_health verb), with
+          its read-boundary exclusion (read_boundary: none) reasoned in
+          docs/contracts/ops_entity_counters.yaml's dq_scope exemption. Landed as roadmap truth by
+          this plan's own scope, not as a closes_criteria self-closure (this plan declares none).
+        status: met
+        met_by: control-table-class-and-counter-conformance
     related_candidate_decisions: [CD.31, CD.33, CD.34]
     effort: L
     strategic: false    # freeze override (AGENTS.md / CD.17): decomposed per_table into atomic IMPLEMENTATION plans
@@ -5022,6 +5038,19 @@ tier_items:
           to record the disposition and ownership directly. T3.20 c5 rehomed onto this item in the
           same session. Parent T2.26 stays in_progress -- c2/c3/c7/c8 remain open on the
           ops_session_log retirement work itself, no longer on CD.40/T3.20's own status.
+      - 2026-09-13 (PLAN-control-table-class-and-counter-conformance): shipped c10 -- fixed the
+        unconditional counter-advance UPDATE that turned the rec-id allocator into a global
+        write/file-churn lock (3,418 unpartitioned live files for ONE row, measured 2026-09-12),
+        then landed a governed `control` table class (docs/contracts/data-modeling-standard.yaml
+        write_modes.control) so ops_entity_counters is registered (Class A contract), partitioned
+        (counter_name), and refused at both the write boundary (write_ops/file_ops/update_ops via
+        resolve_table_spec's directed raise) and the read boundary (every reader verb + named_read).
+        Added the ducklake_maintenance control_health verb (every 6h) as the dq_scope health binding,
+        and a new admission check (validate_table_registration, Decision 170) that fails a future
+        CREATE TABLE resolving to an unregistered ops_catalog table name. Re-grounded c2 (see above)
+        to distinguish application-ops-table migration from this writer-internal control substrate.
+        Parent T2.26 stays in_progress -- c2/c3/c7/c8 remain open, all on the ops_session_log
+        retirement work (unaffected by this slice).
 
   - id: T2.27
     tier: T2
@@ -6433,7 +6462,8 @@ tier_items:
       obscure lineage, complicate backfills, and prevent atomic publication).
 
       (2) A REBUILDABLE-DERIVED-ASSET write mode in docs/contracts/data-modeling-standard.yaml,
-      which today defines only scd2 and append_only and has no mode for derived aggregates. Derived
+      which today defines scd2, append_only, and control (T2.26 control-table-class-and-counter-
+      conformance) and has no mode for derived aggregates. Derived
       aggregates must NOT be force-fitted into SCD2 (they are not mutable entities): admissible
       shapes are append-only aggregate snapshots, incrementally replaced time partitions, versioned
       materialization runs with a current pointer, or complete atomic rebuilds. A logical asset must
@@ -6455,13 +6485,15 @@ tier_items:
       - id: c1
         text: >-
           docs/contracts/data-modeling-standard.yaml declares a rebuildable-derived-asset write mode
-          alongside scd2/append_only, enumerating the admissible materialization shapes (append-only
-          aggregate snapshot, incrementally replaced time partition, versioned run with a current
-          pointer, complete atomic rebuild) and, per asset, the required declarations: asset id,
-          one-row-per grain, input assets, output schema contract, virtual-vs-persisted
-          materialization, incremental watermark and lookback, late-arrival/correction behaviour,
-          partitioning, backfill behaviour, atomic publication method, freshness expectation, DQ
-          checks, and code+input lineage
+          alongside scd2/append_only/control (control added by T2.26 control-table-class-and-
+          counter-conformance, 2026-09-13 -- a fourth, unrelated write mode: writer-internal
+          bookkeeping, never a derived/rebuildable aggregate), enumerating the admissible
+          materialization shapes (append-only aggregate snapshot, incrementally replaced time
+          partition, versioned run with a current pointer, complete atomic rebuild) and, per asset,
+          the required declarations: asset id, one-row-per grain, input assets, output schema
+          contract, virtual-vs-persisted materialization, incremental watermark and lookback,
+          late-arrival/correction behaviour, partitioning, backfill behaviour, atomic publication
+          method, freshness expectation, DQ checks, and code+input lineage
         status: open
       - id: c2
         text: >-

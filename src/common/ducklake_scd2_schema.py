@@ -198,10 +198,21 @@ def resolve_table_spec(table: str | None = None, semantics: dict[str, Any] | Non
     spec = ops_tables.get(table)
     if spec is None:
         raise SchemaGateError(f"unknown ops table {table!r}: not in field_semantics ops_tables (have {sorted(ops_tables)})")
+    write_mode = spec.get("write_mode", "scd2")
+    if write_mode == "control":
+        # Directed error, not a widened spec (T2.26): a control-class table has no history/current
+        # pair, so ScdTableSpec.history_table (non-Optional; mypy is ratchet-enforced) can never
+        # represent it. Resolve control specs through ducklake_control_tables.resolve_control_spec
+        # instead -- checked BEFORE spec["merge_key"]/spec["columns"] below, which a control-class
+        # projection need not even carry.
+        raise SchemaGateError(
+            f"{table!r} is a control-class table (write_mode=control): resolve_table_spec does not "
+            "serve control-class tables -- use ducklake_control_tables.resolve_control_spec instead "
+            "(it is also refused at both the write and read boundaries, Decision 55)"
+        )
     merge_key = spec["merge_key"]
     fields = spec["columns"]
     part = spec.get("partition", {})
-    write_mode = spec.get("write_mode", "scd2")
     return ScdTableSpec(
         table=table,
         history_table=spec["history_table"],

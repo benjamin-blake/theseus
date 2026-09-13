@@ -38,10 +38,13 @@ def _load_sidecar(root: Path) -> dict[str, Any]:
     return yaml.safe_load((root / _SIDECAR_REL).read_text(encoding="utf-8"))
 
 
-def _ops_table_ids(root: Path) -> list[str]:
-    """The authoritative table set: generate()['ops_tables'] keys -- NEVER contract_table_ops's
-    own keys. A table missing its own contract_table_ops entry must fail closed, so the
-    iteration source cannot be contract_table_ops itself (VP step 1 fix_if)."""
+def _generated_ops_tables(root: Path) -> dict[str, Any]:
+    """The authoritative ops_tables projection (schema_to_field_semantics.generate()) -- the
+    single source for both the table-id set (VP step 1 fix_if: never contract_table_ops's own
+    keys, so a table missing its own entry fails closed) and each table's GENERATED write_mode.
+    The latter is needed for the control class (T2.26): its write_mode lives only in the
+    contract projection, never in the sidecar's dormant_ops_tables/smoke_ops_tables blocks that
+    _write_mode below otherwise reads."""
     root_str = str(root)
     injected = root_str not in sys.path
     if injected:
@@ -50,10 +53,14 @@ def _ops_table_ids(root: Path) -> list[str]:
         import scripts.schema_to_field_semantics as _gen_mod
 
         doc = _gen_mod.generate(include_prose=False)
-        return list(doc["ops_tables"].keys())
+        return dict(doc["ops_tables"])
     finally:
         if injected and root_str in sys.path:
             sys.path.remove(root_str)
+
+
+def _ops_table_ids(root: Path) -> list[str]:
+    return list(_generated_ops_tables(root).keys())
 
 
 def _declared_columns(table_id: str, sidecar: dict[str, Any], root: Path) -> set[str] | None:
@@ -71,11 +78,16 @@ def _declared_columns(table_id: str, sidecar: dict[str, Any], root: Path) -> set
     return None
 
 
-def _write_mode(table_id: str, sidecar: dict[str, Any]) -> str:
+def _write_mode(table_id: str, sidecar: dict[str, Any], generated: dict[str, Any] | None = None) -> str:
     for block_name in ("dormant_ops_tables", "smoke_ops_tables"):
         block = sidecar.get(block_name, {}) or {}
         if table_id in block:
             return block[table_id].get("write_mode", "scd2")
+    if generated is not None and table_id in generated:
+        # Contract-backed tables (ops_recommendations/ops_decisions/ops_entity_counters) carry
+        # their write_mode only in the generated projection -- the control class (T2.26) is
+        # reachable ONLY through this branch, never the dormant/smoke sidecar blocks above.
+        return generated[table_id].get("write_mode", "scd2")
     return "scd2"
 
 
@@ -198,16 +210,24 @@ def _check_declared_columns_for_table(
 
 
 def _check_declared_columns(
-    contract_table_ops: dict[str, Any], sidecar: dict[str, Any], root: Path, key: str, failed: list[str]
+    contract_table_ops: dict[str, Any],
+    sidecar: dict[str, Any],
+    root: Path,
+    key: str,
+    failed: list[str],
+    *,
+    generated: dict[str, Any] | None = None,
 ) -> None:
     """Undeclared-column + append_only-current checks over every declared table."""
     for table_id, ops_entry in contract_table_ops.items():
         declared = _declared_columns(table_id, sidecar, root)
-        write_mode = _write_mode(table_id, sidecar)
+        write_mode = _write_mode(table_id, sidecar, generated)
         _check_declared_columns_for_table(table_id, ops_entry, declared, write_mode, key, failed)
 
 
-def _check_diff_added_column_gap(root: Path, sidecar: dict[str, Any], key: str, failed: list[str]) -> None:
+def _check_diff_added_column_gap(
+    root: Path, sidecar: dict[str, Any], key: str, failed: list[str], *, generated: dict[str, Any] | None = None
+) -> None:
     """Diff-added column without a matching pending_reconcile entry -- the incident's actual
     failure mode: a column shipped in the deployed spec with no physical ALTER ever run."""
     added = _diff_added_columns(root)
@@ -221,8 +241,15 @@ def _check_diff_added_column_gap(root: Path, sidecar: dict[str, Any], key: str, 
     pending_map = _pending_reconcile_map(sidecar)
     for table_id, new_cols in added.items():
         pending = pending_map.get(table_id, {"history": [], "current": []})
-        write_mode = _write_mode(table_id, sidecar)
-        required_sides = ["history"] if write_mode == "append_only" else ["history", "current"]
+        write_mode = _write_mode(table_id, sidecar, generated)
+        # Control-class tables (T2.26) need NO reconcile side at all: a single flat table with no
+        # history/current SCD2 split has no physical ALTER surface for pending_reconcile to track.
+        if write_mode == "control":
+            required_sides: list[str] = []
+        elif write_mode == "append_only":
+            required_sides = ["history"]
+        else:
+            required_sides = ["history", "current"]
         for col in sorted(new_cols):
             for side in required_sides:
                 if col not in pending.get(side, []):
@@ -246,14 +273,17 @@ def validate_reconcile_pending_gate(failed: list[str]) -> None:
 
     try:
         table_ids = _ops_table_ids(root)
+        generated = _generated_ops_tables(root)
     except Exception as exc:  # noqa: BLE001
         failed.append(f"{key} could not resolve the ops table set via the generator: {exc}")
+        registry.skipped(f"generator raised: {exc}")
         return
 
     _check_unclassified_tables(table_ids, contract_table_ops, key, failed)
-    _check_declared_columns(contract_table_ops, sidecar, root, key, failed)
-    _check_diff_added_column_gap(root, sidecar, key, failed)
+    _check_declared_columns(contract_table_ops, sidecar, root, key, failed, generated=generated)
+    _check_diff_added_column_gap(root, sidecar, key, failed, generated=generated)
 
+    registry.examined(len(table_ids), unit="ops_tables")
     if not any(f.startswith(key) for f in failed):
         print(f"  PASS: all {len(table_ids)} ops tables classified; no undeclared columns; no diff-added column gaps.")
 
