@@ -86,7 +86,7 @@ def action_write_ops(event: dict[str, Any], con: Any) -> dict[str, Any]:
     """
     table = event.get("table")
     record = event.get("record") or {}
-    _require_ops_table(table)
+    _require_ops_table(table, direction="write")
     record["_contract_version"] = record.get("_contract_version", "1")
     result = rt.write_scd2(con, record, table=table, metric_sink=rt.make_metric_sink())
     return {
@@ -109,7 +109,7 @@ def action_file_ops(event: dict[str, Any], con: Any) -> dict[str, Any]:
     """
     table = event.get("table")
     record = event.get("record") or {}
-    _require_ops_table(table)
+    _require_ops_table(table, direction="write")
     record["_contract_version"] = record.get("_contract_version", "1")
     identity = None
     idem = event.get("idempotency_ulid")
@@ -141,7 +141,7 @@ def action_update_ops(event: dict[str, Any], con: Any) -> dict[str, Any]:
     """
     table = event.get("table")
     record = event.get("record") or {}
-    _require_ops_table(table)
+    _require_ops_table(table, direction="write")
     record["_contract_version"] = record.get("_contract_version", "1")
     result = rt.write_scd2(con, record, table=table, require_exists=True, metric_sink=rt.make_metric_sink())
     return {
@@ -154,20 +154,41 @@ def action_update_ops(event: dict[str, Any], con: Any) -> dict[str, Any]:
     }
 
 
-def action_create_ops_tables(event: dict[str, Any], con: Any) -> dict[str, Any]:
-    """Production: create (optionally re-create) an ops_* table pair with partition transforms.
-
-    Used by the backfill's resurrection-loop guard (force_recreate drops + recreates so a failed
-    mid-sequence run never appends onto a half-populated catalog).
-    """
-    table = event.get("table")
-    _require_ops_table(table)
-    force = bool(event.get("force_recreate_tables", False))
+def _check_force_recreate_confirm(table: Any, event: dict[str, Any], force: bool) -> None:
+    """Destructive-action guard shared by both create_ops_tables branches (Decision 84)."""
     if force and event.get("confirm_force_recreate") != table:
         raise WriterActionError(
-            f"force_recreate_tables on {table!r} DROPS the production table pair: pass "
+            f"force_recreate_tables on {table!r} DROPS the production table(s): pass "
             f"confirm_force_recreate={table!r} to proceed (destructive-action guard, Decision 84)"
         )
+
+
+def action_create_ops_tables(event: dict[str, Any], con: Any) -> dict[str, Any]:
+    """Production: create (optionally re-create) an ops_* table (pair) with partition transforms.
+
+    Used by the backfill's resurrection-loop guard (force_recreate drops + recreates so a failed
+    mid-sequence run never appends onto a half-populated catalog). A control-class table (T2.26)
+    branches BEFORE _require_ops_table's generic refusal: this verb is its ONLY legitimate
+    provisioning path (docs/contracts/ops_entity_counters.yaml write_boundary=writer_internal) --
+    a single CREATE + SET PARTITIONED BY, no history/current pair, no counter to seed (it IS the
+    counter).
+    """
+    table = event.get("table")
+    force = bool(event.get("force_recreate_tables", False))
+    if isinstance(table, str) and rt.is_control_table(table):
+        _check_force_recreate_confirm(table, event, force)
+        rt.create_control_table(con, table=table, force_recreate=force)
+        control_spec = rt.resolve_control_spec(table)
+        return {
+            "ok": True,
+            "table": table,
+            "tables": [control_spec.table],
+            "force_recreate": force,
+            "counter_seed": None,
+        }
+
+    _require_ops_table(table, direction="write")
+    _check_force_recreate_confirm(table, event, force)
     rt.create_scd2_tables(con, table=table, force_recreate=force)
     spec = rt.resolve_table_spec(table)
     counter_seed = None
@@ -193,8 +214,22 @@ def action_describe(event: dict[str, Any], _con: Any) -> dict[str, Any]:
     return {"ok": True, "verbs": rt.describe_write_verbs()}
 
 
-def _require_ops_table(table: Any) -> None:
-    """Loud-fail if *table* is not a configured ops_* table (closed-boundary table allow-list)."""
+def _require_ops_table(table: Any, *, direction: str) -> None:
+    """Loud-fail if *table* is not a configured ops_* table, or is a control-class table not
+    reachable through the generic write verbs (closed-boundary table allow-list).
+
+    Control-class tables (write_boundary=writer_internal, T2.26) are refused HERE -- narrow and
+    class-specific, never a general per-direction capability field (that is rec-3771, deliberately
+    out of this plan) -- so write_ops/file_ops/update_ops loud-fail instead of falling through
+    write_scd2 into the SCD2 branch against a spec with current_table=None. create_ops_tables is
+    the one legitimate exception and branches BEFORE ever reaching this function.
+    """
+    if rt.is_control_table(table):
+        raise WriterActionError(
+            f"{table!r} is a control-class table (write_boundary=writer_internal): not reachable "
+            f"through the generic {direction} verbs -- provisioned only via create_ops_tables "
+            "(docs/contracts/ops_entity_counters.yaml)"
+        )
     if not isinstance(table, str) or table not in rt.ops_table_names():
         raise WriterActionError(f"unknown or missing ops table {table!r}: expected one of {list(rt.ops_table_names())}")
 

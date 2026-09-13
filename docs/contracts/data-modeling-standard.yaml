@@ -37,6 +37,23 @@ amendment_log:
       the header comment, the indexes comment, and the _joins.yaml index entry's self-description
       -- all three previously claimed this file does not absorb detailed content, which the walk's
       arrival makes false for this one entry. No rule changed -- unchanged prose, restated here.
+  - date: "2026-09-13"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-control-table-class-and-counter-conformance (T2.26): add a third write mode, `control`,
+      alongside scd2/append_only -- writer-internal bookkeeping state (e.g. the entity-id
+      allocation counter, docs/contracts/ops_entity_counters.yaml) that is a single physical
+      table, never reachable through the generic application read/write verbs. No existing rule or
+      write mode changed.
+    migration_story: >-
+      Additive: scd2 and append_only are unchanged. The new write_modes.control entry declares its
+      invariants (hard row ceiling, partition-on-key, no-op-free writes, mandatory
+      maintenance_binding, a dq_scope rule requiring either DQ checks or a named exemption) and its
+      one example table (ops_entity_counters). scripts/checks/contracts/validate_data_model_standard.py
+      requires no change (it checks section presence only); scripts/checks/contracts/
+      validate_table_registration.py is the new admission control this plan adds separately.
+      semantic_break=false.
 
 version: 1
 updated_at: "2026-07-20"
@@ -107,6 +124,43 @@ write_modes:
     shape: history-only event journal; no current-table projection
     when_to_use: insert-once event / telemetry data that is never mutated after the initial write
     example_tables: [ops_smoke_events, telemetry_sessions, telemetry_observations, telemetry_transcripts, telemetry_agents]
+  control:
+    shape: >-
+      a SINGLE physical table -- no history/current SCD2 pair -- partitioned on its own key
+      column. Never an append-only journal either: rows are mutated in place (the allocation
+      counter), but the mutation is a bounded, no-op-free UPDATE serving the writer's own
+      bookkeeping, never an application record.
+    when_to_use: >-
+      writer-internal control state that exists to support the writer's own operation (e.g. the
+      entity-id allocation counter, Decision 84 I-2), never reachable through the generic
+      application read/write verbs. The narrow exception to append-only/SCD2-as-default (rule
+      append-only-default-not-ban above) -- not a template for ordinary application tables.
+    example_tables: [ops_entity_counters]
+    invariants:
+      - >-
+        hard row ceiling per table (e.g. exactly one row per writer-keyspace ops table) -- the
+        owning maintenance_binding health verb asserts it as a failing condition, never a report.
+      - >-
+        partition-on-key (rule partition-every-table, CD.9): partitioned on the table's own key
+        column before first write, same as every other table -- the per-table exception this
+        implies to CD.9's default day(last_updated_timestamp)/day(trade_date) partitioning is
+        named explicitly here, per Decision 137's reversal-conditions clause, rather than
+        expressed as a loosened uniform rule.
+      - >-
+        no-op-free writes: a write that would not change a row's value issues NO UPDATE at all
+        (Decision 55) -- an unconditional write turns a bookkeeping row into a serialization
+        point / file-churn source even when nothing needs to change (the 2026-09-12 3,418-live-
+        file-for-one-row incident this write mode's landing fixes).
+      - >-
+        mandatory maintenance_binding: every control-class table names, in its Class A contract's
+        dq_scope exemption, the maintenance verb that periodically asserts its invariants against
+        the live catalog.
+      - >-
+        dq_scope rule: a control-class table is either DQ-checked like any other table, or
+        declares an EXPLICIT `exempt` naming its maintenance_binding health verb -- the DQ runner
+        having no reachable read path (read_boundary: none) is not itself sufficient; the
+        exemption and its substitute binding must be named, so "forgot" and "deliberately exempt"
+        stay distinguishable (docs/contracts/ops_entity_counters.yaml is the worked example).
 
 indexes:
   # Pointers to the existing detailed sources this standard formalizes and names -- this file does

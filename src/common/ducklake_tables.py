@@ -4,12 +4,19 @@ Owner concern: creating and reconciling the physical history/current table pairs
 table-spec resolver and DDL builder FROM ducklake_scd2_schema (+ stdlib) only, and NEVER from the
 ducklake_runtime facade (Decision 80 acyclic-import discipline) or from ducklake_writes -- there is
 no tables<->writes call in either direction.
+
+T2.26 adds create_control_table: the control-class create path (one physical table, partitioned,
+no history/current pair). It imports its spec/DDL-builder FROM ducklake_control_tables.py only
+(the same one-directional shape as the SCD2 imports above) -- ducklake_control_tables never
+imports this module back.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from src.common.ducklake_control_tables import _column_ddl as _control_column_ddl
+from src.common.ducklake_control_tables import resolve_control_spec
 from src.common.ducklake_scd2_schema import CATALOG_ALIAS, _column_ddl, resolve_table_spec
 
 # ---------------------------------------------------------------------------
@@ -104,3 +111,21 @@ def reconcile_table_columns(con: Any, *, table: str) -> dict[str, list[str]]:
             added_list.append(col_name)
 
     return {"added_history": added_history, "added_current": added_current}
+
+
+def create_control_table(con: Any, *, table: str, force_recreate: bool = False) -> None:
+    """Create the SINGLE physical table for a control-class *table* and partition it BEFORE
+    first write (T2.26). One CREATE plus one SET PARTITIONED BY -- a control table has no
+    history/current pair (ControlTableSpec carries neither), so there is nothing else to create.
+
+    `force_recreate=True` drops the table first (same destructive-guard shape as
+    create_scd2_tables -- the caller, action_create_ops_tables, gates it on an explicit
+    confirm_force_recreate token before ever reaching here).
+    """
+    spec = resolve_control_spec(table)
+    fq = f"{CATALOG_ALIAS}.{spec.table}"
+    columns = _control_column_ddl(spec)
+    if force_recreate:
+        con.execute(f"DROP TABLE IF EXISTS {fq}")
+    con.execute(f"CREATE TABLE IF NOT EXISTS {fq} ({columns})")
+    con.execute(f"ALTER TABLE {fq} SET PARTITIONED BY ({spec.partition_key})")

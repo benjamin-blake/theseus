@@ -264,6 +264,14 @@ def test_require_ops_table_rejects_unknown():
         h._require_ops_table("nope")
 
 
+def test_require_ops_table_rejects_control_class_table():
+    """A control-class table (read_boundary=none, T2.26) is refused here -- registering it for
+    governance never grants application read access. The symmetric writer-side refusal test lives
+    separately in tests/lambdas/ducklake_reader/test_control_table_refusal.py."""
+    with pytest.raises(rt.DuckLakeRuntimeError, match="control-class table"):
+        h._require_ops_table("ops_entity_counters")
+
+
 def test_handler_read_ops_current_end_to_end(monkeypatch):
     monkeypatch.setattr(h, "_open_reader_connection", lambda: FakeCon())
     monkeypatch.setattr(rt, "read_current", lambda con, *, table, key, key_column, limit: [{"id": "rec-1"}])

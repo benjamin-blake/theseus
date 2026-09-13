@@ -127,6 +127,13 @@ def test_resolve_unknown_table_raises():
         schema.resolve_table_spec("ops_does_not_exist")
 
 
+def test_resolve_table_spec_rejects_control_class_table():
+    """resolve_table_spec directed-raises for a control-class table (T2.26) -- never widened to
+    represent one; ducklake_control_tables.resolve_control_spec is the real resolution path."""
+    with pytest.raises(schema.SchemaGateError, match="ducklake_control_tables"):
+        schema.resolve_table_spec("ops_entity_counters")
+
+
 # ---------------------------------------------------------------------------
 # _column_ddl
 # ---------------------------------------------------------------------------

@@ -167,13 +167,15 @@ resource "aws_lambda_function" "ducklake_maintenance" {
 
   environment {
     variables = {
-      # The operational actions target production via explicit event params (catalog_reinit,
-      # reconcile_columns, merge_ops, clone_catalog); EXTENSION_DIRECTORY and
-      # FIELD_SEMANTICS_PATH are the only env-pinned values this function still reads --
-      # DUCKLAKE_DATA_PATH/DUCKLAKE_META_SCHEMA were only consumed by the scheduled smoke
-      # cadences (merge/gc/hot_merge/breaker_probe), which moved to ducklake_maintenance_smoke.tf
-      # in the T2.18 c9 split.
-      DUCKLAKE_EXTENSION_DIRECTORY = local.ducklake_extension_dir
+      # The production-destructive/operational actions target production via explicit event
+      # params (catalog_reinit, reconcile_columns, merge_ops, clone_catalog) -- DUCKLAKE_DATA_PATH
+      # is NOT read by any of those (no-arg invokes refused, Decision 84/81). It IS read by the
+      # read-mostly control_health action (T2.26) as a convenience default, since that action only
+      # asserts invariants and never mutates -- see src/lambdas/ducklake_maintenance/handler.py's
+      # DATA_PATH comment. DUCKLAKE_META_SCHEMA/GC_BREAKER_* remain consumed only by the scheduled
+      # smoke cadences (merge/gc/hot_merge/breaker_probe) on ducklake_maintenance_smoke.tf's sibling.
+      DUCKLAKE_DATA_PATH            = local.ducklake_prod_data_path
+      DUCKLAKE_EXTENSION_DIRECTORY  = local.ducklake_extension_dir
       # catalog_reinit's create_scd2_tables + reconcile_columns/restore_drill's field-spec
       # resolution load the field-semantics contract bundled into the zip (manifest assets[]).
       DUCKLAKE_FIELD_SEMANTICS_PATH = "/var/task/config/lambda/ducklake/field_semantics.yaml"
@@ -252,6 +254,43 @@ resource "aws_lambda_permission" "ducklake_maintenance_merge_ops" {
 }
 
 # ---------------------------------------------------------------------------
+# EventBridge control-health rule (T2.26 control-table-class-and-counter-conformance): periodic
+# assertion of the control-class table invariants (row count, counter floor, live-file ceiling) --
+# the health binding docs/contracts/ops_entity_counters.yaml's dq_scope exemption names as the
+# substitute for DQ-runner coverage (that table has no reachable read path for the DQ runner to
+# use). Staggered to :15 (off both the hot_merge :00 and merge_ops :30, on maintenance_smoke.tf /
+# this file respectively) to avoid throttle under reserved_concurrent_executions=1. No new IAM:
+# reuses the existing maintenance role (control_health only reads).
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_event_rule" "ducklake_maintenance_control_health" {
+  name                = "agent-platform-ducklake-maintenance-control-health"
+  description         = "Every-6h control-class table invariant assertion (T2.26). cron every 6h at :15 UTC."
+  schedule_expression = "cron(15 */6 * * ? *)"
+  state               = "ENABLED"
+
+  tags = {
+    Name    = "DuckLake Maintenance Control Health Schedule"
+    Purpose = "T2.26 control-table-class-and-counter-conformance periodic invariant assertion"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "ducklake_maintenance_control_health" {
+  rule      = aws_cloudwatch_event_rule.ducklake_maintenance_control_health.name
+  target_id = "ducklake-maintenance-control-health"
+  arn       = aws_lambda_function.ducklake_maintenance.arn
+  input     = jsonencode({ action = "control_health", meta_schema = "ducklake_ops" })
+}
+
+resource "aws_lambda_permission" "ducklake_maintenance_control_health" {
+  statement_id  = "AllowEventBridgeControlHealth"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.ducklake_maintenance.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.ducklake_maintenance_control_health.arn
+}
+
+# ---------------------------------------------------------------------------
 # Circuit-breaker CloudWatch metric alarm.
 # Fires when MaintenanceBreakerTrip >= 1 in a 5-minute window.
 # alarm_actions wired to shared SNS topic (FP-B / Decision 39).
@@ -276,6 +315,33 @@ resource "aws_cloudwatch_metric_alarm" "ducklake_maintenance_breaker" {
   tags = {
     Name    = "DuckLake Maintenance Breaker Alarm"
     Purpose = "T2.18 CD.33 H1 circuit breaker alert"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Control-table invariant-violation CloudWatch metric alarm (T2.26), mirrors the breaker alarm
+# above. Fires when ControlTableInvariantViolation >= 1 in a 5-minute window.
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_metric_alarm" "ducklake_maintenance_control_table_invariant" {
+  alarm_name          = "ducklake-maintenance-control-table-invariant"
+  alarm_description   = "DuckLake control-class table invariant violated (row count / counter floor / live-file ceiling). T2.26."
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ControlTableInvariantViolation"
+  namespace           = "DuckLakeMaintenance"
+  period              = 300
+  statistic           = "Sum"
+  threshold           = 1
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  treat_missing_data = "notBreaching"
+
+  tags = {
+    Name    = "DuckLake Maintenance Control Table Invariant Alarm"
+    Purpose = "T2.26 control-table-class-and-counter-conformance invariant alert"
   }
 }
 

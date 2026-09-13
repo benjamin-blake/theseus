@@ -71,6 +71,89 @@ def test_create_scd2_tables_append_only_force_recreate_single_drop():
     assert not any("ops_smoke_events_current" in s for s in sql_stmts)
 
 
+class _ReconcileCon:
+    """Fake connection for reconcile_table_columns/_physical_columns's two lookup paths:
+    information_schema.columns (primary) and PRAGMA table_info (fallback when the primary query
+    returns no rows, e.g. against a catalog that doesn't populate information_schema)."""
+
+    def __init__(self, *, info_schema_cols: dict[str, list[str]] | None = None, pragma_cols: list[str] | None = None):
+        self.executed: list[tuple[str, list | None]] = []
+        self._info_schema_cols = info_schema_cols or {}
+        self._pragma_cols = pragma_cols or []
+        self._last = ""
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+        self._last = sql
+        return self
+
+    def fetchall(self):
+        if "information_schema.columns" in self._last:
+            table_name = self._last.split("table_name = '")[1].split("'")[0]
+            return [(c,) for c in self._info_schema_cols.get(table_name, [])]
+        if self._last.startswith("PRAGMA table_info"):
+            return [(i, c, "VARCHAR", 0, None, 0) for i, c in enumerate(self._pragma_cols)]
+        return []
+
+
+def test_physical_columns_uses_information_schema_when_available():
+    """When information_schema.columns returns rows, that IS the existing-column set -- no PRAGMA
+    fallback query is issued."""
+    all_fields = sorted(rt.resolve_table_spec("ops_recommendations").fields)
+    con = _ReconcileCon(
+        info_schema_cols={"ops_recommendations_history": all_fields, "ops_recommendations_current": all_fields}
+    )
+    result = rt.reconcile_table_columns(con, table="ops_recommendations")
+    assert result["added_history"] == []  # every column already present -- all `continue`
+    assert not any(sql.startswith("PRAGMA") for sql, _ in con.executed)
+
+
+def test_reconcile_table_columns_scd2_processes_both_history_and_current():
+    """A non-append_only table reconciles BOTH the history and current sides -- and a column
+    already present on one side is skipped (`continue`) while a missing column is ALTERed in."""
+    all_fields = sorted(rt.resolve_table_spec("ops_recommendations").fields)
+    con = _ReconcileCon(
+        info_schema_cols={
+            "ops_recommendations_history": all_fields,
+            "ops_recommendations_current": [],  # nothing present -- every field gets ALTERed in
+        }
+    )
+    result = rt.reconcile_table_columns(con, table="ops_recommendations")
+    assert result["added_history"] == []
+    assert set(result["added_current"]) == set(all_fields)
+    alters = [sql for sql, _ in con.executed if sql.startswith("ALTER TABLE") and "ADD COLUMN" in sql]
+    assert all("ops_recommendations_current" in sql for sql in alters)
+
+
+def test_physical_columns_falls_back_to_pragma_when_information_schema_empty():
+    """information_schema.columns returning no rows (e.g. a catalog that doesn't populate it)
+    falls back to PRAGMA table_info."""
+    all_fields = sorted(rt.resolve_table_spec("ops_recommendations").fields)
+    con = _ReconcileCon(pragma_cols=all_fields)
+    result = rt.reconcile_table_columns(con, table="ops_recommendations")
+    assert result["added_history"] == []
+    assert any(sql.startswith("PRAGMA table_info") for sql, _ in con.executed)
+
+
+def test_create_control_table_issues_create_and_partition():
+    con = FakeCon()
+    rt.create_control_table(con, table="ops_entity_counters")
+    sqls = [s for s, _ in con.executed]
+    assert any(s.startswith("CREATE TABLE IF NOT EXISTS") and "ops_entity_counters" in s for s in sqls)
+    assert any("SET PARTITIONED BY (counter_name)" in s for s in sqls)
+    assert not any(s.startswith("DROP TABLE") for s in sqls)
+
+
+def test_create_control_table_force_recreate_drops_first():
+    con = FakeCon()
+    rt.create_control_table(con, table="ops_entity_counters", force_recreate=True)
+    sqls = [s for s, _ in con.executed]
+    drops = [i for i, s in enumerate(sqls) if s.startswith("DROP TABLE")]
+    creates = [i for i, s in enumerate(sqls) if s.startswith("CREATE TABLE")]
+    assert drops and creates
+    assert min(drops) < min(creates)
+
+
 def test_reconcile_table_columns_append_only_history_only():
     """reconcile_table_columns for append_only tables issues ALTER TABLE only on history; added_current is empty."""
     con = FakeCon()

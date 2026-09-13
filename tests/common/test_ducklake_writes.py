@@ -284,6 +284,7 @@ class FileOpsCon:
         seed_max: int = 2170,
         existing_rows: list | None = None,
         occ_fail_on_update: int = 0,
+        hard_fail_substr: str | None = None,
     ):
         self.executed: list[tuple[str, list | None]] = []
         self._replay_rows = replay_rows or []
@@ -291,6 +292,7 @@ class FileOpsCon:
         self._seed_max = seed_max
         self._existing_rows = existing_rows or []
         self._occ_fail_on_update = occ_fail_on_update
+        self._hard_fail_substr = hard_fail_substr
         self._update_calls = 0
         self._last = ""
         self.description = [("c",)]
@@ -298,6 +300,8 @@ class FileOpsCon:
     def execute(self, sql, params=None):
         self._last = sql
         self.executed.append((sql, params))
+        if self._hard_fail_substr and self._hard_fail_substr in sql:
+            raise ValueError("hard failure -- not a collision")
         if "UPDATE" in sql and rt.ENTITY_COUNTERS_TABLE in sql:
             self._update_calls += 1
             if self._update_calls <= self._occ_fail_on_update:
@@ -341,6 +345,29 @@ def test_file_scd2_missing_counter_is_terminal():
         rt.file_scd2(con, {"status": "open"}, table="ops_recommendations")
     assert ("ROLLBACK", None) in con.executed
     assert not any(s.startswith("MERGE INTO") for s, _ in con.executed)
+
+
+def test_allocate_entity_id_rejects_no_writer_keyspace():
+    """_allocate_entity_id's own keyspace guard (defense-in-depth: file_scd2 already refuses
+    before ever calling it, but the private helper must not silently mis-mint if reached
+    directly)."""
+    with pytest.raises(rt.DuckLakeRuntimeError, match="no writer-owned keyspace"):
+        rt._allocate_entity_id(FileOpsCon(), rt.resolve_table_spec("ops_priority_queue"))
+
+
+def test_file_scd2_occ_retry_exhaustion_raises():
+    con = FileOpsCon(counter_value=2170, occ_fail_on_update=99)  # always collide
+    with pytest.raises(rt.OCCRetryExhaustedError, match="exhausted"):
+        rt.file_scd2(con, {"status": "open"}, table="ops_recommendations", sleep=lambda s: None)
+
+
+def test_file_scd2_non_occ_error_propagates():
+    """A hard (non-collision) failure during file_scd2 rolls back and re-raises unconditionally --
+    never retried, never reclassified as an OCC collision."""
+    con = FileOpsCon(counter_value=2170, hard_fail_substr="MERGE INTO")
+    with pytest.raises(ValueError, match="hard failure"):
+        rt.file_scd2(con, {"status": "open"}, table="ops_recommendations")
+    assert any(s == "ROLLBACK" for s, _ in con.executed)
 
 
 def test_bootstrap_entity_counter_seeds_from_history_max():
@@ -405,14 +432,29 @@ def test_write_scd2_advances_counter_for_canonical_caller_key():
     """A caller-keyed rec-NNN write_ops (backfill / pre-merge clients) must never strand the counter."""
     con = FileOpsCon(counter_value=2170)
     rt.write_scd2(con, {"id": "rec-2200", "status": "open"}, table="ops_recommendations")
-    advances = [(s, p) for s, p in con.executed if "GREATEST(current_value, ?)" in s and rt.ENTITY_COUNTERS_TABLE in s]
+    advances = [(s, p) for s, p in con.executed if s.startswith("UPDATE") and rt.ENTITY_COUNTERS_TABLE in s]
     assert advances and advances[0][1] == [2200, "ops_recommendations"]
 
 
 def test_write_scd2_no_counter_advance_for_noncanonical_key():
     con = FileOpsCon(counter_value=2170)
     rt.write_scd2(con, {"id": "test-probe-1", "status": "open"}, table="ops_recommendations")
-    assert not any("GREATEST(current_value" in s for s, _ in con.executed)
+    assert not any(s.startswith("UPDATE") and rt.ENTITY_COUNTERS_TABLE in s for s, _ in con.executed)
+
+
+def test_advance_counter_noop_writes_no_files():
+    """A no-op counter advance (candidate <= current) issues no UPDATE at all.
+
+    Red before the fix: the old unconditional `UPDATE ... SET current_value = GREATEST(...)`
+    issued a write -- and so minted a new DuckLake data file -- even when the candidate id did
+    not exceed the stored value, turning the counter row into a global write-lock/file-churn
+    source. Observation surface: the recording connection fake's executed-SQL list (no UPDATE
+    issued), per VP step 1 -- a SQL-predicate form cannot be discriminated here because the
+    UPDATE would still be issued and merely match zero rows.
+    """
+    con = FileOpsCon(counter_value=2170)
+    rt.write_scd2(con, {"id": "rec-2100", "status": "open"}, table="ops_recommendations")
+    assert not any(s.startswith("UPDATE") and rt.ENTITY_COUNTERS_TABLE in s for s, _ in con.executed)
 
 
 def test_file_scd2_allocated_collision_is_terminal():

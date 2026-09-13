@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from src.common.ducklake_control_tables import is_control_table
 from src.common.ducklake_scd2_schema import (
     CATALOG_ALIAS,
     NAMED_READS,
@@ -122,6 +123,13 @@ def named_read(con: Any, *, verb: str, params: dict[str, Any] | None = None, lim
     entry = NAMED_READS.get(verb)
     if entry is None:
         raise DuckLakeRuntimeError(f"unknown read verb {verb!r}: expected one of {sorted(NAMED_READS)}")
+    if is_control_table(entry.table):
+        # A control-class table has no current projection (read_boundary=none, T2.26): the {tbl}
+        # substitution below assumes one, so a future verb must never be able to bind one here.
+        raise DuckLakeRuntimeError(
+            f"read verb {verb!r} targets {entry.table!r}, a control-class table (read_boundary=none): "
+            "named_read cannot bind it -- no current projection exists to substitute for {tbl}"
+        )
     supplied = dict(params or {})
     if set(supplied) != set(entry.params):
         raise DuckLakeRuntimeError(f"read verb {verb!r} requires params {list(entry.params)}; got {sorted(supplied)}")

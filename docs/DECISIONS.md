@@ -3196,6 +3196,17 @@ Supersedes CIRCA-03's grouping-fingerprint contract; resolves rec-2710 and rec-2
 
 **Related:** CD.9 (this ratifies it), Decision 78 / dec-078 (CD.31 DuckLake adoption -- proxy ratification of the partitioning substance), Decision 81 / dec-081 (CD.9 ALTER-partitioning mechanism amendment), T2.4 (gated item, complete; its note carried the proxy fact this Decision folds back), T2.33 (DuckLake partition-as-code owner), Decision 84 (DECISIONS.md canonical + portal backfill), Decision 105 (candidate-decision ratification lane).
 
+[Amendment 2026-09-13: PLAN-control-table-class-and-counter-conformance (T2.26) names the
+anticipated per-table exception from this Decision's own Reversal-conditions clause: a
+control-class table (docs/contracts/data-modeling-standard.yaml write_modes.control, e.g.
+ops_entity_counters) partitions on its own key column (counter_name) rather than
+day(last_updated_timestamp) -- a writer-internal bookkeeping table has no last_updated_timestamp
+envelope column at all (no history/current SCD2 pair), so the default column does not apply. The
+"no unpartitioned-table path" absolute is UNCHANGED and still holds: the table is partitioned
+before first write, same as every other table; only the partition COLUMN differs, named
+explicitly here per the Reversal-conditions clause rather than expressed as a loosened uniform
+rule.]
+
 ---
 
 ## Decision 136: Ratify CD.39 -- exit-criteria ledger (per-criterion status) is the realized in_progress-resolution mechanism; follow-on planning is the in_progress default (Decided)

@@ -154,12 +154,18 @@ def test_action_file_ops_without_idempotency_mints_identity(monkeypatch):
 
 def test_require_ops_table_rejects_unknown():
     with pytest.raises(h.WriterActionError, match="unknown or missing ops table"):
-        h._require_ops_table("not_a_table")
+        h._require_ops_table("not_a_table", direction="write")
 
 
 def test_require_ops_table_rejects_non_string():
     with pytest.raises(h.WriterActionError):
-        h._require_ops_table(None)
+        h._require_ops_table(None, direction="write")
+
+
+def test_require_ops_table_rejects_control_class_table():
+    """T2.26: the control-class refusal is class-specific, checked before the unknown-table case."""
+    with pytest.raises(h.WriterActionError, match="control-class table"):
+        h._require_ops_table("ops_entity_counters", direction="write")
 
 
 def test_handler_write_ops_unknown_table_returns_400(monkeypatch):
@@ -304,6 +310,36 @@ def test_action_create_ops_tables_caller_keyspace_skips_counter(monkeypatch):
     assert out["ok"] is True
     assert out["counter_seed"] is None
     assert called == []
+
+
+def test_action_create_ops_tables_writer_keyspace_seeds_counter(monkeypatch):
+    """ops_recommendations has a writer-owned keyspace: provisioning seeds/repairs its counter."""
+    monkeypatch.setattr(rt, "create_scd2_tables", lambda con, *, table, force_recreate: None)
+    seeded = []
+    monkeypatch.setattr(rt, "bootstrap_entity_counter", lambda con, spec: (seeded.append(spec.table), 2178)[1])
+    out = h.action_create_ops_tables({"table": "ops_recommendations"}, FakeCon())
+    assert out["ok"] is True
+    assert out["counter_seed"] == 2178
+    assert seeded == ["ops_recommendations"]
+
+
+def test_action_create_ops_tables_control_class_table(monkeypatch):
+    """A control-class table (T2.26) branches before _require_ops_table's generic refusal --
+    this verb is its only legitimate provisioning path: one CREATE + partition, no counter seed."""
+    calls = {}
+
+    def _create_control(con, *, table, force_recreate):  # noqa: ARG001
+        calls.update(table=table, force=force_recreate)
+
+    monkeypatch.setattr(rt, "create_control_table", _create_control)
+    out = h.action_create_ops_tables(
+        {"table": "ops_entity_counters", "force_recreate_tables": True, "confirm_force_recreate": "ops_entity_counters"},
+        FakeCon(),
+    )
+    assert out["ok"] is True
+    assert calls == {"table": "ops_entity_counters", "force": True}
+    assert out["tables"] == ["ops_entity_counters"]
+    assert out["counter_seed"] is None
 
 
 def test_action_file_ops_rejects_caller_keyspace_table(monkeypatch):

@@ -16,8 +16,9 @@ Design invariants (CD.33):
     loudly on mismatch.
 
 Split invariant (PLAN-sloc-ducklake-layer): the write/table-DDL/read/metrics primitives now live
-in ducklake_writes / ducklake_tables / ducklake_reads / ducklake_metrics; this module re-exports
-every symbol so `from src.common.ducklake_runtime import X`, `rt.X`, and
+in ducklake_writes / ducklake_tables / ducklake_reads / ducklake_metrics; the control-class table
+surface (T2.26) lives in ducklake_control_tables. This module re-exports every symbol so
+`from src.common.ducklake_runtime import X`, `rt.X`, and
 `patch("src.common.ducklake_runtime.X")` call sites keep binding to real module attributes at the
 original path. The pure schema layer (spec/SQL builders/gate) lives in ducklake_scd2_schema, whose
 re-export block below is unchanged. Dependency is strictly one-directional: this facade imports
@@ -31,6 +32,14 @@ import time
 from typing import Any, Callable
 
 from src.common import ducklake_spike
+from src.common.ducklake_control_tables import (  # noqa: F401 -- re-exported facade surface (T2.26)
+    ControlTableSpec,
+    bootstrap_entity_counter,
+    control_table_names,
+    ensure_entity_counters_table,
+    is_control_table,
+    resolve_control_spec,
+)
 from src.common.ducklake_metrics import (  # noqa: F401 -- re-exported facade surface (PLAN-sloc-ducklake-layer)
     CLOUDWATCH_NAMESPACE,
     emit_metric,
@@ -81,7 +90,11 @@ from src.common.ducklake_scd2_schema import (
     resolve_table_spec,  # noqa: F401 -- re-exported; own use moved to ducklake_writes/tables/reads
     schema_gate,  # noqa: F401 -- re-exported; own use (write_scd2/file_scd2) moved to ducklake_writes
 )
-from src.common.ducklake_tables import create_scd2_tables, reconcile_table_columns  # noqa: F401 -- re-exported facade surface
+from src.common.ducklake_tables import (  # noqa: F401 -- re-exported facade surface
+    create_control_table,
+    create_scd2_tables,
+    reconcile_table_columns,
+)
 from src.common.ducklake_version import pinned_duckdb_version as _pinned_duckdb_version
 from src.common.ducklake_writes import (  # noqa: F401 -- re-exported facade surface (PLAN-sloc-ducklake-layer)
     CHURN_WRITERS,
@@ -96,8 +109,6 @@ from src.common.ducklake_writes import (  # noqa: F401 -- re-exported facade sur
     _emit_write_metrics,
     _occ_backoff,
     _safe_rollback,
-    bootstrap_entity_counter,
-    ensure_entity_counters_table,
     file_scd2,
     is_occ_collision,
     mint_write_identity,

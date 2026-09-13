@@ -103,6 +103,25 @@ def test_read_history_orders_newest_first():
     assert out == [{"ulid": "01B"}, {"ulid": "01A"}]
 
 
+def test_read_history_applies_limit():
+    class _Cur:
+        description = [("ulid",)]
+
+        def __init__(self):
+            self.sql = ""
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+            return self
+
+        def fetchall(self):
+            return [("01B",)]
+
+    con = _Cur()
+    rt.read_history(con, table="ops_decisions", limit=5)
+    assert "LIMIT 5" in con.sql
+
+
 def test_query_current_substitutes_tbl():
     class _Cur:
         description = [("violation",)]
@@ -182,6 +201,30 @@ def test_named_read_param_mismatch_loud_fails():
         rt.named_read(NamedReadCon(), verb="rec_by_id", params={})
     with pytest.raises(rt.DuckLakeRuntimeError, match="requires params"):
         rt.named_read(NamedReadCon(), verb="open_recs", params={"sneaky": "x"})
+
+
+def test_named_read_applies_limit_to_paginable_verb():
+    con = NamedReadCon(rows=[("rec-1",)])
+    rt.named_read(con, verb="open_recs", params={}, limit=5)
+    sql, _params = con.executed[0]
+    assert sql.rstrip().endswith("LIMIT 5")
+
+
+def test_named_read_rejects_limit_on_non_paginable_verb():
+    with pytest.raises(rt.DuckLakeRuntimeError, match="not paginable"):
+        rt.named_read(NamedReadCon(), verb="rec_by_id", params={"id": "rec-1"}, limit=5)
+
+
+def test_named_read_cannot_bind_control_table(monkeypatch):
+    """named_read refuses a control-class table before ever substituting {tbl} -- dedicated
+    coverage home for the ducklake_reads.py refusal itself (the reader-handler symmetric-refusal
+    test lives separately in tests/lambdas/ducklake_reader/test_control_table_refusal.py)."""
+    from src.common.ducklake_scd2_schema import NamedRead
+
+    probe = NamedRead(verb="_control_probe", table="ops_entity_counters", sql="SELECT * FROM {tbl}")
+    monkeypatch.setitem(rt.NAMED_READS, "_control_probe", probe)
+    with pytest.raises(rt.DuckLakeRuntimeError, match="control-class table"):
+        rt.named_read(NamedReadCon(), verb="_control_probe", params={})
 
 
 def test_named_read_registry_verbs_are_select_only():
