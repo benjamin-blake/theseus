@@ -39,7 +39,11 @@ scope:
       of which assert the deleted mechanism as live -- repoint them at the guard set. Leave lines
       16-17 (guardrails are module-level constants, never relaxed to pass a gate) and the line-24
       T2.19 expansion forward pointer untouched: both still read correctly after the retirement, and
-      the T2.19 pointer is Plan B's surface.
+      the T2.19 pointer is Plan B's surface. Also repoint line 100, the DuckLakeMaintenanceError
+      docstring ("Loud-fail for any maintenance abort condition (circuit breaker trip, invariant
+      violation)"), at the guard set -- the CLASS is retained as the G1-G4 loud-fail raise, its
+      docstring's subject is not, and it is sweep-invisible. The scope row's retention sentence covers
+      MaintenanceBreakerTrip the metric, not this exception class.
   - file: src/lambdas/ducklake_maintenance/handler.py
     action: Modify
     purpose: >-
@@ -106,7 +110,10 @@ scope:
       response_codes (line 121) for the count_unavailable / null-count degradation, AND the gc verb's
       own response_codes (lines 95-97), whose 200 entry enumerates the body the shape assertion now
       checks and whose 500 entry still reads "breaker trip". Neither carries a retired name, so the
-      sweep cannot see them.
+      sweep cannot see them. Same for the merge and hot_merge response_codes 500 entries at lines 85
+      and 109, both reading "DuckLakeMaintenanceError (breaker) / DuckLakeRuntimeError /
+      VersionMismatchError": retiring the breaker: typed_error at 87 and 111 without them would leave
+      each verb's 500 line naming a typed error that no longer exists.
   - file: docs/runbooks/ducklake-catalog-operations.md
     action: Modify
     purpose: >-
@@ -130,20 +137,25 @@ scope:
       purpose: keys and a malformed fence. The sweep is a post-condition ASSERTION, never an edit
       instruction -- this holds for every surface, not just here;
       (c) lines 16 and 194, bare "circuit breaker" in a title and a step description, asserting the
-      mechanism as live -- retitled here, not deferred; and (d) the breaker-probe block at 265-275 in
-      the "### Manual invoke runbook" section, which asserts RETIRED PROBE SEMANTICS as live and is
-      sweep-invisible on every line. Three edits there: 268's "Forced-threshold breaker probe" is
-      repointed at the G1 forcing constant (the same repoint the contract's wording gets); 275's
-      parenthetical "(if any deletable files exist)" is DELETED, because AC5 requires the forcing
-      constant to trip INDEPENDENTLY of catalog contents and that parenthetical documents to an
-      operator the exact vacuity this plan exists to kill; and 267's --function-name is repointed from
-      agent-platform-ducklake-maintenance to agent-platform-ducklake-maintenance-smoke. That last one
-      is a PRE-EXISTING c9-split residue, not a defect this plan introduces -- verified, the admin
-      handler's _ACTIONS dict (lines 418-423) has no breaker_probe key, so the documented invoke
-      returns 400 unknown action today and its "Expect: statusCode=500" is already false. It is
-      corrected here rather than filed because the same three-line block is being rewritten anyway and
-      landing a knowingly-false expectation beside a corrected one is worse than the widening; if the
-      implementer judges it separable, file it instead and leave 267 alone. NOT edited: the "### Guardrail constants"
+      mechanism as live -- retitled here, not deferred; and (d) the breaker-probe block at 268-275
+      (NOT 265-275: 265-266 are the tail of the preceding action=gc invoke and 267 is blank) in the
+      "### Manual invoke runbook" section, which asserts RETIRED PROBE SEMANTICS as live and is
+      sweep-invisible on every line. Exactly TWO edits there, both defects this plan itself creates:
+      268's "Forced-threshold breaker probe" is repointed at the G1 forcing constant (the same repoint
+      the contract's wording gets); and 275's parenthetical "(if any deletable files exist)" is
+      DELETED, because AC5 requires the forcing constant to trip INDEPENDENTLY of catalog contents and
+      that parenthetical documents to an operator the exact vacuity this plan exists to kill.
+      EXPLICITLY NOT EDITED -- line 270's --function-name. It names the admin function
+      agent-platform-ducklake-maintenance for an action the c9 split moved to the smoke function, so
+      the documented invoke returns 400 unknown action today and its "Expect: statusCode=500" is
+      already false (verified: the admin handler's _ACTIONS dict at lines 417-424 carries only
+      catalog_reinit / restore_drill / merge_ops / catalog_stats / reconcile_columns / clone_catalog).
+      That residue is FOUR invokes, not one -- 254 merge, 262 gc, 270 breaker_probe, 416 hot_merge,
+      all four smoke cadences the split moved, and the runbook names the smoke function nowhere
+      (measured: zero occurrences of "maintenance-smoke"). Repointing 1 of 4 turns a uniformly-stale
+      block into a self-contradictory one and leaves an identical decoy at 262, eight lines above the
+      edit. It is a separate defect with its own identity and blast radius and zero overlap with
+      retired breaker semantics: file it as a follow-on rec at implement time, leave all four alone. NOT edited: the "### Guardrail constants"
       yaml block survives the removal of 215-216 intact (snapshot_retain_days, file_cleanup_grace_days,
       snapshot_floor, cleanup_all_in_scheduled_runs are all retained), so its lead-out at 220-221 still
       reads correctly and G4's absolute byte bound is ADDED there rather than replacing the section.
@@ -611,7 +623,7 @@ context:
   - "gates: decision-scout=FLAGS_FOUND (3 rounds, superseded combined plan); plan-critique=REVISE rounds 1-3 (16, 14, 12 findings; all dispositioned); plan-critique=<verdict> after <N> round(s)"
   - "Plan A of a three-way split of PLAN-production-catalog-gc-guardrail-repair (deleted; REVISE at 21 then 16 findings, root cause was arm coupling). Plan B owns compaction coverage and the table-scope constants; Plan C owns GC scheduling, lifecycle and the c2 disposition."
   - "Evidence: rec-3764 (fail-open), rec-3761 (dead byte budget), rec-3759 (gate vacuity). Measurement detail lives in this plan commit body."
-  - "Residues: ROADMAP 1296/1308/5440/9617 assert the breaker as live but sit outside T2.18 and outside this plan's only roadmap edits (the c6 and c8 criterion texts) -- file a follow-on rec at implement time. Runbook 16/194 and the module docstring 11/18-19 are NOT residues: the runbook and ducklake_maintenance.py are two of the six swept surfaces, so those lines sit INSIDE the swept surface set but OUTSIDE the sweep PATTERN, and are named edits in their own scope rows. rec-3761's stored acceptance probe names a node on the deleted check_gc_breaker; repoint it to the G4 byte test at closure."
+  - "Residues (TWO, both filed as follow-on recs at implement time, neither edited here): (1) ROADMAP 1296/1308/5440/9617 assert the breaker as live but sit outside T2.18 and outside this plan's only roadmap edits (the c6 and c8 criterion texts). (2) The runbook's four Manual-invoke commands at 254/262/270/416 (merge, gc, breaker_probe, hot_merge) all target the admin function agent-platform-ducklake-maintenance for actions the c9 split moved to agent-platform-ducklake-maintenance-smoke, so all four return 400 unknown action today; the runbook names the smoke function nowhere. That is a pre-existing c9-split residue with its own blast radius and zero overlap with retired breaker semantics -- repointing only the breaker_probe one, inside a block this plan does edit, would make a uniformly-stale block self-contradictory and leave an identical decoy at 262, so all four stay. Runbook 16/194 and the module docstring 11/18-19 are NOT residues: the runbook and ducklake_maintenance.py are two of the six swept surfaces, so those lines sit INSIDE the swept surface set but OUTSIDE the sweep PATTERN, and are named edits in their own scope rows. rec-3761's stored acceptance probe names a node on the deleted check_gc_breaker; repoint it to the G4 byte test at closure."
   - "closes_criteria is EMPTY deliberately (12l). T2.18's sole open criterion c2 is Plan C's. c6 and c8 have TEXTS rewritten (both pin the retired metric) with NO status change: c6 stays met with met_by repointed to this plan's slug; c8 stays rehomed to T2.26, premise unchanged. c9 is NOT edited -- its text carries no GC_BREAKER_* assertion. progress_note lines are history and stay verbatim."
   - "Decision 88 clause 4 is NOT amended and need not be: its latch is GC_TABLE_SCOPE, which Plan A does not delete -- scope constants move to Plan B with the resolver that replaces them."
   - "Guard vs observability split (gotcha): guard-path catalog reads RAISE; action_merge_ops' two _count_files sites must degrade LOUDLY (null counts + count_unavailable), or a transient error aborts the every-6h compaction Decision 88 cl.1(iii) mandates. Same reason the gc gate keeps force_recreate_tables (rec-2115 gap-1)."
@@ -659,7 +671,7 @@ execution_steps:
     see the probe trip. Do NOT add a live files_cleaned > 0 assertion -- see the AC and F7.
   - >-
     Rewrite the two alarm descriptions and remove the two env vars in the terraform files; retire the
-    gc verb's force_* fields and file-fraction typed_error in the contract; sweep the runbook's 9 sweep-visible references (215/216/229/386/388/390/391/392/396) plus the sweep-invisible named edits its scope row enumerates, which are REPLACEMENTS not deletions: the Circuit breaker section (223 rehead, 225-228/230 delete, 231 rewrite, 233-243 rehome unchanged, 244 reword), the Co-tuning knobs section (380, 382, 397, 399-401 delete, with the fenced block at 384-394 removed WHOLE rather than by matched line), the bare-"circuit breaker" lines 16 and 194, and the Manual-invoke breaker-probe block (268 reword, 275 parenthetical delete, 267 function-name repoint to the smoke function); ADD G4's byte bound into the surviving Guardrail constants block.
+    gc verb's force_* fields and file-fraction typed_error in the contract; sweep the runbook's 9 sweep-visible references (215/216/229/386/388/390/391/392/396) plus the sweep-invisible named edits its scope row enumerates, which are REPLACEMENTS not deletions: the Circuit breaker section (223 rehead, 225-228/230 delete, 231 rewrite, 233-243 rehome unchanged, 244 reword), the Co-tuning knobs section (380, 382, 397, 399-401 delete, with the fenced block at 384-394 removed WHOLE rather than by matched line), the bare-"circuit breaker" lines 16 and 194, and the Manual-invoke breaker-probe block at 268-275 (268 reword, 275 parenthetical delete -- line 270's function-name is deliberately NOT touched, see the scope row); ADD G4's byte bound into the surviving Guardrail constants block.
   - >-
     Write the tests named in test_obligations, each failing against current main, and give the
     terraform assertion ALL THREE red cases: an alarm description carrying a threshold shape (must
