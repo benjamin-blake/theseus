@@ -319,33 +319,6 @@ resource "aws_cloudwatch_metric_alarm" "ducklake_maintenance_breaker" {
 }
 
 # ---------------------------------------------------------------------------
-# Control-table invariant-violation CloudWatch metric alarm (T2.26), mirrors the breaker alarm
-# above. Fires when ControlTableInvariantViolation >= 1 in a 5-minute window.
-# ---------------------------------------------------------------------------
-
-resource "aws_cloudwatch_metric_alarm" "ducklake_maintenance_control_table_invariant" {
-  alarm_name          = "ducklake-maintenance-control-table-invariant"
-  alarm_description   = "DuckLake control-class table invariant violated (row count / counter floor / live-file ceiling). T2.26."
-  comparison_operator = "GreaterThanOrEqualToThreshold"
-  evaluation_periods  = 1
-  metric_name         = "ControlTableInvariantViolation"
-  namespace           = "DuckLakeMaintenance"
-  period              = 300
-  statistic           = "Sum"
-  threshold           = 1
-
-  alarm_actions = [aws_sns_topic.alerts.arn]
-  ok_actions    = [aws_sns_topic.alerts.arn]
-
-  treat_missing_data = "notBreaching"
-
-  tags = {
-    Name    = "DuckLake Maintenance Control Table Invariant Alarm"
-    Purpose = "T2.26 control-table-class-and-counter-conformance invariant alert"
-  }
-}
-
-# ---------------------------------------------------------------------------
 # Outputs -- admin-invoked operational actions only (the c9 smoke gates resolve
 # ducklake_maintenance_smoke_function_url instead; see ducklake_maintenance_smoke.tf).
 # ---------------------------------------------------------------------------
