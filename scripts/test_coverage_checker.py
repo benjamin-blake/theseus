@@ -246,6 +246,7 @@ _CONCERN_SPLIT_TEST_PACKAGES: frozenset[str] = frozenset(
         "scripts/checks/verification/validate_graduation_completeness.py",
         "scripts/checks/verification/validate_scope_boundary.py",
         "scripts/checks/hygiene/validate_placement.py",
+        "scripts/checks/verification/validate_vp_replay.py",
     }
 )
 

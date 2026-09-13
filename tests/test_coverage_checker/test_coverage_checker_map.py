@@ -475,3 +475,18 @@ class TestValidatePlacementConcernSplitRegistration:
         ok, why = check_test_file_exists(source)
         assert ok is True
         assert why == "test package found"
+
+
+class TestVpReplayConcernSplitRegistration:
+    """scripts/checks/verification/validate_vp_replay.py (PLAN-vp-replay-mirror-decomposition) is
+    registered directly in _CONCERN_SPLIT_TEST_PACKAGES: its tests were concern-split into
+    tests/checks/verification/validate_vp_replay/ (four test modules) alongside the deletion of
+    the former flat single-file mirror. Without this registration map_source_to_test resolves the
+    deleted flat file, and validate_red_case_floor fails on an unresolvable mirror rather than a
+    skip."""
+
+    def test_maps_vp_replay_to_concern_split_package(self) -> None:
+        source = ROOT / "scripts" / "checks" / "verification" / "validate_vp_replay.py"
+        result = map_source_to_test(source)
+        assert result is not None
+        assert result == ROOT / "tests" / "checks" / "verification" / "validate_vp_replay"
