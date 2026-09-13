@@ -71,7 +71,7 @@ from typing import Any, Callable, Optional, cast
 
 from scripts.checks._budget_recs import _find_open_budget_breach_rec
 from scripts.convergence_health.approvals import _make_github_caller
-from scripts.convergence_health.escalate import _fetch_open_recs
+from scripts.rec_episode import find_recs
 
 ARTIFACT_NAME = "selection-manifest"
 MANIFEST_MEMBER = "selection-manifest.json"
@@ -503,9 +503,12 @@ def ingest_budget_breaches(
                           from the same token.
         portal_caller:    Injected callable(action, fields) for testability, mirroring escalate().
                           When None, uses scripts.ops_data_portal.file_rec / update_rec directly.
-        open_recs:        Pre-fetched open rec list (for testing). When None, fetched live via the
-                          DuckLake reader `open_recs` named verb -- never the JSONL read cache.
-                          Fetched ONLY when there is at least one episode to file against.
+        open_recs:        Pre-fetched open budget_breach rec list (for testing). When None,
+                          fetched live via scripts.rec_episode.find_recs's source-scoped
+                          structural read (current_state on ops_recommendations, row_filter=
+                          "source = 'budget_breach'") -- never a bulk fetch of every open rec,
+                          never the JSONL read cache. Fetched ONLY when there is at least one
+                          episode to file against.
         resolved_recs:    Pre-fetched resolved (closed/declined/superseded) budget_breach recs (for
                           testing). When None, fetched live per branch via _fetch_resolved_budget_recs,
                           and ONLY for an episode with no open match -- see the module docstring's
@@ -529,7 +532,7 @@ def ingest_budget_breaches(
 
     actions: list[dict[str, Any]] = []
     if groups and open_recs is None:
-        open_recs = _fetch_open_recs(profile=profile)
+        open_recs = find_recs("budget_breach", profile=profile)
     resolved_cache: dict[str, list[dict[str, Any]]] = {}
 
     for group in groups:

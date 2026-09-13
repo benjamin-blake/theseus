@@ -29,12 +29,12 @@ Edge derivation:
 `significance` is a parse_decisions_md() row key (the envelope's routing claim dict, or {} when
 absent) that is DELIBERATELY NOT projected into docs/decisions-index.json -- it is parser-surfaced
 and check-read only (scripts.checks.decisions.validate_decision_entry_conformance), mirroring the
-index-only treatment of `intent`/`amends`/`title_supersedes` before them: the docs/decisions-index.json
-byte pin (112,000 bytes as of migration step 5 of audits/contract-first-governance-33c8667.yaml,
-re-derived downward from Decision 166 point 9's original 131,000 per that point's rec-3012
-deferral and reversal condition (g); see tests/test_decisions_index.py for the derivation) grows
-with every projected field on every row, and significance is a per-entry authoring-time claim the
-index's consumers (decision-scout triage) have no use for.
+index-only treatment of `intent`/`amends`/`title_supersedes` before them: docs/decisions-index.json
+is a read-in-full-every-/plan surface with no stock size guard of its own (Decision 179 retired the
+mechanical ceiling that used to bound it indirectly; T2.56 c1 and T1.5 c1 own the residual), so
+every projected field on every row still has a real, disclosed read cost even though nothing
+mechanically enforces it -- and significance is a per-entry authoring-time claim the index's
+consumers (decision-scout triage) have no use for.
 
 `live` derivation (PLAN-decision-scout-bounded-retrieval): whether the decision number is headed
 in docs/DECISIONS.md, via scripts.decisions_md.decision_header_numbers(paths=[docs/DECISIONS.md])
@@ -54,11 +54,12 @@ was already the narrowest of the five retrieval-aid keys; as of migration step 5
 
 `triage_excerpt` derivation, LIVE ROWS ONLY as of migration step 5 of
 audits/contract-first-governance-33c8667.yaml (decision-scout never reads it for an archived row,
-and the docs/decisions-index.json byte pin grows with every projected field on every row -- the
-same rationale this docstring already gives above for excluding `significance`): a <=320-char
-excerpt for the decision-scout bounded-retrieval SPIRIT lane (Decision 152 gate (ii) widened to
-admit a Decision-clause quote), fallback order Intent -> Problem -> Context (the parser's
-Rationale/Key details/Context extraction) -> Decision (the decision-body marker).
+and every projected field on every row still carries a real read cost on this
+read-in-full-every-/plan surface -- the same rationale this docstring already gives above for
+excluding `significance`, Decision 179): a <=320-char excerpt for the decision-scout
+bounded-retrieval SPIRIT lane (Decision 152 gate (ii) widened to admit a Decision-clause quote),
+fallback order Intent -> Problem -> Context (the parser's Rationale/Key details/Context
+extraction) -> Decision (the decision-body marker).
 `triage_excerpt_source` names which of the four supplied the excerpt (or "" when none of the four
 markers are present at all). `triage_excerpt_truncated` is True iff the source text exceeded 320
 chars and was cut.
@@ -220,7 +221,8 @@ def build_index() -> dict[str, Any]:
         }
         # Skeleton archive rows (rec-3012, migration step 5): a live:false row never derives or
         # carries these five keys -- decision-scout only ever triages live:true rows, and every
-        # projected field on every row grows the docs/decisions-index.json byte pin.
+        # projected field on every row still has a real read cost on this read-in-full-every-/plan
+        # surface (Decision 179 retired the mechanical ceiling; the cost itself did not go away).
         if is_live:
             excerpt, excerpt_source, excerpt_truncated = _build_triage_excerpt(by_number[n])
             entry["triage_excerpt"] = excerpt

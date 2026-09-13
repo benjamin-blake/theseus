@@ -150,6 +150,7 @@ def get_status_aware_diff(root: Path | None = None) -> list[tuple[str, str]]:
     entries: list[tuple[str, str]] = []
 
     push_base = push_context_base(root)
+    base_ref: str | None
     if push_base is not None:
         base_ref = push_base
     else:

@@ -391,9 +391,8 @@ def _check_acceptance_on_main(rec_id: str, acceptance_cmd: str, branch: str) -> 
                 },
             )
             return True
-        else:
-            logger.info("[ACCEPTANCE-CHECK] Acceptance failed on main -- proceeding with plan")
-            return False
+        logger.info("[ACCEPTANCE-CHECK] Acceptance failed on main -- proceeding with plan")
+        return False
 
     except Exception as e:
         logger.warning("[ACCEPTANCE-CHECK] Error during acceptance check: %s", e)

@@ -12,8 +12,8 @@ composes, verifies, and merges the prompt.
 
 *Note: For the full methodology (prompt anatomy, BP1-BP14 checklist, recon dossier, output
 contract skeleton, zero-context verification gate), invoke your `audit-prompt` skill via the
-Skill tool. For canonical git-ops (branching, rebase, PR/CI/merge flow), see AGENTS.md
-`## Git-ops procedure`.*
+Skill tool. For canonical git-ops (branching, rebase, PR/CI/merge flow), see
+`docs/contracts/git-ops.yaml`.*
 
 ## Step 1: Preflight
 
@@ -112,7 +112,7 @@ git add docs/audit-prompts/AUDIT-{slug}.md
 git commit -m "audit({slug}): draft audit prompt"
 ```
 
-(The `audit({slug}):` prefix is registered in AGENTS.md's commit-message conventions table.)
+(The `audit({slug}):` prefix is registered in `docs/contracts/git-ops.yaml`'s commit-message conventions table.)
 
 ## Step 7: Zero-Context Prompt Verification Gate (MANDATORY)
 
@@ -128,7 +128,7 @@ After 3 REVISE rounds, escalate to the human. Never proceed past an incomplete g
 ## Step 8: Merge the Prompt to Main
 
 Commit any remaining changes (`audit({slug}): approved audit prompt`; skip if empty), then use
-the event-driven flow from AGENTS.md `## Git-ops procedure`:
+the event-driven flow from `docs/contracts/git-ops.yaml`:
 
 1. `git fetch origin main && git rebase origin/main` (STOP on conflict)
 2. `git push -u origin HEAD`

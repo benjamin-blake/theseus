@@ -92,7 +92,7 @@ class TestValidateCiRcaTaxonomy:
             "workflows": {},
         }
         monkeypatch.setattr(subject.registry, "all_checks", lambda: {"validate_sloc_limits": object()})
-        monkeypatch.setattr("scripts.ci_rca.taxonomy.enumerate_workflow_names", lambda: [])
+        monkeypatch.setattr("scripts.ci_rca.taxonomy.enumerate_workflow_names", list)
         monkeypatch.setattr("scripts.ci_rca.taxonomy.load_taxonomy", lambda: synthetic)
         failed: list[str] = []
         validate_ci_rca_taxonomy(failed)
@@ -110,7 +110,7 @@ class TestValidateCiRcaTaxonomy:
             "workflows": {},
         }
         monkeypatch.setattr(subject.registry, "all_checks", lambda: {"validate_sloc_limits": object()})
-        monkeypatch.setattr("scripts.ci_rca.taxonomy.enumerate_workflow_names", lambda: [])
+        monkeypatch.setattr("scripts.ci_rca.taxonomy.enumerate_workflow_names", list)
         monkeypatch.setattr("scripts.ci_rca.taxonomy.load_taxonomy", lambda: synthetic)
         failed: list[str] = []
         validate_ci_rca_taxonomy(failed)
@@ -129,7 +129,7 @@ class TestValidateCiRcaTaxonomy:
             "workflows": {},
         }
         monkeypatch.setattr(subject.registry, "all_checks", lambda: {"validate_sloc_limits": object()})
-        monkeypatch.setattr("scripts.ci_rca.taxonomy.enumerate_workflow_names", lambda: [])
+        monkeypatch.setattr("scripts.ci_rca.taxonomy.enumerate_workflow_names", list)
         monkeypatch.setattr("scripts.ci_rca.taxonomy.load_taxonomy", lambda: synthetic)
         failed: list[str] = []
         validate_ci_rca_taxonomy(failed)
@@ -148,7 +148,7 @@ class TestValidateCiRcaTaxonomy:
             "workflows": {},
         }
         monkeypatch.setattr(subject.registry, "all_checks", lambda: {"validate_sloc_limits": object()})
-        monkeypatch.setattr("scripts.ci_rca.taxonomy.enumerate_workflow_names", lambda: [])
+        monkeypatch.setattr("scripts.ci_rca.taxonomy.enumerate_workflow_names", list)
         monkeypatch.setattr("scripts.ci_rca.taxonomy.load_taxonomy", lambda: synthetic)
         failed: list[str] = []
         validate_ci_rca_taxonomy(failed)

@@ -158,3 +158,49 @@ class TestValidateComplexity:
             validate_complexity(failed)
 
         assert failed == []
+
+
+class TestPromptDensityOutliers:
+    """complexity.py:154/158/161 -- the prompt-density arm is advisory-only, so its warnings are
+    observed through the list validate_complexity RETURNS, never through `failed`."""
+
+    @staticmethod
+    def _write_prompts(tmp_path: Path, plain_count: int, with_outlier: bool) -> None:
+        """Write plain_count zero-density prompts, optionally plus one density-1.0 outlier.
+
+        Nine plain plus one outlier gives mean 0.1, stdev 0.3162 and threshold 0.7325, so the
+        outlier's 1.0 clears it and the plain files' 0.0 do not.
+        """
+        prompts_dir = tmp_path / ".github" / "prompts"
+        prompts_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(plain_count):
+            (prompts_dir / f"plain{i}.md").write_text("Regular narrative line.\n", encoding="utf-8")
+        if with_outlier:
+            (prompts_dir / "outlier.md").write_text("You must do the thing.\n", encoding="utf-8")
+
+    @staticmethod
+    def _prompt_warning_files(tmp_path: Path) -> list[str]:
+        """Return the prompt-typed warning paths from the value validate_complexity returns."""
+        failed: list[str] = []
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            warnings = validate_complexity(failed)
+        assert failed == []
+        return [w["file"] for w in warnings if w["type"] == "prompt"]
+
+    def test_prompt_density_outlier_is_flagged(self, tmp_path: Path) -> None:
+        """A prompt more than two stdevs above the mean imperative density is warned about."""
+        self._write_prompts(tmp_path, plain_count=9, with_outlier=True)
+
+        assert ".github/prompts/outlier.md" in self._prompt_warning_files(tmp_path)
+
+    def test_non_outlier_prompt_files_are_not_flagged(self, tmp_path: Path) -> None:
+        """Exact list equality: only the outlier is selected, never the nine in-band files."""
+        self._write_prompts(tmp_path, plain_count=9, with_outlier=True)
+
+        assert self._prompt_warning_files(tmp_path) == [".github/prompts/outlier.md"]
+
+    def test_uniform_prompt_densities_produce_no_prompt_warning(self, tmp_path: Path) -> None:
+        """Anti-vacuity green: a zero-spread prompt surface short-circuits before any warning."""
+        self._write_prompts(tmp_path, plain_count=10, with_outlier=False)
+
+        assert self._prompt_warning_files(tmp_path) == []

@@ -32,7 +32,7 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.hygiene.validate_no_cross_test_imports",
         attr="validate_no_cross_test_imports",
         pre=True,
-        pre_globs=("tests/**",),
+        pre_globs=("tests/**", "scripts/checks/hygiene/validate_no_cross_test_imports.py"),
         full_segment="full_after_lint",
     ),
     Entry(
@@ -91,6 +91,34 @@ ENTRIES: tuple[Entry, ...] = (
         name="validate_vacuity_justified",
         module="scripts.checks.hygiene.validate_vacuity_justified",
         attr="validate_vacuity_justified",
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_raises_discrimination",
+        module="scripts.checks.hygiene.validate_raises_discrimination",
+        attr="validate_raises_discrimination",
+        pre=True,
+        pre_globs=(
+            "tests/**",
+            "scripts/checks/hygiene/**",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_declaring_coverage",
+        module="scripts.checks.hygiene.validate_declaring_coverage",
+        attr="validate_declaring_coverage",
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_episode_lookup_projection",
+        module="scripts.checks.hygiene.validate_episode_lookup_projection",
+        attr="validate_episode_lookup_projection",
+        pre=True,
+        pre_globs=(
+            "scripts/**",
+            "src/common/**",
+        ),
         full_segment="full_after_lint",
     ),
 )

@@ -15,9 +15,10 @@ multi-class modules -- PLAN-plan-resolution-content-keyed extends it next.
 from __future__ import annotations
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
-from scripts.roadmap.plan_document import PlanDocument, validate_paths
+from scripts.roadmap.plan_document import PlanDocument, load, validate_paths
 from tests.fixtures.plan_document_helpers import REPO_ROOT, _base, _mutate
 
 
@@ -80,6 +81,62 @@ class TestClosesCriteria:
         d = _mutate(closes_criteria=tokens)
         doc = PlanDocument.model_validate(d)
         assert doc.closes_criteria == tokens
+
+
+class TestFollowonRecs:
+    """PLAN-plan-followon-recs-field (PDB-01, B1-R5): followon_recs is an additive optional
+    field naming a plan's deferred halves by rec id, token-shape validated like its sibling
+    closes_criteria. Deliberately NOT shared with bundled_recommendations (Fork 2, consistency
+    with Decision 85's whole-corpus revalidation): exactly one merged legacy plan populates that
+    field with prose, and a shared validator would invalidate it."""
+
+    def test_followon_recs_defaults_to_empty_list(self) -> None:
+        doc = PlanDocument.model_validate(_base())
+        assert doc.followon_recs == []
+
+    def test_followon_recs_accepts_rec_id_tokens(self) -> None:
+        d = _mutate(followon_recs=["rec-3091", "rec-3078"])
+        doc = PlanDocument.model_validate(d)
+        assert doc.followon_recs == ["rec-3091", "rec-3078"]
+
+    def test_followon_recs_rejects_prose_with_whitespace(self) -> None:
+        d = _mutate(followon_recs=["file the caching half later"])
+        with pytest.raises(ValidationError, match="not a valid 'rec-NNNN' token"):
+            PlanDocument.model_validate(d)
+
+    def test_followon_recs_rejects_bare_number(self) -> None:
+        d = _mutate(followon_recs=["3091"])
+        with pytest.raises(ValidationError, match="not a valid 'rec-NNNN' token"):
+            PlanDocument.model_validate(d)
+
+    def test_followon_recs_rejects_uppercase_prefix(self) -> None:
+        d = _mutate(followon_recs=["REC-3091"])
+        with pytest.raises(ValidationError, match="not a valid 'rec-NNNN' token"):
+            PlanDocument.model_validate(d)
+
+    def test_followon_recs_rejects_trailing_suffix(self) -> None:
+        d = _mutate(followon_recs=["rec-3091x"])
+        with pytest.raises(ValidationError, match="not a valid 'rec-NNNN' token"):
+            PlanDocument.model_validate(d)
+
+    def test_followon_recs_rejected_at_loader_level(self, tmp_path) -> None:
+        """The token-shape validator also fires through the load()/validate_paths() CLI path,
+        not just model_validate() -- a plan authored to disk with a bad entry must fail the
+        same way validate_plan_documents would catch it in CI."""
+        d = _mutate(followon_recs=["not-a-rec-id"])
+        plan_path = tmp_path / "PLAN-zz-valid-demo.yaml"
+        plan_path.write_text(yaml.safe_dump(d), encoding="utf-8")
+        failures = validate_paths([plan_path])
+        assert len(failures) == 1
+        assert "not a valid 'rec-NNNN' token" in failures[0][1]
+
+    def test_bundled_recommendations_stays_unvalidated(self) -> None:
+        """Pinned asymmetry (Fork 2): the rec-id token validator applies to followon_recs only.
+        PLAN-t1-11-plan-yaml-migration.yaml carries two prose bundled_recommendations entries and
+        must still load -- a shared validator would invalidate this merged, historical plan."""
+        doc = load(REPO_ROOT / "docs" / "plans" / "PLAN-t1-11-plan-yaml-migration.yaml")
+        assert len(doc.bundled_recommendations) == 2
+        assert any(" " in entry for entry in doc.bundled_recommendations)
 
 
 class TestGraduationDisposition:

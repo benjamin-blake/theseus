@@ -6,6 +6,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import cast
 
 EVIDENCE_PATH = Path("logs/debug/implementation-retrospective.json")
 CATEGORIES = (
@@ -48,7 +49,8 @@ def render(evidence: dict[str, object]) -> str:
     sections = []
     for category in CATEGORIES:
         title = category.replace("_", " ").title()
-        entries = evidence[category]
+        # validate(evidence) above raises unless every category holds a list of str.
+        entries = cast(list[str], evidence[category])
         body = "\n".join(f"- {entry}" for entry in entries) or "- None recorded"
         sections.append(f"## {title}\n{body}")
     return "\n\n".join(sections)

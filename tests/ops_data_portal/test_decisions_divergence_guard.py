@@ -266,9 +266,10 @@ class TestSubstantiveSignalPin:
 
         assert "continue-on-error" not in step, "the backfill step must not neutralise its own exit code"
         assert "|| true" not in step["run"], "the backfill step's run script must not neutralise its exit code"
-        assert step.get("if") == "steps.detect-decisions.outputs.changed == 'true'", (
-            "the backfill step must stay co-gated with the DCG-03 orphan guard on the DECISIONS.md-changed condition"
-        )
+        assert step.get("if") == (
+            "!cancelled() && steps.install-dependencies.outcome == 'success' && "
+            "steps.aws-creds.outcome == 'success' && steps.detect-decisions.outputs.changed == 'true'"
+        ), "the backfill step must stay co-gated with the DCG-03 orphan guard on the DECISIONS.md-changed condition"
 
         body = self._heredoc_body(step["run"])
         tree = ast.parse(body)

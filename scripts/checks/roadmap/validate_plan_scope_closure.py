@@ -4,6 +4,12 @@ Thin @register(...) delegate over scripts.roadmap.plan_obligations -- that modul
 registration-closure engine and reads its obligation map from docs/contracts/plan-obligations.yaml
 at check time. Runs in --pre (gated on docs/plans/** changes) and the full tier's
 full_after_lint segment (scripts/checks/roadmap/_manifest.py).
+
+Accounting (Decision 170): the grammar leg below runs UNCONDITIONALLY, before plan discovery, so
+this check always reads docs/contracts/plan-obligations.yaml -- there is no path on which the
+contract goes unexamined. Both reachable exits therefore declare examined(), never skipped(): an
+unreadable/malformed contract is a FINDING (validate_obligation_grammar reports it), not a
+could-not-examine skip.
 """
 
 from __future__ import annotations
@@ -17,7 +23,8 @@ from scripts.roadmap import plan_obligations
 @registry.register("validate_plan_scope_closure", owner="platform")
 def validate_plan_scope_closure(failed: list[str], plan_paths: list[Path] | None = None) -> None:
     """Flag a net-new, schema_version >= 4 IMPLEMENTATION plan whose scope omits a
-    mechanically-derivable companion registration (docs/contracts/plan-obligations.yaml).
+    mechanically-derivable companion registration (docs/contracts/plan-obligations.yaml), AND flag
+    a docs/contracts/plan-obligations.yaml body that violates its own five-guard grammar.
 
     `plan_paths` overrides plan discovery and is accepted UNFILTERED -- absolute or relative,
     with no re-application of the net-new/schema-version/PLAN_PATH_RE diff-derivation gate -- so
@@ -27,9 +34,17 @@ def validate_plan_scope_closure(failed: list[str], plan_paths: list[Path] | None
     -- this check never globs docs/plans/.
     """
     print("\n=== Plan scope registration-closure validation ===")
+
+    grammar_findings = plan_obligations.validate_obligation_grammar()
+    for finding in grammar_findings:
+        print(f"  FAIL (grammar): {finding}")
+    if grammar_findings:
+        failed.extend(grammar_findings)
+
     paths = plan_obligations.net_new_v4_implementation_plan_paths() if plan_paths is None else plan_paths
     if not paths:
         print("  PASS: no net-new IMPLEMENTATION plan (schema_version >= 4) to check.")
+        registry.examined(1, unit="artefacts")
         return
     errors: list[str] = []
     for path in paths:
@@ -43,3 +58,4 @@ def validate_plan_scope_closure(failed: list[str], plan_paths: list[Path] | None
         failed.extend(errors)
     else:
         print(f"  PASS: {len(paths)} plan(s) closure-complete.")
+    registry.examined(1 + len(paths), unit="artefacts")

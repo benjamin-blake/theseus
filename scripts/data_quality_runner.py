@@ -3,6 +3,19 @@
 Modelled after dbt test semantics. Each check produces a SQL query that returns
 VIOLATION rows. Zero violations = PASS. Any violations = FAIL (or WARN).
 
+Two-layer health picture (surfaced in preflight's `data_quality` section):
+    1. Coverage, read from config/agent/data_quality/*.yaml: how many declarative
+       checks (not_null, unique, accepted_values, relationships, row_count,
+       recency) are defined across how many tables (checks_defined > 0 means
+       there is visibility into data correctness at all).
+    2. State, read from logs/debug/dq-latest.json: the verdict, pass/fail/warn
+       counts, and timestamp of the most recent run of this module
+       (last_run.verdict == PASS means the data was actually correct as of
+       that run).
+    Coverage without state means checks are defined but have never run.
+    checks_defined == 0 means a plan touching data write paths should add YAML
+    checks here; a FAIL verdict means the plan should note which tables failed.
+
 Usage:
     # Run all checks for all tables
     AWS_PROFILE=agent_platform python -m scripts.data_quality_runner

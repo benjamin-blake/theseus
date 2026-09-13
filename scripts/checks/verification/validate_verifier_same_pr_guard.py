@@ -76,6 +76,15 @@ def validate_verifier_same_pr_guard(failed: list[str]) -> None:
       (c) No covered file appears in the diff (the author is changing only the verifier,
           not any guarded target).
 
+    This diff's own plan paths never count as covered -- the CANDIDATE set
+    ``_common.plan_paths_from_changed`` returns for the changed set. Sanction row
+    ``implementing_plan_bookkeeping`` in docs/contracts/implement-scope-boundary.yaml already
+    holds a plan document to be a bookkeeping companion of its own implement diff rather than
+    code. The candidate set is deliberate rather than that contract's derived one because
+    ``implementation_declared`` flips only in the commit flow, so the derived set is empty while
+    this check runs. This REFINES what counts as covered and is not a further exception beside
+    (b) and (c): a verifier changed alongside any real covered source file still violates.
+
     AST-scan scripts/verifiers/*.py to extract the ``covers`` class attribute.
     Classes without an explicit ``covers`` default to ["**"] (matches everything).
     """
@@ -83,10 +92,12 @@ def validate_verifier_same_pr_guard(failed: list[str]) -> None:
     verifiers_dir = _common.ROOT / "scripts" / "verifiers"
     if not verifiers_dir.is_dir():
         print("  scripts/verifiers/ not found -- skip.")
+        registry.skipped("scripts/verifiers/ not found")
         return
 
     changed = _common.get_changed_files()
     changed_set = set(changed)
+    plan_companions = set(_common.plan_paths_from_changed(changed))
 
     git_new = _common.run(
         ["git", "diff", "--name-only", "--diff-filter=A", "origin/main"],
@@ -98,10 +109,12 @@ def validate_verifier_same_pr_guard(failed: list[str]) -> None:
     new_files: set[str] = set(git_new.stdout.strip().splitlines()) if git_new.returncode == 0 else set()
 
     violations: list[str] = []
+    scanned = 0
     for py_file in sorted(verifiers_dir.glob("*.py")):
         rel = str(py_file.relative_to(_common.ROOT))
         if rel not in changed_set:
             continue
+        scanned += 1
 
         try:
             source = py_file.read_text(encoding="utf-8")
@@ -117,7 +130,9 @@ def validate_verifier_same_pr_guard(failed: list[str]) -> None:
 
         for cls in classes:
             covers = _extract_verifier_covers(cls) or ["**"]
-            covered_in_diff = [f for f in changed if f != rel and any(fnmatch.fnmatch(f, g) for g in covers)]
+            covered_in_diff = [
+                f for f in changed if f != rel and f not in plan_companions and any(fnmatch.fnmatch(f, g) for g in covers)
+            ]
             if not covered_in_diff:
                 # Exception (c): no covered file in this diff.
                 continue
@@ -132,6 +147,8 @@ def validate_verifier_same_pr_guard(failed: list[str]) -> None:
                 + ", ".join(covered_in_diff[:3])
                 + (" ..." if len(covered_in_diff) > 3 else "")
             )
+
+    registry.examined(scanned, unit="verifier_modules")
 
     if violations:
         for v in violations:

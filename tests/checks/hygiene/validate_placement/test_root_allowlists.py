@@ -378,3 +378,19 @@ class TestValidatePlacementRootAllowlists:
             failed: list[str] = []
             self.validate_placement(failed, router_path=router)
         assert failed == []
+
+    def test_scripts_root_allowlist_integration_malformed_fails(self, tmp_path: Path) -> None:
+        """A present-but-malformed scripts_root_allowlist (a string, not a mapping) is a single
+        gate failure carrying the malformed message -- the RS-01 twin of the RS-03 case above."""
+        router = self._router(
+            tmp_path,
+            "schema_version: 1\n"
+            "routes:\n"
+            "  - topic: file-target\n"
+            "    targets: [scripts/validate.py]\n"
+            'scripts_root_allowlist: "x"\n',
+        )
+        with patch("scripts.checks._common.run", side_effect=self._mock_ls_files(["scripts/validate.py"])):
+            failed: list[str] = []
+            self.validate_placement(failed, router_path=router)
+        assert failed == ["Scripts-root allowlist: scripts_root_allowlist is not a mapping"]

@@ -20,7 +20,7 @@ from scripts.verify_ci_workflow import (
 )
 
 # ---------------------------------------------------------------------------
-# _check_apply_rca_fallback (PLAN-gated-apply-rca-trigger)
+# tests for _check_apply_rca_fallback (PLAN-gated-apply-rca-trigger)
 # ---------------------------------------------------------------------------
 
 _DISPATCH_STEP: dict[str, Any] = {

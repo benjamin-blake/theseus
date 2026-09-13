@@ -603,7 +603,7 @@ def read_jsonl(path: Path) -> list[dict]:
     entries: list[dict] = []
     for lineno, raw in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
         line = raw.strip()
-        if not line or line.startswith("#") or line.startswith('{"_schema'):
+        if not line or line.startswith(("#", '{"_schema')):
             continue
         try:
             entries.append(json.loads(line))

@@ -21,12 +21,14 @@ SCANNED_PATHS: tuple[str, ...] = (
     "scripts/ops_portal/*.py",
     "scripts/convergence_health/code_drift.py",
     "scripts/convergence_health/escalate.py",
+    "scripts/convergence_health/sensor_liveness.py",
     "scripts/checks/_budget_recs.py",
     "scripts/ci_rca/probe_health.py",
     "scripts/preflight/ci_rca_gauges.py",
     "scripts/executor/jsonl_store.py",
     "scripts/executor/branch_lifecycle.py",
     "scripts/ducklake_smoke/lambda_ops_gates.py",
+    "scripts/backlog_health/escalate.py",
 )
 
 

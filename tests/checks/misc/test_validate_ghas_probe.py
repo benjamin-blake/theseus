@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from scripts.checks.misc.validate_ghas_probe import (
+    ProbeAuthError,
     ProbeTransportError,
     _actions_scope_label,
     _alerts_reachability,
@@ -289,3 +290,34 @@ class TestProbeErrorBranches:
     def test_disabled_push_protection_is_reported(self) -> None:
         state = {"scanning_status": "enabled", "push_protection": "disabled", "actions_enabled": True}
         assert _disabled_controls(state) == ["push_protection=disabled"]
+
+
+class TestAuthErrorsAreDistinctFromTransportErrors:
+    """_get must classify 401/403 as ProbeAuthError, never as the generic ProbeTransportError.
+    Both callers catch the two classes together for the failed[]/exit-code outcome, so the
+    class identity (and the runner's message) is the only channel that tells them apart."""
+
+    @staticmethod
+    def _raise_http(code: int):
+        def _urlopen(request: object, timeout: float = 15) -> None:
+            raise urllib.error.HTTPError(url="x", code=code, msg="denied", hdrs=None, fp=None)  # type: ignore[arg-type]
+
+        return _urlopen
+
+    def test_get_raises_probe_auth_error_on_401(self) -> None:
+        with patch("scripts.checks.misc.validate_ghas_probe.urlopen", side_effect=self._raise_http(401)):
+            with pytest.raises(ProbeAuthError, match="HTTP 401"):
+                _get("/repos/x/y", "tok")
+
+    def test_get_raises_probe_auth_error_on_403(self) -> None:
+        with patch("scripts.checks.misc.validate_ghas_probe.urlopen", side_effect=self._raise_http(403)):
+            with pytest.raises(ProbeAuthError, match="HTTP 403"):
+                _get("/repos/x/y", "tok")
+
+    def test_runner_reports_a_401_as_an_auth_error(self, capsys: pytest.CaptureFixture) -> None:
+        with (
+            patch.dict("os.environ", {"GHAS_PROBE_TOKEN": "tok"}),
+            patch("scripts.checks.misc.validate_ghas_probe.urlopen", side_effect=self._raise_http(401)),
+        ):
+            assert _ghas_run_cli() != 0
+        assert "auth error, cannot verify: HTTP 401" in capsys.readouterr().out

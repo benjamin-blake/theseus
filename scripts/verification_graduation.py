@@ -276,6 +276,26 @@ def _run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, encoding="utf-8")
 
 
+def _provision_venv_symlink(wt_path: Path, repo_root: Path) -> Path | None:
+    """Symlink ``repo_root``'s ``.venv`` into the worktree, if ``repo_root`` has one.
+
+    Keyed off the ``repo_root`` ARGUMENT, never the module-level ``ROOT`` -- a synthetic
+    fixture repo (tests build these under tmp_path, with neither a `.venv` nor a
+    `bin/venv-python`) must stay unprovisioned so its own environment-probe tests can still
+    exercise the unrunnable-interpreter path. Without this, `bin/venv-python` invoked inside
+    the worktree resolves its own location via `$0` and re-derives `REPO_ROOT` relative to
+    cwd (see `bin/venv-python`), landing on `<worktree>/.venv/bin/python` -- absent on a bare
+    `git worktree add`, since `.venv` is gitignored and was never checked out. Returns the
+    created symlink path, or None if `repo_root` carries no `.venv` to provision.
+    """
+    real_venv = repo_root / ".venv"
+    if not real_venv.exists():
+        return None
+    wt_venv = wt_path / ".venv"
+    wt_venv.symlink_to(real_venv, target_is_directory=True)
+    return wt_venv
+
+
 @contextlib.contextmanager
 def git_worktree(ref: str, repo_root: Path | None = None) -> Iterator[Path]:
     """Check out ``ref`` into a temporary git worktree; remove it on exit.
@@ -289,13 +309,106 @@ def git_worktree(ref: str, repo_root: Path | None = None) -> Iterator[Path]:
     if add_result.returncode != 0:
         shutil.rmtree(tmp_parent, ignore_errors=True)
         raise GraduationError(f"git worktree add failed for ref {ref!r}: {add_result.stderr.strip()}")
+    venv_symlink = _provision_venv_symlink(wt_path, root)
     try:
         yield wt_path
     finally:
+        # Explicit unlink before `worktree remove`/`rmtree` even though both were verified not
+        # to follow the symlink into the real .venv -- a 432MB destructive failure mode is not
+        # a property to rely on implicitly.
+        if venv_symlink is not None and venv_symlink.is_symlink():
+            venv_symlink.unlink()
         remove_result = _run_git(["worktree", "remove", "--force", str(wt_path)], root)
         if remove_result.returncode != 0:
             _run_git(["worktree", "prune"], root)
         shutil.rmtree(tmp_parent, ignore_errors=True)
+
+
+# Allowlisted interpreter tokens the environment probe recognises, longest-first so a
+# whole-word match on "bin/venv-python" is found before "python" is ever attempted at the
+# same span -- see _probed_interpreter_tokens for why order alone isn't the whole story.
+_INTERPRETER_ALLOWLIST: tuple[str, ...] = ("bin/venv-python", "python3", "python", "bash", "sh")
+
+_INTERPRETER_TOKEN_RE = re.compile(r"\b(?:" + "|".join(re.escape(tok) for tok in _INTERPRETER_ALLOWLIST) + r")\b")
+
+# Slots whose materialized check carries a `.command` list a subprocess actually execs.
+# test_selector always runs via sys.executable (verification_checks.py's TestSelectorCheck),
+# so it inherits the parent interpreter and has no tree-relative resolution to break;
+# grep_count/file_presence never spawn a subprocess at all. Probing either would be a no-op
+# at best and a wrong-headed assertion at worst.
+_PROBEABLE_SLOTS: frozenset[str] = frozenset({"command_exit_zero", "command_output_matches", "metric_under_threshold"})
+
+
+def _probed_interpreter_tokens(command: list[str]) -> list[str]:
+    """Distinct allowlisted interpreter tokens appearing anywhere in `command` (not just
+    argv[0]) -- a bash- or timeout-headed row can still invoke bin/venv-python in its body
+    (29 of 139 cohort rows have this shape; a head-only probe is blind to all 29). Matched on
+    regex word boundaries, never bare substrings: a naive substring scan finds "sh" inside
+    "shard", "push", "shell", "shutil", "sha256" (42 spurious hits across the live corpus).
+    Because re.finditer finds leftmost non-overlapping matches, a "bin/venv-python" occurrence
+    is consumed whole before the engine ever considers the "python" tail inside it as a
+    separate start position, so the same token instance is never double-counted.
+    """
+    text = " ".join(command)
+    seen: list[str] = []
+    for match in _INTERPRETER_TOKEN_RE.finditer(text):
+        token = match.group(0)
+        if token not in seen:
+            seen.append(token)
+    return seen
+
+
+def _probe_interpreter(token: str, revert_worktree: Path) -> tuple[bool, str]:
+    """Attempt to launch `token` as `<token> -c ''` with cwd set to `revert_worktree`.
+
+    A relative token (e.g. "bin/venv-python") resolves relative to `cwd` at exec time, which
+    is exactly what materialize_check_in_tree's own `cwd=` repointing relies on -- this probe
+    exercises the identical resolution path the real check would take. FileNotFoundError/OSError
+    (e.g. a synthetic repo with no bin/venv-python at all) is a probe FAILURE, not an exception
+    to propagate -- the caller decides whether that failure matters.
+    """
+    try:
+        result = subprocess.run(
+            [token, "-c", ""],
+            cwd=str(revert_worktree),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return False, str(exc)
+    if result.returncode == 0:
+        return True, ""
+    detail = result.stderr.strip() or result.stdout.strip()
+    return False, f"exit {result.returncode}" + (f": {detail}" if detail else "")
+
+
+def _probe_environment_on_fail(row: dict, check: BaseCheck, wt_root: Path) -> None:
+    """Before a revert-leg FAIL is attributed to content, prove the revert worktree could
+    execute every allowlisted interpreter token the check's command references.
+
+    Raises GraduationError (fail-loud, Decision 55) naming the check_id, the unrunnable token,
+    and its exit code/detail the moment any probed token cannot launch -- this is the gate
+    that stops an environment defect (e.g. a missing .venv) from being misread as the check
+    discriminating between pre- and post-change content. A command whose interpreter falls
+    outside the allowlist, or that reaches here via a non-probeable slot, is simply not probed
+    -- the probe is a positive detector only and must never manufacture a failure for an
+    unrecognised head (two `timeout`-headed rows already live on main; their bodies still
+    surface bin/venv-python/bash and get probed via the whole-command scan).
+    """
+    if row.get("primitive_slot") not in _PROBEABLE_SLOTS:
+        return
+    command = getattr(check, "command", None)
+    if not command:
+        return
+    for token in _probed_interpreter_tokens(command):
+        ok, detail = _probe_interpreter(token, wt_root)
+        if not ok:
+            raise GraduationError(
+                f"check_id={row.get('check_id')!r}: interpreter {token!r} is not runnable in the "
+                f"revert worktree ({detail}) -- refusing to admit a FAIL that may be environmental, "
+                "not content"
+            )
 
 
 def make_worktree_revert_runner(
@@ -311,7 +424,10 @@ def make_worktree_revert_runner(
     def revert_runner(_check: BaseCheck) -> CheckResult:
         with git_worktree(ref, repo_root=repo_root) as wt_root:
             reverted_check = materialize_check_in_tree(row, wt_root)
-            return reverted_check.run()
+            result = reverted_check.run()
+            if result.status == CheckStatus.FAIL:
+                _probe_environment_on_fail(row, reverted_check, wt_root)
+            return result
 
     return revert_runner
 

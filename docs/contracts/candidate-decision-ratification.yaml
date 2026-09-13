@@ -10,7 +10,31 @@ contract:
   evaluator:
     agent_surface: .claude/skills/implement/SKILL.md
 
-amendment_log: []
+amendment_log:
+  - date: "2026-09-12"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-skills-layer-prose-relocation (T2.56 c1 skills-layer conjunct): expanded the
+      pre-existing lane_steps.plan.draft and lane_steps.implement.execute keys with the full
+      relocated protocols from the planning and implement skills' Candidate Decision Ratification
+      / CD Ratification Bookkeeping sections (both heading + preamble stay in their skills as
+      mandatory-read stubs). Leaf values stay scalar strings -- no Class A/B descriptor-key
+      smuggling introduced. No new rule -- unchanged prose, restated here.
+  - date: "2026-09-04"
+    semantic_break: true
+    change_class: field_add
+    summary: >-
+      PLAN-roadmap-blocking-edge-semantics: documented the new CandidateDecision.affects field
+      (in-scope-of, never completion-blocking -- see affects_field below) and narrowed the
+      necessary_not_sufficient claim from "gate derivation keys purely on cd.state == pending"
+      to "keys on gates, which affects deliberately does not populate" -- affects splits the
+      formerly-overloaded gates field's non-gating uses (e.g. CD.17) out into their own edge
+      type. Also corrected three stale scripts/roadmap/platform_roadmap.py (facade) pointers to
+      their real defining modules: scripts/platform_roadmap_models.py for CandidateDecision's
+      own fields (surfacing_signal.location, second_signal_realized_but_pending.location), and
+      scripts/platform_roadmap_state.py for blocked_on_cd / to_preflight_dict
+      (necessary_not_sufficient).
 
 version: 1
 last_updated: "2026-07-24"
@@ -56,10 +80,26 @@ canonical_ratified_shape:
     warehouse ids (dec-1085/1086/1089/1091) before Decision 105 reconciled them onto the real
     3-digit DECISIONS.md numbers.
 
+affects_field:
+  field: affects
+  type: "list[str]"
+  location: "CandidateDecision.affects (scripts/platform_roadmap_models.py)"
+  semantics: >-
+    In-scope-of, never completion-blocking (PLAN-roadmap-blocking-edge-semantics -- splits the
+    former overloaded gates field into two edge types: gates stays completion-blocking, affects
+    is the non-gating "this CD's work touches these items" relationship, e.g. CD.17's freeze
+    scope). A tier_item named in a CD's affects is within that CD's scope of impact but its
+    completion is NOT gated on the CD ratifying -- gate derivation (see necessary_not_sufficient
+    below) keys on gates only, which affects deliberately does not populate.
+    realization_candidates() and blocked_on_cd() (scripts/platform_roadmap_state.py) both treat
+    an empty-gates CD carrying affects as non-gating: no vacuous-True realization surfacing, no
+    completion_blocked_on_cd entry.
+  computed_by: "Read directly off CandidateDecision.affects; no dedicated projection helper."
+
 surfacing_signal:
   field: realization_evidence
   type: "str | None"
-  location: "CandidateDecision.realization_evidence (scripts/roadmap/platform_roadmap.py)"
+  location: "CandidateDecision.realization_evidence (scripts/platform_roadmap_models.py)"
   semantics: >-
     Free-text evidence that a pending CD's gated work is realized/live, set by whoever notices
     (audit, /orient session, planning). Truthy realization_evidence on a state==pending CD makes
@@ -73,7 +113,7 @@ second_signal_realized_but_pending:
     lower-confidence surfacing signal, distinct from the deliberate realization_evidence signal above.
   field: detail
   type: "str"
-  location: "CandidateDecision.detail (scripts/roadmap/platform_roadmap.py)"
+  location: "CandidateDecision.detail (scripts/platform_roadmap_models.py)"
   semantics: >-
     A pending CD whose free-text detail carries a '[Realized' prose marker but has NOT (yet) been
     given structured realization_evidence is flagged for corroboration/ratification-review -- a
@@ -177,7 +217,39 @@ lane_steps:
       Decision text (including any reversal conditions) plus the exact portal + roadmap-flip
       commands to run at /implement time. The plan confirmation step + plan-critique are the
       human sign-off on the drafted Decision text -- ratification is the user's call, never
-      unilateral.
+      unilateral. Fires when the plan's scope realizes the work a pending candidate_decision
+      (CD.NN) gates, OR the CD was surfaced by /orient's "Ratifiable CDs" subsection
+      (platform_roadmap.ratifiable_cds -- pending CDs carrying realization_evidence).
+
+      Protocol (relocated from the planning skill's Candidate Decision Ratification section,
+      PLAN-skills-layer-prose-relocation): (1) Confirm the CD's realization_evidence (or
+      equivalent corroborating evidence gathered this session) actually establishes the gated
+      work is realized/live -- do not draft a ratification for a forward-intent CD (Decision 55:
+      no unilateral judgement calls; no evidence, no candidacy). (2) Add a ratification block to
+      the plan (own section, distinct from scope/execution_steps) containing: the full drafted
+      Decision text (title, body, any amendments to other Decisions/CDs it narrows or
+      supersedes) -- including explicit reversal conditions if the ratified state could later be
+      undone (e.g. a swap-back to a prior architecture); a ratification with no reversal
+      conditions when the realized state is reversible is incomplete. The exact
+      `bin/venv-python -m scripts.ops_data_portal --backfill-decisions-md` (or --file-decision
+      single-row alternative) command sequence /implement will run. The exact roadmap-flip diff:
+      state: ratified + ratified_as: dec-NNN + filed_via: ops_decisions:dec-NNN (canonical shape;
+      same NNN in both fields) on the target CD entry. Wave bundling: when >=2 same-session PURE
+      gate-clear CDs realize together (no content beyond "this CD's work is realized"), draft ONE
+      wave ## Decision N entry with a per-CD clause each, all pointing at the shared dec-NNN
+      (batch_wave_ratified_form above) -- a content-bearing ratification keeps its own entry. (3)
+      This is a DRAFT only. Do not run the portal write or the roadmap flip during /plan --
+      Decision 105 / the plan's own constraints reserve execution for /implement behind an
+      execution-time human confirmation gate. Planning-time writes would make the Step 6b
+      confirmation gate meaningless (the write already done before the human signs off). (4) The
+      Step 6b Confirmation Gate and the Critique Gate (plan-critique) ARE the human sign-off on
+      the drafted Decision text -- do not add a separate approval step. If Decision-Scout flags a
+      contradiction with the drafted text, resolve it before presenting. Numbering-race note:
+      decision numbers are not reserved at draft time. Re-check the current max ## Decision NNN:
+      header in docs/DECISIONS.md at /implement execution time -- a concurrent PR may have
+      claimed the drafted number. The referential guard (validate_candidate_decision_ratification)
+      catches any resulting header mismatch, so shifting to the next free number at execution
+      time is safe.
   implement:
     execute: >-
       After explicit execution-time human confirmation (never before), /implement: (1) authors
@@ -194,9 +266,59 @@ lane_steps:
       discipline_points/detail prose on CDs touched by this ratification that assumed the CD was
       still pending, so stale pending-tense assertions do not survive the flip.
 
+      Full protocol (relocated from the implement skill's CD Ratification Bookkeeping section,
+      PLAN-skills-layer-prose-relocation): this step fires ONLY when the approved plan carries a
+      ratification block, and NEVER runs without the explicit execution-time human confirmation
+      in step 2 below. (1) Locate the ratification block in the approved plan (drafted Decision
+      text, reversal conditions if applicable, and the exact portal + roadmap-flip commands). (2)
+      STOP and obtain explicit execution-time human confirmation of the Decision text before any
+      write. Plan approval (the planning skill's Step 6b + Critique Gate) is sign-off on the
+      drafted text; it is NOT authorization to execute the write. Re-present the drafted Decision
+      text verbatim and wait for an explicit go-ahead in THIS session. Do not proceed on an
+      assumed or inferred yes. (3) Author the DECISIONS.md entry using the confirmed text. Before
+      assigning the number, re-check the current max ## Decision NNN: header (numbering-race
+      note: a concurrent PR may have claimed the drafted number since /plan ran -- shift to the
+      next free number if so, and update the ratified_as/filed_via targets in the same edit). (4)
+      ETL via the Single Portal Invariant (Decision 84):
+      `bin/venv-python -m scripts.ops_data_portal --backfill-decisions-md` (the --file-decision
+      single-row form is the alternative for a single entry). Confirm the new dec-NNN row(s) are
+      present in logs/.decisions-index.jsonl after the sync. NEVER edit the JSONL cache directly.
+      (5) Flip the CD in docs/ROADMAP-PLATFORM.yaml to the canonical shape: state: ratified +
+      ratified_as: dec-NNN + filed_via: ops_decisions:dec-NNN (same NNN in both fields). If the
+      plan's ratification block calls for truth-maintenance edits to the CD's body (e.g. a stale
+      mechanism description contradicted by the ratified reality), apply them in the SAME edit --
+      do not leave the body describing a superseded mechanism after the flip (mirrors the
+      exit-criteria realized-differently rule, docs/contracts/exit-criteria-ledger.yaml's
+      fields.status semantics). (6) Re-run `bin/venv-python -m scripts.session.preflight` (or
+      `-m scripts.roadmap.platform_roadmap` for the full dict if the slim preflight payload omits
+      the field you need) and confirm the ratified CD no longer appears in blocked_on_cd /
+      completion_blocked_on_cd for any item it was gating. (7) Run
+      `bin/venv-python -m scripts.validate --pre` -- the diff selects
+      validate_candidate_decision_ratification, which must pass against the new dec-NNN header.
+      (8) Do NOT flip any tier_item status as part of this step. An item that fully unparks
+      (every gating CD ratified AND zero open criteria) is a separate Tier_item bookkeeping
+      decision (docs/contracts/tier-item-lifecycle.yaml#bookkeeping_walk) -- note in the PR body
+      which items became unpark-eligible, if any, but let the normal bookkeeping walk decide
+      status flips (Decision 90). Batch-wave bundling (Decision 150, >=2 same-session PURE
+      gate-clear CDs): when the ratification block bundles >=2 same-session PURE gate-clear CDs
+      (no content beyond "this CD's work is realized"; a content-bearing ratification is never
+      bundled), steps 3 (author ONE ## Decision N wave entry, one clause per CD) and 4 (ETL)
+      above run ONCE FOR THE WHOLE WAVE, but the three PER-CD sub-steps -- step 5's roadmap-flip
+      (each CD's own ratified_as/filed_via pointing at the SHARED dec-NNN), the marking-convention
+      obligation, and the pending-window prose sweep (sub-steps 5-6 above) -- REPEAT ONCE PER
+      BUNDLED CD. Steps 6 (preflight) and 7 (validate) run once over all bundled CDs. Step 8
+      (tier_item status flips stay a separate bookkeeping step) is unchanged. Rejection handling:
+      if the human declines to confirm the Decision text in step 2 (asks for edits, defers, or
+      says no), do NOT proceed to steps 3-8. Either incorporate the requested edits and
+      re-present, or stop the ratification portion of the plan entirely and report which steps
+      were skipped. A plan whose non-ratification scope is otherwise complete may still
+      commit/merge without the ratification having executed -- ratification is additive, not a
+      blocking prerequisite for the rest of the plan.
+
 necessary_not_sufficient: >-
-  Ratifying a CD clears the COMPLETION gate on items it gates (gate derivation keys purely on
-  cd.state == 'pending'; scripts/roadmap/platform_roadmap.py blocked_on_cd / to_preflight_dict). It does
-  NOT close those items' open CODE exit criteria, and does NOT cascade to unrelated items whose
-  own gating CDs remain pending. Tier_item status flips (Decision 90 bookkeeping) are a separate
-  /implement step from the ratification itself.
+  Ratifying a CD clears the COMPLETION gate on items named in its gates field (gate derivation
+  keys on gates, together with cd.state == 'pending' -- affects deliberately does NOT populate
+  gate derivation; see affects_field above). scripts/platform_roadmap_state.py's blocked_on_cd
+  / to_preflight_dict compute this. It does NOT close those items' open CODE exit criteria, and
+  does NOT cascade to unrelated items whose own gating CDs remain pending. Tier_item status
+  flips (Decision 90 bookkeeping) are a separate /implement step from the ratification itself.

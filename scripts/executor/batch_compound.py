@@ -46,8 +46,7 @@ def load_cluster(cluster_id: str) -> list[str]:
                 try:
                     finding = json.loads(line)
                     if finding.get("type") == "cluster" and finding.get("cluster_id") == cluster_id:
-                        rec_ids = finding.get("rec_ids", [])
-                        return rec_ids
+                        return finding.get("rec_ids", [])
                 except json.JSONDecodeError:
                     continue
     except Exception as e:

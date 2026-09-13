@@ -225,19 +225,19 @@ def classify_file(
     is different in kind (see the module docstring): every added line is UNCOVERED.
     """
     if not covering_tests:
-        return {ln: DEFERRED for ln in added_lines}, REASON_UNMAPPED
+        return dict.fromkeys(added_lines, DEFERRED), REASON_UNMAPPED
     ran = covering_tests & selected
     if not ran:
-        return {ln: DEFERRED for ln in added_lines}, REASON_AFFECTED_SET
+        return dict.fromkeys(added_lines, DEFERRED), REASON_AFFECTED_SET
     if ran <= heavy_dep_deferred:
-        return {ln: DEFERRED for ln in added_lines}, REASON_HEAVY_DEP
+        return dict.fromkeys(added_lines, DEFERRED), REASON_HEAVY_DEP
 
     file_cov = _find_coverage_file_entry(coverage_files, rel_path)
     if file_cov is None:
         # Included in the traced scope but never imported by any selected test -- coverage.py emits
         # no entry for it, so an executable/non-executable split is not derivable here. Report every
         # added line UNCOVERED (the blanket-tracing signal) rather than silently dropping the file.
-        return {ln: UNCOVERED for ln in added_lines}, None
+        return dict.fromkeys(added_lines, UNCOVERED), None
     executed = set(file_cov.get("executed_lines") or [])
     missing = set(file_cov.get("missing_lines") or [])
     result: dict[int, str] = {}

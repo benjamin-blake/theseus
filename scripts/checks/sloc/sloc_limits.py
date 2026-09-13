@@ -41,10 +41,10 @@ def _update_sloc_budgets() -> None:
 
     new_budgets: dict[str, int] = {}
     for rel, budget in existing.items():
-        sloc = current_sloc.get(rel)
-        if sloc is None or sloc <= _SLOC_LIMIT:
+        measured = current_sloc.get(rel)
+        if measured is None or measured <= _SLOC_LIMIT:
             continue  # deleted, or shrank to <=500 -- drop from the registry
-        new_budgets[rel] = min(sloc, budget)
+        new_budgets[rel] = min(measured, budget)
 
     lowered = sorted(k for k in new_budgets if new_budgets[k] < existing[k])
     dropped = sorted(k for k in existing if k not in new_budgets)
@@ -84,8 +84,10 @@ def validate_sloc_limits(failed: list[str]) -> None:
     budgets = _load_sloc_budgets()
     errors: list[str] = []
     advisories: list[str] = []
+    scanned = 0
 
     for py_file in iter_gated_py_files():
+        scanned += 1
         content = py_file.read_text(encoding="utf-8", errors="replace")
         lines = content.splitlines()
         sloc = len([ln for ln in lines if ln.strip() and not ln.strip().startswith("#")])
@@ -131,3 +133,5 @@ def validate_sloc_limits(failed: list[str]) -> None:
         failed.append("SLOC limits (Decision 43)")
     else:
         print("All files within SLOC budgets.")
+
+    registry.examined(scanned, unit="gated_python_files")

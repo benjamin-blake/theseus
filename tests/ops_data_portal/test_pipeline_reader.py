@@ -96,7 +96,7 @@ class TestPipelineConsolidation:
             result = sync()
 
         assert pulled == ["ops_recommendations", "ops_decisions", "ops_priority_queue"]
-        assert result == {"pulled": {t: 1 for t in pulled}}
+        assert result == {"pulled": dict.fromkeys(pulled, 1)}
 
     def test_update_rec_raises_on_reader_unreachable(self, tmp_path: Path) -> None:
         """update_rec() propagates RuntimeError when _fetch_rec_from_reader raises."""

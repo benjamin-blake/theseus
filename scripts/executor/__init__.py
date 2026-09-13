@@ -138,6 +138,6 @@ __all__ = [
     # ci_triage
     "TriageResult",
     "triage_ci_failure",
-    # orchestration (lazy)
+    # orchestration group, imported lazily
     "execute_recommendation",
 ]

@@ -28,6 +28,10 @@ ROOT = Path(__file__).parent.parent
 _REQUIREMENTS_TXT = ROOT / "requirements.txt"
 _REQUIREMENTS_DEV = ROOT / "requirements-dev.txt"
 _REQUIREMENTS_LOCK = ROOT / "requirements.lock"
+# pip's requirement-file comment rule (the value of pip._internal.req.req_file.COMMENT_RE, copied rather than
+# imported from a private API): '#' starts a comment only at line start or after whitespace, so `pkg>=1.0#x`
+# stays part of the requirement exactly as pip sees it.
+_REQUIREMENT_COMMENT_RE = re.compile(r"(^|\s+)#.*$")
 
 
 def run_import_contracts() -> tuple[bool, str]:
@@ -75,15 +79,24 @@ def check_lockfile_sync() -> tuple[bool, str]:
     requirement_texts = [path.read_text(encoding="utf-8") for path in requirement_files]
     req_text = "\n".join(requirement_texts)
     top_level: dict[str, Requirement] = {}
+    unparseable: list[str] = []
     for raw_line in req_text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or line.startswith("-"):
+        line = _REQUIREMENT_COMMENT_RE.sub("", raw_line).strip()
+        if not line or line.startswith("-"):
             continue
         try:
             requirement = Requirement(line)
         except InvalidRequirement:
+            unparseable.append(raw_line.strip())
             continue
         top_level[_normalize_pkg(requirement.name)] = requirement
+
+    req_identity = f"{len(req_text)} bytes, {len(top_level)} top-level packages across {len(requirement_files)} files"
+    if unparseable:
+        return False, (
+            "requirements declarations cannot be parsed (the gate cannot check what it cannot parse): "
+            f"{', '.join(repr(entry) for entry in unparseable)} (requirements.txt: {req_identity})"
+        )
 
     pinned, extras_pins = _parse_lock_pins(_REQUIREMENTS_LOCK.read_text(encoding="utf-8"))
 
@@ -97,7 +110,6 @@ def check_lockfile_sync() -> tuple[bool, str]:
         )
 
     missing = [pkg for pkg in top_level if pkg not in pinned]
-    req_identity = f"{len(req_text)} bytes, {len(top_level)} top-level packages across {len(requirement_files)} files"
     if missing:
         return False, f"requirements.lock missing pins for: {', '.join(missing)} (requirements.txt: {req_identity})"
 

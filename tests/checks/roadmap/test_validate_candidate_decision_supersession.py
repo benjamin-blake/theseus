@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from scripts.checks.registry import full_sequence, pre_sequence
 from scripts.checks.roadmap.validate_candidate_decision_supersession import (
     validate_candidate_decision_supersession,
@@ -92,3 +94,35 @@ class TestCandidateDecisionSupersession:
         full_names = {step.name for step in full_sequence() if step.kind == "check"}
         assert "validate_candidate_decision_supersession" in pre_names
         assert "validate_candidate_decision_supersession" in full_names
+
+
+class TestCandidateDecisionSupersessionWrapperEmission:
+    """The guard's two early-return failed.append sites, which every well-formed fixture skips."""
+
+    @staticmethod
+    def _run(tmp_path: Path) -> list[str]:
+        """Drive the registered guard against tmp_path and return its failed list."""
+        failed: list[str] = []
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            validate_candidate_decision_supersession(failed)
+        return failed
+
+    def test_missing_roadmap_file_appends_a_failure(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Line 39: no docs/ROADMAP-PLATFORM.yaml at all -> early-return append."""
+        failed = self._run(tmp_path)
+
+        out = capsys.readouterr().out
+        assert failed == ["Candidate decision supersession guard"]
+        assert "FAIL: docs/ROADMAP-PLATFORM.yaml not found" in out
+
+    def test_unloadable_roadmap_appends_a_failure(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Line 52: an unparseable roadmap drives the `except Exception` early return."""
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        (docs_dir / "ROADMAP-PLATFORM.yaml").write_text("document: [unclosed\n", encoding="utf-8")
+
+        failed = self._run(tmp_path)
+
+        out = capsys.readouterr().out
+        assert failed == ["Candidate decision supersession guard"]
+        assert "FAIL: could not load roadmap:" in out

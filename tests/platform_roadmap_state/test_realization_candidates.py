@@ -30,6 +30,18 @@ class TestRealizationCandidatesGateCompleteness:
         result = _state_from_doc(doc).realization_candidates()
         assert [c["id"] for c in result] == ["CD.5"]
 
+    def test_empty_gates_with_affects_excluded(self) -> None:
+        # PLAN-roadmap-blocking-edge-semantics regression: an empty-gates CD carrying affects
+        # has NO gate-derived realization evidence at all -- it must not vacuously surface just
+        # because it gates nothing (unlike test_vacuous_empty_gates_included's gates-only CD.5,
+        # which carries no affects and is correctly included).
+        doc = _doc(
+            tier_items=[_item("T1.5")],
+            candidate_decisions=[_cd("CD.17", gates=[], affects=["T1.5"])],
+        )
+        result = _state_from_doc(doc).realization_candidates()
+        assert result == []
+
     def test_deferred_post_mvp_gate_nonblocking(self) -> None:
         doc = _doc(
             tier_items=[_item("T0.1", status="deferred_post_mvp")],

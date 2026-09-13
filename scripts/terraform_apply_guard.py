@@ -174,8 +174,7 @@ def _redact(text: str) -> str:
     already-redacted text.
     """
     text = _ARN_PATTERN.sub("[ARN]", text)
-    text = _ACCOUNT_ID_PATTERN.sub("[ACCOUNT_ID]", text)
-    return text
+    return _ACCOUNT_ID_PATTERN.sub("[ACCOUNT_ID]", text)
 
 
 def _load_budget() -> Optional[dict]:

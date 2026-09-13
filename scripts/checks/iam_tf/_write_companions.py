@@ -477,21 +477,42 @@ def _identity_allow_iam_actions(apply_statements: list[dict]) -> set[str]:
     }
 
 
+def _identity_allow_actions(apply_statements: list[dict]) -> set[str]:
+    """Every distinct action GRANTED (Effect=Allow) anywhere in the identity/reads surface, any
+    service -- the general per-action collector check_identity_iam_actions_subset_of_boundary uses.
+
+    Delegates to _identity_allow_iam_actions for the iam: subset rather than re-deriving it, so
+    that helper keeps a production caller instead of becoming an orphan retained for tests alone;
+    its iam-only contract (pinned by test_collects_allow_iam_actions_only) is unchanged by this
+    generalization -- this collector only unions in the non-iam: actions on top.
+    """
+    return _identity_allow_iam_actions(apply_statements) | {
+        action
+        for stmt in _allow_statements(apply_statements)
+        for action in stmt["actions"]
+        if not action.startswith(_IAM_ACTION_PREFIX)
+    }
+
+
 def check_identity_iam_actions_subset_of_boundary(apply_statements: list[dict], failed: list[str], key: str) -> None:
     """Defense-in-depth (same ceiling-assertion family as the companion check above, hence collocated).
 
-    Every identity-policy iam: Allow action must also be granted by the boundary DataPlaneAllow
-    ceiling, so the single enumerated IAM list (Decision 144) can never split into silent drift
-    between the two layers.
+    Every identity-policy Allow action -- not just iam: -- must also be granted by the boundary
+    DataPlaneAllow ceiling, so a future one-layer restore (an identity grant added without its
+    ceiling counterpart, or the reverse) fails loud instead of silently denying at the
+    identity/boundary intersection (PLAN-glue-delete-database-grant generalization).
 
-    Scoped to iam: actions ONLY: iam is the sole ACTION-ENUMERATED service in DataPlaneAllow --
-    s3:*/lambda:*/logs:*/etc. are already service-wide wildcards there, so a subset test over those
-    services would be vacuous. "The boundary covers action a" is implemented with the boundary's
-    action list as the PATTERNS, so a future iam:* in the ceiling is honored -- not literal
-    string-equality membership. Effect-aware: a Deny-only identity iam action is never flagged -- it
-    grants nothing, so it has no boundary-ceiling obligation.
+    The iam-only premise of the original, narrower check still HOLDS today: iam is the sole
+    ACTION-ENUMERATED service in DataPlaneAllow, and s3:*/lambda:*/glue:*/etc. are already
+    service-wide wildcards there, so this generalization is per-action DEFENSE against a FUTURE
+    one-layer restore, not a repair of a premise the 7b67e21d cleanse broke -- that sweep removed
+    BOTH layers together in one sweep, leaving no single-layer gap for either the old or the new
+    check to have caught. "The boundary covers action a" is implemented with the boundary's action
+    list as the PATTERNS, so a service-wide ceiling wildcard (iam:*, glue:*, ...) is honored -- not
+    literal string-equality membership. Effect-aware: a Deny-only identity action is never
+    flagged -- it grants nothing, so it has no boundary-ceiling obligation.
     """
-    identity_actions = _identity_allow_iam_actions(apply_statements)
+    identity_actions = _identity_allow_actions(apply_statements)
     if not identity_actions:
         return
 

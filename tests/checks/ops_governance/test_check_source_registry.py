@@ -22,12 +22,14 @@ class TestScannedPaths:
             "scripts/ops_portal/*.py",
             "scripts/convergence_health/code_drift.py",
             "scripts/convergence_health/escalate.py",
+            "scripts/convergence_health/sensor_liveness.py",
             "scripts/checks/_budget_recs.py",
             "scripts/ci_rca/probe_health.py",
             "scripts/preflight/ci_rca_gauges.py",
             "scripts/executor/jsonl_store.py",
             "scripts/executor/branch_lifecycle.py",
             "scripts/ducklake_smoke/lambda_ops_gates.py",
+            "scripts/backlog_health/escalate.py",
         }
         assert required <= set(SCANNED_PATHS)
 
@@ -122,6 +124,14 @@ class TestCheckSourceRegistry:
         with patch("scripts.checks._common.ROOT", tmp_path):
             failed: list[str] = []
             check_source_registry(failed)
+        assert failed == [], f"Expected no failures but got: {failed}"
+
+    def test_real_repo_backlog_health_literals_are_registered(self) -> None:
+        """Integration check against the real repo (no tmp_path fixture): the four
+        backlog_health source literals escalate.py writes are all registered in
+        config/agent/data_quality/source_registry.yaml, so the widened scan set passes clean."""
+        failed: list[str] = []
+        check_source_registry(failed)
         assert failed == [], f"Expected no failures but got: {failed}"
 
     def test_declares_examined_outcome(self, tmp_path: Path) -> None:

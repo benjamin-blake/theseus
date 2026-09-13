@@ -103,7 +103,7 @@ def test_last_updated_minted_once():
     wid = rt.mint_write_identity(now=datetime(2026, 1, 1, tzinfo=timezone.utc))
     rt.write_scd2(con, {"rec_id": "rec-1"}, identity=wid, semantics=_SEMANTICS, sleep=lambda s: None)
     # last_updated_timestamp (param index 4) identical across every attempt
-    last_updated = {tuple([p[4]]) for p in con.merge_history_params()}
+    last_updated = {(p[4],) for p in con.merge_history_params()}
     assert last_updated == {(wid.timestamp,)}
 
 

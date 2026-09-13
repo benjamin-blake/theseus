@@ -10,6 +10,7 @@ from scripts.platform_roadmap_gate_rules import GateRuleEvaluator, GateRuleParse
 from scripts.platform_roadmap_models import (
     _GATE_HELPERS,
     CandidateDecision,
+    CriterionBlocker,
     CrossTierGate,
     DocumentMeta,
     ExitCriterion,
@@ -26,6 +27,7 @@ from scripts.platform_roadmap_state import PlatformRoadmapState, compute_followo
 
 __all__ = [
     "CandidateDecision",
+    "CriterionBlocker",
     "CrossTierGate",
     "DocumentMeta",
     "ExitCriterion",

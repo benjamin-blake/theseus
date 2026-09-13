@@ -72,8 +72,10 @@ _DUCKLAKE_RUNTIME_SPLIT_MODULES = {
 # llm_ prefix, model_registry/github_models_client keep their names) but a single "test_llm_"
 # prefix reproduces all four via the two renamed tests (test_llm_model_registry.py,
 # test_llm_github_models_client.py). agent_sdk keeps full names (test_agent_sdk_<stem>.py), the
-# same convention as roadmap. Whitelisted to the six known subpackages so a NEW scripts/<pkg>/
-# does not silently inherit a mapping (do not generalise to any len==3).
+# same convention as roadmap. backlog_health keeps full names (test_backlog_health_<stem>.py),
+# the same convention as roadmap/agent_sdk (PLAN-backlog-health-detection). Whitelisted to the
+# seven known subpackages so a NEW scripts/<pkg>/ does not silently inherit a mapping (do not
+# generalise to any len==3).
 _NESTED_SUBPACKAGE_TEST_PREFIX = {
     "ci_rca": "test_ci_rca_",
     "session": "test_session_",
@@ -81,6 +83,7 @@ _NESTED_SUBPACKAGE_TEST_PREFIX = {
     "roadmap": "test_",
     "llm": "test_llm_",
     "agent_sdk": "test_agent_sdk_",
+    "backlog_health": "test_backlog_health_",
 }
 
 
@@ -110,16 +113,18 @@ def _grandfathered_source_to_test(source_path: Path) -> Path | None:
                               special case so every src/lambdas/*/handler.py resolves to its own
                               distinct, real test home instead of colliding on the stem-based
                               tests/test_handler.py fallback (retired).
-    scripts/{ci_rca,session,sync,roadmap,llm,agent_sdk}/<name>.py -> the module's kept-in-place
-                              flat test (nested subpackages, RS-01 / rec-164): ci_rca/session/sync
-                              strip the family prefix -> test_ci_rca_/test_session_/test_sync_<name>.py;
-                              roadmap and agent_sdk keep full names -> test_<name>.py /
-                              test_agent_sdk_<name>.py; llm is mixed (client/utils strip the llm_
-                              prefix, model_registry/github_models_client keep their names) but all
-                              four resolve via the single test_llm_ prefix -> test_llm_client.py,
-                              test_llm_utils.py, test_llm_model_registry.py,
-                              test_llm_github_models_client.py. See _NESTED_SUBPACKAGE_TEST_PREFIX
-                              (whitelisted to these six; no general len==3 rule).
+    scripts/{ci_rca,session,sync,roadmap,llm,agent_sdk,backlog_health}/<name>.py -> the module's
+                              kept-in-place flat test (nested subpackages, RS-01 / rec-164):
+                              ci_rca/session/sync strip the family prefix ->
+                              test_ci_rca_/test_session_/test_sync_<name>.py; roadmap, agent_sdk
+                              and backlog_health keep full names -> test_<name>.py /
+                              test_agent_sdk_<name>.py / test_backlog_health_<name>.py; llm is
+                              mixed (client/utils strip the llm_ prefix, model_registry/
+                              github_models_client keep their names) but all four resolve via the
+                              single test_llm_ prefix -> test_llm_client.py, test_llm_utils.py,
+                              test_llm_model_registry.py, test_llm_github_models_client.py. See
+                              _NESTED_SUBPACKAGE_TEST_PREFIX (whitelisted to these seven; no
+                              general len==3 rule).
 
     Returns None for paths not under src/ or scripts/ -- including scripts/executor/** and
     scripts/ops_portal/**, which deliberately have no source-to-test mapping (Decision 124).
@@ -135,22 +140,22 @@ def _grandfathered_source_to_test(source_path: Path) -> Path | None:
 
     if parts[0] == "src" and len(parts) >= 3 and parts[1] == "common" and rel.name in _DUCKLAKE_RUNTIME_SPLIT_MODULES:
         return ROOT / "tests" / "test_ducklake_runtime.py"
-    elif parts[0] == "src" and len(parts) >= 4 and parts[1] == "lambdas":
+    if parts[0] == "src" and len(parts) >= 4 and parts[1] == "lambdas":
         return ROOT / "tests" / f"test_{parts[2]}_handler.py"
-    elif parts[0] == "src" and len(parts) >= 2:
+    if parts[0] == "src" and len(parts) >= 2:
         stem = rel.stem
         return ROOT / "tests" / f"test_{stem}.py"
-    elif parts[0] == "scripts" and len(parts) >= 2 and parts[1] == "checks":
+    if parts[0] == "scripts" and len(parts) >= 2 and parts[1] == "checks":
         return ROOT / "tests" / "test_validate.py"
-    elif parts[0] == "scripts" and len(parts) == 3 and parts[1] == "convergence_health":
+    if parts[0] == "scripts" and len(parts) == 3 and parts[1] == "convergence_health":
         return ROOT / "tests" / "test_convergence_health.py"
-    elif parts[0] == "scripts" and len(parts) == 3 and parts[1] in _NESTED_SUBPACKAGE_TEST_PREFIX:
+    if parts[0] == "scripts" and len(parts) == 3 and parts[1] in _NESTED_SUBPACKAGE_TEST_PREFIX:
         # Nested scripts/ subpackages (RS-01 / rec-164): ci_rca/session/sync strip the family
         # prefix, roadmap keeps full names -- each module keeps its flat test (see the prefix map).
         # One dict-lookup branch (not four parallel elifs) keeps this function under the
         # Decision 43 cyclomatic-complexity ceiling; still whitelisted (no general len==3 rule).
         return ROOT / "tests" / f"{_NESTED_SUBPACKAGE_TEST_PREFIX[parts[1]]}{rel.stem}.py"
-    elif parts[0] == "scripts" and len(parts) == 2:
+    if parts[0] == "scripts" and len(parts) == 2:
         stem = rel.stem
         return ROOT / "tests" / f"test_{stem}.py"
 
@@ -214,6 +219,7 @@ _CONCERN_SPLIT_TEST_PACKAGES: frozenset[str] = frozenset(
         "scripts/verify_ci_workflow.py",
         "scripts/contracts_enforcement.py",
         "scripts/platform_roadmap_state.py",
+        "scripts/platform_roadmap_models.py",
         "scripts/build_lambda_deploy.py",
         "scripts/lambda_manifest.py",
         "scripts/ducklake_neon_smoke_test.py",
@@ -238,6 +244,8 @@ _CONCERN_SPLIT_TEST_PACKAGES: frozenset[str] = frozenset(
         "scripts/convergence_health/budget_ingest.py",
         "scripts/verification_graduation.py",
         "scripts/checks/verification/validate_graduation_completeness.py",
+        "scripts/checks/verification/validate_scope_boundary.py",
+        "scripts/checks/hygiene/validate_placement.py",
     }
 )
 

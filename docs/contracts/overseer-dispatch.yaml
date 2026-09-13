@@ -30,7 +30,20 @@ contract:
   evaluator:
     agent_surface: .claude/skills/overseer/SKILL.md
 
-amendment_log: []
+amendment_log:
+  - date: "2026-09-03"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-step-6b-fork-classification (B2-R4, PDB-03): added
+      autonomy_tiers.plan_fork_classification (ports the four-criteria Autonomy-Boundary Policy
+      to plan-grain design forks); declared the Step 6b confirmation as a fourth `gate` value
+      (step-6b-confirmation) on the existing GATE_REQUEST status, with its own
+      trampoline_sequence stage, a gate_run_id.not_applicable_to carve-out, and a
+      pending_gates.write_ahead clause; and corrected the injected dispatch header and
+      gate_run_id.provenance's scoping, which the fourth value falsified. Two reader surfaces
+      this contract's single-evaluator schema cannot declare: .claude/commands/plan.md and
+      .claude/skills/planning/SKILL.md (named instead in applies_to).
 
 schema_version: 1
 decision: Decision-90
@@ -46,9 +59,9 @@ division_of_labor:
         as /plan or /implement would standalone."
       - "Commits and pushes its own artefact."
       - "Opens its own PR (plan-approval PR or implementation PR)."
-      - "Whenever its lifecycle reaches a gate (decision-scout, plan-critique, code-review), it
-        NEVER invokes the gate skill inline via the Skill tool. It returns a GATE_REQUEST
-        hand-back (see gate_request_trampoline below) and pauses."
+      - "Whenever its lifecycle reaches a gate (decision-scout, step-6b-confirmation,
+        plan-critique, code-review), it NEVER invokes the gate skill inline via the Skill tool.
+        It returns a GATE_REQUEST hand-back (see gate_request_trampoline below) and pauses."
       - "Stops at PR-open. It does not subscribe to PR activity, does not wait for CI, and does
         not merge -- it hands the PR back to the overseer via the Bounded Hand-Back schema
         (status PROCEED, artifacts=[PR URL])."
@@ -81,19 +94,23 @@ gate_request_trampoline:
     trampoline-specific fields -- it is a strict superset, never a replacement shape, so the
     overseer's existing malformed-hand-back re-dispatch rule still applies unchanged. The three
     extension fields:
-    gate (decision-scout | plan-critique | code-review),
+    gate (decision-scout | plan-critique | code-review | step-6b-confirmation),
     round (1-based count of how many times this gate has been requested for this slice, mirrors
     each gate's own convergence-rule counter),
     inputs (gate-specific prompt inputs the overseer must relay verbatim into the fresh gate
     subagent's dispatch prompt -- e.g. for decision-scout: intent, proposed approach, scope
     files, verification tier, explicitly cited decisions; for plan-critique: the plan file path;
-    for code-review: the branch and plan file path).
+    for code-review: the branch and plan file path; for step-6b-confirmation: the Step 6b
+    presentation and its design forks, carried in `open_questions`).
     The base shape's own `artifacts` field (NOT a separate `artifacts_written` field -- there is
     only one artifacts field, reused here) carries the paths already committed and pushed by the
     author subagent (plan file, branch head), so the gate subagent reads current on-disk/on-PR
     state, never a chat-pasted body; `summary`/`evidence`/`decisions`/`open_questions` may be
     minimal (e.g. summary: \"requesting <gate> gate\") since the substantive payload for a
-    GATE_REQUEST is the three extension fields plus `artifacts`, not those four."
+    GATE_REQUEST is the three extension fields plus `artifacts`, not those four. The first three
+    gate values dispatch a gate skill in a fresh sibling subagent; the fourth,
+    step-6b-confirmation, dispatches no gate skill at all -- it is relayed by the overseer
+    directly to the human, per autonomy_tiers.plan_fork_classification above."
   gate_run_id:
     minted_by: overseer
     when: "at write-ahead time (see pending_gates below), before the gate subagent is
@@ -109,10 +126,18 @@ gate_request_trampoline:
       skill's own methodology: 'After producing that structured report, append one final
       line to your response: gate_run_id: <the exact value below>.' The overseer parses that
       trailing line from the subagent's raw response text -- it is never a field inside the
-      gate skill's own report schema. This is the ONE non-optional piece of the trampoline: it
-      is the only check that a subagent did not silently run a bias gate inline instead of
-      requesting it -- a gate response with no trailing gate_run_id line, or a mismatched one,
-      is not trustworthy and must be re-dispatched properly rather than accepted."
+      gate skill's own report schema. For the three SKILL-DISPATCHED (literal token:
+      skill-dispatched) gates, this is the ONE non-optional piece of the trampoline: it is the
+      only check that a subagent did not silently run a bias gate inline instead of requesting
+      it -- a gate response with no trailing gate_run_id line, or a mismatched one, is not
+      trustworthy and must be re-dispatched properly rather than accepted. See
+      not_applicable_to below for the one exempted gate value."
+    not_applicable_to: "step-6b-confirmation. There is no gate subagent to echo the id, and a
+      human turn cannot be inlined by the author, which is the only property the id proves --
+      so minting one for a human-relayed hop would prove nothing. Exception: when the overseer
+      instead dispatches a fresh sibling to stand in for the human under delegated authority
+      recorded in autonomous_decision_log, the id IS minted and echoed exactly as for the three
+      skill-dispatched gates."
   pending_gates:
     write_ahead: "the overseer appends {gate, round, gate_run_id, slice, requested_at, inputs} to
       the ledger's pending_gates list BEFORE dispatching the gate subagent -- never after. The
@@ -125,7 +150,11 @@ gate_request_trampoline:
       convenience, not a hard requirement, for those two gates.) This makes a mid-dispatch crash
       or compaction genuinely RE-DRIVABLE on resume, not merely observable: a pending_gates entry
       with no matching gate-verdict ledger update means re-dispatch the gate using this entry's
-      own `inputs` verbatim, never re-deriving them from the (possibly-gone) author subagent."
+      own `inputs` verbatim, never re-deriving them from the (possibly-gone) author subagent. A
+      step-6b-confirmation entry is write-ahead-recorded too, and its `inputs` (the Step 6b
+      presentation and the open_questions, verbatim) is REQUIRED for the same reason
+      decision-scout's is: neither exists on disk until Step 8 writes the plan, so neither is
+      recoverable via artifact_first_yield."
     resolution: "on receiving the gate subagent's verdict (with matching gate_run_id), the
       overseer removes the entry from pending_gates and records the verdict against the slice."
   artifact_first_yield: "the gate-requesting author subagent's payload is the artifact path(s)
@@ -162,6 +191,10 @@ subagent_detection:
         You do not have Agent tool access. Any gate you would normally run inline via the Skill
         tool (decision-scout, plan-critique, code-review) must instead be requested via a
         GATE_REQUEST hand-back to the orchestrator -- never run inline.
+        The same hand-back rule applies to your /plan Step 6b confirmation and its design forks:
+        you hold no AskUserQuestion tool, so they ride a post-verdict GATE_REQUEST
+        (gate: step-6b-confirmation) the orchestrator relays; never decide an always-ask fork
+        yourself and never skip the confirmation.
     - name: error_fallback
       description: "if a subagent nonetheless attempts a nested Agent-tool dispatch and receives
         a nesting error (or any error consistent with 'Agent tool unavailable' / 'nesting not
@@ -195,6 +228,18 @@ trampoline_sequence:
         - "4. Planning subagent applies its own existing Verdict handling (Step 6b presentation
           on NO_FLAGS/FLAGS_FOUND, or GATE_REQUEST round=2 after a BLOCK pivot, up to the
           existing 3-round convergence cap)."
+    - gate: step-6b-confirmation
+      fires_at: "planning subagent's own /plan Step 6b, after the decision-scout verdict is
+        applied -- never before the decision-scout verdict (on BLOCK there is no hop at all; on
+        FLAGS_FOUND the flags ride inside the presentation). Dispatches no gate skill."
+      flow:
+        - "1. The author composes its Step 6b presentation and returns a SECOND hand-back
+          (status GATE_REQUEST, gate=step-6b-confirmation, round=1) carrying the presentation
+          and its design forks in `open_questions`."
+        - "2. The overseer write-ahead-records it, relays the presentation and questions to the
+          human VERBATIM (gate bodies whole, never summarised by item number), and the human's
+          answers and confirmation (or feedback) return on a SECOND SendMessage resume, which
+          the author applies at Step 6b before Step 7."
     - gate: plan-critique
       fires_at: "planning subagent's own /plan Step 9, after Step 6b human confirmation and the
         plan write."
@@ -323,6 +368,83 @@ autonomy_tiers:
     never_overrides: "an open critical source=ci_rca rec (Decision 73 halt-on-open-ci_rca) is
       never proceed-with-notice-eligible -- the halt stays a hard block even for a
       low-stakes-looking dispatch decision."
+  plan_fork_classification:
+    applies_to: >-
+      Step 6b design forks; ports the four-criteria Autonomy-Boundary Policy to plan grain.
+      Reader surfaces named by path: .claude/commands/plan.md Step 6b and
+      .claude/skills/planning/SKILL.md Confirmation Gate carry the classification;
+      .claude/skills/overseer/SKILL.md carries the dispatched carrier and relay hop; and this
+      contract's own subagent_detection.signals[injected_header].exact_header is the verbatim
+      text a dispatched author actually reads at dispatch time. The Step 6b human confirmation
+      itself is untouched -- decided-with-notice forks are part of what the human confirms,
+      never a replacement for it.
+    consistency_only_test: >-
+      All FOUR autonomy-boundary criteria must hold -- settled-consensus (re-read per
+      settled_consensus_reread below), convention-fit, reversible (worst case a plan revision),
+      and no-credible-alternative (a fork weighing a credible alternative is never
+      consistency-only) -- AND the fork must be off the always_ask list below. A fork that fails
+      any criterion, or that is on always_ask, defers to always_ask and asks.
+    settled_consensus_reread: >-
+      A repo-internal fork has no external practice to consult, so 'settled' means settled by
+      REPO PRECEDENT -- a Decision, a contract, or a fork the human ANSWERED in a prior plan. A
+      decided-with-notice line is NEVER precedent, and a fork without precedent always asks; a
+      Fable consult may inform the recommended option, never replace asking. The precedent corpus
+      is thin BY MEASUREMENT, stated as TWO figures: the audit's pinned fork/option pattern
+      (contract_notes 7c) matched 2 of 366 plans when B2-R4 was written (PLAN-dcg-decisions-index,
+      PLAN-provisional-contract-alarm); re-measured by the implementer at origin/main f11c9bef,
+      excluding this remediation run's own six slice plans from the evidentiary base (one of
+      them, PLAN-ci-rca-deferral-instrumentation, does not match the pattern), it matches the
+      SAME 2 of 376. Exactly ONE fork -- PLAN-dcg-decisions-index fork 1, committed JSON
+      [recommended] vs Markdown -- survives this test as the exemplar; that handful is the whole
+      evidentiary base, which is why this tier is bounded to consistency-only forks.
+    always_ask: >-
+      IAM/security; spend; any public-surface artefact (incl. the PUBLIC-repository boundary and
+      AGENTS.md); any governed-deploy action; any Decision conflict or roadmap CONFLICT the
+      decision-scout flagged; and any fork with no settled precedent.
+    ask_shape_interactive: >-
+      AskUserQuestion field mapping: question = the fork sentence; header = a short label;
+      options = 2-4 choices with the recommended option first (the tool's own convention widens
+      the ported Autonomy-Boundary Policy's "present 2-3 options and wait"
+      (.claude/skills/overseer/SKILL.md:176) to AskUserQuestion's own 2-4 cap -- the two tiers are
+      not in contradiction); description = consequences, reversibility, and where the choice is
+      persisted.
+    ask_shape_dispatched: >-
+      The same shape rides a SECOND, post-verdict hand-back whose status stays GATE_REQUEST and
+      whose gate is the fourth value step-6b-confirmation, carrying the Step 6b presentation plus
+      the design forks in open_questions, relayed verbatim by the overseer -- see
+      gate_request_trampoline.request_schema and trampoline_sequence below.
+    record_grammar: >-
+      One line per fork: 'fork: <sentence> | chosen: <X> | class: consistency-only|asked |
+      precedent: <ref> | precedent_kind: decision|contract|answered-fork | reversible: yes|no |
+      persisted: <where>'. precedent: none | precedent_kind: none is legal ONLY on a class: asked
+      line. A fork answered by a delegate under recorded delegated authority carries that
+      provenance in the precedent slot, so a later planner can judge whether it counts as an
+      ANSWERED fork.
+    notice_tier: >-
+      Decided forks are listed at Step 6b as decided-with-notice -- the proceed_with_notice tier
+      at plan grain: visible before confirmation, never silent, catchable by the confirmation
+      itself, the plan-critique gate, or /implement's deviation trigger.
+    enforcement_coverage:
+      - surface: "this section's nine-field shape, the trampoline relay hop, and the corrected
+          dispatch header/provenance"
+        status: mechanical
+        enforced_by: plan-fork-classification-contract-shape
+        note: >-
+          Runs unconditionally in the full tier (pre-handoff local + post-merge on main) and in
+          --pre only when the diff-aware affected-set selection picks it (Decision 135) -- a
+          documentation-only edit to one of the three instruction surfaces may therefore be
+          caught post-merge rather than pre-merge; the registry shard adds a one-time
+          differential admission at graduation, not a per-PR re-run.
+      - surface: "a plan's context[] fork line -- record-grammar conformance and correct
+          consistency-only-vs-asked classification"
+        status: residual_agent_obligation
+        residual_owner: "rec-3530"
+        note: >-
+          No mechanical check today distinguishes a conforming fork line, or a correctly
+          classified one, from a malformed or misclassified one -- this stays an agent (and the
+          Step 6b confirmation, the plan-critique gate, and /implement's deviation trigger)
+          obligation until a validate_plan_documents check over plan context[] fork lines closes
+          it.
 
 fable_triggers:
   existing: "before each major design decision (the G1 decomposition shape; any point where the
@@ -350,7 +472,7 @@ ledger_persistence:
     portion of a slice's lifecycle only (once a plan file or branch exists to query against). A
     full session loss DURING the pre-PR-open gate-request sequence (interleave_with_pr_lifecycle
     -- decision-scout/plan-critique fire before the plan file is committed) has NO durable,
-    PR-observable signal to distinguish progress among the three gates; only the (non-durable)
+    PR-observable signal to distinguish progress among the four gates; only the (non-durable)
     scratchpad pending_gates entries covered that window, and they are gone too. Recovery in that
     specific case is to restart the slice's gate sequence from decision-scout round 1 -- bounded,
     non-destructive cost (no merged artefact to unwind), not a gap requiring a new mechanism."

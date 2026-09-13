@@ -67,12 +67,55 @@ def _escalate_ci_rca_probe_health(
 
 
 def print_ci_rca_abstention_gauge(gauge: dict | None) -> None:
-    """Print the CI-RCA probe abstention-rate gauge line."""
+    """Print the CI-RCA agent rca_confidence abstention-rate gauge line.
+
+    Re-worded (T1.13:c9 repair) to name the field it reads: this gauge measures the AGENT's own
+    self-rated rca_confidence, not the deterministic probe -- see
+    print_ci_rca_escape_mode_abstention_gauge for the probe-side gauge, a materially different
+    quantity at a materially different rate.
+    """
     if gauge is None:
         return
     print(
-        f"CI-RCA probe abstention (last {gauge['window_days']}d): "
+        f"CI-RCA agent rca_confidence abstention (last {gauge['window_days']}d): "
         f"{gauge['low_or_undetermined_count']}/{gauge['total_count']} low-confidence/undetermined ({gauge['rate']:.0%})"
+    )
+
+
+def _compute_ci_rca_escape_mode_abstention(cache_rows: list[dict] | None, window_days: int = 14) -> dict | None:
+    """Compute the CI-RCA probe escape_mode abstention gauge from the warm cache (T1.13:c9 repair).
+
+    A SEPARATE gauge from _compute_ci_rca_abstention (which reads rca_confidence, the agent's own
+    self-rating): this one reads context_v2_json.detection_gap.escape_mode and never rca_confidence,
+    so a regression back to the field's dead 100%-undetermined state trips a gauge instead of
+    passing silently. Never widens _compute_ci_rca_abstention -- see docs/contracts/ci-rca-
+    lifecycle.yaml's abstention_surface note.
+
+    Returns None when the warm cache is unavailable (reader unreachable / offline) -- zero new
+    reader egress (Decision 88), computed entirely from already-loaded rows.
+    """
+    if cache_rows is None:
+        return None
+    from scripts.ci_rca.probe_health import compute_escape_mode_abstention_rate  # noqa: PLC0415
+
+    undetermined_count, total_count, rate = compute_escape_mode_abstention_rate(cache_rows, window_days=window_days)
+    return {
+        "undetermined_count": undetermined_count,
+        "total_count": total_count,
+        "rate": rate,
+        "window_days": window_days,
+    }
+
+
+def print_ci_rca_escape_mode_abstention_gauge(gauge: dict | None) -> None:
+    """Print the CI-RCA probe escape_mode abstention-rate gauge line -- a SEPARATE quantity from
+    print_ci_rca_abstention_gauge's rca_confidence line (never a widening of that gauge)."""
+    if gauge is None:
+        return
+    print(
+        f"CI-RCA probe escape_mode abstention (last {gauge['window_days']}d): "
+        f"{gauge['undetermined_count']}/{gauge['total_count']} "
+        f"detection_gap.escape_mode=undetermined ({gauge['rate']:.0%})"
     )
 
 
@@ -207,18 +250,62 @@ def _derive_ci_rca_back_validation(cache_rows: list[dict] | None) -> list[dict] 
     return find_preventive_regressions(cache_rows)
 
 
-def print_ci_rca_back_validation(flags: list[dict] | None) -> None:
-    """Print the CI-RCA Back-Validation (preventive_action did not hold) section (T1.13 c12(iii))."""
+def _derive_open_escape_ci_rca_recs(cache_rows: list[dict] | None) -> list[dict] | None:
+    """OPEN source=ci_rca recs that are escape-classified (Decision 186, the D-B1 mitigation): a
+    rec refused at rec-autoclose is left OPEN with no artifact and no marker, and otherwise
+    invisible until the 30-day inactivity sweep waivers it closed -- this is the one surface
+    that makes that refusal legible to a human before the sweep. Zero new reader egress
+    (Decision 88): reads only the already-loaded warm cache. Returns None when the warm cache is
+    unavailable (reader unreachable / offline)."""
+    if cache_rows is None:
+        return None
+    from scripts.ops_portal.closure_gate import is_escape_classified  # noqa: PLC0415
+
+    open_escape: list[dict] = []
+    for row in cache_rows:
+        if row.get("source") != "ci_rca" or row.get("status") != "open":
+            continue
+        ctx_raw = row.get("context_v2_json") or ""
+        if not ctx_raw:
+            continue
+        try:
+            ctx = json.loads(ctx_raw) if isinstance(ctx_raw, str) else dict(ctx_raw or {})
+        except (TypeError, ValueError):
+            continue
+        if isinstance(ctx, dict) and is_escape_classified(ctx):
+            open_escape.append({"id": row.get("id", ""), "file": row.get("file", "")})
+    return open_escape
+
+
+def print_ci_rca_back_validation(flags: list[dict] | None, open_escape_recs: list[dict] | None = None) -> None:
+    """Print the CI-RCA Back-Validation (preventive_action did not hold) section (T1.13 c12(iii)).
+
+    Decision 186: each flag's own 'grade' (VERIFIED-PRESENT/CONFIRMED-ABSENT/WAIVED/CANDIDATE)
+    replaces the prior blanket '[CANDIDATE] file-only match' banner -- a flag carrying neither
+    new field still grades CANDIDATE, so the display is unchanged for a historical/pre-grading
+    flag shape. open_escape_recs (optional) additionally lists any OPEN escape-classified rec in
+    this same section -- the D-B1 mitigation surface. Stays advisory at every grade and for
+    every listed rec (Decision 55): it surfaces, it never files.
+    """
     print("\n--- CI-RCA Back-Validation (preventive_action did not hold) ---")
     if not flags:
         print("  (none)")
-        print()
-        return
-    print("  [CANDIDATE] file-only match -- treat as a candidate, not a confirmed regression (Decision 55).")
-    for flag in flags:
-        print(f"  {flag['new_rec_id']} recurs on {flag['file']} -- prior {flag['prior_rec_id']} claimed:")
-        print(f"    {flag['preventive_action_excerpt']}")
+    else:
+        for flag in flags:
+            grade = flag.get("grade") or "CANDIDATE"
+            artifact_note = f" artifact={flag['closure_artifact']}" if flag.get("closure_artifact") else ""
+            print(
+                f"  [{grade}]{artifact_note} {flag['new_rec_id']} recurs on {flag['file']} "
+                f"-- prior {flag['prior_rec_id']} claimed:"
+            )
+            print(f"    {flag['preventive_action_excerpt']}")
     print()
+
+    if open_escape_recs:
+        print("  Open escape-classified recs (refused at rec-autoclose; will waiver-close on inactivity):")
+        for rec in open_escape_recs:
+            print(f"    {rec.get('id', '')} ({rec.get('file', '')})")
+        print()
 
 
 # ---------------------------------------------------------------------------

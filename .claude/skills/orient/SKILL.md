@@ -1,11 +1,11 @@
 ---
 name: orient
-description: Read-only orientation session. Surfaces in-progress/eligible work, CI-RCA triage, ranked what-to-work-on, and up to N disjoint /plan prompts with an overlap matrix and keystone-first sequencing. Chat reply only; writes nothing.
+description: Read-only orientation session. Surfaces in-progress/eligible work, CI-RCA triage, ranked what-to-work-on, and up to N disjoint /plan prompts with an overlap matrix and keystone-first sequencing. Chat reply only; writes nothing (one named probe exception -- Read-Only Contract).
 ---
 
 # Orient Methodology
 
-You are using this skill to augment the `/orient` workflow. This skill is **strictly read-only**: it produces a chat reply only. No files, roadmap edits, recommendation writes, or decision writes.
+You are using this skill to augment the `/orient` workflow. This skill is **strictly read-only** (one named exception, in Read-Only Contract): it produces a chat reply only. No files, roadmap edits, recommendation writes, or decision writes.
 
 Decisions cited: 90 (Four-Tier Workflow Architecture), 59 (prefer deterministic signals), 72 (RCA-as-Plan-Source), 76 (.claude/ canonical), 84 (closed boundary), 86 (no new prose-architecture docs), 88 (egress budget).
 
@@ -16,6 +16,7 @@ The `/orient` workflow produces **one deliverable: a chat reply**. It:
 - Makes no roadmap status edits
 - Files no recommendations or decisions (Single Portal Invariant untouched)
 - Issues no git commits or pushes
+- Runs no subprocess except the CI-RCA relevance probe of `.claude/commands/orient.md` Step 3 -- read-only by that step's guard clause, writing no file, rec, or roadmap edit
 
 Status flips remain the verification-earned closing step owned by `/implement` tier-item bookkeeping. Orient reports roadmap state AS AUTHORED -- it never promotes, infers, or corrects status.
 
@@ -34,6 +35,7 @@ Status flips remain the verification-earned closing step owned by `/implement` t
 | Roadmap detail (`files_in_scope`, `depends_on`) | `docs/ROADMAP-PLATFORM.yaml` | Typed-loader projection: `scripts.roadmap.platform_roadmap.load()` (pure-local, no warehouse I/O -- distinct from the banned `-m scripts.roadmap.platform_roadmap` module entrypoint), returning both a candidate-scoped projection (filtered to the ids already surfaced by the preflight cache) and a roadmap-wide `depends_index` (`{id: depends_on}`, cheap) for reverse-dependency lookups; see the orient command Step 2 for the literal runnable form. Full-file Read only as an error fallback if the extraction fails. |
 | Recent main activity | `logs/.preflight-report.json` (`recent_main_commits`) | Read preflight cache |
 | Decision reversal-conditions monitor | `logs/.preflight-report.json` (`decision_conditions`: `monitored[]`, `surfaced[]`, `malformed[]`) | Read preflight cache (`scripts.preflight.decision_conditions.preflight_bucket()`, SEQ-02) |
+| Rec `acceptance` string (Step 3 probe) | `logs/.recommendations-log.jsonl` | Read local cache file (no portal or reader call) |
 
 **Read-from-preflight-cache constraint (Decision 88 egress budget; Decision 84 closed boundary):** `/orient` reads the preflight cache -- it must NOT trigger a fresh warehouse reader fan-out. Do not call `bin/venv-python -m scripts.roadmap.platform_roadmap` or any DuckLake reader verb during orient. The preflight script is the only path that may refresh `logs/.preflight-report.json`.
 
@@ -61,9 +63,10 @@ Trust roadmap `status` exactly as authored in `docs/ROADMAP-PLATFORM.yaml` (via 
 
 ## Tier Item Freshness Gate -- Reference
 
-The single authoritative definition of the Tier Item Freshness Gate lives in the **planning skill** (`.claude/skills/planning/SKILL.md`, section "Tier Item Freshness Gate"). Orient uses the eligible candidates from the preflight cache as its input list. Freshness adjudication (the four checks: silent-completion, stale-reference, supersession, gating-decision) fires per-item inside `/plan` at commitment time, not during orientation.
+The single authoritative definition of the Tier Item Freshness Gate lives in
+`docs/contracts/tier-item-lifecycle.yaml#tier_item_freshness_gate`. Orient uses the eligible candidates from the preflight cache as its input list. Freshness adjudication (the four checks: silent-completion, stale-reference, supersession, gating-decision) fires per-item inside `/plan` at commitment time, not during orientation.
 
-Do not re-author the four checks here -- that would be drift by design. `/orient` references the planning skill's section; it does not duplicate it.
+Do not re-author the four checks here -- that would be drift by design. `/orient` references the contract; it does not duplicate it.
 
 ## Deliverable Shape
 
@@ -88,7 +91,7 @@ Compact table of tier_items currently `in_progress` or eligible (`not_started` w
 ```
 Ratifiable CDs: CD.6 (realized: <first ~80 chars of realization_evidence>) | CD.34 (realized: ...)
 ```
-A CD appearing here is a candidate for a `/plan` session that drafts its ratifying Decision text (see the planning skill's "Candidate Decision Ratification" section) -- ratification itself never happens in `/orient` (read-only) or without human sign-off. Do NOT surface a pending CD with no `realization_evidence` here even if it looks plausibly realized -- absence of the field means nobody has corroborated it yet (Decision 55: no unilateral judgement calls in a read-only surface).
+A CD appearing here is a candidate for a `/plan` session that drafts its ratifying Decision text (see `docs/contracts/candidate-decision-ratification.yaml#lane_steps.plan.draft`) -- ratification itself never happens in `/orient` (read-only) or without human sign-off. Do NOT surface a pending CD with no `realization_evidence` here even if it looks plausibly realized -- absence of the field means nobody has corroborated it yet (Decision 55: no unilateral judgement calls in a read-only surface).
 
 **Realized-but-pending CDs** (close-audit-ulf-02 amendment, building on Decision 105): read `platform_roadmap.realized_but_pending_cds` from the preflight cache -- pending CDs whose free-text `detail` carries a `[Realized` prose marker but which have NOT (yet) been given a structured `realization_evidence` value. This is a lower-confidence, "needs corroboration/ratification-review" tier that sits BELOW the Ratifiable CDs list above: a prose annotation is not the same as someone deliberately corroborating the CD as ready (Decision 55). List each as:
 ```
@@ -100,7 +103,7 @@ Realized-but-pending (needs corroboration): CD.2 (hint: <realized_hint>) | CD.21
 ```
 Realization candidates (derived): CD.4 (gates: ...) | CD.5 (gates: ...)
 ```
-`/orient` stays read-only here exactly as elsewhere in this section -- it never writes `realization_evidence`; a human-confirmed `/plan` session is what would draft the evidence text (and, separately, the ratifying Decision, per the planning skill's ratification section). Preserve the "do NOT surface a pending CD with no `realization_evidence` in the RATIFIABLE list" rule above unchanged: a CD surfacing here never appears in Ratifiable CDs until a human writes `realization_evidence` for it.
+`/orient` stays read-only here exactly as elsewhere in this section -- it never writes `realization_evidence`; a human-confirmed `/plan` session is what would draft the evidence text (and, separately, the ratifying Decision, per `docs/contracts/candidate-decision-ratification.yaml#lane_steps.plan.draft`).
 
 **Blocked-on-CD annotation**: for each item in `platform_roadmap.blocked_on_cd`, add a "gated by CD.NN" note in the Notes column including the relationship type (`gates`, `related`, or `decision_required_before`) and whether the item carries `bootstrap_completion_exempt: true` (in which case it may start/complete despite the pending CD). An item can be eligible-to-start while still annotated as gated-by-CD; the annotation informs planning, it is not a hard block on eligibility.
 
@@ -133,14 +136,7 @@ Source: `ci_rca_unresolved_recs`, `ci_rca_likely_resolved_recs`, `ci_rca_livenes
 | `status == "unknown"` | S3 read failed -- note as informational; may indicate transient credential issue. |
 | `status == "green"` or `convergence_health` is null | No action needed. |
 
-| Preflight signal | Classification | Operator action |
-|---|---|---|
-| `ci_rca_unresolved_recs` non-empty | **HARD BLOCK** | List each rec (id, priority, title). The next `/plan` enforces the block; orient surfaces it. |
-| `ci_rca_likely_resolved_recs` non-empty | **SOFT PROMPT** | "LIKELY RESOLVED -- verify and close." Provide the close command per rec: `bin/venv-python -m scripts.ops_data_portal --update-rec <id> --status closed --resolution 'Fixed by ...'`. |
-| `ci_rca_liveness_alert` non-null | **HARD ALERT** | Main CI red >30 min with no rec. Triage immediately. |
-| `forward_fix_recursion_alert` non-null | **HARD ALERT** | 3+ ci-rca recs targeting same file in 24h. Triage immediately. |
-
-If HARD BLOCK recs exist, note them prominently at the top of this section.
+Classification rows, the `prior_deferrals` render and the close-then-stamp route have ONE home: `.claude/commands/orient.md` Step 3 ("CI-RCA Triage rendering"). Render this section from there; restate no row here.
 
 ### 3. Momentum & Direction
 
@@ -163,7 +159,7 @@ Render as a table: practice -> preflight signal -> PASS/WATCH/GAP.
 | Practice | Preflight signal | PASS/WATCH/GAP threshold |
 |---|---|---|
 | Terraform converged | `convergence_health.status` | PASS if `green`; WATCH if `red` and `red_age_hours` < 6; GAP if `red` and `red_age_hours` >= 6 or `stuck_approvals` > 0 |
-| Data quality coverage | `data_quality.last_verdict` | PASS if `pass`; WATCH if `warn`; GAP if `fail` or field absent |
+| Data quality coverage | `data_quality.last_run.verdict` | PASS if `PASS`; WATCH if `DEGRADED` or `SKIP`; GAP if `FAIL`, `HARD_GATE`, `ERROR` or null/absent |
 | CI-RCA liveness | `ci_rca_unresolved_recs` empty AND `ci_rca_liveness_alert` null | PASS if both clear; GAP if either non-empty or non-null |
 | Rec backlog (soft cap) | `non_automatable_softcap_breached` | PASS if false; GAP if true |
 | Terraform pending | `terraform_pending` | PASS if false or absent; WATCH if true |
@@ -220,6 +216,8 @@ Then one prompt per eligible (not_started) item, ordered keystone-first:
 ```
 /plan <item-id>: <item-name>
 ```
+
+Ad-hoc lane (non-blocking, cap 3): open Critical recs, ready follow-on recs, priority queue -- rendering rule in the orient command Section 6 trailing subsection.
 
 ## Scope
 

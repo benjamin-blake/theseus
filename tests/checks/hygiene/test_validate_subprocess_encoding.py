@@ -50,3 +50,30 @@ class TestValidateSubprocessEncoding:
             failed: list[str] = []
             self.validate_subprocess_encoding(failed)
         assert "Subprocess encoding lint" in failed
+
+
+class TestCallBodyBoundary:
+    """The paren-depth scanner must stop at the call's own closing paren: the incumbent
+    fixtures are all single-call, single-line files, so a scanner that never terminates
+    produced identical verdicts."""
+
+    validate_subprocess_encoding = staticmethod(validate_subprocess_encoding)
+
+    def _run(self, tmp_path: Path, body: str) -> list[str]:
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "mod.py").write_text(body, encoding="utf-8")
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            failed: list[str] = []
+            self.validate_subprocess_encoding(failed)
+        return failed
+
+    def test_text_true_after_the_call_is_not_attributed_to_it(self, tmp_path: Path) -> None:
+        """A clean call followed by an unrelated `text=True` later in the file stays clean."""
+        failed = self._run(tmp_path, 'subprocess.run(["cmd"], check=True)\nhelper(text=True)\n')
+        assert failed == []
+
+    def test_encoding_after_the_call_does_not_absolve_it(self, tmp_path: Path) -> None:
+        """A genuine violation is still reported when a later line mentions encoding=."""
+        failed = self._run(tmp_path, 'subprocess.run(fmt("a"), text=True)\nprint("encoding=utf-8")\n')
+        assert failed == ["Subprocess encoding lint"]

@@ -65,7 +65,7 @@ def test_no_circular_import():
 
 
 # ---------------------------------------------------------------------------
-# Constants in schema (CATALOG_ALIAS, SMOKE_* tables)
+# tests for the schema constants CATALOG_ALIAS and the SMOKE_* tables
 # ---------------------------------------------------------------------------
 
 
@@ -98,7 +98,7 @@ def test_order_columns_other_inputs_middle():
 
 
 # ---------------------------------------------------------------------------
-# resolve_table_spec -- smoke (None) and ops_recommendations
+# tests for resolve_table_spec on smoke (None) and on ops_recommendations
 # ---------------------------------------------------------------------------
 
 

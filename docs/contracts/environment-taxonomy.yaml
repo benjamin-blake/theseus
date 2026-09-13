@@ -27,6 +27,16 @@ contract:
     check: validate_environment_taxonomy
 
 amendment_log:
+  - date: "2026-09-04"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      PLAN-dispatch-gated-apply-unlatch (Decision 183): axis_a.sandbox_gated_apply now states the
+      gated-apply job is reachable from BOTH the push path and the workflow_dispatch
+      acknowledge-and-retry path, fed by the fresh plan the guard routes on a dispatch, handed over
+      as SANDBOX_FRESH_PLAN_ARTIFACT with symmetric sha256 EMIT/VERIFY (Decision 158 route (ii)'s
+      pattern) so Decision 77 artifact identity holds on every route. No apply-model or guard
+      classification field semantics changed.
   - date: "2026-08-26"
     semantic_break: false
     change_class: prose_improvement
@@ -80,12 +90,22 @@ axis_a:
     The platform split is mock-vs-real at ONE code version, not version-skew tiers. The same code
     path runs in each environment; only the externals (mocked vs real) and the apply gate differ.
   sandbox_gated_apply: >-
-    Sandbox gated-apply path (CD.35 Wave 3 / T2.22 / Decision 92, trust corrected by Decision 94):
-    when the deterministic guard exits 2 (IAM/trust/destroy diff), the apply-sandbox job sets
-    routed=true and exits green (routing is not a failure). A gated-apply job (needs: apply-sandbox,
-    environment: tf-gated-apply) then blocks until benjamin-blake approves in GitHub Actions. On
-    approval, it applies the SAME saved plan.bin the guard inspected (no re-plan, Decision 77
-    no-TOCTOU) and writes the convergence record via the T2.20 always-run write, whose write
+    Sandbox gated-apply path (CD.35 Wave 3 / T2.22 / Decision 92, trust corrected by Decision 94;
+    reach widened by Decision 183): when the deterministic guard exits 2 (IAM/trust/destroy diff),
+    the apply-sandbox job sets routed=true and exits green (routing is not a failure). This is
+    reachable from EITHER heal verb: a push to main (T2.21 apply-the-saved-plan), or a
+    workflow_dispatch acknowledge-and-retry (plans fresh at main HEAD) whose fresh plan the guard
+    also routes. A gated-apply job (needs: apply-sandbox, environment: tf-gated-apply) then blocks
+    until benjamin-blake approves in GitHub Actions -- the SOLE authorization boundary on BOTH
+    routes, no second approval mechanism. On approval, it applies the SAME plan.bin the guard
+    inspected (no re-plan, Decision 77 no-TOCTOU): on push, the digest-verified saved plan.bin
+    fetched from S3 (DEP-07); on a routed workflow_dispatch, the run's own fresh plan.bin handed
+    over as a run-scoped SANDBOX_FRESH_PLAN_ARTIFACT (GitHub-native artifact transport, workflow
+    token only -- no new IAM, no S3 write) with a symmetric sha256 EMIT (apply-sandbox) / VERIFY
+    (gated-apply) pair, mirroring reconcile.yml's RECONCILE_FRESH_PLAN_ARTIFACT hand-off (Decision
+    158 route (ii)) verbatim -- Decision 77 artifact identity holds on every route. The saved-plan
+    and artifact plan sources are mutually exclusive per run; a saved plan.bin is never fetched on
+    a dispatch. It then writes the convergence record via the T2.20 always-run write, whose write
     semantics are THREE-BRANCH (Decision 154 / rec-2862, amends Decision 92 by forward reference):
     status=green on apply success; status=red on a genuine apply failure (an apply step ran and
     infrastructure may be in an unknown state); or, on a PRE-apply failure (artifact fetch / tfvars

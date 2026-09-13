@@ -79,7 +79,7 @@ def _scope_drift_check(plan_steps: list[dict]) -> list[str]:
     )
     _EXCLUDED_NAMES = {"requirements.txt", "scripts/execute_recommendation.py"}
     _EXCLUDED_EXTENSIONS = (".jsonl",)
-    unplanned = [
+    return [
         p
         for p in changed
         if not any(p.startswith(prefix) for prefix in _EXCLUDED_PREFIXES)
@@ -87,7 +87,6 @@ def _scope_drift_check(plan_steps: list[dict]) -> list[str]:
         and p not in _EXCLUDED_NAMES
         and not any(p.endswith(ext) for ext in _EXCLUDED_EXTENSIONS)
     ]
-    return unplanned
 
 
 # Resolve review model via registry; fall back to COPILOT_MODEL_REVIEW env var.

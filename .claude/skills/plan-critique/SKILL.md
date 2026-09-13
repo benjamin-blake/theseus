@@ -17,7 +17,7 @@ This BLOCKING gate assesses strategic soundness, bounds, and North Star alignmen
 
 Reject a plan that invents a third validation tier, treats mapped coverage or readiness as authoritative, or permits required full validation to time out, remain incomplete, or become a warning/CI-only handoff. A schema-v3 IMPLEMENTATION plan must carry the exact blocking handoff policy and its closure steps must distinguish readiness states, parent validator evidence, structured postflight evidence, and real push/PR outcomes.
 
-1. Read the ENTIRE plan file path provided by the caller (e.g., `docs/plans/PLAN-infra-parallel-workflow.yaml`). The caller passes this path explicitly — do not default to `docs/plans/PLAN.md`. If no path was provided, search `docs/plans/` for files matching `PLAN-*.yaml` and read the most recently modified one (fall back to `PLAN-*.md` only if no .yaml exists, and note the deprecation in your output).
+1. Read the ENTIRE plan file provided by the caller -- never default to `docs/plans/PLAN.md`. Absent a path, use the newest `PLAN-*.yaml` in `docs/plans/` (fall back to `PLAN-*.md` only if none exists, and note the deprecation).
 
 2. Read `docs/PROJECT_CONTEXT.md` in full (for North Star and rules).
 
@@ -25,7 +25,7 @@ Reject a plan that invents a third validation tier, treats mapped coverage or re
 
 4. **Targeted decision extraction + conflict-sweep, not a full-file read:** read only the decision sections named in the plan's context `Decision-scout verdict + CITE list` (locate each via `rg "^## Decision N:" docs/DECISIONS.md`), plus a conflict-sweep: `rg` 2-3 keywords drawn from the plan's approach over `^## Decision` headers in `docs/DECISIONS.md` to catch a contradiction the scout's CITE list omitted. Do not Read the full file -- it is large (near its Decision 134 size ceiling) and the decision-scout gate already paid that cost minutes earlier in the same workflow.
 
-5. **For IMPLEMENTATION plans:** Read the files listed in the plan's `scope` list (the `## Scope` table in legacy .md plans) to verify the plan's accuracy. For STRATEGIC plans, this is not required — work areas are high-level and do not require file-level verification.
+5. **For IMPLEMENTATION plans:** Read the files listed in the plan's `scope` list (the `## Scope` table in legacy .md plans) to verify the plan's accuracy. For STRATEGIC plans, this is not required -- work areas are high-level and do not require file-level verification.
 
 5b. For IMPLEMENTATION plans, run `bin/venv-python -m scripts.roadmap.plan_obligations --plan <plan path>` and fold its report into the scope check above -- it names missing companion registrations mechanically, freeing this gate to judge adequacy, not arithmetic.
 
@@ -37,7 +37,7 @@ Reject a plan that invents a third validation tier, treats mapped coverage or re
 
 8. **Evaluate Work Area scoping (STRATEGIC plans) or Scope breadth (IMPLEMENTATION plans):**
    - For STRATEGIC: Are Work Areas well-bounded (one logical concern per area)? Too large (suggest split)? Too small (merge with adjacent area)?
-   - For IMPLEMENTATION: Are all scope entries necessary? Does the Scope extend beyond the stated phase?
+   - For IMPLEMENTATION: Are all scope entries necessary? Too large (suggest split)? Does the Scope extend beyond the stated phase?
 
 9. **Check phase dependencies:** Does this plan depend on work from a prior phase that is not yet complete? Cite specific ROADMAP phase entries.
 
@@ -133,7 +133,7 @@ Ask the following five questions against the plan's chosen approach. For each, w
 **North Star Alignment:** X/5 -- [1-2 sentence justification]
 
 **Work Area / Scope Evaluation:**
-- [Area or file 1]: appropriately scoped / too large (suggest split into: X, Y) / too small (merge with: Z)
+- [Area or file 1]: appropriately scoped / too large (suggest split into: X, Y; deferred half filed as a follow-on rec) / too small (merge with: Z)
 - [Area or file 2]: ...
 
 **Phase Dependencies:** Aligned / [describe issue and which phase must complete first]
@@ -154,7 +154,7 @@ Ask the following five questions against the plan's chosen approach. For each, w
 
 **Category Consistency (12p, Decision 167 clause 2):** N/A -- plan drafts no numbered Decision text / PASS -- "[verbatim body quote]" supports claimed [routing row] / REVISE -- claimed [routing row] but body reads: "[verbatim quote]"
 
-**Finding-Origin Attribution:** mechanical (scripts.roadmap.plan_obligations) / critic judgement -- tag each registration-closure finding
+**Finding-Origin Attribution:** mechanical (a deterministic check could catch it -- name it) / critic judgement -- tag each finding, with a stable anchor (plan field path or VP step id)
 
 **Recommendation:** PROCEED / REVISE [with specific suggestions if REVISE]
 ```

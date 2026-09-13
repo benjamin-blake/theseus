@@ -316,7 +316,9 @@ class PlatformRoadmapState:
           - includes only CDs whose every gated item (via cd.gates, resolved the same way as
             the existing _TIER_SHORTCUT_RE gate-resolution: tier shortcut -> every item in that
             tier; else by_id[ref]) is complete or non-blocking (_INACTIVE_FOR_TIER); empty gates
-            are vacuously included.
+            are vacuously included UNLESS the CD carries affects (a CD split into gates=[] +
+            affects=[...] has no gate-derived realization evidence at all and must not surface
+            here just because it gates nothing).
 
         rec-2468: realization_evidence is str | None; TRUTHY => evidenced (excluded here), None
         or empty-string => not evidenced (a candidate). This filters on truthiness, never on
@@ -334,6 +336,13 @@ class PlatformRoadmapState:
             if "[Realized" in detail:
                 continue
             if _FULLY_SUPERSEDED_RE.search(detail):
+                continue
+            if not cd.gates and cd.affects:
+                # An empty gates list is vacuously all-complete (_all_gates_complete: all() over
+                # an empty iterable). A CD carrying affects but no gates has no gate-derived
+                # realization evidence at all -- it must not surface here just because it gates
+                # nothing. (CD.32-shaped CDs with empty gates AND empty affects are a separate,
+                # out-of-scope gap -- see PLAN-roadmap-blocking-edge-semantics context.)
                 continue
             if not self._all_gates_complete(cd.gates):
                 continue

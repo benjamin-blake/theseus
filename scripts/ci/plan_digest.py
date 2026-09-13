@@ -79,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         return 0
 
-    # command == "verify"
+    # the remaining branch handles command "verify"
     try:
         verify(args.path, args.reference)
     except PlanDigestError as exc:

@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import logging
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from scripts.ops_data_portal import (
+    _load_write_time_validators,
     _validate_context_length,
     _validate_file_path,
+    _write_time_validators_cache,
     compute_automatable,
     file_rec,
 )
+from scripts.ops_portal import write_validators as _write_validators
 
 # ---------------------------------------------------------------------------
 # _validate_file_path
@@ -110,6 +114,29 @@ def test_compute_automatable_valid():
     assert result is True
 
 
+@pytest.mark.parametrize(
+    "file_path",
+    [
+        "src/executor_loop/rendered/executor_loop.asl.json",
+        "docs/contracts/personas/plan_agent.yaml",
+        "docs/contracts/executor-loop-policy.yaml",
+        "config/agent/executor/personas.yaml",
+        ".github/CODEOWNERS",
+        "scripts/ci/executor_boundary_guard.py",
+        "scripts/checks/executor/validate_executor_boundary.py",
+    ],
+)
+def test_compute_automatable_executor_loop_kernel_path_is_never_automatable(file_path):
+    """The executor loop kernel, its rendered ASL, its contracts and its own boundary-guard
+    implementation (Decision 185 clause 3) never derive automatable. The risk score is patched
+    to 0.0 so a boundary_patterns hit is the ONLY path to False -- an unpatched score would
+    already be low for a tiny new file, which would pass vacuously without exercising the
+    boundary check at all."""
+    with patch("scripts.ops_portal.risk_scoring._compute_risk_score", return_value=0.0):
+        result = compute_automatable(file_path, "XS")
+    assert result is False
+
+
 # ---------------------------------------------------------------------------
 # automatable override warning in file_rec
 # ---------------------------------------------------------------------------
@@ -143,3 +170,308 @@ def test_automatable_override_warning(caplog):
     assert any("automatable" in str(m) for m in warning_msgs), (
         f"Expected automatable override WARNING in logs; got: {warning_msgs}"
     )
+
+
+# ---------------------------------------------------------------------------
+# _load_write_time_validators: unrecognised names loud-fail (rec-3308 sibling gap)
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_write_time_test_raises(tmp_path):
+    """A write_time test name outside the recognised set raises, instead of the pre-fix elif
+    chain falling through with no error and no log."""
+    fixture_yaml = tmp_path / "ops.yaml"
+    fixture_yaml.write_text(
+        yaml.safe_dump(
+            {
+                "tables": {
+                    "ops_recommendations": {
+                        "columns": {
+                            "mystery": {
+                                "tests": [{"bogus_test": {"write_time": True, "enforced": True}}],
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    )
+    with (
+        patch("scripts.ops_portal.write_validators._OPS_YAML_PATH", fixture_yaml),
+        patch("scripts.ops_portal.write_validators._write_time_validators_cache", {}),
+    ):
+        with pytest.raises(ValueError, match="bogus_test"):
+            _load_write_time_validators("ops_recommendations")
+
+
+# ---------------------------------------------------------------------------
+# array_element_format (rec-3307 dependencies)
+# ---------------------------------------------------------------------------
+
+
+def test_array_element_format_rejects_malformed_element():
+    """array_element_format rejects a malformed dependencies element and accepts a valid list and
+    None -- via the bare validator against the real ops.yaml, and through file_rec's write-time
+    gate too (acceptance criterion 4 claims both write paths; test_update_rec_content_validation.py
+    covers the update_rec half)."""
+    _write_time_validators_cache.clear()
+    dep_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "dependencies"]
+    assert dep_validators, "expected a write_time validator for the dependencies column"
+    validate = dep_validators[0]
+
+    with pytest.raises(ValueError, match="dependencies"):
+        validate(["rec-1", "nonsense"], "dependencies")
+    validate(["rec-1", "rec-2"], "dependencies")  # must not raise
+    validate(None, "dependencies")  # must not raise
+
+    long_context = "This recommendation exists because the system needs improvement to handle edge cases well."
+    fields = {
+        "title": "Test recommendation title for dependency format",
+        "file": "scripts/some_module.py",
+        "context": long_context,
+        "acceptance": "grep -q ops_data_portal scripts/ops_data_portal.py && grep -q file_rec scripts/ops_data_portal.py",
+        "effort": "S",
+        "priority": "Low",
+        "source": "manual",
+        "status": "open",
+        "dependencies": ["rec-1", "nonsense"],
+    }
+    with patch("scripts.ops_data_portal.validate_source"):
+        with pytest.raises(ValueError, match="dependencies"):
+            file_rec(fields)
+
+
+# ---------------------------------------------------------------------------
+# array_element_reference (rec-3307 referential half, PLAN-dependency-referential-integrity)
+# ---------------------------------------------------------------------------
+
+
+def test_array_element_reference_rejects_absent_rec():
+    """array_element_reference resolves existence against the FULL corpus via its own
+    make_reader/rec_by_id call (scripts.ops_portal may not import scripts.ops_data_portal,
+    .importlinter no-cycles-ops-data-portal-executor); a well-formed-but-absent id is rejected
+    while a present id is accepted."""
+    _write_time_validators_cache.clear()
+    _write_validators._rec_exists_memo.clear()
+    dep_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "dependencies"]
+    assert len(dep_validators) >= 2, "expected both array_element_format and array_element_reference validators"
+
+    fake_reader = MagicMock()
+    fake_reader.named.side_effect = lambda verb, id: [{"id": id}] if id == "rec-1" else []  # noqa: A006
+
+    with patch("src.common.ducklake_reader_client.make_reader", return_value=fake_reader):
+        raised = []
+        for fn in dep_validators:
+            try:
+                fn(["rec-1", "rec-999999"], "dependencies")
+            except ValueError as exc:
+                raised.append(str(exc))
+        assert any("rec-999999" in msg for msg in raised), raised
+
+        for fn in dep_validators:
+            fn(["rec-1"], "dependencies")  # must not raise
+        for fn in dep_validators:
+            fn(None, "dependencies")  # must not raise
+    _write_validators._rec_exists_memo.clear()
+
+
+def test_array_element_reference_loud_fails_on_unreachable_reader():
+    """An unreachable reader propagates (Decision 55 / 84 I-4) rather than being swallowed into
+    a silent pass that would admit the write."""
+    _write_time_validators_cache.clear()
+    _write_validators._rec_exists_memo.clear()
+    dep_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "dependencies"]
+
+    with (
+        patch("src.common.ducklake_reader_client.make_reader", side_effect=RuntimeError("reader unreachable")),
+        pytest.raises(RuntimeError, match="unreachable"),
+    ):
+        for fn in dep_validators:
+            fn(["rec-1"], "dependencies")
+    _write_validators._rec_exists_memo.clear()
+
+
+def test_array_element_reference_memoises_positive_results_only():
+    """Positive existence results are memoised (bounding repeated Neon egress, Decision 88); the
+    memo is never used to cache an absent verdict, so a later-filed id is still accepted."""
+    _write_time_validators_cache.clear()
+    _write_validators._rec_exists_memo.clear()
+    calls: list[str] = []
+
+    def _fake_named(verb, id):  # noqa: A002
+        calls.append(id)
+        return [{"id": id}]
+
+    fake_reader = MagicMock()
+    fake_reader.named.side_effect = _fake_named
+
+    with patch("src.common.ducklake_reader_client.make_reader", return_value=fake_reader):
+        assert _write_validators._rec_exists("rec-1") is True
+        assert _write_validators._rec_exists("rec-1") is True
+    assert calls == ["rec-1"], "second call for the same id must be served from the positive memo, not re-fetched"
+    _write_validators._rec_exists_memo.clear()
+
+
+def test_array_element_reference_holds_one_reader_per_write():
+    """Decision 88 invariant (i): a single write's dependencies list with N distinct,
+    not-yet-memoised elements constructs exactly ONE reader (make_reader called once), never one
+    per element -- the array_element_reference validator's _check closure shares a single reader
+    across the whole list, not _rec_exists constructing its own per call."""
+    _write_time_validators_cache.clear()
+    _write_validators._rec_exists_memo.clear()
+    dep_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "dependencies"]
+
+    fake_reader = MagicMock()
+    fake_reader.named.side_effect = lambda verb, id: [{"id": id}]  # noqa: A006
+
+    with patch("src.common.ducklake_reader_client.make_reader", return_value=fake_reader) as mock_make_reader:
+        for fn in dep_validators:
+            fn(["rec-10", "rec-11", "rec-12", "rec-13"], "dependencies")  # must not raise
+
+    assert mock_make_reader.call_count == 1, (
+        f"expected exactly one make_reader() call for a 4-element write, got {mock_make_reader.call_count}"
+    )
+    assert fake_reader.named.call_count == 4
+    _write_validators._rec_exists_memo.clear()
+
+
+def test_array_element_reference_skips_reader_when_all_elements_memoised():
+    """When every element of a write is already positively memoised, the validator never
+    constructs a reader at all (not even one)."""
+    _write_time_validators_cache.clear()
+    _write_validators._rec_exists_memo.clear()
+    _write_validators._rec_exists_memo["rec-20"] = True
+    _write_validators._rec_exists_memo["rec-21"] = True
+    dep_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "dependencies"]
+
+    with patch("src.common.ducklake_reader_client.make_reader") as mock_make_reader:
+        for fn in dep_validators:
+            fn(["rec-20", "rec-21"], "dependencies")  # must not raise
+
+    mock_make_reader.assert_not_called()
+    _write_validators._rec_exists_memo.clear()
+
+
+# ---------------------------------------------------------------------------
+# repair_dependency_tokens dry-run (PLAN-dependency-referential-integrity)
+# ---------------------------------------------------------------------------
+
+
+def test_repair_dependency_tokens_dry_run_writes_nothing():
+    """The backfill helper enumerates malformed dependencies rows via current_state, reports the
+    strip-bracket repair per row, and calls update_rec zero times under dry_run."""
+    from scripts.ops_portal.maintenance_ops import repair_dependency_tokens
+
+    rows = [
+        {"id": "rec-100", "dependencies": ["[rec-1]"]},
+        {"id": "rec-101", "dependencies": ["rec-2", "rec-3"]},  # already well-formed
+        {"id": "rec-102", "dependencies": None},
+        {"id": "rec-103", "dependencies": ["[rec-4", "rec-5]"]},  # split-pair shape
+    ]
+    fake_reader = MagicMock()
+    fake_reader.current_state.return_value = rows
+
+    with (
+        patch("src.common.ducklake_reader_client.make_reader", return_value=fake_reader),
+        patch("scripts.ops_data_portal.update_rec") as mock_update,
+    ):
+        result = repair_dependency_tokens(dry_run=True)
+
+    mock_update.assert_not_called()
+    assert result["repaired"] == 0
+    assert result["matched"] == [
+        {"id": "rec-100", "before": ["[rec-1]"], "after": ["rec-1"]},
+        {"id": "rec-103", "before": ["[rec-4", "rec-5]"], "after": ["rec-4", "rec-5"]},
+    ]
+
+
+# ---------------------------------------------------------------------------
+# min_length (rec-3310 disarmed landmine)
+# ---------------------------------------------------------------------------
+
+
+def test_min_length_reports_its_own_column_and_bound():
+    """min_length honours its declared parameter per column: a 9-char title is rejected naming
+    title and the bound 10, and a 47-char title is accepted -- under the old hardcoded
+    _validate_context_length branch a 47-char value would have been rejected for failing
+    context's 80-char rule regardless of which column it was bound to."""
+    _write_time_validators_cache.clear()
+    title_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "title"]
+    assert len(title_validators) >= 2, "expected both not_null and min_length write_time validators for title"
+
+    short_title = "123456789"  # 9 stripped chars
+    raised = []
+    for fn in title_validators:
+        try:
+            fn(short_title, "title")
+        except ValueError as exc:
+            raised.append(str(exc))
+    assert raised, "expected at least one title validator to reject a 9-char title"
+    assert any("title" in msg and "10" in msg for msg in raised), raised
+    assert not any("context" in msg for msg in raised), (
+        f"min_length must name its own column (title), not the old hardcoded context rule: {raised}"
+    )
+
+    ok_title = "x" * 47  # under context's old hardcoded 80-char rule; title's bound is 10
+    for fn in title_validators:
+        fn(ok_title, "title")  # must not raise
+
+
+def test_loader_yields_context_min_length_80():
+    """Context enforcement is unchanged at 80 THROUGH THE YAML LOADER after migrating off the
+    expression branch -- file_rec calls _validate_context_length directly regardless of the
+    loader, so this must exercise _load_write_time_validators itself, not the direct function."""
+    _write_time_validators_cache.clear()
+    context_validators = [fn for col, fn in _load_write_time_validators("ops_recommendations") if col == "context"]
+    assert context_validators, "expected at least one write_time validator for the context column"
+
+    short = "x" * 79
+    long_ = "x" * 80
+    raised = []
+    for fn in context_validators:
+        try:
+            fn(short, "context")
+        except ValueError as exc:
+            raised.append(str(exc))
+    assert raised, "expected a context validator to reject 79 stripped chars"
+    for fn in context_validators:
+        fn(long_, "context")  # must not raise
+
+
+def test_expression_write_time_yields_no_validator(tmp_path):
+    """The retired hardcoded expression write-time branch is unreachable: a column whose only
+    write_time test is an expression carrying a python: key yields no validator from
+    _load_write_time_validators. The python: key is mandatory in the fixture -- the retired
+    branch was gated on isinstance(params.get("python"), str), so an expression without it would
+    yield nothing even if the branch had survived, making the test pass vacuously."""
+    fixture_yaml = tmp_path / "ops.yaml"
+    fixture_yaml.write_text(
+        yaml.safe_dump(
+            {
+                "tables": {
+                    "ops_recommendations": {
+                        "columns": {
+                            "some_expr_col": {
+                                "tests": [
+                                    {
+                                        "expression": {
+                                            "sql": "LENGTH(TRIM(some_expr_col)) >= 80",
+                                            "write_time": True,
+                                            "enforced": True,
+                                            "python": "len(value.strip()) >= 80",
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    )
+    with (
+        patch("scripts.ops_portal.write_validators._OPS_YAML_PATH", fixture_yaml),
+        patch("scripts.ops_portal.write_validators._write_time_validators_cache", {}),
+    ):
+        validators = _load_write_time_validators("ops_recommendations")
+    assert validators == [], f"expected no validator for the retired expression write-time branch, got: {validators}"

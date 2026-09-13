@@ -436,7 +436,7 @@ def test_named_read_dispatch_every_registered_verb(verb, monkeypatch):
         return []
 
     monkeypatch.setattr(rt, "named_read", _named)
-    params = {p: "x" for p in entry.params}
+    params = dict.fromkeys(entry.params, "x")
     out = h.action_named_read({"verb": verb, "params": params}, FakeCon())
     assert out["ok"] is True
     assert out["verb"] == verb

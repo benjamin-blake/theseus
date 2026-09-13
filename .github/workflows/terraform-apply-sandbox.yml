@@ -26,13 +26,24 @@ name: terraform-apply-sandbox
 # CD.35 / T2.22 (Wave 3) adds a human-gated CD apply path for the guard fail-closed set:
 #   - The guard BLOCK verdict (exit 2) now sets a job output routed=true and exits 0 -- routing is
 #     not a failure; the apply-sandbox job stays green and the convergence record is NOT touched.
-#   - A new gated-apply job (needs: apply-sandbox, if: routed == 'true' && push, environment:
-#     tf-gated-apply) fetches the SAME saved plan.bin from S3 and applies it VERBATIM after a
+#   - A new gated-apply job (needs: apply-sandbox, if: routed == 'true', environment:
+#     tf-gated-apply) fetches the SAME plan.bin the guard inspected and applies it VERBATIM after a
 #     human reviewer approves in GitHub Actions (no re-plan -- Decision 77 no-TOCTOU).
 #   - The gated-apply job reuses the T2.20 always-run red-on-failure convergence record write so a
 #     failed gated apply writes red and files a ci-rca rec (Decision 55/72 anti-masking preserved).
 #   - The gated-apply job is NOT a PR required check (Decision 83 / T2.22 constraint).
 #   - The routine guard-PASS auto-apply path is unchanged.
+#
+# Decision 183: TWO heal verbs reach gated-apply, both fed by Decision 77 artifact identity --
+#   - push: the digest-verified saved plan.bin fetched from S3 (fetch_plan, T2.21/DEP-07).
+#   - workflow_dispatch acknowledge-and-retry, guard-ROUTED: the SAME run's fresh plan.bin the
+#     guard inspected, handed over as a run-scoped SANDBOX_FRESH_PLAN_ARTIFACT (sha256 EMIT in
+#     apply-sandbox, VERIFY in gated-apply -- reconcile.yml's RECONCILE_FRESH_PLAN_ARTIFACT
+#     pattern, verbatim). The two plan sources are mutually exclusive per run (fetch_plan is
+#     gated on push AND fresh_plan_pending != 'true'); a saved plan.bin is NEVER fetched on a
+#     dispatch. See docs/contracts/environment-taxonomy.yaml axis_a.sandbox_gated_apply and
+#     docs/contracts/deploy-paths.yaml's reconcile row for the routing rule between this path and
+#     reconcile.yml's red-commit replay.
 #
 # Trust: assumes agent-platform-github-ci-apply, which trusts refs/heads/main ONLY (oidc.tf). A PR
 # or agent/* branch cannot assume it, so auto-apply is reachable only via a merge to main. The
@@ -52,7 +63,10 @@ on:
         description: >-
           Unlatch a RED convergence record: name the red commit SHA (or the open rec id, rec-NNNN).
           This is the ONLY sanctioned path to clear red; a successful apply from this run writes
-          green. Leave blank for a routine manual apply (refused if the record is red).
+          green. Plans fresh at main HEAD -- if the guard ROUTES the fresh plan (IAM/trust/destroy
+          diff), it reaches the tf-gated-apply Environment in THIS run via SANDBOX_FRESH_PLAN_ARTIFACT
+          (Decision 183), the same Environment approval a routine push-path guard-BLOCK routes
+          through. Leave blank for a routine manual apply (refused if the record is red).
         required: false
         type: string
 
@@ -89,9 +103,21 @@ jobs:
     timeout-minutes: 30
     outputs:
       # routed=true when the guard exits 2 (IAM/trust/destroy diff) -- signals the gated-apply
-      # job to fetch the saved plan and wait for human approval. The convergence record is NOT
+      # job to fetch the SAME plan (saved, on push; the fresh SANDBOX_FRESH_PLAN_ARTIFACT, on a
+      # routed workflow_dispatch) and wait for human approval. The convergence record is NOT
       # touched while routed (anti-masking, T2.22 / Decision 55).
       routed: ${{ steps.guard.outputs.routed }}
+      # artifact_sha: the SAME content-addressed sha the plan.bin (saved or fresh) was built
+      # against -- gated-apply's artifact_sha step echoes this verbatim instead of re-resolving it
+      # (Decision 183; a re-resolution would fail on a dispatch commit with no originating PR).
+      artifact_sha: ${{ steps.artifact_sha.outputs.value }}
+      # fresh_plan_pending/fresh_plan_sha256: the SANDBOX_FRESH_PLAN_ARTIFACT hand-off (Decision
+      # 183, mirrors reconcile.yml's RECONCILE_FRESH_PLAN_ARTIFACT). fresh_plan_pending is true
+      # only on a guard-ROUTED workflow_dispatch (the EMIT step below only runs on that path);
+      # gated-apply's fetch_plan step is gated on its negation so the two plan sources stay
+      # mutually exclusive.
+      fresh_plan_pending: ${{ steps.upload_fresh_plan_sha256.outcome == 'success' }}
+      fresh_plan_sha256: ${{ steps.upload_fresh_plan_sha256.outputs.sha256 }}
     permissions:
       id-token: write       # REQUIRED for OIDC token minting
       contents: read
@@ -330,6 +356,30 @@ jobs:
         working-directory: ${{ env.WORKDIR }}
         run: terraform apply -input=false -lock-timeout=120s plan.bin
 
+      - name: Emit fresh plan.bin sha256 (SANDBOX_FRESH_PLAN_ARTIFACT sha256 job-output EMIT)
+        # Decision 183, mirrors reconcile.yml's RECONCILE_FRESH_PLAN_ARTIFACT EMIT verbatim: the
+        # byte-integrity gate that crosses the job boundary to gated-apply must be independently
+        # checkable, not merely "an artifact exists" -- this job output is verified again on
+        # download in gated-apply (VERIFY, symmetric with this EMIT).
+        id: upload_fresh_plan_sha256
+        if: success() && github.event_name == 'workflow_dispatch' && steps.guard.outputs.routed == 'true'
+        run: echo "sha256=$(sha256sum ${{ env.WORKDIR }}/plan.bin | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload fresh plan.bin as a run-scoped artifact (SANDBOX_FRESH_PLAN_ARTIFACT)
+        # Decision 183: guard-ROUTE on a workflow_dispatch acknowledge-and-retry (out-of-budget
+        # IAM/trust/destroy) -- hand the fresh plan.bin to gated-apply below via a GitHub-native
+        # run-scoped artifact (workflow token only -- no new IAM, no S3 write) so the episode
+        # completes in THIS SAME dispatch after one Environment approval, instead of stranding
+        # (the dispatch-vs-push deadlock rec-3522/rec-3135/rec-2918 identified). retention-days 2
+        # is the ephemeral_handoff class maximum (docs/contracts/github-actions-evidence.yaml),
+        # giving the human approval two days before the hand-off expires.
+        if: success() && github.event_name == 'workflow_dispatch' && steps.guard.outputs.routed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sandbox-fresh-plan-${{ github.run_id }}
+          path: ${{ env.WORKDIR }}/plan.bin
+          retention-days: 2
+
       - name: Write convergence record (always-run, red-on-failure)
         id: record_write
         # CD.35 5.5 integrity anchor: apply-identity-only write, ALWAYS-run so a failed apply writes
@@ -364,15 +414,18 @@ jobs:
       - name: Best-effort post-merge SHA->PR wake
         # CD.35 5.3 / Decision 76 (poll-free): the push event's workflow_run.pull_requests[] is
         # empty, so resolve the originating PR from the merge commit SHA and comment to re-engage a
-        # held subscription. BEST-EFFORT ONLY (continue-on-error) -- the authoritative baseline is
-        # the next-planning-session record re-check; nothing depends on this wake. Skipped on
-        # refusal (no apply ran).
-        if: ${{ always() && github.event_name == 'push' && steps.precond.outputs.refused != 'true' }}
+        # held subscription. Decision 183: on a routed workflow_dispatch, resolve from the
+        # ACKNOWLEDGED RED COMMIT instead -- that is the PR humans are actually watching for this
+        # incident, not whatever merge happens to sit at github.sha when the dispatch runs.
+        # BEST-EFFORT ONLY (continue-on-error) -- the authoritative baseline is the
+        # next-planning-session record re-check; nothing depends on this wake. Skipped on refusal
+        # (no apply ran) and on an un-routed dispatch (no PR to notify).
+        if: ${{ always() && steps.precond.outputs.refused != 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && steps.guard.outputs.routed == 'true')) }}
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ github.event_name == 'push' && github.sha || github.event.inputs.acknowledge_red_commit }}
           ROUTED: ${{ steps.guard.outputs.routed }}
           APPLY_OUTCOME: ${{ steps.apply.outcome }}
         run: |
@@ -385,8 +438,10 @@ jobs:
             # Guard exit 2 (out-of-budget IAM / trust / destroy) -> routed to gated-apply job.
             # The convergence record is NOT touched; the gated-apply job pending reviewer approval
             # handles the apply. Distinct message so the held subscription knows a human action is
-            # required (T2.22).
-            MSG="sandbox terraform-apply guard routed ${SHA} to the tf-gated-apply job (out-of-budget IAM / trust / destroy diff). Pending reviewer approval in GitHub Actions -- the convergence record is unchanged until the gated apply completes. Approve at: Actions -> gated-apply job. (Best-effort wake.)"
+            # required (T2.22). ${{ github.sha }} (not $SHA, which is the ack'd red commit on a
+            # routed dispatch) is the commit whose fresh plan is pending and this run's
+            # apply-sandbox plan + guard step logs are what to review before approving.
+            MSG="sandbox terraform-apply guard routed ${{ github.sha }} to the tf-gated-apply job (out-of-budget IAM / trust / destroy diff); pending reviewer approval -- review this run's apply-sandbox plan + guard step logs, then approve at: Actions -> gated-apply job. The convergence record is unchanged until the gated apply completes (commit_sha becomes ${{ github.sha }} on success). (Best-effort wake.)"
           elif [ "$APPLY_OUTCOME" = "success" ]; then
             MSG="sandbox terraform-apply converged GREEN for ${SHA}; convergence record updated. (Best-effort wake; next planning session re-checks the record.)"
           else
@@ -716,16 +771,21 @@ jobs:
             --field target_url="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
 
   # ---------------------------------------------------------------------------
-  # Gated-apply job: post-merge push ONLY, when guard exits 2 (CD.35 Wave 3 / T2.22).
+  # Gated-apply job: reachable on EITHER heal verb, when guard exits 2 (CD.35 Wave 3 / T2.22;
+  # Decision 183 widens the reach from post-merge push ONLY to also admit a guard-ROUTED
+  # workflow_dispatch acknowledge-and-retry).
   #
-  # Triggered when apply-sandbox sets routed=true (guard exit 2: IAM/trust/destroy diff).
-  # Declares environment: tf-gated-apply so the job does NOT start until a required reviewer
-  # approves in GitHub Actions -- the Environment is the authorization boundary (Decision 92).
+  # Triggered when apply-sandbox sets routed=true (guard exit 2: IAM/trust/destroy diff), on
+  # EITHER a push or a workflow_dispatch acknowledge-and-retry. Declares environment:
+  # tf-gated-apply so the job does NOT start until a required reviewer approves in GitHub Actions
+  # -- the Environment is the sole authorization boundary on both routes (Decision 92, Decision 183).
   #
   # Key invariants:
-  #   - No re-plan: applies the SAME plan.bin the guard inspected (Decision 77 no-TOCTOU).
-  #     A stale plan fails closed -> red convergence record -> ci-rca rec; recovery is the
-  #     workflow_dispatch acknowledge-and-retry path only.
+  #   - No re-plan: applies the SAME plan.bin the guard inspected (Decision 77 no-TOCTOU) -- the
+  #     digest-verified saved plan.bin on push, the sha256-verified SANDBOX_FRESH_PLAN_ARTIFACT on
+  #     a routed dispatch (the two sources are mutually exclusive per run). A stale or corrupted
+  #     plan fails closed -> red convergence record -> ci-rca rec; recovery is the workflow_dispatch
+  #     acknowledge-and-retry path only.
   #   - Always-run red-on-failure record write: a failed gated apply writes red (ci-rca files
   #     a rec). Decision 55 / 72 anti-masking: nothing auto-remediates.
   #   - NOT a PR required check (Decision 83 / T2.22): the gated-apply job is an out-of-band
@@ -754,8 +814,7 @@ jobs:
     if: >-
       always() &&
       needs.apply-sandbox.result == 'success' &&
-      needs.apply-sandbox.outputs.routed == 'true' &&
-      github.event_name == 'push'
+      needs.apply-sandbox.outputs.routed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: tf-gated-apply
@@ -801,22 +860,15 @@ jobs:
           working-directory: ${{ env.WORKDIR }}
 
       - name: Resolve DuckLake artifact sha (content-addressed key, T2.42 c3)
-        # This job is push-only (job-level if: github.event_name == 'push'), so a PR always
-        # resolves -- resolved the same way as the "Fetch saved plan" step below.
+        # Decision 183: this job is reachable on EITHER heal verb now, so it can no longer
+        # re-resolve the originating PR itself (a workflow_dispatch commit has none). Echo the
+        # SAME value apply-sandbox already resolved (PR head sha on push, github.sha on dispatch,
+        # which apply-sandbox's skip-assert build dual-wrote to lambda-packages/<sha>/* in the
+        # same run) -- the identical content-addressed sha the plan.bin (saved or fresh) was built
+        # against, so mode: fetch below resolves on every route.
         id: artifact_sha
         if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          VALUE=$(gh api "repos/${REPO}/commits/${SHA}/pulls" --jq '.[0].head.sha' 2>/dev/null || echo "")
-          if [ -z "$VALUE" ] || [ "$VALUE" = "null" ]; then
-            echo "::error::No originating PR resolved for ${SHA}; cannot resolve the content-addressed artifact sha (Decision 77 no-TOCTOU)." >&2
-            exit 1
-          fi
-          echo "value=${VALUE}" >> "$GITHUB_OUTPUT"
+        run: echo "value=${{ needs.apply-sandbox.outputs.artifact_sha }}" >> "$GITHUB_OUTPUT"
 
       - name: Fetch reviewed DuckLake lambda packages (no rebuild, Decision 154 / rec-2862)
         id: build_ducklake
@@ -834,13 +886,45 @@ jobs:
           mode: fetch
           artifact-sha: ${{ steps.artifact_sha.outputs.value }}
 
+      - name: Download fresh plan.bin artifact (SANDBOX_FRESH_PLAN_ARTIFACT handoff)
+        # Decision 183: the guard-ROUTEd workflow_dispatch's fresh re-plan was uploaded by
+        # apply-sandbox above -- download the SAME plan.bin it uploaded rather than fetching a
+        # saved plan from S3 (there is none on this route). GitHub-native artifact transport only
+        # (workflow token) -- no new IAM/S3.
+        if: needs.apply-sandbox.outputs.fresh_plan_pending == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: sandbox-fresh-plan-${{ github.run_id }}
+          path: ${{ env.WORKDIR }}
+
+      - name: Verify downloaded fresh plan.bin sha256 (SANDBOX_FRESH_PLAN_ARTIFACT sha256 download-side VERIFY)
+        # Decision 183, symmetric with apply-sandbox's EMIT: re-derive the artifact's sha256 here
+        # and compare against the job output it emitted, so byte-integrity across the job boundary
+        # is independently checkable, not merely "an artifact was downloaded".
+        id: verify_fresh_plan_sha256
+        if: needs.apply-sandbox.outputs.fresh_plan_pending == 'true'
+        working-directory: ${{ env.WORKDIR }}
+        env:
+          FRESH_PLAN_SHA256: ${{ needs.apply-sandbox.outputs.fresh_plan_sha256 }}
+        run: |
+          set -euo pipefail
+          ACTUAL=$(sha256sum plan.bin | cut -d' ' -f1)
+          if [ "$ACTUAL" != "$FRESH_PLAN_SHA256" ]; then
+            echo "::error::SANDBOX_FRESH_PLAN_ARTIFACT sha256 mismatch: expected ${FRESH_PLAN_SHA256}, got ${ACTUAL}. Refusing to apply a possibly-corrupted plan." >&2
+            exit 1
+          fi
+          echo "SANDBOX_FRESH_PLAN_ARTIFACT sha256 verified: ${ACTUAL}"
+
       - name: Fetch saved plan from S3 (gated-apply path, T2.22)
         # Resolve the PR (number + head sha) from the merge commit and fetch the content-addressed
         # plan.bin from S3 (DEP-07 c3), digest-verified (DEP-07 c2). Same logic as apply-sandbox's
         # "Fetch saved plan" step. No re-plan -- applies the guard-inspected plan verbatim (Decision
-        # 77 no-TOCTOU). No plan.json needed here (no re-guard in this job).
+        # 77 no-TOCTOU). No plan.json needed here (no re-guard in this job). Decision 183: skipped
+        # when the SANDBOX_FRESH_PLAN_ARTIFACT above already supplied plan.bin -- the two plan
+        # sources stay mutually exclusive, and this push-only path never runs on a dispatch.
         # id: fetch_plan is in the CLOSED pre-apply-failure allow-list (Decision 154 / rec-2862).
         id: fetch_plan
+        if: needs.apply-sandbox.outputs.fresh_plan_pending != 'true' && github.event_name == 'push'
         uses: ./.github/actions/fetch-saved-plan
         with:
           resolve-from-sha: ${{ github.sha }}
@@ -849,10 +933,13 @@ jobs:
 
       - name: Terraform apply (gated -- plan.bin verbatim, no re-plan)
         id: apply
-        # Applies the exact plan.bin the guard inspected and the speculative-plan showed on the PR.
-        # Human approval via tf-gated-apply Environment is the authorization. No re-plan after
-        # approval (Decision 77 no-TOCTOU). A stale plan fails closed -> record write below sets red
-        # -> ci-rca rec files. Recovery: workflow_dispatch acknowledge-and-retry path only.
+        # Applies the exact plan.bin the guard inspected -- on push, the same plan.bin the
+        # speculative-plan job showed on the originating PR; on a routed workflow_dispatch, the
+        # SANDBOX_FRESH_PLAN_ARTIFACT this run's apply-sandbox job planned, guard-routed, and
+        # uploaded (Decision 183). Human approval via tf-gated-apply Environment is the
+        # authorization on EITHER route. No re-plan after approval (Decision 77 no-TOCTOU). A
+        # stale or corrupted plan fails closed -> record write below sets red -> ci-rca rec files.
+        # Recovery: workflow_dispatch acknowledge-and-retry path only.
         if: success()
         working-directory: ${{ env.WORKDIR }}
         run: terraform apply -input=false -lock-timeout=120s plan.bin
@@ -904,14 +991,16 @@ jobs:
 
       - name: Best-effort post-merge SHA->PR wake
         # Best-effort wake to re-engage a held subscription after the gated apply completes.
-        # Same poll-free pattern as apply-sandbox (Decision 76). The authoritative baseline is
-        # the next-planning-session convergence-record re-check.
+        # Same poll-free pattern as apply-sandbox (Decision 76). Decision 183: resolve the PR from
+        # the ACKNOWLEDGED RED COMMIT on a routed dispatch (the incident PR humans are watching),
+        # push's merge commit SHA otherwise -- same split as apply-sandbox's wake step. The
+        # authoritative baseline is the next-planning-session convergence-record re-check.
         if: always()
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
+          SHA: ${{ github.event_name == 'push' && github.sha || github.event.inputs.acknowledge_red_commit }}
           APPLY_OUTCOME: ${{ steps.apply.outcome }}
         run: |
           PR_NUM=$(gh api "repos/${REPO}/commits/${SHA}/pulls" --jq '.[0].number' 2>/dev/null || echo "")
@@ -920,9 +1009,9 @@ jobs:
             exit 0
           fi
           if [ "$APPLY_OUTCOME" = "success" ]; then
-            MSG="gated-apply converged GREEN for ${SHA} (IAM/trust/destroy change applied in CD after reviewer approval); convergence record updated with commit_sha and plan_sha. (Best-effort wake; next planning session re-checks the record.)"
+            MSG="gated-apply converged GREEN for ${{ github.sha }} (IAM/trust/destroy change applied in CD after reviewer approval); convergence record updated with commit_sha and plan_sha. (Best-effort wake; next planning session re-checks the record.)"
           else
-            MSG="gated-apply did NOT converge (RED) for ${SHA}; ci-rca will file a source=ci_rca rec. After review, unlatch via the workflow_dispatch acknowledge-and-retry path. (Best-effort wake.)"
+            MSG="gated-apply did NOT converge (RED) for ${{ github.sha }}; ci-rca will file a source=ci_rca rec. After review, unlatch via the workflow_dispatch acknowledge-and-retry path. (Best-effort wake.)"
           fi
           gh pr comment "$PR_NUM" --repo "$REPO" --body "$MSG" || true
 

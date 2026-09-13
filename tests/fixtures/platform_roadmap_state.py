@@ -93,14 +93,19 @@ def _cd(
     gates: list | None = None,
     realization_evidence: str | None = None,
     detail: str | None = None,
+    affects: list | None = None,
 ) -> dict:
     """Build a minimal candidate_decision dict. `detail` is an optional param (extended for the
-    realization_candidates() fixtures -- the superseded-prose and [Realized-marker edge cases)."""
+    realization_candidates() fixtures -- the superseded-prose and [Realized-marker edge cases).
+    `affects` (PLAN-roadmap-blocking-edge-semantics) is the non-gating in-scope-of sibling to
+    `gates` -- omitted by default so existing gates-only fixtures are unaffected."""
     d = {"id": cd_id, "title": f"Decision {cd_id}", "state": state, "gates": gates or []}
     if realization_evidence is not None:
         d["realization_evidence"] = realization_evidence
     if detail is not None:
         d["detail"] = detail
+    if affects is not None:
+        d["affects"] = affects
     return d
 
 

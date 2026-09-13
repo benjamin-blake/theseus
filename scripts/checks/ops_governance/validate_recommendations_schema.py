@@ -19,7 +19,12 @@ def validate_recommendations_schema(failed: list[str]) -> None:
     recs_jsonl = _common.ROOT / "logs" / ".recommendations-log.jsonl"
 
     if not recs_jsonl.exists():
+        # rec-3309: this used to return silently here -- a vacuous pass in both CI tiers, since
+        # the gitignored cache is never synced by either job. Declaring skipped() (an unavailable
+        # input, not an empty domain -- check-accounting.yaml's discrimination_rule) makes that
+        # honest instead of indistinguishable from "examined 0 rows and they were all fine".
         print("logs/.recommendations-log.jsonl not found — skipping.")
+        registry.skipped("logs/.recommendations-log.jsonl not found -- gitignored cache never synced by CI")
         return
 
     # Lazy import with sys.path injection
@@ -42,12 +47,14 @@ def validate_recommendations_schema(failed: list[str]) -> None:
             sys.path.remove(root_str)
 
     errors: list[str] = []
+    examined_count = 0
     try:
         lines = recs_jsonl.read_text(encoding="utf-8").splitlines()
         for line_num, line in enumerate(lines, 1):
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
+            examined_count += 1
             try:
                 entry = json.loads(stripped)
             except json.JSONDecodeError as e:
@@ -75,8 +82,9 @@ def validate_recommendations_schema(failed: list[str]) -> None:
 
     if errors:
         print("Recommendations schema validation errors:")
-        for e in errors:
-            print(f"  - {e}")
+        for error_msg in errors:
+            print(f"  - {error_msg}")
         failed.append("Recommendations schema validation")
     else:
         print("Recommendations schema validation passed.")
+        registry.examined(examined_count, unit="rec rows")

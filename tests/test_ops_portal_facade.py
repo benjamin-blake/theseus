@@ -165,9 +165,9 @@ class TestImportedNameTrapTypes:
         assert _facade.subprocess is _stdlib_subprocess
 
     def test_trap_et_is_the_stdlib_module(self) -> None:
-        import xml.etree.ElementTree as _stdlib_et
+        import xml.etree.ElementTree as ET
 
-        assert _facade.ET is _stdlib_et
+        assert _facade.ET is ET
 
     def test_trap_recommendation_is_the_jsonl_store_class(self) -> None:
         from scripts.executor.jsonl_store import Recommendation as _rec_cls

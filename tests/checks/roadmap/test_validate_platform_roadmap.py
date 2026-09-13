@@ -4,8 +4,11 @@ TestPlatformRoadmapCriteriaIntegrity, TestPlatformRoadmapT31Criteria,
 TestRoadmapSizeGuard, and the module-level
 test_platform_roadmap_t31_criteria_are_structured (rec-2709 Wave 1)."""
 
+import sys
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from scripts.checks._common import ROOT
 from scripts.checks.roadmap.validate_platform_roadmap import validate_platform_roadmap
@@ -272,3 +275,91 @@ class TestRoadmapSizeGuard:
         text = "line\n" * 10000
         issues = _roadmap_size_issues(text, ceiling=10000)
         assert issues == []
+
+
+class TestPlatformRoadmapWrapperFailureEmission:
+    """One guard per previously unreached failed.append site in the registered wrapper.
+
+    All five sites append the identical string, so exact list equality on `failed` plus the
+    site's own stdout marker is what attributes a failure to a single emission site.
+    """
+
+    _MINIMAL_ROADMAP = (
+        "document:\n  id: test-roadmap\n  version: 1\n  status: draft\n  filed_via: pending_log_decision_lambda\n"
+    )
+
+    @staticmethod
+    def _write_roadmap(tmp_path: Path, body: str) -> None:
+        """Write body to <tmp_path>/docs/ROADMAP-PLATFORM.yaml, creating docs/ as needed."""
+        docs_dir = tmp_path / "docs"
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        (docs_dir / "ROADMAP-PLATFORM.yaml").write_text(body, encoding="utf-8")
+
+    @staticmethod
+    def _run(tmp_path: Path) -> list[str]:
+        """Drive the registered wrapper against tmp_path and return its failed list."""
+        failed: list[str] = []
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            validate_platform_roadmap(failed)
+        return failed
+
+    def test_missing_roadmap_file_appends_a_failure(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Line 46: no docs/ROADMAP-PLATFORM.yaml -> early-return append."""
+        failed = self._run(tmp_path)
+
+        out = capsys.readouterr().out
+        assert failed == ["Platform roadmap schema validation"]
+        assert "FAIL: docs/ROADMAP-PLATFORM.yaml not found" in out
+
+    def test_import_error_appends_a_failure(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Line 141: the in-function platform_roadmap import raises -> `except ImportError` append."""
+        self._write_roadmap(tmp_path, self._MINIMAL_ROADMAP)
+
+        failed: list[str] = []
+        with (
+            patch("scripts.checks._common.ROOT", tmp_path),
+            patch.dict(sys.modules, {"scripts.roadmap.platform_roadmap": None}),
+        ):
+            validate_platform_roadmap(failed)
+
+        out = capsys.readouterr().out
+        assert failed == ["Platform roadmap schema validation"]
+        assert "ERROR: Could not import platform_roadmap" in out
+
+    def test_pydantic_validation_error_appends_a_failure(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Line 144: an unsupported document.version trips DocumentMeta._check_version."""
+        self._write_roadmap(
+            tmp_path,
+            "document:\n  id: test-roadmap\n  version: 99\n  status: draft\n  filed_via: pending_log_decision_lambda\n",
+        )
+
+        failed = self._run(tmp_path)
+
+        out = capsys.readouterr().out
+        assert failed == ["Platform roadmap schema validation"]
+        assert "FAIL: Pydantic validation error:" in out
+
+    def test_yaml_parse_error_appends_a_failure(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Line 147: an unterminated flow sequence makes load()'s yaml.safe_load raise."""
+        self._write_roadmap(tmp_path, "document: [unclosed\n")
+
+        failed = self._run(tmp_path)
+
+        out = capsys.readouterr().out
+        assert failed == ["Platform roadmap schema validation"]
+        assert "FAIL: YAML parse error:" in out
+
+    def test_unexpected_error_appends_a_failure(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        """Line 150: a non-ImportError/ValidationError/YAMLError escape hits the catch-all arm."""
+        self._write_roadmap(tmp_path, self._MINIMAL_ROADMAP)
+
+        failed: list[str] = []
+        with (
+            patch("scripts.checks._common.ROOT", tmp_path),
+            patch("scripts.roadmap.platform_roadmap.load", side_effect=RuntimeError("boom")),
+        ):
+            validate_platform_roadmap(failed)
+
+        out = capsys.readouterr().out
+        assert failed == ["Platform roadmap schema validation"]
+        assert "FAIL: Unexpected error: boom" in out

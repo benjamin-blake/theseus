@@ -14,6 +14,7 @@ import pytest
 from tests.fixtures.coverage_checker_module import _ALL_MIRROR_TARGET_HOMES, _RETIRING_GRANDFATHER_HOMES, ROOT
 from tests.fixtures.coverage_checker_module import checker as _checker
 
+check_test_file_exists = _checker.check_test_file_exists
 map_source_to_test = _checker.map_source_to_test
 
 
@@ -79,6 +80,18 @@ class TestMapSourceToTest:
         assert result is not None
         assert result == ROOT / "tests" / "ci_rca" / "taxonomy"
 
+    def test_maps_scripts_checks_verification_validate_scope_boundary_to_concern_split_package(self) -> None:
+        """scripts/checks/verification/validate_scope_boundary.py maps to the
+        tests/checks/verification/validate_scope_boundary/ concern-split package
+        (PLAN-secrets-baseline-sanction-row: the flat test_validate_scope_boundary.py monolith was
+        decomposed per Decision 128 SLOC governance, and the source is a declared
+        _CONCERN_SPLIT_TEST_PACKAGES entry so map_source_to_test resolves to the package directory
+        instead of the deleted flat file)."""
+        source = ROOT / "scripts" / "checks" / "verification" / "validate_scope_boundary.py"
+        result = map_source_to_test(source)
+        assert result is not None
+        assert result == ROOT / "tests" / "checks" / "verification" / "validate_scope_boundary"
+
     def test_maps_still_grandfathered_sync_sibling_to_flat_home(self) -> None:
         """scripts/sync/ducklake_version.py (never on the 24-roster, never concern-split) still
         resolves to its flat grandfathered home via _NESTED_SUBPACKAGE_TEST_PREFIX -- proves
@@ -137,6 +150,20 @@ class TestMapSourceToTest:
         roadmap-family siblings."""
         assert map_source_to_test(ROOT / "scripts" / "roadmap" / "plan_audit.py") == ROOT / "tests" / "test_plan_audit.py"
         assert map_source_to_test(ROOT / "scripts" / "roadmap" / "find_plan.py") == ROOT / "tests" / "test_find_plan.py"
+
+    def test_maps_backlog_health_package_to_flat_homes(self) -> None:
+        """scripts/backlog_health/<stem>.py (a new nested subpackage, PLAN-backlog-health-detection)
+        resolves to tests/test_backlog_health_<stem>.py via _NESTED_SUBPACKAGE_TEST_PREFIX -- the
+        FLAT-HOME family map, not the _ALL_MIRROR_TARGET_HOMES mirror-package route (that
+        membership is a frozenset documented as never mutated)."""
+        assert (
+            map_source_to_test(ROOT / "scripts" / "backlog_health" / "census.py")
+            == ROOT / "tests" / "test_backlog_health_census.py"
+        )
+        assert (
+            map_source_to_test(ROOT / "scripts" / "backlog_health" / "probe.py")
+            == ROOT / "tests" / "test_backlog_health_probe.py"
+        )
 
     def test_returns_none_for_unmapped_path(self, tmp_path: Path) -> None:
         """Paths not under src/ or scripts/ return None."""
@@ -407,3 +434,44 @@ class TestBudgetIngestConcernSplitRegistration:
 
     def test_budget_ingest_pre_decomposition_single_file_module_is_gone(self) -> None:
         assert not (ROOT / "tests" / "convergence_health" / "test_budget_ingest.py").exists()
+
+
+class TestPlatformRoadmapModelsConcernSplitRegistration:
+    """scripts/platform_roadmap_models.py (PLAN-roadmap-blocking-edge-semantics) is registered
+    directly in _CONCERN_SPLIT_TEST_PACKAGES, alongside its sibling scripts/platform_roadmap_state.py
+    entry. Without this registration map_source_to_test falls through _grandfathered_source_to_test's
+    generic scripts-root rule to tests/test_platform_roadmap_models.py -- a file this plan deletes in
+    favor of the tests/platform_roadmap_models/ mirror package -- dropping the module out of the
+    coverage roster entirely and breaking check_test_file_exists / validate_diff_coverage for a file
+    that is itself in scope."""
+
+    def test_maps_platform_roadmap_models_to_concern_split_package(self) -> None:
+        source = ROOT / "scripts" / "platform_roadmap_models.py"
+        result = map_source_to_test(source)
+        assert result is not None
+        assert result == ROOT / "tests" / "platform_roadmap_models"
+
+    def test_platform_roadmap_models_pre_decomposition_single_file_module_is_gone(self) -> None:
+        assert not (ROOT / "tests" / "test_platform_roadmap_models.py").exists()
+
+
+class TestValidatePlacementConcernSplitRegistration:
+    """scripts/checks/hygiene/validate_placement.py's tests were concern-split into
+    tests/checks/hygiene/validate_placement/ (three test modules) at #1037 without registering
+    the split, so map_source_to_test computed the non-existent FLAT file
+    tests/checks/hygiene/test_validate_placement.py and check_test_file_exists returned
+    (False, "missing test file") for it -- a live latent false negative for validate_test_coverage
+    (PLAN-red-case-floor's precondition fix: this is the one Entry of 123 the red-case floor's
+    canonical-map dependency could not resolve)."""
+
+    def test_maps_validate_placement_to_concern_split_package_directory(self) -> None:
+        source = ROOT / "scripts" / "checks" / "hygiene" / "validate_placement.py"
+        result = map_source_to_test(source)
+        assert result is not None
+        assert result == ROOT / "tests" / "checks" / "hygiene" / "validate_placement"
+
+    def test_check_test_file_exists_finds_the_package(self) -> None:
+        source = ROOT / "scripts" / "checks" / "hygiene" / "validate_placement.py"
+        ok, why = check_test_file_exists(source)
+        assert ok is True
+        assert why == "test package found"

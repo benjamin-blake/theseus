@@ -271,19 +271,18 @@ def ensure_feature_branch(rec_id: str) -> bool:
                 else:
                     raise
             return True
-        elif current == expected_branch:
+        if current == expected_branch:
             logger.info("[BRANCH] Already on correct feature branch: %s", current)
             return True
-        elif current.startswith("agent/"):
+        if current.startswith("agent/"):
             logger.warning(
                 "[BRANCH] On wrong feature branch '%s' -- expected '%s'. Checkout main first or use --restart.",
                 current,
                 expected_branch,
             )
             return False
-        else:
-            logger.warning("[BRANCH] On unexpected branch '%s' -- expected main or %s", current, expected_branch)
-            return False
+        logger.warning("[BRANCH] On unexpected branch '%s' -- expected main or %s", current, expected_branch)
+        return False
     except _er.subprocess.CalledProcessError as e:
         logger.error("[BRANCH] Git operation failed: %s", e)
         return False

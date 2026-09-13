@@ -50,6 +50,18 @@ name: convergence-health
 # resurrect a human-closed rec every hour for 14 days), and it never buffers a failed write
 # (Decision 84 I-4: no outbox -- a failure reds this step and the next tick re-derives from the
 # artifact window).
+#
+# Also runs the LSA-02 scheduled-loop liveness sensor (audit loop-spec-adoption-4d8bac4a) on the
+# same cron/identity: derives the schedule-bearing peer set from every .github/workflows/*.yml
+# on:.schedule block AT RUN TIME (no declared register anywhere), asserts each peer's newest
+# `event=schedule` run against a threshold derived from that peer's OWN cron, and files/updates
+# (NEVER closes) a single deduped loop_liveness_stale rec per stale loop -- or one collapsed
+# __fleet__ rec when 3+ peers are stale simultaneously. Alarm-only invariants, same posture as the
+# tf_convergence_stale escalation above: no workflow_dispatch of a stale peer, no schedule edit, no
+# close verb -- restored cadence does not auto-resolve a filed rec; a human investigates and closes
+# it. The step needs the job's existing `actions: read` grant (per-peer run queries plus one
+# workflow-state listing) and GH_TOKEN; it never touches terraform apply, the convergence record,
+# or main-protection required_status_checks (Decision 83 non-wedging).
 
 on:
   schedule:
@@ -128,3 +140,10 @@ jobs:
         run: |
           set -euo pipefail
           .venv/bin/python -m scripts.convergence_health --budget-ingest
+
+      - name: Assert scheduled loop liveness (LSA-02)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          .venv/bin/python -m scripts.convergence_health --sensor-liveness

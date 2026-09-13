@@ -43,64 +43,26 @@ When reading `logs/.preflight-report.json`, apply these conditionals:
   relevant if the plan touches data pipelines or table schemas.
 - **`data_quality.last_run` is null** -- Note that DQ checks have never run; after fixing the
   pipeline, run the same command to establish a baseline. Non-blocking.
+- **`data_quality.checks_defined == 0`** -- none defined; a plan touching data write paths should
+  add YAML checks under `config/agent/data_quality/`. See scripts/data_quality_runner.py's module
+  docstring.
 - **`ci_rca_unresolved_recs` non-empty** -- **HARD BLOCK** at commitment time. `/plan` cannot scope unrelated work while any unresolved ci-rca rec exists. Proceed only to scope work that satisfies one of the three Related-Work conditions (see Step 8) OR has a logged deferral rationale in the new plan's Context section. (Legacy: if the report only has `ci_rca_recs` and no `ci_rca_unresolved_recs`, treat all entries as HARD BLOCK.) Full triage surfacing and the SOFT PROMPT / HARD ALERT classification is `/orient`'s responsibility -- run `/orient` for the full ci-rca visibility layer.
 - **`ci_rca_likely_resolved_recs`, `ci_rca_liveness_alert`, `forward_fix_recursion_alert`** -- Full triage (SOFT PROMPT, HARD ALERT, forward-fix recursion) is surfaced by `/orient`. If still unresolved when `/plan` runs, apply the close or triage guidance from the orient skill.
 - **`budget_bypass_alert` non-null** -- **Informational.** Surface the bypass count and recent
   reasons as planning context. Repeated `--ignore-budget` use indicates fast-tier drift and likely
   warrants revisiting the budget or identifying the slow check.
 
-### What Data-Quality Health Represents
-
-The preflight `data_quality` section reports operational health of the ops data pipeline:
-
-1. **Data quality coverage** (from `config/agent/data_quality/*.yaml`): how many declarative checks (not_null, unique, accepted_values, relationships, row_count, recency) are defined across how many tables. This answers: "Do we have visibility into data correctness?"
-
-2. **Last DQ run result** (from `logs/debug/dq-latest.json`): the verdict (PASS/FAIL), pass/fail/warn counts, and timestamp of the most recent `bin/venv-python -m scripts.data_quality_runner` execution. This answers: "When we last checked, was the data actually correct?"
-
-Together these form a two-layer health picture:
-- **Quality coverage**: Do we have checks defined? (checks_defined > 0)
-- **Quality state**: Are the checks passing? (last_run.verdict == PASS)
-
-If quality coverage is zero, any plan touching data write paths should include adding YAML checks. If the last DQ run failed, the plan should note which tables are affected.
-
 ## Follow-on /plan mode (in_progress items with open criteria)
 
-When intent targets an `in_progress` tier_item (one with open criteria remaining), `/plan`
-operates in **follow-on mode**. This is the common case -- most items take N follow-on plans.
+Conditional read-trigger: when intent targets an `in_progress` tier_item (open criteria remain),
+read `docs/contracts/tier-item-lifecycle.yaml#follow_on_plan_mode` in full before scoping -- the
+single authoritative definition of the trigger, the four-step protocol, and the
+Status-Trusted-Never-Inferred constraint. Do not re-author it here.
 
-### Trigger
-- `/orient` emits a follow-on `/plan <item-id>: follow-on -- <name>` prompt for any in_progress
-  item where `needs_followon_plan` is True (open criteria AND no in-flight plan covers them).
-- The human selects one of these prompts, or names an in_progress item directly.
-
-### Follow-on /plan protocol
-1. **Load state.** Read the item's `exit_criteria[]` from `docs/ROADMAP-PLATFORM.yaml`; identify
-   which criteria have `status: open`. Load any prior PLAN-*.yaml files that reference this item
-   (via their `closes_criteria` field or the item id in their Phase/Context) and the item's
-   `progress_note` to understand what has already shipped.
-2. **Scope the NEXT slice only.** Plan the minimum work to close one or more open criteria -- do
-   NOT re-plan work already met/rehomed. The plan's scope, acceptance criteria, and VP steps are
-   constrained to what is needed to flip the chosen open criteria.
-3. **Declare closes_criteria.** The plan document MUST include a `closes_criteria:` field listing
-   each item-criterion the plan commits to close on a verified VP pass, in `<item-id>:<crit-id>`
-   format (e.g. `T-1.23:c2`). The plan's acceptance_criteria should 1:1 map onto the chosen open
-   criteria -- each AC corresponds to a closes_criteria ref.
-4. **Cross-reference the Freshness Gate.** Before committing, run the Tier Item Freshness Gate
-   (below) on the parent item: check if any open criterion is already satisfied by recent work
-   (silent-completion check). If so, propose a criterion status flip to `met` as a roadmap
-   bookkeeping step before scoping the next slice.
-
-### Status-Trusted-Never-Inferred constraint
-`/plan` NEVER flips criterion statuses or item status during planning. Criterion flips happen only
-in `/implement`'s bookkeeping walk, on a verified VP pass, for explicitly declared closes_criteria.
-See T2.20 lesson. Never infer `met` from prose, file existence, or commit activity.
-
-### closes_criteria field format
-Each entry is a string `"<item-id>:<crit-id>"` matching exactly one ExitCriterion in the roadmap:
-- `item-id` must be a real tier_item id in the roadmap.
-- `crit-id` must be an id within that item's exit_criteria (e.g. `c1`, `c2`, ...).
-- `validate.py` enforces referential integrity: a closes_criteria ref to a nonexistent
-  item:criterion fails CI (check (iii) in validate_platform_roadmap).
+### closes_criteria / followon_recs field format
+Field format and write-time validation for both plan-linkage fields: see
+docs/contracts/exit-criteria-ledger.yaml (plan_closes_criteria, plan_followon_recs). Only
+followon_recs carries a template line below; closes_criteria stays prose-only by design.
 
 ## Platform Roadmap Eligibility (Workflow Step 2)
 
@@ -124,55 +86,11 @@ If the request is vague or missing key information, ask between 2 and 5 question
 
 ## Tier Item Freshness Gate (Workflow Step 3, fires once intent resolves to tier_items)
 
-Firing point: AFTER the Step 3 clarification has mapped the intent to one or more
-`tier_items[].id` values, and BEFORE any Step 4 assessment or Step 8 Scope is written. If
-the intent matches a soft-warn exception category (ci_rca, hotfix, security_advisory,
-ad_hoc_rec, user_explicit_out_of_scope) and names no tier_item, this gate is skipped.
-Scope: per-touched-item only -- this gate re-verifies the items THIS session plans against;
-it is not a roadmap-wide staleness sweep (that is a periodic audit's job, e.g. the
-2026-06-09 platform-roadmap audit).
-
-The roadmap can lag the repo: items go stale when decisions ratify, surfaces move, or
-sibling work absorbs their scope (2026-06-09 roadmap audit, findings F-008/F-013/F-016/F-017).
-Before scoping ANY tier_item -- whether picked from `next_eligible` or named by the human --
-re-verify it against the repo. Eligibility computation alone is NOT sufficient grounds to
-plan an item. Run four checks, cheapest first:
-
-1. **Silent-completion check.** Re-adjudicate the item's `exit_criteria[]` against the repo
-   (executable criteria via subprocess; prose criteria with the implement skill's conservative
-   bias). If ALL criteria already hold, do NOT plan the item -- propose a status closeout
-   instead: stage `status: complete` + `completed_at` + a note citing the evidence, present it
-   to the human, and on confirmation land it as a small roadmap-bookkeeping commit. Precedent:
-   T-1.9 sat `not_started` after its T-1.9 session-log audit deliverable had already landed, and
-   a downstream item (T2.15) was citing the deliverable as existing.
-2. **Stale-reference check.** Verify every `files_in_scope` path exists or is marked `# new`;
-   scan the item's intent/exit_criteria for surfaces or substrates that ratified decisions have
-   retired (e.g. the EC2 runner per CD.21/Decision 73, Bedrock per CD.28, SSO per CD.26, direct
-   warehouse access for tables cut over to the DuckLake closed boundary per CD.31/CD.33/
-   Decision 81). A stale reference does not block planning -- but the plan MUST include
-   re-grounding the item's text as an explicit Scope row, and the implementation follows the
-   CURRENT architecture, never the stale instruction.
-3. **Supersession / redundancy check.** Search the roadmap for sibling tier_items or ratified-CD
-   amendment notes that have absorbed or superseded the item's scope (`rg` the item's key
-   artefacts across `tier_items[]` and `candidate_decisions[]`). Fully absorbed -> propose
-   closing the item out (`status: reserved` with a supersession note, preserving the id)
-   instead of planning duplicate work. Partial overlap -> the plan names the boundary
-   explicitly and cross-references the sibling.
-4. **Gating-decision and gate-rule check.** Read the item's `related_candidate_decisions` and
-   any `decision_required_before`; check each referenced CD's `state` in the roadmap. If a
-   gating CD is pending, surface it: starting is allowed (bootstrap allowance) but COMPLETION
-   is gated, and ratification currently transits the ops portal (see the roadmap
-   agent_instructions "ratification vehicle" note). Also grep `cross_tier_gates[]` for rules
-   naming the item or its tier and adjudicate them by hand (e.g. a grace_period_elapsed window
-   that has not elapsed makes an eligible-by-deps item not actually startable -- T5.2/G.10 is
-   the canonical case). This manual check stands in for the blocked-on-CD and gate-evaluation
-   preflight surfacing until T-1.20 lands.
-
-Output discipline: every closeout or re-grounding this gate proposes is staged as a roadmap
-edit in the plan's Scope table (or its own micro-commit on human confirmation) -- never
-applied silently, never dropped silently. If the gate finds nothing, say so in one line and
-continue. Closeouts replace dead work; they do not become an excuse to skip the human
-confirmation gate (Step 6b).
+MANDATORY read-trigger: fires AFTER intent maps to `tier_items[].id` values and BEFORE any Step 4
+assessment or Step 8 Scope is written (skipped for a soft-warn exception category naming no
+tier_item). Read `docs/contracts/tier-item-lifecycle.yaml#tier_item_freshness_gate` in full before
+scoping ANY tier_item -- the single authoritative definition of the four checks and the output
+discipline rule. Do not re-author it here.
 
 ## Suggest Aligned Recommendations
 Search `logs/.recommendations-log.jsonl` for open recommendations that align with the current task (ensure cache is fresh via `bin/venv-python -m scripts.sync.ops pull` during preflight):
@@ -186,37 +104,12 @@ Search `logs/.recommendations-log.jsonl` for open recommendations that align wit
 
 ## Recommendation Relevance Gate (Workflow Step 3, fires before bundling any rec)
 
-Before adding any open recommendation to the plan's `bundled_recommendations` list, re-check
-its relevance using `scripts/rec_relevance.py`. Recs can go stale between filing and the
-current session (target file deleted, decision ratified, sibling plan already fixed it).
-
-### Protocol
-For each candidate rec identified via "Suggest Aligned Recommendations":
-```bash
-bin/venv-python -c "
-from scripts.rec_relevance import evaluate_rec_relevance
-import json, pathlib
-cache = pathlib.Path('logs/.recommendations-log.jsonl')
-rows = [json.loads(l) for l in cache.read_text().splitlines() if l.strip()]
-rec = next((r for r in rows if r.get('id') == 'rec-NNNN'), None)
-verdict, evidence = evaluate_rec_relevance(rec, run_acceptance_probe=False)
-print(verdict, '|', evidence[:120])
-"
-```
-
-**Verdict handling:**
-- **`relevant` or `unknown`** -- proceed; offer to bundle normally.
-- **`satisfied`** -- do NOT bundle. Surface the evidence and the proposal command from
-  `propose_or_close_rec(rec_id, 'satisfied', evidence, deterministic=False)` (planning time:
-  never deterministic). Wait for operator to run the closure command, then proceed without bundling.
-- **`superseded`, `duplicate`, `contradicted`, `stale_target`, `blocked_by_decision`** -- do NOT
-  bundle. Present the `propose_or_close_rec` output and wait for operator decision. Remove from
-  candidate list regardless of outcome.
-
-**Constraints:**
-- `run_acceptance_probe=False` is mandatory at planning time (Decision 55: no auto-closure from
-  semantic judgment). Acceptance probes run only at `/implement` time.
-- Never call `_make_reader()` inside this gate (Decision 88: use read-cache only).
+Conditional read-trigger: before adding any open recommendation to the plan's
+`bundled_recommendations` list, read
+`docs/contracts/recommendation-relevance.yaml#planning_gate_protocol` in full -- it is the single
+authoritative definition of the re-check protocol (the `evaluate_rec_relevance` call against the
+read cache), the verdict handling, and the `run_acceptance_probe=False` / no-`_make_reader()`
+constraints. Do not re-author it here.
 
 ## Documentation Artefact Design
 
@@ -255,48 +148,22 @@ When a plan creates or modifies documentation artefacts, apply these rules:
 
 
 ## Data-Model Assessment (Workflow Step 4)
-Conduct this assessment if a table (DDL/schema), a `field_semantics` entry, or a warehouse write path is
-in scope. Generalizes Precision Context Injection (Decision 66) to the data-modeling layer -- surface
-the standard at design time, before the plan commits to a schema, not as a post-rejection error. Full
-rules and the write-mode table live in `docs/contracts/data-modeling-standard.yaml`; AGENTS.md carries
-the ambient summary. Walk order:
 
-1. **Grain**: state "one row per ___" in one sentence. If it cannot be stated, the design is not ready
-   for the remaining steps.
-2. **merge_key + history/current split**: identify the business key the table merges on, and whether
-   the table needs a Type-1 current projection alongside its history table (SCD2) or history-only
-   (append_only).
-3. **Identity**: ULID, minted once at the write boundary -- never client-side, never a natural-key
-   primary key.
-4. **Join / correlation keys**: identify session/trace FKs and cross-table join keys the new table
-   participates in; consult `docs/contracts/_joins.yaml`.
-5. **Write mode**: SCD2 (mutable-entity ops tables) vs append_only (insert-once event/telemetry tables)
-   -- grain-first, NOT "default to SCD2" (telemetry/event tables are insert-once append_only with no
-   SCD2 envelope, Decision 96).
-6. **Partitioning** (CD.9): every table is partitioned; name the partition column.
-7. **Reject-CRUD checklist**: no in-place UPDATE/DELETE as the default write path, no
-   one-row-per-entity mutation model, a read cache is never a write source (AGENTS.md
-   Warehouse-as-source-of-truth invariant).
-8. **Fable escalation**: for load-bearing/novel calls only -- a NEW table, a NEW identity scheme, or a
-   `merge_key` change -- dispatch a `model:"fable"` advice-consult per the `overseer` skill's Fable
-   Advice-Consult Protocol before committing the design. Routine, already-settled calls (an additional
-   column on an existing SCD2 table, a grain that matches an existing sibling table) do not need
-   escalation.
-
-**Framing reminder**: append-only/SCD2 as a family is the design default/prior, explicitly NOT a ban on
-sanctioned exceptional physical deletes (Decision 70) or lifecycle-closure paths (Decision 103).
+MANDATORY read-trigger: conduct this assessment if a table (DDL/schema), a `field_semantics`
+entry, or a warehouse write path is in scope. Read
+`docs/contracts/data-modeling-standard.yaml#design_time_walk` in full before the plan commits to
+a schema -- the single authoritative definition of the eight-step walk order, including
+consulting `docs/contracts/_joins.yaml` for the join/correlation-key obligation, and the
+append-only/SCD2 framing reminder. Do not re-author it here.
 
 
 ## Main Divergence Assessment (Workflow Step 4)
-After Scope is identified, intersect the prospective Scope file list with `main_freshness.main_files_changed_since_branch` from the preflight report. If any Scope file appears in that list:
 
-> "Main has changed [list of overlapping files] since this branch diverged. Planning against the stale branch view risks decisions that conflict with what is already on main (e.g., a Decision Record you cite has been amended, a tier_item you target has been retired). Recommend rebasing BEFORE writing the plan: `git fetch origin main && git rebase origin/main`. Options: (1) rebase now and re-enter `/plan`, (2) proceed and accept the risk, (3) abort."
-
-**Rebase phase distinction (assessment time)**: do NOT auto-rebase here. This is the assessment-time rule -- surface the divergence, wait for the human's choice. Auto-rebase happens only at commit-flow time (the Pre-Push Rebase step in the implement skill), NOT here. See AGENTS.md `## Git-ops procedure` as the canonical git-ops authority for the full rebase phase distinction.
-
-If the human chooses (2), record the deferral as a line in the plan's Context section: "Branch was N commits behind main at planning time; overlapping files: [list]. Rebase deferred per human decision."
-
-If `main_freshness.status != "ok"`, this assessment cannot run -- note in the plan's Context section and continue.
+Conditional read-trigger: after Scope is identified, read
+`docs/contracts/git-ops.yaml#rebase_phase_distinction.assessment_time` in full -- the single
+authoritative definition of the detection rule, the surfacing text, and the deferral-recording
+rule. Do not re-author it here. Do NOT auto-rebase at this step -- that happens only at
+commit-flow time (the implement skill's Pre-Push Rebase step).
 
 ## Verification Tier Guidelines (Workflow Step 5)
 Classify deterministically. Highest tier wins.
@@ -389,43 +256,12 @@ open-ended "consider whether" prompt:
 
 ## Candidate Decision Ratification (Workflow Step 5b, when the plan realizes/ratifies a CD)
 
-Fires when the plan's scope realizes the work a pending `candidate_decision` (CD.NN) gates, OR the
-CD was surfaced by `/orient`'s "Ratifiable CDs" subsection (`platform_roadmap.ratifiable_cds` --
-pending CDs carrying `realization_evidence`). Ratification is a first-class lane shared across
-`/orient` (surface), `/plan` (draft, this section), and `/implement` (execute) -- see
-`docs/contracts/candidate-decision-ratification.yaml` for the canonical shape and referential guard
-this drafting step must satisfy.
-
-**Protocol:**
-1. Confirm the CD's `realization_evidence` (or equivalent corroborating evidence gathered this
-   session) actually establishes the gated work is realized/live -- do not draft a ratification for
-   a forward-intent CD (Decision 55: no unilateral judgement calls; no evidence, no candidacy).
-2. Add a **ratification block** to the plan (own section, distinct from `scope`/`execution_steps`)
-   containing:
-   - The full drafted Decision text (title, body, any amendments to other Decisions/CDs it
-     narrows or supersedes) -- including explicit **reversal conditions** if the ratified state
-     could later be undone (e.g. a swap-back to a prior architecture). A ratification with no
-     reversal conditions when the realized state is reversible is incomplete.
-   - The exact `bin/venv-python -m scripts.ops_data_portal --backfill-decisions-md` (or
-     `--file-decision` single-row alternative) command sequence /implement will run.
-   - The exact roadmap-flip diff: `state: ratified` + `ratified_as: dec-NNN` + `filed_via:
-     ops_decisions:dec-NNN` (canonical shape; same NNN in both fields) on the target CD entry.
-   - **Wave bundling:** when >=2 same-session PURE gate-clear CDs realize together (no content
-     beyond "this CD's work is realized"), draft ONE wave `## Decision N` entry with a per-CD
-     clause each, all pointing at the shared dec-NNN (`batch_wave_ratified_form` in
-     candidate-decision-ratification.yaml) -- a content-bearing ratification keeps its own entry.
-3. This is a DRAFT only. Do not run the portal write or the roadmap flip during `/plan` --
-   Decision 105 / the plan's own constraints reserve execution for `/implement` behind an
-   execution-time human confirmation gate. Planning-time writes would make Step 6b's confirmation
-   gate meaningless (the write already done before the human signs off).
-4. The Step 6b Confirmation Gate (below) and the Critique Gate (Workflow Step 9) ARE the human
-   sign-off on the drafted Decision text -- do not add a separate approval step. If Decision-Scout
-   (Step 6a) flags a contradiction with the drafted text, resolve it before presenting.
-
-**Numbering-race note:** decision numbers are not reserved at draft time. Re-check the current max
-`## Decision NNN:` header in `docs/DECISIONS.md` at `/implement` execution time -- a concurrent PR
-may have claimed the drafted number. The referential guard (`validate_candidate_decision_ratification`)
-catches any resulting header mismatch, so shifting to the next free number at execution time is safe.
+MANDATORY read-trigger: fires when the plan's scope realizes the work a pending
+`candidate_decision` (CD.NN) gates, OR the CD was surfaced by `/orient`'s "Ratifiable CDs"
+subsection. Read `docs/contracts/candidate-decision-ratification.yaml#lane_steps.plan.draft` in
+full before drafting -- the single authoritative definition of the draft protocol and the
+numbering-race note. Do not re-author it here. Ratification is a first-class lane shared across
+`/orient` (surface), `/plan` (this step), and `/implement` (execute).
 
 ## Decision Scout Gate (Workflow Step 6a, pre-presentation)
 
@@ -449,7 +285,8 @@ subagent-dispatch division of labor; schema: `docs/contracts/overseer-dispatch.y
 **Dispatch shape (non-subagent runs):**
 - `subagent_type: "general-purpose"` (needs `Skill`, `Read` access)
 - `description: "Decision scout gate"`
-- `prompt:` a self-contained brief per the example above, supplying Intent (Step 3), Proposed approach (Steps 3-5 synthesis), Scope file list (Step 4), Verification Tier (Step 5), and any decision IDs already cited by the human. Instruct the subagent to invoke the `decision-scout` skill via the `Skill` tool and return the structured `## Decision Scout Report` output verbatim.
+- `prompt:` self-contained per the Example body above -- Intent: Step 3; approach: Steps 3-5;
+  scope: Step 4; tier: Step 5; cited decisions: the human.
 
 **Verdict handling:**
 - **NO_FLAGS** -> Proceed to Step 6b. Include the scout's CITE list in the presentation as "Decisions this plan must reference." Record in the plan template's `context:` list: "Decision-scout verdict + CITE list (verbatim decision ids)" and "gates: decision-scout=<verdict>; plan-critique=<verdict> after <N> round(s))".
@@ -463,14 +300,16 @@ subagent-dispatch division of labor; schema: `docs/contracts/overseer-dispatch.y
 Do not loop more than 3 times. If the gate keeps returning BLOCK after 3 revisions, escalate to the human: "After N revisions the decision-scout still flags BLOCK on [decision N]. Continued pivoting suggests either the underlying intent contradicts the decision (re-scope the request) or the decision needs to be revisited (file a recommendation to revise the decision). How would you like to proceed?"
 
 ## Confirmation Gate (Workflow Step 6b)
-Wait for explicit 'write the plan' (or clear equivalent) before proceeding. Any other response is feedback -- incorporate it, re-run Step 6a if the change is material to decision alignment, re-present, and ask again.
+Wait for explicit 'write the plan'; anything else is feedback -- incorporate it, re-run Step 6a if material to decision alignment, re-present, ask again.
 IT IS **CRITICAL** THAT YOU DO NOT PROCEED UNTIL THE HUMAN CONFIRMS THE PLAN.
-**If you are a subagent** (no direct chat turn with the human to wait on), obtain this SAME
-confirmation via the `AskUserQuestion` tool -- it blocks for a real human reply regardless of
-caller; this checkpoint needs no overseer mediation (not a bias-fresh-context gate).
+Class each design fork: consistency-only is decided-with-notice, else ask in the pinned shape --
+`docs/contracts/overseer-dispatch.yaml#autonomy_tiers.plan_fork_classification`.
+**If you are a subagent**: use `AskUserQuestion` if you hold it; an overseer-dispatched author does
+not -- forks and confirmation ride a post-verdict `GATE_REQUEST` (`gate: step-6b-confirmation`) the
+overseer relays.
 
 ## Create Branch (Workflow Step 7)
-See AGENTS.md `## Git-ops procedure` as the canonical git-ops authority for branching topology (DEV vs ADMIN containers, AWS profiles, harness branch vs never agent/).
+See `docs/contracts/git-ops.yaml` as the canonical git-ops authority for branching topology (DEV vs ADMIN containers, AWS profiles, harness branch vs never agent/).
 
 Verify you are on the harness branch and not on `main`:
 ```bash
@@ -500,6 +339,7 @@ scope: # min 1 entry; only files listed here may be modified
     action: Create # Create | Modify | Delete
     purpose: why this file changes
 bundled_recommendations: [] # included open recs (list of str), or []
+followon_recs: [] # deferred halves as follow-on rec ids, or []
 infrastructure_dependencies: [] # list of str; populate when .tf files appear in scope
 acceptance_criteria: # min 1; each independently verifiable
   - verifiable condition 1
@@ -578,13 +418,8 @@ Launch a zero-context Claude subagent via the `Agent` tool to run the `plan-crit
 **Invocation shape:**
 - `subagent_type: "general-purpose"` (needs `Skill`, `Read`, and `Grep` access)
 - `description: "Plan critique gate"`
-- `prompt:` self-contained, mentions:
-  - The absolute path to `docs/plans/PLAN-{slug}.yaml` (a `.md` path is deprecated -- surface a deprecation warning and proceed)
-  - Instruction to invoke the `plan-critique` skill via the `Skill` tool against that path
-  - Context files to load explicitly: `docs/PROJECT_CONTEXT.md` (full read) plus targeted (not full-file) projections of the roadmap items and decision sections the plan names from `docs/ROADMAP-PLATFORM.yaml` / `docs/DECISIONS.md` -- see the `plan-critique` skill's Phase 1
-  - For IMPLEMENTATION plans: instruction to also read every file in the plan's Scope table
-  - Requirement to return the skill's structured output verbatim, including the final `Recommendation: PROCEED / REVISE` line
-  - Forbid file edits
+- `prompt:` self-contained per the Example body below; also state a `.md` plan path is
+  deprecated -- warn and proceed.
 
 **Example prompt body:**
 > "You are running the plan-critique gate in a fresh context window. **First, run `git fetch origin main --quiet`** so the local `origin/main` ref is current. Then invoke the `plan-critique` skill via the Skill tool to critique `/abs/path/to/docs/plans/PLAN-{slug}.yaml`. Read `docs/PROJECT_CONTEXT.md` in full; extract only the roadmap items and decision sections the plan names per the skill's Phase 1 (do not load full ROADMAP-PLATFORM.yaml/DECISIONS.md). For IMPLEMENTATION plans, also read every file in the plan's Scope table. If `git diff origin/main -- docs/DECISIONS.md docs/ROADMAP-PLATFORM.yaml` shows divergence, note that the critique evaluates against the branch's (possibly stale) view of these docs. Return the skill's structured critique output verbatim, including the final `Recommendation:` verdict line. Do not edit any files."
@@ -594,7 +429,17 @@ If it suggests revisions, update the plan with these fixes and re-launch the sam
 Loop if REVISE. Proceed if PROCEED.
 If the gate subagent errors or returns output missing the required `Recommendation:` line, the gate has NOT completed -- re-dispatch; never proceed past an incomplete gate.
 
-Convergence rule: after 3 REVISE rounds, escalate to the human with the unresolved findings and options (accept-with-deferral / re-scope / abandon), mirroring the Step 6a decision-scout convergence rule.
+**Convergence rule -- findings, not rounds:**
+
+The critic tags every finding mechanical or judgement with a stable anchor (plan-critique's Finding-Origin Attribution). Fix tagged findings first: apply every mechanical finding, run `bin/venv-python -m scripts.validate --pre` before EVERY re-dispatch (a pre-check; Decision 73 makes `--pre` authoritative only via PR CI). Record one disposition per finding, fixed or disputed (neither counts as disputed for the escalation test; accept-with-deferral is human-authored only).
+
+**Oscillation interrupts, not the count:** escalate at once on a finding recurring at a tag+anchor you recorded fixed, any round -- never wait for a cap. Revisit after 40 cap-hitting plans if it conflates independent re-findings with real oscillation.
+
+Otherwise, once findings are disposed with none recurring, run ONE fresh confirming round. PROCEED -> done; pin `plan-critique=<verdict> after <N> round(s); round <N> autonomous` (round 4 autonomous when addressed; no round-5 rule). REVISE -> escalate below, "one more round" among the choices.
+
+**Escalation shape** (disputed residue, an oscillation interrupt, or a REVISE on the confirming round): present, per finding, the finding verbatim with tag and anchor; why it did not converge; your recommendation; and, when re-escalating, a clause that starts a new series naming the predecessor rounds -- plus the five choices: accept-with-deferral / re-scope / split / abandon / one more round. Carrier: chat, or GATE_REQUEST `open_questions`.
+
+**Contested-residue consult:** On contested residue only -- never a mechanical finding -- consult `model:"fable"` per the overseer skill's Fable Advice-Consult Protocol -- a third fresh reading of THIS plan against the repo's own Decisions, not industry practice. It recommends a disposition and decides nothing. Revisit after 10 contested escalations; demote if it changed nothing in 8 or more.
 
 This gate reviews the PLAN artefact, not the report deliverable. For REPORT-ONLY plans, the deliverable gets its own critique in Step 10.
 
@@ -632,7 +477,7 @@ This gate reviews the PLAN artefact, not the report deliverable. For REPORT-ONLY
    - Both agents return PROCEED on a fresh round (clean convergence), OR
    - The human explicitly accepts the current state with a defined deferral (e.g. "fix the HIGH-severity items and defer the rest to phase plans"). Document the deferral list in the deliverable's Known Gaps or equivalent section so future sessions know what's outstanding.
 
-   Do not loop indefinitely. After 3 rounds without convergence, escalate to the human for a decision call -- continued iteration typically signals either a structural issue with the deliverable's scope or diminishing returns.
+   Apply the Step 9 Convergence rule in kind: findings, not rounds -- fix mechanical findings first, escalate at once on a recurring tag+anchor, and run one autonomous confirming round once both agents converge before escalating disputed residue in the pinned shape.
 
 **Anti-patterns to reject:**
 - Single critique agent (misses orthogonal issues by definition); same perspective twice

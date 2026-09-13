@@ -91,6 +91,7 @@ ENTRIES: tuple[Entry, ...] = (
         pre=True,
         pre_globs=(
             "scripts/verification_checks.py",
+            "scripts/verification_graduation.py",
             "scripts/checks/verification/**",
             "scripts/checks/_common.py",
             "scripts/checks/registry.py",
@@ -102,5 +103,32 @@ ENTRIES: tuple[Entry, ...] = (
         module="scripts.checks.verification.validate_vp_replay",
         attr="validate_vp_replay",
         pre=True,
+    ),
+    Entry(
+        name="validate_scope_boundary",
+        module="scripts.checks.verification.validate_scope_boundary",
+        attr="validate_scope_boundary",
+        pre=True,
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_red_case_floor",
+        module="scripts.checks.verification.validate_red_case_floor",
+        attr="validate_red_case_floor",
+        pre=True,
+        pre_globs=(
+            "scripts/checks/**",
+            "tests/checks/**",
+            "scripts/test_coverage_checker.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
+        name="validate_tier_demotion_markers",
+        module="scripts.checks.verification.validate_tier_demotion_markers",
+        attr="validate_tier_demotion_markers",
+        pre=True,
+        pre_globs=None,
+        full_segment="full_after_lint",
     ),
 )

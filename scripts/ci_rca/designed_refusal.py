@@ -30,7 +30,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 
 # Declared workflow slug -> designed-refusal job NAME set. The job NAME is checked (not a step
 # name) because the failing-job granularity is what the jobs JSON exposes; none of
@@ -52,9 +52,12 @@ def resolve_failing_jobs(jobs_payload: dict) -> set[str]:
     jobs = jobs_payload.get("jobs")
     if not isinstance(jobs, list):
         return set()
-    return {
-        job.get("name") for job in jobs if isinstance(job, dict) and job.get("conclusion") == "failure" and job.get("name")
-    }
+    # The trailing `and j.get("name")` predicate already drops every falsy name, so the surviving
+    # elements are exactly the truthy job names -- str by the jobs-JSON shape documented above.
+    return cast(
+        "set[str]",
+        {j.get("name") for j in jobs if isinstance(j, dict) and j.get("conclusion") == "failure" and j.get("name")},
+    )
 
 
 def is_designed_refusal(workflow_slug: str, jobs_payload: dict) -> bool:

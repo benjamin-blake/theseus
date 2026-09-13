@@ -67,7 +67,7 @@ class Recommendation(BaseModel):
         if not v:
             raise ValueError("ID cannot be empty")
         val = str(v).strip()
-        if not (val.startswith("rec-") or val.startswith("agent-") or val.startswith("test-")):
+        if not (val.startswith(("rec-", "agent-", "test-"))):
             raise ValueError(f"Invalid ID prefix: {val}. Must be rec-, agent-, or test-.")
         return val
 

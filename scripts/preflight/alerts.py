@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
 from scripts.preflight import _common
+from src.common.ducklake_reader_client import DuckLakeReader
 
 
 def _derive_forward_fix_recursion(rows: list[dict], since_ts: str) -> list[dict]:
@@ -40,7 +42,7 @@ def _check_forward_fix_recursion(cache_rows: object = _common._READER_SENTINEL) 
         rows = _derive_forward_fix_recursion(cache_rows, cutoff)  # type: ignore[arg-type]
     else:
         try:
-            rows = _common._make_reader().named("forward_fix_recursion", since_ts=cutoff)
+            rows = cast(DuckLakeReader, _common._make_reader()).named("forward_fix_recursion", since_ts=cutoff)
         except Exception:  # noqa: BLE001
             return None
 
@@ -84,7 +86,7 @@ def _check_budget_bypass_alert(cache_rows: object = _common._READER_SENTINEL) ->
         rows = _derive_budget_bypass_recent(cache_rows)  # type: ignore[arg-type]
     else:
         try:
-            rows = _common._make_reader().named("budget_bypass_recent")
+            rows = cast(DuckLakeReader, _common._make_reader()).named("budget_bypass_recent")
         except Exception:  # noqa: BLE001
             return None
 
@@ -131,7 +133,7 @@ def _check_budget_breach_summary(cache_rows: object = _common._READER_SENTINEL) 
         rows = _derive_budget_breach_recent(cache_rows)  # type: ignore[arg-type]
     else:
         try:
-            rows = _common._make_reader().named("budget_breach_recent")
+            rows = cast(DuckLakeReader, _common._make_reader()).named("budget_breach_recent")
         except Exception:  # noqa: BLE001
             return None
 

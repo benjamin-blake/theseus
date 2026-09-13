@@ -152,6 +152,14 @@ locals {
         # boundary-modifying -- they carry no escalation risk equivalent to IAMRoleReconcile's trust
         # verb, so the prefix-scoped grant is safe (Decision 143: only worst-verb-scoped verbs like
         # iam:UpdateAssumeRolePolicy / iam:PassRole / the boundary-edit verbs stay individually narrow).
+        # rec-3327 / Decision 180: the metadata risk class is role/agent-platform-* PLUS enumerated
+        # boundary-carrying non-prefixed managed roles, today exactly {PlatformDev} -- added below so
+        # the same four verbs reach PlatformDev's own description/tag/lifecycle metadata (PlatformDev
+        # carries the mandatory boundary, Decision 144 clause 3, so the ceiling still constrains).
+        # PlatformAdmin is PERMANENTLY excluded from this Resource list and from every other
+        # CI-writable Resource pattern in this policy (Decision 180 clause 3): it carries no boundary
+        # by design, and this Sid has no boundary Condition, so a matched PlatformAdmin would become
+        # CI-mutable.
         Sid    = "IAMRoleMetadataWrite"
         Effect = "Allow"
         Action = [
@@ -160,7 +168,10 @@ locals {
           "iam:UpdateRole",
           "iam:UpdateRoleDescription"
         ]
-        Resource = ["arn:aws:iam::${var.account_id}:role/agent-platform-*"]
+        Resource = [
+          "arn:aws:iam::${var.account_id}:role/agent-platform-*",
+          "arn:aws:iam::${var.account_id}:role/PlatformDev",
+        ]
       },
       {
         # In-budget CreateRole: the pipeline may only create roles that carry the authority budget
@@ -639,6 +650,36 @@ locals {
           "ssm:ListTagsForResource"
         ]
         Resource = ["arn:aws:ssm:${var.aws_region}:${var.account_id}:parameter/agent-platform/*"]
+      },
+      {
+        # Time-boxed restore for the Decision 178 clause 4 drain (PLAN-glue-delete-database-grant):
+        # the 7b67e21d cleanse deleted this Sid and the live aws_glue_catalog_database.ops resource
+        # in the same sweep, deleting the HCL before the resource was destroyed in AWS and orphaning
+        # it in tfstate. Narrowed to the DESTROY path only (Decision 143 worst-verb scoping) -- no
+        # remaining HCL can reach glue:CreateDatabase/UpdateDatabase/CreateTable/UpdateTable, so none
+        # is granted. The fourth Resource ARN (userDefinedFunction/agent_platform/*) is required
+        # because AWS authorizes glue:DeleteDatabase against the database's child ARNs, not the
+        # database ARN alone -- run 33323201848 AccessDenied on exactly this ARN. This grant is
+        # TIME-BOXED to the drain: scripts/ops/drain_glue_orphan.py's close phase files a
+        # removal-obligation rec once the orphan leaves state (rec-3348, rec-3328).
+        Sid    = "GlueCatalog"
+        Effect = "Allow"
+        Action = [
+          "glue:GetDatabase",
+          "glue:GetDatabases",
+          "glue:GetTable",
+          "glue:GetTables",
+          "glue:GetPartitions",
+          "glue:GetTags",
+          "glue:DeleteTable",
+          "glue:DeleteDatabase"
+        ]
+        Resource = [
+          "arn:aws:glue:${var.aws_region}:${var.account_id}:catalog",
+          "arn:aws:glue:${var.aws_region}:${var.account_id}:database/agent_platform",
+          "arn:aws:glue:${var.aws_region}:${var.account_id}:table/agent_platform/*",
+          "arn:aws:glue:${var.aws_region}:${var.account_id}:userDefinedFunction/agent_platform/*"
+        ]
       }
     ]
   })

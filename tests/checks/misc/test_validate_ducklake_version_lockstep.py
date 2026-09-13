@@ -87,3 +87,45 @@ class TestDucklakeVersionLockstepGate:
             with patch("scripts.checks._common.ROOT", tmp_path):
                 validate_ducklake_version_lockstep(failed)
         assert any("hardcoded" in f or "literal" in f or "ducklake_runtime" in f for f in failed), failed
+
+
+class TestUnexpectedFailuresAreReported:
+    """The two defensive except-arms of validate_ducklake_version_lockstep -- an unexpected
+    exception out of the requirements-floor check, and an unreadable derive surface -- must each
+    add their own failed[] entry rather than being swallowed into a clean green."""
+
+    @staticmethod
+    def _write_clean_tree(tmp_path: Path) -> None:
+        import scripts.sync.ducklake_version as _sdv_inner  # noqa: PLC0415
+
+        (tmp_path / "requirements.txt").write_text(_sdv_inner._expected_floor_line("1.5.4") + "\n", encoding="utf-8")
+        (tmp_path / "src" / "common").mkdir(parents=True)
+        (tmp_path / "src" / "common" / "ducklake_runtime.py").write_text("# no literal\n", encoding="utf-8")
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "build_lambda.py").write_text("# no literal\n", encoding="utf-8")
+
+    def test_requirements_check_exception_is_reported(self, tmp_path: Path) -> None:
+        import scripts.sync.ducklake_version as sdv  # noqa: PLC0415
+
+        self._write_clean_tree(tmp_path)
+        failed: list[str] = []
+        with patch.object(sdv, "sync", side_effect=RuntimeError("synthetic sync failure")):
+            with patch("scripts.checks._common.ROOT", tmp_path):
+                validate_ducklake_version_lockstep(failed)
+        assert failed == ["ducklake-version-lockstep: requirements check raised: synthetic sync failure"]
+
+    def test_unreadable_derive_surface_is_reported(self, tmp_path: Path) -> None:
+        import scripts.sync.ducklake_version as sdv  # noqa: PLC0415
+
+        self._write_clean_tree(tmp_path)
+        surface = tmp_path / "src" / "common" / "ducklake_runtime.py"
+        surface.unlink()
+        surface.mkdir()
+        failed: list[str] = []
+        with patch.object(sdv, "_get_pinned_version", return_value="1.5.4"):
+            with patch("scripts.checks._common.ROOT", tmp_path):
+                validate_ducklake_version_lockstep(failed)
+        prefix = f"ducklake-version-lockstep: cannot read {surface}: "
+        read_errors = [f for f in failed if f.startswith(prefix)]
+        assert read_errors, failed
+        assert read_errors == failed

@@ -13,7 +13,7 @@ import re
 import uuid
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 
 from pydantic import ValidationError
 
@@ -80,7 +80,7 @@ def selftest_roundtrip(profile: Optional[str] = None) -> dict:
         raise RuntimeError(f"selftest_roundtrip FAIL ({backend}): wrote {probe_id} but read-back returned {len(rows)} rows")
 
     # SCD2 supersede via the writer on the caller-keyed test- keyspace (Decision 84 I-2 sanctioned
-    # exception; Decision 103/81). NOT via update_rec: its _fetch_rec_from_reader helper only
+    # exception; Decision 103/81). NOT via update_rec, because its _fetch_rec_from_reader helper only
     # accepts writer-allocated rec-NNN ids, and this is a caller-keyed test- probe id.
     superseded_record = {
         **record,
@@ -192,10 +192,14 @@ def purge_postmortems_for(failed_rec_id: str, dry_run: bool = False, profile: Op
     if not re.fullmatch(r"rec-\d+", failed_rec_id):
         raise ValueError(f"Invalid rec ID for purge: {failed_rec_id!r}. Must match rec-\\d+.")
 
-    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
 
     title_prefix = f"Investigate executor failure for {failed_rec_id}"
-    rows = make_reader(profile=profile).named("recs_by_title_prefix", title_prefix=f"{title_prefix}%")
+    # make_reader() is annotated -> Reader (the Protocol, which deliberately does not declare
+    # named()) but only ever constructs a DuckLakeReader; cast narrows the type at this one call
+    # site rather than widening the Protocol by omission.
+    reader = cast(DuckLakeReader, make_reader(profile=profile))
+    rows = reader.named("recs_by_title_prefix", title_prefix=f"{title_prefix}%")
     id_re = re.compile(rf"Investigate executor failure for {re.escape(failed_rec_id)}(?![0-9])")
     matched = [
         r["id"]
@@ -228,4 +232,42 @@ def purge_postmortems_for(failed_rec_id: str, dry_run: bool = False, profile: Op
     update_rec(failed_rec_id, {"status": "declined", "resolution": resolution}, profile=profile)
 
     logger.info("[PURGE] Complete for %s: %d postmortems superseded.", failed_rec_id, result["superseded"])
+    return result
+
+
+def repair_dependency_tokens(dry_run: bool = False, profile: Optional[str] = None) -> dict:
+    """One-shot backfill: strip bracket-residue from malformed ops_recommendations.dependencies
+    tokens (e.g. '[rec-009' -> 'rec-009'), through the sanctioned writer only.
+
+    Enumeration source is DuckLakeReader.current_state("ops_recommendations") -- no new named
+    verb (Decision 88). Per-row repair values come from update_rec's own reader fetch, never from
+    logs/.recommendations-log.jsonl (Decision 84: a read cache is never a write source).
+
+    Returns:
+        {"matched": [{"id", "before", "after"}, ...], "repaired": N}
+    """
+    from scripts.ops_data_portal import update_rec  # noqa: PLC0415
+    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
+
+    rows = make_reader(profile=profile).current_state("ops_recommendations") or []
+    result: dict = {"matched": [], "repaired": 0}
+
+    for row in rows:
+        deps = row.get("dependencies") or []
+        if not isinstance(deps, list):
+            continue
+        fixed = [d.strip("[]") if isinstance(d, str) else d for d in deps]
+        if fixed == deps:
+            continue
+        result["matched"].append({"id": row["id"], "before": deps, "after": fixed})
+
+    if dry_run:
+        logger.info("[REPAIR] Dry-run: %d recs with malformed dependency tokens would be repaired.", len(result["matched"]))
+        return result
+
+    for entry in result["matched"]:
+        update_rec(entry["id"], {"dependencies": entry["after"]}, profile=profile)
+        result["repaired"] += 1
+
+    logger.info("[REPAIR] Complete: %d recs repaired.", result["repaired"])
     return result

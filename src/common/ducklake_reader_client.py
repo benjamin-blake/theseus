@@ -127,6 +127,41 @@ class Reader(Protocol):
     def latest_snapshot(self, table: str) -> int | None: ...
 
 
+# ---------------------------------------------------------------------------
+# Declared verb projections (Decision 84 I-3) -- the true column set NAMED_READS' registered SQL
+# actually returns for each verb. Mirrors src.common.ducklake_scd2_schema.NAMED_READS client-side,
+# because that module is excluded from the data-pipeline Lambda manifest (unimportable at Lambda
+# runtime) -- hence the literal version pin below, asserted (not commented) equal to the registry's
+# own NAMED_READS_VERSION by tests/common/ducklake_reader_client/test_verb_fields_parity.py. Every
+# fixed-column entry is proven against the verb's real SQL executed in DuckDB by that same test; the
+# four SELECT * verbs carry the ALL_TABLE_COLUMNS sentinel instead of a hand-copied ~80-column list,
+# so a routine field_semantics column add cannot silently drift them.
+# ---------------------------------------------------------------------------
+
+# Sentinel: this verb's column set equals its underlying table's full declared column set (a
+# `SELECT *` verb), resolved at test/fixture time via ducklake_scd2_schema.resolve_table_spec().
+ALL_TABLE_COLUMNS: object = object()
+
+# Same-commit parity with src.common.ducklake_scd2_schema.NAMED_READS_VERSION, asserted by
+# test_verb_fields_parity.py::test_version_pin_matches_registry.
+_NAMED_READS_VERSION_PIN = 3
+
+VERB_FIELDS: dict[str, tuple[str, ...] | object] = {
+    "open_recs": ("id", "title", "context", "created_timestamp", "automatable"),
+    "rec_by_id": ALL_TABLE_COLUMNS,
+    "recs_by_title_prefix": ("id", "title", "status", "source"),
+    "ci_rca_open": ("id", "title", "priority", "created_timestamp", "file"),
+    "ci_rca_since": ("id",),
+    "forward_fix_recursion": ("file", "cnt"),
+    "budget_bypass_recent": ("id", "context", "created_timestamp"),
+    "rec_history": ALL_TABLE_COLUMNS,
+    "count_by_status": ("status", "n"),
+    "decision_by_id": ALL_TABLE_COLUMNS,
+    "decisions_max_updated": ("ts",),
+    "priority_queue_current": ALL_TABLE_COLUMNS,
+}
+
+
 class ReaderInvokeError(RuntimeError):
     """A ducklake_reader invocation returned a non-200 response.
 
@@ -316,14 +351,10 @@ class DuckLakeReader:
         *,
         params: tuple[Any, ...] = (),
         snapshot_id: int | None = None,
-    ) -> list[dict] | None:
-        """Execute *sql* (using `{tbl}`) over the current projection via the reader. None on error."""
-        try:
-            body = self._invoke({"action": "query_ops", "table": table, "sql": sql, "params": list(params)})
-            return list(body.get("rows", []))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("DuckLakeReader.query: %s: %s", table, exc)
-            return None
+    ) -> list[dict]:
+        """Execute *sql* (using `{tbl}`) over the current projection via the reader. Raises on error (Decision 55)."""
+        body = self._invoke({"action": "query_ops", "table": table, "sql": sql, "params": list(params)})
+        return list(body.get("rows", []))
 
 
 def make_reader(profile: str | None = None, table: str | None = None) -> Reader:

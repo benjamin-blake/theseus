@@ -192,11 +192,7 @@ def _extract_type_errors(error_output: str) -> str:
 
 def _extract_test_errors(error_output: str) -> str:
     """Extract pytest FAILED/ERROR lines from output, capped at 2000 chars."""
-    lines = [
-        line
-        for line in error_output.splitlines()
-        if line.startswith("FAILED") or line.startswith("ERROR") or "AssertionError" in line
-    ]
+    lines = [line for line in error_output.splitlines() if line.startswith(("FAILED", "ERROR")) or "AssertionError" in line]
     result = "\n".join(lines[:50])
     return result[:2000]
 

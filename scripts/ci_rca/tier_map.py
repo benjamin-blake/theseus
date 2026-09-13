@@ -259,9 +259,7 @@ def compute_earliest_viable_gate(
         return ("presubmit", f"{check_name} not found in tier_membership; defaulting to presubmit.")
 
     if median_seconds is None:
-        if runtime_confidence and (
-            runtime_confidence.startswith("dispersion_too_high") or runtime_confidence.startswith("probe_failed")
-        ):
+        if runtime_confidence and (runtime_confidence.startswith(("dispersion_too_high", "probe_failed"))):
             return ("undetermined", f"Runtime probe inconclusive: {runtime_confidence}.")
         return ("undetermined", "Runtime probe result unavailable.")
 

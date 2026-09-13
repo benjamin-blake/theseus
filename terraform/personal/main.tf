@@ -10,6 +10,15 @@
 # The account ID is supplied at apply time via the gitignored terraform.personal.tfvars; it is
 # never a committed literal (PLAN Step 11b parameterisation invariant).
 # Retired-resource state reconciliation for this root is governed by Decision 178 clause 4 (docs/DECISIONS.md).
+#
+# Draining a retired address never uses `terraform state rm`: a destroy always routes the
+# deterministic guard to terraform-apply-sandbox's gated-apply job (the tf-gated-apply human
+# approval). Two heal verbs reach it (Decision 183): the push-triggered run from merging a PR that
+# touches this root applies the saved, digest-verified plan.bin; a workflow_dispatch
+# acknowledge-and-retry run plans fresh at main HEAD and hands that plan.bin to gated-apply as the
+# sha256-verified SANDBOX_FRESH_PLAN_ARTIFACT -- the only path that also clears a red record.
+# Reconcile cannot substitute: it replays the saved plan.bin for the red commit, which stops
+# rendering once config drops a provider that plan still references.
 
 terraform {
   # use_lockfile (native S3 state locking, no DynamoDB lock table) requires Terraform 1.10+.
@@ -62,7 +71,7 @@ resource "aws_s3_bucket" "data_lake" {
 
   tags = {
     Name    = "Platform Data Lake"
-    Purpose = "Platform object storage (tfstate, plans, convergence records, logs)"
+    Purpose = "Platform object storage - tfstate / plans / convergence records / logs"
   }
 }
 

@@ -120,8 +120,9 @@ def test_ducklake_reader_retries_transient_502_then_succeeds(monkeypatch):
 def test_ducklake_reader_persistent_502_raises_after_max_attempts(monkeypatch):
     captured: dict = {}
     ir = _patch_dl_invoke_seq(monkeypatch, [_FakeResp(status_code=502, text="boom")] * 3, captured)
-    # query() swallows the loud-fail and returns None; the underlying _invoke exhausted retries.
-    assert ir.DuckLakeReader().query("ops_recommendations", "SELECT 1 FROM {tbl}") is None
+    # query() no longer swallows the loud-fail: the underlying _invoke's ReaderInvokeError propagates.
+    with pytest.raises(ir.ReaderInvokeError):
+        ir.DuckLakeReader().query("ops_recommendations", "SELECT 1 FROM {tbl}")
     assert captured["calls"] == 3  # _READER_MAX_ATTEMPTS
     assert len(captured["sleeps"]) == 2  # backoff between the 3 attempts
 
@@ -129,7 +130,8 @@ def test_ducklake_reader_persistent_502_raises_after_max_attempts(monkeypatch):
 def test_ducklake_reader_non_transient_500_not_retried(monkeypatch):
     captured: dict = {}
     ir = _patch_dl_invoke_seq(monkeypatch, [_FakeResp(status_code=500, text="boom")], captured)
-    assert ir.DuckLakeReader().query("ops_recommendations", "SELECT 1 FROM {tbl}") is None
+    with pytest.raises(ir.ReaderInvokeError):
+        ir.DuckLakeReader().query("ops_recommendations", "SELECT 1 FROM {tbl}")
     assert captured["calls"] == 1  # 500 is not transient -> no retry
     assert captured["sleeps"] == []
 
@@ -181,10 +183,11 @@ def test_ducklake_reader_query_uses_query_ops(monkeypatch):
     assert body["params"] == ["x"]
 
 
-def test_ducklake_reader_query_returns_none_on_error(monkeypatch):
+def test_ducklake_reader_query_raises_on_error(monkeypatch):
     captured: dict = {}
     ir = _patch_dl_invoke(monkeypatch, _FakeResp(status_code=500, text="boom"), captured)
-    assert ir.DuckLakeReader().query("ops_recommendations", "SELECT 1 FROM {tbl}") is None
+    with pytest.raises(ir.ReaderInvokeError):
+        ir.DuckLakeReader().query("ops_recommendations", "SELECT 1 FROM {tbl}")
 
 
 def test_ducklake_reader_latest_snapshot_is_none():
@@ -300,6 +303,68 @@ def test_ducklake_reader_named_loud_fails_on_non_200(monkeypatch):
         ir.DuckLakeReader().named("not_a_verb")
 
 
+class TestResolveFunctionUrlViaSSM:
+    """Direct coverage of _resolve_function_url_via_ssm's success and any-failure paths."""
+
+    def test_returns_stripped_value_on_success(self, monkeypatch):
+        import src.common.ducklake_reader_client as ir
+
+        class _Client:
+            def get_parameter(self, Name, WithDecryption):
+                return {"Parameter": {"Value": "https://ssm-value.example/"}}
+
+        class _Session:
+            def __init__(self, profile_name=None):
+                pass
+
+            def client(self, service, region_name=None):
+                return _Client()
+
+        monkeypatch.setattr(boto3, "Session", _Session)
+        assert ir._resolve_function_url_via_ssm("/some/path", profile=None, region="eu-west-2") == "https://ssm-value.example"
+
+    def test_returns_none_on_any_failure(self, monkeypatch):
+        import src.common.ducklake_reader_client as ir
+
+        class _Session:
+            def __init__(self, profile_name=None):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(boto3, "Session", _Session)
+        assert ir._resolve_function_url_via_ssm("/some/path", profile=None, region="eu-west-2") is None
+
+
+class TestResolveFunctionUrlViaAPI:
+    """Direct coverage of _resolve_function_url_via_api's success and any-failure paths."""
+
+    def test_returns_function_url_on_success(self, monkeypatch):
+        import src.common.ducklake_reader_client as ir
+
+        class _Client:
+            def get_function_url_config(self, FunctionName):
+                return {"FunctionUrl": "https://api-value.example/"}
+
+        class _Session:
+            def __init__(self, profile_name=None):
+                pass
+
+            def client(self, service, region_name=None):
+                return _Client()
+
+        monkeypatch.setattr(boto3, "Session", _Session)
+        assert ir._resolve_function_url_via_api("fn-name", profile=None, region="eu-west-2") == "https://api-value.example/"
+
+    def test_returns_none_on_any_failure(self, monkeypatch):
+        import src.common.ducklake_reader_client as ir
+
+        class _Session:
+            def __init__(self, profile_name=None):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(boto3, "Session", _Session)
+        assert ir._resolve_function_url_via_api("fn-name", profile=None, region="eu-west-2") is None
+
+
 class TestDuckLakeReaderSSMResolution:
     """SSM step in _reader_url() resolution chain (Decision 79 / T2.19 Slice 1)."""
 
@@ -348,7 +413,7 @@ class TestDuckLakeReaderSSMResolution:
 
         def fake_ssm(*a, **k):
             ssm_called.append(True)
-            return None
+            return
 
         monkeypatch.setattr(ir, "_resolve_function_url_via_ssm", fake_ssm)
 

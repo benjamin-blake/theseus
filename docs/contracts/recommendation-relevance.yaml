@@ -17,7 +17,34 @@ contract:
   evaluator:
     check: validate_rec_relevance_contract
 
-amendment_log: []
+amendment_log:
+  - date: "2026-09-12"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-skills-layer-prose-relocation (T2.56 c1 skills-layer conjunct): added the
+      planning_gate_protocol key, the planning-time relevance gate relocated out of the planning
+      skill's Recommendation Relevance Gate section (which now carries a conditional-read stub
+      pointing here). No rule changed -- unchanged prose, restated here.
+  - date: "2026-09-07"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      PLAN-backlog-health-detection: corrected a mis-cite on both never-queue-wide clauses below
+      (signal_definitions.acceptance_probe.signal and constraints[1]) -- each attributed the
+      acceptance-probe "on-demand per-rec only, never queue-wide" constraint to Decision 88 (the
+      Neon catalog-EGRESS budget), but the probe those clauses constrain is a LOCAL
+      `subprocess.run(shell=True)` with no warehouse round-trip at all, so Decision 88 was never
+      the real owner. The real owner is Decision 103 itself (this projection's ratifying
+      decision), which now carries a dated amendment naming the correction and sanctioning a
+      second venue: scripts/backlog_health's scheduled monitor (Decision 62 2026-06-16 amendment
+      / CD.12, alarm-not-gate) composes this evaluator queue-wide for target_existence and
+      open_duplicate ONLY (never acceptance_probe) via one structural DuckLake read per episode
+      plus local evaluation -- a measured two-attach-per-episode pattern with zero incremental
+      egress, distinct from the still-forbidden queue-wide acceptance-probe run. Also records that
+      this monitor emits close-proposals for satisfied candidates and never auto-closes --
+      deliberately stricter than closure_split's deterministic_auto_close permits for the
+      interactive gate.
 
 projection_id: recommendation-relevance
 version: 1
@@ -28,6 +55,27 @@ description: >-
   Relevance verdict contract for open recommendations. The verdict is a read-time signal
   computed deterministically-first, with semantic fallback. No new Class A columns are
   added to ops_recommendations (Decision 84); this projection is ephemeral and surfaced only.
+planning_gate_protocol: >-
+  Planning-time relevance gate (relocated from the planning skill's Recommendation Relevance
+  Gate, PLAN-skills-layer-prose-relocation). Fires before bundling any rec. Before adding any open
+  recommendation to the plan's bundled_recommendations list, re-check its relevance using
+  scripts/rec_relevance.py. Recs can go stale between filing and the current session (target file
+  deleted, decision ratified, sibling plan already fixed it). Protocol: for each candidate rec
+  identified via the "Suggest Aligned Recommendations" step, run
+  `bin/venv-python -c "from scripts.rec_relevance import evaluate_rec_relevance; import json,
+  pathlib; cache = pathlib.Path('logs/.recommendations-log.jsonl'); rows = [json.loads(l) for l in
+  cache.read_text().splitlines() if l.strip()]; rec = next((r for r in rows if r.get('id') ==
+  'rec-NNNN'), None); verdict, evidence = evaluate_rec_relevance(rec, run_acceptance_probe=False);
+  print(verdict, '|', evidence[:120])"`. Verdict handling: relevant or unknown -- proceed; offer to
+  bundle normally. satisfied -- do NOT bundle; surface the evidence and the proposal command from
+  propose_or_close_rec(rec_id, 'satisfied', evidence, deterministic=False) (planning time: never
+  deterministic); wait for operator to run the closure command, then proceed without bundling.
+  superseded, duplicate, contradicted, stale_target, blocked_by_decision -- do NOT bundle; present
+  the propose_or_close_rec output and wait for operator decision; remove from candidate list
+  regardless of outcome. Constraints: run_acceptance_probe=False is mandatory at planning time
+  (Decision 55: no auto-closure from semantic judgment); acceptance probes run only at /implement
+  time. Never call _make_reader() inside this gate (Decision 88: use read-cache only).
+
 verdicts:
   - relevant
   - satisfied
@@ -65,8 +113,10 @@ signal_definitions:
     type: deterministic
     signal: >-
       Run rec.acceptance shell command with bounded timeout (default 10s). On-demand per-rec
-      only -- never queue-wide (Decision 88). Exit 0 => satisfied. No acceptance field =>
-      probe is skipped; rec cannot resolve to satisfied via this signal alone.
+      only -- never queue-wide (Decision 103; corrected 2026-09-07 from a Decision 88 mis-cite --
+      Decision 88 is the Neon catalog-EGRESS budget, and this probe is a local subprocess call
+      with no warehouse round-trip). Exit 0 => satisfied. No acceptance field => probe is
+      skipped; rec cannot resolve to satisfied via this signal alone.
   target_existence:
     type: deterministic
     signal: >-
@@ -91,7 +141,10 @@ signal_definitions:
       Open rec on same file with title Jaccard >= 0.7 => duplicate (close_proposed).
 constraints:
   - "Decision 84: no new Class A columns added to ops_recommendations."
-  - "Decision 88: acceptance probe is on-demand per-rec only; never queue-wide."
+  - >-
+    Decision 103: acceptance probe is on-demand per-rec only; never queue-wide (corrected
+    2026-09-07 from a Decision 88 mis-cite -- Decision 88 is the Neon catalog-EGRESS budget, and
+    this probe is a local subprocess call with no warehouse round-trip).
   - "Decision 55: semantic verdicts produce close_proposed only; no auto-action."
   - "Decision 70: verdict and lifecycle status are orthogonal; no new status enum value."
   - "CD.36: deterministic satisfied auto-closes with proof; all else is close_proposed."

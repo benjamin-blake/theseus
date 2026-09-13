@@ -1,8 +1,9 @@
 """CLI entry point for the convergence-health sensor (called by convergence-health.yml).
 
 Preserves `python -m scripts.convergence_health [--ducklake-drift|--prod-drift|--budget-ingest
-[--dry-run]]`. Part of the scripts.convergence_health package -- see
-scripts/convergence_health/__init__.py for the full public surface.
+[--dry-run]|--sensor-liveness|--liveness-probe [workflow]]`. Part of the
+scripts.convergence_health package -- see scripts/convergence_health/__init__.py for the full
+public surface.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from scripts.convergence_health.budget_ingest import ingest_budget_breaches
 from scripts.convergence_health.code_drift import detect_ducklake_code_drift, detect_prod_code_drift
 from scripts.convergence_health.escalate import escalate
 from scripts.convergence_health.record import derive_red_since, read_convergence_record
+from scripts.convergence_health.sensor_liveness import detect_stale_loops, stale_peers_for_probe
 
 
 def main(profile: Optional[str] = None) -> int:
@@ -119,6 +121,45 @@ def main_budget_ingest(profile: Optional[str] = None, dry_run: bool = False) -> 
     return 0
 
 
+def main_sensor_liveness(profile: Optional[str] = None) -> int:
+    """Run the scheduled-loop liveness sensor (audit finding LSA-02) and file/update/drop
+    loop_liveness_stale alarms. Returns exit code.
+
+    Fails LOUDLY on a portal or GitHub-API failure, same shape as main_budget_ingest: nothing is
+    buffered (Decision 84 I-4 -- there is no outbox), and the next hourly tick re-derives the
+    peer set and every peer's staleness from the live workflow tree and the GitHub Actions API.
+    """
+    try:
+        result = detect_stale_loops(profile=profile)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            "[convergence_health] sensor_liveness FAILED (nothing buffered -- Decision 84 I-4 has no "
+            f"outbox; the next tick re-derives from the live workflow tree): {exc}"
+        )
+        return 1
+    print(f"[convergence_health] sensor_liveness result: {result}")
+    return 0
+
+
+def main_liveness_probe(workflow: Optional[str] = None) -> int:
+    """`--liveness-probe [workflow]` acceptance oracle. Returns exit code: 0 iff the named peer (or
+    every derived peer, when `workflow` is omitted) is within its derived threshold; 1 if any is
+    stale, the named workflow is not a derived peer, or the GitHub query fails. This is the
+    discriminating, repo-local, gh-free command every filed loop_liveness_stale rec's `acceptance`
+    names -- never `gh`, which is deliberately not installed in either container.
+    """
+    try:
+        stale = stale_peers_for_probe(workflow)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[convergence_health] liveness_probe FAILED: {exc}")
+        return 1
+    if stale:
+        print(f"[convergence_health] liveness_probe STALE: {stale}")
+        return 1
+    print(f"[convergence_health] liveness_probe OK: {workflow or 'all derived peers'}")
+    return 0
+
+
 def _dispatch(argv: list[str]) -> int:
     """Route a bare argv (flags only, no argparse) to the matching sensor entry point."""
     if "--ducklake-drift" in argv:
@@ -127,6 +168,12 @@ def _dispatch(argv: list[str]) -> int:
         return main_prod_drift()
     if "--budget-ingest" in argv:
         return main_budget_ingest(dry_run="--dry-run" in argv)
+    if "--sensor-liveness" in argv:
+        return main_sensor_liveness()
+    if "--liveness-probe" in argv:
+        idx = argv.index("--liveness-probe")
+        workflow = argv[idx + 1] if idx + 1 < len(argv) and not argv[idx + 1].startswith("--") else None
+        return main_liveness_probe(workflow)
     return main()
 
 

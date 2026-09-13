@@ -66,21 +66,18 @@ from scripts.checks._scaffolding import (  # noqa: F401,E402
     run_terraform_creds_free,
 )
 
-_FAST_TIER_BUDGET_SECONDS = 300
+# Module-style import (Decision 182): scripts/checks/deps/selection_budget.py is the SINGLE home of
+# every budget constant this tier asserts on, of the two-term split, and of the two phase names it
+# reports on. This file restates NO budget number -- it BINDS its two existing public constant names
+# below. Module-style rather than `from ... import <CONSTANT>` so no second CEILING-bearing name
+# enters this namespace. selection_budget defines no check and imports only stdlib at module scope,
+# so --terraform-only is unaffected; derive_affected_tests stays the function-scope import below.
+from scripts.checks.deps import selection_budget  # noqa: E402
 
-# Derived guardrail, not a second tier budget (Decision 153): pr-validate's 30-min job
-# timeout (.github/workflows/ci.yml) minus a ~5-min diagnostic margin, on the fast tier's
-# own elapsed clock (job clock additionally includes checkout/pip). Re-derive if
-# timeout-minutes changes; the fast tier's sole design budget is _FAST_TIER_BUDGET_SECONDS.
-_FORCED_FULL_SUITE_CEILING_SECONDS = 1500
-
-# Which limit each budget outcome was actually judged against. The two forced-full-suite
-# outcomes are governed by the derived ceiling, not the fast-tier budget, so recording 300 for
-# them would make the manifest's elapsed_s/limit_s ratio describe a limit the run never had.
-_BUDGET_LIMIT_BY_OUTCOME = {
-    "forced_waived": _FORCED_FULL_SUITE_CEILING_SECONDS,
-    "forced_ceiling_breach": _FORCED_FULL_SUITE_CEILING_SECONDS,
-}
+# Bound, never restated: the fast tier's FLOOR total (the two budgets' sum) and the derived
+# forced-run ceiling. Both names are kept for their existing readers.
+_FAST_TIER_BUDGET_SECONDS = selection_budget.FLOOR_TOTAL_SECONDS
+_FORCED_FULL_SUITE_CEILING_SECONDS = selection_budget.CEILING_SECONDS
 
 
 def _dispatch_check(name: str, failed: list[str]) -> None:
@@ -347,7 +344,12 @@ def main() -> None:
 
         phase_times: dict[str, float] = {}
 
-        def _record_budget_outcome(outcome: str, elapsed: float, dominant_phase: str | None) -> None:
+        def _record_budget_outcome(
+            verdict: "selection_budget.BudgetVerdict",
+            elapsed: float,
+            dominant_phase: str | None,
+            extra_keys: dict,
+        ) -> None:
             """Attach this run's budget verdict to the selection manifest and re-write it locally.
 
             The artifact ci.yml's pr-validate job already uploads
@@ -362,78 +364,163 @@ def main() -> None:
             The best-effort S3 copy is uploaded on emit_manifest's first write and so never
             carries this block; see write_manifest's docstring.
 
+            The split's seven extra keys (Decision 182) are merged into build_budget_record's
+            returned dict HERE, at this call site: build_budget_record keeps exactly its existing
+            six keyword arguments and scripts/checks/_budget_recs.py stays byte-identical, while the
+            manifest budget block still carries n_selected / static_s / test_s / replay_s /
+            unattributed_s / phase_count / waiver_cause.
+
             Decision 55 loud-skip: an observability write must never decide a gate's exit code, so
             every failure here (write_manifest's own OSError leg included) is caught and printed.
             """
             try:
-                _affected_selection["manifest"]["budget"] = build_budget_record(
-                    outcome=outcome,
+                record = build_budget_record(
+                    outcome=verdict.outcome,
                     elapsed_s=elapsed,
-                    limit_s=float(_BUDGET_LIMIT_BY_OUTCOME.get(outcome, _FAST_TIER_BUDGET_SECONDS)),
+                    limit_s=verdict.limit_s,
                     dominant_phase=dominant_phase,
                     diff_manifest=diff_manifest,
                     phase_times=phase_times,
                 )
+                record.update(extra_keys)
+                _affected_selection["manifest"]["budget"] = record
                 write_manifest(_affected_selection["manifest"])
             except Exception as exc:  # noqa: BLE001 -- Decision 55: never alters the budget verdict
                 print(f"Selection manifest: budget-block write failed -- loud skip (Decision 55): {exc!r}")
 
         def _scaffold_budget_assertion() -> None:
+            """Assert the fast tier's TWO budgets (Decision 182, amending Decision 153).
+
+            The retired single aggregate averaged two quantities with different causes: an absolute
+            NON-TEST half, where Decision 73's anti-drift rationale actually applies, and a
+            TEST-EXECUTION half whose cost is a measured function of selection breadth. Both are
+            defined, bounded and dispatched in scripts/checks/deps/selection_budget.py; this scaffold
+            measures, renders and exits. The non-test half is asserted BY SUBTRACTION on the whole
+            remaining half (elapsed minus the one subtracted test phase), so unattributed time and
+            the replay phase are governed at the non-test budget rather than only at the ceiling.
+            """
             elapsed = time.monotonic() - _t0
             dominant_phase = max(phase_times, key=lambda phase: phase_times[phase]) if phase_times else None
-            if args.ignore_budget:
+            static_s, test_s, replay_s, unattributed_s = selection_budget.split_phase_times(phase_times, elapsed)
+            non_test_s = elapsed - test_s
+            n_selected = len(changed_tests)
+            # Decision 153's fail-closed reads, both unchanged: _empty_manifest defaults
+            # full_suite_forced to False, and a derivation fallback collapses the breadth allowance
+            # to its base, so a degraded selection still hard-fails and gets no breadth relief.
+            verdict = selection_budget.classify(
+                non_test_s=non_test_s,
+                static_s=static_s,
+                test_s=test_s,
+                replay_s=replay_s,
+                elapsed=elapsed,
+                n_selected=n_selected,
+                forced=bool(_affected_selection["manifest"].get("full_suite_forced", False)),
+                derivation_ok=not _selection_fallback,
+                bypass=bool(args.ignore_budget),
+                census=selection_budget.count_test_modules(_common.ROOT),
+            )
+            extra_keys = selection_budget.budget_extra_keys(
+                n_selected=n_selected,
+                static_s=static_s,
+                test_s=test_s,
+                replay_s=replay_s,
+                unattributed_s=unattributed_s,
+                phase_count=len(phase_times),
+                waiver_cause=verdict.waiver_cause,
+            )
+            predicted_low, predicted_high = selection_budget.predict_ci_elapsed(n_selected)
+            print(
+                f"\nSelection breadth: {n_selected} test module(s) selected; test-execution allowance "
+                f"{verdict.allowance_s:.0f}s, non-test budget {selection_budget.NON_TEST_BUDGET_SECONDS:.0f}s. "
+                f"CI-predicted elapsed {predicted_low:.0f}-{predicted_high:.0f}s. This run's local wall clock "
+                f"({elapsed:.1f}s: non-test {non_test_s:.1f}s, test {test_s:.1f}s) is ADVISORY -- local hardware "
+                "is not the CI runner, though the same two assertions are applied to it."
+            )
+            if verdict.hard_fail and _selection_fallback:
+                print(
+                    "\nNOTE: this run's affected-set derivation fell back to the edited-set, so the "
+                    "pytest scope it just ran is not the scope this diff should have run -- read the "
+                    "phase attribution below as degraded, not as ordinary drift."
+                )
+
+            if verdict.outcome == "non_test_breach":
+                # Branch 1, evaluated before every waiver: rec-free BY DESIGN (the outcome is
+                # deliberately outside _budget_recs._REC_FILING_OUTCOMES, whose breach wording names
+                # a limit this run was never judged against), so the reporting obligation is
+                # discharged through the OTHER channel -- a titled CI step-summary section, exactly
+                # as Decision 153 point 3 requires of a deliberately rec-free arm.
+                _mirror_budget_notice_to_summary(
+                    "Fast-tier non-test budget breached",
+                    f"ERROR: Fast tier exceeded budget (non-test budget: {verdict.limit_s / 60:.1f} min). "
+                    f"Non-test half: {non_test_s:.1f}s of {elapsed:.1f}s elapsed -- static {static_s:.1f}s, "
+                    f"{selection_budget.REPLAY_PHASE_NAME} {replay_s:.1f}s (its own ratified allowance is "
+                    f"{selection_budget.REPLAY_ALLOWANCE_SECONDS:.0f}s), unattributed {unattributed_s:.1f}s. "
+                    f"Dominant non-test phase: {selection_budget.dominant_non_test_phase(phase_times) or 'unknown'}.\n"
+                    "This half is UNWAIVABLE: no bypass, forced-scope, breadth or fallback path reaches it. "
+                    "Fix the named component, or re-derive the budget by amendment against the recorded "
+                    "static_s series -- never by a bypass flag.",
+                )
+                _record_budget_outcome(verdict, elapsed, dominant_phase, extra_keys)
+                sys.exit(1)
+            elif verdict.outcome == "bypass":
                 _file_budget_bypass_rec(elapsed, diff_manifest, args.ignore_budget_reason, dominant_phase)
-                _record_budget_outcome("bypass", elapsed, dominant_phase)
+                _record_budget_outcome(verdict, elapsed, dominant_phase, extra_keys)
                 print(f"\nBudget assertion skipped (--ignore-budget). Elapsed: {elapsed / 60:.1f} min.")
-            elif elapsed > _FAST_TIER_BUDGET_SECONDS:
+            elif verdict.outcome == "forced_waived":
                 # Decision 153: a root-conftest change deterministically forces full-suite scope
-                # (Decision 135/VTS-03) and is a self-identified, already-diagnosed cause of the
-                # breach -- not drift. Narrow the hard-fail to exactly the non-forced case; a
-                # forced run is still bounded by the derived ceiling below. Fail-closed read:
-                # _empty_manifest defaults full_suite_forced to False, so any derivation-failure
-                # fallback still hard-fails.
-                forced = bool(_affected_selection["manifest"].get("full_suite_forced", False))
-                if forced and elapsed <= _FORCED_FULL_SUITE_CEILING_SECONDS:
-                    _mirror_budget_notice_to_summary(
-                        "Fast-tier budget waived (forced full-suite scope)",
-                        "budget waived: full-suite scope forced by root-conftest change. "
-                        f"Elapsed: {elapsed / 60:.1f} min (forced-run ceiling: "
-                        f"{_FORCED_FULL_SUITE_CEILING_SECONDS / 60:.0f} min). Dominant phase: "
-                        f"{dominant_phase or 'unknown'}. No breach rec filed -- this is a "
-                        "deterministic, already-diagnosed full-suite run, not drift.",
-                    )
-                    _record_budget_outcome("forced_waived", elapsed, dominant_phase)
-                elif forced:
-                    _mirror_budget_notice_to_summary(
-                        "Fast-tier forced-run ceiling breached",
-                        "ERROR: forced full-suite run exceeded the forced-run ceiling "
-                        f"({_FORCED_FULL_SUITE_CEILING_SECONDS / 60:.0f} min). Elapsed: "
-                        f"{elapsed / 60:.1f} min. Dominant phase: {dominant_phase or 'unknown'}.\n"
-                        "The forced full suite itself is now the problem, not the gate -- "
-                        "open a planning session (Decision 153 reversal condition (b)).",
-                    )
-                    _record_budget_outcome("forced_ceiling_breach", elapsed, dominant_phase)
-                    sys.exit(1)
-                else:
-                    if _selection_fallback:
-                        print(
-                            "\nNOTE: this run's affected-set derivation fell back to the edited-set, so the "
-                            "pytest scope it just ran is not the scope this diff should have run -- read the "
-                            "phase attribution below as degraded, not as ordinary drift."
-                        )
-                    _file_budget_breach_rec(elapsed, diff_manifest, dominant_phase)
-                    _record_budget_outcome("breach", elapsed, dominant_phase)
-                    print(
-                        f"\nERROR: Fast tier exceeded budget (5 min). Elapsed: {elapsed / 60:.1f} min. "
-                        f"Dominant phase: {dominant_phase or 'unknown'}.\n"
-                        "This tier has grown beyond its design contract. Either:\n"
-                        "  1. Move the slow check to the full tier, or\n"
-                        "  2. Optimise the check, or\n"
-                        "  3. Open a planning session to revise this budget (requires Decision Record)."
-                    )
-                    sys.exit(1)
+                # (Decision 135/VTS-03) and is a self-identified, already-diagnosed cause -- not
+                # drift. Unchanged, with one stated subordination: the unwaivable non-test arm above
+                # outranks it, so a forced run whose NON-TEST half has drifted no longer gets it.
+                _mirror_budget_notice_to_summary(
+                    "Fast-tier budget waived (forced full-suite scope)",
+                    "budget waived: full-suite scope forced by root-conftest change. "
+                    f"Elapsed: {elapsed / 60:.1f} min (forced-run ceiling: "
+                    f"{_FORCED_FULL_SUITE_CEILING_SECONDS / 60:.0f} min). Dominant phase: "
+                    f"{dominant_phase or 'unknown'}. No breach rec filed -- this is a "
+                    "deterministic, already-diagnosed full-suite run, not drift.",
+                )
+                _record_budget_outcome(verdict, elapsed, dominant_phase, extra_keys)
+            elif verdict.outcome == "forced_ceiling_breach":
+                _mirror_budget_notice_to_summary(
+                    "Fast-tier forced-run ceiling breached",
+                    "ERROR: Fast tier exceeded budget (forced-run ceiling: "
+                    f"{_FORCED_FULL_SUITE_CEILING_SECONDS / 60:.0f} min) -- the forced full-suite run "
+                    f"exceeded the forced-run ceiling. Elapsed: {elapsed / 60:.1f} min. Dominant phase: "
+                    f"{dominant_phase or 'unknown'}.\n"
+                    "The forced full suite itself is now the problem, not the gate -- "
+                    "open a planning session (Decision 153 reversal condition (b)).",
+                )
+                _record_budget_outcome(verdict, elapsed, dominant_phase, extra_keys)
+                sys.exit(1)
+            elif verdict.outcome == "breach":
+                _file_budget_breach_rec(elapsed, diff_manifest, dominant_phase)
+                _record_budget_outcome(verdict, elapsed, dominant_phase, extra_keys)
+                print(
+                    f"\nERROR: Fast tier exceeded budget (test-execution allowance: "
+                    f"{verdict.limit_s / 60:.1f} min for {n_selected} selected module(s)). Test half: "
+                    f"{test_s:.1f}s of {elapsed:.1f}s elapsed. Dominant phase: {dominant_phase or 'unknown'}.\n"
+                    "This tier has grown beyond its design contract. Either:\n"
+                    "  1. Move the slow check to the full tier, or\n"
+                    "  2. Optimise the check, or\n"
+                    "  3. Open a planning session to revise this budget (requires Decision Record)."
+                )
+                sys.exit(1)
+            elif verdict.outcome == "breadth_waived":
+                # The SECOND measured cause (Decision 182): a test half above the base, explained by
+                # measured selection breadth rather than by drift. Loud and attributable, to the same
+                # bar Decision 153 point 1 sets for the forced waiver, and recorded as an explicit
+                # waiver_cause in the manifest rather than by overloading a boolean.
+                _mirror_budget_notice_to_summary(
+                    "Fast-tier test budget waived (selection breadth)",
+                    f"budget waived: waiver_cause selection_breadth -- this diff selected {n_selected} test "
+                    f"module(s), so the test-execution allowance is {verdict.allowance_s:.0f}s and the measured "
+                    f"test half is {test_s:.1f}s. Non-test half: {non_test_s:.1f}s against an unwaived "
+                    f"{selection_budget.NON_TEST_BUDGET_SECONDS:.0f}s. No breach rec filed -- this is measured "
+                    "breadth, not drift.",
+                )
+                _record_budget_outcome(verdict, elapsed, dominant_phase, extra_keys)
             else:
-                _record_budget_outcome("within_budget", elapsed, dominant_phase)
+                _record_budget_outcome(verdict, elapsed, dominant_phase, extra_keys)
 
         scaffold_fns = {
             "lint": _scaffold_lint,

@@ -81,6 +81,7 @@ from scripts.preflight.ci_rca_gauges import (  # noqa: F401
     DEDUP_EFFECTIVENESS_MIN_SAMPLE,
     DEDUP_EFFECTIVENESS_THRESHOLD,
     _compute_ci_rca_abstention,
+    _compute_ci_rca_escape_mode_abstention,
     _compute_ci_rca_telemetry,
     _compute_dedup_effectiveness,
     _derive_ci_rca_back_validation,
@@ -90,6 +91,7 @@ from scripts.preflight.ci_rca_gauges import (  # noqa: F401
     find_open_dedup_effectiveness_rec,
     print_ci_rca_abstention_gauge,
     print_ci_rca_back_validation,
+    print_ci_rca_escape_mode_abstention_gauge,
     print_ci_rca_telemetry,
     print_dedup_effectiveness_gauge,
 )
@@ -291,6 +293,7 @@ def main(roadmap_detail: str = "slim") -> int:
     ci_rca_correlation = correlation.correlate_ci_rca_with_main(
         ci_rca_recs, recent_main_commits, closed_ci_rca_recs=closed_ci_rca_recs
     )
+    ci_rca_correlation = ci_rca_signals.annotate_prior_deferrals(ci_rca_correlation)
     ci_rca_signals.print_ci_rca_recs(ci_rca_recs, correlation=ci_rca_correlation)
     ci_rca_signals.print_ci_rca_dispute_recs(ci_rca_dispute_recs)
     ci_rca_signals.print_ci_rca_undetermined_recs(ci_rca_undetermined_recs)
@@ -300,6 +303,9 @@ def main(roadmap_detail: str = "slim") -> int:
         creds_status, recs_rows_cache, ci_rca_abstention_gauge
     )
     ci_rca_gauges.print_ci_rca_abstention_gauge(ci_rca_abstention_gauge)
+
+    ci_rca_escape_mode_gauge = ci_rca_gauges._compute_ci_rca_escape_mode_abstention(recs_rows_cache)
+    ci_rca_gauges.print_ci_rca_escape_mode_abstention_gauge(ci_rca_escape_mode_gauge)
 
     ci_rca_telemetry = ci_rca_gauges._compute_ci_rca_telemetry(recs_rows_cache)
     ci_rca_back_validation = ci_rca_gauges._derive_ci_rca_back_validation(recs_rows_cache)
@@ -369,6 +375,7 @@ def main(roadmap_detail: str = "slim") -> int:
         "ci_rca_undetermined_recs": ci_rca_undetermined_recs[:5],
         "ci_rca_undetermined_total": len(ci_rca_undetermined_recs),
         "ci_rca_abstention_gauge": ci_rca_abstention_gauge,
+        "ci_rca_escape_mode_gauge": ci_rca_escape_mode_gauge,
         "ci_rca_probe_health_escalation": ci_rca_probe_health_escalation,
         "ci_rca_telemetry": ci_rca_telemetry,
         "ci_rca_back_validation": ci_rca_back_validation,
@@ -387,6 +394,12 @@ def main(roadmap_detail: str = "slim") -> int:
     report["provisional_contracts_due"] = provisional_contracts_due
     report["decision_conditions"] = decision_conditions_bucket
     report["non_automatable_softcap_breached"] = recs_cache._check_non_automatable_softcap(non_automatable_count)
+    # Ad-hoc /orient lane (audit PDB-01, B1-R4 + B4-O1): pure derivations over the already-pulled
+    # recs_rows_cache -- unconditionally written on both the healthy and degraded paths (a
+    # degraded warm pull yields [] for both, never a missing key -- Decision 55: no silent zero,
+    # the READER half of that honesty is /orient's own recs_read_status-keyed degraded clause).
+    report["followon_recs"] = recs_cache._derive_followon_recs(recs_rows_cache or [])
+    report["open_critical_recs"] = recs_cache._derive_open_critical_recs(recs_rows_cache or [])
     report["ci_rca_liveness_alert"] = ci_rca_liveness_alert
     report["convergence_sensor_liveness_alert"] = convergence_sensor_liveness_alert
     summary.print_convergence_sensor_liveness_alert(convergence_sensor_liveness_alert)

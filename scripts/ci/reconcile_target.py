@@ -22,7 +22,7 @@ import json
 import re
 import sys
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 CONVERGENCE_BUCKET = "agent-platform-data-lake"
 CONVERGENCE_KEY = "convergence/personal/sandbox.json"
@@ -123,10 +123,14 @@ def _default_reader(profile: Optional[str]) -> Callable[[str], list[dict[str, An
     Deferred import: this module must remain importable (for unit tests) without the reader's
     heavier dependency chain loaded unless the live path is actually exercised.
     """
-    from src.common.ducklake_reader_client import make_reader  # noqa: PLC0415
+    from src.common.ducklake_reader_client import DuckLakeReader, make_reader  # noqa: PLC0415
 
     def _call(rec_id: str) -> list[dict[str, Any]]:
-        return make_reader(profile=profile).named("rec_by_id", id=rec_id)
+        # make_reader() is annotated -> Reader (the Protocol, which deliberately does not declare
+        # named()) but only ever constructs a DuckLakeReader; cast narrows the type at this one
+        # call site rather than widening the Protocol by omission.
+        reader = cast(DuckLakeReader, make_reader(profile=profile))
+        return reader.named("rec_by_id", id=rec_id)
 
     return _call
 

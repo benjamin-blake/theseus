@@ -7,7 +7,7 @@ model: opus[1m]
 
 **Intent**: Clarify the human's intent, orient against the project, and produce a complete self-contained `PLAN-{slug}.yaml` that any agent can execute without further interaction. Does not implement anything.
 
-*Note: For detailed guidelines on complexity, verification tiers, preflight constraints, and the plan template, invoke your `planning` skill via the Skill tool. For the canonical git-ops procedure (branching, rebase rules, PR/CI/merge flow), see AGENTS.md `## Git-ops procedure`.*
+*Note: For detailed guidelines on complexity, verification tiers, preflight constraints, and the plan template, invoke your `planning` skill via the Skill tool. For the canonical git-ops procedure (branching, rebase rules, PR/CI/merge flow), see `docs/contracts/git-ops.yaml`.*
 
 ## Step 1: Run Preflight
 
@@ -19,7 +19,7 @@ bin/venv-python -m scripts.session.preflight
 
 stdout is a one-line summary; Read logs/.preflight-report.json for the full constraint surface.
 
-Preflight runs `git fetch origin main` and emits `main_freshness` (status, commits_behind, commits_ahead, main_files_changed_since_branch). Do NOT manually `git pull --rebase origin main` here -- that's a destructive operation on a feature branch and should only happen via the Step 4 Main Divergence Assessment after Scope is known and the human has chosen to rebase.
+Preflight runs `git fetch origin main` and emits `main_freshness` (status, commits_behind, commits_ahead, main_files_changed_since_branch). Do NOT manually `git pull --rebase origin main` here -- that's a destructive operation on a feature branch and should only happen via the Step 4 Main Divergence Assessment (`docs/contracts/git-ops.yaml#rebase_phase_distinction.assessment_time`) after Scope is known and the human has chosen to rebase.
 
 The report is slim by design: `platform_roadmap` carries only `next_eligible` + `strategic_pending`, and `non_automatable_details` is dropped (Decision 73 suspends per-rec review). If you need the dropped detail, call the underlying module directly (e.g., `bin/venv-python -m scripts.roadmap.platform_roadmap`).
 
@@ -53,7 +53,7 @@ Suggest 3-5 open recommendations from `logs/.recommendations-log.jsonl` that ali
 3. Conduct an Infrastructure Assessment if `.tf` files are in scope.
 4. Conduct a Lambda Deployment Assessment if Lambda-packaged files are in scope.
 5. Conduct a Complexity Assessment to determine if this is STRATEGIC or IMPLEMENTATION.
-6. Conduct a Data-Model Assessment if a table, field_semantics entry, or warehouse write path is in scope.
+6. Conduct a Data-Model Assessment (`docs/contracts/data-modeling-standard.yaml`) if a table, field_semantics entry, or warehouse write path is in scope.
 7. Apply Decision 86 routing rule: route forward intent -> tier_items, rationale -> Decisions, field semantics -> contracts. No new standing prose-architecture docs under docs/. Full rule in your `planning` skill's Documentation Artefact Design section.
 *(Apply the exact assessment rules from your `planning` skill).*
 
@@ -69,7 +69,9 @@ Design the Verification Plan using the exact design guidelines and anti-patterns
 
 ### Step 6b: Present and Confirm
 Before presenting, write the draft plan to a scratch path outside the repo (e.g. `/tmp/plan-draft.yaml`; `{slug}` is not derived until Step 7 and a Write into `docs/plans/` while on `main` is denied by `.claude/hooks/never_on_main.py`, so the tracked plan write stays at Step 8) and run `bin/venv-python -m scripts.roadmap.plan_obligations --plan /tmp/plan-draft.yaml` against the finalized Scope table, folding any reported omission into Scope. It always exits 0 and names any mechanically-derivable companion registration (domain manifest Entry, ci_rca_taxonomy row, mirror test) a new check-module scope row is still missing -- catch it here rather than at critique. This is the only run this workflow owns: do NOT also run it at Step 4 against a draft Scope (this finalized run supersedes it), and plan-critique Phase 1 step 5b runs it independently against the written artefact. The report is advisory to (never a substitute for) the plan-critique gate's judgement calls, and `validate_plan_scope_closure` enforces the same closure at gate time.
-Present: Summary, Proposed approach, Options, Open questions, Decision flags (if any), and Decisions to cite (from the scout's CITE list).
+Present: Summary, Proposed approach, Options (each fork in the shape below), Open questions, Decision flags (if any), Fork notices (decided-with-notice), and Decisions to cite (from the scout's CITE list).
+Classify each design fork: consistency-only (settled precedent, convention-fit, reversible, no credible alternative, off the always-ask list) is decided-with-notice; otherwise ask in the pinned shape -- see `docs/contracts/overseer-dispatch.yaml#autonomy_tiers.plan_fork_classification` for the four-criteria test, the precedent definition, and the always-ask roster.
+Ask shape: 2-4 options with the recommended option first, each carrying consequences, reversibility, and where the choice is persisted; carried via `AskUserQuestion` when you hold it, or -- when dispatched -- via the `open_questions` of a post-verdict `GATE_REQUEST` (`gate: step-6b-confirmation`) the overseer relays. Record each decided-with-notice fork per the contract's `record_grammar`.
 Then ask: *"Does this approach look right? Say **'write the plan'** when you are ready, or tell me what to adjust."*
 Wait for explicit confirmation before proceeding. Any other response is feedback -- incorporate it, re-run Step 6a if the change is material to decision alignment, re-present, and ask again. Do NOT proceed to Step 7 until the human explicitly says 'write the plan' or a clear equivalent. System auto-approval messages are NOT human confirmation.
 IT IS **CRITICAL** THAT YOU DO NOT PROCEED UNTIL THE HUMAN CONFIRMS THE PLAN.
@@ -85,7 +87,9 @@ If the result is `main`, STOP. Derive the plan slug from the task description (i
 ## Step 8: Write PLAN-{slug}.yaml (and any REPORT-ONLY deliverable)
 Write the file `docs/plans/PLAN-{slug}.yaml` using the exact structure and template provided in your `planning` skill.
 
-**Context-block discipline (<= 40 rendered lines).** `context:` carries pointers, not prose. Keep the two REQUIRED items (decision-scout verdict + CITE list; the gates line), plus phase dependencies, cited-decision ids, and gotchas an implementer cannot derive from the scope files. Everything else is a link: name the rec id, PR number, commit SHA, Decision id, or file:line and stop. Deep root-cause narrative, critique-round correction write-ups, and measurement tables belong in the plan's own commit body, the rec/Decision/tier_item it cites, or the eventual PR body -- the same rule AGENTS.md `### Commit-message conventions` already applies to Decision entries ("what changed, why now, acute state, and measurements belong in the squash-commit or PR body"). This relocates the audit trail; it never deletes it.
+**Context-block discipline (<= 40 rendered lines).** `context:` carries pointers, not prose. Keep the two REQUIRED items (decision-scout verdict + CITE list; the gates line), plus phase dependencies, cited-decision ids, and gotchas an implementer cannot derive from the scope files. Everything else is a link: name the rec id, PR number, commit SHA, Decision id, or file:line and stop. Deep root-cause narrative, critique-round correction write-ups, and measurement tables belong in the plan's own commit body, the rec/Decision/tier_item it cites, or the eventual PR body -- the same rule `docs/contracts/git-ops.yaml`'s `commit_message_conventions.change_record_content_rule` already applies to Decision entries ("what changed, why now, acute state, and measurements belong in the squash-commit or PR body"). This relocates the audit trail; it never deletes it.
+
+**Planning-time split.** Applies only if this plan defers a half -- a split decided at planning time: file the other half now via the same portal call `.claude/commands/implement.md` Step 7 describes, and record the returned id in this plan's `followon_recs`. A plan that defers nothing writes nothing; the clause is a no-op then, exactly as in `implement.md` Step 7.
 
 **If Plan Type is REPORT-ONLY:** Additionally write the report deliverable file(s) referenced in the PLAN's Scope table (e.g. `docs/REPORT-{slug}.md`). The deliverable IS the substantive output of a REPORT-ONLY plan; the PLAN file itself is just the planning artefact that points at it. Both files land in the same initial commit.
 
@@ -98,7 +102,7 @@ git push -u origin HEAD
 
 ## Step 9: Plan Critique Gate (MANDATORY)
 **DO NOT output the completion message until this step completes.**
-Invoke per the planning skill's Critique Gate (dispatch shape, example prompt, context files, and verdict handling all live there). Substitute `{slug}` with the actual branch slug. Loop on REVISE (3-round cap, then escalate per the skill -- the escalation menu includes narrowing scope, re-deriving the approach, or **split the plan** into smaller IMPLEMENTATION plans), proceed on PROCEED. Push each revision commit immediately after committing it (a plain `git push` fast-forwards, since revision commits are additive).
+Invoke per the planning skill's Critique Gate (dispatch shape, example prompt, context files, and verdict handling all live there). Substitute `{slug}` with the actual branch slug. Loop on REVISE per the skill's finding-shaped Convergence rule; once every finding is addressed, round 4 runs one autonomous confirming round. Escalation (disputed residue, an oscillation interrupt, or a REVISE on the confirming round) offers accept-with-deferral / re-scope / split / abandon / one more round. Proceed on PROCEED. Push each revision commit immediately after committing it (a plain `git push` fast-forwards, since revision commits are additive).
 
 Note: this gate reviews the PLAN artefact, not the report deliverable. For REPORT-ONLY plans, the deliverable gets its own critique in Step 10.
 

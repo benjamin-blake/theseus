@@ -108,7 +108,7 @@ class TestCommitStep:
                 attempt_num = sum(1 for c in calls if c[0:2] == ["git", "commit"])
                 if attempt_num <= 2:
                     raise hook_err
-                elif attempt_num == 3:
+                if attempt_num == 3:
                     if "--no-verify" not in cmd:
                         raise AssertionError("Expected --no-verify flag on attempt 3")
                     return mock_commit_ok
@@ -116,6 +116,7 @@ class TestCommitStep:
                 return mock_diff
             elif cmd[0:2] == ["git", "add"]:
                 return mock_add
+            return None
 
         with (
             patch("scripts.executor.step_runner._enforce_step_scope", return_value=True),

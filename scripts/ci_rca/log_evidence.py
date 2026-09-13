@@ -9,7 +9,7 @@ import re
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 SCHEMA = "ci-rca-log-evidence/v2"
@@ -330,8 +330,16 @@ def validate_envelope(value: Any) -> dict[str, Any]:
     limits = value.get("limits")
     _validate_limits(body, limits)
     job_ids = _validate_jobs(value.get("failed_jobs"))
-    _validate_selection(value.get("fallback_selection"), job_ids, limits)
-    _validate_scope(value.get("scope"), value.get("failed_jobs"), value.get("retrieval_path"), value.get("fallback_selection"))
+    # _validate_limits above raises unless `limits` is a dict, so it is one by the time we get here.
+    _validate_selection(value.get("fallback_selection"), job_ids, cast("dict[str, Any]", limits))
+    _validate_scope(
+        value.get("scope"),
+        # _validate_jobs above raises unless "failed_jobs" is a non-empty list of dicts.
+        cast("list[dict[str, Any]]", value.get("failed_jobs")),
+        value.get("retrieval_path"),
+        # _validate_selection above raises unless "fallback_selection" is a dict.
+        cast("dict[str, Any]", value.get("fallback_selection")),
+    )
     return value
 
 

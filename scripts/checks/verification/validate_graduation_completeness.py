@@ -1,8 +1,9 @@
 """Verification graduation completeness gate (T3.21, VF-05 enforcement, re-keyed to content
 resolution -- see the amendment on Decision 132/148 in docs/DECISIONS.md).
 
-VF-05 (T3.18) shipped the graduation PRODUCER (the implement skill's Tier_item bookkeeping
-walk graduates a plan's own kernel-expressible VP steps into a new
+VF-05 (T3.18) shipped the graduation PRODUCER (the tier-item bookkeeping walk,
+docs/contracts/tier-item-lifecycle.yaml#bookkeeping_walk, graduates a plan's own
+kernel-expressible VP steps into a new
 config/agent/verification_registry/entries/<check_id>.yaml shard) and VF-06 (validate_verification_registry's
 real differential admission gate). Neither one is an OBLIGATION: nothing forces a fix PR to
 actually add the registry row it owes, so a skip is invisible to CI (a plan-PR incident, PR
@@ -56,12 +57,15 @@ validate_verification_registry / VF-06).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from scripts import verification_graduation
 from scripts.checks import _common, registry
 
-LoadPlanFn = Callable[[str, Path], object]
+if TYPE_CHECKING:
+    from scripts.roadmap.plan_document import PlanDocument
+
+LoadPlanFn = Callable[[str, Path], "PlanDocument"]
 BaselineRegistryReaderFn = Callable[[Path], list[dict]]
 
 

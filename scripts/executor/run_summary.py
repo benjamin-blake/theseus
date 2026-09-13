@@ -44,7 +44,7 @@ def _extract_validation_failed_checks(validate_output: str) -> list[str]:
         if stripped.startswith("- "):
             failed_checks.append(stripped[2:].strip())
             continue
-        if failed_checks and (not stripped or stripped.startswith("Fix all failures") or stripped.startswith("===")):
+        if failed_checks and (not stripped or stripped.startswith(("Fix all failures", "==="))):
             break
 
     return failed_checks

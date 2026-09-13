@@ -18,7 +18,6 @@ from unittest.mock import patch
 import pytest
 
 from scripts.decisions_index import (
-    _EXPORT_PATH,
     _LIVE_PATH,
     _build_triage_excerpt,
     _derive_category_tags,
@@ -467,40 +466,6 @@ class TestCategoryTagsIntegration:
         counts = Counter(tag for entry in live for tag in entry["category_tags"])
         for tag, count in counts.items():
             assert count / len(live) <= 0.40, f"tag {tag!r} covers {count}/{len(live)} live entries -- too broad"
-
-
-class TestCommittedIndexSizePin:
-    """AC1 / VP step 2: the committed docs/decisions-index.json stays within a re-derived byte
-    pin, so the figure recorded in the governing Decision cannot silently drift upward.
-
-    RE-DERIVED DOWNWARD by migration step 5 of audits/contract-first-governance-33c8667.yaml,
-    per Decision 166 point 9's rec-3012 deferral and reversal condition (g): rec-3012 landed
-    (archive rows are skeletons now), so the archive term shrinks and this bound falls with it
-    -- mirrored at docs/contracts/decision-entry.yaml's size_governance.index_max_bytes.
-
-    Derivation (measured on this tree, indent=2 pretty-printed bytes): live term 120 (the
-    RATIFIED target, Decision 134 clause 2 / Decision 160 point 4 -- not 132, the unratified
-    PLAN-decision-ceiling-bridge ceiling) x 796 bytes/row = 95,520; archive term 54 skeleton
-    rows x 289 bytes/row = 15,606; total 111,126, rounded up to 112,000. Deriving at 132 would
-    have banked the bridge's temporary raise permanently (121,000) -- declined.
-
-    Consequence: a TWO-entry window. From the regenerated 107,367 B at 795.88 B/live row, the
-    pin fails starting at +6 live entries (112,142 B); the header ceiling (measured 125/132
-    today) only fails at +8 -- across +6 and +7 the byte pin is the sole guard to fire.
-
-    THE PIN IS NEVER RAISED (operator's standing position, mirrored in the contract). When it
-    binds: archival under Decision 146, or collapsing entries into contracts -- never a raise,
-    and never a floor either: a further-shrunk archive term lets this bound fall again.
-    """
-
-    _COMMITTED_INDEX_MAX_BYTES = 112_000
-
-    def test_committed_index_under_re_derived_byte_pin(self) -> None:
-        size = len(_EXPORT_PATH.read_bytes())
-        assert size <= self._COMMITTED_INDEX_MAX_BYTES, (
-            f"committed index is {size} bytes, over the {self._COMMITTED_INDEX_MAX_BYTES:,}-byte pin "
-            "(re-derived downward, migration step 5 / Decision 166 point 9)"
-        )
 
 
 class TestCheckIndexFreshnessDirect:

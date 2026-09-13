@@ -16,6 +16,7 @@ from unittest.mock import patch
 from scripts.checks.ops_governance.validate_deploy_channel_conformance import (
     _actual_decoupled_state,
     _doc_state_from_channel_class,
+    _extract_function_blocks,
     _prod_channels_complete,
     _taxonomy_state,
     validate_deploy_channel_conformance,
@@ -66,6 +67,43 @@ resource "aws_lambda_function" "writer" {
 resource "aws_lambda_function" "reader" {
   function_name = "agent-platform-ducklake-reader"
   source_code_hash = try(filemd5("y.zip"), null)
+}
+"""
+
+# A COUPLED resource preceding a decoupled one: a block that over-runs its closing brace
+# absorbs the next resource's ignore_changes and the partial rollout disappears.
+_TF_MIXED_COUPLED_FIRST = """
+resource "aws_lambda_function" "writer" {
+  function_name = "agent-platform-ducklake-writer"
+  source_code_hash = try(filemd5("x.zip"), null)
+}
+
+resource "aws_lambda_function" "reader" {
+  function_name = "agent-platform-ducklake-reader"
+  source_code_hash = try(filemd5("y.zip"), null)
+
+  lifecycle {
+    ignore_changes = [source_code_hash]
+  }
+}
+"""
+
+# A nested environment/variables block that closes BEFORE the lifecycle block: a block that
+# stops at the first inner closing brace loses the ignore_changes text entirely.
+_TF_NESTED_BLOCK_DECOUPLED = """
+resource "aws_lambda_function" "writer" {
+  function_name = "agent-platform-ducklake-writer"
+  source_code_hash = try(filemd5("x.zip"), null)
+
+  environment {
+    variables = {
+      DUCKLAKE_STAGE = "prod"
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [source_code_hash]
+  }
 }
 """
 
@@ -385,3 +423,55 @@ class TestValidateDeployChannelConformance:
             result = _taxonomy_state(failed)
         assert result is None
         assert any("cannot read/parse" in f for f in failed)
+
+
+class TestDeployChannelBlockExtraction:
+    """Brace-depth block extraction and the PASS line; own helpers (Decision 131)."""
+
+    @staticmethod
+    def _write(tmp_path: Path, tf: str, prod_tf: str = _PROD_TF_DECOUPLED) -> None:
+        personal_dir = tmp_path / "terraform" / "personal"
+        personal_dir.mkdir(parents=True, exist_ok=True)
+        (personal_dir / "ducklake_lambdas.tf").write_text(tf, encoding="utf-8")
+        (personal_dir / "prod_lambdas.tf").write_text(prod_tf, encoding="utf-8")
+
+        contracts_dir = tmp_path / "docs" / "contracts"
+        contracts_dir.mkdir(parents=True, exist_ok=True)
+        (contracts_dir / "build-lambda.yaml").write_text(_BUILD_LAMBDA_DECOUPLED, encoding="utf-8")
+        (contracts_dir / "environment-taxonomy.yaml").write_text(_TAXONOMY_DECOUPLED, encoding="utf-8")
+
+    @staticmethod
+    def _run(tmp_path: Path) -> list[str]:
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            failed: list[str] = []
+            validate_deploy_channel_conformance(failed)
+        return failed
+
+    def test_coupled_first_partial_rollout_is_still_reported(self, tmp_path: Path) -> None:
+        """A COUPLED resource preceding a decoupled one is still a partial rollout -- a block
+        running past its closing brace would swallow the next resource's ignore_changes."""
+        self._write(tmp_path, _TF_MIXED_COUPLED_FIRST)
+        failed = self._run(tmp_path)
+        assert len(failed) == 1, f"Expected exactly one failure but got: {failed}"
+        assert "1/2 ducklake" in failed[0]
+        assert "partial rollout" in failed[0]
+
+    def test_nested_block_does_not_truncate_the_resource_block(self) -> None:
+        """The extracted block spans to the OUTER closing brace, so text sitting after an
+        inner block that closes first is still part of it."""
+        blocks = _extract_function_blocks(_TF_NESTED_BLOCK_DECOUPLED)
+        assert sorted(blocks) == ["writer"]
+        assert "ignore_changes = [source_code_hash]" in blocks["writer"]
+
+    def test_nested_block_resource_reads_as_decoupled_end_to_end(self, tmp_path: Path) -> None:
+        """End-to-end companion: the nested-block resource still reads as decoupled, so the
+        structural claim above is tied to the conformance verdict it feeds."""
+        self._write(tmp_path, _TF_NESTED_BLOCK_DECOUPLED)
+        assert self._run(tmp_path) == []
+
+    def test_agreeing_state_prints_the_pass_line(self, tmp_path: Path, capsys) -> None:
+        """The PASS line is printed only when the run added no failures."""
+        self._write(tmp_path, _TF_DECOUPLED)
+        failed = self._run(tmp_path)
+        assert failed == []
+        assert "PASS: docs and terraform/personal agree" in capsys.readouterr().out

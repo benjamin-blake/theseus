@@ -223,7 +223,7 @@ def validate_contract_drift(
                 ritual_contracts.append((p, doc))
                 continue
 
-            # shape == "class_d"
+            # the remaining branch handles shape "class_d"
             smuggled = _population.detect_smuggled_shape(data)
             if smuggled:
                 failed.append(f"Contract drift (smuggling): {name}: {smuggled}")

@@ -105,7 +105,7 @@ class TestStandardContractGate:
         # INVERTED (migration-step-3-grandfathering): data-modeling-standard.yaml now legitimately
         # carries a Class D `contract:` envelope (its own evaluator is
         # {check: validate_data_model_standard} -- this check self-hosts). The pre-migration
-        # rejection ("must stay non-ritual so the CD.25 drift gate keeps skipping it") is gone;
+        # rejection, whose text was "must stay non-ritual so the CD.25 drift gate keeps skipping it", is gone;
         # this check now only enforces the required sections, regardless of contract: presence.
         data = dict(_COMPLETE_STANDARD)
         data["contract"] = {"id": "data-modeling-standard", "class": "D", "contract_version": 1, "status": "active"}

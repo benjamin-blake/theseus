@@ -86,3 +86,36 @@ class TestVerifierHermeticity:
         with patch("scripts.checks._common.ROOT", tmp_path):
             validate_verifier_hermeticity(failed)
         assert failed == [], f"SyntaxError file must be skipped, got: {failed}"
+
+    def test_missing_verifiers_dir_appends_a_failure(self, tmp_path: Path) -> None:
+        """No scripts/verifiers/ under ROOT at all -- the early-return failure arm."""
+        failed: list[str] = []
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            validate_verifier_hermeticity(failed)
+        assert failed == ["verifier-hermeticity: scripts/verifiers/ not found"]
+
+    def test_random_module_attribute_fails(self, tmp_path: Path) -> None:
+        """random.* is gated by the module-PREFIX arm, not the dotted-name set."""
+        verifiers_dir = tmp_path / "scripts" / "verifiers"
+        verifiers_dir.mkdir(parents=True)
+        (verifiers_dir / "rand_verifier.py").write_text(
+            "import random\n\nclass RandVerifier:\n    async def verify(self):\n        return random.random()\n",
+            encoding="utf-8",
+        )
+        failed: list[str] = []
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            validate_verifier_hermeticity(failed)
+        assert failed == ["verifier-hermeticity: rand_verifier.py:5: random.random"]
+
+    def test_from_import_of_a_network_module_fails(self, tmp_path: Path) -> None:
+        """`from requests import get` is the ImportFrom arm, distinct from plain `import boto3`."""
+        verifiers_dir = tmp_path / "scripts" / "verifiers"
+        verifiers_dir.mkdir(parents=True)
+        (verifiers_dir / "from_import_verifier.py").write_text(
+            "from requests import get\n\nclass FromImportVerifier:\n    async def verify(self):\n        return get\n",
+            encoding="utf-8",
+        )
+        failed: list[str] = []
+        with patch("scripts.checks._common.ROOT", tmp_path):
+            validate_verifier_hermeticity(failed)
+        assert failed == ["verifier-hermeticity: from_import_verifier.py:1: from requests import ..."]
