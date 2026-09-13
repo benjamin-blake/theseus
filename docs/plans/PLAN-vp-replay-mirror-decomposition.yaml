@@ -29,8 +29,13 @@ scope:
     purpose: >-
       The named export surface, re-exported so no sibling module imports across test packages
       (Decision 131 clause 2 / validate_no_cross_test_imports makes conftest the ONLY sharing
-      channel). Must export exactly: _vp_replay_plan_dict, _write_vp_replay_plan, _git,
-      _init_repo, _commit_all and _ResolvedFixture. The undeclared-repo build currently inline
+      channel). Must export AT MINIMUM: _vp_replay_plan_dict, _write_vp_replay_plan, _git,
+      _init_repo, _commit_all and _ResolvedFixture -- plus whatever source symbols the relocated
+      classes import (registry, validate_vp_replay, yaml), re-exported with the
+      `# noqa: F401 (re-exported for from .conftest import ...)` marker both precedent packages
+      use. "At minimum", not "exactly": those are source imports rather than cross-test imports, so
+      validate_no_cross_test_imports is satisfied either way, and an exact list would forbid the
+      precedent's own shape. The undeclared-repo build currently inline
       inside TestPlanOnlyLeg must be lifted to a shared helper here too -- slice 2 adds modules
       that need it and cannot reach it otherwise, nor add it, since conftest is outside its scope.
   - file: tests/checks/verification/validate_vp_replay/test_plan_only_leg.py
@@ -51,7 +56,9 @@ scope:
   - file: scripts/test_coverage_checker.py
     action: Modify
     purpose: >-
-      Add scripts/checks/verification/validate_vp_replay.py to _CONCERN_SPLIT_TEST_PACKAGES.
+      Add scripts/checks/verification/validate_vp_replay.py to _CONCERN_SPLIT_TEST_PACKAGES. This
+      file is 472 SLOC against the 500 default with no budget entry -- 28 SLOC of headroom -- so a
+      one-line frozenset addition fits, but it is not a file to grow further without decomposing.
       Measured: map_source_to_test returns the PACKAGE form only for a member of that hardcoded
       34-member frozenset, so without this the decomposed mirror is unresolvable.
   - file: tests/test_coverage_checker/test_coverage_checker_map.py
@@ -100,10 +107,12 @@ verification_plan:
       is wrong, not the assertion.
     graduation: waive
     graduation_waiver_reason: >-
-      Admission-by-absence, plus status-quo preservation. run_differential materializes the row's
-      OWN check_spec in an origin/main worktree where this package does not exist, so a directory
-      selector would exit 4 and be admitted BY ABSENCE -- it would guard nothing while looking
-      guarded. Note honestly what this leaves unpinned: after steps 3 and 4 were flipped to waive,
+      Obligation, not discrimination -- the distinction matters because step 6 shares the
+      admitted-by-absence property (measured exit 4 on the pre-implementation tree) and is
+      graduated anyway. Step 6 is REQUIRED: test_obligations[0]'s red_green_expectation names it.
+      Step 1 is optional extra coverage over a directory selector, and a directory selector admitted
+      by absence guards nothing while looking guarded, so the registry is better without it. Note
+      honestly what this leaves unpinned: after steps 3 and 4 were flipped to waive,
       no graduated row executes test_plan_only_leg.py or test_implement_leg.py. That is not a
       reduction -- TestPlanOnlyLeg and TestImplementLeg carry no graduated row on origin/main
       either, and the two shard-pinned classes keep their incumbent rows. Pinning them is new
@@ -196,9 +205,10 @@ verification_plan:
     hermetic: true
     action: The deleted flat mirror leaves no stale reference behind
     command: >-
-      bin/venv-python -c "import subprocess; from pathlib import Path; assert not
-      Path('tests/checks/verification/test_validate_vp_replay.py').exists(), 'flat mirror still
-      present'; r=subprocess.run(['git','grep','-l','test_validate_vp_replay','--','.',':!docs/plans'],
+      bin/venv-python -c "import subprocess; from pathlib import Path; assert
+      Path('tests/checks/verification/validate_vp_replay').is_dir(), 'package missing';
+      r=subprocess.run(['git','grep','-lI',
+      r'tests/checks/verification/test_validate_vp_replay\.py','--','.',':!docs/plans'],
       capture_output=True, text=True); assert r.returncode == 1, (r.returncode, r.stdout,
       r.stderr); print('NO_STALE_REFERENCES')"
     expected: NO_STALE_REFERENCES printed, exit 0
@@ -213,8 +223,16 @@ verification_plan:
       Deliberately NOT a negated rg: `! rg` maps rg's error exit 2 to success, so a missing path or
       an absent binary reads as a clean sweep -- the exact hazard the sibling plan exists to lint.
       git grep is present wherever the differential runs and returns 1 for no-match versus >1 for
-      error, so `returncode == 1` asserts absence rather than merely non-success. The existence
-      conjunct comes first so the sweep cannot pass while the file is still there.
+      error, so `returncode == 1` asserts absence rather than merely non-success. THREE properties
+      make this command work and all three are load-bearing. (i) The pattern is the escaped full
+      path, so it excludes ITSELF: measured, the regex matches an unescaped literal but not the
+      escaped form this command carries, which is why the precedent has the shape it does. (ii)
+      There is therefore NO unescaped occurrence of the flat path anywhere in the command -- the
+      round-3 draft asserted Path('...test_validate_vp_replay.py').exists(), which would have made
+      the graduated shard's own YAML self-match and left the step permanently red at HEAD. The
+      deleted-file property is carried instead by the positive package assertion, which names only
+      the new path. (iii) The package assertion comes first and is red on base (the directory does
+      not exist on origin/main), so the step fails there and is admitted.
     graduation: graduate
     graduation_check_id: vp-replay-flat-mirror-fully-retired
   - step: 8
