@@ -46,7 +46,7 @@ verification_plan:
 - step: 1
   phase: pre-deploy
   action: action_gc seeds the catalog before running GC
-  command: bin/venv-python -m pytest tests/test_ducklake_maintenance_smoke_handler.py -q
+  command: bin/venv-python -m pytest tests/test_ducklake_maintenance_smoke_handler.py::test_action_gc_seeds_catalog_before_gc -q
   expected: all pass including the new seeding assertion
   fix_if: run_gc is still reached against an empty catalog
   graduation: graduate
@@ -54,7 +54,7 @@ verification_plan:
 - step: 2
   phase: pre-deploy
   action: the smoke gate's newly-reachable storage-growth branch is covered
-  command: bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py -q
+  command: bin/venv-python -m pytest tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_gc_gate_fails_when_storage_grew -q
   expected: all pass, including coverage of the files_before>0 branch that seeding makes live
   fix_if: the branch is still unreachable or the gate accepts a grown-storage body
   graduation: graduate
@@ -65,8 +65,10 @@ verification_plan:
   command: test -z "$(git diff origin/main -- src/common/ducklake_maintenance_ops.py)"
   expected: exit 0, empty diff
   fix_if: the guard module was modified -- revert; the repair belongs in the smoke fixture, not the guard
-  graduation: graduate
-  graduation_check_id: g3-guard-module-untouched
+  graduation: waive
+  graduation_waiver_reason: asserts the ABSENCE of an edit in this session's own diff (the G3 guard module stays untouched). Green by construction on the un-implemented tree, so it cannot demonstrate red-before;
+    as a standing registry row it would pass vacuously on every future commit that does not touch the module, guarding nothing. The restraint it encodes is enforced by validate_scope_boundary, which already
+    fails a diff touching a file absent from this plan's scope.
 - step: 4
   phase: pre-deploy
   action: the checker resolves the mirror target for the previously-misrouted source
@@ -78,7 +80,7 @@ verification_plan:
 - step: 5
   phase: pre-deploy
   action: repo-wide mapping non-regression -- no currently-green source turns red
-  command: bin/venv-python -m pytest tests/test_coverage_checker/test_coverage_checker_grandfather.py -q
+  command: bin/venv-python -m pytest tests/test_coverage_checker/test_coverage_checker_grandfather.py::test_unmapped_sources_are_exactly_the_two_shared_modules -q
   expected: passes, including a test pinning the unmapped set to exactly the two scripts/checks/*/_shared.py files
   fix_if: any other source became unmapped -- the predicate is too wide; gate on flat-home absence only
   graduation: graduate
@@ -89,8 +91,9 @@ verification_plan:
   command: bin/venv-python -m pytest tests/test_coverage_checker/ -q
   expected: all pass
   fix_if: a legacy-roster or concern-split mapping regressed
-  graduation: graduate
-  graduation_check_id: coverage-checker-mapping-suite
+  graduation: waive
+  graduation_waiver_reason: the full mapping suite is green before and after by design -- it is the non-regression backstop for the 371 sources the fix must NOT remap, not evidence of the fix. Its discriminating
+    half is graduated separately as mapping-repo-wide-non-regression (step 5); graduating the suite as well would duplicate that row against a broader, slower selector.
 - step: 7
   phase: pre-deploy
   action: SLOC stays under the limit without a budget raise
@@ -98,8 +101,9 @@ verification_plan:
     print("sloc",n); sys.exit(0 if n<=500 else 1)'
   expected: prints a count at or under 500 and exits 0 (validate_sloc_limits metric, 475 at plan time)
   fix_if: over 500 -- decompose into the existing tests/test_coverage_checker concern-split package per Decision 128; a raise is unavailable, no Decision authorizes this path
-  graduation: graduate
-  graduation_check_id: test-coverage-checker-sloc-under-limit
+  graduation: waive
+  graduation_waiver_reason: a budget-headroom assertion that is legitimately green both before (475) and after, so it can never demonstrate red-before. The property is already enforced fleet-wide by validate_sloc_limits
+    and validate_sloc_budget_raises in the --pre tier; a registry row here would duplicate a standing check that is strictly stronger.
 - step: 8
   phase: pre-deploy
   action: no T2.18 criterion status was flipped by the re-grounding
@@ -107,8 +111,9 @@ verification_plan:
     if c["id"] in ("c6","c9")}; print(s); sys.exit(0 if s=={"c6":"met","c9":"met"} else 1)'
   expected: 'prints {''c6'': ''met'', ''c9'': ''met''} and exits 0'
   fix_if: a status changed -- revert; only /implement's bookkeeping walk flips criterion status
-  graduation: graduate
-  graduation_check_id: t218-c6-c9-status-unflipped
+  graduation: waive
+  graduation_waiver_reason: asserts the ABSENCE of a criterion status flip in this session's roadmap edit. Green by construction before the edit exists, and vacuous as a standing row -- c6/c9 could later
+    be flipped legitimately by /implement's bookkeeping walk, at which point a pinned row asserting 'met' would fail correctly-behaving code.
 - step: 9
   phase: pre-deploy
   action: full-tier validation (the tier that caught rec-3783; --pre alone cannot prove it fixed)
@@ -131,13 +136,20 @@ test_obligations:
 - source: scripts/test_coverage_checker.py
   behavior: a source whose grandfathered flat home is absent resolves to its mirror target, and no other source remaps
   verification_step: 5
-  test_selector: tests/test_coverage_checker/test_coverage_checker_grandfather.py
+  test_selector: tests/test_coverage_checker/test_coverage_checker_grandfather.py::test_unmapped_sources_are_exactly_the_two_shared_modules
   red_green_expectation: red before, green after
 - source: scripts/ducklake_smoke/lambda_maintenance_gates.py
   behavior: the files_before>0 storage-growth branch, dead while the catalog was empty, is reachable and correct
   verification_step: 2
-  test_selector: tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py
+  test_selector: tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_gc_gate_fails_when_storage_grew
   red_green_expectation: red before, green after
+- source: docs/ROADMAP-PLATFORM.yaml
+  behavior: T2.18 c6/c9 carry a dated regression annotation naming rec-3802 while their status stays met
+  verification_step: 8
+  command: bin/venv-python -c 'import yaml,sys; t=[i for i in yaml.safe_load(open("docs/ROADMAP-PLATFORM.yaml"))["tier_items"] if i["id"]=="T2.18"][0]; s={c["id"]:c["status"] for c in t["exit_criteria"]
+    if c["id"] in ("c6","c9")}; print(s); sys.exit(0 if s=={"c6":"met","c9":"met"} else 1)'
+  waiver_reason: text-only ledger annotation with no executable behaviour of its own; the one mechanical property worth guarding is that no criterion status flipped, which VP step 8 asserts directly against
+    the file
 constraints:
 - No rescue agents or workaround loops (Decision 55)
 - Never weaken or skip a check to obtain green (Decision 59 / Decision 181)
