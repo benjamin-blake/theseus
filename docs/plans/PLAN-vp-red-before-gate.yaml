@@ -25,6 +25,12 @@ scope:
       vocabulary and its in-dispatch self-test, the negated-sweep lint, the shared cross-leg budget
       counter with a re-derived step cap, and the widened accounting declaration. Projected 203 ->
       350-430 SLOC, under the 500 default; watch validate_cc_limits (CC 20) on the classifier.
+  - file: tests/checks/verification/validate_vp_replay/conftest.py
+    action: Modify
+    purpose: >-
+      Extend the package conftest with any fixture the three new modules need. In scope because
+      validate_no_cross_test_imports makes conftest the only legal sharing channel between test
+      modules, so without this row the new modules could neither reach a shared helper nor add one.
   - file: tests/checks/verification/validate_vp_replay/test_red_before_leg.py
     action: Create
     purpose: >-
@@ -78,7 +84,10 @@ scope:
     action: Modify
     purpose: >-
       Re-point criterion 12o's inbound pointer, which names the planning skill's "Graduation
-      disposition authoring" section and would otherwise become a two-hop through a stub.
+      disposition authoring" section and would otherwise become a two-hop through a stub. Budget
+      note: this file is 18621 against an 18693 budget -- 72 bytes of headroom, and it already
+      carries a raise-approved marker -- so the replacement pointer must not be longer than the
+      text it replaces by more than that.
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-
@@ -90,9 +99,11 @@ infrastructure_dependencies: []
 acceptance_criteria:
   - A graduate-marked pre-deploy step that exits 0 on the plan-only PR tree fails the check.
   - >-
-    The inverted leg fires only when the plan's implementation_declared is FALSE in the working
-    tree. A diff-modified plan that already declared true -- a post-implementation plan edit, the
-    shape merged as origin/main 45822ef7 (#1121) with 8 graduate steps all green -- is NOT refused.
+    The inverted leg fires only on a plan that is ADDED in this diff (git status A or ??, via
+    _common.get_status_aware_diff -- the primitive validate_plan_documents._added_plan_names
+    already uses) AND whose implementation_declared is falsy. Both conjuncts are required. Any
+    plan MODIFIED rather than added is exempt regardless of its declared state, which covers the
+    whole post-implementation-edit population, not merely the 83 plans carrying the field.
   - >-
     A graduate step that is genuinely red before passes, and its outcome is reported as
     target_absent or assertion_failed as two distinct classes, neither of which fails.
@@ -112,8 +123,12 @@ acceptance_criteria:
     One shared aggregate counter spans both legs within a dispatch. MAX_REPLAYED_STEPS is
     re-derived from the measured per-step cost so the 120s wall clock, not the step count, is the
     binding constraint -- a PR carrying two plans of this size must not hard-fail on the count cap.
-    MAX_AGGREGATE_SECONDS and PER_STEP_TIMEOUT_SECONDS are unchanged, so Decision 182 point 2's
-    150s figure and its "only in-tier allowance" claim both stay literally true.
+    MAX_AGGREGATE_SECONDS and PER_STEP_TIMEOUT_SECONDS are unchanged, so no SECOND in-tier
+    allowance is installed. Decision 182 point 2's 150s figure is preserved for the replay phase
+    only: the classifier self-test runs unconditionally before any early-return and sits outside
+    both constants, so the check's true green maximum is 150s plus a bounded self-test cost. Either
+    fold that cost into MAX_AGGREGATE_SECONDS or state the bounded figure -- do not restate 150 as
+    if unchanged.
   - >-
     The terminal declaration counts plans acted on in EITHER leg under a new unit naming that
     grain, and a plan-only PR whose plan carries ZERO graduate steps declares vacuous, not
@@ -168,19 +183,21 @@ verification_plan:
   - step: 3
     phase: pre-deploy
     hermetic: true
-    action: A post-implementation plan edit is not refused
-    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_red_before_leg.py::TestRedBeforeLeg::test_already_declared_plan_edit_is_not_refused
+    action: A modified plan is not refused, whether or not it carries implementation_declared
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_red_before_leg.py::TestEligibility
       -q
-    expected: 1 passed
+    expected: all tests in the class pass -- one per exempt shape
     fix_if: >-
-      THE design defect this step exists to prevent. resolve_declared_plans is EDGE-triggered
-      ("true in the working tree but not true at base"), so a plan already declaring
-      implementation_declared true is not "resolved" and would fall into the inverted leg on a tree
-      that already carries its implementation -- every graduate step green, every one classified a
-      tautology, the PR hard-failed. Verified against merged main: origin/main 45822ef7 (#1121)
-      edits PLAN-backlog-health-detection.yaml, whose implementation_declared is true and untouched
-      by that diff, carrying 8 graduate steps whose targets all exist. Gate the inverted leg on
-      implementation_declared being FALSE in the working tree, never on the edge-trigger.
+      THE design defect this step exists to prevent, and it has TWO shapes -- one test each.
+      (a) resolve_declared_plans is EDGE-triggered, so a plan already declaring
+      implementation_declared true is not "resolved"; verified against merged main, 45822ef7
+      (#1121) edits PLAN-backlog-health-detection.yaml, declared true and untouched by that diff,
+      with 8 graduate steps whose targets all exist. (b) The LARGER shape: implementation_declared
+      landed 2026-08-17 and 335 of 418 plans do not carry it at all, so it reads falsy forever --
+      80 of those carry graduate steps and 55 name a live tests/ path, so keying on the field
+      alone hard-fails any PR editing them. Both are exempt only under the added-in-diff conjunct.
+      The class needs a fixture per shape: a declared-true modified plan, and a FIELD-ABSENT legacy
+      plan whose graduate steps are green.
     graduation: graduate
     graduation_check_id: vp-red-before-eligibility-is-working-tree-state
   - step: 4
@@ -247,7 +264,7 @@ verification_plan:
       -q
     expected: all tests in the class pass
     fix_if: >-
-      MAX_REPLAYED_STEPS is 20 today and this plan alone carries 12 graduate steps, so two plans in
+      MAX_REPLAYED_STEPS is 20 today and this plan alone carries 14 graduate steps, so two plans in
       one PR hit the count cap -- and measured per-step cost is 0.32s absent / 1.06s live, meaning
       the count cap binds long before the 120s wall clock. Re-derive the cap from that cost so the
       wall clock is the real constraint, and leave MAX_AGGREGATE_SECONDS and
@@ -322,8 +339,9 @@ verification_plan:
       import validate_contract_drift as f; failed=[]; f(failed); assert not failed, failed;
       c=yaml.safe_load(Path('docs/contracts/vp-red-before.yaml').read_text())['contract']; assert
       c['class']=='D' and c['status']=='provisional_v0', c; assert c['evaluator']['check']=='validate_vp_replay',
-      c; r=yaml.safe_load(Path('docs/contracts/file-router.yaml').read_text()); assert any('vp-red-before'
-      in str(v) for v in r.values()), 'no route row'; print('CONTRACT_LIVE_AND_ROUTED')"
+      c; r=yaml.safe_load(Path('docs/contracts/file-router.yaml').read_text()); assert
+      any(row.get('topic')=='vp-red-before' for row in r['routes']), 'no route row';
+      print('CONTRACT_LIVE_AND_ROUTED')"
     expected: CONTRACT_LIVE_AND_ROUTED printed, exit 0
     fix_if: >-
       Asserted against the LIVE repo deliberately. The mirror suites for these checks run entirely
@@ -331,7 +349,10 @@ verification_plan:
       test-only anti-pattern. A Class D body may never carry Class A field-shaped or Class B
       verb-shaped content, needs a unique subject, and resolve_evaluator requires the string
       vp-red-before.yaml in EXECUTABLE context in validate_vp_replay.py -- a docstring will not
-      resolve.
+      resolve. The route conjunct matches r['routes'] rows on topic, NEVER any('vp-red-before' in
+      str(v) for v in r.values()): file-router.yaml carries a top-level amendment_log whose
+      summaries name the topic of every edit by convention, so the loose form would pass with no
+      route row present -- green by construction, in the plan that exists to refuse that.
     graduation: graduate
     graduation_check_id: vp-red-before-contract-live-and-routed
   - step: 14
@@ -343,8 +364,8 @@ verification_plan:
       scripts.checks.contracts.validate_skill_prose_relocation import validate_skill_prose_relocation
       as f, _REINLINE_MARKERS; failed=[]; f(failed); assert not failed, failed;
       m=yaml.safe_load(Path('docs/contracts/instruction-architecture.yaml').read_text())['layer4_relocation_map'];
-      new=[r['stub_heading'] for r in m if 'vp-red-before' in r['destination']]; assert len(new)==2,
-      new; assert all(h in _REINLINE_MARKERS and _REINLINE_MARKERS[h] for h in new), new;
+      new=[r['stub_heading'] for r in m if 'vp-red-before' in r['destination']]; assert
+      len(set(new))==2, new; assert all(h in _REINLINE_MARKERS and _REINLINE_MARKERS[h] for h in new), new;
       print('STUBS_REGISTERED_AND_GUARDED')"
     expected: the mirror node passes, then STUBS_REGISTERED_AND_GUARDED printed, exit 0
     fix_if: >-
@@ -364,16 +385,21 @@ verification_plan:
       bin/venv-python -c "import re; from pathlib import Path; from
       scripts.checks.decisions.validate_decision_entry_conformance import
       validate_decision_entry_conformance as f; failed=[]; f(failed); assert not failed, failed;
-      t=Path('docs/DECISIONS.md').read_text(); m=re.search(r'^## Decision
-      (\d+):.*?amends:\s*\[148\]', t, re.S|re.M); assert m, 'no entry amending 148';
-      blk=t[m.start():m.start()+6144]; assert 'significance:' in blk, 'no significance envelope';
+      t=Path('docs/DECISIONS.md').read_text();
+      hs=[m.start() for m in re.finditer(r'^## Decision \d+:', t, re.M)] + [len(t)];
+      blks=[t[hs[i]:hs[i+1]] for i in range(len(hs)-1)];
+      hit=[b for b in blks if re.search(r'amends:\s*\[148\]', b)]; assert len(hit)==1, len(hit);
+      assert 'significance:' in hit[0], 'no significance envelope in the amending entry';
       print('DECISION_AMENDS_148_CONFORMS')"
     expected: DECISION_AMENDS_148_CONFORMS printed, exit 0
     fix_if: >-
       Decision 167 requires a fenced yaml envelope with a significance value and justification,
       capped at 6144 bytes. Decision 177 makes live bodies exact-line append-only, so the pointer
       on 148 must be a newly appended line, never a mid-line splice. Asserted live rather than via
-      the conformance mirror, which writes its own DECISIONS.md into tmp_path.
+      the conformance mirror, which writes its own DECISIONS.md into tmp_path. The block selection
+      iterates headings and picks the one whose OWN body carries the amends field -- a single
+      non-greedy regex over the whole 7000-line corpus binds across entries and would slice the
+      newest heading's block instead, passing against the wrong entry.
     graduation: graduate
     graduation_check_id: vp-red-before-decision-amends-148-live
   - step: 16
@@ -480,7 +506,7 @@ test_obligations:
   - source: docs/contracts/file-router.yaml
     behavior: The new contract is discoverable under topic vp-red-before.
     verification_step: 13
-    command: r=yaml.safe_load(Path('docs/contracts/file-router.yaml').read_text())
+    command: any(row.get('topic')=='vp-red-before' for row in r['routes'])
     waiver_reason: >-
       Index DATA. Its only assertable property is presence of the route row, which step 13's second
       conjunct executes; a mirror test over the router index belongs to the router's own check.
@@ -504,9 +530,13 @@ constraints:
     Do NOT rename any registered check -- authorization is at check-NAME level (Decision 187) and
     the registry shard linkage matches on the (plan_slug, check_id) pair.
   - >-
-    The eligibility predicate is working-tree state (implementation_declared FALSE), never
-    resolve_declared_plans' edge-trigger. That resolver stays the implement leg's predicate,
-    unchanged.
+    The eligibility predicate is diff status (added: A or ??) AND implementation_declared falsy.
+    Never resolve_declared_plans' edge-trigger, and never implementation_declared alone. Measured:
+    that field landed 2026-08-17 and 335 of 418 plans do not carry it, so it reads falsy forever
+    on every legacy plan; 80 of those carry graduate pre-deploy steps and 55 name a tests/ path
+    that exists today. Keying on the field alone would route every one of them into the inverted
+    leg and hard-fail any PR that edits them. resolve_declared_plans stays the implement leg's
+    predicate, unchanged.
   - >-
     graduation graduate is the partition key, never the hermetic flag -- hermetic carries two
     meanings (replay cost and creds-freeness) and cannot partition: 258 of 731 graduate steps are
@@ -517,8 +547,11 @@ constraints:
     SKILL.md:202 re-keyed from the hermetic partition to the graduate partition, plus a static
     refusal of a graduate step whose command matches scripts.validate.
   - >-
-    When relocating the graduation-authoring prose, REWRITE rather than copy the clause "When
-    unsure, prefer not-applicable". Under this gate a false graduate is no longer a detour but a
+    When relocating, REWRITE rather than copy TWO sentences the same PR falsifies. First, in the
+    Hermetic authoring block: "Steps are replayed at implement time by validate_vp_replay, not
+    plan time: a plan-only PR defers with a printed reason" -- that is precisely the Decision 148
+    point 1 clause this plan negates, so relocating it verbatim ships a contract describing
+    behaviour this PR removes. Second, the clause "When unsure, prefer not-applicable". Under this gate a false graduate is no longer a detour but a
     hard plan-PR failure, so the sentence now points authors at the two dispositions nothing
     executes -- the exact incentive rec-3777 exists to monitor. Do not defer this to that rec.
 context:
@@ -527,37 +560,39 @@ context:
     165, 181, 128, 169."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
   - >-
-    Flag dispositions: D148 -> new numbered Decision, amends [148]; the forcing argument is that
-    only a Decision can negate a Decision's clause, NOT the byte cap (the per-entry 6144 cap
-    hard-fails NEW entries only; the baseline leg is WARN-tier). D88 -> credential absence is
-    unmeasurable and hard-fails. D132 -> cited for the two-leg model and disposition schema only;
-    its residual limitation A (the not-applicable seam) is NOT discharged. D187 -> dissolved when
-    plan-critique's 12o proved to carry no red-before reading to shed.
+    Flag dispositions: D148 -> new Decision, amends [148]; the forcing argument is that only a
+    Decision can negate a Decision's clause, NOT the byte cap (the 6144 per-entry cap hard-fails
+    NEW entries only). D88 -> credential absence is unmeasurable and hard-fails. D132 -> cited for
+    the two-leg model and disposition schema only; residual limitation A is NOT discharged. D187 ->
+    dissolved when 12o proved to carry no red-before reading to shed.
   - >-
-    amends scope, reconciled: the new Decision negates point 1's ruling ("no execution against an
+    amends scope: the Decision negates point 1's ruling ("no execution against an
     implementation-less tree" governs GREEN-AFTER replay only) AND retracts point 3's RATIONALE
     ("since they are replayed at implement time (not plan time)"); point 3's hermetic-default
-    ruling itself survives, since hermetic still governs the implement leg.
+    ruling survives, since hermetic still governs the implement leg.
   - >-
-    Forks, all class asked and all reversible: graduate-only partition (precedent none) || extend
-    vs new module -> extend (precedent Decision 182 point 2) || classifier self-test home ->
-    in-dispatch precondition of validate_vp_replay (precedent none; first decided as a third leg on
-    validate_differential_gate_baseline and reversed on consult) || split into two plans (precedent:
-    round-3 critique recommendation).
+    Forks, all asked and reversible: graduate-only partition || extend vs new module -> extend
+    (Decision 182 point 2) || self-test home -> in-dispatch precondition of validate_vp_replay
+    (first decided as a third leg on validate_differential_gate_baseline, reversed on consult) ||
+    split into two plans (round-3 critique). Reusable charter test from the reversal: a leg joins an
+    existing check only if ALL of -- same instrument, same preconditions, same lifetime profile, no
+    obligation evasion; a check may self-test ITS OWN instrument, no other module's.
   - >-
-    Reusable charter-widening test from that reversal: a leg may join an existing check only if ALL
-    of -- same instrument, same preconditions, same lifetime profile, no obligation evasion.
-    Precedent bound: a check may self-test ITS OWN instrument, no other module's.
+    Why the plan-only leg: a newly-added plan's tree IS the pre-implementation tree (Decision 76 --
+    18 of the last 40 relevant commits are plan-first), so red-before needs no worktree/revert/.venv.
+    Replaces hand-rolled prior art in 9 merged plans (PLAN-closure-stamp-applicability step 2).
+    Coverage honesty: target_absent passes for free and test_selector is the dominant graduate
+    shape (41 of 58 recent), so this gate refuses only the green-by-construction case; neither gate
+    catches a vacuous new test (T3.7, deferred). The lint earns its place on reach not volume
+    (measured: 5 commands across 2 plans) -- static, so it covers the waive and not-applicable
+    steps the dynamic leg never executes.
   - >-
-    Why the plan-only leg: that PR's tree IS the pre-implementation tree (Decision 76 -- 18 of the
-    last 40 relevant commits are plan-first), so red-before needs no worktree/revert/.venv.
-    Replaces hand-rolled prior art in 9 merged plans; see PLAN-closure-stamp-applicability step 2.
-  - >-
-    Coverage honesty: target_absent passes for free and per rec-3776 test_selector is the dominant
-    graduate shape (41 of 58 recent), so this gate refuses only the green-by-construction case;
-    neither gate catches a vacuous new test (T3.7, deferred). Lint justification (measured: 5
-    commands across 2 plans) is reach not volume -- static, so it covers the waive and
-    not-applicable steps the dynamic leg never executes.
+    Risk this change introduces, named rather than left implicit: a plan-only PR today executes
+    NOTHING, and after this it shell-executes every graduate step command in the plan, including
+    ones the author never marked hermetic. Measured empty today (0 of 258 invoke scripts.validate,
+    none make a real AWS call) and degraded loudly rather than silently by the unmeasurable class,
+    with a static scripts.validate refusal -- but empirically empty is not structurally prevented,
+    and the new Decision's body must say so.
   - >-
     followon_recs: rec-3776 (admission accepts FAIL-by-absence for test_selector rows); rec-3777
     (disposition-drift monitor for the population this check never executes).
