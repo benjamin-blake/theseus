@@ -507,13 +507,12 @@ class TestRunPytestDiff:
 class TestRunPytestDiffSingleExecution:
     """Common-case single execution (acceptance criterion 1): when every changed test file
     collects and passes, run_pytest_diff issues EXACTLY ONE non-collect-only pytest invocation
-    over the runnable set, fed by EXACTLY ONE batched --collect-only invocation -- no proactive
-    per-file isolated probe, no per-file collect-only subprocess."""
+    over the full target set, with no proactive per-file isolated probe or preliminary
+    collect-only subprocess."""
 
     def test_runs_pytest_exactly_once_in_mixed_case(self) -> None:
-        """tests/common/ducklake_reader_client/test_ducklake_reader.py defers at --collect-only (never gets a real run at all);
-        tests/test_validate.py collects fine and passes, so it gets exactly one real run --
-        both resolved from a SINGLE batched --collect-only invocation."""
+        """The primary plugin defers the heavy module while the good module executes in the
+        same pytest session."""
         captured_cmds: list[list[str]] = []
 
         def mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
@@ -533,15 +532,20 @@ class TestRunPytestDiffSingleExecution:
         with (
             patch("scripts.checks._common.run", side_effect=mock_run),
             patch("importlib.util.find_spec", return_value=None),
+            patch(
+                "scripts.checks._pytest_diff_primary.PrimaryCapture.read",
+                return_value={"tests/common/ducklake_reader_client/test_ducklake_reader.py": "duckdb"},
+            ),
         ):
             run_pytest_diff(["tests/common/ducklake_reader_client/test_ducklake_reader.py", "tests/test_validate.py"], failed)
 
         collect_only_cmds = [c for c in captured_cmds if "--collect-only" in c]
-        assert len(collect_only_cmds) == 1, f"expected exactly one collect-only invocation, got: {collect_only_cmds}"
+        assert collect_only_cmds == []
         real_run_cmds = [c for c in captured_cmds if "pytest" in c and "--collect-only" not in c]
         assert len(real_run_cmds) == 1, f"expected exactly one real pytest run, got: {real_run_cmds}"
         assert "tests/test_validate.py" in real_run_cmds[0]
-        assert "tests/common/ducklake_reader_client/test_ducklake_reader.py" not in real_run_cmds[0]
+        assert "tests/common/ducklake_reader_client/test_ducklake_reader.py" in real_run_cmds[0]
+        assert real_run_cmds[0][-2:] == ["-p", "scripts.checks._pytest_diff_primary"]
         # Whole-tree tracing is gone (see tests/validate/test_pytest_diff_coverage.py for the
         # scoped replacement); a mocked-git diff exposes no changed source file, so no --cov at all.
         assert not any(flag.startswith("--cov") for flag in real_run_cmds[0])

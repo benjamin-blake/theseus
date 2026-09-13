@@ -43,6 +43,18 @@ class TestNodeCapture:
         captured = capture.read_events(events)
         assert any(row["nodeid"].endswith("test_sample.py::test_value[1]") for row in captured)
 
+    def test_generated_plugin_creates_an_empty_event_stream_when_no_node_runs(self, tmp_path: Path) -> None:
+        test_file = tmp_path / "test_empty.py"
+        test_file.write_text("", encoding="utf-8")
+        (tmp_path / f"{capture.PLUGIN_NAME}.py").write_text(capture.PLUGIN_SOURCE, encoding="utf-8")
+        command, env, junit, events = capture.instrumented_pytest_command(
+            [sys.executable, "-m", "pytest", str(test_file), "-q"], tmp_path, 0, None
+        )
+        result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, encoding="utf-8")
+        assert result.returncode == pytest.ExitCode.NO_TESTS_COLLECTED
+        capture.validate_junit(junit)
+        assert capture.read_events(events) == []
+
     def test_junit_and_event_validation_fail_loudly(self, tmp_path: Path) -> None:
         missing = tmp_path / "missing"
         with pytest.raises(capture.HarnessError, match="required JUnit"):
