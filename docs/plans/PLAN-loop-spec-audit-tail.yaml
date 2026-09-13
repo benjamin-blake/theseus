@@ -68,7 +68,13 @@ scope:
     purpose: narrow the AST scan to concrete Verifier subclasses, defusing the covers=["**"] trap (rec-3721)
   - file: tests/checks/verification/test_validate_verifier_same_pr_guard.py
     action: Modify
-    purpose: framework-only population fixture -- editing harness.py alongside another file must not gate
+    purpose: existing mirror -- concrete-subclass fixture still gates; framework classes no longer do
+  - file: tests/checks/verification/test_validate_verifier_same_pr_guard_disposition.py
+    action: Create
+    purpose: >-
+      carries TestFrameworkOnlyPopulation::test_editing_harness_alongside_another_file_does_not_gate
+      VERBATIM -- this exact path/class/method is rec-3721's CURRENT acceptance command, so the rec
+      cannot close without it. Do not rename either half.
   - file: scripts/checks/ci_guards/_manifest.py
     action: Modify
     purpose: paydown globs for 5 entries; register validate_schedule_removal_markers
@@ -105,6 +111,16 @@ scope:
   - file: docs/contracts/implement-scope-boundary.yaml
     action: Modify
     purpose: one CONTENT enforcement_coverage row for pre_globs UNDER-declaration (T2.54 interim form)
+  - file: config/agent/verification_registry/entries/pre-glob-prune-roster-liveness.yaml
+    action: Modify
+    purpose: >-
+      node_id relocation -- its target test moves into the new package. Relocate rather than retire:
+      the property is KEPT, not dropped. VP step 14 proves the relocation is admissible to
+      validate_verification_registry's modified-entry differential; if it refuses a
+      relocated-but-unchanged test, fall back to git mv into entries/deprecated/ plus a fresh shard.
+  - file: config/agent/verification_registry/entries/pre-glob-prune-row-reachable-from-gated-closure.yaml
+    action: Modify
+    purpose: node_id relocation -- same disposition and same step-14 proof as the sibling row above
   - file: config/agent/verification_registry/entries/pre-glob-prune-portal-row-is-load-bearing.yaml
     action: Delete
     purpose: git mv half -- dangling node_id, retired per Decision 176 point 5
@@ -135,6 +151,18 @@ scope:
   - file: config/agent/verification_registry/entries/verifier-same-pr-guard-concrete-only.yaml
     action: Create
     purpose: graduated shard -- rec-3721 acceptance
+  - file: config/agent/verification_registry/entries/pre-glob-closure-self-gate-fixed-point.yaml
+    action: Create
+    purpose: graduated shard for VP step 9 -- the auditor cannot be narrowed out of its own way
+  - file: config/agent/verification_registry/entries/pre-glob-closure-registration-closure.yaml
+    action: Create
+    purpose: graduated shard for VP step 11 -- registration and concern-split closure, floor green
+  - file: config/agent/verification_registry/entries/pre-glob-closure-no-repo-wide-glob-gained.yaml
+    action: Create
+    purpose: graduated shard for VP step 12 -- the paydown's DIRECTION bound
+  - file: config/agent/verification_registry/entries/pre-glob-closure-deleted-mirrors-unreferenced.yaml
+    action: Create
+    purpose: graduated shard for VP step 13 -- stale-reference sweep over the three Delete rows
 bundled_recommendations: ["rec-3558", "rec-3727", "rec-3721"]
 followon_recs: []
 infrastructure_dependencies: []
@@ -241,7 +269,7 @@ verification_plan:
       Leg (c) tightening-freedom and the anti-second-surface pin. Adding a schedule passes unmarked;
       the replicated on:.schedule parse agrees with sensor_liveness.derive_scheduled_peers on the
       live tree; and the guard's own module imports nothing from scripts.convergence_health.
-    command: "bin/venv-python -m pytest tests/checks/ci_guards/test_validate_schedule_removal_markers.py::TestTighteningFree -q && ! grep -q 'convergence_health' scripts/checks/ci_guards/validate_schedule_removal_markers.py"
+    command: "bin/venv-python -m pytest tests/checks/ci_guards/test_validate_schedule_removal_markers.py::TestTighteningFree -q && bin/venv-python -c \"import scripts.checks.deps.validate_pre_glob_closure as m; from scripts.checks import _common; v=m._closure_view(_common.ROOT); n=len(m._closure_modules(v,'scripts.checks.ci_guards.validate_schedule_removal_markers')); assert n <= 12, f'closure grew to {n} modules -- the sensor_liveness import edge is back'; print(f'closure {n} modules')\""
     expected: "Exit 0; the grep finds no convergence_health import, so the 56-module closure is not inherited."
     fix_if: >-
       If tightening needs a marker the mechanism is dead -- fix the direction rule. If the parses
@@ -270,7 +298,7 @@ verification_plan:
       rec-3721 -- the framework-only population no longer traps. Drives the real
       scripts/verifiers/harness.py alongside an unrelated changed file and requires NO violation,
       then confirms a concrete Verifier subclass fixture still gates.
-    command: "bin/venv-python -m pytest tests/checks/verification/test_validate_verifier_same_pr_guard.py -q"
+    command: "bin/venv-python -m pytest tests/checks/verification/test_validate_verifier_same_pr_guard_disposition.py tests/checks/verification/test_validate_verifier_same_pr_guard.py -q"
     expected: "Exit 0. harness.py + another file yields zero violations (today it yields six); a concrete subclass fixture still yields one."
     fix_if: >-
       Still six violations means the scan still matches ClassDefs with no covers. If the concrete
@@ -281,14 +309,22 @@ verification_plan:
   - step: 6
     phase: pre-deploy
     action: >-
-      The inert-floor discrimination red case -- the Decision 181 honesty check on the 53-finding
-      removal. A module with a docstring plus exactly ONE executable statement must still be
-      reported; only an empty-or-docstring-only body is excluded.
+      The inert-floor discrimination red cases. MEASURED PROBLEM this step exists to close: on the
+      live tree the correct rule and a naive `len(tree.body) <= 1` heuristic select the IDENTICAL 5
+      modules, and all 5 are __init__.py -- so a two-fixture test proves nothing. Four fixtures are
+      required: (i) docstring-only -> excluded; (ii) docstring + one statement -> reported; (iii) NO
+      docstring, exactly ONE statement -> REPORTED (this is the only fixture that separates the rule
+      from the length heuristic, which wrongly excludes it); (iv) a NON-__init__.py docstring-only
+      module -> excluded, proving the rule is keyed on the AST body and never on the filename.
+      Ruling to encode: `docstring + from __future__ import annotations` is REPORTED -- the import is
+      an executable statement.
     command: "bin/venv-python -m pytest tests/checks/deps/validate_pre_glob_closure/test_closure_and_floor.py -q"
-    expected: "Exit 0; the one-statement fixture is reported and the docstring-only fixture is not."
+    expected: "Exit 0; all four fixtures behave as stated, including the no-docstring-single-statement case the length heuristic gets wrong."
     fix_if: >-
-      If the one-statement module is excluded the floor is over-broad and is silently shrinking real
-      recall, which is the exact fail-open shape this auditor exists to catch. Narrow the predicate.
+      If fixture (iii) is excluded, the implementation is a length heuristic, not the stated rule,
+      and it silently shrinks real recall -- the exact fail-open shape this auditor exists to catch.
+      If fixture (iv) is reported, the rule is keyed on the filename. Fix the predicate, never the
+      fixture.
     hermetic: true
     graduation: graduate
     graduation_check_id: pre-glob-closure-inert-floor-discriminates
@@ -336,10 +372,12 @@ verification_plan:
   - step: 10
     phase: pre-deploy
     action: >-
-      The paydown terminal condition on the LIVE tree -- zero findings, and the check does not fail.
-      This is the step the flip depends on and it runs AFTER the flip has landed in the module.
-    command: "bin/venv-python -c \"import scripts.checks.deps.validate_pre_glob_closure as m; f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO, gate green')\""
-    expected: "Prints 'BACKLOG ZERO, gate green'; a PASS line naming all 52 gated checks; no ADVISORY line."
+      The paydown terminal condition on the LIVE tree, asserted PER DOMAIN so each of the seven
+      _manifest.py obligations is independently falsifiable rather than hidden inside one aggregate
+      conjunction. Runs AFTER the flip has landed in the module. This is the one-time paydown
+      RECEIPT; the STANDING guarantee for these obligations is step 8 plus the flip itself.
+    command: "bin/venv-python -c \"import ast,collections; import scripts.checks.deps.validate_pre_glob_closure as m; from scripts.checks import _common; root=_common.ROOT; v=m._closure_view(root); per=collections.Counter(); [per.update({e.module.split('.')[2]: len(m._unmatched_paths(e,v,root))}) for e in m._gated_entries()]; print('per-domain residual:', dict(per)); assert not any(per.values()), dict(per); f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO per domain, gate green')\""
+    expected: "Prints a per-domain residual of all zeros, then 'BACKLOG ZERO per domain, gate green'."
     fix_if: >-
       Any residual finding means the flip would red main on merge. Add the missing glob to the named
       Entry. Never add a _PRUNED_EDGES row to reach zero -- that is the blind-spot growth rec-3558
@@ -350,48 +388,378 @@ verification_plan:
   - step: 11
     phase: pre-deploy
     action: >-
-      Registration closure for the new check across the seven surfaces, and the concern-split
-      registrations the two test decompositions require. Without the latter,
-      validate_red_case_floor reports "mirror not found" for both decomposed modules and reds.
-    command: "bin/venv-python -m pytest tests/checks/deps/test__manifest.py tests/checks/ci_guards/test__manifest.py tests/test_checks_registry.py tests/test_coverage_checker/test_coverage_checker_map.py -q && bin/venv-python -c \"from scripts.test_coverage_checker import _CONCERN_SPLIT_TEST_PACKAGES as C; need={'scripts/checks/deps/validate_pre_glob_closure.py','scripts/checks/verification/validate_red_case_floor.py'}; assert need <= C, need - C; print('concern-split registered')\""
-    expected: "Exit 0; prints 'concern-split registered'."
+      Registration closure across all seven domain manifests plus the registry package, and the
+      TERMINAL proof that the two decompositions did not break mirror resolution: run
+      validate_red_case_floor itself and require an empty `failed`. Existence of the
+      _CONCERN_SPLIT_TEST_PACKAGES entries is NOT sufficient evidence -- it proves registration, not
+      that the floor resolves a POPULATED mirror. The floor is green on the live tree today, so this
+      assertion is free and its absence would be the gap.
+    command: "bin/venv-python -m pytest tests/checks/deps/test__manifest.py tests/checks/ci_guards/test__manifest.py tests/checks/contracts/test__manifest.py tests/checks/hygiene/test__manifest.py tests/checks/iam_tf/test__manifest.py tests/checks/ops_governance/test__manifest.py tests/checks/verification/test__manifest.py tests/checks/registry/ tests/test_coverage_checker/test_coverage_checker_map.py -q && bin/venv-python -c \"import scripts.checks.verification.validate_red_case_floor as r; f=[]; r.validate_red_case_floor(f); assert not f, f; print('red-case floor green over the decomposed mirrors')\""
+    expected: "Exit 0; prints 'red-case floor green over the decomposed mirrors'."
     fix_if: >-
-      A missing concern-split entry makes both decomposed mirrors invisible to the red-case floor. A
-      missing taxonomy row fails the two-way census in validate_ci_rca_adjudication.
+      A non-empty `failed` naming either decomposed module means map_source_to_test still resolves a
+      now-deleted file -- add the _CONCERN_SPLIT_TEST_PACKAGES entry. A manifest mirror failure means
+      the new Entry or a paydown glob is malformed.
     hermetic: true
     graduation: graduate
     graduation_check_id: pre-glob-closure-registration-closure
   - step: 12
     phase: pre-deploy
     action: >-
-      Whole-fleet regression -- the flip is live, so every check's declared coverage is now load
-      bearing. Confirms no SLOC limit was crossed by the new tests and no file was registered over
-      500 instead of decomposed.
-    command: "bin/venv-python -m pytest tests/checks/ -q && bin/venv-python -c \"import subprocess,sys; out=subprocess.run(['git','diff','--name-only','origin/main'],capture_output=True,text=True).stdout.split(); bad=[f for f in out if f.endswith('.py') and len([l for l in open(f, encoding='utf-8').read().splitlines() if l.strip() and not l.strip().startswith('#')])>500]; assert not bad, bad; print('no file over 500 SLOC')\""
+      DIRECTION bound on the paydown. Step 10's zero is satisfiable the wrong way -- declaring a
+      repo-wide glob on all 19 Entries would turn every obligation green while destroying fast-tier
+      selectivity, and selection_budget cannot see it (widened pre_globs change which CHECKS run on
+      FUTURE diffs, not this diff's module selection). So assert no Entry except the auditor NEWLY
+      GAINS a repo-wide glob. Base-vs-head, because validate_acceptance_literals already declares
+      `scripts/**` legitimately and must not be flagged.
+    command: "bin/venv-python -m pytest tests/checks/deps/validate_pre_glob_closure/test_pruned_edges_roster.py::TestPaydownDirection -q"
+    expected: "Exit 0; no gated Entry other than validate_pre_glob_closure gained any of **, **/*.py, scripts/**, src/**, tests/**."
+    fix_if: >-
+      A newly-gained repo-wide glob means the paydown bought its zero by over-selection rather than
+      by declaring real inputs. Replace it with the specific directory globs and root-level file
+      names the closure actually requires -- the plan's context records the exact shapes.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: pre-glob-closure-no-repo-wide-glob-gained
+  - step: 13
+    phase: pre-deploy
+    action: >-
+      Stale-reference sweep for the three Delete rows (12k trigger 2). Both deleted mirror paths must
+      be gone from disk and unreferenced by live code, config or contracts. Known live reference to
+      fix in-scope: validate_pre_glob_closure.py:115's TestGlobMatcherEquivalence pointer. audits/
+      and docs/plans/ are excluded -- they are historical records, not live references.
+    command: "test ! -f tests/checks/deps/test_validate_pre_glob_closure.py && test ! -f tests/checks/verification/test_validate_red_case_floor.py && ! git grep -F -e 'test_validate_pre_glob_closure.py' -e 'test_validate_red_case_floor.py' -- ':!audits' ':!docs/plans'"
+    expected: "Exit 0; both files absent and no live reference survives outside audits/ and docs/plans/."
+    fix_if: >-
+      A surviving reference is a dangling pointer of exactly the class this plan pays down. Repoint
+      it at the new package path; never delete the pointing text to silence the sweep.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: pre-glob-closure-deleted-mirrors-unreferenced
+  - step: 14
+    phase: pre-deploy
+    action: >-
+      Prove the two relocated graduation shards are admissible. Their node_ids move into the new
+      package, which makes them MODIFIED entries, so validate_verification_registry fires its
+      fail-on-revert differential on them. This step decides the F5 fork with evidence rather than
+      by assumption.
+    command: "bin/venv-python -c \"import scripts.checks.verification.validate_verification_registry as v; f=[]; v.validate_verification_registry(f); assert not f, f; print('relocated shards admitted')\""
+    expected: "Prints 'relocated shards admitted'; both relocated node_ids resolve and their differentials pass."
+    fix_if: >-
+      If the differential refuses a relocated-but-unchanged test, take the declared fallback: git mv
+      both shards into entries/deprecated/ and create fresh shards carrying the same two properties
+      against the new package paths. Do NOT leave the node_ids pointing at the deleted file -- that
+      is the dangling-shard defect this plan is closing.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      The assertion is a one-time admission receipt for this PR's own shard relocation, not a
+      standing property; validate_verification_registry already runs in --pre as the standing owner
+      of shard admissibility, so a second registry row would duplicate it.
+  - step: 15
+    phase: pre-deploy
+    action: >-
+      SLOC and whole-fleet regression. The flip is live, so every check's declared coverage is now
+      load bearing. The file list is filtered to paths that still EXIST -- `git diff --name-only`
+      includes the two deleted test files, and opening them raises FileNotFoundError before any
+      assertion runs.
+    command: "bin/venv-python -m pytest tests/checks/ -q && bin/venv-python -c \"import subprocess; from pathlib import Path; out=subprocess.run(['git','diff','--name-only','origin/main'],capture_output=True,text=True).stdout.split(); bad=[f for f in out if f.endswith('.py') and Path(f).is_file() and len([l for l in Path(f).read_text(encoding='utf-8').splitlines() if l.strip() and not l.strip().startswith('#')])>500]; assert not bad, bad; print('no file over 500 SLOC')\""
     expected: "Exit 0; prints 'no file over 500 SLOC'."
     fix_if: >-
       A file over 500 SLOC must be decomposed (Decision 128), never registered with a raise marker --
-      --update-sloc-budgets will not seed it and a raise here has no authorizing Decision.
+      --update-sloc-budgets will not seed it and a raise here has no authorizing Decision. Watch
+      validate_red_case_floor.py (371 at plan time, the largest check module gaining new logic).
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
       Depends on a live `git diff origin/main` against this PR's own branch state, so the assertion
       is transient to this session's tree rather than a standing property; the standing SLOC
       guarantee is already owned by validate_sloc_limits and validate_sloc_budget_raises in --pre.
-  - step: 13
+  - step: 16
     phase: pre-deploy
     action: >-
-      Bundled-rec closure -- confirm the three bundled recs close against their CURRENT acceptance
-      text, and that rec-3722 is still open rather than silently swept.
-    command: "bin/venv-python -m scripts.sync.ops pull && bin/venv-python -c \"import json; rows={json.loads(l)['id']: json.loads(l) for l in open('logs/.recommendations-log.jsonl')}; assert 'empty_pruned_edges' not in rows['rec-3558']['acceptance'], 'rec-3558 still carries the falsified criterion'; assert rows['rec-3722']['status']=='open', rows['rec-3722']['status']; print('rec-3558 re-scoped; rec-3722 open')\""
-    expected: "Prints 'rec-3558 re-scoped; rec-3722 open'."
+      Bundled-rec closure (12k trigger 1). Refresh the read cache through the portal's ONLY sync
+      surface -- `scripts.sync.ops sync`; there is no `pull` subcommand and AGENTS.md forbids calling
+      a pull CLI directly -- then assert each bundled rec's acceptance command names a path this plan
+      actually creates, and that rec-3722 is still open rather than swept.
+    command: "bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c \"import json; r={json.loads(l)['id']: json.loads(l) for l in open('logs/.recommendations-log.jsonl')}; assert 'test_pruned_edges_roster.py::TestRowRationaleIsStructural' in r['rec-3558']['acceptance'], r['rec-3558']['acceptance']; assert 'test_within_package_file_deletion.py' in r['rec-3727']['acceptance'], r['rec-3727']['acceptance']; assert 'test_validate_verifier_same_pr_guard_disposition.py' in r['rec-3721']['acceptance'], r['rec-3721']['acceptance']; assert r['rec-3722']['status']=='open', r['rec-3722']['status']; print('three bundled acceptances match scope; rec-3722 open')\""
+    expected: "Prints 'three bundled acceptances match scope; rec-3722 open'."
     fix_if: >-
-      If rec-3558 still names the empty-roster test, the portal re-scope did not land -- re-run it
-      before closing, never close against the falsified text. If rec-3722 is closed, the decline was
-      wrongly written as a resolution.
+      A mismatch means a bundled rec cannot close against its own acceptance command. Either add the
+      named path to scope or re-scope that rec through the portal under Decision 103 BEFORE
+      implementing -- never close a rec against text its acceptance does not satisfy. If rec-3722 is
+      closed, the decline was wrongly written as a resolution.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Requires live warehouse state through the agent_platform assume-role chain, so it is neither
+      hermetic nor replayable in a credential-free CI tier; the standing owner of rec-acceptance
+      quality is the scheduled backlog-health monitor, not a --pre registry row.
+  - step: 17
+    phase: pre-deploy
+    action: >-
+      Contract and config conformance for the three declaration surfaces this plan edits: the
+      taxonomy two-way census over the new check, marker-grammar export parity plus the
+      contract-drift ratchet, and the scope-boundary CONTENT map's sole-residual pin.
+    command: "bin/venv-python -m pytest tests/test_scope_boundary_contract.py::TestContentInvariant::test_content_invariant_has_enforcement_coverage_with_single_rec_owned_residual -q && bin/venv-python -c \"from scripts.checks.registry import resolve; f=[]; [resolve(n)(f) for n in ('validate_ci_rca_taxonomy','validate_ci_rca_adjudication','validate_marker_grammar_exports','validate_contract_drift')]; assert not f, f; print('contract+config conformance green')\""
+    expected: "Exit 0; prints 'contract+config conformance green'."
+    fix_if: >-
+      A census failure means the new Entry landed without its function_to_category row. A
+      sole-residual failure means the new CONTENT row was authored as a residual instead of
+      mechanical, which would silently add a second unowned residual to that map.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Every assertion here is a conjunction of checks that ALREADY run as standing --pre registry
+      entries (validate_ci_rca_taxonomy, validate_ci_rca_adjudication, validate_marker_grammar_exports,
+      validate_contract_drift) plus an existing graduated contract pin; a new shard would duplicate
+      four standing owners rather than add a guard.
+  - step: 18
+    phase: pre-deploy
+    action: >-
+      Fast tier end to end on the real tree -- the authoritative pre-merge gate, now running the
+      auditor in BLOCKING mode against this PR's own diff.
+    command: "bin/venv-python -m scripts.validate --pre"
+    expected: "Exit 0. The pre-glob closure section prints a PASS line for all gated checks and no ADVISORY banner."
+    fix_if: >-
+      A closure failure here is this PR's own paydown being incomplete -- fix the named Entry's
+      globs. Never reach green by reverting the flip or adding a prune row.
+    hermetic: false
+    graduation: not-applicable
+  - step: 19
+    phase: pre-deploy
+    action: >-
+      Full tier before handoff, as handoff_policy.full_validation_required_before_commit declares.
+      This is the run that exercises validate_graduation_completeness over all twelve new shards and
+      validate_verification_registry over the two relocated ones.
+    command: "bin/venv-python -m scripts.validate"
+    expected: "Exit 0 on a completed run; no check reports a missing or unadmitted graduation shard."
+    fix_if: >-
+      A graduation-completeness failure names the graduate step whose shard is missing or mismatched;
+      add or correct that shard. A timeout is `blocked` per handoff_policy -- resume and rerun the
+      full tier from the start rather than committing on a partial run.
     hermetic: false
     graduation: not-applicable
 test_obligations:
+  - source: config/agent/verification_registry/entries/pre-glob-prune-roster-liveness.yaml
+    behavior: Records a preserved roster property against the relocated mirror path.
+    verification_step: 14
+    command: bin/venv-python -c "import scripts.checks.verification.validate_verification_registry as v;
+      f=[]; v.validate_verification_registry(f); assert not f, f; print('relocated shards admitted')"
+    waiver_reason: 'WAIVED: the edit is a node_id RELOCATION of an existing graduated shard whose pinned
+      test moves into the new package unchanged -- the property it records is preserved verbatim, not altered,
+      so no new behaviour exists to red-case. Admissibility of the relocation to validate_verification_registry''s
+      modified-entry differential is the substantive question, and VP step 14 asserts exactly that against
+      the live registry, with the git-mv-to-deprecated fallback declared in its fix_if.'
+  - source: config/agent/verification_registry/entries/pre-glob-prune-row-reachable-from-gated-closure.yaml
+    behavior: Records a preserved roster property against the relocated mirror path.
+    verification_step: 14
+    command: bin/venv-python -c "import scripts.checks.verification.validate_verification_registry as v;
+      f=[]; v.validate_verification_registry(f); assert not f, f; print('relocated shards admitted')"
+    waiver_reason: 'WAIVED: the edit is a node_id RELOCATION of an existing graduated shard whose pinned
+      test moves into the new package unchanged -- the property it records is preserved verbatim, not altered,
+      so no new behaviour exists to red-case. Admissibility of the relocation to validate_verification_registry''s
+      modified-entry differential is the substantive question, and VP step 14 asserts exactly that against
+      the live registry, with the git-mv-to-deprecated fallback declared in its fix_if.'
+  - source: config/agent/verification_registry/entries/pre-glob-prune-portal-row-is-load-bearing.yaml
+    behavior: Retirement destination for a shard whose node_id no longer resolves.
+    verification_step: 14
+    command: bin/venv-python -c "import scripts.checks.verification.validate_verification_registry as v;
+      f=[]; v.validate_verification_registry(f); assert not f, f; print('relocated shards admitted')"
+    waiver_reason: 'WAIVED: the edit is a node_id RELOCATION of an existing graduated shard whose pinned
+      test moves into the new package unchanged -- the property it records is preserved verbatim, not altered,
+      so no new behaviour exists to red-case. Admissibility of the relocation to validate_verification_registry''s
+      modified-entry differential is the substantive question, and VP step 14 asserts exactly that against
+      the live registry, with the git-mv-to-deprecated fallback declared in its fix_if.'
+  - source: config/agent/verification_registry/entries/deprecated/pre-glob-prune-portal-row-is-load-bearing.yaml
+    behavior: Retirement destination for a shard whose node_id no longer resolves.
+    verification_step: 14
+    command: bin/venv-python -c "import scripts.checks.verification.validate_verification_registry as v;
+      f=[]; v.validate_verification_registry(f); assert not f, f; print('relocated shards admitted')"
+    waiver_reason: 'WAIVED: the edit is a node_id RELOCATION of an existing graduated shard whose pinned
+      test moves into the new package unchanged -- the property it records is preserved verbatim, not altered,
+      so no new behaviour exists to red-case. Admissibility of the relocation to validate_verification_registry''s
+      modified-entry differential is the substantive question, and VP step 14 asserts exactly that against
+      the live registry, with the git-mv-to-deprecated fallback declared in its fix_if.'
+  - source: config/agent/verification_registry/entries/pre-glob-closure-blocking-on-uncovered-import.yaml
+    behavior: Derived record of verification_plan step 8.
+    verification_step: 8
+    command: bin/venv-python -m pytest tests/checks/deps/validate_pre_glob_closure/test_blocking_contract.py
+      -q && ! grep -q 'Never fails the build at this stage' scripts/checks/deps/validate_pre_glob_closure.py
+    waiver_reason: 'WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step,
+      authored by scripts.verification_graduation from that step''s own command -- it carries no behaviour
+      of its own, so it has no red case distinct from the step it records. Its correctness (node_id resolves,
+      plan_slug and check_id match, the differential admits it) is owned by validate_graduation_completeness
+      and validate_verification_registry, both of which run in the linked full tier. Asserting a separate
+      red case here would assert that a file contains what this plan just wrote into it. The scope row exists
+      because the LOCATION invariant is exact path equality, not because the shard is behaviour-capable.'
+  - source: config/agent/verification_registry/entries/pre-glob-closure-inert-floor-discriminates.yaml
+    behavior: Derived record of verification_plan step 6.
+    verification_step: 6
+    command: bin/venv-python -m pytest tests/checks/deps/validate_pre_glob_closure/test_closure_and_floor.py
+      -q
+    waiver_reason: 'WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step,
+      authored by scripts.verification_graduation from that step''s own command -- it carries no behaviour
+      of its own, so it has no red case distinct from the step it records. Its correctness (node_id resolves,
+      plan_slug and check_id match, the differential admits it) is owned by validate_graduation_completeness
+      and validate_verification_registry, both of which run in the linked full tier. Asserting a separate
+      red case here would assert that a file contains what this plan just wrote into it. The scope row exists
+      because the LOCATION invariant is exact path equality, not because the shard is behaviour-capable.'
+  - source: config/agent/verification_registry/entries/pre-glob-closure-backlog-is-zero.yaml
+    behavior: Derived record of verification_plan step 10.
+    verification_step: 10
+    command: 'bin/venv-python -c "import ast,collections; import scripts.checks.deps.validate_pre_glob_closure
+      as m; from scripts.checks import _common; root=_common.ROOT; v=m._closure_view(root); per=collections.Counter();
+      [per.update({e.module.split(''.'')[2]: len(m._unmatched_paths(e,v,root))}) for e in m._gated_entries()];
+      print(''per-domain residual:'', dict(per)); assert not any(per.values()), dict(per); f=[]; m.validate_pre_glob_closure(f);
+      assert not f, f; print(''BACKLOG ZERO per domain, gate green'')"'
+    waiver_reason: 'WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step,
+      authored by scripts.verification_graduation from that step''s own command -- it carries no behaviour
+      of its own, so it has no red case distinct from the step it records. Its correctness (node_id resolves,
+      plan_slug and check_id match, the differential admits it) is owned by validate_graduation_completeness
+      and validate_verification_registry, both of which run in the linked full tier. Asserting a separate
+      red case here would assert that a file contains what this plan just wrote into it. The scope row exists
+      because the LOCATION invariant is exact path equality, not because the shard is behaviour-capable.'
+  - source: config/agent/verification_registry/entries/pre-glob-prune-row-rationale-is-structural.yaml
+    behavior: Derived record of verification_plan step 7.
+    verification_step: 7
+    command: bin/venv-python -m pytest tests/checks/deps/validate_pre_glob_closure/test_pruned_edges_roster.py
+      -q
+    waiver_reason: 'WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step,
+      authored by scripts.verification_graduation from that step''s own command -- it carries no behaviour
+      of its own, so it has no red case distinct from the step it records. Its correctness (node_id resolves,
+      plan_slug and check_id match, the differential admits it) is owned by validate_graduation_completeness
+      and validate_verification_registry, both of which run in the linked full tier. Asserting a separate
+      red case here would assert that a file contains what this plan just wrote into it. The scope row exists
+      because the LOCATION invariant is exact path equality, not because the shard is behaviour-capable.'
+  - source: config/agent/verification_registry/entries/schedule-removal-guard-known-bad.yaml
+    behavior: Derived record of verification_plan step 2.
+    verification_step: 2
+    command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_schedule_removal_markers.py::TestKnownBad
+      -q
+    waiver_reason: 'WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step,
+      authored by scripts.verification_graduation from that step''s own command -- it carries no behaviour
+      of its own, so it has no red case distinct from the step it records. Its correctness (node_id resolves,
+      plan_slug and check_id match, the differential admits it) is owned by validate_graduation_completeness
+      and validate_verification_registry, both of which run in the linked full tier. Asserting a separate
+      red case here would assert that a file contains what this plan just wrote into it. The scope row exists
+      because the LOCATION invariant is exact path equality, not because the shard is behaviour-capable.'
+  - source: config/agent/verification_registry/entries/schedule-removal-tightening-free.yaml
+    behavior: Derived record of verification_plan step 3.
+    verification_step: 3
+    command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_schedule_removal_markers.py::TestTighteningFree
+      -q && bin/venv-python -c "import scripts.checks.deps.validate_pre_glob_closure as m; from scripts.checks
+      import _common; v=m._closure_view(_common.ROOT); n=len(m._closure_modules(v,'scripts.checks.ci_guards.validate_schedule_removal_markers'));
+      assert n <= 12, f'closure grew to {n} modules -- the sensor_liveness import edge is back'; print(f'closure
+      {n} modules')"
+    waiver_reason: 'WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step,
+      authored by scripts.verification_graduation from that step''s own command -- it carries no behaviour
+      of its own, so it has no red case distinct from the step it records. Its correctness (node_id resolves,
+      plan_slug and check_id match, the differential admits it) is owned by validate_graduation_completeness
+      and validate_verification_registry, both of which run in the linked full tier. Asserting a separate
+      red case here would assert that a file contains what this plan just wrote into it. The scope row exists
+      because the LOCATION invariant is exact path equality, not because the shard is behaviour-capable.'
+  - source: config/agent/verification_registry/entries/red-case-floor-within-package-deletion.yaml
+    behavior: Derived record of verification_plan step 4.
+    verification_step: 4
+    command: bin/venv-python -m pytest tests/checks/verification/validate_red_case_floor/test_within_package_file_deletion.py
+      -q
+    waiver_reason: 'WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step,
+      authored by scripts.verification_graduation from that step''s own command -- it carries no behaviour
+      of its own, so it has no red case distinct from the step it records. Its correctness (node_id resolves,
+      plan_slug and check_id match, the differential admits it) is owned by validate_graduation_completeness
+      and validate_verification_registry, both of which run in the linked full tier. Asserting a separate
+      red case here would assert that a file contains what this plan just wrote into it. The scope row exists
+      because the LOCATION invariant is exact path equality, not because the shard is behaviour-capable.'
+  - source: config/agent/verification_registry/entries/verifier-same-pr-guard-concrete-only.yaml
+    behavior: Derived record of verification_plan step 5.
+    verification_step: 5
+    command: bin/venv-python -m pytest tests/checks/verification/test_validate_verifier_same_pr_guard_disposition.py
+      tests/checks/verification/test_validate_verifier_same_pr_guard.py -q
+    waiver_reason: 'WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step,
+      authored by scripts.verification_graduation from that step''s own command -- it carries no behaviour
+      of its own, so it has no red case distinct from the step it records. Its correctness (node_id resolves,
+      plan_slug and check_id match, the differential admits it) is owned by validate_graduation_completeness
+      and validate_verification_registry, both of which run in the linked full tier. Asserting a separate
+      red case here would assert that a file contains what this plan just wrote into it. The scope row exists
+      because the LOCATION invariant is exact path equality, not because the shard is behaviour-capable.'
+  - source: config/agent/verification_registry/entries/pre-glob-closure-self-gate-fixed-point.yaml
+    behavior: Derived record of verification_plan step 9.
+    verification_step: 9
+    command: bin/venv-python -m pytest tests/checks/registry/test_sequences.py -q
+    waiver_reason: 'WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step,
+      authored by scripts.verification_graduation from that step''s own command -- it carries no behaviour
+      of its own, so it has no red case distinct from the step it records. Its correctness (node_id resolves,
+      plan_slug and check_id match, the differential admits it) is owned by validate_graduation_completeness
+      and validate_verification_registry, both of which run in the linked full tier. Asserting a separate
+      red case here would assert that a file contains what this plan just wrote into it. The scope row exists
+      because the LOCATION invariant is exact path equality, not because the shard is behaviour-capable.'
+  - source: config/agent/verification_registry/entries/pre-glob-closure-registration-closure.yaml
+    behavior: Derived record of verification_plan step 11.
+    verification_step: 11
+    command: bin/venv-python -m pytest tests/checks/deps/test__manifest.py tests/checks/ci_guards/test__manifest.py
+      tests/checks/contracts/test__manifest.py tests/checks/hygiene/test__manifest.py tests/checks/iam_tf/test__manifest.py
+      tests/checks/ops_governance/test__manifest.py tests/checks/verification/test__manifest.py tests/checks/registry/
+      tests/test_coverage_checker/test_coverage_checker_map.py -q && bin/venv-python -c "import scripts.checks.verification.validate_red_case_floor
+      as r; f=[]; r.validate_red_case_floor(f); assert not f, f; print('red-case floor green over the decomposed
+      mirrors')"
+    waiver_reason: 'WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step,
+      authored by scripts.verification_graduation from that step''s own command -- it carries no behaviour
+      of its own, so it has no red case distinct from the step it records. Its correctness (node_id resolves,
+      plan_slug and check_id match, the differential admits it) is owned by validate_graduation_completeness
+      and validate_verification_registry, both of which run in the linked full tier. Asserting a separate
+      red case here would assert that a file contains what this plan just wrote into it. The scope row exists
+      because the LOCATION invariant is exact path equality, not because the shard is behaviour-capable.'
+  - source: config/agent/verification_registry/entries/pre-glob-closure-no-repo-wide-glob-gained.yaml
+    behavior: Derived record of verification_plan step 12.
+    verification_step: 12
+    command: bin/venv-python -m pytest tests/checks/deps/validate_pre_glob_closure/test_pruned_edges_roster.py::TestPaydownDirection
+      -q
+    waiver_reason: 'WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step,
+      authored by scripts.verification_graduation from that step''s own command -- it carries no behaviour
+      of its own, so it has no red case distinct from the step it records. Its correctness (node_id resolves,
+      plan_slug and check_id match, the differential admits it) is owned by validate_graduation_completeness
+      and validate_verification_registry, both of which run in the linked full tier. Asserting a separate
+      red case here would assert that a file contains what this plan just wrote into it. The scope row exists
+      because the LOCATION invariant is exact path equality, not because the shard is behaviour-capable.'
+  - source: config/agent/verification_registry/entries/pre-glob-closure-deleted-mirrors-unreferenced.yaml
+    behavior: Derived record of verification_plan step 13.
+    verification_step: 13
+    command: test ! -f tests/checks/deps/test_validate_pre_glob_closure.py && test ! -f tests/checks/verification/test_validate_red_case_floor.py
+      && ! git grep -F -e 'test_validate_pre_glob_closure.py' -e 'test_validate_red_case_floor.py' -- ':!audits'
+      ':!docs/plans'
+    waiver_reason: 'WAIVED: a graduation shard is a DERIVED RECORD of its linked verification_plan step,
+      authored by scripts.verification_graduation from that step''s own command -- it carries no behaviour
+      of its own, so it has no red case distinct from the step it records. Its correctness (node_id resolves,
+      plan_slug and check_id match, the differential admits it) is owned by validate_graduation_completeness
+      and validate_verification_registry, both of which run in the linked full tier. Asserting a separate
+      red case here would assert that a file contains what this plan just wrote into it. The scope row exists
+      because the LOCATION invariant is exact path equality, not because the shard is behaviour-capable.'
+  - source: config/ci_rca_taxonomy.yaml
+    behavior: Carries a function_to_category row for the new check, keeping the two-way census whole.
+    verification_step: 17
+    command: bin/venv-python -m pytest tests/test_scope_boundary_contract.py::TestContentInvariant::test_content_invariant_has_enforcement_coverage_with_single_rec_owned_residual
+      -q && bin/venv-python -c "from scripts.checks.registry import resolve; f=[]; [resolve(n)(f)
+      for n in ('validate_ci_rca_taxonomy','validate_ci_rca_adjudication','validate_marker_grammar_exports','validate_contract_drift')];
+      assert not f, f; print('contract+config conformance green')"
+    red_green_expectation: red before (the new Entry lands with no taxonomy row, failing the census), green
+      after
+  - source: docs/contracts/marker-grammar.yaml
+    behavior: Declares the two new tokens and records the closure floor now bounding tier-demotion-approved.
+    verification_step: 17
+    command: bin/venv-python -m pytest tests/test_scope_boundary_contract.py::TestContentInvariant::test_content_invariant_has_enforcement_coverage_with_single_rec_owned_residual
+      -q && bin/venv-python -c "from scripts.checks.registry import resolve; f=[]; [resolve(n)(f)
+      for n in ('validate_ci_rca_taxonomy','validate_ci_rca_adjudication','validate_marker_grammar_exports','validate_contract_drift')];
+      assert not f, f; print('contract+config conformance green')"
+    red_green_expectation: green before and after on export parity by design (no new _marker_guard export);
+      the token rows are a semantics declaration the contract-drift ratchet keeps honest
+  - source: docs/contracts/implement-scope-boundary.yaml
+    behavior: CONTENT map gains a mechanical row for pre_globs UNDER-declaration; the single residual row
+      stays sole.
+    verification_step: 17
+    test_selector: tests/test_scope_boundary_contract.py::TestContentInvariant::test_content_invariant_has_enforcement_coverage_with_single_rec_owned_residual
+    red_green_expectation: 'green before and after by design: a coverage DECLARATION obligation (Decision
+      181 clause 2), asserted by the sole-residual pin'
   - source: scripts/checks/deps/validate_pre_glob_closure.py
     behavior: >-
       Excludes only modules with an empty or docstring-only AST body; appends to `failed` on any
@@ -421,7 +789,7 @@ test_obligations:
       Only concrete Verifier subclasses are scanned; framework base classes with no `covers` no
       longer default to ["**"]; the empty domain is declared via examined(0).
     verification_step: 5
-    test_selector: tests/checks/verification/test_validate_verifier_same_pr_guard.py
+    test_selector: tests/checks/verification/test_validate_verifier_same_pr_guard_disposition.py
     red_green_expectation: red before (harness.py plus any file yields six violations), green after
   - source: scripts/test_coverage_checker.py
     behavior: >-
@@ -444,37 +812,37 @@ test_obligations:
       The auditor's Entry declares the ("**/*.py", "scripts/checks/**") union, and
       validate_check_manifests' Entry is glob-covered for its own closure.
     verification_step: 10
-    command: "bin/venv-python -c \"import scripts.checks.deps.validate_pre_glob_closure as m; f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO, gate green')\""
+    command: "bin/venv-python -c \"import ast,collections; import scripts.checks.deps.validate_pre_glob_closure as m; from scripts.checks import _common; root=_common.ROOT; v=m._closure_view(root); per=collections.Counter(); [per.update({e.module.split('.')[2]: len(m._unmatched_paths(e,v,root))}) for e in m._gated_entries()]; print('per-domain residual:', dict(per)); assert not any(per.values()), dict(per); f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO per domain, gate green')\""
     red_green_expectation: red before (the auditor's globs under-declare its .py-wide input), green after
   - source: scripts/checks/ci_guards/_manifest.py
     behavior: Five entries' globs cover their own import closures; the new guard is registered and ungated.
     verification_step: 10
-    command: "bin/venv-python -c \"import scripts.checks.deps.validate_pre_glob_closure as m; f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO, gate green')\""
+    command: "bin/venv-python -c \"import ast,collections; import scripts.checks.deps.validate_pre_glob_closure as m; from scripts.checks import _common; root=_common.ROOT; v=m._closure_view(root); per=collections.Counter(); [per.update({e.module.split('.')[2]: len(m._unmatched_paths(e,v,root))}) for e in m._gated_entries()]; print('per-domain residual:', dict(per)); assert not any(per.values()), dict(per); f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO per domain, gate green')\""
     red_green_expectation: red before (5 entries report uncovered closure paths), green after
   - source: scripts/checks/verification/_manifest.py
     behavior: Five entries' globs cover their own import closures, including the portal-hub subtree.
     verification_step: 10
-    command: "bin/venv-python -c \"import scripts.checks.deps.validate_pre_glob_closure as m; f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO, gate green')\""
+    command: "bin/venv-python -c \"import ast,collections; import scripts.checks.deps.validate_pre_glob_closure as m; from scripts.checks import _common; root=_common.ROOT; v=m._closure_view(root); per=collections.Counter(); [per.update({e.module.split('.')[2]: len(m._unmatched_paths(e,v,root))}) for e in m._gated_entries()]; print('per-domain residual:', dict(per)); assert not any(per.values()), dict(per); f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO per domain, gate green')\""
     red_green_expectation: red before (3 of them report 51-53 uncovered paths each), green after
   - source: scripts/checks/hygiene/_manifest.py
     behavior: Four entries' globs cover their own import closures.
     verification_step: 10
-    command: "bin/venv-python -c \"import scripts.checks.deps.validate_pre_glob_closure as m; f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO, gate green')\""
+    command: "bin/venv-python -c \"import ast,collections; import scripts.checks.deps.validate_pre_glob_closure as m; from scripts.checks import _common; root=_common.ROOT; v=m._closure_view(root); per=collections.Counter(); [per.update({e.module.split('.')[2]: len(m._unmatched_paths(e,v,root))}) for e in m._gated_entries()]; print('per-domain residual:', dict(per)); assert not any(per.values()), dict(per); f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO per domain, gate green')\""
     red_green_expectation: red before (4 entries report uncovered paths), green after
   - source: scripts/checks/ops_governance/_manifest.py
     behavior: Two entries' globs cover their own import closures, including src/common/**.
     verification_step: 10
-    command: "bin/venv-python -c \"import scripts.checks.deps.validate_pre_glob_closure as m; f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO, gate green')\""
+    command: "bin/venv-python -c \"import ast,collections; import scripts.checks.deps.validate_pre_glob_closure as m; from scripts.checks import _common; root=_common.ROOT; v=m._closure_view(root); per=collections.Counter(); [per.update({e.module.split('.')[2]: len(m._unmatched_paths(e,v,root))}) for e in m._gated_entries()]; print('per-domain residual:', dict(per)); assert not any(per.values()), dict(per); f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO per domain, gate green')\""
     red_green_expectation: red before (2 entries report 42 and 9 uncovered paths), green after
   - source: scripts/checks/contracts/_manifest.py
     behavior: validate_prompt_compliance's globs cover scripts/s3_log_store.py.
     verification_step: 10
-    command: "bin/venv-python -c \"import scripts.checks.deps.validate_pre_glob_closure as m; f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO, gate green')\""
+    command: "bin/venv-python -c \"import ast,collections; import scripts.checks.deps.validate_pre_glob_closure as m; from scripts.checks import _common; root=_common.ROOT; v=m._closure_view(root); per=collections.Counter(); [per.update({e.module.split('.')[2]: len(m._unmatched_paths(e,v,root))}) for e in m._gated_entries()]; print('per-domain residual:', dict(per)); assert not any(per.values()), dict(per); f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO per domain, gate green')\""
     red_green_expectation: red before (1 uncovered path), green after
   - source: scripts/checks/iam_tf/_manifest.py
     behavior: validate_terraform_tag_charset's globs cover its check-framework closure.
     verification_step: 10
-    command: "bin/venv-python -c \"import scripts.checks.deps.validate_pre_glob_closure as m; f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO, gate green')\""
+    command: "bin/venv-python -c \"import ast,collections; import scripts.checks.deps.validate_pre_glob_closure as m; from scripts.checks import _common; root=_common.ROOT; v=m._closure_view(root); per=collections.Counter(); [per.update({e.module.split('.')[2]: len(m._unmatched_paths(e,v,root))}) for e in m._gated_entries()]; print('per-domain residual:', dict(per)); assert not any(per.values()), dict(per); f=[]; m.validate_pre_glob_closure(f); assert not f, f; print('BACKLOG ZERO per domain, gate green')\""
     red_green_expectation: red before (2 uncovered paths), green after
 constraints:
   - >-
@@ -507,7 +875,7 @@ context:
   - "gates: decision-scout=FLAGS_FOUND (re-dispatched against the revised A+B approach); plan-critique=<verdict> after <N> round(s)"
   - "Decision 153's single-300s-budget clause is NEGATED by Decision 182 -- cite 182, never 153, for any budget claim."
   - "SOURCE OF TRUTH for intent: audits/loop-spec-adoption-4d8bac4a.yaml, fields LSA-06.proposed_change/acceptance and LSA-01.proposed_change/acceptance. Prior art: PLAN-verifier-weakening-guards (leg a, PR #1142, Decision 187), PLAN-pre-glob-closure-hub-prune and PLAN-pre-glob-closure-portal-prune (paydown precedent)."
-  - "EXECUTION ORDER IS LOAD-BEARING (Decision 162 spirit, recorded choice): legs (c)/rec-3727/rec-3721 first, then the paydown, then re-measure to zero, then the flip LAST -- so the highest-blast-radius change lands on an already-green tree. Do not hoist the flip."
+  - "EXECUTION ORDER IS LOAD-BEARING (recorded choice, argued on its own terms -- do NOT cite Decision 162, whose own paragraph argues for FILING A FOLLOW-ON rather than bundling, i.e. against this arrangement): legs (c)/rec-3727/rec-3721 first, then the paydown, then re-measure to zero, then the flip LAST, so the highest-blast-radius change lands on an already-green tree. The bundle is justified by the measured budget (one plan is within_budget; the A|B split buys no headroom because scripts/checks/registry.py, not the A|B line, is the breadth driver) and by paydown-and-flip needing atomicity against regrowth. The merged artifact is order-free, so the ordering is authoring guidance; the load-bearing precondition (zero backlog at the flip) is mechanically enforced by VP step 10, by PR CI running the now-blocking check, and by the pre-handoff full tier."
   - "DECLARED BREADTH WAIVER (Decision 182): scripts.checks.deps.selection_budget predicts breadth_waived for this scope -- 227 modules selected, test half 192.7-247.6s against a 454s allowance, elapsed 243.7-319.3s. Both governed quantities pass. scripts/checks/registry.py is the single driver (it alone moves selection 141 -> 231); it is IN scope deliberately because Decision 187 point 6 requires the fixed-point raise there, not in a same-PR-editable test."
   - "REGROWTH CAUSE, traced: PR #1115 (episode-lookup-primitive) gave scripts/checks/_budget_recs.py a second import path to the portal hub, forcing retirement of the _budget_recs prune row -- backlog 150 -> 292. The same PR deleted that row's pinning test but left config/agent/verification_registry/entries/pre-glob-prune-portal-row-is-load-bearing.yaml pointing at it. Regrowth came from UNRELATED work, which is the argument for landing paydown and flip atomically."
   - "PAYDOWN TRIAGE, measured at 6b6df4dd: 292 findings / 43 of 52 gated checks. Zero unresolvable Entry.module values. 53 findings sit on 5 provably inert modules; 239 across 60 paths and 19 checks are genuine, 199 of them on 4 checks that all reach the portal subtree via scripts.checks._scaffolding -> _budget_recs -> {ops_data_portal, rec_episode}. Simulated paydown reaches EXACTLY zero."
@@ -517,6 +885,7 @@ context:
   - "NEW BOUND ON AN EXISTING MARKER: post-flip the auditor is an exceptionless closure floor, so tier-demotion-approved can no longer authorize narrowing a check's pre_globs BELOW its own import closure -- only down to it. Measured: only 3 of 52 gated checks sit at that floor today. Record this in marker-grammar.yaml's tier-demotion-approved row."
   - "rec-3558 WAS RE-SCOPED THROUGH THE PORTAL on 2026-09-13 before implementation, by explicit human confirmation (Decision 103). Its original acceptance (empty _PRUNED_EDGES at the flip) was falsified by measurement: 292 -> 997 findings emptied, registry row 670, _common row 35, and two live tests assert the roster non-empty. Do not re-introduce it."
   - "FILE AT IMPLEMENT TIME (Decision 59 / implement.md Step 7): the 3 remaining dangling shards (ci-rca-close-then-recur-reopen-backstop, convergence-dedup-drift-cause-match, and a decisions-size shard); the 4 concern-split mirror files carrying no red case; the stale `validate_imports` row in config/ci_rca_taxonomy.yaml; and the Decision 163 residual that a future marker-authorized _PRUNED_EDGES row inherits no structural rationale test."
+  - "MERGE-RACE GATE (unmitigated otherwise): step 10 measures zero on the BRANCH. origin/main can gain an uncovered import between the branch's last CI run and the squash-merge -- the exact PR #1115 mechanism this plan documents -- and after the flip that reds main AND every subsequent PR's --pre. Re-run VP step 10 after the final pre-merge rebase and require the branch up to date before merging. Do not merge a stale branch."
   - "rec-3780 (RCA: a guard did not follow the refactor that emptied its governed population) was filed this session. It is NOT bundled and NOT resolved here -- rec-3721 fixes the symptom, rec-3780 owns the class."
   - "T2.54 owns bidirectional clause-to-check traceability: land the SINGLE implement-scope-boundary.yaml enforcement_coverage row as the interim form, never a general traceability index."
 pre_implementation_checklist:
@@ -531,15 +900,17 @@ execution_steps:
   - "Run VP step 1 FIRST and record the live counts. If they differ materially from 292 / 43 of 52, re-triage before touching any manifest."
   - "Create scripts/checks/ci_guards/validate_schedule_removal_markers.py -- per-workflow RegistrySpec + check_state_diff over a base/head glob of .github/workflows, bare-filename keys, its own replicated on:.schedule parse (no convergence_health import). Register across the seven surfaces."
   - "Modify scripts/checks/verification/validate_red_case_floor.py -- add the base-ref-derived mirror file-SET existence guard using _common.get_status_aware_diff, which already surfaces deletions. Add no marker escape."
-  - "Modify scripts/checks/verification/validate_verifier_same_pr_guard.py -- narrow the AST scan to concrete Verifier subclasses; declare examined(0) on the resulting empty domain."
+  - "Modify scripts/checks/verification/validate_verifier_same_pr_guard.py -- narrow the AST scan to concrete Verifier subclasses; declare examined(0) on the resulting empty domain. Create tests/checks/verification/test_validate_verifier_same_pr_guard_disposition.py with TestFrameworkOnlyPopulation::test_editing_harness_alongside_another_file_does_not_gate spelled EXACTLY as rec-3721's acceptance names it."
   - "Decompose both oversized mirrors into packages and register them in scripts/test_coverage_checker.py's _CONCERN_SPLIT_TEST_PACKAGES; run VP step 11 before going further, or the red-case floor loses both mirrors."
   - "Pay the backlog down: add globs to 19 Entries across 7 _manifest.py files, and add the derived inert-module floor to the auditor. Re-run VP step 1 until it reports zero findings while STILL ADVISORY."
-  - "Only once the backlog reads zero: flip the auditor to blocking, widen its own Entry to the ('**/*.py', 'scripts/checks/**') union, and add the registry.py fixed-point raise."
+  - "Only once the backlog reads zero: flip the auditor to blocking, widen its own Entry to the ('**/*.py', 'scripts/checks/**') union, and add the registry.py fixed-point raise. Correct the auditor Entry's now-false comment in scripts/checks/deps/_manifest.py (it claims the globs are 'exactly this check's own closure' and names a wave-4b _PRUNED_EDGES candidate -- both clauses die with this change), and repoint validate_pre_glob_closure.py:115's TestGlobMatcherEquivalence pointer at the new package path."
   - "Update docs/contracts/marker-grammar.yaml (two token rows plus the new tier-demotion-approved floor note) and docs/contracts/implement-scope-boundary.yaml (one CONTENT row)."
-  - "git mv the dangling shard to entries/deprecated/ and create the nine graduated shards."
+  - "git mv the dangling shard to entries/deprecated/, relocate the two sibling shards' node_ids into the new package (VP step 14 proves admissibility), and create the TWELVE graduated shards -- one per `graduation: graduate` VP step. Cross-check the count against the VP before pushing: validate_graduation_completeness requires a NEW-in-diff registry row with matching plan_slug and check_id for every graduate step, and a miscount reds the PR."
   - "Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)."
   - "File the four follow-on recommendations named in context via scripts.ops_data_portal."
+  - "Put `Resolves: rec-3558, rec-3727, rec-3721` in the SQUASH-MERGE COMMIT BODY so rec-autoclose.yml fires (AGENTS.md Git-ops). Name only these three -- rec-3722 is declined, not resolved, and rec-3780 owns a different class."
   - "Record the rec-3722 decline and its rationale in the PR body; leave rec-3722 OPEN."
+  - "Re-measure the non-test half before re-asserting the budget claim: the declared figures predate this PR's 12 new verification-registry shards, each firing a real git-worktree differential inside validate_verification_registry in --pre, plus a new check and an auditor now selected on every .py diff. Headroom is large (~72s of the unwaivable 240) but the claim must rest on post-change numbers."
   - "Declare the measured breadth waiver in the PR body so it is reviewed rather than discovered in CI."
   - "Report: what was implemented, verification results, final backlog count, and the measured --pre selection breadth."
 work_areas: []
