@@ -178,8 +178,9 @@ acceptance_criteria:
   - >-
     validate_pre_glob_closure reports ZERO findings on the live tree and its ADVISORY banner string
     is gone from the module. A synthetic repo whose check module imports an uncovered hub makes the
-    check APPEND to `failed` (LSA-06 acceptance). Measured start state to beat: 292 findings across
-    43 of 52 glob-gated --pre checks at 6b6df4dd.
+    check APPEND to `failed` (LSA-06 acceptance). Measured start state to beat: 293 findings across
+    44 of 53 glob-gated --pre checks at main ac32677c (292 / 43-of-52 at 6b6df4dd; the delta is one
+    newly-landed gated check whose single finding the inert floor absorbs).
   - >-
     The derived structural floor excludes a module whose AST body is empty or docstring-only and
     NOTHING else. Proven by a red case, not by construction: a module carrying a docstring plus ONE
@@ -255,12 +256,17 @@ verification_plan:
     phase: pre-deploy
     action: >-
       Baseline the start state before any edit, so the paydown delta is measured rather than
-      asserted. Records 292 findings across 43 of 52 gated checks.
+      asserted. Records 293 findings across 44 of 53 gated checks at main ac32677c.
     command: "bin/venv-python -c \"import scripts.checks.deps.validate_pre_glob_closure as m; f=[]; m.validate_pre_glob_closure(f); print('FAILED:', f)\" | tail -3"
-    expected: "An ADVISORY line naming 43 of 52 gated checks and 292 findings; FAILED: [] (still advisory)."
+    expected: "An ADVISORY line naming 44 of 53 gated checks and 293 findings; FAILED: [] (still advisory). The HEADLINE figure drifts as gated checks land; the GENUINE (post-inert-floor) total is the load-bearing one -- see the fix_if."
     fix_if: >-
-      A materially different count means main moved under the plan -- re-triage before paydown
-      rather than forcing the old numbers. Do not proceed on an unexplained delta.
+      Judge the delta on the GENUINE total, not the headline. Measured twice: at 6b6df4dd the
+      headline was 292/43-of-52 and at ac32677c it is 293/44-of-53, but the genuine post-inert-floor
+      total was 239 BOTH TIMES, with an identical per-domain split (ops_governance 51, ci_guards 15,
+      hygiene 7, deps 2, verification 161, contracts 1, iam_tf 2) -- the new gated check's single
+      finding was absorbed by the floor, which is the floor working as designed. A changed GENUINE
+      total, or any genuine finding in a domain outside the seven scoped manifests, means re-triage
+      before touching a manifest. Do not force the old numbers.
     hermetic: false
     graduation: not-applicable
   - step: 2
@@ -902,7 +908,7 @@ context:
   - "EXECUTION ORDER IS LOAD-BEARING (recorded choice, argued on its own terms -- do NOT cite Decision 162, whose own paragraph argues for FILING A FOLLOW-ON rather than bundling, i.e. against this arrangement): legs (c)/rec-3727/rec-3721 first, then the paydown, then re-measure to zero, then the flip LAST, so the highest-blast-radius change lands on an already-green tree. The bundle is justified by the measured budget (one plan is within_budget; the A|B split buys no headroom because scripts/checks/registry.py, not the A|B line, is the breadth driver) and by paydown-and-flip needing atomicity against regrowth. The merged artifact is order-free, so the ordering is authoring guidance; the load-bearing precondition (zero backlog at the flip) is mechanically enforced by VP step 10, by PR CI running the now-blocking check, and by the pre-handoff full tier."
   - "DECLARED BREADTH WAIVER (Decision 182): scripts.checks.deps.selection_budget predicts breadth_waived for this scope -- 227 modules selected, test half 192.7-247.6s against a 454s allowance, elapsed 243.7-319.3s. Both governed quantities pass. scripts/checks/registry.py is the single driver (it alone moves selection 141 -> 231); it is IN scope deliberately because Decision 187 point 6 requires the fixed-point raise there, not in a same-PR-editable test."
   - "REGROWTH CAUSE, traced: PR #1115 (episode-lookup-primitive) gave scripts/checks/_budget_recs.py a second import path to the portal hub, forcing retirement of the _budget_recs prune row -- backlog 150 -> 292. The same PR deleted that row's pinning test but left config/agent/verification_registry/entries/pre-glob-prune-portal-row-is-load-bearing.yaml pointing at it. Regrowth came from UNRELATED work, which is the argument for landing paydown and flip atomically."
-  - "PAYDOWN TRIAGE, measured at 6b6df4dd: 292 findings / 43 of 52 gated checks. Zero unresolvable Entry.module values. 53 findings sit on 5 provably inert modules; 239 across 60 paths and 19 checks are genuine, 199 of them on 4 checks that all reach the portal subtree via scripts.checks._scaffolding -> _budget_recs -> {ops_data_portal, rec_episode}. Simulated paydown reaches EXACTLY zero."
+  - "PAYDOWN TRIAGE, measured twice. At 6b6df4dd: 292 findings / 43 of 52 gated checks, 53 inert, 239 genuine. At main ac32677c: 293 / 44 of 53, 54 inert, 239 genuine -- the GENUINE total and its per-domain split are IDENTICAL across both (ops_governance 51, ci_guards 15, hygiene 7, deps 2, verification 161, contracts 1, iam_tf 2), so the newly-landed gated check was absorbed by the derived floor with no scope change. Zero unresolvable Entry.module values either time. 199 of the 239 sit on 4 checks that all reach the portal subtree via scripts.checks._scaffolding -> _budget_recs -> {ops_data_portal, rec_episode}. Simulated paydown reaches EXACTLY zero, and all 239 fall inside the seven scoped manifests."
   - "BIG-4 GLOB SHAPE (validate_differential_gate_baseline, validate_verification_registry, validate_hermeticity_flags): 8 directory globs + 5 root files each; validate_recommendations_schema needs 5 + 3. NEVER emit a bare `scripts/**` -- only 3-5 root-level scripts/*.py files are involved, so name them."
   - "TAIL GLOB SHAPE: the other 15 checks need 1-3 globs each, overwhelmingly scripts/checks/_common.py + scripts/checks/registry.py; validate_acceptance_literals needs src/common/**."
   - "HONEST RECALL ACCOUNTING: ~42 of the 239 findings belong to validate_recommendations_schema, which carries a PUBLISHED vacuity residual (rec-3681, docs/contracts/check-accounting.yaml decision_181_residuals) -- vacuous in both CI tiers for want of credentials. Paying it down is correct for the declaration invariant but buys nominal real recall. Do not report 239 as recall won."
@@ -920,9 +926,9 @@ pre_implementation_checklist:
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
   - audits/loop-spec-adoption-4d8bac4a.yaml LSA-01 and LSA-06 read as the intent source of truth
-  - VP step 1 baseline run and its counts compared against the plan's 292 / 43 of 52
+  - VP step 1 baseline run and its GENUINE (post-inert-floor) total compared against the plan's 239 across the seven scoped domains -- not against the drifting headline
 execution_steps:
-  - "Run VP step 1 FIRST and record the live counts. If they differ materially from 292 / 43 of 52, re-triage before touching any manifest."
+  - "Run VP step 1 FIRST and record the live counts. Judge drift on the GENUINE post-inert-floor total (239 across the seven scoped domains, stable across two measurements), never on the headline, which moves whenever a gated check lands. Re-triage before touching any manifest if the genuine total moves or a genuine finding appears outside those seven domains."
   - "Create scripts/checks/ci_guards/validate_schedule_removal_markers.py -- per-workflow RegistrySpec + check_state_diff over a base/head glob of .github/workflows, bare-filename keys, its own replicated on:.schedule parse (no convergence_health import). Register across the seven surfaces."
   - "Modify scripts/checks/verification/validate_red_case_floor.py -- add the base-ref-derived mirror file-SET existence guard using _common.get_status_aware_diff, which already surfaces deletions. Add no marker escape."
   - "Modify scripts/checks/verification/validate_verifier_same_pr_guard.py -- narrow the AST scan to concrete Verifier subclasses; declare examined(0) on the resulting empty domain. Create tests/checks/verification/test_validate_verifier_same_pr_guard_disposition.py with TestFrameworkOnlyPopulation::test_editing_harness_alongside_another_file_does_not_gate spelled EXACTLY as rec-3721's acceptance names it."
