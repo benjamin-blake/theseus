@@ -42,7 +42,10 @@ scope:
     purpose: Existing green-after replay, content-keyed resolution and root-scoped base cases.
   - file: tests/checks/verification/validate_vp_replay/test_red_before_leg.py
     action: Create
-    purpose: Tautology, the two red classes, unmeasurable, and non-graduate non-execution.
+    purpose: >-
+      Tautology, the two red classes, unmeasurable (including timeout), non-graduate
+      non-execution, and the relocated TestPlanOnlyLeg cases -- the plan-only leg is what this
+      work inverts, so its existing DEFER/resolution coverage belongs here.
   - file: tests/checks/verification/validate_vp_replay/test_lint_and_budget.py
     action: Create
     purpose: Negated-sweep lint (including fail-open) and the shared cross-leg budget guard.
@@ -51,6 +54,39 @@ scope:
     purpose: >-
       Terminal declaration across both legs, the vacuity cross-check, mirror resolution, and the
       classifier self-test including a patch-to-mislabel red case.
+  - file: scripts/test_coverage_checker.py
+    action: Modify
+    purpose: >-
+      Register scripts/checks/verification/validate_vp_replay.py in _CONCERN_SPLIT_TEST_PACKAGES.
+      Measured: map_source_to_test returns the PACKAGE form only for a member of that hardcoded
+      frozenset (34 members, none matching vp_replay), so without this the decomposed mirror is
+      unresolvable and validate_red_case_floor FAILS -- a missing oracle, not a skip.
+  - file: tests/test_coverage_checker/test_coverage_checker_map.py
+    action: Modify
+    purpose: Assert the new concern-split member resolves to the package.
+  - file: config/agent/verification_registry/entries/root-scoped-diff-base-vp-replay-root-scoping.yaml
+    action: Modify
+    purpose: >-
+      Re-point check_spec.node_id off the deleted flat file onto its new package module. This is a
+      live test_selector shard; run_differential treats a non-PASS live result as a hard failure
+      and an absent file does not match the narrow importorskip skip-reason.
+  - file: config/agent/verification_registry/entries/vp-replay-content-keyed-can-still-fail.yaml
+    action: Modify
+    purpose: Re-point check_spec.node_id off the deleted flat file, same reason.
+  - file: tests/checks/verification/validate_scope_boundary/test_plan_legs.py
+    action: Modify
+    purpose: >-
+      Update the docstring reference to the flat mirror path so step 14's stale-reference sweep
+      passes.
+  - file: scripts/checks/contracts/validate_skill_prose_relocation.py
+    action: Modify
+    purpose: >-
+      Add _REINLINE_MARKERS entries for both new stubs. Measured: the markers live in a hardcoded
+      dict in this module, not in layer4_relocation_map, so a map row alone receives no re-inline
+      guard at all.
+  - file: tests/checks/contracts/test_validate_skill_prose_relocation.py
+    action: Modify
+    purpose: Cover the two new marker entries.
   - file: scripts/checks/verification/_manifest.py
     action: Modify
     purpose: >-
@@ -70,8 +106,11 @@ scope:
   - file: docs/contracts/instruction-architecture.yaml
     action: Modify
     purpose: >-
-      Register both relocated stubs in layer4_relocation_map with re-inline giveaway markers, so
-      the stubs are guarded by validate_skill_prose_relocation rather than left unenforced.
+      Register both relocated stubs in layer4_relocation_map. Both blocks are PROMOTED to level-two
+      headings first (fork resolved at plan time): every one of the five existing rows keys on a
+      "## " heading, and _slice_section slices heading-to-next-"## ", so leaving them as bold
+      sub-blocks would make the first stub's slice swallow the second's body and both guards pass
+      vacuously. Heading promotion costs a few dozen bytes against a 3031 B savings pool.
   - file: docs/contracts/file-router.yaml
     action: Modify
     purpose: >-
@@ -96,8 +135,10 @@ acceptance_criteria:
     A graduate step that is genuinely red before passes, and its outcome is reported as
     target_absent or assertion_failed as two distinct classes, neither of which fails.
   - >-
-    An unmeasurable outcome (exit 126/127, rg/grep error exit 2, credential absence) is a hard
-    failure and never counted as red.
+    An unmeasurable outcome is a hard failure and never counted as red. The frozen set is exit
+    126/127, rg/grep error exit 2, credential absence, AND subprocess timeout -- under inverted
+    polarity a timeout otherwise reads as "not green" and PASSES, which is the rec-3770 defect
+    class reproduced inside the rec-3770 fix.
   - waive and not-applicable steps are not executed by the plan-only leg and produce no warning.
   - >-
     The static negated-sweep lint runs over EVERY pre-deploy step regardless of disposition --
@@ -124,6 +165,19 @@ acceptance_criteria:
     stays under the 500-SLOC default with no sloc_budgets entry, the flat file is deleted and
     unreferenced, and map_source_to_test still resolves the mirror for validate_red_case_floor.
   - The full validation tier completes exit 0 before handoff (Decision 163).
+  - >-
+    Both live vp-replay registry shards still resolve after the mirror decomposition and pass
+    run_differential -- their check_spec.node_id is re-pointed onto the new package modules, and
+    map_source_to_test returns the PACKAGE form for validate_vp_replay.py.
+  - >-
+    docs/contracts/vp-red-before.yaml exists, is Class D provisional_v0, its evaluator resolves to
+    validate_vp_replay, and file-router.yaml routes topic vp-red-before at it.
+  - >-
+    Both relocated stubs are level-two headings registered in layer4_relocation_map AND carry a
+    _REINLINE_MARKERS entry, so re-inlining either body reddens validate_skill_prose_relocation.
+  - >-
+    The new Decision entry carries an amends [148] field and a significance envelope whose claimed
+    routing row matches its body.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -173,9 +227,12 @@ verification_plan:
     expected: 1 passed
     fix_if: >-
       This is the defect class rec-3770 exists to kill, reproduced inside the fix: exit 127, a
-      non-executable command, rg/grep exit 2, and credential absence all exit non-zero and would
-      otherwise be counted as a genuine red. A missing oracle and a satisfied oracle must not look
-      alike (Decision 55).
+      non-executable command, rg/grep exit 2, credential absence AND a subprocess timeout all exit
+      non-zero and would otherwise be counted as a genuine red. Timeout is the live one --
+      PER_STEP_TIMEOUT_SECONDS is 30 and round 1 of critique found a real 28.1s step in this very
+      plan. _replay_step already treats TimeoutExpired as a divergence in the green-after
+      direction; the inverted leg must NOT port that naively. A missing oracle and a satisfied
+      oracle must not look alike (Decision 55).
     graduation: graduate
     graduation_check_id: vp-red-before-unmeasurable-hard-fails
   - step: 5
@@ -263,8 +320,12 @@ verification_plan:
       common-path re-audit trigger for a sibling gate; adopt the same ceiling. If the measured
       cost approaches it, drop the fixture to a cheaper shape rather than moving the self-test
       behind the early return, which would reintroduce the masking this design removes.
-    graduation: graduate
-    graduation_check_id: vp-red-before-self-test-under-1s
+    graduation: waive
+    graduation_waiver_reason: >-
+      A wall-clock assertion is the canonical NONDETERMINISTIC shape T3.15 c4 exists to surface;
+      graduating it would install a timing gate in the standing registry that flakes on a loaded
+      runner. The durable property -- that the self-test runs unconditionally and cheaply -- is
+      carried by step 9's shard, which asserts the behaviour rather than its duration.
   - step: 11
     phase: pre-deploy
     hermetic: true
@@ -404,18 +465,63 @@ verification_plan:
     phase: pre-deploy
     hermetic: false
     action: rec-3770 is reconciled against the surfaces this plan actually creates
-    command: bin/venv-python -c "import json; rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl')];
-      r=[x for x in rows if x['id']=='rec-3770'][-1]; assert 'plan_obligations' not in (r.get('file')
-      or ''), r.get('file'); assert 'test_plan_obligations' not in (r.get('acceptance') or ''),
-      r.get('acceptance'); print('REC_3770_RECONCILED')"
-    expected: REC_3770_RECONCILED printed, exit 0
+    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json;
+      rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl')]; r=[x for x in rows if
+      x['id']=='rec-3770'][-1]; assert r['status']=='closed', r['status']; assert
+      r['file']=='scripts/checks/verification/validate_vp_replay.py', r['file']; assert
+      'validate_vp_replay' in r['acceptance'], r['acceptance']; print('REC_3770_CLOSED')"
+    expected: REC_3770_CLOSED printed, exit 0
     fix_if: >-
       rec-3770 was filed naming scripts/roadmap/plan_obligations.py and a
       tests/test_plan_obligations.py selector, neither of which this plan creates. Reconcile via
-      update_rec (the portal refreshes the read cache) before closure -- never close against a
-      stale acceptance command, and never hand-edit the cache, which is read-only downstream of
-      the warehouse.
-    graduation: not-applicable
+      update_rec (which writes through and refreshes the read cache) BEFORE closure -- never close
+      against a stale acceptance command, and never hand-edit the cache, which is read-only
+      downstream of the warehouse. The assertions are deliberately POSITIVE (field equals the new
+      surface) rather than "not in": a negative assertion passes vacuously on an absent or null
+      field, which is this plan's own defect class. The sync verb is `sync`; `pull` does not exist
+      (choices=["sync"]) and exits 2.
+    graduation: waive
+    graduation_waiver_reason: >-
+      One-shot and rec-id-specific: the assertions name rec-3770 by id and its post-close state,
+      so a standing shard would either pin a single closed rec forever or re-run a warehouse sync
+      on every dispatch. Not not-applicable -- the command IS a single command_output_matches
+      shape, and claiming the no-obligation row for it would be exactly the classification gaming
+      criterion 12o exists to catch.
+  - step: 21
+    phase: pre-deploy
+    hermetic: true
+    action: The decomposed mirror resolves and both live shards still admit
+    command: bin/venv-python -m pytest tests/test_coverage_checker/test_coverage_checker_map.py
+      -q && bin/venv-python -c "from pathlib import Path; from scripts import test_coverage_checker
+      as tcc; r=tcc.map_source_to_test(Path('scripts/checks/verification/validate_vp_replay.py'));
+      assert r.is_dir(), r; import yaml,glob; n=[yaml.safe_load(open(f))['check_spec']['node_id']
+      for f in glob.glob('config/agent/verification_registry/entries/*vp-replay*.yaml')]; assert
+      all('validate_vp_replay/' in x for x in n), n; print('MIRROR_AND_SHARDS_REPOINTED')"
+    expected: MIRROR_AND_SHARDS_REPOINTED printed, exit 0
+    fix_if: >-
+      Measured before this plan: map_source_to_test returns the FLAT file for validate_vp_replay.py
+      and the PACKAGE only for members of the hardcoded _CONCERN_SPLIT_TEST_PACKAGES frozenset (34
+      members, none matching vp_replay). Without the registration the decomposed mirror is
+      unresolvable and validate_red_case_floor FAILS. The two shards
+      (root-scoped-diff-base-vp-replay-root-scoping, vp-replay-content-keyed-can-still-fail) pin
+      node_ids into the deleted file; run_differential treats a non-PASS live result as a hard
+      failure and an absent file does not match its narrow importorskip skip-reason.
+    graduation: graduate
+    graduation_check_id: vp-replay-mirror-and-shards-repointed
+  - step: 22
+    phase: pre-deploy
+    hermetic: true
+    action: Both relocated stubs are registered and re-inline-guarded
+    command: bin/venv-python -m pytest tests/checks/contracts/test_validate_skill_prose_relocation.py
+      -q
+    expected: all tests pass
+    fix_if: >-
+      _REINLINE_MARKERS is a hardcoded dict in the check module keyed on the exact stub heading, so
+      a layer4_relocation_map row alone buys no re-inline guard. Both blocks must be level-two
+      headings first: _slice_section slices heading-to-next-"## ", so as bold sub-blocks the first
+      stub's slice swallows the second's body and both guards pass vacuously.
+    graduation: graduate
+    graduation_check_id: vp-red-before-stubs-registered-and-guarded
 test_obligations:
   - source: scripts/checks/verification/validate_vp_replay.py
     behavior: >-
@@ -455,8 +561,12 @@ constraints:
     graduation graduate is the partition key, never the hermetic flag -- hermetic carries two
     meanings (replay cost and creds-freeness) and cannot partition: 258 of 731 graduate steps are
     not marked hermetic. The recursion/credential hazard this opens is measured and empirically
-    empty today: 0 of those 258 invoke scripts.validate, and 195 are pytest invocations with no
-    real AWS call. Re-measure before widening the partition further.
+    empty today: 0 of those 258 invoke scripts.validate; 195 are pytest, and the 63-step residue
+    is 28 other bin/venv-python invocations, 8 grep, 4 test, and assorted shell -- none making a
+    real AWS call. Empirically empty is not structurally prevented, so the contract must ALSO
+    carry the recursion warning currently at SKILL.md:202, re-keyed from the hermetic partition to
+    the graduate partition, plus a static refusal of a graduate step whose command matches
+    scripts.validate. Re-measure before widening the partition further.
   - >-
     When relocating the graduation-authoring prose, REWRITE rather than copy the clause "When
     unsure, prefer not-applicable". Under this gate a false graduate is no longer a detour but a
@@ -537,19 +647,24 @@ execution_steps:
     to mislabel and asserts the self-test reddens; validate_red_case_floor requires at least one
     positive-outcome assertion derived from an invocation of the check under test.
   - >-
-    docs/contracts/instruction-architecture.yaml and docs/contracts/file-router.yaml -- register
-    both relocated stubs in layer4_relocation_map (stub_heading, surface planning, destination
+    Promote both relocated blocks to level-two headings in the skill, then register each in
+    layer4_relocation_map (stub_heading verbatim, surface planning, destination
     docs/contracts/vp-red-before.yaml plus anchor, enforcing_check validate_skill_prose_relocation,
-    tier) with re-inline giveaway markers, and add the topic vp-red-before route row. The map keys
-    on level-two headings while both blocks are bold sub-blocks of "Verification Tier Guidelines
-    (Workflow Step 5)" -- resolve that deliberately by promoting the stubs to headings (costing
-    bytes against step 15) or by extending the grammar; if neither, declare the non-coverage with
-    a reason rather than leaving the stubs silently unguarded.
+    tier) and add the topic vp-red-before route row to file-router.yaml. Separately add a
+    _REINLINE_MARKERS entry per stub in scripts/checks/contracts/validate_skill_prose_relocation.py
+    -- the markers are a hardcoded dict in that module, NOT data in the map, so a map row alone
+    buys no re-inline guard. Pick a marker phrase that appears in the relocated body and not in
+    the stub.
   - >-
     .claude/skills/planning/SKILL.md -- collapse the two named blocks to read-trigger stubs;
     verify the net byte delta is negative (step 15) before committing.
   - >-
-    docs/DECISIONS.md -- draft the new numbered Decision. Its envelope carries significance with a
+    docs/DECISIONS.md -- draft the new numbered Decision. Its envelope claims significance row
+    "durable architectural commitment with reversal-relevant consequences": the body reverses when
+    and against which tree a verification step is executed, and its reversal condition is the same
+    one Decision 148 names (the two-PR flow being replaced by co-present plan+code PRs, which would
+    make the inverted leg dead code). Pre-declared here so the 12p category-consistency gate can
+    adjudicate the claim against the body at plan time. Its envelope carries significance with a
     justification naming the rejected alternatives concretely: a contract governance note cannot
     negate a ratified Decision clause, and an amendment_forms annotation reframes rather than
     retracts, leaving Decision 148 point 3's premise ("since they are replayed at implement time
