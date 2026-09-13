@@ -1,0 +1,323 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "vp-replay-mirror-decomposition"
+intent: >-
+  Decompose validate_vp_replay's 483-SLOC flat mirror into a concern-split package and re-point
+  everything that names the old path, so the next plan can add cases without crossing the
+  500-SLOC limit. Behavior-preserving: no check logic changes and no test assertion changes.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-vp-replay-mirror-decomposition.yaml
+phase: >-
+  Verification-system hygiene. Prerequisite slice split out of PLAN-vp-red-before-gate (rec-3770)
+  on the round-3 plan-critique recommendation: 11 of that plan's 22 scope rows were a
+  behavior-preserving refactor with no dependency on the new gate. Soft-warn category ad_hoc_rec;
+  no tier_item is claimed and no exit criterion closes, hence no closes_criteria.
+scope:
+  - file: tests/checks/verification/test_validate_vp_replay.py
+    action: Delete
+    purpose: >-
+      483 SLOC against the 500 default with no config/sloc_budgets.yaml entry. Decision 128 makes
+      decomposition the default response to a file at its ceiling, not a budget raise.
+  - file: tests/checks/verification/validate_vp_replay/__init__.py
+    action: Create
+    purpose: Package root, matching the validate_graduation_completeness precedent.
+  - file: tests/checks/verification/validate_vp_replay/conftest.py
+    action: Create
+    purpose: >-
+      The _ResolvedFixture helper and shared git-repo fixtures, re-exported so no sibling module
+      imports across test packages (Decision 131 clause 2 / validate_no_cross_test_imports).
+  - file: tests/checks/verification/validate_vp_replay/test_plan_only_leg.py
+    action: Create
+    purpose: TestPlanOnlyLeg, relocated verbatim.
+  - file: tests/checks/verification/validate_vp_replay/test_implement_leg.py
+    action: Create
+    purpose: TestImplementLeg, relocated verbatim.
+  - file: tests/checks/verification/validate_vp_replay/test_content_keyed_resolution.py
+    action: Create
+    purpose: >-
+      TestContentKeyedResolution, relocated verbatim. Its own module because a live registry shard
+      pins this class as a node_id.
+  - file: tests/checks/verification/validate_vp_replay/test_root_scoped_base.py
+    action: Create
+    purpose: >-
+      TestRootScopedBase, relocated verbatim. Its own module for the same shard-pinning reason.
+  - file: scripts/test_coverage_checker.py
+    action: Modify
+    purpose: >-
+      Add scripts/checks/verification/validate_vp_replay.py to _CONCERN_SPLIT_TEST_PACKAGES.
+      Measured: map_source_to_test returns the PACKAGE form only for a member of that hardcoded
+      34-member frozenset, so without this the decomposed mirror is unresolvable.
+  - file: tests/test_coverage_checker/test_coverage_checker_map.py
+    action: Modify
+    purpose: Assert the new member resolves to the package directory.
+  - file: config/agent/verification_registry/entries/root-scoped-diff-base-vp-replay-root-scoping.yaml
+    action: Modify
+    purpose: >-
+      Re-point check_spec.node_id from the deleted flat file to
+      validate_vp_replay/test_root_scoped_base.py::TestRootScopedBase.
+  - file: config/agent/verification_registry/entries/vp-replay-content-keyed-can-still-fail.yaml
+    action: Modify
+    purpose: >-
+      Re-point check_spec.node_id to
+      validate_vp_replay/test_content_keyed_resolution.py::TestContentKeyedResolution.
+  - file: tests/checks/verification/validate_scope_boundary/test_plan_legs.py
+    action: Modify
+    purpose: Update the docstring reference to the flat mirror path.
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    Every test that passed in the flat file passes in the package, with identical assertions --
+    this is a relocation, not a rewrite.
+  - >-
+    map_source_to_test('scripts/checks/verification/validate_vp_replay.py') returns the package
+    directory, so validate_red_case_floor resolves the mirror instead of failing on a missing one.
+  - >-
+    Both live vp-replay registry shards name a node_id that exists and passes, and each still
+    admits under run_differential.
+  - >-
+    The flat file is deleted and no reference to it remains anywhere outside docs/plans/.
+  - Every module in the new package is under the 500-SLOC default with no sloc_budgets entry.
+  - The full validation tier completes exit 0 before handoff (Decision 163).
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    hermetic: true
+    action: The relocated package passes end to end
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/ -q
+    expected: all tests pass, 0 failures
+    fix_if: >-
+      A collection error usually means conftest.py did not re-export a fixture a relocated class
+      depends on. This is a relocation -- if an assertion needs changing to pass, the relocation
+      is wrong, not the assertion.
+    graduation: waive
+    graduation_waiver_reason: >-
+      A directory-wide selector is unadmittable by construction: run_differential rejects a check
+      that also passes on an origin/main worktree, and these tests pass there today under their
+      old path. Steps 3 and 4 graduate the two discriminating node_ids instead.
+  - step: 2
+    phase: pre-deploy
+    hermetic: true
+    action: The test count is preserved exactly across the move
+    command: 'BEFORE=$(git show origin/main:tests/checks/verification/test_validate_vp_replay.py
+      | grep -cE "^\s+def test_"); AFTER=$(grep -rhcE "^\s+def test_" tests/checks/verification/validate_vp_replay/*.py
+      | paste -sd+ | bc); echo "before=$BEFORE after=$AFTER"; test "$BEFORE" -eq "$AFTER" && echo
+      TEST_COUNT_PRESERVED'
+    expected: TEST_COUNT_PRESERVED printed, exit 0
+    fix_if: >-
+      A shortfall means a test was dropped in the move; a surplus means a case was added, which is
+      out of scope for a behavior-preserving refactor and belongs in the follow-on gate plan.
+    graduation: waive
+    graduation_waiver_reason: >-
+      A one-shot differential against origin/main whose polarity inverts on merge: once this plan
+      lands, origin/main carries the package and not the flat file, so the BEFORE arm returns
+      nothing and the command fails forever after. Not graduatable in principle.
+  - step: 3
+    phase: pre-deploy
+    hermetic: true
+    action: The root-scoping shard's re-pointed node_id resolves and passes
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_root_scoped_base.py::TestRootScopedBase
+      -q
+    expected: all tests in the class pass
+    fix_if: >-
+      pytest exits 4 for a missing nodeid, which run_differential would misread. The shard
+      root-scoped-diff-base-vp-replay-root-scoping pins this exact path; it and the YAML must move
+      together in one commit.
+    graduation: graduate
+    graduation_check_id: vp-replay-root-scoped-base-node-resolves
+  - step: 4
+    phase: pre-deploy
+    hermetic: true
+    action: The content-keyed shard's re-pointed node_id resolves and passes
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_content_keyed_resolution.py::TestContentKeyedResolution
+      -q
+    expected: all tests in the class pass
+    fix_if: Same failure mode as step 3, for shard vp-replay-content-keyed-can-still-fail.
+    graduation: graduate
+    graduation_check_id: vp-replay-content-keyed-node-resolves
+  - step: 5
+    phase: pre-deploy
+    hermetic: true
+    action: The mirror resolves to the package and both shards name a live path
+    command: bin/venv-python -c "from pathlib import Path; from scripts import test_coverage_checker
+      as tcc; r=tcc.map_source_to_test(Path('scripts/checks/verification/validate_vp_replay.py'));
+      assert r.is_dir(), r; import yaml,glob; ns=[yaml.safe_load(open(f))['check_spec']['node_id']
+      for f in glob.glob('config/agent/verification_registry/entries/*vp-replay*.yaml') if
+      yaml.safe_load(open(f)).get('primitive_slot')=='test_selector']; assert ns, 'no shards found';
+      assert all(Path(n.split('::')[0]).exists() for n in ns), ns; print('MIRROR_AND_SHARDS_LIVE')"
+    expected: MIRROR_AND_SHARDS_LIVE printed, exit 0
+    fix_if: >-
+      Measured before this plan: map_source_to_test returns the FLAT file for validate_vp_replay.py
+      and the package only for a member of the hardcoded _CONCERN_SPLIT_TEST_PACKAGES frozenset (34
+      members, none matching vp_replay). Without the registration, validate_red_case_floor fails on
+      an unresolvable mirror -- a missing oracle, never a skip.
+    graduation: graduate
+    graduation_check_id: vp-replay-mirror-and-shards-live
+  - step: 6
+    phase: pre-deploy
+    hermetic: true
+    action: The coverage-checker mirror covers the new concern-split member
+    command: bin/venv-python -m pytest tests/test_coverage_checker/test_coverage_checker_map.py -q
+    expected: all tests pass
+    fix_if: >-
+      _CONCERN_SPLIT_TEST_PACKAGES is a hardcoded frozenset, so its own mirror is the only guard
+      that a member was added deliberately rather than by an unrelated edit.
+    graduation: graduate
+    graduation_check_id: coverage-checker-map-covers-vp-replay-split
+  - step: 7
+    phase: pre-deploy
+    hermetic: true
+    action: The deleted flat mirror leaves no stale reference behind
+    command: 'test ! -e tests/checks/verification/test_validate_vp_replay.py && ! rg -n "test_validate_vp_replay"
+      --glob "!docs/plans/**" . && echo NO_STALE_REFERENCES'
+    expected: NO_STALE_REFERENCES printed, exit 0
+    fix_if: >-
+      The Delete row fires the surface-retiring closure obligation. Measured reference set is
+      exactly three: the two shard node_ids and validate_scope_boundary/test_plan_legs.py:6. Note
+      the negation hazard -- a negated rg over a missing path exits 0 for the wrong reason, so the
+      `test ! -e` conjunct comes first and the rg is rooted at `.`, which always exists.
+    graduation: graduate
+    graduation_check_id: vp-replay-flat-mirror-fully-retired
+  - step: 8
+    phase: pre-deploy
+    hermetic: true
+    action: No package module approaches the SLOC ceiling
+    command: 'bin/venv-python -c "from pathlib import Path; bad=[(str(p), n) for p in Path(''tests/checks/verification/validate_vp_replay'').glob(''*.py'')
+      for n in [sum(1 for l in p.read_text().splitlines() if l.strip() and not l.strip().startswith(''#''))]
+      if n >= 500]; assert not bad, bad; print(''ALL_MODULES_UNDER_LIMIT'')"'
+    expected: ALL_MODULES_UNDER_LIMIT printed, exit 0
+    fix_if: >-
+      The flat file was 483 SLOC across four classes; a 1:1 class-to-module split puts each well
+      under the limit. A module at the ceiling means the split was uneven, not that the limit is
+      wrong.
+    graduation: graduate
+    graduation_check_id: vp-replay-package-modules-under-sloc-limit
+  - step: 9
+    phase: pre-deploy
+    hermetic: false
+    action: Fast tier is green end to end
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: >-
+      validate_red_case_floor and validate_test_coverage both read the mirror mapping, so a
+      half-applied decomposition reddens here rather than at step 5.
+    graduation: waive
+    graduation_waiver_reason: >-
+      Recursion: a standing registry shard invoking scripts.validate would re-enter the tier that
+      dispatches it. Not not-applicable -- the command is a single command_exit_zero shape, and
+      claiming the no-obligation row for it would be the classification gaming 12o exists to catch.
+  - step: 10
+    phase: pre-deploy
+    hermetic: false
+    action: Full validation tier completes exit 0 before handoff
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: >-
+      handoff_policy.full_validation_required_before_commit is declared true, and
+      validate_handoff_full_tier fails any plan declaring it without a full-tier step. Step 9 does
+      not satisfy it. On timeout the disposition is blocked -- rerun from the start, never part-way.
+    graduation: waive
+    graduation_waiver_reason: Same recursion reason as step 9, over the full tier rather than the fast one.
+test_obligations:
+  - source: scripts/test_coverage_checker.py
+    behavior: >-
+      validate_vp_replay.py is a concern-split member, so its mirror resolves to the package
+      directory rather than the deleted flat file.
+    verification_step: 6
+    test_selector: tests/test_coverage_checker/test_coverage_checker_map.py::test_vp_replay_resolves_to_concern_split_package
+    red_green_expectation: red before, green after
+  - source: config/agent/verification_registry/entries/root-scoped-diff-base-vp-replay-root-scoping.yaml
+    behavior: The shard's node_id names a path that exists and passes.
+    verification_step: 3
+    test_selector: tests/checks/verification/validate_vp_replay/test_root_scoped_base.py::TestRootScopedBase
+    waiver_reason: >-
+      This row is registry DATA, not behavior-capable source: its only assertable property is that
+      the node_id it names resolves, which step 3 executes directly against the re-pointed path.
+      A dedicated test asserting a YAML string equals itself would be the tautology this repo
+      refuses.
+  - source: config/agent/verification_registry/entries/vp-replay-content-keyed-can-still-fail.yaml
+    behavior: The shard's node_id names a path that exists and passes.
+    verification_step: 4
+    test_selector: tests/checks/verification/validate_vp_replay/test_content_keyed_resolution.py::TestContentKeyedResolution
+    waiver_reason: >-
+      Registry DATA, same reasoning as the sibling shard above: step 4 executes the re-pointed
+      node_id directly, which is the only property the row can carry.
+constraints:
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    Only files in the Scope table may be modified; out-of-scope defects become recommendations via
+    scripts.ops_data_portal, never inline fixes (Decision 59).
+  - >-
+    BEHAVIOR-PRESERVING. Relocate test bodies verbatim -- no new cases, no assertion edits, no
+    renames of test functions or classes. If a relocated test fails, the relocation is wrong. New
+    cases belong to the follow-on gate plan, which is authored against the package this creates.
+  - >-
+    The shard YAML re-points and the module creations must land in the SAME commit: a commit where
+    the node_id names a path that does not yet exist leaves run_differential reading pytest exit 4
+    as a content failure.
+  - >-
+    Do NOT add a config/sloc_budgets.yaml entry for the deleted file or any new module. Decision
+    128 makes decomposition the response to a file at its ceiling; a raise here would be the
+    silent trade that Decision explicitly refuses.
+context:
+  - "Decision-scout verdict + CITE list: inherited from PLAN-vp-red-before-gate round 2
+    (FLAGS_FOUND; Decisions triaged: 140 of 140; Roadmap items intersected: 7; CONFLICT: 0;
+    RELATED: 6). Of that CITE list only 128 (decompose-not-raise), 163 (full-tier obligation) and
+    169 bear on this refactor; the rest governed the gate half and travel with it."
+  - "gates: decision-scout=FLAGS_FOUND (inherited); plan-critique=<verdict> after <N> round(s)"
+  - >-
+    Split rationale: this is slice 1 of 2, carved out of PLAN-vp-red-before-gate on the round-3
+    critique recommendation. Slice 2 (the red-before gate itself) is authored against the package
+    this plan creates and must not start until this merges.
+  - >-
+    Measured facts this plan rests on: the flat mirror is 483 SLOC against the 500 default with no
+    budget entry; map_source_to_test returns the package form only for a member of
+    _CONCERN_SPLIT_TEST_PACKAGES, a hardcoded 34-member frozenset with no vp_replay member; two
+    live test_selector shards pin node_ids into the file being deleted; one further reference sits
+    in validate_scope_boundary/test_plan_legs.py:6.
+  - >-
+    Precedent: tests/checks/verification/validate_graduation_completeness/ and
+    tests/checks/verification/validate_scope_boundary/ are both already concern-split packages
+    with __init__.py + conftest.py + per-leg modules.
+  - >-
+    Why the shards are re-pointed rather than re-graduated: run_differential admits a test_selector
+    row by ANY failure on the base ref, including pytest exit 4 for an absent file, so a stale
+    node_id would keep admitting while guarding nothing. That admission-by-absence defect itself is
+    rec-3776 and is out of scope here.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    Create tests/checks/verification/validate_vp_replay/ with __init__.py and a conftest.py
+    carrying _ResolvedFixture and the shared git-repo fixtures, modelled on
+    tests/checks/verification/validate_graduation_completeness/conftest.py.
+  - >-
+    Relocate the four classes verbatim, one per module: TestPlanOnlyLeg -> test_plan_only_leg.py,
+    TestImplementLeg -> test_implement_leg.py, TestContentKeyedResolution ->
+    test_content_keyed_resolution.py, TestRootScopedBase -> test_root_scoped_base.py. Change no
+    assertion and rename nothing.
+  - >-
+    Delete tests/checks/verification/test_validate_vp_replay.py and re-point both registry shard
+    node_ids in the SAME commit.
+  - >-
+    scripts/test_coverage_checker.py -- add the new member to _CONCERN_SPLIT_TEST_PACKAGES; cover
+    it in tests/test_coverage_checker/test_coverage_checker_map.py.
+  - >-
+    tests/checks/verification/validate_scope_boundary/test_plan_legs.py -- update the docstring
+    reference so step 7's sweep passes.
+  - >-
+    Execute the Verification Plan -- run each step, loop until pass; on unrecoverable failure stop
+    and RCA (Decision 55).
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Revert the squash-merge commit. Nothing deploys and no data migrates; the shard YAMLs revert
+  alongside the test files, so the node_ids and the paths they name move back together.
