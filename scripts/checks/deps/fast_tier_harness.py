@@ -11,39 +11,19 @@ import re
 import subprocess
 import sys
 import threading
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
 
 import yaml
 
+from scripts.checks.deps import fast_tier_harness_capture, fast_tier_harness_support
+
+_FILE_LAUNCH = __package__ in {None, ""}
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _QUALIFYING_PATH_RE = re.compile(r"^(?:scripts|src|tests)/.+\.py$")
 _DIFF_STATUSES = frozenset({"A", "M", "D"})
-PLUGIN_NAME = "fast_tier_node_capture"
-PLUGIN_SOURCE = """from __future__ import annotations
-
-import json
-import os
-from pathlib import Path
-
-
-def pytest_runtest_logreport(report):
-    payload = {
-        "nodeid": report.nodeid,
-        "when": report.when,
-        "outcome": report.outcome,
-        "wasxfail": bool(getattr(report, "wasxfail", False)),
-    }
-    path = Path(os.environ["FAST_TIER_NODE_EVENTS"])
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(payload, sort_keys=True) + "\\n")
-"""
-
-
-class HarnessError(RuntimeError):
-    """A fail-loud corpus or execution error."""
+HarnessError = fast_tier_harness_support.HarnessError
 
 
 @dataclass(frozen=True)
@@ -99,22 +79,10 @@ def _load_predictor_pairs(root: dict[str, Any]) -> tuple[dict[str, Any], ...]:
         pair_prs.add(pr)
     loaded = tuple(pairs)
     try:
-        _predictor_report(loaded)
+        fast_tier_harness_support.predictor_report(loaded)
     except (KeyError, TypeError, ValueError) as exc:
         raise HarnessError(f"predictor calibration corpus is incomplete: {exc}") from exc
     return loaded
-
-
-def _predictor_report(pairs: tuple[dict[str, Any], ...]) -> dict[str, Any]:
-    from scripts.checks.deps.fast_tier_harness_support import predictor_report  # noqa: PLC0415
-
-    return predictor_report(pairs)
-
-
-def _ensure_fast_environment(repo_root: Path, cache_root: Path) -> tuple[Path, str]:
-    from scripts.checks.deps.fast_tier_harness_support import ensure_fast_environment  # noqa: PLC0415
-
-    return ensure_fast_environment(repo_root, cache_root)
 
 
 def load_corpus(path: Path) -> Corpus:
@@ -238,110 +206,11 @@ def _overlay_delta(repo_root: Path, worktree: Path, baseline_ref: str, engine_re
         target.chmod(0o755 if mode == "100755" else 0o644)
 
 
-def _is_pytest_execution(command: list[str]) -> bool:
-    return len(command) >= 3 and command[1:3] == ["-m", "pytest"] and "--collect-only" not in command
-
-
-def _instrumented_pytest_command(
-    command: list[str], output_dir: Path, index: int, original_env: dict[str, str] | None
-) -> tuple[list[str], dict[str, str], Path, Path]:
-    junit_path = output_dir / f"pytest-{index}.xml"
-    event_path = output_dir / f"pytest-{index}-nodes.jsonl"
-    junit_path.unlink(missing_ok=True)
-    event_path.unlink(missing_ok=True)
-    env = dict(os.environ)
-    env.update(original_env or {})
-    env["FAST_TIER_NODE_EVENTS"] = str(event_path)
-    env["PYTHONPATH"] = os.pathsep.join(filter(None, (str(output_dir), env.get("PYTHONPATH", ""))))
-    augmented = [*command, f"--junitxml={junit_path}", "-p", PLUGIN_NAME]
-    return augmented, env, junit_path, event_path
-
-
-def _validate_junit(path: Path) -> None:
-    if not path.is_file():
-        raise HarnessError(f"pytest did not produce required JUnit XML: {path}")
-    try:
-        ET.parse(path)
-    except (OSError, ET.ParseError) as exc:
-        raise HarnessError(f"invalid JUnit XML {path}: {exc}") from exc
-
-
-def _read_events(path: Path) -> list[dict[str, Any]]:
-    if not path.is_file():
-        raise HarnessError(f"pytest did not produce native node events: {path}")
-    events: list[dict[str, Any]] = []
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            row = json.loads(line)
-            if not isinstance(row, dict) or not isinstance(row.get("nodeid"), str):
-                raise ValueError("event is not a node mapping")
-            events.append(row)
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        raise HarnessError(f"invalid native node events {path}: {exc}") from exc
-    return events
-
-
-def _event_verdict(event: dict[str, Any]) -> str | None:
-    when = event.get("when")
-    outcome = event.get("outcome")
-    wasxfail = bool(event.get("wasxfail"))
-    if when == "call":
-        if wasxfail:
-            return "xfailed" if outcome == "skipped" else "xpassed"
-        return {"passed": "pass", "failed": "fail", "skipped": "skipped"}.get(outcome)
-    if when in {"setup", "teardown"} and outcome == "failed":
-        return "fail"
-    if when == "setup" and outcome == "skipped":
-        return "skipped"
-    return None
-
-
-def consolidate_nodes(events: list[dict[str, Any]], deferred: dict[str, str]) -> dict[str, str]:
-    priority = {"skipped": 0, "xfailed": 1, "pass": 2, "xpassed": 3, "fail": 4}
-    nodes: dict[str, str] = {}
-    for event in events:
-        verdict = _event_verdict(event)
-        nodeid = event["nodeid"]
-        if verdict is not None and (nodeid not in nodes or priority[verdict] > priority[nodes[nodeid]]):
-            nodes[nodeid] = verdict
-    for nodeid in tuple(nodes):
-        if nodeid.split("::", 1)[0] in deferred:
-            nodes[nodeid] = "deferred"
-    return dict(sorted(nodes.items()))
-
-
-def compare_captures(baseline: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    baseline_nodes = _mapping(baseline.get("nodes"), "baseline.nodes")
-    candidate_nodes = _mapping(candidate.get("nodes"), "candidate.nodes")
-    baseline_deferred = _mapping(baseline.get("deferred_modules"), "baseline.deferred_modules")
-    candidate_deferred = _mapping(candidate.get("deferred_modules"), "candidate.deferred_modules")
-    baseline_failures = list(_sequence(baseline.get("gate_failures"), "baseline.gate_failures"))
-    candidate_failures = list(_sequence(candidate.get("gate_failures"), "candidate.gate_failures"))
-    rows: list[dict[str, str]] = []
-    for nodeid in sorted(set(baseline_nodes) | set(candidate_nodes)):
-        path = nodeid.split("::", 1)[0]
-        before = baseline_nodes.get(nodeid, "deferred" if path in baseline_deferred else "not-collected")
-        after = candidate_nodes.get(nodeid, "deferred" if path in candidate_deferred else "not-collected")
-        rows.append({"nodeid": nodeid, "baseline": before, "candidate": after})
-    changed = [row for row in rows if row["baseline"] != row["candidate"]]
-    failures_changed = baseline_failures != candidate_failures
-    return {
-        "union_node_count": len(rows),
-        "changed_node_count": len(changed),
-        "nodes": rows,
-        "changed_nodes": changed,
-        "deferred_modules": {"baseline": baseline_deferred, "candidate": candidate_deferred},
-        "gate_failures": {"baseline": baseline_failures, "candidate": candidate_failures},
-        "gate_failures_changed": failures_changed,
-        "difference_count": len(changed) + int(failures_changed),
-    }
-
-
-def _file_sha256(path: Path) -> str | None:
-    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
-
-
 def _worker(repo_root: Path, diff_path: Path, output_path: Path) -> None:
+    if _FILE_LAUNCH:
+        for module_name in tuple(sys.modules):
+            if module_name == "scripts" or module_name.startswith("scripts."):
+                del sys.modules[module_name]
     sys.path.insert(0, str(repo_root))
     from scripts.checks import (
         _common,  # noqa: PLC0415
@@ -351,7 +220,9 @@ def _worker(repo_root: Path, diff_path: Path, output_path: Path) -> None:
 
     output_dir = output_path.parent
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / f"{PLUGIN_NAME}.py").write_text(PLUGIN_SOURCE, encoding="utf-8")
+    (output_dir / f"{fast_tier_harness_capture.PLUGIN_NAME}.py").write_text(
+        fast_tier_harness_capture.PLUGIN_SOURCE, encoding="utf-8"
+    )
     entries = json.loads(diff_path.read_text(encoding="utf-8"))
     selection = derive_affected_tests([(row["status"], row["path"]) for row in entries], repo_root=repo_root)
     original_run = _common.run
@@ -360,16 +231,18 @@ def _worker(repo_root: Path, diff_path: Path, output_path: Path) -> None:
     capture_lock = threading.Lock()
 
     def instrumented_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
-        if not _is_pytest_execution(command):
+        if not fast_tier_harness_capture.is_pytest_execution(command):
             return original_run(command, **kwargs)
         with capture_lock:
             index = len(command_rows)
             command_rows.append({"index": index, "state": "running"})
-        augmented, env, junit_path, event_path = _instrumented_pytest_command(command, output_dir, index, kwargs.get("env"))
+        augmented, env, junit_path, event_path = fast_tier_harness_capture.instrumented_pytest_command(
+            command, output_dir, index, kwargs.get("env")
+        )
         kwargs["env"] = env
         result = original_run(augmented, **kwargs)
-        _validate_junit(junit_path)
-        events = _read_events(event_path)
+        fast_tier_harness_capture.validate_junit(junit_path)
+        events = fast_tier_harness_capture.read_events(event_path)
         with capture_lock:
             all_events.extend(events)
             command_rows[index] = {
@@ -397,13 +270,13 @@ def _worker(repo_root: Path, diff_path: Path, output_path: Path) -> None:
         "selection": selection["manifest"],
         "gate_failures": failed,
         "commands": command_rows,
-        "nodes": consolidate_nodes(all_events, deferred),
+        "nodes": fast_tier_harness_capture.consolidate_nodes(all_events, deferred),
         "deferred_modules": deferred,
         "environment": {
             "python": sys.executable,
             "python_version": sys.version,
-            "requirements_sha256": _file_sha256(repo_root / "requirements.txt"),
-            "requirements_fast_sha256": _file_sha256(repo_root / "requirements-fast.txt"),
+            "requirements_sha256": fast_tier_harness_capture.file_sha256(repo_root / "requirements.txt"),
+            "requirements_fast_sha256": fast_tier_harness_capture.file_sha256(repo_root / "requirements-fast.txt"),
         },
     }
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -435,7 +308,7 @@ def capture_case(
         encoding="utf-8",
     )
     with _prepared_worktree(repo_root, case, baseline_ref, engine_ref) as worktree:
-        environment_python, environment_key = _ensure_fast_environment(worktree, environment_root)
+        environment_python, environment_key = fast_tier_harness_support.ensure_fast_environment(worktree, environment_root)
         result = subprocess.run(
             [
                 str(environment_python),
@@ -446,6 +319,7 @@ def capture_case(
                 str(output_path),
             ],
             cwd=worktree,
+            env={**os.environ, "PYTHONPATH": os.pathsep.join((str(repo_root), os.environ.get("PYTHONPATH", "")))},
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -498,14 +372,20 @@ def run_comparison(
             artifact_root / case.case_id / "candidate" / "capture.json",
             environment_root,
         )
-        results.append({"id": case.case_id, "pr": case.pr, "comparison": compare_captures(baseline, candidate)})
+        results.append(
+            {
+                "id": case.case_id,
+                "pr": case.pr,
+                "comparison": fast_tier_harness_capture.compare_captures(baseline, candidate),
+            }
+        )
     payload = {
         "schema_version": 1,
         "corpus_base_sha": corpus.base_sha,
         "baseline_ref": baseline_ref,
         "candidate_ref": candidate_ref,
         "stratum_i": {"case_count": len(results), "cases": results},
-        "stratum_p": _predictor_report(corpus.predictor_pairs),
+        "stratum_p": fast_tier_harness_support.predictor_report(corpus.predictor_pairs),
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
