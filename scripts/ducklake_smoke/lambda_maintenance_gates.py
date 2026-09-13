@@ -50,14 +50,29 @@ def lambda_maintenance_merge(*, profile: str | None = None, region: str = "eu-we
     )
 
 
+_REQUIRED_GUARD_STATS_KEYS = frozenset(
+    {
+        "g1_would_delete_candidates",
+        "g2_snapshots_remaining",
+        "g4_would_delete_files",
+        "g4_would_delete_bytes",
+        "g4_deferred_files",
+        "g4_deferred_bytes",
+        "g4_bounded",
+    }
+)
+
+
 def lambda_maintenance_gc(*, profile: str | None = None, region: str = "eu-west-2") -> None:
-    """T2.18 c9: invoke weekly GC; assert S3 object count stable/lower and breaker NOT tripped.
+    """T2.18 c9: invoke weekly GC; assert the guard-stats RESPONSE SHAPE, not deletion volume.
 
     Invokes action=gc on the live maintenance-smoke Lambda. force_recreate_tables=True creates the
-    smoke DuckLake tables if absent (same idempotent-on-fresh-environment handling as
-    lambda_maintenance_merge; rec-2115 gap-1) so this gate does not 502 on a fresh smoke catalog.
-    Asserts ok=True, breaker_tripped=False, and files_after <= files_before (or files_before == 0
-    when the smoke tables are empty).
+    smoke DuckLake tables if absent (rec-2115 gap-1) so this gate does not 502 on a fresh smoke
+    catalog. Discriminates a pre-fix build on shape: the body must carry the G1-G4 guard_stats
+    shape and must NOT carry the retired file_fraction / breaker_stats keys. Shape is the right
+    discriminator because this gate runs on EVERY push against a CI-fresh smoke catalog where
+    files_cleaned is structurally 0 -- a live files_cleaned > 0 assertion would regress every
+    subsequent DuckLake deploy.
     """
     maint_url = core._function_url("maintenance_smoke")
     body = core._ok_json(
@@ -65,9 +80,14 @@ def lambda_maintenance_gc(*, profile: str | None = None, region: str = "eu-west-
     )
     if not body.get("ok"):
         raise core.SmokeTestFailure(f"MAINTENANCE_GC FAIL: {body}")
-    breaker_stats = body.get("breaker_stats", {})
-    if breaker_stats.get("breaker_tripped"):
-        raise core.SmokeTestFailure(f"MAINTENANCE_GC FAIL: circuit breaker tripped unexpectedly: {body}")
+    if "file_fraction" in body or "breaker_stats" in body:
+        raise core.SmokeTestFailure(f"MAINTENANCE_GC FAIL: response still carries a retired breaker key: {body}")
+    guard_stats = body.get("guard_stats")
+    if not isinstance(guard_stats, dict):
+        raise core.SmokeTestFailure(f"MAINTENANCE_GC FAIL: response is missing the guard_stats shape: {body}")
+    missing = _REQUIRED_GUARD_STATS_KEYS - set(guard_stats)
+    if missing:
+        raise core.SmokeTestFailure(f"MAINTENANCE_GC FAIL: guard_stats is missing keys {sorted(missing)}: {body}")
     files_before = body.get("files_before", 0)
     files_after = body.get("files_after", 0)
     if files_before > 0 and files_after > files_before:
@@ -75,32 +95,28 @@ def lambda_maintenance_gc(*, profile: str | None = None, region: str = "eu-west-
             f"MAINTENANCE_GC FAIL: files_after ({files_after}) > files_before ({files_before}) -- storage grew"
         )
     print(
-        f"MAINTENANCE_GC OK files_before={files_before} files_after={files_after} "
-        f"breaker_tripped=false snapshots_expired={body.get('snapshots_expired', 0)} "
-        f"files_cleaned={body.get('files_cleaned', 0)} orphans_deleted={body.get('orphans_deleted', 0)}"
+        f"MAINTENANCE_GC OK files_before={files_before} files_after={files_after} guard_stats={guard_stats} "
+        f"snapshots_expired={body.get('snapshots_expired', 0)} files_cleaned={body.get('files_cleaned', 0)} "
+        f"orphans_deleted={body.get('orphans_deleted', 0)}"
     )
 
 
 def lambda_maintenance_breaker(*, profile: str | None = None, region: str = "eu-west-2") -> None:
-    """T2.18 c9: forced-threshold circuit-breaker trip; assert loud-fail (5xx) and no deletion.
+    """T2.18 c9: forced G1 trip; assert loud-fail (5xx) and no deletion.
 
-    Invokes action=breaker_probe on the maintenance-smoke Lambda. Expects a 500 response with
-    breaker_tripped=True. The MaintenanceBreakerTrip metric must be emitted (asserted via the
-    response payload, not CloudWatch alarm state -- the alarm-state transition is timing-dependent
-    and has no action target in FP-A, so it is not the load-bearing assertion here).
+    Invokes action=breaker_probe on the maintenance-smoke Lambda. The probe forces a G1
+    reachability violation via an internal module-level constant, independent of the smoke
+    catalog's real contents, so it must ALWAYS trip -- there is no early-return-OK branch here.
+    A 200/breaker_tripped=False response is itself a gate failure: the retired file_fraction=0.0
+    probe tripped only when at least one deletable file existed, so an empty smoke catalog
+    silently no-op'd it and this gate passed vacuously on every push (the defect this plan closes).
     """
     maint_url = core._function_url("maintenance_smoke")
     resp = core._sigv4_invoke(maint_url, {"action": "breaker_probe"}, profile=profile, region=region)
     body = resp.json()
-    if resp.status_code == 200 and body.get("breaker_tripped") is False:
-        print(
-            "MAINTENANCE_BREAKER OK (no deletable files during probe; breaker did not trip) "
-            "-- metric not emitted (correct: nothing to delete)"
-        )
-        return
     if resp.status_code != 500:
         raise core.SmokeTestFailure(
-            f"MAINTENANCE_BREAKER FAIL: expected 500 (breaker trip) but got {resp.status_code}: {body}"
+            f"MAINTENANCE_BREAKER FAIL: expected 500 (forced G1 trip) but got {resp.status_code}: {body}"
         )
     if not body.get("breaker_tripped"):
         raise core.SmokeTestFailure(f"MAINTENANCE_BREAKER FAIL: response lacks breaker_tripped=True: {body}")

@@ -65,8 +65,20 @@ def test_lambda_maintenance_merge_not_ok_fails(monkeypatch):
         smoke.lambda_maintenance_merge()
 
 
+_GUARD_STATS_OK = {
+    "g1_would_delete_candidates": 2,
+    "g2_snapshots_remaining": 3,
+    "g4_would_delete_files": 2,
+    "g4_would_delete_bytes": 200,
+    "g4_deferred_files": 0,
+    "g4_deferred_bytes": 0,
+    "g4_bounded": False,
+}
+
+
 def test_lambda_maintenance_gc_ok(monkeypatch, capsys):
-    """VP10: gc with force_recreate_tables=True (rec-2115 gap-1); asserts files_after <= files_before."""
+    """T2.18 c9: gc with force_recreate_tables=True (rec-2115 gap-1); asserts the guard-stats shape
+    and files_after <= files_before."""
     monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
     invoked = {}
 
@@ -76,7 +88,7 @@ def test_lambda_maintenance_gc_ok(monkeypatch, capsys):
             200,
             {
                 "ok": True,
-                "breaker_stats": {"breaker_tripped": False},
+                "guard_stats": _GUARD_STATS_OK,
                 "files_before": 5,
                 "files_after": 3,
                 "snapshots_expired": 1,
@@ -94,7 +106,8 @@ def test_lambda_maintenance_gc_ok(monkeypatch, capsys):
 
 def test_lambda_maintenance_gc_fresh_smoke_catalog_ok(monkeypatch, capsys):
     """rec-2115 gap-1: force_recreate_tables=True means gc no longer 502s on a fresh smoke catalog
-    (files_before=0 when the smoke tables were just created)."""
+    (files_before=0 when the smoke tables were just created) -- this is the fresh-catalog case the
+    deployed gate hits on EVERY push, so a files_cleaned=0 body must keep passing."""
     monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
     monkeypatch.setattr(
         core,
@@ -103,7 +116,7 @@ def test_lambda_maintenance_gc_fresh_smoke_catalog_ok(monkeypatch, capsys):
             200,
             {
                 "ok": True,
-                "breaker_stats": {"breaker_tripped": False},
+                "guard_stats": {**_GUARD_STATS_OK, "g1_would_delete_candidates": 0, "g4_would_delete_files": 0},
                 "files_before": 0,
                 "files_after": 0,
                 "snapshots_expired": 0,
@@ -116,15 +129,51 @@ def test_lambda_maintenance_gc_fresh_smoke_catalog_ok(monkeypatch, capsys):
     assert "MAINTENANCE_GC OK files_before=0 files_after=0" in capsys.readouterr().out
 
 
-def test_lambda_maintenance_gc_breaker_tripped_fails(monkeypatch):
-    """VP10: loud-fail when the circuit breaker trips unexpectedly."""
+def test_gc_gate_fails_on_pre_fix_breaker_stats_shape(monkeypatch):
+    """T2.18 c9: the gate must discriminate a pre-fix build on RESPONSE SHAPE. A body carrying the
+    retired breaker_stats key (with no guard_stats at all) is exactly what the shipped
+    (pre-fix) Lambda would have returned, and must fail this gate -- five consecutive green CD
+    runs passed this shape unconditionally while the underlying breaker was fail-open (rec-3772)."""
     monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
     monkeypatch.setattr(
         core,
         "_sigv4_invoke",
-        lambda url, payload, **kw: _Resp(200, {"ok": True, "breaker_stats": {"breaker_tripped": True}}),
+        lambda url, payload, **kw: _Resp(
+            200,
+            {
+                "ok": True,
+                "breaker_stats": {"breaker_tripped": False},
+                "files_before": 5,
+                "files_after": 3,
+                "snapshots_expired": 1,
+                "files_cleaned": 2,
+                "orphans_deleted": 0,
+            },
+        ),
     )
-    with pytest.raises(smoke.SmokeTestFailure, match="circuit breaker tripped"):
+    with pytest.raises(smoke.SmokeTestFailure, match="retired breaker key"):
+        smoke.lambda_maintenance_gc()
+
+
+def test_gc_gate_fails_on_missing_guard_stats(monkeypatch):
+    """A post-fix-shaped body missing guard_stats entirely (e.g. a typo'd key) must also fail."""
+    monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
+    monkeypatch.setattr(
+        core,
+        "_sigv4_invoke",
+        lambda url, payload, **kw: _Resp(
+            200,
+            {
+                "ok": True,
+                "files_before": 5,
+                "files_after": 3,
+                "snapshots_expired": 1,
+                "files_cleaned": 2,
+                "orphans_deleted": 0,
+            },
+        ),
+    )
+    with pytest.raises(smoke.SmokeTestFailure, match="missing the guard_stats shape"):
         smoke.lambda_maintenance_gc()
 
 
@@ -138,3 +187,47 @@ def test_lambda_maintenance_gc_not_ok_fails(monkeypatch):
     )
     with pytest.raises(smoke.SmokeTestFailure, match="MAINTENANCE_GC FAIL"):
         smoke.lambda_maintenance_gc()
+
+
+# ---------------------------------------------------------------------------
+# lambda_maintenance_breaker (T2.18 c9 forced G1 trip gate)
+# ---------------------------------------------------------------------------
+
+
+def test_lambda_maintenance_breaker_ok(monkeypatch, capsys):
+    """The forced probe must return 500 + breaker_tripped=True -- the gate's happy path."""
+    monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
+    monkeypatch.setattr(
+        core,
+        "_sigv4_invoke",
+        lambda url, payload, **kw: _Resp(500, {"ok": False, "breaker_tripped": True, "error_type": "breaker"}),
+    )
+    smoke.lambda_maintenance_breaker()
+    assert "MAINTENANCE_BREAKER OK status=500 breaker_tripped=true" in capsys.readouterr().out
+
+
+def test_breaker_gate_fails_when_probe_does_not_trip(monkeypatch):
+    """T2.18 c9: no early-return-OK branch. A 200 + breaker_tripped=False response -- exactly what
+    the retired file_fraction=0.0 probe returned on an empty smoke catalog -- must now FAIL the
+    gate outright (the vacuity this plan closes: this gate previously passed unconditionally on a
+    fresh/empty smoke catalog)."""
+    monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
+    monkeypatch.setattr(
+        core,
+        "_sigv4_invoke",
+        lambda url, payload, **kw: _Resp(200, {"ok": True, "breaker_tripped": False}),
+    )
+    with pytest.raises(smoke.SmokeTestFailure, match="expected 500"):
+        smoke.lambda_maintenance_breaker()
+
+
+def test_lambda_maintenance_breaker_missing_breaker_tripped_fails(monkeypatch):
+    """A 500 response that lacks breaker_tripped=True is not proof of the forced trip."""
+    monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
+    monkeypatch.setattr(
+        core,
+        "_sigv4_invoke",
+        lambda url, payload, **kw: _Resp(500, {"ok": False, "error_type": "runtime"}),
+    )
+    with pytest.raises(smoke.SmokeTestFailure, match="lacks breaker_tripped=True"):
+        smoke.lambda_maintenance_breaker()
