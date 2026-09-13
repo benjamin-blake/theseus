@@ -24,10 +24,11 @@ scope:
   - file: scripts/checks/verification/validate_vp_replay.py
     action: Modify
     purpose: >-
-      Inverted-polarity plan-only leg over graduate pre-deploy steps, the five-constant outcome
+      Inverted-polarity plan-only leg over graduate pre-deploy steps, the outcome
       vocabulary -- FOUR classes (tautological, target_absent, assertion_failed, unmeasurable),
       where unmeasurable carries five arms including timeout, never five classes -- and its
-      in-dispatch self-test, the negated-sweep lint, the shared cross-leg budget
+      in-dispatch self-test, the negated-sweep lint, the static scripts.validate recursion
+      refusal, the shared cross-leg budget
       counter with a re-derived step cap, and the widened accounting declaration. Projected 203 ->
       350-430 SLOC, under the 500 default; watch validate_cc_limits (CC 20) on the classifier.
   - file: tests/checks/verification/validate_vp_replay/conftest.py
@@ -36,6 +37,8 @@ scope:
       Extend the package conftest with any fixture the three new modules need. In scope because
       validate_no_cross_test_imports makes conftest the only legal sharing channel between test
       modules, so without this row the new modules could neither reach a shared helper nor add one.
+      Also correct the delivered _ResolvedFixture.build annotation, which reads -> Path while the
+      body returns tuple[Path, str]; all three new modules consume that helper.
   - file: tests/checks/verification/validate_vp_replay/test_red_before_leg.py
     action: Create
     purpose: >-
@@ -43,7 +46,9 @@ scope:
       non-execution, and the post-implementation-edit shape that must NOT be refused.
   - file: tests/checks/verification/validate_vp_replay/test_lint_and_budget.py
     action: Create
-    purpose: Negated-sweep lint (including fail-open and precedence) and the shared budget guard.
+    purpose: >-
+      The static step lints -- negated sweep (including fail-open and precedence) and the
+      scripts.validate recursion refusal -- and the shared budget guard.
   - file: tests/checks/verification/validate_vp_replay/test_accounting_and_self_test.py
     action: Create
     purpose: >-
@@ -108,7 +113,7 @@ acceptance_criteria:
     _common.get_status_aware_diff -- the primitive validate_plan_documents._added_plan_names
     already uses) AND whose implementation_declared is falsy. Both conjuncts are required. Any
     plan MODIFIED rather than added is exempt regardless of its declared state, which covers the
-    whole post-implementation-edit population, not merely the 83 plans carrying the field.
+    whole post-implementation-edit population, not merely the 87 plans carrying the field.
   - >-
     A graduate step that is genuinely red before passes, and its outcome is reported as
     target_absent or assertion_failed as two distinct classes, neither of which fails.
@@ -120,12 +125,32 @@ acceptance_criteria:
   - waive and not-applicable steps are not executed by the plan-only leg and produce no warning.
   - >-
     On the SAME eligible plan set the inverted leg uses (added A or ?? AND implementation_declared
-    falsy) -- a MODIFIED or field-absent legacy plan carrying a negated sweep is NOT linted -- the
+    falsy) -- an ALREADY-MERGED (not-added) plan carrying a negated sweep is NOT linted, whether it
+    declares implementation_declared true or omits the field entirely; field-absence alone does not
+    exempt, since it SATISFIES the falsy conjunct and only not-added exempts -- the
     static negated-sweep lint runs over EVERY pre-deploy step regardless of disposition -- its
     distinct value, since the dynamic leg executes only graduate steps -- rejecting a negated rg or
     grep naming an absent path and passing any command it cannot confidently parse. When the lint
     and the tautology leg both fire on one step, the tautology failure is reported and the lint
     finding is suppressed (no double-reporting).
+  - >-
+    A graduate pre-deploy step whose command INVOKES scripts.validate is refused STATICALLY,
+    before execution, on that same eligible plan set -- the recursion refusal constraints[6]
+    requires, and the mechanism steps 17 and 18 lean on when they waive rather than graduate.
+    It keys on the invocation shape (an argv head of `-m scripts.validate` or
+    `scripts/validate.py`), never a bare scripts[/.]validate substring, and it is PROPHYLACTIC:
+    that rule selects 0 of 775 merged graduate pre-deploy steps, so it must be proven on fixtures
+    and cannot be proven on the corpus. The empty population is not evidence the rule is too
+    narrow -- it is what constraints[6] explains. The substring rule would instead refuse 11 of
+    11, every one a false positive: 8 steps IMPORT scripts.validate (which dispatches nothing --
+    the module is __main__-guarded), and 3 carry the string without executing it at all -- TWO read scripts/validate.py to count its SLOC
+    and ONE greps it for a check function NAME. Build the lint fixtures from exactly these three
+    shapes: an earlier draft listed a tests/validate/ path here, which scripts[/.]validate does not
+    match at all, so a fixture built from it would be flagged by neither rule and would discriminate
+    nothing -- a non-discriminating test inside the plan that exists to refuse them. That is the over-detection the lint's fail-open rule
+    exists to avoid, at a 100 percent false-positive rate. Unlike the negated-sweep lint, this refusal binds the GRADUATE partition
+    only: a waive or not-applicable step may name scripts.validate freely, since nothing
+    executes it.
   - >-
     One shared aggregate counter spans both legs within a dispatch. MAX_REPLAYED_STEPS is
     re-derived from the measured per-step cost so the 120s wall clock, not the step count, is the
@@ -133,9 +158,11 @@ acceptance_criteria:
     MAX_AGGREGATE_SECONDS and PER_STEP_TIMEOUT_SECONDS are unchanged, so no SECOND in-tier
     allowance is installed. Decision 182 point 2's 150s figure is preserved for the replay phase
     only: the classifier self-test runs unconditionally before any early-return and sits outside
-    both constants, so the check's true green maximum is 150s plus a bounded self-test cost. Either
-    fold that cost into MAX_AGGREGATE_SECONDS or state the bounded figure -- do not restate 150 as
-    if unchanged.
+    both constants, so the check's true green maximum is 150s plus a bounded self-test cost. State
+    that bounded figure; do NOT restate 150 as if unchanged, and do NOT fold the cost into
+    MAX_AGGREGATE_SECONDS. Moving either constant is Decision 182 reversal condition (b) verbatim
+    and obliges re-deriving the fast-tier cap as CEILING - NON_TEST in the same edit, which this
+    plan does not scope (scripts/checks/deps/selection_budget.py is not a scope row).
   - >-
     The terminal declaration counts plans acted on in EITHER leg under a new unit naming that
     grain, and a plan-only PR whose plan carries ZERO graduate steps declares vacuous, not
@@ -210,8 +237,9 @@ verification_plan:
       implementation_declared true is not "resolved"; verified against merged main, 45822ef7
       (#1121) edits PLAN-backlog-health-detection.yaml, declared true and untouched by that diff,
       with 8 graduate steps whose targets all exist. (b) The LARGER shape: implementation_declared
-      landed 2026-08-17 and 335 of 418 plans do not carry it at all, so it reads falsy forever --
-      80 of those carry graduate steps and 56 name a live tests/ path, so keying on the field
+      landed 2026-08-17 and 335 of 422 plans do not carry it at all, so it reads falsy forever --
+      80 of those carry graduate steps and 54-59 name a live tests/ path (54 requiring a .py
+      suffix, 59 on a loose path token), so keying on the field
       alone hard-fails any PR editing them. Both are exempt only under the added-in-diff conjunct.
       The class needs a fixture per shape: a declared-true modified plan, and a FIELD-ABSENT legacy
       plan whose graduate steps are green.
@@ -261,26 +289,33 @@ verification_plan:
   - step: 7
     phase: pre-deploy
     hermetic: true
-    action: The negated-sweep lint flags a missing path, fails open, defers to the dynamic leg, and
-      lints only eligible plans
-    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_lint_and_budget.py::TestNegatedSweepLint
+    action: The static step lints -- negated sweep and the scripts.validate recursion refusal --
+      flag, fail open, defer to the dynamic leg, and bind only eligible plans
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_lint_and_budget.py::TestStaticStepLints
       -q
     expected: all tests in the class pass
     fix_if: >-
       Verified in-container: rg exits 2 on a missing path and shell negation maps that to 0. Over-
       detection is the worse failure -- a crude extractor produced visible false positives on
       trailing punctuation and multi-word tokens across the corpus -- so an ambiguous parse must
-      pass. FOUR arms, and the fourth is the one nothing else reaches: (i) missing-path detection,
-      (ii) fail-open on an unparseable command, (iii) precedence -- when the tautology leg fires on
-      the same step the lint finding is suppressed -- and (iv) SCOPING: a MODIFIED plan and a
-      FIELD-ABSENT legacy plan, each carrying a negated sweep, are NOT linted. Arm (iv) has no
+      pass. FIVE arms; the fourth and fifth are the ones nothing else reaches: (i) missing-path
+      detection, (ii) fail-open on an unparseable command, (iii) precedence -- when the tautology
+      leg fires on the same step the lint finding is suppressed -- (iv) SCOPING: a MODIFIED plan
+      and a FIELD-ABSENT legacy plan, each carrying a negated sweep, are NOT linted -- and (v) the
+      scripts.validate RECURSION REFUSAL: a graduate step invoking it is refused, while a
+      graduate step merely carrying the substring without invoking it (the acceptance criterion
+      names all 11 merged false-positive shapes, 8 of them imports of a __main__-guarded module)
+      and a waive step invoking it outright both pass. The two lints differ in disposition scope on purpose -- negated sweep runs over
+      every pre-deploy step, the refusal over the graduate partition alone -- so arm (v) must
+      assert the waive case, not only the graduate one. Arm (iv) has no
       other oracle, since step 17 gives no signal (the implement PR MODIFIES this plan rather than
       adding it) and this plan carries no negated sweep of its own. Without it an implementation
       satisfying every other criterion can still hard-fail any PR merely editing one of the
-      ~115-126 plans carrying such a command. Draw the fixture from the waive/not-applicable
-      population (~49 plans), the lint's own distinct-value case.
+      130 plans carrying such a command. Draw the fixture from the waive/not-applicable
+      population that also carries a negated sweep (83 commands across 51 plans), the lint's own
+      distinct-value case.
     graduation: graduate
-    graduation_check_id: vp-red-before-negated-sweep-lint
+    graduation_check_id: vp-red-before-static-step-lints
   - step: 8
     phase: pre-deploy
     hermetic: true
@@ -290,12 +325,19 @@ verification_plan:
     expected: all tests in the class pass
     fix_if: >-
       MAX_REPLAYED_STEPS is 20 today and this plan alone carries 14 graduate steps, so two plans in
-      one PR hit the count cap -- and measured per-step cost is 0.32s absent / 1.06s live, meaning
+      one PR hit the count cap -- and measured per-step cost is 0.30s when the target is ABSENT (stable, 0.29-0.39s over three runs)
+      while LIVE cost is step-dependent and ranged 0.8-4.6s, so derive the cap from the worst and
+      never the fastest -- even at 4.6s the count cap binds first (20 x 4.6 = 92s, inside the 120s
+      wall clock), meaning
       the count cap binds long before the 120s wall clock. Re-derive the cap from that cost so the
       wall clock is the real constraint, and leave MAX_AGGREGATE_SECONDS and
       PER_STEP_TIMEOUT_SECONDS untouched so Decision 182 point 2's 150s figure stays literally
-      true. The legs are exclusive per plan but NOT per dispatch: 8 of the last 285 plan-touching
-      commits touch more than one plan file. Exhaustion appends a loud failure; it never truncates.
+      true. The legs are exclusive per plan but NOT per dispatch: under the stated rule (distinct docs/plans/PLAN-*.yaml paths in one commit -- the _common.PLAN_PATH_RE population, whose ANCHORED docs/plans/PLAN- prefix structurally excludes
+      docs/plans/reports/ -- the match fails on the literal prefix, never reaching the [^/]+ an
+      earlier draft credited, which only forbids a slug spanning a slash -- merges included) 9 of the last 285 plan-touching commits touch more than one plan file, and 5 of them
+      ADD more than one, always exactly two -- the inverted leg's real multi-plan dispatch. An
+      earlier draft said 14 by counting OVERSEER run-logs under docs/plans/reports/ as plans, a
+      population no plan-resolution path can ever return. Exhaustion appends a loud failure; it never truncates.
     graduation: graduate
     graduation_check_id: vp-red-before-step-cap-derived-from-cost
   - step: 9
@@ -406,7 +448,11 @@ verification_plan:
       _REINLINE_MARKERS is a hardcoded dict in the check module keyed on the exact stub heading, so
       a layer4_relocation_map row alone buys no guard. Both blocks must be level-two headings
       first: _slice_section slices heading-to-next-level-two, so as bold sub-blocks the first
-      stub's slice swallows the second's body and both guards pass vacuously. Two conjuncts on
+      stub's slice swallows the second's body and both guards pass vacuously. This command is an
+      && compound AND this step is graduate: _replay_step runs it with shell=True, but
+      CommandExitZeroCheck.run hands its list[str] to subprocess.run with NO shell, so the
+      graduated check_spec must materialize as ["bash", "-c", "<the whole compound>"] -- a
+      shlex-split argv would run the pytest node and silently drop everything after the &&. Two conjuncts on
       purpose: the mirror node proves the marker entries behave on a fixture repo, the live
       assertion proves they are actually wired to the real stubs -- neither alone is an oracle.
     graduation: graduate
@@ -468,7 +514,8 @@ verification_plan:
     graduation: waive
     graduation_waiver_reason: >-
       Recursion: a standing shard invoking scripts.validate would re-enter the tier dispatching it,
-      and this plan's own lint refuses a graduate step whose command matches scripts.validate. Not
+      and this plan's own lint refuses a graduate step whose command INVOKES scripts.validate at its argv
+      head. Not
       not-applicable -- the command is a single command_exit_zero shape, and claiming the
       no-obligation row for it would be the classification gaming 12o exists to catch.
   - step: 18
@@ -564,8 +611,13 @@ constraints:
     net_new_v4_implementation_plan_paths already derives this exact eligible population and is
     already dispatched at plan-PR time via validate_plan_scope_closure. It fails the same charter
     test for the same reason -- it owns no replay instrument, no per-step timeout and no aggregate
-    budget, and it is a read-only registration-closure engine that executes nothing. The eligibility
-    predicate itself is the one piece that could live in scripts/checks/_common.py, the sole home
+    budget, and it is a read-only registration-closure engine that executes nothing. Re-run that charter test on the two STATIC lints and it comes out differently on one conjunct: they
+    share none of the replay instrument, so plan_obligations' "executes nothing" reads as a match
+    rather than a disqualifier. They are co-located here anyway, for a reason the test does not
+    capture: the precedence rule (a tautology failure SUPPRESSES the lint finding on the same step)
+    needs both legs inside one dispatch, and a second module would install a second Decision 182 in-
+    tier allowance. The eligibility predicate itself is the one piece that could live in
+    scripts/checks/_common.py, the sole home
     Decision 148 established for plan-resolution helpers; it is kept inline here deliberately, since
     _common.py is not in scope and a one-call predicate does not yet have a second consumer.
   - >-
@@ -575,24 +627,50 @@ constraints:
     The eligibility predicate is diff status (added: A or ??) AND implementation_declared falsy.
     Never resolve_declared_plans' edge-trigger, and never implementation_declared alone. The
     negated-sweep lint binds the SAME plan set -- it widens the step disposition, never the plan
-    population. Measured why that matters: 117-126 of 418 plans carry a negated rg/grep
-    pre-deploy command depending on the command-boundary rule, so an unscoped lint would hard-fail any PR merely editing one of them, which is this
+    population. Measured why that matters, under the stated rule `! rg` / `! grep` (a bare
+    rg/grep-mention rule instead returns 287 plans, which is why the rule is stated rather than
+    the digit pinned): 208 negated-sweep pre-deploy commands span 130 of 422 plans, so an
+    unscoped lint would hard-fail any PR merely editing one of them, which is this
     same defect class on the second leg. Measured:
-    that field landed 2026-08-17 and 335 of 418 plans do not carry it, so it reads falsy forever
-    on every legacy plan; 80 of those carry graduate pre-deploy steps, and 53-56 name a tests/ path
-    that exists today (the range is the token-extraction rule: 53 requiring a .py suffix, 56 on a
-    loose path token -- re-measure with one stated rule rather than trusting a pinned digit). Keying on the field alone would route every one of them into the inverted
+    that field landed 2026-08-17 and 335 of 422 plans do not carry it, so it reads falsy forever
+    on every legacy plan; 80 of those carry graduate pre-deploy steps, and 54-59 name a tests/ path
+    that exists today (the range is the token-extraction rule: 54 requiring the EXTRACTED PATH to end in .py -- a pytest nodeid does not, so the rule must split on
+    :: first, exactly as the loose arm does --,
+    59 on any tests/ path token with trailing punctuation stripped -- state the rule beside the
+    digit, since every unstated-rule figure in this plan has had to be re-measured at least once). Keying on the field alone would route every one of them into the inverted
     leg and hard-fail any PR that edits them. resolve_declared_plans stays the implement leg's
     predicate, unchanged.
   - >-
     graduation graduate is the partition key, never the hermetic flag -- hermetic carries two
-    meanings (replay cost and creds-freeness) and cannot partition: 258 of 739 graduate steps are
-    not marked hermetic. The recursion/credential hazard is measured and empirically empty today: 0
-    of those 258 invoke scripts.validate; 195 are pytest and the 63-step residue is 28 other
-    bin/venv-python, 8 grep, 4 test and assorted shell, none making a real AWS call. Empirically
-    empty is not structurally prevented, so the contract carries the recursion warning currently at
-    SKILL.md:202 re-keyed from the hermetic partition to the graduate partition, plus a static
-    refusal of a graduate step whose command matches scripts.validate.
+    meanings (replay cost and creds-freeness) and cannot partition: roughly 280 of 775 graduate
+    steps are not marked hermetic. The recursion hazard is EMPIRICALLY EMPTY on the graduate
+    partition today, and the refusal is PROPHYLACTIC rather than remedial. Say it that way: three
+    successive drafts mismeasured this one figure, each landing a digit that did not match its own
+    stated rule. The first filtered to NON-hermetic steps -- the complement of the partition this
+    plan selects -- and reported 0. The second matched a loose scripts[/.]validate substring and
+    reported 11 across 6 plans. The third stated an argv-head rule but reported the IMPORT rule's
+    count, 8 across 5. Measured with the argv-head rule the refusal must itself use: 0 of 775
+    graduate pre-deploy steps invoke scripts.validate. A further 8 across 5 plans (all
+    hermetic: true, all already-merged) IMPORT the module, and scripts/validate.py ends in an
+    `if __name__ == "__main__": main()` guard, so importing it dispatches nothing -- they are
+    outside the refusal by design, not oversight, and widening the rule to catch them would refuse
+    8 harmless steps.
+    Prophylactic is defensible here, and the evidence is measured rather than counterfactual. The shape
+    is not rare, it is near-universal: 497 pre-deploy steps across 362 of 422 plans invoke -m
+    scripts.validate, and validate_handoff_full_tier makes one MANDATORY in all 120 schema_v4 plans
+    (120 of 120 declare full_validation_required_before_commit and 120 of 120 carry such a step).
+    Zero of the 497 are marked graduate -- 204 not-applicable, 113 waive, 180 pre-T3.21 with no
+    field. So the population is empty because nobody has flipped a disposition, not because the
+    shape is unreachable, and the flip is under active pressure: 12o treats not-applicable as
+    suspect on a single command_exit_zero shape, which bin/venv-python -m scripts.validate plainly
+    is, so those 204 are exactly what 12o pushes toward graduate. The refusal is the backstop for
+    497 one-flip sites. The hazard is also created BY this plan's own leg -- before it a plan-only
+    PR executes nothing. Steps 17 and 18 of
+    this very plan are the first two commands that would trigger it, and they are waived for
+    exactly that reason. So the contract carries the recursion warning currently at SKILL.md:202,
+    re-keyed from the hermetic partition to the graduate partition, AND the static refusal -- and
+    the refusal's tests are fixture-only by necessity, which the plan discloses rather than
+    disguises.
   - >-
     When relocating, REWRITE rather than copy TWO sentences the same PR falsifies. First, in the
     Hermetic authoring block: "Steps are replayed at implement time by validate_vp_replay, not
@@ -625,20 +703,35 @@ context:
     existing check only if ALL of -- same instrument, same preconditions, same lifetime profile, no
     obligation evasion; a check may self-test ITS OWN instrument, no other module's.
   - >-
-    Why the plan-only leg: a newly-added plan's tree IS the pre-implementation tree (Decision 76 --
-    18 of the last 40 relevant commits are plan-first), so red-before needs no worktree/revert/.venv.
-    Replaces hand-rolled prior art in 9 merged plans (PLAN-closure-stamp-applicability step 2).
+    Why the plan-only leg: a newly-added plan's tree IS the pre-implementation tree (Decision 76;
+    measured under a stated rule, since an earlier draft's "18 of the last 40 relevant commits" left
+    "relevant" undefined and reproduces under no reading: of the last 40 commits that ADD a
+    docs/plans/PLAN-*.yaml, 40 of 40 touch no non-plan file at all), so red-before needs no
+    worktree/revert/.venv.
+    Replaces hand-rolled prior art in 9 STEPS across 7 merged plans (rule: a `git worktree add` against
+    origin/main in the step command; exemplar PLAN-closure-stamp-applicability step 2). An earlier
+    draft said "9 merged plans" -- the right digit under the wrong denominator, the fifth instance
+    of that shape in this plan's own figures.
     Coverage honesty: target_absent passes for free and test_selector is the dominant graduate
-    shape (41 of 58 recent), so this gate refuses only the green-by-construction case; neither gate
-    catches a vacuous new test (T3.7, deferred). The lint earns its place on reach not volume
-    (measured: 5 commands across 2 plans) -- static, so it covers the waive and not-applicable
-    steps the dynamic leg never executes.
+    shape -- measured over the WHOLE partition rather than a recency window, 446 of 775 graduate pre-deploy commands are pytest-shaped, 57 percent (rule: a word-boundary pytest
+    token in the command) -- so this gate refuses only the
+    green-by-construction case; neither gate
+    catches a vacuous new test (T3.7, deferred). The lint earns its place on REACH, with the
+    denominator stated: under the `! rg` / `! grep` rule, 208 negated-sweep pre-deploy commands
+    span 130 of 422 plans, and 83 of them across 51 plans sit on waive or not-applicable steps --
+    the population no dynamic leg reaches. Volume of actual FINDINGS is small and deliberately
+    unpinned: a crude path extractor calls 52 of the 208 absent-path, but a visible fraction of
+    those are extractor artifacts (bare CD.6/CD.17-shaped tokens), so the fail-open rule admits
+    only the confidently-parsed remainder.
   - >-
     Risk named rather than left implicit: a plan-only PR today executes NOTHING; after this it
-    shell-executes every graduate step command, including ones never marked hermetic. Measured
-    empty today (0 of 258 invoke scripts.validate, none make a real AWS call) and degraded loudly
-    by the unmeasurable class plus a static scripts.validate refusal -- but empirically empty is
-    not structurally prevented, and the new Decision's body must say so. followon_recs: rec-3776
+    shell-executes every graduate step command, including the 280 of 775 never marked hermetic.
+    Measured with the argv-head rule the refusal itself uses: 0 of 775 graduate pre-deploy steps
+    invoke scripts.validate and none makes a real AWS call, so the hazard is EMPTY today and the
+    refusal is prophylactic -- see constraints[6] for why empty is expected and why prophylactic
+    is still the right call. It is degraded loudly by the unmeasurable class plus that refusal --
+    but an empty population is not a structural prevention, and the new Decision's body must say
+    so plainly rather than claim a containment the corpus does not supply. followon_recs: rec-3776
     (admission accepts FAIL-by-absence for test_selector rows); rec-3777 (disposition drift).
 pre_implementation_checklist:
   - Branch confirmed not on main
@@ -669,7 +762,9 @@ execution_steps:
     mirror fixtures inject a tmp_path root, so the new tests would silently evaluate the wrong
     tree. Keep the
     existing branch for a plan resolved by resolve_declared_plans, which prints PASS (handed to the
-    implement leg), not DEFER. Add the outcome classifier, the negated-sweep lint, the shared
+    implement leg), not DEFER. Add the outcome classifier, the negated-sweep lint, the static
+    scripts.validate recursion refusal (keyed on the invocation shape, never a bare substring --
+    see the acceptance criterion), the shared
     cross-leg counter with a re-derived MAX_REPLAYED_STEPS, the grammar-pinned per-class summary
     line, and the widened declaration under a new unit. Run the fixture classifications
     unconditionally at the top of the dispatch, before any precondition early-return, appending to
