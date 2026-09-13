@@ -2,714 +2,703 @@ schema_version: 4
 handoff_policy:
   full_validation_required_before_commit: true
   timeout_disposition: blocked
-slug: "control-table-class-and-counter-conformance"
-intent: >-
-  Separate the registry's read and write capability so governance registration stops granting
-  exposure, then fix the unconditional counter advance and land a governed `control` table class
-  so writer-internal control state is registered, partitioned, maintained and health-checked.
+slug: control-table-class-and-counter-conformance
+intent: Separate the registry's read and write capability so governance registration stops granting exposure,
+  then fix the unconditional counter advance and land a governed `control` table class so writer-internal control
+  state is registered, partitioned, maintained and health-checked.
 plan_type: IMPLEMENTATION
 verification_tier: V3
 plan_path: docs/plans/PLAN-control-table-class-and-counter-conformance.yaml
 phase: T2.26
 scope:
-  - file: src/common/ducklake_table_capabilities.py
-    action: Create
-    purpose: >-
-      PR1. Per-entry, per-direction capability resolution (read_boundary / write_boundary) over the
-      ops_tables registry. Its own module so ducklake_scd2_schema.py (468/500) takes no accretion.
-  - file: src/common/ducklake_scd2_schema.py
-    action: Modify
-    purpose: >-
-      PR1 shim: ops_table_names gains a direction argument delegating to the capabilities module.
-      PR2 shim: control-class spec resolution delegates to ducklake_control_tables. Shims only --
-      _order_columns is never widened and ScdTableSpec keeps its SCD2 shape.
-  - file: src/lambdas/ducklake_reader/handler.py
-    action: Modify
-    purpose: PR1. Its four _require_ops_table call sites pass direction=read, so a table with read_boundary none is refused.
-  - file: src/common/ducklake_reads.py
-    action: Modify
-    purpose: >-
-      PR1. named_read resolves its table through the capability gate so a future verb cannot bind a
-      non-application table; its {tbl} substitution assumes a current projection a control table lacks.
-  - file: scripts/data_quality_execute.py
-    action: Modify
-    purpose: PR1. Delete the hardcoded _OPS_TABLES frozenset (:19) in favour of the registry-derived read-capable list.
-  - file: docs/contracts/ducklake_reader.yaml
-    action: Modify
-    purpose: PR1. Document the per-table read surface so describe publishes what each table admits.
-  - file: src/common/ducklake_writes.py
-    action: Modify
-    purpose: PR2. Make _advance_entity_counter no-op-free so a key at or below current_value performs no catalog write.
-  - file: src/common/ducklake_control_tables.py
-    action: Create
-    purpose: PR2. Control spec dataclass, column ordering and single-table DDL, WHOLLY contained here.
-  - file: src/common/ducklake_tables.py
-    action: Modify
-    purpose: PR2. Control-class create path -- one table, partitioned before first write.
-  - file: src/common/ducklake_runtime.py
-    action: Modify
-    purpose: PR1+PR2. Re-export the capability and control-class surfaces through the facade every Lambda uses.
-  - file: src/lambdas/ducklake_writer/handler.py
-    action: Modify
-    purpose: >-
-      PR1: its five _require_ops_table call sites pass direction=write. PR2: create_ops_tables
-      provisions a control-class table and the write verbs refuse write_boundary writer_internal.
-  - file: src/common/ducklake_maintenance.py
-    action: Modify
-    purpose: PR2. control_health implementation -- assert per control table row count, counter floor and live-file ceiling.
-  - file: src/lambdas/ducklake_maintenance/handler.py
-    action: Modify
-    purpose: PR2. control_health action plus its metric emission.
-  - file: src/lambdas/ducklake_maintenance/manifest.yaml
-    action: Modify
-    purpose: PR2. Explicit includes row for the two new modules (this manifest uses an explicit include list, so a new module is NOT auto-bundled).
-  - file: src/lambdas/ducklake_writer/manifest.yaml
-    action: Modify
-    purpose: PR2. Explicit includes row for the two new modules.
-  - file: src/lambdas/ducklake_reader/manifest.yaml
-    action: Modify
-    purpose: PR2. Explicit includes row for the two new modules.
-  - file: src/lambdas/ducklake_maintenance_smoke/manifest.yaml
-    action: Modify
-    purpose: PR2. Explicit includes row for the two new modules.
-  - file: src/lambdas/ducklake_catalog_dr/manifest.yaml
-    action: Modify
-    purpose: PR2. Explicit includes row for the two new modules.
-  - file: src/lambdas/data-pipeline/manifest.yaml
-    action: Modify
-    purpose: >-
-      PR2. EXCLUDES row for both new modules. This artifact deliberately excludes DuckLake runtime
-      code; its `includes: - src/` wildcard would otherwise auto-bundle them and widen its affected set.
-  - file: terraform/personal/ducklake_maintenance.tf
-    action: Modify
-    purpose: PR2. control_health schedule plus a ControlTableInvariantViolation alarm mirroring the breaker alarm.
-  - file: scripts/schema_to_field_semantics.py
-    action: Modify
-    purpose: PR1 capability fields; PR2 control-class projection with entity_id_prefix / id_keyspace optional.
-  - file: scripts/checks/contracts/validate_table_registration.py
-    action: Create
-    purpose: >-
-      PR3. Admission control -- resolve module-level constant references in CREATE TABLE statements
-      under src/ and fail when the resolved name is absent from the registry.
-  - file: scripts/checks/contracts/_manifest.py
-    action: Modify
-    purpose: PR3. One Entry registering the new check (Decision 169 -- validate.py is never edited).
-  - file: config/ci_rca_taxonomy.yaml
-    action: Modify
-    purpose: PR3. function_to_category row for the new check module.
-  - file: docs/contracts/data-modeling-standard.yaml
-    action: Modify
-    purpose: >-
-      PR2. Third write mode `control` with its invariants, the dq_scope/health-binding rule, the Q3
-      divergence note, and the reversal conditions the contract-only routing would otherwise omit.
-  - file: docs/contracts/ops_entity_counters.yaml
-    action: Create
-    purpose: PR2. Class A contract -- table_class control, read_boundary none, write_boundary writer_internal, dq_scope exempt with its health binding.
-  - file: docs/contracts/storage-substrate.yaml
-    action: Modify
-    purpose: PR2. Register the table so every table-driven governance surface sees it.
-  - file: docs/contracts/ducklake_writer.yaml
-    action: Modify
-    purpose: PR2. Correct the allocation wording and record that control-table reads occur inside the writer transaction or via the admin health verb.
-  - file: config/lambda/ducklake/field_semantics.static.yaml
-    action: Modify
-    purpose: PR1 capability fields on every entry; PR2 the control entry with reconcile_scope exempt AND its exempt_reason companion.
-  - file: config/lambda/ducklake/field_semantics.yaml
-    action: Modify
-    purpose: Regenerated registry output (generated; drift-gated).
-  - file: docs/DECISIONS.md
-    action: Modify
-    purpose: >-
-      PR3. Dated annotation on Decision 137 naming the counter_name per-table partition exception
-      (amendment_forms shape). NO new numbered Decision.
-  - file: docs/ROADMAP-PLATFORM.yaml
-    action: Modify
-    purpose: PR3. Re-ground T2.52 c1 and T2.26 c2, and add a T2.26 progress note recording this plan's contribution.
-  - file: tests/common/test_ducklake_table_capabilities.py
-    action: Create
-    purpose: PR1. Direction-aware allow-list resolution, including that dormant and smoke entries are refused at the read boundary.
-  - file: tests/lambdas/ducklake_reader/test_read_boundary_capability.py
-    action: Create
-    purpose: PR1. Reader refuses a table whose read_boundary is none, and named_read cannot bind one.
-  - file: tests/common/test_ducklake_control_tables.py
-    action: Create
-    purpose: PR2. Control spec shape, DDL, partition and write-verb refusal.
-  - file: tests/common/test_ducklake_writes.py
-    action: Modify
-    purpose: PR2. Red-before regression that a no-op advance performs no catalog write.
-  - file: tests/test_ducklake_facade.py
-    action: Modify
-    purpose: PR1+PR2. Facade surface list after both splits.
-  - file: tests/lambda_manifest/test_bundle_checks.py
-    action: Modify
-    purpose: >-
-      PR2. Two-sided bundling invariant -- every artifact bundling ducklake_scd2_schema.py also bundles
-      the new modules, AND every artifact excluding it also excludes them.
-  - file: tests/test_schema_to_field_semantics.py
-    action: Modify
-    purpose: PR1 capability projection; PR2 control-class projection.
-  - file: tests/common/test_ducklake_maintenance.py
-    action: Modify
-    purpose: PR2. control_health asserts the counter invariants and emits its metric.
-  - file: tests/checks/contracts/test_validate_table_registration.py
-    action: Create
-    purpose: PR3. Admission-check discrimination, constant resolution, and a non-zero examined count over real src/.
+- file: src/common/ducklake_scd2_schema.py
+  action: Modify
+  purpose: 'Shim only: control-class spec resolution delegates to ducklake_control_tables. _order_columns is never
+    widened and ScdTableSpec keeps its SCD2 shape (468/500 SLOC, 32 headroom).'
+- file: src/lambdas/ducklake_reader/handler.py
+  action: Modify
+  purpose: Refuse a CONTROL-CLASS table at its three _require_ops_table call sites -- the symmetric partner of
+    the writer-side refusal. Narrow and class-specific; the general per-direction capability field is rec-3771,
+    deliberately NOT in this plan.
+- file: src/common/ducklake_reads.py
+  action: Modify
+  purpose: 'named_read refuses a control-class table: its {tbl} substitution assumes a current projection a control
+    table lacks, so a future verb must not be able to bind one.'
+- file: docs/contracts/ducklake_reader.yaml
+  action: Modify
+  purpose: Record that control-class tables are not reachable through any reader verb.
+- file: src/common/ducklake_writes.py
+  action: Modify
+  purpose: PR2. Make _advance_entity_counter no-op-free so a key at or below current_value performs no catalog
+    write.
+- file: src/common/ducklake_control_tables.py
+  action: Create
+  purpose: PR2. Control spec dataclass, column ordering and single-table DDL, WHOLLY contained here.
+- file: src/common/ducklake_tables.py
+  action: Modify
+  purpose: PR2. Control-class create path -- one table, partitioned before first write.
+- file: src/common/ducklake_runtime.py
+  action: Modify
+  purpose: PR1+PR2. Re-export the capability and control-class surfaces through the facade every Lambda uses.
+- file: src/lambdas/ducklake_writer/handler.py
+  action: Modify
+  purpose: 'PR1: its five _require_ops_table call sites pass direction=write. PR2: create_ops_tables provisions
+    a control-class table and the write verbs refuse write_boundary writer_internal.'
+- file: src/common/ducklake_maintenance.py
+  action: Modify
+  purpose: PR2. control_health implementation -- assert per control table row count, counter floor and live-file
+    ceiling.
+- file: src/lambdas/ducklake_maintenance/handler.py
+  action: Modify
+  purpose: PR2. control_health action plus its metric emission.
+- file: src/lambdas/ducklake_maintenance/manifest.yaml
+  action: Modify
+  purpose: PR2. Explicit includes row for the two new modules (this manifest uses an explicit include list, so
+    a new module is NOT auto-bundled).
+- file: src/lambdas/ducklake_writer/manifest.yaml
+  action: Modify
+  purpose: PR2. Explicit includes row for the two new modules.
+- file: src/lambdas/ducklake_reader/manifest.yaml
+  action: Modify
+  purpose: PR2. Explicit includes row for the two new modules.
+- file: src/lambdas/ducklake_maintenance_smoke/manifest.yaml
+  action: Modify
+  purpose: PR2. Explicit includes row for the two new modules.
+- file: src/lambdas/ducklake_catalog_dr/manifest.yaml
+  action: Modify
+  purpose: PR2. Explicit includes row for the two new modules.
+- file: src/lambdas/data-pipeline/manifest.yaml
+  action: Modify
+  purpose: 'PR2. EXCLUDES row for both new modules. This artifact deliberately excludes DuckLake runtime code;
+    its `includes: - src/` wildcard would otherwise auto-bundle them and widen its affected set.'
+- file: terraform/personal/ducklake_maintenance.tf
+  action: Modify
+  purpose: PR2. control_health schedule plus a ControlTableInvariantViolation alarm mirroring the breaker alarm.
+- file: scripts/schema_to_field_semantics.py
+  action: Modify
+  purpose: Control-class projection with entity_id_prefix / id_keyspace optional.
+- file: scripts/checks/ops_governance/validate_reconcile_pending_gate.py
+  action: Modify
+  purpose: Teach _write_mode and _check_diff_added_column_gap the control class. Today the leg globs docs/contracts/ops_*.yaml,
+    defaults an unknown write mode to scd2, demands history+current sides and never consults reconcile_scope --
+    so the new contract would fail --pre on arrival.
+- file: tests/checks/ops_governance/test_validate_reconcile_pending_gate.py
+  action: Modify
+  purpose: Cover the control-class path through the diff-added-column gap leg.
+- file: scripts/checks/contracts/validate_table_registration.py
+  action: Create
+  purpose: PR3. Admission control -- resolve module-level constant references in CREATE TABLE statements under
+    src/ and fail when the resolved name is absent from the registry.
+- file: scripts/checks/contracts/_manifest.py
+  action: Modify
+  purpose: PR3. One Entry registering the new check (Decision 169 -- validate.py is never edited).
+- file: config/ci_rca_taxonomy.yaml
+  action: Modify
+  purpose: PR3. function_to_category row for the new check module.
+- file: docs/contracts/data-modeling-standard.yaml
+  action: Modify
+  purpose: PR2. Third write mode `control` with its invariants, the dq_scope/health-binding rule, the Q3 divergence
+    note, and the reversal conditions the contract-only routing would otherwise omit.
+- file: docs/contracts/ops_entity_counters.yaml
+  action: Create
+  purpose: PR2. Class A contract -- table_class control, read_boundary none, write_boundary writer_internal, dq_scope
+    exempt with its health binding.
+- file: docs/contracts/storage-substrate.yaml
+  action: Modify
+  purpose: PR2. Register the table so every table-driven governance surface sees it.
+- file: docs/contracts/ducklake_writer.yaml
+  action: Modify
+  purpose: PR2. Correct the allocation wording and record that control-table reads occur inside the writer transaction
+    or via the admin health verb.
+- file: config/lambda/ducklake/field_semantics.static.yaml
+  action: Modify
+  purpose: PR1 capability fields on every entry; PR2 the control entry with reconcile_scope exempt AND its exempt_reason
+    companion.
+- file: config/lambda/ducklake/field_semantics.yaml
+  action: Modify
+  purpose: Regenerated registry output (generated; drift-gated).
+- file: docs/DECISIONS.md
+  action: Modify
+  purpose: PR3. Dated annotation on Decision 137 naming the counter_name per-table partition exception (amendment_forms
+    shape). NO new numbered Decision.
+- file: docs/ROADMAP-PLATFORM.yaml
+  action: Modify
+  purpose: Add T2.26:c10 (governed control-table class; ops_entity_counters conforms) as the criterion this plan
+    closes, and re-ground T2.52 c1 plus T2.26 c2.
+- file: tests/lambdas/ducklake_reader/__init__.py
+  action: Create
+  purpose: Test package marker -- every sibling test package carries one.
+- file: tests/lambdas/ducklake_reader/test_control_table_refusal.py
+  action: Create
+  purpose: Reader verbs and named_read both refuse a control-class table.
+- file: tests/common/test_ducklake_control_tables.py
+  action: Create
+  purpose: PR2. Control spec shape, DDL, partition and write-verb refusal.
+- file: tests/common/test_ducklake_writes.py
+  action: Modify
+  purpose: PR2. Red-before regression that a no-op advance performs no catalog write.
+- file: tests/test_ducklake_facade.py
+  action: Modify
+  purpose: PR1+PR2. Facade surface list after both splits.
+- file: tests/lambda_manifest/test_bundle_checks.py
+  action: Modify
+  purpose: PR2. Two-sided bundling invariant -- every artifact bundling ducklake_scd2_schema.py also bundles the
+    new modules, AND every artifact excluding it also excludes them.
+- file: tests/test_schema_to_field_semantics.py
+  action: Modify
+  purpose: PR1 capability projection; PR2 control-class projection.
+- file: tests/test_ducklake_maintenance.py
+  action: Modify
+  purpose: PR2. control_health asserts the counter invariants and emits its metric.
+- file: tests/checks/contracts/test_validate_table_registration.py
+  action: Create
+  purpose: PR3. Admission-check discrimination, constant resolution, and a non-zero examined count over real src/.
 bundled_recommendations: []
 followon_recs: []
 infrastructure_dependencies:
-  - >-
-    terraform/personal/ducklake_maintenance.tf gains an EventBridge rule/target/permission for
-    control_health and a CloudWatch alarm, both in the guard's known-safe shape (principal
-    events.amazonaws.com, agent-platform-* function, no IAM role or trust change), so the apply stays
-    auto-apply (Decision 77). Verification is CI-delegated per Decision 119; never a local plan.
-  - >-
-    FIVE active artifacts bundle ducklake_scd2_schema.py via explicit include lists -- ducklake_writer,
-    ducklake_reader, ducklake_maintenance, ducklake_maintenance_smoke, ducklake_catalog_dr. A new module
-    is NOT auto-bundled there and must be added explicitly. data-pipeline is the inverse case: its
-    `includes: - src/` wildcard WOULD auto-bundle it, and its excludes block deliberately keeps DuckLake
-    runtime code out, so it needs an excludes row. Verified via compute_affected_artifacts.
-  - >-
-    data-pipeline deploys through deploy-prod-lambdas.yml, not deploy-ducklake-lambdas.yml. Its manifest
-    edit adds no code to the artifact, so it needs no deploy verification beyond its own workflow.
-  - >-
-    The PR2 migration needs the writer quiesced via reserved concurrency on an existing function -- an
-    operator action, not a new resource, so no gated apply is involved.
+- terraform/personal/ducklake_maintenance.tf gains an EventBridge rule/target/permission for control_health and
+  a CloudWatch alarm, both in the guard's known-safe shape (principal events.amazonaws.com, agent-platform-* function,
+  no IAM role or trust change), so the apply stays auto-apply (Decision 77). Verification is CI-delegated per
+  Decision 119; never a local plan.
+- 'FIVE active artifacts bundle ducklake_scd2_schema.py via explicit include lists -- ducklake_writer, ducklake_reader,
+  ducklake_maintenance, ducklake_maintenance_smoke, ducklake_catalog_dr. A new module is NOT auto-bundled there
+  and must be added explicitly. data-pipeline is the inverse case: its `includes: - src/` wildcard WOULD auto-bundle
+  it, and its excludes block deliberately keeps DuckLake runtime code out, so it needs an excludes row. Verified
+  via compute_affected_artifacts.'
+- data-pipeline deploys through deploy-prod-lambdas.yml, not deploy-ducklake-lambdas.yml. Its manifest edit adds
+  no code to the artifact, so it needs no deploy verification beyond its own workflow.
+- The PR2 migration needs the writer quiesced via reserved concurrency on an existing function -- an operator
+  action, not a new resource, so no gated apply is involved.
 acceptance_criteria:
-  - >-
-    ops_table_names resolves per direction: a registry entry with read_boundary none is refused by every
-    reader verb and by named_read, while remaining writable by the writer verbs that own it.
-  - >-
-    The dormant and smoke registry entries are no longer admitted to the application read boundary,
-    closing an exposure that exists on main today.
-  - >-
-    scripts/data_quality_execute.py derives its table scope from the registry; the hardcoded _OPS_TABLES
-    frozenset is gone.
-  - >-
-    A no-op counter advance performs no catalog write: the test named in test_obligations asserts it
-    against the observation surface named in verification_plan step 5, and fails against current main.
-  - >-
-    docs/contracts/data-modeling-standard.yaml declares a third write mode `control` whose invariants
-    include a hard row ceiling, partition-on-key, no-op-free writes, a mandatory maintenance_binding,
-    and a dq_scope rule requiring either DQ checks or an explicit exemption naming a health binding.
-  - >-
-    ops_entity_counters resolves as a control-class table partitioned on counter_name with no
-    history_table and no current_table, carries read_boundary none and write_boundary writer_internal,
-    and is present in storage-substrate.yaml.
-  - >-
-    write_ops, file_ops and update_ops each loud-fail on a writer_internal table rather than falling
-    through write_scd2 into the SCD2 branch against current_table=None.
-  - >-
-    Every artifact that bundles ducklake_scd2_schema.py also bundles both new modules, AND every
-    artifact that excludes it also excludes them -- asserted as a two-sided invariant so the
-    data-pipeline exclusion cannot silently rot.
-  - >-
-    control_health asserts, per control table, that the row count equals expected, that current_value is
-    at or above the max allocated id, and that the live-file count is below its ceiling; it emits
-    ControlTableInvariantViolation and a CloudWatch alarm fires on a non-zero value.
-  - >-
-    The admission check fails when a CREATE TABLE under src/ resolves to a table absent from the
-    registry, resolves module-level constant references, and reports examined() over real src/ above zero.
-  - >-
-    No caller outside the control module reaches ensure_entity_counters_table; the counter table is
-    created only by create_ops_tables, partitioned and registered.
-  - >-
-    Post-migration, clause8_checks.current_merge_key_unique on ops_recommendations reports PASSING.
-  - >-
-    No scope file crosses its SLOC budget; the capability and control logic land as new modules.
+- 'Both boundaries refuse a control-class table symmetrically: write_ops / file_ops / update_ops loud-fail on
+  it, and every reader verb plus named_read refuse it -- so registering for governance does not grant application
+  read access.'
+- 'A no-op counter advance performs no catalog write: the test named in test_obligations asserts it against the
+  observation surface named in verification_plan step 5, and fails against current main.'
+- docs/contracts/data-modeling-standard.yaml declares a third write mode `control` whose invariants include a
+  hard row ceiling, partition-on-key, no-op-free writes, a mandatory maintenance_binding, and a dq_scope rule
+  requiring either DQ checks or an explicit exemption naming a health binding.
+- ops_entity_counters resolves as a control-class table partitioned on counter_name with no history_table and
+  no current_table, carries read_boundary none and write_boundary writer_internal, and is present in storage-substrate.yaml.
+- write_ops, file_ops and update_ops each loud-fail on a writer_internal table rather than falling through write_scd2
+  into the SCD2 branch against current_table=None.
+- Every artifact that bundles ducklake_scd2_schema.py also bundles both new modules, AND every artifact that excludes
+  it also excludes them -- asserted as a two-sided invariant so the data-pipeline exclusion cannot silently rot.
+- control_health asserts, per control table, that the row count equals expected, that current_value is at or above
+  the max allocated id, and that the live-file count is below the ceiling declared as health.live_file_ceiling
+  in docs/contracts/ops_entity_counters.yaml; it emits ControlTableInvariantViolation and a CloudWatch alarm fires
+  on a non-zero value.
+- The admission check fails when a CREATE TABLE under src/ resolves to a table absent from the registry, resolves
+  module-level constant references, and reports examined() over real src/ above zero.
+- No caller outside the control module reaches ensure_entity_counters_table; the counter table is created only
+  by create_ops_tables, partitioned and registered.
+- Post-migration, clause8_checks.current_merge_key_unique on ops_recommendations reports PASSING.
+- No scope file crosses its SLOC budget; the capability and control logic land as new modules.
 verification_plan:
-  - step: 1
-    phase: pre-deploy
-    action: "PR1. Prove direction-aware capability resolution, including that dormant and smoke entries lose read admission."
-    command: bin/venv-python -m pytest tests/common/test_ducklake_table_capabilities.py::test_read_direction_refuses_non_application_tables -q
-    expected: Read direction admits only entries whose read_boundary is application; dormant and smoke entries are refused.
-    fix_if: The list is still undifferentiated -- gate on the per-entry field, never on a name pattern or status string.
-    graduation: graduate
-    graduation_check_id: registry-read-direction-refuses-non-application
-  - step: 2
-    phase: pre-deploy
-    action: "PR1. Prove the reader and named_read honour the gate."
-    command: bin/venv-python -m pytest tests/lambdas/ducklake_reader/test_read_boundary_capability.py -q
-    expected: Every reader verb refuses a read_boundary none table, and named_read cannot bind one.
-    fix_if: A verb still resolves the table -- the call site did not pass direction=read.
-    graduation: graduate
-    graduation_check_id: reader-honours-read-boundary
-  - step: 3
-    phase: pre-deploy
-    action: "PR1. Prove the divergent client list is gone."
-    command: "! rg -n '_OPS_TABLES' scripts/data_quality_execute.py"
-    expected: No match (exit 0 via negation) -- DQ scope derives from the registry.
-    fix_if: The frozenset survives -- replace it with the registry-derived read-capable list.
-    graduation: graduate
-    graduation_check_id: dq-scope-registry-derived
-  - step: 4
-    phase: pre-deploy
-    action: "PR1. Prove the capability fields project and the drift gate is clean."
-    command: bin/venv-python -m pytest tests/test_schema_to_field_semantics.py::test_capability_fields_projected -q
-    expected: Every ops_tables entry carries read_boundary and write_boundary after generation.
-    fix_if: An entry lacks a field -- the generator must default it explicitly, never implicitly.
-    graduation: graduate
-    graduation_check_id: capability-fields-projected
-  - step: 5
-    phase: pre-deploy
-    action: "PR2. Prove a no-op counter advance performs no catalog write."
-    command: bin/venv-python -m pytest tests/common/test_ducklake_writes.py::test_advance_counter_noop_writes_no_files -q
-    expected: >-
-      PASSES after the fix; FAILS against current main. OBSERVATION SURFACE -- implement as a Python-side
-      read-then-conditional-write and assert on the recording connection fake's executed-SQL list (no
-      UPDATE issued). A SQL-predicate form cannot be discriminated by a fake, because the UPDATE is still
-      issued and only matches zero rows.
-    fix_if: The assertion cannot distinguish a no-op from a write -- switch to the read-then-conditional surface.
-    graduation: graduate
-    graduation_check_id: entity-counter-advance-noop-free
-  - step: 6
-    phase: pre-deploy
-    action: "PR2. Prove control-class resolution returns a single partitioned table and the write verbs refuse it."
-    command: bin/venv-python -m pytest tests/common/test_ducklake_control_tables.py -q
-    expected: Spec carries table + partition counter_name with history_table/current_table None; write_ops, file_ops and update_ops each raise.
-    fix_if: A verb falls through to the SCD2 branch against current_table=None -- add the refusal before dispatch.
-    graduation: graduate
-    graduation_check_id: control-class-spec-and-write-refusal
-  - step: 7
-    phase: pre-deploy
-    action: "PR2. Prove the control projection drops the SCD2 assumptions."
-    command: bin/venv-python -m pytest tests/test_schema_to_field_semantics.py::test_control_class_projection -q
-    expected: Projection emits a single table, partition on the key column, and no entity_id_prefix / id_keyspace.
-    fix_if: KeyError on ops_config -- those keys are hard-indexed; make them optional for the control class.
-    graduation: graduate
-    graduation_check_id: control-class-registry-projection
-  - step: 8
-    phase: pre-deploy
-    action: "PR2. Prove both decompositions preserved the runtime facade surface."
-    command: bin/venv-python -m pytest "tests/test_ducklake_facade.py::test_ducklake_runtime_facade_reexports_symbol" -q
-    expected: Every symbol the facade exported before the splits still resolves through src/common/ducklake_runtime.py.
-    fix_if: A symbol disappeared -- re-export it from its new module rather than deleting it from the facade list.
-    graduation: graduate
-    graduation_check_id: ducklake-facade-reexports-every-symbol
-  - step: 9
-    phase: pre-deploy
-    action: "PR2. Prove the two-sided bundling invariant -- included where the SCD2 schema is, excluded where it is not."
-    command: bin/venv-python -m pytest tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership -q
-    expected: >-
-      The five artifacts bundling ducklake_scd2_schema.py also bundle both new modules; data-pipeline,
-      which excludes it, also excludes them. This runs in --pre; --check-bundles does not (it is
-      registered at full_after_lint via validate_lambda_bundle_completeness), which is why this
-      assertion is needed rather than relying on the staged-import oracle to gate the PR.
-    fix_if: An artifact is missing a row -- add it; if data-pipeline gained the module, add the exclude instead.
-    graduation: graduate
-    graduation_check_id: control-modules-track-scd2-membership
-  - step: 10
-    phase: pre-deploy
-    action: "PR2. Staged-import closure across every active artifact (standing owner: validate_lambda_bundle_completeness)."
-    command: bin/venv-python -m scripts.lambda_manifest --check-bundles
-    expected: All active artifacts stage and their handlers import cleanly.
-    fix_if: An artifact fails to import -- fix its manifest; never narrow the check.
-    graduation: not-applicable
-  - step: 11
-    phase: pre-deploy
-    action: "PR2. Prove control_health asserts the counter invariants."
-    command: bin/venv-python -m pytest tests/common/test_ducklake_maintenance.py -k control_health -q
-    expected: Row count, counter floor and live-file ceiling each assert independently; a violation emits a non-zero metric.
-    fix_if: A violation returns ok -- the verb reports rather than asserts; make each invariant a failing condition.
-    graduation: graduate
-    graduation_check_id: control-health-asserts-invariants
-  - step: 12
-    phase: pre-deploy
-    action: "PR3. Prove the admission check discriminates on real code, not only a synthetic fixture."
-    command: bin/venv-python -m pytest tests/checks/contracts/test_validate_table_registration.py -q
-    expected: >-
-      Fails on an unregistered table, passes when registered, resolves module-level constant references
-      (every CREATE TABLE under src/ interpolates a variable or constant -- none is a bare literal), and
-      reports examined() over the real src/ tree above zero.
-    fix_if: examined() is zero -- the check resolves literals only and is Decision 170 vacuous.
-    graduation: graduate
-    graduation_check_id: create-table-must-be-registered
-  - step: 13
-    phase: pre-deploy
-    action: "PR3. Prove no caller outside the control module reaches the ungoverned creation helper."
-    command: test -z "$(rg -l 'ensure_entity_counters_table\(' src/ scripts/ --glob '!*control_tables*' || true)"
-    expected: Empty result. The `test -z` form is used so an rg error exit cannot false-pass the sweep.
-    fix_if: A caller survives -- route it through create_ops_tables; never leave a conditional fallback.
-    graduation: graduate
-    graduation_check_id: ungoverned-counter-creation-retired
-  - step: 14
-    phase: pre-deploy
-    action: "PR3. Prove the Decision 137 annotation is present and 137's baseline body is intact."
-    command: rg -n 'counter_name' docs/DECISIONS.md | rg -q 'Amendment|Update' && rg -c '^## Decision 137' docs/DECISIONS.md
-    expected: >-
-      A dated amendment trailer naming the counter_name exception exists under Decision 137, and the
-      entry still has exactly one header. amendment_forms enforcement is convention-only (no validator
-      since Decision 178 retired validate_live_entry_immutability), so this grep IS the evidence.
-    fix_if: No trailer -- add it in a sanctioned amendment_forms shape; never rewrite 137's body in place.
-    graduation: graduate
-    graduation_check_id: decision-137-amendment-trailer-present
-  - step: 15
-    phase: pre-deploy
-    action: Fast presubmit, including SLOC budgets.
-    command: bin/venv-python -m scripts.validate --pre
-    expected: exit 0, including validate_sloc_limits and validate_sloc_budget_raises.
-    fix_if: A file is over budget -- decompose further; never register a raise for this plan.
-    graduation: not-applicable
-  - step: 16
-    phase: pre-deploy
-    action: Full presubmit before handoff.
-    command: bin/venv-python -m scripts.validate
-    expected: exit 0
-    fix_if: Any check fails -- fix at source; never weaken an assertion to obtain green.
-    graduation: not-applicable
-  - step: 17
-    phase: post-deploy
-    action: Confirm the governed CD channel deployed the five DuckLake artifacts.
-    command: mcp__github__actions_list(owner="benjamin-blake", repo="theseus", workflow_id="deploy-ducklake-lambdas.yml", perPage=1)
-    expected: >-
-      Latest run green on the merge commit, with the writer, reader, maintenance, maintenance-smoke and
-      catalog-dr jobs succeeded. data-pipeline is NOT in this workflow -- its manifest edit adds no code,
-      so it needs no deploy verification here.
-    fix_if: Red -- read the job log via mcp__github__get_job_logs and fix forward; never re-run hoping for green.
-  - step: 18
-    phase: post-deploy
-    action: OPERATOR -- quiesce the writer, then provision the control table.
-    command: aws lambda put-function-concurrency --function-name agent-platform-ducklake-writer --reserved-concurrent-executions 0 --profile agent_platform_admin --region eu-west-2 && aws lambda invoke --function-name agent-platform-ducklake-writer --profile agent_platform_admin --region eu-west-2 --cli-binary-format raw-in-base64-out --payload '{"action":"create_ops_tables","table":"ops_entity_counters","force_recreate_tables":true,"confirm_force_recreate":"ops_entity_counters"}' /tmp/control.json && cat /tmp/control.json
-    expected: >-
-      Reserved concurrency 0 is in force BEFORE the invoke -- this is the enforcement behind "quiesced".
-      The table is recreated partitioned on counter_name. counter_seed is null here by design: the control
-      class has no entity_id_prefix, so the keyspace reseed is step 19.
-    fix_if: Reserved concurrency did not apply -- STOP; a concurrent allocation during the drop window is the 2026-06-11 duplicate-id failure mode.
-  - step: 19
-    phase: post-deploy
-    action: OPERATOR -- reseed the rec keyspace counter, then restore writer concurrency.
-    command: aws lambda invoke --function-name agent-platform-ducklake-writer --profile agent_platform_admin --region eu-west-2 --cli-binary-format raw-in-base64-out --payload '{"action":"create_ops_tables","table":"ops_recommendations"}' /tmp/reseed.json && cat /tmp/reseed.json && aws lambda delete-function-concurrency --function-name agent-platform-ducklake-writer --profile agent_platform_admin --region eu-west-2
-    expected: counter_seed equals the current max rec-NNNN in ops_recommendations_history; concurrency restored only after the seed is confirmed.
-    fix_if: counter_seed is below the table max -- STOP and RCA; do not restore concurrency onto a stranded counter.
-  - step: 20
-    phase: post-deploy
-    action: OPERATOR -- run control_health and confirm the invariants hold on live state.
-    command: aws lambda invoke --function-name agent-platform-ducklake-maintenance --profile agent_platform_admin --region eu-west-2 --cli-binary-format raw-in-base64-out --payload '{"action":"control_health","meta_schema":"ducklake_ops"}' /tmp/health.json && cat /tmp/health.json
-    expected: >-
-      One counter row, current_value at or above the max allocated id, live-file count below ceiling,
-      ControlTableInvariantViolation emitted as 0. This is the periodic assertion that replaces DQ
-      coverage for control tables, and it is what the contract's dq_scope exemption names.
-    fix_if: A violation is reported -- STOP and RCA (Decision 55); do not restore traffic onto a corrupt counter.
-  - step: 21
-    phase: post-deploy
-    action: Prove the duplicate-id failure mode is absent, and measure the amplification.
-    command: bin/venv-python -m scripts.data_quality_runner --table ops_recommendations && aws lambda invoke --function-name agent-platform-ducklake-maintenance --profile agent_platform_admin --region eu-west-2 --cli-binary-format raw-in-base64-out --payload '{"action":"catalog_stats","meta_schema":"ducklake_ops"}' /tmp/stats.json && cat /tmp/stats.json
-    expected: >-
-      clause8_checks.current_merge_key_unique PASSES. ops_entity_counters live-file count stays FLAT
-      across subsequent update_rec calls -- that flatness, not the absolute count, is this plan's
-      evidence, because the pre-existing files await the sibling session's compaction cadence.
-    fix_if: A uniqueness failure appears -- the reseed raced an allocation; STOP and RCA. If the count climbs per update_rec, the guard is not on the executed path.
+- step: 1
+  phase: pre-deploy
+  action: PR2. Prove a no-op counter advance performs no catalog write.
+  command: bin/venv-python -m pytest tests/common/test_ducklake_writes.py::test_advance_counter_noop_writes_no_files
+    -q
+  expected: PASSES after the fix; FAILS against current main. OBSERVATION SURFACE -- implement as a Python-side
+    read-then-conditional-write and assert on the recording connection fake's executed-SQL list (no UPDATE issued).
+    A SQL-predicate form cannot be discriminated by a fake, because the UPDATE is still issued and only matches
+    zero rows.
+  fix_if: The assertion cannot distinguish a no-op from a write -- switch to the read-then-conditional surface.
+  graduation: graduate
+  graduation_check_id: entity-counter-advance-noop-free
+- step: 2
+  phase: pre-deploy
+  action: PR2. Prove control-class resolution returns a single partitioned table and the write verbs refuse it.
+  command: bin/venv-python -m pytest tests/common/test_ducklake_control_tables.py -q
+  expected: Spec carries table + partition counter_name with history_table/current_table None; write_ops, file_ops
+    and update_ops each raise.
+  fix_if: A verb falls through to the SCD2 branch against current_table=None -- add the refusal before dispatch.
+  graduation: graduate
+  graduation_check_id: control-class-spec-and-write-refusal
+- step: 3
+  phase: pre-deploy
+  action: Prove the reader and named_read both refuse a control-class table.
+  command: bin/venv-python -m pytest tests/lambdas/ducklake_reader/test_control_table_refusal.py -q
+  expected: Every reader verb refuses a control-class table and named_read cannot bind one -- the symmetric partner
+    of the writer-side refusal.
+  fix_if: A verb still resolves the table -- add the class check at the _require_ops_table call sites and in named_read
+    table resolution.
+  graduation: graduate
+  graduation_check_id: reader-refuses-control-class-table
+- step: 4
+  phase: pre-deploy
+  action: PR2. Prove the control projection drops the SCD2 assumptions.
+  command: bin/venv-python -m pytest tests/test_schema_to_field_semantics.py::test_control_class_projection -q
+  expected: Projection emits a single table, partition on the key column, and no entity_id_prefix / id_keyspace.
+  fix_if: KeyError on ops_config -- those keys are hard-indexed; make them optional for the control class.
+  graduation: graduate
+  graduation_check_id: control-class-registry-projection
+- step: 5
+  phase: pre-deploy
+  action: Prove the reconcile gate recognises the control class before --pre ever sees the new contract.
+  command: bin/venv-python -m pytest tests/checks/ops_governance/test_validate_reconcile_pending_gate.py -q
+  expected: A control-class contract needs no history/current reconcile sides. Today the leg globs docs/contracts/ops_*.yaml,
+    defaults an unknown write mode to scd2 and never consults reconcile_scope, so the new contract would fail
+    --pre on arrival.
+  fix_if: The gate still demands both sides -- teach _write_mode the control class; never declare false pending_reconcile
+    entries to appease it.
+  graduation: graduate
+  graduation_check_id: reconcile-gate-knows-control-class
+- step: 6
+  phase: pre-deploy
+  action: PR2. Prove both decompositions preserved the runtime facade surface.
+  command: bin/venv-python -m pytest "tests/test_ducklake_facade.py::test_ducklake_runtime_facade_reexports_symbol"
+    -q
+  expected: Every symbol the facade exported before the splits still resolves through src/common/ducklake_runtime.py.
+  fix_if: A symbol disappeared -- re-export it from its new module rather than deleting it from the facade list.
+  graduation: waive
+  graduation_waiver_reason: 'The facade list and the runtime move together in one commit, so a reverted-tree differential
+    cannot discriminate: make_worktree_revert_runner materialises origin/main list AND origin/main runtime, which
+    pass. Graduating it would register a guard whose green is not evidence. Its regression value is carried by
+    the always-running suite.'
+- step: 7
+  phase: pre-deploy
+  action: PR2. Prove the two-sided bundling invariant -- included where the SCD2 schema is, excluded where it
+    is not.
+  command: bin/venv-python -m pytest tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
+    -q
+  expected: The five artifacts bundling ducklake_scd2_schema.py also bundle both new modules; data-pipeline, which
+    excludes it, also excludes them. This runs in --pre; --check-bundles does not (it is registered at full_after_lint
+    via validate_lambda_bundle_completeness), which is why this assertion is needed rather than relying on the
+    staged-import oracle to gate the PR.
+  fix_if: An artifact is missing a row -- add it; if data-pipeline gained the module, add the exclude instead.
+  graduation: graduate
+  graduation_check_id: control-modules-track-scd2-membership
+- step: 8
+  phase: pre-deploy
+  action: 'PR2. Staged-import closure across every active artifact (standing owner: validate_lambda_bundle_completeness).'
+  command: bin/venv-python -m scripts.lambda_manifest --check-bundles
+  expected: All active artifacts stage and their handlers import cleanly.
+  fix_if: An artifact fails to import -- fix its manifest; never narrow the check.
+  graduation: not-applicable
+- step: 9
+  phase: pre-deploy
+  action: PR2. Prove control_health asserts the counter invariants.
+  command: bin/venv-python -m pytest tests/test_ducklake_maintenance.py::test_control_health_asserts_counter_invariants
+    tests/test_ducklake_maintenance.py::test_control_health_action_dispatches -q
+  expected: Row count, counter floor and live-file ceiling each assert independently; a violation emits ControlTableInvariantViolation=1
+    to the DuckLakeMaintenance namespace.
+  fix_if: A violation returns ok -- the verb reports rather than asserts; make each invariant a failing condition.
+  graduation: graduate
+  graduation_check_id: control-health-asserts-invariants
+- step: 10
+  phase: pre-deploy
+  action: PR3. Prove the admission check discriminates on real code, not only a synthetic fixture.
+  command: bin/venv-python -m pytest tests/checks/contracts/test_validate_table_registration.py -q
+  expected: Fails on an unregistered table, passes when registered, resolves module-level constant references
+    (every CREATE TABLE under src/ interpolates a variable or constant -- none is a bare literal), and reports
+    examined() over the real src/ tree above zero.
+  fix_if: examined() is zero -- the check resolves literals only and is Decision 170 vacuous.
+  graduation: graduate
+  graduation_check_id: create-table-must-be-registered
+- step: 11
+  phase: pre-deploy
+  action: PR3. Prove no caller outside the control module reaches the ungoverned creation helper.
+  command: test -z "$(rg -l 'ensure_entity_counters_table\(' src/ scripts/ --glob '!*control_tables*' || true)"
+  expected: Empty result. The `test -z` form is used so an rg error exit cannot false-pass the sweep.
+  fix_if: A caller survives -- route it through create_ops_tables; never leave a conditional fallback.
+  graduation: graduate
+  graduation_check_id: ungoverned-counter-creation-retired
+- step: 12
+  phase: pre-deploy
+  action: PR3. Prove the Decision 137 annotation is present and 137's baseline body is intact.
+  command: rg -n 'counter_name' docs/DECISIONS.md | rg -q 'Amendment|Update' && rg -c '^## Decision 137' docs/DECISIONS.md
+  expected: A dated amendment trailer naming the counter_name exception exists under Decision 137, and the entry
+    still has exactly one header. amendment_forms enforcement is convention-only (no validator since Decision
+    178 retired validate_live_entry_immutability), so this grep IS the evidence.
+  fix_if: No trailer -- add it in a sanctioned amendment_forms shape; never rewrite 137's body in place.
+  graduation: graduate
+  graduation_check_id: decision-137-amendment-trailer-present
+- step: 13
+  phase: pre-deploy
+  action: Fast presubmit, including SLOC budgets.
+  command: bin/venv-python -m scripts.validate --pre
+  expected: exit 0, including validate_sloc_limits and validate_sloc_budget_raises.
+  fix_if: A file is over budget -- decompose further; never register a raise for this plan.
+  graduation: not-applicable
+- step: 14
+  phase: pre-deploy
+  action: Full presubmit before handoff.
+  command: bin/venv-python -m scripts.validate
+  expected: exit 0
+  fix_if: Any check fails -- fix at source; never weaken an assertion to obtain green.
+  graduation: not-applicable
+- step: 15
+  phase: post-deploy
+  action: Confirm the governed CD channel deployed the five DuckLake artifacts.
+  command: mcp__github__actions_list(owner="benjamin-blake", repo="theseus", workflow_id="deploy-ducklake-lambdas.yml",
+    perPage=1)
+  expected: Latest run green on the merge commit across the workflow real jobs -- deploy-maintenance, maintenance-smoke,
+    reconcile-gate, deploy-serving and smoke (maintenance+smoke ship in one job; writer/reader/catalog-dr in another).
+    Note reconcile-gate re-runs validate_reconcile_pending_gate at deploy time, so the control-class teaching
+    must be in.
+  fix_if: Red -- read the job log via mcp__github__get_job_logs and fix forward; never re-run hoping for green.
+- step: 16
+  phase: post-deploy
+  action: OPERATOR -- quiesce the writer, then provision the control table.
+  command: aws lambda put-function-concurrency --function-name agent-platform-ducklake-writer --reserved-concurrent-executions
+    0 --profile agent_platform_admin --region eu-west-2 && aws lambda invoke --function-name agent-platform-ducklake-writer
+    --profile agent_platform_admin --region eu-west-2 --cli-binary-format raw-in-base64-out --payload '{"action":"create_ops_tables","table":"ops_entity_counters","force_recreate_tables":true,"confirm_force_recreate":"ops_entity_counters"}'
+    /tmp/control.json && cat /tmp/control.json
+  expected: 'Reserved concurrency 0 is in force BEFORE the invoke -- this is the enforcement behind "quiesced".
+    The table is recreated partitioned on counter_name. counter_seed is null here by design: the control class
+    has no entity_id_prefix, so the keyspace reseed is step 19.'
+  fix_if: Reserved concurrency did not apply -- STOP; a concurrent allocation during the drop window is the 2026-06-11
+    duplicate-id failure mode.
+- step: 17
+  phase: post-deploy
+  action: OPERATOR -- reseed the rec keyspace counter, then restore writer concurrency.
+  command: aws lambda invoke --function-name agent-platform-ducklake-writer --profile agent_platform_admin --region
+    eu-west-2 --cli-binary-format raw-in-base64-out --payload '{"action":"create_ops_tables","table":"ops_recommendations"}'
+    /tmp/reseed.json && cat /tmp/reseed.json && aws lambda delete-function-concurrency --function-name agent-platform-ducklake-writer
+    --profile agent_platform_admin --region eu-west-2
+  expected: counter_seed equals the current max rec-NNNN in ops_recommendations_history; concurrency restored
+    only after the seed is confirmed.
+  fix_if: counter_seed is below the table max -- STOP and RCA; do not restore concurrency onto a stranded counter.
+- step: 18
+  phase: post-deploy
+  action: OPERATOR -- run control_health and confirm the invariants hold on live state.
+  command: aws lambda invoke --function-name agent-platform-ducklake-maintenance --profile agent_platform_admin
+    --region eu-west-2 --cli-binary-format raw-in-base64-out --payload '{"action":"control_health","meta_schema":"ducklake_ops"}'
+    /tmp/health.json && cat /tmp/health.json
+  expected: One counter row, current_value at or above the max allocated id, live-file count below ceiling, ControlTableInvariantViolation
+    emitted as 0. This is the periodic assertion that replaces DQ coverage for control tables, and it is what
+    the contract's dq_scope exemption names.
+  fix_if: A violation is reported -- STOP and RCA (Decision 55); do not restore traffic onto a corrupt counter.
+- step: 19
+  phase: post-deploy
+  action: Prove the duplicate-id failure mode is absent, and measure the amplification.
+  command: bin/venv-python -m scripts.data_quality_runner --table ops_recommendations && aws lambda invoke --function-name
+    agent-platform-ducklake-maintenance --profile agent_platform_admin --region eu-west-2 --cli-binary-format
+    raw-in-base64-out --payload '{"action":"catalog_stats","meta_schema":"ducklake_ops"}' /tmp/stats.json && cat
+    /tmp/stats.json
+  expected: clause8_checks.current_merge_key_unique PASSES. ops_entity_counters live-file count stays FLAT across
+    subsequent update_rec calls -- that flatness, not the absolute count, is this plan's evidence, because the
+    pre-existing files await the sibling session's compaction cadence.
+  fix_if: A uniqueness failure appears -- the reseed raced an allocation; STOP and RCA. If the count climbs per
+    update_rec, the guard is not on the executed path.
 test_obligations:
-  - source: src/common/ducklake_table_capabilities.py
-    behavior: Allow-list resolution is direction-aware; non-application tables are refused at the read boundary.
-    verification_step: 1
-    test_selector: tests/common/test_ducklake_table_capabilities.py::test_read_direction_refuses_non_application_tables
-    red_green_expectation: Red before (module absent; ops_table_names is undifferentiated), green after.
-  - source: src/lambdas/ducklake_reader/handler.py
-    behavior: Every reader verb passes direction=read and refuses a read_boundary none table.
-    verification_step: 2
-    test_selector: tests/lambdas/ducklake_reader/test_read_boundary_capability.py::test_reader_refuses_read_boundary_none
-    red_green_expectation: Red before (the reader admits every registry key, dormant and smoke included), green after.
-  - source: src/common/ducklake_reads.py
-    behavior: named_read cannot bind a table that is not read-capable.
-    verification_step: 2
-    test_selector: tests/lambdas/ducklake_reader/test_read_boundary_capability.py::test_named_read_cannot_bind_non_application_table
-    red_green_expectation: Red before, green after.
-  - source: scripts/data_quality_execute.py
-    behavior: DQ table scope derives from the registry rather than a hardcoded frozenset.
-    verification_step: 3
-    command: "! rg -n '_OPS_TABLES' scripts/data_quality_execute.py"
-    red_green_expectation: Red before (the frozenset is present at :19), green after.
-  - source: src/common/ducklake_writes.py
-    behavior: A counter advance at or below current_value performs no catalog write.
-    verification_step: 5
-    test_selector: tests/common/test_ducklake_writes.py::test_advance_counter_noop_writes_no_files
-    red_green_expectation: Red before (GREATEST matches the row unconditionally), green after.
-  - source: src/common/ducklake_control_tables.py
-    behavior: Control specs resolve to a single partitioned table with no history/current pair.
-    verification_step: 6
-    test_selector: tests/common/test_ducklake_control_tables.py::test_control_spec_has_no_history_pair
-    red_green_expectation: Red before (module absent), green after.
-  - source: src/common/ducklake_tables.py
-    behavior: Control-class creation issues one CREATE plus one SET PARTITIONED BY.
-    verification_step: 6
-    test_selector: tests/common/test_ducklake_control_tables.py::test_control_ddl_single_table
-    red_green_expectation: Red before, green after.
-  - source: src/lambdas/ducklake_writer/handler.py
-    behavior: The write verbs refuse a writer_internal table instead of falling through to the SCD2 branch.
-    verification_step: 6
-    test_selector: tests/common/test_ducklake_control_tables.py::test_write_verb_refusal_on_control_table
-    red_green_expectation: Red before (no refusal exists; write_scd2 would run against current_table=None), green after.
-  - source: src/common/ducklake_scd2_schema.py
-    behavior: Both shims delegate without widening _order_columns or the SCD2 spec shape.
-    verification_step: 6
-    test_selector: tests/common/test_ducklake_control_tables.py::test_scd2_schema_delegates_without_widening
-    red_green_expectation: Red before (resolve_table_spec hard-requires history_table), green after.
-  - source: scripts/schema_to_field_semantics.py
-    behavior: Capability fields project on every entry; a control contract projects without SCD2 assumptions.
-    verification_step: 7
-    test_selector: tests/test_schema_to_field_semantics.py::test_control_class_projection
-    red_green_expectation: Red before (hard-indexed ops_config keys raise KeyError), green after.
-  - source: src/common/ducklake_runtime.py
-    behavior: The facade re-exports both new surfaces and retains every pre-existing symbol.
-    verification_step: 8
-    test_selector: tests/test_ducklake_facade.py::test_ducklake_runtime_facade_reexports_symbol
-    red_green_expectation: >-
-      Red before -- the parametrised facade list is edited in this plan (ensure_entity_counters_table is
-      pinned at tests/test_ducklake_facade.py:53 and moves behind the control module), so the updated
-      list fails against the pre-change runtime; green after.
-  - source: tests/lambda_manifest/test_bundle_checks.py
-    behavior: Two-sided bundling invariant -- included where the SCD2 schema is, excluded where it is not.
-    verification_step: 9
-    test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
-    red_green_expectation: Red before (assertion absent), green after.
-  - source: src/lambdas/ducklake_writer/manifest.yaml
-    behavior: Writer bundles both new modules.
-    verification_step: 9
-    test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
-    red_green_expectation: Red before, green after.
-  - source: src/lambdas/ducklake_reader/manifest.yaml
-    behavior: Reader bundles both new modules.
-    verification_step: 9
-    test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
-    red_green_expectation: Red before, green after.
-  - source: src/lambdas/ducklake_maintenance/manifest.yaml
-    behavior: Maintenance bundles both new modules.
-    verification_step: 9
-    test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
-    red_green_expectation: Red before, green after.
-  - source: src/lambdas/ducklake_maintenance_smoke/manifest.yaml
-    behavior: Maintenance-smoke bundles both new modules.
-    verification_step: 9
-    test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
-    red_green_expectation: Red before, green after.
-  - source: src/lambdas/ducklake_catalog_dr/manifest.yaml
-    behavior: Catalog-DR bundles both new modules.
-    verification_step: 9
-    test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
-    red_green_expectation: Red before, green after.
-  - source: src/lambdas/data-pipeline/manifest.yaml
-    behavior: Data-pipeline EXCLUDES both new modules, so its `src/` wildcard cannot auto-bundle DuckLake runtime code.
-    verification_step: 9
-    test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
-    red_green_expectation: Red before (the wildcard would bundle them today), green after.
-  - source: src/common/ducklake_maintenance.py
-    behavior: control_health asserts row count, counter floor and live-file ceiling, and emits a violation metric.
-    verification_step: 11
-    test_selector: tests/common/test_ducklake_maintenance.py::test_control_health_asserts_counter_invariants
-    red_green_expectation: Red before (verb absent), green after.
-  - source: src/lambdas/ducklake_maintenance/handler.py
-    behavior: control_health is dispatchable and emits its metric.
-    verification_step: 11
-    test_selector: tests/common/test_ducklake_maintenance.py::test_control_health_action_dispatches
-    red_green_expectation: Red before, green after.
-  - source: scripts/checks/contracts/validate_table_registration.py
-    behavior: An unregistered CREATE TABLE under src/ fails the check, with a non-zero examined count.
-    verification_step: 12
-    test_selector: tests/checks/contracts/test_validate_table_registration.py::test_unregistered_create_table_fails
-    red_green_expectation: Red before (check absent), green after.
-  - source: scripts/checks/contracts/_manifest.py
-    behavior: The new check is registered and dispatched by the contracts domain.
-    verification_step: 12
-    test_selector: tests/checks/contracts/test_validate_table_registration.py::test_check_is_registered
-    red_green_expectation: Red before, green after.
-  - source: tests/common/test_ducklake_table_capabilities.py
-    behavior: Test surface for capability resolution.
-    verification_step: 1
-    test_selector: tests/common/test_ducklake_table_capabilities.py::test_read_direction_refuses_non_application_tables
-    red_green_expectation: Red before, green after.
-  - source: tests/lambdas/ducklake_reader/test_read_boundary_capability.py
-    behavior: Test surface for the reader gate.
-    verification_step: 2
-    test_selector: tests/lambdas/ducklake_reader/test_read_boundary_capability.py::test_reader_refuses_read_boundary_none
-    red_green_expectation: Red before, green after.
-  - source: tests/common/test_ducklake_control_tables.py
-    behavior: Test surface for the control class.
-    verification_step: 6
-    test_selector: tests/common/test_ducklake_control_tables.py::test_control_spec_has_no_history_pair
-    red_green_expectation: Red before, green after.
-  - source: tests/common/test_ducklake_writes.py
-    behavior: Test surface for the no-op regression.
-    verification_step: 5
-    test_selector: tests/common/test_ducklake_writes.py::test_advance_counter_noop_writes_no_files
-    red_green_expectation: Red before, green after.
-  - source: tests/test_ducklake_facade.py
-    behavior: Test surface carrying the post-split facade list.
-    verification_step: 8
-    test_selector: tests/test_ducklake_facade.py::test_ducklake_runtime_facade_reexports_symbol
-    red_green_expectation: Red before, green after.
-  - source: tests/test_schema_to_field_semantics.py
-    behavior: Test surface for both projections.
-    verification_step: 7
-    test_selector: tests/test_schema_to_field_semantics.py::test_control_class_projection
-    red_green_expectation: Red before, green after.
-  - source: tests/common/test_ducklake_maintenance.py
-    behavior: Test surface for control_health.
-    verification_step: 11
-    test_selector: tests/common/test_ducklake_maintenance.py::test_control_health_asserts_counter_invariants
-    red_green_expectation: Red before, green after.
-  - source: tests/checks/contracts/test_validate_table_registration.py
-    behavior: Test surface for the admission check.
-    verification_step: 12
-    test_selector: tests/checks/contracts/test_validate_table_registration.py::test_unregistered_create_table_fails
-    red_green_expectation: Red before, green after.
-  - source: terraform/personal/ducklake_maintenance.tf
-    behavior: control_health schedule and violation alarm exist.
-    verification_step: 16
-    command: bin/venv-python -m scripts.validate
-    red_green_expectation: Waived -- terraform artefact assertions ride the existing artifact test suite; CI-delegated per Decision 119.
-  - source: config/ci_rca_taxonomy.yaml
-    behavior: Taxonomy registration data only.
-    verification_step: 16
-    command: bin/venv-python -m scripts.validate
-    red_green_expectation: Waived -- registration data, adjudicated by the ci_rca taxonomy validator.
-  - source: docs/contracts/data-modeling-standard.yaml
-    behavior: Contract content -- the control write mode, its invariants and the dq_scope rule.
-    verification_step: 16
-    command: bin/venv-python -m scripts.validate
-    red_green_expectation: Waived -- contract data, enforced by the registration check and the drift gate.
-  - source: docs/contracts/ops_entity_counters.yaml
-    behavior: Class A contract content for the control table.
-    verification_step: 7
-    command: bin/venv-python -m pytest tests/test_schema_to_field_semantics.py::test_control_class_projection -q
-    red_green_expectation: Waived -- contract data; the projection test is its behavioural guard.
-  - source: docs/contracts/storage-substrate.yaml
-    behavior: Registration data only.
-    verification_step: 16
-    command: bin/venv-python -m scripts.validate
-    red_green_expectation: Waived -- data edit; validate_data_model_standard adjudicates grain/write_mode presence.
-  - source: docs/contracts/ducklake_writer.yaml
-    behavior: Contract wording only.
-    verification_step: 16
-    command: bin/venv-python -m scripts.validate
-    red_green_expectation: Waived -- contract edit governed by validate_contract_drift.
-  - source: docs/contracts/ducklake_reader.yaml
-    behavior: Contract wording documenting the per-table read surface.
-    verification_step: 16
-    command: bin/venv-python -m scripts.validate
-    red_green_expectation: Waived -- contract edit governed by validate_contract_drift.
-  - source: config/lambda/ducklake/field_semantics.static.yaml
-    behavior: Sidecar carrying capability fields and the control entry's reconcile_scope plus exempt_reason.
-    verification_step: 4
-    command: bin/venv-python -m pytest tests/test_schema_to_field_semantics.py::test_capability_fields_projected -q
-    red_green_expectation: Red before (the generator raises when reconcile_scope is absent), green after.
-  - source: config/lambda/ducklake/field_semantics.yaml
-    behavior: Generated output; never hand-edited.
-    verification_step: 4
-    command: bin/venv-python -m pytest tests/test_schema_to_field_semantics.py::test_capability_fields_projected -q
-    red_green_expectation: Waived -- generated artefact, drift-gated.
-  - source: docs/DECISIONS.md
-    behavior: Dated amendment trailer on Decision 137; no new numbered Decision.
-    verification_step: 14
-    command: rg -n 'counter_name' docs/DECISIONS.md | rg -q 'Amendment|Update' && rg -c '^## Decision 137' docs/DECISIONS.md
-    red_green_expectation: >-
-      Red before (no trailer exists), green after. amendment_forms enforcement is convention-only --
-      validate_live_entry_immutability was RETIRED by Decision 178, so this grep is the only evidence.
-  - source: docs/ROADMAP-PLATFORM.yaml
-    behavior: Roadmap bookkeeping only.
-    verification_step: 16
-    command: bin/venv-python -m scripts.validate
-    red_green_expectation: Waived -- data edit enforced by validate_platform_roadmap.
+- source: src/lambdas/ducklake_reader/handler.py
+  behavior: Every reader verb refuses a control-class table.
+  verification_step: 3
+  test_selector: tests/lambdas/ducklake_reader/test_control_table_refusal.py::test_reader_refuses_control_table
+  red_green_expectation: Red before (no class check exists at the reader call sites), green after.
+- source: src/common/ducklake_reads.py
+  behavior: named_read cannot bind a control-class table.
+  verification_step: 3
+  test_selector: tests/lambdas/ducklake_reader/test_control_table_refusal.py::test_named_read_cannot_bind_control_table
+  red_green_expectation: Red before, green after.
+- source: src/common/ducklake_writes.py
+  behavior: A counter advance at or below current_value performs no catalog write.
+  verification_step: 1
+  test_selector: tests/common/test_ducklake_writes.py::test_advance_counter_noop_writes_no_files
+  red_green_expectation: Red before (GREATEST matches the row unconditionally), green after.
+- source: src/common/ducklake_control_tables.py
+  behavior: Control specs resolve to a single partitioned table with no history/current pair.
+  verification_step: 2
+  test_selector: tests/common/test_ducklake_control_tables.py::test_control_spec_has_no_history_pair
+  red_green_expectation: Red before (module absent), green after.
+- source: src/common/ducklake_tables.py
+  behavior: Control-class creation issues one CREATE plus one SET PARTITIONED BY.
+  verification_step: 2
+  test_selector: tests/common/test_ducklake_control_tables.py::test_control_ddl_single_table
+  red_green_expectation: Red before, green after.
+- source: src/lambdas/ducklake_writer/handler.py
+  behavior: The write verbs refuse a writer_internal table instead of falling through to the SCD2 branch.
+  verification_step: 2
+  test_selector: tests/common/test_ducklake_control_tables.py::test_write_verb_refusal_on_control_table
+  red_green_expectation: Red before (no refusal exists; write_scd2 would run against current_table=None), green
+    after.
+- source: src/common/ducklake_scd2_schema.py
+  behavior: Both shims delegate without widening _order_columns or the SCD2 spec shape.
+  verification_step: 2
+  test_selector: tests/common/test_ducklake_control_tables.py::test_scd2_schema_delegates_without_widening
+  red_green_expectation: Red before (resolve_table_spec hard-requires history_table), green after.
+- source: scripts/schema_to_field_semantics.py
+  behavior: Capability fields project on every entry; a control contract projects without SCD2 assumptions.
+  verification_step: 4
+  test_selector: tests/test_schema_to_field_semantics.py::test_control_class_projection
+  red_green_expectation: Red before (hard-indexed ops_config keys raise KeyError), green after.
+- source: src/common/ducklake_runtime.py
+  behavior: The facade re-exports both new surfaces and retains every pre-existing symbol.
+  verification_step: 6
+  test_selector: tests/test_ducklake_facade.py::test_ducklake_runtime_facade_reexports_symbol
+  red_green_expectation: Red before -- the parametrised facade list is edited in this plan (ensure_entity_counters_table
+    is pinned at tests/test_ducklake_facade.py:53 and moves behind the control module), so the updated list fails
+    against the pre-change runtime; green after.
+- source: tests/lambda_manifest/test_bundle_checks.py
+  behavior: Two-sided bundling invariant -- included where the SCD2 schema is, excluded where it is not.
+  verification_step: 7
+  test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
+  red_green_expectation: Red before (assertion absent), green after.
+- source: src/lambdas/ducklake_writer/manifest.yaml
+  behavior: Writer bundles both new modules.
+  verification_step: 7
+  test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
+  red_green_expectation: Red before, green after.
+- source: src/lambdas/ducklake_reader/manifest.yaml
+  behavior: Reader bundles both new modules.
+  verification_step: 7
+  test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
+  red_green_expectation: Red before, green after.
+- source: src/lambdas/ducklake_maintenance/manifest.yaml
+  behavior: Maintenance bundles both new modules.
+  verification_step: 7
+  test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
+  red_green_expectation: Red before, green after.
+- source: src/lambdas/ducklake_maintenance_smoke/manifest.yaml
+  behavior: Maintenance-smoke bundles both new modules.
+  verification_step: 7
+  test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
+  red_green_expectation: Red before, green after.
+- source: src/lambdas/ducklake_catalog_dr/manifest.yaml
+  behavior: Catalog-DR bundles both new modules.
+  verification_step: 7
+  test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
+  red_green_expectation: Red before, green after.
+- source: src/lambdas/data-pipeline/manifest.yaml
+  behavior: Data-pipeline EXCLUDES both new modules, so its `src/` wildcard cannot auto-bundle DuckLake runtime
+    code.
+  verification_step: 7
+  test_selector: tests/lambda_manifest/test_bundle_checks.py::test_new_ducklake_modules_track_scd2_schema_membership
+  red_green_expectation: Red before (the wildcard would bundle them today), green after.
+- source: src/common/ducklake_maintenance.py
+  behavior: control_health asserts row count, counter floor and live-file ceiling, and emits a violation metric.
+  verification_step: 9
+  test_selector: tests/test_ducklake_maintenance.py::test_control_health_asserts_counter_invariants
+  red_green_expectation: Red before (verb absent), green after.
+- source: src/lambdas/ducklake_maintenance/handler.py
+  behavior: control_health is dispatchable and emits its metric.
+  verification_step: 9
+  test_selector: tests/test_ducklake_maintenance.py::test_control_health_action_dispatches
+  red_green_expectation: Red before, green after.
+- source: scripts/checks/contracts/validate_table_registration.py
+  behavior: An unregistered CREATE TABLE under src/ fails the check, with a non-zero examined count.
+  verification_step: 10
+  test_selector: tests/checks/contracts/test_validate_table_registration.py::test_unregistered_create_table_fails
+  red_green_expectation: Red before (check absent), green after.
+- source: scripts/checks/contracts/_manifest.py
+  behavior: The new check is registered and dispatched by the contracts domain.
+  verification_step: 10
+  test_selector: tests/checks/contracts/test_validate_table_registration.py::test_check_is_registered
+  red_green_expectation: Red before, green after.
+- source: tests/common/test_ducklake_control_tables.py
+  behavior: Test surface for the control class.
+  verification_step: 2
+  test_selector: tests/common/test_ducklake_control_tables.py::test_control_spec_has_no_history_pair
+  red_green_expectation: Red before, green after.
+- source: tests/common/test_ducklake_writes.py
+  behavior: Test surface for the no-op regression.
+  verification_step: 1
+  test_selector: tests/common/test_ducklake_writes.py::test_advance_counter_noop_writes_no_files
+  red_green_expectation: Red before, green after.
+- source: tests/test_ducklake_facade.py
+  behavior: Test surface carrying the post-split facade list.
+  verification_step: 6
+  test_selector: tests/test_ducklake_facade.py::test_ducklake_runtime_facade_reexports_symbol
+  red_green_expectation: Red before, green after.
+- source: tests/test_schema_to_field_semantics.py
+  behavior: Test surface for both projections.
+  verification_step: 4
+  test_selector: tests/test_schema_to_field_semantics.py::test_control_class_projection
+  red_green_expectation: Red before, green after.
+- source: tests/test_ducklake_maintenance.py
+  behavior: Test surface for control_health.
+  verification_step: 9
+  test_selector: tests/test_ducklake_maintenance.py::test_control_health_asserts_counter_invariants
+  red_green_expectation: Red before, green after.
+- source: tests/checks/contracts/test_validate_table_registration.py
+  behavior: Test surface for the admission check.
+  verification_step: 10
+  test_selector: tests/checks/contracts/test_validate_table_registration.py::test_unregistered_create_table_fails
+  red_green_expectation: Red before, green after.
+- source: terraform/personal/ducklake_maintenance.tf
+  behavior: control_health schedule and violation alarm exist.
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate
+  red_green_expectation: Waived -- terraform artefact assertions ride the existing artifact test suite; CI-delegated
+    per Decision 119.
+- source: config/ci_rca_taxonomy.yaml
+  behavior: Taxonomy registration data only.
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate
+  red_green_expectation: Waived -- registration data, adjudicated by the ci_rca taxonomy validator.
+- source: docs/contracts/data-modeling-standard.yaml
+  behavior: Contract content -- the control write mode, its invariants and the dq_scope rule.
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate
+  red_green_expectation: Waived -- contract data, enforced by the registration check and the drift gate.
+- source: docs/contracts/ops_entity_counters.yaml
+  behavior: Class A contract content for the control table.
+  verification_step: 4
+  command: bin/venv-python -m pytest tests/test_schema_to_field_semantics.py::test_control_class_projection -q
+  red_green_expectation: Waived -- contract data; the projection test is its behavioural guard.
+- source: docs/contracts/storage-substrate.yaml
+  behavior: Registration data only.
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate
+  red_green_expectation: Waived -- data edit; validate_data_model_standard adjudicates grain/write_mode presence.
+- source: docs/contracts/ducklake_writer.yaml
+  behavior: Contract wording only.
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate
+  red_green_expectation: Waived -- contract edit governed by validate_contract_drift.
+- source: docs/contracts/ducklake_reader.yaml
+  behavior: Contract wording documenting the per-table read surface.
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate
+  red_green_expectation: Waived -- contract edit governed by validate_contract_drift.
+- source: config/lambda/ducklake/field_semantics.static.yaml
+  behavior: Sidecar carries the control entry with reconcile_scope exempt and its exempt_reason companion.
+  verification_step: 4
+  command: bin/venv-python -m pytest tests/test_schema_to_field_semantics.py::test_control_class_projection -q
+  red_green_expectation: Red before (the generator raises when reconcile_scope is absent), green after.
+- source: config/lambda/ducklake/field_semantics.yaml
+  behavior: Generated output; never hand-edited.
+  verification_step: 4
+  command: bin/venv-python -m pytest tests/test_schema_to_field_semantics.py::test_control_class_projection -q
+  red_green_expectation: Waived -- generated artefact, drift-gated.
+- source: docs/DECISIONS.md
+  behavior: Dated amendment trailer on Decision 137; no new numbered Decision.
+  verification_step: 12
+  command: rg -n 'counter_name' docs/DECISIONS.md | rg -q 'Amendment|Update' && rg -c '^## Decision 137' docs/DECISIONS.md
+  red_green_expectation: Red before (no trailer exists), green after. amendment_forms enforcement is convention-only
+    -- validate_live_entry_immutability was RETIRED by Decision 178, so this grep is the only evidence.
+- source: docs/ROADMAP-PLATFORM.yaml
+  behavior: Roadmap bookkeeping only.
+  verification_step: 14
+  command: bin/venv-python -m scripts.validate
+  red_green_expectation: Waived -- data edit enforced by validate_platform_roadmap.
+- source: scripts/checks/ops_governance/validate_reconcile_pending_gate.py
+  behavior: The diff-added-column gap leg recognises the control class and does not demand history/current sides.
+  test_selector: tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_control_class_needs_no_reconcile_sides
+  red_green_expectation: Red before (_write_mode defaults to scd2 and the leg never consults reconcile_scope),
+    green after.
+  verification_step: 5
+- source: tests/checks/ops_governance/test_validate_reconcile_pending_gate.py
+  behavior: Test surface for the control-class path through the reconcile gate.
+  test_selector: tests/checks/ops_governance/test_validate_reconcile_pending_gate.py::test_control_class_needs_no_reconcile_sides
+  red_green_expectation: Red before, green after.
+  verification_step: 5
+- source: tests/lambdas/ducklake_reader/test_control_table_refusal.py
+  behavior: Test surface for the reader-side refusal.
+  test_selector: tests/lambdas/ducklake_reader/test_control_table_refusal.py::test_reader_refuses_control_table
+  red_green_expectation: Red before, green after.
+  verification_step: 3
+- source: tests/lambdas/ducklake_reader/__init__.py
+  behavior: Package marker only -- no runtime behaviour.
+  command: bin/venv-python -m scripts.validate
+  red_green_expectation: Waived -- an empty package marker carries no behaviour to guard.
+  verification_step: 14
 constraints:
-  - No rescue agents or workaround loops (Decision 55).
-  - NEVER weaken an assertion or raise a budget to obtain green (Decision 55 / Decision 181 / Decision 128).
-  - >-
-    Decision 84 I-2 is PRESERVED: allocation stays writer-owned and inside the DuckLake write
-    transaction. This plan changes the counter table's SHAPE, GOVERNANCE and EXPOSURE, never its substrate.
-  - >-
-    Decision 177/178: Decision 137 takes a dated appended annotation, never an in-place body rewrite.
-    Enforcement is convention-only -- validate_live_entry_immutability was retired -- so VP step 14 is
-    the evidence, not a validator.
-  - >-
-    Decision 169: a new check is a registered module plus one _manifest.py Entry. scripts/validate.py
-    is not edited.
-  - >-
-    NO new numbered Decision. decision-entry.yaml's routing_rule needs all three questions to answer
-    yes; question 3 fails because the field_semantics row ('constraints of a data field or config key
-    -> the owning contract; never a numbered Decision') already owns the control-class invariants.
-  - >-
-    ducklake_scd2_schema.py has 32 SLOC of headroom (468/500) and takes SHIMS ONLY. Capability
-    resolution lives in ducklake_table_capabilities.py and control-class logic in
-    ducklake_control_tables.py; _order_columns and ScdTableSpec are never widened.
-  - >-
-    FIVE artifacts bundle ducklake_scd2_schema.py via EXPLICIT include lists, so a new module is not
-    auto-bundled and must be added to each. data-pipeline is the INVERSE: its `includes: - src/`
-    wildcard would auto-bundle it, and its excludes block deliberately keeps DuckLake runtime code out.
-    Adding the module to data-pipeline's includes would ship DuckLake code in that zip and widen its
-    affected set -- exactly what its manifest comment forbids.
-  - >-
-    Control tables are never exposed through the APPLICATION read boundary. They remain readable by
-    their owning writer in-transaction and by the admin maintenance health verb -- writer-owned, not
-    writer-opaque. Do not widen query_ops or named_read to reach them.
-  - >-
-    The migration runs under reserved-concurrency-0 on the writer. "Quiesced" is that mechanism, never
-    a prose intention: a concurrent self-seed race minted duplicate rec ids on 2026-06-11.
-  - >-
-    Inlining stays globally disabled (Decision 107/CD.34). A per-table inlining exception was
-    considered and rejected: it relocates cost into catalog egress and complicates GC policy.
-  - Lambda code deploys ride the governed CD channel; never build_lambda --deploy (Decision 125/126).
+- No rescue agents or workaround loops (Decision 55).
+- NEVER weaken an assertion or raise a budget to obtain green (Decision 55 / Decision 181 / Decision 128).
+- 'Decision 84 I-2 is PRESERVED: allocation stays writer-owned and inside the DuckLake write transaction. This
+  plan changes the counter table''s SHAPE, GOVERNANCE and EXPOSURE, never its substrate.'
+- 'Decision 177/178: Decision 137 takes a dated appended annotation, never an in-place body rewrite. Enforcement
+  is convention-only -- validate_live_entry_immutability was retired -- so VP step 14 is the evidence, not a validator.'
+- 'Decision 169: a new check is a registered module plus one _manifest.py Entry. scripts/validate.py is not edited.'
+- NO new numbered Decision. decision-entry.yaml's routing_rule needs all three questions to answer yes; question
+  3 fails because the field_semantics row ('constraints of a data field or config key -> the owning contract;
+  never a numbered Decision') already owns the control-class invariants.
+- ducklake_scd2_schema.py has 32 SLOC of headroom (468/500) and takes SHIMS ONLY. Capability resolution lives
+  in ducklake_table_capabilities.py and control-class logic in ducklake_control_tables.py; _order_columns and
+  ScdTableSpec are never widened.
+- 'FIVE artifacts bundle ducklake_scd2_schema.py via EXPLICIT include lists, so a new module is not auto-bundled
+  and must be added to each. data-pipeline is the INVERSE: its `includes: - src/` wildcard would auto-bundle it,
+  and its excludes block deliberately keeps DuckLake runtime code out. Adding the module to data-pipeline''s includes
+  would ship DuckLake code in that zip and widen its affected set -- exactly what its manifest comment forbids.'
+- Control tables are never exposed through the APPLICATION read boundary. They remain readable by their owning
+  writer in-transaction and by the admin maintenance health verb -- writer-owned, not writer-opaque. Do not widen
+  query_ops or named_read to reach them.
+- 'The migration runs under reserved-concurrency-0 on the writer. "Quiesced" is that mechanism, never a prose
+  intention: a concurrent self-seed race minted duplicate rec ids on 2026-06-11.'
+- 'Inlining stays globally disabled (Decision 107/CD.34). A per-table inlining exception was considered and rejected:
+  it relocates cost into catalog egress and complicates GC policy.'
+- Lambda code deploys ride the governed CD channel; never build_lambda --deploy (Decision 125/126).
 context:
-  - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 84, Decision 81, Decision 88, Decision 82, Decision 118, Decision 79, Decision 126, Decision 170, Decision 167, Decision 177, Decision 178, Decision 166, Decision 65, Decision 137, Decision 169, Decision 104, Decision 100, Decision 75, Decision 107, Decision 70, Decision 143, Decision 125, Decision 168, Decision 187, Decision 128, Decision 150, Decision 62, Decision 55, CD.33, CD.9, CD.25"
-  - "Decisions triaged: 140 of 140; Roadmap items intersected: 18; CONFLICT: 1; RELATED: 14"
-  - "gates: decision-scout=FLAGS_FOUND (round 2; round 1 BLOCKed an abandoned substrate-change framing); plan-critique=REVISE round 1 (16 findings) -> REVISE round 2 (13 findings, F1/F13/F14/F15 not held) -> <verdict> after <N> round(s)"
-  - "Root cause verified: _advance_entity_counter (ducklake_writes.py:329-346) runs on every write_scd2 (:205); update_ops routes through it (handler.py:146); GREATEST at :343, WHERE at :344, no current_value < ? guard."
-  - "Measured (production, catalog_stats 2026-09-12): ops_entity_counters 3,418 live files unpartitioned for ONE row; catalog 12,887 live files, 22,044 scheduled_for_deletion, 13,848 snapshots."
-  - "PR1 exists because ops_table_names() (ducklake_scd2_schema.py:233) returns EVERY registry key -- live, dormant AND smoke -- with no status gate, and BOTH _require_ops_table sites consume it unchanged (writer handler.py:196, reader handler.py:212). Registering for governance therefore grants read exposure. Verified on main: dormant ops_priority_queue / ops_session_log and smoke ops_smoke_events are admitted to the application read boundary today."
-  - "Fable consult 2 (control-table observability): control state is writer-OWNED, not writer-opaque -- every mature system exposes bookkeeping through a verb owned by the writing component, never through the application data model. ADOPTED: per-direction capability separation; the one-word invariant fix (application read boundary); declared dq_scope exemption naming a health binding; control_health on the admin maintenance Lambda. REJECTED: DQ-through-reader, which query_current (ducklake_reads.py:153) cannot serve anyway."
-  - "DQ posture resolved: the DQ runner has NO scheduled monitor (T1.6 deferred), so a PR-gate check would find 03:00 corruption at the next PR. control_health on the 6h maintenance cadence plus an alarm is the stronger substitute, and the contract's dq_scope exemption NAMES it -- 'forgot' and 'deliberately exempt' stay structurally distinguishable."
-  - "Delivery: THREE PRs on one plan (human direction 2026-09-13). PR1 capability separation (steps 1-4) -- independently green, no control class. PR2 counter fix + control class + registration + health verb + migration (steps 5-11, 17-21) -- depends on PR1's read_boundary field. PR3 admission check + governance bookkeeping (steps 12-14) -- depends on PR2's class existing."
-  - "closes_criteria WITHDRAWN: T2.26:c7 is item-level replacement-closure over the legacy ops-table estate whose residual is the ops_session_log disposition; a writer-internal bookkeeping helper is not that, and c2/c3/c8 remain open. Recorded as a T2.26 progress note instead."
-  - "Fast-tier breadth DECLARED, re-derived against THIS 42-row scope (selection_budget 2026-09-13): 237 of 565 modules; predicted test half 205.4-264.6s, elapsed 256.4-336.3s against a 240s non-test budget and a 474s test allowance. Disposition breadth_waived. The upper bound crosses the operator-set 5-minute --pre target for the combined scope, which the three-PR delivery resolves -- each PR carries a strict subset."
-  - "SLOC at draft time: ducklake_scd2_schema.py 468, ducklake_writes.py 374, schema_to_field_semantics.py 291, ducklake_maintenance.py 468 -- all unregistered against the 500 default."
-  - "rec-3767 tracks the sibling plan's gc_ops enablement residual. The merge_ops LIKE-pattern gap (rec-3762, sibling-owned) is why one row reached 3,418 files; three independent reviews converged on it."
+- 'Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 84, 81, 88, 82, 118, 79, 126, 170, 167, 177,
+  178, 166, 65, 137, 169, 104, 100, 75, 107, 70, 143, 125, 168, 187, 128, 150, 62, 55, CD.33, CD.9, CD.25'
+- 'Decisions triaged: 140 of 140; Roadmap items intersected: 18; CONFLICT: 1; RELATED: 14'
+- 'gates: decision-scout=FLAGS_FOUND (rd2; rd1 BLOCKed an abandoned substrate-change framing); plan-critique=REVISE
+  rd1 (16) -> REVISE rd2 (13) -> REVISE rd3 (10) -> <verdict> after <N> round(s)'
+- 'Root cause: _advance_entity_counter (ducklake_writes.py:329-346) runs on every write_scd2 (:205); update_ops
+  routes through it (writer handler.py:146); GREATEST at :343, WHERE at :344, no current_value < ? guard.'
+- 'Measured (production, catalog_stats 2026-09-12): ops_entity_counters 3,418 live files unpartitioned for ONE
+  row; catalog 12,887 live files, 22,044 scheduled_for_deletion, 13,848 snapshots.'
+- 'SPLIT OUT to rec-3771 (operator direction 2026-09-13, after critique rd3): the general per-direction registry
+  capability field. It had never been decision-scouted and, as first drafted, contradicted Decision 84 I-3. CORRECTION
+  carried forward: dormant/smoke entries in the read allow-list are NOT an exposure -- ops_priority_queue is a
+  ratified boundary table (read-engine.yaml:53,:71) whose dormant status refers to the frozen executor producer,
+  not the table (field_semantics.static.yaml:306); sync/ops.py:72 and preflight/priority_queue.py:118 read it
+  live.'
+- 'This plan therefore carries only a NARROW, class-specific refusal: control-class tables are refused at both
+  boundaries, symmetric writer and reader. It does not touch the general allow-list.'
+- 'Fable consult 2: control state is writer-OWNED, not writer-opaque -- mature systems expose bookkeeping through
+  a verb owned by the writing component, never the application data model. ADOPTED: control_health on the admin
+  maintenance Lambda with metric+alarm, NAMED by the contract''s dq_scope exemption. REJECTED: DQ-through-reader,
+  which query_current (ducklake_reads.py:153) cannot serve.'
+- 'DQ posture: the DQ runner has NO scheduled monitor (T1.6 deferred), so a PR-gate check would find 03:00 corruption
+  at the next PR. control_health on the 6h cadence is the stronger substitute, and the exemption naming it keeps
+  ''forgot'' and ''deliberately exempt'' distinguishable.'
+- 'Delivery: TWO PRs. PR-A counter fix + control class + both refusals + registration + control_health + migration.
+  PR-B admission check + governance bookkeeping. PR-B depends on PR-A''s class existing.'
+- 'closes_criteria T2.26:c10 is ADDED BY THIS PLAN and closed by it -- stating the work as a criterion rather
+  than claiming an existing one. c7 was claimed in an earlier revision and withdrawn: it is item-level replacement
+  closure over the legacy ops-table estate whose residual is the ops_session_log disposition.'
+- 'Scope is 41 rows. Verified figures: reader has 3 and writer 4 _require_ops_table call sites; ducklake_scd2_schema.py
+  468/500 SLOC, ducklake_maintenance.py 443, ducklake_writes.py 374.'
+- 'FIVE artifacts bundle ducklake_scd2_schema.py via EXPLICIT include lists (a new module is NOT auto-bundled);
+  data-pipeline is the inverse -- its `includes: - src/` wildcard would auto-bundle it and its excludes block
+  deliberately keeps DuckLake runtime out. Verified with compute_affected_artifacts, not prose.'
+- rec-3767 tracks the sibling plan's gc_ops enablement residual; rec-3762 (sibling-owned) is the merge_ops LIKE-pattern
+  gap that let one row reach 3,418 files.
+- 'Fast-tier breadth DECLARED, re-derived against this 41-row scope (selection_budget 2026-09-13): predicted test
+  half 200.3-257.8s, elapsed 251.3-329.5s against a 240s non-test budget. Disposition breadth_waived; the two-PR
+  delivery keeps each PR''s subset inside the 5-minute --pre target.'
 pre_implementation_checklist:
-  - Branch confirmed not on main
-  - docs/PROJECT_CONTEXT.md read
-  - Only the plan-cited decision sections read (84 I-2, 81 cl.3/4/7, 137, 169, 170, 177/178, 128, 65, 104)
-  - All files in scope located and readable
-  - Acceptance criteria understood and verifiable
-  - docs/contracts/data-modeling-standard.yaml design_time_walk conducted for the control class
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- Only the plan-cited decision sections read (84 I-2, 81 cl.3/4/7, 137, 169, 170, 177/178, 128, 65, 104)
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+- docs/contracts/data-modeling-standard.yaml design_time_walk conducted for the control class
 execution_steps:
-  - >-
-    PR1. Create src/common/ducklake_table_capabilities.py resolving read_boundary / write_boundary per
-    registry entry; give ops_table_names a direction argument that delegates to it; pass the direction
-    at all nine _require_ops_table call sites; gate named_read's table resolution; delete
-    data_quality_execute.py's _OPS_TABLES frozenset; project the fields in the generator and sidecar;
-    document the per-table surface in the reader contract.
-  - >-
-    PR2. Fix _advance_entity_counter to be no-op-free using the read-then-conditional surface named in
-    VP step 5.
-  - >-
-    PR2. Create src/common/ducklake_control_tables.py; delegate from ducklake_scd2_schema and
-    ducklake_tables; re-export through ducklake_runtime. Do not widen _order_columns.
-  - >-
-    PR2. Add the control module and the capabilities module to the FIVE explicit-include manifests, and
-    add both to data-pipeline's EXCLUDES. Assert the two-sided invariant in tests/lambda_manifest/.
-  - >-
-    PR2. Add the writer_internal refusal to the write verbs and move counter creation onto create_ops_tables.
-  - >-
-    PR2. Author docs/contracts/ops_entity_counters.yaml and its sidecar entry (reconcile_scope exempt
-    WITH exempt_reason, read_boundary none, write_boundary writer_internal, dq_scope exempt naming the
-    health binding); register in storage-substrate.yaml; regenerate field_semantics.yaml; add the
-    `control` write mode and the dq_scope rule to data-modeling-standard.yaml.
-  - >-
-    PR2. Implement control_health in ducklake_maintenance.py, dispatch it in the maintenance handler,
-    and add its schedule plus ControlTableInvariantViolation alarm in terraform.
-  - >-
-    PR3. Add validate_table_registration.py plus its _manifest.py Entry and ci_rca_taxonomy row,
-    resolving module-level constants and declaring examined/skipped counts (Decision 170).
-  - >-
-    PR3. Append the dated annotation to Decision 137 (amendment_forms shape). Mint NO new numbered
-    Decision. Re-ground T2.52 c1 and T2.26 c2 and add the T2.26 progress note.
-  - >-
-    Write the tests named in test_obligations, each failing against current main before its fix.
-  - >-
-    Execute the Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55).
-  - 'Report: what was implemented, verification results, and which acceptance criteria are evidenced.'
+- PR1. Create src/common/ducklake_table_capabilities.py resolving read_boundary / write_boundary per registry
+  entry; give ops_table_names a direction argument that delegates to it; pass the direction at all nine _require_ops_table
+  call sites; gate named_read's table resolution; delete data_quality_execute.py's _OPS_TABLES frozenset; project
+  the fields in the generator and sidecar; document the per-table surface in the reader contract.
+- PR2. Fix _advance_entity_counter to be no-op-free using the read-then-conditional surface named in VP step 5.
+- PR2. Create src/common/ducklake_control_tables.py; delegate from ducklake_scd2_schema and ducklake_tables; re-export
+  through ducklake_runtime. Do not widen _order_columns.
+- PR2. Add the control module and the capabilities module to the FIVE explicit-include manifests, and add both
+  to data-pipeline's EXCLUDES. Assert the two-sided invariant in tests/lambda_manifest/.
+- PR2. Add the writer_internal refusal to the write verbs and move counter creation onto create_ops_tables.
+- PR2. Author docs/contracts/ops_entity_counters.yaml and its sidecar entry (reconcile_scope exempt WITH exempt_reason,
+  read_boundary none, write_boundary writer_internal, dq_scope exempt naming the health binding); register in
+  storage-substrate.yaml; regenerate field_semantics.yaml; add the `control` write mode and the dq_scope rule
+  to data-modeling-standard.yaml.
+- PR2. Implement control_health in ducklake_maintenance.py, dispatch it in the maintenance handler, and add its
+  schedule plus ControlTableInvariantViolation alarm in terraform.
+- PR3. Add validate_table_registration.py plus its _manifest.py Entry and ci_rca_taxonomy row, resolving module-level
+  constants and declaring examined/skipped counts (Decision 170).
+- PR3. Append the dated annotation to Decision 137 (amendment_forms shape). Mint NO new numbered Decision. Re-ground
+  T2.52 c1 and T2.26 c2 and add the T2.26 progress note.
+- Write the tests named in test_obligations, each failing against current main before its fix.
+- Execute the Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision
+  55).
+- 'Report: what was implemented, verification results, and which acceptance criteria are evidenced.'
 work_areas: []
-rollback: >-
-  Code changes revert with their commit. The counter table is derived state: create_ops_tables on
-  ops_recommendations reseeds the keyspace counter from the history-table max, so a failed migration is
-  recovered by restoring reserved-concurrency-0, re-running that verb, and confirming control_health
-  plus clause8_checks.current_merge_key_unique before restoring concurrency -- never by restoring data.
-  PR1 is independently revertible: restoring the undifferentiated ops_table_names re-opens the
-  pre-existing exposure but breaks nothing that depends on the new fields.
+rollback: 'Code changes revert with their commit. The counter table is derived state: create_ops_tables on ops_recommendations
+  reseeds the keyspace counter from the history-table max, so a failed migration is recovered by restoring reserved-concurrency-0,
+  re-running that verb, and confirming control_health plus clause8_checks.current_merge_key_unique before restoring
+  concurrency -- never by restoring data. PR1 is independently revertible: restoring the undifferentiated ops_table_names
+  re-opens the pre-existing exposure but breaks nothing that depends on the new fields.'
+closes_criteria:
+- T2.26:c10
