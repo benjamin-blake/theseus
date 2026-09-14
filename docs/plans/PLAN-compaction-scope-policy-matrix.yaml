@@ -209,7 +209,7 @@ verification_plan:
   - step: 3
     phase: pre-deploy
     action: Prove the naming-convention predicate and the unratified T2.19 claims are gone (X -> Y cutover sweep; the sweep is a post-condition ASSERTION, never an edit instruction).
-    command: "for f in src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml; do test -f \"$f\" || { echo \"MISSING SWEEP SURFACE: $f\"; exit 1; }; done; ! rg -n \"ops_%_history|ops_%_current|LIKE 'ops_%'|T2.19 exit criterion\" src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml"
+    command: "for f in src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml; do test -f \"$f\" || { echo \"MISSING SWEEP SURFACE: $f\"; exit 1; }; done; ! grep -nE \"ops_%_history|ops_%_current|LIKE 'ops_%'|T2.19 exit criterion\" src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml"
     expected: >-
       Zero matches across all four surfaces. The pattern matches BOTH T2.19 claim sites
       (ducklake_maintenance.py lines 62 and 354), which the scope row names.
@@ -221,8 +221,11 @@ verification_plan:
     graduation: waive
     graduation_waiver_reason: >-
       Compound command (existence precondition then negated multi-path sweep) that no CANONICAL_SLOTS
-      primitive expresses; collapsing it to a grep_count slot reintroduces the rg-exit-2 false pass
-      the precondition exists to prevent (vp-red-before.yaml negated_sweep_lint).
+      primitive expresses; collapsing it to a grep_count slot reintroduces the exit-2 false pass the
+      precondition exists to prevent (vp-red-before.yaml negated_sweep_lint). Uses grep, NOT rg: rg
+      is absent on the CI runner, and a negated invocation of a MISSING binary exits 0 -- a false
+      pass that proves nothing. Measured: pr-validate on d43ee15e failed with
+      'actual=unmeasurable (exit 127) ... rg: not found'.
   - step: 4
     phase: pre-deploy
     action: Prove the policy matrix is exhaustive over classes x verbs and that the gate rejects a self-supplied universe.
@@ -280,7 +283,7 @@ verification_plan:
   - step: 9
     phase: pre-deploy
     action: Prove the registration companions landed -- the numbered Decision and the ci_rca taxonomy row.
-    command: "rg -q '^## Decision [0-9]+: Maintenance scope is catalog enumeration' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml && bin/venv-python -c \"import io,re; t=io.open('docs/DECISIONS.md',encoding='utf-8').read(); m=[b for b in re.split(r'(?m)^## Decision ', t) if re.match(r'[0-9]+: Maintenance scope is catalog enumeration', b)]; assert len(m)==1, f'expected exactly one matching entry, found {len(m)}'; b=m[0]; assert 'Decision 188' in b and 'merge_adjacent_files' in b, 'carve-out extension clause absent from the entry body'; print('clause present')\""
+    command: "grep -qE '^## Decision [0-9]+: Maintenance scope is catalog enumeration' docs/DECISIONS.md && grep -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml && bin/venv-python -c \"import io,re; t=io.open('docs/DECISIONS.md',encoding='utf-8').read(); m=[b for b in re.split(r'(?m)^## Decision ', t) if re.match(r'[0-9]+: Maintenance scope is catalog enumeration', b)]; assert len(m)==1, f'expected exactly one matching entry, found {len(m)}'; b=m[0]; assert 'Decision 188' in b and 'merge_adjacent_files' in b, 'carve-out extension clause absent from the entry body'; print('clause present')\""
     expected: Heading present, taxonomy row present, AND the matched entry's OWN body names Decision 188 and merge_adjacent_files -- the carve-out extension clause.
     fix_if: >-
       The heading matches but the body lacks the clause. A heading-only assertion cannot see the one
@@ -389,7 +392,7 @@ test_obligations:
   - source: src/common/ducklake_maintenance.py
     behavior: No LIKE-predicate scope prescription and no unratified T2.19 claim survive.
     verification_step: 3
-    command: "for f in src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml; do test -f \"$f\" || { echo \"MISSING SWEEP SURFACE: $f\"; exit 1; }; done; ! rg -n \"ops_%_history|ops_%_current|LIKE 'ops_%'|T2.19 exit criterion\" src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml"
+    command: "for f in src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml; do test -f \"$f\" || { echo \"MISSING SWEEP SURFACE: $f\"; exit 1; }; done; ! grep -nE \"ops_%_history|ops_%_current|LIKE 'ops_%'|T2.19 exit criterion\" src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml"
     red_green_expectation: Red before -- four matches across handler.py:375 and ducklake_maintenance.py:62,70,354. Green after.
   - source: docs/contracts/ducklake_maintenance.yaml
     behavior: The merge_ops clause describes enumeration-plus-policy and carries an honest amendment_log entry.
@@ -411,12 +414,12 @@ test_obligations:
   - source: config/ci_rca_taxonomy.yaml
     behavior: The new check module has a function_to_category row, so a CI failure in it classifies.
     verification_step: 9
-    command: "rg -q '^## Decision [0-9]+: Maintenance scope is catalog enumeration' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml"
+    command: "grep -qE '^## Decision [0-9]+: Maintenance scope is catalog enumeration' docs/DECISIONS.md && grep -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml"
     red_green_expectation: Red before -- neither the Decision heading nor the taxonomy row exists. Green after.
   - source: docs/DECISIONS.md
     behavior: The commitment and the Decision 188 pt 3 carve-out extension are recorded.
     verification_step: 9
-    command: "rg -q '^## Decision [0-9]+: Maintenance scope is catalog enumeration' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml"
+    command: "grep -qE '^## Decision [0-9]+: Maintenance scope is catalog enumeration' docs/DECISIONS.md && grep -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml"
     red_green_expectation: Red before (no such Decision), green after.
   - source: tests/common/test_ducklake_maintenance_scope.py
     behavior: The scope module red cases are exercised, not asserted adjacent to.
