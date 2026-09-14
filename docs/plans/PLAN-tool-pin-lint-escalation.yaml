@@ -10,7 +10,11 @@ intent: >-
 plan_type: IMPLEMENTATION
 verification_tier: V2
 plan_path: docs/plans/PLAN-tool-pin-lint-escalation.yaml
-phase: T1.13
+phase: >-
+  No tier_item slice; closes no criterion. Cites T1.13:c9 (Failure-category integrity + correct
+  gate-escape modeling, status open) as context only -- c9 models tier_misplaced as a gate-escape
+  whose corrective_action targets the GATE, which is what this plan's preventive half is. c9's own
+  build (the escape_mode derivation) is owned elsewhere and is untouched here.
 scope:
   - file: scripts/checks/_scaffolding.py
     action: Modify
@@ -37,6 +41,11 @@ scope:
     purpose: >-
       retarget the two tests pinning the retired diff-scoped branch onto the new whole-tree
       invariant; add pin-only-changed-set coverage replaying commit 1c50e26b
+  - file: tests/validate/test_scaffold_gates.py
+    action: Modify
+    purpose: >-
+      retarget the THIRD test pinning the deleted diff-scoped branch; add the run_precommit_checks
+      escalation assertions (Decision 131 mirror home for _scaffolding.py behaviour)
   - file: tests/checks/deps/test_validate_presubmit_tool_pin_escalation.py
     action: Create
     purpose: mirror test for the new check (Decision 104/131)
@@ -99,57 +108,256 @@ acceptance_criteria:
   - "run_lint_checks lints src/ tests/ scripts/ regardless of the changed-file set, including a pin-only set"
   - "a diff touching a pre-commit global input escalates run_precommit_checks to --all-files"
   - "the global-input set is derived from .pre-commit-config.yaml, not a hard-coded path roster"
-  - "a lint or precommit step that does not execute is recorded via skipped(), never as silent success"
+  - "run_precommit_checks non-execution (pre-commit absent, or an empty changed-file target) is recorded via outcome_scope/skipped(), never as silent success; run_lint_checks has no reachable non-execution path once unconditional, and is accounted via examined()"
   - "validate_presubmit_tool_pin_escalation is sequenced and resolves its Class D contract by basename"
 verification_plan:
   - step: 1
     phase: pre-deploy
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: whole_tree_ruff_clean
     action: whole-tree ruff and format are clean
     command: bin/venv-python -m ruff check src/ tests/ scripts/ && bin/venv-python -m ruff format --check src/ tests/ scripts/
-    expected: both exit 0; no ISC004 diagnostics
-    fix_if: any ISC004 remains, or the parenthesization changed formatting
+    expected: both exit 0; zero ISC004 diagnostics
+    fix_if: any ISC004 remains, or the parenthesization left formatting ruff would rewrite
   - step: 2
     phase: pre-deploy
-    action: replay the escape -- a pin-only changed set must still lint the whole tree
-    command: bin/venv-python -m pytest tests/validate/test_lint_targets.py -v
-    expected: whole-tree targets asserted for a changed set of only requirements files; the old diff-scoped branch is unreachable
-    fix_if: run_lint_checks still early-returns or filters targets to .py
+    graduation: waive
+    graduation_waiver_reason: >-
+      pytest invocation -- non-hermetic by construction (imports the tree under test), so it is
+      excluded from the Decision 148 replay leg; the red-before evidence is carried by the
+      test_obligations row instead.
+    action: >-
+      unit altitude -- a pin-only changed set still lints the whole tree, and the deleted
+      diff-scoped branch is unreachable
+    command: bin/venv-python -m pytest tests/validate/test_lint_targets.py tests/validate/test_scaffold_gates.py -v
+    expected: >-
+      run_lint_checks emits src/ tests/ scripts/ in its ruff argv when handed a changed set of only
+      requirements pin files; all three previously-passing tests that pinned the .py filter and the
+      two early returns now assert the whole-tree invariant instead
+    fix_if: run_lint_checks still filters targets to .py or early-returns on an all-non-.py set
   - step: 3
     phase: pre-deploy
-    action: pre-commit escalation fires on a derived global input and not otherwise
-    command: bin/venv-python -m pytest tests/checks/deps/test_validate_presubmit_tool_pin_escalation.py -v
-    expected: escalates to all_files=True for a .pre-commit-config.yaml change; stays changed-files for an ordinary .py change
-    fix_if: trigger set is hard-coded rather than derived, or is read from head instead of base ref
+    graduation: waive
+    graduation_waiver_reason: >-
+      pytest invocation -- non-hermetic, excluded from replay; discrimination is carried by the
+      red-before expectation on the driver-altitude obligation row.
+    action: >-
+      driver altitude -- replay commit 1c50e26b's actual five-file pin-only diff through the --pre
+      driver and assert the emitted ruff argv is whole-tree
+    command: bin/venv-python -m pytest tests/validate/test_scaffold_gates.py -k pin_only_diff_drives_whole_tree_lint -v
+    expected: >-
+      a --pre run whose changed set is exactly requirements.in, requirements.txt, requirements-dev.in,
+      requirements-dev.txt, requirements-fast.txt emits a ruff argv containing src/ tests/ scripts/
+    fix_if: >-
+      the assertion lives only at the run_lint_checks unit level -- a call-site re-scoping at
+      scripts/validate.py:325 would then pass the whole VP, which is the exact shape rec-3863's
+      gap_explanation names
   - step: 4
     phase: pre-deploy
-    action: Class D contract and evaluator satisfy the population gate
-    command: bin/venv-python -m scripts.validate --pre
-    expected: exit 0; validate_contract_drift accepts subject uniqueness and evaluator resolution
-    fix_if: evaluator does not contain the contract basename as an executable-context string literal
+    graduation: waive
+    graduation_waiver_reason: >-
+      pytest invocation -- non-hermetic, excluded from replay; the escalation behaviour's red-before
+      evidence is carried by its own test_obligations row.
+    action: pre-commit escalation fires on a derived global input and not otherwise
+    command: bin/venv-python -m pytest tests/validate/test_scaffold_gates.py -k precommit_escalation tests/checks/deps/test_validate_presubmit_tool_pin_escalation.py -v
+    expected: >-
+      run_precommit_checks is called with all_files=True for a .pre-commit-config.yaml change and
+      all_files=False for an ordinary .py change; the trigger set is DERIVED by parsing
+      .pre-commit-config.yaml rather than read from a hard-coded path roster; it is derived at the
+      BASE REF, so a PR cannot weaken its own trigger; and an unreadable or unparseable base-ref
+      config escalates rather than skips
+    fix_if: >-
+      the trigger set is a hard-coded path roster, is read from head instead of base ref, or fails
+      open on a parse error
   - step: 5
     phase: pre-deploy
-    action: full tier green before handoff
+    graduation: waive
+    graduation_waiver_reason: >-
+      argv head is -m scripts.validate -- vp-red-before.yaml#recursion_refusal refuses a graduate
+      disposition on a step that re-enters the validator.
+    action: Class D contract and evaluator satisfy the population gate, and the plan itself passes --pre
+    command: bin/venv-python -m scripts.validate --pre
+    expected: >-
+      exit 0; validate_contract_drift accepts subject uniqueness and evaluator resolution,
+      validate_graduation_completeness and validate_plan_documents both pass on this plan
+    fix_if: the evaluator module lacks the contract basename as an executable-context string literal
+  - step: 6
+    phase: pre-deploy
+    graduation: waive
+    graduation_waiver_reason: >-
+      argv head is -m scripts.validate -- recursion refusal applies identically to the full tier;
+      Decision 163 requires the step to exist, not to graduate.
+    action: full tier green before handoff (Decision 163)
     command: bin/venv-python -m scripts.validate
     expected: exit 0
     fix_if: any check fails
+  - step: 7
+    phase: post-deploy
+    graduation: not-applicable
+    action: both bundled recs reached closed (closure obligation 12k)
+    command: >-
+      bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json;
+      rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl')];
+      m={r['id']: r['status'] for r in rows if r['id'] in ('rec-3861','rec-3863')};
+      print(m); assert m.get('rec-3861')=='closed' and m.get('rec-3863')=='closed', m"
+    expected: "both ids print status closed; the assert does not raise"
+    fix_if: >-
+      either rec is still open -- check the Resolves trailer reached the squash commit and that
+      assert_closure_obligation accepted the shard: closure artifact
 test_obligations:
   - source: scripts/checks/_scaffolding.py
     behavior: >-
-      lint targets are whole-tree regardless of the changed-file set; pre-commit escalates to
-      --all-files on a derived global-input change; non-execution is accounted, never silent
+      run_lint_checks emits whole-tree targets (src/ tests/ scripts/) regardless of the changed-file
+      set, including a set containing no .py file at all
     verification_step: 2
     test_selector: tests/validate/test_lint_targets.py
-    red_green_expectation: red before, green after
+    red_green_expectation: >-
+      red before (today the .py filter empties targets and the function returns having run nothing),
+      green after
+  - source: scripts/checks/_scaffolding.py
+    behavior: >-
+      run_precommit_checks escalates to all_files=True when the diff intersects the global-input set
+      derived from .pre-commit-config.yaml at the base ref, and escalates on an unreadable or
+      unparseable base-ref config rather than skipping
+    verification_step: 4
+    test_selector: tests/validate/test_scaffold_gates.py
+    red_green_expectation: red before (no escalation path exists today), green after
+  - source: scripts/checks/_scaffolding.py
+    behavior: >-
+      a lint or precommit step that does not execute is accounted through
+      registry.outcome_scope/examined/skipped, never returning as silent success (Decision 170)
+    verification_step: 4
+    test_selector: tests/validate/test_scaffold_gates.py
+    red_green_expectation: >-
+      red before (both scaffolds carry bare early returns emitting nothing, two of the 35 sites
+      Decision 170 names), green after
   - source: scripts/checks/deps/validate_presubmit_tool_pin_escalation.py
-    behavior: the evaluator asserts the escalation mechanism and demonstrably reads its contract
-    verification_step: 3
+    behavior: >-
+      the evaluator asserts the escalation mechanism and demonstrably reads its contract by basename
+      in executable context (Decision 168 clause 2)
+    verification_step: 4
     test_selector: tests/checks/deps/test_validate_presubmit_tool_pin_escalation.py
-    red_green_expectation: red before, green after
+    red_green_expectation: red before (module does not exist), green after
+  - source: scripts/checks/contracts/_ratchet.py
+    behavior: ISC004 parenthesization only (1 site) -- no behaviour change
+    verification_step: 1
+    command: bin/venv-python -m ruff check src/ tests/ scripts/
+    waiver_reason: >-
+      Semantically inert edit: wrapping an already-adjacent implicit string concatenation in
+      parentheses changes no runtime value, no control flow and no public surface. All 1 site in this
+      file were read in context at plan time and confirmed intentional line-splitting, not a missing
+      comma. The guard is VP step 1's whole-tree ruff check plus ruff format --check; a behavioural
+      test would assert nothing this edit is capable of breaking.
+  - source: scripts/checks/decisions/validate_decisions_size.py
+    behavior: ISC004 parenthesization only (1 site) -- no behaviour change
+    verification_step: 1
+    command: bin/venv-python -m ruff check src/ tests/ scripts/
+    waiver_reason: >-
+      Semantically inert edit: wrapping an already-adjacent implicit string concatenation in
+      parentheses changes no runtime value, no control flow and no public surface. All 1 site in this
+      file were read in context at plan time and confirmed intentional line-splitting, not a missing
+      comma. The guard is VP step 1's whole-tree ruff check plus ruff format --check; a behavioural
+      test would assert nothing this edit is capable of breaking.
+  - source: scripts/checks/iam_tf/_read_coverage.py
+    behavior: ISC004 parenthesization only (2 sites) -- no behaviour change
+    verification_step: 1
+    command: bin/venv-python -m ruff check src/ tests/ scripts/
+    waiver_reason: >-
+      Semantically inert edit: wrapping an already-adjacent implicit string concatenation in
+      parentheses changes no runtime value, no control flow and no public surface. All 2 sites in this
+      file were read in context at plan time and confirmed intentional line-splitting, not a missing
+      comma. The guard is VP step 1's whole-tree ruff check plus ruff format --check; a behavioural
+      test would assert nothing this edit is capable of breaking.
+  - source: scripts/checks/roadmap/validate_plan_documents.py
+    behavior: ISC004 parenthesization only (1 site) -- no behaviour change
+    verification_step: 1
+    command: bin/venv-python -m ruff check src/ tests/ scripts/
+    waiver_reason: >-
+      Semantically inert edit: wrapping an already-adjacent implicit string concatenation in
+      parentheses changes no runtime value, no control flow and no public surface. All 1 site in this
+      file were read in context at plan time and confirmed intentional line-splitting, not a missing
+      comma. The guard is VP step 1's whole-tree ruff check plus ruff format --check; a behavioural
+      test would assert nothing this edit is capable of breaking.
+  - source: scripts/checks/structural/size_limits.py
+    behavior: ISC004 parenthesization only (1 site) -- no behaviour change
+    verification_step: 1
+    command: bin/venv-python -m ruff check src/ tests/ scripts/
+    waiver_reason: >-
+      Semantically inert edit: wrapping an already-adjacent implicit string concatenation in
+      parentheses changes no runtime value, no control flow and no public surface. All 1 site in this
+      file were read in context at plan time and confirmed intentional line-splitting, not a missing
+      comma. The guard is VP step 1's whole-tree ruff check plus ruff format --check; a behavioural
+      test would assert nothing this edit is capable of breaking.
+  - source: scripts/ci/convergence_advisory.py
+    behavior: ISC004 parenthesization only (4 sites) -- no behaviour change
+    verification_step: 1
+    command: bin/venv-python -m ruff check src/ tests/ scripts/
+    waiver_reason: >-
+      Semantically inert edit: wrapping an already-adjacent implicit string concatenation in
+      parentheses changes no runtime value, no control flow and no public surface. All 4 sites in this
+      file were read in context at plan time and confirmed intentional line-splitting, not a missing
+      comma. The guard is VP step 1's whole-tree ruff check plus ruff format --check; a behavioural
+      test would assert nothing this edit is capable of breaking.
+  - source: scripts/convergence_health/escalate.py
+    behavior: ISC004 parenthesization only (3 sites) -- no behaviour change
+    verification_step: 1
+    command: bin/venv-python -m ruff check src/ tests/ scripts/
+    waiver_reason: >-
+      Semantically inert edit: wrapping an already-adjacent implicit string concatenation in
+      parentheses changes no runtime value, no control flow and no public surface. All 3 sites in this
+      file were read in context at plan time and confirmed intentional line-splitting, not a missing
+      comma. The guard is VP step 1's whole-tree ruff check plus ruff format --check; a behavioural
+      test would assert nothing this edit is capable of breaking.
+  - source: scripts/executor/step_context.py
+    behavior: ISC004 parenthesization only (8 sites) -- no behaviour change
+    verification_step: 1
+    command: bin/venv-python -m ruff check src/ tests/ scripts/
+    waiver_reason: >-
+      Semantically inert edit: wrapping an already-adjacent implicit string concatenation in
+      parentheses changes no runtime value, no control flow and no public surface. All 8 sites in this
+      file were read in context at plan time and confirmed intentional line-splitting, not a missing
+      comma. The guard is VP step 1's whole-tree ruff check plus ruff format --check; a behavioural
+      test would assert nothing this edit is capable of breaking.
+  - source: scripts/roadmap/plan_obligations.py
+    behavior: ISC004 parenthesization only (4 sites) -- no behaviour change
+    verification_step: 1
+    command: bin/venv-python -m ruff check src/ tests/ scripts/
+    waiver_reason: >-
+      Semantically inert edit: wrapping an already-adjacent implicit string concatenation in
+      parentheses changes no runtime value, no control flow and no public surface. All 4 sites in this
+      file were read in context at plan time and confirmed intentional line-splitting, not a missing
+      comma. The guard is VP step 1's whole-tree ruff check plus ruff format --check; a behavioural
+      test would assert nothing this edit is capable of breaking.
+  - source: scripts/checks/deps/_manifest.py
+    behavior: registration/declaration surface -- no executable behaviour of its own
+    verification_step: 5
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Registration surface, not behaviour: the added Entry is a bare string-literal module=/attr= pair. Its correctness is already enforced by validate_check_manifests (entry grammar, allowed full_segment tokens, bare-string-literal rule) and by VP step 5, which fails if the Entry is unsequenced and the Decision 168 evaluator therefore does not resolve.
+  - source: docs/contracts/presubmit-tool-pin-escalation.yaml
+    behavior: registration/declaration surface -- no executable behaviour of its own
+    verification_step: 5
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Declarative contract, not executable behaviour. Envelope correctness (class D, ratified_via present, subject uniqueness, evaluator resolution by basename in executable context) is enforced by validate_contract_drift, exercised at VP step 5; the mechanism the contract describes is asserted by the _scaffolding.py rows above.
+  - source: docs/contracts/file-router.yaml
+    behavior: registration/declaration surface -- no executable behaviour of its own
+    verification_step: 5
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Registration surface: a single route row whose topic must equal the new contract subject. Enforced by validate_placement and by contract-population.yaml's subject_namespace.topic_equals_subject rule, both run at VP step 5. No behaviour of its own to guard.
+  - source: config/ci_rca_taxonomy.yaml
+    behavior: registration/declaration surface -- no executable behaviour of its own
+    verification_step: 5
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Registration surface: one function_to_category row is required for every registered check by validate_ci_rca_taxonomy, which fails at VP step 5 if the row is absent. Data, not behaviour.
 constraints:
   - No rescue agents or workaround loops (Decision 55)
   - "Decision 181 CONTENT invariant -- rejected: noqa, per-file-ignores, de-selecting ISC, reverting the ruff pin"
   - "Exactly two CI tiers (operator direction, Google TAP style): no parallel job, no third tier, all gate logic in scripts.validate"
-  - "Decision 104 retains-ONLY clause -- the precommit decider lives in _scaffolding.py, never validate.py"
+  - "Decision 169 clause 1 retains-ONLY -- the precommit decider lives in _scaffolding.py, never validate.py"
   - "Decision 161 -- the mypy --pre diff-aware scaffold is untouched; this plan narrows the ruff half only"
   - "Decision 170 -- account non-execution via outcome_scope/examined/skipped, not a print"
 context:
@@ -157,11 +365,14 @@ context:
   - "gates: decision-scout=FLAGS_FOUND after 2 round(s); plan-critique=<pending>"
   - "Decisions triaged: 144 of 144; Roadmap items intersected: 25; CONFLICT: 0; RELATED: 24"
   - "Incident: dependabot #1182 / commit 1c50e26b bumped ruff 0.15.20 -> 0.16.7; 5 files changed, all requirements pins, zero .py."
-  - "Measured: whole-tree ruff check 0.055s, ruff format --check 0.045s, vs NON_TEST_BUDGET_SECONDS=240. pre-commit --all-files 57.2s, of which detect-secrets 48.7s."
+  - "Measured: whole-tree ruff check 0.055s, ruff format --check 0.045s, vs NON_TEST_BUDGET_SECONDS=240. pre-commit --all-files 57.2s, of which detect-secrets 48.7s, check-yaml 4.7s, other seven hooks 1.6s combined."
+  - "HEADROOM MEASURED: --pre on this branch reports non-test 34.1s against the 240s budget (0 test modules selected; CI-predicted elapsed 79-100s). The escalation's +55s net lands at roughly 89s local / under the CI prediction band, so the unwaivable non_test_breach branch (the FIRST branch of selection_budget.classify(), scripts/validate.py:446-461) has real margin. Caveat: 34.1s is a plan-only diff; a code diff runs more gated checks. The escalation fires only on pin-change diffs, which carry no .py, so pytest_diff selects near-nothing on exactly those runs. Implementer should still record observed non-test elapsed on the first escalating run."
   - "dec-166 is the precedent that whole-tree lint at ~0.1s is already sanctioned in both tiers -- item 2 is not novel."
-  - "GOTCHA: tests/validate/test_lint_targets.py::test_explicit_files_scope_is_unaffected and ::test_no_op_when_files_is_empty_list PIN the diff-scoped branch this plan deletes. They must be RETARGETED onto the new invariant, not deleted or relaxed -- they pin retired behaviour, so this is not a dec-181 weakening. State that in the commit body."
-  - "GOTCHA: _should_run_in_pre (validate.py:110) is NOT the extension point -- its only caller is the registry.pre_sequence() loop consuming step.pre_globs; run_precommit_checks never calls it."
-  - "dec-186 closure artifact: test-kind, tests/validate/test_lint_targets.py, bound to fixed_by_sha. `check:` cannot resolve -- the lint step is a scaffold, not a registry entry."
+  - "GOTCHA: THREE tests pin the diff-scoped branch this plan deletes, not two. tests/validate/test_lint_targets.py::test_explicit_files_scope_is_unaffected and ::test_no_op_when_files_is_empty_list, PLUS tests/validate/test_scaffold_gates.py:474-483 TestRunLintChecksTargetsAllFiltered::test_no_python_files_in_explicit_scope_is_a_no_op. All three must be RETARGETED onto the new invariant, never deleted or relaxed -- they pin retired behaviour, so this is not a dec-181 weakening. The replacement assertions are strictly stronger (membership and executed-call, vs absence and assert_not_called). State this in the commit body: this surface is dec-181's residual_agent_obligation arm (owner rec-3357) with no mechanical arbiter."
+  - "GOTCHA: tests/validate/test_scaffold_gates.py:435-472 TestRunPrecommitChecks is the ONLY existing test of run_precommit_checks and all four cases patch scripts.checks._common.run -- the new base-ref `git show` read will be intercepted by that same mock and handed a MagicMock unless the test is updated or the read is routed around it."
+  - "SIGNATURE (pinned): run_lint_checks RETAINS its `files` parameter, ignored for target selection. Removing it would TypeError at scripts/validate.py:325 and would make VP step 2's pin-only replay inexpressible -- the step would silently degenerate into the four whole-tree cases that already pass today. scripts/validate.py therefore stays OUT of scope."
+  - "GOTCHA (dec-169 clause 1 retains-ONLY): _should_run_in_pre (validate.py:110) is NOT the extension point -- its only caller is the registry.pre_sequence() loop consuming step.pre_globs; run_precommit_checks never calls it."
+  - "dec-186 closure artifact: shard:<id> (config/agent/verification_registry/entries/<id>.yaml), bound to fixed_by_sha. artifact_kinds is [shard, pytest, check, fixture] -- there is NO `test` kind. shard is kind_strength-first and the only still-red-on-reintroduction kind, and this plan's own scope creates one (plan_obligations names a graduated verification-registry shard). Earlier reasoning that `check:` cannot resolve is STALE against this scope -- it now adds a sequenced Entry -- but shard: is chosen as the strictly stronger token."
   - "dec-168 clause 2: the {check: ...} evaluator resolves only if the check is sequenced AND its module contains the contract basename as an executable-context string literal."
   - "ratified_via takes a PLAN with no Decision -- six precedents (PLAN-build-lambda-yaml, PLAN-instruction-architecture-yaml, PLAN-skills-layer-prose-relocation, and three more)."
   - "dec-182 tension: 182 narrowed this same dec-73 clause by minting a number. This plan routes to a Class D contract instead, on explicit operator direction. Differentiator: 182 minted for its own substantive content with the 73 narrowing incidental; here the mechanism IS the content and has a contract home."
@@ -175,11 +386,12 @@ pre_implementation_checklist:
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
 execution_steps:
-  - "Fix the 38 ISC004 sites by parenthesization. A `ruff check --select ISC004 --fix --unsafe-fixes` sweep is permitted ONLY because every site was reviewed at plan time; diff-review the result and confirm 38 hunks, all parenthesization, zero comma insertions."
+  - "Fix the 38 ISC004 sites by parenthesization. A `ruff check --select ISC004 --fix --unsafe-fixes` sweep is permitted ONLY because every site was reviewed at plan time and confirmed intentional. Diff-review the result against the invariant that matters -- 38 SITES changed, all parenthesization, ZERO comma insertions and zero string joining. Do NOT assert a hunk count: the sweep leaves continuation-line indentation that `ruff format` then rewrites, so the post-format diff legitimately exceeds 38 hunks."
   - "Rewrite run_lint_checks: drop the .py filter and the two early returns; lint src/ tests/ scripts/ unconditionally from a single shared target constant."
-  - "Add the derived global-input escalation to run_precommit_checks: parse .pre-commit-config.yaml at the BASE REF for its declared global inputs (its own path plus any baseline a hook names), escalate to all_files=True when the diff intersects that derived set."
+  - "Add the derived global-input escalation to run_precommit_checks: parse .pre-commit-config.yaml at the BASE REF for its declared global inputs (its own path plus any baseline a hook names), escalate to all_files=True when the diff intersects that derived set. FAIL CLOSED: if the base-ref read fails, the file is absent, or the YAML does not parse, ESCALATE rather than skip -- mirroring _should_run_in_pre's own stated doctrine (scripts/validate.py:110-120, `never silently skip on doubt`) and Decision 55. A silent non-escalation reproduces the exact defect this plan exists to close."
   - "Replace silent non-execution with registry.outcome_scope(...) plus examined()/skipped() in both scaffolds (Decision 170); keep any print as human affordance only."
-  - "Add docs/contracts/presubmit-tool-pin-escalation.yaml (Class D, status ratified, ratified_via PLAN-tool-pin-lint-escalation, unique subject, evaluator {check: validate_presubmit_tool_pin_escalation}), the evaluator module, its deps/_manifest.py Entry, the file-router route whose topic equals the subject, and the ci_rca_taxonomy row."
+  - "Add docs/contracts/presubmit-tool-pin-escalation.yaml. REQUIRED envelope fields (ContractMeta is extra=forbid): id, class: D, contract_version (int), status: ratified, ratified_via: PLAN-tool-pin-lint-escalation, description, unique subject, evaluator {check: validate_presubmit_tool_pin_escalation}. status: active is birth-closed and must NOT be used. No ratchet pin edit and no raise-approved marker is owed -- a ratified contract with a resolving evaluator lands in the `declared` census bucket, which neither grandfathered_max nor status_active_max binds."
+  - "Add the evaluator module, its deps/_manifest.py Entry, the file-router route whose topic equals the subject, and the ci_rca_taxonomy function_to_category row. The Entry SHOULD be pre=True -- a guard against a presubmit escape that does not itself run in presubmit is weaker than the escape it prevents -- which obliges pre_globs covering its own transitive import closure (validate_pre_glob_closure) and membership of a domain in _PRE_DOMAIN_ORDER. Decision 168 clause 2 resolves on membership of EITHER sequence, so a full_segment-only Entry would also pass the gate; make the choice deliberately, not by default."
   - "Retarget the two tests that pin the deleted diff-scoped branch; add a pin-only-changed-set case replaying commit 1c50e26b's five-file diff."
   - "Satisfy the two enforced-elsewhere obligations for the new check: the Decision 170 accounting declaration and the graduated verification-registry shard."
   - "Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)"
