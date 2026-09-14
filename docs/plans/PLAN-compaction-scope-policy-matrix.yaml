@@ -1,0 +1,439 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: compaction-scope-policy-matrix
+intent: >-
+  Replace the naming-convention predicate that decides which tables the production compaction
+  cadence touches with catalog enumeration crossed against a declared per-class, per-verb policy
+  matrix, so a table can never be silently omitted from maintenance it requires and a new table
+  class costs one policy row rather than a scheduler edit.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-compaction-scope-policy-matrix.yaml
+phase: T2.18
+scope:
+  - file: src/common/ducklake_maintenance_scope.py
+    action: Create
+    purpose: >-
+      Pure, connection-free scope resolution: classify_table (physical name -> table class),
+      load_policy (the contract's maintenance_policy matrix), resolve_scope (catalog rows + verb ->
+      applied/skipped/unclassified) and reconcile_catalog (catalog set vs registry union). No I/O,
+      so every predicate is directly unit-testable, mirroring the ducklake_maintenance_ops split
+      Decision 188 landed. New module rather than growing handler.py (368 SLOC) -- decompose by
+      default, Decision 128.
+  - file: src/lambdas/ducklake_maintenance/handler.py
+    action: Modify
+    purpose: >-
+      action_merge_ops: replace the LIKE-predicate discovery query (line 373-376) with an
+      unfiltered information_schema enumeration, classify each row, and apply the merge_ops policy
+      cell. An unclassifiable table RAISES (the incident failure mode made loud). Wrap the
+      per-table maint.merge_adjacent_files call (line 401) so ONE table's failure no longer aborts
+      the cadence for the rest -- but stays loud per Decision 188 pt 3: per_table carries
+      error/merge_unavailable, a MergeOpsTablesFailed metric is emitted, and the aggregate RAISES
+      after the loop completes. Also null BOTH sides of a table's count pair when either side
+      fails (rec-3785), and report skipped[] with reasons.
+  - file: docs/contracts/ducklake_maintenance.yaml
+    action: Modify
+    purpose: >-
+      Replace the merge_ops prose "discovered via information_schema" with a structured
+      maintenance_policy matrix (class x verb -> {apply, reason}) so validate_contract_drift
+      compares a structure rather than a sentence (Decision 118 / CD.25). Amend merge_ops
+      response_codes for skipped[]/unclassified/per-table error, and its 500 typed_errors for the
+      unclassified-table and post-loop aggregate raises.
+  - file: src/common/ducklake_maintenance.py
+    action: Modify
+    purpose: >-
+      Retire MAINTENANCE_SCOPE_NOTE's prescription to "set GC_TABLE_SCOPE to all relevant tables or
+      introduce a catalog-table-listing query (information_schema.tables WHERE table_name LIKE
+      'ops_%')" -- it prescribes the exact anti-pattern this plan removes. Correct run_hot_merge's
+      docstring claim that expansion "is a T2.19 exit criterion": verified false, no T2.19 criterion
+      names hot_merge; it traces only to a T2.18 progress_note. GC_TABLE_SCOPE / HOT_TABLE_SCOPE
+      VALUES are NOT changed here -- Decision 143 cl.2 pins hot_merge to the smoke function, and
+      GC scope is Plan C's.
+  - file: src/lambdas/ducklake_maintenance/manifest.yaml
+    action: Modify
+    purpose: Bundle the new scope module into the admin maintenance zip (the only handler importing it).
+  - file: src/lambdas/data-pipeline/manifest.yaml
+    action: Modify
+    purpose: >-
+      Exclude the new module from data-pipeline, mirroring the ducklake_maintenance_ops exclusion
+      Decision 188's implementation added (manifest.yaml line 32).
+  - file: scripts/checks/contracts/validate_maintenance_policy_matrix.py
+    action: Create
+    purpose: >-
+      Exhaustiveness gate that scales with CLASSES, not tables: every class the registries define
+      must have a cell for every maintenance verb, and every cell must carry apply plus a reason
+      when apply is false. A missing cell fails the build, so adding a class cannot silently
+      inherit a default.
+  - file: scripts/checks/contracts/_manifest.py
+    action: Modify
+    purpose: Register the new check module in the contracts domain manifest.
+  - file: config/ci_rca_taxonomy.yaml
+    action: Modify
+    purpose: >-
+      function_to_category row for the new check module -- a mechanically-derivable companion
+      registration every new check owes (plan_obligations), so a CI failure in it classifies.
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      New Decision (drafted in context) committing the platform to enumerate-and-classify scope
+      resolution. Routed numbered_decision by decision-entry.yaml's three questions: durable,
+      reversal-relevant, and owned by no other row -- the matrix's FIELD semantics route
+      field_semantics to the contract, but the commitment itself does not.
+  - file: tests/common/test_ducklake_maintenance_scope.py
+    action: Create
+    purpose: >-
+      Unit coverage for classify_table / load_policy / resolve_scope / reconcile_catalog, including
+      the red cases: an unclassifiable table, a missing policy cell, and a registry/catalog
+      divergence in BOTH directions.
+  - file: tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py
+    action: Create
+    purpose: >-
+      rec-3762's named acceptance path: discovery covers a non-SCD2 ops table. Also the loud-
+      isolation contract -- one table's merge raising must not prevent the others' merges, and must
+      still surface as a non-success terminal outcome.
+  - file: tests/lambdas/ducklake_maintenance/handler/test_operational_actions.py
+    action: Modify
+    purpose: Re-point the existing merge_ops tests at the policy-driven loop; add the whole-pair null case (rec-3785).
+  - file: tests/checks/contracts/test_validate_maintenance_policy_matrix.py
+    action: Create
+    purpose: Red-case fixtures for the exhaustiveness gate -- missing cell, missing reason on a false cell, unknown class.
+  - file: tests/common/test_ducklake_writes.py
+    action: Modify
+    purpose: >-
+      rec-3762's HAZARD requirement: assert file_ops still allocates correctly while a merge runs
+      concurrently against ops_entity_counters, by injecting an OCC collision on the counter
+      UPDATE and asserting the bounded retry commits a correct, non-duplicated id.
+bundled_recommendations:
+  - rec-3762
+  - rec-3785
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    action_merge_ops discovers tables by unfiltered information_schema enumeration; no
+    naming-convention predicate (LIKE 'ops_%_history' / 'ops_%_current') survives anywhere in the
+    maintenance path.
+  - >-
+    Every enumerated table resolves to a registered class. An unclassifiable table in the
+    production catalog RAISES with that table named -- it is never skipped.
+  - >-
+    ops_entity_counters is in merge_ops scope and reported in per_table; a control-class table is
+    included by its declared policy cell, never by a naming accident (rec-3762).
+  - >-
+    Compaction of the writer-owned counter does not break id allocation: a test asserts file_ops
+    allocates a correct, non-duplicated id under an injected OCC collision on the counter UPDATE,
+    and the plan records the OCC budget this relies on (rec-3762 HAZARD).
+  - >-
+    One table's merge_adjacent_files failure does not prevent the remaining tables' merges, AND the
+    invocation still fails: per_table carries the error, a metric is emitted, and the aggregate
+    raises after the loop (Decision 188 pt 3 -- isolation without loudness is the fail-open class
+    188 closed).
+  - >-
+    Both sides of a table's files_before/files_after pair are null when either count read fails
+    (rec-3785); no half-populated pair is reported.
+  - >-
+    The contract carries maintenance_policy as a STRUCTURE, not prose, and a class missing any
+    verb cell -- or a false cell missing a reason -- fails validate.py.
+  - >-
+    The live catalog set reconciles against the registry union in BOTH directions, asserted
+    per-invocation and in CI against fixtures; the assertion's universe is the CATALOG, so it
+    cannot be blind to a table the registries omit.
+  - MAINTENANCE_SCOPE_NOTE no longer prescribes a LIKE-predicate scope expansion.
+  - run_hot_merge's docstring no longer asserts an unratified T2.19 exit criterion.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: Prove the scope module's pure predicates hold, including every red case.
+    command: bin/venv-python -m pytest tests/common/test_ducklake_maintenance_scope.py -q
+    expected: All pass, including unclassifiable-table, missing-cell and both divergence directions.
+    fix_if: >-
+      Any red case passes without the fix -- the predicate is not discriminating. A reconciliation
+      test that passes when the registry omits a catalog table is the incident failure mode
+      reproduced; invert it so the catalog is the universe.
+    graduation: graduate
+    graduation_check_id: maintenance-scope-predicates-discriminate
+  - step: 2
+    phase: pre-deploy
+    action: Prove discovery covers a non-SCD2 ops table and the loud-isolation contract holds.
+    command: bin/venv-python -m pytest tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py -q
+    expected: >-
+      Discovery returns a control-class table; a failing table's merge does not prevent the others;
+      the invocation still terminates non-successfully.
+    fix_if: >-
+      Isolation returns ok/200 while a table's merge raised -- that is the Decision 188 pt 3
+      violation. Raise the aggregate after the loop.
+    graduation: graduate
+    graduation_check_id: merge-ops-discovery-and-loud-isolation
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Prove the naming-convention predicate is gone from every maintenance surface (X -> Y cutover
+      sweep; the sweep is a post-condition ASSERTION, never an edit instruction).
+    command: "for f in src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml; do test -f \"$f\" || { echo \"MISSING SWEEP SURFACE: $f\"; exit 1; }; done; ! rg -n \"ops_%_history|ops_%_current|LIKE 'ops_%'|T2.19 exit criterion\" src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml"
+    expected: >-
+      Zero matches across all four surfaces -- both the naming-convention predicate and the unratified
+      "T2.19 exit criterion" claim -- with the file-existence precondition passing first.
+    fix_if: >-
+      A match survives, or a path is missing and the bare negated rg exits 0 (rg exits 2 on a
+      missing path and the negation maps it to success) -- that is why the precondition is first.
+    graduation: waive
+    graduation_waiver_reason: >-
+      Compound command (existence precondition then negated multi-path sweep) that no CANONICAL_SLOTS
+      primitive expresses; collapsing it to a grep_count slot reintroduces the false-pass the
+      precondition exists to prevent.
+  - step: 4
+    phase: pre-deploy
+    action: Prove the policy matrix is exhaustive over classes x verbs and that the gate discriminates.
+    command: bin/venv-python -m pytest tests/checks/contracts/test_validate_maintenance_policy_matrix.py -q
+    expected: Missing cell, missing reason on a false cell, and unknown class each fail the gate.
+    fix_if: A fixture with a missing cell passes -- the gate is checking presence of the matrix, not its exhaustiveness.
+    graduation: graduate
+    graduation_check_id: maintenance-policy-matrix-exhaustive
+  - step: 5
+    phase: pre-deploy
+    action: Prove id allocation survives concurrent compaction of the counter table (rec-3762 HAZARD).
+    command: bin/venv-python -m pytest tests/common/test_ducklake_writes.py::test_entity_allocation_survives_concurrent_counter_merge -q
+    expected: An injected OCC collision on the counter UPDATE retries within budget and commits one correct, non-duplicated id.
+    fix_if: >-
+      The test asserts only that a collision is classified, not that the resulting id is correct and
+      unique -- an allocation that retries into a duplicate id is the failure this guards.
+    graduation: graduate
+    graduation_check_id: counter-allocation-survives-concurrent-merge
+  - step: 6
+    phase: pre-deploy
+    action: Prove the merge_ops handler tests hold, including the whole-pair null case.
+    command: bin/venv-python -m pytest tests/lambdas/ducklake_maintenance/handler/test_operational_actions.py::test_merge_ops_nulls_both_sides_of_count_pair -q
+    expected: All pass; a single-sided count failure nulls both sides and sets count_unavailable.
+    fix_if: A half-populated pair is still reported -- rec-3785 is not closed.
+    graduation: graduate
+    graduation_check_id: merge-ops-count-pair-nulled-together
+  - step: 7
+    phase: pre-deploy
+    action: Prove the new module is bundled into the maintenance zip and excluded from data-pipeline.
+    command: bin/venv-python -m pytest tests/lambda_manifest/test_bundle_checks.py::test_maintenance_scope_module_bundled_and_excluded -q
+    expected: The scope module is in the maintenance manifest includes and the data-pipeline excludes.
+    fix_if: The module is absent from either list -- the Lambda will ImportError at runtime.
+    graduation: graduate
+    graduation_check_id: maintenance-scope-module-manifest-wiring
+  - step: 8
+    phase: pre-deploy
+    action: Prove the two registration companions landed -- the numbered Decision and the ci_rca taxonomy row.
+    command: "rg -q '^## Decision [0-9]+: .*(enumerat|scope resolution)' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml"
+    expected: Both present; the Decision heading matches the drafted subject and the check module has a taxonomy category.
+    fix_if: >-
+      Either is absent. A new check module with no taxonomy row means a CI failure in it cannot
+      classify; a missing Decision leaves the scope-resolution commitment unrecorded.
+    graduation: graduate
+    graduation_check_id: maintenance-scope-registration-companions
+  - step: 9
+    phase: pre-deploy
+    action: Full-tier validation before handoff.
+    command: bin/venv-python -m scripts.validate
+    expected: Exit 0.
+    fix_if: Any check fails -- resolve before commit per handoff_policy.
+    graduation: not-applicable
+  - step: 10
+    phase: post-deploy
+    action: >-
+      Confirm the governed CD channel deployed the maintenance Lambda and the scheduled merge_ops
+      invocation reports the control table.
+    command: "echo 'DISPATCH VIA MCP: mcp__github__actions_get(owner=benjamin-blake, repo=theseus, workflow_id=deploy-ducklake-lambdas.yml) for the merge commit, then mcp__github__get_job_logs for the maintenance deploy job'"
+    expected: Deploy succeeded; a subsequent merge_ops run lists ops_entity_counters in per_table with files_after <= files_before.
+    fix_if: The table is absent from per_table -- the policy cell or classification did not take effect in the deployed build.
+  - step: 11
+    phase: post-deploy
+    action: Verify the bundled recommendations closed. Sync the read cache, then assert terminal status.
+    command: "bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c \"import json,pathlib,sys; rows=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()]; want={'rec-3762','rec-3785'}; seen={r['id'] for r in rows if r['id'] in want}; missing=want-seen; still={r['id'] for r in rows if r['id'] in want and r.get('status')=='open'}; print('missing from cache:', sorted(missing), '| still open:', sorted(still)); sys.exit(1 if (missing or still) else 0)\""
+    expected: Both recs present in the cache and terminal.
+    fix_if: Either is still open -- the Resolves trailer did not reach the squash-merge commit body of the IMPLEMENT leg.
+test_obligations:
+  - source: src/common/ducklake_maintenance_scope.py
+    behavior: Classification, policy lookup and catalog reconciliation are correct and discriminating.
+    verification_step: 1
+    test_selector: tests/common/test_ducklake_maintenance_scope.py
+    red_green_expectation: Red before (module absent), green after.
+  - source: src/lambdas/ducklake_maintenance/handler.py
+    behavior: Discovery covers non-SCD2 tables; per-table merge failure isolates but stays loud.
+    verification_step: 2
+    test_selector: tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py
+    red_green_expectation: >-
+      Red before -- the LIKE predicate cannot return a control-class table, and an unguarded
+      merge_adjacent_files aborts the loop. Green after.
+  - source: docs/contracts/ducklake_maintenance.yaml
+    behavior: maintenance_policy is an exhaustive structure over classes x verbs.
+    verification_step: 4
+    test_selector: tests/checks/contracts/test_validate_maintenance_policy_matrix.py
+    red_green_expectation: Red before (no maintenance_policy key exists), green after.
+  - source: scripts/checks/contracts/validate_maintenance_policy_matrix.py
+    behavior: The exhaustiveness gate itself discriminates, proven by red-case fixtures.
+    verification_step: 4
+    test_selector: tests/checks/contracts/test_validate_maintenance_policy_matrix.py
+    red_green_expectation: Red before (module absent), green after.
+  - source: tests/common/test_ducklake_writes.py
+    behavior: Id allocation stays correct and unique under an injected OCC collision on the counter.
+    verification_step: 5
+    test_selector: tests/common/test_ducklake_writes.py::test_entity_allocation_survives_concurrent_counter_merge
+    red_green_expectation: >-
+      Red before -- no test injects a collision on the counter UPDATE specifically, so the
+      concurrent-merge hazard rec-3762 names is unguarded. Green after.
+  - source: tests/lambdas/ducklake_maintenance/handler/test_operational_actions.py
+    behavior: A single-sided count failure nulls the whole pair.
+    verification_step: 6
+    test_selector: tests/lambdas/ducklake_maintenance/handler/test_operational_actions.py::test_merge_ops_nulls_both_sides_of_count_pair
+    red_green_expectation: Red before -- the current loop nulls only the failed side (rec-3785). Green after.
+  - source: src/lambdas/ducklake_maintenance/manifest.yaml
+    behavior: The scope module ships in the maintenance zip.
+    verification_step: 7
+    test_selector: tests/lambda_manifest/test_bundle_checks.py::test_maintenance_scope_module_bundled_and_excluded
+    red_green_expectation: Red before (module not listed), green after.
+  - source: src/lambdas/data-pipeline/manifest.yaml
+    behavior: The scope module is excluded from data-pipeline.
+    verification_step: 7
+    test_selector: tests/lambda_manifest/test_bundle_checks.py::test_maintenance_scope_module_bundled_and_excluded
+    red_green_expectation: Red before (module not in excludes), green after.
+  - source: src/common/ducklake_maintenance.py
+    behavior: No LIKE-predicate scope prescription and no unratified T2.19 hot_merge claim survive.
+    verification_step: 3
+    command: "for f in src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml; do test -f \"$f\" || { echo \"MISSING SWEEP SURFACE: $f\"; exit 1; }; done; ! rg -n \"ops_%_history|ops_%_current|LIKE 'ops_%'|T2.19 exit criterion\" src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml"
+    red_green_expectation: >-
+      Red before -- MAINTENANCE_SCOPE_NOTE prescribes the LIKE query and run_hot_merge's docstring
+      asserts the unratified criterion. Green after.
+  - source: scripts/checks/contracts/_manifest.py
+    behavior: The new check is registered in the contracts domain manifest.
+    verification_step: 4
+    test_selector: tests/checks/contracts/test_validate_maintenance_policy_matrix.py
+    red_green_expectation: Red before (unregistered check fails manifest validation), green after.
+  - source: config/ci_rca_taxonomy.yaml
+    behavior: The new check module has a function_to_category row, so a CI failure in it classifies.
+    verification_step: 8
+    command: "rg -q '^## Decision [0-9]+: .*(enumerat|scope resolution)' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml"
+    red_green_expectation: Red before -- neither the Decision heading nor the taxonomy row exists. Green after.
+  - source: docs/DECISIONS.md
+    behavior: The scope-resolution commitment is recorded as a numbered Decision.
+    verification_step: 8
+    command: "rg -q '^## Decision [0-9]+: .*(enumerat|scope resolution)' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml"
+    red_green_expectation: Red before (no such Decision), green after.
+  - source: tests/common/test_ducklake_maintenance_scope.py
+    behavior: The scope module's red cases are exercised, not merely asserted adjacent to.
+    verification_step: 1
+    test_selector: tests/common/test_ducklake_maintenance_scope.py
+    red_green_expectation: Red before (file absent), green after.
+  - source: tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py
+    behavior: rec-3762's named acceptance node exists and discriminates.
+    verification_step: 2
+    test_selector: tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py
+    red_green_expectation: Red before (file absent), green after.
+  - source: tests/checks/contracts/test_validate_maintenance_policy_matrix.py
+    behavior: The gate's red-case fixtures exist.
+    verification_step: 4
+    test_selector: tests/checks/contracts/test_validate_maintenance_policy_matrix.py
+    red_green_expectation: Red before (file absent), green after.
+constraints:
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    Isolation must never be silent. Decision 188 pt 3 names exactly two carve-out sites
+    (action_merge_ops's two _count_files reads); merge_adjacent_files is NOT one of them, so a
+    per-table merge error may be isolated but must still produce a non-success terminal outcome.
+  - >-
+    Do NOT change GC_TABLE_SCOPE or HOT_TABLE_SCOPE values. Decision 88 cl.4 keeps GC smoke-only
+    until its gate clears (Plan C / T2.18 c2), and Decision 143 cl.2 pins hot_merge's dispatch
+    table and env to the smoke function.
+  - >-
+    Do NOT weaken any G1-G4 guard to make a gate pass. Where a guard trips on a fixture, fix the
+    fixture (the precedent set by the rec-3802 resolution, PR #1175).
+  - The policy matrix is data in the contract, never a default in code -- a missing cell fails the build rather than inheriting.
+  - Never edit logs/*.jsonl directly; all rec writes go through scripts.ops_data_portal (Decision 84).
+context:
+  - "decision-scout verdict: FLAGS_FOUND. Decisions triaged: 143 of 143"
+  - "Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3"
+  - "CITE: Decision 88 (cl.1(iii) merge ALL live ops_* tables -- the clause defect 2 is non-conformant with; cl.4 keeps GC smoke-only), Decision 188 (pt 3 two-site carve-out governs the isolation shape; pt 2 defer-vs-abort precedent), Decision 55 (loud failure), Decision 155 (clause shape for narrowing a 55-grounded contract), Decision 84 (I-2 writer-owned counter; I-4 fail loudly at the call site), Decision 81 (cl.6 merge cadence; cl.3 race closure covers expire_snapshots NOT merge), Decision 143 (cl.2 pins the smoke dispatch table -- closes the hot_merge fork), Decision 137 (name a class exception, never loosen the uniform rule), Decision 118 (CD.25 contract binds its code consumer), Decision 79 (active manifest -> V3), Decision 125/126 (governed CD channel)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - >-
+    CI-RCA DEFERRAL (Related-Work Check: all three conditions fail). rec-3844 and rec-3845 both cite
+    scripts/checks/verification/validate_vp_replay.py -- no shared scope file, no shared Decision,
+    different failure category. They belong to the vp-red-before-gate / vp-replay-mirror-decomposition
+    workstream (f7e99012, 587de8b3), actively owned elsewhere. Deferred deliberately.
+  - >-
+    TWO TRAPS, recorded so critique re-checks both. (1) Naive loop isolation returning 200/ok while a
+    table's merge raised reproduces the exact fail-open class Decision 188 closed -- isolate AND raise
+    after the loop, which also disposes of the Decision 190 spirit-flag (no silent branch remains, so
+    no separate escalation counter is needed). (2) Build the reconciliation test with the CATALOG as
+    its universe: a registry-universe test reproduces this workstream's recorded blind-oracle failure
+    (an assertion that passed while structurally blind to its subject) and must be rejected in review.
+  - >-
+    rec-3762 carries a HAZARD section -- read it in full before flipping the control cell
+    (ops_entity_counters is the writer-owned keyspace serialization point, Decision 84 I-2). Its
+    required mitigation is VERIFIED already present, not assumed: _advance_entity_counter
+    (ducklake_writes.py:205) sits inside the bounded OCC retry loop. VP5 asserts allocation
+    correctness under an injected collision. Residual risk to watch, not block: sustained contention
+    past OCC_MAX_ATTEMPTS hard-fails writes by design.
+  - >-
+    Two dispositions rec-3762 requires: (a) ops_entity_counters is UNPARTITIONED -- Decision 137 /
+    CD.9's absolute does not admit that silently, so record an explicit writer-internal-bookkeeping
+    exemption in the contract; (b) the DynamoDB agent-platform-counters table may be legacy after
+    Decision 84 I-2 -- out of scope, file a follow-on rec at implement time.
+  - >-
+    DRAFTED DECISION (routing: numbered_decision per decision-entry.yaml's three questions; the
+    matrix's FIELD semantics route field_semantics to the contract). Heading: "## Decision NNN:
+    Maintenance scope is catalog enumeration crossed with declared class policy; a naming convention
+    never determines what gets maintained (Decided)". Amends Decision 88 cl.1(iii)'s enforcement
+    mechanism without changing its requirement.
+  - "Design provenance: Fable frontier-architecture consult (facts-only, independent derivation). Survey + measurements in this plan's commit body."
+  - >-
+    closes_criteria is EMPTY deliberately. T2.18 c2 (destructive GC against production + S3 stability
+    after N cycles) is the only open T2.18 criterion and is Plan C's. This plan makes Plan C a
+    one-cell flip (gc.apply false -> true) rather than a scheduler rewrite.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - rec-3762's HAZARD section read in full before touching the control-class policy cell
+execution_steps:
+  - >-
+    Create src/common/ducklake_maintenance_scope.py with classify_table, load_policy, resolve_scope
+    and reconcile_catalog as pure connection-free functions over already-fetched catalog rows.
+  - >-
+    Add the maintenance_policy matrix to docs/contracts/ducklake_maintenance.yaml as a structure
+    (class x verb -> {apply, reason}), covering scd2 and control across merge_ops, hot_merge and
+    gc. Set gc.apply false for both classes with a reason citing Decision 88 cl.4 / Plan C, and
+    hot_merge.apply false citing Decision 143 cl.2. Record the unpartitioned-table exemption for
+    ops_entity_counters here.
+  - >-
+    Rewrite action_merge_ops: enumerate information_schema unfiltered, classify every row, raise on
+    an unclassifiable table, apply the merge_ops policy cell, and report skipped[] with reasons.
+  - >-
+    Wrap the per-table merge_adjacent_files call so one failure isolates to that table, records
+    error/merge_unavailable in per_table, emits a MergeOpsTablesFailed metric, and RAISES the
+    aggregate after the loop. Null BOTH sides of the count pair when either read fails (rec-3785).
+  - >-
+    Create scripts/checks/contracts/validate_maintenance_policy_matrix.py, register it in the
+    contracts domain manifest, and add its config/ci_rca_taxonomy.yaml function_to_category row.
+  - >-
+    Retire MAINTENANCE_SCOPE_NOTE's LIKE prescription and correct run_hot_merge's docstring; do NOT
+    change GC_TABLE_SCOPE or HOT_TABLE_SCOPE values.
+  - Add the scope module to the maintenance manifest includes and the data-pipeline excludes.
+  - >-
+    Write the tests named in test_obligations, each failing against current main. Three node ids are
+    named by the VP steps and must be created, not renamed:
+    test_entity_allocation_survives_concurrent_counter_merge (VP5),
+    test_merge_ops_nulls_both_sides_of_count_pair (VP6),
+    test_maintenance_scope_module_bundled_and_excluded (VP7) -- each selected by node id precisely
+    because the surrounding file already passes, so a bare file path would not discriminate. Build the
+    reconciliation test so the CATALOG is the universe -- a test whose universe is the registry
+    reproduces the recorded blind-oracle failure mode and must be rejected in review.
+  - >-
+    Author the new Decision in docs/DECISIONS.md from the drafted text in this plan's context.
+  - >-
+    File the follow-on rec for the possibly-legacy DynamoDB agent-platform-counters table
+    (rec-3762 disposition b) via scripts.ops_data_portal.
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Revert the handler and contract together (validate_contract_drift couples them). The policy
+  matrix is additive to the contract, so reverting restores the LIKE predicate without data
+  migration -- no catalog or S3 state changes in this plan.
