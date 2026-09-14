@@ -401,7 +401,7 @@ def action_merge_ops(event: dict[str, Any], _con: Any) -> dict[str, Any]:
         files_before_total = 0
         files_after_total = 0
         any_count_unavailable = False
-        merge_failed_tables: list[str] = []
+        merge_failures: list[dict[str, str]] = []
 
         for table in resolution.to_merge:
             count_unavailable = False
@@ -422,7 +422,7 @@ def action_merge_ops(event: dict[str, Any], _con: Any) -> dict[str, Any]:
                 # (recorded below + a metric emitted); the pass still raises after the loop
                 # (Decision 188 pt 3, extended by Decision 191) -- see the aggregate raise below.
                 merge_error = str(exc)
-                merge_failed_tables.append(table)
+                merge_failures.append({"table": table, "error": merge_error})
                 _emit_maintenance_metric("MergeOpsTableFailure", 1.0)
 
             if merge_error is None and not count_unavailable:
@@ -461,10 +461,15 @@ def action_merge_ops(event: dict[str, Any], _con: Any) -> dict[str, Any]:
             _emit_maintenance_metric("MergeOpsFilesAfterTotal", float(files_after_total))
         _emit_maintenance_metric("MergeOpsTablesCount", float(len(resolution.to_merge)))
 
-        if merge_failed_tables or resolution.unclassified:
+        if merge_failures or resolution.unclassified:
+            # The per-table error detail is embedded directly in the raised message (not just
+            # table names) so it survives into the caller-visible response body -- handler()
+            # below catches this and returns {ok: false, error: str(exc)}, which is the ONLY
+            # thing an operator sees for a 500; a bare table-name list would have discarded
+            # exactly the detail an operator needs to triage which table failed and why.
             raise rt.DuckLakeRuntimeError(
                 "merge_ops: pass completed with failures (per-table isolation held; classified "
-                f"tables were still merged) -- merge_failed={merge_failed_tables} "
+                f"tables were still merged) -- merge_failures={merge_failures} "
                 f"unclassified={list(resolution.unclassified)}"
             )
 

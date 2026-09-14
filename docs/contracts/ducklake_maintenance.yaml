@@ -138,18 +138,26 @@ verbs:
         together, never an asymmetric one-null-one-real pair (rec-3785); the merge itself still ran
         for every table with a readable count (guard vs observability split: a transient count
         failure degrades loudly rather than aborting this every-6h production cadence). Each
-        per_table entry also carries `error` (the merge_adjacent_files exception string, or null)
-        and `merge_unavailable` (true iff that table's merge failed) -- one table's merge failure
-        isolates to that table and does not prevent the remaining classified tables from merging.
+        per_table entry also carries `error` and `merge_unavailable` keys, but in a 200 response
+        BOTH ARE ALWAYS null/false FOR EVERY ENTRY: a 200 is only ever returned when the whole
+        pass had zero per-table merge failures (see 500 below) -- a non-null `error` is never an
+        observable 200-response state; the keys exist for shape uniformity with the internal
+        per-table record, not because a 200 caller ever sees a populated one.
       500: >-
         DuckLakeRuntimeError: missing/non-s3 data_path, missing meta_schema, no tables discovered at
         all, OR the pass completed with one or more per-table merge failures and/or unclassified
         tables (the aggregate post-loop raise -- classified tables were still merged before it
-        fires) / VersionMismatchError
+        fires). This is the ONLY place a per-table merge failure's diagnostic detail is
+        observable: the structured `per_table`/`reconciliation` objects are NOT returned on this
+        path (the raise short-circuits the response body entirely), so the failure detail --
+        which table, and the underlying merge_adjacent_files exception text for each -- is
+        embedded directly in the `error` string message instead, alongside the unclassified table
+        names. / VersionMismatchError
     typed_errors:
       runtime: >-
         missing s3:// data_path / meta_schema, no tables discovered at all, or a post-loop
-        aggregate raise naming per-table merge failures and/or unclassified tables (500)
+        aggregate raise naming per-table merge failures (table + underlying error text) and/or
+        unclassified tables (500)
       version_mismatch: "DuckDB/extension version mismatch (500)"
   catalog_reinit:
     payload_schema_ref: >-

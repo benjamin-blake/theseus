@@ -5,6 +5,7 @@ node and the isolate-then-raise / reconciliation-wiring nodes have their own foc
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -112,14 +113,44 @@ def test_one_table_merge_failure_isolates_but_still_raises():
         patch.object(h.maint, "merge_adjacent_files", side_effect=merge_side_effect) as mock_merge,
         patch.object(h, "_emit_maintenance_metric") as mock_emit,
     ):
-        with pytest.raises(DuckLakeRuntimeError, match="ops_entity_counters"):
+        with pytest.raises(DuckLakeRuntimeError, match="ops_entity_counters") as exc_info:
             h.action_merge_ops({"data_path": "s3://b/ducklake/", "meta_schema": "ducklake_ops"}, None)
 
+    # The per-table error DETAIL (not just the failed table's name) must survive into the raised
+    # message -- it is the only thing an operator sees once handler() converts this to a bare
+    # {ok: false, error: str(exc)} 500 response, so a bare table-name list would silently lose it.
+    assert "simulated merge failure" in str(exc_info.value)
     merged_tables = {c.args[1][0] for c in mock_merge.call_args_list}
     assert merged_tables == {"ops_entity_counters", "ops_recommendations_current", "ops_recommendations_history"}
     metric_names = [c.args[0] for c in mock_emit.call_args_list]
     assert "MergeOpsTableFailure" in metric_names
     con.close.assert_called_once()
+
+
+def test_handler_response_body_surfaces_per_table_merge_error_detail():
+    """The wiring end-to-end: a per-table merge failure's error text must be visible in the
+    Function-URL response body handler() returns, not just in an internal per_table list that
+    gets discarded once action_merge_ops raises."""
+    con = MagicMock()
+    con.execute.return_value.fetchall.return_value = [("ops_entity_counters",)]
+
+    def merge_side_effect(_con, _tables, **_kwargs):
+        raise RuntimeError("simulated merge failure detail")
+
+    with (
+        patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
+        patch.object(h.rt, "open_connection", return_value=con),
+        patch.object(h.rt, "load_field_semantics", return_value=_semantics()),
+        patch.object(h.maint, "_count_files", return_value=1),
+        patch.object(h.maint, "merge_adjacent_files", side_effect=merge_side_effect),
+        patch.object(h, "_emit_maintenance_metric"),
+    ):
+        response = h.handler({"action": "merge_ops", "data_path": "s3://b/ducklake/", "meta_schema": "ducklake_ops"})
+
+    assert response["statusCode"] == 500
+    body = json.loads(response["body"])
+    assert "simulated merge failure detail" in body["error"]
+    assert "ops_entity_counters" in body["error"]
 
 
 def test_unclassified_table_also_triggers_the_aggregate_raise():
