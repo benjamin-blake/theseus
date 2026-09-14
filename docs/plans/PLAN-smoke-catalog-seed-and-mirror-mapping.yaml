@@ -15,8 +15,10 @@ scope:
   purpose: seed the smoke catalog in action_gc so the pre-GC live set is non-empty and G3 is exercised non-vacuously
 - file: tests/test_ducklake_maintenance_smoke_handler.py
   action: Modify
-  purpose: red-then-green coverage that action_gc seeds before run_gc, and re-patch the three existing action_gc tests (:157, :175, :194) which patch only create_scd2_tables/run_gc and would otherwise reach
-    a real rt.write_scd2 against FakeCon
+  purpose: 'add test_action_gc_seeds_catalog_before_gc, which must assert BOTH that action_gc({''force_recreate_tables'': True}, con) seeds before run_gc AND that action_gc({}, con) issues no write at all.
+    Of the three existing action_gc tests, ONLY test_action_gc_force_recreate_calls_create_tables (def :176, call :191) enters the seeding branch and may need re-patching; test_action_gc_ok (:157, call
+    :171) and test_action_gc_emits_metrics (:195, call :210) pass {} and MUST stay green unmodified -- they are the discriminator proving the plain gc verb stays write-free. If either reddens, the seed
+    was placed outside the force_recreate_tables block'
 - file: scripts/ducklake_smoke/lambda_maintenance_gates.py
   action: Modify
   purpose: NARROW the gc-gate docstring's 'CI-fresh smoke catalog' premise to 'CI-fresh, then seeded' and cover the now-armed files_before>0 branch. Decision 188 clause 5's shape-not-volume ruling and the
@@ -47,6 +49,7 @@ infrastructure_dependencies:
 - 'data-pipeline (status: active) -- affected only via the docs/ROADMAP-PLATFORM.yaml asset; deploy deliberately omitted per established precedent, gap filed as rec-3846'
 acceptance_criteria:
 - action_gc seeds at least one row before run_gc so the pre-GC live file set is non-empty
+- the plain gc verb (no force_recreate_tables) issues no write -- the seed is confined to the fixture branch
 - src/common/ducklake_maintenance_ops.py is unmodified -- Decision 188 clause 2 stands untouched, enforced by validate_scope_boundary against this plan's scope list, not a bespoke VP step
 - the repo-wide unmapped-source set drops from 3 to exactly 2, turning no currently-green source red
 - scripts/test_coverage_checker.py stays at or under 500 SLOC with no budget raise
@@ -72,9 +75,10 @@ verification_plan:
 - step: 3
   phase: pre-deploy
   action: the checker resolves the mirror target for the previously-misrouted source
-  command: bin/venv-python -c "from pathlib import Path; import scripts.test_coverage_checker as t; ok,_ = t.check_test_file_exists(Path('src/common/ducklake_maintenance_ops.py')); raise SystemExit(0 if
-    ok else 1)"
-  expected: exit 0 -- check_test_file_exists resolves the mirror target (exits 1 both pre-fix and on any crash)
+  command: bin/venv-python -c "import scripts.test_coverage_checker as t; want = t.ROOT / 'tests' / 'common' / 'test_ducklake_maintenance_ops.py'; got = t.map_source_to_test(t.ROOT / 'src' / 'common' /
+    'ducklake_maintenance_ops.py'); raise SystemExit(0 if got == want else 1)"
+  expected: exit 0 -- map_source_to_test resolves exactly tests/common/test_ducklake_maintenance_ops.py. Asserts the resolved TARGET, not check_test_file_exists' ok flag, which returns True with a 'skipped'
+    reason when the map returns None
   fix_if: still reports missing tests/test_ducklake_maintenance_ops.py
   graduation: graduate
   graduation_check_id: mirror-map-new-src-common
@@ -129,13 +133,14 @@ verification_plan:
   action: governed CD channel maintenance-gc smoke gate
   command: bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-maintenance-gc
   expected: the maintenance-gc gate passes against the deployed smoke function -- the same command deploy-ducklake-lambdas.yml runs at line 247, which is the authoritative verifier
-  fix_if: gate returns breaker_tripped -- re-diagnose before any further deploy. If it reds on files_after > files_before, the fix is to materialize the seed (call flush_inlined_data immediately after seeding
-    so files_before is already counted and merge can only reduce) -- NEVER to relax lambda_maintenance_gates.py:93, which is now the softest available target and whose weakening Decision 181/59 forbids
+  fix_if: gate returns breaker_tripped -- re-diagnose before any further deploy. If it reds on files_after > files_before (gc gate, lambda_maintenance_gates.py:93) OR on the hot_merge comparison (:211,
+    which has NO files_before > 0 guard), the fix is to materialize the seed -- call flush_inlined_data immediately after seeding so files_before is already counted at ducklake_maintenance.py:481 and merge
+    can only reduce. NEVER relax either comparison; both are now the softest available targets and Decision 181/59 forbid weakening them
 - step: 10
   phase: post-deploy
   action: bundled recommendations are closed in the warehouse
-  command: 'bin/venv-python -m scripts.sync.ops sync && test "$(grep -cE ''"id": "rec-(3802|3783|3809)"'' logs/.recommendations-log.jsonl)" -ge 3 && ! grep -E ''"id": "rec-(3802|3783|3809)"'' logs/.recommendations-log.jsonl
-    | grep -q ''"status": "open"'''
+  command: 'bin/venv-python -m scripts.sync.ops sync && test "$(grep -oE ''"id": "rec-(3802|3783|3809)"'' logs/.recommendations-log.jsonl | sort -u | wc -l)" -eq 3 && ! grep -E ''"id": "rec-(3802|3783|3809)"''
+    logs/.recommendations-log.jsonl | grep -q ''"status": "open"'''
   expected: exit 0 -- all three ids are PRESENT in the cache and none is open (presence asserted first, so a rec dropped from the pull cannot false-pass)
   fix_if: a rec is still open -- check the squash-commit Resolves trailer and the Decision 186 closure artifact
 test_obligations:
@@ -181,7 +186,7 @@ context:
 - 'rec-3802 carries escape_class no-edge / escape_mode no_premerge_gate_by_design, so the Decision 186 closure gate fires: closing needs a fix-bound artifact or the no_premerge_gate_by_design waiver'
 - 'Mapping predicate is flat-home-absence only. Measured repo-wide at plan time: the naive home-on-neither-roster predicate remaps 130 sources and turns 50 green files red; the family-table variant rec-3783
   itself proposes turns 7 red. Both rejected.'
-- 'Mapping baseline at plan time: 3 unmapped of 373 sources (checker filter: .py under src/ or scripts/, excluding __init__.py, conftest.py and test_*) (scripts/checks/ci_guards/_shared.py, scripts/checks/sloc/_shared.py,
+- 'Mapping baseline at plan time: 3 unmapped of 374 sources (checker filter: .py under src/ or scripts/, excluding __init__.py and conftest.py) (scripts/checks/ci_guards/_shared.py, scripts/checks/sloc/_shared.py,
   src/common/ducklake_maintenance_ops.py). Target post-fix: exactly 2.'
 - 'Decision 79 asset-gating: docs/ROADMAP-PLATFORM.yaml is an asset of the active data-pipeline artifact, so a strict reading obliges a data-pipeline deploy. This plan follows established precedent (217fc78e/#1150,
   08a9457c/#1159, 699425ab/#1157) and omits it explicitly; the unratified gap is filed as rec-3846.'
@@ -203,8 +208,10 @@ context:
   likewise touched by the fix sha'
 - 'Out-of-scope defect found during planning, filed not fixed (Decision 59): src/lambdas/ducklake_maintenance_smoke/handler.py:52-53 claims its actions mirror the admin handler verbatim, but the admin handler
   has none of action_merge/action_gc/action_hot_merge/action_breaker_probe -- already false on main'
-- Census enumeration MUST filter exactly like test_coverage_checker.get_changed_source_files (.py under src/ or scripts/, excluding __init__.py, conftest.py, test_*); model it on scripts/checks/hygiene/validate_vacuity_justified.py's
-  _base_free_oracle. A naive rglob yields 37 unmapped, not 3
+- Census enumeration MUST filter exactly like test_coverage_checker.get_changed_source_files, whose code (scripts/test_coverage_checker.py:526) excludes ONLY {__init__.py, conftest.py} -- its docstring
+  also claims 'test files', but the code does not, and the docstring is not the authority. Filtered population is 374; a naive rglob yields 37 unmapped, not 3
+- 'Seed blast radius extends past action_gc: the seeded row persists, so lambda_maintenance_hot_merge (workflow line 253, after gc at 247, invoked WITHOUT force_recreate_tables) also moves from a vacuous
+  0<=0 comparison to a live one, and its comparison at lambda_maintenance_gates.py:211 carries no files_before>0 guard. The flush_inlined_data mitigation covers both gates'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
