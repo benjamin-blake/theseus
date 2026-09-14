@@ -1,0 +1,189 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "tool-pin-lint-escalation"
+intent: >-
+  Close the two open Critical CI-RCA recs by fixing the 38 ruff ISC004 violations that ruff 0.16.7
+  exposed, and close the presubmit gate gap that let a linter-version bump reach main unlinted --
+  so a tool whose behaviour changes globally can no longer escape the fast tier by touching no .py file.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-tool-pin-lint-escalation.yaml
+phase: T1.13
+scope:
+  - file: scripts/checks/_scaffolding.py
+    action: Modify
+    purpose: >-
+      run_lint_checks becomes unconditional whole-tree; run_precommit_checks gains the derived
+      global-input escalation; both replace silent early returns with outcome_scope accounting
+  - file: scripts/checks/deps/validate_presubmit_tool_pin_escalation.py
+    action: Create
+    purpose: Class D evaluator -- reads the new contract by basename and asserts the escalation mechanism
+  - file: scripts/checks/deps/_manifest.py
+    action: Modify
+    purpose: register the new check Entry (sequenced, so the Decision 168 evaluator resolves)
+  - file: docs/contracts/presubmit-tool-pin-escalation.yaml
+    action: Create
+    purpose: Class D mechanism contract -- whole-tree lint rule and tool-pin escalation semantics
+  - file: docs/contracts/file-router.yaml
+    action: Modify
+    purpose: route whose topic equals the new contract subject (Decision 168 clause 4)
+  - file: config/ci_rca_taxonomy.yaml
+    action: Modify
+    purpose: function_to_category row for the new check module
+  - file: tests/validate/test_lint_targets.py
+    action: Modify
+    purpose: >-
+      retarget the two tests pinning the retired diff-scoped branch onto the new whole-tree
+      invariant; add pin-only-changed-set coverage replaying commit 1c50e26b
+  - file: tests/checks/deps/test_validate_presubmit_tool_pin_escalation.py
+    action: Create
+    purpose: mirror test for the new check (Decision 104/131)
+  - file: scripts/checks/contracts/_ratchet.py
+    action: Modify
+    purpose: ISC004 parenthesization (1 site)
+  - file: scripts/checks/decisions/validate_decisions_size.py
+    action: Modify
+    purpose: ISC004 parenthesization (1 site)
+  - file: scripts/checks/iam_tf/_read_coverage.py
+    action: Modify
+    purpose: ISC004 parenthesization (2 sites)
+  - file: scripts/checks/roadmap/validate_plan_documents.py
+    action: Modify
+    purpose: ISC004 parenthesization (1 site)
+  - file: scripts/checks/structural/size_limits.py
+    action: Modify
+    purpose: ISC004 parenthesization (1 site)
+  - file: scripts/ci/convergence_advisory.py
+    action: Modify
+    purpose: ISC004 parenthesization (4 sites)
+  - file: scripts/convergence_health/escalate.py
+    action: Modify
+    purpose: ISC004 parenthesization (3 sites)
+  - file: scripts/executor/step_context.py
+    action: Modify
+    purpose: ISC004 parenthesization (8 sites)
+  - file: scripts/roadmap/plan_obligations.py
+    action: Modify
+    purpose: ISC004 parenthesization (4 sites)
+  - file: tests/checks/hygiene/test_validate_raises_discrimination.py
+    action: Modify
+    purpose: ISC004 parenthesization (3 sites)
+  - file: tests/checks/roadmap/test_validate_plan_scope_closure.py
+    action: Modify
+    purpose: ISC004 parenthesization (1 site)
+  - file: tests/execute_recommendation/test_review_and_context.py
+    action: Modify
+    purpose: ISC004 parenthesization (2 sites)
+  - file: tests/ops_data_portal/test_ci_rca_propose_close.py
+    action: Modify
+    purpose: ISC004 parenthesization (1 site)
+  - file: tests/ops_data_portal/test_ci_rca_runtime.py
+    action: Modify
+    purpose: ISC004 parenthesization (1 site)
+  - file: tests/ops_data_portal/test_ci_rca_schema.py
+    action: Modify
+    purpose: ISC004 parenthesization (2 sites)
+  - file: tests/test_ci_rca_back_validate.py
+    action: Modify
+    purpose: ISC004 parenthesization (1 site)
+  - file: tests/test_ci_rca_lifecycle_correct_rec_context.py
+    action: Modify
+    purpose: ISC004 parenthesization (2 sites)
+bundled_recommendations: ["rec-3861", "rec-3863"]
+followon_recs: ["rec-3868", "rec-3869"]
+infrastructure_dependencies: []
+acceptance_criteria:
+  - "bin/venv-python -m ruff check src/ tests/ scripts/ exits 0 with zero ISC004"
+  - "run_lint_checks lints src/ tests/ scripts/ regardless of the changed-file set, including a pin-only set"
+  - "a diff touching a pre-commit global input escalates run_precommit_checks to --all-files"
+  - "the global-input set is derived from .pre-commit-config.yaml, not a hard-coded path roster"
+  - "a lint or precommit step that does not execute is recorded via skipped(), never as silent success"
+  - "validate_presubmit_tool_pin_escalation is sequenced and resolves its Class D contract by basename"
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: whole-tree ruff and format are clean
+    command: bin/venv-python -m ruff check src/ tests/ scripts/ && bin/venv-python -m ruff format --check src/ tests/ scripts/
+    expected: both exit 0; no ISC004 diagnostics
+    fix_if: any ISC004 remains, or the parenthesization changed formatting
+  - step: 2
+    phase: pre-deploy
+    action: replay the escape -- a pin-only changed set must still lint the whole tree
+    command: bin/venv-python -m pytest tests/validate/test_lint_targets.py -v
+    expected: whole-tree targets asserted for a changed set of only requirements files; the old diff-scoped branch is unreachable
+    fix_if: run_lint_checks still early-returns or filters targets to .py
+  - step: 3
+    phase: pre-deploy
+    action: pre-commit escalation fires on a derived global input and not otherwise
+    command: bin/venv-python -m pytest tests/checks/deps/test_validate_presubmit_tool_pin_escalation.py -v
+    expected: escalates to all_files=True for a .pre-commit-config.yaml change; stays changed-files for an ordinary .py change
+    fix_if: trigger set is hard-coded rather than derived, or is read from head instead of base ref
+  - step: 4
+    phase: pre-deploy
+    action: Class D contract and evaluator satisfy the population gate
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0; validate_contract_drift accepts subject uniqueness and evaluator resolution
+    fix_if: evaluator does not contain the contract basename as an executable-context string literal
+  - step: 5
+    phase: pre-deploy
+    action: full tier green before handoff
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: any check fails
+test_obligations:
+  - source: scripts/checks/_scaffolding.py
+    behavior: >-
+      lint targets are whole-tree regardless of the changed-file set; pre-commit escalates to
+      --all-files on a derived global-input change; non-execution is accounted, never silent
+    verification_step: 2
+    test_selector: tests/validate/test_lint_targets.py
+    red_green_expectation: red before, green after
+  - source: scripts/checks/deps/validate_presubmit_tool_pin_escalation.py
+    behavior: the evaluator asserts the escalation mechanism and demonstrably reads its contract
+    verification_step: 3
+    test_selector: tests/checks/deps/test_validate_presubmit_tool_pin_escalation.py
+    red_green_expectation: red before, green after
+constraints:
+  - No rescue agents or workaround loops (Decision 55)
+  - "Decision 181 CONTENT invariant -- rejected: noqa, per-file-ignores, de-selecting ISC, reverting the ruff pin"
+  - "Exactly two CI tiers (operator direction, Google TAP style): no parallel job, no third tier, all gate logic in scripts.validate"
+  - "Decision 104 retains-ONLY clause -- the precommit decider lives in _scaffolding.py, never validate.py"
+  - "Decision 161 -- the mypy --pre diff-aware scaffold is untouched; this plan narrows the ruff half only"
+  - "Decision 170 -- account non-execution via outcome_scope/examined/skipped, not a print"
+context:
+  - "Decision-scout verdict + CITE list: FLAGS_FOUND (round 2). CITE: dec-73, dec-161, dec-166, dec-186, dec-177, dec-181, dec-55, dec-163, dec-142."
+  - "gates: decision-scout=FLAGS_FOUND after 2 round(s); plan-critique=<pending>"
+  - "Decisions triaged: 144 of 144; Roadmap items intersected: 25; CONFLICT: 0; RELATED: 24"
+  - "Incident: dependabot #1182 / commit 1c50e26b bumped ruff 0.15.20 -> 0.16.7; 5 files changed, all requirements pins, zero .py."
+  - "Measured: whole-tree ruff check 0.055s, ruff format --check 0.045s, vs NON_TEST_BUDGET_SECONDS=240. pre-commit --all-files 57.2s, of which detect-secrets 48.7s."
+  - "dec-166 is the precedent that whole-tree lint at ~0.1s is already sanctioned in both tiers -- item 2 is not novel."
+  - "GOTCHA: tests/validate/test_lint_targets.py::test_explicit_files_scope_is_unaffected and ::test_no_op_when_files_is_empty_list PIN the diff-scoped branch this plan deletes. They must be RETARGETED onto the new invariant, not deleted or relaxed -- they pin retired behaviour, so this is not a dec-181 weakening. State that in the commit body."
+  - "GOTCHA: _should_run_in_pre (validate.py:110) is NOT the extension point -- its only caller is the registry.pre_sequence() loop consuming step.pre_globs; run_precommit_checks never calls it."
+  - "dec-186 closure artifact: test-kind, tests/validate/test_lint_targets.py, bound to fixed_by_sha. `check:` cannot resolve -- the lint step is a scaffold, not a registry entry."
+  - "dec-168 clause 2: the {check: ...} evaluator resolves only if the check is sequenced AND its module contains the contract basename as an executable-context string literal."
+  - "ratified_via takes a PLAN with no Decision -- six precedents (PLAN-build-lambda-yaml, PLAN-instruction-architecture-yaml, PLAN-skills-layer-prose-relocation, and three more)."
+  - "dec-182 tension: 182 narrowed this same dec-73 clause by minting a number. This plan routes to a Class D contract instead, on explicit operator direction. Differentiator: 182 minted for its own substantive content with the 73 narrowing incidental; here the mechanism IS the content and has a contract home."
+  - "plan_obligations reports 2 enforced-elsewhere obligations for the new check module: a dec-170 accounting declaration (validate_check_accounting) and a graduated verification-registry shard (validate_graduation_completeness). Neither is a scope row; both must still be satisfied."
+  - "All 38 ISC004 sites were individually reviewed at plan time: every one is intentional single-message concatenation split for the 127-char limit; zero are genuine missing commas. Uniform parenthesization, no semantic delta."
+  - "T1.13:c9 models tier_misplaced as a gate-escape whose corrective_action targets the GATE. Cite; do NOT claim c9 closure."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - "Fix the 38 ISC004 sites by parenthesization. A `ruff check --select ISC004 --fix --unsafe-fixes` sweep is permitted ONLY because every site was reviewed at plan time; diff-review the result and confirm 38 hunks, all parenthesization, zero comma insertions."
+  - "Rewrite run_lint_checks: drop the .py filter and the two early returns; lint src/ tests/ scripts/ unconditionally from a single shared target constant."
+  - "Add the derived global-input escalation to run_precommit_checks: parse .pre-commit-config.yaml at the BASE REF for its declared global inputs (its own path plus any baseline a hook names), escalate to all_files=True when the diff intersects that derived set."
+  - "Replace silent non-execution with registry.outcome_scope(...) plus examined()/skipped() in both scaffolds (Decision 170); keep any print as human affordance only."
+  - "Add docs/contracts/presubmit-tool-pin-escalation.yaml (Class D, status ratified, ratified_via PLAN-tool-pin-lint-escalation, unique subject, evaluator {check: validate_presubmit_tool_pin_escalation}), the evaluator module, its deps/_manifest.py Entry, the file-router route whose topic equals the subject, and the ci_rca_taxonomy row."
+  - "Retarget the two tests that pin the deleted diff-scoped branch; add a pin-only-changed-set case replaying commit 1c50e26b's five-file diff."
+  - "Satisfy the two enforced-elsewhere obligations for the new check: the Decision 170 accounting declaration and the graduated verification-registry shard."
+  - "Execute Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)"
+  - "Report: what was implemented, verification results"
+rollback: >-
+  Every change is additive or a deletion of a scoped branch; revert the squash commit to restore the
+  diff-scoped lint gate. The 38 parenthesizations are semantically inert and safe to carry independently.
