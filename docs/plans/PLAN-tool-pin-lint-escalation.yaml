@@ -37,9 +37,14 @@ scope:
       pre-tier-registry-isolation-guard.yaml binds node_id
       tests/validate/test_tiers.py::TestPreModeRegistryIsolation and would dangle (rec-3812's
       failure mode). PR2 then adds the driver-altitude test and retargets two pinning tests here.
-  - file: tests/validate/test_pre_globs.py
-    action: Create
-    purpose: PR1 -- receives TestPreGlobMatch, TestShouldRunInPre, TestPreGlobsGateEndToEnd
+  - file: tests/validate/test_pre_glob_gating.py
+    action: Modify
+    purpose: >-
+      PR1 -- receives TestPreGlobMatch, TestShouldRunInPre, TestPreGlobsGateEndToEnd. This EXISTING
+      module (39 effective lines) already owns the same two symbols, _pre_glob_match and
+      _should_run_in_pre, and its own docstring says it was split out of test_tiers.py precisely
+      because that file sits at 492 SLOC. Extending it lands at ~140 effective lines, well inside
+      budget, and avoids two confusably-named modules for one subject (collocation doctrine).
   - file: tests/validate/test_scaffold_gates.py
     action: Modify
     purpose: >-
@@ -359,7 +364,10 @@ test_obligations:
   - source: scripts/checks/deps/validate_presubmit_tool_pin_escalation.py
     behavior: >-
       the evaluator asserts the escalation mechanism and demonstrably reads its contract by basename
-      in executable context (Decision 168 clause 2)
+      in executable context (Decision 168 clause 2). The mirror test MUST exercise at least one
+      FAILING path of the check with a positive-outcome assertion derived from invoking it --
+      validate_red_case_floor rejects negated and empty-side forms, and VP step 5's --pre run
+      catches the omission before merge.
     verification_step: 4
     test_selector: tests/checks/deps/test_validate_presubmit_tool_pin_escalation.py
     red_green_expectation: red before (module does not exist), green after
@@ -486,13 +494,14 @@ constraints:
   - "Decision 170 -- account non-execution via outcome_scope/examined/skipped, not a print"
 context:
   - "Decision-scout verdict + CITE list: FLAGS_FOUND (round 2). CITE: dec-73, dec-161, dec-166, dec-186, dec-177, dec-181, dec-55, dec-163, dec-142."
-  - "gates: decision-scout=FLAGS_FOUND after 2 round(s); plan-critique=<pending>"
+  - "gates: decision-scout=FLAGS_FOUND after 2 round(s); plan-critique=PROCEED after 6 round(s); round 6 confirming"
   - "Decisions triaged: 144 of 144; Roadmap items intersected: 25; CONFLICT: 0; RELATED: 24"
   - "Incident: dependabot #1182 / commit 1c50e26b bumped ruff 0.15.20 -> 0.16.7; 5 files changed, all requirements pins, zero .py."
   - "Measured: whole-tree ruff check 0.055s, ruff format --check 0.045s, vs NON_TEST_BUDGET_SECONDS=240. pre-commit --all-files 57.2s, of which detect-secrets 48.7s, check-yaml 4.7s, other seven hooks 1.6s combined."
   - "HEADROOM MEASURED: --pre on this branch reports non-test 34.1s against the 240s budget (0 test modules selected; CI-predicted elapsed 79-100s). The escalation's +55s net lands at roughly 89s local / under the CI prediction band, so the unwaivable non_test_breach branch (the FIRST branch of selection_budget.classify(), scripts/validate.py:446-461) has real margin. Caveat: 34.1s is a plan-only diff; a code diff runs more gated checks. The escalation fires only on pin-change diffs, which carry no .py, so pytest_diff selects near-nothing on exactly those runs. Implementer should still record observed non-test elapsed on the first escalating run."
   - "dec-166 is the precedent that whole-tree lint at ~0.1s is already sanctioned in both tiers -- item 2 is not novel."
   - "GOTCHA: FIVE tests pin the diff-scoped branch this plan deletes. The set is CLOSED -- verified by a whole-tree grep for run_lint_checks / ruff argv / no-lint assertions; nothing else in the repo asserts on it. (1) tests/validate/test_lint_targets.py::TestRunLintChecksWholeTreeTargets::test_explicit_files_scope_is_unaffected; (2) ::test_no_op_when_files_is_empty_list; (3) tests/validate/test_scaffold_gates.py:474-483 TestRunLintChecksTargetsAllFiltered::test_no_python_files_in_explicit_scope_is_a_no_op; (4) tests/validate/test_tiers.py:77-103 TestPreModeDiffAware::test_passes_changed_py_files_to_ruff (asserts `scripts/validate.py in ruff_check[0]`, false once the argv is whole-tree); (5) tests/validate/test_tiers.py:105-128 ::test_skips_lint_when_no_files_changed (asserts `not ruff_cmds` on an empty changed set, false once the early returns go). (4) and (5) encode a DELIBERATE behaviour change: a no-diff --pre run now lints the whole tree, at ~0.1s. All five must be RETARGETED onto the new invariant, never deleted or relaxed -- they pin retired behaviour, so this is not a dec-181 weakening. The replacement assertions are strictly stronger (membership and executed-call, vs absence and assert_not_called). State this in the commit body: this surface is dec-181's residual_agent_obligation arm (owner rec-3357) with no mechanical arbiter."
+  - "GOTCHA (LINE NUMBERS): PR1 extracts TestRunCoverageCheck from the TOP of test_scaffold_gates.py (lines 28-79), shifting everything below by ~52 lines. Every test_scaffold_gates.py line citation in this plan (:474-483, :435-472) is measured PRE-PR1 and will be stale when PR2 reads it -- always resolve by the paired Class::test node id, which is authoritative. test_tiers.py's citations (77-103, 105-128) are unaffected: its extraction is a tail."
   - "GOTCHA: tests/validate/test_scaffold_gates.py:435-472 TestRunPrecommitChecks is the ONLY existing test of run_precommit_checks and three of its four cases patch scripts.checks._common.run (the fourth, test_skips_when_pre_commit_not_installed, patches importlib.util.find_spec) -- the new base-ref `git show` read will be intercepted by that same mock and handed a MagicMock unless the test is updated or the read is routed around it."
   - "SIGNATURE (pinned): run_lint_checks RETAINS its `files` parameter, ignored for target selection. Removing it would TypeError at scripts/validate.py:325 and would make VP step 2's pin-only replay inexpressible -- the step would silently degenerate into the four whole-tree cases that already pass today. scripts/validate.py therefore stays OUT of scope."
   - "GOTCHA (dec-169 clause 1 retains-ONLY): _should_run_in_pre (validate.py:110) is NOT the extension point -- its only caller is the registry.pre_sequence() loop consuming step.pre_globs; run_precommit_checks never calls it."
@@ -538,8 +547,9 @@ execution_steps:
   - >-
     PR1: extract TestReportOnly/TestRegistrationSurfaces/TestLiveTreeInvariants from
     test_validate_raises_discrimination.py (499) into test_validate_raises_reporting.py; extract
-    TestPreGlobMatch/TestShouldRunInPre/TestPreGlobsGateEndToEnd from test_tiers.py (492) into
-    test_pre_globs.py; extract TestRunCoverageCheck/TestVerifierCoverageArgv/
+    TestPreGlobMatch/TestShouldRunInPre/TestPreGlobsGateEndToEnd from test_tiers.py (492) into the
+    EXISTING tests/validate/test_pre_glob_gating.py (39 eff, same two symbols, ~140 after) rather
+    than a new module; extract TestRunCoverageCheck/TestVerifierCoverageArgv/
     TestRunDependencyChecks/TestRunCoverageCheckSysPathInjection from test_scaffold_gates.py (456)
     into test_scaffold_coverage.py. Residuals 353 / 391 / 318, all verified. No assertion may change
     in PR1, so any red is a move error, not a behaviour question.
