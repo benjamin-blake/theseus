@@ -41,7 +41,11 @@ scope:
       and an output tail for any sub-threshold file instead of discarding all three.
   - file: tests/checks/misc/test_coverage_baseline.py
     action: Modify
-    purpose: Pin the new diagnostic surface, including the non-zero-returncode case.
+    purpose: >-
+      Pin the new diagnostic surface, including the non-zero-returncode case, AND add
+      `proc.returncode = 0` to the eight existing TestMeasureAndCheck fixtures -- they build a bare
+      MagicMock whose `.returncode != 0` evaluates True, so reading the returncode makes every one
+      of them emit a spurious diagnostic.
   - file: scripts/checks/misc/_manifest.py
     action: Modify
     purpose: >-
@@ -91,7 +95,12 @@ verification_plan:
     fix_if: >-
       Selects nothing (exit 5) means the discriminating test was never added. A failure means one
       arm still classifies via the other -- assert on which branch produced the classification, not
-      merely that the string "unmeasurable" appeared, since both arms emit it.
+      merely that the string "unmeasurable" appeared, since both arms emit it. The subprocess stub
+      MUST dispatch on the command (a side_effect, as test_non_graduate_dispositions_not_executed
+      already does with wraps=), never a blanket return_value: validate_vp_replay.subprocess.run is
+      shared with _run_self_test_fixture, and _run_classifier_self_test runs unconditionally before
+      any early return, so a blanket patch mislabels all five self-test fixtures and appends
+      spurious self-test failures.
     hermetic: true
     graduation: graduate
     graduation_check_id: vp-replay-classifier-arms-do-not-alias
@@ -102,24 +111,28 @@ verification_plan:
       condition that produced 99.6%. Verified red on the un-implemented tree (exit 1, 7s).
     command: |-
       D=$(mktemp -d); printf '#!/bin/sh\nexit 127\n' > "$D/rg"; chmod +x "$D/rg"
-      rm -f .coverage.json
-      PATH="$D:$PATH" _COVERAGE_SUBPROCESS=1 bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_red_before_leg.py --cov=scripts/checks/verification --cov-report=json:.coverage.json -q --no-header >/dev/null 2>&1
-      bin/venv-python -c "
-      import json,pathlib
+      PATH="$D:$PATH" _COVERAGE_SUBPROCESS=1 bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_red_before_leg.py --cov=scripts/checks/verification --cov-report=json:"$D/cov.json" -q --no-header >/dev/null 2>&1
+      COV="$D/cov.json" bin/venv-python -c "
+      import json,os,pathlib
       src='scripts/checks/verification/validate_vp_replay.py'
       lines=pathlib.Path(src).read_text().splitlines()
       arm=[i+2 for i,l in enumerate(lines) if '_RG_GREP_ERROR_EXIT_CODE and' in l]
       assert len(arm)==1, arm
-      d=json.load(open('.coverage.json'))['files'][src]
+      d=json.load(open(os.environ['COV']))['files'][src]
       assert arm[0] not in d['missing_lines'], f'exit-2 arm line {arm[0]} uncovered with ripgrep absent'
-      print('RG_ABSENT_ARM_COVERED')"; rc=$?; rm -f .coverage.json; exit $rc
+      print('RG_ABSENT_ARM_COVERED')"; rc=$?; rm -rf "$D"; exit $rc
     expected: RG_ABSENT_ARM_COVERED printed, exit 0
     fix_if: >-
       Still red means the test continues to reach a real binary. The arm line is resolved by source
       text, never pinned as a literal line number -- this edit shifts line numbers, so a hardcoded
       197 would silently measure the wrong line. Do not satisfy this by installing ripgrep in CI:
       that leaves the aliased assertion in place and re-arms the same defect on the next runner
-      image change.
+      image change. The coverage artifact is written inside the mktemp dir, never to the repo root
+      -- keep it that way so the step stays side-effect-free and the hermetic marker stays honest.
+      Measured 6s; as a standing registry row it costs roughly double that, since
+      validate_verification_registry's run_differential executes it twice (once on HEAD, once in a
+      venv-less origin/main worktree revert). Kept graduate anyway: this is the single most valuable
+      standing guard in the plan, being the exact runner condition rec-3844 escaped through.
     hermetic: true
     graduation: graduate
     graduation_check_id: vp-replay-coverage-survives-absent-ripgrep
@@ -134,6 +147,9 @@ verification_plan:
       graduation field. It must route through _partition_steps' existing excluded-with-reason list
       so the reason prints, and must carry its own Decision 170 declaration -- an exclusion that
       collapses into an undeclared green is the same silent-vacuity shape this plan is repairing.
+      Use PLAN-vp-red-before-gate.yaml step 16's literal command text as the fixture's command, so
+      acceptance criterion 6 is pinned by this one step rather than only compositionally across
+      steps 3 and 6.
     hermetic: true
     graduation: graduate
     graduation_check_id: vp-replay-pr-relative-excluded-on-base-collapse
@@ -158,7 +174,14 @@ verification_plan:
       measure_and_check currently calls proc.communicate() and drops stdout, stderr and the
       returncode, so a test FAILING inside the coverage subprocess is indistinguishable from a
       genuine coverage gap. Capture and surface all three; a non-zero returncode must be reported,
-      not silently folded into the percentage.
+      not silently folded into the percentage. Two hard constraints: (a) measure_and_check MUST keep
+      its 2-tuple return -- scripts/test_coverage_checker.py:443 unpacks it as `pcts, _` and that
+      file is OUT of scope (Decision 59 LOCATION invariant), so route diagnostics through the
+      existing errors list or stdout, never a third element; (b) "sub-threshold" must be decided by
+      the in-module load_baseline/compare pair (coverage_baseline.py:47 and :57), NOT by
+      "has missing lines" -- config/coverage_baseline.yaml carries 11+ live sub-100 entries, so an
+      unguarded append would newly redden the full tier on every PR touching a baselined-but-passing
+      file.
     hermetic: true
     graduation: graduate
     graduation_check_id: coverage-baseline-reports-diagnostics
@@ -230,7 +253,9 @@ verification_plan:
       rather than the measured 10 because step 6 of this plan rewrites one of them, and because the
       corpus grows between authoring and implement time. The predicate is ADVISORY and must never
       refuse -- 76 merged steps use `git diff origin/main -- <path>` as a legitimate PR-time
-      assertion, and refusing the idiom would ban valid verification.
+      assertion, and refusing the idiom would ban valid verification. It must recognise at least
+      BOTH live shapes: `git diff origin/main -- <path>` and `git show origin/main:<path>` (step 16
+      of PLAN-vp-red-before-gate.yaml, the command that produced rec-3845, is the `git show` shape).
     hermetic: true
     graduation: graduate
     graduation_check_id: vp-replay-pr-relative-predicate-population
@@ -360,6 +385,19 @@ constraints:
     replacement would be green by construction. Do NOT reintroduce it; step 6 pins the predicate
     against that plan's live command text instead.
   - >-
+    Partition predicate, stated precisely: use `git merge-base --is-ancestor HEAD origin/main`, NOT
+    strict `git rev-parse` SHA equality. Strict equality misses the post-merge race -- if origin/main
+    advances past HEAD between the merge and the post-merge validate run, equality is false, the
+    exclusion does not fire, and rec-3845's failure mode recurs even though the step is still vacuous
+    (the change is an ancestor of origin/main). Ancestry is the condition that actually makes a
+    PR-relative step vacuous. Both predicates share one benign edge -- a session branch before its
+    first commit -- where no plan resolves anyway.
+  - >-
+    _partition_steps currently takes only `verification_plan` and needs a `root` parameter to reach
+    the rev-parse. Its sole caller is _implement_pr_leg and no test calls it directly, so the
+    signature change is safe in-scope; do NOT dodge it by adding a second exclusion path outside the
+    excluded-with-reason mechanism, which acceptance criterion 3 requires.
+  - >-
     Decision 159 residual, stated rather than left implicit: push_context_base() cannot be threaded
     into this defect. It already governs the CHECK's own base resolution
     (validate_vp_replay.py resolves push_context_base(root) or "origin/main"); what collapses here is
@@ -374,7 +412,10 @@ context:
     choosing the measured partition key over a post-merge skip / waive redefinition. Re-gate flags:
     181 WARN (acted on -- the step-16 rewrite was scoped out), 159 NOTE and 168 NOTE (both acted on
     -- recorded as constraints and folded into step 7).
-  - "gates: decision-scout=FLAGS_FOUND after 2 dispatch(es); plan-critique=<verdict> after <N> round(s)"
+  - >-
+    "gates: decision-scout=FLAGS_FOUND after 2 dispatch(es); plan-critique=PROCEED after 1 round
+    (9 non-blocking findings, all folded into scope purposes, step fix_ifs and constraints; no
+    re-critique required by the critic)"
   - >-
     Both recs: post-merge full-tier run 34787472517 on main, after PR #1170 (f7e99012). main is green
     on all three pushes since -- both checks are diff-scoped, so both defects are latent, not blocking.
@@ -396,10 +437,11 @@ context:
     plan is diff-added with implementation_declared falsy, so it is ELIGIBLE -- its own graduate steps
     are replayed RED-BEFORE at plan-PR time and a false graduate is a hard plan-PR failure.
   - >-
-    Steps 1, 2, 7, 8 and 9 were empirically confirmed red on the un-implemented tree during planning
-    (exits 5, 1, 1, 1, 1); step 2 runs in 7s against the 30s per-step timeout. Step 2 was also
-    controlled: with a real ripgrep on PATH the same command passes today, so it isolates the
-    runner condition and not a pre-existing gap.
+    All nine graduate steps were empirically confirmed red on the un-implemented tree, twice --
+    once during planning and once independently by the plan-critique gate. Exits: 5, 1, 5, 5, 5, 1,
+    1, 1, 1 (steps 1-9); zero tautological, zero unmeasurable. Step 2 runs in 6s against the 30s
+    per-step timeout and was controlled: with a real ripgrep on PATH the same command passes today,
+    so it isolates the runner condition rather than a pre-existing gap.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
