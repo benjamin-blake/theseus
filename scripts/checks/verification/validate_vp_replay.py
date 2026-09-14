@@ -7,10 +7,11 @@ this module holds no second copy of that prose.
 Closes the cooperative-self-evaluation gap named in VF-01: a PLAN-*.yaml's Verification Plan is
 self-reported by the implementing agent. Two legs, run every dispatch:
 
-  Implement leg (unchanged): for every plan resolved by ``_common.resolve_declared_plans``
-    (content-keyed False->True ``implementation_declared`` flip), replay its hermetic pre-deploy
-    steps GREEN-AFTER (exit 0 required; opt-in backtick-literal substring match against stdout+
-    stderr; a TimeoutExpired always diverges).
+  Implement leg: for every plan resolved by ``_common.resolve_declared_plans`` (content-keyed
+    False->True ``implementation_declared`` flip), replay its hermetic pre-deploy steps
+    GREEN-AFTER (exit 0 required; opt-in backtick-literal substring match against stdout+stderr;
+    a TimeoutExpired always diverges) -- EXCEPT a PR-relative step whose base ref has collapsed
+    (measured, never keyed on ``graduation``; see ``_partition_steps``), excluded with a reason.
 
   Plan-only leg (new, Decision 189): a diff-present plan not resolved by the implement leg still
     prints DEFER; when it is also ELIGIBLE (added in this diff AND ``implementation_declared``
@@ -159,21 +160,53 @@ class _ReplayBudget:
         self.count += 1
 
 
-def _partition_steps(verification_plan) -> tuple[list, list[tuple]]:
+# PR-relative authoring predicate (docs/contracts/vp-red-before.yaml's implement_leg_partition) --
+# ADVISORY, never refuses: a false negative only skips the exclusion/lint for an unrecognised
+# shape (76 merged steps use the origin/main diff idiom legitimately and must never be refused).
+# Recognises both live shapes: `git diff origin/main -- <path>` and `git show origin/main:<path>`
+# (PLAN-vp-red-before-gate.yaml step 16, the command behind rec-3845).
+_PR_RELATIVE_RE = re.compile(r"\bgit\b.*?\b(?:diff|show)\b.*?\borigin/main\b", re.DOTALL)
+
+
+def _is_pr_relative(command: str) -> bool:
+    return bool(_PR_RELATIVE_RE.search(command))
+
+
+def _base_ref_collapsed(root: Path) -> bool:
+    """True iff HEAD is an ancestor of (or equal to) origin/main -- the post-merge condition
+    under which a PR-relative step's origin/main comparison has become vacuous. Ancestry, never
+    strict SHA equality: origin/main may have advanced past HEAD since the merge, and the step
+    is still vacuous either way (rec-3845's own failure mode)."""
+    result = _common.run(["git", "merge-base", "--is-ancestor", "HEAD", "origin/main"], capture_output=True, cwd=root)
+    return result.returncode == 0
+
+
+def _partition_steps(verification_plan, root: Path) -> tuple[list, list[tuple]]:
     """Split VP steps into (replay set, EXCLUDED set with reason) for the GREEN-AFTER (implement)
     leg only -- the red-before leg partitions by ``graduation`` instead (see ``_red_before_leg``).
 
     Phase eligibility is checked before hermetic eligibility: a post-deploy step is reported
     as "post-deploy" regardless of its hermetic marker (phase alone disqualifies it from
     replay), and "not-hermetic" is reserved for a pre-deploy step that isn't marked hermetic.
+    A hermetic pre-deploy step whose command is PR-relative (``_is_pr_relative``) is additionally
+    excluded, keyed on the MEASURED base-ref collapse (``_base_ref_collapsed``, cached at most
+    once per call) -- never on ``graduation``, which stays untouched by this partition.
     """
     replay = []
     excluded = []
+    collapsed: bool | None = None
     for step in verification_plan:
         if step.phase != "pre-deploy":
             excluded.append((step, "post-deploy"))
         elif not step.hermetic:
             excluded.append((step, "not-hermetic"))
+        elif _is_pr_relative(step.command):
+            if collapsed is None:
+                collapsed = _base_ref_collapsed(root)
+            if collapsed:
+                excluded.append((step, "pr-relative-base-collapsed"))
+            else:
+                replay.append(step)
         else:
             replay.append(step)
     return replay, excluded
@@ -425,7 +458,7 @@ def _implement_pr_leg(root: Path, resolved: list[str], failed: list[str], budget
             continue
 
         plans_resolved += 1
-        replay_steps, excluded_steps = _partition_steps(doc.verification_plan)
+        replay_steps, excluded_steps = _partition_steps(doc.verification_plan, root)
 
         for step, reason in excluded_steps:
             print(f"  EXCLUDED: {plan_rel}:{step.step} ({reason})")

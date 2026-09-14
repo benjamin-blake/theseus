@@ -62,8 +62,9 @@ ENTRIES: tuple[Entry, ...] = (
     # skipped (the silent-vacuity shape this plan exists to avoid). `misc` is also absent from
     # every later segment's _FULL_SEGMENT_DOMAIN_ORDER tuple, so registering one there would fail
     # OD-0. Precedent for this exact shape: validate_sloc_budget_raises, validate_prose_budget_
-    # raises, validate_vp_replay (pre=True, no full_segment) -- NOT validate_terraform_try, which
-    # is unsequenced (pre=False, no full_segment) and would never dispatch at all.
+    # raises (both pre=True, no full_segment) -- NOT validate_terraform_try, which is unsequenced
+    # (pre=False, no full_segment) and would never dispatch at all, and NOT validate_vp_replay,
+    # which DOES carry full_segment="full_after_lint" despite living in this same tier shape.
     Entry(
         name="validate_diff_coverage",
         module="scripts.checks.misc.validate_diff_coverage",

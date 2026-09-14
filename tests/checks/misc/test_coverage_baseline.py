@@ -97,12 +97,18 @@ class TestMeasureAndCheck:
 
         coverage_json = tmp_path / ".coverage.json"
         coverage_json.write_text('{"files": {"scripts/probe.py": {"summary": {"percent_covered": 87.7}}}}', encoding="utf-8")
+        # Baselined at 80% so 87.7% passes -- this test pins pct measurement, not the sub-
+        # threshold diagnostic surface (see TestSubthresholdDiagnostics for that).
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "coverage_baseline.yaml").write_text("entries:\n  scripts/probe.py: 80.0\n", encoding="utf-8")
 
         mock_subprocess = MagicMock()
         proc = MagicMock()
         proc.__enter__.return_value = proc
         proc.__exit__.return_value = False
         proc.communicate.return_value = ("", "")
+        proc.returncode = 0
         mock_subprocess.Popen.return_value = proc
 
         pcts, errors = coverage_baseline.measure_and_check(
@@ -136,6 +142,7 @@ class TestMeasureAndCheck:
         proc.__enter__.return_value = proc
         proc.__exit__.return_value = False
         proc.communicate.return_value = ("", "")
+        proc.returncode = 0
         mock_subprocess.Popen.return_value = proc
 
         pcts, errors = coverage_baseline.measure_and_check(
@@ -161,6 +168,7 @@ class TestMeasureAndCheck:
         proc.__enter__.return_value = proc
         proc.__exit__.return_value = False
         proc.communicate.return_value = ("", "")
+        proc.returncode = 0
         mock_subprocess.Popen.return_value = proc
 
         pcts, errors = coverage_baseline.measure_and_check(
@@ -202,6 +210,7 @@ class TestMeasureAndCheck:
         proc.__enter__.return_value = proc
         proc.__exit__.return_value = False
         proc.communicate.return_value = ("", "")
+        proc.returncode = 0
         mock_subprocess.Popen.return_value = proc
 
         pcts, errors = coverage_baseline.measure_and_check(
@@ -231,6 +240,7 @@ class TestMeasureAndCheck:
         proc.__enter__.return_value = proc
         proc.__exit__.return_value = False
         proc.communicate.return_value = ("", "")
+        proc.returncode = 0
         mock_subprocess.Popen.return_value = proc
 
         with patch("pathlib.Path.unlink", side_effect=OSError("locked")):
@@ -275,6 +285,95 @@ class TestMeasureAndCheck:
         mock_kill.assert_called_once_with(12345)
         assert pcts == {str(source.resolve()): None}
         assert any("timed out" in e for e in errors)
+
+
+class TestSubthresholdDiagnostics:
+    """Pins the new diagnostic surface: a sub-threshold result must report the missing line
+    numbers, the coverage subprocess returncode, and an output tail -- including the
+    non-zero-returncode case, which distinguishes a genuinely failing coverage subprocess from a
+    plain coverage gap that the old code folded silently into the bare percentage."""
+
+    def test_subthreshold_result_reports_diagnostics(self, tmp_path: Path, capsys) -> None:
+        """Printed, never appended to `errors` -- errors is consumed 2-tuple-unpacked by
+        scripts/test_coverage_checker.py (out of scope, Decision 59), whose own
+        check_per_file_coverage() separately appends its own baseline-aware message to the same
+        list; a second errors entry here would silently double that list instead of adding
+        value."""
+        source = tmp_path / "scripts" / "probe.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("x = 1\n", encoding="utf-8")
+        test_file = tmp_path / "tests" / "test_probe.py"
+        test_file.parent.mkdir(parents=True)
+        test_file.write_text("# test\n", encoding="utf-8")
+
+        coverage_json = tmp_path / ".coverage.json"
+        coverage_json.write_text(
+            '{"files": {"scripts/probe.py": {"summary": {"percent_covered": 50.0}, "missing_lines": [3, 7, 9]}}}',
+            encoding="utf-8",
+        )
+
+        mock_subprocess = MagicMock()
+        proc = MagicMock()
+        proc.__enter__.return_value = proc
+        proc.__exit__.return_value = False
+        proc.communicate.return_value = ("child stdout content", "child stderr content")
+        proc.returncode = 3
+        mock_subprocess.Popen.return_value = proc
+
+        pcts, errors = coverage_baseline.measure_and_check(
+            [source],
+            root=tmp_path,
+            map_source_to_test=lambda p: test_file,
+            is_empty_dir=lambda p: False,
+            subprocess_module=mock_subprocess,
+        )
+        assert pcts == {str(source.resolve()): 50.0}
+        assert errors == []
+        diagnostic = capsys.readouterr().out
+        assert "[3, 7, 9]" in diagnostic
+        assert "exit 3" in diagnostic
+        assert "child stdout content" in diagnostic
+        assert "child stderr content" in diagnostic
+
+    def test_baselined_passing_file_reports_no_diagnostics(self, tmp_path: Path, capsys) -> None:
+        """'sub-threshold' is decided by load_baseline/compare, never by 'has missing lines' -- a
+        baselined file with missing lines that still clears its own threshold must not get a
+        spurious diagnostic (11+ live sub-100 baseline entries pass this way today)."""
+        source = tmp_path / "scripts" / "probe.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("x = 1\n", encoding="utf-8")
+        test_file = tmp_path / "tests" / "test_probe.py"
+        test_file.parent.mkdir(parents=True)
+        test_file.write_text("# test\n", encoding="utf-8")
+
+        config_dir = tmp_path / "config"
+        config_dir.mkdir()
+        (config_dir / "coverage_baseline.yaml").write_text("entries:\n  scripts/probe.py: 70.0\n", encoding="utf-8")
+
+        coverage_json = tmp_path / ".coverage.json"
+        coverage_json.write_text(
+            '{"files": {"scripts/probe.py": {"summary": {"percent_covered": 75.0}, "missing_lines": [3, 7, 9]}}}',
+            encoding="utf-8",
+        )
+
+        mock_subprocess = MagicMock()
+        proc = MagicMock()
+        proc.__enter__.return_value = proc
+        proc.__exit__.return_value = False
+        proc.communicate.return_value = ("", "")
+        proc.returncode = 0
+        mock_subprocess.Popen.return_value = proc
+
+        pcts, errors = coverage_baseline.measure_and_check(
+            [source],
+            root=tmp_path,
+            map_source_to_test=lambda p: test_file,
+            is_empty_dir=lambda p: False,
+            subprocess_module=mock_subprocess,
+        )
+        assert pcts == {str(source.resolve()): 75.0}
+        assert errors == []
+        assert "[diagnostic]" not in capsys.readouterr().out
 
 
 class TestValidateCoverageBaselineEdits:

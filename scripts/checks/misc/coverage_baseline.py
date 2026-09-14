@@ -77,6 +77,7 @@ def measure_and_check(source_files: list, *, root, map_source_to_test, is_empty_
     """
     pcts: dict = {}
     errors: list = []
+    baseline_table = load_baseline(root / _BASELINE_REL_PATH)
 
     for source_path in source_files:
         try:
@@ -122,7 +123,7 @@ def measure_and_check(source_files: list, *, root, map_source_to_test, is_empty_
             env=child_env,
         ) as proc:
             try:
-                proc.communicate(timeout=300)
+                stdout, stderr = proc.communicate(timeout=300)
             except subprocess_module.TimeoutExpired:
                 from scripts.llm.utils import kill_process_tree  # noqa: PLC0415
 
@@ -131,6 +132,7 @@ def measure_and_check(source_files: list, *, root, map_source_to_test, is_empty_
                 errors.append(f"{rel}: coverage check timed out (300s)")
                 pcts[key] = None
                 continue
+            returncode = proc.returncode
 
         coverage_json = root / ".coverage.json"
         if not coverage_json.exists():
@@ -151,17 +153,34 @@ def measure_and_check(source_files: list, *, root, map_source_to_test, is_empty_
 
         rel_str = str(rel).replace("\\", "/")
         matched: dict[str, float] = {}
+        missing_by_key: dict[str, list] = {}
         for file_key, file_data in data.get("files", {}).items():
             normalised_key = file_key.replace("\\", "/")
             if rel_str in normalised_key or normalised_key.endswith(rel_str):
                 matched[file_key] = file_data.get("summary", {}).get("percent_covered", 0.0)
+                missing_by_key[file_key] = file_data.get("missing_lines", [])
 
         if not matched:
             errors.append(f"{rel}: 0% coverage (no tests exercise this file)")
             pcts[key] = None
             continue
 
-        pcts[key] = min(matched.values())
+        worst_key, pct = min(matched.items(), key=lambda kv: kv[1])
+        pcts[key] = pct
+
+        # "sub-threshold" is decided by the load_baseline/compare pair, never by "has missing
+        # lines" -- config/coverage_baseline.yaml carries live sub-100 entries that legitimately
+        # PASS, so gating on missing-lines presence would newly redden every one of them. Printed
+        # (never appended to `errors`) -- scripts/test_coverage_checker.py:443 unpacks the 2-tuple
+        # and its own check_per_file_coverage() separately appends its own baseline-aware message
+        # to this same `errors` list; that file is OUT of scope (Decision 59), so a second entry
+        # here would silently break its exact-match assertions instead of adding real value.
+        if not compare(pct, rel_str, baseline_table):
+            tail = (stdout + stderr)[-500:]
+            print(
+                f"  [diagnostic] {rel}: {pct:.1f}% line coverage below threshold -- missing lines "
+                f"{missing_by_key[worst_key]}; coverage subprocess exit {returncode}; output tail={tail!r}"
+            )
 
     return pcts, errors
 
@@ -193,3 +212,7 @@ def validate_coverage_baseline_edits(
         failed.append(_SPEC.label)
     else:
         print("No unauthorized coverage baseline lowering or new sub-100 registration.")
+
+    current_path = _common.ROOT / _SPEC.rel_path
+    entries_examined = len(_SPEC.extractor(current_path.read_text(encoding="utf-8"))) if current_path.exists() else 0
+    registry.examined(entries_examined, unit="baseline_entries")
