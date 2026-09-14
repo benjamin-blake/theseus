@@ -47,14 +47,12 @@ scope:
     purpose: >-
       Correct the comment describing validate_vp_replay as "(pre=True, no full_segment)"; its Entry
       carries full_segment="full_after_lint".
-  - file: docs/plans/PLAN-vp-red-before-gate.yaml
-    action: Modify
-    purpose: >-
-      Rewrite step 16 from a one-shot HEAD-vs-origin/main byte differential into a durable
-      standing assertion against the budget cap.
   - file: docs/contracts/vp-red-before.yaml
     action: Modify
-    purpose: Record the implement-leg partition rule the code now enforces.
+    purpose: >-
+      Record the implement-leg partition rule the code now enforces, widening the declared
+      description/subject from the plan-only leg and bumping contract_version to match
+      (Decision 168 clause 4).
 bundled_recommendations:
   - rec-3844
   - rec-3845
@@ -77,7 +75,12 @@ acceptance_criteria:
   - >-
     A sub-threshold coverage result names the missing lines, the subprocess returncode and an
     output tail.
-  - PLAN-vp-red-before-gate.yaml step 16 survives post-merge replay.
+  - >-
+    PLAN-vp-red-before-gate.yaml step 16 -- the step that produced rec-3845 -- stops failing
+    post-merge WITHOUT editing that merged plan, because the partition excludes it.
+  - >-
+    docs/contracts/vp-red-before.yaml's declared description and subject cover the implement leg
+    it now documents, with contract_version bumped in the same change.
   - rec-3844 and rec-3845 are closed in the warehouse.
 verification_plan:
   - step: 1
@@ -161,16 +164,21 @@ verification_plan:
     graduation_check_id: coverage-baseline-reports-diagnostics
   - step: 6
     phase: pre-deploy
-    action: PLAN-vp-red-before-gate.yaml step 16 is a durable assertion, not a one-shot differential
-    command: bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/plans/PLAN-vp-red-before-gate.yaml')); s=[x for x in d['verification_plan'] if x['step']==16][0]; assert 'origin/main' not in s['command'], 'step 16 is still PR-relative'; print('STEP16_DURABLE')"
-    expected: STEP16_DURABLE printed, exit 0
+    action: >-
+      The partition covers the exact step that produced rec-3845 -- asserted against the merged
+      plan's live command text, without editing that plan
+    command: bin/venv-python -c "import yaml; from scripts.checks.verification.validate_vp_replay import _is_pr_relative; d=yaml.safe_load(open('docs/plans/PLAN-vp-red-before-gate.yaml')); s=[x for x in d['verification_plan'] if x['step']==16][0]; assert _is_pr_relative(s['command']), 'the predicate does not recognise the step that produced rec-3845'; print('REC3845_STEP_RECOGNISED')"
+    expected: REC3845_STEP_RECOGNISED printed, exit 0
     fix_if: >-
-      Replace the HEAD-vs-origin/main byte differential with a standing assertion that the file is
-      at or under its budget cap -- the durable property the waiver reason already names. Strengthens
-      rather than weakens (Decision 181): a one-shot differential asserts nothing after its merge.
+      This is the regression oracle for rec-3845: it pins the predicate against the real failing
+      command rather than a fixture. Do NOT satisfy it by rewriting step 16 of that merged plan --
+      its own waiver reason records that the durable property "is already owned by the standing
+      validate_prose_budget_raises check", so a budget-cap replacement would assert nothing
+      independently falsifiable, which Decision 181 clause 1 prohibits as weakening a VP step to
+      obtain green.
     hermetic: true
     graduation: graduate
-    graduation_check_id: vp-red-before-step16-durable
+    graduation_check_id: vp-replay-predicate-recognises-rec3845-step
   - step: 7
     phase: pre-deploy
     action: The contract records the implement-leg partition rule the code enforces
@@ -180,7 +188,11 @@ verification_plan:
       Decision 168 clause 2 requires this Class D contract's declared evaluator to demonstrably read
       it. State the rule as the code implements it -- measured base-ref collapse plus PR-relative
       command text -- and do NOT state or imply that graduation waive excludes a step from replay,
-      which would contradict Decision 132's frozen disposition semantics.
+      which would contradict Decision 132's frozen disposition semantics. The contract's declared
+      description and subject currently scope it to the "Inverted-polarity plan-only leg"; the
+      implement leg is outside that subject, so widen the description and bump contract_version
+      from 1 in the SAME change (Decision 168 clause 4 binds subject/topic identity). The evaluator
+      {check: validate_vp_replay} resolves either way, so the clause-2 obligation is already met.
     hermetic: true
     graduation: graduate
     graduation_check_id: vp-red-before-contract-records-partition
@@ -309,11 +321,6 @@ test_obligations:
     verification_step: 7
     command: bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/contracts/vp-red-before.yaml')); assert 'implement_leg_partition' in d, 'contract does not record the partition rule'; print('CONTRACT_RECORDS_PARTITION')"
     red_green_expectation: red before (key absent), green after
-  - source: docs/plans/PLAN-vp-red-before-gate.yaml
-    behavior: Step 16 asserts a durable property that survives its own merge.
-    verification_step: 6
-    command: bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/plans/PLAN-vp-red-before-gate.yaml')); s=[x for x in d['verification_plan'] if x['step']==16][0]; assert 'origin/main' not in s['command'], 'step 16 is still PR-relative'; print('STEP16_DURABLE')"
-    red_green_expectation: red before (command is PR-relative), green after
   - source: scripts/checks/misc/_manifest.py
     behavior: No behavior change -- a comment corrected to match the Entry it describes.
     verification_step: 8
@@ -345,17 +352,29 @@ constraints:
     as deliberately deferred pending measured false-positive and DEFERRED rates (Decision 55); it is
     its own evidence-gated plan.
   - >-
-    Decision 181 CONTENT never-weaken: three edits here are weakening-SHAPED (a rewritten test
-    assertion, a rewritten VP step, a narrowed replay partition). Each must be justified as
-    strengthening in the PR body, per-surface -- see acceptance criteria 2, 3 and 6.
+    Decision 181 CONTENT never-weaken: two edits here are weakening-SHAPED (a rewritten test
+    assertion, a narrowed replay partition). Each must be justified as strengthening in the PR body,
+    per-surface. A third -- rewriting step 16 of the merged PLAN-vp-red-before-gate.yaml -- was
+    SCOPED OUT at the decision-scout re-gate for failing exactly this clause: its own waiver reason
+    records the durable property as already owned by validate_prose_budget_raises, so the
+    replacement would be green by construction. Do NOT reintroduce it; step 6 pins the predicate
+    against that plan's live command text instead.
+  - >-
+    Decision 159 residual, stated rather than left implicit: push_context_base() cannot be threaded
+    into this defect. It already governs the CHECK's own base resolution
+    (validate_vp_replay.py resolves push_context_base(root) or "origin/main"); what collapses here is
+    the literal "origin/main" inside an AUTHOR-OWNED step command, which the replayer cannot rebase
+    without rewriting someone else's assertion. Hence exclusion-with-declaration rather than
+    base substitution.
   - Decision 128 decompose-by-default if validate_vp_replay.py crosses 500 SLOC; never raise.
 context:
   - >-
-    Decision-scout verdict + CITE list: FLAGS_FOUND (dispatch 1), re-dispatched against the revised
-    approach. CITE: 189, 148, 132, 168, 182, 186, 170, 165. Flags: 159 WARN, 187 WARN, 163 WARN (all
-    three resolved by choosing the measured partition key over a post-merge skip or a waive
-    redefinition); 181 NOTE remains live and is carried as a constraint.
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+    Decision-scout verdict + CITE list: FLAGS_FOUND on both dispatches; Decisions triaged 143 of 143.
+    CITE: 189, 148, 132, 170, 182, 186, 128, 165, 55. Dispatch-1 flags 187 and 163 RESOLVED by
+    choosing the measured partition key over a post-merge skip / waive redefinition. Re-gate flags:
+    181 WARN (acted on -- the step-16 rewrite was scoped out), 159 NOTE and 168 NOTE (both acted on
+    -- recorded as constraints and folded into step 7).
+  - "gates: decision-scout=FLAGS_FOUND after 2 dispatch(es); plan-critique=<verdict> after <N> round(s)"
   - >-
     Both recs: post-merge full-tier run 34787472517 on main, after PR #1170 (f7e99012). main is green
     on all three pushes since -- both checks are diff-scoped, so both defects are latent, not blocking.
@@ -377,8 +396,10 @@ context:
     plan is diff-added with implementation_declared falsy, so it is ELIGIBLE -- its own graduate steps
     are replayed RED-BEFORE at plan-PR time and a false graduate is a hard plan-PR failure.
   - >-
-    Steps 1, 2, 6, 8 and 9 were empirically confirmed red on the un-implemented tree during planning
-    (exits 5, 1, 1, 1, 1); step 2 runs in 7s against the 30s per-step timeout.
+    Steps 1, 2, 7, 8 and 9 were empirically confirmed red on the un-implemented tree during planning
+    (exits 5, 1, 1, 1, 1); step 2 runs in 7s against the 30s per-step timeout. Step 2 was also
+    controlled: with a real ripgrep on PATH the same command passes today, so it isolates the
+    runner condition and not a pre-existing gap.
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -403,8 +424,10 @@ execution_steps:
     output, and report missing lines, returncode and tail for any sub-threshold file; pin it in
     tests/checks/misc/test_coverage_baseline.py.
   - scripts/checks/misc/_manifest.py -- correct the stale tier description.
-  - docs/plans/PLAN-vp-red-before-gate.yaml -- rewrite step 16 as a durable budget assertion.
-  - docs/contracts/vp-red-before.yaml -- record the implement_leg_partition rule.
+  - >-
+    docs/contracts/vp-red-before.yaml -- record the implement_leg_partition rule, widen the declared
+    description/subject beyond the plan-only leg, and bump contract_version to 2 in the same change.
+    Do NOT edit docs/plans/PLAN-vp-red-before-gate.yaml -- it is deliberately out of scope.
   - >-
     Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and
     RCA (Decision 55).
