@@ -42,9 +42,10 @@ the LAST SUCCESSFUL apply. Second occurrence of this shape (Decision 183, 2026-0
 2. **A benign delta gets a bounded, non-status marker, never a red latch.** Mirrors the
    `pending_gated`/`infra_error` read-modify-write shape (status UNCHANGED, read-back verified):
    `pending_codification` records `first_seen` (WRITE-ONCE, NOT `routed_at`'s unconditional
-   overwrite -- a refreshed `first_seen` would cap measured age at ~1h against the hourly cron),
-   `last_seen`, `run_url`. A plan_ec==0 cycle self-clears the marker with an additive
-   `pending_codification_last_cleared_at` closure stamp (Decision 55). NO third status value.
+   overwrite -- a refresh would cap measured age at ~1h against the hourly cron), `last_seen`,
+   `run_url`. A plan_ec==0 cycle self-clears the marker with an additive `benign_delta_resolved_at`
+   stamp (Decision 55; NOT containing "pending_codification" -- an absence-of-marker grep reader
+   would else never resolve). NO third status value.
 3. **The benign branch is bounded.** A marker whose age reaches 2.0 hours (matches
    `STALE_GREEN_BACKLOG_THRESHOLD_HOURS`) escalates to red, marker removed -- a misclassified
    real drift can never sit indefinitely under a benign marker.
@@ -85,11 +86,10 @@ re-verify the completeness premise first.
 predicate means, with reversal-relevant consequences and itemised reversal conditions; not a CD
 state-flip or field-semantics change.
 
-**Related:** Decision 92 (amended), Decision 154 (amended), Decision 55 (anti-masking), Decision
-142 (one authority), Decision 77 (the hard block whose LATCH TRIGGER this narrows), Decision 158
-(route-exhaustiveness), Decision 84 I-3 (verb equivalence), Decision 183 (first occurrence,
-2026-09-04). Roadmap refs: T2.47 (closes no exit criterion); rec-3797 (auto-closed); rec-3800
-(superseded).
+**Related:** Decision 92 (amended), Decision 154 (amended), Decision 55, Decision 142 (one
+authority), Decision 77 (the hard block whose LATCH TRIGGER this narrows), Decision 158
+(route-exhaustiveness), Decision 84 I-3, Decision 183 (first occurrence, 2026-09-04). Roadmap
+refs: T2.47 (closes no exit criterion); rec-3797 (auto-closed); rec-3800 (superseded).
 
 ---
 

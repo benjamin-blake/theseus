@@ -217,7 +217,12 @@ def self_clear_pending_codification(existing_record: Optional[dict[str, Any]], n
     if not isinstance(record.get("pending_codification"), dict):
         return None
     record.pop("pending_codification", None)
-    record["pending_codification_last_cleared_at"] = _format_ts(now)
+    # Named to NOT contain "pending_codification" as a substring (code-review finding): every
+    # reader of the marker's absence -- terraform-drift.yml's self-clear read-back verify,
+    # escalate.py's two rec-acceptance probes -- greps the bare string "pending_codification",
+    # so a closure-stamp key containing that substring would make a genuine self-clear look like
+    # the marker is still present, forever.
+    record["benign_delta_resolved_at"] = _format_ts(now)
     return record
 
 

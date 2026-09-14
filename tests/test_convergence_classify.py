@@ -158,7 +158,8 @@ class TestSelfClear:
         cleared = self_clear_pending_codification(existing, now)
         assert cleared is not None
         assert "pending_codification" not in cleared
-        assert cleared["pending_codification_last_cleared_at"]
+        assert cleared["benign_delta_resolved_at"]
+        assert "pending_codification" not in json.dumps(cleared)
         assert cleared["status"] == "green"
         assert cleared["commit_sha"] == "abc"
 
