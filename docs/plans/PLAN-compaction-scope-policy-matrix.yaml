@@ -226,8 +226,10 @@ verification_plan:
   - step: 4
     phase: pre-deploy
     action: Prove the policy matrix is exhaustive over classes x verbs and that the gate rejects a self-supplied universe.
-    command: bin/venv-python -m pytest tests/checks/contracts/test_validate_maintenance_policy_matrix.py -q
-    expected: Missing cell, missing reason, unknown class, and self-referential universe each fail the gate.
+    command: bin/venv-python -m pytest tests/checks/contracts/test_validate_maintenance_policy_matrix.py tests/checks/registry/test_manifest_contracts.py::test_registered_names_equal_manifest_names -q
+    expected: >-
+      Missing cell, missing reason, unknown class and self-referential universe each fail the gate,
+      AND the registry node confirms the new check module is registered in its domain manifest.
     fix_if: A fixture whose class universe comes from the matrix own keys passes -- the gate is self-referential and trivially green.
     graduation: graduate
     graduation_check_id: maintenance-policy-matrix-exhaustive
@@ -240,7 +242,7 @@ verification_plan:
       and matches none of the retired NAMES. check_amendment_for_diff does not reach verbs.* on a
       Class B contract either, so without this step the repointed prose, the new response_codes, the
       new typed_errors and the amendment entry are enforced by nothing.
-    command: "bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('docs/contracts/ducklake_maintenance.yaml',encoding='utf-8')); blob=repr(d['verbs']['merge_ops']); assert 'SCD2 table pairs' not in blob, 'merge_ops still describes the retired SCD2-pair predicate'; assert 'maintenance_policy' in blob, 'merge_ops does not name the policy matrix'; a=d['amendment_log'][-1]; assert a['change_class'] != 'prose_improvement', 'amendment entry still prose_improvement'; print('contract shape + amendment ok')\""
+    command: "bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('docs/contracts/ducklake_maintenance.yaml',encoding='utf-8')); blob=repr(d['verbs']['merge_ops']); assert 'SCD2 table pairs' not in blob, 'merge_ops still describes the retired SCD2-pair predicate'; assert 'maintenance_policy' in blob, 'merge_ops does not name the policy matrix'; al=d['amendment_log']; assert len(al) >= 2, 'no amendment entry appended -- editing the existing one in place does not count'; a=al[-1]; assert a['change_class'] != 'prose_improvement', 'amendment entry still prose_improvement'; print('contract shape + amendment ok')\""
     expected: The retired SCD2-pair prose is gone, merge_ops names the policy matrix, and the newest amendment_log entry is not prose_improvement.
     fix_if: >-
       Still prose_improvement -- that change_class cannot describe added response fields and new
@@ -311,7 +313,7 @@ verification_plan:
     action: >-
       Discharge the rec-3762 HAZARD against production: assert a portal write succeeded inside a
       merge window, rather than assuming the OCC budget absorbed the contention.
-    command: "echo 'DISPATCH VIA MCP: mcp__github__get_job_logs for the merge_ops invocation window, then run scripts.ops_data_portal --file-rec for a disposable probe rec timed inside that window; assert it returns an id rather than OCCRetryExhaustedError'"
+    command: "echo 'OPERATOR STEP: invoke merge_ops DIRECTLY (aws lambda invoke --function-name agent-platform-ducklake-maintenance with explicit data_path + meta_schema -- the contract human_initiated path) and, while it runs, file a disposable probe rec via scripts.ops_data_portal --file-rec; assert it returns an id rather than OCCRetryExhaustedError. Direct invoke, NOT waiting on the 6-hourly cron, so the observation is repeatable on demand.'"
     expected: file_rec allocates normally during a merge pass; no OCCRetryExhaustedError in the writer logs for that window.
     fix_if: >-
       Allocation exhausts the budget. That is the rec-3762 hazard realised -- separate the control
@@ -392,7 +394,7 @@ test_obligations:
   - source: docs/contracts/ducklake_maintenance.yaml
     behavior: The merge_ops clause describes enumeration-plus-policy and carries an honest amendment_log entry.
     verification_step: 5
-    command: "bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('docs/contracts/ducklake_maintenance.yaml',encoding='utf-8')); blob=repr(d['verbs']['merge_ops']); assert 'SCD2 table pairs' not in blob, 'merge_ops still describes the retired SCD2-pair predicate'; assert 'maintenance_policy' in blob, 'merge_ops does not name the policy matrix'; a=d['amendment_log'][-1]; assert a['change_class'] != 'prose_improvement', 'amendment entry still prose_improvement'; print('contract shape + amendment ok')\""
+    command: "bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('docs/contracts/ducklake_maintenance.yaml',encoding='utf-8')); blob=repr(d['verbs']['merge_ops']); assert 'SCD2 table pairs' not in blob, 'merge_ops still describes the retired SCD2-pair predicate'; assert 'maintenance_policy' in blob, 'merge_ops does not name the policy matrix'; al=d['amendment_log']; assert len(al) >= 2, 'no amendment entry appended -- editing the existing one in place does not count'; a=al[-1]; assert a['change_class'] != 'prose_improvement', 'amendment entry still prose_improvement'; print('contract shape + amendment ok')\""
     red_green_expectation: >-
       Red before -- merge_ops reads "ALL live ops_* SCD2 table pairs" and the newest amendment_log
       entry is prose_improvement. NOT bound to VP3: measured, that sweep returns zero matches on this
@@ -400,8 +402,12 @@ test_obligations:
   - source: scripts/checks/contracts/_manifest.py
     behavior: The new check is registered in the contracts domain manifest.
     verification_step: 4
-    test_selector: tests/checks/contracts/test_validate_maintenance_policy_matrix.py
-    red_green_expectation: Red before (unregistered check fails manifest validation), green after.
+    test_selector: tests/checks/registry/test_manifest_contracts.py::test_registered_names_equal_manifest_names
+    red_green_expectation: >-
+      Red before (the check module exists with no manifest entry). The registry node is CHAINED into
+      VP4 rather than left to the gate's own tests: those would stay green with the manifest entry
+      missing, since they only exercise the new matrix check. This node AST-scans the whole checks
+      tree against registry._ALL_ENTRIES, so it is the assertion that actually sees a missing entry.
   - source: config/ci_rca_taxonomy.yaml
     behavior: The new check module has a function_to_category row, so a CI failure in it classifies.
     verification_step: 9
