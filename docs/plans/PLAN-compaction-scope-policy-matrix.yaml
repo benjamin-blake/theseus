@@ -22,15 +22,29 @@ scope:
       may not define fields, so the matrix has no legal placement there (reproduced against
       scripts/contracts_schema.py:106,204,229). The sidecar is the designed home for non-contract
       content, already carries the sibling operational classifications (dormant_ops_tables,
-      smoke_ops_tables, contract_table_ops), and regenerates into an already-bundled Lambda asset --
-      which also closes the runtime-availability gap. Collocating policy with the class declaration
-      is the consulted principle applied literally.
+      smoke_ops_tables, contract_table_ops). It regenerates into an already-bundled Lambda asset
+      ONCE the generator passthrough lands (see the schema_to_field_semantics row) -- today an
+      unknown sidecar key is dropped. Collocating policy with the class declaration is the consulted
+      principle applied literally.
   - file: config/lambda/ducklake/field_semantics.yaml
     action: Modify
     purpose: >-
-      Regenerated projection carrying the matrix to the Lambda. GENERATED -- never hand-edited;
-      produced by scripts.schema_to_field_semantics after the sidecar edit. Already listed in the
-      maintenance manifest assets (manifest.yaml:27), so no assets change is needed.
+      Regenerated projection that will carry the matrix to the Lambda once the generator passthrough
+      lands. GENERATED -- never hand-edited; produced by scripts.schema_to_field_semantics after the
+      sidecar edit. Already listed in the maintenance manifest assets (manifest.yaml:27), so no
+      assets change is needed.
+  - file: scripts/schema_to_field_semantics.py
+    action: Modify
+    purpose: >-
+      Add the maintenance_policy passthrough. REQUIRED, not conditional -- the generator builds its
+      output from a closed five-key whitelist at lines 252-254 (tables, fields, derivation_timing,
+      partition_transforms, connection_settings) plus ops_tables, so an unknown sidecar key is read
+      and silently DROPPED, and --check still reports no drift. Reproduced. Without this the matrix
+      never reaches the Lambda and the failure surfaces as an opaque byte-compare in
+      validate_field_semantics_drift, or invites hand-editing the generated file that gate forbids.
+  - file: tests/test_schema_to_field_semantics.py
+    action: Modify
+    purpose: Assert the passthrough carries maintenance_policy into the generated projection -- a behaviour-changing generator edit owes a test.
   - file: src/common/ducklake_maintenance_scope.py
     action: Create
     purpose: >-
@@ -145,10 +159,13 @@ acceptance_criteria:
     ops_entity_counters is in merge_ops scope and reported in per_table, included by its declared
     policy cell rather than by a naming accident (rec-3762).
   - >-
-    The OCC budget the counter compaction relies on is stated as a measured quantity, not an
-    assumption: the plan records the merge window against OCC_MAX_ATTEMPTS=5 / OCC_MAX_BACKOFF_S=1.0,
-    names the real conflict message is_occ_collision must match, and a post-deploy step asserts
-    file_rec succeeded during a merge window (rec-3762 HAZARD).
+    The rec-3762 HAZARD is discharged by OBSERVATION, not a fake-connection test: VP12 asserts a
+    probe file_rec allocates inside a real merge window. No pre-deploy unit test can evidence
+    merge-vs-allocation contention, because the injected exception string is chosen by the test
+    author and is_occ_collision is a substring match -- and the existing suite already covers single
+    collision (:468) and budget exhaustion through file_scd2 (:358). The open question VP12 closes
+    empirically: does a real DuckLake merge-vs-UPDATE conflict message match one of the six markers,
+    or fall to the unconditional raise at :429.
   - >-
     One table merge_adjacent_files failure does not prevent the remaining tables merges, AND the
     invocation still fails: per_table carries the error, a metric is emitted, and the aggregate
@@ -162,9 +179,10 @@ acceptance_criteria:
     The exhaustiveness gate class and verb universes are DECLARED independently of the matrix. A
     matrix supplying its own key set is rejected by a red-case fixture.
   - >-
-    reconcile_catalog runs inside action_merge_ops, its result is carried in the response, and a VP
-    step asserts it. The universe is the CATALOG; registered-but-absent tables are dispositioned by
-    the registry own status field (live | dormant | smoke).
+    reconcile_catalog runs inside action_merge_ops and its result is carried in the response,
+    asserted pre-deploy by VP2's third node (the wiring) as well as VP1 (the predicate). The
+    universe is the CATALOG; registered-but-absent tables are dispositioned by the registry's own
+    status field (live | dormant | smoke).
   - MAINTENANCE_SCOPE_NOTE no longer prescribes a LIKE-predicate scope expansion, and no unratified T2.19 hot_merge claim survives.
 verification_plan:
   - step: 1
@@ -180,8 +198,11 @@ verification_plan:
   - step: 2
     phase: pre-deploy
     action: Prove discovery covers a non-SCD2 ops table and the loud-isolation contract holds.
-    command: bin/venv-python -m pytest tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py::test_discovery_covers_non_scd2_ops_tables tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py::test_one_table_merge_failure_isolates_but_still_raises -q
-    expected: Discovery returns a control-class table; a failing table does not prevent the others; the invocation still terminates non-successfully.
+    command: bin/venv-python -m pytest tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py::test_discovery_covers_non_scd2_ops_tables tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py::test_one_table_merge_failure_isolates_but_still_raises tests/lambdas/ducklake_maintenance/handler/test_merge_ops_discovery.py::test_merge_ops_response_carries_reconciliation_result -q
+    expected: >-
+      Discovery returns a control-class table; a failing table does not prevent the others; the
+      invocation still terminates non-successfully; and the response carries reconcile_catalog's
+      result -- the WIRING, which VP1's pure-predicate coverage cannot reach.
     fix_if: Isolation returns ok/200 while a table merge raised -- the fail-open class Decision 188 closed.
     graduation: graduate
     graduation_check_id: merge-ops-discovery-and-loud-isolation
@@ -210,23 +231,6 @@ verification_plan:
     fix_if: A fixture whose class universe comes from the matrix own keys passes -- the gate is self-referential and trivially green.
     graduation: graduate
     graduation_check_id: maintenance-policy-matrix-exhaustive
-  - step: 5
-    phase: pre-deploy
-    action: >-
-      Prove id allocation survives compaction contention at the REAL serialization point --
-      _allocate_entity_id UPDATE (ducklake_writes.py:281-284) inside file_scd2 retry loop
-      (:369-426), which is what file_rec drives.
-    command: bin/venv-python -m pytest tests/common/test_ducklake_writes.py::test_allocate_entity_id_exhausts_budget_under_sustained_conflict -q
-    expected: >-
-      A conflict sustained past OCC_MAX_ATTEMPTS raises OCCRetryExhaustedError rather than allocating
-      a duplicate or silently succeeding -- the failure mode a long merge window would produce.
-    fix_if: >-
-      The test asserts only the single-collision retry path. That is ALREADY covered by
-      test_file_scd2_occ_retry_reallocates (tests/common/test_ducklake_writes.py:468), so a test of
-      that shape is a rename of existing coverage, not new evidence. The uncovered case is budget
-      EXHAUSTION under sustained conflict, which is what a 3,418-file merge window risks.
-    graduation: graduate
-    graduation_check_id: entity-allocation-exhaustion-under-sustained-conflict
   - step: 6
     phase: pre-deploy
     action: Prove the whole count pair is nulled when either side fails (rec-3785 own acceptance node).
@@ -258,9 +262,15 @@ verification_plan:
   - step: 9
     phase: pre-deploy
     action: Prove the registration companions landed -- the numbered Decision and the ci_rca taxonomy row.
-    command: "rg -q '^## Decision [0-9]+: .*(enumerat|scope resolution)' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml"
-    expected: Both present; the Decision body carries the Decision 188 pt 3 carve-out extension clause.
-    fix_if: Either is absent. A Decision without the carve-out clause leaves the third isolation site unauthorized.
+    command: "rg -q '^## Decision [0-9]+: Maintenance scope is catalog enumeration' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml && bin/venv-python -c \"import io,re; t=io.open('docs/DECISIONS.md',encoding='utf-8').read(); m=[b for b in re.split(r'(?m)^## Decision ', t) if re.match(r'[0-9]+: Maintenance scope is catalog enumeration', b)]; assert len(m)==1, f'expected exactly one matching entry, found {len(m)}'; b=m[0]; assert '188' in b and 'merge_adjacent_files' in b, 'carve-out extension clause absent from the entry body'; print('clause present')\""
+    expected: Heading present, taxonomy row present, AND the matched entry's OWN body names Decision 188 and merge_adjacent_files -- the carve-out extension clause.
+    fix_if: >-
+      The heading matches but the body lacks the clause. A heading-only assertion cannot see the one
+      authorization constraints[1] makes the whole isolation change contingent on, so the body check
+      is scoped to the matched entry, not the whole file. The heading pattern is the drafted title's
+      literal opening, NOT a keyword alternation: measured, 'enumerat|scope resolution' already
+      matches Decisions 180, 157 and 91, so that pattern would be green before implementation and
+      would inspect the wrong entry's body. The len(m)==1 assertion keeps it that way.
     graduation: graduate
     graduation_check_id: maintenance-scope-registration-companions
   - step: 10
@@ -323,14 +333,18 @@ test_obligations:
     verification_step: 4
     test_selector: tests/checks/contracts/test_validate_maintenance_policy_matrix.py
     red_green_expectation: Red before (module absent), green after.
-  - source: tests/common/test_ducklake_writes.py
-    behavior: Sustained conflict at the real serialization point exhausts the budget loudly rather than mis-allocating.
-    verification_step: 5
-    test_selector: tests/common/test_ducklake_writes.py::test_allocate_entity_id_exhausts_budget_under_sustained_conflict
+  - source: scripts/schema_to_field_semantics.py
+    behavior: The generator carries maintenance_policy from the sidecar into the generated projection.
+    verification_step: 8
+    command: "bin/venv-python -m scripts.schema_to_field_semantics --check && bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('config/lambda/ducklake/field_semantics.yaml',encoding='utf-8')); assert 'maintenance_policy' in d, 'matrix absent from the bundled asset'; print('matrix present')\""
     red_green_expectation: >-
-      Red before -- the existing suite covers a SINGLE collision (line 468) and exhaustion via
-      write_scd2, but not sustained conflict on _allocate_entity_id UPDATE, which is the path
-      file_rec drives. Green after.
+      Red before -- the key whitelist at lines 252-254 drops unknown sidecar keys, so the generated
+      asset lacks maintenance_policy while --check still reports clean. Green after.
+  - source: tests/test_schema_to_field_semantics.py
+    behavior: The passthrough is guarded by its own test, not only by the plan's VP step.
+    verification_step: 8
+    command: "bin/venv-python -m scripts.schema_to_field_semantics --check && bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('config/lambda/ducklake/field_semantics.yaml',encoding='utf-8')); assert 'maintenance_policy' in d, 'matrix absent from the bundled asset'; print('matrix present')\""
+    red_green_expectation: Red before -- no test asserts the passthrough. Green after.
   - source: tests/lambdas/ducklake_maintenance/handler/test_operational_actions.py
     behavior: A single-sided count failure nulls the whole pair.
     verification_step: 6
@@ -369,12 +383,12 @@ test_obligations:
   - source: config/ci_rca_taxonomy.yaml
     behavior: The new check module has a function_to_category row, so a CI failure in it classifies.
     verification_step: 9
-    command: "rg -q '^## Decision [0-9]+: .*(enumerat|scope resolution)' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml"
+    command: "rg -q '^## Decision [0-9]+: Maintenance scope is catalog enumeration' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml"
     red_green_expectation: Red before -- neither the Decision heading nor the taxonomy row exists. Green after.
   - source: docs/DECISIONS.md
     behavior: The commitment and the Decision 188 pt 3 carve-out extension are recorded.
     verification_step: 9
-    command: "rg -q '^## Decision [0-9]+: .*(enumerat|scope resolution)' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml"
+    command: "rg -q '^## Decision [0-9]+: Maintenance scope is catalog enumeration' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml"
     red_green_expectation: Red before (no such Decision), green after.
   - source: tests/common/test_ducklake_maintenance_scope.py
     behavior: The scope module red cases are exercised, not asserted adjacent to.
@@ -412,7 +426,7 @@ constraints:
 context:
   - "decision-scout verdict: FLAGS_FOUND. Decisions triaged: 143 of 143"
   - "Roadmap items intersected: 3; CONFLICT: 0; RELATED: 3"
-  - "CITE: Decision 88 (cl.1(iii); cl.4 GC smoke-only), Decision 188 (pt 3 two-site carve-out -- THIS PLAN EXTENDS IT; pt 2 defer-vs-abort), Decision 55, Decision 155 (clause shape for narrowing a 55-grounded contract), Decision 84 (I-2 writer-owned counter; I-4 fail loudly), Decision 81 (cl.6; cl.3 race closure covers expire_snapshots NOT merge), Decision 143 (cl.2 pins the smoke dispatch table), Decision 137 (name a class exception; its 2026-09-13 amendment DISCHARGES rec-3762 disposition (a)), Decision 118 (CD.25), Decision 79 (active manifest -> V3), Decision 125/126, Decision 128"
+  - "CITE: Decision 88 (cl.1(iii), cl.4), Decision 188 (pt 3 -- THIS PLAN EXTENDS IT; pt 2), Decision 55, Decision 155, Decision 84 (I-2, I-4), Decision 81 (cl.6; cl.3 covers expire_snapshots NOT merge), Decision 143 (cl.2), Decision 137 (2026-09-13 amendment DISCHARGES rec-3762 disposition (a)), Decision 118, Decision 79, Decision 125/126, Decision 128"
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
   - >-
     CI-RCA DEFERRAL (Related-Work Check: all three fail). rec-3844/rec-3845 both cite
@@ -420,35 +434,23 @@ context:
     different failure category; they belong to the vp-red-before-gate workstream (f7e99012,
     587de8b3), owned elsewhere. Deferred deliberately.
   - >-
-    THREE TRAPS, recorded so critique re-checks each. (1) Isolation returning 200/ok while a merge
-    raised reproduces the fail-open class Decision 188 closed -- isolate AND raise after the loop,
-    and land the clause extending 188 pt 3. (2) Reconciliation universe is the CATALOG; a
-    registry-universe assertion reproduces this workstream's recorded blind-oracle failure. (3) The
-    exhaustiveness gate must not read its class or verb universe from the matrix it checks.
-  - >-
     rec-3762 disposition (a) is DISCHARGED, not actionable: the rec says ops_entity_counters is
     unpartitioned; it was partitioned the next day in PR #1163 (ops_entity_counters.yaml:105; T2.26
     c10 met; Decision 137's 2026-09-13 amendment). Writing an exemption would re-open a closed
     amendment. Disposition (b) (possibly-legacy DynamoDB counters table) stands as a follow-on rec.
   - >-
-    rec-3762 HAZARD site, CORRECTED: the serialization point is _allocate_entity_id's UPDATE
-    (ducklake_writes.py:281-284) inside file_scd2's loop (:369-426), NOT _advance_entity_counter
-    (:293, write_ops' backfill, skips the UPDATE at :319, never called by file_scd2). Existing
-    coverage is a SINGLE collision (:468), so VP5's subject is budget EXHAUSTION under sustained
-    conflict. Open question the implementer must close: is_occ_collision (:55-63) is a substring
-    match over six markers -- establish a real DuckLake merge-vs-UPDATE conflict message contains
-    one, or it falls to the unconditional raise at :429 and the hazard is live behind a green test.
+    rec-3762 HAZARD site, CORRECTED (the rec and two earlier drafts of this plan name the wrong
+    function): the serialization point is _allocate_entity_id's UPDATE at ducklake_writes.py:281-284
+    inside file_scd2's loop (:369-426). NOT _advance_entity_counter (:293) -- write_ops' backfill,
+    skips the UPDATE at :319, never called by file_scd2.
   - >-
     Matrix placement resolved empirically: a Class B contract cannot hold it (ContractDocument and
-    VerbSpec are extra=forbid; reproduced against scripts/contracts_schema.py:106,204,229), so it
-    lives in the sidecar field_semantics.static.yaml and regenerates into field_semantics.yaml --
-    already a maintenance-manifest asset (manifest.yaml:27), closing runtime availability too.
+    VerbSpec are extra=forbid; scripts/contracts_schema.py:106,204,229). Sidecar + generator
+    passthrough; see those two scope rows.
   - >-
-    THREE classes, not two: scd2, control, append_only (ops_smoke_events, whose _history table is
-    merged TODAY -- omitting the class would convert a working table into an unclassifiable raise).
-    Registry status (live|dormant|smoke) dispositions the registry->catalog direction. Verb universe
-    is {merge_ops} only: gc and hot_merge run on the smoke function against another catalog
-    (Decision 143 cl.2), so columns for them would have no consumer; Plan C ADDS gc to the universe.
+    ops_smoke_events is status:smoke in the registry -- the implementer must establish whether its
+    _history table is in ducklake_ops or only ducklake_smoke, since that determines what
+    reconcile_catalog should say about it. The cell is required either way.
   - "Affected active artifacts: ducklake_maintenance (build+deploy+smoke, VP11); ducklake_maintenance_smoke (same CD run; no smoke verb behaviour change); data-pipeline (manifest excludes only, no redeploy)."
   - >-
     DRAFTED DECISION. Heading: "## Decision NNN: Maintenance scope is catalog enumeration crossed
@@ -476,9 +478,10 @@ execution_steps:
   - >-
     Add maintenance_policy to config/lambda/ducklake/field_semantics.static.yaml: three classes
     (scd2, append_only, control) x the declared verb universe ({merge_ops}), each cell {apply,
-    reason}. Regenerate with scripts.schema_to_field_semantics -- never hand-edit
-    field_semantics.yaml. If the generator does not splice an unknown sidecar key, add the
-    passthrough there as part of this step.
+    reason}. THEN add the passthrough to scripts/schema_to_field_semantics.py -- required, not
+    conditional: the generator's key whitelist (lines 252-254) drops unknown sidecar keys silently
+    and --check still reports clean, so without it the matrix never reaches the Lambda. Regenerate;
+    never hand-edit field_semantics.yaml.
   - >-
     Create src/common/ducklake_maintenance_scope.py with classify_table, load_policy, resolve_scope
     and reconcile_catalog as pure functions over already-fetched catalog rows, plus the per-table
