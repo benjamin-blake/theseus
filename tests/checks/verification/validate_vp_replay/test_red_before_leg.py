@@ -9,7 +9,7 @@ import subprocess as _subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.checks.verification.validate_vp_replay import _is_red_before_eligible
+from scripts.checks.verification.validate_vp_replay import _classify_outcome, _is_red_before_eligible
 
 from .conftest import (
     _ModifiedPlanFixture,
@@ -108,11 +108,24 @@ class TestUnmeasurable:
         assert any("actual=unmeasurable" in f for f in failed)
 
     def test_rg_grep_error_exit_2(self, tmp_path: Path) -> None:
-        repo, rel = _RedBeforeFixture().build(
-            tmp_path, "vpr-unm-rg", [_graduate_step(1, "rg SOMEPATTERN missing/nonexistent/path.py")]
-        )
+        """Decoupled from a real ripgrep binary: stubs the replayed subprocess to return exit 2
+        directly (rec-3844's own runner condition -- ripgrep absent on ubuntu-latest makes a real
+        invocation exit 127, aliasing this arm with the exit-127 arm instead of exercising it).
+        The stub dispatches on command text (never a blanket return_value) and falls through to a
+        real subprocess.run for everything else, since _run_classifier_self_test shares this same
+        patch target and runs unconditionally before any early return."""
+        command = "rg SOMEPATTERN missing/nonexistent/path.py"
+        repo, rel = _RedBeforeFixture().build(tmp_path, "vpr-unm-rg", [_graduate_step(1, command)])
+        _real_run = _subprocess.run  # captured BEFORE patching -- the patch target IS this module object
+
+        def _side_effect(*args, **kwargs):
+            if args and args[0] == command:
+                return _subprocess.CompletedProcess(args[0], returncode=2, stdout="", stderr="rg: fixture stub exit 2\n")
+            return _real_run(*args, **kwargs)
+
         failed: list[str] = []
-        validate_vp_replay(failed, changed_files=[rel], root=repo)
+        with patch("scripts.checks.verification.validate_vp_replay.subprocess.run", side_effect=_side_effect):
+            validate_vp_replay(failed, changed_files=[rel], root=repo)
         assert any("actual=unmeasurable" in f for f in failed)
 
     def test_credential_absence(self, tmp_path: Path) -> None:
@@ -131,6 +144,19 @@ class TestUnmeasurable:
         with patch("scripts.checks.verification.validate_vp_replay.PER_STEP_TIMEOUT_SECONDS", 0.1):
             validate_vp_replay(failed, changed_files=[rel], root=repo)
         assert any("actual=unmeasurable" in f and "TIMEOUT" in f for f in failed)
+
+
+class TestClassifierArmsDoNotAlias:
+    def test_classifier_arms_do_not_alias(self) -> None:
+        """The exit-2 (rg/grep) and exit-127 (command-not-found) unmeasurable arms are reached via
+        genuinely different conditions in _classify_outcome, not merely both emitting the same
+        "unmeasurable" string -- exit 2 WITHOUT an rg/grep invocation must NOT take the rg/grep
+        arm (it falls through to assertion_failed), proving that arm is keyed on the command text,
+        never the bare exit code alone."""
+        assert _classify_outcome("rg PATTERN missing/path.py", 2, "", timed_out=False) == "unmeasurable"
+        assert _classify_outcome("rg PATTERN missing/path.py", 127, "", timed_out=False) == "unmeasurable"
+        assert _classify_outcome("some-other-command", 2, "", timed_out=False) == "assertion_failed"
+        assert _classify_outcome("some-other-command", 127, "", timed_out=False) == "unmeasurable"
 
 
 class TestEligibility:

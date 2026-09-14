@@ -1,0 +1,35 @@
+check_id: vp-replay-coverage-survives-absent-ripgrep
+primitive_slot: command_exit_zero
+guard_target: scripts/checks/verification/validate_vp_replay.py
+guard_symbol: _classify_outcome
+plan_slug: vp-replay-postmerge-partition-and-coverage-diagnostics
+graduated_at: '2026-09-14'
+graduated_by: implement-agent
+check_spec:
+  command:
+  - bash
+  - -c
+  - 'D=$(mktemp -d); printf ''#!/bin/sh\nexit 127\n'' > "$D/rg"; chmod +x "$D/rg"
+
+    PATH="$D:$PATH" _COVERAGE_SUBPROCESS=1 bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_red_before_leg.py
+    --cov=scripts/checks/verification --cov-report=json:"$D/cov.json" -q --no-header
+    >/dev/null 2>&1
+
+    COV="$D/cov.json" bin/venv-python -c "
+
+    import json,os,pathlib
+
+    src=''scripts/checks/verification/validate_vp_replay.py''
+
+    lines=pathlib.Path(src).read_text().splitlines()
+
+    arm=[i+2 for i,l in enumerate(lines) if ''_RG_GREP_ERROR_EXIT_CODE and'' in l]
+
+    assert len(arm)==1, arm
+
+    d=json.load(open(os.environ[''COV'']))[''files''][src]
+
+    assert arm[0] not in d[''missing_lines''], f''exit-2 arm line {arm[0]} uncovered
+    with ripgrep absent''
+
+    print(''RG_ABSENT_ARM_COVERED'')"; rc=$?; rm -rf "$D"; exit $rc'

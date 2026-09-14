@@ -17,6 +17,7 @@ from .conftest import (
     _git,
     _init_repo,
     _ResolvedFixture,
+    _write_vp_replay_plan,
     validate_vp_replay,
 )
 
@@ -209,6 +210,79 @@ class TestImplementLeg:
         with patch("scripts.checks.verification.validate_vp_replay.MAX_REPLAYED_STEPS", 2):
             validate_vp_replay(failed, changed_files=[rel], root=repo)
         assert any("budget exceeded" in f for f in failed)
+
+    def test_pr_relative_excluded_when_base_collapsed(self, tmp_path: Path, monkeypatch, capsys) -> None:
+        """PLAN-vp-red-before-gate.yaml step 16's own shape (rec-3845): post-merge, origin/main and
+        HEAD collapse onto the same commit while push_context_base() still resolves a distinct
+        base (HEAD~1) for implementation_declared edge-triggering -- the PR-relative step's
+        origin/main comparison has become vacuous and must be EXCLUDED, never silently replayed.
+        The command fails if actually executed, so a wrongly-replayed step reddens the check."""
+        repo = tmp_path / "repo"
+        _init_repo(repo)
+        (repo / "README.md").write_text("base\n", encoding="utf-8")
+        _commit_all(repo, "base")
+
+        command = "git show origin/main:README.md > /dev/null; exit 1"
+        rel = _write_vp_replay_plan(
+            repo,
+            "vpr-collapse",
+            [
+                {
+                    "step": 1,
+                    "phase": "pre-deploy",
+                    "hermetic": True,
+                    "action": "PR-relative step, fails if replayed.",
+                    "command": command,
+                    "expected": "n/a",
+                    "fix_if": "n/a",
+                }
+            ],
+            declared=False,
+        )
+        pre_declare_sha = _commit_all(repo, "add plan")
+
+        plan_path = repo / rel
+        plan_dict = _yaml.safe_load(plan_path.read_text(encoding="utf-8"))
+        plan_dict["implementation_declared"] = True
+        plan_path.write_text(_yaml.dump(plan_dict), encoding="utf-8")
+        head_sha = _commit_all(repo, "declare implementation")
+        _git(repo, ["update-ref", "refs/remotes/origin/main", head_sha])
+
+        monkeypatch.setenv("GITHUB_EVENT_NAME", "push")
+        monkeypatch.delenv("GITHUB_EVENT_BEFORE", raising=False)
+        assert _git(repo, ["rev-parse", "HEAD~1"]).stdout.strip() == pre_declare_sha
+
+        failed: list[str] = []
+        validate_vp_replay(failed, changed_files=[rel], root=repo)
+        out = capsys.readouterr().out
+        assert failed == []
+        assert f"EXCLUDED: {rel}:1 (pr-relative-base-collapsed)" in out
+
+    def test_pr_relative_still_replayed_when_base_distinct(self, tmp_path: Path, capsys) -> None:
+        """The same PR-relative shape still replays at PR time, when origin/main and HEAD differ --
+        no PR-time verification is lost (the ResolvedFixture shape: HEAD is descendant of, never
+        an ancestor of, origin/main)."""
+        repo, rel = _ResolvedFixture().build(
+            tmp_path,
+            "vpr-distinct",
+            [
+                {
+                    "step": 1,
+                    "phase": "pre-deploy",
+                    "hermetic": True,
+                    "action": "PR-relative step, replayed against a distinct base.",
+                    "command": "git diff origin/main -- README.md > /dev/null; echo REPLAYED",
+                    "expected": "n/a",
+                    "fix_if": "n/a",
+                }
+            ],
+        )
+        failed: list[str] = []
+        validate_vp_replay(failed, changed_files=[rel], root=repo)
+        out = capsys.readouterr().out
+        assert failed == []
+        assert f"PASS: {rel}:1 replayed" in out
+        assert "EXCLUDED" not in out
 
     def test_default_changed_files_falls_back_to_common_get_changed_files(self) -> None:
         """No changed_files arg -- falls back to _common.get_changed_files(). An empty diff means
