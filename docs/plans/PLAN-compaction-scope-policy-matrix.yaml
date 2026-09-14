@@ -231,6 +231,22 @@ verification_plan:
     fix_if: A fixture whose class universe comes from the matrix own keys passes -- the gate is self-referential and trivially green.
     graduation: graduate
     graduation_check_id: maintenance-policy-matrix-exhaustive
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      Prove the contract's merge_ops clause actually changed shape and the amendment_log entry is
+      honest. VP3's negated sweep CANNOT see this file -- measured, its pattern returns zero matches
+      on the contract before and after, because the clause reads "ALL live ops_* SCD2 table pairs"
+      and matches none of the retired NAMES. check_amendment_for_diff does not reach verbs.* on a
+      Class B contract either, so without this step the repointed prose, the new response_codes, the
+      new typed_errors and the amendment entry are enforced by nothing.
+    command: "bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('docs/contracts/ducklake_maintenance.yaml',encoding='utf-8')); blob=repr(d['verbs']['merge_ops']); assert 'SCD2 table pairs' not in blob, 'merge_ops still describes the retired SCD2-pair predicate'; assert 'maintenance_policy' in blob, 'merge_ops does not name the policy matrix'; a=d['amendment_log'][-1]; assert a['change_class'] != 'prose_improvement', 'amendment entry still prose_improvement'; print('contract shape + amendment ok')\""
+    expected: The retired SCD2-pair prose is gone, merge_ops names the policy matrix, and the newest amendment_log entry is not prose_improvement.
+    fix_if: >-
+      Still prose_improvement -- that change_class cannot describe added response fields and new
+      typed errors, and nothing else in CI will object.
+    graduation: graduate
+    graduation_check_id: merge-ops-contract-shape-and-amendment
   - step: 6
     phase: pre-deploy
     action: Prove the whole count pair is nulled when either side fails (rec-3785 own acceptance node).
@@ -252,7 +268,7 @@ verification_plan:
   - step: 8
     phase: pre-deploy
     action: Prove the matrix reaches the deployed Lambda -- present in the regenerated asset, and the regeneration is reproducible.
-    command: "bin/venv-python -m scripts.schema_to_field_semantics --check && bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('config/lambda/ducklake/field_semantics.yaml',encoding='utf-8')); assert 'maintenance_policy' in d, 'matrix absent from the bundled asset'; print('matrix present')\""
+    command: "bin/venv-python -m scripts.schema_to_field_semantics --check && bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('config/lambda/ducklake/field_semantics.yaml',encoding='utf-8')); assert 'maintenance_policy' in d, 'matrix absent from the bundled asset'; print('matrix present')\" && bin/venv-python -m pytest tests/test_schema_to_field_semantics.py::test_maintenance_policy_passthrough -q"
     expected: Regeneration is clean (no drift) and the matrix is present in the asset the manifest ships.
     fix_if: >-
       The matrix is in the sidecar but not the generated file -- the generator does not splice that
@@ -262,7 +278,7 @@ verification_plan:
   - step: 9
     phase: pre-deploy
     action: Prove the registration companions landed -- the numbered Decision and the ci_rca taxonomy row.
-    command: "rg -q '^## Decision [0-9]+: Maintenance scope is catalog enumeration' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml && bin/venv-python -c \"import io,re; t=io.open('docs/DECISIONS.md',encoding='utf-8').read(); m=[b for b in re.split(r'(?m)^## Decision ', t) if re.match(r'[0-9]+: Maintenance scope is catalog enumeration', b)]; assert len(m)==1, f'expected exactly one matching entry, found {len(m)}'; b=m[0]; assert '188' in b and 'merge_adjacent_files' in b, 'carve-out extension clause absent from the entry body'; print('clause present')\""
+    command: "rg -q '^## Decision [0-9]+: Maintenance scope is catalog enumeration' docs/DECISIONS.md && rg -q 'validate_maintenance_policy_matrix' config/ci_rca_taxonomy.yaml && bin/venv-python -c \"import io,re; t=io.open('docs/DECISIONS.md',encoding='utf-8').read(); m=[b for b in re.split(r'(?m)^## Decision ', t) if re.match(r'[0-9]+: Maintenance scope is catalog enumeration', b)]; assert len(m)==1, f'expected exactly one matching entry, found {len(m)}'; b=m[0]; assert 'Decision 188' in b and 'merge_adjacent_files' in b, 'carve-out extension clause absent from the entry body'; print('clause present')\""
     expected: Heading present, taxonomy row present, AND the matched entry's OWN body names Decision 188 and merge_adjacent_files -- the carve-out extension clause.
     fix_if: >-
       The heading matches but the body lacks the clause. A heading-only assertion cannot see the one
@@ -326,7 +342,7 @@ test_obligations:
   - source: config/lambda/ducklake/field_semantics.yaml
     behavior: The matrix reaches the bundled Lambda asset through a reproducible regeneration.
     verification_step: 8
-    command: "bin/venv-python -m scripts.schema_to_field_semantics --check && bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('config/lambda/ducklake/field_semantics.yaml',encoding='utf-8')); assert 'maintenance_policy' in d, 'matrix absent from the bundled asset'; print('matrix present')\""
+    command: "bin/venv-python -m scripts.schema_to_field_semantics --check && bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('config/lambda/ducklake/field_semantics.yaml',encoding='utf-8')); assert 'maintenance_policy' in d, 'matrix absent from the bundled asset'; print('matrix present')\" && bin/venv-python -m pytest tests/test_schema_to_field_semantics.py::test_maintenance_policy_passthrough -q"
     red_green_expectation: Red before -- the key is absent from the generated asset. Green after.
   - source: scripts/checks/contracts/validate_maintenance_policy_matrix.py
     behavior: The exhaustiveness gate discriminates and rejects a self-supplied universe.
@@ -336,15 +352,18 @@ test_obligations:
   - source: scripts/schema_to_field_semantics.py
     behavior: The generator carries maintenance_policy from the sidecar into the generated projection.
     verification_step: 8
-    command: "bin/venv-python -m scripts.schema_to_field_semantics --check && bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('config/lambda/ducklake/field_semantics.yaml',encoding='utf-8')); assert 'maintenance_policy' in d, 'matrix absent from the bundled asset'; print('matrix present')\""
+    command: "bin/venv-python -m scripts.schema_to_field_semantics --check && bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('config/lambda/ducklake/field_semantics.yaml',encoding='utf-8')); assert 'maintenance_policy' in d, 'matrix absent from the bundled asset'; print('matrix present')\" && bin/venv-python -m pytest tests/test_schema_to_field_semantics.py::test_maintenance_policy_passthrough -q"
     red_green_expectation: >-
       Red before -- the key whitelist at lines 252-254 drops unknown sidecar keys, so the generated
       asset lacks maintenance_policy while --check still reports clean. Green after.
   - source: tests/test_schema_to_field_semantics.py
-    behavior: The passthrough is guarded by its own test, not only by the plan's VP step.
+    behavior: The passthrough is guarded by its own named test node.
     verification_step: 8
-    command: "bin/venv-python -m scripts.schema_to_field_semantics --check && bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('config/lambda/ducklake/field_semantics.yaml',encoding='utf-8')); assert 'maintenance_policy' in d, 'matrix absent from the bundled asset'; print('matrix present')\""
-    red_green_expectation: Red before -- no test asserts the passthrough. Green after.
+    test_selector: tests/test_schema_to_field_semantics.py::test_maintenance_policy_passthrough
+    red_green_expectation: >-
+      Red before -- the node does not exist in an otherwise-passing file. Previously this obligation
+      carried VP8's own command, so the claim that the passthrough is guarded by more than the plan's
+      VP step was verified BY that VP step and would have gone green with no test written.
   - source: tests/lambdas/ducklake_maintenance/handler/test_operational_actions.py
     behavior: A single-sided count failure nulls the whole pair.
     verification_step: 6
@@ -372,9 +391,12 @@ test_obligations:
     red_green_expectation: Red before -- four matches across handler.py:375 and ducklake_maintenance.py:62,70,354. Green after.
   - source: docs/contracts/ducklake_maintenance.yaml
     behavior: The merge_ops clause describes enumeration-plus-policy and carries an honest amendment_log entry.
-    verification_step: 3
-    command: "for f in src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml; do test -f \"$f\" || { echo \"MISSING SWEEP SURFACE: $f\"; exit 1; }; done; ! rg -n \"ops_%_history|ops_%_current|LIKE 'ops_%'|T2.19 exit criterion\" src/lambdas/ducklake_maintenance/handler.py src/common/ducklake_maintenance.py src/common/ducklake_maintenance_scope.py docs/contracts/ducklake_maintenance.yaml"
-    red_green_expectation: Red before -- the clause still names the SCD2-pair predicate. Green after.
+    verification_step: 5
+    command: "bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('docs/contracts/ducklake_maintenance.yaml',encoding='utf-8')); blob=repr(d['verbs']['merge_ops']); assert 'SCD2 table pairs' not in blob, 'merge_ops still describes the retired SCD2-pair predicate'; assert 'maintenance_policy' in blob, 'merge_ops does not name the policy matrix'; a=d['amendment_log'][-1]; assert a['change_class'] != 'prose_improvement', 'amendment entry still prose_improvement'; print('contract shape + amendment ok')\""
+    red_green_expectation: >-
+      Red before -- merge_ops reads "ALL live ops_* SCD2 table pairs" and the newest amendment_log
+      entry is prose_improvement. NOT bound to VP3: measured, that sweep returns zero matches on this
+      file before and after, so it was vacuous on its declared subject.
   - source: scripts/checks/contracts/_manifest.py
     behavior: The new check is registered in the contracts domain manifest.
     verification_step: 4
