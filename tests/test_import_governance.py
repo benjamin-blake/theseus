@@ -226,6 +226,25 @@ class TestCheckLockfileSync:
         assert "pins all 2 declared floors" in msg, msg
 
     @pytest.mark.parametrize("requirements_file", ["requirements.in", "requirements-fast.txt"])
+    def test_mcp_declaration_admits_the_compiled_pin(self, requirements_file: str) -> None:
+        """The declared floor must admit whatever mcp version is actually pinned in the compiled
+        requirements.txt. The probe is an INDEPENDENT oracle taken from the compiled pin itself --
+        never re-derived from the declared floor, which would make this tautological for every
+        `>=floor,<2` form (Decision 181 clause 1) and would go green-by-construction the moment the
+        floor bumps alongside it."""
+        from packaging.requirements import Requirement
+        from packaging.version import Version
+
+        declaration = next(
+            line for line in Path(requirements_file).read_text(encoding="utf-8").splitlines() if line.startswith("mcp")
+        )
+        pin_line = next(
+            line for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines() if line.startswith("mcp==")
+        )
+        pin = Version(pin_line.split("==")[1].strip())
+        assert pin in Requirement(declaration).specifier, f"declared floor {declaration!r} rejects compiled pin {pin}"
+
+    @pytest.mark.parametrize("requirements_file", ["requirements.in", "requirements-fast.txt"])
     def test_mcp_declaration_rejects_major_two(self, requirements_file: str) -> None:
         from packaging.requirements import Requirement
         from packaging.version import Version
@@ -233,7 +252,6 @@ class TestCheckLockfileSync:
         declaration = next(
             line for line in Path(requirements_file).read_text(encoding="utf-8").splitlines() if line.startswith("mcp")
         )
-        assert Version("1.28.1") in Requirement(declaration).specifier
         assert Version("2.0.0") not in Requirement(declaration).specifier
 
     def test_pytz_is_a_direct_requirement_not_a_transitive_survivor(self) -> None:

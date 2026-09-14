@@ -5591,6 +5591,44 @@ as the cascade proof: one edit to `version.yaml`, then `sync_ducklake_version` t
 `src/common/ducklake_runtime.py`, `scripts/build_lambda.py`, `requirements.txt`,
 `terraform/personal/ducklake_lambdas.tf`, four Lambda manifests.
 
+> **Amended (2026-09-14, rec-3832):** `.github/dependabot.yml`'s pip `minor-and-patch` group now
+> carries `exclude-patterns: ["duckdb", "ducklake"]`, so this Decision's SSOT lockstep denylist
+> (`scripts/ci/dependabot_auto_merge.sh` `_DENIED_DEPENDENCIES`) can no longer strand an entire
+> grouped weekly bump behind its one lockstep-owned member. The cost is priced, not hidden: the
+> excluded pair still gets its own standalone Dependabot PR, which the same denylist permanently
+> refuses to arm (`validate_ducklake_version_lockstep` plus the auto-merge gate both correctly
+> reject it), so that PR is BLOCKED from day one and permanently holds one of the five pip
+> `open-pull-requests-limit` slots. It is kept, not suppressed with a top-level `ignore:`, because
+> it is the operator-visible new-release signal the one-file bump procedure below depends on as its
+> trigger. `scripts/checks/ci_guards/validate_dependabot_config.py` derives the exclusion assertion
+> from `_DENIED_DEPENDENCIES` at check time (never a re-enumerated literal), so a future denylist
+> addition fails presubmit until the config catches up. See the reversal-conditions stanza below
+> for the monitored retirement criteria this accepted cost is held against.
+
+```yaml reversal-conditions
+decision: 99
+review_by: 2027-03-14
+on_trigger: "re-decide the exclusion via /plan; update or re-arm this stanza; never silently renew"
+conditions:
+  - id: coordinated-cascade-automated
+    kind: manual
+    description: >-
+      An automated coordinated multi-file lockstep bump mechanism lands (superseding today's
+      manual one-file bump procedure as the update path for duckdb/ducklake), which would let the
+      pip group re-absorb the excluded pair without reintroducing the strand-the-whole-group
+      failure this exclusion exists to prevent. Evidence (not the condition itself, Decision 103):
+      rec-3843 tracks the automation work; rec-3791 is the pending 1.5.4->1.5.5 cascade exercising
+      today's manual procedure.
+  - id: quarantined-signal-degraded-to-noise
+    kind: manual
+    description: >-
+      The permanently-quarantined standalone PR this exclusion accepts stops functioning as an
+      operator-visible new-release signal -- for example it goes unreviewed for multiple cycles, or
+      Dependabot's own behavior around a permanently-BLOCKED PR changes (re-opens, stops
+      recreating, or otherwise degrades) -- so the cost this exclusion pays (one permanently-held
+      pip open-pull-requests-limit slot) is no longer offset by the signal it was kept to preserve.
+```
+
 ---
 
 ## Decision 98: Provisioning model for convergence-writer and peer CI roles -- admin-create in terraform/personal, read-only bootstrap IAMRolesRead grant (Decided)
