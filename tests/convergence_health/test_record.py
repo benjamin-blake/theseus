@@ -25,6 +25,7 @@ from scripts.convergence_health import (
     record_age_hours,
     red_age_hours,
 )
+from scripts.convergence_health.record import derive_red_cause, read_pending_codification_marker
 
 
 class TestDeriveRedSince:
@@ -182,6 +183,31 @@ class TestReadInfraErrorMarker:
     def test_malformed_int_marker_degrades_to_none(self) -> None:
         rec = {"status": "green", "infra_error": 42}
         assert read_infra_error_marker(rec) is None
+
+
+def test_read_pending_codification_marker_degrades() -> None:
+    """Decision 190: pending_codification marker parsing mirrors read_infra_error_marker's
+    degrade-to-None contract -- absent or malformed markers read as 'no marker', never raise."""
+    assert read_pending_codification_marker({"status": "green"}) is None
+    assert read_pending_codification_marker({}) is None
+    assert read_pending_codification_marker({"status": "green", "pending_codification": "not-a-dict"}) is None
+    assert read_pending_codification_marker({"status": "green", "pending_codification": [1, 2]}) is None
+
+    marker = {"first_seen": "2026-09-13T00:00:00Z", "last_seen": "2026-09-13T00:00:00Z", "run_url": "https://x/1"}
+    rec = {"status": "green", "pending_codification": marker}
+    assert read_pending_codification_marker(rec) == marker
+
+
+class TestDeriveRedCause:
+    """Decision 190 / Decision 142 one authority: mirrors scripts.ci.convergence_classify's
+    stdlib twin and scripts.ci_rca.convergence_dedup's own drift_run_url discriminator."""
+
+    def test_out_of_band_drift_when_drift_run_url_present(self) -> None:
+        assert derive_red_cause({"drift_run_url": "https://x/drift-run"}) == "out_of_band_drift"
+
+    def test_apply_failure_when_drift_run_url_absent(self) -> None:
+        assert derive_red_cause({"commit_sha": "abc"}) == "apply_failure"
+        assert derive_red_cause({}) == "apply_failure"
 
 
 class TestCountUnappliedTfCommitsDefaultRunner:

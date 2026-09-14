@@ -15,6 +15,7 @@ from typing import Any, Callable, Optional
 from scripts.convergence_health.record import (
     count_unapplied_tf_commits,
     read_infra_error_marker,
+    read_pending_codification_marker,
     record_age_hours,
     red_age_hours,
 )
@@ -51,6 +52,13 @@ class HealthVerdict:
     # scripts/convergence_health/__main__.py; escalate.py never reads it, and preflight does not
     # read it at all, so this floor files nothing on its own.
     infra_error: Optional[dict[str, Any]] = None
+    # Decision 190: the non-status pending_codification marker (a code-behind-state delta the
+    # drift classifier measured as benign, not out-of-band infra drift), or None when absent.
+    # Orthogonal to status like pending_gated/infra_error -- status stays at its PRIOR value while
+    # this marker is present. Read by escalate.py to ticket the episode; unlike infra_error this
+    # does NOT floor severity on its own (a benign code-behind-state delta is not a failure), and
+    # unlike pending_gated it DOES drive its own escalate.py ticketing trigger (see that module).
+    pending_codification: Optional[dict[str, Any]] = None
 
 
 def assess_health(
@@ -70,6 +78,7 @@ def assess_health(
             record_age_hours=0.0,
             pending_gated=None,
             infra_error=None,
+            pending_codification=None,
         )
 
     status = record.get("status", "unknown")
@@ -82,14 +91,21 @@ def assess_health(
     approvals = stuck_approvals or []
     pending_gated = record.get("pending_gated")
     infra_error = read_infra_error_marker(record)
+    pending_codification = read_pending_codification_marker(record)
     stale_green_backlog = status == "green" and backlog > 0 and rec_age >= STALE_GREEN_BACKLOG_THRESHOLD_HOURS
+    # Decision 190: a RED record with a non-zero unapplied backlog means a fix has already merged
+    # and is sitting BLOCKED behind the red latch (the 2026-09-13 incident: three applies refused
+    # while backlog grew) -- that impact must raise severity immediately, not wait for red_age to
+    # cross RED_AGE_THRESHOLD_HOURS. backlog was already computed above; it previously only ever
+    # reached severity on the green branch (stale_green_backlog).
+    red_blocked_apply_backlog = status == "red" and backlog > 0
 
     if approvals:
         # A stuck gated-apply approval escalates independent of the record's own status --
         # a routed gated-apply deliberately leaves the record green while it waits.
         severity = "high"
     elif status == "red":
-        severity = "high" if age >= RED_AGE_THRESHOLD_HOURS else "low"
+        severity = "high" if (age >= RED_AGE_THRESHOLD_HOURS or red_blocked_apply_backlog) else "low"
     elif stale_green_backlog:
         severity = "high"
     else:
@@ -114,4 +130,5 @@ def assess_health(
         record_age_hours=round(rec_age, 2),
         pending_gated=pending_gated,
         infra_error=infra_error,
+        pending_codification=pending_codification,
     )

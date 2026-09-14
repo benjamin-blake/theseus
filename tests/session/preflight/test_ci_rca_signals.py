@@ -135,7 +135,10 @@ class TestConvergenceSensorLivenessAlert:
 
 
 class TestConvergenceRcaGapAlert:
-    """Tests for _check_convergence_rca_gap() (PLAN-gated-apply-rca-trigger)."""
+    """Tests for _check_convergence_rca_gap() (PLAN-gated-apply-rca-trigger; Decision 190 widens
+    the tracking-rec predicate from ci_rca-only to ci_rca-or-tf_drift via a NEW PRIVATE
+    predicate, _fetch_convergence_gap_tracking_recs_since -- never _fetch_ci_rca_recs_since,
+    which _check_ci_rca_liveness also uses and which must stay untouched)."""
 
     def _red_health(self, red_age_hours: float = 1.0) -> dict:
         from datetime import timedelta
@@ -150,14 +153,16 @@ class TestConvergenceRcaGapAlert:
         }
 
     def test_convergence_rca_gap_alert_set_when_red_beyond_grace_no_matching_rec(self) -> None:
-        with patch("scripts.preflight.ci_rca_signals._fetch_ci_rca_recs_since", return_value=[]):
+        with patch("scripts.preflight.ci_rca_signals._fetch_convergence_gap_tracking_recs_since", return_value=[]):
             result = _preflight._check_convergence_rca_gap(self._red_health())
         assert result is not None
         assert result["commit_sha"] == "0b81f6a184d1a74b075082801ec9de2bfc4157d8"  # pragma: allowlist secret
         assert result["red_age_hours"] == 1.0
 
     def test_convergence_rca_gap_alert_none_when_matching_open_rec_exists(self) -> None:
-        with patch("scripts.preflight.ci_rca_signals._fetch_ci_rca_recs_since", return_value=[{"id": "rec-1"}]):
+        with patch(
+            "scripts.preflight.ci_rca_signals._fetch_convergence_gap_tracking_recs_since", return_value=[{"id": "rec-1"}]
+        ):
             result = _preflight._check_convergence_rca_gap(self._red_health())
         assert result is None
 
@@ -167,7 +172,7 @@ class TestConvergenceRcaGapAlert:
 
     def test_convergence_rca_gap_alert_none_when_red_within_grace(self) -> None:
         health = self._red_health(red_age_hours=0.1)  # 6 minutes, within the 30-minute grace
-        with patch("scripts.preflight.ci_rca_signals._fetch_ci_rca_recs_since", return_value=[]):
+        with patch("scripts.preflight.ci_rca_signals._fetch_convergence_gap_tracking_recs_since", return_value=[]):
             result = _preflight._check_convergence_rca_gap(health)
         assert result is None
 
@@ -178,6 +183,61 @@ class TestConvergenceRcaGapAlert:
         health = {"status": "red", "red_age_hours": 1.0}
         result = _preflight._check_convergence_rca_gap(health)
         assert result is None
+
+
+def test_convergence_gap_fires_on_tf_drift_and_ignores_unrelated_ci_rca() -> None:
+    """Decision 190: a red convergence record tracked ONLY by an open tf_drift rec must not fire
+    the gap alert, and an UNRELATED ci_rca rec created after red_since must not silently satisfy
+    it either -- the exact 2026-09-13 incident failure mode (rec-3802/3809/3810/3811 were
+    unrelated ci_rca recs that happened to post-date red_since; the real tf_drift rec never
+    counted under the old ci_rca-only matcher)."""
+    from datetime import timedelta
+
+    red_since = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    health = {
+        "status": "red",
+        "red_age_hours": 1.0,
+        "commit_sha": "abc123",
+        "run_url": "https://github.com/org/repo/actions/runs/1",
+        "red_since": red_since,
+    }
+    after = (datetime.now(timezone.utc) - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # An unrelated ci_rca rec alone (source=ci_rca, unrelated failure) must NOT silence the gap.
+    unrelated_ci_rca_rows = [{"id": "rec-3802", "source": "ci_rca", "created_timestamp": after}]
+    result = _preflight._check_convergence_rca_gap(health, cache_rows=unrelated_ci_rca_rows)
+    assert result is not None
+    assert result["commit_sha"] == "abc123"
+
+    # A tf_drift rec created after red_since DOES satisfy the gap (it IS the tracking rec).
+    tf_drift_rows = [{"id": "rec-9001", "source": "tf_drift", "created_timestamp": after}]
+    assert _preflight._check_convergence_rca_gap(health, cache_rows=tf_drift_rows) is None
+
+
+def test_ci_rca_liveness_unperturbed_by_tf_drift() -> None:
+    """Decision 190 blast-radius guard: _check_ci_rca_liveness (the main-CI-red alert) must stay
+    completely unperturbed by a tf_drift rec -- it uses _fetch_ci_rca_recs_since, never the new
+    private predicate, so _derive_ci_rca_since's ci_rca_since verb equivalence
+    (test_ci_rca_since_equivalence) is untouched. Exercises REAL cache_rows through
+    _check_ci_rca_liveness (never patches _fetch_ci_rca_recs_since -- that would assert against a
+    mock and prove nothing about _derive_ci_rca_since)."""
+    from datetime import timedelta
+
+    old_ts = (datetime.now(timezone.utc) - timedelta(minutes=45)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    gh_result = MagicMock()
+    gh_result.returncode = 0
+    gh_result.stdout = json.dumps([{"conclusion": "failure", "createdAt": old_ts, "url": "https://github.com/run/1"}])
+
+    after = (datetime.now(timezone.utc) - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    tf_drift_only_rows = [{"id": "rec-9001", "source": "tf_drift", "created_timestamp": after}]
+
+    with patch("session_preflight.subprocess.run", return_value=gh_result):
+        result = _preflight._check_ci_rca_liveness("ok", cache_rows=tf_drift_only_rows)
+    # A tf_drift row is not a ci_rca row -- _derive_ci_rca_since (which _fetch_ci_rca_recs_since
+    # calls) must still find nothing, so the liveness alert still fires exactly as if the tf_drift
+    # row were absent.
+    assert result is not None
+    assert result["elapsed_minutes"] > 30
 
 
 class TestFetchCiRcaRecs:

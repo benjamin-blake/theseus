@@ -53,6 +53,27 @@ def read_infra_error_marker(record: dict[str, Any]) -> Optional[dict[str, Any]]:
     return marker
 
 
+def read_pending_codification_marker(record: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Return the record's pending_codification marker (Decision 190) if present and well-formed,
+    else None. Mirrors read_infra_error_marker's degrade-to-None contract: a malformed marker
+    (missing, or present but not a dict) reads as "no marker" rather than raising -- this is a
+    health-surface READ, not the write path's own validation."""
+    marker = record.get("pending_codification")
+    if not isinstance(marker, dict):
+        return None
+    return marker
+
+
+def derive_red_cause(record: dict[str, Any]) -> str:
+    """Measured red-cause discriminator (Decision 190 / Decision 142 one authority): reads the
+    SAME drift_run_url marker scripts/ci_rca/convergence_dedup.py's find_open_convergence_cause_rec
+    already discriminates on, and scripts/ci/convergence_classify.py's stdlib-only twin mirrors
+    for the workflow-callable surface. Never a second, potentially-divergent classifier."""
+    if record.get("drift_run_url"):
+        return "out_of_band_drift"
+    return "apply_failure"
+
+
 def derive_red_since(record: dict[str, Any]) -> datetime:
     """Return the datetime when the record entered the current red episode.
 

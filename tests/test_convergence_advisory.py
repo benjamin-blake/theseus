@@ -16,6 +16,31 @@ from unittest.mock import patch
 from scripts.ci.convergence_advisory import ERROR, FAILURE, SUCCESS, classify, main
 
 
+def test_drift_red_does_not_blame_last_apply_commit() -> None:
+    """Decision 190: a drift-caused red must not assert 'last sandbox apply RED at {commit}' --
+    that commit is the last SUCCESSFUL apply, not the failing one, on a drift-flip red."""
+    body = json.dumps(
+        {
+            "status": "red",
+            "commit_sha": "lastgoodsha",
+            "drift_run_url": "https://x/drift-run",
+            "drift_reason": "out-of-band infra drift detected by scheduled terraform plan",
+            "drift_detected_at": "2026-09-13T16:24:36Z",
+        }
+    )
+    state, desc = classify(0, "", body)
+    assert state == FAILURE
+    assert "last sandbox apply RED" not in desc
+    assert "out-of-band drift" in desc
+
+
+def test_apply_failure_red_keeps_original_last_apply_wording() -> None:
+    body = json.dumps({"status": "red", "commit_sha": "badsha"})
+    state, desc = classify(0, "", body)
+    assert state == FAILURE
+    assert "last sandbox apply RED at badsha" in desc
+
+
 class TestNoSuchKeyPassOnAbsent:
     def test_nosuchkey_is_success_pass_on_absent(self) -> None:
         state, desc = classify(1, "An error occurred (NoSuchKey) when calling ...", "")
@@ -84,6 +109,29 @@ class TestPendingGated:
         pending_state, pending_desc = classify(0, "", pending_body)
         assert plain_state == pending_state == SUCCESS
         assert plain_desc != pending_desc
+
+
+class TestPendingCodification:
+    """Decision 190: the pending_codification marker surfaces the same way pending_gated does."""
+
+    def test_pending_codification_marker_is_success_with_distinguishing_description(self) -> None:
+        body = json.dumps({"status": "green", "pending_codification": {"first_seen": "2026-09-13T00:00:00Z"}})
+        state, desc = classify(0, "", body)
+        assert state == SUCCESS
+        assert "pending-codification" in desc
+        assert "2026-09-13T00:00:00Z" in desc
+
+    def test_pending_codification_is_distinguishable_from_plain_green(self) -> None:
+        plain_state, plain_desc = classify(0, "", json.dumps({"status": "green"}))
+        marker_body = json.dumps({"status": "green", "pending_codification": {"first_seen": "x"}})
+        marker_state, marker_desc = classify(0, "", marker_body)
+        assert plain_state == marker_state == SUCCESS
+        assert plain_desc != marker_desc
+
+    def test_malformed_pending_codification_falls_through_to_plain_green(self) -> None:
+        state, desc = classify(0, "", json.dumps({"status": "green", "pending_codification": "not-a-dict"}))
+        assert state == SUCCESS
+        assert "converged" in desc
 
 
 class TestGreen:

@@ -34,10 +34,23 @@ from scripts.rec_episode import run_episode
 _TITLE_STUCK_APPROVAL = "Gated-apply approval stuck -- staleness escalation"
 _TITLE_STALE_GREEN_BACKLOG = "Sandbox convergence green with stale unapplied backlog -- staleness escalation"
 _TITLE_PERSISTENTLY_RED = "Sandbox convergence record persistently red -- staleness escalation"
+# Decision 190: a FOURTH, orthogonal condition -- a benign code-behind-state delta the drift
+# classifier measured (resource_changes with no resource_drift), tracked separately from the
+# status-red/status-green conditions above since the marker leaves status at its PRIOR value.
+_TITLE_PENDING_CODIFICATION = (
+    "Sandbox convergence shows a pending-codification delta (state ahead of code, not drift) -- staleness escalation"
+)
 
 _RESOLUTION_STUCK_APPROVAL = "Gated-apply approval cleared (approved or cancelled); staleness episode resolved."
 _RESOLUTION_STALE_GREEN_BACKLOG = "Unapplied terraform/personal/ backlog drained; staleness episode resolved."
 _RESOLUTION_PERSISTENTLY_RED = "Convergence record returned to green; staleness episode resolved."
+# Decision 55 anti-hiding: the durable closure stamp for a self-cleared pending_codification
+# episode -- names WHICH of the two possible outcomes happened (code caught up, or the marker
+# escalated past the bound), never a bare "cleared" that could hide the escalate branch's harm.
+_RESOLUTION_PENDING_CODIFICATION = (
+    "pending_codification marker cleared: either the code caught up (a plan_ec==0 self-clear) or "
+    "the marker escalated to a genuine red past its bounded age; episode resolved either way."
+)
 
 # Per-condition lint-valid acceptance probes (Decision 103 [NOTE]: these are live AWS/gh probes
 # because no repo-local command can express "the convergence record returned to green"). Each
@@ -54,12 +67,23 @@ _ACCEPTANCE_PERSISTENTLY_RED = (
     "aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json - --profile agent_platform "
     '| grep -q \'"status": "green"\''
 )
+_ACCEPTANCE_PENDING_CODIFICATION = (
+    "aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json - --profile agent_platform "
+    "| grep -qv pending_codification"
+)
 
 
 def _condition_for_verdict(verdict: HealthVerdict) -> str:
-    """Classify which of the three escalation conditions this verdict represents."""
+    """Classify which of the FOUR escalation conditions this verdict represents.
+
+    pending_codification is checked BEFORE stale_green_backlog/persistently_red: it is orthogonal
+    to status (like pending_gated/infra_error, the marker leaves status at its PRIOR value), so it
+    must not be shadowed by whichever status-keyed condition the record happens to carry.
+    """
     if verdict.stuck_approvals:
         return "stuck_approval"
+    if verdict.pending_codification:
+        return "pending_codification"
     if verdict.status == "green" and verdict.unapplied_backlog > 0:
         return "stale_green_backlog"
     return "persistently_red"
@@ -76,6 +100,8 @@ def _condition_from_existing_rec(existing: dict[str, Any]) -> str:
         return "stuck_approval"
     if title == _TITLE_STALE_GREEN_BACKLOG:
         return "stale_green_backlog"
+    if title == _TITLE_PENDING_CODIFICATION:
+        return "pending_codification"
     return "persistently_red"
 
 
@@ -103,6 +129,20 @@ def _build_context(verdict: HealthVerdict, condition: str) -> str:
             "terraform/personal/ change) to apply the pending backlog. This rec closes "
             "automatically on the next sensor tick once the backlog drains."
         )
+    elif condition == "pending_codification":
+        marker = verdict.pending_codification or {}
+        parts = [
+            "The sandbox convergence record carries a pending_codification marker -- the drift "
+            "classifier measured a state-vs-code delta with resource_changes but NO resource_drift "
+            f"(status stays at its prior value, {verdict.status}; this is not out-of-band infra "
+            f"drift). First observed: {marker.get('first_seen', 'unknown')}."
+        ]
+        parts.append(
+            "Resolve via: land the codifying terraform/personal/ change (a plan_ec==0 cycle "
+            "self-clears the marker), or wait for the scheduled drift check -- a marker left "
+            "unresolved past its bounded age escalates to a genuine red automatically. This rec "
+            "closes automatically on the next sensor tick once the marker clears."
+        )
     else:
         parts = [
             f"The sandbox convergence record has been red for {verdict.red_age_hours:.1f} hours.",
@@ -125,10 +165,12 @@ def _build_rec_fields(verdict: HealthVerdict, condition: str) -> dict[str, Any]:
     title = {
         "stuck_approval": _TITLE_STUCK_APPROVAL,
         "stale_green_backlog": _TITLE_STALE_GREEN_BACKLOG,
+        "pending_codification": _TITLE_PENDING_CODIFICATION,
     }.get(condition, _TITLE_PERSISTENTLY_RED)
     acceptance = {
         "stuck_approval": _ACCEPTANCE_STUCK_APPROVAL,
         "stale_green_backlog": _ACCEPTANCE_STALE_GREEN_BACKLOG,
+        "pending_codification": _ACCEPTANCE_PENDING_CODIFICATION,
     }.get(condition, _ACCEPTANCE_PERSISTENTLY_RED)
     return {
         "title": title,
@@ -177,12 +219,28 @@ def escalate(
     """
     stuck_approval_trigger = bool(verdict.stuck_approvals)
     red_age_trigger = verdict.status == "red" and verdict.red_age_hours >= threshold_hours
+    # Decision 190: a RED record with a non-zero unapplied backlog trips over_threshold on IMPACT,
+    # not only on age -- assess.py already raises severity for this shape, but Decision 154 point
+    # 7 states severity "files nothing on its own" (escalate.py had zero severity references
+    # before this). Without this trigger the 2026-09-13 incident's real harm (three applies
+    # refused, 2.6h, zero recs filed) stays unfixed even after assess.py's severity fix.
+    red_blocked_apply_backlog_trigger = verdict.status == "red" and verdict.unapplied_backlog > 0
     stale_green_backlog_trigger = (
         verdict.status == "green"
         and verdict.unapplied_backlog > 0
         and verdict.record_age_hours >= STALE_GREEN_BACKLOG_THRESHOLD_HOURS
     )
-    over_threshold = stuck_approval_trigger or red_age_trigger or stale_green_backlog_trigger
+    # Decision 190: unconditional -- the marker's OWN bounded-age escalation lives in
+    # scripts.ci.convergence_classify (the drift workflow's stdlib delegate), not here. This
+    # ticket only tracks operator visibility of the episode while it is open.
+    pending_codification_trigger = bool(verdict.pending_codification)
+    over_threshold = (
+        stuck_approval_trigger
+        or red_age_trigger
+        or red_blocked_apply_backlog_trigger
+        or stale_green_backlog_trigger
+        or pending_codification_trigger
+    )
 
     def _build_fields() -> dict[str, Any]:
         condition = _condition_for_verdict(verdict)
@@ -197,6 +255,7 @@ def escalate(
         resolution = {
             "stuck_approval": _RESOLUTION_STUCK_APPROVAL,
             "stale_green_backlog": _RESOLUTION_STALE_GREEN_BACKLOG,
+            "pending_codification": _RESOLUTION_PENDING_CODIFICATION,
         }.get(condition, _RESOLUTION_PERSISTENTLY_RED)
         return {"status": "closed", "resolution": resolution}
 

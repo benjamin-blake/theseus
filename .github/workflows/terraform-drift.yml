@@ -250,11 +250,15 @@ jobs:
         # 0 on no change, 1 on error. We capture both stdout/stderr and the exit code.
         # Lock: -lock=true with 120s timeout (mirrors apply). An in-flight apply holds the native
         # S3 lock -> plan exits 1 with "Error acquiring the state lock" -> skip-this-cycle.
+        # -out=tfplan.bin + terraform show -json (Decision 190): the saved plan is rendered to
+        # tfplan.json HERE (this step's own working-directory, where tfplan.bin lives) so the
+        # repo-root delegate (scripts.ci.convergence_classify, invoked from the Handle-drift step
+        # below) can classify the MEASURED delta instead of the bare exit code.
         run: |
           set +e
           STDERR_FILE=$(mktemp)
           terraform plan -detailed-exitcode -lock=true -lock-timeout=120s -input=false \
-            -var-file=terraform.personal.tfvars 2>"$STDERR_FILE"
+            -var-file=terraform.personal.tfvars -out=tfplan.bin 2>"$STDERR_FILE"
           PLAN_EC=$?
           PLAN_STDERR=$(cat "$STDERR_FILE")
           rm -f "$STDERR_FILE"
@@ -268,7 +272,8 @@ jobs:
           fi
 
           if [ "$PLAN_EC" -eq 2 ]; then
-            echo "Drift check: changes detected (exit 2); drift found."
+            terraform show -json tfplan.bin > tfplan.json
+            echo "Drift check: changes detected (exit 2); rendered tfplan.json for classification."
             exit 0
           fi
 
@@ -297,11 +302,43 @@ jobs:
           set -euo pipefail
           RUN_URL="${SERVER_URL}/${REPO}/actions/runs/${RUN_ID}"
 
+          # MEASUREMENT always runs and is always logged, even when the write below is deduped
+          # away below -- narrowing the dedup invariant to TICKETING only (Decision 190).
+          VERDICT=$(PLAN_JSON="$(cat terraform/personal/tfplan.json)" python3 -m scripts.ci.convergence_classify --classify-plan)
+          echo "Measured verdict this cycle: ${VERDICT} (never inferred from the bare exit code)."
+
           if [ "$PRIOR_STATUS" = "red" ] || [ "$PRIOR_STATUS" = "unknown" ]; then
-            echo "Convergence record is ${PRIOR_STATUS}; not re-alarming (dedup invariant: one red = one signal; unknown = transient S3 read failure)."
+            echo "Convergence record is ${PRIOR_STATUS}; not re-ticketing this measured ${VERDICT} (one red = one signal; unknown = transient S3 read failure)."
             exit 0
           fi
 
+          if [ "$VERDICT" = "pending_codification" ]; then
+            EXISTING=$(aws s3 cp "s3://${CONVERGENCE_BUCKET}/${CONVERGENCE_KEY}" - 2>/dev/null || echo "{}")
+            OUT=$(EXISTING="$EXISTING" RUN_URL="$RUN_URL" python3 -m scripts.ci.convergence_classify --pending-codification-write)
+            ACTION=$(printf '%s' "$OUT" | sed -n '1p')
+            RECORD=$(printf '%s' "$OUT" | sed -n '2p')
+            printf '%s' "$RECORD" | aws s3 cp - "s3://${CONVERGENCE_BUCKET}/${CONVERGENCE_KEY}" --content-type application/json
+            echo "pending_codification ${ACTION}: ${RECORD}"
+            if [ "$ACTION" != "marked" ]; then
+              echo "::error::CONVERGENCE_STALE_MARKER_ESCALATED a pending_codification marker exceeded its bounded age; escalated to red this cycle."
+              exit 0
+            fi
+            .venv/bin/python -m scripts.ops_data_portal \
+              --file-rec \
+              --source tf_drift \
+              --priority Medium \
+              --effort S \
+              --risk low \
+              --verification-tier V2 \
+              --title "Terraform drift check found a pending-codification delta (state ahead of code, not drift)" \
+              --file ".github/workflows/terraform-drift.yml" \
+              --context "Scheduled terraform plan (T2.24) measured resource_changes with NO resource_drift -- a benign code-behind-state delta (e.g. an operator-sanctioned split-apply), not out-of-band infra drift (Decision 190). Status stays at its PRIOR value with a pending_codification marker; a plan_ec==0 cycle self-clears it, and one left unresolved past its bounded age escalates to red automatically." \
+              --acceptance "aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json - | grep -qv pending_codification"
+            echo "pending_codification tf_drift rec filed via ops portal."
+            exit 0
+          fi
+
+          # VERDICT == out_of_band_drift -- unchanged out-of-band red-flip (Decision 92/154).
           # DEP-11 / CARRY-2 (T2.47): a pending_gated marker means the delta this tick observed is
           # EXPLAINED by a routed-pending gated-apply awaiting human review, not out-of-band drift.
           # PENDING_GATED_DRIFT branch -- checked BEFORE the out-of-band red-flip below, and it
@@ -404,3 +441,31 @@ jobs:
             --context "Scheduled terraform plan (T2.24) detected a state-vs-code delta in the sandbox environment. The convergence record has been flipped red. Review the drift in GitHub Actions run ${RUN_URL} and resolve via the dispatch-ack apply path (terraform-apply-sandbox workflow_dispatch naming this run URL or the rec id)." \
             --acceptance "aws s3 cp s3://agent-platform-data-lake/convergence/personal/sandbox.json - | grep -q green"
           echo "tf_drift rec filed via ops portal."
+
+      - name: Self-clear a resolved pending_codification marker (ec=0, Decision 190)
+        # The existing Handle-drift step above is gated on plan_ec == '2' and can never reach this
+        # path -- a plan_ec == 0 cycle (no changes at all) is exactly when a benign
+        # pending_codification delta has been codified, so this is the ONLY step that can clear it.
+        if: >-
+          steps.oidc_drift.outcome == 'success' &&
+          steps.plan.outputs.plan_ec == '0'
+        run: |
+          set -euo pipefail
+          EXISTING=$(aws s3 cp "s3://${CONVERGENCE_BUCKET}/${CONVERGENCE_KEY}" - 2>/dev/null || echo "{}")
+          OUT=$(EXISTING="$EXISTING" python3 -m scripts.ci.convergence_classify --self-clear)
+          ACTION=$(printf '%s' "$OUT" | sed -n '1p')
+          if [ "$ACTION" = "noop" ]; then
+            echo "No pending_codification marker present; nothing to self-clear."
+            exit 0
+          fi
+
+          RECORD=$(printf '%s' "$OUT" | sed -n '2p')
+          printf '%s' "$RECORD" | aws s3 cp - "s3://${CONVERGENCE_BUCKET}/${CONVERGENCE_KEY}" --content-type application/json
+          echo "Self-cleared pending_codification marker with durable closure stamp (Decision 55 anti-hiding): ${RECORD}"
+
+          READBACK=$(aws s3 cp "s3://${CONVERGENCE_BUCKET}/${CONVERGENCE_KEY}" - 2>/dev/null || echo "")
+          if printf '%s' "$READBACK" | grep -q pending_codification; then
+            echo "::error::CONVERGENCE_WRITE_VERIFY pending_codification marker still present after self-clear write."
+            exit 1
+          fi
+          echo "Convergence record read-back verified: pending_codification marker cleared."

@@ -21,6 +21,30 @@ from scripts.ci_rca.convergence_dedup import (
 from scripts.ci_rca.convergence_dedup import main as convergence_main
 
 
+def test_drift_red_resolves_with_red_cause_and_marker_present() -> None:
+    """Decision 190 / Decision 142 one authority: the two NEW additive record fields (red_cause
+    is derived, never stored, so this covers a record shaped as if a caller stored one anyway;
+    pending_codification) must not perturb find_open_convergence_cause_rec's drift_run_url-keyed
+    resolution -- cause_kind=tf_drift stays stable whether or not the fields are present."""
+    record = {
+        "status": "red",
+        "commit_sha": "ed22aa46",
+        "drift_run_url": "https://x/runs/999",
+        "drift_reason": "out-of-band infra drift",
+        "drift_detected_at": "2026-09-13T16:24:36Z",
+        "red_cause": "out_of_band_drift",
+        "pending_codification": {"first_seen": "2026-09-13T00:00:00Z", "last_seen": "2026-09-13T00:00:00Z"},
+    }
+    drift_finder = MagicMock(return_value="rec-2695")
+    status_checker = MagicMock()
+
+    hit = find_open_convergence_cause_rec(record, drift_rec_finder=drift_finder, commit_status_checker=status_checker)
+
+    assert hit == ConvergenceCauseHit(cause_rec="rec-2695", cause_kind="tf_drift")
+    drift_finder.assert_called_once_with("https://x/runs/999")
+    status_checker.assert_not_called()
+
+
 class TestFindOpenConvergenceCauseRec:
     """Cause-aware CONVERGENCE_RED dedup decision (PLAN-ci-rca-convergence-dedup,
     acceptance criterion 2). All lookups injected -- no live DuckLake reader or gh call."""

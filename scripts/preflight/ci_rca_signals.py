@@ -266,6 +266,36 @@ def _check_ci_rca_liveness(creds_status: str, cache_rows: object = _common._READ
     return {"run_url": run.get("url", ""), "elapsed_minutes": round(elapsed_minutes, 1)}
 
 
+def _derive_convergence_gap_tracking_since(rows: list[dict], since_ts: str) -> list[dict]:
+    """PRIVATE PREDICATE for _check_convergence_rca_gap ONLY (Decision 190): tf_drift rec ids
+    created strictly after since_ts, deliberately NEVER source=ci_rca -- a tf_drift-tracked red
+    never counted before, while ANY unrelated ci_rca rec (rec-3802/3809/3810/3811) silently
+    satisfied the old matcher (ci_rca recs carry no field binding them to a specific episode, and
+    Decision 142 forbids a second cause-resolution classifier here). Deliberately NOT a widening
+    of _derive_ci_rca_since (Decision 84 I-3 verb equivalence; also reached by
+    _check_ci_rca_liveness) -- a separate, narrower derivation with no other caller.
+    """
+    cutoff = _common._parse_ts_utc(since_ts)
+    if cutoff is None:
+        return []
+    out: list[dict] = []
+    for r in rows:
+        if r.get("source") != "tf_drift":
+            continue
+        ts = _common._row_ts(r)
+        if ts is not None and ts > cutoff:
+            out.append({"id": r.get("id", "")})
+    return out
+
+
+def _fetch_convergence_gap_tracking_recs_since(ts: str, cache_rows: object = _common._READER_SENTINEL) -> list[dict]:
+    """Cache-rows-only fetch (Decision 88 egress invariant) for the predicate above -- never a
+    reader call, mirroring _fetch_ci_rca_dispute_recs's cache-only shape."""
+    if cache_rows is not _common._READER_SENTINEL:
+        return [] if cache_rows is None else _derive_convergence_gap_tracking_since(cache_rows, ts)  # type: ignore[arg-type]
+    return []
+
+
 def _check_convergence_sensor_liveness(creds_status: str) -> dict | None:
     """Return alert dict when the latest scheduled convergence-health.yml run did not succeed.
 
@@ -329,16 +359,15 @@ _CONVERGENCE_RCA_GAP_GRACE_MINUTES = 30
 
 
 def _check_convergence_rca_gap(convergence_health: dict | None, cache_rows: object = _common._READER_SENTINEL) -> dict | None:
-    """Return alert dict when the convergence record is red beyond grace with no ci_rca rec since.
+    """Return alert dict when the convergence record is red beyond grace with no tracking rec since.
 
-    Generalises _check_ci_rca_liveness (which only inspects ci.yml push-to-main failures) to the
-    convergence-record surface: PLAN-gated-apply-rca-trigger's confirmed gap (run 28379330706,
-    gated-apply, run_attempt=2) wrote a red record with zero RCA signal and was invisible to
-    _check_ci_rca_liveness. Matches on the red episode's start TIMESTAMP (red_since) vs
-    ci_rca rec creation time -- NOT commit_sha, which ci_rca recs carry no structured field for
-    (a commit match would fire a permanent false-positive even after a valid rec is filed).
-    commit_sha rides the alert payload for the operator only. Degrades to None on any error or
-    missing data (rec-2027 pattern -- never crashes preflight).
+    Generalises _check_ci_rca_liveness (ci.yml push-to-main only) to the convergence-record
+    surface: PLAN-gated-apply-rca-trigger's confirmed gap (run 28379330706) wrote a red record
+    with zero RCA signal, invisible to that check. Matches on red_since vs a tf_drift rec's
+    creation time (Decision 190 -- see _derive_convergence_gap_tracking_since for why ci_rca is
+    excluded, not added alongside it), never commit_sha (no structured field carries it; a commit
+    match would false-positive forever after a valid rec is filed). Degrades to None on any error
+    or missing data (rec-2027 pattern -- never crashes preflight).
     """
     try:
         if not convergence_health or convergence_health.get("status") != "red":
@@ -352,7 +381,7 @@ def _check_convergence_rca_gap(convergence_health: dict | None, cache_rows: obje
         if (red_age_hours * 60.0) <= _CONVERGENCE_RCA_GAP_GRACE_MINUTES:
             return None
 
-        if _fetch_ci_rca_recs_since(red_since, cache_rows=cache_rows):
+        if _fetch_convergence_gap_tracking_recs_since(red_since, cache_rows=cache_rows):
             return None
 
         return {

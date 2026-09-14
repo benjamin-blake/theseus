@@ -9,17 +9,25 @@ conflation is exactly what published a green `terraform-converged` status throug
 2026-08-15 OIDC outage this plan recovers from, even though main was in fact unverifiable, not
 converged.
 
-classify() discriminates SIX mutually-exclusive outcomes:
+classify() discriminates SEVEN mutually-exclusive outcomes:
   1. NoSuchKey / genuinely absent record -> success, pass-on-absent (first-apply-allowed).
   2. Any OTHER read failure (credential/authorization) -> error, UNVERIFIED -- never a green.
   3. Empty response body -> error, UNVERIFIED (today folds into pass-on-absent green; must not).
   4. Unparseable / non-object JSON -> error, UNVERIFIED (today aborts under inherited errexit,
      reding a job that must never red; here it degrades to a printed state instead).
-  5. status == "red" -> failure (advisory only; never a required check, Decision 83).
-  6. status != "red" -> success, distinguishing a pending_gated marker (DEP-11) from plain green.
+  5. status == "red" -> failure (advisory only; never a required check, Decision 83), NAMING THE
+     MEASURED CAUSE (Decision 190) via scripts.ci.convergence_classify.
+     render_convergence_advisory_red_description rather than unconditionally asserting "last
+     sandbox apply RED at {commit}" -- false on a drift-caused red, where commit is the last
+     SUCCESSFUL apply, not the failing one.
+  6. status != "red" with a pending_gated marker -> success, distinguishing a routed-pending
+     episode (DEP-11) from plain green.
+  7. status != "red" with a pending_codification marker (Decision 190) -> success, distinguishing
+     a benign code-behind-state delta (measured resource_changes with no resource_drift) from
+     plain green, the same way outcome 6 already does for pending_gated.
 
 classify() is a pure function of (return code, stderr text, response body) -- no I/O, no AWS
-call -- so all six outcomes are unit-provable (tests/test_convergence_advisory.py). The S3 read
+call -- so all seven outcomes are unit-provable (tests/test_convergence_advisory.py). The S3 read
 itself stays in the workflow's `run:` body, reusing the NoSuchKey-vs-other-error pattern already
 at terraform-drift.yml:198-225 rather than inventing a second one.
 
@@ -36,6 +44,8 @@ import os
 import re
 import sys
 from typing import Optional
+
+from scripts.ci.convergence_classify import render_convergence_advisory_red_description
 
 SUCCESS = "success"
 FAILURE = "failure"
@@ -81,11 +91,7 @@ def classify(rc: int, stderr: str, body: str) -> tuple[str, str]:
 
     status = record.get("status", "")
     if status == "red":
-        commit = record.get("commit_sha", "")
-        return (
-            FAILURE,
-            f"main is non-converged (last sandbox apply RED at {commit}). Advisory only -- not a required check.",
-        )
+        return (FAILURE, render_convergence_advisory_red_description(record))
 
     pending_gated = record.get("pending_gated")
     pending_sha = pending_gated.get("commit_sha") if isinstance(pending_gated, dict) else None
@@ -94,6 +100,15 @@ def classify(rc: int, stderr: str, body: str) -> tuple[str, str]:
             SUCCESS,
             f"main is pending-gated (a routed change at {pending_sha} awaits gated-apply "
             "reviewer approval; not a failure). Advisory only.",
+        )
+
+    pending_codification = record.get("pending_codification")
+    first_seen = pending_codification.get("first_seen") if isinstance(pending_codification, dict) else None
+    if first_seen:
+        return (
+            SUCCESS,
+            f"main is pending-codification (a code-behind-state delta measured since {first_seen}, "
+            "not out-of-band drift; not a failure). Advisory only.",
         )
 
     return SUCCESS, "main is converged (last sandbox apply GREEN). Advisory only."

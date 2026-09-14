@@ -15,6 +15,46 @@ import pytest
 
 import scripts.convergence_health as ch
 from scripts.convergence_health import HealthVerdict, escalate
+from scripts.convergence_health.escalate import _RESOLUTION_PENDING_CODIFICATION, _TITLE_PENDING_CODIFICATION
+
+
+def test_red_backlog_trips_over_threshold_before_age() -> None:
+    """Decision 190: a red record with a non-zero unapplied backlog files/updates a rec well
+    below the 6h age threshold -- Decision 154 point 7 notes severity 'files nothing on its own',
+    so this trigger (not assess.py's severity fix alone) is what actually fixes the incident's
+    real harm (three applies refused, 2.6h, zero recs filed)."""
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def _caller(action: str, fields: dict[str, Any]) -> Any:
+        calls.append((action, fields))
+        return "rec-901"
+
+    verdict = HealthVerdict(status="red", red_age_hours=0.5, unapplied_backlog=3, severity="high")
+    result = escalate(verdict, portal_caller=_caller, open_recs=[], threshold_hours=6.0)
+    assert result == {"action": "file", "rec_id": "rec-901"}
+    assert calls[0][0] == "file"
+
+
+def test_pending_codification_selfclear_writes_closure_stamp() -> None:
+    """Decision 190 / Decision 55 anti-hiding: a self-cleared pending_codification episode closes
+    with a durable closure-stamp resolution, never a silent revert with no trace."""
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    def _caller(action: str, fields: dict[str, Any]) -> Any:
+        calls.append((action, fields))
+        return None
+
+    existing = {
+        "id": "rec-950",
+        "source": "tf_convergence_stale",
+        "status": "open",
+        "title": _TITLE_PENDING_CODIFICATION,
+    }
+    cleared_verdict = HealthVerdict(status="green", red_age_hours=0.0, unapplied_backlog=0, severity="none")
+    result = escalate(cleared_verdict, portal_caller=_caller, open_recs=[existing])
+    assert result == {"action": "close", "rec_id": "rec-950"}
+    assert calls[0][0] == "close"
+    assert calls[0][1]["resolution"] == _RESOLUTION_PENDING_CODIFICATION
 
 
 class TestFindOpenConvergenceStaleRec:
@@ -60,11 +100,11 @@ class TestFindOpenConvergenceStaleRec:
 
 
 class TestEscalate:
-    def _make_verdict(self, red_age: float = 10.0, status: str = "red") -> HealthVerdict:
+    def _make_verdict(self, red_age: float = 10.0, status: str = "red", unapplied_backlog: int = 0) -> HealthVerdict:
         return HealthVerdict(
             status=status,
             red_age_hours=red_age,
-            unapplied_backlog=2,
+            unapplied_backlog=unapplied_backlog,
             stuck_approvals=[],
             severity="high" if red_age >= 6 else "low",
         )
@@ -400,6 +440,70 @@ class TestEscalateGreenStaleBacklog:
         assert calls[0][1]["resolution"] == ch._RESOLUTION_STALE_GREEN_BACKLOG
 
 
+class TestEscalatePendingCodification:
+    """Decision 190: the fourth, orthogonal escalation condition -- a benign code-behind-state
+    delta tracked independently of status."""
+
+    def _marker(self) -> dict[str, Any]:
+        return {"first_seen": "2026-09-13T00:00:00Z", "last_seen": "2026-09-13T00:00:00Z", "run_url": "https://x/1"}
+
+    def test_files_rec_for_pending_codification(self) -> None:
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        def _caller(action: str, fields: dict[str, Any]) -> Any:
+            calls.append((action, fields))
+            return "rec-960"
+
+        verdict = HealthVerdict(
+            status="green", red_age_hours=0.0, unapplied_backlog=0, severity="none", pending_codification=self._marker()
+        )
+        result = escalate(verdict, portal_caller=_caller, open_recs=[])
+        assert result == {"action": "file", "rec_id": "rec-960"}
+        assert calls[0][1]["title"] == _TITLE_PENDING_CODIFICATION
+        assert "resource_changes" in calls[0][1]["context"]
+
+    def test_second_tick_updates_not_files(self) -> None:
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        def _caller(action: str, fields: dict[str, Any]) -> Any:
+            calls.append((action, fields))
+            return None
+
+        existing = {
+            "id": "rec-961",
+            "source": "tf_convergence_stale",
+            "status": "open",
+            "title": _TITLE_PENDING_CODIFICATION,
+        }
+        verdict = HealthVerdict(
+            status="green", red_age_hours=0.0, unapplied_backlog=0, severity="none", pending_codification=self._marker()
+        )
+        result = escalate(verdict, portal_caller=_caller, open_recs=[existing])
+        assert result == {"action": "update", "rec_id": "rec-961"}
+        assert len(calls) == 1
+
+    def test_pending_codification_takes_priority_over_stale_green_backlog(self) -> None:
+        """The marker is checked BEFORE stale_green_backlog so it is never shadowed by a
+        co-occurring status-keyed condition."""
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        def _caller(action: str, fields: dict[str, Any]) -> Any:
+            calls.append((action, fields))
+            return "rec-962"
+
+        verdict = HealthVerdict(
+            status="green",
+            red_age_hours=0.0,
+            unapplied_backlog=5,
+            severity="high",
+            record_age_hours=ch.STALE_GREEN_BACKLOG_THRESHOLD_HOURS + 1.0,
+            pending_codification=self._marker(),
+        )
+        result = escalate(verdict, portal_caller=_caller, open_recs=[])
+        assert result["action"] == "file"
+        assert calls[0][1]["title"] == _TITLE_PENDING_CODIFICATION
+
+
 class TestAcceptanceLint:
     """VP step 1 / AC1: every _build_rec_fields acceptance must pass the REAL linter, no mocking."""
 
@@ -415,7 +519,7 @@ class TestAcceptanceLint:
             severity="high",
             record_age_hours=ch.STALE_GREEN_BACKLOG_THRESHOLD_HOURS,
         )
-        for condition in ("persistently_red", "stale_green_backlog", "stuck_approval"):
+        for condition in ("persistently_red", "stale_green_backlog", "stuck_approval", "pending_codification"):
             fields = _build_rec_fields(verdict, condition)
             assert lint_acceptance_command(fields["acceptance"]) == (True, None), condition
 
