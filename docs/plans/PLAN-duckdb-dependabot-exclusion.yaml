@@ -43,10 +43,19 @@ scope:
       pip` entry in .github/dependabot.yml. DERIVED, never enumerated (Decision 187): the denylist is
       read from the shell script at check time, so a future denylist addition fails this gate until
       the config catches up, which is the whole point. Scope the assertion to the pip ecosystem --
-      duckdb/ducklake are PyPI distributions, so asserting their absence from the github-actions
-      group would be vacuous and would force noise config into that entry. A denylist that cannot be
+      duckdb is a PyPI distribution, so asserting its absence from the github-actions group would be
+      vacuous and would force noise config into that entry. Note `ducklake` is NOT a pip requirement
+      here at all (no requirements file declares it; it is a DuckDB extension), so its exclusion is
+      inert defensive config that Dependabot could never act on -- it is carried because the derived
+      assertion reads the denylist verbatim, which is the honest price of Decision 187, not because a
+      ducklake pip bump is reachable. A denylist that cannot be
       parsed FAILS LOUDLY (never a silent pass): losing the regex silently converts this into a check
-      that asserts nothing while reporting green. Declares `registry.examined(count,
+      that asserts nothing while reporting green. Record in the module docstring that the assertion
+      is scoped to pip groups as a whole: a future pip group narrowly patterned on something duckdb
+      could never match (say `patterns: ["boto3*"]`) would still be required to carry the
+      exclude-patterns, which is the same noise-config trap the ecosystem scoping avoids -- revisit
+      the scoping rather than adding the noise if that group ever appears. Declares
+      `registry.examined(count,
       unit="dependabot_pip_groups")` on every reachable exit path (Decision 170); the
       `_BASELINE_SEED` in config/check_accounting_baseline.yaml is frozen, so a new check genuinely
       cannot be grandfathered. NEW SIBLING MODULE rather than a third assertion inside
@@ -158,7 +167,9 @@ verification_plan:
     command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_dependabot_config.py -q
     expected: >-
       All cases pass -- including the group-with-no-exclude-patterns case, the
-      exclude-patterns-missing-one-name case, and the unparseable-denylist case appending a failure
+      exclude-patterns-missing-one-name case, the unparseable-denylist case appending a failure, and
+      the taxonomy-row and Decision 170 accounting nodes (the command runs the whole file, which is
+      why test_obligations links the config/ci_rca_taxonomy.yaml row to this step)
     fix_if: >-
       A config missing the exclusion passes the guard, or an unparseable denylist yields zero
       failures (a check that asserts nothing while reporting green)
@@ -178,7 +189,11 @@ verification_plan:
     phase: pre-deploy
     action: The Decision 99 reversal-conditions stanza parses, matches its enclosing header, and is actually monitored
     command: 'out=$(bin/venv-python -m scripts.preflight.decision_conditions) && printf ''%s\n'' "$out" | grep -qE "^Decision 99: (not-due|manual-review-due|fired)"'
-    expected: A Decision 99 line is printed in a well-formed STATE (not-due against its review_by), and the CLI exits zero
+    expected: >-
+      A Decision 99 line is printed in a well-formed STATE and the CLI exits zero. The alternation
+      admits all three live states (not-due today, plus manual-review-due and fired) on purpose, so
+      the standing registry row does not false-red once review_by elapses or a condition fires --
+      only MALFORMED is rejected
     fix_if: >-
       No Decision 99 line (the fence was never added, or sits outside Decision 99's block), or the
       stanza reports MALFORMED because decision/review_by/on_trigger/conditions is missing or the
@@ -299,14 +314,20 @@ verification_plan:
       On main after the merge, duckdb is still pinned 1.5.4 (the exclusion held end to end) and the
       old mcp pin is gone (the ten updates actually landed)
     fix_if: >-
-      duckdb moved (the exclusion failed and the SSOT is now desynced -- revert the merge), or the old
-      mcp pin survives (the group never merged; check whether pr-validate is still red, and fix the
+      duckdb moved AND the SSOT at config/lambda/ducklake/version.yaml still reads 1.5.4 (the
+      exclusion leaked and the pin is now desynced -- revert the merge). If duckdb moved and the SSOT
+      moved WITH it, that is the sanctioned rec-3791 cascade landing, not a leak: re-pin this step's
+      expected value to the new version rather than reverting anything. Or the old mcp pin survives (the group never merged; check whether pr-validate is still red, and fix the
       oracle rather than the assertion's strength if the mcp test is the cause)
   - step: 12
     phase: post-deploy
     action: The bundled recommendation closes against the warehouse, not just locally
-    command: bin/venv-python -m scripts.sync.ops sync && grep 'rec-3832' logs/.recommendations-log.jsonl | grep -q 'closed'
-    expected: rec-3832 reads closed in the refreshed read cache
+    command: 'bin/venv-python -m scripts.sync.ops sync && grep ''"id": "rec-3832"'' logs/.recommendations-log.jsonl | grep -q ''"status": "closed"'''
+    expected: >-
+      rec-3832 reads closed in the refreshed read cache. Both greps are ANCHORED on their json keys
+      deliberately: rec-3843's row also contains the bare substring "rec-3832" (it is one of its four
+      dependency edges), so an unanchored `grep rec-3832 | grep closed` passes as soon as rec-3843
+      closes, whether or not rec-3832 did
     fix_if: >-
       Still open -- the squash-merge body omitted the `Resolves: rec-3832` trailer that
       rec-autoclose.yml keys on, or its acceptance command still names the old
@@ -366,8 +387,8 @@ constraints:
     red-before leg it relies on.
 context:
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 143 of 143. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 6."
-  - "CITE: 99, 167, 177, 133, 169, 170, 187, 128, 131, 189, 100."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "CITE: 99, 100, 103, 128, 131, 133, 167, 169, 170, 177, 181, 187, 189."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 3 round(s); round 3 autonomous confirming"
   - "D181 WARN resolved by pivot: compiled-pin oracle, not floor-derived probe. See the tests/test_import_governance.py scope row."
   - "D167 NOTE resolved: amend Decision 99, no new number (decision-entry.yaml significance.routing)."
   - "D103 NOTE resolved: conditions are self-describing states; rec ids are evidence, not the condition."
