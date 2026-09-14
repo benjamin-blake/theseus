@@ -1,0 +1,319 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "duckdb-dependabot-exclusion"
+intent: >-
+  Stop one SSOT-owned dependency from stranding an entire weekly grouped bump, and make the duckdb
+  exclusion a monitored commitment that resurfaces on its own -- so it is retired on the evidence
+  that the coordinated cascade exists, never silently forgotten as a standing exception.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-duckdb-dependabot-exclusion.yaml
+phase: T3.11
+implementation_declared: true
+scope:
+  - file: .github/dependabot.yml
+    action: Modify
+    purpose: >-
+      Add `exclude-patterns: ["duckdb", "ducklake"]` to the pip `minor-and-patch` group. BOTH names,
+      not just duckdb: `scripts/ci/dependabot_auto_merge.sh`'s `_DENIED_DEPENDENCIES` carries both,
+      and the new guard derives its assertion FROM that literal, so excluding only duckdb leaves the
+      guard red on `ducklake`. An excluded dependency still gets its OWN PR (Dependabot's documented
+      behaviour), which the denylist then quarantines alone -- that standing PR is the new-release
+      signal Decision 99's one-file bump procedure needs as its trigger, and is the reason
+      exclude-patterns was chosen over a top-level `ignore:` (which would delete the signal). Carry
+      an inline comment naming Decision 99 as the owning commitment and the reversal-conditions
+      stanza as the retirement criteria, so a reader of this file alone can find why.
+  - file: scripts/checks/ci_guards/validate_dependabot_config.py
+    action: Create
+    purpose: >-
+      New `--pre` check asserting that every name parsed out of `_DENIED_DEPENDENCIES` in
+      scripts/ci/dependabot_auto_merge.sh is excluded from every group of every `package-ecosystem:
+      pip` entry in .github/dependabot.yml. DERIVED, never enumerated (Decision 187): the denylist
+      is read from the shell script at check time, so a future denylist addition fails this gate
+      until the config catches up, which is the whole point. Scope the assertion to the pip
+      ecosystem -- duckdb/ducklake are PyPI distributions, so asserting their absence from the
+      github-actions group would be vacuous and would force noise config into that entry. A
+      denylist that cannot be parsed FAILS LOUDLY (never a silent pass): losing the regex silently
+      converts this into a check that asserts nothing. Declares `registry.examined(count,
+      unit="dependabot_pip_groups")` on every reachable exit path (Decision 170); it cannot be
+      grandfathered into the frozen config/check_accounting_baseline.yaml seed. NEW SIBLING MODULE
+      rather than a third assertion inside validate_dependabot_automation.py: that module's mirror
+      test is already 461 SLOC against the 500 limit, and Decision 128 answers a crossing with
+      decomposition, never a raise -- a separate cohesive module (config shape) beside the existing
+      one (workflow shape) avoids the crossing entirely.
+  - file: tests/checks/ci_guards/test_validate_dependabot_config.py
+    action: Create
+    purpose: >-
+      Mirror tests (Decision 131). Pass path against the REAL repo files, plus one fail path per
+      assertion, each mutating exactly one property of a valid fixture so no test fails for two
+      reasons at once (the sibling module's established fixture discipline): a pip group with no
+      exclude-patterns key at all; exclude-patterns present but missing one denied name; an
+      unparseable/absent `_DENIED_DEPENDENCIES` literal failing loudly rather than passing
+      vacuously. Plus the Decision 170 accounting assertions (examined declared on the pass path
+      AND on the unreadable-config path). Self-contained -- no cross-test imports.
+  - file: scripts/checks/ci_guards/_manifest.py
+    action: Modify
+    purpose: >-
+      One `Entry(...)` literal registering the new check, BARE STRING module/attr only (Decision
+      169 -- a computed or "module:attr" value severs the AST graph edge validate_check_manifests
+      walks). `pre=True` with `pre_globs` reaching `.github/dependabot.yml` AND
+      `scripts/ci/dependabot_auto_merge.sh`: a config-only or denylist-only PR is exactly the class
+      this guard exists to catch, and without those globs it would only ever fire in the full tier,
+      i.e. after merge. `full_segment="full_after_lint"`, matching its sibling. Adding globs is a
+      tightening and needs no tier-demotion marker (Decision 187).
+  - file: tests/checks/ci_guards/test__manifest.py
+    action: Modify
+    purpose: >-
+      Mirror assertion that the new Entry exists, is pre-tier, and carries both load-bearing
+      pre_globs. Assert membership and properties -- never an exact `len(ENTRIES) == N`, which
+      breaks CI on the next unrelated check addition (tests/CLAUDE.md test-count coupling rule).
+  - file: config/ci_rca_taxonomy.yaml
+    action: Modify
+    purpose: >-
+      `validate_dependabot_config: code_regression` row. Named by `scripts.roadmap.plan_obligations`
+      as the one registration obligation a new check module owes as a scope row; the sibling
+      validate_dependabot_automation already carries the identical classification.
+  - file: tests/test_import_governance.py
+    action: Modify
+    purpose: >-
+      Second, INDEPENDENT blocker on PR #1171, unrelated to duckdb.
+      `TestCheckLockfileSync::test_mcp_declaration_rejects_major_two` asserts `Version("1.28.1") in
+      Requirement(declaration).specifier`, so it fails on ANY mcp floor bump (the PR moves the floor
+      to >=1.30.0) -- a version literal coupled to the thing it guards, the same defect class
+      tests/CLAUDE.md names for counts and rec-2358 names for the duckdb fixtures. DO NOT fix it by
+      deriving the probe from the declared floor: that makes the assertion tautological for every
+      `>=floor,<2` form and is an assertion weakened to obtain green, which Decision 181 clause 1
+      forbids. Fix it with an INDEPENDENT oracle -- take the probe from the COMPILED
+      requirements.txt pin, so the line asserts the cross-file property "the pin satisfies the
+      declared floor" and still discriminates. Keep the `Version("2.0.0") not in specifier` upper
+      bound exactly as it is.
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      Amend Decision 99 IN PLACE -- no new Decision number. A group exclusion is a point-fix whose
+      durable commitment (SSOT ownership of the duckdb floor) Decision 99 already owns, and
+      docs/contracts/decision-entry.yaml's significance.routing sends that to an existing entry, not
+      to a fresh header. Two pure INSERTIONS (Decision 177 branch 1 permits added lines; modifying
+      or reordering the live body does not): a dated, source-cited `> **...:**` annotation recording
+      the exclusion and why the signal is preserved, and a fenced ```yaml reversal-conditions```
+      stanza with `decision: 99` (the parser MALFORMED-fails a stanza whose id does not match its
+      enclosing header). Decision 99 carries no stanza today, so this claims the slot rather than
+      colliding. Write each condition as a self-describing STATE citing rec ids as EVIDENCE, never
+      as the condition itself (Decision 103) -- a condition phrased as "rec-3841 is closed" rots
+      silently the moment that rec is superseded.
+  - file: docs/plans/PLAN-duckdb-dependabot-exclusion.yaml
+    action: Create
+    purpose: This plan.
+bundled_recommendations:
+  - rec-3832
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - Every name in dependabot_auto_merge.sh's _DENIED_DEPENDENCIES is excluded from every pip group in .github/dependabot.yml
+  - A --pre check fails when a denylisted dependency is left inside a pip group, and fails loudly when the denylist cannot be parsed
+  - The new check is dispatched by a PR that touches only .github/dependabot.yml
+  - Decision 99 carries a well-formed reversal-conditions stanza that scripts.preflight.decision_conditions reports as monitored
+  - tests/test_import_governance.py asserts the mcp declaration against the compiled pin, with no hardcoded version literal and the major-2 upper bound intact
+  - The regenerated Dependabot group PR carries the ten non-duckdb updates, no duckdb change, green CI, and is merged
+  - rec-3832 is closed
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      The guard rejects every way a denylisted dependency can survive in a pip group, and fails
+      loudly rather than vacuously when the denylist itself cannot be read
+    command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_dependabot_config.py -q
+    expected: >-
+      All cases pass -- including the group-with-no-exclude-patterns case, the
+      exclude-patterns-missing-one-name case, and the unparseable-denylist case appending a failure
+    fix_if: >-
+      A config missing the exclusion passes the guard, or an unparseable denylist yields zero
+      failures (a check that asserts nothing while reporting green)
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: dependabot-denylist-excluded-from-pip-groups
+  - step: 2
+    phase: pre-deploy
+    action: The live repository config satisfies the guard against the real denylist, not a fixture
+    command: bin/venv-python -m pytest "tests/checks/ci_guards/test_validate_dependabot_config.py::TestPassPath::test_passes_against_the_real_repo_config" -q
+    expected: Passes; the real .github/dependabot.yml excludes both duckdb and ducklake from the pip group
+    fix_if: The real config still lets a denylisted name ride the pip group, or only duckdb was excluded and ducklake was forgotten
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: dependabot-real-config-excludes-denylisted-deps
+  - step: 3
+    phase: pre-deploy
+    action: The Decision 99 reversal-conditions stanza parses, matches its enclosing header, and is actually monitored
+    command: bin/venv-python -m scripts.preflight.decision_conditions | grep -q "^Decision 99:"
+    expected: A Decision 99 line is printed (not-due against its review_by), and the CLI exits zero -- no MALFORMED entry
+    fix_if: >-
+      No Decision 99 line (the fence was never added, or sits outside Decision 99's block), or the
+      stanza reports MALFORMED because decision/review_by/on_trigger/conditions is missing or the
+      stanza id does not match the header
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: decision-99-reversal-stanza-monitored
+  - step: 4
+    phase: pre-deploy
+    action: The mcp declaration assertion no longer carries a version literal coupled to the floor it guards
+    command: test "$(grep -c 'Version("1\.28\.1")' tests/test_import_governance.py)" -eq 0
+    expected: Zero occurrences; the 1.x probe now comes from the compiled requirements.txt pin
+    fix_if: >-
+      The literal survives (the test still breaks on the next mcp bump), or it was removed by
+      deriving the probe from the declared floor, which makes the assertion tautological and trips
+      Decision 181 clause 1
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: mcp-declaration-test-has-no-pinned-version-literal
+  - step: 5
+    phase: pre-deploy
+    action: The new check is selected by a PR that touches only the dependabot config -- the exact class it guards
+    command: bin/venv-python -m pytest tests/checks/ci_guards/test__manifest.py -q
+    expected: Passes; the Entry is registered, pre-tier, and its pre_globs name .github/dependabot.yml and the auto-merge delegate
+    fix_if: >-
+      The Entry is full-tier only, or its globs miss .github/dependabot.yml, so a config-only PR
+      never dispatches the guard and the regression is caught only after merge
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: dependabot-config-guard-is-pre-tier-on-config-edits
+  - step: 6
+    phase: pre-deploy
+    action: The mcp declaration test still passes against the current, unbumped tree
+    command: bin/venv-python -m pytest tests/test_import_governance.py -q
+    expected: All tests pass; the rewritten assertion holds where the compiled pin satisfies the declared floor
+    fix_if: The rewritten oracle is wrong about the current tree (e.g. it reads the wrong file or mis-parses the pin)
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Green by construction on the unimplemented tree, so it cannot demonstrate red-before and a
+      graduate disposition would be a false one (Decision 189). The discriminating condition is a
+      BUMPED mcp floor, which exists only on the Dependabot head, not here; step 4 graduates the
+      property that is red-before on this tree, and VP step 9 exercises the real bumped floor.
+  - step: 7
+    phase: pre-deploy
+    action: Whole fast presubmit stays green with the new check wired in
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0, with the new check listed among those run
+    fix_if: The new check reds the live tree, or a manifest/accounting guard rejects its registration
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      An aggregate of the whole fast tier that duplicates checks already graduated individually, and
+      it is green on the unimplemented tree by construction, so graduating it would assert nothing
+      this plan introduces. Kept as the integration gate that the registration guards (manifest,
+      accounting, taxonomy) accept the new module.
+  - step: 8
+    phase: post-deploy
+    action: Dependabot regenerates the group without duckdb once the config change is on main
+    command: bin/venv-python -m scripts.sync.ops sync
+    expected: >-
+      The regenerated group PR (a new number if Dependabot supersedes #1171, as #1167 became #1171)
+      lists the ten non-duckdb updates, touches no duckdb pin, and the ducklake-version-lockstep
+      gate is green on it
+    fix_if: >-
+      Dependabot reopens the group still carrying duckdb (the exclude-pattern did not take -- check
+      the group name and indentation), or leaves #1171 stale, in which case post @dependabot recreate
+  - step: 9
+    phase: post-deploy
+    action: The regenerated PR is green end to end, proving both blockers are gone against a real bumped mcp floor
+    command: bin/venv-python -m scripts.sync.ops sync
+    expected: pr-validate is green on the regenerated PR; neither ducklake-version-lockstep nor the mcp declaration test reds it
+    fix_if: >-
+      ducklake-version-lockstep still reds (duckdb survived the exclusion), or the mcp test reds
+      (the compiled-pin oracle does not hold against the bumped floor -- fix the oracle, never the
+      assertion's strength)
+  - step: 10
+    phase: post-deploy
+    action: The bundled recommendation closes against the warehouse, not just locally
+    command: bin/venv-python -m scripts.sync.ops sync && grep 'rec-3832' logs/.recommendations-log.jsonl | grep -q 'closed'
+    expected: rec-3832 reads closed in the refreshed read cache
+    fix_if: >-
+      Still open -- the squash-merge body omitted the `Resolves: rec-3832` trailer that
+      rec-autoclose.yml keys on, or its acceptance command still names the old
+      test_validate_dependabot_automation.py home and must be repointed via update_rec first
+test_obligations:
+  - source: scripts/checks/ci_guards/validate_dependabot_config.py
+    behavior: >-
+      A denylisted dependency left inside a pip group fails the check, and an unparseable
+      _DENIED_DEPENDENCIES fails loudly rather than passing vacuously
+    verification_step: 1
+    test_selector: tests/checks/ci_guards/test_validate_dependabot_config.py
+    red_green_expectation: red before (module and tests do not exist), green after
+  - source: scripts/checks/ci_guards/_manifest.py
+    behavior: >-
+      The new Entry stays pre-tier with .github/dependabot.yml and the auto-merge delegate in its
+      pre_globs, so a config-only PR dispatches the guard pre-merge
+    verification_step: 5
+    test_selector: tests/checks/ci_guards/test__manifest.py
+    red_green_expectation: red before, green after
+constraints:
+  - No rescue agents or workaround loops (Decision 55)
+  - >-
+    Never weaken an assertion to obtain green (Decision 181 clause 1). The mcp fix must keep
+    discriminating; if no non-vacuous form exists, file a recommendation instead of relaxing it.
+  - >-
+    Never raise a SLOC budget to absorb the new tests (Decision 128). If a scope file crosses 500,
+    decompose it into a facade package; --update-sloc-budgets does not auto-seed a new oversized file.
+  - >-
+    Do not modify or reorder Decision 99's existing body (Decision 177). Both edits are pure
+    insertions; the fenced stanza interior is the one mutable monitored surface.
+  - >-
+    The denylist is DERIVED from scripts/ci/dependabot_auto_merge.sh at check time, never re-listed
+    in the checker or its tests (Decision 187 derive-don't-enumerate).
+  - >-
+    Do not hand-edit the Dependabot branch. The regenerated PR comes from Dependabot itself
+    (@dependabot recreate); merging is squash, via mcp__github__merge_pull_request.
+context:
+  - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 143 of 143. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 6."
+  - "CITE: 99, 167, 177, 133, 169, 170, 187, 128, 131, 189, 100."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "D181 WARN resolved by pivot: compiled-pin oracle, not floor-derived probe. See the tests/test_import_governance.py scope row."
+  - "D167 NOTE resolved: amend Decision 99, no new number (decision-entry.yaml significance.routing)."
+  - "D103 NOTE resolved: conditions are self-describing states; rec ids are evidence, not the condition."
+  - "D79 NOTE resolved: V2 stands. pyyaml is the only Lambda manifest pip_packages name and is not among the eleven bumped packages."
+  - "Root cause of the PR #1171 red: run 34815746939, job 103885937715 -- ducklake-version-lockstep plus 2 mcp test failures."
+  - "Reversal criteria holder is rec-3843; its three preconditions are rec-3840, rec-3841, rec-3842. rec-3791 is the pending 1.5.4->1.5.5 cascade."
+  - "T1.5:c2 cost: this stanza is a 16th reversal-conditions carrier the ops_decisions projection cannot recover (Decision 134)."
+  - >-
+    ci-rca deferral rationale: rec-3844 and rec-3845 (validate_vp_replay coverage and vp-replay
+    graduation replay) share no scope file, Decision Record or failure category with this plan, so
+    no Related-Work condition is satisfiable. Deferred deliberately, not overlooked.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    .github/dependabot.yml -- add exclude-patterns with BOTH duckdb and ducklake to the pip
+    minor-and-patch group, plus the inline comment naming Decision 99 and the stanza.
+  - >-
+    scripts/checks/ci_guards/validate_dependabot_config.py -- parse _DENIED_DEPENDENCIES from the
+    auto-merge delegate, assert exclusion across every pip group, fail loudly on an unparseable
+    denylist, declare examined() on every exit path.
+  - tests/checks/ci_guards/test_validate_dependabot_config.py -- pass path on the real files plus one fail path per assertion.
+  - scripts/checks/ci_guards/_manifest.py -- register the Entry with bare-string module/attr and the two load-bearing pre_globs.
+  - tests/checks/ci_guards/test__manifest.py -- membership and property assertions, no exact-count coupling.
+  - config/ci_rca_taxonomy.yaml -- add the validate_dependabot_config row.
+  - >-
+    tests/test_import_governance.py -- repoint the mcp 1.x probe at the compiled requirements.txt
+    pin, keeping the major-2 upper bound.
+  - >-
+    docs/DECISIONS.md -- insert the dated annotation and the decision-99 reversal-conditions stanza
+    into Decision 99, conditions phrased as states.
+  - Execute Verification Plan steps 1-7 -- run each; loop until pass.
+  - >-
+    Repoint rec-3832's acceptance at the realised test home via update_rec, then commit, PR, and
+    squash-merge with a `Resolves: rec-3832` trailer.
+  - >-
+    Post @dependabot recreate on PR #1171, subscribe_pr_activity, and squash-merge the regenerated
+    PR once green. Execute Verification Plan steps 8-10.
+  - 'Report: what was implemented, verification results, and the merged PR number for the regenerated group.'
+work_areas: []
+rollback: >-
+  Revert the .github/dependabot.yml exclude-patterns block to restore the previous grouping. The
+  guard, the stanza and the mcp oracle are independently revertible and none is load-bearing for
+  any runtime path -- nothing deploys, so rollback is a plain revert commit.
