@@ -13,6 +13,25 @@ import scripts.convergence_health as ch
 from scripts.convergence_health import HealthVerdict, assess_health, escalation_action
 
 
+def test_red_backlog_raises_severity_before_age_threshold() -> None:
+    """Decision 190: a RED record with a non-zero unapplied backlog scores 'high' even well
+    below the 6h RED_AGE_THRESHOLD_HOURS -- the 2026-09-13 incident's real harm (applies refused
+    while backlog grew) must surface as severity impact, not wait on red-age alone."""
+    now = datetime(2026, 9, 13, 0, 30, tzinfo=timezone.utc)
+    rec = {
+        "status": "red",
+        "timestamp": "2026-09-13T00:00:00Z",
+        "drift_detected_at": "2026-09-13T00:00:00Z",
+        "commit_sha": "abc123",
+    }
+    git_output = "commit1 msg"
+    v = assess_health(rec, git_runner=lambda cmd: git_output, now=now)
+    assert v.status == "red"
+    assert v.unapplied_backlog == 1
+    assert v.red_age_hours < ch.RED_AGE_THRESHOLD_HOURS
+    assert v.severity == "high"
+
+
 class TestEscalationAction:
     def test_file_when_over_threshold_and_no_rec(self) -> None:
         assert escalation_action(over_threshold=True, open_rec_exists=False) == "file"
@@ -247,10 +266,59 @@ class TestAssessHealth:
         assert v.severity == "high"
         assert v.infra_error == marker
 
+    def test_infra_error_never_lowers_red_backlog_high(self) -> None:
+        """Decision 190: preserve Decision 154 point 7's floor property exactly -- infra_error
+        raises none->low and never lowers an already-high severity, including the NEW red+backlog
+        impact trigger."""
+        now = datetime(2026, 9, 13, 0, 30, tzinfo=timezone.utc)
+        marker = {"routed_at": "2026-09-12T00:00:00Z", "run_url": "https://example.com/run/9", "commit_sha": "ghi789"}
+        rec = {
+            "status": "red",
+            "timestamp": "2026-09-13T00:00:00Z",
+            "drift_detected_at": "2026-09-13T00:00:00Z",
+            "commit_sha": "abc123",
+            "infra_error": marker,
+        }
+        v = assess_health(rec, git_runner=lambda cmd: "commit1 msg", now=now)
+        assert v.severity == "high"
+        assert v.infra_error == marker
+
     def test_infra_error_malformed_marker_does_not_floor_severity(self) -> None:
         """A malformed marker (not a dict) reads as absent -- severity stays 'none', matching
         read_infra_error_marker's degrade-to-None contract."""
         rec = {"status": "green", "timestamp": "2026-06-27T00:00:00Z", "commit_sha": "", "infra_error": "not-a-dict"}
         v = assess_health(rec, git_runner=lambda cmd: "")
         assert v.infra_error is None
+        assert v.severity == "none"
+
+
+class TestPendingCodification:
+    """Decision 190: the pending_codification HealthVerdict field -- present / absent / does not
+    force severity on its own (a benign code-behind-state delta is not a failure)."""
+
+    def test_absent_by_default(self) -> None:
+        rec = {"status": "green", "timestamp": "2026-09-13T00:00:00Z", "commit_sha": ""}
+        v = assess_health(rec, git_runner=lambda cmd: "")
+        assert v.pending_codification is None
+
+    def test_none_when_record_is_none(self) -> None:
+        v = assess_health(None)
+        assert v.pending_codification is None
+
+    def test_present_when_marker_in_record(self) -> None:
+        marker = {"first_seen": "2026-09-13T00:00:00Z", "last_seen": "2026-09-13T00:00:00Z", "run_url": "https://x/1"}
+        rec = {"status": "green", "timestamp": "2026-09-13T00:00:00Z", "commit_sha": "", "pending_codification": marker}
+        v = assess_health(rec, git_runner=lambda cmd: "")
+        assert v.pending_codification == marker
+
+    def test_malformed_marker_degrades_to_none(self) -> None:
+        rec = {"status": "green", "timestamp": "2026-09-13T00:00:00Z", "commit_sha": "", "pending_codification": "bad"}
+        v = assess_health(rec, git_runner=lambda cmd: "")
+        assert v.pending_codification is None
+
+    def test_does_not_force_severity_on_its_own(self) -> None:
+        marker = {"first_seen": "2026-09-13T00:00:00Z", "last_seen": "2026-09-13T00:00:00Z", "run_url": "https://x/1"}
+        rec = {"status": "green", "timestamp": "2026-09-13T00:00:00Z", "commit_sha": "", "pending_codification": marker}
+        v = assess_health(rec, git_runner=lambda cmd: "")
+        assert v.pending_codification is not None
         assert v.severity == "none"

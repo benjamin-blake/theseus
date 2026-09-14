@@ -27,6 +27,16 @@ contract:
     check: validate_environment_taxonomy
 
 amendment_log:
+  - date: "2026-09-14"
+    semantic_break: false
+    change_class: governance_note_add
+    summary: >-
+      PLAN-convergence-drift-classification (Decision 190): declares the pending_codification
+      marker alongside the existing pending_gated/infra_error rows (convergence_marker_vocabulary),
+      the red_cause discriminator (derived, never a stored field -- Decision 142 one authority),
+      and the drift classifier's three-member route-exhaustiveness table
+      (convergence_drift_route_exhaustiveness). No apply-model or guard-classification field
+      changed -- this section extends the marker-vocabulary SoT, it does not compete with it.
   - date: "2026-09-04"
     semantic_break: false
     change_class: governance_note_add
@@ -126,6 +136,63 @@ axis_a:
     bootstrap root (CD.35 Wave 4 / T2.23) owns github_ci_apply's own IAM + authority budget
     (permissions boundary + propagation condition keys) in terraform/bootstrap/. In-budget IAM
     auto-apply (guard-consumption) landed in T2.25 -- see guard_classification below.
+
+# Convergence-record marker vocabulary (Decision 77 clause 1 / Decision 92 point 5 -- SOLE SoT;
+# Decision 190 adds pending_codification). Table keyed by marker name; each row uses the domain
+# terms meaning / status_effect / written_by (verified safe against the smuggling detector).
+convergence_marker_vocabulary:
+  pending_gated:
+    meaning: a routed-pending gated-apply awaiting human review (DEP-11, Decision 183)
+    status_effect: "none -- status is read-modify-written UNCHANGED (routed_at overwrites unconditionally)"
+    written_by: write-convergence-record composite action (routed input)
+  infra_error:
+    meaning: a pre-apply failure (Decision 154) -- the apply never ran, so infrastructure is in its last-known state
+    status_effect: "none -- status is read-modify-written UNCHANGED (routed_at overwrites unconditionally)"
+    written_by: write-convergence-record composite action (pre-apply-failure input)
+  pending_codification:
+    meaning: >-
+      a benign code-behind-state delta measured by scripts.ci.convergence_classify.classify_plan
+      (resource_changes non-empty, resource_drift EMPTY) -- state ahead of code (e.g. an
+      operator-sanctioned split-apply), never out-of-band infra drift
+    status_effect: "none while fresh -- status is read-modify-written UNCHANGED; first_seen is WRITE-ONCE (never refreshed) so measured age keeps growing across repeated writes"
+    written_by: terraform-drift.yml's Handle-drift step (plan_ec==2 branch)
+    bounded_age_hours: 2.0
+    escalation: >-
+      a marker whose measured age (now - first_seen) reaches bounded_age_hours escalates to
+      status=red on the NEXT drift tick (the marker is removed, never left to coexist with red) --
+      a misclassified real drift must never sit indefinitely under a benign marker
+    self_clear: >-
+      a plan_ec==0 cycle (terraform-drift.yml's dedicated self-clear step) removes the marker and
+      writes the additive benign_delta_resolved_at timestamp as a durable closure stamp (Decision
+      55 anti-hiding) -- the marker is never silently dropped with no trace. The closure-stamp
+      key deliberately does NOT contain "pending_codification" as a substring: every reader that
+      checks for the marker's ABSENCE (terraform-drift.yml's self-clear read-back verify, both
+      escalate.py rec-acceptance probes) greps that bare string, so a closure-stamp key
+      containing it would make a genuine self-clear look permanently unresolved.
+
+# red_cause: a DERIVED discriminator, never a stored record field (Decision 190 / Decision 142 one
+# authority). scripts.ci.convergence_classify.derive_red_cause and its
+# scripts.convergence_health.record.derive_red_cause mirror both read the SAME drift_run_url field
+# scripts/ci_rca/convergence_dedup.py's cause-resolution already keys on: drift_run_url present ->
+# out_of_band_drift; absent -> apply_failure. Consumed by the CONVERGENCE_RED refusal renderer and
+# the terraform-converged advisory description so neither ever blames a drift-caused red's stale
+# last-successful-apply commit_sha as the failing apply.
+
+# Route-exhaustiveness (Decision 158 pattern): classify_plan()'s three-member VERDICTS set, fed by
+# a `terraform show -json` plan. Precedence is FAIL-CLOSED and explicit -- evaluated in this order.
+convergence_drift_route_exhaustiveness:
+  - verdict: out_of_band_drift
+    criteria: "resource_drift non-empty, WHATEVER resource_changes holds (drift wins on both-present)"
+    record_effect: "status=red (unchanged from the pre-Decision-190 behaviour)"
+  - verdict: pending_codification
+    criteria: "resource_drift empty AND resource_changes non-empty"
+    record_effect: "pending_codification marker merged; status unchanged"
+  - verdict: converged
+    criteria: "both resource_drift and resource_changes empty"
+    record_effect: "no-op"
+  - verdict: out_of_band_drift
+    criteria: "unparseable / non-object plan JSON -- fail-closed, NEVER converged"
+    record_effect: "status=red (an unreadable plan is never evidence of nothing having changed)"
 
 # In-budget vs out-of-budget guard classification (T2.25 / Decision 92 point 5 -- SOLE SoT). Table
 # keyed by classification name; each row uses the domain terms criteria / guard_verdict (verified

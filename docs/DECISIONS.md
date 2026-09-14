@@ -2,6 +2,97 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 190: Drift is measured, never inferred from an exit code -- the convergence record carries a measured red_cause, and code-behind-state is a bounded non-status marker rather than a red latch (amends 92, 154) (Decided)
+
+```yaml
+number: 190
+status: Decided
+decided_date: "2026-09-14"
+amends: [92, 154]
+significance:
+  value: numbered_decision
+  justification: >-
+    It re-decides what the sole hard block's red predicate MEANS (a measured cause, not an exit
+    code) and adds a writer branch, across two prior entries at more than one call site.
+```
+
+**Status:** Decided
+**Date:** 2026-09-14
+**Warehouse ID:** dec-190 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+**Problem:**
+2026-09-13: an operator-sanctioned split-apply left `terraform/personal`'s state ahead of the
+code that would codify it. A scheduled plan measured `resource_changes` non-empty with
+`resource_drift` EMPTY -- a benign code-behind-state delta, not out-of-band drift -- but the bare
+`plan_ec == 2` branch cannot see that distinction. The record latched red at 16:24:36Z; three
+sandbox applies were refused before an unrelated PR unlatched it at 19:00:32Z (2.6h, zero recs
+filed). `_check_convergence_rca_gap` (30-minute grace) stayed silent throughout: its matcher
+counted ANY `source=ci_rca` rec created after `red_since`, and four unrelated recs satisfied it,
+while the tf_drift rec tracking this episode counted for nothing. The apply-sandbox refusal and
+the advisory status then named only `commit_sha` as the cause -- on a drift-flip that commit is
+the LAST SUCCESSFUL apply. Second occurrence of this shape (Decision 183, 2026-09-04).
+
+**Decision:**
+1. **Drift is classified from measured plan content, never the exit code.**
+   `scripts/ci/convergence_classify.py` (stdlib-only, PEP 420 -- `scripts.convergence_health`
+   eagerly imports yaml/boto3 and would ImportError on apply-sandbox) parses `terraform show
+   -json` into an exhaustive verdict: `resource_drift` non-empty -> `out_of_band_drift` (drift
+   always wins); empty AND `resource_changes` non-empty -> `pending_codification`; both empty ->
+   `converged`; unparseable JSON -> `out_of_band_drift`, never `converged`.
+2. **A benign delta gets a bounded, non-status marker, never a red latch.** Mirrors the
+   `pending_gated`/`infra_error` read-modify-write shape (status UNCHANGED, read-back verified):
+   `pending_codification` records `first_seen` (WRITE-ONCE, NOT `routed_at`'s unconditional
+   overwrite -- a refresh would cap measured age at ~1h against the hourly cron), `last_seen`,
+   `run_url`. A plan_ec==0 cycle self-clears the marker with an additive `benign_delta_resolved_at`
+   stamp (Decision 55; NOT containing "pending_codification" -- an absence-of-marker grep reader
+   would else never resolve). NO third status value.
+3. **The benign branch is bounded.** A marker whose age reaches 2.0 hours (matches
+   `STALE_GREEN_BACKLOG_THRESHOLD_HOURS`) escalates to red, marker removed -- a misclassified
+   real drift can never sit indefinitely under a benign marker.
+4. **Every red-status reader names the MEASURED cause.** `derive_red_cause` (mirrored in
+   `scripts.ci.convergence_classify` and `scripts.convergence_health.record`) reads the SAME
+   `drift_run_url` field `scripts/ci_rca/convergence_dedup.py` already discriminates on
+   (Decision 142 one authority) -- present means `out_of_band_drift`; absent means
+   `apply_failure`. DERIVED, never stored. The `CONVERGENCE_RED` refusal and the
+   `terraform-converged` advisory both render through it.
+5. **The convergence-RCA gap check counts `tf_drift`, never `ci_rca`.**
+   `_check_convergence_rca_gap` gains a NEW PRIVATE predicate matching `source=tf_drift` ONLY --
+   dropping `ci_rca` entirely (no field binds a ci_rca rec to a specific episode). Fail-loud over
+   silent masking (Decision 55). `_derive_ci_rca_since` (Decision 84 I-3) and
+   `_check_ci_rca_liveness` are untouched.
+6. **Impact, not only age, escalates severity and files a rec.** A RED record with a non-zero
+   backlog scores `severity="high"` regardless of age, and `escalate`'s `over_threshold` trips
+   on the same impact -- Decision 154 pt 7 notes severity "files nothing on its own," so this
+   trigger is what actually files during a blocked-apply episode. The floor property holds.
+7. **STRICTLY ADDITIVE record schema.** Top-level `commit_sha`/`run_id`/`run_url`/`timestamp`/
+   `plan_sha` never move or nest.
+
+**Rationale:**
+The sole hard block's red predicate (Decision 92 pt 2, narrowed by Decision 154) means "an apply
+ran and left infrastructure in an unknown state." A plan measuring `resource_changes` with no
+`resource_drift` proves the opposite. Latching the same platform-halting red for both cases is
+the conflation this Decision closes, mirroring Decision 154's reasoning for pre-apply failures.
+Point 5 is not incidental: stopping the false latch while the gap check stays silenceable still
+leaves a future episode invisible for hours.
+
+**Reversal conditions:** Revert to unconditional red if (a) a `pending_codification`-classified
+plan is observed concealing genuine drift -- Decision 119 forbids locally verifying that
+`resource_drift` is COMPLETE, so this is an open risk, not settled; re-approach with an
+independent drift oracle; (b) the 2.0h bound proves too tight and benign windows routinely
+escalate -- retune, never remove; (c) `resource_drift` semantics change on a version bump --
+re-verify the completeness premise first.
+
+**Significance:** clears the Decision 150 bar -- re-decides what the sole hard block's red
+predicate means, with reversal-relevant consequences and itemised reversal conditions; not a CD
+state-flip or field-semantics change.
+
+**Related:** Decision 92 (amended), Decision 154 (amended), Decision 55, Decision 142 (one
+authority), Decision 77 (the hard block whose LATCH TRIGGER this narrows), Decision 158
+(route-exhaustiveness), Decision 84 I-3, Decision 183 (first occurrence, 2026-09-04). Roadmap
+refs: T2.47 (closes no exit criterion); rec-3797 (auto-closed); rec-3800 (superseded).
+
+---
+
 ## Decision 189: Plan-only PRs execute a graduate pre-deploy step under inverted (red-before) polarity -- Decision 148 point 1's no-execution ruling is negated for this population (amends Decision 148) (Decided)
 
 ```yaml
@@ -2281,6 +2372,12 @@ Two structural facts justify the narrowing, independent of Decision 55's recover
 **Status:** Decided
 **Date:** 2026-07-26
 **Warehouse ID:** dec-154 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+> **Amended by Decision 190 (2026-09-14):** extends the `pending_gated`/`infra_error` marker
+> family with a fourth, orthogonal marker (`pending_codification`) for a benign code-behind-state
+> delta measured on the DRIFT surface (never a pre-apply failure) -- the SAME read-modify-write /
+> read-back-verify shape, with a bounded age that escalates to red rather than persisting
+> indefinitely. This body is otherwise unedited; see Decision 190 for the full derivation.
 
 **Problem:**
 Run 30160878397's gated-apply job failed at "Build DuckLake lambda packages" with `DUCKLAKE_ZIP_MISMATCH ducklake-deps-layer.zip local=974c4a6564be86dc748955f7345dc1a7 remote=c6c2488d79470321851936d5253c08c8`. Apply was skipped (`APPLY_OUTCOME=skipped`), so the always-run writer took its else branch and latched status=red. Timeline: 13:59Z PR #754's speculative-plan job uploads the layer (baked pytz 2026.3); 14:03Z the push apply-sandbox job rebuilds and the assert PASSES (`DUCKLAKE_ZIP_IDEMPOTENT_OK`), guard routes to gated-apply; 15:12:05Z pytz 2026.3.post1 is published to PyPI; 15:33Z the human approves, gated-apply rebuilds, resolves 2026.3.post1, and the bytes differ. The human-approval wait IS the exposure window -- the longer a reviewer takes, the likelier a rebuild-and-reassert fails on an unrelated PyPI release. That inversion (approval latency causing platform-halting red) is the defect, not the pytz release itself.
@@ -5758,6 +5855,12 @@ T5.2 (teardown) was considered but excluded: it is a near-due cost-saver (grace 
 > pre-apply failure (no apply step ran) now merges a non-status `infra_error` marker instead of
 > latching red. This body is otherwise unedited; see Decision 154 for the full derivation,
 > constraints, and reversal conditions.
+
+> **Amended by Decision 190 (2026-09-14):** point 2's red predicate now means a MEASURED cause
+> (a scheduled drift plan classifies the delta from `terraform show -json`, never from the plan
+> exit code), and a benign code-behind-state delta gets a bounded, non-status
+> `pending_codification` marker instead of latching red. This body is otherwise unedited; see
+> Decision 190 for the full derivation, constraints, and reversal conditions.
 
 **Problem:**
 CD.35 (Agent-native Terraform CI/CD) specified a five-wave architecture ratified via the log-decision
