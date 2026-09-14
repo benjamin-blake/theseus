@@ -423,6 +423,38 @@ class TestGenerateIntegration:
 
 
 # ---------------------------------------------------------------------------
+# maintenance_policy passthrough (compaction-scope-policy-matrix, Decision 191)
+# ---------------------------------------------------------------------------
+def test_maintenance_policy_passthrough() -> None:
+    """The sidecar's maintenance_policy matrix is carried VERBATIM into the generated projection
+    -- the generator's key whitelist previously dropped any unknown sidecar key silently, so the
+    matrix never reached the Lambda-bundled asset while --check still reported no drift."""
+    doc = generate()
+    assert "maintenance_policy" in doc, "maintenance_policy missing from the generated projection"
+    sidecar = yaml.safe_load(
+        (_ROOT / "config" / "lambda" / "ducklake" / "field_semantics.static.yaml").read_text(encoding="utf-8")
+    )
+    assert doc["maintenance_policy"] == sidecar["maintenance_policy"]
+    for cls in ("scd2", "append_only", "control"):
+        assert cls in doc["maintenance_policy"], f"class {cls!r} missing from generated maintenance_policy"
+        assert "merge_ops" in doc["maintenance_policy"][cls]
+
+
+def test_maintenance_policy_absent_from_sidecar_raises(tmp_path: Path) -> None:
+    """REQUIRED, not conditional: a sidecar missing maintenance_policy must raise (KeyError), never
+    silently emit a projection without it."""
+    sidecar_path = _ROOT / "config" / "lambda" / "ducklake" / "field_semantics.static.yaml"
+    sidecar = yaml.safe_load(sidecar_path.read_text(encoding="utf-8"))
+    del sidecar["maintenance_policy"]
+    tmp_sidecar = tmp_path / "field_semantics.static.yaml"
+    tmp_sidecar.write_text(yaml.dump(sidecar), encoding="utf-8")
+
+    with patch.object(_mod, "_SIDECAR_PATH", tmp_sidecar):
+        with pytest.raises(KeyError, match="maintenance_policy"):
+            generate()
+
+
+# ---------------------------------------------------------------------------
 # Control-class projection (T2.26 control-table-class-and-counter-conformance)
 # ---------------------------------------------------------------------------
 def test_control_class_projection() -> None:

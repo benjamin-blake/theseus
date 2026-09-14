@@ -17,6 +17,46 @@
 # field_semantics.yaml is pure generator output -- edit HERE, then re-run the generator.
 
 # ---------------------------------------------------------------------------
+# Maintenance policy matrix (compaction-scope-policy-matrix, Decision 191): declares, per table
+# CLASS x maintenance VERB, whether that verb applies and why. action_merge_ops enumerates the
+# production catalog UNFILTERED (no naming-convention predicate anywhere in the path), classifies
+# every discovered table via this same sidecar's write_mode declarations (src/common/
+# ducklake_maintenance_scope.py::classify_table), then consults this matrix cell to decide whether
+# to touch it. Both the class universe (scd2 | append_only | control -- every distinct write_mode
+# value across ops_tables) and the verb universe (VERB_UNIVERSE in ducklake_maintenance_scope.py)
+# are DECLARED independently of this matrix's own keys -- see
+# scripts/checks/contracts/validate_maintenance_policy_matrix.py, which fails the build if the
+# matrix is missing a cell, missing a reason on a false cell, or names a class outside the
+# declared universe. Regenerates into config/lambda/ducklake/field_semantics.yaml (the Lambda-
+# bundled asset) via scripts/schema_to_field_semantics.py's maintenance_policy passthrough --
+# EDIT HERE, never the generated file.
+# ---------------------------------------------------------------------------
+maintenance_policy:
+  scd2:
+    merge_ops:
+      apply: true
+      reason: >-
+        Standard SCD2 history/current pair; the target of the every-6h non-destructive production
+        compaction cadence (Decision 88 cl.1(iii)).
+  append_only:
+    merge_ops:
+      apply: true
+      reason: >-
+        History-only append table (no current projection); its live file count still grows with
+        write volume and benefits from the same non-destructive small-file compaction.
+  control:
+    merge_ops:
+      apply: true
+      reason: >-
+        rec-3762: a control table's live files also grow with churn -- ops_entity_counters is the
+        writer-owned entity-id allocation serialization point (Decision 84 I-2) and had never been
+        compacted because the naming-convention predicate this plan retires could not match it
+        (measured 2026-09-12: 26.5 percent of the catalog's live file set). Included by declared policy
+        cell, not a naming accident. OCC contention with concurrent allocation is verified
+        empirically by this plan's VP12 (a real merge window vs. a probe file_rec allocation), not
+        assumed away by exclusion.
+
+# ---------------------------------------------------------------------------
 # Smoke table definitions (smoke schema drives the test harness)
 # ---------------------------------------------------------------------------
 tables:
