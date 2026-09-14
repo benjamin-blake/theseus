@@ -5,6 +5,9 @@ never start with test_), so both tests/checks/** and tests/validate/ consumers i
 here rather than from each other.
 """
 
+import json
+from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 
@@ -17,7 +20,17 @@ def _mock_completed(returncode: int = 0, stdout: str = "", stderr: str = "") -> 
     return cp
 
 
-def _pre_mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
+def _write_primary_capture(kwargs: dict[str, Any]) -> None:
+    environment = kwargs.get("env")
+    if not isinstance(environment, dict):
+        return
+    capture_path = environment.get("FAST_TIER_PRIMARY_CAPTURE")
+    if not isinstance(capture_path, str):
+        return
+    Path(capture_path).write_text(json.dumps({"complete": True, "deferred": {}}), encoding="utf-8")
+
+
+def _pre_mock_run(cmd: list[str], **kwargs: Any) -> MagicMock:
     """Shared subprocess mock that handles git branch + everything else.
 
     stderr is set to "" (not left as an auto-vivified MagicMock attribute) so callers that
@@ -25,6 +38,7 @@ def _pre_mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
     scripts.checks._scaffolding._attribute_batched_collect_errors, which must scan for a
     graceful SKIPPED line even on a returncode-0 batch) get a real string rather than a Mock.
     """
+    _write_primary_capture(kwargs)
     result = MagicMock()
     result.returncode = 0
     result.stdout = "agent/test-branch\n"
