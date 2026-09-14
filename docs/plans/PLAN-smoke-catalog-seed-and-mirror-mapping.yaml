@@ -60,8 +60,8 @@ verification_plan:
   phase: pre-deploy
   action: action_gc seeds the catalog before running GC
   command: bin/venv-python -m pytest tests/test_ducklake_maintenance_smoke_handler.py::test_action_gc_seeds_catalog_before_gc -q
-  expected: all pass including the new seeding assertion
-  fix_if: run_gc is still reached against an empty catalog
+  expected: 'all pass, including BOTH halves of the new node: action_gc with force_recreate_tables=True seeds before run_gc, AND action_gc({}, con) issues no write at all'
+  fix_if: run_gc is still reached against an empty catalog, OR the plain gc verb writes -- the latter means the seed was placed outside the force_recreate_tables block
   graduation: graduate
   graduation_check_id: smoke-gc-seeds-before-run
 - step: 2
@@ -133,9 +133,10 @@ verification_plan:
   action: governed CD channel maintenance-gc smoke gate
   command: bin/venv-python -m scripts.ducklake_neon_smoke_test --lambda-maintenance-gc
   expected: the maintenance-gc gate passes against the deployed smoke function -- the same command deploy-ducklake-lambdas.yml runs at line 247, which is the authoritative verifier
-  fix_if: gate returns breaker_tripped -- re-diagnose before any further deploy. If it reds on files_after > files_before (gc gate, lambda_maintenance_gates.py:93) OR on the hot_merge comparison (:211,
-    which has NO files_before > 0 guard), the fix is to materialize the seed -- call flush_inlined_data immediately after seeding so files_before is already counted at ducklake_maintenance.py:481 and merge
-    can only reduce. NEVER relax either comparison; both are now the softest available targets and Decision 181/59 forbid weakening them
+  fix_if: 'gate returns breaker_tripped -- re-diagnose before any further deploy. If it reds on files_after > files_before (gc gate, lambda_maintenance_gates.py:93) or on the hot_merge comparison (:211,
+    which has NO files_before > 0 guard), do NOT reach for flush_inlined_data: inlining is disabled on every connection (ducklake_runtime.py:301), so the seed materialises to S3 immediately and the flush
+    is a documented no-op (ducklake_maintenance.py:15). The seed is already counted at ducklake_maintenance.py:481 and merge_adjacent_files can only reduce or hold, so a growth red means a real defect --
+    RCA it. NEVER relax either comparison (Decision 181/59).'
 - step: 10
   phase: post-deploy
   action: bundled recommendations are closed in the warehouse
@@ -196,8 +197,9 @@ context:
 - 'closes_criteria is deliberately empty: this repairs a regression on already-met c6/c9; T2.18''s only open criterion c2 (production-catalog destructive GC over N cycles) is plainly out of scope'
 - 'Seeding gain, stated honestly: it strengthens the gate (G3 no longer aborts, G1/G2/G4 run against a non-empty inventory, the files_after>files_before branch becomes live) and relaxes no assertion --
   but the seeded row sits inside both the 30d/7d retention window and the 7d cleanup grace, so files_cleaned/orphans_deleted stay 0 and the destructive path remains unexercised'
-- The newly-live growth branch is a new way for the CD gate to red on main (run_gc rewrites files via merge_adjacent_files, ducklake_maintenance.py:491) -- expected files_before/files_after for the seeded
-  fixture must be pinned in the step-2 test
+- 'The newly-live growth branch is a new way for the CD gate to red on main (run_gc rewrites files via merge_adjacent_files, ducklake_maintenance.py:491) -- this is NOT pre-deploy mitigable: tests/ducklake_neon_smoke_test/
+  is fully mocked (it monkeypatches core._sigv4_invoke), so no unit test can pin what the deployed seeded fixture returns. The protection is structural -- merge_adjacent_files can only reduce or hold the
+  live count -- and a growth red is a real defect to RCA, never a threshold to relax'
 - Mapping predicate insertion point is PINNED to the fall-through `return home` at scripts/test_coverage_checker.py:368. Placed before the _RETIRING_GRANDFATHER_HOMES branch (:349) it fails OPEN -- retiring
   a roster monolith mid-wave would silently flip its sources to a mirror target that may already exist (Decision 131 clause 1 wave discipline)
 - 'Step 3 of the first draft (a bespoke git-diff guard-untouched assertion) was DELETED: it exits 0 on an unresolvable origin/main ref, and validate_scope_boundary already enforces the same restraint from
@@ -220,6 +222,8 @@ pre_implementation_checklist:
 - Acceptance criteria understood and verifiable
 execution_steps:
 - Seed the smoke catalog via rt.write_scd2 INSIDE the `if event.get("force_recreate_tables")` block in action_gc (handler.py:81-82), so the CD fixture seeds while the plain gc verb stays write-free
+- Add tests/test_ducklake_maintenance_smoke_handler.py::test_action_gc_seeds_catalog_before_gc asserting both halves (seeds under force_recreate_tables; no write under {}), and re-patch test_action_gc_force_recreate_calls_create_tables
+  (:176) only if it now reaches write_scd2
 - Add test_gc_gate_fails_when_storage_grew to tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py, pinning expected files_before/files_after for the seeded fixture
 - Re-ground the lambda_maintenance_gates.py docstring and cover the newly-live files_before>0 branch
 - In map_source_to_test, resolve to the mirror target only when the grandfathered flat home does not exist on disk, inserted at the fall-through `return home` (line 368) -- never before the _RETIRING_GRANDFATHER_HOMES
