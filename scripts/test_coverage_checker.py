@@ -340,6 +340,19 @@ def map_source_to_test(source_path: Path) -> Path | None:
        the MIRROR branch above, so registering a file whose grandfathered home was not itself
        in _ALL_MIRROR_TARGET_HOMES was inert (the membership check was never consulted).
 
+    4. FLAT-HOME-ABSENCE FALLBACK (fall-through only, rec-3809): when none of the three rules
+       above fires, the plain fall-through home is a FLAT grandfathered path outside the fixed
+       roster entirely. If that flat file does not exist on disk AND its mirror target does, use
+       the mirror instead -- a source whose real test already lives at the mirror location (e.g.
+       one added post-hoc under the mirror convention) must not be reported as missing a test file
+       it already has. Requiring the mirror to also exist keeps this inert for a hypothetical path
+       where neither location is real (a pure structural-mapping check has nothing to redirect to).
+       This check is pinned strictly AFTER the _RETIRING_GRANDFATHER_HOMES branch, never ahead of
+       it: placed earlier it would fail OPEN, silently flipping a still-retiring roster monolith's
+       sources to a mirror target that may already exist mid-wave (Decision 131 clause 1 wave
+       discipline). A flat home that DOES exist is returned unchanged, so every currently-green
+       source keeps resolving exactly as before.
+
     Returns None for paths not under src/ or scripts/, or with no grandfathered home (unless
     the path is itself a declared concern-split entry, which is checked independently of
     having a grandfathered home).
@@ -365,6 +378,10 @@ def map_source_to_test(source_path: Path) -> Path | None:
         rel_str = None
     if rel_str is not None and rel_str in _CONCERN_SPLIT_TEST_PACKAGES:
         return _mirror_source_to_test(source_path)
+    if home is not None and not home.exists():
+        mirror = _mirror_source_to_test(source_path)
+        if mirror is not None and mirror.exists():
+            return mirror
     return home
 
 

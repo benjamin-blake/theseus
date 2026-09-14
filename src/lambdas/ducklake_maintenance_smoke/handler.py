@@ -76,10 +76,14 @@ def action_merge(event: dict[str, Any], con: Any) -> dict[str, Any]:
 def action_gc(event: dict[str, Any], con: Any) -> dict[str, Any]:
     """Weekly guarded GC: full five-step sequence behind the G1-G4 guard set.
 
-    Accepts force_recreate_tables=True (drop/recreate smoke tables before GC; test harness).
+    Accepts force_recreate_tables=True (drop/recreate smoke tables before GC; test harness). When
+    set, also seeds one SCD2 row into the smoke pair so the pre-GC live set is non-empty and G3
+    (empty-live-set catalog sanity) is exercised non-vacuously (rec-3802) -- the plain gc verb (no
+    force_recreate_tables) issues no write, so the real weekly cadence never seeds.
     """
     if event.get("force_recreate_tables"):
         rt.create_scd2_tables(con, force_recreate=True)
+        rt.write_scd2(con, {"rec_id": "rec-gc-smoke-seed", "payload": "gc-smoke-seed"})
 
     t0 = time.perf_counter()
     result = maint.run_gc(con, _SCOPE_TABLES)

@@ -208,6 +208,31 @@ class TestGetChangedSourceFiles:
         assert any("ducklake_runtime.py" in str(p) for p in result)
 
 
+def test_unmapped_sources_do_not_grow() -> None:
+    """rec-3809 / rec-3783 non-regression: census every real repo source under src/ or scripts/
+    (filtered exactly like get_changed_source_files: .py files, excluding __init__.py and
+    conftest.py) and assert the unmapped set (map_source_to_test resolves, but the resolved test
+    file/package does not exist) never grows past the two grandfathered stragglers.
+    src/common/ducklake_maintenance_ops.py must be ABSENT -- its mirror-resolved test file
+    (tests/common/test_ducklake_maintenance_ops.py) already exists on disk. The remaining set must
+    be a SUBSET of {scripts/checks/ci_guards/_shared.py, scripts/checks/sloc/_shared.py} --
+    subset, not equality, so a future improvement that maps one of them does not regress this
+    test."""
+    excluded_names = {"__init__.py", "conftest.py"}
+    unmapped: set[str] = set()
+    for base in ("src", "scripts"):
+        for source in (ROOT / base).rglob("*.py"):
+            if source.name in excluded_names:
+                continue
+            ok, _msg = check_test_file_exists(source)
+            if not ok:
+                unmapped.add(str(source.relative_to(ROOT)).replace("\\", "/"))
+
+    assert "src/common/ducklake_maintenance_ops.py" not in unmapped
+    allowed = {"scripts/checks/ci_guards/_shared.py", "scripts/checks/sloc/_shared.py"}
+    assert unmapped <= allowed, f"unmapped set grew beyond the known stragglers: {unmapped - allowed}"
+
+
 def test_coverage_reports_owning_target_and_module(tmp_path: Path, capsys) -> None:
     source = ROOT / "scripts" / "checks" / "validation_result.py"
     test_target = ROOT / "tests" / "checks" / "test_validation_result.py"
