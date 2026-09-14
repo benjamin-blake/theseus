@@ -76,9 +76,14 @@ scope:
       500; a route row is 3 effective lines, so the add alone breaches. The contracts class
       relief_valve forbids splitting ("splitting a single subject is forbidden by collocation
       doctrine") and lists compaction FIRST; docs/contracts/decision-entry.yaml is the live
-      precedent for trim-then-add. Tighten >=3 effective lines of verbose route description across
-      the 72 routes so the net lands at <=499. No budget raise: this plan mints no Decision, and a
-      raise marker must name an AUTHORIZING Decision (Decision 165).
+      precedent for trim-then-add. COST IS 7 LINES, NOT 3: the route row is 3 effective lines AND a
+      new amendment_log entry is COMPULSORY (4-6 lines house style) -- file-router.yaml is itself
+      class: D, and _population.check_amendment_log_for_class_d hard-fails when the canonical dump
+      (every top-level key except amendment_log) changes with no new amendment_log[] entry. Adding a
+      routes[] row changes that dump. Both live 2026-09 precedents in this file say so verbatim
+      ("Paid for the route PLUS this entry by compacting..."). So tighten >=7 effective lines so the
+      net lands at <=499. No budget raise: this plan mints no Decision, and a raise marker must name
+      an AUTHORIZING Decision (Decision 165).
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
     purpose: function_to_category row for the new check module
@@ -253,7 +258,9 @@ verification_plan:
     phase: post-deploy
     graduation: not-applicable
     action: >-
-      close rec-3861 with a fix-bound closure artifact (closure obligation 12k). The Resolves:
+      RUN IMMEDIATELY AFTER PR2 MERGES, BEFORE PR3 OPENS -- the shard this token names lands with
+      PR2, and the fix sha must be PR2's squash commit. Close rec-3861 with a fix-bound closure
+      artifact (closure obligation 12k). The Resolves:
       trailer alone CANNOT close these: close_recs_from_trailer threads only closure_fix_sha into
       update_rec, never closure_artifact, and both recs are escape-classified (escape_class
       no-edge), so assert_closure_obligation raises ClosureArtifactRequired and rec-autoclose.yml
@@ -264,26 +271,34 @@ verification_plan:
       --closure-fix-sha "$(git rev-parse origin/main)" --profile agent_platform
     expected: the portal accepts the write; rec-3861 reads status closed
     fix_if: >-
-      ClosureArtifactRequired is raised. Most likely cause is a STALE refs/remotes/origin/main --
-      after a remote squash-merge the local ref lags until fetched, so `git rev-parse origin/main`
-      yields the PRE-merge sha, _fix_commit_touches diff-trees the wrong commit, finds no
-      intersection with the shard file and refuses SILENTLY rather than erroring. Hence the
-      explicit fetch above. Other causes: the shard did not land in the closing commit, or the
-      token does not match config/agent/verification_registry/entries/<id>.yaml
+      ClosureArtifactRequired is raised, and the refusal is SILENT -- rec-autoclose prints a marker
+      and exits 0, so the rec simply stays open. In THIS three-PR plan the leading cause is an
+      origin/main that has advanced PAST the shard-bearing commit: closure_gate._fix_commit_touches
+      diff-trees the fix sha for an intersection with
+      config/agent/verification_registry/entries/pin-only-set-lints-whole-tree.yaml, which lands in
+      PR2 only -- run these steps after PR3 and origin/main resolves to PR3's squash sha, whose
+      diff-tree does not contain that file. Hence the run-after-PR2 sequencing above. Secondary
+      cause: a STALE origin/main (the local ref lags a remote squash-merge until fetched), which the
+      explicit fetch above addresses. Tertiary: the shard never landed, or the token does not match
+      the entries/<id>.yaml filename.
   - step: 8
     phase: post-deploy
     graduation: not-applicable
-    action: close rec-3863 with the same fix-bound closure artifact
+    action: >-
+      RUN IMMEDIATELY AFTER PR2 MERGES, BEFORE PR3 OPENS (same reason as step 7). Close rec-3863
+      with the same fix-bound closure artifact.
     command: >-
       git fetch origin main --quiet && bin/venv-python -m scripts.ops_data_portal --update-rec rec-3863 --status closed
       --closure-artifact "shard:pin-only-set-lints-whole-tree"
       --closure-fix-sha "$(git rev-parse origin/main)" --profile agent_platform
     expected: the portal accepts the write; rec-3863 reads status closed
-    fix_if: as step 7
+    fix_if: as step 7 -- leading cause is an origin/main advanced past PR2, secondary is a stale ref
   - step: 9
     phase: post-deploy
     graduation: not-applicable
-    action: read back both recs through the portal to confirm closure landed
+    action: >-
+      read back both recs through the portal to confirm closure landed (run with steps 7-8, after
+      PR2, before PR3)
     command: >-
       bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json;
       rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl')];
@@ -497,14 +512,27 @@ execution_steps:
     available, because a raise marker must name an AUTHORIZING Decision (Decision 165) and this
     plan deliberately mints none.
   - >-
-    PR1 (decomposition only -- no behaviour change, no ISC004, no gate edits). Extract
+    PR1 (decomposition; no gate edits and no behaviour change). ONE EXCEPTION to "no ISC004": PR1
+    MUST also parenthesize the three ISC004 sites at test_validate_raises_discrimination.py:239,
+    258 and 266. They sit inside TestCallShapeMatrix, the class PR1 deliberately RETAINS, so PR1
+    touches that file and --pre's diff-scoped lint (still diff-scoped until PR2) lints it in full
+    and fails on them. Verified: ruff check over PR1's three touched files reports exactly those 3
+    errors; ruff format --check is clean. Final SLOC is unaffected (~353 + 6 = ~359). Extract
     TestReportOnly/TestRegistrationSurfaces/TestLiveTreeInvariants from
     test_validate_raises_discrimination.py (499) into test_validate_raises_reporting.py; extract
     TestPreGlobMatch/TestShouldRunInPre/TestPreGlobsGateEndToEnd from test_tiers.py (492) into
     test_pre_globs.py; extract TestRunCoverageCheck/TestVerifierCoverageArgv/
     TestRunDependencyChecks/TestRunCoverageCheckSysPathInjection from test_scaffold_gates.py (456)
-    into test_scaffold_coverage.py. Move whole classes and their imports only -- no assertion may
-    change in PR1, so any red is a move error, not a behaviour question.
+    into test_scaffold_coverage.py. No assertion may change in PR1, so any red is a move error, not
+    a behaviour question. TWO EXTRACTION HAZARDS, both on the hygiene file only (the other two
+    files' helpers come from tests/fixtures/, which is guard-exempt): (i) the three extracted
+    classes use module-level privates (_write, _module_source, _live_sites/_LIVE_SITES) and seven
+    constants (_ROOT, _CHECK, _SHARD, _SHARD_PATH, _TAXONOMY_PATH, _BASELINE_PATH, _MODULE_PATH)
+    plus guard/registry/measure_check/ENTRIES/yaml. validate_no_cross_test_imports (BOTH tiers)
+    forbids importing them from the source module, so they must be DUPLICATED into the new module,
+    including a second guard.scan_tests(_ROOT) whole-tests-tree walk. (ii) _live_sites/_LIVE_SITES
+    and several imports go dead in the source module -- an F401 sweep is owed there
+    (tests/CLAUDE.md:73 names this exact hazard).
   - >-
     PR1 SHARD HAZARD (rec-3812's failure mode): two live verification-registry shards bind node ids
     in these files and would dangle if the bound classes move. tests/validate/test_tiers.py::
@@ -571,8 +599,12 @@ execution_steps:
     of a domain in _PRE_DOMAIN_ORDER. Decision 168 clause 2 resolves on membership of EITHER
     sequence, so a full_segment-only Entry would also pass; make the choice deliberately.
   - >-
-    PR3: COMPACT docs/contracts/file-router.yaml by at least 3 effective lines BEFORE adding the
-    route row, so the net stays <=499 against the contracts-class limit of 500. Splitting is
+    PR3: COMPACT docs/contracts/file-router.yaml by at least 7 effective lines BEFORE adding the
+    route row, so the net stays <=499 against the contracts-class limit of 500. Seven, not three:
+    the route row is 3 lines and the compulsory Class D amendment_log entry is another 4-6
+    (check_amendment_log_for_class_d hard-fails a routes[] change with no new entry). The
+    amendment_log is also the file's largest compressible region, so it is both the cost and the
+    source of the relief. Splitting is
     forbidden by collocation doctrine; compaction is the class's first listed relief valve and
     decision-entry.yaml is the live trim-then-add precedent. If compaction cannot find 3 lines, drop
     the route row instead with a stated reason -- Decision 168 clause 4 constrains a route's topic
@@ -581,6 +613,21 @@ execution_steps:
     PR3: satisfy the two enforced-elsewhere obligations for the new check -- the Decision 170
     accounting declaration (validate_check_accounting) and the graduated verification-registry shard
     (validate_graduation_completeness).
+  - >-
+    PLAN-FLIP PR: implementation_declared flips in PR3, never PR1 or PR2. Both
+    validate_graduation_completeness's implement-PR leg and validate_vp_replay's implement leg key
+    on a docs/plans/PLAN-*.yaml appearing in the diff, and VP step 4's check id
+    precommit-escalates-on-derived-global-input guards behaviour that only exists after PR3.
+    Flipping it earlier reddens both gates.
+  - >-
+    VP SEQUENCING: steps 1-6 run per-PR as their subjects land. Steps 7-9 (rec closure) run
+    IMMEDIATELY AFTER PR2 MERGES AND BEFORE PR3 OPENS -- not at the end. The shard
+    config/agent/verification_registry/entries/pin-only-set-lints-whole-tree.yaml lands with PR2,
+    and closure_gate._fix_commit_touches diff-trees the fix sha for an intersection with that exact
+    file. Run them after PR3 and `git rev-parse origin/main` resolves to PR3's squash sha, whose
+    diff-tree does not contain the shard -- resolve_closure_artifact returns False,
+    assert_closure_obligation raises, and both Critical recs stay OPEN silently. PR2 is also the
+    point at which both recs' acceptance commands first hold.
   - Execute the Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55)
   - 'Report: what was implemented, verification results, and the measured SLOC of every decomposed file'
 
