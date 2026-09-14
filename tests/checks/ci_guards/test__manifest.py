@@ -90,3 +90,18 @@ class TestGatedEntryInputClosures:
         """Anti-vacuity: the rows above would also pass against a catch-all pattern."""
         globs = self._globs("validate_ci_rca_trigger")
         assert not any(fnmatch("README.md", glob) for glob in globs)
+
+    def test_dependabot_config_entry_closes_over_its_inputs(self) -> None:
+        """A config-only or checker-only PR must still dispatch the guard in --pre: every path
+        validate_dependabot_config.py reads (the dependabot config, the denylist delegate it
+        derives from, its own module, and the shared _common/registry primitives) must be in its
+        pre_globs closure."""
+        entry = next(e for e in _manifest.ENTRIES if e.name == "validate_dependabot_config")
+        assert entry.pre is True
+        assert {
+            ".github/dependabot.yml",
+            "scripts/ci/dependabot_auto_merge.sh",
+            "scripts/checks/ci_guards/validate_dependabot_config.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        } <= self._globs("validate_dependabot_config")

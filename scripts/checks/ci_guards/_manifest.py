@@ -153,6 +153,20 @@ ENTRIES: tuple[Entry, ...] = (
         full_segment="full_after_lint",
     ),
     Entry(
+        name="validate_dependabot_config",
+        module="scripts.checks.ci_guards.validate_dependabot_config",
+        attr="validate_dependabot_config",
+        pre=True,
+        pre_globs=(
+            ".github/dependabot.yml",
+            "scripts/ci/dependabot_auto_merge.sh",
+            "scripts/checks/ci_guards/validate_dependabot_config.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
+    Entry(
         name="validate_branch_cleanup",
         module="scripts.checks.ci_guards.validate_branch_cleanup",
         attr="validate_branch_cleanup",
