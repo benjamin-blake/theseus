@@ -53,6 +53,23 @@ def test_open_connection_takes_no_event_argument():
     assert inspect.signature(h._open_connection).parameters == {}
 
 
+def test_open_connection_builds_connection_from_fetched_dsn():
+    """Exercises _open_connection's real body: fetch_dsn's result is threaded into
+    open_connection() with the env-pinned DATA_PATH/META_SCHEMA/EXTENSION_DIRECTORY constants."""
+    fake_con = object()
+    with patch.object(h.rt, "fetch_dsn", return_value={"host": "x"}) as mock_fetch:
+        with patch.object(h.rt, "open_connection", return_value=fake_con) as mock_open_conn:
+            result = h._open_connection()
+    assert result is fake_con
+    mock_fetch.assert_called_once_with()
+    mock_open_conn.assert_called_once_with(
+        dsn={"host": "x"},
+        data_path=h.DATA_PATH,
+        meta_schema=h.META_SCHEMA,
+        extension_directory=h.EXTENSION_DIRECTORY,
+    )
+
+
 def test_handler_ignores_data_path_and_meta_schema_in_event():
     con = FakeCon(fetchall=[], fetchone_map={"ducklake_list_files": (0,), "count(*)": (0,)})
     with patch.object(h, "_open_connection", return_value=con) as mock_open:
@@ -176,8 +193,57 @@ def test_action_gc_ok():
 def test_action_gc_force_recreate_calls_create_tables():
     con = _gc_con()
     with patch.object(h.rt, "create_scd2_tables") as mock_create:
-        with patch.object(h.maint, "run_gc") as mock_gc:
-            mock_gc.return_value = {
+        with patch.object(h.rt, "write_scd2") as mock_write:
+            with patch.object(h.maint, "run_gc") as mock_gc:
+                mock_gc.return_value = {
+                    "ok": True,
+                    "action": "gc",
+                    "tables": [],
+                    "files_before": 0,
+                    "files_after": 0,
+                    "snapshots_expired": 0,
+                    "files_cleaned": 0,
+                    "orphans_deleted": 0,
+                    "guard_stats": {},
+                }
+                h.action_gc({"force_recreate_tables": True}, con)
+    mock_create.assert_called_once_with(con, force_recreate=True)
+    mock_write.assert_called_once()
+
+
+def test_action_gc_seeds_catalog_before_gc():
+    """rec-3802: force_recreate_tables=True must seed one row into the smoke pair BEFORE run_gc
+    runs, so G3's post-pass live-set check is exercised non-vacuously. The plain gc verb (no
+    force_recreate_tables) must issue no write at all -- the seed is confined to the fixture
+    branch, never reaching the real weekly cadence."""
+    manager = MagicMock()
+    con = _gc_con()
+    with patch.object(h.rt, "create_scd2_tables") as mock_create:
+        with patch.object(h.rt, "write_scd2") as mock_write:
+            with patch.object(h.maint, "run_gc") as mock_gc:
+                manager.attach_mock(mock_create, "create_scd2_tables")
+                manager.attach_mock(mock_write, "write_scd2")
+                manager.attach_mock(mock_gc, "run_gc")
+                mock_gc.return_value = {
+                    "ok": True,
+                    "action": "gc",
+                    "tables": [],
+                    "files_before": 1,
+                    "files_after": 1,
+                    "snapshots_expired": 0,
+                    "files_cleaned": 0,
+                    "orphans_deleted": 0,
+                    "guard_stats": {},
+                }
+                h.action_gc({"force_recreate_tables": True}, con)
+    mock_write.assert_called_once()
+    call_order = [c[0] for c in manager.mock_calls]
+    assert call_order.index("write_scd2") < call_order.index("run_gc"), "seed must happen before run_gc"
+
+    con_plain = _gc_con()
+    with patch.object(h.rt, "write_scd2") as mock_write_plain:
+        with patch.object(h.maint, "run_gc") as mock_gc_plain:
+            mock_gc_plain.return_value = {
                 "ok": True,
                 "action": "gc",
                 "tables": [],
@@ -188,8 +254,8 @@ def test_action_gc_force_recreate_calls_create_tables():
                 "orphans_deleted": 0,
                 "guard_stats": {},
             }
-            h.action_gc({"force_recreate_tables": True}, con)
-    mock_create.assert_called_once_with(con, force_recreate=True)
+            h.action_gc({}, con_plain)
+    mock_write_plain.assert_not_called()
 
 
 def test_action_gc_emits_metrics():

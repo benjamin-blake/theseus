@@ -177,6 +177,32 @@ def test_gc_gate_fails_on_missing_guard_stats(monkeypatch):
         smoke.lambda_maintenance_gc()
 
 
+def test_gc_gate_fails_when_storage_grew(monkeypatch):
+    """rec-3802: seeding arms the files_before>0 branch, previously dead against an always-empty
+    smoke catalog. A grown-storage body (files_after > files_before) must fail this gate --
+    merge_adjacent_files can only reduce or hold the live count, so growth is a real defect
+    (Decision 181/59: never relax this comparison to pass)."""
+    monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
+    monkeypatch.setattr(
+        core,
+        "_sigv4_invoke",
+        lambda url, payload, **kw: _Resp(
+            200,
+            {
+                "ok": True,
+                "guard_stats": _GUARD_STATS_OK,
+                "files_before": 1,
+                "files_after": 2,
+                "snapshots_expired": 0,
+                "files_cleaned": 0,
+                "orphans_deleted": 0,
+            },
+        ),
+    )
+    with pytest.raises(smoke.SmokeTestFailure, match="storage grew"):
+        smoke.lambda_maintenance_gc()
+
+
 def test_lambda_maintenance_gc_not_ok_fails(monkeypatch):
     """VP10: loud-fail when maintenance returns ok=False."""
     monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")

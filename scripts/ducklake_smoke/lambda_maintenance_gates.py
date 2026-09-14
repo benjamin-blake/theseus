@@ -67,12 +67,16 @@ def lambda_maintenance_gc(*, profile: str | None = None, region: str = "eu-west-
     """T2.18 c9: invoke weekly GC; assert the guard-stats RESPONSE SHAPE, not deletion volume.
 
     Invokes action=gc on the live maintenance-smoke Lambda. force_recreate_tables=True creates the
-    smoke DuckLake tables if absent (rec-2115 gap-1) so this gate does not 502 on a fresh smoke
-    catalog. Discriminates a pre-fix build on shape: the body must carry the G1-G4 guard_stats
-    shape and must NOT carry the retired file_fraction / breaker_stats keys. Shape is the right
-    discriminator because this gate runs on EVERY push against a CI-fresh smoke catalog where
-    files_cleaned is structurally 0 -- a live files_cleaned > 0 assertion would regress every
-    subsequent DuckLake deploy.
+    smoke DuckLake tables if absent (rec-2115 gap-1) and seeds one row (rec-3802) so this gate does
+    not 502 on a fresh smoke catalog AND G3 sees a non-empty pre-GC live set. Discriminates a
+    pre-fix build on shape: the body must carry the G1-G4 guard_stats shape and must NOT carry the
+    retired file_fraction / breaker_stats keys. Shape is the right discriminator because this gate
+    runs on EVERY push against a CI-fresh, then seeded smoke catalog where files_cleaned is
+    structurally 0 (the seeded row sits inside both the retention window and the cleanup grace
+    period) -- a live files_cleaned > 0 assertion would regress every subsequent DuckLake deploy.
+    The seed also arms the files_before>0 branch below: a grown-storage body (files_after >
+    files_before) is now reachable and must fail this gate -- merge_adjacent_files can only reduce
+    or hold the live count, so growth is a real defect, never a threshold to relax.
     """
     maint_url = core._function_url("maintenance_smoke")
     body = core._ok_json(
