@@ -116,18 +116,40 @@ verbs:
     payload_schema_ref: >-
       event envelope {action: "merge_ops", data_path (s3://), meta_schema}. SCHEDULED (EventBridge
       cron(30 */6 * * ? *) against PRODUCTION ducklake_ops, params supplied by the EventBridge target) AND
-      human-invokable. Non-destructive merge over ALL live ops_* SCD2 table pairs in the production
-      catalog (discovered via information_schema). No expire/cleanup/orphan.
+      human-invokable. Non-destructive merge scoped by catalog enumeration crossed with a declared
+      per-class per-verb maintenance_policy matrix (config/lambda/ducklake/field_semantics.static.yaml,
+      compaction-scope-policy-matrix / Decision 191) -- NOT a naming-convention predicate. Every table
+      the catalog enumeration discovers (unfiltered information_schema, no LIKE filter) is classified
+      (scd2 | append_only | control) via the field_semantics registry and merged iff its class's
+      merge_ops policy cell is apply=true; a table absent from the registry is unclassifiable and
+      collected rather than silently skipped. No expire/cleanup/orphan.
     response_codes:
       200: >-
-        merged; body {ok, tables, files_before, files_after, elapsed_ms, per_table, count_unavailable}.
-        files_before/files_after and each per_table entry's files_before/files_after are null and
-        count_unavailable is true when a file-count introspection read failed for any table -- the
-        merge itself still ran for every table (guard vs observability split: a transient count
-        failure degrades loudly rather than aborting this every-6h production cadence).
-      500: "DuckLakeRuntimeError: missing/non-s3 data_path, missing meta_schema, or no ops_* pairs discovered / VersionMismatchError"
+        merged; body {ok, tables, skipped, unclassified, reconciliation, files_before, files_after,
+        elapsed_ms, per_table, count_unavailable}. `tables` lists only the tables actually merged
+        (apply=true for their class); `skipped` lists classified tables whose policy cell is
+        apply=false, each with its declared reason; `unclassified` lists catalog tables absent from
+        the registry. `reconciliation` carries {registered_absent, catalog_unregistered} from
+        comparing the enumerated catalog against the registry (registered_absent tables are
+        dispositioned by their own registry `status`: a dormant/smoke table's physical absence from
+        production is expected, not a defect). files_before/files_after and each per_table entry's
+        files_before/files_after are null and count_unavailable is true when a file-count
+        introspection read failed for either side of that table's pair -- BOTH sides are nulled
+        together, never an asymmetric one-null-one-real pair (rec-3785); the merge itself still ran
+        for every table with a readable count (guard vs observability split: a transient count
+        failure degrades loudly rather than aborting this every-6h production cadence). Each
+        per_table entry also carries `error` (the merge_adjacent_files exception string, or null)
+        and `merge_unavailable` (true iff that table's merge failed) -- one table's merge failure
+        isolates to that table and does not prevent the remaining classified tables from merging.
+      500: >-
+        DuckLakeRuntimeError: missing/non-s3 data_path, missing meta_schema, no tables discovered at
+        all, OR the pass completed with one or more per-table merge failures and/or unclassified
+        tables (the aggregate post-loop raise -- classified tables were still merged before it
+        fires) / VersionMismatchError
     typed_errors:
-      runtime: "missing s3:// data_path / meta_schema, or no ops_* table pairs discovered (500)"
+      runtime: >-
+        missing s3:// data_path / meta_schema, no tables discovered at all, or a post-loop
+        aggregate raise naming per-table merge failures and/or unclassified tables (500)
       version_mismatch: "DuckDB/extension version mismatch (500)"
   catalog_reinit:
     payload_schema_ref: >-
@@ -190,4 +212,18 @@ amendment_log:
       Documentation-only: the verb surface, response codes, and typed-error keys are unchanged --
       only the prose describing what trips the shared "breaker" typed error and emits
       MaintenanceBreakerTrip was updated to match the replacement mechanism.
+  - date: "2026-09-14"
+    semantic_break: true
+    change_class: field_add
+    summary: >-
+      compaction-scope-policy-matrix (Decision 191): merge_ops discovery replaced the retired
+      suffix-matching naming-convention predicate with unfiltered catalog enumeration crossed
+      against a declared maintenance_policy matrix -- a real behaviour change,
+      not prose-only (rec-3762: ops_entity_counters, a control-class table the old predicate could
+      never match, is now in scope). Added response fields: `skipped`, `unclassified`,
+      `reconciliation`, and per_table `error`/`merge_unavailable`. Added typed-error semantics: the
+      500 runtime error now also covers a post-loop aggregate raise for per-table merge failures
+      and/or unclassified tables (isolate-then-raise, extending Decision 188 pt 3's carve-out to
+      this third site). Also fixes rec-3785: files_before/files_after are now nulled together
+      (never asymmetrically) when either side's count read fails.
 previous_versions: []

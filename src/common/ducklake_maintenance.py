@@ -57,17 +57,21 @@ _META_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 GC_TABLE_SCOPE: tuple[str, ...] = (SMOKE_HISTORY_TABLE, SMOKE_CURRENT_TABLE)
 
 # HOT_TABLE_SCOPE: higher-frequency merge cadence for high-write-rate tables (T2.18 FP-B, CD.34).
-# Scoped to ducklake_smoke_* for T2.18 (same as GC_TABLE_SCOPE). At T2.19, this EXPANDS to the
-# real high-write-rate ops_* tables (ops_recommendations, ops_decisions) once the DuckLake writer
-# is the live write path. Wiring the numeric tuning + real tables is a T2.19 exit criterion.
+# Scoped to ducklake_smoke_* for T2.18 (same as GC_TABLE_SCOPE; Decision 88 cl.4, Decision 143
+# cl.2 -- unchanged by compaction-scope-policy-matrix / Decision 191). Expanding this cadence to
+# real high-write-rate ops_* tables (ops_recommendations, ops_decisions) remains open forward
+# work -- NOT one of T2.19's ratified exit criteria (verified false against all 15 T2.19 criteria; the
+# claim traced only to a T2.18 progress_note, compaction-scope-policy-matrix).
 HOT_TABLE_SCOPE: tuple[str, ...] = (SMOKE_HISTORY_TABLE, SMOKE_CURRENT_TABLE)
 
 MAINTENANCE_SCOPE_NOTE = (
-    "T2.18 FP-A: scope is ducklake_smoke_* only. "
-    "T2.19 expands this to the full ducklake_ops catalog and all ops_* business tables "
-    "(ops_recommendations, ops_decisions, etc.). "
-    "To expand: set GC_TABLE_SCOPE to all relevant tables or introduce a catalog-table-listing "
-    "query (information_schema.tables WHERE table_name LIKE 'ops_%')."
+    "T2.18 FP-A: GC_TABLE_SCOPE / HOT_TABLE_SCOPE (this module's smoke-only merge/gc/hot_merge "
+    "cadences) stay ducklake_smoke_* (Decision 88 cl.4; Decision 143 cl.2) -- unchanged by this "
+    "note. T2.19 already introduced a SEPARATE scheduled cadence, merge_ops "
+    "(src/lambdas/ducklake_maintenance/handler.py::action_merge_ops), against the full "
+    "PRODUCTION ducklake_ops catalog and every ops_* table; it now discovers that scope by "
+    "catalog enumeration crossed with the declared maintenance_policy matrix "
+    "(compaction-scope-policy-matrix, Decision 191), never a naming-convention predicate."
 )
 
 # ---------------------------------------------------------------------------
@@ -350,8 +354,9 @@ def run_hot_merge(
     Bounds the small-file COUNT between weekly GC passes without reclaiming storage (that is
     the weekly GC cadence's job). Safe to invoke frequently.
 
-    Table scope: HOT_TABLE_SCOPE (ducklake_smoke_* for T2.18). At T2.19, this expands to the
-    real high-write-rate ops_* tables -- wiring is a T2.19 exit criterion.
+    Table scope: HOT_TABLE_SCOPE (ducklake_smoke_* for T2.18; Decision 88 cl.4 / Decision 143
+    cl.2 -- unchanged). Expanding this cadence to the real high-write-rate ops_* tables remains
+    open forward work, NOT one of T2.19's ratified exit criteria (compaction-scope-policy-matrix).
 
     Returns a stats dict so the smoke gate (VP12) can assert files_after <= files_before and
     confirm no destructive calls were issued.

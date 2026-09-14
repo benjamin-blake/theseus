@@ -288,3 +288,19 @@ def test_new_ducklake_modules_track_scd2_schema_membership():
     # neither module.
     assert checked_include > 0
     assert checked_exclude > 0
+
+
+# ---------------------------------------------------------------------------
+# compaction-scope-policy-matrix (T2.18): the new scope module ships with the maintenance Lambda
+# (action_merge_ops depends on it directly) and is explicitly excluded from data-pipeline (the
+# same wildcard-includes-src/-plus-explicit-excludes pattern the other ducklake_* modules use).
+# ---------------------------------------------------------------------------
+
+
+def test_maintenance_scope_module_bundled_and_excluded():
+    scope_module = "src/common/ducklake_maintenance_scope.py"
+    manifests = load_all()
+    maintenance = manifests["ducklake_maintenance"]
+    data_pipeline = manifests["data-pipeline"]
+    assert scope_module in set(maintenance.includes), "ducklake_maintenance manifest must bundle the scope module"
+    assert scope_module in set(data_pipeline.excludes), "data-pipeline manifest must exclude the scope module"

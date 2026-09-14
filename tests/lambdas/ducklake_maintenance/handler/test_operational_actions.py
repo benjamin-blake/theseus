@@ -167,8 +167,31 @@ def test_handler_dispatches_catalog_reinit_without_a_connection_arg():
 
 
 # ---------------------------------------------------------------------------
-# action_merge_ops (T2.18 Phase-4 production ops_* merge cadence)
+# action_merge_ops (compaction-scope-policy-matrix: catalog enumeration x declared policy, T2.18)
 # ---------------------------------------------------------------------------
+
+
+def _merge_ops_semantics() -> dict:
+    """A field_semantics-shaped fixture covering both live scd2 tables + their policy cell."""
+    return {
+        "ops_tables": {
+            "ops_recommendations": {
+                "status": "live",
+                "history_table": "ops_recommendations_history",
+                "current_table": "ops_recommendations_current",
+            },
+            "ops_decisions": {
+                "status": "live",
+                "history_table": "ops_decisions_history",
+                "current_table": "ops_decisions_current",
+            },
+        },
+        "maintenance_policy": {
+            "scd2": {"merge_ops": {"apply": True, "reason": "standard"}},
+            "append_only": {"merge_ops": {"apply": True, "reason": "standard"}},
+            "control": {"merge_ops": {"apply": True, "reason": "standard"}},
+        },
+    }
 
 
 def test_action_merge_ops_requires_data_path():
@@ -190,20 +213,20 @@ def test_action_merge_ops_requires_meta_schema():
 
 
 def test_action_merge_ops_no_tables_discovered():
-    """Loud-fail when information_schema returns no ops_* table pairs."""
+    """Loud-fail when information_schema returns no tables at all."""
     con = MagicMock()
     con.execute.return_value.fetchall.return_value = []
     with (
         patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
         patch.object(h.rt, "open_connection", return_value=con),
     ):
-        with pytest.raises(DuckLakeRuntimeError, match="no ops_"):
+        with pytest.raises(DuckLakeRuntimeError, match="no tables discovered"):
             h.action_merge_ops({"data_path": "s3://b/ducklake/", "meta_schema": "ducklake_ops"}, None)
     con.close.assert_called_once()
 
 
 def test_action_merge_ops_discovers_and_merges_tables():
-    """Discovery query triggers merge_adjacent_files for each discovered table."""
+    """Discovery query triggers merge_adjacent_files for each discovered, classified table."""
     expected_tables = [
         "ops_decisions_current",
         "ops_decisions_history",
@@ -216,6 +239,7 @@ def test_action_merge_ops_discovers_and_merges_tables():
     with (
         patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
         patch.object(h.rt, "open_connection", return_value=con),
+        patch.object(h.rt, "load_field_semantics", return_value=_merge_ops_semantics()),
         patch.object(h.maint, "_count_files", return_value=10),
         patch.object(h.maint, "merge_adjacent_files") as mock_merge,
         patch.object(h, "_emit_maintenance_metric"),
@@ -252,6 +276,7 @@ def test_action_merge_ops_covers_ops_recommendations_and_ops_decisions():
     with (
         patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
         patch.object(h.rt, "open_connection", return_value=con),
+        patch.object(h.rt, "load_field_semantics", return_value=_merge_ops_semantics()),
         patch.object(h.maint, "_count_files", return_value=5),
         patch.object(h.maint, "merge_adjacent_files", side_effect=capture_merge),
         patch.object(h, "_emit_maintenance_metric"),
@@ -273,6 +298,7 @@ def test_action_merge_ops_emits_metrics():
     with (
         patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
         patch.object(h.rt, "open_connection", return_value=con),
+        patch.object(h.rt, "load_field_semantics", return_value=_merge_ops_semantics()),
         patch.object(h.maint, "_count_files", return_value=3),
         patch.object(h.maint, "merge_adjacent_files"),
         patch.object(h, "_emit_maintenance_metric") as mock_emit,
@@ -316,6 +342,7 @@ def test_merge_ops_reports_count_unavailable_when_introspection_raises():
     with (
         patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
         patch.object(h.rt, "open_connection", return_value=con),
+        patch.object(h.rt, "load_field_semantics", return_value=_merge_ops_semantics()),
         patch.object(h.maint, "_count_files", side_effect=RuntimeError("connection lost")),
         patch.object(h.maint, "merge_adjacent_files") as mock_merge,
         patch.object(h, "_emit_maintenance_metric") as mock_emit,
@@ -337,6 +364,35 @@ def test_merge_ops_reports_count_unavailable_when_introspection_raises():
     con.close.assert_called_once()
 
 
+def test_merge_ops_nulls_only_the_failed_side_of_a_table():
+    """rec-3785: when only ONE side of a table's two _count_files reads fails (before succeeds,
+    after raises), BOTH sides of that table's pair must be nulled -- never an asymmetric
+    one-null-one-real pair sitting next to count_unavailable: true."""
+    discovered = ["ops_recommendations_history", "ops_recommendations_current"]
+    con = MagicMock()
+    con.execute.return_value.fetchall.return_value = [(t,) for t in discovered]
+
+    with (
+        patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
+        patch.object(h.rt, "open_connection", return_value=con),
+        patch.object(h.rt, "load_field_semantics", return_value=_merge_ops_semantics()),
+        patch.object(
+            h.maint, "_count_files", side_effect=[10, RuntimeError("after read lost"), 10, RuntimeError("after read lost")]
+        ),
+        patch.object(h.maint, "merge_adjacent_files"),
+        patch.object(h, "_emit_maintenance_metric"),
+    ):
+        result = h.action_merge_ops({"data_path": "s3://b/ducklake/", "meta_schema": "ducklake_ops"}, None)
+
+    assert result["count_unavailable"] is True
+    assert result["files_before"] is None
+    assert result["files_after"] is None
+    for entry in result["per_table"]:
+        assert entry["count_unavailable"] is True
+        assert entry["files_before"] is None, "the successful 'before' read must be nulled alongside the failed 'after' read"
+        assert entry["files_after"] is None
+
+
 def test_action_merge_ops_no_destructive_primitives():
     """merge_ops must not dispatch expire_snapshots, cleanup_old_files, or delete_orphaned_files."""
     con = MagicMock()
@@ -348,6 +404,7 @@ def test_action_merge_ops_no_destructive_primitives():
     with (
         patch.object(h.rt, "fetch_dsn", return_value=_FULL_DSN),
         patch.object(h.rt, "open_connection", return_value=con),
+        patch.object(h.rt, "load_field_semantics", return_value=_merge_ops_semantics()),
         patch.object(h.maint, "_count_files", return_value=5),
         patch.object(h.maint, "merge_adjacent_files"),
         patch.object(h.maint, "expire_snapshots") as mock_expire,

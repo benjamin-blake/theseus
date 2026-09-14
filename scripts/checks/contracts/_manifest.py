@@ -193,4 +193,19 @@ ENTRIES: tuple[Entry, ...] = (
         ),
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_maintenance_policy_matrix",
+        module="scripts.checks.contracts.validate_maintenance_policy_matrix",
+        attr="validate_maintenance_policy_matrix",
+        pre=True,
+        pre_globs=(
+            "config/lambda/ducklake/field_semantics.static.yaml",
+            "src/common/ducklake_maintenance_scope.py",
+            "src/common/ducklake_scd2_schema.py",
+            "scripts/checks/contracts/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
 )

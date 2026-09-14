@@ -2,6 +2,84 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 191: Maintenance scope is catalog enumeration crossed with declared class policy; a naming convention never determines what gets maintained (Decided)
+
+```yaml
+number: 191
+status: Decided
+decided_date: "2026-09-14"
+amends: [88]
+significance:
+  value: numbered_decision
+  justification: >-
+    Re-decides the ENFORCEMENT MECHANISM behind Decision 88 clause 1(iii)'s requirement (merge
+    must run on ALL live ops_* tables) after that requirement was measured non-conformant since
+    inception, and extends Decision 188 point 3's named two-site isolation carve-out to a third
+    site -- a durable, reversal-relevant commitment, not a contract-prose edit.
+```
+
+**Status:** Decided
+**Date:** 2026-09-14
+**Warehouse ID:** dec-191
+
+**Problem:**
+`action_merge_ops` discovered scope with `table_name LIKE 'ops_%_history' OR ... LIKE
+'ops_%_current'`. `ops_entity_counters` (a control-class table, no history/current pair) matches
+neither, so the every-6h production merge cadence never touched it (rec-3762). Measured
+2026-09-12: 3,418 live tracked files, 26.5% of the catalog's live set, contributing ~52,000 of
+`ducklake_file_column_stats`' 196,051 rows (the Neon read-egress driver, Decision 88 cl.1(iii)
+invariant). Not a new gap: cl.1(iii) already REQUIRES merge on every live ops_* table, so the
+predicate was non-conformant from the moment it shipped -- a naming convention can only express
+"every table matching a pattern someone thought of," not "every live table."
+
+**Decision:**
+1. **Scope is catalog enumeration crossed with a declared per-class, per-verb policy matrix, never
+   a naming convention.** `action_merge_ops` enumerates the catalog UNFILTERED via
+   `information_schema`, resolves every table to a declared class (`scd2`|`append_only`|`control`,
+   from its own `write_mode` in the field_semantics registry -- never its physical name), and
+   consults `maintenance_policy` for that class x verb cell. Exclusion is a DECLARED cell
+   (`apply: false` + `reason`), never an absence. An unclassifiable table is COLLECTED, not
+   skipped and not raised on individually -- every classified table still merges; the invocation
+   raises a post-loop aggregate naming every unclassified table.
+2. **Both universes the exhaustiveness gate checks are declared independently of the matrix.**
+   Class universe = every distinct `write_mode` across the live registry; verb universe = an
+   explicit list (`ducklake_maintenance_scope.VERB_UNIVERSE`). Neither reads `maintenance_policy`'s
+   own keys -- a matrix supplying its own key set as its checked universe is trivially exhaustive
+   and can never fail, the blind-oracle shape this closes. `validate_maintenance_policy_matrix`
+   enforces this in CI.
+3. **Decision 188 pt 3's isolation carve-out EXTENDS from two named sites to three.** Pt 3 names
+   the two `_count_files` sites where a transient failure degrades loudly rather than aborting the
+   cadence. This adds a third: the per-table `merge_adjacent_files` call. One table's failure
+   isolates to that table -- the rest still merge -- but the pass still terminates
+   non-successfully via a POST-LOOP aggregate raise. No permissive default: only the raise's
+   timing moves from per-table to post-loop. Amends Decision 88 cl.1(iii)'s ENFORCEMENT MECHANISM,
+   not its requirement.
+4. Also fixes rec-3785: `files_before`/`files_after` are nulled TOGETHER when either side's count
+   read fails, never an asymmetric one-null-one-real pair.
+
+**Rationale:**
+A volume-blind naming-convention predicate and a volume-blind exhaustiveness gate share Decision
+188's root defect: coverage depending on pattern-matching, not a declared checked universe,
+degrades silently once reality outgrows the pattern author's assumptions. Deriving both universes
+from the SAME live registry the runtime already trusts -- never restating them, never reading them
+off the artifact under check -- is what keeps the gate falsifiable.
+
+**Reversal conditions:** Revert to an explicit table list if (a) a future class the registry
+cannot express needs finer-than-per-class policy -- add a per-table override, never string
+matching; (b) the post-loop aggregate raise proves too coarse to triage which of several
+concurrent failures dominated -- retune the response shape, never remove the isolation.
+
+**Significance:** clears the Decision 150 bar -- re-decides the enforcement mechanism behind a
+ratified, measured-non-conformant requirement (Decision 88 cl.1(iii)), extends a prior Decision's
+named carve-out to a new site, carries itemised reversal conditions.
+
+**Related:** Decision 88 (cl.1(iii) mechanism amended, cl.4 untouched), Decision 188 (pt 3 extended
+to a third site), Decision 137 (cl.2; ops_entity_counters partitioning already discharged, 2026-
+09-13 amendment), Decision 143 (cl.2 untouched), Decision 84 (I-2 counter serialization point;
+I-4 no offline outbox), Decision 55, Decision 128 (scope module is a new file).
+
+---
+
 ## Decision 190: Drift is measured, never inferred from an exit code -- the convergence record carries a measured red_cause, and code-behind-state is a bounded non-status marker rather than a red latch (amends 92, 154) (Decided)
 
 ```yaml
@@ -6078,6 +6156,11 @@ On 2026-06-15 the DuckLake-on-Neon catalog breached Neon's free-tier 5 GB/month 
 The free-tier breach proved the cap is real and the access pattern, not the workload, drove it. Encoding catalog egress as a named budget with standing invariants prevents the class of mistake recurring: each invariant maps to a verified driver (i->D2, ii->D4, iii->D3, iv->D1), so a future change that reintroduces a cold-ATTACH-per-request or a read-cache re-fetch is checkable against a ratified rule rather than rediscovered via the next bill. The measurement obligation makes the budget enforceable -- a budget you cannot read is a wish. The work is shaped as one IMPLEMENTATION effort (Decision 67 / CD.17 STRATEGIC freeze). Form follows Decision 86: the durable rationale lives here, field/measurement semantics ride the maintenance action + ops.yaml, and no new standing prose-architecture doc is created (intent-doc-freeze compliant). Citation correction (2026-06-09 audit F-033): Decision 82 governs the DIRECT-vs-pooled endpoint basis and the EC8 churn-gate N=8->4 frame -- NOT the cold-resume warm-up; the preflight warm-up attribution to Decision 82 was a mis-citation and is corrected to this Decision's invariant (i).
 
 **Related:** Decision 84 (DuckLake sole ops backend; named-verb closed boundary I-3; no write buffering I-4 -- the cache refresh is downstream of the synchronous writer commit, never a write source), Decision 81 (maintenance cadence design, clause 6 -- merge/GC primitives this tunes), Decision 82 (DIRECT-vs-pooled endpoint + EC8 churn-gate frame; the cold-resume warm-up is NOT Decision 82, audit F-033), Decision 55 (loud failure -- the warm-connection reopen handles ONE expected condition; GC stays gated), Decision 86 (deliverable routing; intent-doc-freeze), CD.34 (amended here: "negligible add-on" is storage-true / egress-false), rec-2113 (DR restore-drill HARD GATE that unlatches D3b), rec-2096 (cold+warm connect-latency measurement, closed by this work), rec-2244 (ducklake_reader 502 -- the downstream symptom relieved by removing this egress pressure; closes on operational confirmation, not this merge), rec-2087 (Neon egress IP-allow-list -- a separate access-control concern, left open), T2.18 / T2.19 / T2.26 (`docs/ROADMAP-PLATFORM.yaml`).
+
+> **Amended by Decision 191 (2026-09-14):** clause 1(iii)'s ENFORCEMENT MECHANISM (how "every live
+> ops_* table" is discovered for non-destructive merge) is replaced: catalog enumeration crossed
+> with a declared per-class, per-verb policy matrix, not a naming-convention predicate. The
+> requirement itself -- merge must run on every live table -- is unchanged.
 
 ---
 

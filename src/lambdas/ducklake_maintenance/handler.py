@@ -34,6 +34,7 @@ from typing import Any
 
 from src.common import catalog_dr, ducklake_control_health
 from src.common import ducklake_maintenance as maint
+from src.common import ducklake_maintenance_scope as scope
 from src.common import ducklake_runtime as rt
 
 EXTENSION_DIRECTORY = os.environ.get("DUCKLAKE_EXTENSION_DIRECTORY", rt.LAMBDA_EXTENSION_DIRECTORY)
@@ -345,15 +346,24 @@ def action_catalog_stats(event: dict[str, Any], _con: Any) -> dict[str, Any]:
 
 
 def action_merge_ops(event: dict[str, Any], _con: Any) -> dict[str, Any]:
-    """OPERATIONAL: non-destructive merge over ALL live ops_* SCD2 table pairs in the production catalog.
+    """OPERATIONAL: non-destructive merge over the production ops_* catalog, scoped by the declared
+    maintenance_policy matrix (compaction-scope-policy-matrix, Decision 191) rather than a naming
+    convention.
 
     Connectionless: opens its own connection from the event's data_path + meta_schema (production).
-    Discovers ops_*_history / ops_*_current pairs via information_schema. Runs
-    maint.merge_adjacent_files per table. Non-destructive only -- no expire/cleanup/orphan (those
-    remain gated by rec-2113 / T2.26).
+    Enumerates the catalog UNFILTERED via information_schema (no naming-convention predicate
+    anywhere in this path), classifies every discovered table against the field_semantics registry
+    (src.common.ducklake_maintenance_scope), and merges only the tables whose class's merge_ops
+    policy cell is apply=true. Unclassifiable tables are COLLECTED, never silently skipped: every
+    classified table is still merged (maint.merge_adjacent_files per table), and the invocation
+    raises an aggregate error after the loop naming both any unclassified tables and any per-table
+    merge failure. A single table's merge_adjacent_files failure isolates to that table -- it does
+    not prevent the remaining tables from merging -- but the pass still terminates
+    non-successfully (Decision 188 pt 3, extended by Decision 191). Non-destructive only -- no
+    expire/cleanup/orphan (those remain gated by rec-2113 / T2.26).
 
-    Loud-fail if data_path is missing or not s3://, meta_schema is missing/invalid, or no ops_*
-    table pairs are discovered (misconfigured data_path / meta_schema guard).
+    Loud-fail if data_path is missing or not s3://, meta_schema is missing/invalid, or no tables at
+    all are discovered in the catalog (misconfigured data_path / meta_schema guard).
     """
     data_path = event.get("data_path")
     if not isinstance(data_path, str) or not data_path.startswith("s3://"):
@@ -370,50 +380,77 @@ def action_merge_ops(event: dict[str, Any], _con: Any) -> dict[str, Any]:
     try:
         catalog = maint.CATALOG_ALIAS
         rows = con.execute(
-            f"SELECT table_name FROM information_schema.tables "
-            f"WHERE table_catalog = '{catalog}' "
-            f"AND (table_name LIKE 'ops_%_history' OR table_name LIKE 'ops_%_current') "
-            f"ORDER BY table_name"
+            f"SELECT table_name FROM information_schema.tables WHERE table_catalog = '{catalog}' ORDER BY table_name"
         ).fetchall()
-        tables = [r[0] for r in rows]
+        discovered = [r[0] for r in rows]
 
-        if not tables:
+        if not discovered:
             raise rt.DuckLakeRuntimeError(
-                "merge_ops: no ops_*_history / ops_*_current tables discovered in the catalog -- "
-                "verify data_path and meta_schema point at the production DuckLake (ducklake_ops @ s3://.../ducklake/)"
+                "merge_ops: no tables discovered in the catalog -- verify data_path and meta_schema "
+                "point at the production DuckLake (ducklake_ops @ s3://.../ducklake/)"
             )
+
+        semantics = rt.load_field_semantics()
+        table_registry = scope.build_registry(semantics)
+        policy = scope.load_policy(semantics)
+        resolution = scope.resolve_scope(discovered, verb="merge_ops", policy=policy, registry=table_registry)
+        reconciliation = scope.reconcile_catalog(discovered, semantics=semantics, registry=table_registry)
 
         t0 = time.perf_counter()
         per_table: list[dict[str, Any]] = []
         files_before_total = 0
         files_after_total = 0
         any_count_unavailable = False
-        for table in tables:
+        merge_failed_tables: list[str] = []
+
+        for table in resolution.to_merge:
             count_unavailable = False
+            before: int | None = None
+            after: int | None = None
+            merge_error: str | None = None
+
             try:
                 before = maint._count_files(con, catalog, table)
             except Exception:  # noqa: BLE001 -- guard vs observability split: a transient introspection
                 # failure degrades LOUDLY (null count + count_unavailable) rather than aborting the
                 # every-6h non-destructive production compaction cadence (Decision 88 cl.1(iii)).
-                before = None
                 count_unavailable = True
-
-            maint.merge_adjacent_files(con, [table], catalog=catalog)
 
             try:
-                after = maint._count_files(con, catalog, table)
-            except Exception:  # noqa: BLE001 -- see above
-                after = None
-                count_unavailable = True
+                maint.merge_adjacent_files(con, [table], catalog=catalog)
+            except Exception as exc:  # noqa: BLE001 -- one table's failure isolates to that table
+                # (recorded below + a metric emitted); the pass still raises after the loop
+                # (Decision 188 pt 3, extended by Decision 191) -- see the aggregate raise below.
+                merge_error = str(exc)
+                merge_failed_tables.append(table)
+                _emit_maintenance_metric("MergeOpsTableFailure", 1.0)
+
+            if merge_error is None and not count_unavailable:
+                try:
+                    after = maint._count_files(con, catalog, table)
+                except Exception:  # noqa: BLE001 -- see above
+                    count_unavailable = True
 
             if count_unavailable:
+                # rec-3785: null BOTH sides of the pair when either read failed -- never an
+                # asymmetric one-null-one-real pair sitting next to count_unavailable: true.
+                before = None
+                after = None
                 any_count_unavailable = True
-            else:
-                assert before is not None and after is not None  # count_unavailable is False here
+            elif merge_error is None:
+                assert before is not None and after is not None
                 files_before_total += before
                 files_after_total += after
+
             per_table.append(
-                {"table": table, "files_before": before, "files_after": after, "count_unavailable": count_unavailable}
+                {
+                    "table": table,
+                    "files_before": before,
+                    "files_after": after,
+                    "count_unavailable": count_unavailable,
+                    "error": merge_error,
+                    "merge_unavailable": merge_error is not None,
+                }
             )
 
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -422,12 +459,25 @@ def action_merge_ops(event: dict[str, Any], _con: Any) -> dict[str, Any]:
         if not any_count_unavailable:
             _emit_maintenance_metric("MergeOpsFilesBeforeTotal", float(files_before_total))
             _emit_maintenance_metric("MergeOpsFilesAfterTotal", float(files_after_total))
-        _emit_maintenance_metric("MergeOpsTablesCount", float(len(tables)))
+        _emit_maintenance_metric("MergeOpsTablesCount", float(len(resolution.to_merge)))
+
+        if merge_failed_tables or resolution.unclassified:
+            raise rt.DuckLakeRuntimeError(
+                "merge_ops: pass completed with failures (per-table isolation held; classified "
+                f"tables were still merged) -- merge_failed={merge_failed_tables} "
+                f"unclassified={list(resolution.unclassified)}"
+            )
 
         return {
             "ok": True,
             "action": "merge_ops",
-            "tables": tables,
+            "tables": list(resolution.to_merge),
+            "skipped": list(resolution.skipped),
+            "unclassified": list(resolution.unclassified),
+            "reconciliation": {
+                "registered_absent": list(reconciliation.registered_absent),
+                "catalog_unregistered": list(reconciliation.catalog_unregistered),
+            },
             "files_before": None if any_count_unavailable else files_before_total,
             "files_after": None if any_count_unavailable else files_after_total,
             "count_unavailable": any_count_unavailable,

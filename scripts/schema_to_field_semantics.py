@@ -26,6 +26,11 @@ rejected for any append_only table (no current projection exists to reconcile). 
 SIX contract_table_ops entries, not only the two contract-backed ones -- the emission path never
 reads reconcile_scope/pending_reconcile/reconciled, so this is the only place they are validated.
 
+maintenance_policy passthrough (compaction-scope-policy-matrix, Decision 191): the sidecar's
+per-class per-verb maintenance policy matrix is copied verbatim into the generated projection --
+REQUIRED, not conditional (a missing key raises KeyError), since this is the only path that
+carries the matrix into the Lambda-bundled asset.
+
 Fail-closed rules:
   - Unmapped iceberg_type raises ValueError (never silently defaults).
   - contract.governance.merge_key must be present for each contract-backed table.
@@ -250,7 +255,14 @@ def generate(*, include_prose: bool = False) -> dict[str, Any]:
     sidecar = yaml.safe_load(_SIDECAR_PATH.read_text(encoding="utf-8"))
 
     doc: dict[str, Any] = {}
-    for key in ("tables", "fields", "derivation_timing", "partition_transforms", "connection_settings"):
+    for key in (
+        "tables",
+        "fields",
+        "derivation_timing",
+        "partition_transforms",
+        "connection_settings",
+        "maintenance_policy",
+    ):
         doc[key] = sidecar[key]
 
     ops_tables: dict[str, Any] = {}
