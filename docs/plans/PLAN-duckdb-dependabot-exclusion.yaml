@@ -23,9 +23,12 @@ scope:
       one-file bump procedure needs as its trigger, and is why exclude-patterns was chosen over a
       top-level `ignore:` (which deletes the signal). PRICE THE COST HONESTLY in the inline comment,
       do not sell this as free: that standalone PR is permanently BLOCKED (the lockstep gate reds it
-      and the denylist refuses to arm it), so `scripts/preflight/dependabot.py::_is_stranded` flags
-      it as stranded in EVERY session preflight from day one regardless of age, and it permanently
-      holds one of the five `open-pull-requests-limit` pip slots. A dedicated second `groups:` entry
+      and the denylist refuses to arm it), so `scripts/preflight/dependabot.py::_is_stranded` returns
+      True for it from day one regardless of age (STRANDED_MERGE_STATES includes BLOCKED), and it
+      permanently holds one of the five `open-pull-requests-limit` pip slots. The alert half is
+      CONSERVATIVE rather than certain: check_stranded_prs sources from the gh CLI, which AGENTS.md
+      keeps deliberately absent from both containers, so in agent sessions the bucket degrades to
+      UNAVAILABLE rather than firing. The slot cost is unconditional; the nagging is not. A dedicated second `groups:` entry
       (`patterns: [duckdb, ducklake]`) was considered -- it would NAME the quarantined PR rather than
       leaving it anonymous -- and rejected: it buys a label at the cost of a second group construct
       whose sole membership is permanently unmergeable, and Dependabot's group-assignment precedence
@@ -144,7 +147,7 @@ acceptance_criteria:
   - The new check's Entry is pre-tier and closes over every path its implementation reads
   - Decision 99 carries a well-formed reversal-conditions stanza that scripts.preflight.decision_conditions reports as monitored
   - tests/test_import_governance.py asserts the mcp 1.x probe against the compiled pin in a named node, with no hardcoded version literal and the major-2 upper bound retained in its own node
-  - After the regenerated group merges, main carries the bumped non-duckdb pins and duckdb is still 1.5.4
+  - After the regenerated group merges, main no longer carries the pre-bump mcp pin and duckdb is still pinned 1.5.4
   - rec-3832 is closed
 verification_plan:
   - step: 1
@@ -174,27 +177,34 @@ verification_plan:
   - step: 3
     phase: pre-deploy
     action: The Decision 99 reversal-conditions stanza parses, matches its enclosing header, and is actually monitored
-    command: bin/venv-python -m scripts.preflight.decision_conditions | grep -q "^Decision 99:"
-    expected: A Decision 99 line is printed (not-due against its review_by), and the CLI exits zero -- no MALFORMED entry
+    command: 'out=$(bin/venv-python -m scripts.preflight.decision_conditions) && printf ''%s\n'' "$out" | grep -qE "^Decision 99: (not-due|manual-review-due|fired)"'
+    expected: A Decision 99 line is printed in a well-formed STATE (not-due against its review_by), and the CLI exits zero
     fix_if: >-
       No Decision 99 line (the fence was never added, or sits outside Decision 99's block), or the
       stanza reports MALFORMED because decision/review_by/on_trigger/conditions is missing or the
-      stanza id does not match the header
+      stanza id does not match the header. DO NOT simplify this command to a bare pipe into `grep -q
+      "^Decision 99:"`: _cli prints `Decision 99: MALFORMED -- {error}` for every malformed branch,
+      so that grep MATCHES a malformed stanza and the pipe discards _cli's exit 1 -- the step would
+      then assert presence while its graduated slug claims monitoring. Binding the output first
+      preserves the exit code; the state alternation rejects MALFORMED explicitly.
     hermetic: true
     graduation: graduate
     graduation_check_id: decision-99-reversal-stanza-monitored
   - step: 4
     phase: pre-deploy
     action: The mcp declaration assertion no longer carries a version literal coupled to the floor it guards
-    command: test "$(grep -c 'Version("1\.28\.1")' tests/test_import_governance.py)" -eq 0
-    expected: Zero occurrences; the 1.x probe now comes from the compiled requirements.txt pin
+    command: test "$(grep -cE 'Version\("1\.[0-9]+\.[0-9]+"\)' tests/test_import_governance.py)" -eq 0
+    expected: Zero hardcoded 1.x version literals; the 1.x probe now comes from the compiled requirements.txt pin
     fix_if: >-
-      The literal survives (the test still breaks on the next mcp bump). Note this step is the
-      NEGATIVE half only and is satisfiable by deleting the test outright -- step 5 is the positive
-      half that makes deletion insufficient
+      A hardcoded 1.x literal survives (the test still breaks on the next mcp bump). The pattern is
+      deliberately the 1.x FAMILY, not the single literal Version("1.28.1"): once this bump merges
+      that exact string can never recur, so a row pinned to it would be green-by-construction and
+      would miss the next hardcoded literal -- the very regression it is named for. Note this step is
+      the NEGATIVE half only and is satisfiable by deleting the test outright -- step 5 is the
+      positive half that makes deletion insufficient
     hermetic: true
     graduation: graduate
-    graduation_check_id: mcp-declaration-test-has-no-pinned-version-literal
+    graduation_check_id: mcp-declaration-test-has-no-pinned-1x-literal
   - step: 5
     phase: pre-deploy
     action: >-
@@ -251,25 +261,30 @@ verification_plan:
     phase: pre-deploy
     action: Full-tier validation before handoff, as handoff_policy.full_validation_required_before_commit declares
     command: bin/venv-python -m scripts.validate
-    expected: exit 0 across the full check fleet, including the full-tier-only manifest, pre-glob-closure and accounting guards the --pre tier skips by glob
+    expected: exit 0 across the whole fleet -- every check runs unconditionally, including the full-tier-only segments the diff-aware --pre tier never reaches (the complete pytest suite, the coverage floor)
     fix_if: >-
-      A full-tier-only guard rejects the new check module -- most likely validate_check_manifests
-      (bare-string Entry grammar), validate_pre_glob_closure (the Entry must close over every path the
-      module reads) or validate_check_accounting (the examined() declaration)
+      A full-tier-only segment reds -- most likely the complete pytest suite surfacing a test the
+      diff-aware --pre selection never ran, or the coverage floor. The registration guards
+      (validate_check_manifests, validate_pre_glob_closure, validate_check_accounting) are all
+      pre=True and are already exercised by step 8, so they are not what this step adds
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
       MANDATORY, not discretionary, for the same reason as step 8: vp-red-before.yaml's
       recursion_refusal statically refuses any graduate pre-deploy step whose argv head is `-m
-      scripts.validate`. This is the handoff gate the plan's handoff_policy requires, and the only
-      step that exercises the full-tier-only registration guards.
+      scripts.validate`. This is the handoff gate handoff_policy.full_validation_required_before_commit
+      requires; the registration guards are pre=True and step 8 already exercises them.
   - step: 10
     phase: post-deploy
     action: >-
       Dependabot regenerates the group without duckdb once the config change is on main. Identify the
       regenerated PR with mcp__github__pull_request_read before running this command
-    command: git fetch origin "+refs/heads/dependabot/pip/*:refs/remotes/dependabot/pip/*" --quiet && test -z "$(git diff origin/main...$(git for-each-ref --sort=-committerdate --format='%(refname)' refs/remotes/dependabot/pip/ | head -1) -- requirements.in requirements.txt requirements-fast.txt requirements-dev.in requirements-dev.txt | grep -E '^[+-]duckdb')"
-    expected: Empty output -- the regenerated group's requirements diff adds and removes no duckdb line at all
+    command: git fetch origin "+refs/heads/dependabot/pip/*:refs/remotes/dependabot/pip/*" --quiet && ref=$(git for-each-ref --sort=-committerdate --format='%(refname)' refs/remotes/dependabot/pip/ | head -1) && test -n "$ref" && test -z "$(git diff origin/main..."$ref" -- requirements.in requirements.txt requirements-fast.txt requirements-dev.in requirements-dev.txt | grep -E '^[+-]duckdb')"
+    expected: >-
+      A dependabot/pip ref exists AND its requirements diff adds and removes no duckdb line at all.
+      The ref is bound and required non-empty deliberately: without `test -n "$ref"` the inner
+      for-each-ref yields nothing, the diff errors to stderr, and `test -z ""` exits 0 -- so "never
+      regenerated" would pass vacuously as "regenerated clean"
     fix_if: >-
       A duckdb line appears in the diff (the exclude-pattern did not take -- check the group name and
       indentation), or no dependabot/pip ref is found because Dependabot neither recreated nor
@@ -337,8 +352,11 @@ constraints:
     Do not modify or reorder Decision 99's existing body (Decision 177). Both edits are pure
     insertions; the fenced stanza interior is the one mutable monitored surface.
   - >-
-    The denylist is DERIVED from scripts/ci/dependabot_auto_merge.sh at check time, never re-listed
-    in the checker or its tests (Decision 187 derive-don't-enumerate).
+    The denylist is DERIVED from scripts/ci/dependabot_auto_merge.sh at check time and never
+    re-listed in the CHECKER MODULE or in any pass-path assertion (Decision 187
+    derive-don't-enumerate). Fail-path FIXTURES may and must carry literal denied names -- a fixture
+    missing exactly one name IS the condition under test -- exactly as the sibling test file does at
+    tests/checks/ci_guards/test_validate_dependabot_automation.py:55.
   - >-
     Do not hand-edit the Dependabot branch. The regenerated PR comes from Dependabot itself
     (@dependabot recreate); merging is squash, via mcp__github__merge_pull_request.
