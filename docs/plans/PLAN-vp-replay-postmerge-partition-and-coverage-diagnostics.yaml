@@ -1,0 +1,419 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: vp-replay-postmerge-partition-and-coverage-diagnostics
+intent: >-
+  Close the two open ci-rca recs on validate_vp_replay.py at root cause -- an environment-coupled
+  test whose assertion two code paths satisfy, and an implement-leg replay partition that ignores
+  whether its diff base still denotes anything -- so the verification system measures what it
+  claims to measure rather than inferring it.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-vp-replay-postmerge-partition-and-coverage-diagnostics.yaml
+phase: >-
+  Verification-system hardening. Rec-driven (rec-3844, rec-3845, both source=ci_rca); soft-warn
+  category ci_rca, so the Tier Item Freshness Gate is skipped -- no tier_item is claimed and no
+  exit criterion closes, hence no closes_criteria. Both recs cite the same source_file, satisfying
+  the Related-Work check on conditions 1 and 3.
+scope:
+  - file: scripts/checks/verification/validate_vp_replay.py
+    action: Modify
+    purpose: >-
+      Add the measured ref-collapse partition -- exclude a hermetic pre-deploy step from the
+      implement leg when origin/main and HEAD resolve to the same commit AND the command text is
+      PR-relative -- routed through _partition_steps' existing excluded-with-reason mechanism, plus
+      the PR-relative predicate the advisory authoring flag also consumes.
+  - file: tests/checks/verification/validate_vp_replay/test_red_before_leg.py
+    action: Modify
+    purpose: >-
+      De-couple test_rg_grep_error_exit_2 from a real ripgrep binary and add the discriminating
+      assertion that stops the exit-2 and exit-127 arms aliasing.
+  - file: tests/checks/verification/validate_vp_replay/test_implement_leg.py
+    action: Modify
+    purpose: >-
+      Cover both sides of the new partition -- excluded post-merge when the base ref has collapsed,
+      still replayed at PR time when it has not.
+  - file: scripts/checks/misc/coverage_baseline.py
+    action: Modify
+    purpose: >-
+      measure_and_check must report the missing line numbers, the coverage subprocess returncode
+      and an output tail for any sub-threshold file instead of discarding all three.
+  - file: tests/checks/misc/test_coverage_baseline.py
+    action: Modify
+    purpose: Pin the new diagnostic surface, including the non-zero-returncode case.
+  - file: scripts/checks/misc/_manifest.py
+    action: Modify
+    purpose: >-
+      Correct the comment describing validate_vp_replay as "(pre=True, no full_segment)"; its Entry
+      carries full_segment="full_after_lint".
+  - file: docs/plans/PLAN-vp-red-before-gate.yaml
+    action: Modify
+    purpose: >-
+      Rewrite step 16 from a one-shot HEAD-vs-origin/main byte differential into a durable
+      standing assertion against the budget cap.
+  - file: docs/contracts/vp-red-before.yaml
+    action: Modify
+    purpose: Record the implement-leg partition rule the code now enforces.
+bundled_recommendations:
+  - rec-3844
+  - rec-3845
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    scripts/checks/verification/validate_vp_replay.py measures 100% line coverage when no ripgrep
+    binary is resolvable on PATH -- the exact CI condition that produced 99.6%.
+  - >-
+    The exit-2 (rg/grep) and exit-127 (command-not-found) unmeasurable arms are asserted
+    separately, so neither can satisfy the other's test.
+  - >-
+    A hermetic pre-deploy step whose command is PR-relative is excluded from the implement leg,
+    with a printed reason and its own accounting declaration, when origin/main and HEAD are the
+    same commit; it still replays when they are not.
+  - >-
+    graduation semantics are unchanged -- no step is excluded from any leg on the strength of an
+    author-supplied disposition.
+  - >-
+    A sub-threshold coverage result names the missing lines, the subprocess returncode and an
+    output tail.
+  - PLAN-vp-red-before-gate.yaml step 16 survives post-merge replay.
+  - rec-3844 and rec-3845 are closed in the warehouse.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: The exit-2 and exit-127 unmeasurable arms are pinned by separate, non-aliasing assertions
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_red_before_leg.py -q -k "classifier_arms_do_not_alias"
+    expected: The test passes -- exit 0
+    fix_if: >-
+      Selects nothing (exit 5) means the discriminating test was never added. A failure means one
+      arm still classifies via the other -- assert on which branch produced the classification, not
+      merely that the string "unmeasurable" appeared, since both arms emit it.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: vp-replay-classifier-arms-do-not-alias
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      The rg/grep exit-2 arm stays covered with NO ripgrep binary resolvable -- the exact runner
+      condition that produced 99.6%. Verified red on the un-implemented tree (exit 1, 7s).
+    command: |-
+      D=$(mktemp -d); printf '#!/bin/sh\nexit 127\n' > "$D/rg"; chmod +x "$D/rg"
+      rm -f .coverage.json
+      PATH="$D:$PATH" _COVERAGE_SUBPROCESS=1 bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_red_before_leg.py --cov=scripts/checks/verification --cov-report=json:.coverage.json -q --no-header >/dev/null 2>&1
+      bin/venv-python -c "
+      import json,pathlib
+      src='scripts/checks/verification/validate_vp_replay.py'
+      lines=pathlib.Path(src).read_text().splitlines()
+      arm=[i+2 for i,l in enumerate(lines) if '_RG_GREP_ERROR_EXIT_CODE and' in l]
+      assert len(arm)==1, arm
+      d=json.load(open('.coverage.json'))['files'][src]
+      assert arm[0] not in d['missing_lines'], f'exit-2 arm line {arm[0]} uncovered with ripgrep absent'
+      print('RG_ABSENT_ARM_COVERED')"; rc=$?; rm -f .coverage.json; exit $rc
+    expected: RG_ABSENT_ARM_COVERED printed, exit 0
+    fix_if: >-
+      Still red means the test continues to reach a real binary. The arm line is resolved by source
+      text, never pinned as a literal line number -- this edit shifts line numbers, so a hardcoded
+      197 would silently measure the wrong line. Do not satisfy this by installing ripgrep in CI:
+      that leaves the aliased assertion in place and re-arms the same defect on the next runner
+      image change.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: vp-replay-coverage-survives-absent-ripgrep
+  - step: 3
+    phase: pre-deploy
+    action: A PR-relative hermetic step is excluded from the implement leg when the base ref has collapsed onto HEAD
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_implement_leg.py -q -k "pr_relative_excluded_when_base_collapsed"
+    expected: The test passes -- exit 0
+    fix_if: >-
+      The exclusion must be keyed on the MEASURED collapse (git rev-parse origin/main equals git
+      rev-parse HEAD) and the command text, never on push-context inference and never on the
+      graduation field. It must route through _partition_steps' existing excluded-with-reason list
+      so the reason prints, and must carry its own Decision 170 declaration -- an exclusion that
+      collapses into an undeclared green is the same silent-vacuity shape this plan is repairing.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: vp-replay-pr-relative-excluded-on-base-collapse
+  - step: 4
+    phase: pre-deploy
+    action: The same step still replays at PR time, when origin/main and HEAD differ -- no PR-time verification is lost
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay/test_implement_leg.py -q -k "pr_relative_still_replayed_when_base_distinct"
+    expected: The test passes -- exit 0
+    fix_if: >-
+      If this is red while step 3 is green, the exclusion was written unconditionally and has
+      demoted the check rather than corrected its measurement -- that is the Decision 187 shape the
+      partition was chosen to avoid.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: vp-replay-pr-relative-replayed-at-pr-time
+  - step: 5
+    phase: pre-deploy
+    action: A sub-threshold coverage result names its missing lines, the subprocess returncode and an output tail
+    command: bin/venv-python -m pytest tests/checks/misc/test_coverage_baseline.py -q -k "diagnostics"
+    expected: The tests pass -- exit 0
+    fix_if: >-
+      measure_and_check currently calls proc.communicate() and drops stdout, stderr and the
+      returncode, so a test FAILING inside the coverage subprocess is indistinguishable from a
+      genuine coverage gap. Capture and surface all three; a non-zero returncode must be reported,
+      not silently folded into the percentage.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: coverage-baseline-reports-diagnostics
+  - step: 6
+    phase: pre-deploy
+    action: PLAN-vp-red-before-gate.yaml step 16 is a durable assertion, not a one-shot differential
+    command: bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/plans/PLAN-vp-red-before-gate.yaml')); s=[x for x in d['verification_plan'] if x['step']==16][0]; assert 'origin/main' not in s['command'], 'step 16 is still PR-relative'; print('STEP16_DURABLE')"
+    expected: STEP16_DURABLE printed, exit 0
+    fix_if: >-
+      Replace the HEAD-vs-origin/main byte differential with a standing assertion that the file is
+      at or under its budget cap -- the durable property the waiver reason already names. Strengthens
+      rather than weakens (Decision 181): a one-shot differential asserts nothing after its merge.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: vp-red-before-step16-durable
+  - step: 7
+    phase: pre-deploy
+    action: The contract records the implement-leg partition rule the code enforces
+    command: bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/contracts/vp-red-before.yaml')); assert 'implement_leg_partition' in d, 'contract does not record the partition rule'; print('CONTRACT_RECORDS_PARTITION')"
+    expected: CONTRACT_RECORDS_PARTITION printed, exit 0
+    fix_if: >-
+      Decision 168 clause 2 requires this Class D contract's declared evaluator to demonstrably read
+      it. State the rule as the code implements it -- measured base-ref collapse plus PR-relative
+      command text -- and do NOT state or imply that graduation waive excludes a step from replay,
+      which would contradict Decision 132's frozen disposition semantics.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: vp-red-before-contract-records-partition
+  - step: 8
+    phase: pre-deploy
+    action: The manifest comment describes validate_vp_replay's actual tier registration
+    command: bin/venv-python -c "import pathlib; t=pathlib.Path('scripts/checks/misc/_manifest.py').read_text(); assert 'validate_vp_replay (pre=True, no full_segment)' not in t, 'stale tier description still present'; print('MANIFEST_COMMENT_ACCURATE')"
+    expected: MANIFEST_COMMENT_ACCURATE printed, exit 0
+    fix_if: >-
+      The Entry at scripts/checks/verification/_manifest.py carries full_segment="full_after_lint".
+      Pick a different precedent for that comment's argument or restate it accurately; do not delete
+      the comment, whose surrounding reasoning about full-tier sequencing is still correct.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: misc-manifest-comment-accurate
+  - step: 9
+    phase: pre-deploy
+    action: The advisory PR-relative predicate identifies the armed self-invalidating steps across the plan corpus
+    command: |-
+      bin/venv-python -c "
+      import yaml, glob
+      from scripts.checks.verification.validate_vp_replay import _is_pr_relative
+      hits=[]
+      for p in sorted(glob.glob('docs/plans/PLAN-*.yaml')):
+          d=yaml.safe_load(open(p))
+          if not isinstance(d, dict) or d.get('implementation_declared'): continue
+          for s in (d.get('verification_plan') or []):
+              if isinstance(s, dict) and s.get('phase')=='pre-deploy' and s.get('hermetic') is True and _is_pr_relative(s.get('command','') or ''):
+                  hits.append((p, s.get('step')))
+      assert len(hits) >= 9, f'expected the armed self-invalidating population, got {len(hits)}: {hits}'
+      print('PR_RELATIVE_PREDICATE_SEES', len(hits))"
+    expected: PR_RELATIVE_PREDICATE_SEES printed with a count of at least 9, exit 0
+    fix_if: >-
+      Measured before this plan: 10 armed steps across 9 plans (8 waive, 2 graduate). The floor is 9
+      rather than the measured 10 because step 6 of this plan rewrites one of them, and because the
+      corpus grows between authoring and implement time. The predicate is ADVISORY and must never
+      refuse -- 76 merged steps use `git diff origin/main -- <path>` as a legitimate PR-time
+      assertion, and refusing the idiom would ban valid verification.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: vp-replay-pr-relative-predicate-population
+  - step: 10
+    phase: pre-deploy
+    action: validate_vp_replay.py stays under the 500-SLOC unregistered-file limit
+    command: bin/venv-python -c "import pathlib; n=len([l for l in pathlib.Path('scripts/checks/verification/validate_vp_replay.py').read_text().splitlines() if l.strip() and not l.strip().startswith('#')]); print('sloc=%d' % n); assert n < 500, 'over the unregistered-file limit -- decompose, do not raise'"
+    expected: sloc printed below 500, exit 0
+    fix_if: >-
+      The file was at 459 SLOC at plan time -- roughly 41 to spend. Decision 128 is decompose-by-
+      default: split into a facade package, never add a config/sloc_budgets.yaml entry to buy room.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates the standing validate_sloc_limits check, which already owns this floor repo-wide, so
+      graduating it would install a second registry row for one property. Kept as an explicit VP step
+      only because the headroom is unusually thin (41 SLOC) and this change adds a predicate plus a
+      partition branch to that exact file.
+  - step: 11
+    phase: pre-deploy
+    action: Fast tier is green end to end
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: >-
+      A vp-replay or coverage failure here is this plan's own work. Decision 182 point 2 pins this
+      check's 150s green maximum inside the unwaivable 240s non-test half -- if the new partition
+      branch pushes past it, the predicate is doing work it should not (it must be a text test on the
+      command plus one cached rev-parse pair, never a per-step subprocess).
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Recursion: a standing shard invoking scripts.validate would re-enter the tier dispatching it,
+      and this check's own static refusal rejects a graduate step whose command invokes
+      scripts.validate at its argv head. Not not-applicable -- the command is a single
+      command_exit_zero shape, and claiming the no-obligation row for it would be the classification
+      gaming criterion 12o exists to catch.
+  - step: 12
+    phase: pre-deploy
+    action: Full tier is green before handoff
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: >-
+      handoff_policy.full_validation_required_before_commit is Literal[True]; a timeout is
+      timeout_disposition blocked -- resume later and rerun full from the start, never commit on a
+      partial run.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Same recursion refusal as step 11, and this step is the mandatory handoff obligation every
+      schema_v4 plan carries, so it can never become a standing registry row of its own.
+  - step: 13
+    phase: post-deploy
+    action: Both bundled ci-rca recs are closed in the warehouse
+    command: |-
+      bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "
+      import json
+      rows = {}
+      for line in open('logs/.recommendations-log.jsonl'):
+          r = json.loads(line)
+          if r.get('id') in ('rec-3844', 'rec-3845'):
+              rows[r['id']] = r.get('status')
+      assert len(rows) == 2 and all(v != 'open' for v in rows.values()), rows
+      print('RECS_CLOSED', rows)"
+    expected: RECS_CLOSED printed with both ids non-open, exit 0
+    fix_if: >-
+      Close via update_rec through scripts.ops_data_portal only -- the local JSONL is a read cache
+      and replaying it upstream is the row-resurrection anti-pattern Decision 84 records. Decision
+      186 requires each closure to name a fix-bound closure_artifact resolved against the closing
+      fixed_by_sha.
+test_obligations:
+  - source: scripts/checks/verification/validate_vp_replay.py
+    behavior: >-
+      A PR-relative hermetic pre-deploy step is excluded from the implement leg exactly when
+      origin/main and HEAD are the same commit, and is replayed otherwise; graduation is never read
+      by the partition.
+    verification_step: 3
+    test_selector: tests/checks/verification/validate_vp_replay/test_implement_leg.py::test_pr_relative_excluded_when_base_collapsed
+    red_green_expectation: red before (test does not exist), green after
+  - source: scripts/checks/misc/coverage_baseline.py
+    behavior: >-
+      measure_and_check surfaces the missing line numbers, the coverage subprocess returncode and an
+      output tail for a sub-threshold file rather than discarding them.
+    verification_step: 5
+    test_selector: tests/checks/misc/test_coverage_baseline.py::test_subthreshold_result_reports_diagnostics
+    red_green_expectation: red before (test does not exist), green after
+  - source: docs/contracts/vp-red-before.yaml
+    behavior: The contract states the implement-leg partition rule the code enforces.
+    verification_step: 7
+    command: bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/contracts/vp-red-before.yaml')); assert 'implement_leg_partition' in d, 'contract does not record the partition rule'; print('CONTRACT_RECORDS_PARTITION')"
+    red_green_expectation: red before (key absent), green after
+  - source: docs/plans/PLAN-vp-red-before-gate.yaml
+    behavior: Step 16 asserts a durable property that survives its own merge.
+    verification_step: 6
+    command: bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/plans/PLAN-vp-red-before-gate.yaml')); s=[x for x in d['verification_plan'] if x['step']==16][0]; assert 'origin/main' not in s['command'], 'step 16 is still PR-relative'; print('STEP16_DURABLE')"
+    red_green_expectation: red before (command is PR-relative), green after
+  - source: scripts/checks/misc/_manifest.py
+    behavior: No behavior change -- a comment corrected to match the Entry it describes.
+    verification_step: 8
+    command: bin/venv-python -c "import pathlib; t=pathlib.Path('scripts/checks/misc/_manifest.py').read_text(); assert 'validate_vp_replay (pre=True, no full_segment)' not in t, 'stale tier description still present'; print('MANIFEST_COMMENT_ACCURATE')"
+    red_green_expectation: >-
+      Waived as a behavior obligation: the edit is comment-only and changes no dispatch, tier
+      membership or check outcome. Step 8 asserts the text, which is the whole of the change.
+constraints:
+  - No rescue agents or workaround loops (Decision 55); an unmeasurable outcome fails loudly.
+  - >-
+    Only files in the Scope table may be modified; out-of-scope defects become recommendations via
+    scripts.ops_data_portal, never inline fixes (Decision 59).
+  - >-
+    Do NOT redefine graduation waive as replay-excluded. Decision 132 freezes waive/not-applicable
+    as "requiring no registry row"; 530 hermetic waive steps across 142 plans already exist, and
+    Decision 163 refuses an exceptionless obligation made opt-out-able by an author-supplied field.
+    The partition key is the MEASURED base-ref collapse, never a disposition.
+  - >-
+    Do NOT skip the implement leg wholesale post-merge. Decision 159 ratified push_context_base()
+    precisely because every diff-aware full-tier check silently no-opped post-merge -- "A MEASUREMENT
+    CORRECTION, not a relaxation" -- and Decision 187 requires a tier-demotion-approved marker for
+    losing full_segment, which a runtime skip would bypass. validate_vp_replay.py already resolves
+    its base correctly; the defect is in the replayed step's own command text.
+  - >-
+    The PR-relative authoring flag is ADVISORY and must never refuse: 76 merged steps use the
+    origin/main diff idiom as a legitimate PR-time assertion.
+  - >-
+    Do NOT flip validate_diff_coverage from report-only to blocking. Its docstring records that flip
+    as deliberately deferred pending measured false-positive and DEFERRED rates (Decision 55); it is
+    its own evidence-gated plan.
+  - >-
+    Decision 181 CONTENT never-weaken: three edits here are weakening-SHAPED (a rewritten test
+    assertion, a rewritten VP step, a narrowed replay partition). Each must be justified as
+    strengthening in the PR body, per-surface -- see acceptance criteria 2, 3 and 6.
+  - Decision 128 decompose-by-default if validate_vp_replay.py crosses 500 SLOC; never raise.
+context:
+  - >-
+    Decision-scout verdict + CITE list: FLAGS_FOUND (dispatch 1), re-dispatched against the revised
+    approach. CITE: 189, 148, 132, 168, 182, 186, 170, 165. Flags: 159 WARN, 187 WARN, 163 WARN (all
+    three resolved by choosing the measured partition key over a post-merge skip or a waive
+    redefinition); 181 NOTE remains live and is carried as a constraint.
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - >-
+    Both recs: post-merge full-tier run 34787472517 on main, after PR #1170 (f7e99012). main is green
+    on all three pushes since -- both checks are diff-scoped, so both defects are latent, not blocking.
+  - >-
+    rec-3844 reproduced exactly: deselect test_rg_grep_error_exit_2 and coverage is 259/260 = 99.6%
+    with missing_lines == [197]. The filed why_chain is WRONG -- the covering test exists; it shells
+    out to a real ripgrep binary, absent on ubuntu-latest, so the shell returns 127, which already
+    maps to unmeasurable before the exit-2 arm is reached, and the assertion accepts both.
+  - >-
+    rec-3845's own corrective (honour waive) is insufficient: of the 10 armed self-invalidating steps
+    across 9 plans, 2 are graduate and would stay armed.
+  - >-
+    validate_vp_replay is registered pre=True AND full_segment="full_after_lint"
+    (scripts/checks/verification/_manifest.py). The stale comment at scripts/checks/misc/_manifest.py
+    says otherwise and is corrected in scope.
+  - >-
+    MANDATORY read before authoring or editing any pre-deploy step here:
+    docs/contracts/vp-red-before.yaml#hermetic_authoring and #graduation_disposition_authoring. This
+    plan is diff-added with implementation_declared falsy, so it is ELIGIBLE -- its own graduate steps
+    are replayed RED-BEFORE at plan-PR time and a false graduate is a hard plan-PR failure.
+  - >-
+    Steps 1, 2, 6, 8 and 9 were empirically confirmed red on the un-implemented tree during planning
+    (exits 5, 1, 1, 1, 1); step 2 runs in 7s against the 30s per-step timeout.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - docs/contracts/vp-red-before.yaml hermetic_authoring and graduation_disposition_authoring read
+execution_steps:
+  - >-
+    tests/checks/verification/validate_vp_replay/test_red_before_leg.py -- stub the replayed
+    subprocess so test_rg_grep_error_exit_2 observes returncode 2 without a PATH lookup, and add
+    classifier_arms_do_not_alias asserting the exit-2 and exit-127 arms independently.
+  - >-
+    scripts/checks/verification/validate_vp_replay.py -- add the PR-relative command predicate and
+    the measured base-ref-collapse partition, excluding through _partition_steps' existing
+    excluded-with-reason list with its own Decision 170 declaration.
+  - >-
+    tests/checks/verification/validate_vp_replay/test_implement_leg.py -- cover both sides of the
+    partition (collapsed base excludes, distinct base replays).
+  - >-
+    scripts/checks/misc/coverage_baseline.py -- capture the coverage subprocess returncode and
+    output, and report missing lines, returncode and tail for any sub-threshold file; pin it in
+    tests/checks/misc/test_coverage_baseline.py.
+  - scripts/checks/misc/_manifest.py -- correct the stale tier description.
+  - docs/plans/PLAN-vp-red-before-gate.yaml -- rewrite step 16 as a durable budget assertion.
+  - docs/contracts/vp-red-before.yaml -- record the implement_leg_partition rule.
+  - >-
+    Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and
+    RCA (Decision 55).
+  - >-
+    Close rec-3844 and rec-3845 via update_rec through scripts.ops_data_portal, each naming a
+    fix-bound closure_artifact (Decision 186); name both in the squash-merge Resolves: trailer.
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Every change is additive or text-local and revertable by reverting the squash commit. The partition
+  narrows what the implement leg replays; reverting restores the prior behavior, which is red only
+  for the 10 armed self-invalidating steps and green elsewhere.
