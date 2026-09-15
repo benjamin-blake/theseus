@@ -27,31 +27,47 @@ if TYPE_CHECKING:
 # target file path. Entries are ordered from most-specific to least-specific.
 _GOTCHA_MAP: dict[str, list[str]] = {
     "scripts/executor/": [
-        "replace_string_in_file context boundary: Include 3-5 lines of unchanged code before "
-        "and after target text. Weak boundaries cause wrong-occurrence matches or silent formatting changes.",
-        "ruff E501 and multi-line section builders: Define intermediate _header, _footer, _section "
-        "variables for long f-strings to stay under 127 chars.",
+        (
+            "replace_string_in_file context boundary: Include 3-5 lines of unchanged code before "
+            "and after target text. Weak boundaries cause wrong-occurrence matches or silent formatting changes."
+        ),
+        (
+            "ruff E501 and multi-line section builders: Define intermediate _header, _footer, _section "
+            "variables for long f-strings to stay under 127 chars."
+        ),
         "Executor self-modification boundary: Never modify executor machinery files from within the executor.",
     ],
     "terraform/": [
-        "Terraform File-Optional Operations: Always wrap filemd5() and file() calls on optional "
-        "artifacts with try(). BAD: source_code_hash = filemd5('build/lambda.zip'). "
-        "GOOD: source_code_hash = try(filemd5('build/lambda.zip'), md5(file('module_file.tf'))).",
+        (
+            "Terraform File-Optional Operations: Always wrap filemd5() and file() calls on optional "
+            "artifacts with try(). BAD: source_code_hash = filemd5('build/lambda.zip'). "
+            "GOOD: source_code_hash = try(filemd5('build/lambda.zip'), md5(file('module_file.tf')))."
+        ),
         "Lambda tag values must use ASCII-safe characters: use plain ASCII hyphens (-) not em dashes.",
     ],
     "tests/": [
-        "Test Isolation Patterns: Never spawn pytest tests/ from a script any test imports -- "
-        "recursion risk. Always mock both subprocess.Popen AND subprocess.run for subprocess-spawning functions.",
-        "ruff format duplicate import consolidation: Never split the same module imports across two "
-        "blocks -- ruff silently drops symbols from the second block during format.",
-        "postflight.py function mock exhaustion: Count total subprocess.run call sequence and update "
-        "mock side_effect counts in tests/test_execute_recommendation.py when adding new calls.",
+        (
+            "Test Isolation Patterns: Never spawn pytest tests/ from a script any test imports -- "
+            "recursion risk. Always mock both subprocess.Popen AND subprocess.run for subprocess-spawning functions."
+        ),
+        (
+            "ruff format duplicate import consolidation: Never split the same module imports across two "
+            "blocks -- ruff silently drops symbols from the second block during format."
+        ),
+        (
+            "postflight.py function mock exhaustion: Count total subprocess.run call sequence and update "
+            "mock side_effect counts in tests/test_execute_recommendation.py when adding new calls."
+        ),
     ],
     "src/data/handlers/": [
-        "Import Safety Patterns: Never raise exceptions during module import -- breaks pytest collection in CI. "
-        "Defer validation to explicit validate() calls.",
-        "Lambda deployment pipeline: Any plan modifying Lambda-packaged files must include "
-        "build and deploy steps via scripts/build_lambda.py.",
+        (
+            "Import Safety Patterns: Never raise exceptions during module import -- breaks pytest collection in CI. "
+            "Defer validation to explicit validate() calls."
+        ),
+        (
+            "Lambda deployment pipeline: Any plan modifying Lambda-packaged files must include "
+            "build and deploy steps via scripts/build_lambda.py."
+        ),
     ],
 }
 

@@ -41,9 +41,11 @@ def _new_plan_version_failures(path: Path, doc: Any, added_names: set[str]) -> l
     if path.name not in added_names or doc.schema_version >= _MIN_NEW_PLAN_SCHEMA_VERSION:
         return []
     return [
-        f"{path.name}: newly-added plans must declare schema_version {_MIN_NEW_PLAN_SCHEMA_VERSION} "
-        f"(got {doc.schema_version}) -- the test-obligation gate only binds at "
-        f"v{_MIN_NEW_PLAN_SCHEMA_VERSION}"
+        (
+            f"{path.name}: newly-added plans must declare schema_version {_MIN_NEW_PLAN_SCHEMA_VERSION} "
+            f"(got {doc.schema_version}) -- the test-obligation gate only binds at "
+            f"v{_MIN_NEW_PLAN_SCHEMA_VERSION}"
+        )
     ]
 
 

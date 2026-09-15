@@ -192,19 +192,25 @@ def _enforced_by_grammar_findings(
     """G2/G3: `enforced_by` must resolve in registry.all_checks() AND be dispatched."""
     if not isinstance(enforced_by, str) or not enforced_by:
         return [
-            f"{rule_name}: enforced_elsewhere entry {label!r} names no enforced_by "
-            "(G2: enforced_by must resolve in registry.all_checks())"
+            (
+                f"{rule_name}: enforced_elsewhere entry {label!r} names no enforced_by "
+                "(G2: enforced_by must resolve in registry.all_checks())"
+            )
         ]
     if enforced_by not in all_checks:
         return [
-            f"{rule_name}: enforced_elsewhere entry {label!r} names enforced_by={enforced_by!r}, "
-            "which is not a registered check (G2: enforced_by must resolve in registry.all_checks())"
+            (
+                f"{rule_name}: enforced_elsewhere entry {label!r} names enforced_by={enforced_by!r}, "
+                "which is not a registered check (G2: enforced_by must resolve in registry.all_checks())"
+            )
         ]
     if enforced_by not in sequenced_names:
         return [
-            f"{rule_name}: enforced_elsewhere entry {label!r} names enforced_by={enforced_by!r}, "
-            "which is registered but dispatched in neither pre_sequence() nor full_sequence() "
-            "(G3: an enforcer that never runs can never fail anything)"
+            (
+                f"{rule_name}: enforced_elsewhere entry {label!r} names enforced_by={enforced_by!r}, "
+                "which is registered but dispatched in neither pre_sequence() nor full_sequence() "
+                "(G3: an enforcer that never runs can never fail anything)"
+            )
         ]
     return []
 
@@ -390,8 +396,10 @@ def build_report(path: Path) -> str:
     findings = evaluate_plan(path)
     if not findings:
         lines = [
-            f"{path}: no unmet registration obligations "
-            f"(or plan is grandfathered / below schema_version {MIN_SCHEMA_VERSION})."
+            (
+                f"{path}: no unmet registration obligations "
+                f"(or plan is grandfathered / below schema_version {MIN_SCHEMA_VERSION})."
+            )
         ]
     else:
         lines = [f"{path}: {len(findings)} unmet registration obligation(s):"]

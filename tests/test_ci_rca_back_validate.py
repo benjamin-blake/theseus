@@ -24,8 +24,10 @@ _VALID_CONTEXT_V2 = {
     "why_chain": [
         "The file was committed at over 500 SLOC in a single PR with no incremental breakpoint.",
         "No local --pre check fired because validate_sloc_limits() is presubmit-tier only.",
-        "The validate_sloc_limits() check was placed in the presubmit tier not --pre despite being O(lines); "
-        "this tier placement defect is the gap at scripts/validate.py:2294.",
+        (
+            "The validate_sloc_limits() check was placed in the presubmit tier not --pre despite being O(lines); "
+            "this tier placement defect is the gap at scripts/validate.py:2294."
+        ),
     ],
     "detection_gap": {
         "earliest_viable_gate": "pre",

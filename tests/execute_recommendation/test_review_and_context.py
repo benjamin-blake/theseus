@@ -235,8 +235,10 @@ class TestPlanningContextInjection:
             patch(
                 "scripts.executor.plan.load_prompt",
                 return_value=(
-                    "{file_content_section}{test_content_section}"
-                    "{rec_id}{title}{context}{file}{acceptance}{dependencies}{effort}",
+                    (
+                        "{file_content_section}{test_content_section}"
+                        "{rec_id}{title}{context}{file}{acceptance}{dependencies}{effort}"
+                    ),
                     "hash123",
                 ),
             ),
@@ -281,8 +283,10 @@ class TestPlanningContextInjection:
             patch(
                 "scripts.executor.plan.load_prompt",
                 return_value=(
-                    "{file_content_section}{test_content_section}"
-                    "{rec_id}{title}{context}{file}{acceptance}{dependencies}{effort}",
+                    (
+                        "{file_content_section}{test_content_section}"
+                        "{rec_id}{title}{context}{file}{acceptance}{dependencies}{effort}"
+                    ),
                     "hash456",
                 ),
             ),

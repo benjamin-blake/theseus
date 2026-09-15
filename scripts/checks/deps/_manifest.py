@@ -61,4 +61,41 @@ ENTRIES: tuple[Entry, ...] = (
         pre_globs=("**/*.py", "scripts/checks/**"),
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_presubmit_tool_pin_escalation",
+        module="scripts.checks.deps.validate_presubmit_tool_pin_escalation",
+        attr="validate_presubmit_tool_pin_escalation",
+        pre=True,
+        # This check imports scripts.checks._scaffolding in full, so it inherits _scaffolding's
+        # OWN transitive closure (_pytest_diff/_terraform pull in scripts.executor/scripts.llm/
+        # scripts.verifiers/etc.) -- identical to validate_hermeticity_flags's Entry
+        # (scripts/checks/verification/_manifest.py), the only other check importing the same
+        # module. docs/contracts/presubmit-tool-pin-escalation.yaml is the runtime YAML read, not
+        # an import, but is still a gate-relevant input (validate_check_manifests precedent: its
+        # own Entry globs docs/contracts/check-manifest.yaml the same way).
+        pre_globs=(
+            "scripts/checks/deps/**",
+            "scripts/checks/_pytest_diff.py",
+            "scripts/checks/_scaffolding.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+            "scripts/checks/_budget_recs.py",
+            "scripts/checks/_terraform.py",
+            "scripts/checks/validation_result.py",
+            "scripts/checks/iam_tf/validate_terraform_try.py",
+            "scripts/decisions_md.py",
+            "scripts/aws_profile.py",
+            "scripts/executor/**",
+            "scripts/llm/**",
+            "scripts/ops_data_portal.py",
+            "scripts/ops_portal/**",
+            "scripts/rec_episode.py",
+            "scripts/s3_log_store.py",
+            "scripts/sync/ops.py",
+            "scripts/verifiers/**",
+            "src/common/**",
+            "docs/contracts/presubmit-tool-pin-escalation.yaml",
+        ),
+        full_segment="full_after_lint",
+    ),
 )

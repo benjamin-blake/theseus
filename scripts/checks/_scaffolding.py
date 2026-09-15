@@ -22,6 +22,8 @@ import sys
 import time
 from pathlib import Path
 
+import yaml
+
 from scripts.checks import _common, registry, validation_result
 from scripts.checks._budget_recs import _file_budget_breach_rec, _file_budget_bypass_rec  # noqa: F401
 from scripts.checks._pytest_diff import (  # noqa: F401
@@ -57,6 +59,84 @@ _TRANSIENT_CLAUDE_SIGNATURES: tuple[str, ...] = ("500", "502", "503", "API Error
 _DQ_FRESHNESS_SECONDS = 3600  # 1 hour
 
 
+_PRECOMMIT_CONFIG_PATH = ".pre-commit-config.yaml"
+
+
+def _precommit_global_inputs(base_ref: str) -> frozenset[str] | None:
+    """Return the derived global-input set that escalates run_precommit_checks to --all-files:
+    the pre-commit config's own path, plus every path a hook's `--baseline` arg names (today:
+    `.secrets.baseline`, via detect-secrets). Read at `base_ref` -- never HEAD or the working
+    tree -- so a PR cannot weaken its own escalation trigger by editing the config it is
+    escalated on (Decision 170).
+
+    Returns None on any read or parse failure (config absent at `base_ref`, unreadable, or not
+    valid YAML) -- the caller must treat None as FAIL CLOSED and escalate rather than skip,
+    mirroring _should_run_in_pre's own "never silently skip on doubt" doctrine (dec-55).
+    """
+    result = _common.run(
+        ["git", "show", f"{base_ref}:{_PRECOMMIT_CONFIG_PATH}"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=_common.ROOT,
+    )
+    if result.returncode != 0:
+        return None
+    try:
+        data = yaml.safe_load(result.stdout)
+    except yaml.YAMLError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    inputs = {_PRECOMMIT_CONFIG_PATH}
+    for repo in data.get("repos") or []:
+        for hook in (repo or {}).get("hooks") or []:
+            args = (hook or {}).get("args") or []
+            for i, arg in enumerate(args):
+                if arg == "--baseline" and i + 1 < len(args):
+                    inputs.add(str(args[i + 1]))
+    return frozenset(inputs)
+
+
+def _run_precommit_body(failed: list[str], *, all_files: bool, files: list[str] | None) -> None:
+    name = "pre-commit hooks"
+    if importlib.util.find_spec("pre_commit") is None:
+        print(f"\n=== {name} ===\nWARNING: pre-commit not installed; skipping (install requirements-dev.txt).")
+        registry.skipped("pre-commit not installed")
+        return
+
+    escalated = False
+    target: list[str] = []
+    if not all_files:
+        target = files if files is not None else _common.get_changed_files()
+        if not target:
+            print(f"\n=== {name} ===\nNo changed files vs origin/main; skipping.")
+            registry.skipped("no changed files vs origin/main")
+            return
+        # "origin/main" directly, not push_context_base(): this branch (all_files=False) is only
+        # ever reached from the --pre call site, which never runs in push/post-merge context --
+        # the full tier's own call site always passes all_files=True.
+        global_inputs = _precommit_global_inputs("origin/main")
+        if global_inputs is None or (set(target) & global_inputs):
+            all_files = True
+            escalated = True
+
+    cmd = [_common.PYTHON, "-m", "pre_commit", "run", "--show-diff-on-failure", "--color", "never"]
+    if all_files:
+        cmd.append("--all-files")
+    else:
+        cmd += ["--files", *target]
+
+    print(f"\n=== {name} ===")
+    if escalated:
+        print("Escalated to --all-files: diff touches a derived pre-commit global input (Decision 170).")
+    env = {**os.environ, "SKIP": "no-commit-to-branch"}
+    result = _common.run(cmd, cwd=_common.ROOT, env=env)
+    if result.returncode != 0:
+        failed.append(name)
+    registry.examined(1, unit="precommit_invocations")
+
+
 def run_precommit_checks(failed: list[str], *, all_files: bool, files: list[str] | None = None) -> None:
     """Run the pre-commit hook suite (detect-secrets, shape denylist, file hygiene).
 
@@ -71,35 +151,45 @@ def run_precommit_checks(failed: list[str], *, all_files: bool, files: list[str]
     no-commit-to-branch is skipped via SKIP: it is a commit-time guard already
     covered by .claude/hooks/never_on_main.py, and it would always fail on the
     push-to-main main-validate run (which legitimately runs on the main branch).
+
+    Escalation (Decision 170): when not already all_files, a diff that touches a derived global
+    input (see _precommit_global_inputs) escalates to --all-files -- a pre-commit-config-only
+    change (e.g. a hook-repo version pin bump) must not be able to slip past its own hook suite
+    by touching no other file. Fail-closed: an unreadable or unparseable base-ref config
+    escalates rather than skips.
     """
-    name = "pre-commit hooks"
-    if importlib.util.find_spec("pre_commit") is None:
-        print(f"\n=== {name} ===\nWARNING: pre-commit not installed; skipping (install requirements-dev.txt).")
-        return
-    cmd = [_common.PYTHON, "-m", "pre_commit", "run", "--show-diff-on-failure", "--color", "never"]
-    if all_files:
-        cmd.append("--all-files")
-    else:
-        target = files if files is not None else _common.get_changed_files()
-        if not target:
-            print(f"\n=== {name} ===\nNo changed files vs origin/main; skipping.")
-            return
-        cmd += ["--files", *target]
-    print(f"\n=== {name} ===")
-    env = {**os.environ, "SKIP": "no-commit-to-branch"}
-    result = _common.run(cmd, cwd=_common.ROOT, env=env)
-    if result.returncode != 0:
-        failed.append(name)
+    before = len(failed)
+    with registry.outcome_scope("run_precommit_checks", kind="scaffold"):
+        _run_precommit_body(failed, all_files=all_files, files=files)
+    validation_result.record_scaffold_outcome("run_precommit_checks", before, failed)
+
+
+_LINT_TARGETS: tuple[str, ...] = ("src/", "tests/", "scripts/")
 
 
 def run_lint_checks(failed: list[str], files: list[str] | None = None) -> None:
-    if files is not None and not files:
-        return
-    targets: list[str] = [f for f in files if f.endswith(".py")] if files is not None else ["src/", "tests/", "scripts/"]
-    if not targets:
-        return
-    _common.invoke_step("Lint (ruff check)", [_common.PYTHON, "-m", "ruff", "check"] + targets, failed)
-    _common.invoke_step("Format check (ruff format)", [_common.PYTHON, "-m", "ruff", "format", "--check"] + targets, failed)
+    """Lint the whole tree unconditionally -- both --pre and the full tier call this with the
+    SAME `_LINT_TARGETS`, so a lint-relevant diff can never escape by touching no .py file. Before
+    this (rec-3861/rec-3863), --pre filtered `files` to its own .py subset and no-opped on an
+    empty/all-non-.py changed set, so a linter-version-only bump (ruff 0.15.20 -> 0.16.7, commit
+    1c50e26b: five requirements-pin files, zero .py) passed --pre unlinted and only reddened the
+    whole-tree full tier post-merge.
+
+    `files` is retained but IGNORED for target selection: scripts/validate.py's --pre call site
+    passes it positionally (`run_lint_checks(failed, files=changed)`), and dropping the parameter
+    would TypeError there. Do not resurrect a files-based target filter here -- that is exactly
+    the escape this plan closes.
+    """
+    before = len(failed)
+    with registry.outcome_scope("run_lint_checks", kind="scaffold"):
+        _common.invoke_step("Lint (ruff check)", [_common.PYTHON, "-m", "ruff", "check", *_LINT_TARGETS], failed)
+        _common.invoke_step(
+            "Format check (ruff format)", [_common.PYTHON, "-m", "ruff", "format", "--check", *_LINT_TARGETS], failed
+        )
+        # Unconditional and whole-tree: there is no reachable non-execution path left to declare
+        # as a skip (Decision 170) -- this always examines the same fixed target set.
+        registry.examined(len(_LINT_TARGETS), unit="lint_targets")
+    validation_result.record_scaffold_outcome("run_lint_checks", before, failed)
 
 
 def _mirror_budget_notice_to_summary(title: str, message: str) -> None:

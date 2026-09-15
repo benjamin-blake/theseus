@@ -1,0 +1,43 @@
+# Class D mechanism contract for the whole-tree presubmit lint invariant and the pre-commit
+# tool-pin escalation (rec-3861/rec-3863, PLAN-tool-pin-lint-escalation). The mechanism lives in
+# scripts/checks/_scaffolding.py; this contract pins its declared surface so a future edit that
+# silently narrows either invariant is caught by validate_presubmit_tool_pin_escalation's
+# derive-and-assert cross-check against the live code, not only by the unit tests.
+contract:
+  id: presubmit-tool-pin-escalation
+  class: D
+  contract_version: 1
+  status: ratified
+  ratified_via: "PLAN-tool-pin-lint-escalation"
+  description: >-
+    Two related presubmit-gate invariants. (1) run_lint_checks lints src/, tests/, scripts/
+    unconditionally in BOTH tiers -- a diff touching no .py file (e.g. a linter version pin
+    bump) can no longer skip lint by narrowing or emptying its target set. (2)
+    run_precommit_checks escalates to --all-files when the diff intersects a global-input set
+    derived from .pre-commit-config.yaml at the BASE REF -- a pre-commit-config-only change
+    cannot narrow its own trigger, and an unreadable or unparseable base-ref config escalates
+    (fail-closed) rather than skips.
+  subject: presubmit-tool-pin-escalation
+  evaluator:
+    check: validate_presubmit_tool_pin_escalation
+
+mechanism:
+  lint_targets: [src/, tests/, scripts/]
+  lint_invariant: >-
+    scripts.checks._scaffolding.run_lint_checks(failed, files=...) ignores `files` for target
+    selection -- it always lints lint_targets above, in both the --pre and full tiers. `files` is
+    retained only because scripts/validate.py's --pre call site passes it positionally; removing
+    the parameter would TypeError there.
+  precommit_config_path: .pre-commit-config.yaml
+  precommit_escalation: >-
+    scripts.checks._scaffolding.run_precommit_checks escalates all_files to True when the --pre
+    diff intersects the global-input set derived by parsing precommit_config_path AT ORIGIN/MAIN
+    (never HEAD or the working tree) -- the config's own path plus every path a hook's
+    `--baseline` arg names. An unreadable or unparseable base-ref config escalates rather than
+    skips (fail-closed, dec-55, mirroring _should_run_in_pre's own doctrine).
+  incident: >-
+    Dependabot PR #1182 (commit 1c50e26b) bumped ruff 0.15.20 -> 0.16.7, touching only five
+    requirements-pin files (zero .py). The old diff-scoped run_lint_checks filtered its `files`
+    argument to .py entries, emptied to [], and no-opped -- so --pre passed green while the
+    version bump silently introduced 38 new ISC004 diagnostics across the whole tree, which only
+    surfaced when the full tier (post-merge on main) ran and reddened rec-3861/rec-3863.
