@@ -1,0 +1,772 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "conflict-wake-prefix-realignment"
+intent: >-
+  Make the merge-conflict wake fire on every agent-session PR whatever prefix the harness assigns,
+  by replacing an invisible jq-side name filter with a declared prefix set the script consumes and
+  reports on, and by replacing the existence-only guard that let the previous filter rot silently.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-conflict-wake-prefix-realignment.yaml
+phase: >-
+  ad_hoc_rec (soft-warn category; no tier_item claimed). Trigger is rec-3046's measured outage plus
+  rec-3874's live-probe finding. No exit criterion closes, hence closes_criteria stays empty.
+scope:
+  - file: scripts/ci/pr_conflict_signal.sh
+    action: Modify
+    purpose: >-
+      Declare _WAKE_HEAD_PREFIXES and _WAKE_HEAD_PREFIXES_TRANSITIONAL; move SELECTION out of the
+      gh --jq into the script's own loop (--jq keeps projection only); report a per-prefix tally
+      naming the unmatched population every run AND mirror that tally to GITHUB_STEP_SUMMARY
+      whenever the unmatched population is non-empty; emit a GITHUB_STEP_SUMMARY notice when a
+      transitional prefix matches zero open PRs; add the missing --limit. The summary mirror is
+      load-bearing, not cosmetic: this job is continue-on-error, so a stdout-only tally is invisible
+      in a green run and the NEXT rename would be as silent as this one was. The script's own
+      Decision 155 marker rationale (lines 30-33) states the principle -- operator-observable
+      instead of buried in a per-run job log.
+  - file: scripts/checks/ci_guards/validate_pr_conflict_signal.py
+    action: Modify
+    purpose: >-
+      Replace the existence-only ("claude/" in script_text) row with structural assertions over the
+      declaration and its consumption, plus a --limit assertion; adopt the Decision 170
+      examined()/skipped() declaration, which editing this baselined module obliges.
+  - file: config/check_accounting_baseline.yaml
+    action: Modify
+    purpose: >-
+      Remove the validate_pr_conflict_signal entry (shrink-only ratchet). The frozen _BASELINE_SEED
+      in scripts/checks/hygiene/validate_check_accounting.py is deliberately NOT edited.
+  - file: tests/checks/ci_guards/test_validate_pr_conflict_signal.py
+    action: Modify
+    purpose: >-
+      Discrimination coverage for the new assertions, including the case the old check could not
+      catch: a script whose declaration is absent but whose prose still contains a prefix literal.
+  - file: tests/test_pr_conflict_signal_wiring.py
+    action: Modify
+    purpose: >-
+      Behavioural enumeration through the existing gh shim: the sweep polls exactly the declared
+      prefixes, skips everything else, and names the unmatched population.
+  - file: AGENTS.md
+    action: Modify
+    purpose: >-
+      Correct the stale premise at lines 51 and 146 (the harness no longer assigns claude/) while
+      preserving Decision 76 clause 2's rule that agents do not create their own branch; keep the
+      thin one-line trigger and route the prefix fact to the contract (Decision 86 / T2.56).
+  - file: docs/contracts/git-ops.yaml
+    action: Modify
+    purpose: >-
+      branching_topology becomes the canonical home for the prefix fact, the declared-set rationale
+      and its reversal condition; adds the amendment_log entry the Class D contract owes. The stale
+      claude/-only premises at branch_rule, push_pr_ci_merge_flow.steps[0],
+      wake_signals.ci_green_comment and wake_signals.merge_conflict are corrected in the same edit,
+      and merge_conflict gains the 2026-09-15 probe evidence rec-3874's oracle names.
+  - file: .github/workflows/ci.yml
+    action: Modify
+    purpose: >-
+      Widen the signal-green head_ref predicate from the single claude/ literal to the declared
+      prefix set, so the CI-green comment wake fires on agent/* PRs. A WIDENING, not a retirement:
+      signal-green keeps running alongside the native check_suite wake until a sibling plan retires
+      it. Delivers rec-3046's ci.yml conjunct and makes the cross-site assertion live rather than
+      born dead.
+  - file: .github/workflows/pr-conflict-signal.yml
+    action: Modify
+    purpose: >-
+      Correct the header and step-name prose at lines 6, 8 and 44, which still describe the workflow
+      as polling claude/* only. This file invokes the very script this plan fixes; leaving its own
+      description of that script stale is the drift this plan exists to close.
+  - file: scripts/preflight/dependabot.py
+    action: Modify
+    purpose: >-
+      Correct the module docstring at line 4, which states pr-conflict-signal.yml polls claude/*
+      only. Docstring-only edit, no behaviour surface, so it forces no tier escalation.
+bundled_recommendations: ["rec-3046", "rec-3874"]
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    The sweep polls mergeability for every open PR whose head ref matches a declared prefix and for
+    no other PR; its run log names the unmatched prefixes it skipped; and a non-empty unmatched
+    population is mirrored to GITHUB_STEP_SUMMARY so it is visible without opening a green job.
+  - >-
+    The guard fails when the declaration is absent, malformed, unconsumed, or when the transitional
+    set is not a subset of the declared set -- and passes none of those on prose alone.
+  - >-
+    The guard never asserts a literal prefix value, so narrowing the declared set reddens no guard
+    assertion. Narrowing is a coordinated edit, not a one-line one: the script declaration, the
+    contract key and the ci.yml predicate move together, which VP steps 6 and 8 enforce.
+  - >-
+    The gh enumeration carries an explicit --limit, so the sweep cannot silently truncate at the
+    30-PR default.
+  - >-
+    validate_pr_conflict_signal declares an examined()/skipped() outcome, is absent from
+    config/check_accounting_baseline.yaml, and validate_check_accounting passes.
+  - >-
+    docs/contracts/git-ops.yaml branching_topology declares the same prefix set the script declares,
+    records why a prefix set is used rather than an enumerated universe, and carries the reversal
+    condition for the executor-unfreeze namespace collision.
+  - >-
+    .github/workflows/ci.yml's signal-green predicate admits every declared prefix, so the CI-green
+    comment fires on an agent/* PR, and the predicate and the sweep declaration name the same set.
+  - >-
+    docs/contracts/git-ops.yaml carries no stale claude/-only premise, and
+    wake_signals.merge_conflict records the 2026-09-15 conflict-wake probe and its negative result
+    -- which is rec-3874's acceptance oracle, delivered rather than assumed.
+  - >-
+    No surface still describes the conflict sweep as polling claude/* only -- the invoking workflow
+    and scripts/preflight/dependabot.py included.
+  - >-
+    AGENTS.md names no branch prefix outside a .claude/ directory path, no longer forbids agent/,
+    and still states that agents work on the harness-assigned branch -- Decision 76 clause 2's rule
+    survives the reword that removes its stale premise.
+  - The full validation tier completes exit 0 before commit.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    hermetic: false
+    action: The sweep selects exactly the declared prefixes and reports the population it skipped
+    command: bin/venv-python -m pytest tests/test_pr_conflict_signal_wiring.py -k declared_prefixes -q
+    expected: all selected tests pass
+    fix_if: >-
+      Collects nothing today (exit 5), which is the red-before. After implementation a failure means
+      the bash selection admitted or dropped the wrong head; assert against the gh call log's
+      mergeable: entries, never against stdout prose. NAMING IS LOAD-BEARING, not cosmetic: this
+      selector is `-k declared_prefixes` and this is the GRADUATED step, so any test it does not
+      select is absent from the standing registry row. The two observability behaviours
+      test_obligations[0] calls load-bearing -- the GITHUB_STEP_SUMMARY mirror of a non-empty
+      unmatched population, and the transitional-zero retirement notice -- MUST therefore carry
+      `declared_prefixes` in their test names (e.g.
+      test_declared_prefixes_unmatched_population_mirrored_to_summary). Widening the selector to the
+      whole file is NOT the alternative: all 24 tests pass today, so a file-level selector is green
+      before implementation and would be classed tautological.
+    graduation: graduate
+    graduation_check_id: conflict-sweep-selects-declared-prefixes-only
+  - step: 2
+    phase: pre-deploy
+    hermetic: false
+    action: The guard rejects a declaration that is absent, malformed, unconsumed, or prose-only
+    command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_pr_conflict_signal.py -k declaration -q
+    expected: all selected tests pass
+    fix_if: >-
+      Collects nothing today (exit 5). The prose-only case is the one the retired check could not
+      catch and is mandatory: a fixture whose declaration is stripped but which still contains a
+      prefix literal in a log message must FAIL the guard.
+    graduation: graduate
+    graduation_check_id: conflict-signal-guard-rejects-prose-only-declaration
+  - step: 3
+    phase: pre-deploy
+    hermetic: true
+    action: The guard passes on the real script and never hardcodes a prefix value
+    command: >-
+      bin/venv-python -c "from pathlib import Path;
+      import scripts.checks.ci_guards.validate_pr_conflict_signal as m; failed=[];
+      m.validate_pr_conflict_signal(failed); assert not failed, failed;
+      src=Path(m.__file__).read_text(encoding='utf-8');
+      assert 'agent/' not in src and ('claude/' not in src or src.count('claude/') == src.count('.claude/')),
+      'guard hardcodes a prefix literal';
+      print('GUARD_VALUE_AGNOSTIC_OK')"
+    expected: GUARD_VALUE_AGNOSTIC_OK printed, exit 0
+    fix_if: >-
+      Red before implementation: the module today contains the literal "claude/" at line 171, so the
+      second assertion fires. If it fires after implementation the replacement reintroduced the rot
+      with a new string -- assert the declaration's shape, never its value.
+    graduation: graduate
+    graduation_check_id: conflict-signal-guard-asserts-shape-not-value
+  - step: 4
+    phase: pre-deploy
+    hermetic: true
+    action: The gh enumeration carries an explicit limit so the sweep cannot truncate silently
+    command: >-
+      bin/venv-python -c "import re; from pathlib import Path;
+      from scripts.checks.ci_guards.validate_pr_conflict_signal import _join_continuations;
+      lines=_join_continuations(Path('scripts/ci/pr_conflict_signal.sh').read_text(encoding='utf-8'));
+      listing=[l for l in lines if re.search(r'(?:^|\\$\\()\\s*gh\\s+pr\\s+list\\b', l)];
+      assert listing, 'no gh pr list call site found';
+      assert all(re.search(r'--limit\\s+\\d+', l) for l in listing), listing;
+      assert len(listing) == 1, listing;
+      print('GH_LIST_LIMIT_OK', len(listing))"
+    expected: GH_LIST_LIMIT_OK 1 printed, exit 0
+    fix_if: >-
+      Red before implementation: the call site carries no --limit, so gh silently caps at 30 and a
+      31st open PR is never swept. scripts/ci/branch_cleanup.py already sets 200; match it.
+    graduation: graduate
+    graduation_check_id: conflict-sweep-gh-list-declares-limit
+  - step: 5
+    phase: pre-deploy
+    hermetic: true
+    action: The Decision 170 declaration is adopted and the accounting baseline has shrunk
+    command: >-
+      bin/venv-python -c "from pathlib import Path;
+      from scripts.checks.hygiene import validate_check_accounting as vca;
+      import scripts.checks.ci_guards.validate_pr_conflict_signal as m;
+      assert vca._module_declares(Path(m.__file__).read_text(encoding='utf-8')),
+      'validate_pr_conflict_signal still declares no examined()/skipped() outcome';
+      entries=set(vca._load_baseline_entries(Path('config/check_accounting_baseline.yaml').read_text(encoding='utf-8')));
+      assert 'validate_pr_conflict_signal' not in entries, 'still baselined';
+      failed=[]; vca.validate_check_accounting(failed); assert not failed, failed;
+      print('ACCOUNTING_RATCHET_OK')"
+    expected: ACCOUNTING_RATCHET_OK printed, exit 0
+    fix_if: >-
+      Red before implementation: the first assertion fires. The predicate is
+      validate_check_accounting's own _module_declares, never a re-implementation, so this step
+      cannot drift from the ratchet it proves. Do not edit _BASELINE_SEED -- the baseline is
+      shrink-only and removal from the YAML is the whole legal edit.
+    graduation: graduate
+    graduation_check_id: conflict-signal-guard-accounting-declaration-adopted
+  - step: 6
+    phase: pre-deploy
+    hermetic: true
+    action: The contract declares the same prefix set the script declares, with its reversal condition
+    command: >-
+      bin/venv-python -c "import re, yaml; from pathlib import Path;
+      from scripts.checks.ci_guards.validate_pr_conflict_signal import _join_continuations;
+      lines=_join_continuations(Path('scripts/ci/pr_conflict_signal.sh').read_text(encoding='utf-8'));
+      decl=[l for l in lines if re.match(r'^_WAKE_HEAD_PREFIXES=\\(', l)];
+      assert len(decl)==1, decl;
+      body=re.search(r'\\((.*?)\\)', decl[0]).group(1);
+      script_set=set(re.findall(r'[A-Za-z0-9._-]+/', body));
+      bt=yaml.safe_load(open('docs/contracts/git-ops.yaml'))['branching_topology'];
+      assert set(bt['agent_branch_prefixes'])==script_set, (bt.get('agent_branch_prefixes'), script_set);
+      assert bt.get('agent_branch_prefixes_reversal'), 'no reversal condition recorded';
+      print('CONTRACT_MATCHES_SCRIPT_OK', sorted(script_set))"
+    expected: CONTRACT_MATCHES_SCRIPT_OK printed with the sorted set, exit 0
+    fix_if: >-
+      Red before implementation: neither the script declaration nor the contract key exists. After
+      implementation a mismatch means the contract and the script drifted -- the contract is the
+      declared universe's published half and must equal the enforced half exactly.
+    graduation: graduate
+    graduation_check_id: git-ops-branching-prefixes-match-sweep-declaration
+  - step: 7
+    phase: pre-deploy
+    hermetic: true
+    action: Every presence-of-wording assertion -- the surviving rule, rec-3874's probe evidence, rec-3866 non-interference
+    command: >-
+      bin/venv-python -c "import re; from pathlib import Path;
+      a=Path('AGENTS.md').read_text(encoding='utf-8');
+      g=Path('docs/contracts/git-ops.yaml').read_text(encoding='utf-8');
+      pat=r'not create (an |a )?.?agent/';
+      assert not re.search(pat, a, re.I), 'AGENTS.md still forbids agent/';
+      assert not re.search(pat, g, re.I), 'git-ops.yaml still forbids agent/';
+      bad=[(i, l.strip()) for i, l in enumerate(a.splitlines(), 1)
+      if 'claude/' in l and '.claude/' not in l];
+      assert not bad, bad;
+      assert 'harness-assigned' in a, 'AGENTS.md no longer states agents work on the harness-assigned branch';
+      assert 'conflict-wake-probe' in g, 'probe evidence absent (rec-3874 oracle)';
+      assert 'no native wake' in g, 'probe result absent (rec-3874 oracle)';
+      assert 'NOT a CI-success webhook' in g, 'rec-3866 non-interference: its oracle string was removed';
+      assert 'check_suite.completed' not in g, 'rec-3866 non-interference: its oracle token was introduced';
+      print('WORDING_AND_NONINTERFERENCE_OK')"
+    expected: WORDING_AND_NONINTERFERENCE_OK printed, exit 0
+    fix_if: >-
+      Exits 1 today, which is the pre-state. Decision 76 clause 2's RULE must survive the reword --
+      the replacement must still say agents work on the harness-assigned branch and do not create
+      their own; only the claude/ premise is corrected.
+    graduation: waive
+    graduation_waiver_reason: >-
+      The graduation line this plan draws, stated once and now APPLIED rather than merely stated:
+      STRUCTURAL ABSENCE of a token class graduates (steps 9 and 10 -- no claude/ occurrence
+      survives outside a .claude/ path or a declared prefix VALUE; reword-proof, so a standing
+      registry row over it is durable). PRESENCE of specific wording waives. Round 3 caught step 9
+      violating this rule while step 7's waiver stated it: step 9 carried two English-phrase
+      assertions ('conflict-wake-probe', 'no native wake') beside its structural sweep. Those moved
+      HERE, so this step is now the single home for every presence-of-wording assertion -- the
+      surviving harness-assigned rule, rec-3874's probe evidence, and rec-3866's two-sided
+      non-interference -- and step 9 is pure structure. Waived because a standing row over English
+      phrases inside a folded scalar this plan is itself rewording would redden on any re-wrap. The earlier claim that vp-red-before's negated-sweep lint makes it ineligible was
+      wrong and is struck: that lint is not gated to graduate and fires only when the negated path
+      is absent, whereas both paths here exist.
+  - step: 8
+    phase: pre-deploy
+    hermetic: true
+    action: The signal-green predicate admits exactly the prefixes the sweep declares
+    command: >-
+      bin/venv-python -c "import re; from pathlib import Path;
+      from scripts.checks.ci_guards.validate_pr_conflict_signal import _join_continuations;
+      lines=_join_continuations(Path('scripts/ci/pr_conflict_signal.sh').read_text(encoding='utf-8'));
+      decl=[l for l in lines if re.match(r'^_WAKE_HEAD_PREFIXES=\\(', l)];
+      assert len(decl)==1, decl;
+      body=re.search(r'\\((.*?)\\)', decl[0]).group(1);
+      script_set=set(re.findall(r'[A-Za-z0-9._-]+/', body));
+      q=chr(39);
+      ci=Path('.github/workflows/ci.yml').read_text(encoding='utf-8');
+      job=[l for l in ci.splitlines() if 'startsWith(github.head_ref' in l];
+      assert job, 'no head_ref predicate found in ci.yml';
+      ci_set=set(re.findall('head_ref, *'+q+'([A-Za-z0-9._-]+/)'+q, ' '.join(job)));
+      assert ci_set==script_set, (sorted(ci_set), sorted(script_set));
+      print('CI_PREDICATE_MATCHES_DECLARATION_OK', sorted(ci_set))"
+    expected: CI_PREDICATE_MATCHES_DECLARATION_OK printed with the sorted set, exit 0
+    fix_if: >-
+      Red before implementation: the script declares nothing, so the first assertion fires. After
+      implementation a mismatch means one wake consumer was widened without the other -- which is
+      exactly the drift that produced this outage. This is a WIDENING; retiring signal-green is a
+      separate later change and must not be done here.
+    graduation: graduate
+    graduation_check_id: ci-signal-green-predicate-matches-sweep-declaration
+  - step: 9
+    phase: pre-deploy
+    hermetic: true
+    action: The contract carries no claude/ occurrence outside a .claude/ path or a declared prefix value
+    command: >-
+      bin/venv-python -c "import yaml; from pathlib import Path;
+      d=yaml.safe_load(Path('docs/contracts/git-ops.yaml').read_text(encoding='utf-8')) or {};
+      bt=d.get('branching_topology') or {};
+      assert bt.get('agent_branch_prefixes'), 'branching_topology.agent_branch_prefixes not declared';
+      walk=lambda n, p: ([x for k, v in n.items() for x in walk(v, p + [str(k)])] if isinstance(n, dict)
+      else [x for v in n for x in walk(v, p)] if isinstance(n, list)
+      else [(p, n)] if isinstance(n, str) else []);
+      bad=[(p, s) for p, s in walk(d, [])
+      if 'claude/' in s.replace('.claude/', '')
+      and not any(k.startswith('agent_branch_prefixes') for k in p)];
+      assert not bad, bad;
+      print('GIT_OPS_PREFIX_STRUCTURAL_OK')"
+    expected: GIT_OPS_PREFIX_STRUCTURAL_OK printed, exit 0
+    fix_if: >-
+      Red before implementation: branching_topology declares no prefix set, so the first assertion
+      fires. AUTHORING CONSTRAINT, stated because round 4 found it latent: this walks PARSED YAML
+      VALUES keyed by path, not raw lines, so block vs flow sequence style is irrelevant (an earlier
+      line-based version silently REQUIRED block style and would have reddened on
+      `agent_branch_prefixes: ["agent/", "claude/"]`). What it does still require: no string value
+      anywhere in the contract outside the agent_branch_prefixes* keys may contain claude/ -- so the
+      new _rationale and _reversal text, the reworded merge_conflict evidence and the amendment_log
+      entry must refer to the declared set rather than repeating the literal. REWRITTEN in round 2 after the gate proved the previous phrase-list version broken:
+      it embedded backticks inside a double-quoted shell string, so command substitution mangled
+      the fourth phrase to 'harness-assigned ' -- a substring the CORRECTED contract still
+      contains, which would have left this graduate step permanently red and frozen that command
+      into a standing registry row. Note what this means about red-before: it classified the broken
+      command assertion_failed, because a broken command is red before AND after. The replacement
+      is STRUCTURAL, not editorial -- every claude/ occurrence must be either a .claude/ directory
+      path or a DECLARED prefix value, so it is order-independent and survives any reword.
+    graduation: graduate
+    graduation_check_id: git-ops-carries-no-stale-prefix-premise
+  - step: 10
+    phase: pre-deploy
+    hermetic: true
+    action: No surface still describes the conflict sweep as polling claude/* only
+    command: >-
+      bin/venv-python -c "from pathlib import Path;
+      paths=['.github/workflows/pr-conflict-signal.yml', 'scripts/preflight/dependabot.py'];
+      bad=[(p, i+1, l.strip()) for p in paths
+      for i, l in enumerate(Path(p).read_text(encoding='utf-8').splitlines())
+      if 'claude/' in l and '.claude/' not in l];
+      assert not bad, bad; print('NO_STALE_SWEEP_PREMISE_OK')"
+    expected: NO_STALE_SWEEP_PREMISE_OK printed, exit 0
+    fix_if: >-
+      Red before implementation: pr-conflict-signal.yml lines 6, 8 and 44 and dependabot.py line 4
+      all still say claude/. This is the Decision-191 / 12k stale-reference sweep, and it is a
+      POSITIVE file-content assertion over paths that exist, not a negated path sweep, so the
+      negated-sweep lint does not apply. ci.yml is deliberately excluded -- step 8 owns it, and its
+      predicate legitimately names claude/ as a declared transitional prefix.
+    graduation: graduate
+    graduation_check_id: no-surface-describes-sweep-as-claude-only
+  - step: 11
+    phase: pre-deploy
+    hermetic: false
+    action: The pre-existing suites over the touched surfaces still pass
+    command: >-
+      bin/venv-python -m pytest tests/test_pr_conflict_signal_wiring.py
+      tests/checks/ci_guards/test_validate_pr_conflict_signal.py -q
+    expected: all tests pass
+    fix_if: >-
+      Distinguish two causes before touching anything. (a) MANDATED MIGRATION: the gh projection
+      gains headRefName, so the 8 two-column "list" control maps in tests/test_pr_conflict_signal_wiring.py
+      (lines 207, 230, 254, 272, 289, 315, 345, 374) go from TSV arity 2 to 3, and the guard suite's
+      _VALID_SCRIPT (line 49) and test_missing_claude_filter_fails (line 199) carry hardcoded
+      claude/ literals that must move. ALSO MANDATED, and easy to misdiagnose: three existing
+      assertions at tests/test_pr_conflict_signal_wiring.py:244 (TestRetryOnFailedCall), :262
+      (TestUnknownNeverFalseWakes) and :320 (TestMarkerEmission) assert summary_text == "". A
+      fixture migrated to agent/-only heads makes the transitional prefix claude/ match zero, which
+      FIRES the retirement notice this plan mandates, so those three assertions must be updated to
+      expect it. Note :244 sits in TestRetryOnFailedCall -- do NOT read that failure as a retry
+      regression under (b); it is this change working as designed. Migrate all of these -- they are
+      part of this change, not a regression. (b) REGRESSION: a failure in the retry or exit-status cases means the selection
+      move disturbed the load-bearing errexit and bounded-retry semantics (rec-2735). There, and
+      only there, fix the move and never the test.
+    graduation: waive
+    graduation_waiver_reason: >-
+      Green on the pre-implementation tree, so graduating it would be a false graduate that the
+      red-before replay classes tautological and hard-fails on this plan's own PR. The genuinely new
+      behaviour is graduated precisely as steps 1 and 2.
+  - step: 12
+    phase: pre-deploy
+    hermetic: false
+    action: Fast tier is green end to end
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: >-
+      validate_check_accounting, validate_pr_conflict_signal and the prose gates all read state this
+      plan moves, so a half-applied change reddens here rather than at a narrower step. CHECK
+      validate_prose_limits FIRST on a red here: S1 root_ambient_load_set has ONE byte of headroom
+      (18942 of 18943, config/prose_budgets.yaml:36), so any net-additive AGENTS.md reword fails
+      this step and the cause is the byte budget, not the logic.
+    graduation: waive
+    graduation_waiver_reason: >-
+      Invokes scripts.validate, which the graduate partition refuses statically at plan-PR time as a
+      recursion hazard. Not not-applicable -- it is a single command_exit_zero shape.
+  - step: 13
+    phase: pre-deploy
+    hermetic: false
+    action: Full validation tier completes exit 0 before handoff
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: >-
+      handoff_policy.full_validation_required_before_commit is true, and validate_handoff_full_tier
+      fails any plan declaring it without a full-tier step. Step 12 does not satisfy it.
+    graduation: waive
+    graduation_waiver_reason: Same recursion refusal as step 12, over the full tier rather than the fast one.
+  - step: 14
+    phase: post-deploy
+    action: rec-3046 and rec-3874 are closed, and their acceptance oracles passed rather than being assumed
+    command: >-
+      bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json, subprocess;
+      rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip()];
+      by={r['id']: r for r in rows}; ids=['rec-3046', 'rec-3874'];
+      open_ids=[(i, by[i]['status']) for i in ids if by[i]['status'] != 'closed'];
+      assert not open_ids, open_ids;
+      rcs=[(i, subprocess.run(['bash', '-c', by[i]['acceptance']]).returncode) for i in ids];
+      assert all(rc == 0 for _, rc in rcs), rcs;
+      print('RECS_CLOSED_AND_ORACLES_PASS_OK')"
+    expected: RECS_CLOSED_AND_ORACLES_PASS_OK printed, exit 0
+    fix_if: >-
+      If either is still open the Resolves trailer was omitted from the squash body. If rec-3046
+      closed while its oracle still names a conjunct this plan does not deliver, that is the
+      rec-3867 defect reproduced -- the update_rec in execution step 8 must land BEFORE the merge.
+test_obligations:
+  - source: scripts/ci/pr_conflict_signal.sh
+    behavior: >-
+      Selection admits exactly the declared prefixes, skips every other head, and the run names the
+      unmatched population -- AND the two operator-observable behaviours acceptance criterion 1 and
+      the scope purpose both call load-bearing are asserted, not merely described: a NON-EMPTY
+      unmatched population is mirrored to GITHUB_STEP_SUMMARY, and a transitional prefix matching
+      zero open PRs appends the retirement notice. Round 3 found both unasserted by any step or
+      obligation, in a plan whose whole thesis is that undescribed behaviour rots.
+    verification_step: 1
+    test_selector: tests/test_pr_conflict_signal_wiring.py
+    red_green_expectation: red before (the selector collects nothing), green after
+  - source: scripts/checks/ci_guards/validate_pr_conflict_signal.py
+    behavior: >-
+      The guard fails on an absent, malformed, unconsumed or prose-only declaration, and passes on
+      the real script without naming a prefix value.
+    verification_step: 2
+    test_selector: tests/checks/ci_guards/test_validate_pr_conflict_signal.py
+    red_green_expectation: red before (the selector collects nothing), green after
+  - source: config/check_accounting_baseline.yaml
+    behavior: >-
+      validate_pr_conflict_signal is absent from the baseline and validate_check_accounting passes
+      with the declaration adopted.
+    verification_step: 5
+    command: >-
+      bin/venv-python -c "from pathlib import Path;
+      from scripts.checks.hygiene import validate_check_accounting as vca;
+      import scripts.checks.ci_guards.validate_pr_conflict_signal as m;
+      assert vca._module_declares(Path(m.__file__).read_text(encoding='utf-8')),
+      'validate_pr_conflict_signal still declares no examined()/skipped() outcome';
+      entries=set(vca._load_baseline_entries(Path('config/check_accounting_baseline.yaml').read_text(encoding='utf-8')));
+      assert 'validate_pr_conflict_signal' not in entries, 'still baselined';
+      failed=[]; vca.validate_check_accounting(failed); assert not failed, failed;
+      print('ACCOUNTING_RATCHET_OK')"
+    red_green_expectation: red before, green after
+  - source: docs/contracts/git-ops.yaml
+    behavior: >-
+      branching_topology declares the same prefix set the script enforces and carries the reversal
+      condition.
+    verification_step: 6
+    command: >-
+      bin/venv-python -c "import re, yaml; from pathlib import Path;
+      from scripts.checks.ci_guards.validate_pr_conflict_signal import _join_continuations;
+      lines=_join_continuations(Path('scripts/ci/pr_conflict_signal.sh').read_text(encoding='utf-8'));
+      decl=[l for l in lines if re.match(r'^_WAKE_HEAD_PREFIXES=\\(', l)];
+      assert len(decl)==1, decl;
+      body=re.search(r'\\((.*?)\\)', decl[0]).group(1);
+      script_set=set(re.findall(r'[A-Za-z0-9._-]+/', body));
+      bt=yaml.safe_load(open('docs/contracts/git-ops.yaml'))['branching_topology'];
+      assert set(bt['agent_branch_prefixes'])==script_set, (bt.get('agent_branch_prefixes'), script_set);
+      assert bt.get('agent_branch_prefixes_reversal'), 'no reversal condition recorded';
+      print('CONTRACT_MATCHES_SCRIPT_OK', sorted(script_set))"
+    red_green_expectation: red before, green after
+  - source: AGENTS.md
+    behavior: >-
+      The branch rule states the harness-assigned branch without naming a stale prefix, and no
+      longer forbids agent/.
+    verification_step: 7
+    command: >-
+      bin/venv-python -c "import re; from pathlib import Path;
+      a=Path('AGENTS.md').read_text(encoding='utf-8');
+      g=Path('docs/contracts/git-ops.yaml').read_text(encoding='utf-8');
+      pat=r'not create (an |a )?.?agent/';
+      assert not re.search(pat, a, re.I), 'AGENTS.md still forbids agent/';
+      assert not re.search(pat, g, re.I), 'git-ops.yaml still forbids agent/';
+      bad=[(i, l.strip()) for i, l in enumerate(a.splitlines(), 1)
+      if 'claude/' in l and '.claude/' not in l];
+      assert not bad, bad;
+      assert 'harness-assigned' in a, 'AGENTS.md no longer states agents work on the harness-assigned branch';
+      assert 'conflict-wake-probe' in g, 'probe evidence absent (rec-3874 oracle)';
+      assert 'no native wake' in g, 'probe result absent (rec-3874 oracle)';
+      assert 'NOT a CI-success webhook' in g, 'rec-3866 non-interference: its oracle string was removed';
+      assert 'check_suite.completed' not in g, 'rec-3866 non-interference: its oracle token was introduced';
+      print('WORDING_AND_NONINTERFERENCE_OK')"
+    red_green_expectation: >-
+      Red before (the prohibition is live at AGENTS.md:51), green after. HONEST STATEMENT OF
+      COVERAGE, corrected in round 3: this is a WAIVED step, so it runs once at implement time and
+      creates NO standing registry row. Meanwhile the previously-pinning graduated entry
+      agents-md-retains-enforced-norms-and-pointer goes vacuous -- it greps 'claude/' in AGENTS.md,
+      which after this edit is satisfied only by the .claude/hooks and ~/.claude/projects DIRECTORY
+      paths at lines 52, 67 and 113. So standing coverage of Decision 76 clause 2's rule is NET
+      LOST, deliberately: graduating a wording assertion would freeze editorial prose into a row
+      that every future reword reddens. An earlier draft claimed this assertion "pins the rule
+      directly". It does not -- it verifies the rule once, at implement time. That trade-off is the
+      choice; overstating it was not.
+  - source: .github/workflows/ci.yml
+    behavior: >-
+      The signal-green head_ref predicate admits every declared prefix, so the CI-green comment
+      wake fires on an agent/* PR and cannot drift from the sweep's declared set.
+    verification_step: 8
+    command: >-
+      bin/venv-python -c "import re; from pathlib import Path;
+      from scripts.checks.ci_guards.validate_pr_conflict_signal import _join_continuations;
+      lines=_join_continuations(Path('scripts/ci/pr_conflict_signal.sh').read_text(encoding='utf-8'));
+      decl=[l for l in lines if re.match(r'^_WAKE_HEAD_PREFIXES=\\(', l)];
+      assert len(decl)==1, decl;
+      body=re.search(r'\\((.*?)\\)', decl[0]).group(1);
+      script_set=set(re.findall(r'[A-Za-z0-9._-]+/', body));
+      q=chr(39);
+      ci=Path('.github/workflows/ci.yml').read_text(encoding='utf-8');
+      job=[l for l in ci.splitlines() if 'startsWith(github.head_ref' in l];
+      assert job, 'no head_ref predicate found in ci.yml';
+      ci_set=set(re.findall('head_ref, *'+q+'([A-Za-z0-9._-]+/)'+q, ' '.join(job)));
+      assert ci_set==script_set, (sorted(ci_set), sorted(script_set));
+      print('CI_PREDICATE_MATCHES_DECLARATION_OK', sorted(ci_set))"
+    red_green_expectation: >-
+      Red before (the script declares no prefix set, so the cross-site comparison cannot hold and
+      the predicate names claude/ alone), green after.
+  - source: .github/workflows/pr-conflict-signal.yml
+    behavior: >-
+      The workflow that invokes the sweep no longer describes it as polling claude/* only.
+    verification_step: 10
+    command: >-
+      bin/venv-python -c "from pathlib import Path;
+      paths=['.github/workflows/pr-conflict-signal.yml', 'scripts/preflight/dependabot.py'];
+      bad=[(p, i+1, l.strip()) for p in paths
+      for i, l in enumerate(Path(p).read_text(encoding='utf-8').splitlines())
+      if 'claude/' in l and '.claude/' not in l];
+      assert not bad, bad; print('NO_STALE_SWEEP_PREMISE_OK')"
+    red_green_expectation: >-
+      Red before (lines 6, 8 and 44 name claude/*), green after.
+  - source: scripts/preflight/dependabot.py
+    behavior: >-
+      The module docstring no longer states that pr-conflict-signal.yml polls claude/* only.
+    verification_step: 10
+    command: >-
+      bin/venv-python -c "from pathlib import Path;
+      paths=['.github/workflows/pr-conflict-signal.yml', 'scripts/preflight/dependabot.py'];
+      bad=[(p, i+1, l.strip()) for p in paths
+      for i, l in enumerate(Path(p).read_text(encoding='utf-8').splitlines())
+      if 'claude/' in l and '.claude/' not in l];
+      assert not bad, bad; print('NO_STALE_SWEEP_PREMISE_OK')"
+    red_green_expectation: >-
+      Red before (line 4 names claude/*), green after. Docstring-only: no behaviour surface, which
+      is why the obligation is a content assertion rather than a new test.
+constraints:
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    The sweep's errexit derivation and bounded-retry helper are load-bearing (rec-2735 / Decision
+    162). Selection moves into the loop; NO gh call site gains or loses its adjacent exit-status
+    capture, and no new gh call is added.
+  - >-
+    The guard must never assert a literal prefix value. Asserting "agent/" appears would recreate
+    the exact rot this plan removes, one string later.
+  - >-
+    EXPLICITLY OUT OF SCOPE: scripts/verify_ci_workflow.py (decomposed separately at 499/500 SLOC),
+    and the RETIREMENT of the signal-green job. This plan WIDENS signal-green's predicate so the
+    green wake reaches agent/* PRs; retirement is a later separate change that NO PLAN YET OWNS, so
+    rec-3046's verify_ci_workflow.py conjunct routes to a filed carrier rec and not to a named
+    plan. CORRECTION, recorded rather than silently fixed: an earlier draft asserted that a sibling
+    plan already owned signal-green's retirement and that the cross-site assertion against ci.yml's
+    if: would therefore be born dead. No such plan exists. Both claims are struck, ci.yml is in
+    scope as a widening, and the cross-site assertion IS built, as VP step 8.
+  - >-
+    Do NOT edit _BASELINE_SEED in scripts/checks/hygiene/validate_check_accounting.py; the baseline
+    is shrink-only and removal from the YAML is the entire legal edit.
+  - >-
+    rec-3866 NON-INTERFERENCE. Execution step 7 rewrites docs/contracts/git-ops.yaml's
+    wake_signals.ci_green_comment, which is open rec-3866's exact surface: its oracle is
+    `grep -q "check_suite.completed\\|check_run.completed" ... && ! grep -q "NOT a CI-success
+    webhook" ...`, and that banned string sits at git-ops.yaml:196 INSIDE the sentence being
+    reworded. rec-3866 is deliberately NOT bundled here -- this plan neither measures nor fixes the
+    native-green-wake documentation. So the reword must correct ONLY the prefix premise and must
+    leave the "NOT a CI-success webhook" clause and the absence of check_suite.completed exactly as
+    found; half-satisfying an open rec's oracle in passing is the rec-3867 defect wearing different
+    clothes. If the prefix correction cannot be made without touching that clause, STOP and raise
+    it rather than deciding rec-3866's disposition inside this plan.
+  - >-
+    Widening signal-green is deliberately NOT justified by need: rec-3866 measured native
+    check_suite.completed green wakes arriving 2/2, so the comment path is redundant on green, and
+    a third and fourth delivery were observed on this plan's own PR. It is widened because it is
+    CURRENTLY BROKEN on every agent/* PR and rec-3046 names that conjunct -- a broken surface is
+    either fixed or retired, never left broken as a silent no-op. Retirement is the better end
+    state and no plan yet owns it; this plan makes the surface honest in the meantime.
+  - >-
+    Discriminator deferral, recorded rather than buried (plan-critique frame challenge, operator
+    direction 2026-09-15): a wake label or body token stamped at PR creation via
+    mcp__github__create_pull_request is available TODAY, and declaring the class at the producer is
+    the shape Decision 191's own remedy names. It is deferred because this plan is a live-outage
+    fix and label self-registration still needs a story for PRs not created through that tool. The
+    review trigger is deliberately NOT solely executor unfreeze, which is undated under Decision
+    67: revisit at the FIRST of (a) executor unfreeze, (b) any second measured miss of the prefix
+    discriminator, or (c) the next change that would add a third consumer of the prefix fact.
+  - >-
+    Ruff or lint failures in CI that this plan's diff did not introduce -- whole-tree lint
+    surfacing a pre-existing violation, or a tool-pin bump landing a new rule -- are OUT OF SCOPE:
+    STOP, raise it to the operator, and do not fix inline. The defect class (a ruff bump escaping
+    diff-scoped --pre lint because a lockfile-only PR changes no .py files) was live while this
+    plan was authored and was closed on main by #1186-#1189, so a recurrence is a signal about that
+    machinery, not about this change. Per implement-scope-boundary.yaml an out-of-scope bug becomes
+    a recommendation, never an inline fix.
+  - Python 3.12, type hints, ruff line length 127, no emojis, ASCII hyphens, comments only where the why is non-obvious.
+context:
+  - >-
+    "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 170, 165, 168, 86, 76, 177,
+    189/132, 131, 187, 186, 103, 55, 191, 163, 181, 100; T2.54:c1. Decisions triaged: 144 of 144.
+    Roadmap items intersected: 3; CONFLICT: 0; RELATED: 2."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 1 round(s), revised"
+  - >-
+    Measured basis: two live probes on 2026-09-15. Native check_suite.completed wakes DO arrive
+    (2/2, rec-3866) but NO native wake was observed for a blocked->dirty transition across ~16 min
+    of idle with a live subscription and the control holding (n=1, rec-3874). The harness documents
+    that notice as best-effort. So this sweep is the only reliable conflict path and is retained.
+  - >-
+    Decision 191 discharge: prefix matching is retained because it is the only discriminator the
+    producer stamps -- author is the operator for every PR including harness ones, the harness
+    applies no labels, and base is always main. The declared set plus the unmatched-population
+    tally is the substitute for an enumerated universe; the tally is what would have caught this
+    outage on the first push after the rename.
+  - >-
+    Reversal condition (recorded in the contract, not only here): agent/ is also the frozen
+    executor's namespace (scripts/executor/branch_lifecycle.py:221 creates agent/{rec_id}). On
+    executor unfreeze a prefix can no longer separate the two populations; the migration at that
+    point is repo-owned self-registration (a wake label or body token applied at PR creation via
+    mcp__github__create_pull_request), which is immune to harness churn.
+  - >-
+    Decision 181: rec-3046's oracle has four conjuncts. The accounting has been wrong twice and is
+    now stated exactly, measured conjunct-by-conjunct against a simulated post-implementation tree:
+    TWO DELIVERED, ONE SUPERSEDED-AND-RECORDED, ONE CARRIED. Delivered: the ci.yml head_ref
+    conjunct (execution step 3 widens the predicate) and the AGENTS.md prohibition conjunct (step
+    6). SUPERSEDED: the pr_conflict_signal.sh startswith("agent/") conjunct, which this plan's own
+    design makes permanently unsatisfiable by removing every startswith(...) literal from the jq.
+    An earlier draft scored this as "delivered by OBSOLESCENCE" -- that was accounting slippage of
+    exactly the kind Decision 181 clause 1 exists to prevent, and it is struck: a conjunct that
+    cannot pass is NOT delivered. It is superseded by a better design, and that supersession is
+    recorded on the rec at update_rec time rather than being quietly counted as a win. CARRIED:
+    exactly ONE, the scripts/verify_ci_workflow.py conjunct. ALSO NAME THE NARROWING: rec-3046's
+    title says "repoint CI wake filters off claude/", and this plan KEEPS claude/ as a declared
+    transitional prefix, so the acceptance rewrite materially narrows the rec's original intent.
+    That narrowing is legitimate under the 2026-09-15 operator direction but must be recorded as a
+    narrowing in the rec context, not presented as completion.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    scripts/ci/pr_conflict_signal.sh -- add _WAKE_HEAD_PREFIXES and
+    _WAKE_HEAD_PREFIXES_TRANSITIONAL near the existing tunables; change the gh pr list --jq to
+    project number, headRefName and headRefOid without selecting; add --limit 200; match head refs
+    against the declared set inside the existing while loop, tallying matched and unmatched prefixes;
+    print the tally every run and append a retirement notice to GITHUB_STEP_SUMMARY when a
+    transitional prefix matches zero. Keep prs_rc=$? adjacent to its call.
+  - >-
+    scripts/checks/ci_guards/validate_pr_conflict_signal.py -- replace the ("claude/* head filter",
+    ...) row with an anchored parse of the declaration (non-empty, every token ends in /, no
+    duplicates, transitional a subset) plus a consumption assertion and the --limit assertion; adopt
+    registry.examined()/skipped() modelled on a sibling ci_guards module; remove the entry from
+    config/check_accounting_baseline.yaml in the same commit.
+  - >-
+    .github/workflows/ci.yml -- widen the signal-green head_ref predicate at line 315 from the
+    single claude/ literal to the declared prefix set (agent/ and claude/), and CORRECT THE COMMENT
+    BLOCK AT LINES 311-312 in the same edit: it says "pass comment on agent (claude/*) branch PRs"
+    and "Scoped to claude/* to avoid commenting on every human PR", both of which become false the
+    moment the predicate widens. Leaving a file this plan edits carrying a false self-description
+    three lines above the edited line is the exact drift this plan exists to close, and is the same
+    argument made for touching pr-conflict-signal.yml. The job body itself stays untouched: this is
+    a WIDENING; do not retire, rename or re-gate it.
+  - >-
+    .github/workflows/pr-conflict-signal.yml lines 6, 8 and 44 and scripts/preflight/dependabot.py
+    line 4 -- correct the prose so neither describes the sweep as polling claude/* only. Prose and
+    docstring only; no behaviour surface in either file.
+  - >-
+    Tests. Add the discrimination tests (including the prose-only fixture) and the behavioural
+    enumeration tests through the existing gh shim. THEN perform the MANDATED fixture migration the
+    projection change forces: the 8 two-column "list" control maps in
+    tests/test_pr_conflict_signal_wiring.py (lines 207, 230, 254, 272, 289, 315, 345, 374) go from
+    TSV arity 2 to 3 with prefix-matching head refs, and the guard suite's _VALID_SCRIPT (line 49)
+    and test_missing_claude_filter_fails (line 199) lose their hardcoded claude/ literals. This is
+    part of the change, not a regression -- see VP step 11's fix_if for the discrimination.
+  - >-
+    AGENTS.md lines 51 and 146 -- correct the premise, preserve the rule, keep the one-line trigger.
+    HARD BYTE CEILING, measured: config/prose_budgets.yaml:36 sets S1 root_ambient_load_set to
+    18943 bytes and the current set is 18942 (AGENTS.md 18931 + CLAUDE.md 11). ONE byte of
+    headroom, and validate_prose_limits is BLOCKING in the fast tier, not advisory. The reword must
+    therefore be NET NON-ADDITIVE: delete at least as many bytes as it adds. Do NOT add a pointer
+    sentence to docs/contracts/git-ops.yaml -- AGENTS.md line 143 already carries that pointer, and
+    adding a second one is what blows the budget. Removing the stale `claude/...` literals is itself
+    net-negative, so a deletion-shaped reword clears it comfortably.
+    Note for the implementer: after this edit the graduated entry
+    agents-md-retains-enforced-norms-and-pointer's grep for 'claude/' in AGENTS.md is satisfied only
+    by the .claude/hooks and ~/.claude/projects DIRECTORY paths. Do not "fix" that entry here --
+    it goes green incidentally, and the rule it was meant to pin is pinned directly by this plan's
+    AGENTS.md test obligation instead.
+  - >-
+    docs/contracts/git-ops.yaml -- branching_topology gains agent_branch_prefixes,
+    agent_branch_prefixes_rationale and agent_branch_prefixes_reversal; branch_rule loses the stale
+    claude/ premise and the agent/ prohibition. ALSO correct the three further stale premises inside
+    this same canonical file -- push_pr_ci_merge_flow.steps[0] (line 176), wake_signals.ci_green_comment
+    (line 194) and wake_signals.merge_conflict (line 201) -- and annotate wake_signals.merge_conflict
+    with the 2026-09-15 conflict-wake-probe evidence and its negative result, which is rec-3874's
+    acceptance oracle. Add the amendment_log entry.
+  - >-
+    BEFORE any Resolves trailer, in this order. (a) File ONE carrier rec for rec-3046's single
+    undeliverable conjunct (the branch-scope guard over the ci.yml signal-green predicate), AND two
+    further carriers Decision 181 clause 2 requires because each is an unenforced residual this plan
+    knowingly creates: (i) the AGENTS.md / Decision 76 clause 2 rule, whose standing coverage this
+    plan retires -- the graduated row agents-md-retains-enforced-norms-and-pointer goes vacuous
+    (its grep is satisfied by .claude/ directory paths alone) and step 7 is waived, so nothing
+    standing replaces it; and (ii) the retirement of signal-green, which this plan names as the
+    better end state, widens rather than retires, and leaves owned by no plan or rec. A disclosed
+    residual with no owning recommendation id is a prose disclosure, not a disposition. For the
+    verify_ci_workflow carrier specifically: WRITE
+    ITS ACCEPTANCE PATH-AGNOSTICALLY, or against the post-decomposition facade package
+    scripts/verify_ci_workflow/ -- NOT against the flat scripts/verify_ci_workflow.py. The sibling
+    decomposition plan, already committed on this branch, carries `action: Delete` for that exact
+    path and a VP step asserting it no longer exists, so a carrier rec whose oracle greps it is
+    BORN DEAD the moment that plan merges. This is the third instance of the same error class in
+    this work -- claiming or naming a surface another plan removes -- after the signal-green
+    ownership claim struck from this plan's constraints and the identical claim struck from the
+    decomposition plan's constraint 3. Record the rec as CARRIED AND UNOWNED: the decomposition
+    plan makes room for that guard but does not add it. (b) update_rec rec-3046's acceptance to exactly what this plan
+    delivers, recording in the rec context both the supersession of the 2026-08-18 operator
+    direction (which assumed the prefix was repo-controllable when the harness assigns it) and the
+    2026-09-15 direction that replaced it. (c) Confirm rec-3874's oracle actually passes by running
+    it, not by assuming the git-ops edit satisfied it. Only then may the squash body carry Resolves.
+  - Execute the Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55).
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Revert the squash-merge commit EXCEPT TWO hunks, which must BOTH be retained: (1) the
+  config/check_accounting_baseline.yaml removal, and (2) the registry.examined()/skipped()
+  declaration added to scripts/checks/ci_guards/validate_pr_conflict_signal.py. Everything else --
+  the sweep's selection change, the guard's assertions, the ci.yml predicate, the prose -- reverts
+  cleanly. Nothing deploys.
+  This field has been WRONG TWICE and the history is kept because each error is instructive.
+  (a) The first draft claimed the baseline "is shrink-only forward, so a revert restores the entry
+  rather than growing it". False: validate_check_accounting leg (c) (:231-243) computes
+  grown = current_baseline - base_baseline against origin/main, and post-merge origin/main no longer
+  carries the entry, so re-adding it FAILS "an entry may be removed, never (re-)added".
+  (b) Round 3 fixed (a) by exempting only the baseline line, and thereby created a leg (a) failure:
+  a revert of the squash-merge reverts the DECLARATION too, leaving the module undeclared AND
+  unbaselined. VERIFIED by simulating that exact state and running the real check -- leg (a)
+  (:212-220) fails with "validate_pr_conflict_signal: declares no examined()/skipped() outcome and
+  is not in config/check_accounting_baseline.yaml". Round 3's own text was self-contradictory,
+  asserting both that "the guard [returns] to its prior row" and that it "keeps its declaration".
+  Only ONE post-rollback state is legal: declared AND unbaselined. Leg (a) passes because the
+  module declares; leg (c) passes because the baseline did not grow.
