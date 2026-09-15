@@ -216,7 +216,6 @@ _CONCERN_SPLIT_TEST_PACKAGES: frozenset[str] = frozenset(
         "scripts/checks/_common.py",
         "scripts/ops_data_portal.py",
         "scripts/s3_log_store.py",
-        "scripts/verify_ci_workflow.py",
         "scripts/contracts_enforcement.py",
         "scripts/platform_roadmap_state.py",
         "scripts/platform_roadmap_models.py",

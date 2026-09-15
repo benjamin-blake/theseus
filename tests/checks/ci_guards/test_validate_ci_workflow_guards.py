@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from scripts.checks import _common
-from scripts.checks.ci_guards.validate_ci_workflow_guards import validate_ci_workflow_guards
+from scripts.checks import _common, registry
+from scripts.checks.ci_guards.validate_ci_workflow_guards import _GUARDS, validate_ci_workflow_guards
 
 _MODULE_NAME = "scripts.checks.ci_guards.validate_ci_workflow_guards"
 
@@ -118,3 +118,34 @@ class TestValidateCiWorkflowGuards:
                 assert "ci-workflow guards gate" in failed[0]
         finally:
             sys.modules[_MODULE_NAME] = original_module
+
+
+class TestCheckAccountingDeclaration:
+    """Decision 170: an enforced run declares examined(len(guards)); a guard-import failure
+    declares a skip and still records exactly one gate failure without raising."""
+
+    def test_enforced_run_declares_examined_len_guards(self) -> None:
+        with registry.outcome_scope("validate_ci_workflow_guards"):
+            failed: list[str] = []
+            validate_ci_workflow_guards(failed)
+        declaration = registry.pop_declaration()
+        outcome = registry.build_outcome("validate_ci_workflow_guards", "check", declaration, bool(failed))
+
+        assert failed == []
+        assert declaration is not None
+        assert declaration.kind == "examined"
+        assert declaration.count == len(_GUARDS) > 0
+        assert declaration.unit == "ci_workflow_guards"
+        assert outcome.status == "enforced"
+
+    def test_guard_import_failure_declares_skip_and_records_one_failure(self) -> None:
+        with registry.outcome_scope("validate_ci_workflow_guards"):
+            with patch.dict(sys.modules, {"scripts.verify_ci_workflow": None}):
+                failed: list[str] = []
+                validate_ci_workflow_guards(failed)
+        declaration = registry.pop_declaration()
+
+        assert len(failed) == 1
+        assert "ci-workflow guards gate" in failed[0]
+        assert declaration is not None
+        assert declaration.kind == "skipped"

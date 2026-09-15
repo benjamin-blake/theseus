@@ -65,7 +65,7 @@ class TestCheckApplyRcaFallbackFailPath:
                 "gated-apply": _VALID_APPLY_SANDBOX_DATA["jobs"]["gated-apply"],
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="apply-sandbox is missing"):
                 _check_apply_rca_fallback()
@@ -83,7 +83,7 @@ class TestCheckApplyRcaFallbackFailPath:
                 },
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="gated-apply is missing 'actions: write'"):
                 _check_apply_rca_fallback()
@@ -98,7 +98,7 @@ class TestCheckApplyRcaFallbackFailPath:
                 },
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="gated-apply is missing"):
                 _check_apply_rca_fallback()
@@ -137,7 +137,7 @@ class TestCheckTerraformApplyConcurrencyPassPath:
         _check_terraform_apply_concurrency()
 
     def test_passes_with_valid_data(self) -> None:
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.side_effect = _mock_load_for(_VALID_APPLY_CONCURRENCY_DATA, _VALID_RECONCILE_CONCURRENCY_DATA)
             _check_terraform_apply_concurrency()
 
@@ -145,7 +145,7 @@ class TestCheckTerraformApplyConcurrencyPassPath:
 class TestCheckTerraformApplyConcurrencyFailPath:
     def test_fails_on_non_conditional_shared_everything_group(self) -> None:
         apply_data = {"concurrency": {"group": "terraform-apply-sandbox", "cancel-in-progress": False}}
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.side_effect = _mock_load_for(apply_data, _VALID_RECONCILE_CONCURRENCY_DATA)
             with pytest.raises(AssertionError, match="not event-keyed"):
                 _check_terraform_apply_concurrency()
@@ -159,7 +159,7 @@ class TestCheckTerraformApplyConcurrencyFailPath:
                 "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.side_effect = _mock_load_for(apply_data, _VALID_RECONCILE_CONCURRENCY_DATA)
             with pytest.raises(AssertionError, match="per-PR format key"):
                 _check_terraform_apply_concurrency()
@@ -174,7 +174,7 @@ class TestCheckTerraformApplyConcurrencyFailPath:
                 "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.side_effect = _mock_load_for(apply_data, _VALID_RECONCILE_CONCURRENCY_DATA)
             with pytest.raises(AssertionError, match="shared push/dispatch key"):
                 _check_terraform_apply_concurrency()
@@ -186,7 +186,7 @@ class TestCheckTerraformApplyConcurrencyFailPath:
                 "cancel-in-progress": False,
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.side_effect = _mock_load_for(apply_data, _VALID_RECONCILE_CONCURRENCY_DATA)
             with pytest.raises(AssertionError, match="not gated on pull_request"):
                 _check_terraform_apply_concurrency()
@@ -198,14 +198,14 @@ class TestCheckTerraformApplyConcurrencyFailPath:
                 "cancel-in-progress": True,
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.side_effect = _mock_load_for(apply_data, _VALID_RECONCILE_CONCURRENCY_DATA)
             with pytest.raises(AssertionError, match="not gated on pull_request"):
                 _check_terraform_apply_concurrency()
 
     def test_fails_when_reconcile_in_different_group(self) -> None:
         reconcile_data = {"concurrency": {"group": "some-other-group", "cancel-in-progress": False}}
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.side_effect = _mock_load_for(_VALID_APPLY_CONCURRENCY_DATA, reconcile_data)
             with pytest.raises(AssertionError, match="no longer shares"):
                 _check_terraform_apply_concurrency()
@@ -295,7 +295,7 @@ class TestRecoveryWorkflowTopologyPassPath:
         _check_recovery_workflow_topology()
 
     def test_recovery_workflow_topology_passes_with_valid_data(self) -> None:
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.return_value = _recovery_topology_data()
             _check_recovery_workflow_topology()
 
@@ -307,14 +307,14 @@ class TestRecoveryWorkflowTopologyFailPath:
         caught the bug" proof, not a structural existence check.
         """
         data = _recovery_topology_data(fresh_signal=_LEGACY, route_step=False)
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="has no `route` step"):
                 _check_recovery_workflow_topology()
 
     def test_recovery_workflow_topology_rejects_legacy_stale_gating_with_route_present(self) -> None:
         data = _recovery_topology_data(fresh_signal=_LEGACY)
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="still gated on"):
                 _check_recovery_workflow_topology()
@@ -323,7 +323,7 @@ class TestRecoveryWorkflowTopologyFailPath:
         data = _recovery_topology_data()
         route = data["jobs"]["apply-reconcile"]["steps"][2]
         del route["env"]["SAVED_PLAN_ROUTED"]
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="does not read cause signal"):
                 _check_recovery_workflow_topology()
@@ -331,7 +331,7 @@ class TestRecoveryWorkflowTopologyFailPath:
     def test_recovery_workflow_topology_rejects_missing_fresh_plan_pending_output(self) -> None:
         data = _recovery_topology_data()
         del data["jobs"]["apply-reconcile"]["outputs"]["fresh_plan_pending"]
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="fresh_plan_pending job output"):
                 _check_recovery_workflow_topology()
@@ -339,7 +339,7 @@ class TestRecoveryWorkflowTopologyFailPath:
     def test_recovery_workflow_topology_rejects_ungated_download_step(self) -> None:
         data = _recovery_topology_data()
         data["jobs"]["gated-apply-reconcile"]["steps"][0].pop("if")
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="download step is not gated"):
                 _check_recovery_workflow_topology()
@@ -347,7 +347,7 @@ class TestRecoveryWorkflowTopologyFailPath:
     def test_recovery_workflow_topology_rejects_dropped_stale_signature_detection(self) -> None:
         data = _recovery_topology_data()
         data["jobs"]["apply-reconcile"]["steps"][1]["run"] = "terraform apply plan.bin"
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="lost its stale-signature detection"):
                 _check_recovery_workflow_topology()
@@ -355,7 +355,7 @@ class TestRecoveryWorkflowTopologyFailPath:
     def test_recovery_workflow_topology_rejects_unmutually_exclusive_saved_plan_source(self) -> None:
         data = copy.deepcopy(_recovery_topology_data())
         data["jobs"]["gated-apply-reconcile"]["steps"][2]["if"] = "always()"
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._apply._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="mutually exclusive"):
                 _check_recovery_workflow_topology()

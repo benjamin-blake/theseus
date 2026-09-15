@@ -75,7 +75,7 @@ _VALID_CANARY_COMPILED_DATA = {
 
 class TestFullTierRuntimeLock:
     def test_accepts_compiled_output_jobs(self) -> None:
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.side_effect = [_VALID_CI_DATA, _VALID_CANARY_COMPILED_DATA]
             _check_full_tier_runtime_lock()
 
@@ -92,7 +92,7 @@ class TestFullTierRuntimeLock:
             steps[2]["run"] = "pip install -r requirements.txt"
         else:
             steps[1]["with"]["key"] = "pip-runtime"
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.side_effect = [ci_data, _VALID_CANARY_COMPILED_DATA]
             with pytest.raises(AssertionError, match=re.escape(expected)):
                 _check_full_tier_runtime_lock()
@@ -105,7 +105,7 @@ class TestFullTierRuntimeLock:
 
 class TestCheckJobsAndFlagsPassPath:
     def test_passes_with_valid_ci_data(self) -> None:
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = _VALID_CI_DATA
             _check_jobs_and_flags()
 
@@ -117,7 +117,7 @@ class TestCheckJobsAndFlagsFailPath:
                 "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="pr-validate job missing"):
                 _check_jobs_and_flags()
@@ -136,7 +136,7 @@ class TestCheckJobsAndFlagsFailPath:
                 "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="--pre"):
                 _check_jobs_and_flags()
@@ -146,7 +146,7 @@ class TestCheckJobsAndFlagsFailPath:
 
         data = copy.deepcopy(_VALID_CI_DATA)
         data["jobs"]["main-validate"]["steps"][2]["run"] = "pip install -r requirements.txt"
-        with patch("scripts.verify_ci_workflow._load", return_value=data):
+        with patch("scripts.verify_ci_workflow._ci_yaml._load", return_value=data):
             with pytest.raises(AssertionError, match="requirements-dev.txt"):
                 _check_jobs_and_flags()
 
@@ -158,7 +158,7 @@ class TestCheckJobsAndFlagsFailPath:
 
 class TestCheckFetchDepthPassPath:
     def test_passes_with_valid_ci_data(self) -> None:
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = _VALID_CI_DATA
             _check_fetch_depth()
 
@@ -178,7 +178,7 @@ class TestCheckFetchDepthFailPath:
                 "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="fetch-depth"):
                 _check_fetch_depth()
@@ -199,7 +199,7 @@ class TestCheckFetchDepthFailPath:
                 },
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="expected 2"):
                 _check_fetch_depth()
@@ -218,7 +218,7 @@ class TestCheckFetchDepthFailPath:
                 },
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="expected 2"):
                 _check_fetch_depth()
@@ -235,7 +235,7 @@ class TestCheckConcurrencyPassPath:
         """Also the VTS-11 happy path: pr-validate's fixture concurrency block (per-PR
         group + cancel-in-progress: True) and main-validate's absent block both satisfy
         _check_concurrency in one pass."""
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = _VALID_CI_DATA
             _check_concurrency()
 
@@ -254,7 +254,7 @@ class TestCheckConcurrencyPassPath:
                 },
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             _check_concurrency()
 
@@ -270,7 +270,7 @@ class TestCheckConcurrencyFailPath:
                 "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="ci-runner"):
                 _check_concurrency()
@@ -285,7 +285,7 @@ class TestCheckConcurrencyFailPath:
                 },
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="ci-runner"):
                 _check_concurrency()
@@ -300,7 +300,7 @@ class TestCheckConcurrencyFailPath:
                 "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="per-PR keyed"):
                 _check_concurrency()
@@ -315,7 +315,7 @@ class TestCheckConcurrencyFailPath:
                 "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="cancel-in-progress"):
                 _check_concurrency()
@@ -330,7 +330,7 @@ class TestCheckConcurrencyFailPath:
                 },
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="cancel-in-progress"):
                 _check_concurrency()
@@ -346,7 +346,7 @@ class TestCheckValidateSingleSourcePassPath:
         _check_validate_single_source()
 
     def test_passes_with_valid_ci_data(self) -> None:
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = _VALID_CI_DATA
             _check_validate_single_source()
 
@@ -366,7 +366,7 @@ class TestCheckValidateSingleSourceFailPath:
                 "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="scripts.validate_bogus"):
                 _check_validate_single_source()
@@ -381,7 +381,7 @@ class TestCheckValidateSingleSourceFailPath:
                 },
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="scripts.verify_something"):
                 _check_validate_single_source()
@@ -406,7 +406,7 @@ class TestCheckSignalGreenNeedsPassPath:
                 "signal-green": {"needs": ["pr-validate", "terraform-validate"]},
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             _check_signal_green_needs()
 
@@ -414,7 +414,7 @@ class TestCheckSignalGreenNeedsPassPath:
 class TestCheckSignalGreenNeedsFailPath:
     def test_fails_when_signal_green_job_missing(self) -> None:
         data = {"jobs": {"pr-validate": _VALID_CI_DATA["jobs"]["pr-validate"]}}
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="signal-green job missing"):
                 _check_signal_green_needs()
@@ -428,7 +428,7 @@ class TestCheckSignalGreenNeedsFailPath:
                 "signal-green": {"needs": ["pr-validate"]},
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="terraform-validate"):
                 _check_signal_green_needs()
@@ -444,7 +444,7 @@ class TestCheckSignalGreenNeedsFailPath:
                 "signal-green": {"needs": ["pr-validate"]},
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="no-if-job"):
                 _check_signal_green_needs()
@@ -465,7 +465,7 @@ class TestCheckSignalGreenNeedsFailPath:
                 "signal-green": {"needs": ["pr-validate"]},
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="dispatch-only-job"):
                 _check_signal_green_needs()
@@ -478,6 +478,6 @@ class TestCheckSignalGreenNeedsFailPath:
                 "signal-green": {"needs": "pr-validate"},
             }
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
             mock_load.return_value = data
             _check_signal_green_needs()
