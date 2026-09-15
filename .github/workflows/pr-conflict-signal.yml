@@ -3,10 +3,12 @@ name: pr-conflict-signal
 # Push-to-main counterpart to ci.yml's signal-green job (Decision 76/83, PLAN-pr-conflict-wake-signal).
 #
 # A push to main fires NO pull_request event on open PRs, so the pull_request-only signal-green
-# job structurally cannot deliver a wake when a merge to main turns a previously-clean claude/*
-# PR into a merge conflict. This workflow closes that gap: on every push to main (and on-demand
-# via workflow_dispatch), it polls the mergeability of every open claude/* PR and posts a
-# one-time wake comment on any PR that is now CONFLICTING.
+# job structurally cannot deliver a wake when a merge to main turns a previously-clean PR (any
+# head ref matching a declared prefix -- see docs/contracts/git-ops.yaml
+# branching_topology.agent_branch_prefixes) into a merge conflict. This workflow closes that gap:
+# on every push to main (and on-demand via workflow_dispatch), it polls the mergeability of every
+# open PR whose head ref matches a declared prefix and posts a one-time wake comment on any PR
+# that is now CONFLICTING.
 #
 # Design invariants (mirrors signal-green; Decision 55/76/83):
 #   - Advisory only: never a required status check (branch protection stays non-wedging).
@@ -41,7 +43,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Poll open claude/* PRs and wake conflicted ones
+      - name: Poll open agent-session PRs and wake conflicted ones
+        # Explicit id (Decision 162 r3_workflows key grammar) keeps the shell-body ratchet's
+        # baseline key (config/composite_action_body_baseline.yaml) stable across this rename --
+        # a step-identity key derives from `id`, else a slug of `name`, so a bare display-name
+        # edit would otherwise silently drift the key and require touching a file outside this
+        # plan's scope.
+        id: poll-open-claude-prs-and-wake-conflicted-ones
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}

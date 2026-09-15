@@ -25,6 +25,20 @@ _MERGEABLE_POLL_SLEEP="${PR_CONFLICT_SIGNAL_POLL_SLEEP:-5}"
 _GH_RETRY_ATTEMPTS=3
 _GH_RETRY_SLEEP="${PR_CONFLICT_SIGNAL_RETRY_SLEEP:-5}"
 
+# _WAKE_HEAD_PREFIXES: the declared branch-prefix universe this sweep enumerates. See
+# docs/contracts/git-ops.yaml branching_topology.agent_branch_prefixes, which must name the same
+# set (validate_pr_conflict_signal cross-checks this declaration structurally; a sibling contract
+# assertion cross-checks the two files against each other). Decision 191 discharge: prefix
+# matching is retained because it is the only discriminator the producer stamps today -- the tally
+# below is the substitute for an enumerated universe, and is what would have caught the outage
+# that motivated this declaration on the first push after a harness prefix rename.
+_WAKE_HEAD_PREFIXES=("agent/" "claude/")
+# Prefixes inside _WAKE_HEAD_PREFIXES that are retirement candidates: one matching ZERO open PRs
+# this run gets a GITHUB_STEP_SUMMARY notice (observability only, never fails the job). Must stay
+# a subset of _WAKE_HEAD_PREFIXES. Reversal condition: see
+# docs/contracts/git-ops.yaml branching_topology.agent_branch_prefixes_reversal.
+_WAKE_HEAD_PREFIXES_TRANSITIONAL=("claude/")
+
 _FAILURE_COUNT=0
 
 # Decision 155 marker shape (mirrors .github/actions/subagent-plan-review/review.sh's
@@ -68,17 +82,39 @@ _gh_bounded_retry() {
   return 1
 }
 
-prs=$(gh pr list --base main --state open --json number,headRefName,headRefOid \
-  --jq '.[] | select(.headRefName | startswith("claude/")) | [.number, .headRefOid] | @tsv')
+prs=$(gh pr list --base main --state open --limit 200 --json number,headRefName,headRefOid \
+  --jq '.[] | [.number, .headRefName, .headRefOid] | @tsv')
 prs_rc=$?
 
 if [ "$prs_rc" -ne 0 ]; then
-  _signal_failure "gh pr list failed (exit $prs_rc); cannot enumerate open claude/* PRs -- sweep cannot proceed this run."
+  _signal_failure "gh pr list failed (exit $prs_rc); cannot enumerate open PRs -- sweep cannot proceed this run."
 elif [ -z "$prs" ]; then
-  echo "No open claude/* PRs against main."
+  echo "No open PRs against main."
 else
-  while IFS=$'\t' read -r number head_sha; do
+  declare -A _matched_counts=()
+  for prefix in "${_WAKE_HEAD_PREFIXES[@]}"; do
+    _matched_counts["$prefix"]=0
+  done
+  _unmatched_heads=()
+
+  while IFS=$'\t' read -r number head_ref head_sha; do
     [ -z "$number" ] && continue
+
+    matched_prefix=""
+    for prefix in "${_WAKE_HEAD_PREFIXES[@]}"; do
+      case "$head_ref" in
+        "$prefix"*)
+          matched_prefix="$prefix"
+          break
+          ;;
+      esac
+    done
+
+    if [ -z "$matched_prefix" ]; then
+      _unmatched_heads+=("$head_ref")
+      continue
+    fi
+    _matched_counts["$matched_prefix"]=$((_matched_counts["$matched_prefix"] + 1))
 
     mergeable=$(_gh_bounded_retry "$_MERGEABLE_POLL_ATTEMPTS" "$_MERGEABLE_POLL_SLEEP" "UNKNOWN" \
       gh pr view "$number" --json mergeable --jq '.mergeable')
@@ -125,6 +161,32 @@ Merge conflict: this PR now conflicts with main and must be rebased/resolved bef
       _signal_failure "PR #$number: gh pr comment failed after $_GH_RETRY_ATTEMPTS attempts; wake comment NOT posted for a CONFLICTING PR at head $head_sha."
     fi
   done <<< "$prs"
+
+  _tally=""
+  for prefix in "${_WAKE_HEAD_PREFIXES[@]}"; do
+    _tally="${_tally}${prefix}=${_matched_counts[$prefix]} "
+  done
+  echo "[PR-CONFLICT-SIGNAL] prefix tally: ${_tally}unmatched=${#_unmatched_heads[@]}"
+
+  if [ "${#_unmatched_heads[@]}" -gt 0 ]; then
+    _unmatched_list=$(printf '%s, ' "${_unmatched_heads[@]}")
+    _unmatched_list="${_unmatched_list%, }"
+    echo "[PR-CONFLICT-SIGNAL] unmatched heads (skipped, no declared prefix matched): ${_unmatched_list}"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      printf '\n## pr-conflict-signal unmatched heads\n\nSkipped -- no declared prefix matched: %s\n' \
+        "$_unmatched_list" >> "$GITHUB_STEP_SUMMARY"
+    fi
+  fi
+
+  for prefix in "${_WAKE_HEAD_PREFIXES_TRANSITIONAL[@]}"; do
+    if [ "${_matched_counts[$prefix]:-0}" -eq 0 ]; then
+      echo "[PR-CONFLICT-SIGNAL] transitional prefix '$prefix' matched zero open PRs this run -- retirement candidate."
+      if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        printf '\n## pr-conflict-signal transitional prefix retirement notice\n\nTransitional prefix `%s` matched zero open PRs this run and is a candidate for retirement from the declared set.\n' \
+          "$prefix" >> "$GITHUB_STEP_SUMMARY"
+      fi
+    fi
+  done
 fi
 
 if [ "$_FAILURE_COUNT" -gt 0 ]; then

@@ -204,7 +204,7 @@ class TestSweepContinuation:
     @pytest.mark.parametrize("argv_name", sorted(ARGVS))
     def test_gh_failure_on_first_pr_still_wakes_second(self, tmp_path: Path, argv_name: str) -> None:
         control = {
-            "list": {"exit_code": 0, "stdout": "101\tabc111\n102\tdef222\n"},
+            "list": {"exit_code": 0, "stdout": "101\tagent/branch-101\tabc111\n102\tagent/branch-102\tdef222\n"},
             "mergeable:101": {"exit_code": 1, "stdout": "", "stderr": "gh: simulated API failure"},
             "mergeable:102": {"exit_code": 0, "stdout": "CONFLICTING"},
             "comments:102": {"exit_code": 0, "stdout": ""},
@@ -227,7 +227,7 @@ class TestRetryOnFailedCall:
     @pytest.mark.parametrize("argv_name", sorted(ARGVS))
     def test_failed_call_recovers_within_the_poll_bound(self, tmp_path: Path, argv_name: str) -> None:
         control = {
-            "list": {"exit_code": 0, "stdout": "111\tsha111\n"},
+            "list": {"exit_code": 0, "stdout": "111\tagent/branch-111\tsha111\n"},
             "mergeable:111": [
                 {"exit_code": 1, "stdout": "", "stderr": "transient"},
                 {"exit_code": 1, "stdout": "", "stderr": "transient"},
@@ -241,7 +241,11 @@ class TestRetryOnFailedCall:
         assert harness.comment_posted("111")
         assert harness.call_count("mergeable:111") == 3
         assert result.returncode == 0
-        assert harness.summary_text == ""
+        # No per-PR FAILURE marker (this is the recovered-within-bound path), but the fixture's
+        # only open PR is agent/*-headed, so the transitional prefix `claude/` matched zero this
+        # run and the retirement notice fires -- the mandated migration side effect (VP1 fix_if).
+        assert "[PR-CONFLICT-SIGNAL] FAILURE" not in harness.summary_text
+        assert "transitional prefix retirement notice" in harness.summary_text
 
 
 class TestUnknownNeverFalseWakes:
@@ -251,7 +255,7 @@ class TestUnknownNeverFalseWakes:
     @pytest.mark.parametrize("argv_name", sorted(ARGVS))
     def test_unknown_after_poll_bound_skips_without_wake_or_failure(self, tmp_path: Path, argv_name: str) -> None:
         control = {
-            "list": {"exit_code": 0, "stdout": "121\tsha121\n"},
+            "list": {"exit_code": 0, "stdout": "121\tagent/branch-121\tsha121\n"},
             "mergeable:121": {"exit_code": 0, "stdout": "UNKNOWN"},
         }
         harness = _Harness(tmp_path, control)
@@ -259,7 +263,10 @@ class TestUnknownNeverFalseWakes:
         assert not harness.comment_posted("121")
         assert harness.call_count("mergeable:121") == 5
         assert result.returncode == 0
-        assert harness.summary_text == ""
+        # No FAILURE marker (UNKNOWN-after-poll-bound is never a counted failure), but the only
+        # open PR is agent/*-headed, so `claude/` matched zero and the retirement notice fires.
+        assert "[PR-CONFLICT-SIGNAL] FAILURE" not in harness.summary_text
+        assert "transitional prefix retirement notice" in harness.summary_text
 
 
 class TestHeadShaIdempotency:
@@ -269,7 +276,7 @@ class TestHeadShaIdempotency:
     @pytest.mark.parametrize("argv_name", sorted(ARGVS))
     def test_existing_marker_suppresses_repost(self, tmp_path: Path, argv_name: str) -> None:
         control = {
-            "list": {"exit_code": 0, "stdout": "131\tsha131\n"},
+            "list": {"exit_code": 0, "stdout": "131\tagent/branch-131\tsha131\n"},
             "mergeable:131": {"exit_code": 0, "stdout": "CONFLICTING"},
             "comments:131": {"exit_code": 0, "stdout": "<!-- conflict-wake:sha131 -->\nalready posted"},
         }
@@ -286,7 +293,7 @@ class TestCommentsReadFailurePostsAnyway:
     @pytest.mark.parametrize("argv_name", sorted(ARGVS))
     def test_comments_read_failure_still_posts_wake_and_marks_failure(self, tmp_path: Path, argv_name: str) -> None:
         control = {
-            "list": {"exit_code": 0, "stdout": "141\tsha141\n"},
+            "list": {"exit_code": 0, "stdout": "141\tagent/branch-141\tsha141\n"},
             "mergeable:141": {"exit_code": 0, "stdout": "CONFLICTING"},
             "comments:141": {"exit_code": 1, "stdout": "", "stderr": "boom"},
             "comment:141": {"exit_code": 0, "stdout": ""},
@@ -310,14 +317,88 @@ class TestMarkerEmission:
         assert result.returncode != 0
 
     @pytest.mark.parametrize("argv_name", sorted(ARGVS))
-    def test_clean_sweep_writes_no_summary_marker(self, tmp_path: Path, argv_name: str) -> None:
+    def test_clean_sweep_writes_no_failure_marker(self, tmp_path: Path, argv_name: str) -> None:
         control = {
-            "list": {"exit_code": 0, "stdout": "151\tsha151\n"},
+            "list": {"exit_code": 0, "stdout": "151\tagent/branch-151\tsha151\n"},
             "mergeable:151": {"exit_code": 0, "stdout": "MERGEABLE"},
         }
         harness = _Harness(tmp_path, control)
         harness.run(ARGVS[argv_name])
-        assert harness.summary_text == ""
+        # No per-PR FAILURE marker on a clean sweep, but the only open PR is agent/*-headed, so
+        # the transitional prefix `claude/` matched zero this run and the retirement notice fires.
+        assert "[PR-CONFLICT-SIGNAL] FAILURE" not in harness.summary_text
+        assert "transitional prefix retirement notice" in harness.summary_text
+
+
+class TestDeclaredPrefixSelection:
+    """The declared-prefix selection this plan moves out of gh's --jq and into the script's own
+    loop (VP1 -k selector: "declared_prefixes"): the sweep admits exactly the declared prefixes,
+    skips every other head, names the unmatched population, and mirrors/notices per the two
+    load-bearing observability behaviours acceptance criterion 1 calls out -- a non-empty
+    unmatched population mirrored to GITHUB_STEP_SUMMARY, and a transitional prefix matching zero
+    open PRs appending the retirement notice."""
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_declared_prefixes_admits_declared_and_skips_others(self, tmp_path: Path, argv_name: str) -> None:
+        control = {
+            "list": {
+                "exit_code": 0,
+                "stdout": "201\tagent/branch-201\tsha201\n202\tclaude/branch-202\tsha202\n203\tsomeone/branch-203\tsha203\n",
+            },
+            "mergeable:201": {"exit_code": 0, "stdout": "MERGEABLE"},
+            "mergeable:202": {"exit_code": 0, "stdout": "MERGEABLE"},
+        }
+        harness = _Harness(tmp_path, control)
+        harness.run(ARGVS[argv_name])
+        # Declared prefixes (agent/, claude/) are polled for mergeability...
+        assert harness.call_count("mergeable:201") == 1
+        assert harness.call_count("mergeable:202") == 1
+        # ...the undeclared head (someone/branch-203) is never polled at all.
+        assert harness.call_count("mergeable:203") == 0
+        assert not any(kind.startswith("mergeable:203") for kind, _ in harness.calls)
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_declared_prefixes_unmatched_population_mirrored_to_summary(self, tmp_path: Path, argv_name: str) -> None:
+        control = {
+            "list": {
+                "exit_code": 0,
+                "stdout": "211\tagent/branch-211\tsha211\n212\tsomeone/branch-212\tsha212\n",
+            },
+            "mergeable:211": {"exit_code": 0, "stdout": "MERGEABLE"},
+        }
+        harness = _Harness(tmp_path, control)
+        harness.run(ARGVS[argv_name])
+        assert harness.call_count("mergeable:212") == 0
+        # Non-empty unmatched population (someone/branch-212) is named in the run log AND
+        # mirrored to GITHUB_STEP_SUMMARY -- a continue-on-error job is otherwise invisible when
+        # green, so this mirror is what would have caught the outage this plan fixes.
+        assert "someone/branch-212" in harness.summary_text
+        assert "unmatched heads" in harness.summary_text
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_declared_prefixes_transitional_zero_match_emits_retirement_notice(self, tmp_path: Path, argv_name: str) -> None:
+        control = {
+            "list": {"exit_code": 0, "stdout": "221\tagent/branch-221\tsha221\n"},
+            "mergeable:221": {"exit_code": 0, "stdout": "MERGEABLE"},
+        }
+        harness = _Harness(tmp_path, control)
+        harness.run(ARGVS[argv_name])
+        # No open PR carries the transitional `claude/` prefix this run -- a retirement candidate
+        # notice must be appended to GITHUB_STEP_SUMMARY, never silently swallowed.
+        assert "transitional prefix retirement notice" in harness.summary_text
+        assert "claude/" in harness.summary_text
+
+    @pytest.mark.parametrize("argv_name", sorted(ARGVS))
+    def test_declared_prefixes_no_retirement_notice_when_transitional_prefix_matches(
+        self, tmp_path: Path, argv_name: str
+    ) -> None:
+        control = {
+            "list": {"exit_code": 0, "stdout": "231\tclaude/branch-231\tsha231\n"},
+            "mergeable:231": {"exit_code": 0, "stdout": "MERGEABLE"},
+        }
+        harness = _Harness(tmp_path, control)
+        harness.run(ARGVS[argv_name])
+        assert "transitional prefix retirement notice" not in harness.summary_text
 
 
 class TestExitStatusContract:
@@ -342,7 +423,7 @@ class TestExitStatusContract:
     @pytest.mark.parametrize("argv_name", sorted(ARGVS))
     def test_multiple_failures_are_all_counted(self, tmp_path: Path, argv_name: str) -> None:
         control = {
-            "list": {"exit_code": 0, "stdout": "161\tsha161\n162\tsha162\n"},
+            "list": {"exit_code": 0, "stdout": "161\tagent/branch-161\tsha161\n162\tagent/branch-162\tsha162\n"},
             "mergeable:161": {"exit_code": 1, "stdout": "", "stderr": "x"},
             "mergeable:162": {"exit_code": 1, "stdout": "", "stderr": "x"},
         }
@@ -371,7 +452,7 @@ class TestRealWorkflowBodyWiring:
         body_file.write_text(run_body, encoding="utf-8")
 
         control = {
-            "list": {"exit_code": 0, "stdout": "171\tsha171\n"},
+            "list": {"exit_code": 0, "stdout": "171\tagent/branch-171\tsha171\n"},
             "mergeable:171": {"exit_code": 0, "stdout": "CONFLICTING"},
             "comments:171": {"exit_code": 0, "stdout": ""},
             "comment:171": {"exit_code": 0, "stdout": ""},

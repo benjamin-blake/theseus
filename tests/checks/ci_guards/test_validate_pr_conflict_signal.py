@@ -39,15 +39,24 @@ _VALID_SCRIPT = """\
 set -uo pipefail
 set +e
 
+_WAKE_HEAD_PREFIXES=("agent/" "claude/")
+_WAKE_HEAD_PREFIXES_TRANSITIONAL=("claude/")
+
 _gh_bounded_retry() {
   local max="$1" sleep_s="$2" retry_val="$3"
   shift 3
   "$@"
 }
 
-prs=$(gh pr list --base main --state open --json number,headRefName,headRefOid \\
-  --jq '.[] | select(.headRefName | startswith("claude/")) | [.number, .headRefOid] | @tsv')
+prs=$(gh pr list --base main --state open --limit 200 --json number,headRefName,headRefOid \\
+  --jq '.[] | [.number, .headRefName, .headRefOid] | @tsv')
 prs_rc=$?
+
+for prefix in "${_WAKE_HEAD_PREFIXES[@]}"; do
+  case "$2" in
+    "$prefix"*) : ;;
+  esac
+done
 
 mergeable=$(_gh_bounded_retry 5 5 "UNKNOWN" gh pr view "$1" --json mergeable --jq '.mergeable')
 mergeable_rc=$?
@@ -196,13 +205,6 @@ class TestValidatePrConflictSignalFailPath:
 
     # --- Semantic marker assertions, now sourced from the delegate script's own content ---
 
-    def test_missing_claude_filter_fails(self, tmp_path: Path) -> None:
-        _write_script(tmp_path, _VALID_SCRIPT.replace("claude/", "other/"))
-        with patch(f"{_MODULE}._load", return_value=_VALID_WORKFLOW), patch(f"{_MODULE}._common.ROOT", tmp_path):
-            failed: list[str] = []
-            validate_pr_conflict_signal(failed)
-        assert any("claude/* head filter" in f for f in failed)
-
     def test_missing_mergeable_poll_fails(self, tmp_path: Path) -> None:
         _write_script(tmp_path, _VALID_SCRIPT.replace("mergeable", "mrg"))
         with patch(f"{_MODULE}._load", return_value=_VALID_WORKFLOW), patch(f"{_MODULE}._common.ROOT", tmp_path):
@@ -230,6 +232,99 @@ class TestValidatePrConflictSignalFailPath:
             failed: list[str] = []
             validate_pr_conflict_signal(failed)
         assert any("head-SHA dedup marker" in f for f in failed)
+
+
+class TestBranchPrefixDeclaration:
+    """The declaration replacing the old existence-only claude/* filter row (VP2 -k selector:
+    "declaration"): absent, malformed, unconsumed, or prose-only must all FAIL, and none of them
+    pass on prose alone -- the shape the retired existence-only check could never distinguish."""
+
+    def _run(self, tmp_path: Path, script: str) -> list[str]:
+        _write_script(tmp_path, script)
+        with patch(f"{_MODULE}._load", return_value=_VALID_WORKFLOW), patch(f"{_MODULE}._common.ROOT", tmp_path):
+            failed: list[str] = []
+            validate_pr_conflict_signal(failed)
+        return failed
+
+    def test_declaration_absent_fails(self, tmp_path: Path) -> None:
+        script = _VALID_SCRIPT.replace('_WAKE_HEAD_PREFIXES=("agent/" "claude/")\n', "")
+        failed = self._run(tmp_path, script)
+        assert any("branch-prefix declaration absent" in f for f in failed)
+
+    def test_declaration_prose_only_fails(self, tmp_path: Path) -> None:
+        """The case the retired existence-only check could not catch: the declaration line is
+        gone, but a log/comment string still mentions a prefix literal in prose."""
+        script = _VALID_SCRIPT.replace(
+            '_WAKE_HEAD_PREFIXES=("agent/" "claude/")\n',
+            "# handles agent/ and claude/ branches\n",
+        )
+        assert "agent/" in script and "claude/" in script  # prose survives the removal
+        failed = self._run(tmp_path, script)
+        assert any("branch-prefix declaration absent" in f for f in failed)
+
+    def test_declaration_empty_fails(self, tmp_path: Path) -> None:
+        script = _VALID_SCRIPT.replace('_WAKE_HEAD_PREFIXES=("agent/" "claude/")', "_WAKE_HEAD_PREFIXES=()")
+        failed = self._run(tmp_path, script)
+        assert any("branch-prefix declaration empty" in f for f in failed)
+
+    def test_declaration_malformed_missing_slash_fails(self, tmp_path: Path) -> None:
+        script = _VALID_SCRIPT.replace('_WAKE_HEAD_PREFIXES=("agent/" "claude/")', '_WAKE_HEAD_PREFIXES=("agent" "claude/")')
+        failed = self._run(tmp_path, script)
+        assert any("missing trailing /" in f for f in failed)
+
+    def test_declaration_duplicate_tokens_fails(self, tmp_path: Path) -> None:
+        script = _VALID_SCRIPT.replace('_WAKE_HEAD_PREFIXES=("agent/" "claude/")', '_WAKE_HEAD_PREFIXES=("agent/" "agent/")')
+        failed = self._run(tmp_path, script)
+        assert any("duplicate tokens" in f for f in failed)
+
+    def test_declaration_unconsumed_fails(self, tmp_path: Path) -> None:
+        script = _VALID_SCRIPT.replace(
+            'for prefix in "${_WAKE_HEAD_PREFIXES[@]}"; do\n  case "$2" in\n    "$prefix"*) : ;;\n  esac\ndone\n',
+            "",
+        )
+        assert "_WAKE_HEAD_PREFIXES[@]" not in script
+        failed = self._run(tmp_path, script)
+        assert any("branch-prefix declaration is unconsumed" in f for f in failed)
+
+    def test_transitional_declaration_absent_fails(self, tmp_path: Path) -> None:
+        script = _VALID_SCRIPT.replace('_WAKE_HEAD_PREFIXES_TRANSITIONAL=("claude/")\n', "")
+        failed = self._run(tmp_path, script)
+        assert any("transitional branch-prefix declaration absent" in f for f in failed)
+
+    def test_transitional_declaration_not_subset_fails(self, tmp_path: Path) -> None:
+        script = _VALID_SCRIPT.replace(
+            '_WAKE_HEAD_PREFIXES_TRANSITIONAL=("claude/")', '_WAKE_HEAD_PREFIXES_TRANSITIONAL=("other/")'
+        )
+        failed = self._run(tmp_path, script)
+        assert any("not a subset of" in f for f in failed)
+
+    def test_declaration_well_formed_passes(self, tmp_path: Path) -> None:
+        """Pass-path pin, isolated from the real repo script (mirrors the class-level pass tests
+        above): the valid fixture's declaration alone leaves failed empty."""
+        failed = self._run(tmp_path, _VALID_SCRIPT)
+        assert failed == []
+
+
+class TestGhListLimit:
+    """The gh pr list call site must carry an explicit --limit (VP step 4's cross-check target)."""
+
+    def test_missing_limit_fails(self, tmp_path: Path) -> None:
+        script = _VALID_SCRIPT.replace("--limit 200 ", "")
+        _write_script(tmp_path, script)
+        with patch(f"{_MODULE}._load", return_value=_VALID_WORKFLOW), patch(f"{_MODULE}._common.ROOT", tmp_path):
+            failed: list[str] = []
+            validate_pr_conflict_signal(failed)
+        assert any("gh pr list call site missing --limit" in f for f in failed)
+
+    def test_no_call_site_found_fails(self, tmp_path: Path) -> None:
+        """No `gh pr list` call site at all (the enumeration was replaced with something else
+        entirely) -- distinct from the present-but-unlimited case above."""
+        script = _VALID_SCRIPT.replace("gh pr list", "gh api repos/example/pulls")
+        _write_script(tmp_path, script)
+        with patch(f"{_MODULE}._load", return_value=_VALID_WORKFLOW), patch(f"{_MODULE}._common.ROOT", tmp_path):
+            failed: list[str] = []
+            validate_pr_conflict_signal(failed)
+        assert any("gh pr list call site not found" in f for f in failed)
 
 
 class TestJoinContinuations:

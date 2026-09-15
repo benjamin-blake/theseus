@@ -1,7 +1,8 @@
 """Stranded-dependabot-PR concern for session_preflight.
 
-Dependabot PRs are invisible to every existing wake signal: ci.yml's signal-green job is scoped to
-`claude/*` head refs and pr-conflict-signal.yml polls `claude/*` only, so a bump that goes behind
+Dependabot PRs are invisible to every existing wake signal: ci.yml's signal-green job and
+pr-conflict-signal.yml both scope to the same declared agent-branch prefix set (see
+docs/contracts/git-ops.yaml branching_topology.agent_branch_prefixes), so a bump that goes behind
 main, conflicts, or waits on a CODEOWNERS review simply sits there. Once an ecosystem reaches
 `open-pull-requests-limit` (5, per .github/dependabot.yml) Dependabot stops opening PRs for it
 entirely, which turns a stalled backlog into a silent dependency freeze.
