@@ -50,9 +50,11 @@ def _e1_residual_floor(rows: list[dict]) -> list[str]:
     residual = [row for row in rows if row.get("slug") == _RESIDUAL_SLUG]
     if not residual:
         return [
-            f"E1: the mandatory `{_RESIDUAL_SLUG}` class row is missing -- every unmatched tracked file would "
-            "fall out of the measured set entirely. Restore it as the LAST row at "
-            f"{_RESIDUAL_LIMIT}/{_RESIDUAL_MAX_LINE_CHARS}."
+            (
+                f"E1: the mandatory `{_RESIDUAL_SLUG}` class row is missing -- every unmatched tracked file would "
+                "fall out of the measured set entirely. Restore it as the LAST row at "
+                f"{_RESIDUAL_LIMIT}/{_RESIDUAL_MAX_LINE_CHARS}."
+            )
         ]
     violations: list[str] = []
     if len(residual) > 1:
@@ -205,7 +207,8 @@ def validate_structural_size_limits(failed: list[str]) -> None:
     long_line_budgets: dict[str, int] = reg.get("long_line_budgets") or {}
 
     errors: list[str] = []
-    for rel, slug in iter_measured_files():
+    measured = list(iter_measured_files())
+    for rel, slug in measured:
         text = (_common.ROOT / rel).read_text(encoding="utf-8", errors="replace")
         class_row = classes_by_slug[slug]
         relief_valves = class_row.get("relief_valve", "")
@@ -226,6 +229,7 @@ def validate_structural_size_limits(failed: list[str]) -> None:
             )
 
     errors.extend(escape_violations(reg))
+    registry.examined(len(measured), unit="measured_files")
 
     if errors:
         print("Structural-size violations:")

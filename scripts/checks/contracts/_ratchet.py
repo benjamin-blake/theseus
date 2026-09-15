@@ -133,8 +133,10 @@ def check_pin_direction(
     marker = entry.marker if entry is not None else None
     if marker is None:
         return [
-            f"{entry_key}: unauthorized increase {base_entry.value} -> {current_value} "
-            "with no `# raise-approved: dec-NNN` marker."
+            (
+                f"{entry_key}: unauthorized increase {base_entry.value} -> {current_value} "
+                "with no `# raise-approved: dec-NNN` marker."
+            )
         ]
 
     bodies = _marker_guard.load_decision_bodies()

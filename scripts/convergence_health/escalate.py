@@ -108,9 +108,11 @@ def _condition_from_existing_rec(existing: dict[str, Any]) -> str:
 def _build_context(verdict: HealthVerdict, condition: str) -> str:
     if condition == "stuck_approval":
         parts = [
-            f"{len(verdict.stuck_approvals)} terraform-apply-sandbox run(s) are waiting on "
-            "the tf-gated-apply Environment approval (stuck > threshold), independent of the "
-            f"convergence record's own status ({verdict.status})."
+            (
+                f"{len(verdict.stuck_approvals)} terraform-apply-sandbox run(s) are waiting on "
+                "the tf-gated-apply Environment approval (stuck > threshold), independent of the "
+                f"convergence record's own status ({verdict.status})."
+            )
         ]
         parts.append(
             "Resolve via: approve or cancel the pending gated-apply run in GitHub Actions -> "
@@ -119,10 +121,12 @@ def _build_context(verdict: HealthVerdict, condition: str) -> str:
         )
     elif condition == "stale_green_backlog":
         parts = [
-            f"The sandbox convergence record is green, but {verdict.unapplied_backlog} merged "
-            "terraform/personal/ commit(s) have been pending application for "
-            f"{verdict.record_age_hours:.1f} hours -- past the "
-            f"{STALE_GREEN_BACKLOG_THRESHOLD_HOURS:.1f}h stale-green-backlog threshold."
+            (
+                f"The sandbox convergence record is green, but {verdict.unapplied_backlog} merged "
+                "terraform/personal/ commit(s) have been pending application for "
+                f"{verdict.record_age_hours:.1f} hours -- past the "
+                f"{STALE_GREEN_BACKLOG_THRESHOLD_HOURS:.1f}h stale-green-backlog threshold."
+            )
         ]
         parts.append(
             "Resolve via: run terraform-apply-sandbox workflow_dispatch (or land a "
@@ -132,10 +136,12 @@ def _build_context(verdict: HealthVerdict, condition: str) -> str:
     elif condition == "pending_codification":
         marker = verdict.pending_codification or {}
         parts = [
-            "The sandbox convergence record carries a pending_codification marker -- the drift "
-            "classifier measured a state-vs-code delta with resource_changes but NO resource_drift "
-            f"(status stays at its prior value, {verdict.status}; this is not out-of-band infra "
-            f"drift). First observed: {marker.get('first_seen', 'unknown')}."
+            (
+                "The sandbox convergence record carries a pending_codification marker -- the drift "
+                "classifier measured a state-vs-code delta with resource_changes but NO resource_drift "
+                f"(status stays at its prior value, {verdict.status}; this is not out-of-band infra "
+                f"drift). First observed: {marker.get('first_seen', 'unknown')}."
+            )
         ]
         parts.append(
             "Resolve via: land the codifying terraform/personal/ change (a plan_ec==0 cycle "

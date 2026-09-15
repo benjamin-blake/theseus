@@ -25,10 +25,14 @@ _VALID_CTX = {
         "and exited 1 by contract, aborting the composite step body under GitHub's inherited errexit."
     ),
     "why_chain": [
-        "review_verdict.py classified the transcript STARVED and exited 1 by contract, which under the "
-        "inherited errexit aborted the composite step body at the classifier call.",
-        "The same-budget retry never executed and the case block never ran, so outputs.outcome was never "
-        "written for the run in question.",
+        (
+            "review_verdict.py classified the transcript STARVED and exited 1 by contract, which under the "
+            "inherited errexit aborted the composite step body at the classifier call."
+        ),
+        (
+            "The same-budget retry never executed and the case block never ran, so outputs.outcome was never "
+            "written for the run in question."
+        ),
         "The always-run record writer missed its starved carve-out and wrote status=red, a contract gap at action.yml:38.",
     ],
     "detection_gap": {

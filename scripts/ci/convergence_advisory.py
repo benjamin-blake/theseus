@@ -65,8 +65,10 @@ def classify(rc: int, stderr: str, body: str) -> tuple[str, str]:
             )
         return (
             ERROR,
-            "UNVERIFIED -- could not read the convergence record (credential/authorization "
-            "failure), not evidence of convergence. Advisory only.",
+            (
+                "UNVERIFIED -- could not read the convergence record (credential/authorization "
+                "failure), not evidence of convergence. Advisory only."
+            ),
         )
 
     text = (body or "").strip()
@@ -98,8 +100,10 @@ def classify(rc: int, stderr: str, body: str) -> tuple[str, str]:
     if pending_sha:
         return (
             SUCCESS,
-            f"main is pending-gated (a routed change at {pending_sha} awaits gated-apply "
-            "reviewer approval; not a failure). Advisory only.",
+            (
+                f"main is pending-gated (a routed change at {pending_sha} awaits gated-apply "
+                "reviewer approval; not a failure). Advisory only."
+            ),
         )
 
     pending_codification = record.get("pending_codification")
@@ -107,8 +111,10 @@ def classify(rc: int, stderr: str, body: str) -> tuple[str, str]:
     if first_seen:
         return (
             SUCCESS,
-            f"main is pending-codification (a code-behind-state delta measured since {first_seen}, "
-            "not out-of-band drift; not a failure). Advisory only.",
+            (
+                f"main is pending-codification (a code-behind-state delta measured since {first_seen}, "
+                "not out-of-band drift; not a failure). Advisory only."
+            ),
         )
 
     return SUCCESS, "main is converged (last sandbox apply GREEN). Advisory only."
@@ -134,8 +140,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     except Exception as exc:  # noqa: BLE001 -- never raise; the advisory job must stay green (Decision 83)
         state, description = (
             ERROR,
-            f"UNVERIFIED -- convergence_advisory classifier raised {type(exc).__name__}; "
-            "treating as unverified rather than crashing the advisory-status job.",
+            (
+                f"UNVERIFIED -- convergence_advisory classifier raised {type(exc).__name__}; "
+                "treating as unverified rather than crashing the advisory-status job."
+            ),
         )
     print(state)
     print(description)

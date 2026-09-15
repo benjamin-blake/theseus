@@ -14,6 +14,7 @@ import io
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from scripts.checks import registry
 from scripts.checks.structural import _classify
 from scripts.checks.structural import size_limits as sl
 from scripts.checks.structural.size_limits import escape_violations, validate_structural_size_limits
@@ -167,6 +168,30 @@ class TestValidateStructuralSizeLimits:
             validate_structural_size_limits(failed)
 
         assert len(failed) == 1
+
+    def test_declares_examined_on_measured_files(self, tmp_path: Path) -> None:
+        """Decision 170 accounting (check-accounting declaration ratchet, touch-it-fix-it):
+        this check must declare examined() over its measured-file population instead of
+        returning undeclared."""
+        _write_registry(tmp_path)
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(exist_ok=True)
+        (config_dir / "ok.yaml").write_text("key: value\n", encoding="utf-8")
+
+        _clear_cache()
+        with (
+            patch("scripts.checks._common.ROOT", tmp_path),
+            patch("scripts.checks._common.run", _mock_ls_files(["config/ok.yaml"])),
+            registry.outcome_scope("validate_structural_size_limits"),
+        ):
+            failed: list[str] = []
+            validate_structural_size_limits(failed)
+            declaration = registry.pop_declaration()
+
+        assert declaration is not None
+        assert declaration.kind == "examined"
+        assert declaration.unit == "measured_files"
+        assert declaration.count == 1
 
     def test_failure_message_names_class_and_relief_valves(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "config"

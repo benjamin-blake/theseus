@@ -48,23 +48,64 @@ class TestRunLintChecksWholeTreeTargets:
             run_lint_checks(failed, files=None)
         assert failed == []
 
-    def test_explicit_files_scope_is_unaffected(self) -> None:
-        """files=[...] (the --pre diff-scoped path) must NOT gain scripts/ -- only the
-        files-is-None whole-tree default does."""
+    def test_explicit_files_argument_is_ignored_for_target_selection(self) -> None:
+        """Retargeted (rec-3861/rec-3863): `files=[...]` (the --pre diff-scoped argument) no
+        longer narrows the lint targets -- it is accepted (removing the parameter would TypeError
+        at the --pre call site) but IGNORED, so the whole tree is always linted regardless of
+        what `files` names. Superseded test: the parameter used to filter targets down to a
+        single explicit .py file; it no longer does."""
         mock_result = MagicMock(returncode=0)
         with patch("scripts.checks._common.run", return_value=mock_result) as mock_run:
             failed: list[str] = []
             run_lint_checks(failed, files=["scripts/checks/_scaffolding.py"])
 
+        assert mock_run.call_count == 2
         for call in mock_run.call_args_list:
             cmd = call.args[0]
-            assert cmd[-1] == "scripts/checks/_scaffolding.py"
-            assert "scripts/" not in cmd
+            assert "src/" in cmd
+            assert "tests/" in cmd
+            assert "scripts/" in cmd
+            assert "scripts/checks/_scaffolding.py" not in cmd
 
-    def test_no_op_when_files_is_empty_list(self) -> None:
-        with patch("scripts.checks._common.run") as mock_run:
+    def test_empty_files_list_still_lints_whole_tree(self) -> None:
+        """Retargeted (rec-3861/rec-3863): an empty `files=[]` used to be a no-op (the exact
+        escape that let commit 1c50e26b's five-file, zero-.py ruff-version bump reach main
+        unlinted by --pre). It now still lints the whole tree -- there is no reachable
+        non-execution path left for run_lint_checks once target selection is unconditional."""
+        mock_result = MagicMock(returncode=0)
+        with patch("scripts.checks._common.run", return_value=mock_result) as mock_run:
             failed: list[str] = []
             run_lint_checks(failed, files=[])
 
-        mock_run.assert_not_called()
+        assert mock_run.call_count == 2
+        for call in mock_run.call_args_list:
+            cmd = call.args[0]
+            assert "src/" in cmd
+            assert "tests/" in cmd
+            assert "scripts/" in cmd
+        assert failed == []
+
+    def test_pin_only_changed_set_still_lints_whole_tree(self) -> None:
+        """Unit altitude (VP step 2): a changed set containing no .py file at all (commit
+        1c50e26b's actual five-file requirements-pin diff) still emits the whole-tree ruff argv --
+        the deleted `[f for f in files if f.endswith(".py")]` filter is unreachable now."""
+        mock_result = MagicMock(returncode=0)
+        pin_only_changed = [
+            "requirements.in",
+            "requirements.txt",
+            "requirements-dev.in",
+            "requirements-dev.txt",
+            "requirements-fast.txt",
+        ]
+        with patch("scripts.checks._common.run", return_value=mock_result) as mock_run:
+            failed: list[str] = []
+            run_lint_checks(failed, files=pin_only_changed)
+
+        assert mock_run.call_count == 2
+        ruff_check = [c for c in mock_run.call_args_list if "check" in c.args[0] and "format" not in c.args[0]]
+        assert ruff_check, "No ruff check command issued"
+        cmd = ruff_check[0].args[0]
+        assert "src/" in cmd
+        assert "tests/" in cmd
+        assert "scripts/" in cmd
         assert failed == []
