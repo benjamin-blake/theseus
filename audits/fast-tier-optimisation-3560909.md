@@ -223,8 +223,15 @@ environment reuse, because it affects only the job clock.
 | Change | Class | Mechanism | Estimated saving | What no longer runs | What is no longer produced | Proof | Residual risk |
 |---|---|---|---|---|---|---|---|
 | Phase 2 diagnosis only | N/A | Documentation checkpoint before code | 0s | Nothing | Nothing | Diff limited to this findings document | None; candidate rows begin in the implementation phase |
-| Candidate 1 - **ABANDONED**; code retained on branch as phase record | Class 2 - identical work, lower cost | The real primary pytest session suppresses only positively identified excluded-and-absent dependency collection reports, records deferrals through xdist worker output, and rolls back coverage produced while importing a deferred module. The former collect-only implementation remains only as a frozen compatibility surface. | The 3.395s orchestration-remainder saving at 144 modules is real (non-overlapping IQRs), but only 1.3% of the Phase 0 264s `--pre` median. Against the Phase 0 CI noise floor of roughly +/-24s, it is below the authoritative surface's resolution and cannot satisfy section 12. Gross-wall saving is null within spread. | **No test nodes are removed.** On this branch, one collect-only process no longer runs. The corrected committed-ref differ from `9cecaab2` to `015a0240` completed all 16 cases and compared 27,878 union-node observations: zero node-verdict changes, zero gate-verdict changes, and identical deferral maps. `deferred` and `not-collected` remain distinct outcomes in the capture vocabulary. | **No loss is observed.** The differ reports identical executed nodes, per-node verdicts, gate verdicts and deferral maps across the corpus. | The initial checkpoint's 72 fixture-only node changes were corrected in `015a0240` by making the shared subprocess double emit the primary-plugin completion record and carrying both new `_pytest_diff` modules into synthetic verifier fixtures. The mandatory 10-case baseline/candidate mutation probe caught all 10 mutations. The original 102 focused tests passed; the correction's 368-test focused suite passed after the one sandbox-denied Git-worktree test was rerun with permission. Ruff and format checks pass. | Costs exceed an unresolvable saving: rewrite of the fail-closed classification path, permanently frozen `_pytest_diff_collect.py` compatibility surface, test-double changes across the suite, rebase conflict in `_pytest_diff.py` after main also modified it, and a full corpus re-proof because all requirements files and the derived heavy-dependency deferral set moved. Do not integrate Candidate 1; no code revert or rebase in this session. |
-| Candidate 2 - **ABANDONED AS SCOPED**; broader static reuse remains open | Class 2 proposal only; not implemented | Share the SLOC/CC gated-file walk and reuse CC's repeated AST parses and source reads within a run. | No achieved saving. The generous SLOC/CC-first ceiling is 2.153s on the branch diff and 1.463s on a single-test diff; it includes one walk, all CC repeated parse/read time, and even all git-call time. The walk alone costs only 15-23ms. | Nothing; no Candidate 2 code changed. | Nothing. | Clean-tree runtime profile: two 984-file `iter_gated_py_files()` calls in normal `--pre`, not four; CC repeated 948 parses costing 1.774s on the branch diff. Full measurement below. | The diagnosed narrow walk/CC sharing is not worth implementing at this measured magnitude. This decision does not abandon run-scoped static reuse as a concept; the broader ceiling and controlled same-SHA CI noise floor require separate assessment. |
+| Candidate 1 - **ABANDONED**; code retained on branch as phase record | Class 2 - identical work, lower cost | The real primary pytest session suppresses only positively identified excluded-and-absent dependency collection reports, records deferrals through xdist worker output, and rolls back coverage produced while importing a deferred module. The former collect-only implementation remains only as a frozen compatibility surface. | The 3.395s orchestration-remainder saving at 144 modules is real (non-overlapping IQRs), but only 1.3% of the Phase 0 264s `--pre` median. The then-used +/-24s cross-PR comparison was workload variation, not a measured noise floor; CI detectability was not established. The explicit abandonment decision stands on the small measured saving and integration costs. Gross-wall saving is null within spread. | **No test nodes are removed.** On this branch, one collect-only process no longer runs. The corrected committed-ref differ from `9cecaab2` to `015a0240` completed all 16 cases and compared 27,878 union-node observations: zero node-verdict changes, zero gate-verdict changes, and identical deferral maps. `deferred` and `not-collected` remain distinct outcomes in the capture vocabulary. | **No loss is observed.** The differ reports identical executed nodes, per-node verdicts, gate verdicts and deferral maps across the corpus. | The initial checkpoint's 72 fixture-only node changes were corrected in `015a0240` by making the shared subprocess double emit the primary-plugin completion record and carrying both new `_pytest_diff` modules into synthetic verifier fixtures. The mandatory 10-case baseline/candidate mutation probe caught all 10 mutations. The original 102 focused tests passed; the correction's 368-test focused suite passed after the one sandbox-denied Git-worktree test was rerun with permission. Ruff and format checks pass. | Costs outweigh this small local saving: rewrite of the fail-closed classification path, permanently frozen `_pytest_diff_collect.py` compatibility surface, test-double changes across the suite, rebase conflict in `_pytest_diff.py` after main also modified it, and a full corpus re-proof because all requirements files and the derived heavy-dependency deferral set moved. Do not integrate Candidate 1; no code revert or rebase in this session. |
+| Candidate 2 - **ABANDONED AS SCOPED**; broader static reuse remains open | Class 2 proposal only; not implemented | Share the SLOC/CC gated-file walk and reuse CC's repeated AST parses and source reads within a run. | No achieved saving. The generous SLOC/CC-first ceiling is 2.153s on the branch diff and 1.463s on a single-test diff; it includes one walk, all CC repeated parse/read time, and even all git-call time. The walk alone costs only 15-23ms. | Nothing; no Candidate 2 code changed. | Nothing. | Clean-tree runtime profile: two 984-file `iter_gated_py_files()` calls in normal `--pre`, not four; CC repeated 948 parses costing 1.774s on the branch diff. Full measurement below. | The diagnosed narrow walk/CC sharing is not worth implementing at this measured magnitude. This decision does not abandon run-scoped static reuse as a concept; the broader concept remains open; the controlled five-run spread below covers only a broad, red workload, not low-breadth CI. |
+
+The Candidate 1 row originally used roughly +/-24s as a "CI noise floor"; that label is corrected
+in the row above. Those clocks came from three different PRs with different selection breadths:
+workload variation, not same-workload run-to-run noise. This correction does not reverse or re-measure the
+user's **ABANDONED** decision for Candidate 1; its measured local saving and integration costs
+remain recorded above. The Candidate 2 scoped abandonment also stands as a user decision about
+the measured narrow ceiling, not a claim that cross-case spread is a detection threshold.
 
 ## Candidate 1 timing row - fixed-tree local attribution
 
@@ -319,14 +326,76 @@ redundant, so actual recoverable time is lower. These are local per-operation ce
 CI-based timing claims.
 
 Against the authoritative Phase 0 regimes, the current-branch perfect-cache ceiling is 20.6%
-of the 68.572s overall static-half median, but only 5.4% of the 264s `--pre` median and below
-its roughly +/-24s CI noise floor. The four reported low-breadth `--pre` clocks are 35, 37,
-37 and 77s (median 37s, cross-case IQR 10.5s, range 42s). The single-test perfect-cache
-ceiling is 8.624s, or 11.2-24.6% of those total clocks, yet remains below even that 10.5s
-observed spread. The cross-case IQR is descriptive, not a controlled same-diff noise estimate;
-it is nevertheless the available Phase 0 resolution bar, and the diagnosed first scope's
-1.463s is well beneath it. **Recommendation: abandon Candidate 2 as scoped**, pending the
-user's decision. No Candidate 2 implementation, rebase, or Candidate 3 work occurred.
+of the 68.572s overall static-half median and 5.4% of the 264s `--pre` median. The four
+low-breadth `--pre` clocks were 35, 37, 37 and 77s, but their 10.5s cross-case IQR came from
+different selections and is **workload variation, not a CI noise floor**. The single-test
+perfect-cache ceiling is 8.624s, or 11.2-24.6% of those total clocks; that comparison gives
+relative magnitude, not detectability. Candidate 2 is **ABANDONED AS SCOPED** per the user's
+decision: the specific SLOC/CC-first ceiling of 1.463-2.153s is not worth implementing. Broader
+run-scoped static reuse remains open. No Candidate 2 implementation, rebase, or Candidate 3 work
+occurred.
+
+## Controlled same-SHA CI spread - profile-only
+
+The historical PR #1131 `ci.yml` run [34763691328](https://github.com/benjamin-blake/theseus/actions/runs/34763691328)
+has head `9cecaab2` and checks out the fixed PR merge tree `41e4d9a8`. A full-run
+`gh run rerun` request was denied by the CLI integration (`Resource not accessible by
+integration`), so the repository's GitHub connection re-ran only its `pr-validate` job. Five
+new attempts (2-6) were issued **sequentially**; none was cancelled by the workflow's
+cancel-in-progress setting. Main stayed at `9dd1648a` throughout. Every new attempt selected
+the same **424** test modules and reported the same two pytest summaries: 48 failed / 8,376
+passed / 1 skipped, then 1 failed / 8,027 passed / 1 skipped. All five jobs ended red. Raw
+timestamps and logs remain in gitignored `logs/debug/`, not this findings document.
+
+| New attempt | `--pre` step clock (s) | `pr-validate` job clock (s) |
+|---:|---:|---:|
+| 2 | 813 | 879 |
+| 3 | 882 | 943 |
+| 4 | 883 | 938 |
+| 5 | 884 | 937 |
+| 6 | 801 | 870 |
+| Median | **882** | **937** |
+| Q1-Q3 (median of the lower/upper two) | 807-883.5 | 874.5-940.5 |
+| Min-max (range) | 801-884 (83) | 870-943 (73) |
+
+The original 2026-09-13 attempt on the same checkout selected **two** test modules and ran
+`--pre` in 40s; it is excluded from this population. The checkout SHA is fixed, but the
+validator resolves `origin/main` at run time. Main advanced between the original run and
+these reruns, turning today's diff into a 424-module workload. It did not advance **between**
+the five new attempts. Thus the 83s step range and 73s job range are genuine same-workload
+CI variation for this **broad, red** regime, including two markedly faster step clocks
+(801/813s) and three clustered clocks (882-884s). They are not a universal detection
+threshold, and in particular do not measure low-breadth 35-77s runs. The earlier +/-24s and
+10.5s cross-case figures must not be used as noise floors. No candidate timing or Phase 4
+acceptance claim is inferred from these reruns.
+
+## Four additional static checks - location profile only
+
+A detached clean checkout of the committed `d89fb626` tree had 984 gated Python files, 684
+test modules and 47 depth-1 contract YAMLs. Runtime-only instrumentation omitted Candidate 1's
+pytest session but kept the registered static `--pre` sequence real. The earlier five direct
+check medians that exposed these checks were 7.057s (contract drift), 4.333s (CC), 4.285s
+(test-count coupling) and 3.698s (raises discrimination), 19.373s gross together. The
+current clean-tree static-sequence profile read 7.197s, 4.243s, 3.688s and 3.491s
+respectively. Direct component timers and `cProfile` located the work; profiled cumulative
+times are **not** treated as saving estimates because profiling adds overhead. No tier source
+or test was changed.
+
+| Check | Where the time goes | Precision versus identical-work route |
+|---|---|---|
+| `validate_contract_drift` | Five isolated direct runs had a 5.461s median on this machine. Its 31 evaluator resolutions invoke 27 fresh registered-check module searches: 2,033 Python source parses, 3.292s median for those searches, with 2.045s inside source read/parse in a detailed run. There were 157 YAML loads, 1.653s median; 109 loads of identical YAML text cost 1.092s in a detailed run. The eight git subprocess reads cost only 0.035s in the static-sequence profile. Contract-tree enumeration was below 1ms. | Pass 1 must validate the complete 47-contract population, evaluator reading, subject uniqueness and pin-vs-census equality; Pass 2 is already diff-aware. A changed-contracts-only Class 1 scan would lose those assertions/artifacts. Class 2 repeated source/YAML work exists; the full 5.461s is **not** recoverable. |
+| `validate_cc_limits` | One 984-file gated walk costs 15-23ms. It reads 984 files (0.146s) and parses the 954 non-waivered files (1.765s); the remainder of its roughly 4.3s check is AST traversal and branch counting for each function, including nested subtree walks. No subprocess runs. | Whole-repo enumeration is not the cost. A Class 1 changed-Python-file precision route is conceivable only with a proved clean baseline and changed-path coverage; none is proved here. Class 2 parse/text reuse with other static readers exists, while branch counting itself is assertion-required. |
+| `validate_test_count_coupling` | It enumerates all 684 test modules in 4-5ms, reads them in 0.095s and parses them in 1.025s in the static-sequence profile; no subprocess runs. It then discovers 12,887 scopes, computes tainted names in one traversal (0.856s median over three direct runs), and traverses each scope again to inspect exact-count assertions. The two AST passes, not the path glob, dominate the remainder. | Class 1 input-disjoint precision may exist when unchanged test source and a clean prior verdict are proved; merely ignoring tests on a production-data change is not such a proof. Class 2 AST sharing with other tests-tree checks and repeated-scope traversal reduction are identifiable identical-work routes. No route is certified here. |
+| `validate_raises_discrimination` | It enumerates the same 684 tests in 4-5ms, reads them in 0.082s and parses them in 1.161s in the static-sequence profile; no subprocess runs. Three direct runs put import-alias resolution over 684 files at 0.539s median, binding discovery over 340 pytest-importing files at 0.364s and scope enumeration over those files at 0.330s. The remaining time is per-scope site classification and report emission. | The complete `scanned` / `hits` / `directories` census and `examined` accounting are emitted artifacts; a diff-only Class 1 scan would change them. Class 2 AST/text reuse with test-count coupling is possible, but the global census and site classification are required. |
+
+These four **gross** check clocks total 19.373s, roughly two-thirds of a ~30s low-breadth
+static half; that total is not an achievable saving. Even eliminating every second of it
+would be within the controlled broad-run `--pre` range
+of 83s; the measured reusable portions are smaller. No accept/abandon conclusion for these
+checks follows on that broad, red regime. The CI run did **not** supply a comparable
+low-breadth noise floor, so a 3-4s static target on a 35-77s PR cannot be judged against
+the old cross-case 10.5s figure or against this broad-run 83s range. This is location and
+route classification only, not a fix proposal or a Candidate 3 start.
 
 ## Phase 4 evidence
 
