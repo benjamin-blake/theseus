@@ -1,0 +1,1061 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: production-gc-and-storage-stability
+intent: >-
+  Turn on destructive garbage collection against the production DuckLake catalog behind a
+  per-cycle safety invariant that can see over-reclaim, and start the observation window whose
+  completion a follow-on plan uses to close T2.18 c2.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-production-gc-and-storage-stability.yaml
+phase: T2.18
+closes_criteria: []
+scope:
+  - file: src/common/ducklake_gc_verification.py
+    action: Create
+    purpose: >-
+      Post-pass verification, pure-predicate split from connection-owning exactly as Decision 188
+      split ducklake_maintenance_ops. SAFETY: referenced_missing(live_paths, storage_paths) -- the
+      |L \ S| direction, which is the over-reclaim signal a storage-size metric structurally cannot
+      see (deleting live data makes storage look BETTER). EFFICACY: gc_debt_ratio(storage_bytes,
+      live_bytes) -- (S-L)/L, the quantity GC controls, since absolute prefix bytes legitimately
+      grow with ingestion. Also the INDEPENDENT safety check,
+      verify_read_path(con, snapshot_id, tables): snapshot identity is CATALOG-level, so ONE
+      pass-start id is captured and every table is re-read AT (VERSION => that id). It MUST force a
+      real data scan -- a bare count(*) at a pinned snapshot is answerable from DuckLake
+      catalog record-count metadata with every underlying Parquet file already deleted, and column
+      min/max statistics have the same problem. Aggregate over actual column VALUES.
+  - file: src/common/ducklake_gc_ops.py
+    action: Create
+    purpose: >-
+      The gc_ops pass body, in its own module because the handler is at 458 SLOC against the
+      500-SLOC limit with NO entry in config/sloc_budgets.yaml -- Decision 128 makes decomposition
+      the default and a budget raise a deliberate exception, and action_merge_ops alone is ~110
+      SLOC while gc_ops does strictly more. Three properties are load-bearing. (1) The live-set
+      collection enumerates EVERY table returned by catalog enumeration, UNCONDITIONALLY -- it is
+      never derived from scope.resolve_scope, and no policy input reaches it. Filtering it would not
+      narrow what gets deleted (the destructive verbs are catalog-wide); it would narrow what G1 and
+      G3 can SEE. (2) It runs NO per-table prelude: flush_inlined_data is a documented guaranteed
+      no-op (inlining disabled at the connection level, ducklake_maintenance.py:13-15) and
+      merge_adjacent_files is already run on every ops table every 6 hours by merge_ops -- 28x per
+      week against gc_ops's 1x. One verb, one job: merge_ops compacts, gc_ops reclaims. (3) It calls
+      run_guarded_gc UNMODIFIED -- this plan changes no shipped guard code. G4's byte half is
+      therefore INERT for gc_ops (a would-delete path is absent from a no-prelude pass's live_before,
+      so it sizes to zero) and the FILE-COUNT half is the only binding cap. That degradation is
+      recorded, not papered over: see the G4 byte-half entry in context, and rec-3871, which
+      owns the fix.
+      (4) READ ORDERING IS LOAD-BEARING: it collects the CATALOG live set FIRST and lists STORAGE
+      SECOND. In that order an interleaved write shows up as a spurious ORPHAN, which is harmless to
+      referenced_missing; the reverse order manufactures a spurious REFERENCED-MISSING, which is the
+      signature of the 3-object delta recorded at VP14 and would trip the safety gate on a race
+      rather than on a real defect. Asserted by a test, not left to implementation order.
+      (5) It EMITS the complete metric set every asserted signal depends on, all into the
+      DuckLakeMaintenance namespace: GcReferencedMissing, GcWouldDeleteFiles, GcDebtRatio,
+      GcDebtBytes, GcStorageObjects, GcSnapshotsRetainedMin (from run_guarded_gc's guard_stats g2
+      snapshot re-read) and per-phase
+      GcDeletedSnapshots / GcDeletedFiles / GcDeletedOrphans. An unemitted metric reads ABSENT, not
+      breached -- the failure shape the namespace trap note calls the worst possible for a guard
+      whose whole job is to be noticed. ORDERING IS LOAD-BEARING: GcReferencedMissing must be
+      EMITTED BEFORE the referenced-missing raise, or the GcReferencedMissing >= 1 alarm never
+      receives the datapoint that is the whole point of the alarm.
+  - file: src/lambdas/ducklake_maintenance/handler.py
+    action: Modify
+    purpose: >-
+      Thin action_gc_ops dispatch entry delegating to src/common/ducklake_gc_ops.py. The verb is
+      gc_ops, NOT gc: gc is already taken by the SMOKE host's weekly disposable-catalog pass
+      (docs/contracts/ducklake_maintenance.yaml verbs.gc, measured), and the contract's own
+      precedent for a production counterpart of a smoke verb is the merge -> merge_ops rename.
+      Requires explicit data_path + meta_schema, refuses a no-arg invoke, and accepts dry_run
+      (default False) -- mirroring action_merge_ops on the first two. BUDGET: the handler is at 458
+      SLOC of 500 (measured), so the dispatch entry has 42 SLOC of headroom and must stay well
+      inside it -- all real work belongs in ducklake_gc_ops. It must NOT call
+      scope.resolve_scope: that function is the per-table-scoped path (handler.py:396, the matrix's
+      only production consumer) and gc_ops has no per-table dimension. Keep the delegation thin so
+      the file does not cross its limit.
+  - file: terraform/personal/ducklake_maintenance.tf
+    action: Modify
+    purpose: >-
+      Weekly production gc_ops EventBridge rule + target + lambda permission, mirroring the
+      merge_ops rule at lines 229-253. Resource "ducklake_maintenance_gc_ops", name
+      "agent-platform-ducklake-maintenance-gc-ops" -- the un-suffixed name is ALREADY TAKEN by the
+      smoke rule (ducklake_maintenance_smoke.tf:242, measured), so the obvious name is a hard
+      apply-time collision. Created state = "DISABLED": Decisions 125/126 deploy the handler and
+      the rule through DIFFERENT channels, so an ENABLED rule from the infra apply can fire
+      action=gc_ops before the handler carrying the verb deploys -- a scheduled 400. Also a
+      CloudWatch alarms -- see below -- which make THREE alarm blocks in this file.
+      SCHEDULE (F51): schedule_expression cron(45 3 ? * SUN *) -- weekly, and deliberately OFFSET
+      from the two existing cadences on this SINGLETON function. reserved_concurrent_executions is 1
+      (Decision 81 cl.6), and this file already carries two explicit anti-throttle comments at :221
+      and :262 for exactly this reason; merge_ops holds cron(30 *''/6 * * ? *) and control_health
+      cron(15 *''/6 * * ? *), so any gc_ops cron at :15 or :30 past a 6-hourly hour collides and
+      throttles with a 429 -- which, per the absence problem below, would be SILENT.
+      RUNTIME (F51): timeout = 300 and memory_size = 1024 (lines 150-151) were sized before this
+      verb existed. gc_ops is the heaviest verb this function will run -- a universal catalog
+      live-set enumeration, the destructive sequence, a post-pass re-enumeration for the G1 re-check
+      and G3, a VALUE-SCANNING read-path re-read of every table at a pinned snapshot (which by
+      design forces real Parquet reads from S3), and a ListObjectsV2 walk of the production prefix.
+      The implementer MUST assess that against 300s and raise timeout/memory in this same file if it
+      does not fit. A timeout between the deletion at ducklake_maintenance_ops.py:231-232 and the G1
+      re-check/G3 at :249-250 leaves production data deleted with NO safety verdict and NO metric.
+      ABSENCE DETECTION (F50): the plan's own stated worst case is a metric reading ABSENT rather
+      than breached. The shipped breaker alarm at :299-319 carries treat_missing_data =
+      "notBreaching" (measured) -- mirroring that faithfully would make the new alarm OK-quiet in
+      every absence case: namespace denial, 429 throttle, 300s timeout mid-pass, an exception before
+      emission, or a rule that silently never fires. So: (1) the GcReferencedMissing >= 1 alarm sets
+      treat_missing_data = "notBreaching" DELIBERATELY, because a weekly metric is legitimately
+      absent six days in seven and that alarm is the breach detector, not the liveness detector;
+      (2) a SECOND, new alarm is the liveness detector -- on the datapoint count of
+      GcDeletedSnapshots over a lookback longer than one week with treat_missing_data = "breaching",
+      in the shape of the existing evaluation_periods-based DR freshness alarm (Decision 88 cl.3's
+      precedent in this codebase). Without (2) a pass that never runs is invisible for the whole
+      nine-week window -- which is the window this plan exists to open.
+      IAM needs no change and must not be widened: the role already carries s3:ListBucket scoped
+      to the prod prefix (lines 112-122) and cloudwatch:PutMetricData CONDITIONED on
+      cloudwatch:namespace == "DuckLakeMaintenance" (lines 123-133) -- every new metric must be
+      emitted into that namespace or it is silently denied.
+  - file: docs/contracts/ducklake_maintenance.yaml
+    action: Modify
+    purpose: >-
+      Document the admin gc_ops verb (payload including dry_run, response_codes, typed_errors)
+      ALONGSIDE the existing smoke gc verb, never by renaming it, and add the amendment_log entry.
+      change_class is a CLOSED 8-value vocabulary (scripts/contracts_schema.py:50-60): this is
+      field_add with semantic_break: true, the Decision 191 precedent in this same amendment_log.
+      The log holds 2 entries today (measured).
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      New Decision (body and envelope drafted in context) recording the Decision 88 cl.4 gate-clear,
+      the rule that the maintenance_policy matrix governs per-table-scoped verbs ONLY, and the c2
+      criterion reframe. MUST carry the Decision 167 fenced yaml envelope with number and
+      significance (decision-entry.yaml metadata_envelope.required_fields: [number, significance])
+      -- a heading and prose clauses alone fail validate_decision_entry_conformance. Plus a dated
+      annotation on Decision 88 cl.2, whose parenthetical "the DR bucket and direct CloudWatch reads
+      are IAM-blocked from the dev role by design" is factually stale -- platform_dev_policies.tf's
+      ObservabilityMetricRead Sid (T2.48 / rec-2851) grants GetMetricStatistics / GetMetricData /
+      ListMetrics, which this plan's read-back depends on.
+  - file: docs/ROADMAP-PLATFORM.yaml
+    action: Modify
+    purpose: >-
+      Rewrite T2.18 c2's text from "S3 storage confirmed stable after N maintenance cycles" to the
+      two assertions that actually adjudicate. STRENGTHENING, not weakening: the original is
+      satisfied by a job that deletes the whole prefix, since over-reclaim reduces storage. Status
+      stays OPEN -- exit-criteria-ledger.yaml forbids flipping met over text that does not
+      adjudicate true at flip time, and N cycles have not elapsed. NOTE this file is a BUNDLED ASSET
+      of data-pipeline (src/lambdas/data-pipeline/manifest.yaml:44), so editing it changes that
+      artifact's zip content -- see VP13's disposition.
+  - file: config/lambda/ducklake/field_semantics.static.yaml
+    action: Modify
+    purpose: >-
+      COMMENT-ONLY edit to the maintenance_policy header (lines 18-32), collocating the rule with
+      the field it governs per the AGENT-FIRST collocation norm: a catalog-wide verb takes no cell,
+      because the matrix's single production consumer is scope.resolve_scope and such a verb has no
+      per-table dimension. The header documents the matrix's universes and its CI gate today but
+      says nothing about which verbs belong, which is how an earlier draft of this very plan talked
+      itself into adding an inert gc_ops column. NO key is added or changed -- field_semantics.yaml
+      is the bundled asset and is generated from the DATA, not the comments, so this edit changes no
+      artifact content and leaves the affected-artifact set at two. Verified: the generated projection
+      carries no comments from this header.
+  - file: src/lambdas/ducklake_maintenance/manifest.yaml
+    action: Modify
+    purpose: Bundle ducklake_gc_verification.py and ducklake_gc_ops.py into the admin maintenance zip.
+  - file: src/lambdas/data-pipeline/manifest.yaml
+    action: Modify
+    purpose: Exclude both new modules from data-pipeline, mirroring the ducklake_maintenance_ops and ducklake_maintenance_scope exclusions.
+  - file: tests/common/test_ducklake_gc_verification.py
+    action: Create
+    purpose: >-
+      Unit coverage for referenced_missing, gc_debt_ratio and verify_read_path, with red cases: an
+      over-reclaim fixture (a live path absent from storage) that MUST trip; a shared-bug fixture
+      where the live-file function is wrong in both the action and referenced_missing and only the
+      read-path check catches it; a VACUITY fixture where the catalog rows survive but the backing
+      Parquet is gone, which a count(*)-only read-path check passes and a value-scanning one fails;
+      and a debt-ratio fixture at the bound.
+  - file: tests/common/test_ducklake_gc_ops.py
+    action: Create
+    purpose: >-
+      The guard-blindness regression, this plan's most important test: the live set gc_ops computes
+      G1, G3 and referenced_missing over contains EVERY table catalog enumeration returns, and is
+      not derived from scope.resolve_scope. Asserted both ways -- the collector is not reachable
+      from any policy input, and with a fixture-injected policy marking a class apply:false (a
+      FIXTURE-ONLY construction; the shipped matrix has no gc_ops column at all) that class's live
+      files are still present in the set. Plus: the catalog live set is collected BEFORE storage is
+      listed (F52's race ordering, asserted by call order, not by comment); gc_ops issues no
+      flush_inlined_data or
+      merge_adjacent_files call, and gc_ops passes the UNIVERSAL CATALOG live set as live_before --
+      never the ListObjectsV2 storage map -- so G4's byte half sizes to zero while the file-count
+      half binds, and G3's before/after comparison keeps live-vs-live semantics. Passing the storage
+      map there instead would silently corrupt G3: assert_catalog_sane would compute its drop as
+      storage-bytes-before minus live-bytes-after, i.e. the GC-debt delta, making the 50 GiB bound
+      meaningless in both directions.
+  - file: tests/lambdas/ducklake_maintenance/handler/test_gc_action.py
+    action: Create
+    purpose: >-
+      action_gc_ops requires explicit data_path and meta_schema and refuses a no-arg invoke; a
+      dry_run invoke emits GcReferencedMissing and GcWouldDeleteFiles and performs no write of any
+      kind; raises on non-zero referenced-missing rather than returning ok; never calls
+      scope.resolve_scope. Also hosts TestSmokeScopeNotRepointed, which SHIPS the Decision 143 cl.2
+      never-weaken invariant as a standing regression test rather than leaving it as a plan-time
+      grep that is green by construction.
+  - file: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py
+    action: Modify
+    purpose: >-
+      New class TestProductionGcRuleInvariants: the gc_ops rule is created DISABLED, and no
+      aws_s3_bucket_lifecycle_configuration anywhere in terraform/personal/*.tf targets the
+      data-lake bucket. The sweep MUST be over the whole directory, not the module's existing
+      _ADMIN_TF / _SMOKE_TF constants: the only lifecycle config in the repo today is
+      ducklake_catalog_dr.tf:74 (targeting the DR bucket, legitimately), so a two-file assertion is
+      green-by-construction forever and could never see a rule added in s3.tf. A lifecycle expiration
+      rule over the lakehouse prefix is over-reclaim by configuration, deleting live Parquet on an
+      age rule the catalog knows nothing about. TWO existing tests in this file are order- or
+      count-sensitive and both break if ignored: (1) test_admin_tf_has_exactly_one_alarm_block
+      (line 63, asserts == 1) must expect 3 -- the breach alarm and the liveness alarm -- and be
+      renamed; the module DOCSTRING at line 4 also asserts "each terraform file holds exactly one
+      aws_cloudwatch_metric_alarm resource (measured)", which this change falsifies and which must be
+      corrected in the same edit; (2)
+      test_alarm_descriptions_retain_provenance_tag (line 77) reads
+      _alarm_descriptions(_ADMIN_TF)[0] and asserts "T2.18 / CD.33 H1" is in it -- blocks come back
+      in FILE ORDER, so the new GcReferencedMissing alarm MUST be placed AFTER the existing breaker
+      alarm (line 299) or carry the same provenance tag. It must also carry an alarm_description at
+      all (_alarm_descriptions_from_text asserts every block has one), whose text avoids the
+      threshold shape this file pins against. The class also carries
+      test_maintenance_role_iam_is_not_widened, pinning the maintenance role's
+      cloudwatch:namespace == DuckLakeMaintenance condition and its prefix-scoped s3:ListBucket --
+      the plan makes non-widening load-bearing (that namespace condition is what makes an unemitted
+      metric read absent rather than breached), so it must be asserted, not merely asserted about.
+bundled_recommendations: []
+followon_recs:
+  - rec-3870
+  - rec-3871
+infrastructure_dependencies:
+  - terraform/personal/ducklake_maintenance.tf
+  - ducklake_maintenance
+  - data-pipeline
+acceptance_criteria:
+  - >-
+    A new admin action_gc_ops exists on ducklake_maintenance, requires explicit data_path +
+    meta_schema, accepts dry_run, and refuses a no-arg invoke. The verb is gc_ops because gc
+    already names the SMOKE host's disposable-catalog pass; the merge -> merge_ops precedent in the
+    same contract governs. Its body lives in src/common/ducklake_gc_ops.py, not in the handler,
+    which is at 458 of 500 SLOC with no budget entry (Decision 128: decompose by default).
+  - >-
+    THE GUARD LIVE SET IS UNIVERSAL. The live-file inventory feeding live_before / live_now /
+    live_after and referenced_missing enumerates EVERY table catalog enumeration returns, is not
+    derived from scope.resolve_scope, and takes no policy input at all. Asserted two ways: the
+    collector is unreachable from any policy input, and under a FIXTURE-INJECTED policy marking a
+    class apply:false that class's live files are still in the set. This is the plan's central
+    correctness property -- see the guard-blindness entry in context.
+  - >-
+    NO maintenance_policy CELL IS ADDED FOR gc_ops, and VERB_UNIVERSE stays ("merge_ops",).
+    The matrix governs per-table-scoped verbs only: its single production consumer is
+    scope.resolve_scope at handler.py:396, gc_ops has no per-table dimension, and a cell nothing
+    reads is a declaration without behavior. config/lambda/ducklake/field_semantics.static.yaml and
+    its generated projection are therefore UNTOUCHED by this plan, which also keeps
+    ducklake_reader, ducklake_writer and ducklake_maintenance_smoke out of the affected-artifact set.
+  - >-
+    gc_ops runs NO per-table prelude. flush_inlined_data is a documented guaranteed no-op and
+    merge_adjacent_files is already run on every ops table 6-hourly by merge_ops, so duplicating it
+    would add writer-serialization contention (rec-3762) for no compaction benefit.
+  - >-
+    SAFETY, asserted every cycle and never retired: after each destructive pass
+    GcReferencedMissing == 0, every table re-reads AT the pass-start CATALOG snapshot id with an
+    unchanged value-level aggregate, and the catalog snapshot count is >= 2. Any breach raises; it
+    is an incident, not a trend. Snapshot identity is CATALOG-level throughout -- expire_snapshots
+    and G2 both read ducklake_snapshots('{catalog}') -- so the signature is
+    verify_read_path(con, snapshot_id, tables), one id for the pass, never one per table.
+  - >-
+    The read-path check is INDEPENDENT of the delete-set computation AND non-vacuous. A fixture in
+    which the live-file function is wrong in both the action and referenced_missing is caught by the
+    read-path check and by nothing else; a second fixture in which catalog rows survive with their
+    backing Parquet deleted is caught by the value-level aggregate and NOT by a row count.
+  - >-
+    NO SHIPPED GUARD CODE IS MODIFIED. gc_ops calls run_guarded_gc as it stands. Two consequences are
+    recorded rather than fixed here, both owned by rec-3871. (a) G4's byte half is INERT for
+    gc_ops: candidate_bytes joins would-delete paths against live_before, and with no merge prelude
+    every candidate was superseded by an earlier pass and is already absent, so it sizes to zero --
+    the FILE-COUNT half is the only binding cap. Note this premise is specific to a no-prelude verb:
+    tests/common/test_ducklake_maintenance_ops.py::TestG4RealDryRunSizeColumn demonstrates on the
+    pinned engine that a PRE-merge live_before does size merge-superseded candidates non-zero, so
+    the smoke path's byte half is live and unaffected. (b) An over-cap backlog defers the whole pass
+    with no partial drain. (c) G4 BOUNDS A PRE-EXPIRY SET AGAINST A POST-EXPIRY DELETION.
+    run_guarded_gc computes would_delete_paths at :205-208, runs expire_snapshots at :218, bounds
+    that PRE-expiry set at :227-228, and only then calls cleanup_old_files / delete_orphaned_files
+    at :231-232 against whatever the engine computes post-expiry. On a catalog where expiry has
+    NEVER run, the first pass's expiry is by construction the largest it will ever see, and the
+    files it orphans become cleanup candidates only afterwards -- so a pre-expiry count
+    systematically UNDERSTATES the first pass's real deletion volume, and on that pass neither G1's
+    pre-check nor G4's bound covers the set actually deleted. G3's live-byte-drop bound and this
+    plan's own post-pass referenced_missing and read-path checks are the cover. All three
+    limitations are rec-3871's, not this plan's to fix -- they live in shipped guard code it must
+    not edit. rec-3871 was filed BEFORE limitation (c) was discovered and its context names only (a)
+    and (b), so this plan AMENDS it (execution step, and VP17 asserts the amendment landed): a
+    follow-on rec that does not describe the defect it owns is an unowned defect wearing a rec id.
+  - >-
+    EFFICACY is expressed as GC DEBT, not absolute storage: GcDebtRatio = (storage_bytes -
+    live_bytes) / live_bytes, emitted post-pass, with GcDebtBytes and GcStorageObjects alongside.
+    Absolute prefix bytes are not the assertion -- live bytes legitimately grow with ingestion.
+  - >-
+    Each destructive phase emits its own NAMED deleted-count metric -- GcDeletedSnapshots,
+    GcDeletedFiles, GcDeletedOrphans -- so a window in which nothing was deleted cannot read as
+    success. "Stable" is never vacuously true. Every signal any verification step asserts has a
+    corresponding emission obligation; no step adjudicates a metric nothing is required to emit.
+  - >-
+    MEASURE BEFORE BUILDING. Whether a bounded drain is needed at all is an OPEN MEASUREMENT: this
+    catalog has never had the destructive sequence run, so its backlog is unknown. VP14's dry-run
+    reports GcWouldDeleteFiles against G4_MAX_DELETE_FILES and gates the schedule enable on it.
+    That reading is a PRE-EXPIRY lower bound, not a headroom certificate -- see limitation (c) --
+    so the measurement is taken TWICE, at the only two points where each figure exists: VP14 reads
+    the pre-expiry lower bound before the schedule is enabled, and VP16 reads the post-expiry figure
+    after the first real pass, which is the first moment it is knowable. Building a cutoff-walk
+    before either measurement would be speculative work on a live production guard; rec-3871 is
+    conditioned on them.
+  - >-
+    Every metric is emitted into the DuckLakeMaintenance CloudWatch namespace. The role's
+    PutMetricData grant is conditioned on exactly that namespace (ducklake_maintenance.tf:123-133),
+    so a metric published anywhere else is silently denied and the safety invariant reads as absent
+    rather than as breached.
+  - >-
+    A dry_run invoke is READ-ONLY: no deletion and no write of any kind. It emits
+    GcReferencedMissing and GcWouldDeleteFiles, so the baseline gate can be taken WITHOUT running
+    the destructive pass it exists to gate. The engine primitives already support this
+    (_dry_run_cleanup_paths / _dry_run_orphan_paths, ducklake_maintenance.py:145-168).
+  - >-
+    The production gc_ops EventBridge rule is created DISABLED, named
+    agent-platform-ducklake-maintenance-gc-ops (the un-suffixed name belongs to the smoke rule), and
+    is enabled only after the baseline assertion passes AND the governed CD channel has deployed
+    the handler carrying the verb. The infra and code channels are separate (Decisions 125/126).
+  - >-
+    The measurement uses managed primitives for storage (ListObjectsV2) and for the sink
+    (CloudWatch); only the catalog-to-storage JOIN is application code, and the plan records why --
+    no managed service has catalog semantics, which is why Iceberg, Delta and Hudi all ship their
+    own orphan and fsck tooling.
+  - >-
+    No aws_s3_bucket_lifecycle_configuration targets the data-lake bucket. A lifecycle expiration
+    rule over the lakehouse prefix would delete live Parquet on an age rule the catalog knows
+    nothing about -- over-reclaim by configuration.
+  - >-
+    The new Decision carries a Decision 167 fenced yaml envelope with number and a significance
+    value plus non-empty justification, not a heading and prose alone.
+  - >-
+    T2.18 c2's text is rewritten to the safety and efficacy assertions and its status stays OPEN.
+    rec-3870 is ALREADY FILED (at plan time, not deferred to implement time) and seeded into
+    followon_recs as the committed closer, so the rewritten criterion is never uncommitted.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Prove the verification predicates hold, including the shared-bug fixture only the read-path check
+      can catch and the vacuity fixture only a value-level aggregate can catch.
+    command: bin/venv-python -m pytest tests/common/test_ducklake_gc_verification.py -q
+    expected: >-
+      All pass, including the over-reclaim fixture, the shared-bug fixture, the
+      catalog-rows-survive-but-Parquet-deleted vacuity fixture, and the debt-ratio bound case.
+    fix_if: >-
+      The vacuity fixture passes under a count(*) read-path check -- a row count at a pinned snapshot
+      is answerable from catalog metadata with every backing file deleted, which is the blind oracle
+      this check exists to be independent of.
+    graduation: graduate
+    graduation_check_id: gc-verification-predicates-discriminate
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Prove action_gc_ops requires explicit params, honours dry_run as read-only, never calls
+      resolve_scope, and raises on referenced-missing.
+    command: bin/venv-python -m pytest tests/lambdas/ducklake_maintenance/handler/test_gc_action.py -q
+    expected: >-
+      No-arg invoke refused; a dry_run invoke emits GcReferencedMissing and GcWouldDeleteFiles and
+      writes nothing; non-zero referenced-missing raises rather than returning ok.
+    fix_if: >-
+      A non-zero referenced-missing returns 200 -- safety must raise, never report. Or dry_run writes.
+      Or the handler reaches for scope.resolve_scope, which is the per-table-scoped path gc_ops has no
+      business on.
+    graduation: graduate
+    graduation_check_id: admin-gc-ops-action-contract
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Prove the guard live set is UNIVERSAL -- it takes no policy input, and a live file of a
+      fixture-excluded class is still inside the set G1/G3 and referenced_missing are computed over
+    command: bin/venv-python -m pytest "tests/common/test_ducklake_gc_ops.py::TestGuardLiveSetIsUniversal::test_live_set_collector_takes_no_policy_input" "tests/common/test_ducklake_gc_ops.py::TestGuardLiveSetIsUniversal::test_policy_excluded_table_live_file_is_in_the_guard_live_set" -q
+    expected: >-
+      Both nodes pass: the collector is unreachable from any policy input, and a fixture-injected
+      apply:false class still has its live files in the guard set.
+    fix_if: >-
+      The live set is derived from scope.resolve_scope or any policy input. That does not stop the
+      catalog-wide destructive verbs touching a table -- it removes that table from what G1 can see,
+      which is a guard hole wearing the costume of a scope narrowing.
+    graduation: graduate
+    graduation_check_id: guard-live-set-is-universal
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Prove gc_ops emits the full metric set, with GcReferencedMissing emitted BEFORE any
+      referenced-missing raise. Its own step and its own registry identity: an unemitted metric
+      reads ABSENT rather than breached, which is a different regression from a guard-live-set
+      defect and must not surface under that name.
+    command: bin/venv-python -m pytest "tests/common/test_ducklake_gc_ops.py::TestMetricEmission::test_emits_the_full_metric_set_with_referenced_missing_before_any_raise" -q
+    expected: >-
+      The fake metrics sink receives all nine metrics, and GcReferencedMissing precedes any raise --
+      otherwise the GcReferencedMissing >= 1 alarm never receives the datapoint that is its purpose.
+    fix_if: >-
+      A metric any verification step adjudicates is missing from the sink, or the raise precedes the
+      emission. Either way the alarm goes quiet exactly when it matters.
+    graduation: graduate
+    graduation_check_id: gc-ops-emits-full-metric-set
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      Prove the shipped never-weaken test holds -- GC_TABLE_SCOPE was not repointed at production
+      (Decision 143 cl.2 env-pinning).
+    command: bin/venv-python -m pytest "tests/lambdas/ducklake_maintenance/handler/test_gc_action.py::TestSmokeScopeNotRepointed::test_gc_table_scope_still_holds_the_smoke_pair" "tests/lambdas/ducklake_maintenance/handler/test_gc_action.py::TestSmokeScopeNotRepointed::test_admin_handler_never_reads_gc_table_scope" -q
+    expected: >-
+      Both nodes pass -- GC_TABLE_SCOPE still holds the smoke pair, and the admin handler never
+      references it.
+    fix_if: >-
+      The admin handler reads GC_TABLE_SCOPE, or the constant changed. Production scope comes from
+      catalog enumeration; repointing the constant aims the SMOKE function at production, which
+      Decision 143 cl.2 forbids.
+    graduation: graduate
+    graduation_check_id: gc-table-scope-stays-smoke-only
+  - step: 6
+    phase: pre-deploy
+    action: >-
+      Prove the contract documents the gc_ops verb with dry_run, keeps the smoke gc verb, and carries
+      an amendment entry using the closed vocabulary correctly.
+    command: "bin/venv-python -c \"import yaml,io; d=yaml.safe_load(io.open('docs/contracts/ducklake_maintenance.yaml',encoding='utf-8')); assert 'gc_ops' in d['verbs'], 'gc_ops verb undocumented'; assert 'gc' in d['verbs'], 'the smoke gc verb must survive the addition'; assert 'dry_run' in d['verbs']['gc_ops']['payload_schema_ref'], 'dry_run absent from the gc_ops payload'; a=d['amendment_log']; assert len(a)>=3, 'no amendment entry appended (2 exist today)'; assert a[-1]['change_class']=='field_add' and a[-1]['semantic_break'] is True, 'a new verb is field_add with semantic_break true'; print('contract + amendment ok')\""
+    hermetic: true
+    expected: >-
+      Both gc_ops and gc are documented, gc_ops names dry_run, and a third amendment entry exists with
+      change_class field_add and semantic_break true.
+    fix_if: >-
+      change_class is outside the closed 8-value enum (scripts/contracts_schema.py:50-60), or gc_ops
+      was added by RENAMING the smoke gc verb rather than alongside it, or dry_run is missing from the
+      payload the baseline gate depends on.
+    graduation: graduate
+    graduation_check_id: gc-ops-verb-contract-and-amendment
+  - step: 7
+    phase: pre-deploy
+    action: >-
+      Prove the terraform invariants -- the gc_ops rule created DISABLED, and no lifecycle rule on the
+      data-lake bucket.
+    command: bin/venv-python -m pytest "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_gc_ops_rule_is_created_disabled" "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_no_lifecycle_configuration_targets_the_data_lake_bucket" "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_maintenance_role_iam_is_not_widened" "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_liveness_alarm_treats_missing_data_as_breaching" "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_gc_ops_rule_cron_does_not_collide_with_the_singleton_cadences" -q
+    expected: >-
+      The gc_ops rule state is DISABLED; no aws_s3_bucket_lifecycle_configuration targets
+      aws_s3_bucket.data_lake anywhere in terraform/personal; the maintenance role's IAM is
+      unwidened (PutMetricData namespace condition and prefix-scoped ListBucket intact); the
+      liveness alarm sets treat_missing_data = "breaching" so a pass that never runs is visible; and
+      the gc_ops cron collides with neither the :30 merge_ops nor the :15 control_health cadence on
+      this singleton function.
+    fix_if: >-
+      The rule is ENABLED -- Decisions 125/126 deploy rule and handler separately, so it can fire
+      before the verb exists. Or a lifecycle rule targets the data lake, which is over-reclaim by
+      configuration. Or the node ids do not resolve -- run pytest --collect-only before trusting a
+      red (rec-3865).
+    graduation: graduate
+    graduation_check_id: gc-ops-rule-disabled-and-no-lakehouse-lifecycle
+  - step: 8
+    phase: pre-deploy
+    action: >-
+      Prove the maintenance_policy matrix and VERB_UNIVERSE are UNTOUCHED -- gc_ops is catalog-wide and
+      takes no cell. This is a never-weaken assertion in the opposite direction from the usual: it
+      guards against re-adding the inert column an earlier draft of this plan proposed.
+    command: bin/venv-python -m pytest "tests/common/test_ducklake_gc_ops.py::TestMatrixCarriesNoCatalogWideVerb::test_verb_universe_holds_only_per_table_scoped_verbs" "tests/common/test_ducklake_gc_ops.py::TestMatrixCarriesNoCatalogWideVerb::test_matrix_carries_no_gc_ops_cell" "tests/common/test_ducklake_gc_ops.py::TestMatrixCarriesNoCatalogWideVerb::test_matrix_header_documents_the_catalog_wide_rule" -q
+    expected: >-
+      All three nodes pass -- VERB_UNIVERSE holds only per-table-scoped verbs, no class carries a
+      gc_ops cell, and the sidecar's maintenance_policy header documents WHY a catalog-wide verb
+      takes none, so the rule lives with the field it governs rather than only in a plan file.
+    fix_if: >-
+      A gc_ops cell or VERB_UNIVERSE entry was added. The matrix single production consumer is
+      scope.resolve_scope at handler.py:396; gc_ops has no per-table dimension, so a gc_ops cell is a
+      CI-enforced field no code reads -- declaration without behavior.
+    graduation: graduate
+    graduation_check_id: matrix-carries-no-catalog-wide-verb
+  - step: 9
+    phase: pre-deploy
+    action: >-
+      Prove both new modules ship in the maintenance zip and are excluded from data-pipeline.
+    command: "bin/venv-python -c \"import yaml,io; m=yaml.safe_load(io.open('src/lambdas/ducklake_maintenance/manifest.yaml',encoding='utf-8')); dp=yaml.safe_load(io.open('src/lambdas/data-pipeline/manifest.yaml',encoding='utf-8')); inc=set(m.get('includes') or []); exc=set(dp.get('excludes') or []); need={'src/common/ducklake_gc_verification.py','src/common/ducklake_gc_ops.py'}; assert need <= inc, 'maintenance manifest missing: '+str(sorted(need-inc)); assert need <= exc, 'data-pipeline excludes missing: '+str(sorted(need-exc)); print('manifests carry both modules')\""
+    hermetic: true
+    expected: >-
+      ducklake_gc_verification.py and ducklake_gc_ops.py are in the maintenance manifest includes and
+      in the data-pipeline excludes.
+    fix_if: >-
+      A module is missing from either list. tests/lambda_manifest/test_bundle_checks.py passes both
+      before and after this change (measured), so it cannot be the assertion here.
+    graduation: graduate
+    graduation_check_id: gc-modules-bundled-and-excluded
+  - step: 10
+    phase: pre-deploy
+    action: >-
+      Prove the Decision landed WITH its Decision 167 envelope and the cl.2 staleness annotation.
+    command: "bin/venv-python -c \"import io,re,yaml; F=chr(96)*3; t=io.open('docs/DECISIONS.md',encoding='utf-8').read(); m=re.search(r'^## Decision (\\d+): Production destructive GC[^\\n]*\\n+'+F+r'yaml\\n(.*?)\\n'+F, t, re.S|re.M); assert m, 'no Decision heading with a fenced yaml envelope'; e=yaml.safe_load(m.group(2)); assert e['number']==int(m.group(1)), 'envelope number disagrees with the heading'; assert e['significance']['value']=='numbered_decision', e['significance']; assert (e['significance'].get('justification') or '').strip(), 'significance justification is empty'; assert not (e.get('amends') or []), 'this Decision amends nothing -- 88/188/191 are related'; d88=re.search(r'^## Decision 88:.*?(?=^## Decision )', t, re.S|re.M); assert d88, 'Decision 88 section not found'; assert 'ObservabilityMetricRead' in d88.group(0), 'the cl.2 annotation must land INSIDE Decision 88, not merely somewhere in the file'; print('decision envelope ok')\""
+    hermetic: true
+    expected: >-
+      The Decision heading exists, its fenced yaml envelope parses, number agrees with the heading,
+      significance is numbered_decision with a non-empty justification, amends is empty, and the
+      ObservabilityMetricRead annotation lands INSIDE the Decision 88 section -- a whole-file grep
+      would be satisfied by the new entry's own body, which is why this is section-scoped.
+    fix_if: >-
+      A heading and prose clauses with no envelope -- decision-entry.yaml
+      metadata_envelope.required_fields is [number, significance] and
+      validate_decision_entry_conformance fails the entry.
+    graduation: graduate
+    graduation_check_id: gc-decision-envelope-and-annotation
+  - step: 11
+    phase: pre-deploy
+    action: >-
+      Prove T2.18 c2 no longer carries the unadjudicable text.
+    command: "bin/venv-python -c \"import yaml,io,json; d=yaml.safe_load(io.open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8')); assert 'S3 storage confirmed stable after N maintenance cycles' not in json.dumps(d), 'c2 still carries the unadjudicable text'; print('c2 rewritten')\""
+    hermetic: true
+    expected: >-
+      c2 no longer reads "S3 storage confirmed stable after N maintenance cycles".
+    fix_if: >-
+      c2 still carries the original -- that text is satisfied by a job deleting the whole prefix, so a
+      follow-on could never honestly flip it met.
+    graduation: graduate
+    graduation_check_id: gc-c2-criterion-rewritten
+  - step: 12
+    phase: pre-deploy
+    action: >-
+      Full-tier validation before handoff.
+    command: bin/venv-python -m scripts.validate
+    expected: >-
+      Exit 0. This is where the amended test_admin_tf_has_exactly_one_alarm_block surfaces if it was
+      left asserting == 1 against a file that now has two alarm blocks, and where
+      test_alarm_descriptions_retain_provenance_tag surfaces if the new alarm was placed first.
+    fix_if: >-
+      Any check fails -- resolve before commit per handoff_policy.
+    graduation: not-applicable
+  - step: 13
+    phase: post-deploy
+    action: >-
+      Confirm the governed CD channel deployed the handler carrying action=gc_ops BEFORE anything
+      invokes the verb, and record the data-pipeline disposition on its true premise.
+    command: "echo 'DISPATCH VIA MCP: mcp__github__actions_get for deploy-ducklake-lambdas.yml on the squash-merge commit. It must be green for ducklake_maintenance before VP14.'"
+    expected: >-
+      deploy-ducklake-lambdas.yml is green for the merge commit for ducklake_maintenance, and the
+      maintenance smoke-gate passed (Decision 79 / CD.16 V3 tier). data-pipeline is the second
+      affected artifact and requires NO deploy -- but NOT because its zip is unchanged: it IS
+      changed, because docs/ROADMAP-PLATFORM.yaml is a bundled ASSET of that artifact
+      (src/lambdas/data-pipeline/manifest.yaml:44) and this plan rewrites c2 in it. The correct
+      ground is that the delta is INERT and unreachable by CD: scheduled agents are disabled
+      (Decisions 61/37/116), and neither deploy-prod-lambdas.yml's on.push.paths nor
+      PROD_SOURCE_PATHSPECS (scripts/convergence_health/code_drift.py:227-238) covers docs/**, so
+      no deploy fires and no stale-code drift alarm raises.
+    fix_if: >-
+      The DuckLake run is red or absent. Do NOT invoke the verb -- a dispatch before the code lands
+      is a 400 that tells you nothing about GC. Never fall back to a local break-glass deploy; see
+      docs/contracts/deploy-paths.yaml. If the inert-delta premise fails to hold at implement time
+      (a scheduled agent re-enabled, or the asset read at runtime), dispatch deploy-prod-lambdas.yml
+      via workflow_dispatch to discharge the Decision 79 / CD.16 obligation for data-pipeline.
+  - step: 14
+    phase: post-deploy
+    action: >-
+      BASELINE GATE, before anything destructive runs. Precondition (OPERATOR, not this command):
+      invoke action=gc_ops with dry_run=true against ducklake_ops -- explicit data_path +
+      meta_schema -- which writes nothing. The admin Function URL is AWS_IAM and CI holds no invoke
+      grant, so the invoke stays human-run; the READ-BACK below is agent-executable on the
+      ObservabilityMetricRead grant, so the assertion is a real command rather than prose that
+      always exits 0. This gate asserts referenced-missing is ZERO and records GcWouldDeleteFiles as
+      a PRE-EXPIRY LOWER BOUND -- not a headroom certificate, per limitation (c). The post-expiry
+      figure is unknowable until a real pass has run, so it is read at VP16, not here: nothing in
+      this plan performs a destructive pass before VP15 enables the schedule, and the rollback note
+      says so.
+      ON THE RECORDED DELTA: 3,418 tracked vs 3,415 objects for one table (measured 2026-09-12) is
+      3 catalog-tracked paths absent from storage -- i.e. referenced-missing == 3, so this gate is
+      PREDICTED TO TRIP unless the cause is removed first. Two candidate causes, and they are
+      distinguishable. (1) A read-ordering race: gc_ops MUST collect the catalog live set FIRST and
+      list storage SECOND. In that order an interleaved write appears as a spurious ORPHAN, which is
+      harmless here; the reverse order manufactures exactly this 3-object referenced-missing
+      signature. Implement the ordering (it is a scope obligation on ducklake_gc_ops and asserted by
+      a test) and re-take the reading. (2) Genuinely missing referenced files, which is an incident
+      predating this plan and must be root-caused before any destructive pass -- deleting more while
+      three referenced files are already unaccounted for is exactly the condition the safety
+      invariant exists to refuse.
+    command: aws cloudwatch get-metric-data --profile agent_platform --start-time "$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --metric-data-queries '[{"Id":"rm","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcReferencedMissing"},"Period":3600,"Stat":"Maximum"}},{"Id":"wd","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcWouldDeleteFiles"},"Period":3600,"Stat":"Maximum"}}]'
+    expected: >-
+      GcReferencedMissing == 0 after the read-ordering rule is in place, nothing written by the
+      dry-run, and GcWouldDeleteFiles reported. That figure is a pre-expiry LOWER BOUND: it
+      establishes only that the backlog is not already over G4_MAX_DELETE_FILES (20,000). It is not
+      a headroom certificate and must not be read as one -- VP16 takes the post-expiry figure.
+    fix_if: >-
+      Baseline referenced-missing is non-zero -- STOP, do not enable the schedule. A post-GC value
+      of 3 is unattributable against a baseline of 3, so the safety invariant cannot adjudicate;
+      root-cause the delta first (measurement race, or genuinely missing referenced files).
+      SEPARATELY, if GcWouldDeleteFiles >= G4_MAX_DELETE_FILES the schedule must NOT be enabled
+      either: bound_deletions defers the WHOLE pass above the cap with no partial drain
+      (ducklake_maintenance_ops.py:129-160). This catalog has never had expire/cleanup/orphan run,
+      so its backlog is unmeasured -- if it is over cap, every pass defers forever, the backlog can
+      never shrink, the N=9 window produces zero deletions and c2 can never adjudicate. Do NOT raise
+      G4 (this plan's own no-weakening constraint, Decision 55): that is rec-3871's bounded drain,
+      and it needs a Decision. If the metrics read ABSENT rather than zero, the operator invoke did
+      not happen or was denied -- check that before reading anything into the silence.
+  - step: 15
+    phase: post-deploy
+    action: Enable the schedule, only after VP13 and VP14 both pass. This is the FIRST step in this plan that permits a destructive pass; everything before it is read-only.
+    command: "echo 'OPERATOR STEP: flip the agent-platform-ducklake-maintenance-gc-ops EventBridge rule state DISABLED -> ENABLED via the governed infra apply, AFTER the CD deploy is green and the baseline reads zero with G4 headroom confirmed.'"
+    expected: The rule is ENABLED and the handler already serves action=gc_ops.
+    fix_if: The handler does not yet serve the verb -- the schedule would fire a 400 unknown action.
+  - step: 16
+    phase: post-deploy
+    action: >-
+      Assert the safety invariant on the first real destructive cycle, AND take the post-expiry
+      GcWouldDeleteFiles reading that VP14 structurally could not. This is where limitation (c)
+      closes: VP14's figure was a pre-expiry lower bound on a never-expired catalog, and after this
+      pass that premise no longer holds, so the understatement shrinks to something the next pass's
+      bound can be judged against. An AGENT-EXECUTABLE read, not an operator echo -- the dev role
+      carries GetMetricData via platform_dev_policies.tf ObservabilityMetricRead (T2.48 / rec-2851).
+    command: aws cloudwatch get-metric-data --profile agent_platform --start-time "$(date -u -d '8 days ago' +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --metric-data-queries '[{"Id":"rm","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcReferencedMissing"},"Period":86400,"Stat":"Maximum"}},{"Id":"snap","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcSnapshotsRetainedMin"},"Period":86400,"Stat":"Minimum"}},{"Id":"debt","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcDebtRatio"},"Period":86400,"Stat":"Average"}},{"Id":"dsnap","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcDeletedSnapshots"},"Period":86400,"Stat":"Sum"}},{"Id":"dfiles","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcDeletedFiles"},"Period":86400,"Stat":"Sum"}},{"Id":"dorph","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcDeletedOrphans"},"Period":86400,"Stat":"Sum"}},{"Id":"wd","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcWouldDeleteFiles"},"Period":86400,"Stat":"Maximum"}}]'
+    expected: >-
+      GcReferencedMissing max == 0, GcSnapshotsRetainedMin >= 2 (catalog-level), GcDebtRatio
+      present, the sum of GcDeletedSnapshots + GcDeletedFiles + GcDeletedOrphans > 0, and
+      GcWouldDeleteFiles present and below G4_MAX_DELETE_FILES on this post-pass reading. Every one
+      of these is a metric the gc_ops scope row obliges the pass to emit -- the query adjudicates
+      nothing it did not ask for. A metric reading ABSENT rather than breached means the pass did
+      not run or never reached its emission: treat absence as a FAILURE of this step, never a pass.
+    fix_if: >-
+      Any safety signal breaches -- this is an incident. Disable the rule and RCA before the next
+      pass; never widen a bound to make it pass (Decision 55). A metric that reads ABSENT rather
+      than breached is the namespace condition biting -- check it was emitted into
+      DuckLakeMaintenance.
+  - step: 17
+    phase: post-deploy
+    action: >-
+      Adjudicate rec-3870 after the observation window, and confirm rec-3871 carries limitation (c).
+      Both recs were filed at PLAN time, so this step resolves committed closers rather than
+      remembering to create them -- but rec-3871 predates limitation (c)'s discovery, so its
+      amendment is asserted here rather than assumed.
+    command: "echo 'OPERATOR STEP: after N = 9 weekly gc_ops cycles, adjudicate rec-3870 against the rewritten c2 -- both the per-cycle safety invariant and the windowed GC-debt efficacy bound -- and close it via scripts.ops_data_portal. N = 9: 1 drain cycle excluded, ceil(max(grace 7, retention 30)/7) = 5 for a file to traverse write->supersede->grace->delete, plus 3 steady-state samples.'"
+    expected: >-
+      rec-3870 is adjudicated against nine cycles of real data and closed, T2.18 c2 flips met only
+      if both assertions adjudicate true, and rec-3871's context names all THREE limitations -- the
+      inert byte half, the whole-pass defer, and the pre-expiry/post-expiry bound mismatch -- with
+      an acceptance probe that cannot be satisfied while (c) stands.
+    fix_if: >-
+      rec-3871 still names only two limitations -- then limitation (c) is owned by nobody and this
+      plan's acceptance criterion 7 is false. Or fewer than nine cycles produced a deletion (see
+      VP16's post-expiry G4 reading -- a permanently
+      deferred pass yields a window with no deletions at all), or a safety signal breached during
+      the window. Neither permits flipping c2 met: exit-criteria-ledger.yaml forbids a flip over
+      text that does not adjudicate true at flip time.
+test_obligations:
+- source: src/common/ducklake_gc_verification.py
+  behavior: referenced_missing, gc_debt_ratio and a NON-VACUOUS value-scanning read-path check are correct and discriminating.
+  verification_step: 1
+  test_selector: tests/common/test_ducklake_gc_verification.py
+  red_green_expectation: Red before (target_absent, exit 4 -- measured; module and test file both absent), green after.
+- source: tests/common/test_ducklake_gc_verification.py
+  behavior: The shared-bug fixture is caught by the read-path check and nothing else; the vacuity fixture is caught by a
+    value aggregate and not by a row count.
+  verification_step: 1
+  test_selector: tests/common/test_ducklake_gc_verification.py
+  red_green_expectation: Red before (file absent, exit 4 -- measured), green after.
+- source: src/common/ducklake_gc_ops.py
+  behavior: >-
+    The live set enumerates every catalog table and takes no policy input; gc_ops runs no prelude,
+    passes the catalog live set (never the storage map) as live_before, and emits every metric any
+    verification step
+    asserts -- GcReferencedMissing, GcWouldDeleteFiles, GcDebtRatio, GcDebtBytes, GcStorageObjects,
+    GcSnapshotsRetainedMin and the three per-phase deleted counts.
+  verification_step: 3
+  test_selector: tests/common/test_ducklake_gc_ops.py::TestGuardLiveSetIsUniversal::test_policy_excluded_table_live_file_is_in_the_guard_live_set
+  red_green_expectation: Red before (target_absent, exit 4 -- measured), green after. This is the plan central correctness
+    assertion.
+- source: tests/common/test_ducklake_gc_ops.py
+  behavior: TestGuardLiveSetIsUniversal exists and reddens if the live set is derived from resolve_scope or any policy input.
+  verification_step: 3
+  test_selector: tests/common/test_ducklake_gc_ops.py::TestGuardLiveSetIsUniversal::test_policy_excluded_table_live_file_is_in_the_guard_live_set
+  red_green_expectation: Red before (file and node absent, exit 4 -- measured), green after.
+- source: src/common/ducklake_gc_ops.py
+  behavior: >-
+    gc_ops emits the full nine-metric set into the DuckLakeMaintenance namespace, with
+    GcReferencedMissing emitted BEFORE any referenced-missing raise, asserted against a fake metrics
+    sink rather than only stated in prose.
+  verification_step: 4
+  test_selector: tests/common/test_ducklake_gc_ops.py::TestMetricEmission::test_emits_the_full_metric_set_with_referenced_missing_before_any_raise
+  red_green_expectation: >-
+    Red before (target_absent, exit 4 -- measured; the node does not exist), green after. Without
+    this the emission obligation is prose only, and an unemitted metric reads ABSENT rather than
+    breached -- exactly what VP16 would then adjudicate against nothing.
+- source: src/lambdas/ducklake_maintenance/handler.py
+  behavior: action_gc_ops requires explicit params, honours dry_run read-only, delegates to ducklake_gc_ops, never calls
+    resolve_scope, and raises on referenced-missing.
+  verification_step: 2
+  test_selector: tests/lambdas/ducklake_maintenance/handler/test_gc_action.py
+  red_green_expectation: Red before (target_absent, exit 4 -- measured). _ACTIONS holds no gc or gc_ops entry on the admin
+    handler. Green after.
+- source: tests/lambdas/ducklake_maintenance/handler/test_gc_action.py
+  behavior: The admin gc_ops verb contract, including the dry_run and no-resolve_scope paths, is exercised.
+  verification_step: 2
+  test_selector: tests/lambdas/ducklake_maintenance/handler/test_gc_action.py
+  red_green_expectation: Red before (file absent, exit 4 -- measured), green after.
+- source: src/common/ducklake_maintenance.py
+  behavior: GC_TABLE_SCOPE is unchanged and the admin handler never reads it, asserted by a shipped test.
+  verification_step: 5
+  test_selector: tests/lambdas/ducklake_maintenance/handler/test_gc_action.py::TestSmokeScopeNotRepointed::test_gc_table_scope_still_holds_the_smoke_pair
+  red_green_expectation: Red before (node absent, exit 4 -- measured), green after. The INVARIANT is never-weaken and would
+    be green either way as a plan-time grep; binding it to a shipped test node makes the step genuinely red before the fix
+    AND leaves a standing regression guard behind.
+- source: docs/contracts/ducklake_maintenance.yaml
+  behavior: The gc_ops verb is documented with dry_run alongside the surviving smoke gc verb, and the amendment entry uses
+    the closed vocabulary correctly.
+  verification_step: 6
+  command: bin/venv-python -c "import yaml,io; d=yaml.safe_load(io.open('docs/contracts/ducklake_maintenance.yaml',encoding='utf-8'));
+    assert 'gc_ops' in d['verbs'], 'gc_ops verb undocumented'; assert 'gc' in d['verbs'], 'the smoke gc verb must survive
+    the addition'; assert 'dry_run' in d['verbs']['gc_ops']['payload_schema_ref'], 'dry_run absent from the gc_ops payload';
+    a=d['amendment_log']; assert len(a)>=3, 'no amendment entry appended (2 exist today)'; assert a[-1]['change_class']=='field_add'
+    and a[-1]['semantic_break'] is True, 'a new verb is field_add with semantic_break true'; print('contract + amendment
+    ok')"
+  red_green_expectation: Red before (assertion_failed, exit 1 -- measured). The contract documents gc (the SMOKE verb) but
+    no gc_ops, and its amendment_log holds 2 entries. Green after.
+- source: terraform/personal/ducklake_maintenance.tf
+  behavior: The gc_ops rule is created DISABLED, no lifecycle rule targets the data lake, and IAM is unwidened.
+  verification_step: 7
+  test_selector: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_gc_ops_rule_is_created_disabled
+  red_green_expectation: Red before (node absent, exit 4 -- measured; the rule does not exist), green after.
+- source: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py
+  behavior: TestProductionGcRuleInvariants hosts the new assertions, and the two order/count-sensitive existing tests are
+    amended.
+  verification_step: 7
+  test_selector: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_gc_ops_rule_is_created_disabled
+  red_green_expectation: Red before (node absent, exit 4 -- measured). The file passes 8 tests today, but two of them break
+    unless amended -- test_admin_tf_has_exactly_one_alarm_block (asserts == 1) and test_alarm_descriptions_retain_provenance_tag
+    (reads block [0]) -- so naming the file alone would have been green-by-construction here AND a latent failure at VP12.
+    Green after.
+- source: config/lambda/ducklake/field_semantics.static.yaml
+  behavior: The matrix is NOT given a gc_ops column and VERB_UNIVERSE is not extended -- a catalog-wide verb takes no per-table
+    cell.
+  verification_step: 8
+  test_selector: tests/common/test_ducklake_gc_ops.py::TestMatrixCarriesNoCatalogWideVerb::test_verb_universe_holds_only_per_table_scoped_verbs
+  red_green_expectation: >-
+    Red before (target_absent, exit 4 -- measured; the node does not exist), green after. The
+    INVARIANT is never-weaken and is green either way as a plan-time assertion -- an earlier draft
+    wrote it as a bare python -c and the red-before gate correctly rejected it as tautological.
+    Binding it to a shipped test node makes the step genuinely red before the fix AND leaves a
+    standing guard against re-adding the inert column a previous draft of this plan proposed.
+- source: config/lambda/ducklake/field_semantics.static.yaml
+  behavior: >-
+    The maintenance_policy header documents that a catalog-wide verb takes no cell, collocating the
+    rule with the field it governs. Comment-only -- no key added or changed.
+  verification_step: 8
+  test_selector: tests/common/test_ducklake_gc_ops.py::TestMatrixCarriesNoCatalogWideVerb::test_matrix_header_documents_the_catalog_wide_rule
+  red_green_expectation: >-
+    Red before (target_absent, exit 4 -- measured; the node does not exist), green after. Verified
+    the edit does not move the affected-artifact set: compute_affected_artifacts over the full scope
+    still returns exactly two, because the bundled asset is the GENERATED field_semantics.yaml and it
+    carries no comments from this header.
+- source: src/lambdas/ducklake_maintenance/manifest.yaml
+  behavior: Both new modules ship in the maintenance zip.
+  verification_step: 9
+  command: 'bin/venv-python -c "import yaml,io; m=yaml.safe_load(io.open(''src/lambdas/ducklake_maintenance/manifest.yaml'',encoding=''utf-8''));
+    dp=yaml.safe_load(io.open(''src/lambdas/data-pipeline/manifest.yaml'',encoding=''utf-8'')); inc=set(m.get(''includes'')
+    or []); exc=set(dp.get(''excludes'') or []); need={''src/common/ducklake_gc_verification.py'',''src/common/ducklake_gc_ops.py''};
+    assert need <= inc, ''maintenance manifest missing: ''+str(sorted(need-inc)); assert need <= exc, ''data-pipeline excludes
+    missing: ''+str(sorted(need-exc)); print(''manifests carry both modules'')"'
+  red_green_expectation: Red before (assertion_failed, exit 1 -- measured). tests/lambda_manifest/test_bundle_checks.py
+    passes both before and after (measured exit 0), so it cannot carry this assertion. Green after.
+- source: src/lambdas/data-pipeline/manifest.yaml
+  behavior: Both new modules are excluded from data-pipeline.
+  verification_step: 9
+  command: 'bin/venv-python -c "import yaml,io; m=yaml.safe_load(io.open(''src/lambdas/ducklake_maintenance/manifest.yaml'',encoding=''utf-8''));
+    dp=yaml.safe_load(io.open(''src/lambdas/data-pipeline/manifest.yaml'',encoding=''utf-8'')); inc=set(m.get(''includes'')
+    or []); exc=set(dp.get(''excludes'') or []); need={''src/common/ducklake_gc_verification.py'',''src/common/ducklake_gc_ops.py''};
+    assert need <= inc, ''maintenance manifest missing: ''+str(sorted(need-inc)); assert need <= exc, ''data-pipeline excludes
+    missing: ''+str(sorted(need-exc)); print(''manifests carry both modules'')"'
+  red_green_expectation: Red before (assertion_failed, exit 1 -- measured), green after.
+- source: docs/DECISIONS.md
+  behavior: The Decision lands with a parseable Decision 167 envelope carrying significance and a non-empty justification,
+    plus the cl.2 annotation.
+  verification_step: 10
+  command: "bin/venv-python -c \"import io,re,yaml; F=chr(96)*3; t=io.open('docs/DECISIONS.md',encoding='utf-8').read(); m=re.search(r'^## Decision (\\d+): Production destructive GC[^\\n]*\\n+'+F+r'yaml\\n(.*?)\\n'+F, t, re.S|re.M); assert m, 'no Decision heading with a fenced yaml envelope'; e=yaml.safe_load(m.group(2)); assert e['number']==int(m.group(1)), 'envelope number disagrees with the heading'; assert e['significance']['value']=='numbered_decision', e['significance']; assert (e['significance'].get('justification') or '').strip(), 'significance justification is empty'; assert not (e.get('amends') or []), 'this Decision amends nothing -- 88/188/191 are related'; d88=re.search(r'^## Decision 88:.*?(?=^## Decision )', t, re.S|re.M); assert d88, 'Decision 88 section not found'; assert 'ObservabilityMetricRead' in d88.group(0), 'the cl.2 annotation must land INSIDE Decision 88, not merely somewhere in the file'; print('decision envelope ok')\""
+  red_green_expectation: 'Red before (assertion_failed, exit 1 -- measured, on the intended clause: no such heading). Positive
+    control run against Decision 191 confirms the regex and envelope assertions are satisfiable, so this is not an unpassable
+    step (rec-3865). Green after.'
+- source: docs/ROADMAP-PLATFORM.yaml
+  behavior: c2 text is rewritten to the adjudicable assertions and its status stays open.
+  verification_step: 11
+  command: bin/venv-python -c "import yaml,io,json; d=yaml.safe_load(io.open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8'));
+    assert 'S3 storage confirmed stable after N maintenance cycles' not in json.dumps(d), 'c2 still carries the unadjudicable
+    text'; print('c2 rewritten')"
+  red_green_expectation: Red before (assertion_failed, exit 1 -- measured), green after.
+constraints:
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    NEVER weaken a guard, bound or retry budget to make a signal pass. A safety breach is an
+    incident: disable the schedule and RCA. Precedent set by the rec-3802 resolution (PR #1175) --
+    when a guard trips on a fixture, fix the fixture.
+  - >-
+    NEVER let any policy input reach the guard live set. The destructive verbs are catalog-wide;
+    filtering the live set does not narrow what is deleted, it narrows what G1, G3 and
+    referenced_missing can SEE.
+  - >-
+    NEVER add a gc_ops cell to maintenance_policy or a gc_ops entry to VERB_UNIVERSE. The matrix
+    governs per-table-scoped verbs only -- its single production consumer is scope.resolve_scope at
+    handler.py:396 -- and gc_ops has no per-table dimension, so a cell there is a CI-enforced field
+    no code reads. A fixture may inject one to prove the guard ignores it; the shipped matrix may
+    not carry one.
+  - >-
+    NEVER give gc_ops a per-table prelude. merge_ops already compacts every ops table 6-hourly and
+    flush_inlined_data is a documented no-op; duplicating the merge adds writer-serialization
+    contention (rec-3762) for nothing.
+  - >-
+    Do NOT modify src/common/ducklake_maintenance_ops.py, src/common/ducklake_maintenance.py or any
+    other shipped guard code in this plan. The G4 byte-half degradation and the whole-pass defer are
+    DEFERRED to rec-3871, conditioned on VP14's measurement -- not fixed inline. An earlier
+    draft tried both here and produced, in two consecutive critique rounds, a fail-closed default
+    that would have hard-failed the live smoke GC on its first orphan candidate, two broken shipped
+    tests in an out-of-scope file, and a cutoff-walk whose stated rule was satisfied by deleting
+    nothing. Equally: do NOT paper over the degradation by claiming G4 is fully effective here.
+  - >-
+    Do NOT repoint GC_TABLE_SCOPE at production. Decision 143 cl.2 env-pins the smoke dispatch to
+    the disposable catalog; production scope comes from catalog enumeration.
+  - >-
+    NEVER add an S3 lifecycle expiration rule over the lakehouse prefix. It would delete live
+    Parquet on an age rule the catalog knows nothing about -- over-reclaim by configuration, which
+    no guard in the GC path can see.
+  - >-
+    Emit every metric into the DuckLakeMaintenance CloudWatch namespace. The role's PutMetricData
+    grant is conditioned on it, so a metric elsewhere is silently denied and reads as absent.
+  - The rule ships DISABLED. Enabling is a separate, gated step after the CD deploy is green and the baseline reads zero with G4 headroom confirmed.
+  - >-
+    Do NOT raise the SLOC budget for src/lambdas/ducklake_maintenance/handler.py. It is at 458 of
+    500 with no budget entry; Decision 128 makes decomposition the default and a raise a deliberate,
+    marked exception. CONTINGENCY if the dispatch will not fit in the 42 SLOC of headroom: move the
+    shared param-validation and connection preamble into ducklake_gc_ops, never raise the budget.
+  - Never edit logs/*.jsonl directly; rec writes go through scripts.ops_data_portal (Decision 84).
+context:
+  - "decision-scout verdict: FLAGS_FOUND. Decisions triaged: 144 of 144"
+  - "Roadmap items intersected: K: 3; CONFLICT: 0; RELATED: 2"
+  - "CITE: Decision 88 (cl.4 is the gate this plan clears; cl.1(iii); cl.2 stale parenthetical annotated), Decision 188 (G1-G4 guard the destructive path, REUSED by gc_ops not reimplemented; cl.6), Decision 191 (cl.2 universes declared independently), Decision 81 (cl.6 fixes weekly cadence + retention floor + >=7d grace + no scheduled cleanup_all), Decision 143 (cl.1/cl.2 admin-only host, smoke env-pinned), Decision 84 (I-2 writer-owned counter), Decision 125/126 (two channels -- rule and handler deploy separately), Decision 129 (pt 1 EventBridgeRead covers agent-platform-* rules), Decision 119 (terraform plan is CI-delegated from CC-web), Decision 100 (managed primitives), Decision 55, Decision 79, Decision 150/177 (annotation dialect)"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE x3 -> confirming round pending; F18 scope fork decided by the human"
+  - >-
+    CI-RCA STATUS, re-checked 2026-09-15: rec-3861 and rec-3863 (the ruff-0.16.7 ISC004
+    regressions) are both CLOSED, fixed_by_sha a86aff9c, which this branch has merged. An earlier
+    draft sequenced this plan behind them because the full tier could not reach exit 0; that
+    dependency is discharged and `ruff check src/ tests/ scripts/` now passes clean on this branch.
+    No CI-RCA rec is open against this work.
+  - >-
+    Decision 88 cl.4 GATE IS CLEARED, verified: the gate is the rec-2113 pg_restore drill; T2.26 c1
+    is met (met_by 6cbfe6b1, 2026-07-04) and rec-2113 is closed. T2.18 c2's own text records the
+    clearing. Decisions 188 and 191 both left cl.4 standing but untouched. No fresh drill required.
+    Cite the clearing; do not restate the gate as open.
+  - >-
+    WHY THE CRITERION IS REWRITTEN. "S3 storage confirmed stable" is blind to over-reclaim --
+    deleting live data makes storage look better, so a job that deleted the whole prefix would
+    satisfy it. It is also unmeasurable as written: the data-lake bucket holds 12+ unrelated
+    prefixes (agents/, convergence/, deploy-records/, lambda-packages/, recommendations/,
+    tf-provider-mirror/, ...), so AWS/S3 bucket-wide metrics cannot isolate the lakehouse. And
+    absolute storage on an ingesting lakehouse is not supposed to be stable. The rewrite is
+    STRENGTHENING; status stays open per exit-criteria-ledger.yaml.
+  - >-
+    THE TRAP. referenced_missing shares the live set L with the delete-set computation, so a bug in
+    the live-file function corrupts the action and its own check identically -- the recorded Iceberg
+    remove_orphan_files class (s3:// vs s3a://, double slashes, URL-encoded paths). The read-path
+    check (pass-start snapshot id, re-read AT VERSION, compare row count) is the INDEPENDENT
+    assertion and the one the criterion rests on. A test that only exercises referenced_missing
+    reproduces this workstream's recorded blind-oracle failure.
+  - >-
+    N = 9 weekly cycles, derived: 1 drain cycle excluded (it always looks like GC works) +
+    ceil(max(grace 7, retention 30)/7) = 5 for a file to traverse write -> supersede -> grace ->
+    delete inside the window + 3 steady-state samples (two points always fit a line). Constants
+    measured at src/common/ducklake_maintenance.py:82-84.
+  - >-
+    Decision 100 justification to record verbatim in the plan's PR: no managed service has catalog
+    semantics, so the catalog-to-storage join is inherently application state -- which is why
+    Iceberg, Delta and Hudi all ship their own orphan/fsck tooling. AWS/S3 metrics are bucket-wide;
+    Storage Lens gives prefix bytes but cannot separate live from dead and is blind to over-reclaim;
+    S3 Inventory's crossover is 10^7-10^8 objects against ~13k here. Storage side uses
+    ListObjectsV2 and the sink uses CloudWatch -- only the join is custom.
+  - >-
+    GUARD BLINDNESS -- the correctness centre of this plan, found by the plan-critique gate and
+    verified against source. ducklake_expire_snapshots, ducklake_cleanup_old_files and
+    ducklake_delete_orphaned_files are CATALOG-WIDE (src/common/ducklake_maintenance.py:36-37, and
+    the three wrappers at :210/:252/:276 take a catalog and no table list). run_guarded_gc
+    (ducklake_maintenance_ops.py:178-250) consumes its tables argument ONLY to build live_now and
+    live_after, while would_delete_paths comes from the catalog-wide dry-run helpers. So excluding a
+    class from the table list does NOT stop its files being expired, cleaned or orphan-deleted -- it
+    removes that table live files from the set G1 (assert_reachability) and G3 (assert_catalog_sane)
+    are computed against. The first draft of this plan excluded the control class that way and would
+    have made ops_entity_counters LESS protected, not more. The live set is therefore universal and
+    takes no policy input at all.
+  - >-
+    READ-PATH VACUITY. A bare count(*) at a pinned snapshot is answerable from DuckLake catalog
+    record-count metadata, so it can return the pass-start count with every backing Parquet file
+    already deleted. Column min/max statistics have the same problem. verify_read_path must
+    aggregate over actual column VALUES, and the vacuity fixture (catalog rows survive, Parquet
+    gone) is what proves it. Without this the plan own "independent" check is the blind oracle its
+    existence is justified by.
+  - >-
+    VERB NAMESPACE, measured 2026-09-14. docs/contracts/ducklake_maintenance.yaml already documents
+    a gc verb -- the SMOKE host weekly disposable-catalog pass -- and
+    terraform/personal/ducklake_maintenance_smoke.tf:243 already owns the EventBridge rule name
+    agent-platform-ducklake-maintenance-gc. The contract own precedent for a production counterpart
+    of a smoke verb is merge -> merge_ops, and VERB_UNIVERSE in
+    src/common/ducklake_maintenance_scope.py is ("merge_ops",) -- i.e. it is the PRODUCTION verb
+    namespace. The production verb is therefore gc_ops, with rule name
+    agent-platform-ducklake-maintenance-gc-ops. Naming it gc would give one verb two opposite scope
+    semantics across two hosts and collide on the rule name at apply time.
+  - >-
+    WHY NO MATRIX COLUMN (round-3 finding F18, and the question the human asked of it). The
+    maintenance_policy matrix was NEVER inert in the codebase: today it carries merge_ops only, for
+    all three classes, and VERB_UNIVERSE is ("merge_ops",) -- both measured 2026-09-14, both live
+    and correct. The inert thing was a column THIS PLAN proposed adding. It entered in draft 1 on
+    the mistaken premise that the matrix could scope a catalog-wide verb (finding F1); when that
+    premise was corrected the column's purpose evaporated, but drafts 2 and 3 fixed the CELL
+    SEMANTICS instead of asking whether the cell should exist at all. The matrix has exactly ONE
+    production consumer -- scope.resolve_scope at src/lambdas/ducklake_maintenance/handler.py:396,
+    called with verb="merge_ops" -- and gc_ops has no per-table dimension, so nothing would ever
+    have read the column. VERB_UNIVERSE is by construction the PER-TABLE-SCOPED verb universe;
+    Decision 191 cl.2 governs how that universe is SOURCED, never which verbs belong in it, so
+    leaving it at ("merge_ops",) satisfies cl.2 completely. Dropping the column also keeps
+    ducklake_reader, ducklake_writer and ducklake_maintenance_smoke out of the affected set.
+  - >-
+    G4 BYTE HALF -- A RECORDED DEGRADATION, DEFERRED BY DESIGN (F20 diagnosis, round-5 scoping).
+    bound_deletions sizes candidate_bytes by joining would_delete_paths against live_before
+    (ducklake_maintenance_ops.py:227). For a verb with NO merge prelude every candidate was
+    superseded by an earlier pass and is already absent, so the byte half sizes to zero and the
+    file-count half is the only binding cap. The premise is specific to a no-prelude verb --
+    tests/common/test_ducklake_maintenance_ops.py::TestG4RealDryRunSizeColumn shows on the pinned
+    engine that a PRE-merge live_before DOES size merge-superseded candidates non-zero, so the smoke
+    path is unaffected and its byte half stays live. Two fixes were drafted and withdrawn: a
+    caller-supplied storage-map byte source, and a cutoff-walk to replace the whole-pass defer. Both
+    require editing shipped guard code, and in two consecutive critique rounds the attempt produced
+    a fail-closed default that would have hard-failed the live smoke GC on its first orphan
+    candidate (orphans are by construction absent from any catalog-derived live map), two broken
+    shipped tests in an out-of-scope file, and a walk rule satisfied by deleting nothing. They are
+    now rec-3871, CONDITIONED on VP14's measurement -- the backlog size that decides whether
+    a bounded drain is needed at all has never been measured.
+  - >-
+    MEASURED 2026-09-15, and it forecloses a tempting shortcut: both dry-run table functions return
+    a SINGLE `path` column -- ducklake_cleanup_old_files(dry_run=True) and
+    ducklake_delete_orphaned_files(dry_run=True), probed directly on the pinned engine. No size
+    column, no timestamp column. So the byte sizing genuinely requires an out-of-band source
+    (ListObjectsV2), and a cutoff-walk genuinely requires re-probing at different cutoffs rather
+    than sorting one result set. Neither can be collapsed into a single dry-run.
+  - >-
+    SLOC. src/lambdas/ducklake_maintenance/handler.py is 458 SLOC by the repo own counter against a
+    500 limit, with NO entry in config/sloc_budgets.yaml. action_merge_ops alone is ~110 SLOC and
+    gc_ops does strictly more, so the action body goes in its own module (Decision 128: decompose by
+    default; a raise is a marked exception, not a frictionless edit).
+  - >-
+    AFFECTED ARTIFACTS, re-measured after the F18 column drop and the round-5 guard-module split:
+    TWO, both status active -- ducklake_maintenance (the handler and its manifest) and data-pipeline
+    (the two new src/common modules plus docs/ROADMAP-PLATFORM.yaml, one of its bundled assets).
+    ducklake_maintenance_smoke is NOT affected, because this plan no longer touches
+    src/common/ducklake_maintenance_ops.py; ducklake_reader and ducklake_writer were pulled in only
+    by the regenerated field_semantics.yaml the F18 drop removed. VP13 gates the invoke on the
+    governed CD run being green for ducklake_maintenance; data-pipeline's disposition is recorded
+    there.
+  - >-
+    METRIC NAMESPACE TRAP. ducklake_maintenance.tf:123-133 conditions the role PutMetricData grant
+    on cloudwatch:namespace == "DuckLakeMaintenance". A metric emitted anywhere else is silently
+    denied, so the safety invariant would read as ABSENT rather than as breached -- the worst
+    possible failure shape for a guard whose whole job is to be noticed.
+  - >-
+    DRAFTED DECISION. Heading: "## Decision NNN: Production destructive GC is licensed by a safety
+    invariant that can see over-reclaim, not by a storage-size trend (Decided)". Envelope (MANDATORY
+    per Decision 167 / decision-entry.yaml metadata_envelope.required_fields [number, significance]),
+    a fenced yaml block carrying: number NNN; status Decided; decided_date; related [88, 188, 191] and amends NOTHING;
+    significance value numbered_decision with justification "Licenses destructive GC against the
+    production catalog for the first time, and fixes the rule that a maintenance_policy cell scopes
+    only per-table verbs -- a durable, reversal-relevant commitment about what may delete production
+    data, not a contract-prose edit." FIVE clauses. (1) The Decision 88 cl.4 gate is cleared by
+    T2.26 c1 / rec-2113; destructive GC is licensed on the admin function only, scoped by catalog
+    enumeration, never by repointing the smoke constant. (2) The maintenance_policy matrix governs
+    PER-TABLE-SCOPED verbs only. A catalog-wide verb takes no cell -- a cell nothing consults is a
+    declaration without behavior -- and its guard live set is universal, taking no policy input:
+    filtering it would narrow the guard, never the deletion.
+    (3) GC verification is two assertions: a per-cycle safety invariant (referenced-missing zero, a
+    value-level read-path check, the CATALOG-LEVEL snapshot floor) that raises on breach and never
+    retires, and a windowed efficacy bound on GC DEBT rather than absolute storage. (4) T2.18 c2 is
+    rewritten to those assertions because the original is satisfied by a job that deletes
+    everything; the rewrite strengthens and the criterion stays open until N cycles elapse.
+    (5) RECORDS A KNOWN LIMITATION rather than amending Decision 188. Decision 188 cl.2 pins G4's
+    sizing basis to a live inventory captured BEFORE merge can supersede a candidate. That premise
+    does not transfer to a verb that runs no merge -- the byte half then sizes to zero and the
+    file-count half is the only binding cap -- and the whole-pass defer has no partial drain. This
+    Decision neither changes 188's mechanism nor claims the guard is fully effective for gc_ops: it
+    records the degradation, notes the smoke path is unaffected, and names rec-3871, which
+    owns the fix, conditioned on the backlog measurement the baseline gate takes. Nothing in 188 or
+    191 changes, so both are RELATED, not amended. Annotates Decision 88 cl.2, whose IAM-blocked
+    parenthetical was superseded by T2.48 / rec-2851, per Decision 177.
+
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - "The catalog-wide/per-table split understood -- the matrix scopes per-table verbs only, so gc_ops takes no cell at all"
+  - "rec-3762's HAZARD read -- it is why gc_ops runs no merge prelude, NOT a reason to exclude a class"
+  - "The baseline gate (VP14) understood as blocking -- no schedule enable until referenced-missing reads zero AND G4 headroom is confirmed"
+execution_steps:
+  - >-
+    Create src/common/ducklake_gc_verification.py with referenced_missing and gc_debt_ratio as pure
+    functions over already-fetched path/byte sets, plus verify_read_path(con, snapshot_id, tables)
+    as the connection-owning independent check. It must force a real data scan -- aggregate over
+    column VALUES, never a count(*) or a min/max that catalog metadata or column statistics can
+    answer without touching storage. Keep the pure/connection split Decision 188 used.
+  - >-
+    Create src/common/ducklake_gc_ops.py holding the gc_ops pass body. Its live-set collection
+    enumerates EVERY catalog table and takes no policy input -- do not call scope.resolve_scope. It
+    runs NO flush/merge prelude. It calls run_guarded_gc UNMODIFIED -- never a second orchestration,
+    and never an edit to the shipped guard module. Note run_gc passes ONE `tables` argument serving
+    both the prelude and the guard live set; gc_ops must not inherit that conflation.
+  - >-
+    Add a thin action_gc_ops dispatch to the admin handler delegating to ducklake_gc_ops: explicit
+    data_path + meta_schema required, no-arg refused, dry_run accepted (default False, read-only).
+    Do NOT read GC_TABLE_SCOPE and do NOT call scope.resolve_scope. Keep the handler under its
+    500-SLOC limit.
+  - >-
+    Add the weekly gc_ops EventBridge rule, target and lambda permission to
+    terraform/personal/ducklake_maintenance.tf as resource "ducklake_maintenance_gc_ops" / name
+    "agent-platform-ducklake-maintenance-gc-ops" (the un-suffixed name is the smoke rule's),
+    state = "DISABLED", schedule_expression cron(45 3 ? * SUN *) (offset from merge_ops' :30 and
+    control_health's :15 under reserved_concurrent_executions=1 -- cite the :221/:262 anti-throttle
+    comments), mirroring the merge_ops rule at lines 229-253. Add TWO alarms, both placed AFTER the
+    existing breaker alarm so the provenance-tag test still reads it at index 0: a
+    GcReferencedMissing >= 1 breach alarm with treat_missing_data = "notBreaching" (deliberate -- a
+    weekly metric is absent six days in seven), and a LIVENESS alarm on the GcDeletedSnapshots
+    datapoint count over a >1-week lookback with treat_missing_data = "breaching". Assess timeout =
+    300 / memory_size = 1024 against gc_ops's real work and raise them here if they do not fit. Do
+    not widen IAM.
+  - Add both new modules to the maintenance manifest includes and the data-pipeline excludes.
+  - >-
+    Amend tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py: expect TWO alarm blocks
+    (line 63, rename accordingly) and confirm test_alarm_descriptions_retain_provenance_tag still
+    reads the breaker alarm at index 0.
+  - >-
+    Document the gc_ops verb in docs/contracts/ducklake_maintenance.yaml ALONGSIDE the existing
+    smoke gc verb -- never by renaming it -- including dry_run in the payload, with an amendment_log
+    entry of change_class field_add and semantic_break true.
+  - >-
+    Author the Decision in docs/DECISIONS.md from the drafted body AND envelope in this plan's
+    context, including the Decision 88 cl.2 dated annotation. The fenced yaml envelope with number
+    and significance is mandatory (Decision 167 / decision-entry.yaml).
+  - >-
+    Rewrite T2.18 c2's text in docs/ROADMAP-PLATFORM.yaml to the safety and efficacy assertions.
+    Leave status OPEN.
+  - >-
+    Write the tests named in test_obligations, each failing against current main. Three fixtures are
+    load-bearing: the shared-bug fixture (caught by the read-path check and nothing else), the
+    vacuity fixture (catalog rows survive, Parquet deleted -- caught by a value aggregate and NOT by
+    a row count), and the fixture-injected apply:false policy proving the guard live set ignores it.
+    Verify every named pytest node RESOLVES (pytest --collect-only) before relying on it -- rec-3865
+    records a merged plan whose VP named a class-method node without its class segment and could
+    never pass.
+  - >-
+    Amend rec-3871 via scripts.ops_data_portal update_rec (Single Portal Invariant -- never an edit
+    to logs/*.jsonl) so its context carries limitation (c), the pre-expiry/post-expiry bound
+    mismatch, alongside the two defects it already names, and so its acceptance probe can no longer
+    be satisfied with (c) untouched. It was filed before (c) was found.
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  The schedule ships DISABLED, so nothing destructive runs until VP15 is taken deliberately -- VP14
+  is a dry-run and writes nothing, so every step up to and including it is read-only. Before VP15
+  rollback is a plain revert -- and with the matrix untouched there is no generated asset
+  to regenerate. After it, disable the rule first, then revert. No catalog or S3 state is changed by
+  merging this plan.
