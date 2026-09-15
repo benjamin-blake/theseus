@@ -96,9 +96,14 @@ scope:
       2026-09-15). The selected cutoff is passed to the destructive wrappers as an explicit
       `older_than`, so exactly the admitted set is deleted.
       MEASURABILITY (this plan's own standard, applied to its own premise): the dry_run measurement
-      path runs the same bracketing walk read-only and reports the PER-PROBE candidate counts as a
-      top-level `drain_probe_counts` field, so VP11's canary shows the production age distribution
-      BEFORE rec-3767 enables the schedule.
+      path runs the same bracketing walk read-only and reports, as a top-level `drain_probe_counts`
+      field, a {days: {files, bytes}} map -- counts AND bytes per probe, sized from the same pre-pass
+      storage listing -- so VP11's canary shows the production age distribution BEFORE rec-3767
+      enables the schedule. BYTES ARE NOT OPTIONAL HERE: counts alone adjudicate
+      G4_MAX_DELETE_FILES but cannot adjudicate G4_MAX_DELETE_BYTES, and per-rung bytes are not
+      derivable from per-rung counts unless sizes are uniform. A canary blind to the byte half would
+      be a canary blind to exactly the cap this plan exists to restore (Decision 192 pt 5). The
+      sizing is free -- dict lookups against the listing already in hand, no extra query per rung.
       SCOPE OF THAT FIELD, stated because the plan may not overclaim its own evidence: dry_run does
       NOT run expire_snapshots, so every probe count is a PRE-EXPIRY count, and the post-expiry set
       is a strict superset on a never-expired catalog (which production is -- VP5 pins exactly that
@@ -119,7 +124,7 @@ scope:
       days; null when the pass deferred wholesale, equal to the configured grace when no walk was
       needed). `g4_bounded` answers "did G4 constrain this pass?" and is therefore TRUE in BOTH new
       states -- a partial drain and a wholesale defer -- and false only when no walk was needed.
-      Today it is `not bound.proceed` (:261), which is undefined for a drain, since a drain both
+      Today it is `not bound.proceed` (:263), which is undefined for a drain, since a drain both
       proceeds and is bounded; this pins it. The drain/defer distinction is carried by
       `g4_drain_cutoff_days` instead: non-null means drained at that cutoff, null means deferred.
       `g2_snapshots_remaining` is untouched. G1/G2/G3 predicates themselves are unchanged.
@@ -182,6 +187,18 @@ scope:
       test_live_before_passed_to_run_guarded_gc_is_the_universal_catalog_set_not_storage stays a
       never-weaken assertion. Emits three ADDITIVE metrics, named authoritatively here:
       `GcWouldDeleteFilesPostExpiry`, `GcDeferredFiles` and `GcDrainCutoffDays`.
+      GcDrainCutoffDays EMITS -1.0 WHEN g4_drain_cutoff_days IS NULL. MetricSink is typed
+      Callable[[str, float], None] and every shipped emission coerces with float(...) (:149, :172-175,
+      :186, :192-193), so float(None) would raise TypeError -- which the admin handler's except chain
+      (src/lambdas/ducklake_maintenance/handler.py:616-624) does not catch. That is an untyped Lambda
+      exception with NO MaintenanceBreakerTrip=1: the exact escape shape being fixed one line away
+      for rec-3876, and reachable on precisely the state this plan designates its loudest (the
+      structurally-undrainable RCA trigger), which would page as a 502 with no breaker metric instead
+      of the loud 200 the plan describes. Skipping the emission is refused by ducklake_gc_ops's own
+      load-bearing property 5 (an unemitted metric reads ABSENT, the worst shape for a guard whose
+      job is to be noticed), and 0.0 is actively misleading -- it reads as a cutoff below the grace
+      floor, the one value constraint 1 forbids. -1.0 is outside the legal cutoff range (always >= 7)
+      and is unambiguous.
       `GcWouldDeleteFiles` keeps its existing pre-expiry meaning and value -- the parent plan's
       VP14/VP16 read it, and its 2026-09-15T16:09Z reading of 23,476 is this plan's sizing evidence.
       Also closes rec-3876: drop the `else 0.0` substitution at :190 and let gc_debt_ratio raise on
@@ -359,9 +376,10 @@ scope:
       deletion for a path the storage listing could not size -- a catalog/storage inconsistency,
       rec-3892 the standing suspect, NOT an over-reclaim breach), and a G4 over-budget pass now
       drains partially rather than always deferring. Add the cause, its triage step, and the drain
-      semantics -- including how to read g4_drain_cutoff_days null (no cutoff admitted a positive
-      count; the backlog is structurally undrainable at the current grace floor, which is an RCA
-      trigger and NOT a benign deferral). Editing this grandfathered file is permitted; docs/CLAUDE.md forbids only NEW files
+      semantics -- including how to read g4_drain_cutoff_days null, and its metric counterpart
+      GcDrainCutoffDays = -1.0 (no cutoff admitted a positive count; the backlog is structurally
+      undrainable at the current grace floor, which is an RCA trigger and NOT a benign deferral; -1.0
+      is a sentinel, never a real cutoff, since a real one is always >= 7). Editing this grandfathered file is permitted; docs/CLAUDE.md forbids only NEW files
       under docs/runbooks/ (Decision 127).
   - file: docs/DECISIONS.md
     action: Modify
@@ -457,8 +475,8 @@ acceptance_criteria:
     set, and re-sources would_delete_bytes from it.
   - >-
     In dry_run, gc_ops reports top-level `unsized_candidates` (computed with strict_sizes=False) and
-    `drain_probe_counts` (the walk's per-probe candidate counts, read-only) and leaves guard_stats
-    None -- fields the pre-enablement canary can actually read, unlike a guard_stats key, which
+    `drain_probe_counts` (the walk's per-probe {days: {files, bytes}} map, read-only, so BOTH caps
+    are adjudicable and not only the file-count half) and leaves guard_stats None -- fields the pre-enablement canary can actually read, unlike a guard_stats key, which
     dry_run never populates. drain_probe_counts counts the PRE-EXPIRY set (dry_run runs no expiry),
     so it is a NECESSARY-not-sufficient signal: all-zero proves the first pass cannot drain, a
     positive fitting cutoff means it may. That is what the field measures, and the plan claims no
@@ -701,7 +719,9 @@ verification_plan:
     expected: >-
       The dry_run invoke returns 200 with unsized_candidates == 0, a NON-ZERO would_delete_bytes
       (structurally 0 before this plan), and a drain_probe_counts map showing AT LEAST ONE cutoff at
-      or above the grace floor admitting a positive count under both caps -- a PRE-EXPIRY reading,
+      or above the grace floor admitting a positive count whose files AND bytes both sit under the
+      caps -- readable because drain_probe_counts carries bytes per probe, not counts alone. A
+      PRE-EXPIRY reading,
       hence necessary but not sufficient (see the scope row's SCOPE OF THAT FIELD note).
       GcReferencedMissing max == 0 and GcWouldDeleteFiles in the same order as the 2026-09-15T16:09Z
       reading of 23,476.
@@ -953,7 +973,7 @@ context:
   - "T2.18 is in_progress; c2 is open and owned by rec-3870 (N=9 weekly cycles). This plan closes NO criterion -- closes_criteria is empty by design, since c2 needs production cycles against a rule that stays DISABLED here."
   - "Freshness gate on T2.18: all six files_in_scope paths exist; no silent completion; no supersession; CD.29 is pending and gates COMPLETION of T2.18, not this defect fix."
   - "Affected active Lambda artifacts (compute_affected_artifacts): ducklake_maintenance AND ducklake_maintenance_smoke, both status: active -> V3; deploy_channels.ducklake_functions governs both and VP10 covers both."
-  - "Cost note: two full ListObjectsV2 walks per real gc_ops pass plus up to seven dry-run re-probes for the drain ladder. The two S3 walks are outside Decision 88's budget, which meters Neon-catalog egress -- but the drain probes are NOT: each rung's two dry-run table functions execute over the Neon-hosted catalog through the postgres scanner, Decision 88's named D2 driver, with the ducklake_file_column_stats sequential-COPY per query. Up to 14 such calls per over-budget pass, each returning ~23k rows. The conclusion still holds at a weekly cadence with a bounded probe count (ladder + at most 5 bisection steps), but it holds for that reason, not because the cost is out of scope. Against the 900s Lambda ceiling this is reassuring rather than alarming: ALL added work lands in the PRE-DESTRUCTIVE window, so a timeout inside it aborts before anything is deleted -- the opposite of the failure shape terraform/personal/ducklake_maintenance.tf:150-160 raised the timeout to avoid."
+  - "Cost note, re-derived at the ACTUAL probe budget (the round-5 budget raise from 5 to 8 bisection probes did not originally propagate here, and this note's own closing clause makes the number load-bearing): per real over-budget gc_ops pass, two full ListObjectsV2 walks plus a walk of up to 7 ladder rungs + 8 bisection probes = 15 probes, each issuing two dry-run table functions = UP TO 30 catalog queries, not the 14 an earlier draft claimed. The two S3 walks are outside Decision 88's budget, which meters Neon-catalog egress -- but the 30 probe queries are NOT: each executes over the Neon-hosted catalog through the postgres scanner, Decision 88 cl.1's named D2 driver, with the ducklake_file_column_stats sequential-COPY per query, over a ~23k-row candidate set. The dry_run measurement path pays the same walk again, read-only, on every VP11 canary invoke -- a human-run, one-off cost, not a scheduled one. RE-ARGUED AT THE REAL NUMBER: 30 queries once per week, and only on a pass that is actually over budget, against a cadence Decision 88 cl.1 sized for 6-hourly merge_ops traffic -- the conclusion holds, but it holds because the cadence is weekly and the probe count is bounded at 15, not because the cost is out of scope. NOTED ALTERNATIVE, not taken here: the walk needs AGES, and the catalog does hold snapshot timestamps for the cleanup class (which the production 23,476 overwhelmingly are), so a single psycopg2 metadata read over ducklake_snapshot/ducklake_data_file could replace all 30 with one query. The Decision 100 NOTE discharge above rejected a metadata read for SIZES, where true orphans are structurally absent from the catalog -- that argument does not transfer to ages, and this is the obvious optimisation if the probe cost ever bites. Against the 900s Lambda ceiling the timing is reassuring rather than alarming either way: ALL added work lands in the PRE-DESTRUCTIVE window, so a timeout inside it aborts before anything is deleted -- the opposite of the failure shape terraform/personal/ducklake_maintenance.tf:150-160 raised the timeout to avoid."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
