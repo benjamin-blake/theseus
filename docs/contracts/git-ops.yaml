@@ -30,6 +30,23 @@ contract:
     check: validate_git_ops_contract
 
 amendment_log:
+  - date: "2026-09-15"
+    semantic_break: true
+    change_class: field_add
+    summary: >-
+      PLAN-conflict-wake-prefix-realignment: branching_topology gains agent_branch_prefixes (the
+      declared branch-prefix universe scripts/ci/pr_conflict_signal.sh and
+      .github/workflows/ci.yml's signal-green predicate must jointly enforce), its rationale, and
+      its reversal condition (the executor-unfreeze namespace collision on `agent/`). Corrected
+      four stale single-prefix-only premises in this file -- branch_rule,
+      push_pr_ci_merge_flow.steps[0], wake_signals.ci_green_comment, and
+      wake_signals.merge_conflict -- to name the declared set instead of the one prior literal,
+      and annotated wake_signals.merge_conflict with the 2026-09-15 conflict-wake-probe
+      evidence (rec-3874: no native wake observed for a blocked -> dirty transition across ~16
+      min). wake_signals.ci_green_comment's "NOT a CI-success webhook" clause is unchanged, and no
+      native check-suite-completion webhook token is introduced anywhere in this file -- rec-3866
+      (native-green-wake documentation) is deliberately not bundled with this plan and its
+      disposition is untouched.
   - date: "2026-09-12"
     semantic_break: false
     change_class: prose_improvement
@@ -86,8 +103,25 @@ branching_topology:
     Claude Code on the web (CC-web) only. Executor frozen (Decision 67); hybrid executor + CC-web
     is the future state.
   branch_rule: >-
-    Work on the harness-assigned `claude/...` session branch -- do NOT create an `agent/` branch,
-    never commit directly to `main`.
+    Work on the harness-assigned session branch (see agent_branch_prefixes below for the declared
+    set) -- agents never create their own branch, and never commit directly to `main`.
+  agent_branch_prefixes: ["agent/", "claude/"]
+  agent_branch_prefixes_rationale: >-
+    PLAN-conflict-wake-prefix-realignment / Decision 191 discharge: prefix matching is retained as
+    the wake-consumer discriminator because it is the only one the producer stamps today -- the PR
+    author is the operator for every PR including harness-created ones, the harness applies no
+    labels, and the base is always main. This declared set (consumed structurally by
+    scripts/ci/pr_conflict_signal.sh's _WAKE_HEAD_PREFIXES/_WAKE_HEAD_PREFIXES_TRANSITIONAL, and by
+    .github/workflows/ci.yml's signal-green head_ref predicate) plus a per-run unmatched-population
+    tally is the substitute for an enumerated universe; the tally is what would have caught the
+    outage that motivated this declaration on the first push after a harness prefix rename.
+  agent_branch_prefixes_reversal: >-
+    `agent/` is also the frozen executor's namespace (scripts/executor/branch_lifecycle.py creates
+    `agent/{rec_id}`). On executor unfreeze a prefix can no longer separate the two populations;
+    the migration at that point is repo-owned self-registration (a wake label or body token
+    applied at PR creation via mcp__github__create_pull_request), which is immune to harness
+    churn. Review trigger: the FIRST of (a) executor unfreeze, (b) any second measured miss of the
+    prefix discriminator, or (c) the next change that would add a third consumer of this fact.
 
 two_tier_presubmit_model:
   description: >-
@@ -173,7 +207,7 @@ local_main_sync: >-
 
 push_pr_ci_merge_flow:
   steps:
-    - "git push -u origin HEAD (harness claude/... branch)."
+    - "git push -u origin HEAD (harness-assigned branch; see branching_topology.agent_branch_prefixes)."
     - >-
       mcp__github__create_pull_request(owner, repo, head=<branch>, base="main", title=<per the
       commit-message-conventions table above>, body=...).
@@ -191,18 +225,25 @@ push_pr_ci_merge_flow:
       CI-wait or merge-conflict-wait purposes are out of scope -- both gaps are closed by the two
       signals below, not by polling.
     ci_green_comment: >-
-      ci.yml's signal-green job posts a "CI green" comment on claude/* PRs on success
+      ci.yml's signal-green job posts a "CI green" comment on PRs whose head ref matches a
+      declared branch prefix (branching_topology.agent_branch_prefixes) on success
       (continue-on-error, retried up to 3 times). This exists because subscribe_pr_activity
       delivers failure events but NOT a CI-success webhook, and CC-web has no sleep/idle tool.
       Ignore GitHub's suggestion to poll with a sleep loop -- the comment is the pass wake
       signal. Unverified: confirm check runs via mcp__github__pull_request_read (get_status /
       get_check_runs) before merging.
     merge_conflict: >-
-      .github/workflows/pr-conflict-signal.yml fires on every push to main, polls open claude/*
-      PR mergeability, and posts a wake comment (idempotent per head SHA, continue-on-error) on
-      any PR now CONFLICTING. This exists because a push to main fires NO pull_request event on
-      open PRs, so the pull_request-only signal-green job cannot deliver this wake -- a
-      silently-conflicted PR would otherwise strand the watching session indefinitely.
+      .github/workflows/pr-conflict-signal.yml fires on every push to main, polls the
+      mergeability of every open PR whose head ref matches a declared branch prefix
+      (branching_topology.agent_branch_prefixes), and posts a wake comment (idempotent per head
+      SHA, continue-on-error) on any PR now CONFLICTING. This exists because a push to main fires
+      NO pull_request event on open PRs, so the pull_request-only signal-green job cannot deliver
+      this wake -- a silently-conflicted PR would otherwise strand the watching session
+      indefinitely. 2026-09-15 conflict-wake-probe (rec-3874, n=1): a live PR-activity
+      subscription held across ~16 minutes of a blocked -> dirty mergeability transition with the
+      control holding, and no native wake was observed for that transition (the harness documents
+      its own notice as best-effort) -- confirming this sweep is the only reliable conflict path
+      and must be retained.
     cc_web_permission_gotcha: >-
       Harness-gated tools, do NOT allowlist: the send_later / trigger tools
       (mcp__Claude_Code_Remote__*) prompt on EVERY call -- the CC-web dialog offers only Deny /

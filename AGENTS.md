@@ -48,7 +48,7 @@ You are a Lead Software Developer writing production-quality Python. Primary dev
 **Hard rule: do not run `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, or any `git commit` / `git push` command while the current branch is `main`.** If you're on main, the only allowed actions are read-only commands and creating a new branch. See `## Git-ops procedure` for the full branching topology.
 
 - **See current branch**: the statusline at the bottom of the prompt shows it. It will read `WARNING: ON MAIN` if you're on main. Or run `git branch --show-current`.
-- **Create a working branch**: on Claude Code on the web you are already on a harness-assigned session branch (e.g. `claude/...`) -- verify with `git branch --show-current`. Do NOT create an `agent/` branch.
+- **Create a working branch**: on Claude Code on the web you are already on a harness-assigned session branch -- verify with `git branch --show-current`. Agents never create their own branch; the harness assigns it.
 - A `PreToolUse` hook at `.claude/hooks/never_on_main.py` enforces this at the harness level: it blocks `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, and `Bash(git commit/push ...)` while on `main`. Other Bash commands (e.g. `git status`, `ls`) still run.
 
 ## Temporary Operational Constraints
@@ -143,7 +143,7 @@ procedure (branching topology, commit-message conventions, rebase mechanics, wak
 and the CI-credential/OAuth-token runbook); AGENTS.md keeps only the machine-enforced norms and
 one-line triggers below.
 
-- **Branch rule**: work on the harness-assigned `claude/...` session branch; never commit directly to `main`.
+- **Branch rule**: work on the harness-assigned session branch; never commit directly to `main`.
 - **Presubmit tier**: see the table below -- fast `--pre` gates PRs, full tier runs pre-handoff (local) + post-merge.
 - **Squash-merge**: `mcp__github__merge_pull_request(..., merge_method="squash")` once CI is green.
 - **Never-poll wake**: event-driven only (`subscribe_pr_activity` plus the CI-green/merge-conflict comment signals) -- never sleep/poll for CI or merge status.

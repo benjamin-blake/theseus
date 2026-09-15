@@ -1,5 +1,7 @@
 """pr-conflict-signal.yml structural invariants gate (PLAN-pr-conflict-wake-signal; extraction
-per Decision 162 / rec-2735)."""
+per Decision 162 / rec-2735; branch-prefix filter realigned to a declared, structurally-asserted
+set by PLAN-conflict-wake-prefix-realignment, which retired this module's existence-only literal
+prefix check -- the row that let the filter rot silently across a harness branch-prefix rename)."""
 
 from __future__ import annotations
 
@@ -30,6 +32,21 @@ _GH_CALL_RE = re.compile(r"(?:^|\$\()\s*gh\s")
 _GH_WORD_RE = re.compile(r"\bgh\s")
 _RETRY_HELPER_TOKEN = "_gh_bounded_retry"
 _EXIT_STATUS_CAPTURE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=\$\?$")
+
+# The declared branch-prefix universe (docs/contracts/git-ops.yaml
+# branching_topology.agent_branch_prefixes carries the published half of the same fact). This
+# guard asserts the DECLARATION'S SHAPE only -- never a specific prefix value -- so narrowing or
+# widening the declared set reddens no assertion here (constraint: a hardcoded literal would
+# recreate the exact rot this plan removes, one string later).
+_PREFIX_VAR = "_WAKE_HEAD_PREFIXES"
+_TRANSITIONAL_VAR = f"{_PREFIX_VAR}_TRANSITIONAL"
+_PREFIX_DECLARATION_RE = re.compile(rf"^{_PREFIX_VAR}=\((.*)\)\s*$")
+_TRANSITIONAL_DECLARATION_RE = re.compile(rf"^{_TRANSITIONAL_VAR}=\((.*)\)\s*$")
+_PREFIX_TOKEN_RE = re.compile(r"""["']([^"']+)["']""")
+_PREFIX_CONSUMPTION_TOKEN = "${" + _PREFIX_VAR + "[@]}"
+
+_GH_PR_LIST_RE = re.compile(r"(?:^|\$\()\s*gh\s+pr\s+list\b")
+_GH_LIMIT_RE = re.compile(r"--limit\s+\d+")
 
 
 def _join_continuations(text: str) -> list[str]:
@@ -69,6 +86,75 @@ def _unguarded_gh_call_sites(script_text: str) -> list[str]:
     return unguarded
 
 
+def _parse_prefix_array(logical_lines: list[str], declaration_re: re.Pattern[str]) -> list[str] | None:
+    """Quoted tokens of the first logical line matching `declaration_re`, or None if absent --
+    the "declaration absent" case a prose-only mention (a comment or log string containing a
+    prefix literal but no real array assignment) must still hit, since it never matches the
+    anchored `VAR=(...)` shape this regex requires."""
+    for line in logical_lines:
+        match = declaration_re.match(line)
+        if match:
+            return _PREFIX_TOKEN_RE.findall(match.group(1))
+    return None
+
+
+def _assert_prefix_declaration(failed: list[str], script_text: str) -> None:
+    """The declared-prefix universe and its transitional subset, asserted structurally: present,
+    non-empty, every token slash-terminated, no duplicates, transitional a subset of declared,
+    and consumed (expanded) somewhere outside its own declaration line -- never a specific value."""
+    logical_lines = _join_continuations(script_text)
+    declared = _parse_prefix_array(logical_lines, _PREFIX_DECLARATION_RE)
+    transitional = _parse_prefix_array(logical_lines, _TRANSITIONAL_DECLARATION_RE)
+
+    if declared is None:
+        print(f"  FAIL: no {_PREFIX_VAR}=(...) declaration found")
+        failed.append("pr-conflict-signal: branch-prefix declaration absent")
+        return
+    if not declared:
+        print(f"  FAIL: {_PREFIX_VAR} declares an empty prefix set")
+        failed.append("pr-conflict-signal: branch-prefix declaration empty")
+    elif not all(token.endswith("/") for token in declared):
+        print(f"  FAIL: {_PREFIX_VAR} contains a token not ending in '/': {declared}")
+        failed.append("pr-conflict-signal: branch-prefix declaration malformed (token missing trailing /)")
+    elif len(declared) != len(set(declared)):
+        print(f"  FAIL: {_PREFIX_VAR} contains duplicate tokens: {declared}")
+        failed.append("pr-conflict-signal: branch-prefix declaration contains duplicate tokens")
+    else:
+        print(f"  PASS: {_PREFIX_VAR} declares {len(declared)} well-formed prefix(es)")
+
+    if transitional is None:
+        print(f"  FAIL: no {_TRANSITIONAL_VAR}=(...) declaration found")
+        failed.append("pr-conflict-signal: transitional branch-prefix declaration absent")
+    elif not set(transitional) <= set(declared):
+        extra = sorted(set(transitional) - set(declared))
+        print(f"  FAIL: {_TRANSITIONAL_VAR} is not a subset of {_PREFIX_VAR}: {extra}")
+        failed.append("pr-conflict-signal: transitional branch-prefix set is not a subset of the declared set")
+    else:
+        print(f"  PASS: {_TRANSITIONAL_VAR} ({len(transitional)}) is a subset of {_PREFIX_VAR}")
+
+    if _PREFIX_CONSUMPTION_TOKEN in script_text:
+        print(f"  PASS: {_PREFIX_VAR} is consumed (expanded) in the selection logic")
+    else:
+        print(f"  FAIL: {_PREFIX_VAR} is declared but never consumed by the selection logic")
+        failed.append("pr-conflict-signal: branch-prefix declaration is unconsumed")
+
+
+def _assert_gh_list_limit(failed: list[str], script_text: str) -> None:
+    """The gh pr list call site(s) carry an explicit --limit, so the sweep cannot silently
+    truncate at gh's default page size."""
+    logical_lines = _join_continuations(script_text)
+    list_lines = [line for line in logical_lines if _GH_PR_LIST_RE.search(line)]
+    if not list_lines:
+        print("  FAIL: no gh pr list call site found")
+        failed.append("pr-conflict-signal: gh pr list call site not found")
+        return
+    if not all(_GH_LIMIT_RE.search(line) for line in list_lines):
+        print(f"  FAIL: gh pr list call site missing --limit: {list_lines}")
+        failed.append("pr-conflict-signal: gh pr list call site missing --limit")
+        return
+    print(f"  PASS: gh pr list call site(s) carry an explicit --limit ({len(list_lines)})")
+
+
 def _resolve_delegate(jobs: dict) -> tuple[str | None, str | None, int | None]:
     """First (job_name, script_rel_path, step_index) whose `run:` is a bare delegation line."""
     for job_name, job in jobs.items():
@@ -91,7 +177,8 @@ def validate_pr_conflict_signal(failed: list[str]) -> None:
     wake that the pull_request-only signal-green job structurally cannot (a push to main fires no
     pull_request event on open PRs). The poll step is a thin delegation to
     scripts/ci/pr_conflict_signal.sh (Decision 162 R1/R3); this guard follows that delegation and
-    asserts its five semantic invariants against the SCRIPT's own contents, plus delegate
+    asserts its semantic invariants against the SCRIPT's own contents -- including the declared
+    branch-prefix universe's shape (never a specific value) and its --limit -- plus delegate
     existence, checkout-precedes-delegation, errexit clearing, and per-call-site exit-status
     handling. Each guard failure appends a distinct label to `failed` rather than raising, matching
     the ci_guards module pattern.
@@ -168,7 +255,6 @@ def validate_pr_conflict_signal(failed: list[str]) -> None:
         failed.append("pr-conflict-signal: delegate script does not clear errexit")
 
     checks = [
-        ("claude/* head filter", "claude/" in script_text),
         ("mergeable poll", "mergeable" in script_text),
         ("UNKNOWN-skip handling", "UNKNOWN" in script_text),
         ("CONFLICTING-only comment gate", "CONFLICTING" in script_text),
@@ -181,9 +267,14 @@ def validate_pr_conflict_signal(failed: list[str]) -> None:
             print(f"  FAIL: {label} not found in delegate script")
             failed.append(f"pr-conflict-signal: missing {label}")
 
+    _assert_prefix_declaration(failed, script_text)
+    _assert_gh_list_limit(failed, script_text)
+
     unguarded = _unguarded_gh_call_sites(script_text)
     if unguarded:
         print(f"  FAIL: gh call site(s) without explicit exit-status handling: {unguarded}")
         failed.append("pr-conflict-signal: gh call site(s) missing explicit exit-status handling")
     else:
         print("  PASS: every gh call site handles its exit status")
+
+    registry.examined(1, unit="pr_conflict_signal_workflows")
