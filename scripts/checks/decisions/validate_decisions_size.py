@@ -147,9 +147,11 @@ def _standing_pressure_warning(root: Path) -> list[str]:
     largest_size, largest_rel, largest_n = over[0]
     plural = "y" if len(over) == 1 else "ies"
     return [
-        f"  WARN: {len(over)} decision entr{plural} exceed {threshold:.0f} bytes (1.2x the "
-        f"{_PER_ENTRY_CAP_BYTES}-byte per-entry cap) -- largest: Decision {largest_n} ({largest_rel}) "
-        f"at {largest_size} bytes (rec-3243 standing-pressure accretion signal; WARN tier only, never fails)."
+        (
+            f"  WARN: {len(over)} decision entr{plural} exceed {threshold:.0f} bytes (1.2x the "
+            f"{_PER_ENTRY_CAP_BYTES}-byte per-entry cap) -- largest: Decision {largest_n} ({largest_rel}) "
+            f"at {largest_size} bytes (rec-3243 standing-pressure accretion signal; WARN tier only, never fails)."
+        )
     ]
 
 

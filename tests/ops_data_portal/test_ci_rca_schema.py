@@ -42,8 +42,10 @@ _VALID_CONTEXT_V2 = {
     "why_chain": [
         "The file was committed at over 500 SLOC in a single PR with no incremental breakpoint.",
         "No local --pre check fired because validate_sloc_limits() is presubmit-tier only.",
-        "The validate_sloc_limits() check was placed in the presubmit tier not --pre despite being O(lines); "
-        "this tier placement defect is the gap at scripts/validate.py:2294.",
+        (
+            "The validate_sloc_limits() check was placed in the presubmit tier not --pre despite being O(lines); "
+            "this tier placement defect is the gap at scripts/validate.py:2294."
+        ),
     ],
     "detection_gap": {
         "earliest_viable_gate": "pre",
@@ -337,8 +339,10 @@ class TestCiRcaSchemaEnforcement:
                     "--title",
                     "validate_sloc_limits missed in pre tier",
                     "--context",
-                    "validate_sloc_limits() raised on scripts/roadmap/platform_roadmap.py: 810 SLOC exceeds 500 limit. "
-                    "CI step 'validate' failed; resource: scripts/roadmap/platform_roadmap.py.",
+                    (
+                        "validate_sloc_limits() raised on scripts/roadmap/platform_roadmap.py: 810 SLOC exceeds 500 limit. "
+                        "CI step 'validate' failed; resource: scripts/roadmap/platform_roadmap.py."
+                    ),
                     "--acceptance",
                     "grep -q validate_sloc_limits scripts/validate.py && grep -q main scripts/validate.py",
                     "--context-v2-json",

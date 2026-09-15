@@ -170,7 +170,9 @@ class TestGatingUnchanged:
         failed: list[str] = []
         validate_plan_scope_closure(failed, plan_paths=[path])
         assert failed == [
-            "PLAN-fixture-probe.yaml: missing ci_rca_taxonomy function_to_category row "
-            "(config/ci_rca_taxonomy.yaml) -- required because scripts/checks/roadmap/validate_x.py "
-            "is a new check module"
+            (
+                "PLAN-fixture-probe.yaml: missing ci_rca_taxonomy function_to_category row "
+                "(config/ci_rca_taxonomy.yaml) -- required because scripts/checks/roadmap/validate_x.py "
+                "is a new check module"
+            )
         ]

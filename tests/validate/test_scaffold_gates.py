@@ -371,7 +371,10 @@ class TestRunPrecommitChecks:
 
     def test_explicit_files_scope_runs_and_appends_on_failure(self) -> None:
         with patch("scripts.checks._common.run") as mock_run:
-            mock_run.return_value = _mock_completed(1)
+            # First call is the escalation check's own base-ref `git show`; a minimal
+            # non-global-input config keeps escalation from firing so the second call (the
+            # actual pre-commit invocation) is exercised with the explicit --files scope.
+            mock_run.side_effect = [_mock_completed(0, stdout="repos: []\n"), _mock_completed(1)]
             failed: list[str] = []
             _validate.run_precommit_checks(failed, all_files=False, files=["scripts/foo.py"])
         cmd = mock_run.call_args.args[0]
@@ -379,13 +382,116 @@ class TestRunPrecommitChecks:
         assert failed == ["pre-commit hooks"]
 
 
-class TestRunLintChecksTargetsAllFiltered:
-    """Coverage-debt payoff: an explicit files= scope with NO .py entries filters down to an
-    empty target list and no-ops (distinct from files=[] itself, already covered elsewhere)."""
+class TestRunPrecommitChecksEscalation:
+    """VP step 4: run_precommit_checks escalates to --all-files on a derived global input
+    (Decision 170), never on an ordinary .py change; the trigger set is DERIVED by parsing
+    .pre-commit-config.yaml at the BASE REF (never HEAD), and an unreadable/unparseable base-ref
+    config escalates rather than skips (fail-closed, dec-55)."""
 
-    def test_no_python_files_in_explicit_scope_is_a_no_op(self) -> None:
+    _CONFIG_YAML = (
+        "repos:\n"
+        "- repo: https://github.com/Yelp/detect-secrets\n"
+        "  rev: v1.4.0\n"
+        "  hooks:\n"
+        "  - id: detect-secrets\n"
+        "    args: ['--baseline', '.secrets.baseline']\n"
+    )
+
+    def test_escalates_on_precommit_config_change(self) -> None:
+        with patch("scripts.checks._common.run") as mock_run:
+            mock_run.side_effect = [_mock_completed(0, stdout=self._CONFIG_YAML), _mock_completed(0)]
+            failed: list[str] = []
+            _validate.run_precommit_checks(failed, all_files=False, files=[".pre-commit-config.yaml"])
+        cmd = mock_run.call_args.args[0]
+        assert "--all-files" in cmd
+        assert failed == []
+
+    def test_escalates_on_baseline_file_named_by_a_hook(self) -> None:
+        with patch("scripts.checks._common.run") as mock_run:
+            mock_run.side_effect = [_mock_completed(0, stdout=self._CONFIG_YAML), _mock_completed(0)]
+            failed: list[str] = []
+            _validate.run_precommit_checks(failed, all_files=False, files=[".secrets.baseline"])
+        cmd = mock_run.call_args.args[0]
+        assert "--all-files" in cmd
+
+    def test_does_not_escalate_on_an_ordinary_py_change(self) -> None:
+        with patch("scripts.checks._common.run") as mock_run:
+            mock_run.side_effect = [_mock_completed(0, stdout=self._CONFIG_YAML), _mock_completed(0)]
+            failed: list[str] = []
+            _validate.run_precommit_checks(failed, all_files=False, files=["scripts/foo.py"])
+        cmd = mock_run.call_args.args[0]
+        assert "--all-files" not in cmd
+        assert "--files" in cmd and "scripts/foo.py" in cmd
+
+    def test_trigger_set_is_derived_not_hard_coded(self) -> None:
+        """A hook naming a DIFFERENT baseline path escalates on THAT path, proving the set is
+        parsed from the config rather than a hard-coded {.pre-commit-config.yaml, .secrets.baseline}
+        roster."""
+        custom_config = (
+            "repos:\n- repo: local\n  hooks:\n  - id: custom-secrets\n    args: ['--baseline', 'config/custom.baseline']\n"
+        )
+        with patch("scripts.checks._common.run") as mock_run:
+            mock_run.side_effect = [_mock_completed(0, stdout=custom_config), _mock_completed(0)]
+            failed: list[str] = []
+            _validate.run_precommit_checks(failed, all_files=False, files=["config/custom.baseline"])
+        cmd = mock_run.call_args.args[0]
+        assert "--all-files" in cmd
+
+    def test_escalates_on_unreadable_base_ref_config(self) -> None:
+        """A non-zero `git show` (config absent at the base ref) fails closed to escalation."""
+        with patch("scripts.checks._common.run") as mock_run:
+            mock_run.side_effect = [_mock_completed(1, stderr="fatal: path does not exist"), _mock_completed(0)]
+            failed: list[str] = []
+            _validate.run_precommit_checks(failed, all_files=False, files=["scripts/foo.py"])
+        cmd = mock_run.call_args.args[0]
+        assert "--all-files" in cmd
+
+    def test_escalates_on_unparseable_base_ref_config(self) -> None:
+        """Invalid YAML at the base ref fails closed to escalation rather than skipping."""
+        with patch("scripts.checks._common.run") as mock_run:
+            mock_run.side_effect = [_mock_completed(0, stdout="not: valid: yaml: ["), _mock_completed(0)]
+            failed: list[str] = []
+            _validate.run_precommit_checks(failed, all_files=False, files=["scripts/foo.py"])
+        cmd = mock_run.call_args.args[0]
+        assert "--all-files" in cmd
+
+    def test_base_ref_is_never_head_or_working_tree(self) -> None:
+        """The escalation-check's git show targets origin/main, never a bare HEAD or
+        working-tree read -- so a PR editing .pre-commit-config.yaml on its own branch cannot
+        narrow its own trigger set by pointing the read at its own head."""
+        with patch("scripts.checks._common.run") as mock_run:
+            mock_run.side_effect = [_mock_completed(0, stdout=self._CONFIG_YAML), _mock_completed(0)]
+            failed: list[str] = []
+            _validate.run_precommit_checks(failed, all_files=False, files=["scripts/foo.py"])
+        first_call_cmd = mock_run.call_args_list[0].args[0]
+        assert first_call_cmd[:2] == ["git", "show"]
+        assert first_call_cmd[2] == "origin/main:.pre-commit-config.yaml"
+
+    def test_already_all_files_never_computes_escalation(self) -> None:
+        """When the caller already passed all_files=True (the full tier), no base-ref read is
+        attempted at all -- escalation is only meaningful for the diff-scoped --pre path."""
+        with patch("scripts.checks._common.run") as mock_run:
+            mock_run.return_value = _mock_completed(0)
+            failed: list[str] = []
+            _validate.run_precommit_checks(failed, all_files=True)
+        assert mock_run.call_count == 1
+        cmd = mock_run.call_args.args[0]
+        assert "--all-files" in cmd
+
+
+class TestRunLintChecksTargetsAllFiltered:
+    """Retargeted (rec-3861/rec-3863): an explicit files= scope with NO .py entries used to
+    filter down to an empty target list and no-op -- the exact whole-tree-lint escape this plan
+    closes. It now still lints the whole tree, since target selection is unconditional."""
+
+    def test_no_python_files_in_explicit_scope_still_lints_whole_tree(self) -> None:
         with patch("scripts.checks._common.invoke_step") as mock_invoke:
             failed: list[str] = []
             _validate.run_lint_checks(failed, files=["README.md", "docs/x.md"])
-        mock_invoke.assert_not_called()
+        assert mock_invoke.call_count == 2
+        for call in mock_invoke.call_args_list:
+            cmd = call.args[1]
+            assert "src/" in cmd
+            assert "tests/" in cmd
+            assert "scripts/" in cmd
         assert failed == []

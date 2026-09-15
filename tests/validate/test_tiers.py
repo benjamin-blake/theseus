@@ -73,7 +73,10 @@ class TestLoadHelpers:
 class TestPreModeDiffAware:
     """Tests that --pre passes changed files to ruff/mypy/pytest."""
 
-    def test_passes_changed_py_files_to_ruff(self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub) -> None:
+    def test_lints_whole_tree_regardless_of_changed_py_files(self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub) -> None:
+        """Retargeted (rec-3861/rec-3863): a changed-py-files diff used to narrow the ruff argv
+        to those exact files; run_lint_checks now ignores `files` for target selection, so the
+        argv is always whole-tree regardless of what changed."""
         monkeypatch.setattr(sys, "argv", ["validate", "--pre"])
         monkeypatch.setenv("_VALIDATE_DEPTH", "0")
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
@@ -99,9 +102,15 @@ class TestPreModeDiffAware:
         assert exc_info.value.code == 0
         ruff_check = [c for c in captured_cmds if "ruff" in c and "check" in c and "format" not in c]
         assert ruff_check, "No ruff check command issued"
-        assert "scripts/validate.py" in ruff_check[0]
+        assert "src/" in ruff_check[0]
+        assert "tests/" in ruff_check[0]
+        assert "scripts/" in ruff_check[0]
 
-    def test_skips_lint_when_no_files_changed(self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub) -> None:
+    def test_lints_whole_tree_even_when_no_files_changed(self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub) -> None:
+        """Retargeted (rec-3861/rec-3863): a no-diff --pre run used to skip lint entirely (the
+        exact escape that let commit 1c50e26b's zero-.py ruff-version bump reach main unlinted).
+        It now still lints the whole tree, at ~0.1s (Decision affected-set-selection precedent:
+        dec-166 already sanctions whole-tree lint at this cost in both tiers)."""
         monkeypatch.setattr(sys, "argv", ["validate", "--pre"])
         monkeypatch.setenv("_VALIDATE_DEPTH", "0")
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
@@ -123,8 +132,54 @@ class TestPreModeDiffAware:
             _validate.main()
 
         assert exc_info.value.code == 0
-        ruff_cmds = [c for c in captured_cmds if "ruff" in c]
-        assert not ruff_cmds, f"Unexpected ruff invocation: {ruff_cmds}"
+        ruff_check = [c for c in captured_cmds if "ruff" in c and "check" in c and "format" not in c]
+        assert ruff_check, "Expected a whole-tree ruff invocation even with no changed files"
+        assert "src/" in ruff_check[0]
+        assert "tests/" in ruff_check[0]
+        assert "scripts/" in ruff_check[0]
+
+    def test_pin_only_diff_drives_whole_tree_lint(self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub) -> None:
+        """DRIVER ALTITUDE (VP step 3): replay commit 1c50e26b's actual five-file pin-only diff
+        (dependabot's ruff 0.15.20 -> 0.16.7 bump; zero .py files) through the real --pre
+        _validate.main() driver -- not just run_lint_checks() at the unit level -- and assert the
+        emitted ruff argv is whole-tree. The --pre lint call site is a closure INSIDE main()
+        (scripts/validate.py's `_scaffold_lint`), so a unit-level-only assertion on
+        run_lint_checks would not catch a call-site re-scoping there; this is the regression
+        shape rec-3863's gap_explanation names."""
+        monkeypatch.setattr(sys, "argv", ["validate", "--pre"])
+        monkeypatch.setenv("_VALIDATE_DEPTH", "0")
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        monkeypatch.delenv("CI", raising=False)
+
+        captured_cmds: list[list[str]] = []
+
+        def tracking_run(cmd: list[str], **kwargs: object) -> MagicMock:
+            captured_cmds.append(list(cmd))
+            return _pre_mock_run(cmd, **kwargs)
+
+        pin_only_changed = [
+            "requirements.in",
+            "requirements.txt",
+            "requirements-dev.in",
+            "requirements-dev.txt",
+            "requirements-fast.txt",
+        ]
+
+        with (
+            patch.object(registry, "pre_sequence", return_value=pre_sequence_stub(checks=())),
+            patch("scripts.checks._common.get_changed_files", return_value=pin_only_changed),
+            patch("scripts.checks._common.run", side_effect=tracking_run),
+            patch("time.monotonic", side_effect=itertools.chain([0.0], itertools.repeat(1.0))),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            _validate.main()
+
+        assert exc_info.value.code == 0
+        ruff_check = [c for c in captured_cmds if "ruff" in c and "check" in c and "format" not in c]
+        assert ruff_check, "No ruff check command issued for a pin-only diff"
+        assert "src/" in ruff_check[0]
+        assert "tests/" in ruff_check[0]
+        assert "scripts/" in ruff_check[0]
 
     def test_source_only_change_now_selects_reverse_dep_tests_via_affected_set(
         self, monkeypatch: pytest.MonkeyPatch, pre_sequence_stub

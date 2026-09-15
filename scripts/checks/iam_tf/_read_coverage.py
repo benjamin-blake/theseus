@@ -547,15 +547,19 @@ def _check_resource(
     spec, literal_only = _classify(rtype)
     if spec is None:
         return [
-            f"{key} unmapped resource type {rtype!r} (resource {rname} in {fname}) -- add a coverage rule "
-            "to scripts/checks/iam_tf/validate_ci_refresh_read_coverage.py"
+            (
+                f"{key} unmapped resource type {rtype!r} (resource {rname} in {fname}) -- add a coverage rule "
+                "to scripts/checks/iam_tf/validate_ci_refresh_read_coverage.py"
+            )
         ], False
 
     resolved_name = _resolve_resource_name(rtype, rname, spec, locals_map, attr_index)
     if spec["name_attrs"] and not resolved_name:
         return [
-            f"{key} could not resolve a name/id for {rtype} {rname!r} in {fname} -- "
-            "treating as uncovered until the extraction is fixed"
+            (
+                f"{key} could not resolve a name/id for {rtype} {rname!r} in {fname} -- "
+                "treating as uncovered until the extraction is fixed"
+            )
         ], False
 
     # An entry declaring read_actions_all_of is asserted as an EXACT conjunction; every other entry
