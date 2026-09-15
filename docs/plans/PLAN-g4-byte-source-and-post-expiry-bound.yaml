@@ -432,9 +432,9 @@ scope:
       separate slot from VP2's because this is rec-3888's own property and should fail
       independently.
 bundled_recommendations:
-  - rec-3871
-  - rec-3876
-  - rec-3888
+  - rec-3894
+  - rec-3895
+  - rec-3896
 followon_recs: []
 infrastructure_dependencies: []
 acceptance_criteria:
@@ -515,7 +515,8 @@ acceptance_criteria:
     set, catalog-before-storage holds at both read pairs, and the guard set still fails closed on
     introspection error.
   - >-
-    rec-3871, rec-3876 and rec-3888 are closed in the warehouse; rec-3892 stays open.
+    rec-3894, rec-3895 and rec-3896 -- the live successor ids -- are closed in the warehouse;
+    rec-3892 stays open.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -748,9 +749,15 @@ verification_plan:
     phase: post-deploy
     action: >-
       Close the three bundled recommendations through the portal and confirm the read cache reflects
-      it. rec-3892 must remain open -- it is a separate finding this plan does not resolve.
-    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json;rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip()];st=lambda i:next(r['status'] for r in rows if r['id']==i);assert st('rec-3871')=='closed','rec-3871 still open';assert st('rec-3876')=='closed','rec-3876 still open';assert st('rec-3888')=='closed','rec-3888 still open';assert st('rec-3892')=='open','rec-3892 must stay open, it is a separate finding';print('closure ok')"
-    expected: exit 0; the three bundled recs closed, rec-3892 still open.
+      it. NOTE THE IDS: rec-3894 / rec-3895 / rec-3896, NOT rec-3871 / rec-3876 / rec-3888 -- those
+      three were FALSELY CLOSED by rec-autoclose.yml when the planning session wrongly put a
+      'Resolves:' trailer on this PLAN's own squash-merge (#1199, merge 98fc043f), which landed one
+      file and no code change. Decision 103's writer guard refuses closed -> open, so the work was
+      carried to successor ids. Asserting the old ids here would pass trivially against a stale
+      closure -- a false green on the exact defect this step exists to catch. rec-3892 must remain
+      open; it is a separate finding this plan does not resolve.
+    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json;rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip()];st=lambda i:next(r['status'] for r in rows if r['id']==i);assert st('rec-3894')=='closed','rec-3894 still open';assert st('rec-3895')=='closed','rec-3895 still open';assert st('rec-3896')=='closed','rec-3896 still open';assert st('rec-3892')=='open','rec-3892 must stay open, it is a separate finding';print('closure ok')"
+    expected: exit 0; rec-3894, rec-3895 and rec-3896 closed, rec-3892 still open.
     fix_if: >-
       A still-open bundled rec means the update_rec call did not land -- re-file through the portal,
       never by editing the read cache (Single Portal Invariant). A closed rec-3892 means a finding
@@ -1039,7 +1046,8 @@ execution_steps:
     Execute the Verification Plan -- run each step; loop until pass; on an unrecoverable V3 failure
     stop and RCA (Decision 55).
   - >-
-    Close rec-3871, rec-3876 and rec-3888 through scripts.ops_data_portal; leave rec-3892 open.
+    Close rec-3894, rec-3895 and rec-3896 through scripts.ops_data_portal (the live successor ids --
+    see VP12); leave rec-3892 open.
   - 'Report: what was implemented, verification results, the smoke-gate outcome, and the VP11 canary reading.'
 work_areas: []
 rollback: >-
@@ -1054,3 +1062,14 @@ rollback: >-
   containment is that the grace floor is refused rather than clamped, G1 runs against the admitted
   set and G3 after it, and the first real pass is human-gated. Reverting restores byte-blind,
   wholesale-deferring behaviour -- safe but inert, never unsafe.
+
+# --- Post-merge amendment 2026-09-15 ---
+# This plan merged as PR #1199 (98fc043f) carrying a 'Resolves: rec-3871, rec-3876, rec-3888'
+# trailer that should never have been on a PLAN merge: that commit landed this file and nothing
+# else. rec-autoclose.yml honoured the trailer and closed all three, so they now read as fixed when
+# no code has changed. Decision 103's writer guard refuses closed -> open, so successors were filed
+# (rec-3894 / rec-3895 / rec-3896), each carrying the original context verbatim plus the false-closure
+# record, and each depending on its predecessor. The three dead ids carry a resolution stating
+# plainly that no work was done. This plan's bundled_recommendations, VP12, acceptance criterion and
+# execution step now name the live ids. The Resolves: trailer belongs on the IMPLEMENTATION
+# squash-merge, never on the plan merge -- see docs/contracts/git-ops.yaml.
