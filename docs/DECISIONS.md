@@ -2,6 +2,42 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 192: Production destructive GC is licensed by a safety invariant that can see over-reclaim, not by a storage-size trend (Decided)
+
+```yaml
+number: 192
+status: Decided
+decided_date: "2026-09-15"
+significance:
+  value: numbered_decision
+  justification: >-
+    Licenses destructive GC against the production catalog for the first time, and fixes the rule
+    that a maintenance_policy cell scopes only per-table verbs -- a durable, reversal-relevant
+    commitment about what may delete production data, not a contract-prose edit.
+```
+
+**Status:** Decided
+**Date:** 2026-09-15
+**Warehouse ID:** dec-192 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+**Problem:**
+T2.18 c2 required "S3 storage confirmed stable after N maintenance cycles". That text does not adjudicate: it is satisfied by a job that deletes the whole prefix (storage falls, so over-reclaim is invisible to a bytes-only metric), and it is unmeasurable -- the data-lake bucket holds 12+ unrelated prefixes, and absolute storage on an ingesting lakehouse is not supposed to be stable regardless of GC correctness. A draft of the licensing plan also proposed a `gc_ops` cell on the `maintenance_policy` matrix (Decision 191) before establishing that the matrix's sole consumer (`scope.resolve_scope`) has no per-table dimension for a catalog-wide verb.
+
+**Decision:**
+1. Decision 88 cl.4's gate is CLEARED (T2.26 c1 / rec-2113 restore drill met 2026-07-04). Destructive GC is licensed on the ADMIN function only, scoped by catalog enumeration, never by repointing `GC_TABLE_SCOPE` (Decision 143 cl.2 stands).
+2. `maintenance_policy` governs PER-TABLE-SCOPED verbs only. `gc_ops` (catalog-wide) takes NO cell and its guard live set is UNIVERSAL (no policy input) -- filtering it would narrow what the guards SEE, never what the catalog-wide primitives delete. `VERB_UNIVERSE` stays `("merge_ops",)`.
+3. GC verification is two assertions (`src/common/ducklake_gc_verification.py`): (a) a PER-CYCLE SAFETY INVARIANT, never retired -- `referenced_missing` (catalog-live path absent from real S3 storage) is zero, an INDEPENDENT value-scanning read-path check at the pass-start snapshot id passes, snapshot count stays >= `SNAPSHOT_FLOOR`; (b) a WINDOWED EFFICACY BOUND on GC DEBT `(storage_bytes - live_bytes) / live_bytes`, never absolute storage (live bytes legitimately grow with ingestion).
+4. T2.18 c2 is REWRITTEN to those two assertions, STRENGTHENING the criterion; status stays OPEN until N=9 cycles adjudicate both true (rec-3870, filed at plan time, is the committed closer).
+5. RECORDS a limitation rather than amending Decision 188: cl.2 sizes G4's byte half from a live inventory captured BEFORE a prelude supersedes a candidate, but `gc_ops` runs NO prelude by design (rec-3762 -- duplicating `merge_ops`'s 6-hourly compaction adds writer contention for nothing), so every candidate is already superseded and G4's byte half sizes to ZERO; the file-count half is the only binding cap. The smoke `gc` verb (which runs a real prelude) is unaffected. rec-3871 owns the fix, amended by this session to add a third limitation (a pre-expiry G4 reading understates a first real pass), conditioned on this plan's own backlog measurements.
+6. ANNOTATES Decision 88 cl.2 (dated append, Decision 177): its "IAM-blocked from the dev role" parenthetical is superseded by the T2.48 / rec-2851 `ObservabilityMetricRead` grant.
+
+**Rationale:**
+A storage-size trend cannot license a destructive verb against production data: blind to over-reclaim by construction, and unmeasurable on a shared bucket. Reachability -- verified independently of the delete-set's own live-file computation -- is what can actually adjudicate safety. GC DEBT stays meaningful on an ingesting lakehouse where absolute bytes legitimately trend up. The matrix restriction closes a hole the plan's critique found: an inert `gc_ops` cell would be a CI-enforced field nothing reads, and "excluding" a class would remove its files from what the guards see without narrowing what gets deleted.
+
+**Related:** Decision 88 (cl.4 cleared; cl.2 annotated), Decision 188 (G1-G4 reused unmodified; G4 byte-half degradation recorded, not fixed), Decision 191 (cl.2 universes unchanged), Decision 143 (cl.1/cl.2 unchanged), Decision 81 (cl.6 unchanged), Decision 84, Decision 125/126 (rule + handler deploy via separate channels -- rule ships DISABLED), Decision 129, Decision 119, Decision 100 (managed primitives), Decision 55, Decision 167, Decision 177. Roadmap refs: T2.18 c2 (rewritten here), rec-3870, rec-3871 (amended).
+
+---
+
 ## Decision 191: Maintenance scope is catalog enumeration crossed with declared class policy; a naming convention never determines what gets maintained (Decided)
 
 ```yaml
@@ -6199,6 +6235,14 @@ The free-tier breach proved the cap is real and the access pattern, not the work
 > ops_* table" is discovered for non-destructive merge) is replaced: catalog enumeration crossed
 > with a declared per-class, per-verb policy matrix, not a naming-convention predicate. The
 > requirement itself -- merge must run on every live table -- is unchanged.
+
+> **Amended by Decision 192 (2026-09-15):** clause 2's parenthetical "the DR bucket and direct
+> CloudWatch reads are IAM-blocked from the dev role by design" is stale and superseded --
+> `terraform/personal/platform_dev_policies.tf`'s `ObservabilityMetricRead` Sid (T2.48 / rec-2851)
+> now grants the PlatformDev role `cloudwatch:GetMetricStatistics` / `GetMetricData` /
+> `ListMetrics`. Direct CloudWatch reads are no longer IAM-blocked from the dev role; this is what
+> production-gc-and-storage-stability's VP14/VP16 `aws cloudwatch get-metric-data --profile
+> agent_platform` read-back depends on.
 
 ---
 
