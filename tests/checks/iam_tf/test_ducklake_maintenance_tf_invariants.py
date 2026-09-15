@@ -1,13 +1,19 @@
 """Standing guard: no CloudWatch alarm description on the DuckLake maintenance alarms pins a
 THRESHOLD SHAPE (T2.18, Decision 188 amending Decision 81 clause 6 / CD.33 H1).
 
-Block-scoped, not whole-file: each terraform file holds exactly one aws_cloudwatch_metric_alarm
-resource (measured), but a SIBLING non-alarm field (e.g. an EventBridge rule's own description) can
-carry a legitimate numeric that a whole-file assertion would false-positive on. The assertion is a
-SHAPE check (a percentage bound or a byte-unit bound), never any-digit: the rewritten descriptions
-retain their "T2.18[ c9] / CD.33 H1" provenance tag, which an any-digit assertion would reject.
-Uses the resource-header brace-balanced slice pattern from
-tests/checks/iam_tf/test_oidc_trust_slug_invariants.py.
+Block-scoped, not whole-file: a terraform file can hold MULTIPLE aws_cloudwatch_metric_alarm
+resources (ducklake_maintenance.tf holds three as of production-gc-and-storage-stability: the
+breaker alarm, and two gc_ops alarms placed after it), and a SIBLING non-alarm field (e.g. an
+EventBridge rule's own description) can carry a legitimate numeric that a whole-file assertion
+would false-positive on. The assertion is a SHAPE check (a percentage bound or a byte-unit bound),
+never any-digit: the rewritten descriptions retain their "T2.18[ c9] / CD.33 H1" provenance tag,
+which an any-digit assertion would reject. Uses the resource-header brace-balanced slice pattern
+from tests/checks/iam_tf/test_oidc_trust_slug_invariants.py.
+
+Also hosts TestProductionGcRuleInvariants (production-gc-and-storage-stability, T2.18 c2): the
+gc_ops EventBridge rule ships DISABLED, no S3 lifecycle configuration targets the data-lake bucket,
+the maintenance role's IAM stays unwidened, the liveness alarm treats missing data as breaching,
+and the gc_ops cron does not collide with this singleton's other two 6-hourly cadences.
 """
 
 from __future__ import annotations
@@ -59,9 +65,29 @@ def _alarm_descriptions(path: Path) -> list[str]:
     return _alarm_descriptions_from_text(path.read_text(encoding="utf-8"))
 
 
+def _find_resource_block(text: str, resource_type: str, resource_name: str) -> str:
+    """Brace-balanced slice for one named resource block (generalizes _alarm_blocks_from_text's
+    pattern to any resource type/name -- production-gc-and-storage-stability)."""
+    pattern = re.compile(rf'resource\s+"{re.escape(resource_type)}"\s+"{re.escape(resource_name)}"\s*\{{')
+    match = pattern.search(text)
+    assert match is not None, f"resource {resource_type!r} {resource_name!r} not found"
+    depth = 0
+    end = match.end() - 1
+    for i in range(match.end() - 1, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                end = i
+                break
+    return text[match.start() : end + 1]
+
+
 class TestAlarmDescriptionsPinNoThreshold:
-    def test_admin_tf_has_exactly_one_alarm_block(self) -> None:
-        assert len(_alarm_blocks_from_text(_ADMIN_TF.read_text(encoding="utf-8"))) == 1
+    def test_admin_tf_has_exactly_three_alarm_blocks(self) -> None:
+        """Breaker alarm (unchanged, index 0) + the two gc_ops alarms (production-gc-and-storage-stability)."""
+        assert len(_alarm_blocks_from_text(_ADMIN_TF.read_text(encoding="utf-8"))) == 3
 
     def test_smoke_tf_has_exactly_one_alarm_block(self) -> None:
         assert len(_alarm_blocks_from_text(_SMOKE_TF.read_text(encoding="utf-8"))) == 1
@@ -100,6 +126,87 @@ resource "aws_cloudwatch_metric_alarm" "example_alarm" {
   metric_name       = "ExampleTrip"
 }
 """
+
+
+_TERRAFORM_PERSONAL_DIR = _REPO_ROOT / "terraform" / "personal"
+_LIFECYCLE_CONFIG_RE = re.compile(r'resource\s+"aws_s3_bucket_lifecycle_configuration"\s+"(\w+)"\s*\{')
+_CRON_MINUTE_RE = re.compile(r'schedule_expression\s*=\s*"cron\((\d+)\s')
+
+
+class TestProductionGcRuleInvariants:
+    """production-gc-and-storage-stability (T2.18 c2): the gc_ops rule + its two alarms, and the
+    no-lifecycle-on-the-lakehouse invariant."""
+
+    def test_gc_ops_rule_is_created_disabled(self) -> None:
+        text = _ADMIN_TF.read_text(encoding="utf-8")
+        block = _find_resource_block(text, "aws_cloudwatch_event_rule", "ducklake_maintenance_gc_ops")
+        m = re.search(r'state\s*=\s*"([^"]*)"', block)
+        assert m is not None, "gc_ops rule has no state attribute"
+        assert m.group(1) == "DISABLED", "the gc_ops rule must ship DISABLED (Decisions 125/126 code/infra decoupling)"
+
+    def test_no_lifecycle_configuration_targets_the_data_lake_bucket(self) -> None:
+        """Sweep the WHOLE terraform/personal directory, not just _ADMIN_TF/_SMOKE_TF -- the sole
+        existing lifecycle config (ducklake_catalog_dr.tf) legitimately targets the DR bucket, and
+        a two-file-only sweep could never see a future lifecycle rule added elsewhere (e.g. s3.tf)."""
+        for tf_file in sorted(_TERRAFORM_PERSONAL_DIR.glob("*.tf")):
+            text = tf_file.read_text(encoding="utf-8")
+            for match in _LIFECYCLE_CONFIG_RE.finditer(text):
+                block = _find_resource_block(text, "aws_s3_bucket_lifecycle_configuration", match.group(1))
+                assert "aws_s3_bucket.data_lake" not in block, (
+                    f"{tf_file.name}: aws_s3_bucket_lifecycle_configuration {match.group(1)!r} targets "
+                    "the data-lake bucket -- an age-based expiration rule the catalog knows nothing "
+                    "about is over-reclaim BY CONFIGURATION (production-gc-and-storage-stability)."
+                )
+
+    def test_maintenance_role_iam_is_not_widened(self) -> None:
+        """gc_ops needs NO new IAM: the role already carries s3:ListBucket scoped to the prod prefix
+        and cloudwatch:PutMetricData conditioned on the DuckLakeMaintenance namespace -- that
+        namespace condition is WHY an unemitted gc_ops metric reads absent rather than breached, so
+        it must be asserted here, not merely assumed."""
+        text = _ADMIN_TF.read_text(encoding="utf-8")
+        policy_block = _find_resource_block(text, "aws_iam_role_policy", "ducklake_maintenance")
+        assert '"cloudwatch:namespace" = "DuckLakeMaintenance"' in policy_block
+        assert '"s3:prefix" = ["${local.ducklake_prod_data_prefix}/*"]' in policy_block
+        sids = re.findall(r'Sid\s*=\s*"(\w+)"', policy_block)
+        assert sids == ["Logs", "NeonDsnRead", "S3DataReadWriteDelete", "S3ListDataPrefix", "CloudWatchMetrics"], (
+            f"maintenance role IAM Sid set changed -- gc_ops must not widen it: {sids}"
+        )
+
+    def test_liveness_alarm_treats_missing_data_as_breaching(self) -> None:
+        """The liveness alarm is the OTHER half of the absence-detection problem the breach alarm's
+        notBreaching posture deliberately leaves open: a pass that never runs must be visible."""
+        text = _ADMIN_TF.read_text(encoding="utf-8")
+        block = _find_resource_block(text, "aws_cloudwatch_metric_alarm", "ducklake_maintenance_gc_ops_liveness")
+        metric = re.search(r'metric_name\s*=\s*"([^"]*)"', block)
+        treat_missing = re.search(r'treat_missing_data\s*=\s*"([^"]*)"', block)
+        assert metric is not None and metric.group(1) == "GcDeletedSnapshots"
+        assert treat_missing is not None and treat_missing.group(1) == "breaching"
+
+    def test_referenced_missing_alarm_treats_missing_data_as_not_breaching(self) -> None:
+        """The BREACH alarm is deliberately the opposite posture: a weekly metric is legitimately
+        absent six days in seven, and this alarm is the breach detector, not the liveness detector."""
+        text = _ADMIN_TF.read_text(encoding="utf-8")
+        block = _find_resource_block(text, "aws_cloudwatch_metric_alarm", "ducklake_maintenance_gc_ops_referenced_missing")
+        metric = re.search(r'metric_name\s*=\s*"([^"]*)"', block)
+        treat_missing = re.search(r'treat_missing_data\s*=\s*"([^"]*)"', block)
+        assert metric is not None and metric.group(1) == "GcReferencedMissing"
+        assert treat_missing is not None and treat_missing.group(1) == "notBreaching"
+
+    def test_gc_ops_rule_cron_does_not_collide_with_the_singleton_cadences(self) -> None:
+        """reserved_concurrent_executions=1 on this singleton function means any cadence collision
+        throttles with a 429 that -- per the absence-detection problem -- would be SILENT."""
+        text = _ADMIN_TF.read_text(encoding="utf-8")
+        gc_ops_block = _find_resource_block(text, "aws_cloudwatch_event_rule", "ducklake_maintenance_gc_ops")
+        merge_ops_block = _find_resource_block(text, "aws_cloudwatch_event_rule", "ducklake_maintenance_merge_ops")
+        control_health_block = _find_resource_block(text, "aws_cloudwatch_event_rule", "ducklake_maintenance_control_health")
+
+        gc_ops_minute = _CRON_MINUTE_RE.search(gc_ops_block)
+        merge_ops_minute = _CRON_MINUTE_RE.search(merge_ops_block)
+        control_health_minute = _CRON_MINUTE_RE.search(control_health_block)
+        assert gc_ops_minute and merge_ops_minute and control_health_minute
+
+        minutes = {gc_ops_minute.group(1), merge_ops_minute.group(1), control_health_minute.group(1)}
+        assert len(minutes) == 3, f"cadence minute collision on this reserved_concurrent_executions=1 singleton: {minutes}"
 
 
 class TestThresholdShapeRedCases:

@@ -147,8 +147,18 @@ resource "aws_lambda_function" "ducklake_maintenance" {
   runtime       = "python3.12"
   handler       = "src.lambdas.ducklake_maintenance.handler.handler"
   architectures = ["x86_64"]
-  timeout       = 300
-  memory_size   = 1024
+  # F51 (production-gc-and-storage-stability): raised from 300s/1024MB. gc_ops is the heaviest verb
+  # this function now runs -- a universal catalog live-set enumeration, the destructive sequence, a
+  # post-pass re-enumeration for the G1 re-check and G3, a VALUE-SCANNING read-path re-read of every
+  # table at a pinned snapshot (forces real Parquet reads from S3 by design), and a ListObjectsV2
+  # walk of the production prefix. A timeout between the deletion and the G1 re-check/G3 leaves
+  # production data deleted with NO safety verdict and NO metric -- raised to the Lambda ceiling
+  # (900s) so correctness is never traded for the (weekly, low-invocation-count) cost delta.
+  # 1536MB gives headroom for the added value-scan workload (a single-pass streaming aggregate over
+  # Parquet columns, not a full-table materialization) without the cost multiplier a full doubling
+  # would apply to every 6h merge_ops/control_health invocation on this shared function.
+  timeout     = 900
+  memory_size = 1536
 
   # Singleton cap (Decision 81 clause 6) = 1 via the variable default. Differs from the writer's OCC
   # model (no reserved concurrency, clause 3). See the variable definition above for the quota history.
@@ -291,6 +301,54 @@ resource "aws_lambda_permission" "ducklake_maintenance_control_health" {
 }
 
 # ---------------------------------------------------------------------------
+# EventBridge prod gc_ops rule (production-gc-and-storage-stability, T2.18 c2): weekly guarded
+# destructive GC against the production catalog (ducklake_ops @ s3://.../ducklake/). Resource name
+# is SUFFIXED ("...-gc-ops") because the un-suffixed "agent-platform-ducklake-maintenance-gc" name
+# is already the SMOKE host's rule (terraform/personal/ducklake_maintenance_smoke.tf) -- naming it
+# "gc" here would collide at apply time.
+#
+# Created state = DISABLED: Decisions 125/126 deploy this rule and the handler carrying the verb
+# through DIFFERENT channels (infra vs code), so an ENABLED rule from this apply could fire
+# action=gc_ops before the code deploy lands -- a scheduled 400. Enabling is a separate, deliberate,
+# gated step (VP15) after the CD deploy is green AND the VP14 baseline gate reads referenced-missing
+# zero with G4 headroom confirmed.
+#
+# Schedule cron(45 3 ? * SUN *): weekly, deliberately OFFSET from this singleton's other two
+# 6-hourly cadences (merge_ops :30, control_health :15; reserved_concurrent_executions=1, so a
+# collision throttles with a 429 that -- per the absence-detection problem below -- would be
+# SILENT). Asserted by TestProductionGcRuleInvariants::test_gc_ops_rule_cron_does_not_collide_with_the_singleton_cadences.
+# No new IAM: reuses the existing maintenance role (already grants S3 RW+Delete + ListBucket on the
+# prod prefix, and PutMetricData conditioned on the DuckLakeMaintenance namespace).
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_event_rule" "ducklake_maintenance_gc_ops" {
+  name                = "agent-platform-ducklake-maintenance-gc-ops"
+  description         = "Weekly production DuckLake destructive GC (T2.18 / production-gc-and-storage-stability). cron weekly Sun 03:45 UTC. Created DISABLED -- enabled only after the baseline gate + CD deploy both clear."
+  schedule_expression = "cron(45 3 ? * SUN *)"
+  state               = "DISABLED"
+
+  tags = {
+    Name    = "DuckLake Maintenance Prod GC Ops Schedule"
+    Purpose = "T2.18 production-gc-and-storage-stability weekly guarded destructive GC"
+  }
+}
+
+resource "aws_cloudwatch_event_target" "ducklake_maintenance_gc_ops" {
+  rule      = aws_cloudwatch_event_rule.ducklake_maintenance_gc_ops.name
+  target_id = "ducklake-maintenance-gc-ops"
+  arn       = aws_lambda_function.ducklake_maintenance.arn
+  input     = jsonencode({ action = "gc_ops", data_path = local.ducklake_prod_data_path, meta_schema = "ducklake_ops" })
+}
+
+resource "aws_lambda_permission" "ducklake_maintenance_gc_ops" {
+  statement_id  = "AllowEventBridgeGcOps"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.ducklake_maintenance.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.ducklake_maintenance_gc_ops.arn
+}
+
+# ---------------------------------------------------------------------------
 # Circuit-breaker CloudWatch metric alarm.
 # Fires when MaintenanceBreakerTrip >= 1 in a 5-minute window.
 # alarm_actions wired to shared SNS topic (FP-B / Decision 39).
@@ -315,6 +373,77 @@ resource "aws_cloudwatch_metric_alarm" "ducklake_maintenance_breaker" {
   tags = {
     Name    = "DuckLake Maintenance Breaker Alarm"
     Purpose = "T2.18 CD.33 H1 circuit breaker alert"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# gc_ops BREACH alarm: fires when GcReferencedMissing >= 1 -- the over-reclaim safety invariant.
+# treat_missing_data = "notBreaching" DELIBERATELY: a weekly metric is legitimately absent six days
+# in seven, and this alarm is the BREACH detector, not the liveness detector (see the liveness
+# alarm below for that half of the absence-detection problem).
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_metric_alarm" "ducklake_maintenance_gc_ops_referenced_missing" {
+  alarm_name          = "ducklake-maintenance-gc-ops-referenced-missing"
+  alarm_description   = "DuckLake production gc_ops over-reclaim signal: a catalog-live path is missing from storage. T2.18 / production-gc-and-storage-stability."
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "GcReferencedMissing"
+  namespace           = "DuckLakeMaintenance"
+  period              = 300
+  statistic           = "Maximum"
+  threshold           = 1
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  treat_missing_data = "notBreaching"
+
+  tags = {
+    Name    = "DuckLake Maintenance GC Ops Referenced-Missing Alarm"
+    Purpose = "T2.18 production-gc-and-storage-stability over-reclaim breach detector"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# gc_ops LIVENESS alarm: fires when GcDeletedSnapshots reports NO datapoint at all across the
+# lookback -- the OTHER half of the absence-detection problem the breach alarm's notBreaching
+# posture deliberately leaves open. Without this, a rule that silently never fires (a schedule
+# misconfiguration, a permission gap, an exception before any metric emits) is invisible for the
+# whole nine-week observation window this plan exists to open.
+#
+# period=1800 (30 min, < 3600) is a deliberate choice to stay clear of the documented AWS
+# EvaluationPeriods*Period <= 604800s (1 week) cap that applies once period>=3600 (empirically hit
+# by ducklake_catalog_dr.tf's freshness alarm at 192*3600=691200s -- see that file's comment).
+# evaluation_periods=480 * period=1800 = 864000s (10 days) -- deliberately LONGER than this
+# function's own weekly cadence so a single real pass (which always emits GcDeletedSnapshots, even
+# 0, on a successful non-dry-run invocation) always lands inside the window under normal operation,
+# while two consecutive missed weeks still trips it. statistic=SampleCount + datapoints_to_alarm
+# equal to evaluation_periods ("ALL periods breaching") is what makes this a DATAPOINT-COUNT check
+# rather than a value-threshold check: a real pass that legitimately deletes nothing still emits a
+# 0-valued datapoint, which SampleCount still counts as present.
+# ---------------------------------------------------------------------------
+
+resource "aws_cloudwatch_metric_alarm" "ducklake_maintenance_gc_ops_liveness" {
+  alarm_name          = "ducklake-maintenance-gc-ops-liveness"
+  alarm_description   = "DuckLake production gc_ops pass never ran: no GcDeletedSnapshots datapoint in 10 days (weekly cadence + buffer). T2.18 / production-gc-and-storage-stability."
+  comparison_operator = "LessThanThreshold"
+  evaluation_periods  = 480
+  datapoints_to_alarm = 480
+  metric_name         = "GcDeletedSnapshots"
+  namespace           = "DuckLakeMaintenance"
+  period              = 1800
+  statistic           = "SampleCount"
+  threshold           = 1
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  treat_missing_data = "breaching"
+
+  tags = {
+    Name    = "DuckLake Maintenance GC Ops Liveness Alarm"
+    Purpose = "T2.18 production-gc-and-storage-stability liveness guard"
   }
 }
 

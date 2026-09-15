@@ -33,6 +33,7 @@ import time
 from typing import Any
 
 from src.common import catalog_dr, ducklake_control_health
+from src.common import ducklake_gc_ops as gc_ops_body
 from src.common import ducklake_maintenance as maint
 from src.common import ducklake_maintenance_scope as scope
 from src.common import ducklake_runtime as rt
@@ -493,6 +494,44 @@ def action_merge_ops(event: dict[str, Any], _con: Any) -> dict[str, Any]:
         con.close()
 
 
+def action_gc_ops(event: dict[str, Any], _con: Any) -> dict[str, Any]:
+    """SCHEDULED (weekly, DISABLED until the baseline gate clears) + human-invokable: the production
+    destructive-GC pass. Thin dispatch entry -- the real body lives in src/common/ducklake_gc_ops.py
+    (Decision 128 decompose-by-default: this handler has no SLOC headroom left for the pass logic).
+
+    Scoped by catalog enumeration ONLY -- never scope.resolve_scope (the per-table-scoped path) and
+    never the smoke-only table-scope constant (Decision 143 cl.2). Requires explicit data_path +
+    meta_schema (no-arg invokes refused, Decision 84/81 guard); dry_run defaults to False and, when
+    True, performs no deletion and no write of any kind.
+
+    Expected event: {"action": "gc_ops", "data_path": "s3://...", "meta_schema": "ducklake_ops", "dry_run"?: bool}.
+    """
+    data_path = event.get("data_path")
+    if not isinstance(data_path, str) or not data_path.startswith("s3://"):
+        raise rt.DuckLakeRuntimeError("gc_ops requires a 'data_path' s3:// URI (the production DuckLake path)")
+    raw_schema = event.get("meta_schema")
+    if not raw_schema:
+        raise rt.DuckLakeRuntimeError(
+            "gc_ops requires an EXPLICIT 'meta_schema' (e.g. 'ducklake_ops'); no-arg invokes refused (Decision 84/81)"
+        )
+    meta_schema = _require_identifier(raw_schema)
+    dry_run = bool(event.get("dry_run", False))
+
+    con = rt.open_connection(
+        dsn=rt.fetch_dsn(), data_path=data_path, meta_schema=meta_schema, extension_directory=EXTENSION_DIRECTORY
+    )
+    try:
+        return gc_ops_body.gc_ops(
+            con,
+            catalog=maint.CATALOG_ALIAS,
+            data_path=data_path,
+            dry_run=dry_run,
+            metric_sink=_emit_maintenance_metric,
+        )
+    finally:
+        con.close()
+
+
 def action_control_health(event: dict[str, Any], _con: Any) -> dict[str, Any]:
     """OPERATIONAL: assert control-class table invariants (row count, counter floor, live-file
     ceiling) -- the periodic health assertion docs/contracts/ops_entity_counters.yaml's dq_scope
@@ -535,6 +574,7 @@ _ACTIONS: dict[str, Any] = {
     "catalog_reinit": action_catalog_reinit,
     "restore_drill": action_restore_drill,
     "merge_ops": action_merge_ops,
+    "gc_ops": action_gc_ops,
     "catalog_stats": action_catalog_stats,
     "reconcile_columns": action_reconcile_columns,
     "clone_catalog": action_clone_catalog,

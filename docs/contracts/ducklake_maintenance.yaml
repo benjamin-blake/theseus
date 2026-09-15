@@ -22,14 +22,15 @@ contract:
   description: >-
     Singleton DuckLake catalog-maintenance Lambda. SCHEDULED actions are EventBridge-triggered:
     merge (daily) / gc (weekly) / hot_merge (every 6h) run against the SMOKE catalog (ducklake_smoke),
-    and merge_ops (every 6h) runs against the PRODUCTION catalog (ducklake_ops, data_path + meta_schema
-    supplied by the EventBridge target). OPERATIONAL actions (catalog_reinit, restore_drill,
-    catalog_stats, reconcile_columns) are human-invoked over 443 via `aws lambda invoke` against the
-    PRODUCTION catalog with explicit data_path + meta_schema event params (no-arg invokes refused). No
-    LLM / agent invocation anywhere in this path (CD.33 cl.5 / Decision 81 cl.6). Singleton via
-    reserved_concurrent_executions=1. This contract documents the SCHEDULED + OPERATIONAL verb surface
-    only; the forced-trip guard-set test action breaker_probe is VP instrumentation
-    (analogous to the writer/reader probes), NOT an operational verb, and is out of contract scope.
+    and merge_ops (every 6h) / gc_ops (weekly, created DISABLED) run against the PRODUCTION catalog
+    (ducklake_ops, data_path + meta_schema supplied by the EventBridge target). OPERATIONAL actions
+    (catalog_reinit, restore_drill, catalog_stats, reconcile_columns) are human-invoked over 443 via
+    `aws lambda invoke` against the PRODUCTION catalog with explicit data_path + meta_schema event
+    params (no-arg invokes refused). No LLM / agent invocation anywhere in this path (CD.33 cl.5 /
+    Decision 81 cl.6). Singleton via reserved_concurrent_executions=1. This contract documents the
+    SCHEDULED + OPERATIONAL verb surface only; the forced-trip guard-set test action breaker_probe
+    is VP instrumentation (analogous to the writer/reader probes), NOT an operational verb, and is
+    out of contract scope.
   governance:
     auth_type: >-
       NOT a public agent surface (an AWS_IAM Function URL exists for smoke-gate invokes, terraform
@@ -159,6 +160,39 @@ verbs:
         aggregate raise naming per-table merge failures (table + underlying error text) and/or
         unclassified tables (500)
       version_mismatch: "DuckDB/extension version mismatch (500)"
+  gc_ops:
+    payload_schema_ref: >-
+      event envelope {action: "gc_ops", data_path (s3://), meta_schema, dry_run? (default false)}.
+      SCHEDULED (EventBridge cron(45 3 ? * SUN *) against PRODUCTION ducklake_ops; rule created
+      DISABLED, enabled only after the baseline gate clears and the governed CD deploy is green) AND
+      human-invokable. Production destructive-GC pass (src/common/ducklake_gc_ops.py): a universal
+      catalog live-set collection (every table, no policy input, never scope.resolve_scope), no
+      per-table prelude (merge_ops already compacts every table 6-hourly), then run_guarded_gc
+      UNMODIFIED (the G1-G4 fail-closed guard set, Decision 188) followed by an INDEPENDENT
+      referenced-missing safety check against a real ListObjectsV2 storage listing and a
+      value-scanning read-path re-read at the pass-start catalog snapshot id. dry_run=true performs
+      NO deletion and NO write of any kind -- it still computes and emits GcReferencedMissing and
+      GcWouldDeleteFiles from the read-only dry-run primitives, so the baseline safety gate can be
+      taken without running the destructive pass it exists to gate.
+    response_codes:
+      200: >-
+        pass complete (or dry-run measurement complete); body {ok, action, dry_run, tables,
+        snapshot_id, would_delete_files, would_delete_bytes, referenced_missing, snapshots_expired,
+        files_cleaned, orphans_deleted, guard_stats, debt_ratio, storage_bytes, live_bytes,
+        storage_objects, read_path}. guard_stats and read_path are null when dry_run=true (no
+        destructive call and no post-pass read-path scan are issued in that mode).
+      500: >-
+        DuckLakeMaintenanceError: a G1/G2/G3 guard-set trip (run_guarded_gc, non-dry-run only), a
+        non-empty referenced_missing set (over-reclaim signal -- raised in BOTH dry_run and
+        non-dry_run modes, after GcReferencedMissing is emitted), or a verify_read_path scan
+        failure (a referenced Parquet object missing from storage) / DuckLakeRuntimeError (missing
+        or non-s3 data_path, missing meta_schema, no tables discovered) / VersionMismatchError.
+    typed_errors:
+      breaker: >-
+        G1/G2/G3 guard-set trip, or a non-empty referenced_missing set, or a verify_read_path
+        failure; emits MaintenanceBreakerTrip=1 for a guard-set trip (500)
+      runtime: "missing s3:// data_path / meta_schema, or no tables discovered (500)"
+      version_mismatch: "DuckDB/extension version mismatch (500)"
   catalog_reinit:
     payload_schema_ref: >-
       event envelope {action: "catalog_reinit", data_path (s3://), meta_schema, confirm}. OPERATIONAL
@@ -206,9 +240,10 @@ verbs:
 audit_invariants:
   - "Singleton: reserved_concurrent_executions=1 enforces a single concurrent maintenance run (Decision 81 cl.6)."
   - "No LLM / agent invocation anywhere in this path (CD.33 cl.5 / Decision 81 cl.6)."
-  - "Scheduled merge/gc/hot_merge operate on the SMOKE catalog (ducklake_smoke); merge_ops is ALSO EventBridge-scheduled (every 6h) but targets the PRODUCTION catalog (ducklake_ops) with data_path+meta_schema supplied by the EventBridge target. The human-invoked operational actions (catalog_reinit/restore_drill/catalog_stats/reconcile_columns) target production via explicit params and refuse no-arg invokes."
-  - "GC is guarded by the fail-closed G1-G4 guard set (reachability, retention floor, catalog sanity, an absolute per-pass deletion bound); a G1/G2/G3 trip raises DuckLakeMaintenanceError, emits MaintenanceBreakerTrip=1, and deletes nothing, while a G4 over-budget pass defers the whole destructive step instead. The forced-trip breaker_probe action (out of contract scope) exists to prove G1."
-  - "Two destructive paths exist: catalog_reinit is CATALOG-STRUCTURE destructive (meta-schema drop + reinit; confirm=<meta_schema>-guarded; IRREVERSIBLE), and gc is DATA-FILE destructive (snapshot expiry + orphan-file deletion on the happy path), guarded by the G1-G4 guard set, not a confirm token."
+  - "Scheduled merge/gc/hot_merge operate on the SMOKE catalog (ducklake_smoke); merge_ops and gc_ops are ALSO EventBridge-scheduled (every 6h / weekly respectively) but target the PRODUCTION catalog (ducklake_ops) with data_path+meta_schema supplied by the EventBridge target -- gc_ops's rule is created DISABLED. The human-invoked operational actions (catalog_reinit/restore_drill/catalog_stats/reconcile_columns) target production via explicit params and refuse no-arg invokes."
+  - "GC (both gc and gc_ops) is guarded by the fail-closed G1-G4 guard set (reachability, retention floor, catalog sanity, an absolute per-pass deletion bound); a G1/G2/G3 trip raises DuckLakeMaintenanceError, emits MaintenanceBreakerTrip=1, and deletes nothing, while a G4 over-budget pass defers the whole destructive step instead. The forced-trip breaker_probe action (out of contract scope) exists to prove G1. gc_ops additionally runs an INDEPENDENT post-pass safety check (referenced_missing against a real storage listing, plus a value-scanning read-path re-read) that G1-G4 do not perform, because gc_ops's live set is UNIVERSAL (every table, no policy input) rather than scoped by maintenance_policy."
+  - "Two destructive paths exist: catalog_reinit is CATALOG-STRUCTURE destructive (meta-schema drop + reinit; confirm=<meta_schema>-guarded; IRREVERSIBLE), and gc / gc_ops are DATA-FILE destructive (snapshot expiry + orphan-file deletion on the happy path), guarded by the G1-G4 guard set, not a confirm token. gc_ops additionally supports dry_run=true, a read-only measurement mode with no destructive call."
+  - "gc_ops NEVER reads maintenance_policy or calls scope.resolve_scope -- that matrix governs PER-TABLE-SCOPED verbs only (its single production consumer is merge_ops); a catalog-wide destructive verb takes no policy cell, because filtering its live set would narrow what the guards can SEE, never what gets deleted."
   - "An unknown `action` returns 400 with the sorted action allow-list (dispatcher-level; not a per-verb outcome)."
 amendment_log:
   - date: "2026-09-13"
@@ -234,4 +269,17 @@ amendment_log:
       and/or unclassified tables (isolate-then-raise, extending Decision 188 pt 3's carve-out to
       this third site). Also fixes rec-3785: files_before/files_after are now nulled together
       (never asymmetrically) when either side's count read fails.
+  - date: "2026-09-15"
+    semantic_break: true
+    change_class: field_add
+    summary: >-
+      production-gc-and-storage-stability (T2.18 c2): added the gc_ops verb -- the production
+      counterpart of the smoke-only gc verb (merge -> merge_ops precedent), EventBridge-scheduled
+      weekly against ducklake_ops with its rule created DISABLED. Real behaviour, not prose-only:
+      gc_ops runs the G1-G4 fail-closed guard set (Decision 188) UNMODIFIED against a UNIVERSAL
+      catalog live set, plus an independent post-pass referenced_missing / value-scanning
+      read-path safety check neither the smoke gc verb nor merge_ops perform. Supports
+      dry_run=true (read-only measurement, no destructive call). gc_ops never reads
+      maintenance_policy or calls scope.resolve_scope -- a catalog-wide destructive verb takes no
+      per-table policy cell.
 previous_versions: []
