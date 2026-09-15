@@ -276,6 +276,57 @@ CI-green signal for it at the last check. Main has changed
 so its prior identical-deferral-map proof cannot be reused after any integration. This session
 did not rebase, re-run the corpus differ, or start Candidate 2.
 
+## Candidate 2 pre-implementation profile - no tier change
+
+This is a local static-work profile at the current committed branch tree, not a production
+change or a new Phase 0/CI timing population. Runtime-only instrumentation drove the registered
+`--pre` sequence with the Candidate 1 pytest-diff scaffold omitted, so Candidate 1 was not
+re-run. A clean scratch checkout at `1ac7ff91` avoided the Codespace's gitignored
+`logs/debug/` replay environments: the working directory had 14,107 gated Python files and
+would overstate CI-like scan cost, while the clean checkout had 984. The clean profile kept all
+static checks and their pre-glob dispatch real. A second pass supplied a synthetic single-test
+changed path on the same tree to profile a low-breadth Python-diff context; neither pass edited
+tracked source.
+
+The normal `--pre` path calls `iter_gated_py_files()` **twice**, not four times: once from
+`validate_cc_limits` and once from `validate_sloc_limits`. SLOC's second call is only in the
+separate `--update-sloc-budgets` command, and `validate_sloc_budget_raises` never calls the
+iterator. Each clean-tree iterator returned 984 files and cost 15-23ms, including its whole-repo
+walk. The budget-raise guard made no AST parse; CC parsed 954 files, skipping 30 waivered files.
+
+| Clean-tree static context | AST parses | Later same-path/source-hash/mode parses | Their measured parse time | Repeated-read time | All git-call time |
+|---|---:|---:|---:|---:|---:|
+| Current branch diff | 8,720 | 7,561 | 12.160s | 1.757s | 0.212s (51 calls) |
+| One edited test module | 5,952 | 4,847 | 7.507s | 0.999s | 0.096s (26 calls) |
+
+The CC check's own repeated parses accounted for 948 calls / 1.774s in the current branch
+context and 624 calls / 1.207s in the single-test context. These are direct timed
+`ast.parse()` bodies, not a subtraction from gross `--pre` wall time. Five direct, uninstrumented
+check invocations on the clean tree gave these medians (Q1-Q3): CC 4.333s (4.329-4.394), SLOC
+0.172s (0.167-0.178), SLOC budget-raise guard 0.004s (0.003-0.008), contract drift 7.057s
+(6.944-7.075), test-count coupling 4.285s (4.213-4.288), and raises discrimination 3.698s
+(3.672-3.712). The direct check timings corroborate that walks are tiny and repeated parsing,
+not the iterator itself, is the larger static cost.
+
+The diagnosed SLOC/CC-first reuse has a **generous ceiling**, not an achieved saving: removing
+one iterator, all CC repeated parses and file reads, and even **all** measured git-call time
+would recover at most 2.153s on the current branch diff and 1.463s on the single-test context.
+An impossible perfect cache across every repeated parse and read in the entire measured pre
+path, plus one walk and all git calls, has a still-generous ceiling of 14.146s and 8.624s
+respectively. Some AST consumers may not safely share an object, and many git calls are not
+redundant, so actual recoverable time is lower. These are local per-operation ceilings, not
+CI-based timing claims.
+
+Against the authoritative Phase 0 regimes, the current-branch perfect-cache ceiling is 20.6%
+of the 68.572s overall static-half median, but only 5.4% of the 264s `--pre` median and below
+its roughly +/-24s CI noise floor. The four reported low-breadth `--pre` clocks are 35, 37,
+37 and 77s (median 37s, cross-case IQR 10.5s, range 42s). The single-test perfect-cache
+ceiling is 8.624s, or 11.2-24.6% of those total clocks, yet remains below even that 10.5s
+observed spread. The cross-case IQR is descriptive, not a controlled same-diff noise estimate;
+it is nevertheless the available Phase 0 resolution bar, and the diagnosed first scope's
+1.463s is well beneath it. **Recommendation: abandon Candidate 2 as scoped**, pending the
+user's decision. No Candidate 2 implementation, rebase, or Candidate 3 work occurred.
+
 ## Phase 4 evidence
 
 Pending candidate implementation and A/B evidence.
