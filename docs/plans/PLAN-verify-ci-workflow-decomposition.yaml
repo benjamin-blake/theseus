@@ -1,0 +1,719 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "verify-ci-workflow-decomposition"
+intent: >-
+  Decompose scripts/verify_ci_workflow.py (499 SLOC against the 500 cap, unregistered in
+  config/sloc_budgets.yaml) into a facade package preserving its entire public surface, so the
+  follow-on plan can add a guard without crossing the limit, and adopt the Decision 170
+  examined()/skipped() declaration on validate_ci_workflow_guards, whose module this plan edits.
+  Behaviour-preserving: every guard still runs, in the same order, with the same failures.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-verify-ci-workflow-decomposition.yaml
+phase: >-
+  ad_hoc_rec (soft-warn category; no tier_item claimed). Decision 128 decompose-by-default,
+  triggered by a file measured at 499 of 500 SLOC with no budget entry; Decision 170
+  touch-it-fix-it, triggered by this plan editing a baselined check's own defining module. No
+  exit criterion closes, hence no closes_criteria.
+scope:
+  - file: scripts/verify_ci_workflow.py
+    action: Delete
+    purpose: >-
+      499 SLOC against the 500 default with no config/sloc_budgets.yaml entry, and
+      --update-sloc-budgets will not seed a newly-oversized unregistered file. Decision 128 makes
+      decomposition the response, never a raise.
+  - file: scripts/verify_ci_workflow/__init__.py
+    action: Create
+    purpose: >-
+      Facade re-exporting all 36 names the flat module defined (measured, not estimated), so every
+      existing `from scripts.verify_ci_workflow import ...` site keeps working byte-for-byte.
+      __all__ lists them, which is what keeps ruff F401 quiet on a pure re-export (the
+      scripts/agent_sdk/__init__.py precedent).
+  - file: scripts/verify_ci_workflow/__main__.py
+    action: Create
+    purpose: >-
+      MANDATORY, not cosmetic. Two live consumers invoke the module form: the graduated registry
+      row terraform-apply-sandbox-concurrency-event-keyed runs
+      `python -m scripts.verify_ci_workflow terraform-apply-concurrency`, and
+      tests/verify_ci_workflow/test_cli_main.py::TestCliMain calls
+      runpy.run_module("scripts.verify_ci_workflow", run_name="__main__"). Both resolve a PACKAGE
+      through pkg.__main__, so without this file both break.
+  - file: scripts/verify_ci_workflow/_shared.py
+    action: Create
+    purpose: >-
+      The workflow-YAML access helpers: _load, _get_steps_text, _get_step_run_text,
+      _assert_runtime_lock. THREE are genuinely cross-group and measured so -- _load throughout,
+      _get_steps_text at lines 55, 56, 174, 181, 294, _assert_runtime_lock at 60, 177, 193, 197.
+      _get_step_run_text is NOT: its only call sites are lines 442-443, both inside
+      _check_ci_rca_fetch_classification, so it belongs to _ci_rca alone. It is placed in _shared
+      for cohesion with the other YAML-access helpers, which is a defensible reason but not the
+      cross-group one an earlier draft gave. Moving it into _ci_rca instead is equally correct;
+      what is not correct is claiming it spans groups.
+  - file: scripts/verify_ci_workflow/_ci_yaml.py
+    action: Create
+    purpose: >-
+      The ci.yml-shape guards and their private helpers: _check_jobs_and_flags,
+      _is_truthy_concurrency_flag, _check_concurrency, _check_fetch_depth,
+      _check_full_tier_runtime_lock, _MODULE_INVOCATION_RE, _CHECK_LIKE_RE,
+      _check_validate_single_source, _admits_pull_request, _check_signal_green_needs. Exactly the
+      six guards tests/verify_ci_workflow/test_ci_data_guards.py imports, plus their helpers.
+  - file: scripts/verify_ci_workflow/_ci_rca.py
+    action: Create
+    purpose: >-
+      The canary and ci-rca guards: _check_canary, _REQUIRED_CI_RCA_WORKFLOWS,
+      _check_ci_rca_filter, _PATTERN_MATCHING_CONSTRUCT_RE, _CI_RCA_FETCH_STEP,
+      _read_ci_rca_authority_sources, _ci_rca_fetch_source_comment, _decision_72_entry,
+      _check_ci_rca_authority_anchor, _check_ci_rca_fetch_classification. Exactly the concern
+      tests/verify_ci_workflow/test_ci_rca_and_canary.py covers.
+  - file: scripts/verify_ci_workflow/_apply.py
+    action: Create
+    purpose: >-
+      The apply/reconcile guards: _check_apply_rca_fallback, _check_terraform_apply_concurrency,
+      the six _RECOVERY_* constants, _recovery_step_body, _check_recovery_workflow_topology.
+      Exactly the concern tests/verify_ci_workflow/test_apply_and_terraform.py covers. Largest
+      submodule at roughly 185 SLOC, well under the cap.
+  - file: scripts/verify_ci_workflow/_cli.py
+    action: Create
+    purpose: >-
+      _COMMANDS and main(), moved verbatim. _COMMANDS stays ONE dict object re-exported by the
+      facade, which is what keeps tests/verify_ci_workflow/test_cli_main.py's
+      patch.dict("scripts.verify_ci_workflow._COMMANDS", ...) intercepting: patch.dict mutates the
+      dict in place rather than rebinding the attribute, so a re-export shares it.
+  - file: tests/verify_ci_workflow/test_facade_surface.py
+    action: Create
+    purpose: >-
+      New mirror test for the facade: all 36 names resolve through scripts.verify_ci_workflow,
+      each resolves to its expected defining submodule, _load still normalises the PyYAML `on:`
+      -> True key quirk, and every package module is under the SLOC cap.
+  - file: scripts/checks/ci_guards/validate_ci_workflow_guards.py
+    action: Modify
+    purpose: >-
+      Decision 170 touch-it-fix-it. This plan edits this module (its docstrings name the flat
+      path), and validate_check_accounting keys touch-it-fix-it on the check's OWN defining module
+      appearing in get_changed_files(), so the examined()/skipped() declaration must be adopted in
+      the same PR. Adds registry.examined(len(guards), unit="ci_workflow_guards") on the success
+      path and registry.skipped(reason) on the import/setup-failure path, modelled on the sibling
+      scripts/checks/ci_guards/validate_dispatch_gated_apply_topology.py. The module-level _GUARDS
+      try/except and the call-time try/except are untouched.
+  - file: config/check_accounting_baseline.yaml
+    action: Modify
+    purpose: >-
+      Remove the `validate_ci_workflow_guards` entry (currently line 45). The baseline is
+      shrink-only with no marker escape grammar, so removal is the only sanctioned edit; the
+      frozen _BASELINE_SEED constant is deliberately NOT edited (it is a ceiling that only shrinks
+      when a check is retired, and the guard only checks current_baseline - _BASELINE_SEED).
+  - file: scripts/checks/ci_guards/_manifest.py
+    action: Modify
+    purpose: >-
+      Four Entry pre_globs tuples name the literal string "scripts/verify_ci_workflow.py"
+      (validate_ci_rca_trigger, validate_dependabot_automation, validate_branch_cleanup,
+      validate_dispatch_gated_apply_topology). Re-point each to "scripts/verify_ci_workflow/**" or
+      the --pre tier silently stops selecting those four checks when the package changes.
+  - file: scripts/test_coverage_checker.py
+    action: Modify
+    purpose: >-
+      Remove the now-dangling "scripts/verify_ci_workflow.py" member of
+      _CONCERN_SPLIT_TEST_PACKAGES. Measured: get_changed_source_files filters to paths that
+      exist, and excludes __init__.py, so the deleted path is never scanned and the new package
+      modules map to None either way -- the removal is the Delete row's closure obligation, not a
+      coverage change. NOT a "sanctioned" disposition: Decision 131 clause 1 enumerates the
+      return-None family as exactly scripts/executor/** and scripts/ops_portal/**, and this prefix
+      is not among them. The mapping pin is therefore RETIRED here, deliberately, and carried by
+      rec-3883 per Decision 187 (silence is not a disposition).
+  - file: tests/checks/ci_guards/test__manifest.py
+    action: Modify
+    purpose: >-
+      Two assertions pin "scripts/verify_ci_workflow.py" as a required glob and as a parametrised
+      probe path for validate_ci_rca_trigger; re-point both to the package form.
+  - file: tests/checks/ci_guards/test_validate_ci_workflow_guards.py
+    action: Modify
+    purpose: >-
+      Add TestCheckAccountingDeclaration, covering the new declaration: an enforced run declares
+      examined(len(_GUARDS)) and derives status "enforced"; a guard-import failure declares a skip
+      and still records a single gate failure without raising.
+  - file: tests/verify_ci_workflow/test_apply_and_terraform.py
+    action: Modify
+    purpose: >-
+      Re-point 18 patch targets from scripts.verify_ci_workflow._load to
+      scripts.verify_ci_workflow._apply._load. The `from scripts.verify_ci_workflow import ...`
+      lines are NOT touched -- the facade keeps them working; only patch targets move. The move is
+      REQUIRED BY PYTHON NAME-BINDING, not by convention: after the split each guard resolves _load
+      from its own submodule globals, so patching the facade attribute would rebind a name nothing
+      reads and the guards would silently run the real _load against live workflow files, asserting
+      against production YAML. Decision 169's "patch the check's OWN defining module" is the
+      precedent for the shape, not the reason it is mandatory.
+  - file: tests/verify_ci_workflow/test_ci_data_guards.py
+    action: Modify
+    purpose: >-
+      Re-point 26 patch targets to scripts.verify_ci_workflow._ci_yaml._load. Imports untouched.
+  - file: tests/verify_ci_workflow/test_ci_rca_and_canary.py
+    action: Modify
+    purpose: >-
+      Re-point 26 _load, 6 Path and 3 _read_ci_rca_authority_sources patch targets to
+      scripts.verify_ci_workflow._ci_rca.*. Imports untouched.
+bundled_recommendations: []
+followon_recs: ["rec-3882", "rec-3883", "rec-3884"]
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    scripts.verify_ci_workflow is a package whose facade resolves all 36 names the flat module
+    defined, and every existing import site (including the ten private guard names
+    scripts/checks/ci_guards/validate_ci_workflow_guards.py imports at lines 19-30, _load in
+    validate_pr_conflict_signal / validate_branch_cleanup / validate_dependabot_automation /
+    validate_dispatch_gated_apply_topology, and _check_ci_rca_filter in validate_ci_rca_trigger)
+    keeps working unchanged.
+  - >-
+    Every package module is under the 500-SLOC default and NO config/sloc_budgets.yaml entry is
+    added for any of them.
+  - >-
+    _GUARDS still carries the same ten (label, function) pairs in the same order, with the SAME
+    function objects the facade exports -- the identity the graduated registry row
+    ci-rca-fetch-classification-guard-runs-in-pre-tier asserts with `in agg._GUARDS`.
+  - >-
+    `python -m scripts.verify_ci_workflow` and `python -m scripts.verify_ci_workflow
+    <command>` both still work, and runpy.run_module("scripts.verify_ci_workflow",
+    run_name="__main__") still reaches main().
+  - >-
+    validate_ci_workflow_guards declares an examined()/skipped() outcome, is absent from
+    config/check_accounting_baseline.yaml, and validate_check_accounting passes; a dispatch of the
+    check derives status "enforced" rather than "undeclared".
+  - >-
+    The four ci_guards Entry pre_globs select the package, so a package-only diff still dispatches
+    those checks in the --pre tier.
+  - >-
+    No string-literal reference to the deleted path remains under scripts/, tests/ or .github/.
+    Scoped deliberately, and stated so rather than reading repo-wide. DECLARED EXCLUSIONS
+    (Decision 191's principle that an exclusion is a DECLARED cell and never an absence, applied
+    BY ANALOGY -- its clause 1 literally governs DuckLake maintenance scope, not verification
+    sweeps, so the transfer is deliberate rather than direct governance): (a) config/, whose five
+    verification_registry guard_target values cannot be corrected here without a spurious
+    tautological differential -- carried by rec-3882; (b) docs/, 84 hits across 31 files, all
+    append-only historical records never retro-edited under Decision 177 -- plan documents,
+    docs/SESSION_LOG.md and three docs/audit-prompts/AUDIT-*.md -- plus one contract,
+    docs/contracts/ci-rca-lifecycle.yaml:458; (c) audits/, four hits in
+    audits/gitops-agent-first-ddfb9cc.yaml:601,:1026 and
+    audits/loop-spec-adoption-4d8bac4a.yaml:529,:828, frozen audit records on the same footing.
+    SURVIVING PROVENANCE DOCSTRINGS, counted POST-implementation: SEVEN. An earlier revision said
+    nine, which measured HEAD and contradicted this plan's own execution step 5 -- that step updates
+    validate_ci_workflow_guards.py:13 and :69 itself, so those two do not survive. The seven are
+    validate_ci_rca_trigger.py:15; validate_dispatch_gated_apply_topology.py:44;
+    scripts/ci/reconcile_reachability.py:18; and the four tests/verify_ci_workflow/test_*.py module
+    docstrings. The sweep matches quoted literals only, so none is caught by it. All seven are inert
+    for ENFORCEMENT -- no route target resolves any of them. One is additionally stale as FACT:
+    validate_dispatch_gated_apply_topology.py:44 claims the file "sits at exactly 500 SLOC" (it is
+    499, and false outright once deleted), carried by rec-3884 rather than fixed inline (Decision 59).
+    One further cosmetic residual, named so the accounting is exhaustive: main()'s usage string at
+    scripts/verify_ci_workflow.py:637 reads "Usage: verify_ci_workflow.py <...>" and moves verbatim
+    into _cli.py, where it names a file that no longer exists. It is a BARE BASENAME, so this
+    criterion's path-scoped sweep is not wrong to miss it; no test asserts it; and both the
+    ZERO-BEHAVIOUR-CHANGE constraint and Decision 59 argue against touching it here.
+  - The full validation tier completes exit 0 before handoff (Decision 163).
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    hermetic: true
+    action: The package exists, every module is under the SLOC cap, and the CLI command table is intact
+    command: >-
+      bin/venv-python -c "from pathlib import Path; import scripts.verify_ci_workflow as m;
+      assert hasattr(m, '__path__'), 'scripts.verify_ci_workflow is not a package';
+      pkg=Path(m.__path__[0]); mods=sorted(p.name for p in pkg.glob('*.py'));
+      assert len(mods) >= 5, mods;
+      over=[(p.name, n) for p in pkg.glob('*.py') for n in [sum(1 for l in
+      p.read_text(encoding='utf-8').splitlines() if l.strip() and not l.strip().startswith('#'))]
+      if n > 500]; assert not over, over;
+      assert not Path('scripts/verify_ci_workflow.py').exists(), 'flat module still present';
+      assert sorted(m._COMMANDS) == sorted(['jobs-and-flags', 'concurrency', 'fetch-depth',
+      'canary', 'ci-rca-filter', 'apply-rca-fallback', 'validate-single-source',
+      'signal-green-needs', 'terraform-apply-concurrency', 'ci-rca-fetch-classification',
+      'full-tier-runtime-lock', 'recovery-workflow-topology']), sorted(m._COMMANDS);
+      assert all(callable(f) for f in m._COMMANDS.values()); print('PACKAGE_SHAPE_OK', mods)"
+    expected: PACKAGE_SHAPE_OK printed with the module list, exit 0
+    fix_if: >-
+      Measured red before implementation: the module has no __path__, so the first assert fires.
+      A module over 500 SLOC means the split was uneven -- rebalance it, never add a
+      config/sloc_budgets.yaml entry (Decision 128). The __path__ assertion must come FIRST: it is
+      what keeps pkg.glob from returning [] and passing the budget assert vacuously on a tree
+      where the package does not exist.
+    graduation: graduate
+    graduation_check_id: verify-ci-workflow-package-shape-and-module-budgets
+  - step: 2
+    phase: pre-deploy
+    hermetic: true
+    action: The aggregator still wires the same ten guard objects, in the same order, through the facade
+    command: >-
+      bin/venv-python -c "from scripts.verify_ci_workflow import (_check_apply_rca_fallback,
+      _check_canary, _check_ci_rca_fetch_classification, _check_concurrency, _check_fetch_depth,
+      _check_jobs_and_flags, _check_recovery_workflow_topology, _check_signal_green_needs,
+      _check_terraform_apply_concurrency, _check_validate_single_source);
+      import scripts.checks.ci_guards.validate_ci_workflow_guards as agg;
+      expected=[('jobs-and-flags', _check_jobs_and_flags), ('fetch-depth', _check_fetch_depth),
+      ('concurrency', _check_concurrency), ('canary', _check_canary),
+      ('apply-rca-fallback', _check_apply_rca_fallback),
+      ('validate-single-source', _check_validate_single_source),
+      ('signal-green-needs', _check_signal_green_needs),
+      ('terraform-apply-concurrency', _check_terraform_apply_concurrency),
+      ('ci-rca-fetch-classification', _check_ci_rca_fetch_classification),
+      ('recovery-workflow-topology', _check_recovery_workflow_topology)];
+      assert list(agg._GUARDS) == expected, agg._GUARDS;
+      assert agg._load_guards() == expected, agg._load_guards();
+      print('GUARDS_IDENTITY_OK', len(expected))"
+    expected: GUARDS_IDENTITY_OK 10 printed, exit 0
+    fix_if: >-
+      A mismatch means the facade re-exported a wrapper rather than the function object itself
+      (e.g. a lambda or a functools.wraps shim), which breaks the `in agg._GUARDS` identity check
+      the graduated row ci-rca-fetch-classification-guard-runs-in-pre-tier performs. Re-export the
+      objects, never copies.
+    graduation: waive
+    graduation_waiver_reason: >-
+      Measured GREEN on the pre-implementation tree (GUARDS_IDENTITY_OK 10, exit 0) -- this is a
+      zero-behaviour-change refactor, so its central regression guard necessarily already holds.
+      Graduating it would be a false `graduate`: the plan-only red-before leg would classify it
+      tautological and HARD-FAIL this plan's own PR. Deliberately not `not-applicable` either --
+      the command is a single command_exit_zero shape and claiming the no-obligation row for it
+      would be the classification gaming that disposition exists to catch.
+  - step: 3
+    phase: pre-deploy
+    hermetic: true
+    action: Both live invocation forms of the package CLI still run every guard against the real workflows
+    command: >-
+      bin/venv-python -m scripts.verify_ci_workflow && bin/venv-python -m
+      scripts.verify_ci_workflow terraform-apply-concurrency && echo PACKAGE_CLI_OK
+    expected: OK printed twice, then PACKAGE_CLI_OK, exit 0
+    fix_if: >-
+      `python -m <package>` resolves through pkg.__main__, so a missing
+      scripts/verify_ci_workflow/__main__.py fails here with "No module named
+      scripts.verify_ci_workflow.__main__". This is also the exact command shape of the graduated
+      registry row terraform-apply-sandbox-concurrency-event-keyed, so a failure here means that
+      row breaks on merge. This run exercises the REAL, unpatched _load / _get_steps_text /
+      _assert_runtime_lock paths in _shared.py.
+    graduation: waive
+    graduation_waiver_reason: >-
+      Measured GREEN on the pre-implementation tree (both invocations print OK, exit 0): the flat
+      module already answers `python -m`. The property this step protects is that the PACKAGE form
+      keeps answering it, which cannot be expressed as a red-before on a tree where the package
+      does not exist without degenerating into the step 1 shape. The incumbent graduated row
+      terraform-apply-sandbox-concurrency-event-keyed already carries this exact command_exit_zero
+      check_spec, so a new row would duplicate it under a different check_id.
+  - step: 4
+    phase: pre-deploy
+    hermetic: true
+    action: The pre-existing suites covering the moved code and its consumers pass end to end
+    command: >-
+      bin/venv-python -m pytest tests/verify_ci_workflow tests/checks/ci_guards
+      tests/test_coverage_checker -q
+    expected: all tests pass, 0 failures (measured 728 passed across these three directories before this change)
+    fix_if: >-
+      A `ModuleNotFoundError: scripts.verify_ci_workflow._ci_yaml` style failure means a patch
+      target was re-pointed to a submodule that does not hold the function under test -- the
+      mapping is one test file to one submodule and must stay that way. An assertion failure means
+      the move was not verbatim: fix the move, never the assertion.
+    graduation: waive
+    graduation_waiver_reason: >-
+      Measured GREEN on the pre-implementation tree: 617 passed across tests/verify_ci_workflow +
+      tests/checks/ci_guards, and 728 across the THREE directories this step's own selector spans
+      (both measured; 728 is what this step's `expected` field carries).
+      A directory selector that is green on the base guards nothing while
+      looking guarded, and the two genuinely new classes are graduated separately as steps 7 and 8
+      with precise node ids.
+  - step: 5
+    phase: pre-deploy
+    hermetic: true
+    action: The Decision 170 declaration is adopted, the baseline has shrunk, and the real ratchet passes
+    command: >-
+      bin/venv-python -c "from pathlib import Path;
+      from scripts.checks.hygiene import validate_check_accounting as vca;
+      import scripts.checks.ci_guards.validate_ci_workflow_guards as agg;
+      assert vca._module_declares(Path(agg.__file__).read_text(encoding='utf-8')),
+      'validate_ci_workflow_guards still declares no examined()/skipped() outcome';
+      entries=set(vca._load_baseline_entries(Path('config/check_accounting_baseline.yaml').read_text(encoding='utf-8')));
+      assert 'validate_ci_workflow_guards' not in entries, 'still baselined';
+      failed=[]; vca.validate_check_accounting(failed); assert not failed, failed;
+      print('ACCOUNTING_RATCHET_OK')"
+    expected: ACCOUNTING_RATCHET_OK printed, exit 0
+    fix_if: >-
+      Measured red before implementation: the first assert fires with "still declares no
+      examined()/skipped() outcome". The predicate is validate_check_accounting's OWN
+      _module_declares, never a re-implementation, so the step cannot drift from the ratchet it
+      proves. If the shrink-only leg complains instead, the baseline grew -- only removal is legal
+      here, and _BASELINE_SEED must not be touched.
+    graduation: graduate
+    graduation_check_id: ci-workflow-guards-accounting-declaration-adopted
+  - step: 6
+    phase: pre-deploy
+    hermetic: true
+    action: A real dispatch of the check derives an enforced outcome rather than an undeclared one
+    command: >-
+      bin/venv-python -c "from scripts.checks import registry;
+      import scripts.checks.ci_guards.validate_ci_workflow_guards as agg; failed=[];
+      ctx=registry.outcome_scope('validate_ci_workflow_guards'); ctx.__enter__();
+      agg.validate_ci_workflow_guards(failed); ctx.__exit__(None, None, None);
+      o=registry.build_outcome('validate_ci_workflow_guards', 'check',
+      registry.pop_declaration(), bool(failed));
+      assert o.status == 'enforced', (o, failed);
+      assert o.examined_count == len(agg._GUARDS) > 0, (o, len(agg._GUARDS));
+      print('ACCOUNTING_OUTCOME_OK', o)"
+    expected: ACCOUNTING_OUTCOME_OK printed with status='enforced', exit 0
+    fix_if: >-
+      Measured red before implementation: status reads 'undeclared'. This is the observable
+      Decision 170 exists for, not a proxy for it -- the AST scan in step 5 proves a declaration
+      exists in the module, this proves one is actually reached on the enforced path. The count is
+      compared to len(agg._GUARDS) rather than to a literal 10 deliberately, so a follow-on plan
+      adding an eleventh guard does not redden this graduated row.
+    graduation: graduate
+    graduation_check_id: ci-workflow-guards-accounting-outcome-enforced
+  - step: 7
+    phase: pre-deploy
+    hermetic: true
+    action: The new unit coverage for the declaration passes
+    command: >-
+      bin/venv-python -m pytest
+      tests/checks/ci_guards/test_validate_ci_workflow_guards.py::TestCheckAccountingDeclaration -q
+    expected: all tests in the class pass
+    fix_if: >-
+      Measured exit 4 ("not found") before implementation, which is a legitimate target_absent
+      red-before, never an unmeasurable arm. The class-qualified node id is deliberate: that file
+      already passes wholesale on origin/main, so a file-level selector would be refused as
+      tautological at admission. The skip-path case must assert that a guard-import failure still
+      records exactly one gate failure and does NOT raise -- scripts/validate.py imports this
+      module unconditionally.
+    graduation: graduate
+    graduation_check_id: ci-workflow-guards-accounting-declaration-unit
+  - step: 8
+    phase: pre-deploy
+    hermetic: true
+    action: The facade's full 36-name surface and its defining-module map are covered by a mirror test
+    command: >-
+      bin/venv-python -m pytest
+      tests/verify_ci_workflow/test_facade_surface.py::TestFacadeSurface -q
+    expected: all tests in the class pass
+    fix_if: >-
+      Measured exit 4 (file absent) before implementation. The class must assert all 36 names
+      resolve through the facade, that each resolves to its expected defining submodule (so a
+      later edit cannot quietly move a guard between concerns), and that _load still normalises
+      the PyYAML 1.1 bare `on:` key to data["on"] -- the one real behaviour _shared.py carries.
+    graduation: graduate
+    graduation_check_id: verify-ci-workflow-facade-surface-unit
+  - step: 9
+    phase: pre-deploy
+    hermetic: true
+    action: The four ci_guards pre_globs still select their checks when the package changes
+    command: >-
+      bin/venv-python -c "from fnmatch import fnmatch; from scripts.checks.ci_guards import
+      _manifest; g={e.name: (e.pre_globs or ()) for e in _manifest.ENTRIES};
+      targets=['validate_ci_rca_trigger', 'validate_dependabot_automation',
+      'validate_branch_cleanup', 'validate_dispatch_gated_apply_topology'];
+      probe='scripts/verify_ci_workflow/__init__.py';
+      miss=[n for n in targets if not any(fnmatch(probe, x) for x in g[n])];
+      assert not miss, miss;
+      noise=[n for n in targets if any(fnmatch('README.md', x) for x in g[n])];
+      assert not noise, noise; print('PRE_GLOBS_COVER_PACKAGE_OK')"
+    expected: PRE_GLOBS_COVER_PACKAGE_OK printed, exit 0
+    fix_if: >-
+      Measured red before implementation: all four checks fail to match the package path. This is
+      the silent failure mode of the whole refactor -- a stale literal glob does not error, it
+      just stops dispatching those four checks in the --pre tier. The README.md conjunct is
+      anti-vacuity: without it a catch-all glob would satisfy the step.
+    graduation: graduate
+    graduation_check_id: ci-guards-pre-globs-cover-verify-ci-workflow-package
+  - step: 10
+    phase: pre-deploy
+    hermetic: true
+    action: The deleted flat module leaves no string-literal reference behind
+    command: >-
+      bin/venv-python -c "import subprocess; from pathlib import Path;
+      assert Path('scripts/verify_ci_workflow/__init__.py').is_file(), 'facade package missing';
+      assert not Path('scripts/verify_ci_workflow.py').exists(), 'flat module still present';
+      r=subprocess.run(['git', 'grep', '-lI', '\"scripts/verify_ci_workflow[.]py\"', '--',
+      'scripts', 'tests', '.github'], capture_output=True, text=True);
+      assert r.returncode == 1, (r.returncode, r.stdout, r.stderr);
+      print('NO_STALE_PATH_LITERALS')"
+    expected: NO_STALE_PATH_LITERALS printed, exit 0
+    fix_if: >-
+      The Delete row fires the surface-retiring closure obligation. The pattern is the
+      DOUBLE-QUOTED path, which is what makes it a data-position sweep: measured, it matches
+      exactly the seven string literals in scripts/checks/ci_guards/_manifest.py,
+      scripts/test_coverage_checker.py and tests/checks/ci_guards/test__manifest.py, and matches
+      NONE of the nine provenance docstrings present AT HEAD (seven survive the change -- see
+      acceptance criterion 7, which counts the post-implementation state). That distinction is
+      load-bearing -- a bare-path sweep would drag
+      scripts/checks/ci_guards/validate_ci_rca_trigger.py into scope, and that module is itself
+      baselined in config/check_accounting_baseline.yaml, so editing it would force a SECOND
+      Decision 170 adoption in this PR. git grep is used rather than `! rg`: rg's exit 2 on a
+      missing path maps to shell success, so a negated rg would read an error as a clean sweep;
+      git grep returns 1 for no-match and >1 for error, so `returncode == 1` asserts absence.
+      The package assertion comes first and is red on the base, which is what admits the row.
+    graduation: graduate
+    graduation_check_id: verify-ci-workflow-flat-module-fully-retired
+  - step: 11
+    phase: pre-deploy
+    hermetic: false
+    action: Fast tier is green end to end
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: >-
+      validate_check_accounting, validate_sloc_limits, validate_check_manifests and
+      validate_pre_glob_closure all read state this plan moves, so a half-applied decomposition
+      reddens here rather than at a narrower step.
+    graduation: waive
+    graduation_waiver_reason: >-
+      Recursion: a standing registry row invoking scripts.validate would re-enter the tier that
+      dispatches it, and the graduate partition refuses that invocation shape statically at
+      plan-PR time. Not not-applicable -- it is a single command_exit_zero shape.
+  - step: 12
+    phase: pre-deploy
+    hermetic: false
+    action: Full validation tier completes exit 0 before handoff
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: >-
+      handoff_policy.full_validation_required_before_commit is declared true, and
+      validate_handoff_full_tier fails any plan declaring it without a full-tier step. Step 11
+      does not satisfy it. On timeout the disposition is blocked -- rerun from the start.
+    graduation: waive
+    graduation_waiver_reason: Same recursion reason as step 11, over the full tier rather than the fast one.
+test_obligations:
+  - source: scripts/verify_ci_workflow/__init__.py
+    behavior: >-
+      All 36 names the flat module defined resolve through the facade, so every existing import
+      site keeps working.
+    verification_step: 8
+    test_selector: tests/verify_ci_workflow/test_facade_surface.py::TestFacadeSurface
+    red_green_expectation: red before (the test module does not exist), green after
+  - source: scripts/verify_ci_workflow/_shared.py
+    behavior: >-
+      _load still normalises the PyYAML 1.1 bare `on:` -> True key to data["on"], and the four
+      shared helpers resolve to this module.
+    verification_step: 8
+    test_selector: tests/verify_ci_workflow/test_facade_surface.py::TestFacadeSurface
+    red_green_expectation: red before (the test module does not exist), green after
+  - source: scripts/verify_ci_workflow/_ci_yaml.py
+    behavior: The six ci.yml-shape guards keep their exact assertions and failure messages.
+    verification_step: 4
+    test_selector: tests/verify_ci_workflow/test_ci_data_guards.py
+    red_green_expectation: >-
+      red before, green after -- the re-pointed patch targets name
+      scripts.verify_ci_workflow._ci_yaml, which does not exist on the pre-move tree.
+  - source: scripts/verify_ci_workflow/_ci_rca.py
+    behavior: The canary and ci-rca guards keep their exact assertions and failure messages.
+    verification_step: 4
+    test_selector: tests/verify_ci_workflow/test_ci_rca_and_canary.py
+    red_green_expectation: >-
+      red before, green after -- the re-pointed patch targets name
+      scripts.verify_ci_workflow._ci_rca, which does not exist on the pre-move tree.
+  - source: scripts/verify_ci_workflow/_apply.py
+    behavior: The apply-rca-fallback, terraform-apply-concurrency and recovery-topology guards are unchanged.
+    verification_step: 4
+    test_selector: tests/verify_ci_workflow/test_apply_and_terraform.py
+    red_green_expectation: >-
+      red before, green after -- the re-pointed patch targets name
+      scripts.verify_ci_workflow._apply, which does not exist on the pre-move tree.
+  - source: scripts/verify_ci_workflow/_cli.py
+    behavior: >-
+      main() still dispatches every _COMMANDS entry, translates AssertionError to "FAIL: ..." on
+      stderr with exit 1, and prints usage for an unknown command.
+    verification_step: 4
+    test_selector: tests/verify_ci_workflow/test_cli_main.py::TestMainDispatch
+    waiver_reason: >-
+      Green before and after by construction: the test module is NOT modified, because
+      patch.dict("scripts.verify_ci_workflow._COMMANDS", ...) mutates the dict object in place and
+      a re-export shares that object. That survival is exactly the property this row guards, and a
+      pure move cannot make it red-before.
+  - source: scripts/verify_ci_workflow/__main__.py
+    behavior: >-
+      runpy.run_module("scripts.verify_ci_workflow", run_name="__main__") still reaches main(),
+      which is how `python -m scripts.verify_ci_workflow` resolves for a package.
+    verification_step: 4
+    test_selector: tests/verify_ci_workflow/test_cli_main.py::TestCliMain
+    waiver_reason: >-
+      Green before and after: the flat module already answered runpy. The row exists because the
+      package form only keeps answering it if __main__.py is created, and that is unprovable as a
+      red-before on a tree with no package; step 3 carries the same property for the `-m` form.
+  - source: scripts/checks/ci_guards/validate_ci_workflow_guards.py
+    behavior: >-
+      The check declares examined(len(guards)) on the enforced path and skipped(reason) on the
+      guard-import-failure path, without ever raising at import or call time.
+    verification_step: 7
+    test_selector: tests/checks/ci_guards/test_validate_ci_workflow_guards.py::TestCheckAccountingDeclaration
+    red_green_expectation: red before (class does not exist; pytest exits 4), green after
+  - source: scripts/checks/ci_guards/_manifest.py
+    behavior: >-
+      validate_ci_rca_trigger's pre_globs still close over the verify_ci_workflow sources, so a
+      package-only diff dispatches it in the --pre tier.
+    verification_step: 4
+    test_selector: tests/checks/ci_guards/test__manifest.py::TestGatedEntryInputClosures::test_ci_rca_trigger_is_gated_on_its_full_closure
+    red_green_expectation: >-
+      red before, green after -- the updated assertion requires the package glob, which the
+      pre-move Entry does not carry.
+  - source: config/check_accounting_baseline.yaml
+    behavior: >-
+      validate_ci_workflow_guards is absent from the baseline and validate_check_accounting passes
+      with the Decision 170 declaration adopted -- the shrink-only ratchet moved, rather than the
+      module going green while still baselined.
+    verification_step: 5
+    command: >-
+      bin/venv-python -c "from pathlib import Path;
+      from scripts.checks.hygiene import validate_check_accounting as vca;
+      import scripts.checks.ci_guards.validate_ci_workflow_guards as agg;
+      assert vca._module_declares(Path(agg.__file__).read_text(encoding='utf-8')),
+      'validate_ci_workflow_guards still declares no examined()/skipped() outcome';
+      entries=set(vca._load_baseline_entries(Path('config/check_accounting_baseline.yaml').read_text(encoding='utf-8')));
+      assert 'validate_ci_workflow_guards' not in entries, 'still baselined';
+      failed=[]; vca.validate_check_accounting(failed); assert not failed, failed;
+      print('ACCOUNTING_RATCHET_OK')"
+    red_green_expectation: >-
+      Red before (the module declares no examined()/skipped() outcome and the entry is still at
+      baseline line 45), green after. Added in revision: validate_plan_documents fails a
+      behaviour-changing scope row with no linked obligation, and this row was missing, so the
+      plan's own PR was red before this fix.
+  - source: scripts/test_coverage_checker.py
+    behavior: >-
+      map_source_to_test keeps resolving every remaining _CONCERN_SPLIT_TEST_PACKAGES member to
+      its test package directory after the verify_ci_workflow member is removed.
+    verification_step: 4
+    test_selector: tests/test_coverage_checker/test_coverage_checker_map.py
+    waiver_reason: >-
+      The removed member's only observable was map_source_to_test on a path this plan deletes, so
+      there is no post-state behaviour a new test could assert; the existing map suite staying
+      green is the real obligation, and step 10's literal sweep is what proves the member is gone.
+constraints:
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    Only files in the Scope table may be modified; out-of-scope defects become recommendations via
+    scripts.ops_data_portal, never inline fixes (Decision 59).
+  - >-
+    ZERO BEHAVIOUR CHANGE. Move function bodies verbatim -- no renames, no signature changes, no
+    assertion-message edits, no new guards, no guard removals. Every guard must still run, in the
+    same order, with the same failures. If a relocated test fails, the move is wrong, not the test.
+  - >-
+    EXPLICITLY OUT OF SCOPE: the signal-green job in .github/workflows/ci.yml. CORRECTED: an
+    earlier draft said it was "owned by two sibling plans". It is not. The conflict-wake sibling
+    plan WIDENS its head_ref predicate (it does not retire the job), and the RETIREMENT is owned by
+    no plan that exists -- the same unsupported-owner claim that sibling struck from its own text.
+    Also out of scope: any removal of _check_signal_green_needs (it moves verbatim into
+    _ci_yaml.py and stays wired); scripts/checks/ci_guards/validate_pr_conflict_signal.py (its
+    `from scripts.verify_ci_workflow import _load` keeps working through the facade and the file
+    is not edited); and anything about branch-name prefixes or wake signals.
+  - >-
+    Do NOT add a config/sloc_budgets.yaml entry for any new module, and do NOT run
+    --update-sloc-budgets as the fix. Decision 128 makes decomposition the response to a file at
+    its ceiling; a raise would be the silent trade that Decision refuses.
+  - >-
+    Never raise during module import (AGENTS.md Safety). scripts/validate.py imports
+    validate_ci_workflow_guards unconditionally, which is why its module-level _GUARDS assignment
+    is wrapped in try/except -- that wrapper and the call-time try/except both stay exactly as
+    they are; the new declaration calls go INSIDE them, never around them.
+  - >-
+    config/agent/verification_registry/entries/*.yaml are NOT edited. Five rows carry
+    `guard_target: scripts/verify_ci_workflow.py` as provenance metadata, and guard_target is
+    read only for presence (validate_verification_registry._schema_errors); modifying any of them
+    makes it a diff-candidate for the VF-06 c2 differential admission gate, whose origin/main
+    worktree revert would still PASS (behaviour is unchanged by a pure move) and therefore be
+    refused as tautological.
+  - >-
+    SIBLING-PLAN ORDERING: PLAN-conflict-wake-prefix-realignment.yaml, authored alongside this
+    one and open as a separate PR (this plan was split out to merge first),
+    also modifies config/check_accounting_baseline.yaml (a DIFFERENT entry) and
+    .github/workflows/ci.yml. Both baseline edits are shrink-only REMOVALS and the ratchet diffs
+    against origin/main, so they are compatible whichever lands first; expect only a textual merge
+    conflict on the baseline if they land close together. Resolve it by keeping BOTH removals --
+    never by restoring an entry.
+  - >-
+    Ruff or lint failures in CI that this plan's diff did not introduce -- whole-tree lint surfacing
+    a pre-existing violation, or a tool-pin bump landing a new rule -- are OUT OF SCOPE: STOP, raise
+    it to the operator, do not fix inline (Decision 59).
+  - >-
+    Python 3.12, type hints, ruff line length 127, no emojis, ASCII hyphens only, comments only
+    where the `why` is non-obvious. Invoke Python as bin/venv-python. Linux/bash commands only.
+context:
+  - >-
+    "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 55, 59, 80, 104, 124, 128,
+    132, 163, 165, 169, 170, 187, 189. Decisions triaged: 145 of 145. Roadmap: 3 intersected,
+    CONFLICT 0, RELATED 3 (T2.54, T3.7, T4.23). Decisions 132, 187 and 189 are NEW relative to the
+    draft's provisional list. 187 governs the four Entry pre_globs re-points -- verified to owe no
+    tier-demotion marker (_globs_narrowed measures the superset at HEAD and its docstring names the
+    same-PR-rename case), cited so a LATER narrowing is not assumed free. Two SPIRIT flags, both
+    carried: Decision 131 -> rec-3883, Decision 187 -> rec-3882. Open rec-3287 (zero-headroom
+    roster: 4 files at 500/500) is PARTIALLY ADVANCED and deliberately NOT bundled -- this drains
+    one of its four files, its oracle TestZeroHeadroomRosterDrained does not yet exist, and three
+    files plus five functions remain, so it cannot close here."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 1 round(s), revised"
+  - >-
+    Measured facts this plan rests on (all verified on the working tree, not estimated):
+    scripts/verify_ci_workflow.py is 499 SLOC of a 500 cap and absent from
+    config/sloc_budgets.yaml; it defines exactly 36 public names; validate_ci_workflow_guards
+    imports ten of them by name and pairs them into _GUARDS; _load is imported by four other
+    ci_guards modules and one test module; four Entry pre_globs and three other files carry the
+    path as a string literal; tests/verify_ci_workflow/ patches 79 moving targets (18 _apply,
+    26 _ci_yaml, 35 _ci_rca; by symbol _load 70, Path 6, _read_ci_rca_authority_sources 3) with
+    test_cli_main.py needing none -- an earlier draft's "70" was the _load count, not the total; tests/verify_ci_workflow + tests/checks/ci_guards is 617
+    passing tests today; a dispatch of validate_ci_workflow_guards derives status 'undeclared'.
+  - >-
+    Submodule boundaries MIRROR the existing concern-split test package 1:1, which is what makes
+    the patch-target re-point one substitution per file with no cross-file reasoning.
+  - >-
+    Known inert residual: docs/contracts/file-router.yaml's scripts_root_allowlist still lists
+    verify_ci_workflow.py. _scripts_root_stray_files only flags depth-1 files ABSENT from the
+    allowlist and never requires a listed file to exist, and file-router.yaml is a Class D contract
+    whose edits carry their own governance -- so touching it here would widen scope for no gain.
+  - >-
+    DECLARED RETIREMENT (corrected post-scout; an earlier draft wrongly called it an inherited,
+    sanctioned disposition): the new package modules map to None under map_source_to_test.
+    Decision 131 clause 1 names exactly scripts/executor/** and scripts/ops_portal/**, so this
+    prefix is not sanctioned and the pin is RETIRED here. Harmless today (check_test_file_exists
+    returns (True, 'skipped: not in src/ or scripts/')); declined in scope because extending the
+    mapping means editing the coverage oracle and its ~30-test pin surface for zero behaviour
+    change; CARRIED by rec-3883 per Decision 187. Precedent for the fix already exists in the
+    same frozenset: scripts/convergence_health/code_drift.py is a registered package module.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    Create scripts/verify_ci_workflow/ with __init__.py (facade re-exporting all 36 names, listed
+    in __all__), _shared.py (_load, _get_steps_text, _get_step_run_text, _assert_runtime_lock),
+    _ci_yaml.py, _ci_rca.py, _apply.py and _cli.py, moving every body VERBATIM per the Scope
+    table's per-module rosters. Submodules import shared helpers absolutely
+    (`from scripts.verify_ci_workflow._shared import ...`), never through the facade, so no import
+    cycle exists.
+  - >-
+    Create scripts/verify_ci_workflow/__main__.py as `from scripts.verify_ci_workflow import main`
+    plus the `if __name__ == "__main__": main()` guard, then delete scripts/verify_ci_workflow.py
+    in the SAME commit.
+  - >-
+    Re-point patch targets one substitution per test file: test_apply_and_terraform.py ->
+    scripts.verify_ci_workflow._apply._load; test_ci_data_guards.py ->
+    scripts.verify_ci_workflow._ci_yaml._load; test_ci_rca_and_canary.py ->
+    scripts.verify_ci_workflow._ci_rca.{_load, Path, _read_ci_rca_authority_sources}. Leave every
+    `from scripts.verify_ci_workflow import ...` line alone.
+  - >-
+    Add tests/verify_ci_workflow/test_facade_surface.py::TestFacadeSurface covering the 36-name
+    surface, the name-to-defining-submodule map, and _load's bare-`on:` normalisation.
+  - >-
+    scripts/checks/ci_guards/validate_ci_workflow_guards.py -- adopt the Decision 170 declaration
+    (registry.examined(len(guards), unit="ci_workflow_guards") after the guard loop inside the
+    existing try, registry.skipped(reason) in the existing except), modelled on
+    validate_dispatch_gated_apply_topology.py; update its two docstrings that name the flat path.
+    Remove validate_ci_workflow_guards from config/check_accounting_baseline.yaml in the same
+    commit; do not touch _BASELINE_SEED. Add
+    tests/checks/ci_guards/test_validate_ci_workflow_guards.py::TestCheckAccountingDeclaration.
+  - >-
+    Re-point the four "scripts/verify_ci_workflow.py" pre_globs in
+    scripts/checks/ci_guards/_manifest.py to "scripts/verify_ci_workflow/**" and update the two
+    matching assertions in tests/checks/ci_guards/test__manifest.py; remove the dangling
+    _CONCERN_SPLIT_TEST_PACKAGES member in scripts/test_coverage_checker.py.
+  - >-
+    Execute the Verification Plan -- run each step, loop until pass; on unrecoverable failure stop
+    and RCA (Decision 55).
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Revert the squash-merge commit. Nothing deploys and no data migrates; the package, the deleted
+  flat module, the baseline removal and the pre_globs all move back together in one commit, and
+  the accounting baseline is shrink-only in the forward direction only -- a revert restores the
+  entry from the reverted diff rather than growing it, so validate_check_accounting's shrink-only
+  leg is satisfied by the restored base.
