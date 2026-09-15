@@ -223,7 +223,58 @@ environment reuse, because it affects only the job clock.
 | Change | Class | Mechanism | Estimated saving | What no longer runs | What is no longer produced | Proof | Residual risk |
 |---|---|---|---|---|---|---|---|
 | Phase 2 diagnosis only | N/A | Documentation checkpoint before code | 0s | Nothing | Nothing | Diff limited to this findings document | None; candidate rows begin in the implementation phase |
-| Candidate 1 - primary-session heavy-dependency classification | Class 2 - identical work, lower cost | The real primary pytest session suppresses only positively identified excluded-and-absent dependency collection reports, records deferrals through xdist worker output, and rolls back coverage produced while importing a deferred module. The former collect-only implementation remains only as a frozen compatibility surface. | Unknown; no timing claim was made in this session | **Nothing is removed.** The corrected committed-ref differ from `9cecaab2` to `015a0240` completed all 16 cases and compared 27,878 union-node observations: zero node-verdict changes, zero gate-verdict changes, and identical deferral maps. `deferred` and `not-collected` remain distinct outcomes in the capture vocabulary. | **No loss is observed.** The differ reports identical executed nodes, per-node verdicts, gate verdicts and deferral maps across the corpus. | The initial checkpoint's 72 fixture-only node changes were corrected in `015a0240` by making the shared subprocess double emit the primary-plugin completion record and carrying both new `_pytest_diff` modules into synthetic verifier fixtures. The mandatory 10-case baseline/candidate mutation probe caught all 10 mutations. The original 102 focused tests passed; the correction's 368-test focused suite passed after the one sandbox-denied Git-worktree test was rerun with permission. Ruff and format checks pass. | Low for equivalence; timing remains unmeasured. Candidate 2 has not started. |
+| Candidate 1 - primary-session heavy-dependency classification | Class 2 - identical work, lower cost | The real primary pytest session suppresses only positively identified excluded-and-absent dependency collection reports, records deferrals through xdist worker output, and rolls back coverage produced while importing a deferred module. The former collect-only implementation remains only as a frozen compatibility surface. | Local broad gross-wall saving is **null** within spread; the median orchestration-remainder difference is 3.395s at 144 modules and 0.822s at 18 modules (timing row below). | **Nothing is removed.** The corrected committed-ref differ from `9cecaab2` to `015a0240` completed all 16 cases and compared 27,878 union-node observations: zero node-verdict changes, zero gate-verdict changes, and identical deferral maps. `deferred` and `not-collected` remain distinct outcomes in the capture vocabulary. | **No loss is observed.** The differ reports identical executed nodes, per-node verdicts, gate verdicts and deferral maps across the corpus. | The initial checkpoint's 72 fixture-only node changes were corrected in `015a0240` by making the shared subprocess double emit the primary-plugin completion record and carrying both new `_pytest_diff` modules into synthetic verifier fixtures. The mandatory 10-case baseline/candidate mutation probe caught all 10 mutations. The original 102 focused tests passed; the correction's 368-test focused suite passed after the one sandbox-denied Git-worktree test was rerun with permission. Ruff and format checks pass. | The committed-ref equivalence proof holds for the old requirements but is stale for integration onto moved main: its requirements and heavy-dependency deferral set changed. Candidate 2 has not started. |
+
+## Candidate 1 timing row - fixed-tree local attribution
+
+Prediction stated before measurement: removing one pytest process start and one whole-selection
+collection pass should save roughly a constant amount per run, not an amount proportional to
+selection breadth. This local A/B tests that prediction; it is not Phase 4 CI timing evidence.
+
+Both scratch worktrees were fixed at `dec04c6d`. The baseline restored **only**
+`scripts/checks/_pytest_diff.py` from `9cecaab2`; the candidate kept the `dec04c6d` file. Git
+status confirmed that this was the only tracked source difference throughout. Both sides used the
+same content-addressed Python 3.12 fast/dev environment and the same `dec04c6d` requirements.
+The broad selection was the exact 144-module selected list in the `pr-1114` capture produced by
+the committed-ref corpus replay; the breadth control was its first 18 modules. Each side ran the real
+`run_pytest_diff` five times per selection, alternating baseline then candidate. Every invocation
+kept the real pytest flags, coverage setup, timeout and xdist path. Outer wall time was measured
+locally; pytest's own summary duration was subtracted only for a secondary orchestration-remainder
+readout. Raw timing and pytest logs stayed in gitignored `logs/debug/`.
+
+| Selection | Side | Five outer wall times (s), in run order | Median (s) | Q1-Q3 (s) | Min-max (s) |
+|---|---|---|---:|---:|---:|
+| 144 modules, 3,176 outcomes | Baseline | 358.436, 305.504, 410.900, 365.706, 312.854 | 358.436 | 312.854-365.706 | 305.504-410.900 |
+| 144 modules, 3,176 outcomes | Candidate 1 | 351.011, 365.540, 360.720, 318.053, 315.390 | 351.011 | 318.053-360.720 | 315.390-365.540 |
+| 18 modules, 503 outcomes | Baseline | 9.380, 9.518, 9.111, 9.038, 9.682 | 9.380 | 9.111-9.518 | 9.038-9.682 |
+| 18 modules, 503 outcomes | Candidate 1 | 9.124, 8.387, 8.169, 8.301, 8.436 | 8.387 | 8.301-8.436 | 8.169-9.124 |
+
+The representative broad-set median difference is 7.425s, but the paired differences range from
+-60.036s to +50.180s and both per-side spreads dwarf 7.425s. The gross-wall improvement is
+therefore **null** under section 12's noise rule. The 18-module control has a 0.993s difference
+between medians (0.942s median paired saving), outside its IQR spread; it is a small-set result,
+not an extrapolated broad-set claim. All ten narrow runs passed the same 503 tests. All ten broad
+runs had the same 3 failed, 3,172 passed and 1 skipped summary: the three failures come from a
+reused environment's `lint-imports` launcher pointing to a vanished path, common to both sides.
+No new test or gate-verdict claim is inferred from these timing-only runs.
+
+| Selection | Baseline outer-minus-pytest median (Q1-Q3), s | Candidate median (Q1-Q3), s | Median difference, s |
+|---|---:|---:|---:|
+| 144 modules | 4.836 (4.424-7.820) | 1.441 (1.433-1.510) | 3.395 |
+| 18 modules | 1.618 (1.571-1.620) | 0.796 (0.731-0.814) | 0.822 |
+
+The non-overlapping orchestration remainders show that Candidate 1 removes some local work, but
+the saving grows from 0.822s to 3.395s as selection breadth grows eightfold. The pre-measurement
+constant-saving prediction is **rejected**: the whole-selection collection pass has a
+breadth-dependent cost. This decomposition does not override the null gross-wall result on the
+representative set, and it makes no CI-based timing claim.
+
+At this checkpoint, `dec04c6d` was pushed to draft PR #1131. The PR is marked conflicting with
+main. The GitHub check returned no PR workflow run associated with that head, and there was no
+CI-green signal for it at the last check. Main has changed
+`scripts/checks/_pytest_diff.py` and all requirements files since the candidate branch diverged,
+so its prior identical-deferral-map proof cannot be reused after any integration. This session
+did not rebase, re-run the corpus differ, or start Candidate 2.
 
 ## Phase 4 evidence
 
