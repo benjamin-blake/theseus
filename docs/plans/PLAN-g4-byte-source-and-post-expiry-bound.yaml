@@ -18,34 +18,47 @@ scope:
     purpose: >-
       run_guarded_gc gains two REQUIRED keyword-only parameters -- candidate_size_source
       (path -> bytes, the map G4 joins its candidates against) and strict_sizes (bool). No default
-      on either: Decision 163's structural-obligation rule and Decision 191 pt 3's precedent both
-      refuse a permissive DEFAULT on a guard path, so every caller declares its posture at the call
-      site and the non-strict site stays enumerable rather than inherited silently by any future
-      caller that omits the argument. strict_sizes=True raises DuckLakeMaintenanceError on a
-      candidate the size source cannot size; the derived local stays named candidate_sizes.
+      on either. BOTH callers pass strict_sizes=True: there is NO non-strict site, which is the
+      instrument Decision 163 actually prescribes ("removing the exception path entirely") over an
+      enumerated carve-out. The flag is retained rather than hardcoded for one precedented reason --
+      the guard must stay FALSIFIABLE: test_g1_non_forcing_call_does_not_trip (:270-274) exists
+      precisely to prove G1's forcing ARGUMENT, not an unconditional raise, is what trips it, and the
+      same discipline applies here. A required parameter with no default and zero sanctioned False
+      call sites is not a permissive default.
+      The derived local is RENAMED from `candidate_bytes` (:227) to `candidate_sizes` -- the token
+      rec-3871's acceptance grep depends on. bound_deletions' own parameter (:130) may be renamed to
+      match; all five call sites pass the map positionally, so the rename is safe.
       SECOND CHANGE: RE-PROBE the dry-run cleanup/orphan candidate paths AFTER expire_snapshots and
-      BEFORE cleanup_old_files/delete_orphaned_files, run the G1 reachability check against that
-      post-expiry set, and bound THAT set with G4 instead of the pre-expiry one. Today
+      BEFORE cleanup_old_files/delete_orphaned_files, and bound THAT set with G4. Today
       would_delete_paths is probed at :205-208, bounded at :227-228, and the destructive calls at
       :231-232 delete whatever the engine computes post-expiry -- on a never-expired catalog neither
       G1's pre-check nor G4's bound covers the set actually deleted. The new probe reuses the same
       fail-closed try/except re-raise shape as the existing introspection sites (Decision 188 pt 3 --
       no permissive default).
-      LIVE SIDE OF THE POST-EXPIRY G1 CHECK (fixed here, not left to the implementer): reuse the
-      `live_now` map already collected at :202-204, do NOT re-read the catalog. _collect_file_paths
-      queries ducklake_list_files, which is current-snapshot scoped, and expire_snapshots retains at
-      least SNAPSHOT_FLOOR snapshots including the current one, so the live set is provably unchanged
-      across the expiry. A fresh re-read would add a fifth full catalog rescan per pass, compounding
-      open rec-3878, for a value that cannot differ.
+      BOTH G1 CHECKS MOVE TO THE POST-EXPIRY SET. Decision 188 pt 2 defines G1 as "checked before and
+      after any destructive call", so the pre-check at :216 runs against the post-expiry set (the set
+      about to be deleted) and the post-destructive re-check at :249 -- currently
+      `would_delete_paths & set(live_after)`, the PRE-expiry set -- is re-pointed at the post-expiry
+      set too. Leaving :249 pre-expiry would make the post-pass reachability verdict cover a strict
+      SUBSET of what was deleted, and the uncovered remainder is exactly the (post - pre) population
+      this plan exists to cover.
+      LIVE SIDE OF THE POST-EXPIRY G1 PRE-CHECK: reuse the `live_now` map already collected at
+      :202-204; do NOT re-read the catalog. _collect_file_paths queries ducklake_list_files, which is
+      current-snapshot scoped, and expire_snapshots retains at least SNAPSHOT_FLOOR snapshots
+      including the current one, so the live set is provably unchanged across the expiry. A fresh
+      re-read would add a fifth full catalog rescan per pass, compounding open rec-3878, for a value
+      that cannot differ. The :249 re-check keeps using its own fresh `live_after` read, unchanged.
       GUARD_STATS KEY SEMANTICS (authoritative -- four surfaces must agree character-for-character):
       the seven shipped keys are retained; `g4_would_delete_files`, `g4_would_delete_bytes`,
       `g4_deferred_files`, `g4_deferred_bytes` and `g4_bounded` now describe the POST-EXPIRY set,
       because that is the set G4 bounds -- a deliberate, documented semantic change that the new
       Decision and the contract both record. `g1_would_delete_candidates` keeps its PRE-expiry
-      meaning (what G1's pre-check saw). Exactly ONE key is added:
-      `g1_post_expiry_would_delete_candidates`. No other key is added or renamed.
-      G1/G2/G3 predicates are untouched, and an over-budget pass still defers WHOLESALE (the partial
-      drain is rec-3888, deferred).
+      meaning (what the pre-expiry probe saw). Exactly TWO keys are added:
+      `g1_post_expiry_would_delete_candidates` and `g4_unsized_candidates` (the count of candidates
+      the size source could not size -- always 0 in a passing strict run, and the loud signal the
+      pre-enablement canary at VP10 reads). No other key is added or renamed.
+      G1/G2/G3 predicates are otherwise untouched, and an over-budget pass still defers WHOLESALE
+      (the partial drain is rec-3888, deferred).
   - file: src/common/ducklake_gc_ops.py
     action: Modify
     purpose: >-
@@ -74,31 +87,54 @@ scope:
   - file: src/common/ducklake_maintenance.py
     action: Modify
     purpose: >-
-      run_gc passes the two new required arguments explicitly -- candidate_size_source=live_before
-      (today's behaviour, unchanged) and strict_sizes=False. This is the SINGLE enumerated
-      non-strict site, named in the same grammar Decision 188 pt 3 and Decision 191 pt 3 use for
-      the merge_ops carve-outs. Non-strict is correct here and only here: the smoke cadence has no
-      storage lister, and rec-3871 measured that a fail-closed default hard-fails the live smoke GC
-      on its first orphan candidate and surfaces as MaintenanceBreakerTrip, indistinguishable from
-      a real safety breach.
+      TWO changes. (1) NEW SHARED HOME for the storage lister: `_parse_s3_uri` and
+      `_default_list_storage` move here from src/common/ducklake_gc_ops.py, and ducklake_gc_ops
+      imports them. Both cadences now need a storage listing, and the smoke Lambda must not import
+      the PRODUCTION verb module to get one -- its manifest deliberately bundles
+      ducklake_maintenance.py and ducklake_maintenance_ops.py but NOT ducklake_gc_ops.py, and that
+      exclusion is import governance worth keeping. Relocation only: no behaviour change, and the
+      two relocated helper tests move with them.
+      (2) run_gc gains a `data_path` parameter, builds the storage-derived size map from it, and
+      passes candidate_size_source=<that map> with strict_sizes=True -- the SAME posture as
+      production. There is no non-strict site anywhere. The earlier draft justified a carve-out here
+      with "the smoke cadence has no storage lister"; that was FALSE and is retracted: the smoke
+      handler already reads DUCKLAKE_DATA_PATH (handler.py:32, defaulting to
+      ducklake_runtime.SMOKE_DATA_PATH = an s3:// URI) and the smoke Lambda's role already grants
+      s3:ListBucket scoped to the smoke prefix (terraform/personal/ducklake_maintenance_smoke.tf:
+      101-110). No terraform, no new IAM. rec-3871's measured hard-fail hazard does not carry over:
+      it was measured against the CATALOG set, where orphans are structurally absent, not against a
+      STORAGE set where they are present by construction.
+      SLOC WATCH: this file is at 383 of 500 with no budget entry; the relocated helpers add ~30.
+      If the total crosses, decompose per Decision 128 -- never register a raise.
   - file: scripts/ducklake_smoke/lambda_maintenance_gates.py
     action: Modify
     purpose: >-
-      Add `g1_post_expiry_would_delete_candidates` to _REQUIRED_GUARD_STATS_KEYS (:53-63) so the CI
-      smoke gc gate discriminates a pre-fix build on RESPONSE SHAPE -- the same discriminator
-      Decision 188 pt 5 installed for the retired breaker keys. The set is applied as a subset check
-      at :92, so the addition is additive to the gate's existing assertions.
+      Add BOTH new keys -- `g1_post_expiry_would_delete_candidates` and `g4_unsized_candidates` --
+      to _REQUIRED_GUARD_STATS_KEYS (:53-63) so the CI smoke gc gate discriminates a pre-fix build on
+      RESPONSE SHAPE, the same discriminator Decision 188 pt 5 installed for the retired breaker
+      keys. The set is applied as a subset check at :92, so the addition is additive. Also assert
+      `g4_unsized_candidates == 0`: under strict sizing a non-zero count is unreachable (the pass
+      would have raised), so this is a cheap structural cross-check that the key means what the
+      contract says.
+      MEASURED VACUITY NOTE, recorded so a future session does not over-read this gate: the smoke
+      candidate set is EMPTY in steady state -- CloudWatch FilesCleaned and OrphansDeleted are 0.0 on
+      every sample across 21 days, and the latest green run reports g1_would_delete_candidates 0 /
+      g4_would_delete_files 0. So this gate exercises G4's SHAPE, not its sizing arithmetic. The
+      unexplained reason the smoke prefix never accumulates candidates is rec-3892; making this gate
+      non-vacuous (smoke-shaped retention on a disposable catalog) is deliberately NOT in this plan's
+      scope.
   - file: tests/common/test_ducklake_maintenance_ops.py
     action: Modify
     purpose: >-
       Add TestG4ByteSource (rec-3871's named acceptance class): a candidate absent from live_before
-      but present in the declared size source sizes NON-ZERO; strict_sizes=True raises on an unsized
-      candidate while strict_sizes=False sizes it zero; and run_gc is the only non-strict call site.
+      but present in the declared size source sizes NON-ZERO; an unsized candidate raises under
+      strict_sizes=True and is counted in g4_unsized_candidates under False -- the falsifiability
+      pair proving the FLAG, not an unconditional raise, is what trips it (the discipline
+      test_g1_non_forcing_call_does_not_trip already establishes for G1).
       Add TestG4PostExpiryBound: run_guarded_gc re-probes after expire_snapshots, G1-checks the
-      post-expiry set against the reused live_now map, and bounds THAT set -- red today, where a
-      candidate appearing only post-expiry is deleted unbounded and unchecked. Extend
-      test_guards_raise_when_catalog_introspection_fails to cover the new probe site, and extend the
-      real-engine anchor TestG4RealDryRunSizeColumn with the post-expiry superset property.
+      post-expiry set against the reused live_now map, bounds THAT set, and -- the :249 half -- the
+      post-destructive re-check also intersects the POST-expiry set, not the pre-expiry one.
+      Extend test_guards_raise_when_catalog_introspection_fails to cover the new probe site.
       MECHANICAL RIPPLE, in scope and expected: all NINE existing run_guarded_gc call sites (lines
       96, 119, 156, 219, 233, 279, 285, 308, 378) must be threaded with the two new kwargs, because
       neither carries a default. That is an argument-list edit, never an assertion edit -- see VP3.
@@ -106,6 +142,15 @@ scope:
       test_g1_disjoint_sets_via_run_guarded_gc_do_not_raise (:283) and
       test_g4_defers_via_run_guarded_gc_skips_destructive_calls (:371); their ASSERTIONS must survive
       unmodified.
+  - file: tests/common/test_ducklake_maintenance_storage.py
+    action: Create
+    purpose: >-
+      New home for the relocated _parse_s3_uri / _default_list_storage tests (currently
+      tests/common/test_ducklake_gc_ops.py::TestInternalHelpers:89-117), plus the REAL-ENGINE path-shape
+      anchor: on the pinned engine with an s3:// DATA_PATH, the `path` column returned by
+      _dry_run_orphan_paths must be byte-identical to _default_list_storage's `s3://bucket/key`
+      keys. A separate file rather than appending to test_ducklake_maintenance_ops.py, which is at
+      330 of 500 SLOC and already gaining two classes (Decision 128 decompose-by-default).
   - file: tests/common/test_ducklake_gc_ops.py
     action: Modify
     purpose: >-
@@ -113,46 +158,65 @@ scope:
       with strict_sizes=True while live_before stays the universal catalog set; the pre-pass storage
       listing precedes any destructive call and is taken in dry_run too; catalog-first ordering holds
       at both read pairs; `would_delete_bytes` is non-zero for a candidate present only in storage;
-      and the two new metrics emit. It also pins the PATH-SHAPE equivalence -- the `s3://bucket/key`
-      keys _default_list_storage emits must match the `data_file` shape _collect_file_paths reads --
-      hermetically, with no network, closing the one failure mode that would turn strict_sizes into a
-      first-pass MaintenanceBreakerTrip. Add rec-3876's own acceptance node id,
+      and the two new metrics emit. Add rec-3876's own acceptance node id,
       TestMetricEmission::test_zero_live_bytes_raises_rather_than_reporting_debt_ratio_zero, driving
-      live_bytes == 0 through gc_ops() and expecting a raise. _NO_GUARD_STATS (:58-63) gains
-      `g1_post_expiry_would_delete_candidates`.
+      live_bytes == 0 through gc_ops() and expecting a raise. REMOVE the two relocated helper tests
+      (they move to the new file above, unchanged). _NO_GUARD_STATS (:58-63) currently carries only
+      {"g2_snapshots_remaining": 2}; it gains g4_deferred_files (the source for GcDeferredFiles),
+      g1_post_expiry_would_delete_candidates and g4_unsized_candidates, or the two shipped tests that
+      patch run_guarded_gc with it (:244, :265) KeyError on the new metric emission.
   - file: tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py
     action: Modify
     purpose: >-
-      _GUARD_STATS_OK (:68-76) gains the new key, plus
+      _GUARD_STATS_OK (:68-76) gains both new keys, plus
       test_lambda_maintenance_gc_fails_without_post_expiry_guard_stats -- a red-before case proving
-      the gate FAILS on a guard_stats payload missing it, so a pre-fix build cannot report
+      the gate FAILS on a guard_stats payload missing them, so a pre-fix build cannot report
       smoke-green.
+  - file: src/lambdas/ducklake_maintenance_smoke/handler.py
+    action: Modify
+    purpose: >-
+      action_gc passes the module-level DATA_PATH (:32) into maint.run_gc (:89) so the smoke cadence
+      builds its storage-derived size source. One argument; no new import of the production verb
+      module, because the lister now lives in ducklake_maintenance.py. The smoke manifest needs no
+      change -- it already bundles that module.
   - file: docs/contracts/ducklake_maintenance.yaml
     action: Modify
     purpose: >-
       Update the gc_ops verb's payload_schema_ref (pre-pass storage listing as the G4 size source,
-      taken in dry_run too; G4 bounds the post-expiry set), its 200 response body (the new
-      `g1_post_expiry_would_delete_candidates` key, the re-sourced `would_delete_bytes`, and the
-      post-expiry semantics of the five g4_* keys), and its 500 typed_errors (a strict-sizes trip and
-      the live_bytes<=0 raise are both breaker-class), and append the Decision 118 Class B
-      amendment_log entry. The existing graduated check gc-ops-verb-contract-and-amendment must still
-      pass.
+      taken in dry_run too; G4 bounds the post-expiry set; strict sizing with no non-strict site),
+      its 200 response body (both new guard_stats keys, the re-sourced `would_delete_bytes`, and the
+      post-expiry semantics of the five g4_* keys), and its 500 typed_errors (a strict-sizes trip is
+      breaker-class, as is the live_bytes<=0 raise -- this is the OPERATOR-FACING description of the
+      new breaker cause, paired with the runbook row below), and append the Decision 118 Class B
+      amendment_log entry. Also update the `gc` verb, whose sizing posture changes with run_gc. The
+      existing graduated check gc-ops-verb-contract-and-amendment must still pass.
+  - file: docs/runbooks/ducklake-catalog-operations.md
+    action: Modify
+    purpose: >-
+      The alarm-triage section (:240-244) enumerates a MaintenanceBreakerTrip as a G1/G2/G3
+      violation. This plan adds a FOURTH breaker cause with materially different triage -- a
+      strict-sizes raise means the catalog scheduled a deletion for a path the storage listing could
+      not size, i.e. a catalog/storage inconsistency, not a reachability breach. Add the row and the
+      triage step (read g4_unsized_candidates and the named path; do NOT treat it as over-reclaim).
+      Editing this grandfathered file is permitted; docs/CLAUDE.md forbids only NEW files under
+      docs/runbooks/ (Decision 127).
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-
       Mint the next number (193 at authoring time -- re-derive from the file, DECISIONS.md is the
       numbering authority) amending Decision 188 pt 2 on three points: G4's byte source is the
       caller's DECLARED size source rather than a prelude-relative live inventory; G4 bounds the
-      POST-expiry candidate set, and the five g4_* guard_stats keys carry post-expiry values
-      accordingly; and run_gc/ducklake_maintenance_smoke is the single enumerated non-strict site, in
-      the same named-carve-out grammar Decision 188 pt 3 and Decision 191 pt 3 use. A fresh number,
-      not an amendment_forms annotation: Decision 188's own significance envelope records that
-      amendment_forms annotates rather than negates a prior entry's substance (rec-3016,
-      Decision 180), and this replaces clause 2's stated byte source. Plus two Decision 177 dated
-      blockquote appends -- on Decision 188 pointing at the new entry, and on Decision 192 pt 5,
-      whose recorded limitation this discharges. Entry carries the Decision 167 typed envelope with
-      significance.value=numbered_decision and a justification naming the rejected contract-note
-      alternative.
+      POST-expiry candidate set and BOTH G1 checks move to it, so the five g4_* guard_stats keys
+      carry post-expiry values; and sizing is fail-closed at EVERY call site with no enumerated
+      carve-out -- the Decision 163 instrument, not the Decision 188 pt 3 / Decision 191 pt 3
+      named-exception grammar, which those precedents earn by degrading LOUDLY and which a silent
+      zero-substitution would not. A fresh number, not an amendment_forms annotation: Decision 188's
+      own significance envelope records that amendment_forms annotates rather than negates a prior
+      entry's substance (rec-3016, Decision 180), and this replaces clause 2's stated byte source.
+      Plus two Decision 177 dated blockquote appends -- on Decision 188 pointing at the new entry,
+      and on Decision 192 pt 5, whose recorded limitation this discharges. Entry carries the Decision
+      167 typed envelope with significance.value=numbered_decision and a justification naming the
+      rejected contract-note alternative.
   - file: config/agent/verification_registry/entries/g4-byte-source-and-post-expiry-bound.yaml
     action: Create
     purpose: >-
@@ -174,47 +238,55 @@ infrastructure_dependencies: []
 acceptance_criteria:
   - >-
     run_guarded_gc takes candidate_size_source and strict_sizes as REQUIRED keyword-only parameters
-    (no default on either), and both call sites -- run_gc and gc_ops -- pass them explicitly.
+    (no default on either), and BOTH call sites -- run_gc and gc_ops -- pass a storage-derived size
+    source with strict_sizes=True. There is no non-strict call site anywhere in the tree.
   - >-
     A would-delete candidate absent from the catalog live set but present in the declared size
-    source sizes NON-ZERO through bound_deletions; the gc_ops path therefore has a binding byte cap,
+    source sizes NON-ZERO through bound_deletions; both GC paths therefore have a binding byte cap,
     not only a file-count cap.
   - >-
-    strict_sizes=True raises DuckLakeMaintenanceError on a candidate the size source cannot size;
-    strict_sizes=False sizes it zero, and run_gc/ducklake_maintenance_smoke is the only caller
-    passing False.
+    strict_sizes=True raises DuckLakeMaintenanceError on a candidate the size source cannot size,
+    and strict_sizes=False instead counts it in g4_unsized_candidates -- proving the flag, not an
+    unconditional raise, is what trips it.
   - >-
-    run_guarded_gc re-probes the dry-run cleanup/orphan candidate paths after expire_snapshots, runs
-    the G1 reachability check on that post-expiry set against the REUSED pre-expiry live_now map
-    (no additional catalog rescan), and applies G4's bound to the post-expiry set; the new probe
-    raises on introspection failure like every other guard-path read.
+    run_guarded_gc re-probes the dry-run cleanup/orphan candidate paths after expire_snapshots and
+    applies G4's bound to that post-expiry set; BOTH G1 checks use it -- the pre-check against the
+    REUSED pre-expiry live_now map (no additional catalog rescan), and the post-destructive re-check
+    at :249 against its own fresh live_after read. The new probe raises on introspection failure
+    like every other guard-path read.
   - >-
-    guard_stats carries exactly one new key, g1_post_expiry_would_delete_candidates, and the five
-    g4_* keys carry post-expiry values; the contract's 200 response body documents both.
+    guard_stats carries exactly two new keys, g1_post_expiry_would_delete_candidates and
+    g4_unsized_candidates, and the five g4_* keys carry post-expiry values; the contract's 200
+    response body documents both and the runbook documents the new breaker cause.
   - >-
     gc_ops takes its pre-pass storage listing after the universal catalog live-set collection and
-    before any destructive call, in dry_run mode as well, passes it as candidate_size_source with
-    strict_sizes=True, leaves live_before as the universal CATALOG set, and re-sources the
-    would_delete_bytes response field from it so the dry-run baseline carries a real byte figure.
+    before any destructive call, in dry_run mode as well, leaves live_before as the universal CATALOG
+    set, and re-sources the would_delete_bytes response field from it so the dry-run baseline carries
+    a real byte figure.
+  - >-
+    _parse_s3_uri and _default_list_storage live in src/common/ducklake_maintenance.py, and the smoke
+    Lambda reaches them without importing src/common/ducklake_gc_ops.py (which its manifest does not
+    bundle).
   - >-
     gc_ops emits GcWouldDeleteFilesPostExpiry and GcDeferredFiles; GcWouldDeleteFiles keeps its
     existing pre-expiry meaning and value.
   - >-
-    A hermetic test pins that the s3://bucket/key shape _default_list_storage emits matches the
-    data_file path shape _collect_file_paths reads, so a key-shape mismatch cannot reach production
-    as a first-pass strict-sizes raise.
+    A real-engine test pins that the `path` column returned by the dry-run cleanup/orphan table
+    functions is byte-identical to _default_list_storage's s3://bucket/key keys against an s3://
+    DATA_PATH -- the pair strict sizing actually joins, not the data_file pair that governs
+    referenced_missing.
   - >-
     gc_ops raises rather than reporting GcDebtRatio=0.0 when live_bytes <= 0 (rec-3876).
   - >-
-    The CI smoke gc gate fails a guard_stats payload missing g1_post_expiry_would_delete_candidates,
-    so a pre-fix build cannot report smoke-green.
+    The CI smoke gc gate fails a guard_stats payload missing either new key, so a pre-fix build
+    cannot report smoke-green.
   - >-
     Every shipped guard ASSERTION still passes unmodified: live_before stays the universal catalog
     set, catalog-first/storage-second ordering holds, the guard set still fails closed on
     introspection error, and an over-budget pass still defers wholesale.
   - >-
-    rec-3871 and rec-3876 are closed in the warehouse; rec-3888 carries defect (b) forward with its
-    measurement gate intact.
+    rec-3871 and rec-3876 are closed in the warehouse; rec-3888 and rec-3892 stay open with their
+    gates intact.
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -234,21 +306,20 @@ verification_plan:
   - step: 2
     phase: pre-deploy
     action: >-
-      Behavioural guard across every new surface -- byte sourcing and strictness, the post-expiry
-      bound, the storage size source and its path shape, rec-3876's raise, and the smoke-gate shape
-      discriminator.
-    command: bin/venv-python -m pytest "tests/common/test_ducklake_maintenance_ops.py::TestG4ByteSource" "tests/common/test_ducklake_maintenance_ops.py::TestG4PostExpiryBound" "tests/common/test_ducklake_gc_ops.py::TestG4SizeSourceIsStorage" "tests/common/test_ducklake_gc_ops.py::TestMetricEmission::test_zero_live_bytes_raises_rather_than_reporting_debt_ratio_zero" "tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_lambda_maintenance_gc_fails_without_post_expiry_guard_stats" -q
+      Behavioural guard across every new surface -- byte sourcing and strict/non-strict
+      falsifiability, the post-expiry bound including the :249 re-check, the storage size source,
+      rec-3876's raise, the relocated listers, and the smoke-gate shape discriminator.
+    command: bin/venv-python -m pytest "tests/common/test_ducklake_maintenance_ops.py::TestG4ByteSource" "tests/common/test_ducklake_maintenance_ops.py::TestG4PostExpiryBound" "tests/common/test_ducklake_gc_ops.py::TestG4SizeSourceIsStorage" "tests/common/test_ducklake_gc_ops.py::TestMetricEmission::test_zero_live_bytes_raises_rather_than_reporting_debt_ratio_zero" "tests/common/test_ducklake_maintenance_storage.py" "tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_lambda_maintenance_gc_fails_without_post_expiry_guard_stats" -q
     expected: >-
       All pass. Each is red on the unfixed tree: TestG4ByteSource sizes to zero, TestG4PostExpiryBound
       finds the pre-expiry set bounded, TestG4SizeSourceIsStorage finds no size source passed,
-      rec-3876's case gets 0.0 instead of a raise, and the smoke-gate test finds the new key
-      unrequired.
+      rec-3876's case gets 0.0 instead of a raise, test_ducklake_maintenance_storage.py does not
+      exist, and the smoke-gate test finds the new keys unrequired.
     fix_if: >-
       A zero-sized candidate means the size source is still joined against the catalog live set. A
       bounded pre-expiry set means the re-probe landed before expire_snapshots rather than after. A
-      path-shape failure means _default_list_storage's keys do not match the data_file shape -- fix
-      the shape, never the assertion. A passing smoke-gate payload means
-      _REQUIRED_GUARD_STATS_KEYS was not extended.
+      failure in the relocated lister tests means the move changed behaviour -- it must not. A
+      passing smoke-gate payload means _REQUIRED_GUARD_STATS_KEYS was not extended.
     hermetic: false
     graduation: graduate
     graduation_check_id: g4-guards-bound-the-post-expiry-set-with-real-sizes
@@ -278,36 +349,41 @@ verification_plan:
   - step: 4
     phase: pre-deploy
     action: >-
-      Real-engine anchor, the TestG4RealDryRunSizeColumn pattern extended: on the pinned DuckLake
-      engine, build a catalog with real cleanup/orphan candidates, size them from a real listing of
-      the data directory, and confirm the post-expiry probe returns a superset of the pre-expiry
-      probe on a never-expired catalog. Every other cleanup/orphan test here mocks the connection, so
-      without this anchor both fixes can be green on a FakeCon and wrong in production.
-    command: bin/venv-python -m pytest "tests/common/test_ducklake_maintenance_ops.py::TestG4RealDryRunSizeColumn" -q
+      Real-engine anchors. (a) The extended TestG4RealDryRunSizeColumn: a post-expiry probe returns a
+      superset of the pre-expiry probe on a never-expired catalog. (b) The PATH-SHAPE anchor, which is
+      the evidence strict sizing rests on: against an s3:// DATA_PATH on the pinned engine, the `path`
+      column from the dry-run cleanup/orphan table functions must be byte-identical to
+      _default_list_storage's s3://bucket/key keys. A mocked-connection test cannot establish this --
+      it can only assert its own fixtures agree with each other.
+    command: bin/venv-python -m pytest "tests/common/test_ducklake_maintenance_ops.py::TestG4RealDryRunSizeColumn" "tests/common/test_ducklake_maintenance_storage.py" -q -m "integration or not integration"
     expected: >-
-      Passes, or SKIPS cleanly when the ducklake extension cannot be fetched. A non-zero byte total
-      from the out-of-band size map and a post-expiry candidate count >= the pre-expiry count.
+      Passes, or SKIPS cleanly where the ducklake extension or S3 credentials are unavailable. The
+      path-shape anchor reports zero symmetric difference between the engine paths and the listing
+      keys.
     fix_if: >-
-      A zero byte total on the real engine means the size map keys do not match DuckLake's data_file
-      path shape -- note that this fixture uses a local tmp_path, so the s3:// shape itself is pinned
-      by the hermetic test in VP2, not here. A smaller post-expiry count means the re-probe ran
-      against the wrong cutoff.
+      A non-empty symmetric difference means strict sizing would raise in production on a shape
+      mismatch -- fix the path normalisation, never the assertion, and do not proceed to VP9's
+      canary until it is empty. A smaller post-expiry count means the re-probe ran against the wrong
+      cutoff.
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
-      pytest.mark.integration and network-gated on the ducklake extension download -- it skips in the
-      default suite, so a registry slot would record a SKIP as a pass and manufacture a false green.
+      Both anchors are network-gated (ducklake extension download; live S3 for the path-shape half)
+      and skip in the default suite, so a registry slot would record a SKIP as a pass and manufacture
+      a false green. The planning session already reproduced the path-shape result by hand -- see the
+      context entry -- which is what licenses strict-by-default here.
   - step: 5
     phase: pre-deploy
     action: >-
-      Contract and Decision surfaces: the gc_ops verb documents the new response body and the
-      amendment_log carries this change; the new Decision entry parses with its typed envelope.
-    command: bin/venv-python -m pytest tests/decisions_md -q && bin/venv-python -c "import yaml,io;d=yaml.safe_load(io.open('docs/contracts/ducklake_maintenance.yaml',encoding='utf-8'));g=d['verbs']['gc_ops'];assert 'g1_post_expiry_would_delete_candidates' in g['response_codes'][200],'response body missing the post-expiry guard_stats key';assert len(d['amendment_log'])>=4,'no amendment entry appended';print('contract ok')"
-    expected: exit 0; the decisions parser suite is green and the contract carries both edits.
+      Governance surfaces: the gc_ops verb documents the new response body, the amendment_log carries
+      this change, the new Decision entry parses with its typed envelope, and the runbook documents
+      the new breaker cause.
+    command: bin/venv-python -m pytest tests/decisions_md -q && grep -q "g4_unsized_candidates" docs/runbooks/ducklake-catalog-operations.md && bin/venv-python -c "import yaml,io;d=yaml.safe_load(io.open('docs/contracts/ducklake_maintenance.yaml',encoding='utf-8'));g=d['verbs']['gc_ops'];assert 'g1_post_expiry_would_delete_candidates' in g['response_codes'][200],'response body missing the post-expiry guard_stats key';assert len(d['amendment_log'])>=4,'no amendment entry appended';print('contract ok')"
+    expected: exit 0; the decisions parser suite is green and both docs carry their edits.
     fix_if: >-
       A parser failure means the new entry breaks the Decision 167 envelope or the Decision 177
-      append shape. A contract assertion failure means the verb doc was not updated alongside the
-      code.
+      append shape. A missing runbook token means the new breaker cause has no operator surface --
+      the contract's typed_errors entry is not a substitute for the alarm-triage list.
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
@@ -343,73 +419,115 @@ verification_plan:
       .github/workflows/deploy-ducklake-lambdas.yml on push-to-main, never a local build_lambda
       --deploy. Its deploy-maintenance job deploys BOTH affected active artifacts
       (ducklake_maintenance and ducklake_maintenance_smoke); its maintenance-smoke job runs
-      --lambda-maintenance-gc, a REAL destructive GC against the smoke catalog, which is the only
-      place the post-expiry re-probe executes end-to-end on a live engine. The strict storage-derived
-      size source is NOT exercised here -- smoke is the enumerated non-strict site and the production
-      gc_ops rule is still state=DISABLED; see the rollback note.
+      --lambda-maintenance-gc, a REAL destructive GC against the smoke catalog, now running the SAME
+      strict posture as production. Read the gate's printed guard_stats, not just its exit code:
+      per rec-3892 the smoke candidate set is empty in steady state, so a green here proves the
+      SHAPE and the strict code path executing, not the sizing arithmetic.
     command: >-
       echo 'DISPATCH VIA MCP -- mcp__github__actions_get for deploy-ducklake-lambdas.yml on the
       squash-merge commit; assert conclusion=success for the deploy-maintenance AND
-      maintenance-smoke jobs.'
+      maintenance-smoke jobs, and read the MAINTENANCE_GC line guard_stats.'
     expected: >-
-      Both jobs green. The deploy-record freshness guard confirms source_git_sha == the merge sha, so
-      the smoke green is against this code and not a stale build.
+      Both jobs green, guard_stats carrying both new keys with g4_unsized_candidates=0. The
+      deploy-record freshness guard confirms source_git_sha == the merge sha, so the smoke green is
+      against this code and not a stale build.
     fix_if: >-
       A MAINTENANCE_GC failure naming a missing guard_stats key means the handler shipped without the
-      new key -- check the deploy record before touching the gate. A G1/G2/G3 trip on the smoke
-      catalog is a real regression in the re-probe: RCA, do not re-run (Decision 55).
+      new keys -- check the deploy record before touching the gate. A strict-sizes raise on the smoke
+      catalog means a real catalog/storage inconsistency (rec-3892 is the standing suspect): RCA, do
+      not re-run and do not loosen the guard (Decision 55).
     graduation: not-applicable
   - step: 9
     phase: post-deploy
     action: >-
+      PRE-ENABLEMENT CANARY on real production data, with zero deletion. Precondition (OPERATOR, not
+      this command): invoke action=gc_ops with dry_run=true against ducklake_ops -- explicit
+      data_path + meta_schema -- which writes nothing; the admin Function URL is AWS_IAM and CI holds
+      no invoke grant, so the invoke stays human-run. This is the evidence the smoke cadence
+      structurally cannot give: the production prefix is the only place the strict size join meets
+      real candidate volume. Attach this reading to the parent plan's VP14 baseline gate -- the
+      gc_ops rule must NOT be enabled (rec-3767) until it reports zero unsized candidates. The
+      READ-BACK below is agent-executable on the ObservabilityMetricRead grant.
+    command: aws cloudwatch get-metric-data --profile agent_platform --start-time "$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --metric-data-queries '[{"Id":"rm","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcReferencedMissing"},"Period":3600,"Stat":"Maximum"}},{"Id":"wd","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcWouldDeleteFiles"},"Period":3600,"Stat":"Maximum"}}]'
+    expected: >-
+      The dry_run invoke returns 200 rather than a 500 breaker trip, with unsized_candidates 0 and a
+      NON-ZERO would_delete_bytes in the response body (the figure that was structurally 0 before
+      this plan). GcReferencedMissing max == 0.
+    fix_if: >-
+      A 500 naming a strict-sizes raise is the canary doing its job -- the production catalog
+      schedules a deletion for a path the listing cannot size. RCA the inconsistency (rec-3892 is the
+      standing suspect) before enabling the schedule; do NOT relax strict sizing to get a green
+      canary. A still-zero would_delete_bytes means the dry_run path never took the pre-pass listing.
+    graduation: not-applicable
+  - step: 10
+    phase: post-deploy
+    action: >-
       Close the bundled recommendations through the portal and confirm the read cache reflects it.
-      rec-3888 must remain open -- its measurement gate (VP14/VP16 of
-      PLAN-production-gc-and-storage-stability) is not satisfied by this plan.
-    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json;rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip()];st=lambda i:next(r['status'] for r in rows if r['id']==i);assert st('rec-3871')=='closed','rec-3871 still open';assert st('rec-3876')=='closed','rec-3876 still open';assert st('rec-3888')=='open','rec-3888 must stay open, its measurement gate is unmet';print('closure ok')"
-    expected: exit 0; both bundled recs closed, rec-3888 still open.
+      rec-3888 and rec-3892 must remain open -- neither is resolved by this plan.
+    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json;rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip()];st=lambda i:next(r['status'] for r in rows if r['id']==i);assert st('rec-3871')=='closed','rec-3871 still open';assert st('rec-3876')=='closed','rec-3876 still open';assert st('rec-3888')=='open','rec-3888 must stay open, its measurement gate is unmet';assert st('rec-3892')=='open','rec-3892 must stay open, it is a separate finding';print('closure ok')"
+    expected: exit 0; both bundled recs closed, rec-3888 and rec-3892 still open.
     fix_if: >-
       A still-open bundled rec means the update_rec call did not land -- re-file through the portal,
-      never by editing the read cache (Single Portal Invariant). A closed rec-3888 means defect (b)
-      was closed without its measurement; reopen it.
+      never by editing the read cache (Single Portal Invariant). A closed rec-3888 or rec-3892 means
+      a finding was closed without its evidence; reopen it.
     graduation: not-applicable
 test_obligations:
   - source: src/common/ducklake_maintenance_ops.py
     behavior: >-
       G4 sizes candidates from the caller's declared size source (not a prelude-relative live
-      inventory), raises under strict_sizes on an unsized candidate, and run_gc is the only non-strict
-      call site.
+      inventory), raises under strict_sizes on an unsized candidate, and counts rather than raises
+      when the flag is False -- so the flag, not an unconditional raise, is demonstrably what trips.
     verification_step: 2
     test_selector: tests/common/test_ducklake_maintenance_ops.py::TestG4ByteSource
     red_green_expectation: >-
-      Red before: every gc_ops candidate sizes to zero against live_before and no call site declares
-      a posture, because the parameters do not exist. Green after.
+      Red before: every gc_ops candidate sizes to zero against live_before and neither parameter
+      exists. Green after.
   - source: src/common/ducklake_maintenance.py
     behavior: >-
-      run_gc declares its posture explicitly -- candidate_size_source=live_before, strict_sizes=False
-      -- and remains the only non-strict call site.
+      run_gc builds a storage-derived size source from its new data_path and passes it with
+      strict_sizes=True -- the same posture as production, with no non-strict site anywhere.
     verification_step: 2
-    test_selector: tests/common/test_ducklake_maintenance_ops.py::TestG4ByteSource::test_run_gc_is_the_only_non_strict_call_site
+    test_selector: tests/common/test_ducklake_maintenance_ops.py::TestG4ByteSource::test_run_gc_passes_a_storage_source_and_strict_sizes
     red_green_expectation: >-
-      Red before: no call site declares a posture because the parameters do not exist. Green after.
+      Red before: run_gc has no data_path, builds no size source, and the parameters do not exist.
+      Green after.
   - source: src/common/ducklake_gc_ops.py
     behavior: >-
       The pre-pass storage listing is the declared size source, passed with strict_sizes=True and
       taken in dry_run too, while live_before stays the universal catalog set and catalog-first
-      ordering holds at both read pairs; would_delete_bytes is re-sourced from it; and the s3://
-      key shape matches the catalog's data_file shape.
+      ordering holds at both read pairs; would_delete_bytes is re-sourced from it.
     verification_step: 2
     test_selector: tests/common/test_ducklake_gc_ops.py::TestG4SizeSourceIsStorage
     red_green_expectation: >-
       Red before: run_guarded_gc is called with no size source and would_delete_bytes sums to zero.
       Green after.
+  - source: tests/common/test_ducklake_maintenance_storage.py
+    behavior: >-
+      The relocated _parse_s3_uri / _default_list_storage helpers behave identically in their new
+      home, and the dry-run `path` column is byte-identical to the storage listing keys on a real
+      s3:// DATA_PATH -- the pair strict sizing joins.
+    verification_step: 2
+    test_selector: tests/common/test_ducklake_maintenance_storage.py
+    red_green_expectation: >-
+      Red before: the file does not exist, so the selector cannot collect. Green after.
+  - source: src/lambdas/ducklake_maintenance_smoke/handler.py
+    behavior: >-
+      action_gc passes DATA_PATH into run_gc so the smoke cadence builds a storage-derived size
+      source, without importing the production verb module.
+    verification_step: 2
+    test_selector: tests/common/test_ducklake_maintenance_ops.py::TestG4ByteSource::test_run_gc_passes_a_storage_source_and_strict_sizes
+    waiver_reason: >-
+      The handler is a one-argument dispatch shim; the behaviour it enables is asserted at the run_gc
+      obligation above, which names the same node id. A duplicate red-before expectation here would
+      double-count one piece of evidence rather than add discrimination.
   - source: scripts/ducklake_smoke/lambda_maintenance_gates.py
     behavior: >-
-      The CI smoke gc gate fails a guard_stats payload missing
-      g1_post_expiry_would_delete_candidates, so a pre-fix build cannot report smoke-green.
+      The CI smoke gc gate fails a guard_stats payload missing either new key, so a pre-fix build
+      cannot report smoke-green.
     verification_step: 2
     test_selector: tests/ducklake_neon_smoke_test/test_lambda_maintenance_gates.py::test_lambda_maintenance_gc_fails_without_post_expiry_guard_stats
     red_green_expectation: >-
-      Red before: the gate accepts a payload without the new key. Green after.
+      Red before: the gate accepts a payload without the new keys. Green after.
   - source: docs/contracts/ducklake_maintenance.yaml
     behavior: >-
       The gc_ops verb's 200 response body documents g1_post_expiry_would_delete_candidates and the
@@ -419,6 +537,15 @@ test_obligations:
     command: assert 'g1_post_expiry_would_delete_candidates' in g['response_codes'][200]
     red_green_expectation: >-
       Red before: the key is absent from the verb's documented response body. Green after.
+  - source: docs/runbooks/ducklake-catalog-operations.md
+    behavior: >-
+      The alarm-triage section names the fourth breaker cause (a strict-sizes raise) and its distinct
+      triage, so an operator paged at 03:45 does not read a catalog/storage inconsistency as an
+      over-reclaim breach.
+    verification_step: 5
+    command: grep -q "g4_unsized_candidates" docs/runbooks/ducklake-catalog-operations.md
+    red_green_expectation: >-
+      Red before: the token is absent -- the section enumerates only G1/G2/G3. Green after.
   - source: config/agent/verification_registry/entries/g4-byte-source-and-post-expiry-bound.yaml
     behavior: >-
       The registry row's check_spec command is the executable grep VP1 runs, so the byte-source and
@@ -478,22 +605,25 @@ test_obligations:
 constraints:
   - >-
     No rescue agents or workaround loops (Decision 55). A guard constant (G3_MAX_LIVE_BYTES_DROP,
-    G4_MAX_DELETE_FILES, G4_MAX_DELETE_BYTES) is NEVER relaxed to make a step pass.
+    G4_MAX_DELETE_FILES, G4_MAX_DELETE_BYTES) is NEVER relaxed to make a gate pass, and strict sizing
+    is never loosened to get a green smoke gate or a green canary.
   - >-
     CONTENT never-weaken (Decision 181, docs/contracts/implement-scope-boundary.yaml): G4 must be
     shown strictly STRONGER, not merely different. No shipped ASSERTION may be edited to pass;
     threading the two new required kwargs through existing call sites is an argument-list edit and is
     explicitly not covered by that clause.
   - >-
-    No permissive DEFAULT on a guard path (Decision 163 spirit flag, Decision 191 pt 3 precedent):
-    strict_sizes and candidate_size_source carry no default, and run_gc is the single enumerated
-    non-strict site.
+    NO exception path (Decision 163, verbatim: "removing the exception path entirely ... not building
+    a gate around it that a future session could argue its way past"). Both callers pass
+    strict_sizes=True; there is no sanctioned False call site. The flag exists only to keep the guard
+    falsifiable in test, the discipline test_g1_non_forcing_call_does_not_trip already establishes
+    for G1. Do NOT reintroduce a default.
   - >-
     G1's live-set reads stay INDEPENDENT OF THE CALLER. Do not thread gc_ops's live_before into
     run_guarded_gc's internal pre-check to save a scan -- that is rec-3878's optimisation and it would
     make G1 check the caller's own read instead of a fresh one. Reusing run_guarded_gc's OWN
-    pre-expiry live_now for the post-expiry G1 check is a different thing and is required here.
-    rec-3878 stays open and unbundled.
+    pre-expiry live_now for the post-expiry G1 pre-check is a different thing and is required here;
+    the :249 re-check keeps its own fresh live_after read. rec-3878 stays open and unbundled.
   - >-
     live_before keeps its identity as the universal CATALOG set feeding G1/G3. The storage listing
     is a SEPARATE argument; it never replaces live_before.
@@ -501,38 +631,46 @@ constraints:
     Read ordering is load-bearing: catalog live set FIRST, storage SECOND, at both the pre-pass and
     post-pass read pairs (Decision 192 pt 3 / ducklake_gc_ops property 4).
   - >-
+    The smoke Lambda must not import src/common/ducklake_gc_ops.py -- its manifest deliberately does
+    not bundle the production verb module. That is why the listers move to ducklake_maintenance.py
+    rather than being imported across.
+  - >-
     Defect (b), the partial drain, is OUT OF SCOPE and stays wholesale-deferring. It is rec-3888 and
-    is gated on measurements that do not exist yet.
+    is gated on measurements that do not exist yet. The smoke-prefix anomaly is rec-3892 and is not
+    fixed here either (Decision 59: out-of-scope findings become recommendations).
   - >-
     Lambda code deploys through .github/workflows/deploy-ducklake-lambdas.yml (Decision 125/126).
     `build_lambda --ducklake-only --deploy` is break-glass only and must not appear as a VP step.
   - >-
     No local terraform init/validate/plan (Decision 119). No terraform change is in scope: the
-    gc_ops rule stays state=DISABLED.
+    gc_ops rule stays state=DISABLED, and enabling it stays rec-3767's human-gated step, now
+    additionally gated on VP9's canary reading zero unsized candidates.
   - >-
-    SLOC decompose-by-default (Decision 128). tests/common/test_ducklake_maintenance_ops.py is at
-    ~330 SLOC against 500 with no budget entry -- if the new classes push it over, decompose into a
-    test package, never register a raise.
+    SLOC decompose-by-default (Decision 128). Two files are near the line: ducklake_maintenance.py at
+    383 of 500 gaining the relocated listers, and test_ducklake_maintenance_ops.py at 330 gaining two
+    classes. If either crosses, decompose -- never register a raise.
 context:
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 145 of 145. Roadmap items intersected: 7; CONFLICT: 0; RELATED: 7."
   - "CITE list (verbatim): Decision 192, Decision 81 cl.6, Decision 55, Decision 143, Decision 126, Decision 125, Decision 88 cl.1, Decision 181, Decision 177, Decision 132, Decision 176, Decision 189."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
   - "Scout WARN on Decision 188 -- resolved by minting a fresh number rather than an amendment_forms annotation; see the docs/DECISIONS.md scope row."
-  - "Scout WARN on Decision 191 pt 3 + SPIRIT WARN on Decision 163 -- resolved by making strict_sizes/candidate_size_source required keyword-only with run_gc as the single enumerated non-strict site."
+  - "Scout WARN on Decision 191 pt 3 + SPIRIT WARN on Decision 163 -- resolved in round 3 by removing the carve-out entirely rather than enumerating it: both callers are strict. Critique round 2 was right that an enumerated carve-out substituting a SILENT zero does not match the 188 pt 3 / 191 pt 4 grammar, which those precedents earn by degrading loudly."
   - "Decision 100 NOTE discharge: the pinned engine's two dry-run table functions return a single path column (no size, no timestamp, probed 2026-09-15), so no catalog-side size is reachable for a non-live file without a second psycopg2 read of the Neon metadata tables -- a Decision 88 cl.1 metered egress cost for a strict SUBSET of candidates, since true orphans are never in the catalog at all. One complete source beats two partial ones; ListObjectsV2 is the bucket's own managed primitive, already framed as such in _default_list_storage."
-  - "Measurement-condition deviation, on the record: rec-3871 and Decision 192 pt 5 condition BOTH (b) and (c) on the parent plan's VP14/VP16 readings. This plan builds (c) now because its cheap structural form -- re-probe and re-bound, two read-only queries -- is independent of how large the backlog turns out to be; only (b)'s cutoff walk is sized against the backlog. rec-3888's filed text records the handoff (the post-expiry half is already in place when it starts), and rec-3871's own acceptance criteria name nothing from (b)."
-  - "Defect anchors: sizing join at src/common/ducklake_maintenance_ops.py:227; probe/bound/delete ordering at :205-208, :227-228, :231-232; pre-expiry live_now at :202-204; rec-3876's silent substitution and the dead would_delete_bytes join at src/common/ducklake_gc_ops.py:190 and :146-148/:213."
-  - "Predecessor: PR #1193 (dae48e4a) shipped gc_ops and recorded both limitations; PLAN-production-gc-and-storage-stability.yaml is the parent plan."
-  - "Measurement state: the gc_ops EventBridge rule is state=DISABLED (terraform/personal/ducklake_maintenance.tf), so the parent plan's VP14 and VP16 readings do not exist. That is what gates rec-3888, not this plan."
+  - "PATH-SHAPE EVIDENCE (this is what licenses strict-by-default): reproduced in the planning session 2026-09-15 against the LIVE smoke prefix. A throwaway local catalog attached with DATA_PATH s3://agent-platform-data-lake/ducklake-neon-smoke/ returned 6 dry-run orphan `path` rows byte-identical to _default_list_storage's 6 keys -- symmetric difference empty in both directions, read-only, no writes. VP4's anchor graduates that probe into a test."
+  - "MEASURED SMOKE VACUITY: CloudWatch FilesCleaned and OrphansDeleted are 0.0 on every sample across 21 days, and the latest green smoke run reports g1_would_delete_candidates 0 / g4_would_delete_files 0. The smoke gate therefore exercises G4's shape and the strict code path, never its sizing arithmetic -- which is why VP9's production dry_run canary, not the smoke gate, is the real pre-enablement evidence. The unexplained cause is rec-3892."
+  - "Measurement-condition deviation, on the record: rec-3871 and Decision 192 pt 5 condition BOTH (b) and (c) on the parent plan's VP14/VP16 readings. This plan builds (c) now because its cheap structural form -- re-probe and re-bound, two read-only queries -- is independent of how large the backlog turns out to be; only (b)'s cutoff walk is sized against the backlog. rec-3888's filed text records the handoff, and rec-3871's own acceptance criteria name nothing from (b)."
+  - "Defect anchors: sizing join at src/common/ducklake_maintenance_ops.py:227 (local `candidate_bytes`, renamed here); probe/bound/delete ordering at :205-208, :227-228, :231-232; pre-expiry live_now at :202-204; the pre-expiry G1 re-check at :249; rec-3876's silent substitution and the dead would_delete_bytes join at src/common/ducklake_gc_ops.py:190 and :146-148/:213."
+  - "Predecessor: PR #1193 (dae48e4a) shipped gc_ops and recorded both limitations; PLAN-production-gc-and-storage-stability.yaml is the parent plan, whose VP14 baseline gate VP9 here extends."
+  - "Measurement state: the gc_ops EventBridge rule is state=DISABLED (terraform/personal/ducklake_maintenance.tf:328), so the parent plan's VP14 and VP16 readings do not exist. That is what gates rec-3888, not this plan."
   - "T2.18 is in_progress; c2 is open and owned by rec-3870 (N=9 weekly cycles). This plan closes NO criterion -- closes_criteria is empty by design."
   - "Freshness gate on T2.18: all six files_in_scope paths exist; no silent completion (c2 needs an enabled schedule); no supersession; CD.29 is pending and gates COMPLETION of T2.18, not this defect fix."
-  - "rec-3878 (four catalog rescans per pass) stays open and unbundled -- see the G1-independence constraint. This plan adds one S3 LIST per pass and no additional catalog rescan. rec-3767 (enabling the rule) is separate."
+  - "rec-3878 (four catalog rescans per pass) stays open and unbundled -- see the G1-independence constraint. This plan adds one S3 LIST per pass per cadence and no additional catalog rescan. rec-3767 (enabling the rule) is separate and now additionally gated on VP9."
   - "Affected active Lambda artifacts (compute_affected_artifacts): ducklake_maintenance AND ducklake_maintenance_smoke, both status: active -> V3; deploy_channels.ducklake_functions governs both code deploys and VP8 covers both."
-  - "Cost note: two full ListObjectsV2 walks of the production prefix per real pass (pre-pass for sizes, post-pass for referenced_missing). The post-pass walk cannot be reused for sizing -- it is taken after deletion by design. Not a Decision 88 breach (that budget is Neon-catalog egress); surfaced for in-Lambda latency against the 900s timeout."
+  - "Cost note: two full ListObjectsV2 walks of the production prefix per real gc_ops pass (pre-pass for sizes, post-pass for referenced_missing); the post-pass walk cannot be reused for sizing, being taken after deletion by design. Not a Decision 88 breach (that budget is Neon-catalog egress). Against the 900s Lambda ceiling this is reassuring rather than alarming: ALL added work -- the pre-pass listing and the post-expiry re-probe -- lands in the PRE-DESTRUCTIVE window, so a timeout inside it aborts before anything is deleted, which is the opposite of the failure shape terraform/personal/ducklake_maintenance.tf:150-160 raised the timeout to avoid."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
-  - Only the plan-cited decision sections read (188, 192, 191, 163, 181, 177, 167, 125/126, 119, 128, 55)
+  - Only the plan-cited decision sections read (188, 192, 191, 163, 181, 177, 167, 125/126, 119, 128, 59, 55)
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
   - >-
@@ -540,35 +678,44 @@ pre_implementation_checklist:
     CONTENT never-weaken invariant is the live constraint, not just the LOCATION one
 execution_steps:
   - >-
+    src/common/ducklake_maintenance.py -- relocate _parse_s3_uri and _default_list_storage here from
+    ducklake_gc_ops (behaviour unchanged), and give run_gc a data_path parameter that builds the
+    storage-derived size source.
+  - >-
     src/common/ducklake_maintenance_ops.py -- add required keyword-only candidate_size_source and
-    strict_sizes to run_guarded_gc; derive candidate_sizes from the declared source; raise on an
-    unsized candidate under strict_sizes.
+    strict_sizes to run_guarded_gc; rename the derived local candidate_bytes -> candidate_sizes;
+    raise on an unsized candidate under strict_sizes and count it in g4_unsized_candidates otherwise.
   - >-
     src/common/ducklake_maintenance_ops.py -- re-probe the dry-run cleanup/orphan paths after
-    expire_snapshots (same fail-closed try/except shape), G1-check that post-expiry set against the
-    REUSED pre-expiry live_now map, bound it with G4, and add the single new guard_stats key
-    g1_post_expiry_would_delete_candidates.
+    expire_snapshots (same fail-closed try/except shape), point BOTH G1 checks at the post-expiry set
+    (the pre-check against the reused live_now map, the :249 re-check against its own fresh
+    live_after read), bound the post-expiry set with G4, and add the two new guard_stats keys.
   - >-
-    src/common/ducklake_maintenance.py -- run_gc passes candidate_size_source=live_before and
-    strict_sizes=False explicitly.
+    src/common/ducklake_maintenance.py + src/lambdas/ducklake_maintenance_smoke/handler.py -- run_gc
+    passes its storage-derived source with strict_sizes=True; the handler passes DATA_PATH through.
   - >-
-    src/common/ducklake_gc_ops.py -- take the pre-pass storage listing after the catalog live-set
-    collection (in dry_run too), pass it with strict_sizes=True, re-source would_delete_bytes_map
-    from it, emit GcWouldDeleteFilesPostExpiry and GcDeferredFiles, surface the new guard_stats key in
-    the response, and drop the `else 0.0` substitution (rec-3876).
+    src/common/ducklake_gc_ops.py -- import the relocated listers, take the pre-pass storage listing
+    after the catalog live-set collection (in dry_run too), pass it with strict_sizes=True,
+    re-source would_delete_bytes_map from it, emit GcWouldDeleteFilesPostExpiry and GcDeferredFiles,
+    surface the new guard_stats keys in the response, and drop the `else 0.0` substitution (rec-3876).
   - >-
-    scripts/ducklake_smoke/lambda_maintenance_gates.py -- add the new key to
-    _REQUIRED_GUARD_STATS_KEYS.
+    scripts/ducklake_smoke/lambda_maintenance_gates.py -- add both new keys to
+    _REQUIRED_GUARD_STATS_KEYS and assert g4_unsized_candidates == 0.
   - >-
     MECHANICAL RIPPLE: thread candidate_size_source and strict_sizes through all nine existing
     run_guarded_gc call sites in tests/common/test_ducklake_maintenance_ops.py (lines 96, 119, 156,
     219, 233, 279, 285, 308, 378). Argument lists only -- change no assertion.
   - >-
-    Tests -- TestG4ByteSource, TestG4PostExpiryBound, TestG4SizeSourceIsStorage (including the
-    hermetic s3:// path-shape pin), the rec-3876 node id, the smoke-gate red-before case, and the
-    extended real-engine anchor. Confirm each is RED against the unfixed tree before writing the fix.
+    Tests -- TestG4ByteSource, TestG4PostExpiryBound, TestG4SizeSourceIsStorage, the new
+    tests/common/test_ducklake_maintenance_storage.py (relocated helper tests plus the real-engine
+    path-shape anchor), rec-3876's node id, the smoke-gate red-before case, the extended real-engine
+    anchor, and the _NO_GUARD_STATS key additions. Confirm each new test is RED against the unfixed
+    tree before writing the fix.
   - >-
-    docs/contracts/ducklake_maintenance.yaml -- verb doc, response body, typed errors, amendment_log.
+    docs/contracts/ducklake_maintenance.yaml -- gc_ops and gc verb docs, response body, typed errors,
+    amendment_log.
+  - >-
+    docs/runbooks/ducklake-catalog-operations.md -- the fourth breaker cause and its triage step.
   - >-
     docs/DECISIONS.md -- the new numbered entry (re-derive the number from the file) plus the two
     dated blockquote appends on Decisions 188 and 192.
@@ -578,17 +725,19 @@ execution_steps:
     Execute the Verification Plan -- run each step; loop until pass; on an unrecoverable V3 failure
     stop and RCA (Decision 55).
   - >-
-    Close rec-3871 and rec-3876 through scripts.ops_data_portal; leave rec-3888 open.
-  - 'Report: what was implemented, verification results, and the post-deploy smoke-gate outcome.'
+    Close rec-3871 and rec-3876 through scripts.ops_data_portal; leave rec-3888 and rec-3892 open.
+  - 'Report: what was implemented, verification results, the smoke-gate outcome, and the VP9 canary reading.'
 work_areas: []
 rollback: >-
   Code-only and revertible by a single revert commit; no terraform, no schema, no data migration. The
   production gc_ops rule stays state=DISABLED throughout, so no production destructive pass runs as
-  part of this plan. KNOWN, HUMAN-GATED RESIDUAL RISK: strict_sizes=True gets no live-engine exercise
-  anywhere in this plan -- the CI smoke path is the enumerated NON-strict site and production gc_ops
-  is disabled, so its first live execution is the first pass after the rec-3767 enablement, which a
-  human gates. The failure mode is a size-source key-shape mismatch raising DuckLakeMaintenanceError
-  and surfacing as MaintenanceBreakerTrip, indistinguishable from a real safety breach. The hermetic
-  s3:// path-shape pin in VP2 is the mitigation; whoever enables the rule should read the first pass's
-  guard_stats before treating a breaker trip as a breach. Reverting this commit restores the current
-  byte-blind behaviour, which is safe-but-weaker, never unsafe.
+  part of this plan. The residual risk the previous draft carried -- that strict sizing would first
+  execute live against production data, where a path-shape mismatch raises as MaintenanceBreakerTrip
+  and is indistinguishable from a real breach -- is now closed on both ends: the path shapes were
+  verified byte-identical against the live smoke prefix during planning (see context), and VP9 makes a
+  human-invoked production dry_run reporting zero unsized candidates a precondition of enabling the
+  schedule (rec-3767). A dry_run deletes nothing, so the canary cannot over-reclaim. If the strict
+  path does trip on the smoke catalog after merge, the correct response is RCA of the
+  catalog/storage inconsistency (rec-3892 is the standing suspect), never loosening the guard;
+  reverting this commit restores the current byte-blind behaviour, which is safe-but-weaker, never
+  unsafe.
