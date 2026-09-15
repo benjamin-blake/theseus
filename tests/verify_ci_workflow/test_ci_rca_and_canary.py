@@ -57,8 +57,8 @@ class TestCheckCiRcaFilterRequiredSet:
             "jobs": {"rca": {"if": _REAL_RCA_IF, "steps": []}},
         }
         with (
-            patch("scripts.verify_ci_workflow._load") as mock_load,
-            patch("scripts.verify_ci_workflow.Path") as mock_path,
+            patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load,
+            patch("scripts.verify_ci_workflow._ci_rca.Path") as mock_path,
         ):
             mock_load.side_effect = lambda p: _REAL_CANARY_DATA if "canary" in p else rca_data
             mock_path.return_value.read_text.return_value = _FILED_MARKER_CONTENT
@@ -72,8 +72,8 @@ class TestCheckCiRcaFilterRequiredSet:
             "jobs": {"rca": {"if": _REAL_RCA_IF, "steps": []}},
         }
         with (
-            patch("scripts.verify_ci_workflow._load") as mock_load,
-            patch("scripts.verify_ci_workflow.Path") as mock_path,
+            patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load,
+            patch("scripts.verify_ci_workflow._ci_rca.Path") as mock_path,
         ):
             mock_load.side_effect = lambda p: _REAL_CANARY_DATA if "canary" in p else rca_data
             mock_path.return_value.read_text.return_value = _FILED_MARKER_CONTENT
@@ -97,8 +97,8 @@ class TestCheckCiRcaFilterMainBranchGate:
             },
         }
         with (
-            patch("scripts.verify_ci_workflow._load") as mock_load,
-            patch("scripts.verify_ci_workflow.Path") as mock_path,
+            patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load,
+            patch("scripts.verify_ci_workflow._ci_rca.Path") as mock_path,
         ):
             mock_load.side_effect = lambda p: _REAL_CANARY_DATA if "canary" in p else rca_data_no_gate
             mock_path.return_value.read_text.return_value = _FILED_MARKER_CONTENT
@@ -120,8 +120,8 @@ class TestCheckCiRcaFilterMainBranchGate:
             },
         }
         with (
-            patch("scripts.verify_ci_workflow._load") as mock_load,
-            patch("scripts.verify_ci_workflow.Path") as mock_path,
+            patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load,
+            patch("scripts.verify_ci_workflow._ci_rca.Path") as mock_path,
         ):
             mock_load.side_effect = lambda p: _REAL_CANARY_DATA if "canary" in p else rca_data_partial_gate
             mock_path.return_value.read_text.return_value = _FILED_MARKER_CONTENT
@@ -132,8 +132,8 @@ class TestCheckCiRcaFilterMainBranchGate:
 class TestCheckCiRcaFilterFiledMarker:
     def test_fails_when_filed_marker_missing_from_agent_doc(self) -> None:
         with (
-            patch("scripts.verify_ci_workflow._load") as mock_load,
-            patch("scripts.verify_ci_workflow.Path") as mock_path,
+            patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load,
+            patch("scripts.verify_ci_workflow._ci_rca.Path") as mock_path,
         ):
             mock_load.side_effect = lambda p: _REAL_CANARY_DATA if "canary" in p else _REAL_RCA_DATA
             mock_path.return_value.read_text.return_value = "## Step 6: Report\n\nPrint a brief summary.\n"
@@ -142,8 +142,8 @@ class TestCheckCiRcaFilterFiledMarker:
 
     def test_passes_when_filed_marker_present(self) -> None:
         with (
-            patch("scripts.verify_ci_workflow._load") as mock_load,
-            patch("scripts.verify_ci_workflow.Path") as mock_path,
+            patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load,
+            patch("scripts.verify_ci_workflow._ci_rca.Path") as mock_path,
         ):
             mock_load.side_effect = lambda p: _REAL_CANARY_DATA if "canary" in p else _REAL_RCA_DATA
             mock_path.return_value.read_text.return_value = _FILED_MARKER_CONTENT
@@ -179,7 +179,7 @@ _VALID_CANARY_DATA: dict[str, Any] = {
 
 class TestCheckCanaryPassPath:
     def test_passes_with_ubuntu_latest(self) -> None:
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = _VALID_CANARY_DATA
             _check_canary()
 
@@ -199,7 +199,7 @@ class TestCheckCanaryFailPath:
                 }
             },
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="ubuntu-latest"):
                 _check_canary()
@@ -218,7 +218,7 @@ class TestCheckCanaryFailPath:
                 }
             },
         }
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = data
             with pytest.raises(AssertionError, match="--pre"):
                 _check_canary()
@@ -279,8 +279,10 @@ def _rca_data_with_fetch_step(run_body: str) -> dict[str, Any]:
 class TestCiRcaAuthorityAnchor:
     def _check(self, workflow: str = _AUTHORITY_WORKFLOW, decisions: str = _AUTHORITY_DECISIONS) -> None:
         with (
-            patch("scripts.verify_ci_workflow._read_ci_rca_authority_sources", return_value=(workflow, decisions)),
-            patch("scripts.verify_ci_workflow._load", return_value=_rca_data_with_fetch_step(_PASSING_FETCH_STEP_BODY)),
+            patch("scripts.verify_ci_workflow._ci_rca._read_ci_rca_authority_sources", return_value=(workflow, decisions)),
+            patch(
+                "scripts.verify_ci_workflow._ci_rca._load", return_value=_rca_data_with_fetch_step(_PASSING_FETCH_STEP_BODY)
+            ),
         ):
             _check_ci_rca_fetch_classification()
 
@@ -344,7 +346,7 @@ class TestCiRcaAuthorityAnchor:
 
 class TestCheckCiRcaFetchClassification:
     def test_passes_on_real_post_change_step_body(self) -> None:
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = _rca_data_with_fetch_step(_PASSING_FETCH_STEP_BODY)
             _check_ci_rca_fetch_classification()
 
@@ -353,35 +355,35 @@ class TestCheckCiRcaFetchClassification:
             "TRANSIENT_ERROR_RE='failed to get jobs|failed to get run|HTTP 5[0-9][0-9]|Service Unavailable'\n"
             'grep -qiE "$TRANSIENT_ERROR_RE" /tmp/ci-rca-failed.log\n'
         )
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = _rca_data_with_fetch_step(body)
             with pytest.raises(AssertionError, match="pattern-matching construct"):
                 _check_ci_rca_fetch_classification()
 
     def test_rejects_renamed_pattern_variable(self) -> None:
         body = _PASSING_FETCH_STEP_BODY + ("PATTERN_X='HTTP 5[0-9][0-9]'\ngrep -qiE \"$PATTERN_X\" /tmp/ci-rca-failed.log\n")
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = _rca_data_with_fetch_step(body)
             with pytest.raises(AssertionError, match="pattern-matching construct"):
                 _check_ci_rca_fetch_classification()
 
     def test_rejects_renamed_log_path_variable(self) -> None:
         body = _PASSING_FETCH_STEP_BODY + ('LOGFILE=/tmp/ci-rca-failed.log\ngrep -qiE "HTTP 5" "$LOGFILE"\n')
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = _rca_data_with_fetch_step(body)
             with pytest.raises(AssertionError, match="pattern-matching construct"):
                 _check_ci_rca_fetch_classification()
 
     def test_rejects_case_statement_shape_a_blocklist_would_miss(self) -> None:
         body = _PASSING_FETCH_STEP_BODY + ('case "$(cat /tmp/ci-rca-failed.log)" in\n  *"HTTP 5"*) exit 1 ;;\nesac\n')
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = _rca_data_with_fetch_step(body)
             with pytest.raises(AssertionError, match="pattern-matching construct"):
                 _check_ci_rca_fetch_classification()
 
     def test_rejects_awk_shape_a_blocklist_would_miss(self) -> None:
         body = _PASSING_FETCH_STEP_BODY + ("awk '/HTTP 5/{exit 1}' /tmp/ci-rca-failed.log\n")
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = _rca_data_with_fetch_step(body)
             with pytest.raises(AssertionError, match="pattern-matching construct"):
                 _check_ci_rca_fetch_classification()
@@ -390,7 +392,7 @@ class TestCheckCiRcaFetchClassification:
         body = _PASSING_FETCH_STEP_BODY + (
             "python3 -c \"import re,sys; sys.exit(1 if re.search('HTTP 5', open('/tmp/ci-rca-failed.log').read()) else 0)\"\n"
         )
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = _rca_data_with_fetch_step(body)
             with pytest.raises(AssertionError, match="pattern-matching construct"):
                 _check_ci_rca_fetch_classification()
@@ -401,7 +403,7 @@ class TestCheckCiRcaFetchClassification:
             'echo "no module call here" > /tmp/ci-rca-failed.log\n'
             "test -s /tmp/ci-rca-failed.log\n"
         )
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = _rca_data_with_fetch_step(body)
             with pytest.raises(AssertionError, match="no longer invokes scripts.ci_rca.fetch_logs"):
                 _check_ci_rca_fetch_classification()
@@ -416,14 +418,14 @@ class TestCheckCiRcaFetchClassification:
         ],
     )
     def test_rejects_removed_bounded_retrieval_backstop(self, mutation: str, match: str) -> None:
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = _rca_data_with_fetch_step(_PASSING_FETCH_STEP_BODY.replace(mutation, "removed"))
             with pytest.raises(AssertionError, match=match):
                 _check_ci_rca_fetch_classification()
 
     def test_rejects_historical_uncapped_whole_run_fallback(self) -> None:
         body = _PASSING_FETCH_STEP_BODY + 'gh run view "$RUN_ID" --log > /tmp/ci-rca-failed.log\n'
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = _rca_data_with_fetch_step(body)
             with pytest.raises(AssertionError, match="uncapped direct log retrieval"):
                 _check_ci_rca_fetch_classification()
@@ -431,7 +433,7 @@ class TestCheckCiRcaFetchClassification:
     def test_rejects_evidence_generation_without_retrieval_envelope(self) -> None:
         data = _rca_data_with_fetch_step(_PASSING_FETCH_STEP_BODY)
         data["jobs"]["rca"]["steps"][-1]["run"] = "bin/venv-python -m scripts.ci_rca.evidence"
-        with patch("scripts.verify_ci_workflow._load", return_value=data):
+        with patch("scripts.verify_ci_workflow._ci_rca._load", return_value=data):
             with pytest.raises(AssertionError, match="durable evidence generation"):
                 _check_ci_rca_fetch_classification()
 
@@ -465,8 +467,10 @@ class TestCiRcaBoundedRetrievalCounterfactuals:
     def test_rejects_retrieval_budget_and_ordering_mutations(self, fragment: str) -> None:
         source = Path("scripts/ci_rca/fetch_logs.py").read_text(encoding="utf-8")
         with (
-            patch("scripts.verify_ci_workflow._load", return_value=_rca_data_with_fetch_step(_PASSING_FETCH_STEP_BODY)),
-            patch("scripts.verify_ci_workflow._read_ci_rca_authority_sources", return_value=_REAL_AUTHORITY_SOURCES),
+            patch(
+                "scripts.verify_ci_workflow._ci_rca._load", return_value=_rca_data_with_fetch_step(_PASSING_FETCH_STEP_BODY)
+            ),
+            patch("scripts.verify_ci_workflow._ci_rca._read_ci_rca_authority_sources", return_value=_REAL_AUTHORITY_SOURCES),
             patch("pathlib.Path.read_text", return_value=source.replace(fragment, "removed", 1)),
             pytest.raises(AssertionError, match="bounded retrieval invariant"),
         ):
@@ -476,8 +480,10 @@ class TestCiRcaBoundedRetrievalCounterfactuals:
         source = Path("scripts/ci_rca/fetch_logs.py").read_text(encoding="utf-8")
         reset = source.replace("_run_log(command, remaining, remaining_lines)", "_run_log(command, max_bytes, max_lines)", 1)
         with (
-            patch("scripts.verify_ci_workflow._load", return_value=_rca_data_with_fetch_step(_PASSING_FETCH_STEP_BODY)),
-            patch("scripts.verify_ci_workflow._read_ci_rca_authority_sources", return_value=_REAL_AUTHORITY_SOURCES),
+            patch(
+                "scripts.verify_ci_workflow._ci_rca._load", return_value=_rca_data_with_fetch_step(_PASSING_FETCH_STEP_BODY)
+            ),
+            patch("scripts.verify_ci_workflow._ci_rca._read_ci_rca_authority_sources", return_value=_REAL_AUTHORITY_SOURCES),
             patch("pathlib.Path.read_text", return_value=reset),
             pytest.raises(AssertionError, match="bounded retrieval invariant"),
         ):
@@ -492,7 +498,7 @@ class TestCiRcaBoundedRetrievalCounterfactuals:
     )
     def test_rejects_malformed_envelope_body_boundary(self, fragment: str) -> None:
         with patch(
-            "scripts.verify_ci_workflow._load",
+            "scripts.verify_ci_workflow._ci_rca._load",
             return_value=_rca_data_with_fetch_step(_PASSING_FETCH_STEP_BODY.replace(fragment, "removed")),
         ):
             with pytest.raises(AssertionError):
@@ -501,7 +507,7 @@ class TestCiRcaBoundedRetrievalCounterfactuals:
     def test_rejects_missing_durable_evidence_argument(self) -> None:
         data = _rca_data_with_fetch_step(_PASSING_FETCH_STEP_BODY)
         data["jobs"]["rca"]["steps"][-1]["run"] = "bin/venv-python -m scripts.ci_rca.evidence"
-        with patch("scripts.verify_ci_workflow._load", return_value=data):
+        with patch("scripts.verify_ci_workflow._ci_rca._load", return_value=data):
             with pytest.raises(AssertionError, match="durable evidence generation"):
                 _check_ci_rca_fetch_classification()
 
@@ -514,7 +520,7 @@ class TestCiRcaBoundedRetrievalCounterfactuals:
 
     def test_fails_when_step_not_found(self) -> None:
         rca_data = {"jobs": {"rca": {"steps": [{"name": "Some other step", "run": "echo hi"}]}}}
-        with patch("scripts.verify_ci_workflow._load") as mock_load:
+        with patch("scripts.verify_ci_workflow._ci_rca._load") as mock_load:
             mock_load.return_value = rca_data
             with pytest.raises(AssertionError, match="not found in job"):
                 _check_ci_rca_fetch_classification()

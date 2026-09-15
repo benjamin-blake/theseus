@@ -66,7 +66,7 @@ class TestGatedEntryInputClosures:
         assert {
             ".github/workflows/**",
             ".claude/agents/scheduled/ci-rca.md",
-            "scripts/verify_ci_workflow.py",
+            "scripts/verify_ci_workflow/**",
             "scripts/checks/ci_guards/**",
         } <= self._globs("validate_ci_rca_trigger")
 
@@ -76,7 +76,7 @@ class TestGatedEntryInputClosures:
             ".github/workflows/ci-rca.yml",
             ".github/workflows/main-canary.yml",
             ".claude/agents/scheduled/ci-rca.md",
-            "scripts/verify_ci_workflow.py",
+            "scripts/verify_ci_workflow/_shared.py",
             "scripts/checks/ci_guards/validate_ci_rca_trigger.py",
             "scripts/checks/_common.py",
             "scripts/checks/registry.py",

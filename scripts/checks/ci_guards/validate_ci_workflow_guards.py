@@ -10,7 +10,7 @@ from scripts.checks.ci_guards._shared import _ensure_root_on_path
 
 
 def _load_guards() -> list[tuple[str, Callable[[], None]]]:
-    """Import the guard functions from scripts/verify_ci_workflow.py and pair each with its
+    """Import the guard functions from scripts/verify_ci_workflow and pair each with its
     presubmit label. Called both at module load (to populate the module-level _GUARDS constant
     below) and again on every validate_ci_workflow_guards() call, so an import-time failure of
     scripts.verify_ci_workflow at CALL time is still caught by that function's own try/except
@@ -66,7 +66,7 @@ def validate_ci_workflow_guards(failed: list[str]) -> None:
     Wires _check_jobs_and_flags, _check_fetch_depth, _check_concurrency, _check_canary,
     _check_apply_rca_fallback, _check_validate_single_source, _check_signal_green_needs,
     _check_terraform_apply_concurrency, _check_ci_rca_fetch_classification, and
-    _check_recovery_workflow_topology from scripts/verify_ci_workflow.py into the presubmit tier.
+    _check_recovery_workflow_topology from scripts/verify_ci_workflow into the presubmit tier.
     Each guard failure appends a distinct label; a non-AssertionError exception
     records a failure rather than crashing presubmit (rec-2027 pattern).
     """
@@ -82,11 +82,13 @@ def validate_ci_workflow_guards(failed: list[str]) -> None:
             except Exception as exc:
                 print(f"  FAIL: {label}: {exc}")
                 failed.append(f"ci-workflow guard: {label}")
+        registry.examined(len(guards), unit="ci_workflow_guards")
     except Exception as exc:
         # Import or setup failure (e.g. verify_ci_workflow unimportable) must
         # record a gate failure, not crash presubmit (rec-2027).
         print(f"  FAIL: ci-workflow guards gate (import/setup): {exc}")
         failed.append("ci-workflow guards gate")
+        registry.skipped(f"import/setup failure: {exc}")
     finally:
         if injected and root_str in sys.path:
             sys.path.remove(root_str)
