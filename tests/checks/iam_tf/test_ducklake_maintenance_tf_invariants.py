@@ -182,6 +182,25 @@ class TestProductionGcRuleInvariants:
         assert metric is not None and metric.group(1) == "GcDeletedSnapshots"
         assert treat_missing is not None and treat_missing.group(1) == "breaching"
 
+    def test_liveness_alarm_period_product_stays_inside_the_putmetricalarm_cap(self) -> None:
+        """rec-3881 regression: PutMetricAlarm rejects EvaluationPeriods*Period > 86400s when
+        period<3600, and > 604800s when period>=3600 -- a runtime CloudWatch API validation that
+        terraform plan/validate cannot see. The prior period=1800/evaluation_periods=480 design
+        (864000s) satisfied neither cap; it was sized against the wrong (>=3600-only) ceiling."""
+        text = _ADMIN_TF.read_text(encoding="utf-8")
+        block = _find_resource_block(text, "aws_cloudwatch_metric_alarm", "ducklake_maintenance_gc_ops_liveness")
+        period = re.search(r"period\s*=\s*(\d+)", block)
+        evaluation_periods = re.search(r"evaluation_periods\s*=\s*(\d+)", block)
+        assert period is not None and evaluation_periods is not None
+        period_s = int(period.group(1))
+        product = period_s * int(evaluation_periods.group(1))
+        cap = 86400 if period_s < 3600 else 604800
+        assert product <= cap, (
+            f"aws_cloudwatch_metric_alarm.ducklake_maintenance_gc_ops_liveness: "
+            f"evaluation_periods*period={product}s exceeds the PutMetricAlarm cap ({cap}s for "
+            f"period={period_s}s) -- this apply will be rejected by CloudWatch (rec-3881)."
+        )
+
     def test_referenced_missing_alarm_treats_missing_data_as_not_breaching(self) -> None:
         """The BREACH alarm is deliberately the opposite posture: a weekly metric is legitimately
         absent six days in seven, and this alarm is the breach detector, not the liveness detector."""
