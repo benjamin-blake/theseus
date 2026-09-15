@@ -412,27 +412,30 @@ resource "aws_cloudwatch_metric_alarm" "ducklake_maintenance_gc_ops_referenced_m
 # misconfiguration, a permission gap, an exception before any metric emits) is invisible for the
 # whole nine-week observation window this plan exists to open.
 #
-# period=1800 (30 min, < 3600) is a deliberate choice to stay clear of the documented AWS
-# EvaluationPeriods*Period <= 604800s (1 week) cap that applies once period>=3600 (empirically hit
-# by ducklake_catalog_dr.tf's freshness alarm at 192*3600=691200s -- see that file's comment).
-# evaluation_periods=480 * period=1800 = 864000s (10 days) -- deliberately LONGER than this
-# function's own weekly cadence so a single real pass (which always emits GcDeletedSnapshots, even
-# 0, on a successful non-dry-run invocation) always lands inside the window under normal operation,
-# while two consecutive missed weeks still trips it. statistic=SampleCount + datapoints_to_alarm
-# equal to evaluation_periods ("ALL periods breaching") is what makes this a DATAPOINT-COUNT check
-# rather than a value-threshold check: a real pass that legitimately deletes nothing still emits a
-# 0-valued datapoint, which SampleCount still counts as present.
+# CloudWatch enforces TWO separate EvaluationPeriods*Period product caps on PutMetricAlarm
+# (confirmed empirically by rec-3881 -- the prior period=1800 design was rejected at apply):
+# <=86400s (1 day) when period<3600, and <=604800s (1 week) only once period>=3600. The prior
+# version conflated the two and sized 480*1800=864000s against the wrong (looser) ceiling. This
+# version follows ducklake_catalog_dr.tf's freshness-alarm precedent instead: DAILY periods
+# (period=86400, evaluation_periods=7, datapoints_to_alarm=7 -- exactly 604800s, the >=3600
+# ceiling) give the same one-day slack that makes a weekly cadence never false-trip (the run lands
+# in one of 7 daily buckets; max empty run under normal operation is 6 days, never 7-of-7
+# breaching -- see that file's comment for the full argument).
+# statistic=SampleCount + datapoints_to_alarm equal to evaluation_periods ("ALL periods breaching")
+# is what makes this a DATAPOINT-COUNT check rather than a value-threshold check: a real pass that
+# legitimately deletes nothing still emits a 0-valued datapoint, which SampleCount still counts as
+# present -- Sum would misread that same 0-valued datapoint as absence.
 # ---------------------------------------------------------------------------
 
 resource "aws_cloudwatch_metric_alarm" "ducklake_maintenance_gc_ops_liveness" {
   alarm_name          = "ducklake-maintenance-gc-ops-liveness"
-  alarm_description   = "DuckLake production gc_ops pass never ran: no GcDeletedSnapshots datapoint in 10 days (weekly cadence + buffer). T2.18 / production-gc-and-storage-stability."
+  alarm_description   = "DuckLake production gc_ops pass never ran: no GcDeletedSnapshots datapoint in 7 days (weekly cadence). T2.18 / production-gc-and-storage-stability."
   comparison_operator = "LessThanThreshold"
-  evaluation_periods  = 480
-  datapoints_to_alarm = 480
+  evaluation_periods  = 7
+  datapoints_to_alarm = 7
   metric_name         = "GcDeletedSnapshots"
   namespace           = "DuckLakeMaintenance"
-  period              = 1800
+  period              = 86400
   statistic           = "SampleCount"
   threshold           = 1
 
