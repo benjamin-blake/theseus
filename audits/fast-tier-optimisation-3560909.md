@@ -389,13 +389,49 @@ or test was changed.
 | `validate_raises_discrimination` | It enumerates the same 684 tests in 4-5ms, reads them in 0.082s and parses them in 1.161s in the static-sequence profile; no subprocess runs. Three direct runs put import-alias resolution over 684 files at 0.539s median, binding discovery over 340 pytest-importing files at 0.364s and scope enumeration over those files at 0.330s. The remaining time is per-scope site classification and report emission. | The complete `scanned` / `hits` / `directories` census and `examined` accounting are emitted artifacts; a diff-only Class 1 scan would change them. Class 2 AST/text reuse with test-count coupling is possible, but the global census and site classification are required. |
 
 These four **gross** check clocks total 19.373s, roughly two-thirds of a ~30s low-breadth
-static half; that total is not an achievable saving. Even eliminating every second of it
-would be within the controlled broad-run `--pre` range
-of 83s; the measured reusable portions are smaller. No accept/abandon conclusion for these
+static half; that total is not an achievable saving. Even eliminating every second of it would
+be within the controlled broad-run `--pre` range of 83s; the measured reusable portions are
+smaller. No accept/abandon conclusion for these
 checks follows on that broad, red regime. The CI run did **not** supply a comparable
 low-breadth noise floor, so a 3-4s static target on a 35-77s PR cannot be judged against
 the old cross-case 10.5s figure or against this broad-run 83s range. This is location and
 route classification only, not a fix proposal or a Candidate 3 start.
+
+## Low-breadth rerun attempt - invalidated by live-base drift
+
+Run [34459640761](https://github.com/benjamin-blake/theseus/actions/runs/34459640761)
+was selected from the Phase 0 low-breadth population. Its first two historical attempts used
+the same `6017e4d4` head / `7fe4a927` PR merge checkout, selected 22 modules, passed 514 tests,
+and recorded `--pre` clocks of 37s and 35s. Their job clocks were 126s and 93s. Two observations
+are insufficient for the requested five-run median/IQR.
+
+One new `pr-validate` rerun was issued through the GitHub connection. It checked out the same
+`7fe4a927` merge commit, but selected **437 modules**, failed 47 of 8,582 outcomes in its first
+pytest session, and ended red. Its `--pre` step was 835s and its job was 901s. It is excluded
+from the low-breadth population rather than mixed with the two valid historical attempts.
+Four further reruns were not issued: they would repeat the wrong workload.
+
+This is deterministic base drift, not unexplained runner noise. `ci.yml` checks out full history
+(`fetch-depth: 0`), while `_common.get_changed_files()` and `get_status_aware_diff()` resolve the
+selection against live `origin/main`. At the rerun, `origin/main` was `9dd1648a`; the historical
+merge commit's second parent is `4fb88c1a`. A job rerun preserves the old checkout but does not
+freeze the remote-tracking base. All four offered Phase 0 runs are historical PR checkouts and
+therefore share this moving-base property. The prescribed job-rerun method can no longer recreate
+their original low-breadth workload without changing the workflow or remote base, neither of
+which this session authorizes.
+
+The current recoverable-work estimate is approximately **7.4s**, with **8.624s** as the measured
+small-diff all-reuse ceiling - not the 19.373s gross duration of four checks. The estimate combines
+contract drift's 3.29s repeated module searches and 1.09s identical-text YAML reloads with roughly
+3.0s of repeated parsing in CC, test-count coupling and raises discrimination. It stays below the
+perfect-cache ceiling, which also includes every other identical parse/read, one walk and all git
+calls. Contract drift is the largest single located surface at about **4.38s**.
+
+No accept/null verdict is recorded from this attempt. In particular, this is not a Section 15
+null result: the low-breadth harness did not reject the 7.4s estimate; the requested five-run
+threshold was not produced. Declaring either acceptance or a null result would manufacture the
+missing measurement. Candidate 1 remains abandoned and Candidate 2 remains abandoned as scoped;
+no Candidate 3 or implementation work occurred.
 
 ## Phase 4 evidence
 
