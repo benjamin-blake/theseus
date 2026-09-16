@@ -224,14 +224,16 @@ environment reuse, because it affects only the job clock.
 |---|---|---|---|---|---|---|---|
 | Phase 2 diagnosis only | N/A | Documentation checkpoint before code | 0s | Nothing | Nothing | Diff limited to this findings document | None; candidate rows begin in the implementation phase |
 | Candidate 1 - **ABANDONED**; code retained on branch as phase record | Class 2 - identical work, lower cost | The real primary pytest session suppresses only positively identified excluded-and-absent dependency collection reports, records deferrals through xdist worker output, and rolls back coverage produced while importing a deferred module. The former collect-only implementation remains only as a frozen compatibility surface. | The 3.395s orchestration-remainder saving at 144 modules is real (non-overlapping IQRs), but only 1.3% of the Phase 0 264s `--pre` median. The then-used +/-24s cross-PR comparison was workload variation, not a measured noise floor; CI detectability was not established. The explicit abandonment decision stands on the small measured saving and integration costs. Gross-wall saving is null within spread. | **No test nodes are removed.** On this branch, one collect-only process no longer runs. The corrected committed-ref differ from `9cecaab2` to `015a0240` completed all 16 cases and compared 27,878 union-node observations: zero node-verdict changes, zero gate-verdict changes, and identical deferral maps. `deferred` and `not-collected` remain distinct outcomes in the capture vocabulary. | **No loss is observed.** The differ reports identical executed nodes, per-node verdicts, gate verdicts and deferral maps across the corpus. | The initial checkpoint's 72 fixture-only node changes were corrected in `015a0240` by making the shared subprocess double emit the primary-plugin completion record and carrying both new `_pytest_diff` modules into synthetic verifier fixtures. The mandatory 10-case baseline/candidate mutation probe caught all 10 mutations. The original 102 focused tests passed; the correction's 368-test focused suite passed after the one sandbox-denied Git-worktree test was rerun with permission. Ruff and format checks pass. | Costs outweigh this small local saving: rewrite of the fail-closed classification path, permanently frozen `_pytest_diff_collect.py` compatibility surface, test-double changes across the suite, rebase conflict in `_pytest_diff.py` after main also modified it, and a full corpus re-proof because all requirements files and the derived heavy-dependency deferral set moved. Do not integrate Candidate 1; no code revert or rebase in this session. |
-| Candidate 2 - **ABANDONED AS SCOPED**; broader static reuse remains open | Class 2 proposal only; not implemented | Share the SLOC/CC gated-file walk and reuse CC's repeated AST parses and source reads within a run. | No achieved saving. The generous SLOC/CC-first ceiling is 2.153s on the branch diff and 1.463s on a single-test diff; it includes one walk, all CC repeated parse/read time, and even all git-call time. The walk alone costs only 15-23ms. | Nothing; no Candidate 2 code changed. | Nothing. | Clean-tree runtime profile: two 984-file `iter_gated_py_files()` calls in normal `--pre`, not four; CC repeated 948 parses costing 1.774s on the branch diff. Full measurement below. | The diagnosed narrow walk/CC sharing is not worth implementing at this measured magnitude. This decision does not abandon run-scoped static reuse as a concept; the broader concept remains open; the controlled five-run spread below covers only a broad, red workload, not low-breadth CI. |
+| Candidate 2 - **ABANDONED AS SCOPED**; broader static reuse resolved separately below | Class 2 proposal only; not implemented | Share the SLOC/CC gated-file walk and reuse CC's repeated AST parses and source reads within a run. | No achieved saving. The generous SLOC/CC-first ceiling is 2.153s on the branch diff and 1.463s on a single-test diff; it includes one walk, all CC repeated parse/read time, and even all git-call time. The walk alone costs only 15-23ms. | Nothing; no Candidate 2 code changed. | Nothing. | Clean-tree runtime profile: two 984-file `iter_gated_py_files()` calls in normal `--pre`, not four; CC repeated 948 parses costing 1.774s on the branch diff. Full measurement below. | The diagnosed narrow walk/CC sharing is not worth implementing at this measured magnitude. This scoped decision did not itself abandon run-scoped static reuse as a concept; the current-base low-breadth experiment below separately resolves the broader line. |
+| Static-reuse continuation - **NULL RESULT** | Class 2 proposal only; not implemented | Reuse identical source parses, registered-check module searches and identical-text contract YAML loads across the static checks. | Approximately 7.4s realistically recoverable, bounded by an 8.624s impossible all-reuse ceiling on the small-diff profile. Both are inside the current-base low-breadth `--pre` IQR width of 11s. | Nothing; no implementation was made. | Nothing. | Five sequential green reruns of a current-base, one-test-file draft PR selected exactly one module every time. The `--pre` median was 41s, IQR 30-41s and full range 27-41s. | Section 12 makes the timing claim null. The 8.624s ceiling is the largest proposed static-reuse change the harness rejected; no target advances to implementation. |
 
 The Candidate 1 row originally used roughly +/-24s as a "CI noise floor"; that label is corrected
 in the row above. Those clocks came from three different PRs with different selection breadths:
 workload variation, not same-workload run-to-run noise. This correction does not reverse or re-measure the
 user's **ABANDONED** decision for Candidate 1; its measured local saving and integration costs
 remain recorded above. The Candidate 2 scoped abandonment also stands as a user decision about
-the measured narrow ceiling, not a claim that cross-case spread is a detection threshold.
+the measured narrow ceiling, not a claim that cross-case spread is a detection threshold. The
+broader static-reuse line is resolved separately by the current-base experiment below.
 
 ## Candidate 1 timing row - fixed-tree local attribution
 
@@ -332,42 +334,25 @@ different selections and is **workload variation, not a CI noise floor**. The si
 perfect-cache ceiling is 8.624s, or 11.2-24.6% of those total clocks; that comparison gives
 relative magnitude, not detectability. Candidate 2 is **ABANDONED AS SCOPED** per the user's
 decision: the specific SLOC/CC-first ceiling of 1.463-2.153s is not worth implementing. Broader
-run-scoped static reuse remains open. No Candidate 2 implementation, rebase, or Candidate 3 work
-occurred.
+run-scoped static reuse remained open at this checkpoint and is resolved by the current-base
+experiment below. No Candidate 2 implementation, rebase, or Candidate 3 work occurred.
 
-## Controlled same-SHA CI spread - profile-only
+## Historical rerun artifact - invalid noise measurement
 
 The historical PR #1131 `ci.yml` run [34763691328](https://github.com/benjamin-blake/theseus/actions/runs/34763691328)
-has head `9cecaab2` and checks out the fixed PR merge tree `41e4d9a8`. A full-run
-`gh run rerun` request was denied by the CLI integration (`Resource not accessible by
-integration`), so the repository's GitHub connection re-ran only its `pr-validate` job. Five
-new attempts (2-6) were issued **sequentially**; none was cancelled by the workflow's
-cancel-in-progress setting. Main stayed at `9dd1648a` throughout. Every new attempt selected
-the same **424** test modules and reported the same two pytest summaries: 48 failed / 8,376
-passed / 1 skipped, then 1 failed / 8,027 passed / 1 skipped. All five jobs ended red. Raw
-timestamps and logs remain in gitignored `logs/debug/`, not this findings document.
+originally selected two test modules at head `9cecaab2`; five later job reruns selected 424 modules,
+ended red and produced an 83s `--pre` range. That range is **invalid as a noise-floor measurement**.
+The fixed historical checkout did not freeze the comparison base: selection resolves the pinned head
+against live `origin/main`, which had moved far beyond the base used by the original run. The resulting
+424-module workload was almost certainly the same live-base drift artifact later demonstrated directly
+by the attempted 22-module Phase 0 rerun below, not evidence that the original workload was genuinely
+broad.
 
-| New attempt | `--pre` step clock (s) | `pr-validate` job clock (s) |
-|---:|---:|---:|
-| 2 | 813 | 879 |
-| 3 | 882 | 943 |
-| 4 | 883 | 938 |
-| 5 | 884 | 937 |
-| 6 | 801 | 870 |
-| Median | **882** | **937** |
-| Q1-Q3 (median of the lower/upper two) | 807-883.5 | 874.5-940.5 |
-| Min-max (range) | 801-884 (83) | 870-943 (73) |
-
-The original 2026-09-13 attempt on the same checkout selected **two** test modules and ran
-`--pre` in 40s; it is excluded from this population. The checkout SHA is fixed, but the
-validator resolves `origin/main` at run time. Main advanced between the original run and
-these reruns, turning today's diff into a 424-module workload. It did not advance **between**
-the five new attempts. Thus the 83s step range and 73s job range are genuine same-workload
-CI variation for this **broad, red** regime, including two markedly faster step clocks
-(801/813s) and three clustered clocks (882-884s). They are not a universal detection
-threshold, and in particular do not measure low-breadth 35-77s runs. The earlier +/-24s and
-10.5s cross-case figures must not be used as noise floors. No candidate timing or Phase 4
-acceptance claim is inferred from these reruns.
+Historical CI runs are therefore not re-runnable experiments in this repository. Re-running a job
+preserves its head or merge checkout but recomputes selection against live `origin/main`; once main has
+moved, both selection breadth and downstream failure/output work can change. Neither the 83s range from
+this artifact nor the earlier +/-24s and 10.5s cross-case spreads are valid detection thresholds. No
+candidate verdict or Phase 4 timing claim uses them.
 
 ## Four additional static checks - location profile only
 
@@ -389,13 +374,11 @@ or test was changed.
 | `validate_raises_discrimination` | It enumerates the same 684 tests in 4-5ms, reads them in 0.082s and parses them in 1.161s in the static-sequence profile; no subprocess runs. Three direct runs put import-alias resolution over 684 files at 0.539s median, binding discovery over 340 pytest-importing files at 0.364s and scope enumeration over those files at 0.330s. The remaining time is per-scope site classification and report emission. | The complete `scanned` / `hits` / `directories` census and `examined` accounting are emitted artifacts; a diff-only Class 1 scan would change them. Class 2 AST/text reuse with test-count coupling is possible, but the global census and site classification are required. |
 
 These four **gross** check clocks total 19.373s, roughly two-thirds of a ~30s low-breadth
-static half; that total is not an achievable saving. Even eliminating every second of it would
-be within the controlled broad-run `--pre` range of 83s; the measured reusable portions are
-smaller. No accept/abandon conclusion for these
-checks follows on that broad, red regime. The CI run did **not** supply a comparable
-low-breadth noise floor, so a 3-4s static target on a 35-77s PR cannot be judged against
-the old cross-case 10.5s figure or against this broad-run 83s range. This is location and
-route classification only, not a fix proposal or a Candidate 3 start.
+static half; that total is not an achievable saving. The measured reusable portions are smaller.
+No accept/abandon conclusion follows from either historical rerun because live-base drift invalidated
+their workloads. A 3-4s static target on a 35-77s PR cannot be judged against the old cross-case 10.5s
+figure or the invalid 83s broad-run range. This is location and route classification only, not a fix
+proposal or a Candidate 3 start.
 
 ## Low-breadth rerun attempt - invalidated by live-base drift
 
@@ -433,9 +416,48 @@ threshold was not produced. Declaring either acceptance or a null result would m
 missing measurement. Candidate 1 remains abandoned and Candidate 2 remains abandoned as scoped;
 no Candidate 3 or implementation work occurred.
 
+## Current-base low-breadth CI noise and Section 15 verdict
+
+Draft PR [#1201](https://github.com/benjamin-blake/theseus/pull/1201) was created from current
+`origin/main` at `9dd1648a2bc2296d2a2153f21ae3e245e259ab64`. Its only change was a comment in
+`tests/test_syspath_hygiene.py`. The initial qualifying run was green and selected exactly that one
+module. Five subsequent `pr-validate` job reruns of workflow run
+[35094004335](https://github.com/benjamin-blake/theseus/actions/runs/35094004335) were issued
+sequentially through the GitHub connection. All five were green, selected exactly
+`tests/test_syspath_hygiene.py`, and passed the same nine tests. `origin/main` was still the exact
+starting SHA after the fifth rerun, so the comparison base and workload did not drift.
+
+| Clock | Five reruns in attempt order (s) | Median (s) | Q1-Q3 (width; % median) | Min-max (width; % median) |
+|---|---|---:|---:|---:|
+| `--pre` step | 33, 41, 41, 41, 27 | **41** | 30-41 (11; 26.8%) | 27-41 (14; 34.1%) |
+| `pr-validate` job | 89, 95, 115, 119, 95 | **95** | 92-117 (25; 26.3%) | 89-119 (30; 31.6%) |
+
+Quartiles use the same median-of-the-lower/upper-two convention as the other five-run tables.
+The absolute low-breadth `--pre` detection threshold is therefore an 11s IQR width, with a 14s
+full range. Relative to the median those spreads are 26.8% and 34.1%; the corresponding job-clock
+spreads are 25s / 26.3% and 30s / 31.6%. The initial qualifying run is excluded from these five-rerun
+statistics.
+
+The realistic recoverable-work estimate remains approximately **7.4s**. Its basis is contract
+drift's 3.29s of repeated registered-module searches plus 1.09s of identical-text YAML reloads,
+and roughly 3.0s of repeated parsing across CC, test-count coupling and raises discrimination.
+Contract drift is the largest single target at approximately **4.38s**. The four checks' 19.373s
+gross clock is not a saving estimate. The small-diff impossible-perfect-reuse ceiling is
+**8.624s**.
+
+This optimisation line is a **Section 15 NULL RESULT**. Both the 7.4s realistic estimate and the
+8.624s all-reuse ceiling fall below the measured 11s `--pre` IQR width and inside the 14s full
+range. The 8.624s ceiling is the largest change the harness rejected: although it is 21.0% of the
+41s median, it is below the same-workload spread on the authoritative CI surface and therefore
+cannot satisfy section 12's evidence bar. Candidate 1's 3.395s orchestration-remainder saving is
+smaller still. No static-reuse target advances to implementation, and Candidate 3 was not started.
+
+The measurement PR was closed without merge, and its local and remote throwaway branches were
+deleted after collection.
+
 ## Phase 4 evidence
 
-Pending candidate implementation and A/B evidence.
+Not entered. The Phase 3 optimisation line ended in the Section 15 null result above.
 
 ## DEVIATIONS
 
