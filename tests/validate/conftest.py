@@ -17,27 +17,10 @@ selected check's real body from running -- that still needs an explicit
 from __future__ import annotations
 
 from collections.abc import Iterable
-from unittest.mock import patch
 
 import pytest
 
 from tests.fixtures.pre_sequence_stub import select_steps
-
-
-@pytest.fixture(autouse=True)
-def primary_capture_stub(request):
-    """Unit-level subprocess doubles in the pytest-diff tests do not execute the real plugin."""
-    if request.module.__name__ not in {
-        "tests.validate.test_pytest_diff",
-        "tests.validate.test_pytest_diff_coverage",
-        "tests.validate.test_pytest_diff_reactive",
-    }:
-        yield
-        return
-    from scripts.checks import _pytest_diff_primary  # noqa: PLC0415
-
-    with patch.object(_pytest_diff_primary.PrimaryCapture, "read", return_value={}):
-        yield
 
 
 @pytest.fixture(scope="package")

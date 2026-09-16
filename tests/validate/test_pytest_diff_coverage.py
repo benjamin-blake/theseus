@@ -82,12 +82,10 @@ class TestDeferralMapStateClassification:
 
     def test_all_files_deferred_writes_that_state(self) -> None:
         test_file = "tests/test_heavy.py"
-        calls: list[list[str]] = []
 
         def mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
-            calls.append(list(cmd))
             result = MagicMock()
-            result.returncode = 5
+            result.returncode = 2
             result.stdout = _collect_error_block(test_file, "duckdb")
             result.stderr = ""
             return result
@@ -96,14 +94,9 @@ class TestDeferralMapStateClassification:
             patch("scripts.checks._pytest_diff._write_deferral_map") as mock_write,
             patch("scripts.checks._common.run", side_effect=mock_run),
             patch("importlib.util.find_spec", return_value=None),
-            patch(
-                "scripts.checks._pytest_diff_primary.PrimaryCapture.read",
-                return_value={test_file: "duckdb"},
-            ),
         ):
             run_pytest_diff([test_file], [])
         mock_write.assert_called_once_with(STATE_ALL_DEFERRED, {test_file: "duckdb"})
-        assert len([cmd for cmd in calls if "pytest" in cmd]) == 1
 
     def test_clean_pass_writes_ok_state(self) -> None:
         def mock_run(cmd: list[str], **kwargs: object) -> MagicMock:
