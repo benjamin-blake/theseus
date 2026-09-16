@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+# Comment-only change for the low-breadth CI timing experiment.
 ROOT = Path(__file__).parent.parent
 
 _MODULES = [
