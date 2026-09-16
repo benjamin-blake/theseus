@@ -2,6 +2,85 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 193: G4 sizes strictly from a declared source and bounds the post-expiry set; an over-budget pass drains partially instead of deferring wholesale (amends Decision 188 clause 2) (Decided)
+
+```yaml
+number: 193
+status: Decided
+decided_date: "2026-09-15"
+amends: [188]
+significance:
+  value: numbered_decision
+  justification: >-
+    Replaces the mechanism Decision 188 cl.2 shipped for G4 (byte-blind for a no-prelude pass,
+    wholesale-defer only) with a strictly stronger one across every destructive GC caller -- a
+    durable, reversal-relevant change to what may be deleted and how a backlog is drained, not a
+    contract-prose edit.
+```
+
+**Status:** Decided
+**Date:** 2026-09-15
+**Warehouse ID:** dec-193
+
+**Problem:**
+Decision 188 cl.2 sized G4 from a live inventory captured before a prelude could supersede a
+candidate. `gc_ops` runs no prelude by design (rec-3762), so every candidate is already
+superseded and the catalog-live-set join sizes to zero -- G4's byte half is inert; only the
+file-count half binds (rec-3871, recorded as a limitation in Decision 192 pt 5). G4 also evaluated
+the PRE-expiry candidate set: on a never-expired production catalog, neither G1's pre-check nor
+G4's bound covered what cleanup/orphan deletion actually deletes post-expiry. A measured
+production reading (2026-09-15T16:09Z, GcWouldDeleteFiles 23,476 > G4_MAX_DELETE_FILES 20,000)
+showed the wholesale-defer branch would reclaim NOTHING on the first real pass, against a 17.3x GC
+debt ratio -- rec-3888's own disposition rule ("if the backlog fits comfortably, close it
+satisfied") resolves the other way on that reading.
+
+**Decision:**
+1. G4's byte source is the CALLER'S DECLARED size source (`candidate_size_source`, required
+   keyword-only on `run_guarded_gc`), never a prelude-relative live inventory; both destructive
+   callers pass a pre-pass ListObjectsV2-derived map. `size_candidates(paths, size_source, *,
+   strict_sizes)` performs the join: `strict_sizes=True` raises naming the unsized path -- no
+   destructive path sizes an unmeasurable candidate as 0 (Decision 163: the exception-path-removal
+   instrument). The one non-strict arm is `gc_ops`'s dry_run measurement path, which deletes
+   nothing.
+2. G4 evaluates the POST-EXPIRY candidate set: `run_guarded_gc` re-probes after
+   `expire_snapshots`; G1's pre-check (against the reused pre-expiry live read) and G4's
+   over-budget decision both move to it. G1's post-destructive re-check moves to the ADMITTED
+   (post-drain) set intersected with a fresh live read -- what was actually deleted, which differs
+   from the post-expiry set under a drain.
+3. An over-budget pass DRAINS (rec-3888) rather than always deferring wholesale: bracket the grace
+   ladder (7/14/30/60/90/180/365 days) youngest-first, bisect inside the bracket (<= 8 probes) for
+   the youngest cutoff admitting a positive count under both caps, and REQUIRE that count be
+   positive -- a cutoff fitting only by admitting zero (a backlog clustered between two rungs) is
+   no fit, never a silent zero-file "drain". The cutoff is passed to the destructive wrappers as an
+   explicit `older_than` (refused, not clamped, below `FILE_CLEANUP_GRACE_DAYS`); with no fitting
+   cutoff, the pass defers wholesale as before.
+4. `guard_stats` renames `g1_would_delete_candidates` to `pre_expiry_would_delete_candidates` (no
+   G1 check consumes the pre-expiry count once both moved off it) and adds
+   `post_expiry_would_delete_candidates` and `g4_drain_cutoff_days` (null on a wholesale defer).
+   `g4_bounded` is true on BOTH a partial drain and a wholesale defer, false only when no walk was
+   needed. `gc_ops` dry_run additionally reports top-level `unsized_candidates` (non-strict) and
+   `drain_probe_counts` (a read-only run of the same ladder; PRE-expiry, so necessary-not-sufficient)
+   -- guard_stats stays null in that mode. Also closes rec-3876: `gc_ops` drops the `else 0.0`
+   GcDebtRatio substitution and wraps `gc_debt_ratio`'s `ValueError` in `DuckLakeMaintenanceError`
+   so the admin handler's typed except chain and breaker metric catch it.
+
+**Rationale:**
+A byte cap sized from data that structurally reads zero for the candidates it exists to bound is
+not a safety property -- the defect class Decision 188 replaced the retired breaker for. Bounding
+the pre-expiry set left a real gap on a never-expired catalog, the production case. A guard whose
+only over-budget response is "defer everything, forever" cannot license a schedule against a
+backlog already measured over cap. The positivity requirement is load-bearing: without it, "the
+oldest cutoff that fits" is trivially satisfied by deleting nothing, reproducing the stall this
+decision removes one rung out.
+
+**Related:** Decision 188 (cl.2 replaced for G4; G1/G2/G3 unchanged), Decision 192 (pt 5
+discharged), Decision 163, Decision 181 (never-weaken), Decision 55, Decision 100, Decision 177
+(dated appends above), Decision 167. Roadmap: T2.18 c2 (unaffected), rec-3894/3895/3896 (live
+successor ids, closed by this plan), rec-3871/3876/3888 (superseded -- falsely auto-closed by an
+earlier plan merge), rec-3892 (standing catalog/storage-inconsistency suspect, stays open).
+
+---
+
 ## Decision 192: Production destructive GC is licensed by a safety invariant that can see over-reclaim, not by a storage-size trend (Decided)
 
 ```yaml
@@ -19,6 +98,12 @@ significance:
 **Status:** Decided
 **Date:** 2026-09-15
 **Warehouse ID:** dec-192 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+> **Amended by Decision 193 (2026-09-15):** clause 5's recorded G4 byte-half limitation is
+> DISCHARGED, not merely recorded: G4 now sizes strictly from a pre-pass storage listing (never
+> the catalog live set) and bounds the POST-expiry candidate set, and an over-budget pass drains
+> partially at the youngest cutoff admitting a positive count under both caps rather than always
+> deferring the whole pass.
 
 **Problem:**
 T2.18 c2 required "S3 storage confirmed stable after N maintenance cycles". That text does not adjudicate: it is satisfied by a job that deletes the whole prefix (storage falls, so over-reclaim is invisible to a bytes-only metric), and it is unmeasurable -- the data-lake bucket holds 12+ unrelated prefixes, and absolute storage on an ingesting lakehouse is not supposed to be stable regardless of GC correctness. A draft of the licensing plan also proposed a `gc_ops` cell on the `maintenance_policy` matrix (Decision 191) before establishing that the matrix's sole consumer (`scope.resolve_scope`) has no per-table dimension for a catalog-wide verb.
@@ -312,6 +397,12 @@ significance:
 **Status:** Decided
 **Date:** 2026-09-13
 **Warehouse ID:** dec-188
+
+> **Amended by Decision 193 (2026-09-15):** G4's byte source (clause 2) is replaced -- it now
+> sizes strictly from the caller's declared size source, never a prelude-relative live inventory,
+> and bounds the POST-expiry candidate set; an over-budget pass drains partially before deferring
+> wholesale. G1-G3 and the rest of clause 2 (reachability before/after, retention floor, catalog
+> sanity) are unchanged.
 
 **Problem:**
 Decision 81 clause 6's GC circuit breaker aborts a pass that would delete >20% of tracked files or
