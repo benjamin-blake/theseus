@@ -522,12 +522,20 @@ verification_plan:
     phase: pre-deploy
     action: >-
       The acceptance grep half of BOTH bundled guard recs -- rec-3871's byte-source, strictness and
-      post-expiry surfaces, and rec-3888's `drain`. Positive greps only (Decision 189: a negated rg
-      exits 2 on no-match and reads as a false green).
-    command: grep -q "candidate_sizes" src/common/ducklake_maintenance_ops.py && grep -q "strict_sizes" src/common/ducklake_maintenance_ops.py && grep -q "post_expiry" src/common/ducklake_maintenance_ops.py && grep -q "drain" src/common/ducklake_maintenance_ops.py
+      post-expiry surfaces, and rec-3888's drain half. Positive greps only (Decision 189: a negated
+      rg exits 2 on no-match and reads as a false green). The fourth grep prints its match rather
+      than suppressing it; see `expected` for why that is load-bearing.
+    command: grep -q "candidate_sizes" src/common/ducklake_maintenance_ops.py && grep -q "strict_sizes" src/common/ducklake_maintenance_ops.py && grep -q "post_expiry" src/common/ducklake_maintenance_ops.py && grep -o -m1 "drain" src/common/ducklake_maintenance_ops.py
     expected: >-
-      exit 0; all four tokens present in the guard module -- rec-3871's three acceptance tokens plus
-      rec-3888's own `drain` half, which its filed acceptance greps for.
+      exit 0, with `drain` printed on stdout -- all four tokens present in the guard module,
+      rec-3871's three acceptance tokens plus rec-3888's own half, which its filed acceptance greps
+      for. CAUTION FOR ANY FUTURE EDIT OF THIS FIELD: validate_vp_replay's green-after leg
+      (validate_vp_replay.py:416) requires EVERY backtick-quoted literal in this text to appear
+      verbatim in the replayed command's captured stdout+stderr, so drain is the only token that may
+      carry backticks here -- it is the one the command actually prints. Quoting a flag or any other
+      token in this field silently adds an unsatisfiable assertion. The fourth grep prints its match
+      from the file instead of suppressing it, which is why the evidence is file-derived rather than
+      an echo asserting its own premise; see the amendment note at the end of this plan.
     fix_if: >-
       Non-zero exit means the sizing helper, its strictness argument or the post-expiry probe is
       missing or was reverted. Do not satisfy the grep with a comment mentioning the tokens.
@@ -1073,3 +1081,17 @@ rollback: >-
 # plainly that no work was done. This plan's bundled_recommendations, VP12, acceptance criterion and
 # execution step now name the live ids. The Resolves: trailer belongs on the IMPLEMENTATION
 # squash-merge, never on the plan merge -- see docs/contracts/git-ops.yaml.
+
+# --- Post-merge amendment 2026-09-16 (VP1 replay defect) ---
+# VP1 was authored with four `grep -q` invocations while its `expected` backtick-quoted `drain`.
+# validate_vp_replay's green-after leg (validate_vp_replay.py:416) requires every backtick literal
+# in `expected` to appear in the replayed command's stdout+stderr, and `grep -q` emits nothing on
+# success -- so VP1 passed the plan-only red-before leg (exit 1, assertion_failed) and was
+# structurally unsatisfiable on the implement leg. The defect was latent because neither leg that
+# would catch it fires until implementation_declared is newly true in a diff, which no session had
+# done. Surfaced by the implementing agent on agent/great-clarke-ur9yhe, which correctly refused to
+# self-amend: implement-scope-boundary.yaml lists verification_plan[].command and [].expected in
+# sanction_rows.implementing_plan_bookkeeping.prohibited_field_edits for a resolved plan, and its
+# amendment_procedure requires the amendment to land as its own reviewed PR first.
+# The fourth grep is now `-o -m1`, printing the matched token from the file. implementation_declared
+# is deliberately NOT set here -- that is the implementing diff's act, not this amendment's.
