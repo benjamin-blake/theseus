@@ -86,7 +86,7 @@ def action_gc(event: dict[str, Any], con: Any) -> dict[str, Any]:
         rt.write_scd2(con, {"rec_id": "rec-gc-smoke-seed", "payload": "gc-smoke-seed"})
 
     t0 = time.perf_counter()
-    result = maint.run_gc(con, _SCOPE_TABLES)
+    result = maint.run_gc(con, _SCOPE_TABLES, data_path=DATA_PATH)
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     result["elapsed_ms"] = round(elapsed_ms, 2)
 

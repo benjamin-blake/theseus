@@ -93,12 +93,25 @@ verbs:
       event envelope {action: "gc", force_recreate_tables?}.
       SCHEDULED (EventBridge weekly 05:00 UTC Sun, smoke catalog). Weekly guarded GC (five-step
       sequence); protected by the G1-G4 fail-closed guard set (reachability, retention floor,
-      catalog sanity, an absolute per-pass deletion bound).
+      catalog sanity, an absolute per-pass deletion bound). run_gc's G4 sizing posture (Decision
+      193): it builds a storage-derived {path: bytes} map via an injectable list_storage seam
+      (defaults to a real ListObjectsV2 walk of the handler's DATA_PATH) and passes it as G4's
+      REQUIRED candidate_size_source -- never the catalog live set, which structurally sizes every
+      would-delete candidate to zero. Sizing is always STRICT on this destructive path: an unsized
+      candidate raises rather than sizing to 0.
     response_codes:
-      200: "gc complete; body {ok, files_before, files_after, snapshots_expired, files_cleaned, orphans_deleted, guard_stats, elapsed_ms}"
-      500: "DuckLakeMaintenanceError (G1/G2/G3 guard-set trip; deletes nothing) / DuckLakeRuntimeError / VersionMismatchError"
+      200: >-
+        gc complete; body {ok, files_before, files_after, snapshots_expired, files_cleaned,
+        orphans_deleted, guard_stats, elapsed_ms}. guard_stats carries the renamed/added keys (see
+        the gc_ops verb below for the authoritative key list -- both verbs share run_guarded_gc's
+        guard_stats shape).
+      500: >-
+        DuckLakeMaintenanceError (G1/G2/G3 guard-set trip, or a G4 strict-sizing raise naming an
+        unsized would-delete candidate; deletes nothing) / DuckLakeRuntimeError / VersionMismatchError
     typed_errors:
-      breaker: "G1 reachability, G2 retention-floor, or G3 catalog-sanity guard trip; emits MaintenanceBreakerTrip=1; deletes nothing (500)"
+      breaker: >-
+        G1 reachability, G2 retention-floor, or G3 catalog-sanity guard trip, or a G4 strict-sizing
+        raise; emits MaintenanceBreakerTrip=1; deletes nothing (500)
       runtime: "runtime loud-fail (500)"
       version_mismatch: "DuckDB/extension version mismatch (500)"
   hot_merge:
@@ -167,30 +180,60 @@ verbs:
       DISABLED, enabled only after the baseline gate clears and the governed CD deploy is green) AND
       human-invokable. Production destructive-GC pass (src/common/ducklake_gc_ops.py): a universal
       catalog live-set collection (every table, no policy input, never scope.resolve_scope), no
-      per-table prelude (merge_ops already compacts every table 6-hourly), then run_guarded_gc
-      UNMODIFIED (the G1-G4 fail-closed guard set, Decision 188) followed by an INDEPENDENT
-      referenced-missing safety check against a real ListObjectsV2 storage listing and a
-      value-scanning read-path re-read at the pass-start catalog snapshot id. dry_run=true performs
-      NO deletion and NO write of any kind -- it still computes and emits GcReferencedMissing and
-      GcWouldDeleteFiles from the read-only dry-run primitives, so the baseline safety gate can be
-      taken without running the destructive pass it exists to gate.
+      per-table prelude (merge_ops already compacts every table 6-hourly), a PRE-PASS storage
+      listing (taken here, in dry_run too, catalog-first/storage-second at both read pairs --
+      Decision 192 pt 3) passed as G4's REQUIRED candidate_size_source, then run_guarded_gc
+      UNMODIFIED (the G1-G4 fail-closed guard set, Decision 188, amended by Decision 193: G4 sizes
+      STRICT from the declared source and bounds the POST-expiry candidate set, draining partially
+      or deferring wholesale over budget) followed by an INDEPENDENT referenced-missing safety
+      check against the same storage listing (re-taken post-pass) and a value-scanning read-path
+      re-read at the pass-start catalog snapshot id. dry_run=true performs NO deletion and NO write
+      of any kind (a LIST is a read) -- it still computes and emits GcReferencedMissing and
+      GcWouldDeleteFiles (pre-expiry, from the same local probe as always) from the read-only
+      dry-run primitives, plus reports would_delete_bytes (re-sourced from storage, never the dead
+      catalog-live-set join), unsized_candidates, and drain_probe_counts (a read-only run of the
+      same bracketing ladder G4's drain walk uses), so the baseline safety gate -- and now a
+      byte-and-drain-aware pre-enablement canary -- can be taken without running the destructive
+      pass it exists to gate.
     response_codes:
       200: >-
         pass complete (or dry-run measurement complete); body {ok, action, dry_run, tables,
-        snapshot_id, would_delete_files, would_delete_bytes, referenced_missing, snapshots_expired,
-        files_cleaned, orphans_deleted, guard_stats, debt_ratio, storage_bytes, live_bytes,
-        storage_objects, read_path}. guard_stats and read_path are null when dry_run=true (no
-        destructive call and no post-pass read-path scan are issued in that mode).
+        snapshot_id, would_delete_files, would_delete_bytes, unsized_candidates,
+        drain_probe_counts, referenced_missing, snapshots_expired, files_cleaned, orphans_deleted,
+        guard_stats, debt_ratio, storage_bytes, live_bytes, storage_objects, read_path}. guard_stats
+        and read_path are null when dry_run=true (no destructive call and no post-pass read-path
+        scan are issued in that mode); drain_probe_counts is null when dry_run=false (it is a
+        dry-run-only measurement, a {days: {files, bytes}} map keyed by the drain ladder's rungs,
+        PRE-expiry since dry_run runs no expire_snapshots -- a NECESSARY, not sufficient, signal
+        that a real pass would drain). would_delete_bytes and unsized_candidates are populated in
+        BOTH modes, sourced from the pre-pass storage listing via a non-strict size_candidates call
+        (an unsized candidate is counted, never raised, at this top-level local probe -- see
+        typed_errors for the destructive path's strict counterpart). guard_stats (non-null,
+        dry_run=false) carries pre_expiry_would_delete_candidates (renamed from
+        g1_would_delete_candidates -- no guard named G1 consumes the pre-expiry count once both G1
+        checks moved to post-expiry/admitted sets), post_expiry_would_delete_candidates (new: the
+        full post-expiry count, what G4 decided against), g4_drain_cutoff_days (new: the selected
+        cutoff in days, null on a wholesale defer, equal to the configured grace when no drain was
+        needed, always >= file_cleanup_grace_days otherwise), plus the existing
+        g2_snapshots_remaining / g4_would_delete_files / g4_would_delete_bytes /
+        g4_deferred_files / g4_deferred_bytes / g4_bounded (g4_bounded is true in BOTH a partial
+        drain and a wholesale defer, false only when no walk was needed; g4_would_delete_* and
+        g4_deferred_* now describe the ADMITTED post-drain set and its remainder, not the
+        pre-drain whole-pass split).
       500: >-
-        DuckLakeMaintenanceError: a G1/G2/G3 guard-set trip (run_guarded_gc, non-dry-run only), a
-        non-empty referenced_missing set (over-reclaim signal -- raised in BOTH dry_run and
-        non-dry_run modes, after GcReferencedMissing is emitted), or a verify_read_path scan
-        failure (a referenced Parquet object missing from storage) / DuckLakeRuntimeError (missing
-        or non-s3 data_path, missing meta_schema, no tables discovered) / VersionMismatchError.
+        DuckLakeMaintenanceError: a G1/G2/G3 guard-set trip or a G4 STRICT-sizing raise naming an
+        unsized would-delete candidate (run_guarded_gc, non-dry-run only -- the destructive path
+        never sizes a candidate as 0 by omission), a non-empty referenced_missing set (over-reclaim
+        signal -- raised in BOTH dry_run and non-dry_run modes, after GcReferencedMissing is
+        emitted), gc_debt_ratio raising on live_bytes <= 0 (rec-3876: no longer silently reported
+        as GcDebtRatio=0.0), or a verify_read_path scan failure (a referenced Parquet object
+        missing from storage) / DuckLakeRuntimeError (missing or non-s3 data_path, missing
+        meta_schema, no tables discovered) / VersionMismatchError.
     typed_errors:
       breaker: >-
-        G1/G2/G3 guard-set trip, or a non-empty referenced_missing set, or a verify_read_path
-        failure; emits MaintenanceBreakerTrip=1 for a guard-set trip (500)
+        G1/G2/G3 guard-set trip, a G4 strict-sizing raise, a non-empty referenced_missing set, a
+        zero-or-negative live_bytes debt-ratio raise (rec-3876), or a verify_read_path failure;
+        emits MaintenanceBreakerTrip=1 for a guard-set trip or a G4 strict-sizing raise (500)
       runtime: "missing s3:// data_path / meta_schema, or no tables discovered (500)"
       version_mismatch: "DuckDB/extension version mismatch (500)"
   catalog_reinit:
@@ -282,4 +325,27 @@ amendment_log:
       dry_run=true (read-only measurement, no destructive call). gc_ops never reads
       maintenance_policy or calls scope.resolve_scope -- a catalog-wide destructive verb takes no
       per-table policy cell.
+  - date: "2026-09-15"
+    semantic_break: true
+    change_class: field_add
+    summary: >-
+      g4-byte-source-and-post-expiry-bound (Decision 193, amends Decision 188 pt 2): a real
+      behaviour change to both gc and gc_ops, not prose-only. G4's byte half is no longer inert --
+      it sizes STRICTLY from the caller's declared size source (a storage listing for both verbs
+      now, via run_gc's new list_storage seam and gc_ops's pre-pass listing), never the catalog
+      live set, and an unsized destructive candidate raises rather than sizing to 0. G4 now bounds
+      the POST-expiry candidate set, and an over-budget pass drains partially at the youngest
+      cutoff admitting a positive count under both caps (never below file_cleanup_grace_days)
+      rather than always deferring the whole pass; a cutoff fitting only by admitting zero is
+      treated as no fit. RENAMED guard_stats key: g1_would_delete_candidates ->
+      pre_expiry_would_delete_candidates (no G1 check consumes the pre-expiry count once both G1
+      checks moved to post-expiry/admitted sets). ADDED guard_stats keys:
+      post_expiry_would_delete_candidates, g4_drain_cutoff_days; g4_bounded's definition widens to
+      cover a partial drain, not only a wholesale defer. ADDED gc_ops top-level dry-run fields:
+      unsized_candidates, drain_probe_counts; would_delete_bytes is re-sourced from storage (was
+      structurally always 0). ADDED gc_ops metrics: GcWouldDeleteFilesPostExpiry, GcDeferredFiles,
+      GcDrainCutoffDays (-1.0 sentinel for a null cutoff). ADDED typed-error semantics: a G4
+      strict-sizing raise is now a breaker-class 500 (emits MaintenanceBreakerTrip=1), and
+      gc_debt_ratio raising on live_bytes <= 0 is now surfaced as a breaker-class 500 instead of
+      being silently reported as GcDebtRatio=0.0 (rec-3876).
 previous_versions: []

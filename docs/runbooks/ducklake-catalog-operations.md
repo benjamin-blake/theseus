@@ -79,6 +79,7 @@ For an ad-hoc inspect from a Python REPL (read-only):
 
 ```python
 from src.common import ducklake_runtime as rt
+
 dsn = rt.fetch_dsn(profile="agent_platform_admin")
 con = rt.open_connection(dsn=dsn, data_path="s3://agent-platform-data-lake/ducklake-neon-smoke/")
 # Inspect catalog metadata (snapshots, files, schema) -- READ ONLY.
@@ -221,27 +222,40 @@ These are module-level constants in `src/common/ducklake_maintenance.py` (guardr
 `src/common/ducklake_maintenance_ops.py` (G3/G4 bounds). They are tunable knobs but NEVER relaxed
 to make a gate pass (Decision 55). Changing them requires a Decision superseding CD.33.
 
-### Fail-closed guard set (T2.18, Decision 188 amending Decision 81 clause 6 / CD.33 H1)
+### Fail-closed guard set (T2.18, Decision 188 amending Decision 81 clause 6 / CD.33 H1; Decision 193 amends G4)
 
 Four guards run PRE- and POST-destructive (src/common/ducklake_maintenance_ops.py), replacing the
 retired file-fraction/byte-budget circuit breaker:
 
 1. **G1 reachability** -- the would-delete set (dry-run `ducklake_cleanup_old_files` +
-   `ducklake_delete_orphaned_files`) and the live set (`ducklake_list_files`) must be disjoint,
-   checked before any destructive `CALL` and re-checked after.
+   `ducklake_delete_orphaned_files`, re-probed AFTER `expire_snapshots`) and the live set
+   (`ducklake_list_files`) must be disjoint. The pre-check runs against the POST-expiry candidate
+   set (checked against the reused pre-expiry live read); the post-destructive re-check runs
+   against the ADMITTED (post-drain) set intersected with a fresh live read -- i.e. what was
+   actually deleted.
 2. **G2 retention floor** -- re-asserts, from a fresh post-expiry read, that `expire_snapshots`
    actually left at least the configured floor of snapshots.
 3. **G3 catalog sanity** -- aborts on an empty live set, or a live-byte drop past an absolute
    bound, after the pass.
 4. **G4 deletion bound** -- an absolute per-pass file-count/byte cap (g4_max_delete_files /
-   g4_max_delete_bytes above); an over-budget pass defers the WHOLE pass (nothing is deleted this
-   run) rather than raising, and reports the deferred count/bytes.
+   g4_max_delete_bytes above), sized STRICTLY from the caller's declared size source (a storage
+   listing, never the catalog live set -- an unsized candidate raises rather than sizing to 0, on
+   every destructive path). Evaluated against the POST-expiry candidate set. An over-budget pass
+   DRAINS at the youngest cutoff (in days, never below `file_cleanup_grace_days`) that admits a
+   positive count under both caps; if no cutoff does, the pass defers the WHOLE pass instead
+   (nothing is deleted this run) and reports the deferred count/bytes.
 
-A G1/G2/G3 violation raises `DuckLakeMaintenanceError` and aborts (no destructive call is issued
-beyond what already ran); on abort, emit `MaintenanceBreakerTrip=1` to the `DuckLakeMaintenance`
-CloudWatch namespace. A G4 violation is different: the whole pass is deferred (nothing is deleted
-this run) but the response is still a 200 -- `MaintenanceBreakerTrip` stays 0, and the deferral is
-visible in the response body's `guard_stats.g4_bounded` / `guard_stats.g4_deferred_files` fields.
+A G1/G2/G3 violation, or a G4 strict-sizing raise (an unsized would-delete candidate), raises
+`DuckLakeMaintenanceError` and aborts (no destructive call is issued beyond what already ran); on
+abort, emit `MaintenanceBreakerTrip=1` to the `DuckLakeMaintenance` CloudWatch namespace. A G4
+over-budget outcome is different: the pass drains partially or defers wholesale (nothing extra is
+deleted beyond the admitted set) but the response is still a 200 -- `MaintenanceBreakerTrip` stays
+0, and the outcome is visible in the response body's `guard_stats.g4_bounded` /
+`guard_stats.g4_deferred_files` / `guard_stats.g4_drain_cutoff_days` fields (`g4_drain_cutoff_days`
+is `null` on a wholesale defer, and the cutoff in days -- always `>= file_cleanup_grace_days` --
+on a drain or a within-budget pass). `gc_ops`'s `GcDrainCutoffDays` CloudWatch metric mirrors this
+as a float, with `-1.0` as the null sentinel (never a real cutoff, since a real one is always `>=
+7`; `0.0` would misread as a cutoff below the floor).
 
 **Reading the alarm (FP-B):** the `ducklake-maintenance-circuit-breaker` CloudWatch alarm fires
 when `MaintenanceBreakerTrip >= 1` in a 5-minute window. As of T2.18 FP-B, `alarm_actions` is
@@ -254,10 +268,24 @@ aws sns list-subscriptions-by-topic \
   --profile agent_platform
 ```
 
-When a guard fires, do NOT relax it to pass. RCA the file accumulation:
-- Is the expiry cutoff too recent (< 30 days)?
-- Did a previous cleanup run fail silently, leaving many expired-but-not-cleaned files?
-- Is there a bug in the orphan path producing large volumes of orphaned files?
+**Triage the trip by cause, not just by the metric.** Four causes exist, and only three are the
+"RCA the file accumulation" case below:
+- **G1/G2/G3 violation** -- RCA the file accumulation: is the expiry cutoff too recent (< 30
+  days)? did a previous cleanup run fail silently, leaving many expired-but-not-cleaned files? is
+  there a bug in the orphan path producing large volumes of orphaned files?
+- **G4 strict-sizing raise (the fourth cause, Decision 193)** -- the error names the unsized path.
+  This is NOT an over-reclaim breach and NOT the file-accumulation triage above: it means the
+  catalog scheduled a path for deletion that the STORAGE listing could not size -- a
+  catalog/storage inconsistency (rec-3892 is the standing suspect for `gc_ops`'s smoke prefix).
+  RCA the inconsistency; never widen the size source to make the raise stop (Decision 55/163) --
+  sizing an unmeasurable candidate as 0 is exactly the silent behaviour this guard replaces. The
+  `gc_ops` dry_run measurement path reports the same condition non-destructively, before this
+  cause can ever fire live: its top-level `unsized_candidates` count (from a non-strict
+  `size_candidates` call, since a dry-run deletes nothing) should read 0 before the weekly
+  destructive schedule is ever enabled -- a non-zero reading is this same catalog/storage
+  inconsistency, caught in advance.
+
+Never relax a guard to pass, on any of the four causes.
 
 ### Manual invoke runbook
 

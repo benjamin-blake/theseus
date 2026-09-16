@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from scripts.ducklake_smoke import core
 from src.common import catalog_dr as _catalog_dr
+from src.common import ducklake_maintenance as maint
 from src.common import ducklake_runtime
 
 
@@ -52,13 +53,15 @@ def lambda_maintenance_merge(*, profile: str | None = None, region: str = "eu-we
 
 _REQUIRED_GUARD_STATS_KEYS = frozenset(
     {
-        "g1_would_delete_candidates",
+        "pre_expiry_would_delete_candidates",
+        "post_expiry_would_delete_candidates",
         "g2_snapshots_remaining",
         "g4_would_delete_files",
         "g4_would_delete_bytes",
         "g4_deferred_files",
         "g4_deferred_bytes",
         "g4_bounded",
+        "g4_drain_cutoff_days",
     }
 )
 
@@ -92,6 +95,16 @@ def lambda_maintenance_gc(*, profile: str | None = None, region: str = "eu-west-
     missing = _REQUIRED_GUARD_STATS_KEYS - set(guard_stats)
     if missing:
         raise core.SmokeTestFailure(f"MAINTENANCE_GC FAIL: guard_stats is missing keys {sorted(missing)}: {body}")
+    cutoff = guard_stats.get("g4_drain_cutoff_days")
+    # NULL-safe: null is the wholesale-defer value (accepted on the smoke path -- the steady-state
+    # smoke catalog has no candidates at all, rec-3892) -- only a non-null cutoff below the grace
+    # floor is a real defect. `None >= N` raises TypeError, so guard the null case explicitly rather
+    # than letting a crash masquerade as a named gate failure.
+    if cutoff is not None and cutoff < maint.FILE_CLEANUP_GRACE_DAYS:
+        raise core.SmokeTestFailure(
+            f"MAINTENANCE_GC FAIL: g4_drain_cutoff_days={cutoff} is below the "
+            f"{maint.FILE_CLEANUP_GRACE_DAYS}-day grace floor: {body}"
+        )
     files_before = body.get("files_before", 0)
     files_after = body.get("files_after", 0)
     if files_before > 0 and files_after > files_before:
