@@ -4,12 +4,26 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
 import yaml
 
 from scripts.checks.deps import fast_tier_mutation_probe as probe
+
+
+def test_tracked_candidate_mutation_anchors_match_current_tree() -> None:
+    repo_root = Path(__file__).resolve().parents[3]
+    probes = probe.load_manifest(repo_root / "scripts/checks/deps/fast_tier_mutations.yaml")
+    assert len(probes) == 10
+    for row in probes:
+        candidate = row["candidate"]
+        subject = repo_root / candidate["subject_path"]
+        assert subject.is_file(), row["id"]
+        assert subject.read_text(encoding="utf-8").count(candidate["find"]) == 1, row["id"]
+        test_file = repo_root / candidate["test_node"].split("::", 1)[0]
+        assert test_file.is_file(), row["id"]
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -80,7 +94,7 @@ def test_manifest_and_mutation_anchors_fail_loudly(tmp_path: Path) -> None:
     invalid.write_text("schema_version: 1\nprobes: []\n", encoding="utf-8")
     with pytest.raises(probe.MutationProbeError, match="non-empty list"):
         probe.load_manifest(invalid)
-    duplicate = {
+    duplicate: dict[str, Any] = {
         "schema_version": 1,
         "probes": [
             {"id": "same", "baseline": {}, "candidate": {}},

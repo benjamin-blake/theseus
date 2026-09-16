@@ -255,11 +255,11 @@ def _worker(repo_root: Path, diff_path: Path, output_path: Path) -> None:
         return result
 
     failed: list[str] = []
-    _common.run = instrumented_run
+    setattr(_common, "run", instrumented_run)
     try:
         _pytest_diff.run_pytest_diff(selection["selected"], failed)
     finally:
-        _common.run = original_run
+        setattr(_common, "run", original_run)
     deferral_rel = getattr(_pytest_diff, "DEFERRAL_MAP_REL", "logs/debug/diff-coverage-deferrals.json")
     deferral_path = repo_root / deferral_rel
     if not deferral_path.is_file():
@@ -345,6 +345,7 @@ def run_comparison(
     output_path: Path,
     case_ids: set[str] | None = None,
 ) -> dict[str, Any]:
+    output_path = output_path.resolve()
     selected_cases = [case for case in corpus.cases if case_ids is None or case.case_id in case_ids]
     if case_ids is not None and {case.case_id for case in selected_cases} != case_ids:
         missing = sorted(case_ids - {case.case_id for case in selected_cases})

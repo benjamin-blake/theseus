@@ -74,7 +74,7 @@ probes:
       test_node: tests/checks/deps/test_fast_tier_harness_support.py::test_ensure_fast_environment_builds_reuses_and_rejects_broken_cache
       find: 'if ready.is_file() and ready.read_text(encoding="utf-8").strip() == fingerprint:'
       replace: 'if False:'
-  - id: primary_session_replaces_collect_only_partition
+  - id: collect_only_partition_is_enforced
     baseline:
       subject_path: scripts/checks/_pytest_diff.py
       test_node: tests/validate/test_pytest_diff.py::TestRunPytestDiffSingleExecution::test_runs_pytest_exactly_once_in_mixed_case
@@ -83,9 +83,9 @@ probes:
     candidate:
       subject_path: scripts/checks/_pytest_diff.py
       test_node: tests/validate/test_pytest_diff.py::TestRunPytestDiffSingleExecution::test_runs_pytest_exactly_once_in_mixed_case
-      find: '"scripts.checks._pytest_diff_primary",'
-      replace: '"scripts.checks._pytest_diff_primary_disabled",'
-  - id: all_deferred_stays_a_single_green_invocation
+      find: 'runnable, deferred = partition_changed_tests_by_collectability(changed_tests)'
+      replace: 'runnable, deferred = (list(changed_tests), [])'
+  - id: all_deferred_writes_classified_green_state
     baseline:
       subject_path: scripts/checks/_pytest_diff.py
       test_node: tests/validate/test_pytest_diff_coverage.py::TestDeferralMapStateClassification::test_all_files_deferred_writes_that_state
@@ -99,12 +99,12 @@ probes:
       subject_path: scripts/checks/_pytest_diff.py
       test_node: tests/validate/test_pytest_diff_coverage.py::TestDeferralMapStateClassification::test_all_files_deferred_writes_that_state
       find: |-
-        if not survivors:
-                if result.returncode != _PYTEST_NO_TESTS_COLLECTED:
+        if not runnable:
+                print(f"\nAll {len(deferred)} changed test file(s) deferred to the full tier -- fast-tier gate not reddened.")
       replace: |-
         if False:
-                if result.returncode != _PYTEST_NO_TESTS_COLLECTED:
-  - id: mocked_primary_session_records_plugin_completion
+                print(f"\nAll {len(deferred)} changed test file(s) deferred to the full tier -- fast-tier gate not reddened.")
+  - id: mocked_pytest_failure_reddens_gate
     baseline:
       subject_path: tests/fixtures/subprocess_stubs.py
       test_node: tests/validate/test_tiers.py::TestPreModeDiffAware::test_invokes_pytest_with_explicit_files_when_test_files_changed
@@ -113,8 +113,8 @@ probes:
     candidate:
       subject_path: tests/fixtures/subprocess_stubs.py
       test_node: tests/validate/test_tiers.py::TestPreModeDiffAware::test_invokes_pytest_with_explicit_files_when_test_files_changed
-      find: 'json.dumps({"complete": True, "deferred": {}})'
-      replace: 'json.dumps({"complete": False, "deferred": {}})'
+      find: 'result.returncode = 0'
+      replace: 'result.returncode = 1'
   - id: synthetic_verifier_repo_carries_pytest_diff_dependencies
     baseline:
       subject_path: tests/verification_graduation/conftest.py
@@ -124,5 +124,5 @@ probes:
     candidate:
       subject_path: tests/verification_graduation/conftest.py
       test_node: tests/verification_graduation/test_differential.py::TestVerifierDifferential::test_genuine_hermetic_verifier_is_admitted
-      find: '"scripts/checks/_pytest_diff_primary.py",'
-      replace: '"scripts/checks/_pytest_diff_primary_missing.py",'
+      find: '"scripts/checks/_pytest_diff.py",'
+      replace: '"scripts/checks/_pytest_diff_missing.py",'

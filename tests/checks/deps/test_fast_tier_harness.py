@@ -8,6 +8,7 @@ import subprocess
 import sys
 import types
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -251,7 +252,7 @@ class TestWorkerAndOrchestration:
             DEFERRAL_MAP_REL="logs/debug/diff-coverage-deferrals.json",
         )
         fake_affected = types.ModuleType("scripts.checks.deps.affected_tests")
-        fake_affected.derive_affected_tests = derive
+        setattr(fake_affected, "derive_affected_tests", derive)
         import scripts.checks as checks
 
         monkeypatch.setattr(checks, "_common", fake_common)
@@ -279,7 +280,7 @@ class TestWorkerAndOrchestration:
         fake_common = types.SimpleNamespace(run=subprocess.run)
         fake_pytest_diff = types.SimpleNamespace(run_pytest_diff=lambda selected, failed: None)
         fake_affected = types.ModuleType("scripts.checks.deps.affected_tests")
-        fake_affected.derive_affected_tests = lambda entries, repo_root: {"selected": [], "manifest": {}}
+        setattr(fake_affected, "derive_affected_tests", lambda entries, repo_root: {"selected": [], "manifest": {}})
         import scripts.checks as checks
 
         monkeypatch.setattr(checks, "_common", fake_common)
@@ -398,6 +399,26 @@ class TestWorkerAndOrchestration:
         assert json.loads(output.read_text(encoding="utf-8"))["candidate_ref"] == "head"
         with pytest.raises(harness.HarnessError, match="unknown corpus case"):
             harness.run_comparison(ROOT, corpus, "base", "head", output, {"missing"})
+
+    def test_run_comparison_resolves_relative_artifact_paths(self, tmp_path: Path, monkeypatch) -> None:
+        corpus = harness.load_corpus(CORPUS_PATH)
+        captures: list[dict[str, Any]] = [
+            {"nodes": {}, "deferred_modules": {}, "gate_failures": []},
+            {"nodes": {}, "deferred_modules": {}, "gate_failures": []},
+        ]
+
+        def capture(*args: Any) -> dict[str, Any]:
+            assert args[5].is_absolute()
+            assert args[6].is_absolute()
+            return captures.pop(0)
+
+        monkeypatch.chdir(tmp_path)
+        with (
+            patch.object(harness, "historical_diff", return_value=[]),
+            patch.object(harness, "capture_case", side_effect=capture),
+        ):
+            harness.run_comparison(ROOT, corpus, "base", "head", Path("logs/result.json"), {"pr-1128"})
+        assert (tmp_path / "logs/result.json").is_file()
 
     def test_main_validate_and_compare_dispatch(self, capsys, tmp_path: Path) -> None:
         assert harness.main(["validate-corpus", "--corpus", str(CORPUS_PATH)]) == 0
