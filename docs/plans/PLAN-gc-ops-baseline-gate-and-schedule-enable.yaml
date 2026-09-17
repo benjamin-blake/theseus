@@ -115,6 +115,9 @@ followon_recs:
 - rec-3908
 - rec-3909
 - rec-3910
+- rec-3911
+- rec-3912
+- rec-3913
 closes_criteria: []
 infrastructure_dependencies:
 - 'terraform/personal/ducklake_maintenance.tf: aws_cloudwatch_event_rule.ducklake_maintenance_gc_ops state UPDATE.
@@ -210,7 +213,7 @@ verification_plan:
     "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_gc_ops_rule_cron_does_not_collide_with_the_singleton_cadences"
     "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_dr_dump_precedes_the_gc_ops_window"
     -q
-  expected: 6 passed. On the un-implemented tree test_gc_ops_rule_is_enabled and test_dr_dump_precedes_the_gc_ops_window
+  expected: 6 passed. On the un-implemented tree test_gc_ops_rule_state_matches_declared_intent and test_dr_dump_precedes_the_gc_ops_window
     do not exist, so pytest exits non-zero with a collection error -- genuinely red before the fix.
   fix_if: A selector is absent (the old test was deleted without a replacement, leaving the rule state unguarded)
     or still asserts DISABLED. Never delete an assertion to make the step pass.
@@ -218,7 +221,7 @@ verification_plan:
   phase: pre-deploy
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: Step 1's graduated check covers the same claim on the state literal AND, once test_gc_ops_rule_is_enabled
+  graduation_waiver_reason: Step 1's graduated check covers the same claim on the state literal AND, once test_gc_ops_rule_state_matches_declared_intent
     carries the block-level negative, on the description attribute too -- so the only thing unique to this step
     is the comment block, which is prose keyed to strings this diff removes and which discriminates nothing once
     merged. Graduating a second shard over the same live invariants would add a maintenance surface without adding
@@ -381,7 +384,11 @@ verification_plan:
     failure means the regex was rewritten as a substring test and now passes vacuously on agent_platform_admin.
     A ''slice would be vacuous'' or ''sweep window truncated'' failure means the section heading was reworded or
     a new ### subsection was introduced inside it -- widen the slice or add the recipes without a new heading; never
-    drop the floor to make it pass.'
+    drop the floor to make it pass. ONE MORE AUTHORING TRAP, and the failure message misdescribes it: the section
+    is split on BLANK LINES, and the ''output -raw'' check runs against the same chunk that carries ''gc_ops''.
+    If the terraform-output assignment and the aws lambda invoke are written as two blank-line-separated blocks
+    (natural inside one bash fence), the step fails with ''the gc_ops recipe does not resolve data_path via a terraform
+    output'' even though it does. Keep the assignment and the invoke in ONE contiguous block.'
 - step: 8
   phase: pre-deploy
   hermetic: false
@@ -396,17 +403,25 @@ verification_plan:
     and NO catalog name (all 19 keys enumerated against ducklake_gc_ops.py:223-243), gc_ops is dispatcher-reachable
     with arbitrary data_path/meta_schema, and the metrics are emitted undimensioned -- so a dry_run pointed at ducklake_smoke
     produces a structurally identical envelope that satisfies every gate condition and both provenance attestations.
-    Assert on `tables`, which IS in the envelope: no table name may contain ''smoke'' (the smoke catalog''s are
-    ducklake_smoke_history, ducklake_smoke_current, ops_smoke_events_history) AND at least one must start with ''ops_recommendations''.
-    Both halves verified to discriminate in each direction. Evidence that cannot be shown to be ABOUT the thing
-    being licensed does not license it. THE PROOF THAT THE READING EXERCISED THE DRAIN CODE IS THE PAYLOAD SHAPE,
-    NOT A TIMESTAMP: unsized_candidates and drain_probe_counts are both #1203 additions (Decision 193 cl.4), so
-    a pre-drain fixture fails this test on a missing key or an empty ladder regardless of what any metadata claims.
-    captured_at and deploy_run_id are CORROBORATING PROVENANCE ONLY -- neither is returned by the handler (the envelope
-    has no such keys, verified against ducklake_gc_ops.py:223-243), so both are operator ATTESTATIONS rather than
-    measurements. They are asserted as PROVENANCE, never as one of the three gate conditions: the gate turns on
-    referenced_missing, unsized_candidates and the ladder alone, so a correct-but-unattested fixture fails on provenance
-    while a well-attested but non-licensing one still fails on the gate. captured_at is asserted to post-date deploy-ducklake-lambdas.yml
+    Assert on `tables`, which IS in the envelope: at least one name must start with ''ops_recommendations'', and
+    neither ''ducklake_smoke_history'' nor ''ducklake_smoke_current'' may appear. DO NOT write this as ''no table
+    name contains smoke'' -- ops_smoke_events_history is a PRODUCTION table, not a smoke-catalog one, so that predicate
+    is FALSE on a correct production reading and the gate could never go green. The name is a trap: ops_smoke_events
+    is registered in field_semantics.yaml''s ops_tables roster beside ops_recommendations, its writer is the production
+    ducklake_writer (ducklake_lambdas.tf:287 sets the prod data path and no DUCKLAKE_META_SCHEMA, so it falls through
+    to META_SCHEMA=''ducklake_ops''), and `status: smoke` is a LIFECYCLE tag, not catalog placement -- only ducklake_maintenance_smoke.tf
+    overrides the schema to ducklake_smoke. Note the generated field_semantics.static.yaml projection files it under
+    a `smoke_ops_tables` key, which reads as if it were smoke-catalog-resident; the live field_semantics.yaml is
+    authoritative. Measured against the real rosters: the corrected predicate is True on production (11 tables incl.
+    ops_smoke_events_history) and False on smoke. Evidence that cannot be shown to be ABOUT the thing being licensed
+    does not license it. THE PROOF THAT THE READING EXERCISED THE DRAIN CODE IS THE PAYLOAD SHAPE, NOT A TIMESTAMP:
+    unsized_candidates and drain_probe_counts are both #1203 additions (Decision 193 cl.4), so a pre-drain fixture
+    fails this test on a missing key or an empty ladder regardless of what any metadata claims. captured_at and
+    deploy_run_id are CORROBORATING PROVENANCE ONLY -- neither is returned by the handler (the envelope has no such
+    keys, verified against ducklake_gc_ops.py:223-243), so both are operator ATTESTATIONS rather than measurements.
+    They are asserted as PROVENANCE, never as one of the three gate conditions: the gate turns on referenced_missing,
+    unsized_candidates and the ladder alone, so a correct-but-unattested fixture fails on provenance while a well-attested
+    but non-licensing one still fails on the gate. captured_at is asserted to post-date deploy-ducklake-lambdas.yml
     run 17''s COMPLETION (2026-09-16T13:21:24Z), not the #1203 merge commit: the merge is not the deploy, and a
     reading taken inside the ~3-minute merge-to-deploy window would satisfy a commit-anchored bound while having
     exercised pre-drain code. An absolute ''within N days of now'' bound was deliberately REJECTED -- it turns green
@@ -427,10 +442,11 @@ verification_plan:
     why the assertion is 0 < files, not files <=. (d) The fixture is missing -- the operator invoke did not happen.
     That is the whole point of this step: it fails loudly here instead of the plan stalling silently. (e) drain_probe_counts
     or unsized_candidates is ABSENT rather than failing a threshold -- the reading came from a pre-#1203 handler.
-    Re-take it after confirming step 11; do not patch the fixture to add the missing keys. (f) A table name contains
-    ''smoke'', or none starts with ''ops_recommendations'' -- the reading was taken against the wrong catalog. Re-take
-    it against ducklake_ops with an explicit data_path and meta_schema; never relax the assertion to admit the reading
-    you have.'
+    Re-take it after confirming step 11; do not patch the fixture to add the missing keys. (f) ducklake_smoke_history
+    or ducklake_smoke_current appears in `tables`, or no name starts with ''ops_recommendations'' -- the reading
+    was taken against the smoke catalog. Re-take it against ducklake_ops with an explicit data_path and meta_schema;
+    never relax the assertion to admit the reading you have. Do NOT widen this to a bare ''smoke'' substring test:
+    ops_smoke_events_history is production-resident and such a test can never pass.'
 - step: 9
   phase: pre-deploy
   hermetic: false
@@ -563,15 +579,16 @@ test_obligations:
 - source: tests/fixtures/gc_ops_dryrun_baseline.json
   verification_step: 8
   test_selector: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestGcOpsEnablementBaseline::test_committed_dry_run_baseline_licenses_the_enablement
-  behavior: 'The committed baseline reading is DEMONSTRABLY ABOUT THE PRODUCTION CATALOG -- no table name contains
-    ''smoke'' and at least one starts with ''ops_recommendations'', which is the only catalog identity available
-    since the envelope carries no data_path, meta_schema or catalog name and the metrics are undimensioned -- and
-    it licenses the enablement: referenced_missing 0, unsized_candidates 0, and at least one ladder rung admitting
-    a positive count under both live caps. The PRIMARY proof that the reading exercised the drain code is the PAYLOAD
-    SHAPE -- drain_probe_counts and unsized_candidates are both #1203 additions, so a pre-drain fixture fails on
-    a missing key whatever its metadata claims. captured_at and deploy_run_id are operator ATTESTATIONS (the handler
-    returns neither) and corroborate only; captured_at is asserted to post-date deploy-ducklake-lambdas.yml run
-    17''s COMPLETION (2026-09-16T13:21:24Z), NOT the #1203 merge commit -- the merge is not the deploy. Tamper-evidence
+  behavior: 'The committed baseline reading is DEMONSTRABLY ABOUT THE PRODUCTION CATALOG -- at least one table name
+    starts with ''ops_recommendations'' and neither ducklake_smoke_history nor ducklake_smoke_current appears (NOT
+    a bare ''smoke'' substring test -- ops_smoke_events_history is production-resident), which is the only catalog
+    identity available since the envelope carries no data_path, meta_schema or catalog name and the metrics are
+    undimensioned -- and it licenses the enablement: referenced_missing 0, unsized_candidates 0, and at least one
+    ladder rung admitting a positive count under both live caps. The PRIMARY proof that the reading exercised the
+    drain code is the PAYLOAD SHAPE -- drain_probe_counts and unsized_candidates are both #1203 additions, so a
+    pre-drain fixture fails on a missing key whatever its metadata claims. captured_at and deploy_run_id are operator
+    ATTESTATIONS (the handler returns neither) and corroborate only; captured_at is asserted to post-date deploy-ducklake-lambdas.yml
+    run 17''s COMPLETION (2026-09-16T13:21:24Z), NOT the #1203 merge commit -- the merge is not the deploy. Tamper-evidence
     on the evidence that licensed a destructive schedule.'
   red_green_expectation: Red before (neither the fixture nor the test class exists), green after.
 - source: config/agent/verification_registry/entries/gc-ops-rule-state-and-no-lakehouse-lifecycle.yaml
@@ -686,9 +703,9 @@ context:
   bar.'
 - 'Adjacent: rec-3892 (unexplained deleter in the SMOKE prefix, same bucket). Its 2026-09-17 addendum records that
   the probe REFUTED its lifecycle hypothesis -- consult before attributing any referenced_missing to a guard defect.'
-- 'plan-critique: 5 REVISE rounds, all findings disposed, none recurring -- per-round detail is in the plan''s commit
-  bodies, which also record the one standing REJECTION (steps 1 and 8 stay hermetic: false per vp-red-before.yaml#hermetic_authoring)
-  and the red-before AND green-after verification of every hermetic step.'
+- 'plan-critique: 6 rounds, all findings disposed, none recurring -- per-round detail is in the plan''s commit bodies,
+  which also record the standing hermetic: false rejection and the red-before AND green-after verification of every
+  hermetic step. Round 6''s four deferred findings are rec-3911/3912/3913 (DEFER-4 fixed inline).'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -717,7 +734,8 @@ execution_steps:
 - config/agent/verification_registry/entries/ -- git mv gc-ops-rule-disabled-and-no-lakehouse-lifecycle.yaml into
   deprecated/, then add gc-ops-rule-state-and-no-lakehouse-lifecycle.yaml (six selectors) and gc-ops-enablement-baseline-fixture-gate.yaml,
   both plan_slug gc-ops-baseline-gate-and-schedule-enable, primitive_slot command_exit_zero, graduated_at the implement
-  date.
+  date, and guard_target set (required by validate_verification_registry) -- terraform/personal/ducklake_maintenance.tf
+  for the state shard, tests/fixtures/gc_ops_dryrun_baseline.json for the fixture-gate shard.
 - 'docs/contracts/ducklake_maintenance.yaml -- repoint the THREE present-tense created-DISABLED sites (:25, :180,
   :286), replacing :180''s future-tense clause with a past-tense record PLUS a retained present-tense re-gate clause.
   LEAVE :321 BYTE-IDENTICAL: it is amendment_log history, not a stale claim. APPEND the new amendment_log entry
