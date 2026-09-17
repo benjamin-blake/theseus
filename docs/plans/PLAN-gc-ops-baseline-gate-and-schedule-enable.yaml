@@ -403,18 +403,51 @@ verification_plan:
     and NO catalog name (all 19 keys enumerated against ducklake_gc_ops.py:223-243), gc_ops is dispatcher-reachable
     with arbitrary data_path/meta_schema, and the metrics are emitted undimensioned -- so a dry_run pointed at ducklake_smoke
     produces a structurally identical envelope that satisfies every gate condition and both provenance attestations.
-    Assert on `tables`, which IS in the envelope: at least one name must start with ''ops_recommendations'', and
-    neither ''ducklake_smoke_history'' nor ''ducklake_smoke_current'' may appear. DO NOT write this as ''no table
-    name contains smoke'' -- ops_smoke_events_history is a PRODUCTION table, not a smoke-catalog one, so that predicate
-    is FALSE on a correct production reading and the gate could never go green. The name is a trap: ops_smoke_events
-    is registered in field_semantics.yaml''s ops_tables roster beside ops_recommendations, its writer is the production
-    ducklake_writer (ducklake_lambdas.tf:287 sets the prod data path and no DUCKLAKE_META_SCHEMA, so it falls through
-    to META_SCHEMA=''ducklake_ops''), and `status: smoke` is a LIFECYCLE tag, not catalog placement -- only ducklake_maintenance_smoke.tf
-    overrides the schema to ducklake_smoke. Note the generated field_semantics.static.yaml projection files it under
-    a `smoke_ops_tables` key, which reads as if it were smoke-catalog-resident; the live field_semantics.yaml is
-    authoritative. Measured against the real rosters: the corrected predicate is True on production (11 tables incl.
-    ops_smoke_events_history) and False on smoke. Evidence that cannot be shown to be ABOUT the thing being licensed
-    does not license it. THE PROOF THAT THE READING EXERCISED THE DRAIN CODE IS THE PAYLOAD SHAPE, NOT A TIMESTAMP:
+    Assert on `tables`, which IS in the envelope, as a MEMBERSHIP FLOOR of five FROZEN LITERAL names: ops_recommendations_current,
+    ops_recommendations_history, ops_decisions_current, ops_decisions_history and ops_entity_counters must ALL appear.
+    AMENDED 2026-09-17 (act one of implement-scope-boundary.yaml''s two-act amendment_procedure): the original predicate ALSO
+    banned ''ducklake_smoke_history'' and ''ducklake_smoke_current'' from `tables`, on the premise that those two names are
+    smoke-catalog-resident. THAT PREMISE IS FALSE and the first measured production reading refutes it -- BOTH names are
+    PRODUCTION-resident, so the negative clause is unsatisfiable by ANY correct production reading. It is DROPPED, not inverted,
+    and must not be reintroduced. THIS SYMPTOM WAS ALREADY ON THE QUEUE AND THE PLAN MISSED IT: rec-3864 (open, High, filed
+    2026-09-14) records production action_merge_ops returning ok:false with unclassified=[ducklake_smoke_current,
+    ducklake_smoke_history] on every 6-hourly firing since #1179, and states the open disjunction -- EITHER the two smoke
+    tables physically live inside production ducklake_ops OR the enumeration is not meta_schema-scoped. This reading RESOLVES
+    that disjunction in favour of the first arm: information_schema enumeration IS catalog-scoped
+    (ducklake_gc_ops.py:74-86 filters on table_catalog), the ATTACH is pinned to (production data_path, ducklake_ops), and the
+    two names come back anyway. CAUSE (verified; OUT OF SCOPE for this plan -- route it by UPDATING rec-3864 with the resolved
+    arm and the fix site per Decision 59, never by filing a duplicate and never fixed inline here): src/lambdas/ducklake_writer/smoke_actions.py:19-21 resolves DATA_PATH to rt.SMOKE_DATA_PATH but
+    META_SCHEMA to rt.META_SCHEMA -- the PRODUCTION default ''ducklake_ops'' -- and terraform/personal/ducklake_lambdas.tf:287
+    sets DUCKLAKE_DATA_PATH with NO DUCKLAKE_META_SCHEMA, so the writer''s smoke actions run rt.create_scd2_tables against the
+    PRODUCTION catalog at the production data path. rec-2099''s isolation fix reached scripts/ducklake_smoke/core.py:26 and the
+    maintenance-smoke Lambda (ducklake_maintenance_smoke.tf:157 pins DUCKLAKE_META_SCHEMA=''ducklake_smoke'') but never reached
+    this path. THE ORIGINAL AUTHORING ERROR: catalog residency was read off config/lambda/ducklake/field_semantics.yaml''s
+    `ops_tables` roster while that same file''s top-level `tables:` key (:7-18) names ducklake_smoke_history and
+    ducklake_smoke_current as first-class entries -- wrong key, and a GENERATED projection rather than the residency SoT (the
+    residency SoT is which META_SCHEMA the creating caller attached under). THE FLOOR IS THE PART THAT DISCRIMINATES AND IT
+    DISCRIMINATES ALONE: the ducklake_smoke catalog holds ONLY the create_scd2_tables smoke pair, and nothing shipped ever
+    creates an ops_* table under META_SCHEMA=''ducklake_smoke'', so a smoke-targeted dry_run fails the floor on all five names.
+    The dropped clause therefore removed no discrimination the floor does not already carry, and the floor is STRICTLY STRONGER
+    on the positive side than the single ''starts with ops_recommendations'' prefix match it replaces -- this is a false-premise
+    correction, not a relaxation: the discarded predicate was unsatisfiable by the true state of the world, not merely failing on
+    the reading in hand. WRITE IT AS A FROZEN LITERAL, NEVER DERIVED from field_semantics.yaml: the fixture is an IMMUTABLE
+    historical reading, so literal-vs-frozen-fixture can never red on a future roster rename, whereas a derived floor would
+    re-import the very roster that produced this false premise AND be the tautological same-source derivation tests/CLAUDE.md
+    forbids -- a membership floor of required entries is exactly the growth-safe pattern that file prescribes. STILL DO NOT write
+    a bare ''no table name contains smoke'' test: ops_smoke_events_history is production-resident (registered in
+    field_semantics.yaml''s ops_tables roster, `status: smoke` being a LIFECYCLE tag and not catalog placement; the generated
+    field_semantics.static.yaml files it under a `smoke_ops_tables` key that misleadingly reads as smoke-catalog-resident), so
+    that predicate is FALSE on a correct production reading and the gate could never go green. ALSO ASSERT THE ENVELOPE
+    SELF-IDENTIFIES -- ok is True, action == ''gc_ops'', dry_run is True -- all three MEASURED handler output, none attested.
+    `action` closes the last non-production hypothesis: gc_ops opens its connection with rt.fetch_dsn() unconditionally and takes
+    no branch_host parameter, unlike action_clone_catalog (ducklake_maintenance/handler.py:215-250), which reads a Neon
+    copy-on-write BRANCH at meta_schema=''ducklake_ops'' and the production data_path -- so a clone read cannot produce this
+    envelope. `dry_run` proves the committed reading is a probe and not a real destructive pass. INDEPENDENT CORROBORATION, measured on a DIFFERENT credential path: rec-3892''s
+    2026-09-17 read-only PlatformAdmin S3 probe of the production `ducklake/` prefix reports 38,160 current versions /
+    261,354,265 bytes against this fixture''s storage_objects 38,215 / storage_bytes 261,778,008 -- agreement to within 0.2% on
+    both, which no smoke-prefix reading could produce. That probe also found 548 noncurrent versions and 548 delete markers,
+    which is why the plan''s 0.246 GiB prefix figure (:171) reads slightly above storage_bytes: list_objects_v2 sees current
+    versions only. Evidence that cannot be shown to be ABOUT the thing being licensed does not license it. THE PROOF THAT THE READING EXERCISED THE DRAIN CODE IS THE PAYLOAD SHAPE, NOT A TIMESTAMP:
     unsized_candidates and drain_probe_counts are both #1203 additions (Decision 193 cl.4), so a pre-drain fixture
     fails this test on a missing key or an empty ladder regardless of what any metadata claims. captured_at and
     deploy_run_id are CORROBORATING PROVENANCE ONLY -- neither is returned by the handler (the envelope has no such
@@ -442,11 +475,16 @@ verification_plan:
     why the assertion is 0 < files, not files <=. (d) The fixture is missing -- the operator invoke did not happen.
     That is the whole point of this step: it fails loudly here instead of the plan stalling silently. (e) drain_probe_counts
     or unsized_candidates is ABSENT rather than failing a threshold -- the reading came from a pre-#1203 handler.
-    Re-take it after confirming step 11; do not patch the fixture to add the missing keys. (f) ducklake_smoke_history
-    or ducklake_smoke_current appears in `tables`, or no name starts with ''ops_recommendations'' -- the reading
-    was taken against the smoke catalog. Re-take it against ducklake_ops with an explicit data_path and meta_schema;
-    never relax the assertion to admit the reading you have. Do NOT widen this to a bare ''smoke'' substring test:
-    ops_smoke_events_history is production-resident and such a test can never pass.'
+    Re-take it after confirming step 11; do not patch the fixture to add the missing keys. (f) ANY of the five floor names
+    (ops_recommendations_current, ops_recommendations_history, ops_decisions_current, ops_decisions_history,
+    ops_entity_counters) is ABSENT from `tables` -- the reading was not taken against the production catalog; the
+    ducklake_smoke catalog carries only ducklake_smoke_current/_history and no ops_* table. Re-take it against ducklake_ops
+    with an explicit data_path and meta_schema; never relax the floor to admit the reading you have. Do NOT reintroduce a
+    negative clause on ''ducklake_smoke_history''/''ducklake_smoke_current'' -- both are PRODUCTION-resident (step 8''s action
+    carries the cause), so such a clause is unsatisfiable and the gate could never go green -- and do NOT widen this to a bare
+    ''smoke'' substring test: ops_smoke_events_history is production-resident and such a test can never pass either. (g) ok,
+    action or dry_run is anything other than True / ''gc_ops'' / True -- the committed envelope is not a gc_ops DRY-RUN
+    response. Re-take it; never edit the fixture to satisfy the assertion.'
 - step: 9
   phase: pre-deploy
   hermetic: false
@@ -579,11 +617,16 @@ test_obligations:
 - source: tests/fixtures/gc_ops_dryrun_baseline.json
   verification_step: 8
   test_selector: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestGcOpsEnablementBaseline::test_committed_dry_run_baseline_licenses_the_enablement
-  behavior: 'The committed baseline reading is DEMONSTRABLY ABOUT THE PRODUCTION CATALOG -- at least one table name
-    starts with ''ops_recommendations'' and neither ducklake_smoke_history nor ducklake_smoke_current appears (NOT
-    a bare ''smoke'' substring test -- ops_smoke_events_history is production-resident), which is the only catalog
-    identity available since the envelope carries no data_path, meta_schema or catalog name and the metrics are
-    undimensioned -- and it licenses the enablement: referenced_missing 0, unsized_candidates 0, and at least one
+  behavior: 'The committed baseline reading is DEMONSTRABLY ABOUT THE PRODUCTION CATALOG -- `tables` carries ALL FIVE
+    frozen-literal floor names (ops_recommendations_current, ops_recommendations_history, ops_decisions_current,
+    ops_decisions_history, ops_entity_counters), which no smoke-targeted dry_run can satisfy because nothing shipped creates an
+    ops_* table under META_SCHEMA=''ducklake_smoke'', and the envelope self-identifies as a gc_ops dry-run (ok True, action
+    ''gc_ops'', dry_run True), which rules out the clone_catalog Neon-branch read. NOT a negative clause on
+    ducklake_smoke_history/ducklake_smoke_current: AMENDED 2026-09-17 -- both are PRODUCTION-resident (ducklake_writer''s
+    smoke_actions falls through to the production META_SCHEMA; see step 8''s action), so that clause was unsatisfiable by any
+    correct production reading -- and NOT a bare ''smoke'' substring test, ops_smoke_events_history being production-resident
+    too. This is the only catalog identity available since the envelope carries no data_path, meta_schema or catalog name and
+    the metrics are undimensioned -- and it licenses the enablement: referenced_missing 0, unsized_candidates 0, and at least one
     ladder rung admitting a positive count under both live caps. The PRIMARY proof that the reading exercised the
     drain code is the PAYLOAD SHAPE -- drain_probe_counts and unsized_candidates are both #1203 additions, so a
     pre-drain fixture fails on a missing key whatever its metadata claims. captured_at and deploy_run_id are operator
