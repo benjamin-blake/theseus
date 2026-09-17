@@ -503,4 +503,31 @@ before claiming Section 7 equivalence.
 
 ### Judgment deviations
 
-- None at the Phase 0 checkpoint.
+- The Candidate 1 ledger initially treated roughly +/-24s from three Phase 0 PRs selecting 175,
+  125 and 149 modules as a CI noise floor. That was cross-workload variation, not repeated-run
+  noise. The error was caught when the abandonment rationale was reviewed. The replacement is the
+  controlled current-base experiment: five sequential green reruns of one SHA, one selected module
+  and nine tests, with an unchanged main base. Its `--pre` median was 41s, its median-exclusive IQR
+  width was 11s, its inclusive-hinge IQR width was 8s, and its full range was 14s.
+- Candidate 1 remained the live branch implementation for two sessions after its abandonment was
+  recorded. That preserved the rejected fail-closed rewrite while later profiling continued. Phase 5
+  removed it by restoring current main's affected files and deleting its added modules; the rejected
+  implementation and its evidence remain available only in git history at `7f1fa195..015a0240`.
+- A historical same-SHA rerun was initially treated as a noise experiment. Selection compared its
+  pinned head with live `origin/main`, so base drift inflated a formerly small workload to 424 modules.
+  The resulting 83s range is invalid, and the earlier 882s-scale observation falls with it. Historical
+  CI runs are not repeatable timing experiments under this repository's live-base selection model.
+- Phase 3 did not proceed as a sequence of implemented candidates. Candidate 1 was implemented,
+  measured, abandoned and later reverted. Candidate 2's diagnosed SLOC/CC scope and its broader
+  static-reuse continuation were profiled before implementation; both stopped on measured magnitude.
+  The installed-environment Candidate 3 was never started. This departs from the brief's nominal
+  change sequence but avoids implementing mechanisms whose measured estimates cannot clear the
+  authoritative surface's observed spread.
+- The controlled five-run table originally said its 11s IQR used the same convention as earlier
+  five-run tables. Independent review found that it used median-exclusive halves while Candidate 1
+  used inclusive hinges. Both values are now stated: 11s under the prescribed median-exclusive
+  convention and 8s under inclusive hinges. The 7.4s realistic estimate is within both; the separate
+  8.624s parse/read/walk/git ceiling is within the 11s IQR and 14s full range but not the 8s IQR.
+- Section 14.1's default instruction to promote the PR to ready is not followed. The optimisation
+  line closed as a null result, the rejected production rewrite was removed, and the operator directed
+  that PR #1131 remain draft for a human disposition decision.
