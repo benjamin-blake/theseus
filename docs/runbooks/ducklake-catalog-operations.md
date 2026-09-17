@@ -315,10 +315,16 @@ aws lambda invoke \
 # pre-enablement baseline canary, and its rehearsal-before-any-future-re-enable equivalent).
 # data_path is resolved via `terraform output -raw`, never a literal bucket name.
 DATA_PATH=$(terraform -chdir=terraform/personal output -raw ducklake_prod_data_path)
+# --cli-read-timeout 900: the default 60s client read-timeout is too short for this probe (the
+# ladder walks multiple cutoffs, each re-listing the storage prefix) -- see the same fix already
+# applied to run_scheduled_agent.py's own lambda invoke (docs/SESSION_LOG_ARCHIVE.md).
+# Invoke clear of the singleton's :15/:30 6-hourly cadences (control_health/merge_ops) -- a
+# concurrent invoke throttles with a 429 under reserved_concurrent_executions=1.
 aws lambda invoke \
   --function-name agent-platform-ducklake-maintenance \
   --payload "{\"action\":\"gc_ops\",\"data_path\":\"$DATA_PATH\",\"meta_schema\":\"ducklake_ops\",\"dry_run\":true}" \
   --cli-binary-format raw-in-base64-out \
+  --cli-read-timeout 900 \
   --profile agent_platform_admin \
   --region eu-west-2 \
   /tmp/gc-ops-dryrun-response.json && cat /tmp/gc-ops-dryrun-response.json
