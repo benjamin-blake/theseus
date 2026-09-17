@@ -143,6 +143,24 @@ _CRON_FIELDS_RE = re.compile(r"cron\((\d+)\s+(\d+)\s+\S+\s+\S+\s+(\S+)\s+\S+\)")
 # Parameterised so a rollback flip is one constant edit, no test surgery, no re-keyed check_id.
 _INTENDED_GC_OPS_STATE = "ENABLED"
 
+# Catalog-identity floor for the committed dry_run reading (plan amended 2026-09-17, #1205).
+# FROZEN LITERALS, never derived from field_semantics.yaml: the fixture is an immutable historical
+# reading, so a literal floor can never redden on a future roster rename, and deriving would
+# re-import the very roster whose misreading produced the original (falsified) premise that
+# ducklake_smoke_* names are smoke-resident. They are production-resident -- ducklake_writer's
+# smoke_actions falls through to the production META_SCHEMA -- so no negative clause on them can
+# ever hold. Nothing shipped creates an ops_* table under META_SCHEMA='ducklake_smoke', so a
+# smoke-targeted reading fails every one of these names.
+_PRODUCTION_CATALOG_TABLE_FLOOR = frozenset(
+    {
+        "ops_recommendations_current",
+        "ops_recommendations_history",
+        "ops_decisions_current",
+        "ops_decisions_history",
+        "ops_entity_counters",
+    }
+)
+
 
 class TestProductionGcRuleInvariants:
     """production-gc-and-storage-stability (T2.18 c2): the gc_ops rule + its two alarms, and the
@@ -312,7 +330,10 @@ class TestGcOpsEnablementBaseline:
     """gc-ops-baseline-gate-and-schedule-enable: adjudicates the committed operator dry_run reading
     against the shipped G4 caps, licensing the production enable. NECESSARY, not SUFFICIENT -- the
     real pass is post-expiry and strict-sized, a strictly larger and less forgiving check (see
-    tests/fixtures/gc_ops_dryrun_baseline.json's own provenance)."""
+    tests/fixtures/gc_ops_dryrun_baseline.json's own provenance).
+
+    Catalog identity rests on _PRODUCTION_CATALOG_TABLE_FLOOR plus the envelope's own
+    ok/action/dry_run self-identification -- all MEASURED handler output, none operator-attested."""
 
     def test_committed_dry_run_baseline_licenses_the_enablement(self) -> None:
         import json
@@ -347,13 +368,24 @@ class TestGcOpsEnablementBaseline:
             "(None, None) and defer the whole pass every week"
         )
 
-        tables = reading.get("tables") or []
-        assert any(str(t).startswith("ops_recommendations") for t in tables), (
-            "no table name starts with 'ops_recommendations' -- this reading is not demonstrably about the production catalog"
+        tables = set(reading.get("tables") or [])
+        missing = _PRODUCTION_CATALOG_TABLE_FLOOR - tables
+        assert not missing, (
+            f"production-catalog floor name(s) {sorted(missing)} absent from `tables` -- this reading "
+            "was not taken against the production catalog (the ducklake_smoke catalog carries no "
+            "ops_* table). Re-take it against ducklake_ops with an explicit data_path and "
+            "meta_schema; never relax the floor to admit the reading you have."
         )
-        assert "ducklake_smoke_history" not in tables and "ducklake_smoke_current" not in tables, (
-            "a smoke-catalog table name appears in `tables` -- this reading was taken against "
-            "ducklake_smoke, not the production ducklake_ops catalog"
+
+        assert reading.get("ok") is True, f"ok={reading.get('ok')!r} -- the committed envelope is not a success response"
+        assert reading.get("action") == "gc_ops", (
+            f"action={reading.get('action')!r} -- the committed envelope is not a gc_ops response. "
+            "action_clone_catalog reads a Neon copy-on-write branch at this same meta_schema and "
+            "data_path, so `action` is what rules that out."
+        )
+        assert reading.get("dry_run") is True, (
+            f"dry_run={reading.get('dry_run')!r} -- the committed reading must be a read-only probe, "
+            "never a real destructive pass"
         )
 
         captured_at = reading.get("captured_at")
