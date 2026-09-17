@@ -22,7 +22,9 @@ shipped G4 caps, licensing the enablement.
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -133,7 +135,7 @@ resource "aws_cloudwatch_metric_alarm" "example_alarm" {
 
 
 _TERRAFORM_PERSONAL_DIR = _REPO_ROOT / "terraform" / "personal"
-_DR_TF = _REPO_ROOT / "terraform" / "personal" / "ducklake_catalog_dr.tf"
+_DR_TF = _TERRAFORM_PERSONAL_DIR / "ducklake_catalog_dr.tf"
 _FIXTURE_PATH = _REPO_ROOT / "tests" / "fixtures" / "gc_ops_dryrun_baseline.json"
 _LIFECYCLE_CONFIG_RE = re.compile(r'resource\s+"aws_s3_bucket_lifecycle_configuration"\s+"(\w+)"\s*\{')
 _CRON_MINUTE_RE = re.compile(r'schedule_expression\s*=\s*"cron\((\d+)\s')
@@ -160,6 +162,14 @@ _PRODUCTION_CATALOG_TABLE_FLOOR = frozenset(
         "ops_entity_counters",
     }
 )
+
+# Provenance anchor: deploy-ducklake-lambdas.yml run 17 shipped #1203's drain walk and completed at
+# this timestamp. captured_at must post-date the COMPLETION rather than the merge commit -- a reading
+# taken inside the merge-to-deploy window would have exercised pre-drain code. The id and the
+# timestamp are pinned TOGETHER so the two provenance fields cannot silently disagree; a fixture
+# re-taken after a later deploy must move both.
+_DRAIN_DEPLOY_RUN_ID = 17
+_DRAIN_DEPLOY_COMPLETED_AT = "2026-09-16T13:21:24+00:00"
 
 
 class TestProductionGcRuleInvariants:
@@ -336,9 +346,9 @@ class TestGcOpsEnablementBaseline:
     ok/action/dry_run self-identification -- all MEASURED handler output, none operator-attested."""
 
     def test_committed_dry_run_baseline_licenses_the_enablement(self) -> None:
-        import json
-        from datetime import datetime
-
+        # Deliberately function-local: the rest of this module reads terraform text and needs no
+        # first-party runtime import, so hoisting this would couple collection of every test here
+        # to src.common's own import chain.
         from src.common.ducklake_maintenance_ops import G4_MAX_DELETE_BYTES, G4_MAX_DELETE_FILES
 
         assert _FIXTURE_PATH.is_file(), (
@@ -391,12 +401,17 @@ class TestGcOpsEnablementBaseline:
         captured_at = reading.get("captured_at")
         deploy_run_id = reading.get("deploy_run_id")
         assert captured_at, "captured_at provenance attestation is missing"
-        assert deploy_run_id, "deploy_run_id provenance attestation is missing"
+        assert deploy_run_id == _DRAIN_DEPLOY_RUN_ID, (
+            f"deploy_run_id={deploy_run_id!r} -- provenance must name run {_DRAIN_DEPLOY_RUN_ID}, the "
+            "deploy-ducklake-lambdas.yml run whose completion anchors the captured_at bound below. A "
+            "fixture re-taken after a later deploy must move BOTH provenance constants together."
+        )
         captured_dt = datetime.fromisoformat(str(captured_at).replace("Z", "+00:00"))
-        deploy_completion = datetime.fromisoformat("2026-09-16T13:21:24+00:00")
+        deploy_completion = datetime.fromisoformat(_DRAIN_DEPLOY_COMPLETED_AT)
         assert captured_dt > deploy_completion, (
-            f"captured_at ({captured_at}) does not post-date deploy-ducklake-lambdas.yml run 17's "
-            "completion (2026-09-16T13:21:24Z) -- the reading may predate the drain code deploy"
+            f"captured_at ({captured_at}) does not post-date deploy-ducklake-lambdas.yml run "
+            f"{_DRAIN_DEPLOY_RUN_ID}'s completion ({_DRAIN_DEPLOY_COMPLETED_AT}) -- the reading may "
+            "predate the drain code deploy"
         )
 
         broadest_rung_files = max((rung["files"] for rung in ladder.values()), default=0)

@@ -315,6 +315,9 @@ aws lambda invoke \
 # pre-enablement baseline canary, and its rehearsal-before-any-future-re-enable equivalent).
 # data_path is resolved via `terraform output -raw`, never a literal bucket name.
 DATA_PATH=$(terraform -chdir=terraform/personal output -raw ducklake_prod_data_path)
+# OPERATOR WORKSTATION ONLY: the `terraform output` below needs a terraform binary and remote-state
+# access, which no agent container has (Decision 119). An agent taking this reading substitutes the
+# literal production data_path instead; everything else in the recipe is identical.
 # --cli-read-timeout 900: the default 60s client read-timeout is too short for this probe (the
 # ladder walks multiple cutoffs, each re-listing the storage prefix) -- see the same fix already
 # applied to run_scheduled_agent.py's own lambda invoke (docs/SESSION_LOG_ARCHIVE.md).
