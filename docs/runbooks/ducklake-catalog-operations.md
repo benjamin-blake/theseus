@@ -289,12 +289,17 @@ Never relax a guard to pass, on any of the four causes.
 
 ### Manual invoke runbook
 
+All recipes below invoke `agent-platform-ducklake-maintenance`, an admin-gated singleton --
+PlatformDev's `DuckLakeInvokeRuntime` grant is scoped to the writer/reader Lambdas only, so every
+recipe here runs under `agent_platform_admin` (Decision 143 blast radius; maintenance stays
+break-glass, never widened to remove the operator step).
+
 ```bash
 # Invoke daily merge manually (safe, non-destructive):
 aws lambda invoke \
   --function-name agent-platform-ducklake-maintenance \
   --payload '{"action":"merge"}' \
-  --profile agent_platform \
+  --profile agent_platform_admin \
   --region eu-west-2 \
   /tmp/merge-response.json && cat /tmp/merge-response.json
 
@@ -302,15 +307,30 @@ aws lambda invoke \
 aws lambda invoke \
   --function-name agent-platform-ducklake-maintenance \
   --payload '{"action":"gc"}' \
-  --profile agent_platform \
+  --profile agent_platform_admin \
   --region eu-west-2 \
   /tmp/gc-response.json && cat /tmp/gc-response.json
+
+# Invoke the PRODUCTION gc_ops dry_run (read-only measurement, no destructive call -- the
+# pre-enablement baseline canary, and its rehearsal-before-any-future-re-enable equivalent).
+# data_path is resolved via `terraform output -raw`, never a literal bucket name.
+DATA_PATH=$(terraform -chdir=terraform/personal output -raw ducklake_prod_data_path)
+aws lambda invoke \
+  --function-name agent-platform-ducklake-maintenance \
+  --payload "{\"action\":\"gc_ops\",\"data_path\":\"$DATA_PATH\",\"meta_schema\":\"ducklake_ops\",\"dry_run\":true}" \
+  --cli-binary-format raw-in-base64-out \
+  --profile agent_platform_admin \
+  --region eu-west-2 \
+  /tmp/gc-ops-dryrun-response.json && cat /tmp/gc-ops-dryrun-response.json
+# Expect: {"ok": true, "action": "gc_ops", "dry_run": true, "referenced_missing": 0,
+# "unsized_candidates": 0, "drain_probe_counts": {...}, "tables": [...], ...}. A non-zero
+# referenced_missing or unsized_candidates is an incident to RCA, never a gate to work around.
 
 # Forced G1-trip probe, via the G1_PROBE_FORCE_CONFLICT constant (VP step 11 / diagnostic):
 aws lambda invoke \
   --function-name agent-platform-ducklake-maintenance \
   --payload '{"action":"breaker_probe"}' \
-  --profile agent_platform \
+  --profile agent_platform_admin \
   --region eu-west-2 \
   /tmp/breaker-response.json && cat /tmp/breaker-response.json
 # Expect: statusCode=500, breaker_tripped=true.
@@ -318,12 +338,44 @@ aws lambda invoke \
 # Check singleton concurrency (reserved_concurrent_executions must be 1):
 aws lambda get-function-concurrency \
   --function-name agent-platform-ducklake-maintenance \
-  --profile agent_platform
+  --profile agent_platform_admin
 
-# Check EventBridge schedule rules:
-aws events list-rules \
-  --name-prefix agent-platform-ducklake-maintenance \
-  --profile agent_platform
+# Check an EventBridge rule's state (events:ListRules is granted to NO identity in this account --
+# describe-rule by exact name instead; example is the production gc_ops rule):
+aws events describe-rule \
+  --name agent-platform-ducklake-maintenance-gc-ops \
+  --profile agent_platform_admin
+```
+
+**Live cadence (gc-ops-baseline-gate-and-schedule-enable):** `gc_ops` runs weekly,
+`cron(45 3 ? * SUN *)` (03:45 UTC Sunday), 45 minutes after the catalog-DR dump
+(`cron(0 3 ? * SUN *)`, Section 4) so backup precedes destruction. The
+`ducklake-maintenance-gc-ops-liveness` alarm sits in ALARM from the moment production GC has never
+run until the first scheduled pass emits `GcDeletedSnapshots` -- expected, not an incident, until
+the first Sunday firing after enablement.
+
+**Delete-marker recovery** (over-reclaim rollback -- UNREHEARSED, rec-3907 carries the rehearsal;
+rehearse on a scratch prefix before running this against production). The data-lake bucket is
+versioned with no lifecycle rule, so a deleted object retains its bytes as a noncurrent version
+behind a zero-byte delete marker; removing the marker by version id restores the object:
+
+```bash
+BUCKET=$(terraform -chdir=terraform/personal output -raw ducklake_prod_data_path | sed -E 's#^s3://([^/]+)/.*#\1#')
+PREFIX="ducklake/"   # narrow this to the affected sub-prefix before running
+
+# List delete markers under the affected prefix:
+aws s3api list-object-versions \
+  --bucket "$BUCKET" \
+  --prefix "$PREFIX" \
+  --query 'DeleteMarkers[].{Key:Key,VersionId:VersionId}' \
+  --profile agent_platform_admin
+
+# Restore one object by removing its delete marker (repeat per marker -- there is no bulk API):
+aws s3api delete-object \
+  --bucket "$BUCKET" \
+  --key "<key-from-above>" \
+  --version-id "<marker-version-id-from-above>" \
+  --profile agent_platform_admin
 ```
 
 ### Singleton constraint (Decision 81 clause 6)

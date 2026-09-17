@@ -22,7 +22,7 @@ contract:
   description: >-
     Singleton DuckLake catalog-maintenance Lambda. SCHEDULED actions are EventBridge-triggered:
     merge (daily) / gc (weekly) / hot_merge (every 6h) run against the SMOKE catalog (ducklake_smoke),
-    and merge_ops (every 6h) / gc_ops (weekly, created DISABLED) run against the PRODUCTION catalog
+    and merge_ops (every 6h) / gc_ops (weekly, ENABLED per gc-ops-baseline-gate-and-schedule-enable) run against the PRODUCTION catalog
     (ducklake_ops, data_path + meta_schema supplied by the EventBridge target). OPERATIONAL actions
     (catalog_reinit, restore_drill, catalog_stats, reconcile_columns) are human-invoked over 443 via
     `aws lambda invoke` against the PRODUCTION catalog with explicit data_path + meta_schema event
@@ -176,9 +176,11 @@ verbs:
   gc_ops:
     payload_schema_ref: >-
       event envelope {action: "gc_ops", data_path (s3://), meta_schema, dry_run? (default false)}.
-      SCHEDULED (EventBridge cron(45 3 ? * SUN *) against PRODUCTION ducklake_ops; rule created
-      DISABLED, enabled only after the baseline gate clears and the governed CD deploy is green) AND
-      human-invokable. Production destructive-GC pass (src/common/ducklake_gc_ops.py): a universal
+      SCHEDULED (EventBridge cron(45 3 ? * SUN *) against PRODUCTION ducklake_ops; rule ENABLED
+      per gc-ops-baseline-gate-and-schedule-enable, after the pre-enablement baseline gate and the
+      governed CD deploy both cleared -- a re-enabling after any future rollback to DISABLED is
+      gated the same way) AND human-invokable. Production destructive-GC pass
+      (src/common/ducklake_gc_ops.py): a universal
       catalog live-set collection (every table, no policy input, never scope.resolve_scope), no
       per-table prelude (merge_ops already compacts every table 6-hourly), a PRE-PASS storage
       listing (taken here, in dry_run too, catalog-first/storage-second at both read pairs --
@@ -283,7 +285,7 @@ verbs:
 audit_invariants:
   - "Singleton: reserved_concurrent_executions=1 enforces a single concurrent maintenance run (Decision 81 cl.6)."
   - "No LLM / agent invocation anywhere in this path (CD.33 cl.5 / Decision 81 cl.6)."
-  - "Scheduled merge/gc/hot_merge operate on the SMOKE catalog (ducklake_smoke); merge_ops and gc_ops are ALSO EventBridge-scheduled (every 6h / weekly respectively) but target the PRODUCTION catalog (ducklake_ops) with data_path+meta_schema supplied by the EventBridge target -- gc_ops's rule is created DISABLED. The human-invoked operational actions (catalog_reinit/restore_drill/catalog_stats/reconcile_columns) target production via explicit params and refuse no-arg invokes."
+  - "Scheduled merge/gc/hot_merge operate on the SMOKE catalog (ducklake_smoke); merge_ops and gc_ops are ALSO EventBridge-scheduled (every 6h / weekly respectively) but target the PRODUCTION catalog (ducklake_ops) with data_path+meta_schema supplied by the EventBridge target -- gc_ops's rule is ENABLED (gc-ops-baseline-gate-and-schedule-enable). The human-invoked operational actions (catalog_reinit/restore_drill/catalog_stats/reconcile_columns) target production via explicit params and refuse no-arg invokes."
   - "GC (both gc and gc_ops) is guarded by the fail-closed G1-G4 guard set (reachability, retention floor, catalog sanity, an absolute per-pass deletion bound); a G1/G2/G3 trip raises DuckLakeMaintenanceError, emits MaintenanceBreakerTrip=1, and deletes nothing, while a G4 over-budget pass defers the whole destructive step instead. The forced-trip breaker_probe action (out of contract scope) exists to prove G1. gc_ops additionally runs an INDEPENDENT post-pass safety check (referenced_missing against a real storage listing, plus a value-scanning read-path re-read) that G1-G4 do not perform, because gc_ops's live set is UNIVERSAL (every table, no policy input) rather than scoped by maintenance_policy."
   - "Two destructive paths exist: catalog_reinit is CATALOG-STRUCTURE destructive (meta-schema drop + reinit; confirm=<meta_schema>-guarded; IRREVERSIBLE), and gc / gc_ops are DATA-FILE destructive (snapshot expiry + orphan-file deletion on the happy path), guarded by the G1-G4 guard set, not a confirm token. gc_ops additionally supports dry_run=true, a read-only measurement mode with no destructive call."
   - "gc_ops NEVER reads maintenance_policy or calls scope.resolve_scope -- that matrix governs PER-TABLE-SCOPED verbs only (its single production consumer is merge_ops); a catalog-wide destructive verb takes no policy cell, because filtering its live set would narrow what the guards can SEE, never what gets deleted."
@@ -348,4 +350,17 @@ amendment_log:
       strict-sizing raise is now a breaker-class 500 (emits MaintenanceBreakerTrip=1), and
       gc_debt_ratio raising on live_bytes <= 0 is now surfaced as a breaker-class 500 instead of
       being silently reported as GcDebtRatio=0.0 (rec-3876).
+  - date: "2026-09-17"
+    semantic_break: true
+    change_class: field_add
+    summary: >-
+      gc-ops-baseline-gate-and-schedule-enable (T2.18 c2): flipped the gc_ops EventBridge rule
+      DISABLED -> ENABLED after the pre-enablement baseline gate cleared against the committed
+      dry_run reading (tests/fixtures/gc_ops_dryrun_baseline.json: referenced_missing 0,
+      unsized_candidates 0, at least one drain-ladder rung admitting a positive count under both
+      G4 caps) and deploy-ducklake-lambdas.yml confirmed green for the handler carrying the drain
+      walk. Real behaviour, not prose-only: the weekly production destructive-GC pass now actually
+      fires. Repoints the contract's present-tense "created DISABLED" claims (description, this
+      verb's payload_schema_ref, audit_invariants) to record the cleared gate, and retains a
+      present-tense re-enabling clause so any future rollback to DISABLED stays gated the same way.
 previous_versions: []
