@@ -432,25 +432,29 @@ starting SHA after the fifth rerun, so the comparison base and workload did not 
 | `--pre` step | 33, 41, 41, 41, 27 | **41** | 30-41 (11; 26.8%) | 27-41 (14; 34.1%) |
 | `pr-validate` job | 89, 95, 115, 119, 95 | **95** | 92-117 (25; 26.3%) | 89-119 (30; 31.6%) |
 
-Quartiles use the same median-of-the-lower/upper-two convention as the other five-run tables.
-The absolute low-breadth `--pre` detection threshold is therefore an 11s IQR width, with a 14s
-full range. Relative to the median those spreads are 26.8% and 34.1%; the corresponding job-clock
-spreads are 25s / 26.3% and 30s / 31.6%. The initial qualifying run is excluded from these five-rerun
-statistics.
+This table uses median-exclusive lower and upper halves, which gives the requested 30-41s quartiles.
+That convention differs from the inclusive hinges used in the Candidate 1 five-run table and from
+Phase 0's linear interpolation. Inclusive hinges would give 33-41s, an 8s IQR width, for this same
+population. The prescribed median-exclusive low-breadth `--pre` spread is 11s (26.8% of the median),
+and the convention-independent full range is 14s (34.1%). The corresponding job-clock spreads are
+25s / 26.3% and 30s / 31.6%. The initial qualifying run is excluded from these five-rerun statistics.
 
 The realistic recoverable-work estimate remains approximately **7.4s**. Its basis is contract
 drift's 3.29s of repeated registered-module searches plus 1.09s of identical-text YAML reloads,
 and roughly 3.0s of repeated parsing across CC, test-count coupling and raises discrimination.
 Contract drift is the largest single target at approximately **4.38s**. The four checks' 19.373s
-gross clock is not a saving estimate. The small-diff impossible-perfect-reuse ceiling is
-**8.624s**.
+gross clock is not a saving estimate. A separate small-diff perfect-reuse ceiling for the measured
+repeated `ast.parse` and `Path.read_text` calls, one repository walk and all git calls is **8.624s**.
+It is not a mathematical bound on the differently composed 7.4s estimate because the latter also
+includes YAML parsing and module-search work outside source read/parse.
 
-This optimisation line is a **Section 15 NULL RESULT**. Both the 7.4s realistic estimate and the
-8.624s all-reuse ceiling fall below the measured 11s `--pre` IQR width and inside the 14s full
-range. The 8.624s ceiling is the largest change the harness rejected: although it is 21.0% of the
-41s median, it is below the same-workload spread on the authoritative CI surface and therefore
-cannot satisfy section 12's evidence bar. Candidate 1's 3.395s orchestration-remainder saving is
-smaller still. No static-reuse target advances to implementation, and Candidate 3 was not started.
+This optimisation line is a **Section 15 NULL RESULT** for the measured one-module regime. The
+7.4s realistic estimate is inside both the 8s inclusive-hinge IQR and the prescribed 11s
+median-exclusive IQR. The separate 8.624s parse/read/walk/git ceiling is inside the 11s IQR and the
+14s full range, though it is 0.624s above the alternative 8s IQR. It therefore remains inside the
+observed same-workload spread on the authoritative CI surface and cannot support a Section 12
+improvement claim. Candidate 1's 3.395s orchestration-remainder saving is smaller still. No
+static-reuse target advances to implementation, and Candidate 3 was not started.
 
 The measurement PR was closed without merge, and its local and remote throwaway branches were
 deleted after collection.
@@ -483,6 +487,12 @@ passed, and the final `bin/venv-python -m scripts.validate --pre` run passed all
 tests. Generated virtualenv artifact directories were moved out of the workspace before the final
 gate because the repository's static walkers deliberately scan gitignored Python trees too; raw JSON
 results remain under `logs/debug/`.
+
+The retained harness is an executed-node and gate-verdict differ, not a standalone Class 2 artifact-
+equivalence certificate. It exposes both deferral maps for inspection, but a map-only change with no
+node or gate change is not included in `difference_count`, and it does not compare the complete
+diff-coverage artifact. Any future Class 2 candidate must compare those emitted artifacts separately
+before claiming Section 7 equivalence.
 
 ## DEVIATIONS
 
