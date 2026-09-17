@@ -459,6 +459,31 @@ deleted after collection.
 
 Not entered. The Phase 3 optimisation line ended in the Section 15 null result above.
 
+## Section 14.3 harness handback
+
+The committed harness corpus contains 16 pinned implementation PRs and eight pinned
+plan-to-implementation predictor pairs. Its manifest base remains
+`35609091fd8482d3116e4b360c6ec2bc9ab25b90`. After Candidate 1 was removed, the branch was rebased
+onto main base `db63955a8ebf12c92b2651c19cb47a1c84efc16c`; keeper commit `9a94f254` contains the re-proven
+harness.
+
+The post-revert corpus subset used `pr-1126`, baseline `9cecaab2` and reverted-tree candidate
+`794316cb`. It exercised current main's real `_pytest_diff.run_pytest_diff()` primary and reactive
+paths, consumed `DEFERRAL_MAP_REL`, and completed a 2,741-union-node comparison. Repository evolution
+between the old baseline and current main produced 311 node changes, so this was a compatibility
+re-proof rather than a new equivalence claim; the gate verdict was unchanged and both sides recorded
+four deferred modules. The updated mutation manifest caught all 10 mutations on both revisions.
+
+The first post-revert attempts found two harness-maintenance defects: relative artifact paths made a
+worker interpreter resolve under the temporary worktree, and four candidate-side mutation anchors
+still named deleted Candidate 1 seams. `9a94f254` resolves artifact paths absolutely, retargets those
+mutations to current main's equivalent assertions, and adds regression coverage for both failures.
+The focused harness/mutation suite passed 40 tests, branch-scoped mypy and whole-tree ruff/format
+passed, and the final `bin/venv-python -m scripts.validate --pre` run passed all checks with 63 selected
+tests. Generated virtualenv artifact directories were moved out of the workspace before the final
+gate because the repository's static walkers deliberately scan gitignored Python trees too; raw JSON
+results remain under `logs/debug/`.
+
 ## DEVIATIONS
 
 ### Capability deviations
