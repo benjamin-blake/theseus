@@ -1,0 +1,585 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: gc-ops-baseline-gate-and-schedule-enable
+intent: Take the gc_ops pre-enablement baseline gate against the post-#1203 partial-drain design and flip the production
+  gc_ops EventBridge rule from DISABLED to ENABLED, starting the weekly destructive-GC cadence whose N=9-cycle record
+  rec-3870 will later adjudicate T2.18 c2 against. This plan starts that clock; it does not close c2.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-gc-ops-baseline-gate-and-schedule-enable.yaml
+phase: T2.18
+scope:
+- file: terraform/personal/ducklake_maintenance.tf
+  action: Modify
+  purpose: TWO edit sites, not one. (a) The state literal at :328, DISABLED -> ENABLED. (b) The `description` ATTRIBUTE
+    at :326, which carries 'Created DISABLED -- enabled only after the baseline gate + CD deploy both clear'. That
+    is an applied resource attribute, not a comment, so it ships to AWS and would describe the rule as disabled
+    while it runs. The comment block above :324 is a third site and is stale the same way -- it instructs a future
+    session to enable after VP14/VP15. Rewrite all three to record the gate that cleared. Leave the cron, the target
+    input, and the lambda permission untouched.
+- file: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py
+  action: Modify
+  purpose: 'Three test changes. (a) Replace test_gc_ops_rule_is_created_disabled with test_gc_ops_rule_is_enabled:
+    the claim INVERTS, so the flip reddens the existing test by construction. This is a claim-flip, not a relaxation
+    -- the assertion is equally strong in the new direction, and the differential-admission run on the new shard
+    is the proof. Deleting rather than re-authoring would leave a silent regression to DISABLED unguarded. (b) Add
+    test_dr_dump_precedes_the_gc_ops_window, reading ducklake_catalog_dr.tf (read-only, not modified) to pin that
+    the catalog backup cron precedes the gc_ops cron on the same day. (c) Add TestGcOpsEnablementBaseline asserting
+    the committed dry-run fixture licenses the enablement. File is 259 of 500 SLOC; ~60 added lines keep it unregistered
+    and well under budget, so Decision 128 decomposition is not engaged.'
+- file: tests/fixtures/gc_ops_dryrun_baseline.json
+  action: Create
+  purpose: 'The operator''s gc_ops dry_run response envelope, committed as evidence. This is the mechanism that
+    removes human memory from the critical path: instead of an operator pasting JSON into a terminal that an agent
+    then trusts, the reading is version-controlled with provenance and a test adjudicates it, so FORGETTING TO TAKE
+    THE READING FAILS CI rather than stalling silently. Body is scalars plus table names only -- no paths, no bucket
+    name, no account id -- and this repo already publishes the same class of figures in PLAN-production-gc-and-storage-stability
+    and rec-3767, so Decision 101''s boundary is satisfied and asserted by step 8 rather than assumed.'
+- file: config/agent/verification_registry/entries/gc-ops-rule-enabled-and-no-lakehouse-lifecycle.yaml
+  action: Create
+  purpose: 'Successor shard carrying the inverted claim, the new DR-ordering assertion, and ALL FOUR unchanged sibling
+    selectors (no-lakehouse-lifecycle, maintenance-IAM-not-widened, liveness-breaching-on-missing, cadence-minutes-disjoint).
+    Carrying all four forward is load-bearing: a retired shard whose surviving properties are not re-homed is a
+    silently lapsed pin. A NEW check_id is required rather than a selector swap in place -- verification-registry.yaml''s
+    check_id semantics make identity immutable across implementation changes, and the retained-id precedent in its
+    amendment_log is explicitly scoped to claim-PRESERVING re-authoring, which an inversion is not.'
+- file: config/agent/verification_registry/entries/gc-ops-enablement-baseline-fixture-gate.yaml
+  action: Create
+  purpose: 'Shard graduating the fixture gate. Its standing value is tamper-evidence on the evidence that licensed
+    a destructive production schedule: once merged, the fixture is immutable, so any later edit that weakens what
+    the baseline claimed reddens CI.'
+- file: config/agent/verification_registry/entries/deprecated/gc-ops-rule-disabled-and-no-lakehouse-lifecycle.yaml
+  action: Create
+  purpose: 'git mv of the superseded shard into the loader-excluded retirement subtree (Decision 176: retirement
+    is a git mv to entries/deprecated/, no status column, no version key). Its check_spec names a pytest selector
+    this plan deletes, so leaving it live converts a standing green check into a collection error.'
+- file: config/agent/verification_registry/entries/gc-ops-rule-disabled-and-no-lakehouse-lifecycle.yaml
+  action: Delete
+  purpose: The git mv's source half -- the shard no longer resolves at the live entries/ path.
+- file: docs/contracts/ducklake_maintenance.yaml
+  action: Modify
+  purpose: Retire the future-tense 'enabled only after the baseline gate clears' clause at :180 and repoint the
+    three sibling 'created DISABLED' sites (:25, :286, :321) to record the cleared gate and the live cadence; prepend
+    the amendment_log entry. File is 336 of 500 effective lines, so size governance is not engaged.
+- file: docs/runbooks/ducklake-catalog-operations.md
+  action: Modify
+  purpose: Three additions. (a) The gc_ops dry_run operator recipe, which does not exist today -- the manual-invoke
+    section carries only the smoke-scoped action=gc -- resolving data_path via `terraform output -raw`, never a
+    literal bucket name. (b) The DELETE-MARKER RECOVERY recipe, so the rollback path for an over-reclaim is written
+    down before it is needed rather than invented under pressure. (c) The live cadence, and the fact that the liveness
+    alarm sits in ALARM until the first pass emits.
+bundled_recommendations:
+- rec-3767
+followon_recs:
+- rec-3907
+- rec-3908
+- rec-3909
+closes_criteria: []
+infrastructure_dependencies:
+- 'terraform/personal/ducklake_maintenance.tf: aws_cloudwatch_event_rule.ducklake_maintenance_gc_ops state UPDATE.
+  Non-IAM, non-delete, non-trust-diff, and not one of the six RESOURCE_POLICY_TYPES, so terraform_apply_guard exits
+  0 and terraform-apply-sandbox.yml auto-applies the saved plan at merge (Decision 77 no-TOCTOU; guard classification
+  per environment-taxonomy.yaml, Decision 92 point 5). No IAM diff, so no tf-gated-apply routing and no admin out-of-band
+  step.'
+- 'Apply-role grant confirmed present, not assumed: github_ci_apply already holds events:PutRule and events:EnableRule
+  scoped to arn:aws:events:*:*:rule/agent-platform-* (terraform/bootstrap/github_ci_apply_policy.tf:553-563), so
+  no IAM gap red-latches this apply.'
+- 'Apply precondition: the durable convergence record must be green -- terraform-apply-sandbox.yml''s read-PRECONDITION
+  refuses on CONVERGENCE_RED and a plain push never clears red. Measured green at plan time via bin/venv-python
+  -m scripts.convergence_health.'
+- 'Decision 119: NO local terraform command is authored anywhere in this plan, fmt included. This container has
+  no terraform binary at all (verified: command not found), so CI''s terraform-validate required check and the speculative-plan
+  job are the only verifiers. The state literal change does not shift attribute alignment (fmt aligns on the longest
+  KEY, schedule_expression, not on values), but fmt remains CI''s to adjudicate.'
+- 'No Lambda artifact is affected: compute_affected_artifacts over this plan''s scope returns {} -- terraform, tests/,
+  config/agent/ and docs/ all sit outside the manifest patterns -- so Decision 79 / CD.16''s build+deploy+smoke
+  obligation does not fire.'
+acceptance_criteria:
+- 'THE GATE PRECEDES THE ENABLE. Steps 11 and 12 complete and pass BEFORE the PR carrying the terraform flip is
+  merged, because the flip auto-applies at merge. Merging first and gating afterwards inverts the only control this
+  plan has. This is structural, not advisory: those steps are phased pre-deploy precisely because the deploy IS
+  the merge-time apply.'
+- THE GATE READS THE INVOKE RESPONSE PAYLOAD, NOT CLOUDWATCH, for the two signals that decide it. drain_probe_counts
+  and unsized_candidates are dry_run-only RESPONSE fields; GcDrainCutoffDays emits only on a real non-dry_run pass.
+  A gate authored against CloudWatch alone would silently adjudicate on metrics that do not exist in dry_run. docs/contracts/ducklake_maintenance.yaml
+  already sanctions the payload as the pre-enablement canary, and the runbook already prescribes unsized_candidates
+  == 0 as a pre-enablement reading.
+- THE GATE CONDITION IS THE POST-#1203 QUESTION. Not 'is the backlog under G4_MAX_DELETE_FILES' -- it is not, 23,476
+  measured 2026-09-15 against a 20,000 cap -- but 'does a ladder rung admit a POSITIVE count under BOTH caps', which
+  is what _drain_walk brackets and bisects on. A rung admitting zero is not a drain (the rec-3871 anti-pattern _drain_walk
+  explicitly rejects), so the assertion is 0 < files <= cap, never files <= cap.
+- THE GATE IS NECESSARY, NOT SUFFICIENT, AND SAYS SO. The dry_run probe is PRE-EXPIRY (dry_run runs no expire_snapshots)
+  while the real walk brackets the POST-EXPIRY set, which is strictly larger on a catalog where expiry has never
+  run. The probe also samples ladder rungs only, with strict_sizes=False, while the real walk bisects with strict_sizes=True
+  -- a coarser and more permissive reading than the pass it predicts. The sufficient reading is GcDrainCutoffDays
+  on the first real pass, which is why step 14 is in this plan rather than deferred.
+- unsized_candidates == 0 IS BLOCKING, NOT AN OBSERVATION. The real pass sizes with strict_sizes=True and RAISES
+  on the first unsized path (Decision 163/193), so a non-zero dry_run reading predicts a 500 and a breaker trip
+  on the first scheduled firing.
+- 'G4_MAX_DELETE_FILES (20,000) and G4_MAX_DELETE_BYTES (10 GiB) ARE UNCHANGED, asserted by an executable cap-pin
+  step rather than left to reviewer vigilance. The drain is the sanctioned answer to an over-cap backlog; raising
+  a bound so a gate passes is the Decision 55 prohibition, and the constants'' own docstring requires a Decision
+  superseding CD.33 / Decision 188 to move them. The byte cap is nowhere near binding regardless: the whole prefix
+  measured 0.246 GiB against a 10 GiB cap, so only the file count decides.'
+- 'EVERY VP COMMAND IS ONE THIS SESSION PROVED THE AGENT IDENTITY CAN RUN. Three candidates were probed and REJECTED
+  as unauthorized rather than authored blind: events:DescribeRule (AccessDenied -- so NO step verifies the rule
+  state via the EventBridge API), lambda:GetFunctionConfiguration (AccessDenied -- so no step reads the function''s
+  LastModified), and any local terraform invocation (no binary). PlatformDev''s ObservabilityMetricRead grant (GetMetricData,
+  DescribeAlarms, platform_dev_policies.tf:103-113) is what the CloudWatch and alarm steps rest on, and it was exercised
+  live at plan time.'
+- THE OPERATOR INVOKE IS ACKNOWLEDGED, THEN ENGINEERED AROUND. PlatformDev's DuckLakeInvokeRuntime grant is scoped
+  to the writer and reader ARNs only; maintenance stays break-glass on PlatformAdmin (platform_dev_policies.tf:56-68,
+  Decision 143 blast radius). That boundary is not widened. Instead the response is COMMITTED AS A FIXTURE and a
+  test adjudicates it, so a forgotten reading fails CI instead of stalling the plan silently -- the human stays
+  at the judgement point and leaves the transcription point.
+- THE FIRST SCHEDULED PASS IS VERIFIED BY A STATE TRANSITION, NOT BY ABSENCE. ducklake-maintenance-gc-ops-liveness
+  is ALREADY in ALARM (measured live 2026-09-15T16:08 -- seven missing daily datapoints treated as breaching, because
+  production GC has never run). Its clearing to OK is the behavioural proof the enable took effect, and given events:DescribeRule
+  is denied it is the one such signal available.
+- BACKUP PRECEDES DESTRUCTION, AND IT IS NOW ASSERTED. The catalog-DR dump runs cron(0 3 ? * SUN *) and gc_ops cron(45
+  3 ? * SUN *) -- both confirmed live 2026-09-17 (catalog-dr ENABLED, gc_ops DISABLED). Until this plan that 45-minute
+  ordering was a property of two independently-authored literals in two files that nothing checked, and it only
+  became load-bearing when the destructive cadence was enabled. The static test pins the ordering; it does NOT prove
+  the backup COMPLETED, which is rec-3909's deferred half and is named as such rather than implied.
+- T2.18 c2 STAYS `open` AND closes_criteria IS EMPTY. This plan starts rec-3870's N=9 clock; it does not adjudicate
+  the window. Criterion flips happen only in /implement's bookkeeping walk for explicitly declared closes_criteria
+  (tier-item-lifecycle.yaml Status-Trusted-Never-Inferred).
+- rec-3767 IS CLOSED ON ITS OWN LITERAL ACCEPTANCE PROBE, run verbatim from the rec row rather than paraphrased,
+  and its closure is verified against the read cache after a portal sync.
+- THE SUPERSEDED SHARD IS RETIRED, NOT ORPHANED, AND ITS SURVIVING PROPERTIES ARE RE-HOMED. All four still-valid
+  sibling selectors move to the successor shard. A retired pin whose properties lapse unreplaced is a silent loss
+  of coverage.
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: gc-ops-rule-enabled-and-no-lakehouse-lifecycle
+  action: 'Run the successor shard''s exact check_spec: the inverted ENABLED assertion, the new DR-precedes-GC ordering
+    assertion, and the four unchanged sibling invariants. The VP step and the registry row run the identical command
+    by construction.'
+  command: bin/venv-python -m pytest "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_gc_ops_rule_is_enabled"
+    "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_no_lifecycle_configuration_targets_the_data_lake_bucket"
+    "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_maintenance_role_iam_is_not_widened"
+    "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_liveness_alarm_treats_missing_data_as_breaching"
+    "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_gc_ops_rule_cron_does_not_collide_with_the_singleton_cadences"
+    "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_dr_dump_precedes_the_gc_ops_window"
+    -q
+  expected: 6 passed. On the un-implemented tree test_gc_ops_rule_is_enabled and test_dr_dump_precedes_the_gc_ops_window
+    do not exist, so pytest exits non-zero with a collection error -- genuinely red before the fix.
+  fix_if: A selector is absent (the old test was deleted without a replacement, leaving the rule state unguarded)
+    or still asserts DISABLED. Never delete an assertion to make the step pass.
+- step: 2
+  phase: pre-deploy
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Duplicates the claim step 1 graduates as gc-ops-rule-enabled-and-no-lakehouse-lifecycle.
+    A second standing shard over one invariant adds a maintenance surface without adding discrimination.
+  action: Assert the terraform literal in BOTH polarities, scoped to the gc_ops rule block alone so a sibling rule's
+    state cannot satisfy it and a half-applied edit cannot pass. The negative half also forces the stale `description`
+    attribute at :326 to be rewritten, since it contains the word DISABLED inside the same block.
+  command: bin/venv-python -c "import re,pathlib; t=pathlib.Path('terraform/personal/ducklake_maintenance.tf').read_text();
+    m=re.search(r'resource \"aws_cloudwatch_event_rule\" \"ducklake_maintenance_gc_ops\" \{.*?\n\}', t, re.S); assert
+    m, 'gc_ops rule block not found'; b=m.group(0); assert re.search(r'state\s*=\s*\"ENABLED\"', b), b; assert 'DISABLED'
+    not in b, b; print('gc_ops rule state = ENABLED')"
+  expected: 'Prints: gc_ops rule state = ENABLED. Exit 0.'
+  fix_if: The block still carries DISABLED anywhere (check the description attribute, not just the state), or the
+    regex finds no block -- the resource was renamed, which also breaks the target and permission references at
+    :337 and :348.
+- step: 3
+  phase: pre-deploy
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: A bundled recommendation's own acceptance literal, not a standing repo invariant --
+    it becomes dead weight the moment rec-3767 closes, and step 1 guards the underlying claim permanently.
+  action: Run rec-3767's acceptance probe VERBATIM from the rec row, so the bundled rec closes on its own stated
+    terms.
+  command: rg -q 'gc_ops' terraform/personal/ducklake_maintenance.tf && ! rg -n 'gc_ops' -A 10 terraform/personal/ducklake_maintenance.tf
+    | rg -q 'state *= *"DISABLED"'
+  expected: Exit 0.
+  fix_if: 'Non-zero. This probe''s -A 10 window is looser than step 2''s block-scoped regex: if step 2 passes and
+    this fails, a DISABLED literal sits within ten lines of some other gc_ops mention. Reword the prose, never weaken
+    the probe.'
+- step: 4
+  phase: pre-deploy
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Asserts a one-time migration specific to this diff (one id retired, two added). It is
+    green-by-construction forever after and would guard nothing as a standing check.
+  action: 'Assert the registry re-key: both successor shards load through the canonical loader, the superseded shard
+    no longer does, and the retired file is physically present under the loader-excluded deprecated subtree -- so
+    ''retired'' stays distinguishable from ''deleted and forgotten''.'
+  command: bin/venv-python -c "import pathlib; from scripts.verification_graduation import load_entries; ids={e['check_id']
+    for e in load_entries()}; assert 'gc-ops-rule-enabled-and-no-lakehouse-lifecycle' in ids, 'new shard does not
+    load'; assert 'gc-ops-enablement-baseline-fixture-gate' in ids, 'fixture-gate shard does not load'; assert 'gc-ops-rule-disabled-and-no-lakehouse-lifecycle'
+    not in ids, 'superseded shard still live'; p=pathlib.Path('config/agent/verification_registry/entries/deprecated/gc-ops-rule-disabled-and-no-lakehouse-lifecycle.yaml');
+    assert p.is_file(), 'retired shard missing from entries/deprecated/'; print('registry re-keyed; retired shard
+    parked')"
+  expected: 'Prints: registry re-keyed; retired shard parked. Exit 0.'
+  fix_if: A shard does not load (filename must equal check_id -- validate_verification_registry enforces placement
+    structurally), or the old one still resolves at the live path, or the retirement was a plain delete rather than
+    a git mv into entries/deprecated/.
+- step: 5
+  phase: pre-deploy
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Green-by-construction on the un-implemented tree, because it asserts an invariant this
+    plan must NOT change. Declaring it `graduate` would fail Decision 189's plan-PR RED-BEFORE replay leg, which
+    requires a graduate pre-deploy step to redden before the fix exists.
+  action: CAP PIN. Assert G4's two absolute bounds are the shipped values, enforcing this plan's no-weakening constraint
+    executably rather than by reviewer vigilance. Step 11 reads these same constants at runtime, so an unpinned
+    raise would make the gate pass for the wrong reason.
+  command: bin/venv-python -c "from src.common.ducklake_maintenance_ops import G4_MAX_DELETE_FILES as f, G4_MAX_DELETE_BYTES
+    as b; assert f==20000, f; assert b==10*1024**3, b; print('G4 caps unchanged:', f, 'files /', b, 'bytes')"
+  expected: 'Prints: G4 caps unchanged: 20000 files / 10737418240 bytes. Exit 0.'
+  fix_if: Either constant moved. Revert it. Moving them requires a Decision superseding CD.33 / Decision 188 per
+    the constants' own docstring, and doing it inside this plan would be the Decision 55 prohibition exactly.
+- step: 6
+  phase: pre-deploy
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Keyed on prose strings this diff introduces, so it discriminates nothing once merged.
+    Standing contract-drift coverage is validate_contract_drift's job, not a per-plan shard.
+  action: Assert the contract carries no future-tense enablement clause, names this plan, and grew an amendment_log
+    entry. Contract drift on a Class A contract is the failure mode that made :180 stale to begin with.
+  command: bin/venv-python -c "import yaml,pathlib; raw=pathlib.Path('docs/contracts/ducklake_maintenance.yaml').read_text();
+    assert 'enabled only after the baseline gate clears' not in raw, 'stale future-tense enablement clause survives';
+    assert 'gc-ops-baseline-gate-and-schedule-enable' in raw, 'contract does not name the enabling plan'; d=yaml.safe_load(raw);
+    e=d['amendment_log'][0]; assert 'gc_ops' in e['summary'] and 'ENABLED' in e['summary'], e; print('contract repointed;
+    newest amendment:', e['date'])"
+  expected: Prints the newest amendment_log date. Exit 0.
+  fix_if: The stale clause survives at any of the four sites, or amendment_log was appended at the tail instead
+    of prepended -- confirm the existing entries' order before assuming either.
+- step: 7
+  phase: pre-deploy
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: Half is keyed on prose this diff introduces. The account-id half duplicates the pre-commit
+    never-commit hook, which already guards the whole repo rather than one file.
+  action: Assert the runbook gained the dry_run recipe AND the delete-marker recovery recipe, and that neither leaks
+    account-scoped data -- data_path resolves through a terraform output, never a literal bucket name (AGENTS.md
+    public-repo boundary, Decision 101).
+  command: bin/venv-python -c "import re,pathlib; t=pathlib.Path('docs/runbooks/ducklake-catalog-operations.md').read_text();
+    c=t.replace(' ',''); assert '\"action\":\"gc_ops\"' in c, 'no gc_ops invoke recipe'; assert '\"dry_run\":true'
+    in c, 'recipe is not the read-only dry_run form'; assert 'output -raw' in t, 'data_path is not resolved via
+    a terraform output'; assert 'delete-marker' in t.lower(), 'no delete-marker recovery recipe'; assert not re.search(r'(?<!\d)\d{12}(?!\d)',
+    t), 'a 12-digit account id reached the runbook'; print('runbook recipe + recovery present and boundary-clean')"
+  expected: 'Prints: runbook recipe + recovery present and boundary-clean. Exit 0.'
+  fix_if: The recipe hardcodes the data-lake bucket or an account id -- resolve it the way the existing SNS recipe
+    does. The never-commit hook blocks the account-id shape, but a bucket name is not shape-detectable, so this
+    step is the only cover for it.
+- step: 8
+  phase: pre-deploy
+  hermetic: false
+  graduation: graduate
+  graduation_check_id: gc-ops-enablement-baseline-fixture-gate
+  action: 'THE BASELINE GATE, adjudicated on the COMMITTED fixture. The operator''s dry_run response (taken per
+    the pre-implementation checklist) is committed at tests/fixtures/gc_ops_dryrun_baseline.json and this test asserts
+    the three gate conditions against it: referenced_missing == 0, unsized_candidates == 0, and at least one ladder
+    rung with 0 < files <= G4_MAX_DELETE_FILES and bytes <= G4_MAX_DELETE_BYTES. The test imports both caps from
+    src.common.ducklake_maintenance_ops so the assertion can never drift from the shipped guard. It also asserts
+    the fixture''s captured_at POST-DATES the #1203 merge (commit 1402004), proving the reading exercised the drain
+    code -- an absolute ''within N days of now'' bound was deliberately REJECTED because it turns green CI red on
+    day N+1 for no reason. The test must additionally PRINT the full ladder and the implied drain-cycle count, which
+    feeds rec-3870''s N.'
+  command: bin/venv-python -m pytest "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestGcOpsEnablementBaseline::test_committed_dry_run_baseline_licenses_the_enablement"
+    -q
+  expected: '1 passed, with at least one admitting rung. Red before the fix: neither the fixture nor the test class
+    exists on the un-implemented tree.'
+  fix_if: '(a) referenced_missing != 0 -- STOP, do not merge. A catalog-live path is missing from storage; that
+    is an incident predating this plan and must be root-caused first. Note rec-3892 records an unexplained deleter
+    in the SMOKE prefix on the same bucket, and its 2026-09-17 addendum refutes the lifecycle hypothesis -- consult
+    it before assuming a guard defect. (b) unsized_candidates != 0 -- STOP. The real pass raises on the first unsized
+    path, so the first firing would 500 and trip the breaker; RCA the catalog/storage inconsistency and never widen
+    the size source. (c) NO ADMITTING RUNG -- STOP. _drain_walk would return (None, None) and defer the whole pass
+    every week, so the backlog never shrinks and the N=9 window produces zero deletions. Do NOT raise the caps to
+    manufacture one (step 5 pins them; Decision 55) -- a rung admitting zero is explicitly not a drain, which is
+    why the assertion is 0 < files, not files <=. (d) The fixture is missing -- the operator invoke did not happen.
+    That is the whole point of this step: it fails loudly here instead of the plan stalling silently.'
+- step: 9
+  phase: pre-deploy
+  hermetic: false
+  graduation: not-applicable
+  action: Fast-tier presubmit before the PR.
+  command: bin/venv-python -m scripts.validate --pre
+  expected: Exit 0. validate_verification_registry's placement leg, validate_plan_documents, validate_graduation_completeness
+    and validate_sloc_budget_raises all run here, so a misnamed shard, an unlinked test obligation or an unset disposition
+    surfaces here rather than in CI.
+  fix_if: Any check fails -- resolve on the branch before pushing (git-ops step 6; per ci-rca-lifecycle.yaml trigger_scope
+    no rec is filed for a PR-branch --pre failure and nothing gates).
+- step: 10
+  phase: pre-deploy
+  hermetic: false
+  graduation: not-applicable
+  action: Full-tier validation before handoff, per handoff_policy.
+  command: bin/venv-python -m scripts.validate
+  expected: Exit 0.
+  fix_if: 'Any check fails -- resolve before commit. A timeout is `blocked`: resume and rerun full from the start
+    rather than committing on a partial pass.'
+- step: 11
+  phase: pre-deploy
+  hermetic: false
+  graduation: not-applicable
+  action: 'BEFORE MERGE. Confirm the governed code-deploy channel has already shipped the handler carrying action=gc_ops
+    AND #1203''s drain walk, on the head the dry_run exercised. Measured at plan time: deploy-ducklake-lambdas.yml
+    run 17 is `success` for head_sha 1402004 (the #1203 merge), so this is expected to re-confirm -- re-take it
+    anyway against the then-current main, since a later merge could have shipped over it.'
+  command: 'echo ''DISPATCH VIA MCP (no gh CLI in either container, AGENTS.md Shell invocations): mcp__github__actions_list
+    method=list_workflow_runs resource_id=deploy-ducklake-lambdas.yml branch=main perPage=5 -- the newest run whose
+    head_sha is an ancestor of the fixture head must have conclusion=success, with deploy-maintenance and maintenance-smoke
+    both green.'''
+  expected: deploy-ducklake-lambdas.yml green for the maintenance functions on the current main head. lambda:GetFunctionConfiguration
+    is DENIED to PlatformDev (verified live at plan time), so the deployed-code state is NOT independently readable
+    from this container -- the workflow verdict is the only available evidence and must not be substituted with
+    a local zip hash.
+  fix_if: 'The run is red or absent. Do NOT trust the fixture: a dry_run taken before the drain code landed reports
+    no drain_probe_counts at all, which step 8 already rejects. Re-dispatch the workflow via workflow_dispatch.
+    Never fall back to the local break-glass build_lambda --ducklake-only --deploy (Decision 125/126; docs/contracts/deploy-paths.yaml).'
+- step: 12
+  phase: pre-deploy
+  hermetic: false
+  graduation: not-applicable
+  action: BEFORE MERGE. Independent second source for the CloudWatch-visible half of the same dry_run, on a different
+    transport from the committed fixture, so a stale or hand-edited payload cannot carry the gate alone. Agent-executable
+    on ObservabilityMetricRead. ONLY these four gc_ops metrics emit under dry_run -- GcDrainCutoffDays, GcDeferredFiles,
+    GcSnapshotsRetainedMin and the three GcDeleted* counters are non-dry_run-only, so asking for them here would
+    read absent and prove nothing.
+  command: aws cloudwatch get-metric-data --profile agent_platform --region eu-west-2 --start-time "$(date -u -d
+    '3 hours ago' +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --metric-data-queries '[{"Id":"rm","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcReferencedMissing"},"Period":3600,"Stat":"Maximum"}},{"Id":"wd","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcWouldDeleteFiles"},"Period":3600,"Stat":"Maximum"}},{"Id":"debt","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcDebtRatio"},"Period":3600,"Stat":"Average"}},{"Id":"obj","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcStorageObjects"},"Period":3600,"Stat":"Maximum"}}]'
+  expected: 'GcReferencedMissing max == 0, and GcWouldDeleteFiles / GcDebtRatio / GcStorageObjects all present with
+    values agreeing with the committed fixture. Baseline for comparison, measured 2026-09-15T15:20Z: referenced-missing
+    0, would-delete 23476, debt ratio 17.3, storage objects 38025.'
+  fix_if: Metrics read ABSENT rather than zero -- the invoke did not reach emission, or published outside the DuckLakeMaintenance
+    namespace where the role's PutMetricData condition silently denies it and the signal reads absent rather than
+    breached. Treat absence as a FAILURE of this step, never a pass. If the values DISAGREE with the fixture, the
+    fixture is stale or was edited -- re-invoke and recommit, never reconcile by editing the fixture.
+- step: 13
+  phase: post-deploy
+  hermetic: false
+  graduation: not-applicable
+  action: 'AFTER MERGE. Confirm the governed apply landed the flip, from MEASURED PLAN CONTENT rather than from
+    a green tick (Decision 190: drift is classified from measured plan content, never the exit code). There is no
+    direct read available -- events:DescribeRule is DENIED to PlatformDev, verified live -- so the evidence is the
+    apply job''s own plan output plus the durable convergence record, which terraform-apply-sandbox.yml always writes
+    (green on success, red on failure, so a failed apply can never leave a stale green).'
+  command: bin/venv-python -m scripts.convergence_health
+  expected: 'HealthVerdict status green, unapplied_backlog 0. Pair with the MCP read: mcp__github__actions_list
+    method=list_workflow_runs resource_id=terraform-apply-sandbox.yml branch=main to find the run for this plan''s
+    squash-merge commit, then mcp__github__get_job_logs on its apply job and REQUIRE the plan output to name aws_cloudwatch_event_rule.ducklake_maintenance_gc_ops
+    with state changing "DISABLED" -> "ENABLED". Conclusion=success alone is NOT sufficient evidence. The guard
+    verdict must be PASS (routed=false); an IAM-shaped diff would have routed to the tf-gated-apply Environment,
+    which this change is not.'
+  fix_if: 'The record is red or the apply run failed. A red record clears ONLY via the workflow_dispatch acknowledge-and-retry
+    path naming the red commit -- a plain push never clears it, so do not push a no-op commit hoping to re-trigger.
+    See docs/contracts/deploy-paths.yaml''s reconcile row for heal-verb selection. If the plan output does not name
+    the resource, the apply consumed a stale saved plan: do not assume the flip landed.'
+- step: 14
+  phase: post-deploy
+  hermetic: false
+  graduation: not-applicable
+  action: 'AFTER THE FIRST SCHEDULED FIRING -- the first Sunday 03:45 UTC following the merge; if merged on or before
+    2026-09-19 that is 2026-09-20, otherwise the following Sunday. OWNER: the implement session, which stays open
+    and re-checks on a 24h cadence rather than ending at merge. This converts step 8''s NECESSARY pre-expiry signal
+    into the SUFFICIENT post-expiry answer, and is the only behavioural proof the enable took effect. Two independent
+    readings: the liveness alarm state transition, and the real pass''s metric set including GcDrainCutoffDays,
+    which exists only on a non-dry_run pass. This is NOT a c2 adjudication -- that is rec-3870''s at N=9.'
+  command: aws cloudwatch describe-alarms --profile agent_platform --region eu-west-2 --alarm-names ducklake-maintenance-gc-ops-liveness
+    ducklake-maintenance-gc-ops-referenced-missing ducklake-maintenance-circuit-breaker --query 'MetricAlarms[].{Name:AlarmName,State:StateValue,Since:StateUpdatedTimestamp}'
+    --output table && aws cloudwatch get-metric-data --profile agent_platform --region eu-west-2 --start-time "$(date
+    -u -d '8 days ago' +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --metric-data-queries '[{"Id":"rm","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcReferencedMissing"},"Period":86400,"Stat":"Maximum"}},{"Id":"snap","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcSnapshotsRetainedMin"},"Period":86400,"Stat":"Minimum"}},{"Id":"cut","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcDrainCutoffDays"},"Period":86400,"Stat":"Maximum"}},{"Id":"dsnap","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcDeletedSnapshots"},"Period":86400,"Stat":"Sum"}},{"Id":"dfiles","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcDeletedFiles"},"Period":86400,"Stat":"Sum"}},{"Id":"dorph","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcDeletedOrphans"},"Period":86400,"Stat":"Sum"}},{"Id":"debt","MetricStat":{"Metric":{"Namespace":"DuckLakeMaintenance","MetricName":"GcDebtRatio"},"Period":86400,"Stat":"Average"}}]'
+  expected: ducklake-maintenance-gc-ops-liveness is OK, transitioned from the ALARM measured 2026-09-15T16:08; referenced-missing
+    and circuit-breaker both OK. GcReferencedMissing max == 0, GcSnapshotsRetainedMin >= 2, GcDrainCutoffDays present
+    and NOT -1.0, and GcDeletedSnapshots + GcDeletedFiles + GcDeletedOrphans > 0.
+  fix_if: 'Liveness still ALARM with no metrics -- the rule did not fire; re-check step 13''s plan-content evidence.
+    GcDrainCutoffDays == -1.0 -- the null sentinel: the walk found no admitting cutoff and deferred wholesale, i.e.
+    step 8''s pre-expiry gate passed but the post-expiry set did not, exactly the necessary-not-sufficient gap.
+    Do NOT raise the caps (step 5); record the post-expiry figure and scope a bounded drain plan. Note this outcome
+    is currently UNALARMED (rec-3908), so it is only visible because this step looks. GcReferencedMissing >= 1,
+    GcSnapshotsRetainedMin < 2, or a breaker trip -- INCIDENT: flip the rule back to DISABLED through the same governed
+    terraform path (see rollback) and RCA before the next Sunday. Never widen a bound to make it pass.'
+- step: 15
+  phase: post-deploy
+  hermetic: false
+  graduation: not-applicable
+  action: Close rec-3767 through the portal, and if step 8 projected more than one drain cycle, update rec-3870's
+    context with the measured ladder so its N=9 is re-grounded rather than adjudicated against a stale assumption
+    -- its derivation explicitly excludes exactly ONE drain cycle. Also append to rec-3870 that GcDebtRatio is computed
+    from a ListObjectsV2 listing and therefore cannot see noncurrent versions, so c2's EFFICACY half must not be
+    read as evidence of billed-storage stability (rec-3907 owns the fix).
+  command: 'bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json; r=[json.loads(l) for l
+    in open(''logs/.recommendations-log.jsonl'')]; m={x[''id'']: x[''status''] for x in r if x[''id''] in (''rec-3767'',''rec-3870'')};
+    print(m); assert m.get(''rec-3767'')==''closed'', m; assert m.get(''rec-3870'')==''open'', ''rec-3870 must stay
+    open -- this plan starts its window, it does not adjudicate it''"'
+  expected: 'Prints {''rec-3767'': ''closed'', ''rec-3870'': ''open''}. Exit 0.'
+  fix_if: rec-3767 still open -- the update_rec portal call did not land; re-file it (writes fail loudly, there
+    is no offline outbox, Decision 84 I-4). rec-3870 closed -- it was adjudicated prematurely; this plan starts
+    its N=9 clock and closes nothing about c2.
+test_obligations:
+- source: terraform/personal/ducklake_maintenance.tf
+  verification_step: 1
+  test_selector: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestProductionGcRuleInvariants::test_gc_ops_rule_is_enabled
+  behavior: The gc_ops EventBridge rule's state literal stays ENABLED. A silent regression to DISABLED would stop
+    production destructive GC with no other signal for a week, until the liveness alarm fired.
+  red_green_expectation: 'Red before: the selector does not exist on the un-implemented tree and its predecessor
+    test_gc_ops_rule_is_created_disabled asserts the opposite claim, so the flip reddens the suite by construction.
+    Green after.'
+- source: tests/fixtures/gc_ops_dryrun_baseline.json
+  verification_step: 8
+  test_selector: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestGcOpsEnablementBaseline::test_committed_dry_run_baseline_licenses_the_enablement
+  behavior: 'The committed baseline reading continues to license the enablement: referenced_missing 0, unsized_candidates
+    0, at least one ladder rung admitting a positive count under both live caps, and a captured_at post-dating the
+    #1203 drain merge. Tamper-evidence on the evidence that licensed a destructive schedule.'
+  red_green_expectation: Red before (neither the fixture nor the test class exists), green after.
+- source: config/agent/verification_registry/entries/gc-ops-rule-enabled-and-no-lakehouse-lifecycle.yaml
+  verification_step: 4
+  command: bin/venv-python -c "import pathlib; from scripts.verification_graduation import load_entries; ids={e['check_id']
+    for e in load_entries()}; assert 'gc-ops-rule-enabled-and-no-lakehouse-lifecycle' in ids, 'new shard does not
+    load'; assert 'gc-ops-enablement-baseline-fixture-gate' in ids, 'fixture-gate shard does not load'; assert 'gc-ops-rule-disabled-and-no-lakehouse-lifecycle'
+    not in ids, 'superseded shard still live'; p=pathlib.Path('config/agent/verification_registry/entries/deprecated/gc-ops-rule-disabled-and-no-lakehouse-lifecycle.yaml');
+    assert p.is_file(), 'retired shard missing from entries/deprecated/'; print('registry re-keyed; retired shard
+    parked')"
+  behavior: The successor shard loads through the canonical loader under its own check_id.
+  red_green_expectation: Red before (check_id absent from the registry), green after.
+- source: config/agent/verification_registry/entries/gc-ops-enablement-baseline-fixture-gate.yaml
+  verification_step: 4
+  command: bin/venv-python -c "import pathlib; from scripts.verification_graduation import load_entries; ids={e['check_id']
+    for e in load_entries()}; assert 'gc-ops-rule-enabled-and-no-lakehouse-lifecycle' in ids, 'new shard does not
+    load'; assert 'gc-ops-enablement-baseline-fixture-gate' in ids, 'fixture-gate shard does not load'; assert 'gc-ops-rule-disabled-and-no-lakehouse-lifecycle'
+    not in ids, 'superseded shard still live'; p=pathlib.Path('config/agent/verification_registry/entries/deprecated/gc-ops-rule-disabled-and-no-lakehouse-lifecycle.yaml');
+    assert p.is_file(), 'retired shard missing from entries/deprecated/'; print('registry re-keyed; retired shard
+    parked')"
+  behavior: The fixture-gate shard loads through the canonical loader under its own check_id.
+  red_green_expectation: Red before (check_id absent from the registry), green after.
+- source: config/agent/verification_registry/entries/deprecated/gc-ops-rule-disabled-and-no-lakehouse-lifecycle.yaml
+  verification_step: 4
+  command: bin/venv-python -c "import pathlib; from scripts.verification_graduation import load_entries; ids={e['check_id']
+    for e in load_entries()}; assert 'gc-ops-rule-enabled-and-no-lakehouse-lifecycle' in ids, 'new shard does not
+    load'; assert 'gc-ops-enablement-baseline-fixture-gate' in ids, 'fixture-gate shard does not load'; assert 'gc-ops-rule-disabled-and-no-lakehouse-lifecycle'
+    not in ids, 'superseded shard still live'; p=pathlib.Path('config/agent/verification_registry/entries/deprecated/gc-ops-rule-disabled-and-no-lakehouse-lifecycle.yaml');
+    assert p.is_file(), 'retired shard missing from entries/deprecated/'; print('registry re-keyed; retired shard
+    parked')"
+  behavior: The superseded shard is parked in the loader-excluded retirement subtree -- not left live (its check_spec
+    names a deleted pytest selector) and not silently deleted.
+  red_green_expectation: Red before (the shard still loads from the live entries/ path and the deprecated copy does
+    not exist), green after.
+- source: docs/contracts/ducklake_maintenance.yaml
+  verification_step: 6
+  command: bin/venv-python -c "import yaml,pathlib; raw=pathlib.Path('docs/contracts/ducklake_maintenance.yaml').read_text();
+    assert 'enabled only after the baseline gate clears' not in raw, 'stale future-tense enablement clause survives';
+    assert 'gc-ops-baseline-gate-and-schedule-enable' in raw, 'contract does not name the enabling plan'; d=yaml.safe_load(raw);
+    e=d['amendment_log'][0]; assert 'gc_ops' in e['summary'] and 'ENABLED' in e['summary'], e; print('contract repointed;
+    newest amendment:', e['date'])"
+  behavior: The contract carries no future-tense 'enabled only after the baseline gate clears' claim once the gate
+    has cleared, and records the transition in amendment_log.
+  red_green_expectation: Red before (the stale clause is present at :180), green after.
+constraints:
+- Do NOT raise G4_MAX_DELETE_FILES or G4_MAX_DELETE_BYTES. The partial drain is the sanctioned answer to an over-cap
+  backlog; raising a bound so a gate passes is the Decision 55 prohibition and would require a Decision superseding
+  CD.33 / Decision 188. Step 5 pins both executably.
+- No rescue agents or workaround loops (Decision 55).
+- 'Do NOT modify shipped guard code: src/common/ducklake_maintenance_ops.py and src/common/ducklake_gc_ops.py are
+  OUT OF SCOPE. This plan takes a reading and flips a schedule; it changes no GC behaviour. The runtime backup precondition
+  that would change gc_ops is rec-3909''s, deliberately deferred.'
+- Do NOT widen PlatformDev's invoke grant to remove the operator step. Maintenance stays break-glass on PlatformAdmin
+  (Decision 143 blast radius); the fixture mechanism is the sanctioned answer. rec-3908 carries the structured-log
+  emission that would retire the relay properly.
+- No local terraform invocation of any kind (Decision 119, terraform/CLAUDE.md) -- fmt included. This container
+  has no terraform binary. CI's terraform-validate check owns fmt/validate; the speculative-plan job owns the plan.
+- The gate precedes the merge. Steps 11 and 12 must be green BEFORE the PR merges, because the flip auto-applies
+  at merge.
+- T2.18 c2 stays `open`; closes_criteria is empty. /plan and /implement never infer a criterion flip (tier-item-lifecycle.yaml
+  Status-Trusted-Never-Inferred).
+- 'Public-repo boundary (Decision 101): the runbook recipe resolves the S3 data path through a terraform output,
+  and the committed fixture carries scalars and table names only. No bucket name, account id, or ARN reaches any
+  scope file. Step 7 asserts it for the runbook; step 8''s test asserts the fixture shape.'
+context:
+- 'Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND. CITE: Decision 192, 193, 188, 163, 176,
+  132, 189, 126, 77, 92, 119, 88, 55. RELATED: Decision 125, 143, 191, 129, 120. Decisions triaged: 146 of 146.
+  Roadmap items intersected: 4; CONFLICT: 0; RELATED: 3.'
+- 'gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)'
+- 'Scout flag dispositions: D48 -> steps 8+12 are the in-session live reading, step 14 dates the deferred half and
+  names an owner. D190 -> step 13 requires the apply job''s plan CONTENT, not its conclusion. D187 -> all four surviving
+  selectors re-homed to the successor shard (step 1). D181 -> the test inversion is a claim-flip, not a relaxation.'
+- 'Parent: docs/plans/PLAN-production-gc-and-storage-stability.yaml (its VP13/14/15 are what this plan executes;
+  none had been taken). Verb shipped #1193; drain shipped #1203 (main 1402004).'
+- 'GOTCHA -- THREE stale sites in terraform/personal/ducklake_maintenance.tf, not one: the state literal :328, the
+  `description` ATTRIBUTE :326 (an applied attribute that ships to AWS, not a comment), and the comment block above
+  :324.'
+- 'GOTCHA -- the dry_run probe is WEAKER than the pass it predicts: src/common/ducklake_gc_ops.py:52 samples ladder
+  rungs only with strict_sizes=False and runs no expire_snapshots, while src/common/ducklake_maintenance_ops.py:283
+  bisects with strict_sizes=True over the POST-expiry set. _drain_walk returns (None, None) BOTH when no rung fits
+  and when the fitting rung admits zero -- hence 0 < files, never files <=.'
+- 'GOTCHA -- DENIED to PlatformDev, all verified live; do not author VP commands against them: events:DescribeRule,
+  lambda:GetFunctionConfiguration, s3:GetBucketVersioning, lambda:InvokeFunction on ducklake_maintenance (platform_dev_policies.tf:56-68).
+  Granted and exercised: cloudwatch GetMetricData/DescribeAlarms (:103-113).'
+- GOTCHA -- ducklake-maintenance-gc-ops-liveness is ALREADY in ALARM (since 2026-09-15T16:08, 7 missing daily datapoints)
+  because production GC has never run. Expected, not an incident; its clearing to OK is step 14's proof.
+- 'Baseline measurements and the versioning/noncurrent-version finding: see rec-3907 (filed by this plan), which
+  owns the full numbers and the GcDebtRatio-cannot-see-noncurrent-versions consequence for c2''s efficacy half.
+  The only consequence THIS plan turns on: deletes land as recoverable delete markers, which is why the first pass
+  may run unattended on the cron. Pre-#1203 reading 2026-09-15T15:20Z: referenced-missing 0, would-delete 23476
+  vs a 20000 cap, debt ratio 17.3, storage objects 38025.'
+- 'Cadences confirmed live 2026-09-17: catalog-dr ENABLED cron(0 3 ? * SUN *); gc_ops DISABLED cron(45 3 ? * SUN
+  *). Backup precedes destruction by 45 min. Completion (not just ordering) is rec-3909''s deferred half.'
+- 'check_id immutability: docs/contracts/verification-registry.yaml fields.check_id -- a changed implementation
+  requires a new id; its amendment_log retained-id precedent is scoped to claim-PRESERVING re-authoring, which an
+  inversion is not. entries/deprecated/ is the Decision 176 retirement subtree.'
+- 'Freshness gate on T2.18 (in_progress, c2 the only open criterion): silent-completion NO, stale-reference NO,
+  supersession NO, CD.29 pending gates COMPLETION not starting. No roadmap bookkeeping edit proposed. c2''s own
+  ''rule created DISABLED'' phrasing is left UNCHANGED deliberately -- historical narrative, unlike the contract''s
+  :180 future-tense normative clause.'
+- 'No numbered Decision drafted: the enablement is already authorized by Decision 192 cl.1 and Decision 126 cl.1,
+  and per decision-entry.yaml significance.routing_rule a state-flip does not clear the bar.'
+- 'Adjacent: rec-3892 (unexplained deleter in the SMOKE prefix, same bucket). Its 2026-09-17 addendum records that
+  the probe REFUTED its lifecycle hypothesis -- consult before attributing any referenced_missing to a guard defect.'
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- only the plan-cited decision sections
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+- 'OPERATOR PRECONDITION, before step 8: the operator invokes gc_ops with dry_run=true against the production catalog
+  under agent_platform_admin (PlatformAdmin) per the runbook recipe this plan adds, and the response envelope is
+  committed to tests/fixtures/gc_ops_dryrun_baseline.json. PlatformDev cannot substitute -- it holds no invoke grant
+  on ducklake_maintenance. A dry_run writes nothing and issues no destructive call. Confirm the operator can do
+  this BEFORE starting; the whole gate blocks on it.'
+execution_steps:
+- terraform/personal/ducklake_maintenance.tf -- flip state DISABLED -> ENABLED at :328; rewrite the `description`
+  attribute at :326 and the comment block above :324 so both record the cleared gate and the enable date instead
+  of instructing a future session to enable after VP14/VP15. Leave cron, target input and lambda permission untouched.
+- tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py -- replace test_gc_ops_rule_is_created_disabled
+  with test_gc_ops_rule_is_enabled (docstring naming why the claim inverted and what regression it now guards);
+  add test_dr_dump_precedes_the_gc_ops_window reading terraform/personal/ducklake_catalog_dr.tf; add TestGcOpsEnablementBaseline
+  for the fixture gate, importing both G4 caps from src.common.ducklake_maintenance_ops rather than hardcoding them.
+- Commit the operator's dry_run envelope to tests/fixtures/gc_ops_dryrun_baseline.json with a captured_at field.
+  Do not hand-edit any measured value -- if it disagrees with step 12's CloudWatch read, re-invoke and recommit.
+- config/agent/verification_registry/entries/ -- git mv gc-ops-rule-disabled-and-no-lakehouse-lifecycle.yaml into
+  deprecated/, then add gc-ops-rule-enabled-and-no-lakehouse-lifecycle.yaml (six selectors) and gc-ops-enablement-baseline-fixture-gate.yaml,
+  both plan_slug gc-ops-baseline-gate-and-schedule-enable, primitive_slot command_exit_zero, graduated_at the implement
+  date.
+- docs/contracts/ducklake_maintenance.yaml -- repoint the four created-DISABLED sites (:25, :180, :286, :321), deleting
+  the future-tense clause at :180; prepend the amendment_log entry naming gc_ops, ENABLED and this slug.
+- docs/runbooks/ducklake-catalog-operations.md -- add the gc_ops dry_run recipe (data_path via terraform output
+  -raw, explicit meta_schema, dry_run true), the delete-marker recovery recipe, and a note that the liveness alarm
+  sits in ALARM until the first pass emits.
+- Execute VP steps 1-10, then 11-12 BEFORE merging, then 13-15 after. Loop until pass; on unrecoverable V3 failure
+  stop and RCA (Decision 55).
+- 'Do NOT end the session at merge. Step 14 is this session''s obligation: stay open and re-check on a 24h cadence
+  until the first scheduled firing is observed.'
+- Update rec-3767 to closed via scripts.ops_data_portal; append to rec-3870's context the measured ladder (if the
+  drain exceeds one cycle) and the GcDebtRatio/noncurrent-version caveat.
+- 'Report: what was implemented, the measured ladder, the admitting rung, and verification results.'
+rollback: 'Flip state back to DISABLED through the same governed terraform PR path and merge -- never a console
+  toggle, never a local apply (Decision 126). The rule is stateless: disabling stops future firings and leaves the
+  catalog exactly as the last completed pass left it. Nothing in steps 1-12 is destructive (a dry_run writes nothing
+  and issues no delete), so a rollback before the first Sunday firing is a pure no-op on production data. IF A PASS
+  HAS ALREADY RUN AND BREACHED: disabling is containment, not the fix -- RCA before re-enabling, and never by widening
+  a guard bound. DATA RECOVERY IS POSSIBLE BUT UNREHEARSED. Because the bucket is versioned with no lifecycle rule
+  (measured 2026-09-17), an over-reclaim is reversible: each deleted object retains its bytes as a noncurrent version
+  behind a zero-byte delete marker, and removing the marker by versionId restores it. The mechanism is `aws s3api
+  list-object-versions` filtered to DeleteMarkers under the affected prefix, then `aws s3api delete-object --version-id
+  <marker-version-id>` per marker, run under agent_platform_admin (PlatformDev cannot). This path has NEVER been
+  exercised -- rec-3907 carries the rehearsal -- so treat it as a documented starting point, not a proven procedure,
+  and rehearse on a scratch prefix before running it against production.'
