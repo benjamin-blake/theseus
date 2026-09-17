@@ -463,13 +463,46 @@ deleted after collection.
 
 Not entered. The Phase 3 optimisation line ended in the Section 15 null result above.
 
+## Section 15 standing claim
+
+The explored optimisation line is a **rigorous null result on its measured surfaces**, not a claim
+that no safe fast-tier optimisation exists at every selection breadth.
+
+- Candidate 1 was implemented and proved equivalent across the 16-case corpus: the committed-ref
+  differ compared 27,878 union-node observations with zero node-verdict changes, zero gate-verdict
+  changes and identical deferral maps. Its isolated orchestration remainder saved 3.395s at 144
+  selected modules. It was rejected because the broad gross-wall A/B was null, the isolated saving
+  was only 1.3% of the Phase 0 264s median, and retaining it required a rewrite of the fail-closed
+  classification path, a frozen compatibility surface, suite-wide test-double changes, conflict
+  resolution and a new corpus proof after requirement drift.
+- Static reuse was not implemented. The realistic recoverable estimate is approximately 7.4s in
+  the profiled small-diff context. The largest measured perfect-reuse ceiling is 8.624s for repeated
+  `ast.parse` and `Path.read_text` calls, one repository walk and all git calls. These are separately
+  composed estimates: the 7.4s figure also includes YAML parsing and registered-module-search work,
+  so 8.624s is an impossible all-reuse ceiling for its measured parse/read/walk/git envelope, not a
+  mathematical bound on every static-reuse mechanism. Both estimates were rejected on magnitude.
+- The authoritative same-workload CI experiment was a current-base, one-module, nine-test PR. Five
+  sequential green reruns had a 41s `--pre` median, a median-exclusive IQR width of 11s (26.8%) and
+  a full range of 14s. The 7.4s estimate is also inside the alternative 8s inclusive-hinge IQR. The
+  8.624s ceiling is inside the prescribed 11s IQR and the 14s full range, although it is 0.624s above
+  the alternative IQR. Neither supports an improvement claim under Section 12.
+
+The one-module 11s IQR is not automatically a detection threshold at the Phase 0 population's
+149-module breadth. No repeated current-base broad-diff population was measured, so this null result
+does not generalise to broad static work or to the unstarted installed-environment candidate. At broad
+breadth it establishes only Candidate 1's local 3.395s orchestration result and null gross-wall A/B.
+At one-module breadth it rejects the profiled static-reuse line within the observed CI spread. This
+is the largest claim the evidence supports.
+
 ## Section 14.3 harness handback
 
 The committed harness corpus contains 16 pinned implementation PRs and eight pinned
 plan-to-implementation predictor pairs. Its manifest base remains
 `35609091fd8482d3116e4b360c6ec2bc9ab25b90`. After Candidate 1 was removed, the branch was rebased
-onto main base `db63955a8ebf12c92b2651c19cb47a1c84efc16c`; keeper commit `9a94f254` contains the re-proven
-harness.
+onto main base `db63955a8ebf12c92b2651c19cb47a1c84efc16c`. The harness was re-proven against that base's
+`scripts/checks/_pytest_diff.py` content at revert commit
+`794316cbb1cf5cfaec9ff6ceafe9fef6a6e1ef41`; keeper commit
+`9a94f254406311053f7e2ac429ff5e0b5e35476f` contains the resulting harness maintenance fixes.
 
 The post-revert corpus subset used `pr-1126`, baseline `9cecaab2` and reverted-tree candidate
 `794316cb`. It exercised current main's real `_pytest_diff.run_pytest_diff()` primary and reactive
