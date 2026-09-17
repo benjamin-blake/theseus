@@ -307,12 +307,13 @@ verification_plan:
     '(weekly, created DISABLED)' not in raw, 'stale contract.description claim at :25 survives'; assert 'rule is
     created DISABLED' not in raw, 'stale audit_invariants claim at :286 survives'; assert 'with its rule created
     DISABLED' in raw, 'the 2026-09-15 amendment_log entry was REWRITTEN -- history is append-only'; assert 'gc-ops-baseline-gate-and-schedule-enable'
-    in raw, 'contract does not name the enabling plan'; assert 're-enabling' in raw.lower(), 'no present-tense re-gate
-    clause survives the repoint'; d=yaml.safe_load(raw); log=d['amendment_log']; new=[e for e in log if 'gc_ops'
-    in e['summary'] and 'ENABLED' in e['summary']]; assert new, 'no amendment_log entry records the gc_ops enable';
-    e=new[-1]; assert 'semantic_break' in e and 'change_class' in e, e; ds=[x['date'] for x in log]; assert ds==sorted(ds),
-    ('amendment_log dates not monotonic ascending', ds); assert e['date']==ds[-1], 'the gc_ops entry is not the
-    newest'; print('contract repointed; history intact; newest amendment:', e['date'])"
+    in raw, 'contract does not name the enabling plan'; d=yaml.safe_load(raw); assert 're-enabling' in d['verbs']['gc_ops']['payload_schema_ref'].lower(),
+    'the present-tense re-gate clause is not in the gc_ops verb contract (an amendment_log mention does not count)';
+    log=d['amendment_log']; new=[e for e in log if 'gc_ops' in e['summary'] and 'ENABLED' in e['summary']]; assert
+    new, 'no amendment_log entry records the gc_ops enable'; e=new[-1]; assert 'semantic_break' in e and 'change_class'
+    in e, e; ds=[x['date'] for x in log]; assert ds==sorted(ds), ('amendment_log dates not monotonic ascending',
+    ds); assert e['date']==ds[-1], 'the gc_ops entry is not the newest'; print('contract repointed; history intact;
+    newest amendment:', e['date'])"
   expected: Prints the newest amendment_log date. Exit 0.
   fix_if: Any of the THREE present-tense sites (:25, :180, :286) still carries its stale claim. Or the 2026-09-15
     amendment_log entry was edited -- restore it byte-identical; the transition is recorded by APPENDING a new entry,
@@ -325,10 +326,11 @@ verification_plan:
   graduation: waive
   graduation_waiver_reason: Half is keyed on prose this diff introduces. The account-id half duplicates the pre-commit
     never-commit hook, which already guards the whole repo rather than one file.
-  action: 'Assert the runbook gained the dry_run recipe AND the delete-marker recovery recipe, that neither leaks
-    account-scoped data (data_path resolves through a terraform output, never a literal bucket name -- AGENTS.md
-    public-repo boundary, Decision 101), and that the `### Manual invoke runbook` section names no identity that
-    cannot actually run its recipes. The profile sweep uses a NEGATIVE LOOKAHEAD, not a substring test, because
+  action: 'Assert the runbook gained the dry_run recipe AND the delete-marker recovery recipe, that the ADDED gc_ops
+    recipe resolves data_path through a terraform output rather than hardcoding a path -- scoped to that recipe''s
+    own command chunk, because a file-level `''output -raw'' in t` is already satisfied by the pre-existing SNS
+    recipes and would discriminate nothing -- and that the `### Manual invoke runbook` section names no identity
+    that cannot actually run its recipes. The profile sweep uses a NEGATIVE LOOKAHEAD, not a substring test, because
     agent_platform_admin contains agent_platform. Scoped to that section only -- the sibling occurrences at :393
     and :442 are rec-3910''s and must NOT be swept up here, on single-concern diff-hygiene grounds. THE SLICE IS
     GUARDED AGAINST VACUITY IN BOTH DIRECTIONS, because two paths would otherwise green it silently: a reworded
@@ -338,22 +340,27 @@ verification_plan:
     the >= 5 positive floor on the ADMIN profile closes the second.'
   command: bin/venv-python -c "import re,pathlib; t=pathlib.Path('docs/runbooks/ducklake-catalog-operations.md').read_text();
     c=t.replace(' ',''); assert '\"action\":\"gc_ops\"' in c, 'no gc_ops invoke recipe'; assert '\"dry_run\":true'
-    in c, 'recipe is not the read-only dry_run form'; assert 'output -raw' in t, 'data_path is not resolved via
-    a terraform output'; assert 'delete-marker' in t.lower(), 'no delete-marker recovery recipe'; mi=t.find('Manual
-    invoke runbook'); assert mi != -1, 'manual-invoke section heading not found -- slice would be vacuous'; nx=t.find('###',
-    mi+10); sec=t[mi:nx]; assert 'list-rules' not in sec, 'dead events list-rules recipe survives in the manual-invoke
-    section'; assert not re.search(r'--profile agent_platform(?!_admin)', sec), 'a manual-invoke recipe still names
-    the non-admin profile, which cannot invoke ducklake_maintenance'; assert len(re.findall(r'--profile agent_platform_admin',
-    sec)) >= 5, 'sweep window truncated -- fewer than the five corrected recipes fall inside it'; assert not re.search(r'(?<!\d)\d{12}(?!\d)',
-    t), 'a 12-digit account id reached the runbook'; print('runbook recipe + recovery present and boundary-clean')"
+    in c, 'recipe is not the read-only dry_run form'; gcc=[ch for ch in sec.split(chr(10)*2) if 'gc_ops' in ch.replace('
+    ','')]; assert gcc, 'no command chunk in the manual-invoke section carries the gc_ops recipe'; assert any('output
+    -raw' in ch for ch in gcc), 'the gc_ops recipe does not resolve data_path via a terraform output'; assert 'delete-marker'
+    in t.lower(), 'no delete-marker recovery recipe'; mi=t.find('Manual invoke runbook'); assert mi != -1, 'manual-invoke
+    section heading not found -- slice would be vacuous'; nx=t.find('###', mi+10); sec=t[mi:nx]; assert 'list-rules'
+    not in sec, 'dead events list-rules recipe survives in the manual-invoke section'; assert not re.search(r'--profile
+    agent_platform(?!_admin)', sec), 'a manual-invoke recipe still names the non-admin profile, which cannot invoke
+    ducklake_maintenance'; assert len(re.findall(r'--profile agent_platform_admin', sec)) >= 5, 'sweep window truncated
+    -- fewer than the five corrected recipes fall inside it'; assert not re.search(r'(?<!\d)\d{12}(?!\d)', t), 'a
+    12-digit account id reached the runbook'; print('runbook recipe + recovery present and boundary-clean')"
   expected: 'Prints: runbook recipe + recovery present and boundary-clean. Exit 0.'
-  fix_if: 'The recipe hardcodes the data-lake bucket or an account id -- resolve it the way the existing SNS recipe
-    does. The never-commit hook blocks the account-id shape, but a bucket name is not shape-detectable, so this
-    step is the only cover for it. A surviving `--profile agent_platform` in the section means one of the five dead
-    recipes was missed; a lookahead failure means the regex was rewritten as a substring test and now passes vacuously
-    on agent_platform_admin. A ''slice would be vacuous'' or ''sweep window truncated'' failure means the section
-    heading was reworded or a new ### subsection was introduced inside it -- widen the slice or add the recipes
-    without a new heading; never drop the floor to make it pass.'
+  fix_if: 'The gc_ops recipe hardcodes its data_path instead of resolving it the way the existing SNS recipe does,
+    via `terraform -chdir=terraform/personal output -raw`. NOTE this is a consistency-and-drift check, NOT a secret-leak
+    guard: the data-lake bucket name already appears four times in this runbook and in terraform/personal/main.tf,
+    and it is not on AGENTS.md''s never-publish list (account ids, ARNs, ExternalIds, credentials, internal hostnames)
+    -- the account-id negative below is the boundary guard, and the pre-commit never-commit hook backs it repo-wide.
+    A surviving `--profile agent_platform` in the section means one of the five dead recipes was missed; a lookahead
+    failure means the regex was rewritten as a substring test and now passes vacuously on agent_platform_admin.
+    A ''slice would be vacuous'' or ''sweep window truncated'' failure means the section heading was reworded or
+    a new ### subsection was introduced inside it -- widen the slice or add the recipes without a new heading; never
+    drop the floor to make it pass.'
 - step: 8
   phase: pre-deploy
   hermetic: false
@@ -368,12 +375,14 @@ verification_plan:
     are both #1203 additions (Decision 193 cl.4), so a pre-drain fixture fails this test on a missing key or an
     empty ladder regardless of what any metadata claims. captured_at and deploy_run_id are CORROBORATING PROVENANCE
     ONLY -- neither is returned by the handler (the envelope has no such keys, verified against ducklake_gc_ops.py:223-243),
-    so both are operator ATTESTATIONS, not measurements, and the test must not rest a gate condition on them. captured_at
-    is asserted to post-date deploy-ducklake-lambdas.yml run 17''s COMPLETION (2026-09-16T13:21:24Z), not the #1203
-    merge commit: the merge is not the deploy, and a reading taken inside the ~3-minute merge-to-deploy window would
-    satisfy a commit-anchored bound while having exercised pre-drain code. An absolute ''within N days of now''
-    bound was deliberately REJECTED -- it turns green CI red on day N+1 for no reason. The test must also PRINT
-    the full ladder and the implied drain-cycle count, which feeds rec-3870''s N.'
+    so both are operator ATTESTATIONS rather than measurements. They are asserted as PROVENANCE, never as one of
+    the three gate conditions: the gate turns on referenced_missing, unsized_candidates and the ladder alone, so
+    a correct-but-unattested fixture fails on provenance while a well-attested but non-licensing one still fails
+    on the gate. captured_at is asserted to post-date deploy-ducklake-lambdas.yml run 17''s COMPLETION (2026-09-16T13:21:24Z),
+    not the #1203 merge commit: the merge is not the deploy, and a reading taken inside the ~3-minute merge-to-deploy
+    window would satisfy a commit-anchored bound while having exercised pre-drain code. An absolute ''within N days
+    of now'' bound was deliberately REJECTED -- it turns green CI red on day N+1 for no reason. The test must also
+    PRINT the full ladder and the implied drain-cycle count, which feeds rec-3870''s N.'
   command: bin/venv-python -m pytest "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestGcOpsEnablementBaseline::test_committed_dry_run_baseline_licenses_the_enablement"
     -q
   expected: '1 passed, with at least one admitting rung. Red before the fix: neither the fixture nor the test class
@@ -569,12 +578,13 @@ test_obligations:
     '(weekly, created DISABLED)' not in raw, 'stale contract.description claim at :25 survives'; assert 'rule is
     created DISABLED' not in raw, 'stale audit_invariants claim at :286 survives'; assert 'with its rule created
     DISABLED' in raw, 'the 2026-09-15 amendment_log entry was REWRITTEN -- history is append-only'; assert 'gc-ops-baseline-gate-and-schedule-enable'
-    in raw, 'contract does not name the enabling plan'; assert 're-enabling' in raw.lower(), 'no present-tense re-gate
-    clause survives the repoint'; d=yaml.safe_load(raw); log=d['amendment_log']; new=[e for e in log if 'gc_ops'
-    in e['summary'] and 'ENABLED' in e['summary']]; assert new, 'no amendment_log entry records the gc_ops enable';
-    e=new[-1]; assert 'semantic_break' in e and 'change_class' in e, e; ds=[x['date'] for x in log]; assert ds==sorted(ds),
-    ('amendment_log dates not monotonic ascending', ds); assert e['date']==ds[-1], 'the gc_ops entry is not the
-    newest'; print('contract repointed; history intact; newest amendment:', e['date'])"
+    in raw, 'contract does not name the enabling plan'; d=yaml.safe_load(raw); assert 're-enabling' in d['verbs']['gc_ops']['payload_schema_ref'].lower(),
+    'the present-tense re-gate clause is not in the gc_ops verb contract (an amendment_log mention does not count)';
+    log=d['amendment_log']; new=[e for e in log if 'gc_ops' in e['summary'] and 'ENABLED' in e['summary']]; assert
+    new, 'no amendment_log entry records the gc_ops enable'; e=new[-1]; assert 'semantic_break' in e and 'change_class'
+    in e, e; ds=[x['date'] for x in log]; assert ds==sorted(ds), ('amendment_log dates not monotonic ascending',
+    ds); assert e['date']==ds[-1], 'the gc_ops entry is not the newest'; print('contract repointed; history intact;
+    newest amendment:', e['date'])"
   behavior: 'The contract''s three present-tense created-DISABLED claims (:25, :180, :286) are repointed once the
     gate has cleared; a present-tense re-gate clause survives so a rollback-then-re-enable is still gated; the append-only
     amendment_log HISTORY is unmodified (the 2026-09-15 entry recording what #1193 did must survive byte-identical
@@ -600,9 +610,11 @@ constraints:
   at merge.
 - T2.18 c2 stays `open`; closes_criteria is empty. /plan and /implement never infer a criterion flip (tier-item-lifecycle.yaml
   Status-Trusted-Never-Inferred).
-- 'Public-repo boundary (Decision 101): the runbook recipe resolves the S3 data path through a terraform output,
-  and the committed fixture carries scalars and table names only. No bucket name, account id, or ARN reaches any
-  scope file. Step 7 asserts it for the runbook; step 8''s test asserts the fixture shape.'
+- 'Public-repo boundary (Decision 101): no account id, ARN, IAM ExternalId, credential or internal hostname reaches
+  any scope file. Step 7 asserts the account-id shape for the runbook and step 8''s test asserts the fixture carries
+  scalars and table names only; the pre-commit never-commit hook backs both repo-wide. The data-lake BUCKET NAME
+  is not covered by that list and already appears throughout this repo, so the runbook''s `terraform output -raw`
+  requirement is a consistency-and-drift convention, not a leak guard -- do not conflate them.'
 context:
 - 'Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND. CITE: Decision 192, 193, 188, 163, 176,
   132, 189, 126, 77, 92, 119, 88, 55. RELATED: Decision 125, 143, 191, 129, 120. Decisions triaged: 146 of 146.
@@ -639,10 +651,10 @@ context:
   bar.'
 - 'Adjacent: rec-3892 (unexplained deleter in the SMOKE prefix, same bucket). Its 2026-09-17 addendum records that
   the probe REFUTED its lifecycle hypothesis -- consult before attributing any referenced_missing to a guard defect.'
-- 'plan-critique: 3 REVISE rounds, all findings disposed, none recurring -- per-round detail is in the plan''s commit
-  bodies. One REJECTION worth not re-opening: steps 1 and 8 stay hermetic: false because vp-red-before.yaml#hermetic_authoring
-  ends ''Steps needing pytest/deploys stay hermetic: false, excluded with a printed reason''; a round-3 finding
-  read only the opening ''hermetic: true is the correct default'' sentence.'
+- 'plan-critique: 4 REVISE rounds, all findings disposed, none recurring -- per-round detail is in the plan''s commit
+  bodies. One REJECTION not to re-open: steps 1 and 8 stay hermetic: false per vp-red-before.yaml#hermetic_authoring
+  (''Steps needing pytest/deploys stay hermetic: false''); it is also moot, since the red-before leg partitions
+  on graduation, not hermetic.'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -662,6 +674,7 @@ execution_steps:
   with test_gc_ops_rule_is_enabled (docstring naming why the claim inverted and what regression it now guards);
   add test_dr_dump_precedes_the_gc_ops_window reading terraform/personal/ducklake_catalog_dr.tf; add TestGcOpsEnablementBaseline
   for the fixture gate, importing both G4 caps from src.common.ducklake_maintenance_ops rather than hardcoding them.
+  Refresh the MODULE DOCSTRING at :13-16 too -- it states the gc_ops rule 'ships DISABLED' and goes stale on merge.
 - Commit the operator's dry_run envelope to tests/fixtures/gc_ops_dryrun_baseline.json, adding captured_at and deploy_run_id
   as operator-attested provenance fields (the handler returns neither). Do not hand-edit any MEASURED value -- if
   one disagrees with step 12's CloudWatch read, re-invoke and recommit rather than reconciling by hand.
@@ -688,14 +701,26 @@ execution_steps:
   drain exceeds one cycle) and the GcDebtRatio/noncurrent-version caveat.
 - 'Report: what was implemented, the measured ladder, the admitting rung, and verification results.'
 rollback: 'Flip state back to DISABLED through the same governed terraform PR path and merge -- never a console
-  toggle, never a local apply (Decision 126). The rule is stateless: disabling stops future firings and leaves the
-  catalog exactly as the last completed pass left it. Nothing in steps 1-12 is destructive (a dry_run writes nothing
-  and issues no delete), so a rollback before the first Sunday firing is a pure no-op on production data. IF A PASS
-  HAS ALREADY RUN AND BREACHED: disabling is containment, not the fix -- RCA before re-enabling, and never by widening
-  a guard bound. DATA RECOVERY IS POSSIBLE BUT UNREHEARSED. Because the bucket is versioned with no lifecycle rule
-  (measured 2026-09-17), an over-reclaim is reversible: each deleted object retains its bytes as a noncurrent version
-  behind a zero-byte delete marker, and removing the marker by versionId restores it. The mechanism is `aws s3api
-  list-object-versions` filtered to DeleteMarkers under the affected prefix, then `aws s3api delete-object --version-id
-  <marker-version-id>` per marker, run under agent_platform_admin (PlatformDev cannot). This path has NEVER been
-  exercised -- rec-3907 carries the rehearsal -- so treat it as a documented starting point, not a proven procedure,
-  and rehearse on a scratch prefix before running it against production.'
+  toggle, never a local apply (Decision 126). THE CONTAINMENT PR MUST CARRY THREE EDITS IN ONE COMMIT, not just
+  the state flip. This plan installs standing guards that assert the ENABLED claim, so a .tf-only rollback fails
+  the very gate that protects the enablement, at the moment an incident needs containing. Measured, not inferred:
+  derive_affected_tests([(''M'',''terraform/personal/ducklake_maintenance.tf'')]) selects tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py
+  via the data_edge channel, and --pre is the authoritative pre-merge gate when run by PR CI (Decision 73), so the
+  containment PR cannot go green on its own. Worse, merging it regardless reddens full-tier on main, which files
+  a source=ci_rca priority=critical rec and then FORBIDS manual patching until /plan reviews it -- compounding the
+  incident instead of containing it. The three edits: (1) the state literal back to DISABLED, with the description
+  attribute and comment block reworded to match; (2) invert test_gc_ops_rule_is_enabled back to the disabled claim
+  (or parameterise it on a single declared intended state so future flips need no test surgery); (3) git mv the
+  successor shard gc-ops-rule-enabled-and-no-lakehouse-lifecycle.yaml to entries/deprecated/ and restore a re-keyed
+  disabled-claim shard, since a live registry row naming a deleted selector is a collection error, not a retirement.
+  The rule is stateless: disabling stops future firings and leaves the catalog exactly as the last completed pass
+  left it. Nothing in steps 1-12 is destructive (a dry_run writes nothing and issues no delete), so a rollback before
+  the first Sunday firing is a pure no-op on production data. IF A PASS HAS ALREADY RUN AND BREACHED: disabling
+  is containment, not the fix -- RCA before re-enabling, and never by widening a guard bound. DATA RECOVERY IS POSSIBLE
+  BUT UNREHEARSED. Because the bucket is versioned with no lifecycle rule (measured 2026-09-17), an over-reclaim
+  is reversible: each deleted object retains its bytes as a noncurrent version behind a zero-byte delete marker,
+  and removing the marker by versionId restores it. The mechanism is `aws s3api list-object-versions` filtered to
+  DeleteMarkers under the affected prefix, then `aws s3api delete-object --version-id <marker-version-id>` per marker,
+  run under agent_platform_admin (PlatformDev cannot). This path has NEVER been exercised -- rec-3907 carries the
+  rehearsal -- so treat it as a documented starting point, not a proven procedure, and rehearse on a scratch prefix
+  before running it against production.'
