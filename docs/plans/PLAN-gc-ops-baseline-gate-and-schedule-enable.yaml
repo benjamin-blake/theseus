@@ -73,17 +73,27 @@ scope:
     engaged.'
 - file: docs/runbooks/ducklake-catalog-operations.md
   action: Modify
-  purpose: 'Three additions. (a) The gc_ops dry_run operator recipe, which does not exist today -- the manual-invoke
-    section carries only the smoke-scoped action=gc -- resolving data_path via `terraform output -raw`, never a
-    literal bucket name. (b) The DELETE-MARKER RECOVERY recipe, so the rollback path for an over-reclaim is written
-    down before it is needed rather than invented under pressure. (c) The live cadence, and the fact that the liveness
-    alarm sits in ALARM until the first pass emits. (d) Correct the DEAD `aws events list-rules --profile agent_platform`
-    recipe at :324, which sits in the very section this plan is editing and cannot work for ANY identity: PlatformDev
-    holds zero events:* grants, and events:ListRules is granted to NO identity anywhere in terraform/. Replace it
-    with `aws events describe-rule --name <exact-rule-name> --profile agent_platform_admin`, which the 2026-09-17
-    probe exercised successfully. The two sibling occurrences at :393 and :442 sit in catalog-DR sections this plan
-    does not touch and are rec-3910''s, split that way to honour the Decision 59 location boundary rather than widening
-    this diff into unrelated sections.'
+  purpose: 'Four additions plus one correction sweep. (a) The gc_ops dry_run operator recipe, which does not exist
+    today -- the manual-invoke section carries only the smoke-scoped action=gc -- resolving data_path via `terraform
+    output -raw`, never a literal bucket name. (b) The DELETE-MARKER RECOVERY recipe, so the rollback path for an
+    over-reclaim is written down before it is needed rather than invented under pressure. (c) The live cadence,
+    and the fact that the liveness alarm sits in ALARM until the first pass emits. (d) CORRECT ALL FIVE DEAD RECIPES
+    IN THE `### Manual invoke runbook` SECTION (:290-328), every one of which names --profile agent_platform and
+    cannot work: three `lambda invoke --function-name agent-platform-ducklake-maintenance` (:294, :302, :310) and
+    one `lambda get-function-concurrency` (:318) -- PlatformDev''s only lambda grant is DuckLakeInvokeRuntime, scoped
+    to the writer and reader ARNs, and it holds no lambda:Get* at all -- plus one `events list-rules` (:324), where
+    PlatformDev holds zero events:* grants AND events:ListRules is granted to no identity anywhere in terraform/.
+    Repoint the four lambda recipes to agent_platform_admin and replace list-rules with `events describe-rule --name
+    <exact-rule-name> --profile agent_platform_admin`, which the 2026-09-17 probe exercised successfully. THIS IS
+    NOT OPTIONAL TIDYING: this plan ADDS a gc_ops recipe under agent_platform_admin into that same fence, so leaving
+    the neighbours naming a profile that cannot invoke maintenance would make the section self-contradictory about
+    which identity invokes it, at the exact moment the section is edited -- and AC8 states maintenance stays break-glass
+    on PlatformAdmin. WHY :393 AND :442 ARE NOT CORRECTED HERE: they carry the same defect but sit in Section 4
+    (catalog-DR), which this plan does not otherwise touch, so leaving them is SINGLE-CONCERN DIFF HYGIENE, not
+    a scope-boundary requirement. implement-scope-boundary.yaml''s LOCATION invariant is FILE-level -- every touched
+    path must be in the plan''s scope[].file union -- and this runbook is already a scope row, so Decision 59 never
+    constrained the choice either way. rec-3910 owns them, and owns the coverage verifier that would stop the whole
+    class.'
 bundled_recommendations:
 - rec-3767
 followon_recs:
@@ -196,17 +206,25 @@ verification_plan:
   graduation: waive
   graduation_waiver_reason: Duplicates the claim step 1 graduates as gc-ops-rule-enabled-and-no-lakehouse-lifecycle.
     A second standing shard over one invariant adds a maintenance surface without adding discrimination.
-  action: Assert the terraform literal in BOTH polarities, scoped to the gc_ops rule block alone so a sibling rule's
-    state cannot satisfy it and a half-applied edit cannot pass. The negative half also forces the stale `description`
-    attribute at :326 to be rewritten, since it contains the word DISABLED inside the same block.
+  action: 'Assert ALL THREE declared stale sites, in both polarities. Sites (a) the state literal and (b) the `description`
+    attribute are covered by the block-scoped negative, since both sit inside the brace-balanced resource block.
+    Site (c), the comment block at :303-322, is OUTSIDE that block by construction (the regex starts at `resource`)
+    and its literal is UNQUOTED (`Created state = DISABLED`), so neither this step''s block negative nor step 3''s
+    quoted probe would reach it -- hence the two file-scoped negatives on its distinctive strings, both verified
+    to occur nowhere else in the file (:310 and :313 only). Without them the most actively misleading of the three
+    sites would survive merge: a standing instruction to enable at VP14/VP15, on a rule that is by then live and
+    destructive.'
   command: bin/venv-python -c "import re,pathlib; t=pathlib.Path('terraform/personal/ducklake_maintenance.tf').read_text();
     m=re.search(r'resource \"aws_cloudwatch_event_rule\" \"ducklake_maintenance_gc_ops\" \{.*?\n\}', t, re.S); assert
     m, 'gc_ops rule block not found'; b=m.group(0); assert re.search(r'state\s*=\s*\"ENABLED\"', b), b; assert 'DISABLED'
-    not in b, b; print('gc_ops rule state = ENABLED')"
+    not in b, b; assert 'Created state = DISABLED' not in t, 'comment block (site c) still declares the rule created
+    DISABLED'; assert 'VP15' not in t and 'VP14' not in t, 'comment block still instructs a future session to enable
+    at VP14/VP15'; print('gc_ops rule state = ENABLED')"
   expected: 'Prints: gc_ops rule state = ENABLED. Exit 0.'
-  fix_if: The block still carries DISABLED anywhere (check the description attribute, not just the state), or the
-    regex finds no block -- the resource was renamed, which also breaks the target and permission references at
-    :337 and :348.
+  fix_if: The block still carries DISABLED anywhere (check the `description` attribute at :326, not just the state
+    literal at :328), or the comment block at :303-322 still declares the rule created DISABLED or still names VP14/VP15,
+    or the regex finds no block -- the resource was renamed, which also breaks the target and permission references
+    at :337 and :348. Rewrite the comment; never delete an assertion to make the step pass.
 - step: 3
   phase: pre-deploy
   hermetic: true
@@ -286,22 +304,27 @@ verification_plan:
   graduation: waive
   graduation_waiver_reason: Half is keyed on prose this diff introduces. The account-id half duplicates the pre-commit
     never-commit hook, which already guards the whole repo rather than one file.
-  action: Assert the runbook gained the dry_run recipe AND the delete-marker recovery recipe, and that neither leaks
-    account-scoped data -- data_path resolves through a terraform output, never a literal bucket name (AGENTS.md
-    public-repo boundary, Decision 101). Also assert the dead `events list-rules` recipe is gone from the manual-invoke
-    section specifically -- scoped to that section, not the whole file, because the two occurrences in the catalog-DR
-    sections are rec-3910's and must NOT be swept up here.
+  action: Assert the runbook gained the dry_run recipe AND the delete-marker recovery recipe, that neither leaks
+    account-scoped data (data_path resolves through a terraform output, never a literal bucket name -- AGENTS.md
+    public-repo boundary, Decision 101), and that the `### Manual invoke runbook` section names no identity that
+    cannot actually run its recipes. The profile sweep uses a NEGATIVE LOOKAHEAD, not a substring test, because
+    agent_platform_admin contains agent_platform. Scoped to that section only -- the sibling occurrences at :393
+    and :442 are rec-3910's and must NOT be swept up here, on single-concern diff-hygiene grounds.
   command: bin/venv-python -c "import re,pathlib; t=pathlib.Path('docs/runbooks/ducklake-catalog-operations.md').read_text();
     c=t.replace(' ',''); assert '\"action\":\"gc_ops\"' in c, 'no gc_ops invoke recipe'; assert '\"dry_run\":true'
     in c, 'recipe is not the read-only dry_run form'; assert 'output -raw' in t, 'data_path is not resolved via
     a terraform output'; assert 'delete-marker' in t.lower(), 'no delete-marker recovery recipe'; mi=t.find('Manual
-    invoke runbook'); nx=t.find('###', mi+10); assert 'list-rules' not in t[mi:nx], 'dead events list-rules recipe
-    survives in the manual-invoke section'; assert not re.search(r'(?<!\d)\d{12}(?!\d)', t), 'a 12-digit account
-    id reached the runbook'; print('runbook recipe + recovery present and boundary-clean')"
+    invoke runbook'); nx=t.find('###', mi+10); sec=t[mi:nx]; assert 'list-rules' not in sec, 'dead events list-rules
+    recipe survives in the manual-invoke section'; assert not re.search(r'--profile agent_platform(?!_admin)', sec),
+    'a manual-invoke recipe still names the non-admin profile, which cannot invoke ducklake_maintenance'; assert
+    not re.search(r'(?<!\d)\d{12}(?!\d)', t), 'a 12-digit account id reached the runbook'; print('runbook recipe
+    + recovery present and boundary-clean')"
   expected: 'Prints: runbook recipe + recovery present and boundary-clean. Exit 0.'
   fix_if: The recipe hardcodes the data-lake bucket or an account id -- resolve it the way the existing SNS recipe
     does. The never-commit hook blocks the account-id shape, but a bucket name is not shape-detectable, so this
-    step is the only cover for it.
+    step is the only cover for it. A surviving `--profile agent_platform` in the section means one of the five dead
+    recipes was missed; a lookahead failure means the regex was rewritten as a substring test and now passes vacuously
+    on agent_platform_admin.
 - step: 8
   phase: pre-deploy
   hermetic: false
@@ -469,8 +492,12 @@ test_obligations:
   verification_step: 8
   test_selector: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestGcOpsEnablementBaseline::test_committed_dry_run_baseline_licenses_the_enablement
   behavior: 'The committed baseline reading continues to license the enablement: referenced_missing 0, unsized_candidates
-    0, at least one ladder rung admitting a positive count under both live caps, and a captured_at post-dating the
-    #1203 drain merge. Tamper-evidence on the evidence that licensed a destructive schedule.'
+    0, and at least one ladder rung admitting a positive count under both live caps. The PRIMARY proof that the
+    reading exercised the drain code is the PAYLOAD SHAPE -- drain_probe_counts and unsized_candidates are both
+    #1203 additions, so a pre-drain fixture fails on a missing key whatever its metadata claims. captured_at and
+    deploy_run_id are operator ATTESTATIONS (the handler returns neither) and corroborate only; captured_at is asserted
+    to post-date deploy-ducklake-lambdas.yml run 17''s COMPLETION (2026-09-16T13:21:24Z), NOT the #1203 merge commit
+    -- the merge is not the deploy. Tamper-evidence on the evidence that licensed a destructive schedule.'
   red_green_expectation: Red before (neither the fixture nor the test class exists), green after.
 - source: config/agent/verification_registry/entries/gc-ops-rule-enabled-and-no-lakehouse-lifecycle.yaml
   verification_step: 4
@@ -557,9 +584,9 @@ context:
   rungs only with strict_sizes=False and runs no expire_snapshots, while src/common/ducklake_maintenance_ops.py:283
   bisects with strict_sizes=True over the POST-expiry set. _drain_walk returns (None, None) BOTH when no rung fits
   and when the fitting rung admits zero -- hence 0 < files, never files <=.'
-- 'GOTCHA -- DENIED to PlatformDev, all verified live; do not author VP commands against them: events:DescribeRule,
-  lambda:GetFunctionConfiguration, s3:GetBucketVersioning, lambda:InvokeFunction on ducklake_maintenance (platform_dev_policies.tf:56-68).
-  Granted and exercised: cloudwatch GetMetricData/DescribeAlarms (:103-113).'
+- 'GOTCHA -- DENIED to PlatformDev, verified live; author no VP command against them: events:DescribeRule, events:ListRules
+  (granted to NO identity), lambda:GetFunctionConfiguration, s3:GetBucketVersioning, and lambda:InvokeFunction on
+  ducklake_maintenance (platform_dev_policies.tf:56-68). Granted: cloudwatch GetMetricData/DescribeAlarms (:103-113).'
 - GOTCHA -- ducklake-maintenance-gc-ops-liveness is ALREADY in ALARM (since 2026-09-15T16:08, 7 missing daily datapoints)
   because production GC has never run. Expected, not an incident; its clearing to OK is step 14's proof.
 - 'Baseline measurements + the versioning/noncurrent-version finding: see rec-3907, which owns the numbers and the
@@ -577,9 +604,9 @@ context:
   bar.'
 - 'Adjacent: rec-3892 (unexplained deleter in the SMOKE prefix, same bucket). Its 2026-09-17 addendum records that
   the probe REFUTED its lifecycle hypothesis -- consult before attributing any referenced_missing to a guard defect.'
-- 'plan-critique r1 REVISE dispositions: F1 amendment_log is ascending here -> step 6 now search+monotonicity; F2
-  captured_at re-anchored to deploy run 17 completion, drain proof attributed to payload shape; S1 re-gate clause
-  retained; S3 split -- :324 fixed here, :393/:442 to rec-3910.'
+- 'plan-critique dispositions: r1 F1 amendment_log ascending -> search+monotonicity; r1 F2 captured_at re-anchored
+  to deploy run 17, drain proof = payload shape; r1 S1 re-gate clause retained; r2 F1 last stale anchor cleared;
+  r2 F2 comment block now asserted; r2 F3 split restated as diff hygiene, five in-section dead recipes corrected.'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -611,9 +638,11 @@ execution_steps:
   the amendment_log entry at the TAIL to match this file's ascending order, carrying semantic_break and change_class
   drawn from the vocabulary its four existing entries use.
 - docs/runbooks/ducklake-catalog-operations.md -- add the gc_ops dry_run recipe (data_path via terraform output
-  -raw, explicit meta_schema, dry_run true), the delete-marker recovery recipe, a note that the liveness alarm sits
-  in ALARM until the first pass emits, and replace the dead `events list-rules` recipe at :324 with `events describe-rule
-  --name <rule> --profile agent_platform_admin`. Leave :393 and :442 alone -- rec-3910 owns them.
+  -raw, explicit meta_schema, dry_run true), the delete-marker recovery recipe, and a note that the liveness alarm
+  sits in ALARM until the first pass emits; then correct ALL FIVE dead recipes in the `### Manual invoke runbook`
+  section -- repoint the four lambda ones (:294, :302, :310, :318) to agent_platform_admin and replace :324's `events
+  list-rules` with `events describe-rule --name <rule> --profile agent_platform_admin`. Leave :393 and :442 alone
+  -- rec-3910 owns them.
 - Execute VP steps 1-10, then 11-12 BEFORE merging, then 13-15 after. Loop until pass; on unrecoverable V3 failure
   stop and RCA (Decision 55).
 - 'Do NOT end the session at merge. Step 14 is this session''s obligation: stay open and re-check on a 24h cadence
