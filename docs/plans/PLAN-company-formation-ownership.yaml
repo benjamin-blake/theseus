@@ -45,34 +45,43 @@ acceptance_criteria:
   - >-
     `## Decision 194:` exists in docs/DECISIONS.md carrying the typed yaml envelope (number,
     status, decided_date, amends: [106], significance.value: numbered_decision with a non-empty
-    justification), the three required markers (Status, Date, Decision), and a fenced
-    ```yaml reversal-conditions``` stanza (Decision 133), not a prose-only Reversal-conditions line.
+    justification), the three required markers (Status, Date, Decision), a fenced
+    ```yaml reversal-conditions``` stanza (Decision 133) rather than a prose-only Reversal-conditions
+    line, and the trailing `---` block separator. Proven by VP steps 5 and 6.
   - >-
     The Decision 194 block measured heading-to-next-heading is strictly under 6144 bytes
-    (Decision 167 clause 3; hard-fail in the --pre tier).
+    (Decision 167 clause 3; hard-fail in the --pre tier). Proven by VP step 3.
   - >-
     Decision 194 carries four clauses: (1) On The Loop Labs Limited owns the platform; (2)
     founder-to-company IP assignment, with the LICENSE `Licensor:` parameter changing ONLY when
     the assignment legally executes and the LICENSE line and validate_licence_consistency.py's
     regex moving in the SAME commit; (3) the AWS account-ownership consequence, naming Decision
     106 reversal condition (a) as the trigger it fires; (4) the canonical GitHub organisation
-    handle as a separately-decided gated identifier, naming both candidates and the gated work.
+    handle as a separately-decided gated identifier, naming the two candidate handles ONLY.
+    Clause 4 carries NO gated-work inventory: "durable sequencing work against a gate" is the
+    work_item routing row, which decision-entry.yaml marks "Never a numbered Decision", and
+    rec-3905 already owns that content. Proven by review, not by a step (prose judgement).
   - >-
     Clause 4 names the two candidate handles ONLY. No preference, leaning or precedent analogy
     appears in the decision entry -- that detail lands on rec-3905, which stays revisable.
+    Proven by VP step 11.
   - >-
     Decision 106 gains the Amended-by blockquote and every pre-existing line of docs/DECISIONS.md
-    is byte-identical -- the diff against origin/main contains zero deleted lines (Decision 177).
+    is byte-identical -- the merge-base diff reports zero deleted lines (Decision 177). Proven by
+    VP step 4. Note Decision 178 retired the mechanical guard validate_live_entry_immutability, so
+    VP step 4 is the ONLY surviving control on this property -- it is load-bearing, not cosmetic.
   - >-
     NS.2's detail names On The Loop Labs Limited explicitly and states it is distinct from the
-    legacy `company-aws-profile` account that tier item T5.2 tears down.
+    legacy `company-aws-profile` account that tier item T5.2 tears down. Proven by VP step 10,
+    this plan's one graduate-disposition step.
   - >-
     LICENSE, LICENSING.md, COMMERCIAL-LICENSE.md, CONTRIBUTING.md and
     scripts/checks/hygiene/validate_licence_consistency.py are unmodified, and no file under
-    terraform/ is touched.
+    terraform/ is touched. Proven by VP steps 12 and 13.
   - >-
     rec-3905 carries the org-handle leaning and its reasoning, applied via `update_rec` through
-    the portal (never a JSONL edit).
+    the portal (never a JSONL edit). Proven by VP step 14, a warehouse read-back -- this is the
+    plan's only write that a git revert does not undo.
 
 verification_plan:
   - step: 1
@@ -84,40 +93,71 @@ verification_plan:
       Non-zero exit means the new entry did not parse. Check the header form
       (`## Decision 194: <title> (Decided)`) and the typed yaml envelope fence.
     hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      A generator invocation, not an assertion -- there is no pass/fail predicate to graduate. Its
+      output is proven by step 2, whose registered equivalent is validate_decisions_index_freshness.
   - step: 2
     phase: pre-deploy
-    action: Prove the regenerated index matches the live corpus (Decision 179 clause 5(i)).
+    action: Prove the regenerated index matches the live corpus.
     command: bin/venv-python -m scripts.decisions_index --check
     expected: "Exit 0; stderr reports `Decisions index is current.`"
     fix_if: Drift means step 1 was skipped or DECISIONS.md changed after it; re-run step 1.
     hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates validate_decisions_index_freshness, already registered in both tiers and already
+      gating exactly this drift. Graduating a second guard over the same predicate adds no coverage.
   - step: 3
     phase: pre-deploy
-    action: Measure the Decision 194 block against the Decision 167 per-entry cap.
-    command: awk '/^## Decision 194:/{f=1} f&&/^## Decision 193:/{exit} f' docs/DECISIONS.md | wc -c
-    expected: A byte count strictly below 6144.
+    action: Measure the Decision 194 block against the Decision 167 per-entry cap, failing if absent.
+    command: grep -q '^## Decision 194:' docs/DECISIONS.md && awk '/^## Decision 194:/{f=1} f&&/^## Decision 193:/{exit} f' docs/DECISIONS.md | wc -c
+    expected: >-
+      Exit 0 and a byte count strictly between 1 and 6143. A count of 0 is impossible here -- the
+      leading grep -q fails first if the entry is absent, so the step cannot pass vacuously.
     fix_if: >-
-      Over cap -- trim the Related pointer block to load-bearing ids only, then move the gated-work
-      rec inventory into this plan's context. Never raise the cap (Decision 167's own reversal text).
+      Over cap -- trim the Related pointer block to load-bearing ids only, then move any remaining
+      inventory into this plan's context. Never raise the cap (Decision 167's own reversal text).
     hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates validate_decisions_size, which already enforces the same 6144-byte
+      heading-to-next-heading cap on every new entry in the --pre tier. This step exists to give the
+      implementer a byte number to trim against, not to add an independent gate.
   - step: 4
     phase: pre-deploy
-    action: Prove the DECISIONS.md change is purely additive (Decision 177 append-only).
-    command: git diff origin/main -- docs/DECISIONS.md | grep -c '^-[^-]' || true
-    expected: "0 -- no deleted or rewritten line anywhere in the file."
+    action: >-
+      Prove the DECISIONS.md change is purely additive (Decision 177 append-only). Counts deleted
+      LINES via numstat rather than grepping diff prefixes -- a deleted markdown bullet renders as
+      `-- item` and a deleted blank line as a bare `-`, neither of which a `^-[^-]` pattern matches,
+      and docs/DECISIONS.md carries 282 bullet lines.
+    command: git fetch origin main && git diff --numstat "$(git merge-base origin/main HEAD)" -- docs/DECISIONS.md | awk '{print $2+0}'
+    expected: >-
+      Empty output, or `0`. Any positive number is a deleted or rewritten line. Merge-base form, not
+      two-dot: two-dot compares branch tips and reports phantom deletions when main advances.
     fix_if: >-
-      Any non-zero count is an in-place body edit. Revert it and re-express the change as a dated
+      A positive count is an in-place body edit. Revert it and re-express the change as a dated
       blockquote annotation appended to the entry.
     hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Kernel-expressible as metric_under_threshold, but its subject is this PR's own diff against a
+      merge base -- the transient repo state the contract names as the waive case. As a standing
+      registry guard it would assert that no commit ever deletes a DECISIONS.md line, which is
+      false: Decision 149 compaction and Decision 146 archival both legitimately remove lines.
   - step: 5
     phase: pre-deploy
     action: Run the decision-corpus entry-conformance gate.
     command: bin/venv-python -c "import sys; from scripts.checks.decisions.validate_decision_entry_conformance import validate_decision_entry_conformance as f; failed=[]; f(failed); print(failed); sys.exit(1 if failed else 0)"
-    expected: "Exit 0; `FAILED: []`."
+    expected: "Exit 0; `[]`."
     fix_if: >-
-      Failures name the missing marker, envelope field or significance token; add them per
-      docs/contracts/decision-entry.yaml. Do not hardcode markers -- the contract is the source.
+      Failures name the missing marker, envelope field, significance token or block separator; add
+      them per docs/contracts/decision-entry.yaml. The contract is the source, not this plan.
     hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Directly invokes an already-registered check (validate_decision_entry_conformance, both
+      tiers). Graduating a wrapper around a registered check duplicates an existing guard.
   - step: 6
     phase: pre-deploy
     action: Prove the fenced reversal-conditions stanza is well-formed and monitored.
@@ -127,65 +167,197 @@ verification_plan:
       A malformed stanza means the fence line is not exactly '```yaml reversal-conditions' or the
       body is not a mapping with decision/review_by/on_trigger/conditions.
     hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Directly invokes an already-registered check (validate_reversal_stanzas). The stanza count
+      rising 12 to 13 is this plan's transient expectation, not a durable invariant to graduate.
   - step: 7
     phase: pre-deploy
-    action: Run the roadmap schema and candidate-decision referential gates after the NS.2 edit.
+    action: >-
+      Run the candidate-decision referential gate only. The roadmap schema and regrowth gates are
+      steps 8 and 9; this step does not run them.
     command: bin/venv-python -c "import sys; from scripts.checks.roadmap.validate_candidate_decision_ratification import validate_candidate_decision_ratification as f; failed=[]; f(failed); print(failed); sys.exit(1 if failed else 0)"
-    expected: "Exit 0; `FAILED: []`; the header-indexed count rises from 173 to 174."
+    expected: "Exit 0; `[]`; the header-indexed count rises from 173 to 174."
     fix_if: >-
       A referential failure means a CD's ratified_as no longer resolves; confirm no CD row was
       edited -- CD.6 is deliberately left untouched under Decision 147's compaction norm.
     hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Directly invokes an already-registered check (validate_candidate_decision_ratification, both
+      tiers). No new predicate to graduate.
   - step: 8
     phase: pre-deploy
-    action: Prove the licence artefacts and their validator were not touched.
-    command: git diff --name-only origin/main -- LICENSE LICENSING.md COMMERCIAL-LICENSE.md CONTRIBUTING.md scripts/checks/hygiene/validate_licence_consistency.py | wc -l
-    expected: "0 -- the licence seam is gated on a legal event, not on this PR."
+    action: >-
+      Run the roadmap schema gate, which enforces the 10,000-line ceiling the NS.2 edit consumes
+      headroom against.
+    command: bin/venv-python -c "import sys; from scripts.checks.roadmap.validate_platform_roadmap import validate_platform_roadmap as f; failed=[]; f(failed); print(failed); sys.exit(1 if failed else 0)"
+    expected: "Exit 0; `[]`."
     fix_if: >-
-      Any named file means the plan overstepped into the concurrent licensing agent's surface.
-      Revert it; the LICENSE line and the validator regex move together, later, in one commit.
+      A line-ceiling failure means the NS.2 annotation pushed docs/ROADMAP-PLATFORM.yaml past
+      _ROADMAP_MAX_LINES = 10_000 (it stands at 9,901). Tighten the annotation; do not raise the
+      ceiling, and do not trim unrelated content to make room -- escalate per Decision 147.
     hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Directly invokes an already-registered check (validate_platform_roadmap, both tiers), which
+      already owns the line ceiling and the Pydantic schema. No new predicate to graduate.
   - step: 9
     phase: pre-deploy
+    action: >-
+      Record the roadmap regrowth observable, proving CD.6 was not re-accumulated (Decision 147).
+      Report-only by design -- read the printed line, do not rely on an exit code.
+    command: bin/venv-python -c "import sys; from scripts.checks.roadmap.check_roadmap_regrowth import check_roadmap_regrowth as f; failed=[]; f(failed); sys.exit(0)"
+    expected: >-
+      A GROWTH line whose `lines=` value is at most 10,000, and no CD.6 row in the re-accumulated
+      terminal-content listing. Baseline before this plan: `lines=9901 headroom=99 escalate=true`.
+    fix_if: >-
+      If CD.6 appears in the terminal-content listing, the amendment was written onto the roadmap
+      row instead of onto Decision 106. Move it.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      check_roadmap_regrowth is report-only by absolute design -- it never appends to failed and
+      never raises. There is no pass/fail predicate to express in a canonical slot, and wrapping a
+      report-only observable in a graduated assertion would invert its declared contract.
+  - step: 10
+    phase: pre-deploy
+    action: Prove NS.2 names the owning entity explicitly and distinguishes it from the legacy account.
+    command: grep -q 'On The Loop Labs Limited' docs/ROADMAP-PLATFORM.yaml && grep -q 'company-aws-profile' docs/ROADMAP-PLATFORM.yaml
+    expected: >-
+      Exit 0. Genuinely RED before the fix -- neither string is present in
+      docs/ROADMAP-PLATFORM.yaml on the un-implemented tree, so this step legitimately fails
+      red-before under the Decision 189 inverted-polarity replay.
+    fix_if: >-
+      A failure means the NS.2 annotation either omits the company's registered name or omits the
+      distinction from the legacy company-aws-profile account -- both are required by AC6, because
+      NS.2's existing contrast term ("not shared work account") inverts without them.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ns2-names-owning-entity
+  - step: 11
+    phase: pre-deploy
+    action: >-
+      Prove the org-handle leaning did not leak into the numbered entry (AC4, and the Decision
+      150 / Decision 75 disposition).
+    command: awk '/^## Decision 194:/{f=1} f&&/^## Decision 193:/{exit} f' docs/DECISIONS.md | grep -ciE 'dbt|leaning|prefer|getdbt' || true
+    expected: "0 -- no preference, reasoning or precedent analogy inside the Decision 194 span."
+    fix_if: >-
+      A positive count means operational_fact content landed in the numbered entry. Move it to
+      rec-3905 via the portal, per the operator's explicit call.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Kernel-expressible as grep_count, but green-by-construction on the un-implemented tree (the
+      Decision 194 span does not exist yet, so the count is trivially 0), which makes it a
+      tautological graduate and a hard plan-PR failure under the Decision 189 gate. It is a
+      one-shot authoring guard for this entry, not a durable corpus invariant.
+  - step: 12
+    phase: pre-deploy
+    action: Prove the licence artefacts and their validator were not touched by THIS branch.
+    command: git fetch origin main && git diff --name-only "$(git merge-base origin/main HEAD)" -- LICENSE LICENSING.md COMMERCIAL-LICENSE.md CONTRIBUTING.md scripts/checks/hygiene/validate_licence_consistency.py | wc -l
+    expected: "0 -- the licence seam is gated on a legal event, not on this PR."
+    fix_if: >-
+      Before reverting anything, distinguish a genuine edit on this branch from base drift: a
+      separate concurrent agent owns the Decision 171 licence terms and may merge to main first.
+      The merge-base form already excludes their commits; if a path still appears, it was edited
+      HERE -- revert it. The LICENSE line and the validator regex move together, later, in one commit.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Kernel-expressible, but its subject is this PR's diff against a merge base -- transient repo
+      state. As a standing guard it would forbid the licence edit this plan explicitly sequences
+      for later, which is the opposite of the intended invariant.
+  - step: 13
+    phase: pre-deploy
     action: Prove no Terraform was touched (rec-3136 records terraform/github state as drifted).
-    command: git diff --name-only origin/main -- terraform/ | wc -l
+    command: git fetch origin main && git diff --name-only "$(git merge-base origin/main HEAD)" -- terraform/ | wc -l
     expected: "0."
     fix_if: Revert any terraform/ hunk; this plan has no infrastructure element.
     hermetic: true
-  - step: 10
+    graduation: waive
+    graduation_waiver_reason: >-
+      Kernel-expressible, but scoped to this PR's diff against a merge base -- transient repo state.
+      A standing "terraform/ is never modified" guard would be false for the whole repository.
+  - step: 14
+    phase: pre-deploy
+    action: >-
+      Confirm the rec-3905 portal update landed, by reading it back from the warehouse. This is the
+      plan's only warehouse write and the only change a git revert does not undo.
+    command: bin/venv-python -m scripts.ops_data_portal --sync && grep -c 'otl-labs' logs/.recommendations-log.jsonl
+    expected: >-
+      A count of at least 1 after the pull, with rec-3905's refreshed context carrying the leaning.
+      The cache is read-only here and is being READ as a projection of the warehouse, never written.
+    fix_if: >-
+      A zero count means the update_rec call did not land. Re-run it through the portal. Never edit
+      logs/.recommendations-log.jsonl to make this pass -- that is the Decision 84 replay-from-cache
+      anti-pattern and validate.py will fail the PR.
+    hermetic: false
+    graduation: not-applicable
+  - step: 15
     phase: pre-deploy
     action: Run the authoritative fast presubmit tier.
     command: bin/venv-python -m scripts.validate --pre
     expected: "Exit 0."
     fix_if: >-
-      Address the named check. validate_decisions_size, validate_decision_currency and
-      validate_supersession_annotations are the likely first failures on a new entry.
+      Address the named check. validate_graduation_completeness, validate_plan_documents,
+      validate_decisions_size and validate_supersession_annotations are the likely first failures.
     hermetic: true
-  - step: 11
+    graduation: waive
+    graduation_waiver_reason: >-
+      The aggregate presubmit tier itself. A graduate disposition here is refused statically by the
+      vp-red-before recursion rule, which forbids a graduate step invoking scripts.validate.
+  - step: 16
     phase: pre-deploy
     action: Run the full validation tier before handoff.
     command: bin/venv-python -m scripts.validate
     expected: "Exit 0."
     fix_if: Address the named check; do not commit on a red full tier (handoff_policy).
     hermetic: true
-
+    graduation: waive
+    graduation_waiver_reason: >-
+      The aggregate full tier itself; same recursion refusal as step 15. Nothing to graduate.
 test_obligations:
   - source: docs/DECISIONS.md
     behavior: >-
       A new decision entry over the Decision 167 per-entry cap, or carrying a prose-only
       reversal-conditions section, or editing an existing body line, is rejected before merge.
-    verification_step: 10
+    verification_step: 15
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: >-
-      No new automated test is authored. This plan adds no executable behaviour: it changes only
-      the decision corpus, the roadmap's north-star prose and a generated index. The behaviour is
-      already covered by five registered checks that gate exactly this diff shape --
-      validate_decisions_size (the 6144 cap), validate_decision_entry_conformance (envelope and
-      markers), validate_reversal_stanzas (the fenced stanza), validate_decisions_index_freshness
-      (index drift) and validate_supersession_annotations. Authoring a sixth test asserting the
-      literal content of one decision entry would pin prose, not behaviour, and would need editing
-      on every future amendment -- the drift-by-design anti-pattern AGENTS.md names.
-
+      No new automated test is authored, and none is mechanically required -- validate_plan_documents'
+      _is_documentation predicate exempts .md sources. Recorded anyway because the exemption is
+      incidental: the behaviour IS already covered by five registered checks that gate exactly this
+      diff shape -- validate_decisions_size (the 6144 cap), validate_decision_entry_conformance
+      (envelope, markers, block separator), validate_reversal_stanzas (the fenced stanza),
+      validate_decisions_index_freshness (index drift) and validate_supersession_annotations. A
+      sixth test asserting the literal content of one decision entry would pin prose, not
+      behaviour, and would need editing on every future amendment -- the drift-by-design
+      anti-pattern AGENTS.md names.
+  - source: docs/ROADMAP-PLATFORM.yaml
+    behavior: >-
+      NS.2's detail names the owning entity (On The Loop Labs Limited) explicitly and distinguishes
+      it from the legacy company-aws-profile account, so the principle's existing contrast term
+      ("Personal AWS account, not shared work account") does not invert unremarked.
+    verification_step: 10
+    command: grep -q 'On The Loop Labs Limited' docs/ROADMAP-PLATFORM.yaml && grep -q 'company-aws-profile' docs/ROADMAP-PLATFORM.yaml
+    red_green_expectation: >-
+      RED before: neither literal appears anywhere in docs/ROADMAP-PLATFORM.yaml today, so the
+      command exits 1. GREEN after: the NS.2 annotation introduces both. This is VP step 10, the
+      plan's one graduate-disposition step (graduation_check_id ns2-names-owning-entity), and it is
+      replayed under Decision 189 inverted polarity to prove it genuinely fails pre-fix.
+  - source: docs/decisions-index.json
+    behavior: >-
+      The committed typed-edge index stays in lockstep with the live decision corpus; a DECISIONS.md
+      change without a regenerated index is rejected before merge.
+    verification_step: 2
+    command: bin/venv-python -m scripts.decisions_index --check
+    waiver_reason: >-
+      No new test is authored because this file is GENERATED, never hand-edited, and its freshness
+      is already the subject of validate_decisions_index_freshness -- a required-artefact check
+      registered in BOTH tiers whose sole predicate is exactly this drift. Authoring a test over a
+      generated artefact would assert the generator against itself. VP step 2 invokes the same
+      check_index_freshness entry point the registered check calls.
 constraints:
   - >-
     SEAM -- a separate concurrent agent owns the Decision 171 LICENCE TERMS (Additional Use Grant
@@ -220,6 +392,26 @@ constraints:
     logs/.recommendations-log.jsonl (gitignored read cache, untracked, and 5 rows stale against
     1273 open recs in the warehouse).
   - >-
+    The NS.2 annotation must NOT introduce the literal string `benjamin-blake/agent-platform`.
+    validate_licence_consistency is an ALWAYS-RUN check and its _CLASS_A_PATTERNS map (line 57)
+    watches docs/ROADMAP-PLATFORM.yaml for exactly that old slug. An account-and-org-identity
+    annotation is precisely where an author would reflexively write it. The repository is
+    `benjamin-blake/theseus` (Decision 171 clause 1), and the owner half moves only via the gated
+    org transfer, never in this plan.
+  - >-
+    Decision 171 clause 5 rests dual licensing on sole copyright ownership "which is UNVERIFIED",
+    and its reversal condition (a) watches provenance. Clause 2's founder-to-company assignment
+    does NOT disturb that premise -- the founder is sole owner before the assignment and the
+    company sole owner after, so sole ownership is preserved across it and condition (a) does not
+    fire. State this in the decision body so a later reader need not re-derive whether `amends:`
+    should have included 171. It should not.
+  - >-
+    docs/ROADMAP-PLATFORM.yaml stands at 9,901 lines against a HARD ceiling of 10,000
+    (_ROADMAP_MAX_LINES, validate_platform_roadmap, both tiers; check_roadmap_regrowth already
+    reports headroom=99 escalate=true). Write the NS.2 annotation as tightly as it can be written.
+    Three follow-on plans budget against the same 99 lines. If it does not fit, escalate per
+    Decision 147's reversal condition -- never an ad hoc trim of unrelated content.
+  - >-
     Out of scope entirely: repository rename, GitHub org transfer, OIDC subject change, hardcoded
     benjamin-blake sweep, any terraform/ change, CONTRIBUTING.md, Decision 101, CD.23, trademark
     content, and re-scoping tier item T5.2.
@@ -238,6 +430,11 @@ context:
   - "Sequence: this plan is the keystone. rec-3921 (contribution governance) and rec-3922 (positioning + rename) cite it; rec-3923 (open-core boundary) is independent of all three."
   - "Rename context: 'Theseus' is retired as an external brand and the product becomes 'On The Loop' (rec-3922). Do NOT assert Theseus is retained in any text authored here."
   - "plan_obligations reports no unmet registration obligations for this scope."
+  - "Roadmap headroom: docs/ROADMAP-PLATFORM.yaml is at 9901 of a hard 10000-line ceiling (validate_platform_roadmap, both tiers). check_roadmap_regrowth reports GROWTH lines=9901 baseline=7329 headroom=99 escalate=true. Decision 147's escalation condition is effectively already armed."
+  - "Index currency is gated by validate_decisions_index_freshness (registered, both tiers), NOT by Decision 179 clause 5(i) -- that clause is the unbounded-read ACCEPTANCE for this file, a different subject."
+  - "Decision 178 retired the mechanical guard validate_live_entry_immutability, so VP step 4 is the sole surviving control on Decision 177's append-only property. It counts deleted lines via git numstat: a `^-[^-]` diff-prefix grep misses deleted markdown bullets (`-- item`) and deleted blank lines (bare `-`), and this file carries 282 bullet lines."
+  - "VP steps 4, 12 and 13 use merge-base (git merge-base origin/main HEAD), never two-dot `git diff origin/main`. Two-dot compares branch tips and reports phantom deletions once the concurrent licensing agent merges to main."
+  - "plan-critique round 1 verdict: REVISE, 13 findings, all applied. Two were reproduced hard --pre failures (missing graduation dispositions on every pre-deploy step; missing per-source test_obligations for the .yaml and .json scope rows -- validate_plan_documents' _is_documentation exempts .md only)."
 
 pre_implementation_checklist:
   - Confirm `git branch --show-current` is the harness session branch, never main.
@@ -250,10 +447,10 @@ pre_implementation_checklist:
   - Confirm `aws sts get-caller-identity --profile agent_platform` succeeds before the rec-3905 update.
 
 execution_steps:
-  - "Author `## Decision 194:` in docs/DECISIONS.md, inserted above `## Decision 193:` (the file is descending by number). Include the typed yaml envelope with amends: [106], the Status/Date/Decision markers, Problem/Intent/Rationale, the fenced reversal-conditions stanza, a Warehouse ID line, and Related."
+  - "Author `## Decision 194:` in docs/DECISIONS.md, inserted above `## Decision 193:` (the file is descending by number). Include the typed yaml envelope with amends: [106], the Status/Date/Decision markers, Problem/Intent/Rationale, the fenced reversal-conditions stanza, a Warehouse ID line, Related, and the trailing `---` block separator (decision-entry.yaml's block_separator, forward-enforced on new-in-diff entries)."
   - "Write clause 2's licence-ordering sentence to state the two-halves-in-one-commit rule explicitly, so a later agent cannot edit LICENSE alone and redden validate_licence_consistency."
   - "Write clause 3 to cite Decision 106's reversal condition (a) by name as the trigger it fires, and to record the consequence rather than execute any account move."
-  - "Write clause 4 with the two candidate handles only. No leaning, no dbt Labs analogy, no rec list."
+  - "Write clause 4 with the two candidate handles only -- the standing commitment THAT the handle is a separately-decided gated identifier. No leaning, no dbt Labs analogy, and no gated-work inventory: sequencing-against-a-gate is the work_item routing row, which decision-entry.yaml marks 'Never a numbered Decision'. Verify with VP step 11 before committing."
   - "Measure the entry (VP step 3). If over 6144 B, trim the Related pointer block first, then relocate any remaining inventory into this plan's context -- never raise the cap."
   - "Append the `> **Amended by Decision 194 (2026-09-17):**` blockquote to `## Decision 106`, directly beneath its Warehouse ID line and above its `**Decision:**` marker, matching the placement used on Decisions 149 and 101."
   - "Append the inline `[Amendment 2026-09-17, Decision 194 -- ...]` annotation to NS.2's detail in docs/ROADMAP-PLATFORM.yaml, naming On The Loop Labs Limited and distinguishing it from the legacy company-aws-profile account T5.2 tears down. Do not touch the CD.6 row."
