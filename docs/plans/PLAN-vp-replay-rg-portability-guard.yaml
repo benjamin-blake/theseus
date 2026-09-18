@@ -43,6 +43,25 @@ scope:
     deliberate: linting merely-modified plans would red an unrelated PR that touches an old plan
     for unrelated reasons. It does mean the class goes unchecked on the act-one amendment diff
     itself, which VP steps 4 and 5 cover directly instead.
+    FINDING-STRING NAMING IS CONSTRAINED, and both constraints are real breakages, not style.
+    The string must NOT contain the substring `vp-red-before-lint`: test_lint_and_budget.py:62 and
+    :76 assert `not any("vp-red-before-lint" in f for f in failed)` on _RedBeforeFixture plans whose
+    commands are `! rg ...` -- program-position rg after a `!`, so the new lint WILL fire on them,
+    and a shared substring breaks two existing negated-sweep assertions. It must also NOT start
+    with `vp-replay`: _implement_pr_leg gates its summary PASS line on
+    `not any(f.startswith("vp-replay") for f in failed)` (validate_vp_replay.py:481), so such a
+    prefix would silently suppress that line. Use a distinct prefix, e.g. `vp-rg-portability`.
+    The MODIFIED exclusion is additionally load-bearing for two existing tests
+    (test_lint_and_budget.py:89, :101 assert `failed == []` on _ModifiedPlanFixture plans carrying
+    `! rg`), so it must not be quietly widened.
+    PRE-PASS ERROR POSTURE: reuse _red_before_leg's existing split -- an ImportError on
+    scripts.roadmap.plan_document REDDENS, a plan content/schema error SKIPs with a printed reason
+    (validate_vp_replay.py:544-551) -- rather than inventing a third posture. The pre-pass will
+    load each eligible plan a second time; that duplicate load is accepted for the simpler control
+    flow, and is stated here so it is a choice rather than an oversight.
+    SIZE THE LINT AGAINST THE CAP: the 412-SLOC residual must also absorb the re-import block, a
+    `shlex` import, the pre-pass and its call site, and two counted loud-line emitters -- headroom
+    is real but not generous. VP step 3 measures it.
     (b) Relocate the classifier surface out to the new sibling module so this file stays under
     budget -- see that row.
 - file: scripts/checks/verification/_vp_replay_classify.py
@@ -93,7 +112,22 @@ scope:
     the five unmeasurable arms classifies as `unmeasurable` (exit 126, exit 127, rg/grep exit 2, a
     credential-unavailable message, and the timeout arm), a pytest collection error classifies
     `target_absent`, exit 0 classifies `tautological`, and an ordinary exit 1 classifies
-    `assertion_failed`. Carries its OWN fixtures: Decision 131 / `validate_no_cross_test_imports`
+    `assertion_failed`. MUST COVER ALL THREE RELOCATED FUNCTIONS, not just the classifier:
+    validate_test_coverage (full tier) resolves this file as the module's mirror via
+    map_source_to_test and measures THIS FILE ALONE against the source with a 100% threshold --
+    there is no config/coverage_baseline.yaml entry for scripts/checks/verification/**, and the
+    sibling precedent measures exactly that way (test__manifest.py alone puts _manifest.py at 100%
+    while every other module in the package sits at 8-27%). So it must also exercise
+    _run_self_test_fixture on BOTH its completing and its TimeoutExpired path, and
+    _run_classifier_self_test on BOTH the all-correct and the mislabel path (the mislabel by
+    patching _vp_replay_classify._classify_outcome, the same module-local target the retarget
+    rationale establishes). Those two functions are covered today only by
+    validate_vp_replay/test_accounting_and_self_test.py, which is a DIFFERENT file and contributes
+    nothing to this module's measurement. Do NOT satisfy this by registering a sub-100
+    config/coverage_baseline.yaml entry: that needs a `# baseline-lowered: dec-NNN` marker naming
+    an authorising Decision (Decision 165) and none exists -- structurally the same
+    raise-instead-of-do-the-work move this plan already refuses on the SLOC axis. Carries its OWN
+    fixtures: Decision 131 / `validate_no_cross_test_imports`
     fails a test module importing from a sibling `test_*` module, so this file must not import from
     the `validate_vp_replay/test_*` package -- `_SELF_TEST_FIXTURES` relocates with the classifier
     and is imported from the source module, never from another test.
@@ -116,7 +150,11 @@ scope:
     assert BOTH polarities and the false-positive floor: a step whose command invokes rg in program
     position is flagged; a step whose command merely CONTAINS the text `rg` inside a quoted string
     is NOT flagged (the exact false positive that would otherwise fire on a plan discussing
-    ripgrep); a merely-modified plan is not linted; and an unparseable segment fails open.
+    ripgrep); a RESOLVED plan is linted, which is the half the pre-pass exists for and the half a
+    naive placement would miss; a merely-modified plan is not linted; and an unparseable segment
+    fails open. The fail-open arm, the MODIFIED-exclusion arm and both loud counted-deferral lines
+    each need a case of their own -- validate_vp_replay.py's mapped-directory coverage obligation
+    counts branches, not polarities.
 - file: docs/contracts/vp-red-before.yaml
   action: Modify
   purpose: >-
@@ -125,10 +163,14 @@ scope:
     its relationship to the `unmeasurable` outcome class it exists to pre-empt. The contract is the
     single authoritative home for this check's semantics; the module holds no second copy of that
     prose. MANDATORY, not optional: this is a Class D mechanism contract at `provisional_v0` whose
-    evaluator is `{check: validate_vp_replay}`, so Decision 168 clause 4 obliges BOTH a
-    `contract_version` bump (2 -> 3) AND an `amendment_log` entry at the list tail, in the same
-    change -- the file's own 2026-09-14 entry records exactly that pairing for the 1 -> 2 bump.
-    Declaring the lint without both is contract drift.
+    evaluator is `{check: validate_vp_replay}`. The ENFORCED obligation is
+    docs/contracts/contract-population.yaml#change_detection.amendment_log -- a Class D file's
+    canonical dump changing with no new `amendment_log[]` entry FAILS `validate_contract_drift` --
+    so append an entry at the list tail. Bump `contract_version` 2 -> 3 alongside it as the file's
+    own 2026-09-14 entry does; that half is convention, not a gate. NOTE: an earlier draft cited
+    "Decision 168 clause 4" for this. That citation is WRONG -- clause 4 is subject uniqueness and
+    the downward-only ratchet, and says nothing about amendment_log or contract_version. Both edits
+    are still required; only the authority differs.
 - file: config/agent/verification_registry/entries/vp-replay-coverage-survives-absent-ripgrep.yaml
   action: Modify
   purpose: >-
@@ -203,6 +245,13 @@ acceptance_criteria:
   scripts/checks/verification/validate_vp_replay.py measures under 500 SLOC after the change, with
   no entry added to config/sloc_budgets.yaml and no budget-raise marker anywhere in the diff.
 - >-
+  tests/checks/verification/test__vp_replay_classify.py ALONE measures
+  scripts/checks/verification/_vp_replay_classify.py at 100% line coverage, with no entry added to
+  config/coverage_baseline.yaml and no `baseline-lowered` marker anywhere in the diff; and
+  validate_vp_replay.py's own mapped-directory coverage survives the new lint's branches -- the
+  fail-open arm, the MODIFIED-exclusion arm and both loud counted-deferral lines included, not only
+  the flag/no-flag polarities.
+- >-
   Every name relocated to _vp_replay_classify.py still resolves under its original
   `scripts.checks.verification.validate_vp_replay` import path, and the full classifier vocabulary
   (all four outcome classes and all five unmeasurable arms) is asserted by the new mirror test.
@@ -263,12 +312,26 @@ verification_plan:
     Run the new mirror module: every outcome class reachable, all five unmeasurable arms
     classifying as unmeasurable, collection error as target_absent, exit 0 as tautological, exit 1
     as assertion_failed. This is the relocation's behaviour-preservation proof.
-  command: bin/venv-python -m pytest tests/checks/verification/test__vp_replay_classify.py -q
-  expected: All tests pass -- exit 0.
+  command: |-
+    bin/venv-python -m pytest tests/checks/verification/test__vp_replay_classify.py
+    --cov=scripts/checks/verification --cov-report=json:/tmp/vpc-cov.json -q --no-header
+    && bin/venv-python -c "
+    import json
+    src = 'scripts/checks/verification/_vp_replay_classify.py'
+    d = json.load(open('/tmp/vpc-cov.json'))['files'][src]['summary']
+    assert d['missing_lines'] == 0, src + ' mirror leaves ' + str(d['missing_lines']) + ' line(s) uncovered: ' + str(d['percent_covered'])
+    print('MIRROR_COVERS_RELOCATED_MODULE_100_PERCENT')
+    "
+  expected: 'All tests pass and it prints: `MIRROR_COVERS_RELOCATED_MODULE_100_PERCENT`. Exit 0.'
   fix_if: >-
-    Red before implementation because the module does not exist (exit 4/5, target_absent). After,
-    a failure means a constant or arm was dropped or altered during relocation -- the move is
-    VERBATIM, so restore the original text rather than adjusting the test.
+    Red before implementation because the module does not exist (exit 4/5, target_absent). A test
+    failure after means a constant or arm was dropped or altered during relocation -- the move is
+    VERBATIM, so restore the original text rather than adjusting the test. A non-zero
+    missing_lines count means the mirror does not carry the whole relocated surface: the usual
+    cause is that _run_self_test_fixture's TimeoutExpired branch or _run_classifier_self_test's
+    mislabel branch is unexercised, because those two live today in a DIFFERENT test file that
+    contributes nothing here. Add the missing cases; never register a coverage baseline to make
+    this pass. This step is what proves the obligation BEFORE step 8's full tier discovers it.
 - step: 3
   phase: pre-deploy
   hermetic: true
@@ -608,7 +671,8 @@ execution_steps:
   _classify_outcome patch sites in test_accounting_and_self_test.py and leave the other seven alone.
 - >-
   Declare the lint in docs/contracts/vp-red-before.yaml beside negated_sweep_lint, AND in the same
-  change bump `contract_version` 2 -> 3 and append an amendment_log entry (Decision 168 clause 4).
+  change append an amendment_log entry (enforced: contract-population.yaml#change_detection.
+  amendment_log via validate_contract_drift) and bump `contract_version` 2 -> 3 (convention).
 - >-
   Repoint ONLY the `src=` literal in
   config/agent/verification_registry/entries/vp-replay-coverage-survives-absent-ripgrep.yaml
