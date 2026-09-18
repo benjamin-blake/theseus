@@ -254,14 +254,36 @@ verification_plan:
   graduation: waive
   graduation_waiver_reason: A bundled recommendation's own acceptance literal, not a standing repo invariant --
     it becomes dead weight the moment rec-3767 closes, and step 1 guards the underlying claim permanently.
-  action: Run rec-3767's acceptance probe VERBATIM from the rec row, so the bundled rec closes on its own stated
-    terms.
-  command: rg -q 'gc_ops' terraform/personal/ducklake_maintenance.tf && ! rg -n 'gc_ops' -A 10 terraform/personal/ducklake_maintenance.tf
-    | rg -q 'state *= *"DISABLED"'
+  action: 'Run rec-3767''s acceptance probe VERBATIM from the rec row, so the bundled rec closes on
+    its own stated terms. AMENDED 2026-09-18 (act one of implement-scope-boundary.yaml''s two-act
+    amendment_procedure, as #1205 amended step 8): the probe was rewritten from ripgrep to POSIX
+    grep. ripgrep is NOT installed on the GitHub-hosted runner, so validate_vp_replay''s green
+    implement leg replayed this step -- the only hermetic pre-deploy step in the whole plan corpus
+    invoking rg -- and got exit 127, reddening pr-validate on #1206 deterministically. rec-3767''s
+    stored acceptance was updated to the identical text, so ''VERBATIM from the rec row'' stays
+    true. THE ARGUMENT ORDER IS LOAD-BEARING, NOT STYLE: write `grep -n -A 10 PATTERN PATH`, never
+    `grep -n PATTERN -A 10 PATH`. Under POSIXLY_CORRECT=1 GNU grep stops permuting arguments, reads
+    `-A` and `10` as filenames, exits 2 -- and STILL PRINTS its matching lines, with the -A context
+    window silently dropped. The state literal sits on a CONTEXT line, so it vanishes from the
+    window, the inner `grep -q` finds nothing and exits 1, and `!` flips that to 0. The exit 2
+    never propagates through the pipe; the LOST CONTEXT WINDOW is the mechanism, and the gate
+    INVERTS to a false pass on a still-disabled rule. Measured in all four cells (DISABLED/ENABLED
+    x default/POSIXLY_CORRECT): canonical order gives 1/1/0/0, the permuted order gives 0 in the
+    POSIXLY_CORRECT DISABLED cell. Decision 189''s negated-absent-path NOTE does not apply here:
+    the leading `grep -q ''gc_ops'' PATH &&` conjunct exits 2 and short-circuits on a missing path,
+    so the negated tail is never reached (measured). A portability substitution with identical
+    discriminating power, never a relaxation -- Decision 181.'
+  command: grep -q 'gc_ops' terraform/personal/ducklake_maintenance.tf && ! grep -n -A 10 'gc_ops'
+    terraform/personal/ducklake_maintenance.tf | grep -q 'state *= *"DISABLED"'
   expected: Exit 0.
-  fix_if: 'Non-zero. This probe''s -A 10 window is looser than step 2''s block-scoped regex: if step 2 passes and
-    this fails, a DISABLED literal sits within ten lines of some other gc_ops mention. Reword the prose, never weaken
-    the probe.'
+  fix_if: 'Non-zero. This probe''s -A 10 window is looser than step 2''s block-scoped regex: if step
+    2 passes and this fails, a DISABLED literal sits within ten lines of some other gc_ops mention.
+    Reword the prose, never weaken the probe. Do NOT reorder the flags back to `grep -n PATTERN -A
+    10 PATH` -- that inverts the gate to a false pass under POSIXLY_CORRECT=1 (see action). Do NOT
+    restore rg: it is absent on the runner, and the standing lint
+    vp-replay-lints-rg-in-program-position now fails any plan whose pre-deploy step invokes it. Do
+    NOT relabel this step `hermetic: false` to dodge replay -- it genuinely is creds-free and
+    side-effect-free, and mislabelling to obtain green is what Decision 181 prohibits.'
 - step: 4
   phase: pre-deploy
   hermetic: true

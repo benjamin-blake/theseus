@@ -57,6 +57,7 @@ there too (classified assertion_failed/target_absent/unmeasurable), never silent
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import time
 from pathlib import Path
@@ -64,8 +65,21 @@ from pathlib import Path
 import yaml
 
 from scripts.checks import _common, registry
+from scripts.checks.verification._vp_replay_classify import (  # noqa: F401  (re-exported: external callers and tests import these from here)
+    _CREDENTIAL_UNAVAILABLE_MESSAGE_RE,
+    _PYTEST_COLLECTION_ERROR_EXIT_CODES,
+    _RG_GREP_ERROR_EXIT_CODE,
+    _RG_GREP_INVOCATION_RE,
+    _SELF_TEST_FIXTURES,
+    _SELF_TEST_TIMEOUT_SECONDS,
+    _UNMEASURABLE_EXIT_CODES,
+    OUTCOME_CLASSES,
+    PER_STEP_TIMEOUT_SECONDS,
+    _classify_outcome,
+    _run_classifier_self_test,
+    _run_self_test_fixture,
+)
 
-PER_STEP_TIMEOUT_SECONDS = 30
 MAX_AGGREGATE_SECONDS = 120
 # Re-derived (rec-3770, Decision 189) so the 120s aggregate wall clock -- not an arbitrary step
 # count -- is the binding constraint on a realistic multi-plan PR. Measured during this plan's
@@ -84,45 +98,11 @@ MAX_REPLAYED_STEPS = 30
 
 _BACKTICK_LITERAL_RE = re.compile(r"`([^`]+)`")
 
-# The FOUR frozen outcome classes (docs/contracts/vp-red-before.yaml derive-and-asserts equal to
-# this tuple) -- never restated as a fifth class or split further.
-OUTCOME_CLASSES: tuple[str, ...] = ("tautological", "target_absent", "assertion_failed", "unmeasurable")
-
 # Genuinely used below (in the classifier self-test's fixture cwd resolution is NOT this -- see
 # _run_classifier_self_test) so docs/contracts/vp-red-before.yaml's {check: validate_vp_replay}
 # evaluator declaration resolves against THIS module (resolve_evaluator requires an
 # executable-context literal, never a docstring mention).
 _CONTRACT_BASENAME = "vp-red-before.yaml"
-
-# The five arms "unmeasurable" subsumes (docs/contracts/vp-red-before.yaml's unmeasurable_arms) --
-# a subprocess timeout is handled separately (no exit code exists), the rest are exit-code/output
-# based.
-_UNMEASURABLE_EXIT_CODES = frozenset({126, 127})
-_RG_GREP_ERROR_EXIT_CODE = 2
-_RG_GREP_INVOCATION_RE = re.compile(r"(?:^|[|&;]|\s)(?:rg|grep)\b")
-_PYTEST_COLLECTION_ERROR_EXIT_CODES = frozenset({4, 5})
-
-# Mirrors scripts/checks/_scaffolding.py's _CREDENTIAL_UNAVAILABLE_MESSAGE_RE shape (Decision
-# 155/170) -- that classifier is exception-based (a raised botocore exception); this one reads
-# combined stdout+stderr TEXT from a replayed shell command instead, so it is kept as its own
-# narrow, message-pattern-only regex rather than importing an exception-oriented classifier.
-_CREDENTIAL_UNAVAILABLE_MESSAGE_RE = re.compile(
-    r"(token (has )?expired|profile.*(not found|could not be found)|unable to locate credentials|"
-    r"no credentials|unauthorized.*sso|token.*retriev|expiredtoken)",
-    re.IGNORECASE,
-)
-
-# Classifier self-test fixtures (one per outcome class, PLUS a dedicated timeout arm so a
-# regression specific to that arm cannot hide behind the exit-127 fixture alone). Cost-bounded:
-# a sub-second timeout keeps the unconditional per-dispatch overhead small.
-_SELF_TEST_TIMEOUT_SECONDS = 0.05
-_SELF_TEST_FIXTURES: tuple[tuple[str, str, float], ...] = (
-    ("true", "tautological", PER_STEP_TIMEOUT_SECONDS),
-    ("exit 1", "assertion_failed", PER_STEP_TIMEOUT_SECONDS),
-    ("exit 5", "target_absent", PER_STEP_TIMEOUT_SECONDS),
-    ("exit 127", "unmeasurable", PER_STEP_TIMEOUT_SECONDS),
-    ("sleep 5", "unmeasurable", _SELF_TEST_TIMEOUT_SECONDS),
-)
 
 # Negated-sweep lint (docs/contracts/vp-red-before.yaml's negated_sweep_lint): a `! rg`/`! grep`
 # invocation's tail, up to the next shell control operator. Fails OPEN (returns None -- never
@@ -214,60 +194,6 @@ def _partition_steps(verification_plan, root: Path) -> tuple[list, list[tuple]]:
 
 def _extract_literals(expected: str) -> list[str]:
     return _BACKTICK_LITERAL_RE.findall(expected)
-
-
-def _classify_outcome(command: str, returncode: int | None, combined_output: str, *, timed_out: bool) -> str:
-    """Classify one replayed graduate step's raw result into the four frozen outcome classes
-    (docs/contracts/vp-red-before.yaml) -- the SOLE classification rule, called identically by
-    the red-before leg's real replay and by the in-dispatch classifier self-test."""
-    if timed_out:
-        return "unmeasurable"
-    if returncode == 0:
-        return "tautological"
-    if returncode in _UNMEASURABLE_EXIT_CODES:
-        return "unmeasurable"
-    if returncode == _RG_GREP_ERROR_EXIT_CODE and _RG_GREP_INVOCATION_RE.search(command):
-        return "unmeasurable"
-    if _CREDENTIAL_UNAVAILABLE_MESSAGE_RE.search(combined_output):
-        return "unmeasurable"
-    if returncode in _PYTEST_COLLECTION_ERROR_EXIT_CODES:
-        return "target_absent"
-    return "assertion_failed"
-
-
-def _run_self_test_fixture(command: str, timeout: float) -> str:
-    """Run one self-test fixture with no `cwd` override: these are generic shell builtins
-    (true/exit N/sleep N) that touch no repo file, and this runs unconditionally before `root`
-    is known to exist (an injected test `root` may be a nonexistent path on purpose)."""
-    try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return _classify_outcome(command, None, "", timed_out=True)
-    return _classify_outcome(command, result.returncode, result.stdout + result.stderr, timed_out=False)
-
-
-def _run_classifier_self_test(failed: list[str]) -> None:
-    """Classify one fixture per outcome class -- including the TIMEOUT arm -- as a precondition
-    of this check's own verdict (Decision 55: a mislabelled classifier must never silently report
-    a trustworthy verdict). A mislabel appends to ``failed`` directly; this function never calls
-    ``examined()``/``skipped()`` -- the terminal Decision 170 declaration is composed once,
-    elsewhere. Runs unconditionally, before any precondition early-return, so no unrelated skip
-    reason can mask a broken classifier."""
-    for command, expected, timeout in _SELF_TEST_FIXTURES:
-        actual = _run_self_test_fixture(command, timeout)
-        if actual != expected:
-            failed.append(
-                f"vp-red-before self-test: fixture {command!r} classified as {actual!r}, expected {expected!r} "
-                "-- the outcome classifier is broken; refusing to report a trustworthy verdict."
-            )
 
 
 def _added_plan_paths(root: Path) -> set[str]:
@@ -484,6 +410,68 @@ def _implement_pr_leg(root: Path, resolved: list[str], failed: list[str], budget
         print(f"  PASS: {plans_resolved} plan(s) resolved via implementation_declared, no hermetic step(s) to replay.")
 
 
+def _segment_invokes_rg(command: str) -> tuple[bool, bool]:
+    """(flagged, unparseable) for one command, by PROGRAM POSITION -- never substring, or every
+    plan discussing this lint would red. Fails OPEN on an unparseable segment and says which.
+    Semantics: docs/contracts/vp-red-before.yaml's rg_portability_lint."""
+    unparseable = False
+    for segment in _SHELL_SEGMENT_SPLIT_RE.split(command or ""):
+        try:
+            tokens = shlex.split(segment)
+        except ValueError:
+            unparseable = True
+            continue
+        while tokens and tokens[0] in ("!", "env"):
+            tokens = tokens[1:]
+        if tokens and tokens[0].rsplit("/", 1)[-1] == "rg":
+            return True, unparseable
+    return False, unparseable
+
+
+def _rg_portability_pre_pass(plan_files: list[str], root: Path, in_population: set[str], failed: list[str]) -> None:
+    """Flag pre-deploy steps invoking ripgrep, which no CI runner has, across added-or-resolved
+    plans -- so the defect is caught at authoring rather than as an exit 127 the implement leg
+    reports as a divergence and the red-before leg calls ``unmeasurable``.
+
+    A PRE-PASS, not a call site inside ``_red_before_leg``: that loop ``continue``s on a resolved
+    plan before its lint site, so a lint sited there would cover only half this population.
+    Merely-MODIFIED plans are excluded (they would red unrelated PRs touching old plans); both
+    exclusion arms print a counted line rather than skipping silently. Error split mirrors
+    ``_red_before_leg``: ImportError reddens, a content error SKIPs -- which also covers a plan
+    absent from disk, so no separate existence guard is carried (one would be unreachable, since
+    membership in this population already required reading the file). The ``vp-rg-portability``
+    prefix is load-bearing -- ``vp-red-before-lint`` is asserted absent by negated-sweep tests
+    whose ``! rg`` fixtures this also flags, and a ``vp-replay`` prefix suppresses the implement
+    leg's PASS line. Never resolve a finding by installing ripgrep in CI.
+    """
+    excluded = unparseable = 0
+    for plan_rel in plan_files:
+        if plan_rel not in in_population:
+            excluded += 1
+            continue
+        try:
+            doc = _common.load_plan(plan_rel, root)
+        except ImportError as exc:
+            failed.append(f"vp-rg-portability {plan_rel}: could not import scripts.roadmap.plan_document: {exc}")
+            continue
+        except Exception as exc:  # noqa: BLE001 -- schema validity is validate_plan_documents' concern
+            print(f"  SKIP: {plan_rel}: load error ({exc}) -- not double-reported here")
+            continue
+        for step in (s for s in doc.verification_plan if s.phase == "pre-deploy"):
+            flagged, seg_unparseable = _segment_invokes_rg(step.command)
+            unparseable += int(seg_unparseable)
+            if flagged:
+                failed.append(
+                    f"vp-rg-portability {plan_rel}:{step.step}: pre-deploy step invokes `rg` in program "
+                    "position, but ripgrep is absent on the CI runner -- replay exits 127 there. Use POSIX "
+                    "grep in canonical argument order (grep -n -A 10 PATTERN PATH)."
+                )
+    if excluded:
+        print(f"  EXCLUDED: {excluded} diff-present plan(s) not added-or-resolved -- rg-portability lint not applied.")
+    if unparseable:
+        print(f"  EXCLUDED: {unparseable} unparseable command segment(s) -- rg-portability lint failed open on them.")
+
+
 def _compute_eligible_plans(plan_files: list[str], root: Path, resolved: set[str]) -> set[str]:
     added = _added_plan_paths(root)
     return {plan_rel for plan_rel in plan_files if plan_rel not in resolved and _is_red_before_eligible(plan_rel, root, added)}
@@ -609,6 +597,8 @@ def validate_vp_replay(failed: list[str], changed_files: list[str] | None = None
     resolved = _common.resolve_declared_plans(changed, root, base)
     resolved_set = set(resolved)
     eligible = _compute_eligible_plans(plan_files, root, resolved_set)
+
+    _rg_portability_pre_pass(plan_files, root, resolved_set | eligible, failed)
 
     budget = _ReplayBudget()
     _implement_pr_leg(root, resolved, failed, budget)
