@@ -2,6 +2,104 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 194: The Apache-2.0 conversion is staged on two named conditions rather than left to the fixed 2030-08-15 Change Date; the Additional Use Grant stays unwidened until the first free-tier release (amends Decision 171) (Decided)
+
+```yaml
+number: 194
+status: Decided
+decided_date: "2026-09-18"
+amends: [171]
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant commitment staging the outbound licence's conversion on named
+    conditions. Not a contract note: no docs/contracts file owns licence terms. Not an
+    amendment_forms annotation: Decision 171 measures 6056 of 6144 bytes, leaving no room for a
+    monitored stanza plus two conditions.
+```
+
+**Status:** Decided
+**Date:** 2026-09-18
+**Warehouse ID:** dec-194 (per Decision 84 backfill)
+
+**Problem:**
+Decision 171 set one fixed Change Date, 2030-08-15. The intent to convert earlier once a moat
+exists lived only in operator memory as "when the free version works and the commercial repo is
+up" -- unfalsifiable, and unevaluable by an agent. Decision 184 clause 5 left the grant's
+carve-out open with no recorded shape.
+
+**Intent:**
+Conversion to Apache-2.0 is staged on conditions this repository can evaluate; grant widening is a
+named deferred decision point, not a forgotten one.
+
+**Decision:** Amends Decision 171 (licence terms only -- clause 5 is untouched).
+
+1. **Staged flip.** When both stanza conditions hold, the Licensor brings the Change Date forward
+   by an explicit act amending `LICENSE` and `LICENSING.md`. BUSL-1.1 permits a published version's
+   Change Date to move EARLIER, never later. One-way: nothing published is ever narrowed.
+2. **Condition (a) is machine-evaluated.** T4.22, T4.23 and T4.24 all `status: complete` with every
+   exit criterion `met`, read from `docs/ROADMAP-PLATFORM.yaml` by `roadmap_items_complete` -- the
+   first registered `repo_state` predicate in `scripts/preflight/decision_conditions.py`, whose
+   registry Decision 133 left empty. A `rehomed` criterion does NOT satisfy it; an
+   absent tier item RAISES rather than returning False. All three are `deferred_post_mvp`
+   (Decision 93), so (a) cannot fire before post-MVP work starts; if Decision 184's `no-free-tier`
+   condition drops them, the predicate fails loud and reddens CI rather than letting this Decision
+   die silently -- that redness is the re-decide trigger, not an outage.
+3. **Condition (b) is a manual attestation, and says so.** A private repository is unobservable
+   from a public one; a predicate reading a self-maintained marker would test only whether the
+   operator remembered to edit it. An operator precondition, never a platform-repo observable
+   (Decision 178). Three claims: the private plane imports the core; holds at least one
+   capability deliberately NOT in the core; is deployed and serving, not scaffolded. The third is
+   load-bearing -- "exists" is not "operational". Discharging it records the DATE and the FACT
+   only: never the repository, its contents or its internals (Decision 111).
+4. **The Additional Use Grant stays unwidened today.** Widening defers to its existing gate --
+   T4.24 c6 and Decision 184 clause 5, before the first free-tier release -- which remains the SOLE
+   deciding authority. No installable free tier exists, so widening now spends an irreversible move
+   on adoption that cannot be bought. Intended shape, recorded as NON-BINDING guidance so it is not
+   redesigned: production use permitted, carve-out limited to offering the Licensed Work to third
+   parties as a hosted or managed service -- NOT a broad "competing product" restriction, which is
+   vaguer, less tested, and leaves an internal-tool builder unable to tell if they are offside.
+5. **Dual licensing (Decision 171 clause 6) is unchanged today and is spent by the flip.** Under a
+   widened grant its subject shifts from permission-to-run-in-production to permission-to-compete
+   -- far narrower than Decision 171 anticipated. rec-3148 survives unmodified on that changed
+   premise. rec-3153 is re-contexted to first_of(grant widening lands, first commercial sale,
+   Apache flip): Apache-2.0 outbound carries its own inbound dependency-compatibility requirement,
+   so that audit gates the flip regardless.
+
+**Stated assumptions -- flagged for solicitor confirmation, NOT settled law:**
+- **A1.** Bringing the Change Date forward exercises a right the licence already contains and every
+  recipient already holds, so it does not depend on Decision 171 clause 5's contributor-assignment
+  work; selling a commercial licence does, because GitHub's inbound=outbound terms confer no right
+  to sublicense. If A1 holds, the flip decouples from rec-3154. A1 concerns CONTRIBUTOR copyright,
+  distinct from the DEPENDENCY-licence question in clause 5.
+- **A2.** `LICENSE` names the Licensor as "Benjamin Blake", an individual, while On The Loop Labs
+  Limited now owns the platform; a relicense is an act of the copyright owner. The
+  founder-to-company IP assignment is therefore a precondition on EXECUTING the flip, gated on a
+  legal event, not on merge order. `validate_licence_consistency` hard-pins that exact string, so
+  the line and the regex move in the same commit whenever it changes. Neither is edited here.
+
+```yaml reversal-conditions
+decision: 194
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: free-core-complete
+    kind: repo_state
+    predicate: roadmap_items_complete
+    params:
+      items: [T4.22, T4.23, T4.24]
+    description: "Free tier shippable: T4.22/T4.23/T4.24 complete with every exit criterion met."
+  - id: commercial-plane-operational
+    kind: manual
+    description: "Operator attests the private plane imports the core, holds a capability absent from it, and is deployed and serving."
+```
+
+**Related:** Decision 171 (amended -- licence terms only), Decision 184 (clause 5 grant gate),
+Decisions 93, 111, 133, 178; T4.22-T4.24, T4.24 c6; rec-3148, rec-3153, rec-3906. Contributor
+assignment (Decision 171 clause 5, rec-3154) is out of scope.
+
+---
+
 ## Decision 193: G4 sizes strictly from a declared source and bounds the post-expiry set; an over-budget pass drains partially instead of deferring wholesale (amends Decision 188 clause 2) (Decided)
 
 ```yaml
