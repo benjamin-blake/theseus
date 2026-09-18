@@ -1,0 +1,380 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: gc-ops-vp-step-3-runner-portability
+intent: >-
+  Unstrand PR #1206 by landing act one of implement-scope-boundary.yaml's two-act
+  amendment_procedure -- make PLAN-gc-ops-baseline-gate-and-schedule-enable's verification_plan
+  step 3 executable on a stock GitHub runner -- so the production gc_ops destructive-GC cadence
+  can start behind its committed baseline gate, and mechanise the rule the incident establishes
+  as a standing guard rather than prose.
+plan_type: IMPLEMENTATION
+verification_tier: V1
+plan_path: docs/plans/PLAN-gc-ops-vp-step-3-runner-portability.yaml
+phase: T2.18
+scope:
+- file: docs/plans/PLAN-gc-ops-baseline-gate-and-schedule-enable.yaml
+  action: Modify
+  purpose: >-
+    ONE verification_plan step, THREE fields. Step 3's `command` substitutes POSIX grep for rg,
+    in CANONICAL ARGUMENT ORDER (`grep -n -A 10 PATTERN PATH`, never `grep -n PATTERN -A 10 PATH`):
+    ripgrep is absent from ubuntu-latest, so validate_vp_replay's green implement leg replays the
+    step and gets exit 127. The argument order is load-bearing, not style -- under POSIXLY_CORRECT=1
+    GNU grep stops permuting, reads `-A` and `10` as filenames, errors, and the `!` negation flips
+    that error into exit 0 on a DISABLED tree, silently INVERTING the gate. Measured both orders,
+    both polarities, both environments; only the canonical order is correct in all four cells.
+    `action` and `fix_if` record the substitution, the parity evidence, why the argument order
+    cannot be reordered back, and why Decision 189's absent-path negation NOTE is already closed
+    here (the leading `grep -q 'gc_ops' PATH &&` conjunct exits 2 and short-circuits on a missing
+    path -- measured -- so the negated tail is never reached). `scope`, `acceptance_criteria` and
+    every `verification_plan[].expected` stay byte-identical: this is a portability substitution
+    with identical discriminating power, never a relaxation, and step 3 asserts exactly that.
+    Step 3 stays `hermetic: true` -- it genuinely is creds-free and side-effect-free, and
+    mislabelling it to dodge the replay is the weaken-a-check-to-get-green move Decision 181 bans.
+- file: config/agent/verification_registry/entries/no-hermetic-vp-step-shells-out-to-ripgrep.yaml
+  action: Create
+  purpose: >-
+    Standing guard shard carrying step 1's scan, so the rule this incident establishes stops being
+    prose. Decision 163's WARN is that a universal obligation expressed only as metadata plus prose
+    is skipped silently the first time a session under load reaches for the faster path -- and the
+    prose channel has already failed twice here (rec-2938's 2026-07-31 occurrence, and this one).
+    The shard is the structural instrument that replaces rec-2938's now counter-indicated primary
+    fix. primitive_slot command_exit_zero; check_spec.command is byte-identical to step 1's, so the
+    VP step and the registry row run the same command by construction. Admission is real: on the
+    origin/main worktree revert the un-amended parent plan is the single offender, so the check
+    FAILS there and PASSES on HEAD.
+bundled_recommendations: []
+followon_recs:
+- rec-3920
+infrastructure_dependencies: []
+acceptance_criteria:
+- >-
+  PLAN-gc-ops-baseline-gate-and-schedule-enable step 3's command exits 0 against a tree whose
+  gc_ops rule state is ENABLED, using only binaries present on a stock ubuntu-latest runner.
+- >-
+  The same command exits non-zero against a tree whose gc_ops rule state is DISABLED, under BOTH
+  the default environment and POSIXLY_CORRECT=1 -- the gate cannot be inverted by getopt
+  permutation being switched off.
+- >-
+  The amended plan's `scope`, its `acceptance_criteria`, and every `verification_plan[].expected`
+  are byte-identical to origin/main, and exactly one `verification_plan[].command` differs from
+  origin/main -- step 3's.
+- >-
+  The amended step 3 command still carries both conjuncts, the -A 10 context window, and the
+  `state *= *"DISABLED"` literal, so its discriminating power is unchanged.
+- >-
+  No plan under docs/plans/ has a `hermetic: true` pre-deploy verification_plan step whose command
+  invokes rg, and a graduated verification-registry shard enforces that on every PR.
+- >-
+  The amended plan carries no `implementation_declared` key, so this amendment DEFERS on
+  validate_scope_boundary and cannot trip its prohibited-field check.
+- >-
+  rec-3767's stored `acceptance` is byte-identical to the amended step 3 command, so step 3's
+  claim to run that probe VERBATIM from the rec row is true.
+- >-
+  rec-2938 records this second live occurrence and no longer names installing ripgrep in ci.yml as
+  its primary fix.
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  hermetic: true
+  graduation: graduate
+  graduation_check_id: no-hermetic-vp-step-shells-out-to-ripgrep
+  action: >-
+    Scan every docs/plans/PLAN-*.yaml for a pre-deploy verification_plan step marked hermetic whose
+    command invokes rg as a program. The hermetic+pre-deploy pair is exactly validate_vp_replay's
+    implement-leg replay set, so this is the precise population that executes on a runner without
+    ripgrep. A malformed plan is skipped, never raised on -- schema validity is
+    validate_plan_documents' concern, not this guard's.
+  command: |-
+    bin/venv-python -c "
+    import pathlib, re, yaml
+    RG = re.compile(r'(?:^|[|&;(]|\s)rg\s')
+    bad = []
+    for p in sorted(pathlib.Path('docs/plans').glob('PLAN-*.yaml')):
+        try:
+            d = yaml.safe_load(p.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        if not isinstance(d, dict):
+            continue
+        for s in d.get('verification_plan') or []:
+            if not isinstance(s, dict):
+                continue
+            if s.get('phase') != 'pre-deploy' or not s.get('hermetic'):
+                continue
+            if RG.search(s.get('command') or ''):
+                bad.append(p.name + ':' + str(s.get('step')))
+    assert not bad, 'hermetic pre-deploy VP step(s) shell out to ripgrep, absent on the CI runner: ' + repr(bad)
+    print('NO_HERMETIC_VP_STEP_SHELLS_OUT_TO_RIPGREP')
+    "
+  expected: 'Prints: `NO_HERMETIC_VP_STEP_SHELLS_OUT_TO_RIPGREP`. Exit 0.'
+  fix_if: >-
+    The assertion names a plan and step id. Rewrite that step's command in POSIX grep, in canonical
+    argument order -- never satisfy this by marking the step `hermetic: false` (that mislabels a
+    creds-free, side-effect-free step to dodge replay) and never by installing ripgrep on the runner
+    (the graduated shard vp-replay-coverage-survives-absent-ripgrep, #1183, states in its own
+    plan's fix_if that doing so re-arms the defect on the next runner image change). On the
+    origin/main worktree revert this MUST fail on PLAN-gc-ops-baseline-gate-and-schedule-enable.yaml:3
+    -- if it passes there, the differential is tautological and the shard must not be admitted.
+- step: 2
+  phase: pre-deploy
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    Asserts a property of the CURRENT tree's gc_ops rule state, which #1206 inverts on merge. The
+    step derives both polarities by rewriting the state literal, so it is correct either way today,
+    but as a standing row it would pin a live operational state rather than a repo invariant -- the
+    exact registry sediment the parent plan's own step 1 scope row argues against. The durable half
+    is step 1's shard.
+  action: >-
+    Two-polarity differential on the AMENDED command, derived from the plan YAML and never restated
+    inline (rec-3547). Materialise two temp trees from the live terraform file -- one with the
+    gc_ops rule's state literal forced to DISABLED, one to ENABLED -- and run the command in each
+    under the default environment AND under POSIXLY_CORRECT=1. Four cells, four required outcomes.
+    This is the evidence that the substitution preserves discriminating power, and the specific
+    evidence that the canonical argument order cannot be silently reordered back.
+  command: |-
+    bin/venv-python -c "
+    import os, pathlib, re, shutil, subprocess, tempfile, yaml
+    plan = yaml.safe_load(pathlib.Path('docs/plans/PLAN-gc-ops-baseline-gate-and-schedule-enable.yaml').read_text(encoding='utf-8'))
+    cmd = [s for s in plan['verification_plan'] if s['step'] == 3][0]['command']
+    assert 'rg ' not in cmd, 'step 3 still invokes rg: ' + cmd
+    rel = 'terraform/personal/ducklake_maintenance.tf'
+    src = pathlib.Path(rel).read_text(encoding='utf-8')
+    blk = re.search(r'resource \"aws_cloudwatch_event_rule\" \"ducklake_maintenance_gc_ops\" \{.*?\n\}', src, re.S)
+    assert blk, 'gc_ops rule block not found'
+    got = {}
+    for label in ('DISABLED', 'ENABLED'):
+        body = re.sub(r'state(\s*)=(\s*)\"(?:EN|DIS)ABLED\"', lambda m: 'state' + m.group(1) + '=' + m.group(2) + '\"' + label + '\"', blk.group(0))
+        tree = src.replace(blk.group(0), body)
+        for posix in (False, True):
+            d = tempfile.mkdtemp()
+            try:
+                t = pathlib.Path(d, rel)
+                t.parent.mkdir(parents=True)
+                t.write_text(tree, encoding='utf-8')
+                env = dict(os.environ)
+                env.pop('POSIXLY_CORRECT', None)
+                if posix:
+                    env['POSIXLY_CORRECT'] = '1'
+                got[(label, posix)] = subprocess.run(cmd, shell=True, cwd=d, env=env, capture_output=True).returncode
+            finally:
+                shutil.rmtree(d)
+    want = {('DISABLED', False): 1, ('DISABLED', True): 1, ('ENABLED', False): 0, ('ENABLED', True): 0}
+    assert got == want, 'probe polarity wrong -- got ' + repr(got) + ' want ' + repr(want)
+    print('PROBE_DISCRIMINATES_IN_BOTH_POLARITIES_AND_BOTH_ENVIRONMENTS')
+    "
+  expected: 'Prints: `PROBE_DISCRIMINATES_IN_BOTH_POLARITIES_AND_BOTH_ENVIRONMENTS`. Exit 0.'
+  fix_if: >-
+    A non-zero value in an ENABLED cell means the probe no longer passes on a correctly-enabled
+    tree. A ZERO in a DISABLED cell is the serious one -- the gate has inverted and would license
+    a destructive production schedule against a rule that is still disabled. If only the
+    POSIXLY_CORRECT DISABLED cell is 0, the argument order was reordered back to
+    `grep -n PATTERN -A 10 PATH`; restore `grep -n -A 10 PATTERN PATH`. Never relax `want` to admit
+    the reading you have.
+- step: 3
+  phase: pre-deploy
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: >-
+    A base-ref-relative, one-time assertion about THIS amendment's diff. It is vacuous the moment
+    the amendment merges (validate_vp_replay's own _is_pr_relative/_base_ref_collapsed partition
+    excludes it post-merge for exactly that reason), so it can never be a standing guard.
+  action: >-
+    Non-weakening proof against origin/main, discharging Decision 181's CONTENT invariant
+    mechanically rather than by assertion. The amended plan's `scope`, its `acceptance_criteria`
+    and every `verification_plan[].expected` must be byte-identical to origin/main; exactly ONE
+    `verification_plan[].command` may differ, it must be step 3's, and the differing command must
+    still carry both conjuncts, the -A 10 window and the `state *= *\"DISABLED\"` literal. This is
+    what distinguishes a portability substitution from a softened check.
+  command: |-
+    bin/venv-python -c "
+    import subprocess, yaml
+    rel = 'docs/plans/PLAN-gc-ops-baseline-gate-and-schedule-enable.yaml'
+    base = yaml.safe_load(subprocess.run(['git', 'show', 'origin/main:' + rel], capture_output=True, text=True, check=True).stdout)
+    head = yaml.safe_load(open(rel, encoding='utf-8'))
+    assert head['scope'] == base['scope'], 'scope changed'
+    assert head['acceptance_criteria'] == base['acceptance_criteria'], 'acceptance_criteria changed'
+    b = {s['step']: s for s in base['verification_plan']}
+    h = {s['step']: s for s in head['verification_plan']}
+    assert set(b) == set(h), 'step ids changed'
+    assert all(b[i].get('expected') == h[i].get('expected') for i in b), 'an expected field changed'
+    differing = sorted(i for i in b if b[i].get('command') != h[i].get('command'))
+    assert differing == [3], 'commands differing from origin/main: ' + repr(differing)
+    c = h[3]['command']
+    assert c.count('grep') == 3 and ' rg ' not in c and not c.startswith('rg '), c
+    assert '&&' in c and '! grep' in c, 'a conjunct or the negation was dropped'
+    assert '-A 10' in c, 'the -A 10 context window narrowed'
+    assert 'state *= *' + chr(34) + 'DISABLED' + chr(34) in c, 'the DISABLED literal changed'
+    assert 'implementation_declared' not in head, 'amended plan declares implementation_declared'
+    print('AMENDMENT_IS_A_PORTABILITY_SUBSTITUTION_NOT_A_WEAKENING')
+    "
+  expected: 'Prints: `AMENDMENT_IS_A_PORTABILITY_SUBSTITUTION_NOT_A_WEAKENING`. Exit 0.'
+  fix_if: >-
+    `scope changed` / `acceptance_criteria changed` / `an expected field changed` means the
+    amendment reached beyond its declared single field set -- revert that edit; those are
+    prohibited_field_edits and the two-act procedure does not license widening them. `commands
+    differing` naming anything but [3] means a second command was edited; a dropped conjunct,
+    narrowed window or changed literal means the probe was weakened rather than ported. The
+    `implementation_declared` assertion failing means the amendment would stop DEFERring and would
+    trip validate_scope_boundary's prohibited-field check -- remove the key.
+- step: 4
+  phase: pre-deploy
+  hermetic: false
+  graduation: not-applicable
+  action: >-
+    Confirm rec-3767's stored `acceptance` is byte-identical to the amended step 3 command, after
+    the portal update and a sync.ops pull -- so step 3's claim to run that probe VERBATIM from the
+    rec row is true rather than stale. Reads the local cache only AFTER the authoritative portal
+    write; the cache is never a write source (Decision 84).
+  command: |-
+    bin/venv-python -m scripts.sync.ops pull && bin/venv-python -c "
+    import json, pathlib, yaml
+    plan = yaml.safe_load(pathlib.Path('docs/plans/PLAN-gc-ops-baseline-gate-and-schedule-enable.yaml').read_text(encoding='utf-8'))
+    cmd = [s for s in plan['verification_plan'] if s['step'] == 3][0]['command']
+    rows = [json.loads(l) for l in open('logs/.recommendations-log.jsonl', encoding='utf-8')]
+    rec = [r for r in rows if r.get('id') == 'rec-3767']
+    assert len(rec) == 1, 'rec-3767 not found in the read cache'
+    assert rec[0]['acceptance'] == cmd, 'rec-3767 acceptance drifted from step 3:\n rec: ' + repr(rec[0]['acceptance']) + '\nstep: ' + repr(cmd)
+    print('REC_3767_ACCEPTANCE_MATCHES_STEP_3_VERBATIM')
+    "
+  expected: 'Prints: `REC_3767_ACCEPTANCE_MATCHES_STEP_3_VERBATIM`. Exit 0.'
+  fix_if: >-
+    A mismatch means update_rec was not called, or was called with different text. Re-issue the
+    portal update_rec on rec-3767 with the step 3 command copied verbatim, then re-pull. If the
+    portal is unreachable the write FAILS LOUDLY (Decision 84 I-4) -- restore the agent_platform
+    assume-role chain and re-file; never hand-edit logs/.recommendations-log.jsonl to make this
+    pass, which is the replay-from-cache anti-pattern Decision 84 records.
+- step: 5
+  phase: pre-deploy
+  hermetic: false
+  graduation: not-applicable
+  action: >-
+    Confirm rec-2938 -- the pre-existing class owner, open since 2026-07-31 -- records this second
+    live occurrence and no longer names installing ripgrep in ci.yml as its primary fix, which the
+    later-merged vp-replay-coverage-survives-absent-ripgrep shard counter-indicates. Updated, never
+    closed and never duplicated: the class stays open until the guard has proven itself.
+  command: |-
+    bin/venv-python -c "
+    import json
+    rows = [json.loads(l) for l in open('logs/.recommendations-log.jsonl', encoding='utf-8')]
+    rec = [r for r in rows if r.get('id') == 'rec-2938']
+    assert len(rec) == 1, 'rec-2938 not found in the read cache'
+    ctx = rec[0]['context']
+    assert 'no-hermetic-vp-step-shells-out-to-ripgrep' in ctx, 'rec-2938 does not name the structural guard that replaces its primary fix'
+    assert '1206' in ctx, 'rec-2938 does not record the second live occurrence'
+    assert rec[0]['status'] == 'open', 'rec-2938 was closed; the class owner stays open'
+    print('REC_2938_REPOINTED_AND_STILL_OPEN')
+    "
+  expected: 'Prints: `REC_2938_REPOINTED_AND_STILL_OPEN`. Exit 0.'
+  fix_if: >-
+    A missing marker means the update_rec context text was not applied. Re-issue it through the
+    portal and re-pull. If rec-2938 reads closed, reopen it -- the ripgrep class is not discharged
+    by one plan's amendment, and closing it would lose the only carrier for the remaining
+    portability work.
+- step: 6
+  phase: pre-deploy
+  hermetic: false
+  graduation: not-applicable
+  action: >-
+    Run the authoritative fast tier locally as a pre-check. Not hermetic -- validate_vp_replay
+    refuses a graduate step invoking scripts.validate for recursion, and Decision 73 makes --pre
+    authoritative only when PR CI runs it.
+  command: bin/venv-python -m scripts.validate --pre
+  expected: 'All checks passed.'
+  fix_if: >-
+    validate_verification_registry failing on the new shard means the differential did not admit --
+    check that the origin/main worktree revert genuinely fails (the un-amended parent plan must
+    still be present there). validate_vp_replay failing means one of steps 1-3 diverged on replay.
+    Diagnose and fix on the branch; per ci-rca-lifecycle.yaml trigger_scope a PR-branch --pre
+    failure files no rec and gates nothing.
+test_obligations: []
+constraints:
+- >-
+  ONLY verification_plan step 3's `command`, `action` and `fix_if` may change in the amended plan.
+  `scope`, `acceptance_criteria` and every `verification_plan[].expected` are prohibited_field_edits
+  and must stay byte-identical -- step 3 asserts this mechanically.
+- >-
+  Do NOT set `implementation_declared` on the amended plan. Leaving it absent is what makes this a
+  DEFERring plan-only amendment rather than an implement-leg diff.
+- >-
+  Do NOT install ripgrep in .github/workflows/ci.yml. It is out of declared scope, and the
+  graduated shard vp-replay-coverage-survives-absent-ripgrep (#1183) explicitly counter-indicates it.
+- >-
+  Do NOT mark any step `hermetic: false` to dodge replay, and do not weaken any assertion, window
+  or literal to obtain green (Decision 181).
+- No rescue agents or workaround loops (Decision 55)
+- >-
+  Recommendation writes go only through scripts.ops_data_portal update_rec; the local JSONL is a
+  read cache and never a write source (Decision 84).
+context:
+- >-
+  Decision-scout verdict FLAGS_FOUND; CITE list: Decision 148 (amended by 189), Decision 55,
+  Decision 73, Decision 84, Decision 103. Decisions triaged: 146 of 146. Roadmap items
+  intersected: 0; CONFLICT: 0; RELATED: 0.
+- 'gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)'
+- >-
+  Scout flags dispositioned: Decision 181 [WARN] -> discharged mechanically by VP step 3, with the
+  parity evidence carried into the amended fix_if and the PR body. Decision 163 [WARN] -> discharged
+  structurally by VP step 1's graduated shard, not deferred. Decision 189 [NOTE] (negated
+  absent-path sweep) -> measured not-applicable here; the leading `grep -q 'gc_ops' PATH &&`
+  conjunct exits 2 and short-circuits, so the negated tail is unreachable on a missing path.
+- >-
+  Stranded PR: benjamin-blake/theseus#1206 (head f9768fdb), failing check pr-validate, run
+  35271994638; the only failure is `vp-replay ...:3 actual=exit 127` from `rg: not found`.
+- >-
+  Act-one precedent for this exact plan: #1205 (f9bab137) amended the same plan's step 8 as its own
+  reviewed PR. Procedure:
+  docs/contracts/implement-scope-boundary.yaml#sanction_rows.implementing_plan_bookkeeping.amendment_procedure.
+- >-
+  Mechanically confirmed DEFER: validate_scope_boundary and validate_vp_replay's implement leg both
+  enforce only on plans whose implementation_declared newly flips true; origin/main's copy of the
+  parent plan has no such key, so this amendment enforces nothing on it.
+- >-
+  Class owner rec-2938 (open, 2026-07-31) already documented this defect and a 19-plan audit. Its
+  stated primary fix (install ripgrep in ci.yml) is counter-indicated by the later shard
+  vp-replay-coverage-survives-absent-ripgrep (#1183, 2026-09-14) -- update it, do not action it.
+- >-
+  rec-3920 (open, High) owns validate_vp_replay's green-leg exit-127 misclassification
+  (_classify_outcome is consumed only by the red-before leg). Not fixed here; it is the diagnosis
+  quality defect, not the cause of this red.
+- >-
+  Measured hazard that rules out the obvious substitution: `grep -n PATTERN -A 10 PATH` returns
+  exit 0 on a DISABLED tree under POSIXLY_CORRECT=1 (grep errors, `!` inverts it) -- a silent gate
+  inversion. `grep -n -A 10 PATTERN PATH` is correct in all four cells. VP step 2 pins this.
+- >-
+  After this merges, #1206 must rebase onto main; its own diff is unchanged and its plan file is
+  untouched by it, so the amended command flows in from the base.
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- only the plan-cited decision sections
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+execution_steps:
+- >-
+  Amend docs/plans/PLAN-gc-ops-baseline-gate-and-schedule-enable.yaml verification_plan step 3 --
+  `command` to the canonical-order POSIX grep form, `action` and `fix_if` to record the
+  substitution, the parity evidence, the POSIXLY_CORRECT argument-order hazard and the Decision 189
+  disposition. Touch no other field and no other step.
+- >-
+  Create config/agent/verification_registry/entries/no-hermetic-vp-step-shells-out-to-ripgrep.yaml
+  with check_spec.command byte-identical to VP step 1's command.
+- >-
+  Call the ops portal update_rec on rec-3767, setting `acceptance` to the amended step 3 command
+  verbatim.
+- >-
+  Call the ops portal update_rec on rec-2938, recording the #1206 occurrence and re-pointing its
+  primary fix from installing ripgrep to the new structural guard. Leave it open.
+- >-
+  Execute the Verification Plan -- run each step; loop until pass; never weaken an assertion to
+  obtain green (Decision 55/181).
+- 'Report: what was implemented, verification results.'
+work_areas: []
+rollback: >-
+  Revert the single squash commit. The parent plan returns to its rg command, #1206 returns to its
+  stranded state, and the shard is removed from the registry; no production, infrastructure or
+  warehouse state is touched by this plan. The two portal updates are field edits on open recs and
+  are reversible by a further update_rec.
