@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 import yaml
 
@@ -147,6 +148,53 @@ class TestV4CorpusInvariance:
             assert actual == reference, f"{name} step {step.get('step')}: {actual} != {reference}"
             checked += 1
         assert checked > 0, "corpus scan found no verification_plan steps -- test is vacuous"
+
+
+class TestPartitionCommandUnit:
+    """Direct coverage for the relocated shell-command tokenizer (Decision 104 sole-home) --
+    plan_document.py exercises it too, but the per-file coverage mapping for this module expects
+    tests/test_vp_literals.py alone to cover vp_literals.py."""
+
+    def test_selectable_arguments_pass_through(self) -> None:
+        selectable, excluded = vp_literals._partition_command("pytest tests/test_x.py -q")
+        assert selectable == ["pytest", "tests/test_x.py", "-q"]
+        assert excluded == []
+
+    def test_ignore_flag_with_equals_is_excluded(self) -> None:
+        selectable, excluded = vp_literals._partition_command("pytest --ignore=tests/test_x.py tests/")
+        assert excluded == ["tests/test_x.py"]
+        assert selectable == ["pytest", "tests/"]
+
+    def test_ignore_flag_with_separate_value_is_excluded(self) -> None:
+        selectable, excluded = vp_literals._partition_command("pytest --deselect tests/test_x.py::test_y")
+        assert excluded == ["tests/test_x.py::test_y"]
+        assert selectable == ["pytest"]
+
+    def test_unparseable_command_falls_back_to_whitespace_split(self) -> None:
+        selectable, excluded = vp_literals._partition_command('pytest "unterminated')
+        assert excluded == []
+        assert selectable == ["pytest", '"unterminated']
+
+
+class TestSelectLiteralsAndFormatPrintUnit:
+    """Direct coverage for the carrier-selection helper and the red-before leg's audit-print
+    formatter, both otherwise exercised only through validate_vp_replay's own test suite."""
+
+    def test_select_literals_v5_uses_expected_literals(self) -> None:
+        step = SimpleNamespace(expected_literals=["ok"], expected="prints `MISSING`")
+        assert vp_literals.select_literals(step, schema_version=5) == ["ok"]
+
+    def test_select_literals_v5_absent_expected_literals_is_empty(self) -> None:
+        step = SimpleNamespace(expected_literals=None, expected="prints ok")
+        assert vp_literals.select_literals(step, schema_version=5) == []
+
+    def test_select_literals_v4_uses_backtick_scan(self) -> None:
+        step = SimpleNamespace(expected_literals=None, expected="prints `ok`")
+        assert vp_literals.select_literals(step, schema_version=4) == ["ok"]
+
+    def test_format_literal_print(self) -> None:
+        line = vp_literals.format_literal_print("docs/plans/PLAN-x.yaml", 3, ["ok"], 5)
+        assert line == "  LITERALS: docs/plans/PLAN-x.yaml:3 expected_literals=['ok'] (schema_version 5)"
 
 
 class TestSegmentAnalysisUnit:
