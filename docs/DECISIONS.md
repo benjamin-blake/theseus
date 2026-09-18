@@ -2,6 +2,85 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 195: On The Loop Labs Limited owns the platform; founder-to-company IP assignment, the AWS account-ownership consequence it reopens, and the undecided GitHub organisation handle (amends Decision 106) (Decided)
+
+```yaml
+number: 195
+status: Decided
+decided_date: "2026-09-17"
+amends: [106]
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable ownership-structure commitment -- who owns the platform, the IP assignment, and the
+    AWS account-ownership consequence it reopens -- with reversal-relevant consequences for
+    Decision 106's rebuild-not-migrate premise; no existing routing row owns it.
+```
+
+**Status:** Decided
+**Date:** 2026-09-17
+**Warehouse ID:** dec-195
+
+**Problem:**
+The platform has operated with no recorded owning legal entity. On The Loop Labs Limited was
+formed as that owner and the founder's IP is to be assigned to it -- a fact with downstream
+consequences for the LICENSE `Licensor:` parameter, the AWS account Decision 106 ratified, and the
+canonical GitHub organisation handle, none of which the corpus records.
+
+**Decision:**
+1. On The Loop Labs Limited owns this platform.
+2. The founder assigns platform IP to the company. This is a legal act, not yet executed: the
+   LICENSE `Licensor:` parameter names the company only once the assignment legally executes, and
+   when it does, the LICENSE line and `scripts/checks/hygiene/validate_licence_consistency.py`'s
+   `^Licensor: +Benjamin Blake\s*$` regex move in the SAME commit -- the two never diverge across
+   a commit boundary.
+3. Company ownership reopens Decision 106's reversal condition (a) -- "a second destination
+   account/re-platform is chosen" -- as the trigger it fires: the AWS account backing this
+   platform may move from the founder's personal account to a company-owned one. This records the
+   consequence only; no account move executes here.
+4. The canonical GitHub organisation handle is a separately-decided, gated identifier: one of two
+   candidates, `onthelooplabs` or `otl-labs`. Which one is operational_fact (Decision 150 /
+   Decision 75), tracked at rec-3905, not decided here.
+
+**Rationale:**
+Recording the owning entity, the assignment, and what it reopens now -- rather than only once the
+AWS account moves or the LICENSE line changes -- keeps Decision 106's rebuild-not-migrate premise
+honestly reversal-tracked and gives the LICENSE-line and account-move work a corpus anchor to
+cite. Clause 4 stays out of the numbered entry because a handle choice is revisable operational
+detail, not an architectural commitment; routing it to rec-3905 keeps this entry free of content a
+numbered Decision cannot cheaply un-say under Decision 177's append-only rule.
+
+```yaml reversal-conditions
+decision: 195
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: assignment-executes
+    kind: manual
+    description: >-
+      The founder-to-company IP assignment legally executes: change the LICENSE Licensor: line
+      and validate_licence_consistency.py's regex in the same commit.
+  - id: account-move-decided
+    kind: manual
+    description: >-
+      A company-owned AWS account is chosen: re-evaluate Decision 106's reversal condition (a),
+      migrate vs rebuild.
+  - id: org-handle-decided
+    kind: manual
+    description: >-
+      The canonical GitHub organisation handle is decided: close rec-3905 and record the handle
+      here or in a successor entry.
+```
+
+**Related:** Decision 106 (amended -- reversal condition (a) reopened), Decision 171 (clause 5
+sole-ownership premise stays unverified; this entry does not amend Decision 171 or cure the
+unverified-provenance question), Decision 177 (append-only bodies), Decision 167 (envelope + cap),
+Decision 150 / Decision 75 (operational_fact routing for the org-handle choice). rec-3905
+(org-handle work), rec-3921 / rec-3922 / rec-3923 / rec-3924 (follow-on sequence this plan is
+keystone of).
+
+---
+
 ## Decision 194: The Apache-2.0 conversion is staged on two named conditions rather than left to the fixed 2030-08-15 Change Date; the Additional Use Grant stays unwidened until the first free-tier release (amends Decision 171) (Decided)
 
 ```yaml
@@ -5346,6 +5425,11 @@ guard), Decision 100/75 (managed-service-native preference the Neon choice align
 **Status:** Decided
 **Date:** 2026-07-02
 **Warehouse ID:** dec-106 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+> **Amended by Decision 195 (2026-09-17):** On The Loop Labs Limited's formation as the platform's
+> owner reopens reversal condition (a) below -- a company-owned AWS account is now a live
+> candidate second destination, pending the gated account-ownership move. This body is otherwise
+> unedited; see Decision 195 for the full derivation.
 
 **Decision:**
 Ratifies CD.6. Realized 2026-05-28 -- Phase B personal-account Terraform re-deploy applied and
