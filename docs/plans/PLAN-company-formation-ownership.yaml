@@ -223,11 +223,17 @@ verification_plan:
   - step: 10
     phase: pre-deploy
     action: Prove NS.2 names the owning entity explicitly and distinguishes it from the legacy account.
-    command: grep -q 'On The Loop Labs Limited' docs/ROADMAP-PLATFORM.yaml && grep -q 'company-aws-profile' docs/ROADMAP-PLATFORM.yaml
+    command: bin/venv-python -c "import sys,yaml; d=[p for p in yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'))['north_star']['principles'] if p['id']=='NS.2'][0]['detail']; sys.exit(0 if 'On The Loop Labs Limited' in d and 'company-aws-profile' in d else 1)"
     expected: >-
-      Exit 0. Genuinely RED before the fix -- neither string is present in
-      docs/ROADMAP-PLATFORM.yaml on the un-implemented tree, so this step legitimately fails
-      red-before under the Decision 189 inverted-polarity replay.
+      Exit 0. Scoped to NS.2's `detail` string via the roadmap's own schema, NEVER a file-wide
+      grep: `company-aws-profile` already occurs 6 times elsewhere in this 9,901-line file
+      (lines 3954, 3960, 3968, 3973, 9136, 9548), so a file-scoped conjunct would assert nothing,
+      and a file-scoped company-name grep would green permanently the moment rec-3921, rec-3922
+      or rec-3923 names the company anywhere in the roadmap -- a standing guard that could never
+      detect regression of the invariant its own slug names. Genuinely RED before: NS.2's detail
+      today reads "Personal AWS account, not shared work account. AUP, IP, and business-continuity
+      reasons; cost is a tiebreaker.", so BOTH literals are absent and the step fails under the
+      Decision 189 inverted-polarity replay.
     fix_if: >-
       A failure means the NS.2 annotation either omits the company's registered name or omits the
       distinction from the legacy company-aws-profile account -- both are required by AC6, because
@@ -240,8 +246,13 @@ verification_plan:
     action: >-
       Prove the org-handle leaning did not leak into the numbered entry (AC4, and the Decision
       150 / Decision 75 disposition).
-    command: awk '/^## Decision 194:/{f=1} f&&/^## Decision 193:/{exit} f' docs/DECISIONS.md | grep -ciE 'dbt|leaning|prefer|getdbt' || true
-    expected: "0 -- no preference, reasoning or precedent analogy inside the Decision 194 span."
+    command: grep -q '^## Decision 194:' docs/DECISIONS.md && { awk '/^## Decision 194:/{f=1} f&&/^## Decision 193:/{exit} f' docs/DECISIONS.md | grep -ciE 'dbt|leaning|prefer|getdbt' || true; }
+    expected: >-
+      Exit 0 and a count of 0 -- no preference, reasoning or precedent analogy inside the
+      Decision 194 span. The leading `grep -q` carries the same anti-vacuity guard as step 3:
+      without it the awk range emits nothing on an absent or mistyped heading, `grep -c` prints
+      0, and `|| true` maps its exit 1 to 0 -- reporting AC4 proven against an empty span. The
+      braces keep `|| true` bound to the grep alone, so the guard's own failure still propagates.
     fix_if: >-
       A positive count means operational_fact content landed in the numbered entry. Move it to
       rec-3905 via the portal, per the operator's explicit call.
@@ -284,9 +295,10 @@ verification_plan:
     action: >-
       Confirm the rec-3905 portal update landed, by reading it back from the warehouse. This is the
       plan's only warehouse write and the only change a git revert does not undo.
-    command: bin/venv-python -m scripts.ops_data_portal --sync && grep -c 'otl-labs' logs/.recommendations-log.jsonl
+    command: bin/venv-python -m scripts.ops_data_portal --sync && grep 'rec-3905' logs/.recommendations-log.jsonl | grep -c 'otl-labs'
     expected: >-
-      A count of at least 1 after the pull, with rec-3905's refreshed context carrying the leaning.
+      A count of at least 1 after the pull. The rec-3905 filter is load-bearing: an unfiltered
+      count would green on any row mentioning otl-labs, not necessarily the row being proven.
       The cache is read-only here and is being READ as a projection of the warehouse, never written.
     fix_if: >-
       A zero count means the update_rec call did not land. Re-run it through the portal. Never edit
@@ -340,10 +352,12 @@ test_obligations:
       it from the legacy company-aws-profile account, so the principle's existing contrast term
       ("Personal AWS account, not shared work account") does not invert unremarked.
     verification_step: 10
-    command: grep -q 'On The Loop Labs Limited' docs/ROADMAP-PLATFORM.yaml && grep -q 'company-aws-profile' docs/ROADMAP-PLATFORM.yaml
+    command: bin/venv-python -c "import sys,yaml; d=[p for p in yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'))['north_star']['principles'] if p['id']=='NS.2'][0]['detail']; sys.exit(0 if 'On The Loop Labs Limited' in d and 'company-aws-profile' in d else 1)"
     red_green_expectation: >-
-      RED before: neither literal appears anywhere in docs/ROADMAP-PLATFORM.yaml today, so the
-      command exits 1. GREEN after: the NS.2 annotation introduces both. This is VP step 10, the
+      RED before: neither literal appears in NS.2's `detail` today, so the command exits 1
+      (verified). Scoped to NS.2 via the roadmap schema rather than a file-wide grep, because
+      `company-aws-profile` already occurs 6 times elsewhere in the file and a file-scoped
+      company-name match would be permanently greened by the follow-on plans. GREEN after: the NS.2 annotation introduces both. This is VP step 10, the
       plan's one graduate-disposition step (graduation_check_id ns2-names-owning-entity), and it is
       replayed under Decision 189 inverted polarity to prove it genuinely fails pre-fix.
   - source: docs/decisions-index.json
@@ -400,11 +414,14 @@ constraints:
     org transfer, never in this plan.
   - >-
     Decision 171 clause 5 rests dual licensing on sole copyright ownership "which is UNVERIFIED",
-    and its reversal condition (a) watches provenance. Clause 2's founder-to-company assignment
-    does NOT disturb that premise -- the founder is sole owner before the assignment and the
-    company sole owner after, so sole ownership is preserved across it and condition (a) does not
-    fire. State this in the decision body so a later reader need not re-derive whether `amends:`
-    should have included 171. It should not.
+    and its reversal condition (a) fires on "a copyright-provenance audit finds a contribution not
+    covered by an assignment". Clause 2's founder-to-company assignment transfers whatever rights
+    the founder holds; it neither creates nor cures the unverified-provenance question 171 raises,
+    so whatever ownership state obtains is preserved ACROSS the assignment and condition (a) -- a
+    third-party-contribution trigger -- is not pulled by it. Write it that way in the decision
+    body. Do NOT write that sole ownership IS established: that is the exact proposition 171
+    clause 5 marks unverified, and under Decision 177's append-only regime a corpus contradiction
+    is not cheaply correctable later. `amends:` therefore correctly omits 171.
   - >-
     docs/ROADMAP-PLATFORM.yaml stands at 9,901 lines against a HARD ceiling of 10,000
     (_ROADMAP_MAX_LINES, validate_platform_roadmap, both tiers; check_roadmap_regrowth already
@@ -454,7 +471,7 @@ execution_steps:
   - "Measure the entry (VP step 3). If over 6144 B, trim the Related pointer block first, then relocate any remaining inventory into this plan's context -- never raise the cap."
   - "Append the `> **Amended by Decision 194 (2026-09-17):**` blockquote to `## Decision 106`, directly beneath its Warehouse ID line and above its `**Decision:**` marker, matching the placement used on Decisions 149 and 101."
   - "Append the inline `[Amendment 2026-09-17, Decision 194 -- ...]` annotation to NS.2's detail in docs/ROADMAP-PLATFORM.yaml, naming On The Loop Labs Limited and distinguishing it from the legacy company-aws-profile account T5.2 tears down. Do not touch the CD.6 row."
-  - "Run VP steps 1-11 in order. Steps 4, 8 and 9 are negative proofs -- a non-zero result is a scope breach, not a test failure to work around."
+  - "Run VP steps 1-14 in order, with step 14 run only AFTER the rec-3905 portal update below, since it is that write's read-back. Steps 4, 12 and 13 are the negative proofs -- a non-zero result there is a scope breach, not a test failure to work around. Step 9 is report-only and exits 0 by construction: read its printed GROWTH line, never its exit code. Steps 15 and 16 are carried by handoff_policy.full_validation_required_before_commit."
   - "Update rec-3905 through the portal with the org-handle leaning (org otl-labs, web and email onthelooplabs.com, on the github.com/dbt-labs + getdbt.com split) and its reasoning, so it is not re-derived later: `bin/venv-python -m scripts.ops_data_portal --update-rec rec-3905 --context '<existing context plus the leaning paragraph>'`."
   - "Commit and push; open the PR. Name rec-3921, rec-3922, rec-3923 and rec-3924 in the PR body as the follow-on sequence. Do NOT add a Resolves: trailer -- this plan bundles no recommendation."
 
