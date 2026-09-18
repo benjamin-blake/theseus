@@ -15,7 +15,9 @@ scope:
   - file: docs/DECISIONS.md
     action: Modify
     purpose: >-
-      Author the new entry `## Decision 195:` (next free number; live max 193, archive max 71) and
+      Author the new entry `## Decision 195:` (hardcoded per the operator's collision call -- 194 is
+      claimed by PLAN-staged-apache-relicense-decision, merged fe93cf93; live max 193, archive max
+      71, so "next free" would otherwise evaluate to the colliding 194) and
       append a dated `> **Amended by Decision 195 (2026-09-17):**` blockquote to `## Decision 106`.
       Both are additions; no existing body line is edited (Decision 177).
   - file: docs/ROADMAP-PLATFORM.yaml
@@ -83,7 +85,7 @@ acceptance_criteria:
   - >-
     rec-3905 carries the org-handle leaning and its reasoning, applied via `update_rec` through
     the portal (never a JSONL edit). Proven by VP step 14, a warehouse read-back keyed on a token
-    absent from the cache today (`getdbt`, 0 occurrences across 2,620 rows) rather than on
+    absent from the cache today (`getdbt`, 0 occurrences cache-wide) rather than on
     `otl-labs`, which rec-3905's existing context already carries. This is the plan's only write
     that a git revert does not undo, so its read-back must discriminate the post-write state.
 
@@ -166,7 +168,12 @@ verification_plan:
     phase: pre-deploy
     action: Prove the fenced reversal-conditions stanza is well-formed and monitored.
     command: bin/venv-python -c "import sys; from scripts.checks.ops_governance.validate_reversal_stanzas import validate_reversal_stanzas as f; failed=[]; f(failed); print(failed); sys.exit(1 if failed else 0)"
-    expected: "Exit 0; the monitored-stanza count rises from 12 to 13."
+    expected: >-
+      Exit 0, and the monitored-stanza count rises by exactly 1 from whatever the baseline is at
+      implement time. Do NOT pin the absolute: it reads 12 on this branch, but Decision 194
+      (PLAN-staged-apache-relicense-decision) also adds a monitored stanza, so the baseline is 13
+      if that plan implements first. A mismatched absolute is not a failure -- exit 0 is the
+      criterion, and `expected` is frozen post-merge by implement-scope-boundary.yaml.
     fix_if: >-
       A malformed stanza means the fence line is not exactly '```yaml reversal-conditions' or the
       body is not a mapping with decision/review_by/on_trigger/conditions.
@@ -181,7 +188,10 @@ verification_plan:
       Run the candidate-decision referential gate only. The roadmap schema and regrowth gates are
       steps 8 and 9; this step does not run them.
     command: bin/venv-python -c "import sys; from scripts.checks.roadmap.validate_candidate_decision_ratification import validate_candidate_decision_ratification as f; failed=[]; f(failed); print(failed); sys.exit(1 if failed else 0)"
-    expected: "Exit 0; `[]`; the header-indexed count rises from 173 to 174."
+    expected: >-
+      Exit 0 and `[]`. The header-indexed count rises by exactly 1 from the implement-time
+      baseline -- 173 on this branch, 174 if Decision 194 landed first. Same reasoning as step 6:
+      do not pin the absolute.
     fix_if: >-
       A referential failure means a CD's ratified_as no longer resolves; confirm no CD row was
       edited -- CD.6 is deliberately left untouched under Decision 147's compaction norm.
@@ -301,14 +311,14 @@ verification_plan:
       plan's only warehouse write and the only change a git revert does not undo.
     command: bin/venv-python -m scripts.ops_data_portal --sync && grep 'rec-3905' logs/.recommendations-log.jsonl | grep -c 'getdbt'
     expected: >-
-      A count of at least 1 after the pull. RED BEFORE, verified: `getdbt` occurs 0 times across
-      all 2,620 rows of the cache today. Do NOT count `otl-labs` -- it ALREADY appears in
+      A count of at least 1 after the pull. RED BEFORE, verified: `getdbt` occurs 0 times cache-wide today
+      (re-measure at implement time; the row count drifts as recs are filed). Do NOT count `otl-labs` -- it ALREADY appears in
       rec-3905's existing context, in the very sentence recording the canonical choice as
       UNDECIDED, so counting it would green before the write and prove nothing (this step would
       pass unchanged if the implementer skipped the portal update entirely). `getdbt` is written
       only by the dbt-labs/getdbt.com precedent split that execution_steps[8] mandates, so a
       count of 1 or more is evidence the update_rec call actually landed. The rec-3905 filter is
-      equally load-bearing: five other recs mention otl-labs. Exact complement of VP step 11,
+      equally load-bearing: at least seven other recs mention otl-labs. Exact complement of VP step 11,
       which asserts `getdbt` must NOT appear inside the Decision 195 span. The cache is read-only
       here and is READ as a projection of the warehouse, never written.
     fix_if: >-
@@ -443,14 +453,14 @@ context:
   - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 146 of 146. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 4."
   - "CITE: Decision 177 (append-only bodies), 167 (typed envelope + 6144 cap), 171 (clause 5 sole-ownership premise; TERMS are another agent's), 101 (frozen internal identifiers), 106 (amended here), 172 (OIDC subject playbook), 149 (never-remove-headers), 133 (fenced reversal stanza), 184 (open-core boundary)."
   - "RELATED: Decision 178, 118/92 (blockquote-amendment precedent on Ratify-CD entries), 147 (roadmap compaction), 146 (archival at zero citations -- 106 gains a live citation here, so it stays live)."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
-  - "Scout flags dispositioned: D167 cap -- budget at authoring, trim Related first (operator's call). D179 -- docs/decisions-index.json added to scope; five omitted checks added to the VP. D101 -- NS.2 amendment names the entity explicitly (see acceptance). D150/D75 -- leaning routed to rec-3905 (operator's call)."
+  - "gates: decision-scout=FLAGS_FOUND (146 of 146 triaged, 0 conflicts); plan-critique=PROCEED after 4 round(s) -- rounds 1-3 REVISE (13, 5, 2 findings, all applied); round 4 confirming, REVISE on 3 descriptive-text residues from the Decision 194 collision fix plus 4 non-blocking, all applied without re-analysis."
+  - "Scout flags dispositioned: D167 cap -- budget at authoring, trim Related first (operator's call). D179 -- five omitted checks added to the VP. The index itself is NOT a scope row: it is auto-sanctioned by implement-scope-boundary.yaml's decisions_index_regeneration, whose trigger is scope containing docs/DECISIONS.md (see the context line below). The scout's add-to-scope recommendation was wrong and is superseded here. D101 -- NS.2 amendment names the entity explicitly (see acceptance). D150/D75 -- leaning routed to rec-3905 (operator's call)."
   - "Decision number is 195, NOT 194. PLAN-staged-apache-relicense-decision (merged fe93cf93, PR #1207 -- the concurrent licence-terms agent) claims 194 and inserts at the same anchor, immediately above '## Decision 193:'. Neither entry is authored yet, so 194 is claimed-but-unwritten. Numbering gaps are harmless: 1-20 are already absent from the corpus and no check enforces contiguity, so 195 landing before 194 is fine."
   - "The VP step 3 and step 11 awk ranges terminate on the NEXT `## Decision ` heading, never on a hardcoded `## Decision 194:`, because 194 may not exist when this plan implements -- a number-pinned terminator would run to end-of-file and blow the cap measurement. Verified: the next-heading form reproduces Decision 193's span at 5200 bytes exactly, matching the number-pinned form."
   - "docs/decisions-index.json is deliberately NOT a scope row. implement-scope-boundary.yaml's decisions_index_regeneration rule auto-sanctions it whenever declared scope contains docs/DECISIONS.md, and states it 'can never be pre-declared as its own scope row'. The decision-scout gate recommended adding it and critique round 1 then required a test_obligation on top of that row; both were wrong and were reverted here. It is still regenerated (VP step 1) and still gated by validate_decisions_index_freshness (VP step 2)."
   - "Cap calibration -- comparable entry sizes, heading-to-next-heading: Decision 184 = 3864 B, 193 = 5200 B, 171 = 6056 B, 190 = 6135 B. Decision 184 scoped the whole open-core boundary in 3864 B."
   - "Pre-change baseline is GREEN: validate_decision_entry_conformance and validate_candidate_decision_ratification both pass on this branch with FAILED: []."
-  - "NS.2 currently reads: 'Account ownership reflects IP ownership. Personal AWS account, not shared work account.' Amending it to argue FOR a company account inverts its own contrast term -- hence the explicit-entity requirement."
+  - "NS.2's `detail` -- the edit target, and what VP step 10 asserts on -- currently reads: 'Personal AWS account, not shared work account. AUP, IP, and business-continuity reasons; cost is a tiebreaker.' Its `principle` field ('Account ownership reflects IP ownership.') is NOT edited. Amending the detail to argue FOR a company account inverts its own contrast term -- hence the explicit-entity requirement."
   - "The token 'company' is already bound to the FORMER employer account: company-aws-profile is a live default in scripts/run_scheduled_agent.py (x2), scripts/build_lambda.py and scripts/build_lambda_deploy.py, plus four test files. Tracked as rec-3924; not fixed here."
   - "Sequence: this plan is the keystone. rec-3921 (contribution governance) and rec-3922 (positioning + rename) cite it; rec-3923 (open-core boundary) is independent of all three."
   - "Rename context: 'Theseus' is retired as an external brand and the product becomes 'On The Loop' (rec-3922). Do NOT assert Theseus is retained in any text authored here."
@@ -472,7 +482,7 @@ pre_implementation_checklist:
   - Confirm `aws sts get-caller-identity --profile agent_platform` succeeds before the rec-3905 update.
 
 execution_steps:
-  - "Author `## Decision 195:` in docs/DECISIONS.md, inserted above `## Decision 193:` (the file is descending by number). Include the typed yaml envelope with amends: [106], the Status/Date/Decision markers, Problem/Intent/Rationale, the fenced reversal-conditions stanza, a Warehouse ID line, Related, and the trailing `---` block separator (decision-entry.yaml's block_separator, forward-enforced on new-in-diff entries)."
+  - "Author `## Decision 195:` in docs/DECISIONS.md, inserted above the FIRST `## Decision ` heading in the file (the file is descending by number, so that heading is 193 today and 194 if PLAN-staged-apache-relicense-decision implements first -- anchor on position, not on a number, for the same reason the VP awk ranges do). Include the typed yaml envelope with amends: [106], the Status/Date/Decision markers, Problem/Intent/Rationale, the fenced reversal-conditions stanza, a Warehouse ID line, Related, and the trailing `---` block separator (decision-entry.yaml's block_separator, forward-enforced on new-in-diff entries)."
   - "Write clause 2's licence-ordering sentence to state the two-halves-in-one-commit rule explicitly, so a later agent cannot edit LICENSE alone and redden validate_licence_consistency."
   - "Write clause 3 to cite Decision 106's reversal condition (a) by name as the trigger it fires, and to record the consequence rather than execute any account move."
   - "Write clause 4 with the two candidate handles only -- the standing commitment THAT the handle is a separately-decided gated identifier. No leaning, no dbt Labs analogy, and no gated-work inventory: sequencing-against-a-gate is the work_item routing row, which decision-entry.yaml marks 'Never a numbered Decision'. Verify with VP step 11 before committing."
