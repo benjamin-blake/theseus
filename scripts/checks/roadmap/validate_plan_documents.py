@@ -11,10 +11,15 @@ from scripts.checks import _common, registry
 _NON_BEHAVIOR_PREFIXES = ("tests/", "docs/plans/")
 _DOCUMENTATION_SUFFIXES = {".md", ".rst", ".txt"}
 
-# Schema version a freshly-authored plan must declare. The test-obligation gate below is
-# v4-gated, so a new plan authored at v3 opts out of it silently -- this constant is what
-# the canonical template in .claude/skills/planning/SKILL.md is pinned to.
-_MIN_NEW_PLAN_SCHEMA_VERSION = 4
+# Two independently pinned floors (PLAN-vp-expected-literal-carrier split this from one shared
+# constant): _MIN_NEW_PLAN_SCHEMA_VERSION is the AUTHORING floor a freshly-authored plan must
+# declare -- this is what the canonical template in .claude/skills/planning/SKILL.md is pinned to.
+# _TEST_OBLIGATION_MIN_SCHEMA_VERSION gates the per-scope-row test-obligation check below and MUST
+# NEVER track the authoring floor: bumping them together would return [] from the obligation gate
+# for every plan authored between the two floors (137 v4 plans at the time of this split), silently
+# disabling a Decision 181 verifier for the whole population.
+_MIN_NEW_PLAN_SCHEMA_VERSION = 5
+_TEST_OBLIGATION_MIN_SCHEMA_VERSION = 4
 
 
 def _added_plan_names() -> set[str]:
@@ -34,17 +39,18 @@ def _added_plan_names() -> set[str]:
 def _new_plan_version_failures(path: Path, doc: Any, added_names: set[str]) -> list[str]:
     """Refuse a brand-new plan authored below the current schema version.
 
-    Historical plans keep the version they were authored at (1-3 all stay schema-valid); the
-    gate binds only files new in this diff, which is what makes the v4-gated obligation check
-    actually fire for the plans being written from now on.
+    Historical plans keep the version they were authored at (1-4 all stay schema-valid); the
+    gate binds only files new in this diff, which is what makes the v4-gated (see
+    _TEST_OBLIGATION_MIN_SCHEMA_VERSION) obligation check actually fire for the plans being
+    written from now on.
     """
     if path.name not in added_names or doc.schema_version >= _MIN_NEW_PLAN_SCHEMA_VERSION:
         return []
     return [
         (
             f"{path.name}: newly-added plans must declare schema_version {_MIN_NEW_PLAN_SCHEMA_VERSION} "
-            f"(got {doc.schema_version}) -- the test-obligation gate only binds at "
-            f"v{_MIN_NEW_PLAN_SCHEMA_VERSION}"
+            f"(got {doc.schema_version}) -- the test-obligation gate binds at "
+            f"v{_TEST_OBLIGATION_MIN_SCHEMA_VERSION} and above"
         )
     ]
 
@@ -77,7 +83,7 @@ def _test_obligation_failures(path: Path, doc: Any) -> list[str]:
     Waivers are per-source (TestObligation.waiver_reason) by design: a single plan-level opt-out
     string would let one sentence disable the gate for every file in the plan.
     """
-    if doc.schema_version < _MIN_NEW_PLAN_SCHEMA_VERSION or doc.plan_type != "IMPLEMENTATION":
+    if doc.schema_version < _TEST_OBLIGATION_MIN_SCHEMA_VERSION or doc.plan_type != "IMPLEMENTATION":
         return []
     covered = {obligation.source for obligation in doc.test_obligations}
     return [

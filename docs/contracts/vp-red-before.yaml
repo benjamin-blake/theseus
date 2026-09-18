@@ -17,7 +17,7 @@
 contract:
   id: vp-red-before
   class: D
-  contract_version: 3
+  contract_version: 4
   status: provisional_v0
   description: >-
     validate_vp_replay's two legs. Inverted-polarity plan-only leg: a graduate-disposition
@@ -76,6 +76,18 @@ amendment_log:
       pairing to "Decision 168 clause 4"; that citation is wrong (clause 4 is subject uniqueness
       and the downward-only ratchet). It is left as written -- this log is append-only -- and
       corrected here rather than by editing history.
+  - date: "2026-09-18"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-vp-expected-literal-carrier: added carrier_rule, self_satisfying_lint, and unsat_guard --
+      schema_version 5 plans declare verification_plan[].expected_literals as their sole assertion
+      carrier instead of an implicit backtick sigil in the free-prose expected field, guarded at
+      authoring time (scripts.roadmap.plan_document) by the hard-failing unsat_guard and the
+      advisory self_satisfying_lint (both scripts.roadmap.vp_literals). Closes the defect class
+      rec-3900/rec-3555 recorded after PLAN-g4-byte-source-and-post-expiry-bound's VP1 stranded an
+      /implement session with an unemittable literal. contract_version bumped 3 -> 4 alongside this
+      entry, per this file's own convention.
 
 # The FOUR frozen outcome classes a dynamically-replayed graduate step's result is classified
 # into (scripts.checks.verification.validate_vp_replay.OUTCOME_CLASSES derive-and-asserts equal
@@ -225,3 +237,73 @@ graduation_disposition_authoring: >-
   the un-implemented tree now reddens the plan's OWN PR before the fix exists (rec-3777 tracks the
   residual incentive this creates toward under-classifying as not-applicable; that monitoring is
   not this contract's concern).
+
+carrier_rule: >-
+  PLAN-vp-expected-literal-carrier: the assertion carrier a hermetic step's replayed
+  stdout+stderr is checked against is SELECTED by the plan's own `schema_version`
+  (scripts.roadmap.vp_literals.select_literals, delegated identically by both of
+  validate_vp_replay's legs). schema_version 4-and-below keeps the pre-existing implicit carrier
+  -- a backtick-delimited literal anywhere inside the free-prose `expected` field. schema_version
+  5 REPLACES that implicit sigil with an explicit one: a hermetic step declares
+  `verification_plan[].expected_literals` (a list of strings, empty or absent both PERMITTED --
+  B1 dropped the non-empty requirement so the marker idiom and every plain exit-0-only step stay
+  authorable) and a backtick literal inside that same step's `expected` field is refused at
+  schema-validation time (scripts.roadmap.plan_document), naming `expected_literals` as the fix.
+  Both new fields bind ONLY a hermetic step -- a non-hermetic step's `expected` is free prose no
+  leg ever programmatically checks, so backticks there stay harmless markdown. Never accepted
+  below schema_version 5 (refused outright, not silently ignored under extra=forbid's per-field
+  blindness to cross-field version gating).
+
+self_satisfying_lint: >-
+  ADVISORY (scripts.roadmap.vp_literals.find_self_satisfying_literals, run by
+  scripts.roadmap.plan_document at schema-validation time -- never raises, only WARNs): a
+  schema_version 5 hermetic step's `expected_literals` entry that appears VERBATIM inside that
+  same step's own `command` text is redundant with that command's exit-0 -- the command already
+  names the token as one of its own arguments, so the assertion adds nothing a passing exit code
+  did not already guarantee. Reported, never rejected: this is the repo's established marker
+  idiom (`echo MARKER`, `grep -o -m1 TOKEN FILE`, including the PR #1202 shape below) and must
+  stay authorable. Named `self_satisfying`, deliberately NEVER `tautological` -- that word is
+  reserved above (outcome_classes) for the DYNAMIC replay outcome vocabulary; reusing it here for
+  an unrelated STATIC property in the same contract file would be drift. Measured on the merged
+  corpus at authoring time: roughly two-thirds of the enforced literal population is
+  self-satisfying under this definition -- redundant, not defective, hence advisory rather than a
+  gate.
+
+unsat_guard: >-
+  HARD-FAILING (scripts.roadmap.vp_literals.find_unsatisfiable_literals, run by
+  scripts.roadmap.plan_document at schema-validation time -- raises, blocking commit): a
+  schema_version 5 hermetic step's `expected_literals` entry is REJECTED when the step's own
+  `command` is a chain of grep/rg invocations joined by shell control operators (`&&`, `||`,
+  `;`, `|`) in which EVERY invocation is confidently silenced -- carries `-q`/`--quiet`,
+  `-c`/`--count`, `-l`/`--files-with-matches`, or `-L`/`--files-without-match` without an
+  overriding `-o`/`--only-matching`, or redirects to `/dev/null` -- so the chain can never print a
+  matched literal to stdout+stderr no matter how correct the implementation is. This is the
+  historical PLAN-g4-byte-source-and-post-expiry-bound VP1 shape (four `grep -q` calls chained
+  with `&&`) that PR #1202 fixed by changing its fourth call to `grep -o -m1 "drain" FILE` --
+  which this guard accepts (an `-o` call is never confidently silent) and the self_satisfying_lint
+  above separately flags advisory (`drain` appears verbatim in that same command).
+
+  The suppressor set this guard treats as confidently silencing is declared as real data in
+  `unsat_guard_suppressor_flags` below (never restated here), asserted equal to the code's own
+  tuple by TestContractSuppressorParity so the contract cannot drift from the code.
+
+  Fails OPEN on anything it cannot confidently classify -- a non-grep/rg program, an unparseable
+  shell segment, or a grep/rg call carrying `-o` -- is treated as satisfiable, never rejected.
+  This is a NARROW regression guard for one historical shape, not a general emittability prover:
+  it does not reason about `python -c` or module-invocation commands, which the carrying plan
+  measured at 86% of the enforced literal population. That residual is UNENFORCED by design and
+  owned by rec-3932 (evaluating a closed command-shape vocabulary broad enough to cover it) --
+  never silently treated as "safe" by this guard's silence on it.
+
+# The unsat_guard's suppressor set as real data (never restated as prose above) -- kept sorted so
+# a diff shows exactly which flag changed. TestContractSuppressorParity asserts this list equal
+# to scripts.roadmap.vp_literals.SUPPRESSOR_FLAGS.
+unsat_guard_suppressor_flags:
+  - "--count"
+  - "--files-with-matches"
+  - "--files-without-match"
+  - "--quiet"
+  - "-L"
+  - "-c"
+  - "-l"
+  - "-q"
