@@ -93,6 +93,7 @@ acceptance_criteria:
   - At schema_version 5, expected_literals is the sole assertion carrier and a backtick in expected is a schema error naming the fix.
   - expected_literals is refused below schema_version 5 rather than silently accepted under extra=forbid.
   - schema_version 5 IMPLEMENTATION plans still REQUIRE handoff_policy, so Decision 163's pre-handoff full-tier obligation does not retire at the version bump.
+  - This plan is merged to main before implementation begins, so the raised floor does not reject its own net-new v4 file (VP step 18 asserts it).
   - _MIN_NEW_PLAN_SCHEMA_VERSION is 5, so a newly-authored v4 plan is refused and the old carrier is not a frictionless path.
   - The per-scope-row test-obligation gate keeps binding on v4 IMPLEMENTATION plans after the authoring floor moves to 5, via a separately pinned _TEST_OBLIGATION_MIN_SCHEMA_VERSION.
   - Every plan at schema_version 4 or below extracts a literal set identical to an inline re-implementation of the current _BACKTICK_LITERAL_RE scan, carried inside the test as its differential arm.
@@ -155,7 +156,7 @@ verification_plan:
     graduation_check_id: v4-corpus-extraction-invariance
     action: Regression-assert that every plan at schema_version 4 or below extracts a literal set identical to the pre-change tree, proving no merged plan changes behaviour.
     command: bin/venv-python -m pytest tests/test_vp_literals.py::TestV4CorpusInvariance -q
-    expected: All pass over the live docs/plans corpus. This is the guarantee that the 252 enforced literals across 150 steps are untouched.
+    expected: All pass over the live docs/plans corpus. This is the guarantee that the 254 enforced literals across 154 steps are untouched.
     fix_if: Any v4 plan's extracted set differs, meaning the relocation silently changed the live guard rather than preserving it.
   - step: 7
     phase: pre-deploy
@@ -222,7 +223,7 @@ verification_plan:
     graduation_check_id: bundled-rec-named-test-identifiers
     action: Run the exact test identifiers rec-3900 and rec-3555 pin in their filed acceptance probes, so the two recs close on their own terms rather than on this plan's paraphrase of them.
     command: bin/venv-python -m pytest "tests/checks/verification/validate_vp_replay/test_plan_only_leg.py::TestExpectedLiteralEmittability" "tests/test_vp_literals.py::TestExpectedLiteralEmittability" "tests/roadmap/plan_document/test_hermetic_expected_literals.py::TestHermeticExpectedLiterals::test_backtick_literal_in_hermetic_expected_is_rejected" "tests/checks/roadmap/test_validate_plan_documents.py::TestSchemaVersionFloorSplit" -q
-    expected: All pass. Red on the unfixed tree, where none of the three identifiers exists and collection errors. The first node id is the exact path rec-3900's filed probe pins; the module's own mirror home carries a second copy exercising the lint directly.
+    expected: All pass. Red on the unfixed tree, where none of the four identifiers exists and collection errors. The first node id is the exact path rec-3900's filed probe pins; the module's own mirror home carries a second copy exercising the lint directly.
     fix_if: Any identifier is absent or renamed, leaving rec-autoclose.yml to close a rec whose filed acceptance does not hold on the merged tree.
   - step: 14
     phase: pre-deploy
@@ -235,6 +236,18 @@ verification_plan:
     command: grep -q "backtick" .claude/skills/planning/SKILL.md && grep -qi "expected" .claude/skills/planning/SKILL.md && grep -qi "validate_vp_replay" .claude/skills/planning/SKILL.md && grep -q "emittable" scripts/checks/verification/validate_vp_replay.py && echo REC_DOC_ACCEPTANCE_MET
     expected: Prints `REC_DOC_ACCEPTANCE_MET`. Exit 0. The emittable token is required by rec-3900's filed probe and must survive the relocation as a named reference in validate_vp_replay's docstring.
     fix_if: Any token is absent, leaving a bundled rec unclosable by the probe it was filed with.
+  - step: 18
+    phase: pre-deploy
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      A one-time merge-ordering precondition specific to this plan's authoring-floor raise, not a
+      standing invariant -- no future plan raises this floor again, so there is nothing to graduate
+      a registered check into.
+    action: Assert this plan is no longer net-new against origin/main before running either validate tier, since the floor this plan raises rejects its own v4 file while it is still status A.
+    command: 'test "$(git diff --name-status origin/main -- docs/plans/PLAN-vp-expected-literal-carrier.yaml | cut -f1)" != "A" && echo PLAN_ALREADY_MERGED'
+    expected: Prints `PLAN_ALREADY_MERGED`. Exit 0. Red on the plan PR, where the file is status A and the test fails silently -- which is correct, because implementation has not begun there.
+    fix_if: The plan file is still status A at implement time, meaning implementation started before the plan merged; merge the plan PR first rather than lowering the floor.
   - step: 15
     phase: pre-deploy
     hermetic: true
@@ -323,12 +336,20 @@ test_obligations:
     red_green_expectation: red before (grep exits 1, only command and expected are listed), green after
 constraints:
   - No rescue agents or workaround loops (Decision 55); the analyzer fails loud and never degrades an undecidable case to a silent pass.
-  - Schema 4 and below keep byte-identical behaviour; the 252 enforced literals across 150 steps must not change verdict (step 6 is the guarantee).
+  - Schema 4 and below keep byte-identical behaviour; the 254 enforced literals across 154 steps must not change verdict (step 6 is the guarantee).
   - validate_vp_replay must land at 490 SLOC or below by delegation, leaving at least 10 SLOC of headroom; VP step 11 asserts 490, not 500. Pinning it at the ceiling forces the next toucher into an unplanned decomposition, the opposite of Decision 128's intent. Never a budget raise.
   - One home for command tokenization (Decision 104); _partition_command moves to vp_literals rather than being duplicated.
   - The planning skill edit is a read-trigger stub, never a second copy of the rule (Decision 86); prose budget headroom is 2,224 bytes.
   - No verb vocabulary and no golden-file capture in this plan; both are recorded as considered-and-rejected with rec-3932 owning the evaluation. The AC7 differential arm is an inline reference re-implementation, which is not golden-file capture.
   - "No plan-critique item is added. .claude/skills/plan-critique/SKILL.md is deliberately out of scope: this plan buys determinism precisely so critique does not have to judge literals. rec-3708's 12c-2 clause is knowingly refused, not overlooked."
+  - >-
+    MERGE-ORDERING PRECONDITION: this plan must already be merged to main before implementation
+    begins. The authoring floor it raises (_MIN_NEW_PLAN_SCHEMA_VERSION 4 -> 5) rejects any
+    net-new v4 plan, and this plan's own file IS v4 -- it cannot declare 5, because 5 does not
+    enter _SUPPORTED_VERSIONS until this plan lands. Implementing while the file is still status A
+    against origin/main makes VP steps 15 and 16 unsatisfiable. /plan Step 11 merges the approved
+    plan to main before /implement, so the workflow already enforces this; VP step 18 asserts it
+    rather than trusting it.
   - Every pre-deploy step naming scripts.validate must be dispositioned waive or not-applicable (vp-red-before.yaml#recursion_refusal refuses it statically in the graduate partition).
   - The static verdict is named self_satisfying, never tautological. vp-red-before.yaml freezes tautological as one of four DYNAMIC replay outcome classes with "never restated as a fifth class"; reusing the word for an unrelated static property in the same contract file is drift.
   - The self-satisfying lint is ADVISORY by design. It reports a literal that adds nothing over exit-0, which is redundancy rather than defect; hard-failing it would reject the marker idiom rec-3900 endorses and PR #1202 merged. Only the unsat guard rejects.
@@ -338,7 +359,7 @@ context:
   - "Decisions triaged: 147 of 147"
   - "Roadmap items intersected: 3; CONFLICT: 0; RELATED: 2"
   - "Root cause is in-band signalling: the opt-in signal and the markdown-formatting reflex are the same keystroke. Precedent for the fix is Go's // +build to //go:build migration."
-  - "Measured on origin/main at e46d0e34: 439 plans / 4584 steps; enforced population 154 hermetic pre-deploy steps / 254 literals; 167 of 254 (66%) are self-satisfying (redundant with exit-0, not defective -- hence advisory). The defect is LIVE, not hypothetical: 55 literals across 13 unimplemented plans are NOT VERBATIM in their own command text -- a necessary-not-sufficient screen, since this plan's own step 9 is in that set and is satisfiable via grep -o. PR #1215 (merge e46d0e34) corrected five genuinely unsatisfiable literals on PLAN-company-formation-ownership after they stranded an /implement session; #1211 was that amendment's plan PR."
+  - "Measured on this branch, rebased onto e46d0e34: 439 plans / 4584 steps; enforced population 154 hermetic pre-deploy steps / 254 literals; 167 of 254 (66%) are self-satisfying (redundant with exit-0, not defective -- hence advisory). The defect is LIVE, not hypothetical: 55 literals across 13 unimplemented plans are NOT VERBATIM in their own command text -- a necessary-not-sufficient screen, since this plan's own step 9 is in that set and is satisfiable via grep -o. PR #1215 (merge e46d0e34) corrected five genuinely unsatisfiable literals on PLAN-company-formation-ownership after they stranded an /implement session; #1211 was that amendment's plan PR."
   - "Measured: 86% of the enforced population (python -c 66%, compound shell 20%) resists a closed command vocabulary, which is why rec-3932 is filed for evaluation rather than planned."
   - "Yield split, stated honestly: the static unsat guard would NOT have caught the live PLAN-company-formation-ownership defect (its commands are python -c and module invocations, both output-producing). The guard is a narrow regression guard for one historical shape; the self-satisfying lint reports redundancy (67% of enforced literals) rather than defect, which is why it is ADVISORY and not a gate; the v5 carrier is what removes the accident class and carries this plan's value. Do not let either lint's low yield be read as the plan's yield."
   - "rec-3755's claim that three named plans will trip is stale: all three are either already declared or not hermetic, so none sit in the green-leg replay set."
@@ -360,10 +381,10 @@ pre_implementation_checklist:
 execution_steps:
   - Create scripts/roadmap/vp_literals.py holding the relocated backtick extraction, the relocated _partition_command tokenizer, the ADVISORY self-satisfying lint (verdict name self_satisfying, never tautological), the hard-failing unsatisfiable-command guard, and a --census subcommand. Keep it import-light and free of any scripts.checks import.
   - Modify scripts/roadmap/plan_document.py - add 5 to _SUPPORTED_VERSIONS; extend _validate_handoff_policy's hard-coded {3, 4} set at :299 to {3, 4, 5} and update the :305 error string (without this every plan from the bumped template fails to load, or drops handoff_policy and silently retires Decision 163's obligation); add expected_literals to VerificationStep gated both ways, with an EMPTY OR ABSENT carrier explicitly PERMITTED on a v5 hermetic graduate step (a non-empty requirement would make the marker idiom and every plain pytest step unauthorable); reject backticks in a v5 expected with a message naming expected_literals as the fix; run both lints at validation time; import the tokenizer back from vp_literals.
-  - Modify scripts/checks/verification/validate_vp_replay.py - delegate extraction and linting to vp_literals, select the carrier by the plan's schema_version, and move the per-step literal print to after the eligibility filter. Delegate rather than inline; the target is 490 SLOC or below, leaving real headroom, not a landing at the 500 ceiling. Keep the word emittable in the module docstring as a named reference to the delegated lint, since rec-3900's filed acceptance probe greps this file for it.
+  - Modify scripts/checks/verification/validate_vp_replay.py - delegate extraction and linting to vp_literals, select the carrier by the plan's schema_version, and ADD a per-step literal print after the eligibility filter (none exists at the DEFER site today). Delegate rather than inline; the target is 490 SLOC or below, leaving real headroom, not a landing at the 500 ceiling. ADD the word emittable to the module docstring as a named reference to the delegated lint -- it appears zero times in that file today, and rec-3900's filed acceptance probe greps this file for it.
   - Modify docs/contracts/vp-red-before.yaml - add the carrier and lint section with the suppressor set as declared data and the inconclusive arm declared as an unenforced residual owning rec-3932; bump contract_version to 4 with an amendment_log entry.
   - Modify docs/contracts/implement-scope-boundary.yaml - add verification_plan[].expected_literals to prohibited_field_edits.
-  - Modify scripts/checks/roadmap/validate_plan_documents.py - FIRST split the constant, THEN bump. Introduce _TEST_OBLIGATION_MIN_SCHEMA_VERSION = 4 and use it at line 80's test-obligation gate, with a comment stating it must never track the authoring floor; only then raise _MIN_NEW_PLAN_SCHEMA_VERSION to 5 at line 41 and rewrite the module comment to describe both consumers. Bumping the shared constant would return [] from the obligation gate for all 137 v4 plans. Before implementing, grep the repo for other version-anchored constants (_SUPPORTED_VERSIONS, _MIN_NEW_PLAN_SCHEMA_VERSION, literal {3, 4} sets) and sweep any further site found.
+  - "Modify scripts/checks/roadmap/validate_plan_documents.py - FIRST split the constant, THEN bump. Introduce _TEST_OBLIGATION_MIN_SCHEMA_VERSION = 4 and use it at line 80's test-obligation gate, with a comment stating it must never track the authoring floor; only then raise _MIN_NEW_PLAN_SCHEMA_VERSION to 5 at line 41. Rewrite THREE stale surfaces, not one: the module comment at :14-16, the _new_plan_version_failures docstring at :36 (which says versions 1-3 stay schema-valid; at v5 that is 1-4), and the error string at :45-47, which interpolates the constant TWICE and would tell a refused author 'the test-obligation gate only binds at v5' -- false post-split, and it is the only remediation guidance that author sees. Bumping the shared constant would return [] from the obligation gate for all 137 v4 plans. Before implementing, grep the repo for other version-anchored constants (_SUPPORTED_VERSIONS, _MIN_NEW_PLAN_SCHEMA_VERSION, literal {3, 4} sets) and sweep any further site found."
   - Modify .claude/skills/planning/SKILL.md - move the template line to schema_version 5 AND correct its trailing comment, which currently reads 'historical versions 1-3 stay valid' and becomes false at v5 (1-4 stay valid); VP step 8 greps only for the version token and cannot see a stale comment. Add expected_literals to the template, and add the one-line read-trigger stub naming backticks and validate_vp_replay.
   - Write tests/test_vp_literals.py with these committed identifiers - TestSelfSatisfyingLint, TestUnsatGuard, TestExpectedLiteralEmittability, TestV4CorpusInvariance, TestContractSuppressorParity. TestV4CorpusInvariance must carry an INLINE re-implementation of the current _BACKTICK_LITERAL_RE scan as its differential arm and compare the relocated extractor against it over the live corpus; that inline oracle is the reference, and it is not golden-file capture. TestContractSuppressorParity loads the suppressor set from vp-red-before.yaml and asserts equality with the module's own tuple, mirroring _vp_replay_classify's derive-and-assert precedent.
   - Write tests/roadmap/plan_document/test_hermetic_expected_literals.py with the committed identifiers TestHermeticExpectedLiterals (including test_backtick_literal_in_hermetic_expected_is_rejected, the exact name rec-3555 pins) and TestVersionGating (including the v5 handoff_policy round-trip in both directions). Extend tests/checks/verification/validate_vp_replay/test_plan_only_leg.py with the committed class identifiers TestCarrierSelection, TestDeferWorkShape, and TestExpectedLiteralEmittability (the last is the exact path rec-3900's filed acceptance probe pins, exercising the lint through validate_vp_replay's delegation); VP step 5 names them rather than the whole file, because the file's existing 5 tests already pass and a whole-file selector would classify tautological on the red-before leg.
