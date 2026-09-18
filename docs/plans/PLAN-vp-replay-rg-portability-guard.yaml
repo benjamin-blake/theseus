@@ -444,6 +444,25 @@ verification_plan:
     admitting. Re-run with `PATH=$PWD/.venv/bin:$PATH` so the fallback resolves a 3.12 interpreter
     and the differential is content-driven. CI needs no such workaround (hosted 3.12 plus
     requirements-fast.txt). Do NOT interpret that raise as a real content failure.
+- step: 8
+  phase: pre-deploy
+  hermetic: false
+  graduation: not-applicable
+  action: >-
+    Run the FULL tier, as handoff_policy.full_validation_required_before_commit declares. Decision
+    163's point is that an obligation stated only as metadata is invisible to every automated gate,
+    so the declaration must have an executable step behind it -- validate_handoff_full_tier enforces
+    exactly this pairing. Not hermetic: vp-red-before.yaml's recursion_refusal statically refuses a
+    graduate step invoking scripts.validate, and the full tier runs pytest and credentialed checks.
+  command: bin/venv-python -m scripts.validate
+  expected: 'Validation Summary (scope: all) -- All checks passed, exit 0.'
+  fix_if: >-
+    On a 10-minute command cap the run is killed (exit 143); per handoff_policy.timeout_disposition
+    that is BLOCKED, not a partial pass -- rerun it complete rather than treating the truncated run
+    as evidence. If validate_verification_registry fails on a differential, see step 7's
+    venv-less-worktree note before treating it as a content failure. Confirm
+    logs/debug/validation-result.json records scope: all, exit_code: 0, failed_checks: [] and a
+    git_head matching HEAD.
 test_obligations:
 - source: scripts/checks/verification/validate_vp_replay.py
   behavior: >-
@@ -470,6 +489,18 @@ test_obligations:
     (origin/main must FAIL, HEAD must PASS), which VP step 7 dispatches. A unit test over the shard
     would assert its YAML shape, not that the check discriminates -- strictly weaker than the
     differential that already gates it.
+- source: docs/contracts/verification-registry.yaml
+  behavior: >-
+    Records the in-place repoint of vp-replay-coverage-survives-absent-ripgrep, its check_id
+    retention rationale, and the five-shard guard_symbol residual.
+  verification_step: 8
+  command: bin/venv-python -m scripts.validate
+  waiver_reason: >-
+    A governance_notes provenance entry with no executable surface of its own -- it records that a
+    modification happened, it does not assert anything a test could exercise. Its conformance is
+    enforced by validate_contract_conformance in the full tier, which VP step 8 dispatches. The
+    behaviour it documents (the repointed shard genuinely discriminating) is proven by
+    validate_verification_registry's real differential, not by a unit test over prose.
 - source: docs/contracts/vp-red-before.yaml
   behavior: Declares the new lint's population, detection rule and fail-open posture.
   verification_step: 7
