@@ -94,7 +94,10 @@ verification_plan:
     phase: pre-deploy
     action: Regenerate the committed decisions index after the DECISIONS.md edits.
     command: bin/venv-python -m scripts.decisions_index --write
-    expected: "Exit 0; stderr reports `Decisions index written to docs/decisions-index.json`."
+    expected: >-
+      Exit 0; stderr contains a line with `Decisions index written to` and, separately,
+      `docs/decisions-index.json` -- the destination is printed as an absolute path, so only
+      these two substrings are asserted, never the full literal path.
     fix_if: >-
       Non-zero exit means the new entry did not parse. Check the header form
       (`## Decision 195: <title> (Decided)`) and the typed yaml envelope fence.
@@ -169,11 +172,13 @@ verification_plan:
     action: Prove the fenced reversal-conditions stanza is well-formed and monitored.
     command: bin/venv-python -c "import sys; from scripts.checks.ops_governance.validate_reversal_stanzas import validate_reversal_stanzas as f; failed=[]; f(failed); print(failed); sys.exit(1 if failed else 0)"
     expected: >-
-      Exit 0, and the monitored-stanza count rises by exactly 1 from whatever the baseline is at
-      implement time. Do NOT pin the absolute: it reads 12 on this branch, but Decision 194
+      Exit 0, and stdout contains `monitored reversal-conditions stanza(s), all well-formed.` and
+      the line `[]`. The monitored-stanza count rises by exactly 1 from whatever the baseline is
+      at implement time. Do NOT pin the absolute: it reads 12 on this branch, but Decision 194
       (PLAN-staged-apache-relicense-decision) also adds a monitored stanza, so the baseline is 13
-      if that plan implements first. A mismatched absolute is not a failure -- exit 0 is the
-      criterion, and `expected` is frozen post-merge by implement-scope-boundary.yaml.
+      if that plan implements first. A mismatched absolute is not a failure -- exit 0 plus the two
+      literal spans above are the criterion; this field is frozen post-merge by
+      implement-scope-boundary.yaml, so it must not hardcode a transient absolute count.
     fix_if: >-
       A malformed stanza means the fence line is not exactly '```yaml reversal-conditions' or the
       body is not a mapping with decision/review_by/on_trigger/conditions.
@@ -223,8 +228,11 @@ verification_plan:
       Report-only by design -- read the printed line, do not rely on an exit code.
     command: bin/venv-python -c "import sys; from scripts.checks.roadmap.check_roadmap_regrowth import check_roadmap_regrowth as f; failed=[]; f(failed); sys.exit(0)"
     expected: >-
-      A GROWTH line whose `lines=` value is at most 10,000, and no CD.6 row in the re-accumulated
-      terminal-content listing. Baseline before this plan: `lines=9901 headroom=99 escalate=true`.
+      Exit 0, and a line containing `GROWTH lines=` and `threshold=500`, with the lines= value at
+      most 10,000, and no CD.6 row in the re-accumulated terminal-content listing. The
+      implementing diff adds lines to docs/ROADMAP-PLATFORM.yaml, so the printed
+      lines=/baseline=/headroom=/escalate= values shift the moment it lands -- do not pin their
+      instantaneous values; only these two line-count-invariant tokens are asserted verbatim.
     fix_if: >-
       If CD.6 appears in the terminal-content listing, the amendment was written onto the roadmap
       row instead of onto Decision 106. Move it.
@@ -239,15 +247,17 @@ verification_plan:
     action: Prove NS.2 names the owning entity explicitly and distinguishes it from the legacy account.
     command: bin/venv-python -c "import sys,yaml; d=[p for p in yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'))['north_star']['principles'] if p['id']=='NS.2'][0]['detail']; sys.exit(0 if 'On The Loop Labs Limited' in d and 'company-aws-profile' in d else 1)"
     expected: >-
-      Exit 0. Scoped to NS.2's `detail` string via the roadmap's own schema, NEVER a file-wide
-      grep: `company-aws-profile` already occurs 6 times elsewhere in this 9,901-line file
-      (lines 3954, 3960, 3968, 3973, 9136, 9548), so a file-scoped conjunct would assert nothing,
-      and a file-scoped company-name grep would green permanently the moment rec-3921, rec-3922
-      or rec-3923 names the company anywhere in the roadmap -- a standing guard that could never
+      Exit 0. Scoped to NS.2's detail string via the roadmap's own schema, NEVER a file-wide grep:
+      company-aws-profile already occurs 6 times elsewhere in this 9,901-line file (lines 3954,
+      3960, 3968, 3973, 9136, 9548), so a file-scoped conjunct would assert nothing, and a
+      file-scoped company-name grep would green permanently the moment rec-3921, rec-3922 or
+      rec-3923 names the company anywhere in the roadmap -- a standing guard that could never
       detect regression of the invariant its own slug names. Genuinely RED before: NS.2's detail
       today reads "Personal AWS account, not shared work account. AUP, IP, and business-continuity
       reasons; cost is a tiebreaker.", so BOTH literals are absent and the step fails under the
-      Decision 189 inverted-polarity replay.
+      Decision 189 inverted-polarity replay. The command is a bare sys.exit with no print
+      statement, so no output literal can ever be asserted here -- correctness rests entirely on
+      the exit code.
     fix_if: >-
       A failure means the NS.2 annotation either omits the company's registered name or omits the
       distinction from the legacy company-aws-profile account -- both are required by AC6, because
@@ -262,11 +272,14 @@ verification_plan:
       150 / Decision 75 disposition).
     command: grep -q '^## Decision 195:' docs/DECISIONS.md && { awk '/^## Decision 195:/{f=1} f&&/^## Decision /&&!/^## Decision 195:/{exit} f' docs/DECISIONS.md | grep -ciE 'dbt|leaning|prefer|getdbt' || true; }
     expected: >-
-      Exit 0 and a count of 0 -- no preference, reasoning or precedent analogy inside the
-      Decision 195 span. The leading `grep -q` carries the same anti-vacuity guard as step 3:
-      without it the awk range emits nothing on an absent or mistyped heading, `grep -c` prints
-      0, and `|| true` maps its exit 1 to 0 -- reporting AC4 proven against an empty span. The
-      braces keep `|| true` bound to the grep alone, so the guard's own failure still propagates.
+      Exit 0 and a count of `0` -- no preference, reasoning or precedent analogy inside the
+      Decision 195 span. Verified against a fabricated clean Decision 195 fixture: the leading
+      grep -q anti-vacuity guard (matching step 3's) prevents an absent or mistyped heading from
+      collapsing to a false pass, and the trailing || true, bound to the count grep alone by the
+      braces, maps a genuine zero-match exit 1 to 0 so the pass reports a proven-empty span rather
+      than an absent one. Known residual, accepted: substring matching means this literal is also
+      satisfied by any nonzero count ending in the digit 0 (10, 20, ...); the frozen command
+      admits no tighter span, so the exit-0 contract plus this digit are the full assertion.
     fix_if: >-
       A positive count means operational_fact content landed in the numbered entry. Move it to
       rec-3905 via the portal, per the operator's explicit call.
