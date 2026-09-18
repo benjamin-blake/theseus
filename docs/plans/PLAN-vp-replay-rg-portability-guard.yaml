@@ -17,41 +17,72 @@ scope:
   purpose: >-
     TWO changes. (a) Add `_rg_portability_findings`, a static, non-executing lint over every
     pre-deploy step of every diff-present plan that is ADDED or RESOLVED -- precisely the two
-    populations whose steps actually execute (red-before replays an added plan's graduate steps;
-    the implement leg replays a resolved plan's hermetic steps), and deliberately NOT merely-
-    modified plans, so a PR touching an old plan for unrelated reasons never reds on a pre-existing
-    step. Detection is PROGRAM-POSITION, not substring: split the command on shell operators, then
-    `shlex.split` each segment and flag only a segment whose argv HEAD is `rg` (after stripping a
-    leading `!`, `env`, or a directory prefix). A text-level `rg ` match would flag any command that
-    merely discusses ripgrep inside a Python string literal -- a false positive this plan's own VP
-    step 3 would have triggered. Fails OPEN on an unparseable segment (`shlex` ValueError), matching
-    `_negated_sweep_findings`' own over-detection-is-worse posture. (b) Relocate the classifier and
-    its self-test OUT to the new sibling module so this file stays under budget -- see that row.
+    populations whose steps actually execute (the red-before leg replays an added plan's graduate
+    steps; the implement leg replays a resolved plan's hermetic steps). Detection is
+    PROGRAM-POSITION, not substring: split the command on shell operators, `shlex.split` each
+    segment, and flag only a segment whose argv HEAD is `rg` after stripping a leading `!`, `env`,
+    or directory prefix. A text-level match would flag any command that merely discusses ripgrep
+    inside a string literal -- the false positive this plan's own steps 4-6 would trigger.
+    PLACEMENT IS NOT "beside the existing negated-sweep lint": `_red_before_leg` `continue`s on
+    `plan_rel in resolved` (validate_vp_replay.py:520-522) BEFORE reaching the
+    `_negated_sweep_findings` call site, so a lint sited there would never see a resolved plan and
+    would silently cover only half its declared population. Hoist it to a shared pre-pass over
+    `resolved_set | eligible` that runs before both legs, or restructure the loop so the resolved
+    branch reaches it -- either way the resolved half MUST be reachable, and VP step 1's resolved
+    case is what proves it.
+    ACCOUNTING (Decision 170): fold the findings into the SINGLE existing terminal
+    `registry.examined()` / `registry.skipped()` composition -- never a second declaration -- and
+    leave the grain composition itself BYTE-IDENTICAL, mirroring `_negated_sweep_findings`, which
+    already contributes findings without contributing to the counted grain. That is what keeps the
+    graduated shard `vp-red-before-accounting-grain-honest` green without modification; changing
+    the grain would re-submit its node_id and is out of scope.
+    NO SILENT UNDER-INCLUSION (Decision 135 spirit): the lint fails open on an unparseable segment
+    and excludes merely-MODIFIED plans, so BOTH arms must print a counted, loud line naming what
+    was not checked and why -- matching this module's own standing discipline that a step outside a
+    leg's set is "EXCLUDED with a reason, never silently skipped". The MODIFIED exclusion is
+    deliberate: linting merely-modified plans would red an unrelated PR that touches an old plan
+    for unrelated reasons. It does mean the class goes unchecked on the act-one amendment diff
+    itself, which VP steps 4 and 5 cover directly instead.
+    (b) Relocate the classifier surface out to the new sibling module so this file stays under
+    budget -- see that row.
 - file: scripts/checks/verification/_vp_replay_classify.py
   action: Create
   purpose: >-
-    SLOC decomposition (Decision 128 -- decompose by default, never raise). This file measures 481
-    SLOC against the unregistered-file limit of 500, and the new lint adds ~35, so the change
-    crosses the budget and MUST decompose. Relocated VERBATIM: OUTCOME_CLASSES, the four
+    SLOC decomposition (Decision 128 -- decompose by default, never raise). validate_vp_replay.py
+    measures 481 SLOC against the unregistered-file limit of 500 and the new lint adds ~35, so the
+    change crosses the budget and MUST decompose. Relocated VERBATIM: OUTCOME_CLASSES, the four
     unmeasurable-arm constants (_UNMEASURABLE_EXIT_CODES, _RG_GREP_ERROR_EXIT_CODE,
     _RG_GREP_INVOCATION_RE, _PYTEST_COLLECTION_ERROR_EXIT_CODES),
     _CREDENTIAL_UNAVAILABLE_MESSAGE_RE, _SELF_TEST_TIMEOUT_SECONDS, _SELF_TEST_FIXTURES,
-    _classify_outcome, _run_self_test_fixture, _run_classifier_self_test. Measured: ~82 SLOC moves,
-    leaving the parent at ~413 + ~35 = ~448, under 500 with headroom. `_classify_outcome` and its
-    ONLY in-module caller `_run_classifier_self_test` relocate TOGETHER, which is what keeps the
-    three existing `patch(..._classify_outcome)` sites working once retargeted at this module --
-    patching a re-export never rebinds the callee's own global. validate_vp_replay.py re-imports
-    the moved names so every external `from ...validate_vp_replay import _classify_outcome` keeps
-    resolving unchanged.
-    DECIDED WITH NOTICE -- sibling private module, NOT a facade package. Decision 128 names the
-    Decision 80/104/124 facade-package pattern, and this deviates from it deliberately: 17
-    graduated registry shards carry `guard_target: scripts/checks/verification/validate_vp_replay.py`
-    and four more EXECUTE that literal path inside their check_spec commands, so converting the
-    module to a package would retire a live path out from under 21 standing records and turn a
-    focused change into a ~29-file repoint. The `scripts/checks/_*.py` sibling-helper idiom
-    (_common, _manifest, _terraform, _schema, _scaffolding, _pytest_diff, _marker_guard) is the
-    established local precedent and keeps the module path -- and therefore all 21 records -- valid.
-    Reversible: promoting this pair to a facade package later is mechanical.
+    PER_STEP_TIMEOUT_SECONDS, _classify_outcome, _run_self_test_fixture and
+    _run_classifier_self_test. Measured: 69 SLOC relocates, leaving 412 + re-imports + ~35 = ~450,
+    under 500 with headroom.
+    PER_STEP_TIMEOUT_SECONDS MUST MOVE WITH THE FIXTURES, and this is the one place the VERBATIM
+    constraint is deliberately read as permitting a relocation it might otherwise forbid:
+    _SELF_TEST_FIXTURES (validate_vp_replay.py:119-125) references PER_STEP_TIMEOUT_SECONDS at
+    MODULE level, so leaving the constant behind would make this module import from a
+    partially-initialised validate_vp_replay -- a module-level cycle that raises on import. Moving
+    it and re-importing it into validate_vp_replay.py keeps both existing
+    `patch("...validate_vp_replay.PER_STEP_TIMEOUT_SECONDS")` sites working, because _replay_step
+    reads its own module global and patch rebinds exactly that name.
+    _classify_outcome and its only in-module caller _run_classifier_self_test relocate TOGETHER,
+    which is what makes the three retargeted patch sites take effect -- patching a re-export never
+    rebinds the callee's own global. validate_vp_replay.py re-imports every moved name so external
+    `from ...validate_vp_replay import _classify_outcome` keeps resolving unchanged.
+    DECIDED WITH NOTICE -- sibling private module, NOT a facade package. Decision 128 clause 1 names
+    the Decision 80/104/124 facade-package pattern; the decision-scout gate confirmed no clause of
+    128, 80, 104 or 124 FORBIDS this, that clause 1 states a default rather than a prohibition, and
+    that the operative gate (clause 2, validate_sloc_budget_raises) fires only on a budget increase
+    or a new >500 registration -- neither occurs here. Decision 104 positively sanctions private
+    sibling modules inside scripts/checks/<domain>/ (_common.py, per-domain _shared.py); the honest
+    caveat is that its _shared.py precedent is scoped to helpers serving 2+ checks, so a
+    single-consumer module is precedent-adjacent rather than squarely on point. The deciding
+    measurement: scripts/checks/verification/ is ALREADY a package and already carries a private
+    sibling with a mirror test (_manifest.py <-> test__manifest.py), so validate_vp_replay.py
+    itself plays the facade role clause 1 describes and the only difference is whether the facade
+    is a file or an __init__.py -- while a package conversion would retire a live path out from
+    under 22 standing records (18 guard_target references plus 4 executing it in check_spec).
+    Reversible: promoting the pair to a facade package later is mechanical.
 - file: tests/checks/verification/test__vp_replay_classify.py
   action: Create
   purpose: >-
@@ -62,7 +93,10 @@ scope:
     the five unmeasurable arms classifies as `unmeasurable` (exit 126, exit 127, rg/grep exit 2, a
     credential-unavailable message, and the timeout arm), a pytest collection error classifies
     `target_absent`, exit 0 classifies `tautological`, and an ordinary exit 1 classifies
-    `assertion_failed`.
+    `assertion_failed`. Carries its OWN fixtures: Decision 131 / `validate_no_cross_test_imports`
+    fails a test module importing from a sibling `test_*` module, so this file must not import from
+    the `validate_vp_replay/test_*` package -- `_SELF_TEST_FIXTURES` relocates with the classifier
+    and is imported from the source module, never from another test.
 - file: tests/checks/verification/validate_vp_replay/test_accounting_and_self_test.py
   action: Modify
   purpose: >-
@@ -87,23 +121,52 @@ scope:
   action: Modify
   purpose: >-
     Declare the new lint beside `negated_sweep_lint` -- its population (added-or-resolved plans),
-    its program-position detection rule, its fail-open posture, and its relationship to the
-    `unmeasurable` outcome class it exists to pre-empt. The contract is the single authoritative
-    home for this check's semantics; the module holds no second copy of that prose. Append an
-    amendment_log entry at the list tail if that file carries one.
+    its program-position detection rule, its fail-open posture, its loud-deferral obligation, and
+    its relationship to the `unmeasurable` outcome class it exists to pre-empt. The contract is the
+    single authoritative home for this check's semantics; the module holds no second copy of that
+    prose. MANDATORY, not optional: this is a Class D mechanism contract at `provisional_v0` whose
+    evaluator is `{check: validate_vp_replay}`, so Decision 168 clause 4 obliges BOTH a
+    `contract_version` bump (2 -> 3) AND an `amendment_log` entry at the list tail, in the same
+    change -- the file's own 2026-09-14 entry records exactly that pairing for the 1 -> 2 bump.
+    Declaring the lint without both is contract drift.
 - file: config/agent/verification_registry/entries/vp-replay-coverage-survives-absent-ripgrep.yaml
   action: Modify
   purpose: >-
-    Repoint the ONLY standing record the relocation actually breaks. Its check_spec resolves the
-    exit-2 arm by scanning `scripts/checks/verification/validate_vp_replay.py` for the literal
-    `_RG_GREP_ERROR_EXIT_CODE and` and asserts that line is covered with ripgrep absent -- that
-    line moves to _vp_replay_classify.py, so both the source path and the `--cov` target must
-    follow it. Claim-PRESERVING re-authoring, so the check_id is RETAINED (the retained-id
-    precedent is scoped to exactly this case); a new id would be registry sediment for a
-    relocation. The other three path-executing shards
-    (push-aware-diff-base-in-verification-checks, no-commit-subject-plan-resolution,
-    vp-replay-mirror-and-shards-live) and all 17 `guard_target` references keep resolving, because
-    the module path is unchanged -- that is the whole point of the sibling-module choice.
+    Repoint the ONE standing record whose ASSERTION the relocation breaks. Its check_spec resolves
+    the exit-2 arm by scanning scripts/checks/verification/validate_vp_replay.py for the literal
+    `_RG_GREP_ERROR_EXIT_CODE and`; that line moves, so the `src=` literal must follow it. ONLY the
+    `src=` literal changes -- `--cov=scripts/checks/verification` is already the PACKAGE directory
+    and so already covers the new sibling. Claim-PRESERVING re-authoring, so the check_id is
+    RETAINED; verification-registry.yaml carries the direct precedent ("repairing a check's read
+    path after its TARGET's shape changed underneath it, with the check's own assertion otherwise
+    identical, is not changing a check implementation ... and keeps its check_id"). This edit is
+    SAFE for the differential precisely BECAUSE the assertion's read path changes: at origin/main
+    the new module is absent, so the repointed check_spec FAILS at base and PASSES at HEAD, and
+    admits.
+    DECLARED RESIDUAL, deliberately NOT repointed: five sibling shards -- vp-red-before-classes-
+    distinct, vp-replay-classifier-arms-do-not-alias, vp-red-before-tautological-fails and
+    vp-red-before-unmeasurable-hard-fails (guard_symbol: _classify_outcome) plus
+    vp-red-before-classifier-self-test (guard_symbol: _run_classifier_self_test) -- name symbols
+    that leave validate_vp_replay.py, so their guard_target/guard_symbol pairs become stale
+    POINTERS. They are left alone because repointing them would RED CI, not because it is tidy to
+    skip: validate_verification_registry._modified_entries compares the WHOLE PARSED MAPPING
+    (`baseline_by_id[cid] != entry`), so a metadata-only guard_target edit marks the record
+    modified and re-submits it to run_differential -- and all five are test_selector rows whose
+    node_ids exist and PASS on origin/main, so the revert would produce PASS, not FAIL, and each
+    would be rejected as "not admitted -- revert did not produce FAIL (tautological)". The
+    plan-critique gate proposed repointing them; that remedy is measurably wrong on this axis and
+    is declined for that reason. guard_symbol has no evaluator today (`grep -rn guard_symbol
+    scripts/` returns zero hits) and T3.7 orphan detection is unbuilt, so nothing reads the stale
+    pointers. Routed to rec-3926's sibling concern rather than fixed here; the true reference count
+    is 18 guard_target entries, six of which also name a relocated symbol.
+- file: docs/contracts/verification-registry.yaml
+  action: Modify
+  purpose: >-
+    Add a governance_notes paragraph recording the in-place repoint of
+    vp-replay-coverage-survives-absent-ripgrep, the check_id retention rationale, and the declared
+    five-shard guard_symbol residual above. Three prior waves landed exactly this kind of entry,
+    and the contract states that block "is now the only provenance surface an in-place modification
+    can land on" -- so an unrecorded in-place edit leaves no provenance at all.
 - file: docs/plans/PLAN-gc-ops-baseline-gate-and-schedule-enable.yaml
   action: Modify
   purpose: >-
@@ -126,6 +189,7 @@ scope:
 bundled_recommendations: []
 followon_recs:
 - rec-3920
+- rec-3926
 infrastructure_dependencies: []
 acceptance_criteria:
 - >-
@@ -147,7 +211,14 @@ acceptance_criteria:
   self-test mislabel tests still fails when the classifier is broken.
 - >-
   vp-replay-coverage-survives-absent-ripgrep is admitted by the real differential after repointing,
-  and the other three path-executing shards plus all 17 guard_target references still resolve.
+  and the other three path-executing shards still resolve, as do all 18 guard_target references --
+  on the PATH axis. Six of those 18 also name a relocated SYMBOL and are a declared, unrepointed
+  residual; no check reads guard_symbol today.
+- >-
+  Both new shards (vp-replay-lints-rg-in-program-position,
+  vp-replay-classifier-relocation-preserves-vocabulary) are admitted by validate_verification_
+  registry's real git-worktree differential -- failing at origin/main, passing at HEAD -- and no
+  already-green shard is re-submitted to that gate by this diff.
 - >-
   PLAN-gc-ops-baseline-gate-and-schedule-enable step 3's command exits 0 against an ENABLED tree
   and non-zero against a DISABLED tree, under BOTH the default environment and POSIXLY_CORRECT=1,
@@ -431,46 +502,56 @@ constraints:
 - >-
   Recommendation writes go only through scripts.ops_data_portal update_rec; the local JSONL is a read
   cache and never a write source (Decision 84).
+- >-
+  The scripts/checks/verification/_manifest.py Entry for validate_vp_replay must NOT acquire
+  pre_globs and must NOT lose pre=True or full_segment -- it dispatches unconditionally today, which
+  is what makes the lint an every-PR guard in both tiers (Decision 187). Do not edit that Entry.
+- >-
+  Do NOT repoint the five sibling shards whose guard_symbol names a relocated symbol. A
+  metadata-only edit marks them modified, re-submits them to run_differential, and their unchanged
+  test_selector assertions still pass at origin/main -- each would be rejected as tautological and
+  redden CI.
 - No rescue agents or workaround loops (Decision 55)
 context:
 - >-
-  Decision-scout verdict FLAGS_FOUND; CITE: Decisions 148 (amended by 189), 55, 73, 84, 103.
-  Decisions triaged: 146 of 146. Roadmap items intersected: 0; CONFLICT: 0; RELATED: 0.
+  Decision-scout FLAGS_FOUND (re-dispatched on the widened scope); CITE: Decisions 189, 148, 168,
+  170, 187, 132, 176, 131, 128, 84, 103, 163. Decisions triaged: 146 of 146. Roadmap items
+  intersected: 3; CONFLICT: 0; RELATED: 3.
 - 'gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)'
 - >-
-  Scout flags: 181 [WARN] -> VP step 4. 163 [WARN] -> the lint itself (the earlier registry-shard
-  framing was withdrawn: validate_verification_registry runs a differential only for added-or-
-  modified entries, and verification-registry.yaml:244 says graduated records are never re-executed
-  as a standing suite). 189 [NOTE] -> measured not-applicable; the leading `grep -q 'gc_ops' PATH &&`
-  conjunct exits 2 and short-circuits on a missing path.
+  Scout/critique flags: 181 -> VP step 4, and the two acts are THIS PR and #1206's rebase, not two
+  acts inside this plan (the parent plan is in this plan's own scope, so no scope-boundary escape
+  is invoked). 163 -> the lint itself; the earlier registry-shard framing was withdrawn because
+  validate_verification_registry differentials run only for added-or-modified entries and
+  verification-registry.yaml:244 says graduated records are never re-executed as a standing suite.
+  189 -> measured not-applicable; the leading `grep -q 'gc_ops' PATH &&` conjunct exits 2 and
+  short-circuits on a missing path.
 - >-
   Stranded PR benjamin-blake/theseus#1206 (head f9768fdb), run 35271994638; sole failure
   `vp-replay ...:3 actual=exit 127`. Act-one precedent #1205 (f9bab137), same parent plan, step 8.
   Procedure: implement-scope-boundary.yaml#sanction_rows.implementing_plan_bookkeeping.amendment_procedure.
 - >-
   Amendment DEFERS: validate_scope_boundary and the vp-replay implement leg enforce only on plans
-  whose implementation_declared newly flips true, and origin/main's parent plan has no such key.
-- >-
-  THIS plan DOES set implementation_declared at commit time -- the PR carries its own
-  implementation, and resolve_declared_plans counts absence at base as False. Leaving it unset would
-  route these graduate steps to the red-before leg, against a tree already carrying the fix ->
-  `tautological` -> hard fail.
+  whose implementation_declared newly flips true; origin/main's parent plan has no such key. THIS
+  plan DOES set it at commit time (the PR carries its own implementation; resolve_declared_plans
+  counts absence at base as False) -- unset, its graduate steps would replay red-before against a
+  tree already carrying the fix and classify `tautological`, a hard fail.
 - >-
   rec-2938 (open, 2026-07-31) owns the class and a 19-plan audit; its stated primary fix (install
   ripgrep) is counter-indicated by shard vp-replay-coverage-survives-absent-ripgrep (#1183).
-  rec-3920 (open, High) owns the green-leg exit-127 misclassification; not fixed here.
+  rec-3920 owns the green-leg exit-127 misclassification. rec-3926, filed at planning time, owns
+  the 6 merged, not-yet-declared plans the widened lint will strand (control-table-class-and-
+  counter-conformance, decision-taxonomy-hygiene, orient-workflow, plan-workflow-audit-actions,
+  platform-mvp-boundary, verb-surface-supersession) -- latent, not live: none is implemented.
 - >-
-  Population: the red-before leg selects graduate pre-deploy steps with NO hermetic filter
-  (validate_vp_replay.py:543), so the executed set exceeds the implement leg's hermetic set --
-  PLAN-control-table-class-and-counter-conformance.yaml steps 8 and 13 are live graduate+non-hermetic
-  rg steps. The lint binds added-or-resolved plans, covering both legs.
+  Population: the red-before leg applies NO hermetic filter (validate_vp_replay.py:521-524), so
+  binding added-or-resolved is what covers both legs.
 - >-
-  Blast radius, measured: 17 shards carry guard_target pointing at validate_vp_replay.py
-  (presence-only metadata, never resolved) and 4 execute that literal path. Keeping the module path
-  holds all 21 valid; only the coverage shard is repointed, because the line it pins moves.
+  Blast radius, measured: 18 guard_target references (presence-only, no evaluator) + 4 shards
+  executing the literal path. Keeping the module path holds all of them.
 - >-
-  After merge, #1206 rebases onto main; its own diff is unchanged, so the amended command arrives
-  from the base.
+  closes_criteria empty by design: T2.18 c2 names rec-3870 as its closer over N=9 weekly cycles.
+- 'After merge, #1206 rebases onto main; its own diff is unchanged.'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -480,19 +561,29 @@ pre_implementation_checklist:
 execution_steps:
 - >-
   Relocate the classifier surface VERBATIM from validate_vp_replay.py into the new sibling
-  scripts/checks/verification/_vp_replay_classify.py, and re-import the moved names in
-  validate_vp_replay.py so every existing import path keeps resolving.
+  scripts/checks/verification/_vp_replay_classify.py -- INCLUDING PER_STEP_TIMEOUT_SECONDS, which
+  _SELF_TEST_FIXTURES reads at module level and which would otherwise form an import cycle -- and
+  re-import every moved name in validate_vp_replay.py so all existing import paths keep resolving.
 - >-
-  Add `_rg_portability_findings` to validate_vp_replay.py and wire it into the dispatch over
-  added-or-resolved diff-present plans, beside the existing negated-sweep lint.
+  Add `_rg_portability_findings` to validate_vp_replay.py and reach BOTH halves of its declared
+  population: `_red_before_leg` `continue`s on a resolved plan (validate_vp_replay.py:520-522)
+  before the negated-sweep call site, so hoist the lint to a shared pre-pass over
+  `resolved_set | eligible` that runs ahead of both legs rather than siting it beside that lint.
+  Fold findings into the single existing registry.examined()/skipped() composition, leaving the
+  grain byte-identical, and print counted loud lines for the fail-open and MODIFIED-excluded arms.
 - >-
   Create tests/checks/verification/test__vp_replay_classify.py; add the rg-portability cases to
   tests/checks/verification/validate_vp_replay/test_lint_and_budget.py; retarget the three
   _classify_outcome patch sites in test_accounting_and_self_test.py and leave the other seven alone.
-- Declare the lint in docs/contracts/vp-red-before.yaml beside negated_sweep_lint.
 - >-
-  Repoint config/agent/verification_registry/entries/vp-replay-coverage-survives-absent-ripgrep.yaml
-  at the relocated path, retaining its check_id.
+  Declare the lint in docs/contracts/vp-red-before.yaml beside negated_sweep_lint, AND in the same
+  change bump `contract_version` 2 -> 3 and append an amendment_log entry (Decision 168 clause 4).
+- >-
+  Repoint ONLY the `src=` literal in
+  config/agent/verification_registry/entries/vp-replay-coverage-survives-absent-ripgrep.yaml
+  (--cov already names the package directory), retaining its check_id, and record the in-place edit
+  plus the five-shard guard_symbol residual in docs/contracts/verification-registry.yaml's
+  governance_notes. Do not touch the five residual shards.
 - >-
   Amend PLAN-gc-ops-baseline-gate-and-schedule-enable.yaml step 3's command, action and fix_if.
   Touch no other field and no other step.
