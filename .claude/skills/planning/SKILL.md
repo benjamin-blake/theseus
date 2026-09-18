@@ -179,6 +179,14 @@ author a local init/validate/plan VP command. See `terraform/CLAUDE.md`, Decisio
 **VP Design Rationale:**
 When writing Verification Plan steps, ask: "If this feature had a subtle bug (wrong column name, missing permission, off-by-one filter), would this step catch it?" If no, the step is too shallow.
 
+**Assertion carrier (schema_version 5):** never quote a backtick literal inside a hermetic step's
+`expected` free-prose field -- validate_vp_replay's replay-time check reads it, but nothing at
+authoring time confirms the literal is emittable by the step's own `command`. See
+`docs/contracts/vp-red-before.yaml#carrier_rule` for the full walk (MANDATORY read-trigger --
+read this before writing any hermetic step's `expected`/`expected_literals`): declare
+`verification_plan[].expected_literals` instead, which `scripts/roadmap/plan_document.py` guards
+at schema-validation time.
+
 **Test Obligation Assessment:** new IMPLEMENTATION plans are schema 4 with one `test_obligations`
 row per behavior-capable scope file (shape below); waivers are per-source, never plan-wide.
 Graduate rows reuse the linked VP step and existing registry slots; adequacy is plan-critique's
@@ -297,7 +305,7 @@ Derive the plan slug from the task, not the branch. Author only `docs/plans/PLAN
 ## PLAN-{slug}.yaml Template (Workflow Step 8)
 The plan is a YAML document validated against the `PlanDocument` Pydantic schema (`scripts/roadmap/plan_document.py`, enforced by `validate.py` in both tiers). Unknown keys FAIL validation (`extra="forbid"`). Use exactly this structure -- comments document field semantics:
 ```yaml
-schema_version: 4 # required on every NEW plan; historical versions 1-3 stay valid
+schema_version: 5 # required on every NEW plan; historical versions 1-4 stay valid
 handoff_policy:
   full_validation_required_before_commit: true # exact literal; commit/PR waits for completed full exit 0
   timeout_disposition: blocked # exact literal; resume later and rerun full from the start
@@ -323,8 +331,10 @@ verification_plan: # min 1 step; step ids must be unique
     phase: pre-deploy # pre-deploy | post-deploy
     action: exercise the feature
     command: executable shell command # REQUIRED non-empty -- prose-only VP steps fail the schema
-    expected: specific expected result
+    expected: specific expected result # v5 hermetic steps: NEVER a backtick literal here -- see below
     fix_if: what failure looks like
+    hermetic: true # a hermetic step's expected assertions are programmatically checked
+    expected_literals: [] # v5 ONLY, hermetic steps: the sole assertion carrier (empty/absent both fine)
 test_obligations: # v4 IMPLEMENTATION: one row per behavior-capable scope file
   - source: path/to/file.py # must equal a scope[].file
     behavior: what must stay guarded

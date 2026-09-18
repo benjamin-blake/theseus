@@ -52,6 +52,9 @@ No network and no AWS calls are made BY THIS CHECK. The implement leg trusts the
 red-before leg carries no such trust requirement -- it only ever replays a step BEFORE the
 implementation exists, so a step needing real infrastructure is simply expected to fail loudly
 there too (classified assertion_failed/target_absent/unmeasurable), never silently "worked".
+
+Assertion carrier: the checked literal set is SELECTED by ``schema_version`` via
+``vp_literals.select_literals`` -- v5 declares ``expected_literals``, proven emittable by ``plan_document``.
 """
 
 from __future__ import annotations
@@ -79,6 +82,7 @@ from scripts.checks.verification._vp_replay_classify import (  # noqa: F401  (re
     _run_classifier_self_test,
     _run_self_test_fixture,
 )
+from scripts.roadmap.vp_literals import format_literal_print, select_literals
 
 MAX_AGGREGATE_SECONDS = 120
 # Re-derived (rec-3770, Decision 189) so the 120s aggregate wall clock -- not an arbitrary step
@@ -95,8 +99,6 @@ MAX_AGGREGATE_SECONDS = 120
 # wide margin. MAX_AGGREGATE_SECONDS itself is unchanged (Decision 182 pt 2's 150s green maximum);
 # this constant only stops the COUNT from being the artificial bottleneck it was before.
 MAX_REPLAYED_STEPS = 30
-
-_BACKTICK_LITERAL_RE = re.compile(r"`([^`]+)`")
 
 # Genuinely used below (in the classifier self-test's fixture cwd resolution is NOT this -- see
 # _run_classifier_self_test) so docs/contracts/vp-red-before.yaml's {check: validate_vp_replay}
@@ -192,10 +194,6 @@ def _partition_steps(verification_plan, root: Path) -> tuple[list, list[tuple]]:
     return replay, excluded
 
 
-def _extract_literals(expected: str) -> list[str]:
-    return _BACKTICK_LITERAL_RE.findall(expected)
-
-
 def _added_plan_paths(root: Path) -> set[str]:
     """Diff-present docs/plans/PLAN-*.yaml paths ADDED (status "A" or "??") in this diff, per
     ``_common.get_status_aware_diff(root)`` -- the same added-in-diff population
@@ -288,19 +286,14 @@ def _command_invokes_scripts_validate(command: str) -> bool:
 
 
 def _replay_step(
-    plan_rel: str, step, root: Path, failed: list[str], *, expected_polarity: str = "green"
+    plan_rel: str, step, root: Path, failed: list[str], *, expected_polarity: str = "green", schema_version: int = 4
 ) -> tuple[float, str | None]:
     """Execute one VP step; append a divergence to failed[] if any.
 
-    ``expected_polarity == "green"`` (the implement leg): the existing green-after contract --
-    exit 0 required, opt-in backtick-literal substring match, TimeoutExpired always diverges.
-    ``expected_polarity == "red"`` (the inverted plan-only leg, docs/contracts/vp-red-before.yaml):
-    the step must classify as ``target_absent`` or ``assertion_failed``; ``tautological`` or
-    ``unmeasurable`` diverge.
-
-    Returns (elapsed wall-clock seconds, outcome classification -- None for the green polarity,
-    always one of OUTCOME_CLASSES for the red polarity) -- the elapsed figure feeds the shared
-    cross-leg aggregate budget guard, the outcome feeds the lint-precedence rule.
+    ``expected_polarity == "green"``: exit 0 required, opt-in literal-substring match against
+    stdout+stderr (carrier SELECTED by ``schema_version`` via ``select_literals``). ``"red"``
+    (docs/contracts/vp-red-before.yaml): must classify ``target_absent``/``assertion_failed``;
+    ``tautological``/``unmeasurable`` diverge. Returns (elapsed seconds, outcome -- None for green).
     """
     start = time.monotonic()
     try:
@@ -339,7 +332,7 @@ def _replay_step(
                 f"!= expected=exit 0 (expected={step.expected!r}; output tail={combined_output[-500:]!r})"
             )
             return elapsed, None
-        missing = [lit for lit in _extract_literals(step.expected) if lit not in combined_output]
+        missing = [lit for lit in select_literals(step, schema_version) if lit not in combined_output]
         if missing:
             failed.append(
                 f"vp-replay {plan_rel}:{step.step}: actual=missing literal(s) {missing} "
@@ -397,7 +390,9 @@ def _implement_pr_leg(root: Path, resolved: list[str], failed: list[str], budget
                 )
                 budget.hit = True
                 break
-            elapsed, _outcome = _replay_step(plan_rel, step, root, failed, expected_polarity="green")
+            elapsed, _outcome = _replay_step(
+                plan_rel, step, root, failed, expected_polarity="green", schema_version=doc.schema_version
+            )
             budget.spend(elapsed)
             replayed_count += 1
 
@@ -530,7 +525,14 @@ def _red_before_leg(
         lint_findings = _negated_sweep_findings(plan_rel, pre_deploy_steps, root)
         graduate_steps = [s for s in pre_deploy_steps if s.graduation == "graduate"]
 
+        # Per-step literal print sited AFTER the eligibility filter above, never at the
+        # unconditional DEFER line -- printing there would force a plan load for every deferred
+        # plan. Makes the carrier's obligation legible in the plan PR before the implementation
+        # that must satisfy it exists.
         for step in graduate_steps:
+            literals = select_literals(step, doc.schema_version)
+            if literals:
+                print(format_literal_print(plan_rel, step.step, literals, doc.schema_version))
             if _command_invokes_scripts_validate(step.command):
                 failed.append(
                     f"vp-red-before-recursion {plan_rel}:{step.step}: graduate step invokes scripts.validate -- "
@@ -546,7 +548,9 @@ def _red_before_leg(
                 budget.hit = True
                 break
 
-            elapsed, outcome = _replay_step(plan_rel, step, root, failed, expected_polarity="red")
+            elapsed, outcome = _replay_step(
+                plan_rel, step, root, failed, expected_polarity="red", schema_version=doc.schema_version
+            )
             budget.spend(elapsed)
             acted_on.add(plan_rel)
             if outcome == "tautological":

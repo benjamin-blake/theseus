@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import shlex
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -13,40 +12,21 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
-_SUPPORTED_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4})
+from scripts.roadmap.vp_literals import (
+    _BACKTICK_LITERAL_RE,
+    SELF_SATISFYING_VERDICT,
+    _partition_command,
+    find_self_satisfying_literals,
+    find_unsatisfiable_literals,
+)
+
+_SUPPORTED_VERSIONS: frozenset[int] = frozenset({1, 2, 3, 4, 5})
 _V2_PHASE_ENUM: frozenset[str] = frozenset({"pre-deploy", "post-deploy"})
 _MIN_WAIVER_CHARS = 20
 _REC_ID_RE = re.compile(r"rec-\d+")
 
-# pytest arguments whose VALUE names something the run will NOT execute. A linked step that
-# excludes an obligation's own selector is worse than one that never mentions it: the plan reads
-# as covered while the run demonstrably skips the proof.
-_EXCLUSION_FLAGS: frozenset[str] = frozenset({"--ignore", "--ignore-glob", "--deselect"})
-
-
-def _partition_command(command: str) -> tuple[list[str], list[str]]:
-    """Split a shell command into (selectable arguments, explicitly excluded values)."""
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        tokens = command.split()
-    selectable: list[str] = []
-    excluded: list[str] = []
-    pending_exclusion = False
-    for token in tokens:
-        if pending_exclusion:
-            excluded.append(token)
-            pending_exclusion = False
-            continue
-        flag, separator, value = token.partition("=")
-        if flag in _EXCLUSION_FLAGS:
-            if separator:
-                excluded.append(value)
-            else:
-                pending_exclusion = True
-            continue
-        selectable.append(token)
-    return selectable, excluded
+# _partition_command lives in scripts.roadmap.vp_literals (Decision 104 sole-home for the
+# shell-command tokenizer within this package) -- imported back here rather than duplicated.
 
 
 def _argument_selects(argument: str, evidence: str) -> bool:
@@ -99,6 +79,7 @@ class VerificationStep(BaseModel):
     graduation: GraduationDisposition | None = None
     graduation_check_id: str | None = None
     graduation_waiver_reason: str | None = None
+    expected_literals: list[str] | None = None
 
     @field_validator("command")
     @classmethod
@@ -296,13 +277,46 @@ class PlanDocument(BaseModel):
         return v
 
     def _validate_handoff_policy(self) -> None:
-        if self.schema_version in {3, 4}:
+        if self.schema_version in {3, 4, 5}:
             if self.plan_type == "IMPLEMENTATION" and self.handoff_policy is None:
                 raise ValueError(f"schema_version {self.schema_version} IMPLEMENTATION plans require handoff_policy")
             if self.plan_type != "IMPLEMENTATION" and self.handoff_policy is not None:
                 raise ValueError(f"handoff_policy is only valid on schema_version {self.schema_version} IMPLEMENTATION plans")
         elif self.handoff_policy is not None:
-            raise ValueError("handoff_policy is only valid with schema_version 3 or 4")
+            raise ValueError("handoff_policy is only valid with schema_version 3, 4 or 5")
+
+    def _validate_expected_literals(self) -> None:
+        """schema_version 5's assertion carrier (docs/contracts/vp-red-before.yaml#carrier_rule):
+        a hermetic step may no longer smuggle an output assertion through a backtick sigil in
+        free-prose `expected` -- it must declare `expected_literals` instead. Below v5, the new
+        field is refused outright rather than silently accepted under extra=forbid's per-field
+        blindness to cross-field version gating. The unsat guard is HARD-FAILING; the
+        self-satisfying lint is ADVISORY and is never raised here -- see
+        `self_satisfying_advisories` for its own (non-raising) call site."""
+        for step in self.verification_plan:
+            if self.schema_version < 5:
+                if step.expected_literals is not None:
+                    raise ValueError(
+                        f"verification step {step.step}: expected_literals requires schema_version 5 or "
+                        f"above (got schema_version {self.schema_version})"
+                    )
+                continue
+            if not step.hermetic:
+                if step.expected_literals:
+                    raise ValueError(f"verification step {step.step}: expected_literals is only valid on a hermetic step")
+                continue
+            if _BACKTICK_LITERAL_RE.search(step.expected):
+                raise ValueError(
+                    f"verification step {step.step}: schema_version 5 hermetic steps must not carry a backtick "
+                    "literal in expected -- declare verification_plan[].expected_literals instead"
+                )
+            if step.expected_literals:
+                unsatisfiable = find_unsatisfiable_literals(step.command, step.expected_literals)
+                if unsatisfiable:
+                    raise ValueError(
+                        f"verification step {step.step}: expected_literals {unsatisfiable} cannot be emitted by "
+                        f"this command (output-suppressed chain) -- command={step.command!r}"
+                    )
 
     def _validate_test_obligation_links(self) -> None:
         """Every obligation must name a verification_plan step that actually runs its evidence.
@@ -365,6 +379,7 @@ class PlanDocument(BaseModel):
                 )
         self._validate_handoff_policy()
         self._validate_test_obligation_links()
+        self._validate_expected_literals()
         return self
 
 
@@ -388,6 +403,26 @@ def context_block_lines(path: str | Path) -> int:
                 return offset - start
         return len(lines) - start
     return 0
+
+
+def self_satisfying_advisories(doc: PlanDocument) -> list[str]:
+    """ADVISORY-only (docs/contracts/vp-red-before.yaml's self_satisfying_lint): schema_version 5
+    hermetic steps whose expected_literals appear verbatim in their own command's text --
+    redundant with that command's exit-0, not a defect. Never raises; the CLI in `main()` is this
+    function's sole call site, printed as WARN, never appended to a failure list."""
+    if doc.schema_version < 5:
+        return []
+    advisories: list[str] = []
+    for step in doc.verification_plan:
+        if not step.hermetic or not step.expected_literals:
+            continue
+        found = find_self_satisfying_literals(step.command, step.expected_literals)
+        if found:
+            advisories.append(
+                f"verification step {step.step}: expected_literals {found} verdict={SELF_SATISFYING_VERDICT} "
+                "(appear verbatim in this step's own command) -- redundant with exit-0, not a defect"
+            )
+    return advisories
 
 
 def load(path: str | Path) -> PlanDocument:
@@ -430,22 +465,29 @@ def main(argv: list[str] | None = None, plans_root: Path | None = None) -> int:
     if not paths:
         print("PASS: no PLAN-*.yaml files found.")
         return 0
-    failures = validate_paths(paths)
-    failed_paths = {p for p, _ in failures}
+    # One load() per path feeds the PASS/FAIL verdict, the context-span advisory, and the
+    # self-satisfying advisory alike -- a second parse per passing plan would be pure waste
+    # (the same principle validate_plan_documents.py states directly). validate_paths() stays
+    # untouched below as its own public single-purpose helper (other callers use it directly).
+    any_failed = False
     for path in paths:
-        if path in failed_paths:
-            error = next(err for p, err in failures if p == path)
-            print(f"FAIL: {path}: {error}")
-        else:
-            print(f"PASS: {path} validates against PlanDocument schema.")
-            span = context_block_lines(path)
-            if span > CONTEXT_BLOCK_LINE_ADVISORY:
-                print(
-                    f"WARN: {path}: context block is {span} rendered lines "
-                    f"(advisory cap {CONTEXT_BLOCK_LINE_ADVISORY}) -- link evidence "
-                    f"(rec/PR/Decision ids, paths), do not restate it"
-                )
-    return 1 if failures else 0
+        try:
+            doc = load(path)
+        except Exception as exc:  # noqa: BLE001 -- any parse/validation error is a failure verdict
+            print(f"FAIL: {path}: {exc}")
+            any_failed = True
+            continue
+        print(f"PASS: {path} validates against PlanDocument schema.")
+        span = context_block_lines(path)
+        if span > CONTEXT_BLOCK_LINE_ADVISORY:
+            print(
+                f"WARN: {path}: context block is {span} rendered lines "
+                f"(advisory cap {CONTEXT_BLOCK_LINE_ADVISORY}) -- link evidence "
+                f"(rec/PR/Decision ids, paths), do not restate it"
+            )
+        for advisory in self_satisfying_advisories(doc):
+            print(f"WARN: {path}: {advisory}")
+    return 1 if any_failed else 0
 
 
 if __name__ == "__main__":  # pragma: no cover - module entry point

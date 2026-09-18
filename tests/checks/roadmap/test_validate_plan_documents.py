@@ -137,11 +137,12 @@ def test_newly_added_plan_below_current_schema_version_is_rejected(tmp_path: Pat
     data["schema_version"] = 3
     failed, output = _validate(tmp_path, data, capsys, added={_FIXTURE_NAME})
     assert failed == ["Plan document schema validation"]
-    assert "must declare schema_version 4" in output
+    assert "must declare schema_version 5" in output
 
 
 def test_newly_added_plan_at_current_schema_version_is_accepted(tmp_path: Path, capsys) -> None:
     data = _plan()
+    data["schema_version"] = 5
     data["test_obligations"] = [
         {
             "source": "scripts/example.py",
@@ -157,6 +158,7 @@ def test_newly_added_plan_at_current_schema_version_is_accepted(tmp_path: Path, 
 
 def _plan_with_linked_obligation() -> dict:
     data = _plan()
+    data["schema_version"] = 5
     data["test_obligations"] = [
         {
             "source": "scripts/example.py",
@@ -280,3 +282,41 @@ def test_declares_examined_zero_for_an_empty_plans_dir(tmp_path: Path, capsys) -
     capsys.readouterr()
     assert failed == []
     mock_examined.assert_called_once_with(0, unit="plan_documents")
+
+
+class TestSchemaVersionFloorSplit:
+    """PLAN-vp-expected-literal-carrier split the single _MIN_NEW_PLAN_SCHEMA_VERSION constant
+    into two independently pinned floors: the AUTHORING floor (bumped 4 -> 5) and
+    _TEST_OBLIGATION_MIN_SCHEMA_VERSION (stays at 4). Both floors must be asserted
+    independently -- the second must survive the first's bump."""
+
+    def test_authoring_floor_is_five(self) -> None:
+        assert module._MIN_NEW_PLAN_SCHEMA_VERSION == 5
+
+    def test_test_obligation_floor_stays_independently_pinned_at_four(self) -> None:
+        assert module._TEST_OBLIGATION_MIN_SCHEMA_VERSION == 4
+
+    def test_authoring_floor_refuses_a_newly_added_v4_plan(self, tmp_path: Path, capsys) -> None:
+        data = _plan()  # schema_version 4, fully covered -- isolates the authoring-floor failure
+        data["test_obligations"] = [
+            {
+                "source": "scripts/example.py",
+                "behavior": "changes behavior",
+                "test_selector": "tests/test_example.py::test_behavior",
+                "verification_step": 1,
+                "red_green_expectation": "fails before the implementation and passes after it",
+            }
+        ]
+        failed, output = _validate(tmp_path, data, capsys, added={_FIXTURE_NAME})
+        assert failed == ["Plan document schema validation"]
+        assert "must declare schema_version 5" in output
+
+    def test_obligation_gate_still_binds_a_v4_plan_post_bump(self, tmp_path: Path, capsys) -> None:
+        """A v4 IMPLEMENTATION plan that is NOT newly-added (so the authoring floor never
+        applies) still fails the test-obligation gate when it carries an uncovered
+        behavior-changing scope row -- the independently-pinned obligation floor survives the
+        authoring floor's move to 5."""
+        data = _plan()  # schema_version 4, no test_obligations -- scope row is uncovered
+        failed, output = _validate(tmp_path, data, capsys, added=set())
+        assert failed == ["Plan document schema validation"]
+        assert "lacks a linked test obligation" in output
