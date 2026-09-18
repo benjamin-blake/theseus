@@ -31,6 +31,12 @@ scope:
   purpose: Append 194 to related_decisions on T4.22, T4.23 and T4.24 so the licence coupling is visible from the roadmap side
     and a rename sees that these ids are load-bearing. No status, exit_criteria or any other field is touched; no criterion
     is closed.
+- file: config/decision_supersession_waivers.yaml
+  action: Modify
+  purpose: 'Waive the (superseder 194, victim 171) forward-pointer edge. Decision 194 declares amends: [171] in both its title
+    and its envelope, and validate_supersession_annotations (pre=True, docs/DECISIONS.md in pre_globs) FAILs an unannotated
+    edge. The waiver is the remedy that keeps Decision 171 unedited, which this plan and the CONTRIBUTING.md seam both require;
+    the file''s own header sanctions exactly this case (clause-level amend).'
 bundled_recommendations: []
 followon_recs: []
 infrastructure_dependencies: []
@@ -50,17 +56,23 @@ acceptance_criteria:
 - The module docstring and the _PREDICATE_REGISTRY comment in scripts/preflight/decision_conditions.py no longer claim the
   registry is empty.
 - T4.22, T4.23 and T4.24 each carry 194 in related_decisions, with no other roadmap field changed.
+- 'validate_supersession_annotations passes: the (194, 171) edge is waived in config/decision_supersession_waivers.yaml and
+  Decision 171''s block is unedited.'
+- docs/decisions-index.json is regenerated and validate_decisions_index_freshness passes.
 verification_plan:
 - step: 1
   phase: pre-deploy
-  action: Decision 194 is monitored end-to-end - stanza well-formed, predicate registered and wired, state not-due.
+  action: Decision 194 is monitored end-to-end - stanza well-formed, predicate registered and wired.
   command: bin/venv-python -c "import scripts.preflight.decision_conditions as dc; r=[x for x in dc.evaluate() if x.decision_id==194];
-    assert len(r)==1, r; s=r[0]; assert s.state=='not-due', s; c={x.id:x for x in s.conditions}; assert c['free-core-complete'].predicate=='roadmap_items_complete';
-    assert c['free-core-complete'].fired is False; assert c['commercial-plane-operational'].kind=='manual'; print('OK', s.state,
-    s.review_by)"
-  expected: Prints OK not-due 2027-03-31; exit 0.
+    assert len(r)==1, r; s=r[0]; assert s.state != 'MALFORMED' and s.error is None, s; c={x.id:x for x in s.conditions}; assert
+    c['free-core-complete'].kind=='repo_state'; assert c['free-core-complete'].predicate=='roadmap_items_complete'; assert
+    c['commercial-plane-operational'].kind=='manual'; print('OK', s.state)"
+  expected: Prints OK followed by the current state; exit 0.
   fix_if: 'No result for 194 means the stanza fence or decision: key is wrong. MALFORMED naming an unregistered predicate
-    means registration did not take effect at evaluate() time.'
+    means registration did not take effect at evaluate() time. Deliberately does NOT assert state==''not-due'' or the review_by
+    date: this graduates into a standing check, and pinning those would assert the Decision''s own conditions never fire and
+    its review date never passes - inverting the entry''s purpose and guaranteed to redden after 2027-03-31. House precedent:
+    decision-99-reversal-stanza-monitored matches (not-due|manual-review-due|fired).'
   hermetic: true
   graduation: graduate
   graduation_check_id: dec-194-stanza-monitored-predicate-wired
@@ -96,7 +108,8 @@ verification_plan:
     b=f(open('docs/DECISIONS.md',encoding='utf-8').read()); assert a==b, (a,b); print('171 span unchanged',b)"
   expected: Prints '171 span unchanged 6056'; exit 0.
   fix_if: A changed 171 span means clause 5 or another 171 clause was edited - revert it; this plan amends 171 by reference
-    from a new entry, never in place.
+    from a new entry, never in place. Measures origin/main...HEAD, so it yields real evidence only on the committed branch
+    or in CI replay, never against an uncommitted working tree.
   hermetic: true
   graduation: waive
   graduation_waiver_reason: Green-before by construction - a negative-scope guard cannot be red before the change it guards,
@@ -106,7 +119,8 @@ verification_plan:
   action: The reversal-stanza CLI reports no malformed stanza across the whole corpus.
   command: bin/venv-python -m scripts.preflight.decision_conditions
   expected: 'One line per monitored decision including "Decision 194: not-due (review_by 2027-03-31)"; exit 0.'
-  fix_if: Nonzero exit names the malformed decision and the parse error verbatim.
+  fix_if: 'Nonzero exit names the malformed decision and the parse error verbatim. Note the new coupling: a docs/ROADMAP-PLATFORM.yaml
+    parse failure now surfaces here as a MALFORMED Decision 194 stanza, a check whose name gives no hint the roadmap is implicated.'
   hermetic: true
   graduation: waive
   graduation_waiver_reason: Duplicates validate_reversal_stanzas, the registered check that already gates corpus-wide stanza
@@ -121,7 +135,10 @@ verification_plan:
   fix_if: Missing phrase means the update_rec call did not land. A non-open status means a rec was closed - neither rec is
     closed by this plan.
   hermetic: false
-  graduation: not-applicable
+  graduation: waive
+  graduation_waiver_reason: 'Non-hermetic warehouse read through the agent_platform assume-role profile, and the assertion
+    is not a durable repo invariant: a standing check asserting ''Apache flip'' in rec-3153''s context would redden the moment
+    that rec is legitimately re-contexted or closed.'
 - step: 7
   phase: pre-deploy
   action: The module no longer claims an empty predicate registry.
@@ -142,12 +159,28 @@ verification_plan:
     --stat origin/main...HEAD -- docs/ROADMAP-PLATFORM.yaml
   expected: Prints 'roadmap backref OK'; the diffstat shows a small ROADMAP-PLATFORM.yaml change (3 lines changed).
   fix_if: A missing 194 means the append was applied to the wrong item. A changed status means the edit strayed beyond the
-    back-reference -- revert it; this plan closes no criterion and advances no item.
+    back-reference -- revert it; this plan closes no criterion and advances no item. Measures origin/main...HEAD, so it yields
+    real evidence only on the committed branch or in CI replay, never against an uncommitted working tree.
   hermetic: false
   graduation: waive
   graduation_waiver_reason: Half the evidence is a git diffstat against origin/main, which is transient repo state for this
     branch and not expressible as a standing regression guard.
 - step: 9
+  phase: pre-deploy
+  action: The 194 -> 171 amends edge is waived and the decisions index is fresh.
+  command: bin/venv-python -c "from scripts.checks.decisions.validate_supersession_annotations import validate_supersession_annotations
+    as a; from scripts.checks.decisions.validate_decisions_index_freshness import validate_decisions_index_freshness as b;
+    f=[]; a(f); b(f); assert not f, f; print('supersession + index OK')"
+  expected: Prints 'supersession + index OK'; exit 0.
+  fix_if: 'A forward-pointer FAIL means the waiver row is missing or names the wrong edge -- the extractor unions the title''s
+    ''amends Decision 171'' and the envelope''s amends: [171] into one (194, 171) edge. An index FAIL means scripts.decisions_index
+    --write was not rerun after editing the entry.'
+  hermetic: true
+  graduation: waive
+  graduation_waiver_reason: 'Green-before by construction: with no Decision 194 in the tree there is no edge to waive and
+    no index drift, so graduating it would redden this plan''s own PR under the red-before replay. Both legs are already standing
+    pre-tier checks.'
+- step: 10
   phase: pre-deploy
   action: Full-tier presubmit passes before commit, as handoff_policy requires.
   command: bin/venv-python -m scripts.validate
@@ -170,9 +203,9 @@ test_obligations:
     the registered predicate rather than going MALFORMED.
   verification_step: 1
   command: bin/venv-python -c "import scripts.preflight.decision_conditions as dc; r=[x for x in dc.evaluate() if x.decision_id==194];
-    assert len(r)==1, r; s=r[0]; assert s.state=='not-due', s; c={x.id:x for x in s.conditions}; assert c['free-core-complete'].predicate=='roadmap_items_complete';
-    assert c['free-core-complete'].fired is False; assert c['commercial-plane-operational'].kind=='manual'; print('OK', s.state,
-    s.review_by)"
+    assert len(r)==1, r; s=r[0]; assert s.state != 'MALFORMED' and s.error is None, s; c={x.id:x for x in s.conditions}; assert
+    c['free-core-complete'].kind=='repo_state'; assert c['free-core-complete'].predicate=='roadmap_items_complete'; assert
+    c['commercial-plane-operational'].kind=='manual'; print('OK', s.state)"
   red_green_expectation: Red before - evaluate() returns no row for 194, so the index raises. Green after.
 - source: docs/ROADMAP-PLATFORM.yaml
   behavior: T4.22, T4.23 and T4.24 each carry 194 in related_decisions, and none of the three has its status or exit-criterion
@@ -185,6 +218,16 @@ test_obligations:
   waiver_reason: 'Pure data back-reference: three related_decisions list entries with no executable behavior to guard. A unit
     test would assert the literal it was written from. VP step 8 asserts both legs (the 194 membership and the unchanged deferred_post_mvp
     status) against the parsed roadmap, which is the honest evidence available for a declarative edit.'
+- source: config/decision_supersession_waivers.yaml
+  behavior: The (194, 171) edge stays waived, so validate_supersession_annotations passes while Decision 171's block remains
+    unedited.
+  verification_step: 9
+  command: bin/venv-python -c "from scripts.checks.decisions.validate_supersession_annotations import validate_supersession_annotations
+    as a; from scripts.checks.decisions.validate_decisions_index_freshness import validate_decisions_index_freshness as b;
+    f=[]; a(f); b(f); assert not f, f; print('supersession + index OK')"
+  waiver_reason: 'Declarative allowlist entry, not behavior: a unit test would assert the literal row it was written from.
+    The real guard is the standing pre-tier check validate_supersession_annotations itself, which VP step 9 invokes directly
+    against the live corpus - stronger evidence than a fixture, since it reads the actual extracted edge set.'
 constraints:
 - Do not edit LICENSE, LICENSE-APACHE, LICENSING.md or COMMERCIAL-LICENSE.md. The Licensor line is gated on a legal event,
   not a merge order.
@@ -232,6 +275,7 @@ context:
 - '12b recorded not fixed: compute_affected_artifacts names data-pipeline only because docs/ROADMAP-PLATFORM.yaml is an assets:
   entry; deploy-prod-lambdas.yml''s paths: filter excludes every asset file, so no build/deploy/smoke is owed. infrastructure_dependencies:
   [] is a decision, not an omission.'
+- 'Round-2 critique: 4 of 95 complete items carry a rehomed criterion but 5 criteria total -- T5.3 carries c1 AND c2.'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -241,7 +285,7 @@ pre_implementation_checklist:
 execution_steps:
 - "docs/DECISIONS.md -- insert the following entry VERBATIM immediately above '## Decision 193:', followed by a blank line,\
   \ '---', and a blank line. Human-approved 2026-09-18; do not paraphrase, reorder clauses, or re-derive the wording. Measured\
-  \ span 6062 of the 6144-byte cap, so any addition needs a compensating cut.\n\n## Decision 194: The Apache-2.0 conversion\
+  \ span 6063 of the 6144-byte cap, so any addition needs a compensating cut.\n\n## Decision 194: The Apache-2.0 conversion\
   \ is staged on two named conditions rather than left to the fixed 2030-08-15 Change Date; the Additional Use Grant stays\
   \ unwidened until the first free-tier release (amends Decision 171) (Decided)\n\n```yaml\nnumber: 194\nstatus: Decided\n\
   decided_date: \"2026-09-18\"\namends: [171]\nsignificance:\n  value: numbered_decision\n  justification: >-\n    Durable,\
@@ -293,6 +337,14 @@ execution_steps:
   \ it, and is deployed and serving.\"\n```\n\n**Related:** Decision 171 (amended -- licence terms only), Decision 184 (clause\
   \ 5 grant gate),\nDecisions 93, 111, 133, 178; T4.22-T4.24, T4.24 c6; rec-3148, rec-3153, rec-3906. Contributor\nassignment\
   \ (Decision 171 clause 5, rec-3154) is out of scope."
+- 'config/decision_supersession_waivers.yaml -- append {superseder: 194, victim: 171, reason: ...} in the SAME commit as the
+  Decision 194 entry. Reason must state that 194 amends Decision 171''s LICENCE TERMS only (Additional Use Grant, Change Date,
+  dual-licensing authorisation) and that 171''s core stands: the rename, the forward-only Apache-2.0 boundary, and clause
+  5''s contributor-assignment position are untouched.'
+- 'docs/decisions-index.json -- regenerate with `bin/venv-python -m scripts.decisions_index --write`. No scope row: implement-scope-boundary.yaml''s
+  decisions_index_regeneration row sanctions it because declared scope contains docs/DECISIONS.md, and the contract states
+  it can never be pre-declared as its own scope row. validate_decisions_index_freshness is pre=True, so a stale index fails
+  the PR.'
 - 'scripts/preflight/decision_conditions.py -- add roadmap_items_complete under @register_predicate(''roadmap_items_complete''),
   taking items: list[str]; function-local import of scripts.platform_roadmap_state; validate every id exists FIRST (raise
   KeyError naming the missing ids), then require status == ''complete'' and every exit criterion status == ''met''.'
@@ -301,7 +353,8 @@ execution_steps:
   predicate: null conditions remain manual and its claim stays true.'
 - 'tests/test_decision_condition_predicates.py -- create; cover: unknown id raises even when an earlier item is incomplete;
   rehomed criterion does not satisfy; positive control on a genuinely complete item; live T4.22/T4.23/T4.24 returns False;
-  registration is visible through evaluate().'
+  registration is visible through evaluate(); also pin that a bare-string exit criterion coerces to status ''open'' (TierItem._normalize_exit_criteria),
+  so 407 of 796 legacy criteria read as not-met and the predicate is never mistaken for general-purpose.'
 - 'docs/ROADMAP-PLATFORM.yaml -- append 194 to related_decisions on T4.22 (currently [39, 185]), T4.23 ([78, 81, 84, 184])
   and T4.24 ([171, 178, 184, 185]). Touch nothing else: no status change, no exit-criterion status change, no progress_note.'
 - rec-3153 -- scripts.ops_data_portal update_rec, context re-pointed to first_of(grant widening lands, first commercial sale,
