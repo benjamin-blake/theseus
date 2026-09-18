@@ -137,7 +137,7 @@ class TestClassifierSelfTest:
         broken = lambda command, returncode, combined_output, *, timed_out: "tautological"  # noqa: E731
         failed: list[str] = []
         registry.pop_declaration()
-        with patch("scripts.checks.verification.validate_vp_replay._classify_outcome", broken):
+        with patch("scripts.checks.verification._vp_replay_classify._classify_outcome", broken):
             validate_vp_replay(failed, changed_files=["scripts/unrelated.py"], root=tmp_path)
         declaration = registry.pop_declaration()
         assert any("self-test" in f for f in failed)
@@ -150,7 +150,7 @@ class TestClassifierSelfTest:
     def test_mislabeled_classifier_fails_the_self_test(self, tmp_path: Path) -> None:
         broken = lambda command, returncode, combined_output, *, timed_out: "assertion_failed"  # noqa: E731
         failed: list[str] = []
-        with patch("scripts.checks.verification.validate_vp_replay._classify_outcome", broken):
+        with patch("scripts.checks.verification._vp_replay_classify._classify_outcome", broken):
             validate_vp_replay(failed, changed_files=[], root=tmp_path)
         assert any("self-test" in f and "'assertion_failed'" in f for f in failed)
 
@@ -165,7 +165,7 @@ class TestClassifierSelfTest:
             return _classify_outcome(command, returncode, combined_output, timed_out=timed_out)
 
         failed: list[str] = []
-        with patch("scripts.checks.verification.validate_vp_replay._classify_outcome", timeout_blind):
+        with patch("scripts.checks.verification._vp_replay_classify._classify_outcome", timeout_blind):
             validate_vp_replay(failed, changed_files=[], root=tmp_path)
         assert any("self-test" in f and "'sleep 5'" in f for f in failed)
 

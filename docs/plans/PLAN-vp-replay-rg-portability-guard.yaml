@@ -8,6 +8,7 @@ intent: >-
   prose, and in the same act land the two-act amendment that unstrands PR #1206 -- so the
   production gc_ops destructive-GC cadence can start behind its committed baseline gate.
 plan_type: IMPLEMENTATION
+implementation_declared: true
 verification_tier: V2
 plan_path: docs/plans/PLAN-vp-replay-rg-portability-guard.yaml
 phase: T2.18
@@ -312,16 +313,7 @@ verification_plan:
     Run the new mirror module: every outcome class reachable, all five unmeasurable arms
     classifying as unmeasurable, collection error as target_absent, exit 0 as tautological, exit 1
     as assertion_failed. This is the relocation's behaviour-preservation proof.
-  command: |-
-    bin/venv-python -m pytest tests/checks/verification/test__vp_replay_classify.py
-    --cov=scripts/checks/verification --cov-report=json:/tmp/vpc-cov.json -q --no-header
-    && bin/venv-python -c "
-    import json
-    src = 'scripts/checks/verification/_vp_replay_classify.py'
-    d = json.load(open('/tmp/vpc-cov.json'))['files'][src]['summary']
-    assert d['missing_lines'] == 0, src + ' mirror leaves ' + str(d['missing_lines']) + ' line(s) uncovered: ' + str(d['percent_covered'])
-    print('MIRROR_COVERS_RELOCATED_MODULE_100_PERCENT')
-    "
+  command: bin/venv-python -m pytest tests/checks/verification/test__vp_replay_classify.py --cov=scripts/checks/verification --cov-report=json:/tmp/vpc-cov.json --cov-fail-under=0 -q --no-header && bin/venv-python -c "import json; d=json.load(open('/tmp/vpc-cov.json'))['files']['scripts/checks/verification/_vp_replay_classify.py']['summary']; assert d['missing_lines']==0, d; print('MIRROR_COVERS_RELOCATED_MODULE_100_PERCENT')"
   expected: 'All tests pass and it prints: `MIRROR_COVERS_RELOCATED_MODULE_100_PERCENT`. Exit 0.'
   fix_if: >-
     Red before implementation because the module does not exist (exit 4/5, target_absent). A test
@@ -501,12 +493,16 @@ verification_plan:
   expected: 'All checks passed.'
   fix_if: >-
     validate_verification_registry failing on the repointed or new shards means a differential did
-    not admit. NOTE a known local-environment trap: run_differential executes the shard inside a
-    venv-less origin/main worktree, and this container's system python3 is 3.11 without pydantic, so
-    bin/venv-python cannot resolve there and _probe_environment_on_fail raises rather than falsely
-    admitting. Re-run with `PATH=$PWD/.venv/bin:$PATH` so the fallback resolves a 3.12 interpreter
-    and the differential is content-driven. CI needs no such workaround (hosted 3.12 plus
-    requirements-fast.txt). Do NOT interpret that raise as a real content failure.
+    not admit -- read the reason, which distinguishes the two cases. "revert did not produce FAIL
+    (tautological)" means the shard asserts something already true at origin/main, so it
+    discriminates nothing; "check does not pass on HEAD" means the implementation is incomplete. An
+    earlier draft of this plan warned that the worktree is venv-less and told the implementer to
+    re-run with `PATH=$PWD/.venv/bin:$PATH`. THAT WARNING WAS WRONG and is removed: measured
+    2026-09-18, verification_graduation.git_worktree provisions the scratch worktree's .venv as a
+    symlink to repo_root's own (PLAN-verification-graduation-gate-fix, recorded in
+    verification-registry.yaml's governance_notes), and all three shards admitted locally with no
+    PATH manipulation at all. A bare `git worktree add` does lack .venv -- that is what produced
+    the false reading -- but run_differential does not use one.
 - step: 8
   phase: pre-deploy
   hermetic: false
