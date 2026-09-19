@@ -1,0 +1,271 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "ci-full-tier-history-parity"
+intent: >-
+  Restore CI tier environment parity so the post-merge full tier stops starving history-dependent
+  tests, and make the parity rule structurally enforced rather than an implicit convention.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-ci-full-tier-history-parity.yaml
+phase: >-
+  Ad-hoc CI-RCA remediation (soft-warn category ci_rca; no tier_item claimed). Restores full-tier
+  checkout parity and files the hermetic-corpus successor as a follow-on rec.
+scope:
+  - file: .github/workflows/ci.yml
+    action: Modify
+    purpose: main-validate checkout fetch-depth 2 -> 0 (full-tier parity with pr-validate)
+  - file: .github/workflows/main-canary.yml
+    action: Modify
+    purpose: canary checkout fetch-depth 2 -> 0; same full tier, same requirement
+  - file: scripts/verify_ci_workflow/_shared.py
+    action: Modify
+    purpose: home for _full_tier_jobs(), the package-wide sole derivation of the full-tier job set; sits beside the _load / _get_steps_text / _assert_runtime_lock helpers it composes (32 SLOC, ample headroom)
+  - file: scripts/verify_ci_workflow/_ci_yaml.py
+    action: Modify
+    purpose: _check_fetch_depth asserts a rule (every full-tier job checks out depth 0) instead of main-validate == 2; covers main-canary.yml
+  - file: tests/verify_ci_workflow/test_ci_data_guards.py
+    action: Modify
+    purpose: flip the depth-0-must-fail expectation to the new polarity; add the untested no-checkout-step paths (rec-2040)
+  - file: scripts/checks/deps/fast_tier_harness_support.py
+    action: Modify
+    purpose: git-object availability probe distinguishing absent-object from digest drift
+  - file: scripts/checks/deps/fast_tier_harness.py
+    action: Modify
+    purpose: historical_diff calls the probe before git diff so a starved checkout names its own remedy
+  - file: tests/checks/deps/test_fast_tier_harness.py
+    action: Modify
+    purpose: probe coverage; closure artifact for rec-3936/rec-3937
+  - file: tests/checks/deps/test_fast_tier_harness_support.py
+    action: Modify
+    purpose: probe unit coverage in its defining module
+  - file: tests/session/preflight/test_context_docs.py
+    action: Modify
+    purpose: convert the shallow-clone pytest.skip into a hard failure (rec-3668); the failure message must name the remedy (git fetch --unshallow origin main), mirroring AC3's duty on the harness probe, because session_start_deepen_history.sh is advisory and fail-open -- its own DEGRADED MODE note says a failed unshallow leaves the wrong answers live, and after this conversion that turns the pre-handoff full tier red
+  - file: .claude/hooks/session_start_deepen_history.sh
+    action: Modify
+    purpose: correct BOTH stale clauses in the CI IS UNAFFECTED block -- 'ci.yml and main-canary.yml stay pinned at fetch-depth 2 (Decision 159 clause 1)' becomes false with this change, and the adjacent 'ci-rca.yml keeps its own bounded depth (Decision 142)' is already false (ci-rca.yml lines 77/83 are fetch-depth 0)
+  - file: docs/contracts/git-ops.yaml
+    action: Modify
+    purpose: full-tier checkout-depth constraint scoped to the guard that enforces it, plus its amendment_log entry (Decision 168)
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: dated correction annotation on Decision 159 clause 1 (D177 post-lock dialect; mints no new number)
+  - file: tests/verify_ci_workflow/test_ci_topology_guards.py
+    action: Create
+    purpose: CONTINGENT -- the Decision 128 decompose target if test_ci_data_guards.py (404/500) crosses budget. It takes the NON-fetch-depth suites (concurrency, signal-green, validate-single-source), which share _VALID_CI_DATA and are pinned by no VP command. The fetch-depth suites deliberately STAY PUT -- see the constraint below. Declared so the split lands inside the LOCATION boundary, whose disposition_on_violation is STOP and which forbids a unilateral scope append
+bundled_recommendations: ["rec-3936", "rec-3937", "rec-3668", "rec-2040"]
+followon_recs: ["rec-3938"]
+infrastructure_dependencies: []
+acceptance_criteria:
+  - Both full-tier jobs check out fetch-depth 0
+  - The guard fails any full-tier job that does not check out full history, canary included
+  - historical_diff names the shallow-checkout remedy when a pinned object is absent
+  - "The one known git-availability skip (test_context_docs.py line 378) is gone, and VP step 5 repo-wide sweep finds no same-line pytest.skip plus shallow/cat-file/absent-from-this-checkout match anywhere under tests/. The sweep is a same-line keyword proxy, not a proof of universal absence -- a skip whose reason wraps or is worded differently escapes it"
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: the harness probe names the shallow-checkout remedy for an absent pinned object
+    command: bin/venv-python -m pytest "tests/checks/deps/test_fast_tier_harness_support.py::TestObjectAvailability::test_absent_pinned_object_names_the_shallow_checkout_remedy" "tests/checks/deps/test_fast_tier_harness.py::TestCorpus::test_historical_diff_probes_object_availability_before_diffing" -q
+    expected: both new probe tests pass; they error as uncollected before the probe exists
+    fix_if: the probe reports digest drift instead of an absent object, or does not name the remedy
+    hermetic: true
+    expected_literals: ["2 passed"]
+    graduation: graduate
+    graduation_check_id: corpus-object-availability-probe
+  - step: 2
+    phase: pre-deploy
+    action: the depth guard rejects a shallow full-tier job, canary included
+    command: bin/venv-python -m pytest "tests/verify_ci_workflow/test_ci_data_guards.py::TestCheckFullTierDepth::test_shallow_canary_checkout_is_rejected" -q
+    expected: the new canary-coverage test passes; it errors as uncollected before the rule exists
+    fix_if: the guard still reads ci.yml only, or still asserts main-validate == 2
+    hermetic: true
+    expected_literals: ["1 passed"]
+    graduation: graduate
+    graduation_check_id: full-tier-checkout-depth-rule
+  - step: 3
+    phase: pre-deploy
+    action: the live guard run accepts the edited workflows
+    command: bin/venv-python -m scripts.verify_ci_workflow fetch-depth
+    expected: exits 0 against both edited workflows
+    fix_if: a full-tier job still declares a bounded depth
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: >-
+      Green-by-construction at plan-PR time -- the pre-implementation guard also exits 0 here, so a
+      graduate disposition would be a false positive. The end-to-end run is already carried in the
+      --pre tier by the registered check validate_ci_workflow_guards, which dispatches this exact
+      guard; step 2 graduates the discriminating unit assertion instead.
+  - step: 4
+    phase: pre-deploy
+    action: the stamp assertion fails rather than skips when the commit is absent
+    command: bin/venv-python -m pytest "tests/session/preflight/test_context_docs.py::TestEndstateStampRefResolves::test_stamp_assertion_fails_rather_than_skips_when_commit_absent" -q
+    expected: the new synthetic absent-ref test passes; it errors as uncollected before the conversion
+    fix_if: the assertion still calls pytest.skip on an unresolvable ref
+    hermetic: true
+    expected_literals: ["1 passed"]
+    graduation: graduate
+    graduation_check_id: stamp-assertion-fails-never-skips
+  - step: 5
+    phase: pre-deploy
+    action: no test in the suite skips on git-object availability
+    command: bash -c 'grep -rn "pytest.skip" tests/ | grep -Eic "shallow|cat-file|absent from this checkout" | grep -qx 0'
+    expected: zero git-availability skip sites remain anywhere under tests/
+    fix_if: a skip-on-missing-object site survives, or a new one was introduced
+    hermetic: true
+    expected_literals: []
+    graduation: graduate
+    graduation_check_id: no-git-availability-skips
+  - step: 6
+    phase: pre-deploy
+    action: fast tier green
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: guard, lint or graduation-completeness failure
+    hermetic: false
+    graduation: not-applicable
+  - step: 10
+    phase: pre-deploy
+    action: full tier green before handoff
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0
+    fix_if: any full-tier check fails; handoff_policy.full_validation_required_before_commit forbids committing until this completes with exit 0
+    hermetic: false
+    graduation: not-applicable
+  - step: 7
+    phase: post-deploy
+    action: the merged full tier actually resolves every pinned corpus object
+    command: bin/venv-python -m pytest "tests/checks/deps/test_fast_tier_harness.py::TestCorpus::test_historical_diff_matches_every_pinned_case" -q
+    expected: passes against the post-merge checkout, resolving all 32 implementation-case SHAs
+    fix_if: fatal bad object persists, meaning the merged workflow did not take effect
+    hermetic: false
+  - step: 8
+    phase: post-deploy
+    action: observe the first post-merge main-validate and main-canary runs
+    command: bin/venv-python -m scripts.checks.deps.fast_tier_harness validate-corpus --corpus scripts/checks/deps/fast_tier_corpus.yaml
+    expected: corpus validates, and the merged main-validate plus the next scheduled main-canary run both report success via mcp__github__actions_get
+    fix_if: mcp__github__actions_get reports either the merged main-validate run or the next scheduled main-canary run as anything but success -- the validate-corpus verb alone is green-by-construction and proves only that the manifest parses
+    hermetic: false
+  - step: 9
+    phase: post-deploy
+    action: all four bundled recommendations are closed
+    command: >-
+      bash -c 'bin/venv-python -m scripts.ops_data_portal --sync && test 4 -eq $(grep -cE "\"id\": \"rec-(3936|3937|3668|2040)\".*\"status\": \"closed\"" logs/.recommendations-log.jsonl)'
+    expected: exactly 4 rows whose id FIELD is one of the four and whose status is closed (anchored on the id field, so a different rec merely mentioning these ids in its context or resolution is not counted -- rec-830 does)
+    fix_if: a rec is still open, or ClosureArtifactRequired refused its closure write
+    hermetic: false
+test_obligations:
+  - source: scripts/verify_ci_workflow/_shared.py
+    behavior: _full_tier_jobs() derives the full-tier job set from workflow text, and both _ci_yaml.py call sites consume it rather than re-deriving
+    verification_step: 2
+    test_selector: tests/verify_ci_workflow/test_ci_data_guards.py::TestCheckFullTierDepth::test_shallow_canary_checkout_is_rejected
+    red_green_expectation: red before (uncollected -- the helper and its test do not exist), green after
+  - source: scripts/verify_ci_workflow/_ci_yaml.py
+    behavior: every full-tier job is rejected unless it checks out full history, canary included
+    verification_step: 2
+    test_selector: tests/verify_ci_workflow/test_ci_data_guards.py::TestCheckFullTierDepth::test_shallow_canary_checkout_is_rejected
+    red_green_expectation: red before (uncollected -- the rule and its test do not exist), green after
+  - source: scripts/checks/deps/fast_tier_harness_support.py
+    behavior: an absent pinned git object is reported as a shallow-checkout condition, never as digest drift
+    verification_step: 1
+    test_selector: tests/checks/deps/test_fast_tier_harness_support.py::TestObjectAvailability::test_absent_pinned_object_names_the_shallow_checkout_remedy
+    red_green_expectation: red before (uncollected), green after
+  - source: scripts/checks/deps/fast_tier_harness.py
+    behavior: historical_diff probes object availability before shelling git diff
+    verification_step: 1
+    test_selector: tests/checks/deps/test_fast_tier_harness.py::TestCorpus::test_historical_diff_probes_object_availability_before_diffing
+    red_green_expectation: red before (uncollected), green after
+  - source: .github/workflows/ci.yml
+    behavior: main-validate checks out full history
+    verification_step: 3
+    command: bin/venv-python -m scripts.verify_ci_workflow fetch-depth
+    red_green_expectation: red before once the rule lands (the unedited workflow fails it), green after
+  - source: .github/workflows/main-canary.yml
+    behavior: the canary full-tier job checks out full history
+    verification_step: 3
+    command: bin/venv-python -m scripts.verify_ci_workflow fetch-depth
+    red_green_expectation: red before once the rule lands (the unedited canary fails it), green after
+  - source: tests/session/preflight/test_context_docs.py
+    behavior: the stamp assertion fails rather than skips when the commit is absent
+    verification_step: 4
+    test_selector: tests/session/preflight/test_context_docs.py::TestEndstateStampRefResolves::test_stamp_assertion_fails_rather_than_skips_when_commit_absent
+    red_green_expectation: red before (uncollected -- the synthetic absent-ref test does not exist), green after
+  - source: .claude/hooks/session_start_deepen_history.sh
+    behavior: comment-only correction
+    verification_step: 6
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: comment-only change with no executable behavior to guard; no test or shard pins the comment text
+  - source: docs/contracts/git-ops.yaml
+    behavior: governance note plus referenced_repo_paths binding
+    verification_step: 6
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: the note is prose; its only executable leg is validate_git_ops_contract's path-existence check, already run inside --pre
+  - source: docs/DECISIONS.md
+    behavior: dated correction annotation only
+    verification_step: 6
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: decision-log annotation with no executable behavior; decisions_md parsing is already exercised in --pre
+  - source: tests/checks/deps/test_fast_tier_harness.py
+    behavior: test surface for the harness probe call site
+    verification_step: 1
+    test_selector: tests/checks/deps/test_fast_tier_harness.py::TestCorpus::test_historical_diff_probes_object_availability_before_diffing
+    waiver_reason: this file is itself the test surface for the harness probe behavior
+  - source: tests/checks/deps/test_fast_tier_harness_support.py
+    behavior: test surface for the support-module probe
+    verification_step: 1
+    test_selector: tests/checks/deps/test_fast_tier_harness_support.py::TestObjectAvailability::test_absent_pinned_object_names_the_shallow_checkout_remedy
+    waiver_reason: this file is itself the test surface for the support-module probe
+  - source: tests/verify_ci_workflow/test_ci_data_guards.py
+    behavior: test surface for the depth guard
+    verification_step: 2
+    test_selector: tests/verify_ci_workflow/test_ci_data_guards.py::TestCheckFullTierDepth::test_shallow_canary_checkout_is_rejected
+    waiver_reason: this file is itself the test surface for the depth guard
+constraints:
+  - No rescue agents or workaround loops (Decision 55)
+  - The depth raise is a bridge, not the fix; rec-3938 carries the hermetic-corpus end state and the numbered Decision this plan deliberately does not mint
+  - Decision 177 post-lock dialect - annotate Decision 159, never edit clause 1 in place
+  - Call the Decision 159 annotation a dated CORRECTION, never a rehoming (Decision 175 pt 3 confines rehoming to superseded entries; live-entry extraction is rec-3246)
+  - The parity rule is scoped to the jobs the guard reaches, never stated as a standing repo-wide invariant (Decision 167 routing; Decision 163 - no universal-sounding rule without an executable assertion)
+  - The new rule subsumes the retired main-validate == 2 pin; state this explicitly to discharge Decision 187 pt 2
+  - Guard tightening is free and unmarked (Decision 187 pt 3) - no tier-demotion marker needed
+  - Decision 170 applies at the validate_ci_workflow_guards layer (it declares examined()/skipped(), counting GUARDS not jobs); _ci_yaml.py does not import registry and also runs standalone via __main__. A zero-match full-tier job derivation inside _check_fetch_depth must therefore assert (fail closed), not reach for a registry declaration
+  - Decompose rather than raise if an edit crosses 500 SLOC (Decision 128); test_ci_data_guards.py is at 404 and test_fast_tier_harness.py at 398
+  - The git-ops.yaml collocation form is provisional pending the convention T2.54 lands
+  - Probe only the SHAs the harness resolves; predictor head_sha and manifest_sha are unresolvable at any depth
+  - "Single enumeration (Decision 104 sole-home) is PACKAGE-wide, not module-wide. Three derivations of the full-tier job set exist or would exist: _check_full_tier_runtime_lock (_ci_yaml.py:126-134), _check_canary (_ci_rca.py:22-24), and the new rule. Put _full_tier_jobs() in _shared.py -- beside _load / _get_steps_text / _assert_runtime_lock -- and re-point BOTH _ci_yaml.py call sites at it. DECLARED RESIDUAL (Decision 181, silence is not a disposition): _ci_rca.py::_check_canary keeps its own derivation because it asserts a different property (workflow shape and runtime lock, not checkout depth) and rewiring it would pull _ci_rca.py and its mirror test into scope for no gain here; fold it in when _check_canary is next opened"
+  - git-ops.yaml referenced_repo_paths currently names ci.yml but NOT main-canary.yml, so the new note would be unbound prose. Add main-canary.yml and scripts/verify_ci_workflow/_ci_yaml.py so validate_git_ops_contract actually binds it
+  - "Decompose target named up front (Decision 128): measured headroom is 96 SLOC (404/500) against roughly 55-70 SLOC of prescribed additions, so the primary disposition is STAY UNDER BUDGET. If it does cross, move the NON-fetch-depth suites (concurrency, signal-green, validate-single-source) into tests/verify_ci_workflow/test_ci_topology_guards.py. NEVER split out the fetch-depth suites: VP step 2 command, three test_obligations selectors and rec-2040 closure artifact all pin tests/verify_ci_workflow/test_ci_data_guards.py, and verification_plan[].command is listed under implement-scope-boundary.yaml prohibited_field_edits with disposition_on_violation STOP -- so that split would make step 2 uncollectable and force the two-act amendment_procedure. Raising the budget is not an option either (Decision 128)"
+  - Every fetch-depth test patches _ci_yaml._load with return_value (one value for every call). Once the guard loads two workflow files they must move to side_effect=[ci_data, canary_data], the shape test_ci_data_guards.py lines 79/96 already uses (an ordered [ci_data, canary_data] list). Prefer test_ci_rca_and_canary.py's path-dispatching lambda instead if load order proves brittle -- choose deliberately, do not inherit by accident. _VALID_CI_DATA (line 45) is shared by the jobs-and-flags, concurrency, validate-single-source and signal-green suites, so the polarity flip touches all four
+  - "Facade and CLI pins are conditional scope: test_facade_surface.py asserts len(_NAME_TO_DEFINING_SUBMODULE) == 36 and set-equality with __all__, and the verify-ci-workflow-package-shape shard pins the exact 12-key _COMMANDS set. Keeping the function name and defining module, and adding no CLI verb, is what keeps __init__.py, _cli.py, test_facade_surface.py and that shard OUT of scope. Adding any exported name or CLI verb makes all four required scope rows"
+  - The Decision 159 annotation must explicitly name that it revisits 159's own Related line 'Decision 55/72/129 (fix the generator -- supersedes rec-2903s fetch-depth-alone fix)', so the corpus records why a fetch-depth instrument is being reinstated rather than silently reversing that choice
+  - "_full_tier_jobs() discriminator, pinned: the full-tier set is the jobs whose steps invoke scripts.validate with NEITHER --pre NOR --terraform-only -- today exactly ci.yml main-validate and main-canary.yml's single job, which is the same set _check_full_tier_runtime_lock reaches by job name plus canary cardinality. A bare 'invokes scripts.validate without --pre' heuristic OVER-MATCHES terraform-validate (ci.yml line 302, --terraform-only, default checkout depth at line 201) and would demand a depth change this plan never intends. AC1's 'both' and VP step 3 would catch it, but the spec must not lean on that"
+  - "Decision 181 declare-your-coverage -- _check_fetch_depth today asserts BOTH that pr-validate has a checkout step (_ci_yaml.py line 113) AND that its fetch-depth == 0 (lines 116-117); lines 118-124 are the main-validate leg being RETIRED, not the leg to keep. pr-validate is not a full-tier job, so the new rule does not cover it; the pr-validate leg must be RETAINED alongside the rule, never replaced by it"
+  - "The four graduate steps registry shards are auto-sanctioned by implement-scope-boundary.yaml sanction_rows.graduated_registry_shard and are deliberately NOT scope rows -- that contract states such a shard is necessarily new at plan time and can never be a pre-declared scope row"
+  - "Starved-checkout call sites in the harness are THREE, not two: historical_diff (the probe goes here), _apply_historical_diff (fast_tier_harness.py lines 183-185, git diff --binary over the same pinned SHAs), and _prepared_worktree (line 289, git_worktree(case.merge_parent_sha)). Only the first is CI-exercised -- the other two are reached solely through the harness compare CLI, which no test and no workflow invokes -- so LEFT RAW is an acceptable disposition for both. What is not acceptable is an enumeration that silently omits one (Decision 181)"
+  - The git-ops.yaml note must be written in the SCOPED form (the jobs this guard reaches). A universal-sounding sentence collapses the field_semantics routing, and the parity rule would then need its own numbered Decision
+context:
+  - "Decision-scout verdict FLAGS_FOUND; CITE: 73, 128, 159, 163, 167, 168, 170, 177, 186, 187"
+  - "Decisions triaged: 148 of 148"
+  - "Roadmap items intersected: 8; CONFLICT: 0; RELATED: 7"
+  - "gates: decision-scout=FLAGS_FOUND (re-dispatched once on the governance pivot); plan-critique=REVISE rounds 1-3; round 3 was an oscillation interrupt (the Decision 128 target recurred at an anchor recorded fixed) escalated to and cleared by the human, who chose one more round; round 4 PROCEED with no recurrence, its four non-blocking notes folded in"
+  - "Decision 62 pacing risk: raising the depth REMOVES the red signal motivating rec-3938; rec-3938 carries a dated review trigger so the bridge does not become permanent once the alarm is gone"
+  - "Root cause: rec-3936/rec-3937 context_v2_json; corpus SHAs sit 87-142 commits back and grow one per merge, so no bounded depth is stable"
+  - "closure artifacts (Decision 186, name at plan time): rec-3936 -> pytest:tests/checks/deps/test_fast_tier_harness.py::TestCorpus::test_historical_diff_rejects_digest_path_and_status_drift; rec-3937 -> pytest:tests/checks/deps/test_fast_tier_harness.py::TestCorpus::test_historical_diff_matches_every_pinned_case; rec-3668 -> pytest:tests/session/preflight/test_context_docs.py::TestEndstateStampRefResolves::test_stamp_assertion_fails_rather_than_skips_when_commit_absent (aligned with rec-3668's stored acceptance, which names this same new test; resolves once created, not today); rec-2040 -> pytest:tests/verify_ci_workflow/test_ci_data_guards.py::TestCheckFetchDepthFailPath::test_fails_when_main_validate_has_no_checkout_step -- the NEW no-checkout-step test, which is what rec-2040 is actually about (its own acceptance greps for 'no checkout step'); resolves once created, not today. NOT test_fails_when_main_validate_has_wrong_fetch_depth, whose polarity this plan flips. A bare class segment never resolves: closure_gate._pytest_kind_fact matches 'def <last-segment>' only"
+  - "Decision 159 precedent for a value-changing annotation that mints no number: its own 2026-08-18 clause-1 widening"
+  - "tests/verify_ci_workflow/test_ci_data_guards.py TestCheckFetchDepthFailPath asserts depth 0 MUST FAIL today - that flip is the red-before-green evidence"
+  - "advice-consult: Fable, twice (repo-context, then industry-best-practice); end state is a hermetic corpus, this plan is the bridge"
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - Raise both full-tier checkouts to fetch-depth 0
+  - Rewrite the depth guard as a rule over full-tier jobs and extend it to the canary
+  - Add the harness object-availability probe and its tests
+  - Convert the stamp-assertion skip to a hard failure
+  - Route the governance content per significance.routing_rule
+  - Execute the Verification Plan
