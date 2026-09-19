@@ -23,6 +23,27 @@ def _required_file(path: Path) -> bytes:
         raise HarnessError(f"required fast-tier environment input is unavailable: {path}: {exc}") from exc
 
 
+def assert_pinned_objects_available(repo_root: Path, shas: tuple[str, ...], *, case_id: str) -> None:
+    """Fail loud, naming the shallow-checkout remedy, when a pinned corpus SHA is absent from
+    this checkout -- so a starved checkout is reported as what it is, never misdiagnosed as the
+    digest-drift defect historical_diff's own comparison guards against downstream.
+    """
+    for sha in shas:
+        result = subprocess.run(
+            ["git", "cat-file", "-e", f"{sha}^{{commit}}"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        if result.returncode != 0:
+            raise HarnessError(
+                f"{case_id}: pinned object {sha} is absent from this checkout (shallow clone?) -- "
+                "run `git fetch --unshallow origin main` (or check out with fetch-depth: 0) before re-running"
+            )
+
+
 def environment_fingerprint(repo_root: Path) -> str:
     digest = hashlib.sha256(f"{sys.version_info[:3]}\n".encode())
     for name in ("requirements-fast.txt", "requirements-dev.txt"):

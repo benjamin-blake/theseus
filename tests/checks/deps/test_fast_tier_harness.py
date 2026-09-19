@@ -151,16 +151,39 @@ class TestCorpus:
         )
         with pytest.raises(harness.HarnessError, match="digest drifted"):
             harness.historical_diff(ROOT, changed)
+        # These two cases use synthetic, non-existent SHAs to isolate the row-parsing logic
+        # below the digest check -- bypass the real object-availability probe accordingly.
         text = "X\ttests/x.py\n"
         changed = harness.CorpusCase("x", 1, "a" * 40, "b" * 40, harness.hashlib.sha256(text.encode()).hexdigest(), ())
-        with patch.object(harness, "_git_text", return_value=text):
+        with (
+            patch.object(harness.fast_tier_harness_support, "assert_pinned_objects_available"),
+            patch.object(harness, "_git_text", return_value=text),
+        ):
             with pytest.raises(harness.HarnessError, match="unsupported historical diff row"):
                 harness.historical_diff(ROOT, changed)
         text = "M\ttests/x.py\n"
         changed = harness.CorpusCase("x", 1, "a" * 40, "b" * 40, harness.hashlib.sha256(text.encode()).hexdigest(), ())
-        with patch.object(harness, "_git_text", return_value=text):
+        with (
+            patch.object(harness.fast_tier_harness_support, "assert_pinned_objects_available"),
+            patch.object(harness, "_git_text", return_value=text),
+        ):
             with pytest.raises(harness.HarnessError, match="qualifying Python paths drifted"):
                 harness.historical_diff(ROOT, changed)
+
+    def test_historical_diff_probes_object_availability_before_diffing(self) -> None:
+        case = harness.load_corpus(CORPUS_PATH).cases[0]
+        calls: list[str] = []
+        with (
+            patch.object(
+                harness.fast_tier_harness_support,
+                "assert_pinned_objects_available",
+                side_effect=lambda *a, **k: calls.append("probe"),
+            ),
+            patch.object(harness, "_git_text", side_effect=lambda *a, **k: calls.append("diff") or "M\tx.py\n"),
+        ):
+            with pytest.raises(harness.HarnessError, match="digest drifted"):
+                harness.historical_diff(ROOT, case)
+        assert calls == ["probe", "diff"]
 
 
 class TestGitAndWorktree:
@@ -214,6 +237,18 @@ class TestGitAndWorktree:
 
 
 class TestWorkerAndOrchestration:
+    def test_reset_scripts_module_cache_clears_scripts_entries_when_file_launched(self, monkeypatch) -> None:
+        monkeypatch.setattr(harness, "_FILE_LAUNCH", True)
+        fake_modules = {"scripts": object(), "scripts.checks": object(), "other": object()}
+        harness._reset_scripts_module_cache(fake_modules)
+        assert set(fake_modules) == {"other"}
+
+    def test_reset_scripts_module_cache_is_a_noop_when_not_file_launched(self, monkeypatch) -> None:
+        monkeypatch.setattr(harness, "_FILE_LAUNCH", False)
+        fake_modules = {"scripts": object(), "other": object()}
+        harness._reset_scripts_module_cache(fake_modules)
+        assert set(fake_modules) == {"scripts", "other"}
+
     def test_worker_drives_real_seams_and_emits_capture(self, tmp_path: Path, monkeypatch) -> None:
         repo = tmp_path / "repo"
         (repo / "tests").mkdir(parents=True)

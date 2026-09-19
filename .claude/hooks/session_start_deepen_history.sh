@@ -64,10 +64,11 @@
 # invocation retries at essentially no cost (2.9s measured).
 #
 # CI IS UNAFFECTED
-# SessionStart hooks do not run in GitHub Actions. ci.yml and
-# main-canary.yml stay pinned at fetch-depth 2 (Decision 159 clause 1);
-# ci-rca.yml keeps its own bounded depth (Decision 142). No workflow
-# checkout is touched by this change.
+# SessionStart hooks do not run in GitHub Actions. ci.yml's main-validate and
+# main-canary.yml already check out fetch-depth 0 (full history -- a dated
+# correction on Decision 159 clause 1, D177 post-lock dialect); ci-rca.yml
+# also checks out fetch-depth 0 (Decision 142). No workflow checkout is
+# touched by this change.
 #
 # Advisory, fail-open, single-attempt: mirrors session_start_sync_main.sh --
 # set -uo pipefail, exit 0 on every branch, loud "WARNING: ... (non-fatal)"

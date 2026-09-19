@@ -43,3 +43,22 @@ def _assert_runtime_lock(job: dict[str, Any], job_name: str) -> None:
     for compiled in ("requirements.txt", "requirements-dev.txt"):
         assert f"pip install -r {compiled}" in steps_text, f"{job_name} does not install compiled {compiled}"
         assert compiled in cache_keys, f"{job_name} dependency cache key omits {compiled}"
+
+
+def _full_tier_jobs(data: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """The full-tier job set: jobs whose steps invoke scripts.validate with neither --pre nor
+    --terraform-only (today: ci.yml's main-validate, main-canary.yml's single job).
+
+    Sole derivation (Decision 104) for "does this job run the full validate tier" -- distinct
+    from the runtime-lock (_assert_runtime_lock) and canary-shape (_ci_rca._check_canary)
+    derivations, which assert different properties over an already-known job.
+    """
+    full_tier = []
+    for job_name, job in data.get("jobs", {}).items():
+        steps_text = _get_steps_text(job)
+        if "scripts.validate" not in steps_text:
+            continue
+        if "--pre" in steps_text or "--terraform-only" in steps_text:
+            continue
+        full_tier.append((job_name, job))
+    return full_tier
