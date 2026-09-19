@@ -98,7 +98,8 @@ def _checkout_step(job: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _check_fetch_depth() -> None:
-    """Decision 168 (amends/subsumes Decision 159 clause 1): every full-tier job -- the jobs
+    """A dated correction on Decision 159 clause 1 (amends/subsumes it; mints no new Decision
+    number, D177 post-lock dialect): every full-tier job -- the jobs
     _full_tier_jobs() derives, canary included -- must check out full history (fetch-depth: 0),
     so history-dependent tests (e.g. the fast-tier corpus harness) never starve on a bounded
     depth. This rule subsumes the retired main-validate == 2 pin outright.
@@ -125,19 +126,22 @@ def _check_fetch_depth() -> None:
         with_block = checkout.get("with", {}) or {}
         assert with_block.get("fetch-depth") == 0, (
             f"{job_name} checkout fetch-depth is {with_block.get('fetch-depth')!r}, expected 0 "
-            "(every full-tier job must check out full history -- Decision 168, amends Decision 159)"
+            "(every full-tier job must check out full history -- Decision 159 clause 1, as corrected)"
         )
 
 
 def _check_full_tier_runtime_lock() -> None:
-    ci_jobs = _load(".github/workflows/ci.yml").get("jobs", {})
-    main_job = ci_jobs.get("main-validate")
-    assert main_job is not None, "main-validate job missing from ci.yml"
-    _assert_runtime_lock(main_job, "main-validate")
+    """Single-enumeration (Decision 104): both legs derive their job(s) via _full_tier_jobs(),
+    the package-wide sole full-tier-job derivation, rather than re-deriving by job name."""
+    ci_full_tier = _full_tier_jobs(_load(".github/workflows/ci.yml"))
+    assert ci_full_tier, "no full-tier job found in ci.yml"
+    for job_name, job in ci_full_tier:
+        _assert_runtime_lock(job, job_name)
 
-    canary_jobs = _load(".github/workflows/main-canary.yml").get("jobs", {})
-    assert len(canary_jobs) == 1, "main-canary.yml must contain exactly one full-tier job"
-    _assert_runtime_lock(next(iter(canary_jobs.values())), "main-canary")
+    canary_full_tier = _full_tier_jobs(_load(".github/workflows/main-canary.yml"))
+    assert len(canary_full_tier) == 1, "main-canary.yml must contain exactly one full-tier job"
+    for job_name, job in canary_full_tier:
+        _assert_runtime_lock(job, job_name)
 
 
 _MODULE_INVOCATION_RE = re.compile(

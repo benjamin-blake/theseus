@@ -2665,9 +2665,12 @@ after 3 rounds with all blocking items applied. Roadmap/queue refs (not DECISION
 > **Correction (2026-09-19, PLAN-ci-full-tier-history-parity, forward reference -- mints no new
 > Decision number; D177 post-lock dialect):** clause 1's "`ci.yml` main-validate and
 > `main-canary.yml` checkout `fetch-depth: 2`" is corrected -- both now check out `fetch-depth: 0`
-> (full history), per Decision 168, which restates the rule scoped to the jobs
+> (full history), via the fetch-depth guard's own rule over the derived full-tier job set (see
+> `docs/contracts/git-ops.yaml`'s `full_tier_checkout_depth` note), scoped to the jobs
 > `scripts.verify_ci_workflow`'s fetch-depth guard reaches (main-validate, canary) rather than the
-> single main-validate == 2 literal this clause pinned. Root cause: rec-3936/rec-3937's fast-tier
+> single main-validate == 2 literal this clause pinned; no new numbered Decision is minted (Decision
+> 167 routing; Decision 163 -- no universal-sounding rule without an executable assertion). Root
+> cause: rec-3936/rec-3937's fast-tier
 > corpus harness pins historical-diff SHAs 87-142 commits back, which no bounded depth serves
 > stably; a hermetic-corpus end state (rec-3938) is the deliberately-deferred real fix, and this
 > depth raise is its bridge, not the fix. This explicitly revisits, but does not reverse, this
