@@ -50,6 +50,8 @@ from src.common.ducklake_runtime import CATALOG_ALIAS, SMOKE_CURRENT_TABLE, SMOK
 # A bare SQL identifier (meta-schema name) -- guards the f-string-interpolated catalog_stats query.
 _META_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+StorageLister = Callable[[str], dict[str, int]]
+
 # ---------------------------------------------------------------------------
 # Scope -- smoke tables only for T2.18 FP-A (production repoint = consolidation Phase 4, Decision 84)
 # ---------------------------------------------------------------------------
@@ -167,6 +169,41 @@ def _dry_run_orphan_paths(con: Any, catalog: str, older_than: datetime) -> list[
     return [r[0] for r in rows]
 
 
+def _parse_s3_uri(data_path: str) -> tuple[str, str]:
+    if not data_path.startswith("s3://"):
+        raise DuckLakeMaintenanceError(f"gc_ops: data_path must be an s3:// URI, got {data_path!r}")
+    without_scheme = data_path[len("s3://") :]
+    bucket, _, prefix = without_scheme.partition("/")
+    if not bucket:
+        raise DuckLakeMaintenanceError(f"gc_ops: data_path {data_path!r} carries no bucket")
+    return bucket, prefix
+
+
+def _default_list_storage(data_path: str, *, client: Any = None) -> dict[str, int]:
+    """ListObjectsV2 walk of the production prefix -- the managed-primitive storage-side source for
+    `referenced_missing` and for G4 byte sizing (Decision 100: no client-tooling substitution for a
+    managed primitive).
+
+    Returns {s3://bucket/key: size_bytes}, the same path shape DuckLake's own `data_file` column
+    uses, so the result compares directly against the catalog live-set paths.
+
+    Lives here (not in ducklake_gc_ops) so the smoke Lambda's run_gc cadence can build a
+    storage-derived size source without importing the production verb module (ducklake_gc_ops
+    must not be part of the smoke Lambda's import graph). ducklake_gc_ops re-exports both this
+    and `_parse_s3_uri` as its own module attributes for its seven shipped patch sites.
+    """
+    import boto3  # noqa: PLC0415
+
+    bucket, prefix = _parse_s3_uri(data_path)
+    s3 = client if client is not None else boto3.client("s3")
+    paginator = s3.get_paginator("list_objects_v2")
+    paths: dict[str, int] = {}
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            paths[f"s3://{bucket}/{obj['Key']}"] = int(obj.get("Size", 0))
+    return paths
+
+
 # ---------------------------------------------------------------------------
 # Maintenance primitives (all table-function calls, no CALL syntax)
 # ---------------------------------------------------------------------------
@@ -249,23 +286,46 @@ def expire_snapshots(
     return int(expired[0]) if expired else 0
 
 
+def _resolve_cleanup_cutoff(*, grace_days: int, older_than: datetime | None, now: datetime, caller: str) -> datetime:
+    """Resolve the effective older_than cutoff for a destructive cleanup/orphan call.
+
+    `older_than`, when given, overrides the grace_days derivation -- the drain walk's mechanism for
+    deleting exactly the rung it selected. FILE_CLEANUP_GRACE_DAYS is the absolute safety floor: an
+    override younger than `now - FILE_CLEANUP_GRACE_DAYS` is REFUSED, never clamped (Decision 55 /
+    Decision 193 -- clamping would silently narrow what the caller asked to delete into something it
+    did not ask for).
+    """
+    if older_than is None:
+        return now - timedelta(days=grace_days)
+    floor_cutoff = now - timedelta(days=FILE_CLEANUP_GRACE_DAYS)
+    if older_than > floor_cutoff:
+        raise DuckLakeMaintenanceError(
+            f"{caller}: older_than={older_than.isoformat()} is younger than the "
+            f"{FILE_CLEANUP_GRACE_DAYS}-day safety floor ({floor_cutoff.isoformat()}) -- refusing "
+            "rather than clamping (Decision 55 / Decision 193)."
+        )
+    return older_than
+
+
 def cleanup_old_files(
     con: Any,
     *,
     catalog: str = CATALOG_ALIAS,
     grace_days: int = FILE_CLEANUP_GRACE_DAYS,
+    older_than: datetime | None = None,
     _now: datetime | None = None,
 ) -> int:
     """Delete S3 data files associated with expired snapshots (with grace period).
 
-    Only deletes files that have been in the expired state for at least grace_days (default 7).
-    Never passes cleanup_all=True (CD.33 H1 / Decision 81 clause 6).
+    Only deletes files that have been in the expired state for at least grace_days (default 7),
+    unless `older_than` explicitly overrides the cutoff (the drain walk's mechanism -- see
+    _resolve_cleanup_cutoff). Never passes cleanup_all=True (CD.33 H1 / Decision 81 clause 6).
 
     Returns the number of files deleted.
     """
     now = _now or _now_utc()
-    older_than = now - timedelta(days=grace_days)
-    ts = _ts_str(older_than)
+    cutoff = _resolve_cleanup_cutoff(grace_days=grace_days, older_than=older_than, now=now, caller="cleanup_old_files")
+    ts = _ts_str(cutoff)
     result = con.execute(
         f"SELECT count(*) FROM ducklake_cleanup_old_files('{catalog}', dry_run=False, "
         f"cleanup_all=False, older_than=TIMESTAMPTZ '{ts}')"
@@ -278,17 +338,20 @@ def delete_orphaned_files(
     *,
     catalog: str = CATALOG_ALIAS,
     grace_days: int = FILE_CLEANUP_GRACE_DAYS,
+    older_than: datetime | None = None,
     _now: datetime | None = None,
 ) -> int:
     """Delete S3 files not referenced by any snapshot (orphans), with grace period.
 
-    Only deletes orphans older than grace_days (default 7). Never passes cleanup_all=True.
+    Only deletes orphans older than grace_days (default 7), unless `older_than` explicitly overrides
+    the cutoff (the drain walk's mechanism -- see _resolve_cleanup_cutoff). Never passes
+    cleanup_all=True.
 
     Returns the number of files deleted.
     """
     now = _now or _now_utc()
-    older_than = now - timedelta(days=grace_days)
-    ts = _ts_str(older_than)
+    cutoff = _resolve_cleanup_cutoff(grace_days=grace_days, older_than=older_than, now=now, caller="delete_orphaned_files")
+    ts = _ts_str(cutoff)
     result = con.execute(
         f"SELECT count(*) FROM ducklake_delete_orphaned_files('{catalog}', dry_run=False, older_than=TIMESTAMPTZ '{ts}')"
     ).fetchone()
@@ -460,11 +523,13 @@ def run_gc(
     con: Any,
     tables: tuple[str, ...] | list[str] = GC_TABLE_SCOPE,
     *,
+    data_path: str,
     catalog: str = CATALOG_ALIAS,
     schema: str = "main",
     retain_days: int = SNAPSHOT_RETAIN_DAYS,
     grace_days: int = FILE_CLEANUP_GRACE_DAYS,
     floor: int = SNAPSHOT_FLOOR,
+    list_storage: StorageLister | None = None,
     _now: datetime | None = None,
 ) -> dict[str, Any]:
     """Weekly guarded destructive cadence: full maintenance sequence behind the G1-G4 guard set.
@@ -476,12 +541,20 @@ def run_gc(
          retention-floor re-assertion, an absolute per-pass deletion bound, and a post-pass
          catalog-sanity check wrap expire_snapshots / cleanup_old_files / delete_orphaned_files.
 
+    `data_path` (required, no default -- a default would silently re-point the size source at the
+    wrong prefix) is listed via `list_storage` (defaults to `_default_list_storage`, injectable for
+    tests) to build G4's byte-sizing source: a would-delete candidate is a file already
+    superseded/expired, so it is structurally absent from the catalog live set and can only be
+    sized from real storage (rec-3871).
+
     Returns a stats dict for CloudWatch emission. Raises DuckLakeMaintenanceError on a G1/G2/G3
-    guard trip; a G4 over-budget pass defers the whole destructive step instead (see guard_stats).
+    guard trip; a G4 over-budget pass drains partially or, if no cutoff at or above the grace floor
+    admits a positive count under both caps, defers the whole destructive step (see guard_stats).
     """
     from src.common import ducklake_maintenance_ops as gcops  # noqa: PLC0415 -- see the import-cycle note in that module
 
     now = _now or _now_utc()
+    list_storage = list_storage or _default_list_storage
 
     files_before = sum(_count_files(con, catalog, t) for t in tables)
 
@@ -495,6 +568,8 @@ def run_gc(
     flush_inlined_data(con, tables, catalog=catalog, schema=schema)
     merge_adjacent_files(con, tables, catalog=catalog, schema=schema)
 
+    candidate_size_source = list_storage(data_path)
+
     guard_result = gcops.run_guarded_gc(
         con,
         tables,
@@ -504,6 +579,7 @@ def run_gc(
         retain_days=retain_days,
         floor=floor,
         now=now,
+        candidate_size_source=candidate_size_source,
     )
 
     files_after = sum(_count_files(con, catalog, t) for t in tables)

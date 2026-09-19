@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from scripts.checks.verification.validate_vp_replay import (
     _extract_negated_rg_grep_path,
+    _segment_invokes_rg,
     _segment_invokes_scripts_validate,
 )
 
@@ -271,3 +272,65 @@ class TestScriptsValidateSegmentUnit:
 
     def test_interpreter_prefixed_script_path_is_true(self) -> None:
         assert _segment_invokes_scripts_validate(["python3", "scripts/validate.py"]) is True
+
+
+class TestRgPortabilityLint:
+    """The rg-portability lint: ripgrep is absent on ubuntu-latest, so a pre-deploy step invoking
+    it exits 127 wherever it is replayed. Bound to ADDED-or-RESOLVED plans, detected by PROGRAM
+    POSITION."""
+
+    def test_rg_portability_flags_program_position_rg_in_an_added_plan(self, tmp_path: Path) -> None:
+        repo, rel = _RedBeforeFixture().build(tmp_path, "vpr-rg-added", [_step(1, "rg -q 'gc_ops' terraform/personal/x.tf")])
+        failed: list[str] = []
+        validate_vp_replay(failed, changed_files=[rel], root=repo)
+        assert any(f.startswith("vp-rg-portability") and ":1:" in f for f in failed)
+
+    def test_rg_portability_flags_a_resolved_plan(self, tmp_path: Path) -> None:
+        """The half a lint sited inside _red_before_leg would miss: that loop continues on a
+        resolved plan before ever reaching its lint site, so only a pre-pass sees this."""
+        repo, rel = _ResolvedFixture().build(tmp_path, "vpr-rg-resolved", [_step(1, "rg -q 'x' README.md", hermetic=False)])
+        failed: list[str] = []
+        validate_vp_replay(failed, changed_files=[rel], root=repo)
+        assert any(f.startswith("vp-rg-portability") for f in failed)
+
+    def test_rg_portability_ignores_rg_named_only_inside_a_quoted_string(self, tmp_path: Path) -> None:
+        """Substring detection would red every plan that merely discusses this lint."""
+        repo, rel = _RedBeforeFixture().build(
+            tmp_path, "vpr-rg-quoted", [_step(1, "bin/venv-python -c \"assert ' rg ' not in c\"")]
+        )
+        failed: list[str] = []
+        validate_vp_replay(failed, changed_files=[rel], root=repo)
+        assert not any(f.startswith("vp-rg-portability") for f in failed)
+
+    def test_rg_portability_never_flags_grep(self, tmp_path: Path) -> None:
+        repo, rel = _RedBeforeFixture().build(
+            tmp_path, "vpr-rg-grep", [_step(1, "grep -q 'x' README.md && ! grep -n -A 10 'x' README.md | grep -q 'y'")]
+        )
+        failed: list[str] = []
+        validate_vp_replay(failed, changed_files=[rel], root=repo)
+        assert not any(f.startswith("vp-rg-portability") for f in failed)
+
+    def test_rg_portability_skips_a_modified_plan_and_announces_it(self, tmp_path: Path, capsys) -> None:
+        """Linting merely-modified plans would red an unrelated PR touching an old plan."""
+        repo, rel = _ModifiedPlanFixture().build(
+            tmp_path, "vpr-rg-modified", [_step(1, "rg -q 'x' README.md")], omit_declared_field=True
+        )
+        failed: list[str] = []
+        validate_vp_replay(failed, changed_files=[rel], root=repo)
+        assert not any(f.startswith("vp-rg-portability") for f in failed)
+        assert "not added-or-resolved -- rg-portability lint not applied" in capsys.readouterr().out
+
+    def test_rg_portability_fails_open_on_an_unparseable_segment_and_announces_it(self, tmp_path: Path, capsys) -> None:
+        """Over-detection is the worse failure, so an unparseable segment is never flagged -- but
+        it is never silent either."""
+        repo, rel = _RedBeforeFixture().build(tmp_path, "vpr-rg-failopen", [_step(1, 'echo "unterminated')])
+        failed: list[str] = []
+        validate_vp_replay(failed, changed_files=[rel], root=repo)
+        assert not any(f.startswith("vp-rg-portability") for f in failed)
+        assert "failed open" in capsys.readouterr().out
+
+    def test_rg_portability_detector_strips_bang_env_and_directory_prefix(self) -> None:
+        assert _segment_invokes_rg("! rg PATTERN path")[0]
+        assert _segment_invokes_rg("env rg PATTERN path")[0]
+        assert _segment_invokes_rg("/usr/bin/rg PATTERN path")[0]
+        assert not _segment_invokes_rg("ripgrep PATTERN path")[0]

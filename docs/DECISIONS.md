@@ -2,6 +2,262 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 195: On The Loop Labs Limited owns the platform; founder-to-company IP assignment, the AWS account-ownership consequence it reopens, and the undecided GitHub organisation handle (amends Decision 106) (Decided)
+
+```yaml
+number: 195
+status: Decided
+decided_date: "2026-09-17"
+amends: [106]
+significance:
+  value: numbered_decision
+  justification: >-
+    A durable ownership-structure commitment -- who owns the platform, the IP assignment, and the
+    AWS account-ownership consequence it reopens -- with reversal-relevant consequences for
+    Decision 106's rebuild-not-migrate premise; no existing routing row owns it.
+```
+
+**Status:** Decided
+**Date:** 2026-09-17
+**Warehouse ID:** dec-195
+
+**Problem:**
+The platform has operated with no recorded owning legal entity. On The Loop Labs Limited was
+formed as that owner and the founder's IP is to be assigned to it -- a fact with downstream
+consequences for the LICENSE `Licensor:` parameter, the AWS account Decision 106 ratified, and the
+canonical GitHub organisation handle, none of which the corpus records.
+
+**Decision:**
+1. On The Loop Labs Limited owns this platform.
+2. The founder assigns platform IP to the company. This is a legal act, not yet executed: the
+   LICENSE `Licensor:` parameter names the company only once the assignment legally executes, and
+   when it does, the LICENSE line and `scripts/checks/hygiene/validate_licence_consistency.py`'s
+   `^Licensor: +Benjamin Blake\s*$` regex move in the SAME commit -- the two never diverge across
+   a commit boundary.
+3. Company ownership reopens Decision 106's reversal condition (a) -- "a second destination
+   account/re-platform is chosen" -- as the trigger it fires: the AWS account backing this
+   platform may move from the founder's personal account to a company-owned one. This records the
+   consequence only; no account move executes here.
+4. The canonical GitHub organisation handle is a separately-decided, gated identifier: one of two
+   candidates, `onthelooplabs` or `otl-labs`. Which one is operational_fact (Decision 150 /
+   Decision 75), tracked at rec-3905, not decided here.
+
+**Rationale:**
+Recording the owning entity, the assignment, and what it reopens now -- rather than only once the
+AWS account moves or the LICENSE line changes -- keeps Decision 106's rebuild-not-migrate premise
+honestly reversal-tracked and gives the LICENSE-line and account-move work a corpus anchor to
+cite. Clause 4 stays out of the numbered entry because a handle choice is revisable operational
+detail, not an architectural commitment; routing it to rec-3905 keeps this entry free of content a
+numbered Decision cannot cheaply un-say under Decision 177's append-only rule.
+
+```yaml reversal-conditions
+decision: 195
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: assignment-executes
+    kind: manual
+    description: >-
+      The founder-to-company IP assignment legally executes: change the LICENSE Licensor: line
+      and validate_licence_consistency.py's regex in the same commit.
+  - id: account-move-decided
+    kind: manual
+    description: >-
+      A company-owned AWS account is chosen: re-evaluate Decision 106's reversal condition (a),
+      migrate vs rebuild.
+  - id: org-handle-decided
+    kind: manual
+    description: >-
+      The canonical GitHub organisation handle is decided: close rec-3905 and record the handle
+      here or in a successor entry.
+```
+
+**Related:** Decision 106 (amended -- reversal condition (a) reopened), Decision 171 (clause 5
+sole-ownership premise stays unverified; this entry does not amend Decision 171 or cure the
+unverified-provenance question), Decision 177 (append-only bodies), Decision 167 (envelope + cap),
+Decision 150 / Decision 75 (operational_fact routing for the org-handle choice). rec-3905
+(org-handle work), rec-3921 / rec-3922 / rec-3923 / rec-3924 (follow-on sequence this plan is
+keystone of).
+
+---
+
+## Decision 194: The Apache-2.0 conversion is staged on two named conditions rather than left to the fixed 2030-08-15 Change Date; the Additional Use Grant stays unwidened until the first free-tier release (amends Decision 171) (Decided)
+
+```yaml
+number: 194
+status: Decided
+decided_date: "2026-09-18"
+amends: [171]
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant commitment staging the outbound licence's conversion on named
+    conditions. Not a contract note: no docs/contracts file owns licence terms. Not an
+    amendment_forms annotation: Decision 171 measures 6056 of 6144 bytes, leaving no room for a
+    monitored stanza plus two conditions.
+```
+
+**Status:** Decided
+**Date:** 2026-09-18
+**Warehouse ID:** dec-194 (per Decision 84 backfill)
+
+**Problem:**
+Decision 171 set one fixed Change Date, 2030-08-15. The intent to convert earlier once a moat
+exists lived only in operator memory as "when the free version works and the commercial repo is
+up" -- unfalsifiable, and unevaluable by an agent. Decision 184 clause 5 left the grant's
+carve-out open with no recorded shape.
+
+**Intent:**
+Conversion to Apache-2.0 is staged on conditions this repository can evaluate; grant widening is a
+named deferred decision point, not a forgotten one.
+
+**Decision:** Amends Decision 171 (licence terms only -- clause 5 is untouched).
+
+1. **Staged flip.** When both stanza conditions hold, the Licensor brings the Change Date forward
+   by an explicit act amending `LICENSE` and `LICENSING.md`. BUSL-1.1 permits a published version's
+   Change Date to move EARLIER, never later. One-way: nothing published is ever narrowed.
+2. **Condition (a) is machine-evaluated.** T4.22, T4.23 and T4.24 all `status: complete` with every
+   exit criterion `met`, read from `docs/ROADMAP-PLATFORM.yaml` by `roadmap_items_complete` -- the
+   first registered `repo_state` predicate in `scripts/preflight/decision_conditions.py`, whose
+   registry Decision 133 left empty. A `rehomed` criterion does NOT satisfy it; an
+   absent tier item RAISES rather than returning False. All three are `deferred_post_mvp`
+   (Decision 93), so (a) cannot fire before post-MVP work starts; if Decision 184's `no-free-tier`
+   condition drops them, the predicate fails loud and reddens CI rather than letting this Decision
+   die silently -- that redness is the re-decide trigger, not an outage.
+3. **Condition (b) is a manual attestation, and says so.** A private repository is unobservable
+   from a public one; a predicate reading a self-maintained marker would test only whether the
+   operator remembered to edit it. An operator precondition, never a platform-repo observable
+   (Decision 178). Three claims: the private plane imports the core; holds at least one
+   capability deliberately NOT in the core; is deployed and serving, not scaffolded. The third is
+   load-bearing -- "exists" is not "operational". Discharging it records the DATE and the FACT
+   only: never the repository, its contents or its internals (Decision 111).
+4. **The Additional Use Grant stays unwidened today.** Widening defers to its existing gate --
+   T4.24 c6 and Decision 184 clause 5, before the first free-tier release -- which remains the SOLE
+   deciding authority. No installable free tier exists, so widening now spends an irreversible move
+   on adoption that cannot be bought. Intended shape, recorded as NON-BINDING guidance so it is not
+   redesigned: production use permitted, carve-out limited to offering the Licensed Work to third
+   parties as a hosted or managed service -- NOT a broad "competing product" restriction, which is
+   vaguer, less tested, and leaves an internal-tool builder unable to tell if they are offside.
+5. **Dual licensing (Decision 171 clause 6) is unchanged today and is spent by the flip.** Under a
+   widened grant its subject shifts from permission-to-run-in-production to permission-to-compete
+   -- far narrower than Decision 171 anticipated. rec-3148 survives unmodified on that changed
+   premise. rec-3153 is re-contexted to first_of(grant widening lands, first commercial sale,
+   Apache flip): Apache-2.0 outbound carries its own inbound dependency-compatibility requirement,
+   so that audit gates the flip regardless.
+
+**Stated assumptions -- flagged for solicitor confirmation, NOT settled law:**
+- **A1.** Bringing the Change Date forward exercises a right the licence already contains and every
+  recipient already holds, so it does not depend on Decision 171 clause 5's contributor-assignment
+  work; selling a commercial licence does, because GitHub's inbound=outbound terms confer no right
+  to sublicense. If A1 holds, the flip decouples from rec-3154. A1 concerns CONTRIBUTOR copyright,
+  distinct from the DEPENDENCY-licence question in clause 5.
+- **A2.** `LICENSE` names the Licensor as "Benjamin Blake", an individual, while On The Loop Labs
+  Limited now owns the platform; a relicense is an act of the copyright owner. The
+  founder-to-company IP assignment is therefore a precondition on EXECUTING the flip, gated on a
+  legal event, not on merge order. `validate_licence_consistency` hard-pins that exact string, so
+  the line and the regex move in the same commit whenever it changes. Neither is edited here.
+
+```yaml reversal-conditions
+decision: 194
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: free-core-complete
+    kind: repo_state
+    predicate: roadmap_items_complete
+    params:
+      items: [T4.22, T4.23, T4.24]
+    description: "Free tier shippable: T4.22/T4.23/T4.24 complete with every exit criterion met."
+  - id: commercial-plane-operational
+    kind: manual
+    description: "Operator attests the private plane imports the core, holds a capability absent from it, and is deployed and serving."
+```
+
+**Related:** Decision 171 (amended -- licence terms only), Decision 184 (clause 5 grant gate),
+Decisions 93, 111, 133, 178; T4.22-T4.24, T4.24 c6; rec-3148, rec-3153, rec-3906. Contributor
+assignment (Decision 171 clause 5, rec-3154) is out of scope.
+
+---
+
+## Decision 193: G4 sizes strictly from a declared source and bounds the post-expiry set; an over-budget pass drains partially instead of deferring wholesale (amends Decision 188 clause 2) (Decided)
+
+```yaml
+number: 193
+status: Decided
+decided_date: "2026-09-15"
+amends: [188]
+significance:
+  value: numbered_decision
+  justification: >-
+    Replaces the mechanism Decision 188 cl.2 shipped for G4 (byte-blind for a no-prelude pass,
+    wholesale-defer only) with a strictly stronger one across every destructive GC caller -- a
+    durable, reversal-relevant change to what may be deleted and how a backlog is drained, not a
+    contract-prose edit.
+```
+
+**Status:** Decided
+**Date:** 2026-09-15
+**Warehouse ID:** dec-193
+
+**Problem:**
+Decision 188 cl.2 sized G4 from a live inventory captured before a prelude could supersede a
+candidate. `gc_ops` runs no prelude by design (rec-3762), so every candidate is already
+superseded and the catalog-live-set join sizes to zero -- G4's byte half is inert; only the
+file-count half binds (rec-3871, recorded as a limitation in Decision 192 pt 5). G4 also evaluated
+the PRE-expiry candidate set: on a never-expired production catalog, neither G1's pre-check nor
+G4's bound covered what cleanup/orphan deletion actually deletes post-expiry. A measured
+production reading (2026-09-15T16:09Z, GcWouldDeleteFiles 23,476 > G4_MAX_DELETE_FILES 20,000)
+showed the wholesale-defer branch would reclaim NOTHING on the first real pass, against a 17.3x GC
+debt ratio -- rec-3888's own disposition rule ("if the backlog fits comfortably, close it
+satisfied") resolves the other way on that reading.
+
+**Decision:**
+1. G4's byte source is the CALLER'S DECLARED size source (`candidate_size_source`, required
+   keyword-only on `run_guarded_gc`), never a prelude-relative live inventory; both destructive
+   callers pass a pre-pass ListObjectsV2-derived map. `size_candidates(paths, size_source, *,
+   strict_sizes)` performs the join: `strict_sizes=True` raises naming the unsized path -- no
+   destructive path sizes an unmeasurable candidate as 0 (Decision 163: the exception-path-removal
+   instrument). The one non-strict arm is `gc_ops`'s dry_run measurement path, which deletes
+   nothing.
+2. G4 evaluates the POST-EXPIRY candidate set: `run_guarded_gc` re-probes after
+   `expire_snapshots`; G1's pre-check (against the reused pre-expiry live read) and G4's
+   over-budget decision both move to it. G1's post-destructive re-check moves to the ADMITTED
+   (post-drain) set intersected with a fresh live read -- what was actually deleted, which differs
+   from the post-expiry set under a drain.
+3. An over-budget pass DRAINS (rec-3888) rather than always deferring wholesale: bracket the grace
+   ladder (7/14/30/60/90/180/365 days) youngest-first, bisect inside the bracket (<= 8 probes) for
+   the youngest cutoff admitting a positive count under both caps, and REQUIRE that count be
+   positive -- a cutoff fitting only by admitting zero (a backlog clustered between two rungs) is
+   no fit, never a silent zero-file "drain". The cutoff is passed to the destructive wrappers as an
+   explicit `older_than` (refused, not clamped, below `FILE_CLEANUP_GRACE_DAYS`); with no fitting
+   cutoff, the pass defers wholesale as before.
+4. `guard_stats` renames `g1_would_delete_candidates` to `pre_expiry_would_delete_candidates` (no
+   G1 check consumes the pre-expiry count once both moved off it) and adds
+   `post_expiry_would_delete_candidates` and `g4_drain_cutoff_days` (null on a wholesale defer).
+   `g4_bounded` is true on BOTH a partial drain and a wholesale defer, false only when no walk was
+   needed. `gc_ops` dry_run additionally reports top-level `unsized_candidates` (non-strict) and
+   `drain_probe_counts` (a read-only run of the same ladder; PRE-expiry, so necessary-not-sufficient)
+   -- guard_stats stays null in that mode. Also closes rec-3876: `gc_ops` drops the `else 0.0`
+   GcDebtRatio substitution and wraps `gc_debt_ratio`'s `ValueError` in `DuckLakeMaintenanceError`
+   so the admin handler's typed except chain and breaker metric catch it.
+
+**Rationale:**
+A byte cap sized from data that structurally reads zero for the candidates it exists to bound is
+not a safety property -- the defect class Decision 188 replaced the retired breaker for. Bounding
+the pre-expiry set left a real gap on a never-expired catalog, the production case. A guard whose
+only over-budget response is "defer everything, forever" cannot license a schedule against a
+backlog already measured over cap. The positivity requirement is load-bearing: without it, "the
+oldest cutoff that fits" is trivially satisfied by deleting nothing, reproducing the stall this
+decision removes one rung out.
+
+**Related:** Decision 188 (cl.2 replaced for G4; G1/G2/G3 unchanged), Decision 192 (pt 5
+discharged), Decision 163, Decision 181 (never-weaken), Decision 55, Decision 100, Decision 177
+(dated appends above), Decision 167. Roadmap: T2.18 c2 (unaffected), rec-3894/3895/3896 (live
+successor ids, closed by this plan), rec-3871/3876/3888 (superseded -- falsely auto-closed by an
+earlier plan merge), rec-3892 (standing catalog/storage-inconsistency suspect, stays open).
+
+---
+
 ## Decision 192: Production destructive GC is licensed by a safety invariant that can see over-reclaim, not by a storage-size trend (Decided)
 
 ```yaml
@@ -19,6 +275,12 @@ significance:
 **Status:** Decided
 **Date:** 2026-09-15
 **Warehouse ID:** dec-192 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+> **Amended by Decision 193 (2026-09-15):** clause 5's recorded G4 byte-half limitation is
+> DISCHARGED, not merely recorded: G4 now sizes strictly from a pre-pass storage listing (never
+> the catalog live set) and bounds the POST-expiry candidate set, and an over-budget pass drains
+> partially at the youngest cutoff admitting a positive count under both caps rather than always
+> deferring the whole pass.
 
 **Problem:**
 T2.18 c2 required "S3 storage confirmed stable after N maintenance cycles". That text does not adjudicate: it is satisfied by a job that deletes the whole prefix (storage falls, so over-reclaim is invisible to a bytes-only metric), and it is unmeasurable -- the data-lake bucket holds 12+ unrelated prefixes, and absolute storage on an ingesting lakehouse is not supposed to be stable regardless of GC correctness. A draft of the licensing plan also proposed a `gc_ops` cell on the `maintenance_policy` matrix (Decision 191) before establishing that the matrix's sole consumer (`scope.resolve_scope`) has no per-table dimension for a catalog-wide verb.
@@ -312,6 +574,12 @@ significance:
 **Status:** Decided
 **Date:** 2026-09-13
 **Warehouse ID:** dec-188
+
+> **Amended by Decision 193 (2026-09-15):** G4's byte source (clause 2) is replaced -- it now
+> sizes strictly from the caller's declared size source, never a prelude-relative live inventory,
+> and bounds the POST-expiry candidate set; an over-budget pass drains partially before deferring
+> wholesale. G1-G3 and the rest of clause 2 (reachability before/after, retention floor, catalog
+> sanity) are unchanged.
 
 **Problem:**
 Decision 81 clause 6's GC circuit breaker aborts a pass that would delete >20% of tracked files or
@@ -5157,6 +5425,11 @@ guard), Decision 100/75 (managed-service-native preference the Neon choice align
 **Status:** Decided
 **Date:** 2026-07-02
 **Warehouse ID:** dec-106 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+> **Amended by Decision 195 (2026-09-17):** On The Loop Labs Limited's formation as the platform's
+> owner reopens reversal condition (a) below -- a company-owned AWS account is now a live
+> candidate second destination, pending the gated account-ownership move. This body is otherwise
+> unedited; see Decision 195 for the full derivation.
 
 **Decision:**
 Ratifies CD.6. Realized 2026-05-28 -- Phase B personal-account Terraform re-deploy applied and

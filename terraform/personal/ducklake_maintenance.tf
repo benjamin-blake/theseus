@@ -307,11 +307,13 @@ resource "aws_lambda_permission" "ducklake_maintenance_control_health" {
 # is already the SMOKE host's rule (terraform/personal/ducklake_maintenance_smoke.tf) -- naming it
 # "gc" here would collide at apply time.
 #
-# Created state = DISABLED: Decisions 125/126 deploy this rule and the handler carrying the verb
-# through DIFFERENT channels (infra vs code), so an ENABLED rule from this apply could fire
-# action=gc_ops before the code deploy lands -- a scheduled 400. Enabling is a separate, deliberate,
-# gated step (VP15) after the CD deploy is green AND the VP14 baseline gate reads referenced-missing
-# zero with G4 headroom confirmed.
+# ENABLED (gc-ops-baseline-gate-and-schedule-enable): the CD deploy of the handler carrying
+# action=gc_ops (deploy-ducklake-lambdas.yml run 17, head 1402004) is green, and the pre-enablement
+# baseline gate cleared against the committed dry_run reading in
+# tests/fixtures/gc_ops_dryrun_baseline.json (referenced_missing 0, unsized_candidates 0, at least
+# one drain-ladder rung admitting a positive count under both G4 caps). A re-enable after any future
+# rollback to DISABLED is gated the same way -- see docs/contracts/ducklake_maintenance.yaml's
+# gc_ops verb contract for the standing re-gate clause.
 #
 # Schedule cron(45 3 ? * SUN *): weekly, deliberately OFFSET from this singleton's other two
 # 6-hourly cadences (merge_ops :30, control_health :15; reserved_concurrent_executions=1, so a
@@ -323,9 +325,9 @@ resource "aws_lambda_permission" "ducklake_maintenance_control_health" {
 
 resource "aws_cloudwatch_event_rule" "ducklake_maintenance_gc_ops" {
   name                = "agent-platform-ducklake-maintenance-gc-ops"
-  description         = "Weekly production DuckLake destructive GC (T2.18 / production-gc-and-storage-stability). cron weekly Sun 03:45 UTC. Created DISABLED -- enabled only after the baseline gate + CD deploy both clear."
+  description         = "Weekly production DuckLake destructive GC (T2.18 / production-gc-and-storage-stability). cron weekly Sun 03:45 UTC. Enabled after the pre-enablement baseline gate and CD deploy both cleared (gc-ops-baseline-gate-and-schedule-enable)."
   schedule_expression = "cron(45 3 ? * SUN *)"
-  state               = "DISABLED"
+  state               = "ENABLED"
 
   tags = {
     Name    = "DuckLake Maintenance Prod GC Ops Schedule"
@@ -463,4 +465,9 @@ output "ducklake_maintenance_function_url" {
 output "ducklake_maintenance_function_name" {
   description = "ducklake_maintenance Lambda function name (build_lambda --ducklake-only --deploy target)."
   value       = aws_lambda_function.ducklake_maintenance.function_name
+}
+
+output "ducklake_prod_data_path" {
+  description = "Production DuckLake data_path (s3://.../ducklake/) for manual-invoke recipes -- resolve via `terraform output -raw`, never hardcode the bucket name in runbook commands."
+  value       = local.ducklake_prod_data_path
 }

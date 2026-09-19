@@ -66,13 +66,15 @@ def test_lambda_maintenance_merge_not_ok_fails(monkeypatch):
 
 
 _GUARD_STATS_OK = {
-    "g1_would_delete_candidates": 2,
+    "pre_expiry_would_delete_candidates": 2,
+    "post_expiry_would_delete_candidates": 2,
     "g2_snapshots_remaining": 3,
     "g4_would_delete_files": 2,
     "g4_would_delete_bytes": 200,
     "g4_deferred_files": 0,
     "g4_deferred_bytes": 0,
     "g4_bounded": False,
+    "g4_drain_cutoff_days": 7,
 }
 
 
@@ -116,7 +118,12 @@ def test_lambda_maintenance_gc_fresh_smoke_catalog_ok(monkeypatch, capsys):
             200,
             {
                 "ok": True,
-                "guard_stats": {**_GUARD_STATS_OK, "g1_would_delete_candidates": 0, "g4_would_delete_files": 0},
+                "guard_stats": {
+                    **_GUARD_STATS_OK,
+                    "pre_expiry_would_delete_candidates": 0,
+                    "post_expiry_would_delete_candidates": 0,
+                    "g4_would_delete_files": 0,
+                },
                 "files_before": 0,
                 "files_after": 0,
                 "snapshots_expired": 0,
@@ -174,6 +181,63 @@ def test_gc_gate_fails_on_missing_guard_stats(monkeypatch):
         ),
     )
     with pytest.raises(smoke.SmokeTestFailure, match="missing the guard_stats shape"):
+        smoke.lambda_maintenance_gc()
+
+
+def test_lambda_maintenance_gc_fails_without_post_expiry_guard_stats(monkeypatch):
+    """Red-before case: a pre-fix payload -- built by OMITTING the new keys, never by naming the
+    retired pre-expiry-count key (this file is not on VP7's four-surface allowlist for it) --
+    must fail this gate."""
+    monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
+    pre_fix_guard_stats = {
+        "g2_snapshots_remaining": 3,
+        "g4_would_delete_files": 2,
+        "g4_would_delete_bytes": 200,
+        "g4_deferred_files": 0,
+        "g4_deferred_bytes": 0,
+        "g4_bounded": False,
+    }
+    monkeypatch.setattr(
+        core,
+        "_sigv4_invoke",
+        lambda url, payload, **kw: _Resp(
+            200,
+            {
+                "ok": True,
+                "guard_stats": pre_fix_guard_stats,
+                "files_before": 5,
+                "files_after": 3,
+                "snapshots_expired": 1,
+                "files_cleaned": 2,
+                "orphans_deleted": 0,
+            },
+        ),
+    )
+    with pytest.raises(smoke.SmokeTestFailure, match="missing keys"):
+        smoke.lambda_maintenance_gc()
+
+
+def test_gc_gate_fails_on_drain_cutoff_below_grace_floor(monkeypatch):
+    """A non-null g4_drain_cutoff_days below FILE_CLEANUP_GRACE_DAYS (7) is never legal -- a real
+    cutoff is always >= the floor. Null (the wholesale-defer / steady-state value) is accepted."""
+    monkeypatch.setattr(core, "_function_url", lambda role: f"https://{role}")
+    monkeypatch.setattr(
+        core,
+        "_sigv4_invoke",
+        lambda url, payload, **kw: _Resp(
+            200,
+            {
+                "ok": True,
+                "guard_stats": {**_GUARD_STATS_OK, "g4_drain_cutoff_days": 3},
+                "files_before": 5,
+                "files_after": 3,
+                "snapshots_expired": 1,
+                "files_cleaned": 2,
+                "orphans_deleted": 0,
+            },
+        ),
+    )
+    with pytest.raises(smoke.SmokeTestFailure, match="grace floor"):
         smoke.lambda_maintenance_gc()
 
 

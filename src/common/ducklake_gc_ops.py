@@ -16,10 +16,11 @@ Five properties are load-bearing:
    the connection level) and merge_adjacent_files already runs on every ops table every 6h via
    action_merge_ops -- 28x/week against this pass's 1x/week. One verb, one job: merge_ops compacts,
    gc_ops reclaims.
-3. `run_guarded_gc` is called UNMODIFIED -- this module changes no shipped guard code. G4's byte
-   half is INERT for a no-prelude pass (a would-delete path is absent from live_before only when a
-   prelude superseded it first), so the file-count half is the only binding cap here; see
-   rec-3871.
+3. `run_guarded_gc` is called UNMODIFIED -- this module changes no shipped guard code. G4 is sized
+   from a PRE-PASS STORAGE LISTING (taken here, in dry_run too, after the universal catalog
+   live-set collection and before anything destructive), never the catalog live set -- a
+   would-delete path is by definition absent from the catalog live set, so joining against it
+   always sizes to zero (rec-3871/rec-3894).
 4. READ ORDERING IS LOAD-BEARING: the CATALOG live set is collected FIRST and STORAGE is listed
    SECOND. In that order an interleaved write shows up as a spurious ORPHAN (harmless to
    `referenced_missing`); the reverse order manufactures a spurious REFERENCED-MISSING, which would
@@ -38,6 +39,7 @@ from typing import Any, Callable
 from src.common import ducklake_gc_verification as gcver
 from src.common import ducklake_maintenance as maint
 from src.common import ducklake_maintenance_ops as guard
+from src.common.ducklake_maintenance import _default_list_storage, _parse_s3_uri  # noqa: F401 -- re-exported module
 
 MetricSink = Callable[[str, float], None]
 StorageLister = Callable[[str], dict[str, int]]
@@ -47,33 +49,26 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _parse_s3_uri(data_path: str) -> tuple[str, str]:
-    if not data_path.startswith("s3://"):
-        raise maint.DuckLakeMaintenanceError(f"gc_ops: data_path must be an s3:// URI, got {data_path!r}")
-    without_scheme = data_path[len("s3://") :]
-    bucket, _, prefix = without_scheme.partition("/")
-    if not bucket:
-        raise maint.DuckLakeMaintenanceError(f"gc_ops: data_path {data_path!r} carries no bucket")
-    return bucket, prefix
-
-
-def _default_list_storage(data_path: str, *, client: Any = None) -> dict[str, int]:
-    """ListObjectsV2 walk of the production prefix -- the managed-primitive storage-side source for
-    `referenced_missing` (Decision 100: no client-tooling substitution for a managed primitive).
-
-    Returns {s3://bucket/key: size_bytes}, the same path shape DuckLake's own `data_file` column
-    uses, so the result compares directly against the catalog live-set paths.
+def _measure_drain_probe_counts(
+    con: Any,
+    catalog: str,
+    now: datetime,
+    grace_days: int,
+    size_source: dict[str, int],
+) -> dict[str, dict[str, int]]:
+    """dry_run's read-only pre-enablement canary: the same ladder the production drain walk brackets
+    on (src/common/ducklake_maintenance_ops.py), re-probed and sized (non-strict -- a dry-run
+    deletes nothing, so an unsized path is counted, not raised) from the same pre-pass storage
+    listing. PRE-EXPIRY (dry_run runs no expire_snapshots): a NECESSARY, not sufficient, signal --
+    see the module the reader was pointed at for the post-expiry caveat.
     """
-    import boto3  # noqa: PLC0415
-
-    bucket, prefix = _parse_s3_uri(data_path)
-    s3 = client if client is not None else boto3.client("s3")
-    paginator = s3.get_paginator("list_objects_v2")
-    paths: dict[str, int] = {}
-    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
-        for obj in page.get("Contents", []):
-            paths[f"s3://{bucket}/{obj['Key']}"] = int(obj.get("Size", 0))
-    return paths
+    ladder = [grace_days, *[d for d in guard._DRAIN_LADDER_DAYS if d > grace_days]]
+    counts: dict[str, dict[str, int]] = {}
+    for days in ladder:
+        paths = guard._probe_dry_run_candidates(con, catalog, now, days)
+        sizes, _unsized = guard.size_candidates(paths, size_source, strict_sizes=False)
+        counts[str(days)] = {"files": len(paths), "bytes": sum(sizes.values())}
+    return counts
 
 
 def _discover_all_tables(con: Any, catalog: str) -> list[str]:
@@ -132,24 +127,32 @@ def gc_ops(
     snapshot_id = _current_snapshot_id(con, catalog)
 
     # Property 2: NO per-table prelude (no flush_inlined_data, no merge_adjacent_files). This IS
-    # live_before for both G4's byte-sizing and the dry-run would-delete accounting below --
-    # because there is no prelude, "before" and "current" are the same read.
+    # live_before -- the universal CATALOG set feeding G1/G3 -- because there is no prelude,
+    # "before" and "current" are the same read. It is NEVER the G4 size source (see below).
     live_before: dict[str, int] = {}
     for table in tables:
         live_before.update(maint._collect_file_paths(con, catalog, table))
+
+    # PRE-PASS storage listing -- catalog FIRST, storage SECOND (Decision 192 pt 3 / property 4),
+    # taken here in dry_run too (a LIST is a read). This is G4's size source: expired-snapshot
+    # cleanup files and true orphans are present in storage and structurally absent from the
+    # catalog live set, which is exactly why sizing against live_before always yields zero
+    # (rec-3871/rec-3894, Decision 192 pt 5).
+    storage_before = list_storage(data_path)
 
     older_than_cleanup = now - timedelta(days=grace_days)
     would_delete_paths = set(
         maint._dry_run_cleanup_paths(con, catalog, older_than_cleanup)
         + maint._dry_run_orphan_paths(con, catalog, older_than_cleanup)
     )
-    would_delete_bytes_map = {p: live_before.get(p, 0) for p in would_delete_paths}
+    would_delete_bytes_map, unsized_candidates = guard.size_candidates(would_delete_paths, storage_before, strict_sizes=False)
     would_delete_files = len(would_delete_paths)
     would_delete_bytes = sum(would_delete_bytes_map.values())
     metric_sink("GcWouldDeleteFiles", float(would_delete_files))
 
     guard_stats: dict[str, Any] | None = None
     snapshots_expired = files_cleaned = orphans_deleted = 0
+    drain_probe_counts: dict[str, dict[str, int]] | None = None
 
     if not dry_run:
         # Property 3: run_guarded_gc UNMODIFIED. `tables` here serves ONLY the guard live-set
@@ -164,6 +167,7 @@ def gc_ops(
             retain_days=retain_days,
             floor=floor,
             now=now,
+            candidate_size_source=storage_before,
         )
         snapshots_expired = guard_result["snapshots_expired"]
         files_cleaned = guard_result["files_cleaned"]
@@ -173,6 +177,16 @@ def gc_ops(
         metric_sink("GcDeletedSnapshots", float(snapshots_expired))
         metric_sink("GcDeletedFiles", float(files_cleaned))
         metric_sink("GcDeletedOrphans", float(orphans_deleted))
+        metric_sink("GcWouldDeleteFilesPostExpiry", float(guard_stats["post_expiry_would_delete_candidates"]))
+        metric_sink("GcDeferredFiles", float(guard_stats["g4_deferred_files"]))
+        drain_cutoff_days = guard_stats["g4_drain_cutoff_days"]
+        # -1.0 when null: 0.0 would misread as a cutoff below the grace floor, a value every real
+        # cutoff (always >= FILE_CLEANUP_GRACE_DAYS) can never take, so it is unambiguous.
+        metric_sink("GcDrainCutoffDays", float(drain_cutoff_days) if drain_cutoff_days is not None else -1.0)
+    else:
+        # dry_run measurement path (VP11's canary): the same bracketing ladder, read-only, so the
+        # canary shows the production age distribution before rec-3767 enables the schedule.
+        drain_probe_counts = _measure_drain_probe_counts(con, catalog, now, grace_days, storage_before)
 
     # Property 1 + 4: universal live-set re-collection (post-pass in a real run; unchanged in
     # dry_run since nothing destructive ran) over EVERY table, then storage SECOND (read-ordering).
@@ -187,7 +201,10 @@ def gc_ops(
 
     live_bytes = sum(live_now.values())
     storage_bytes = sum(storage_paths.values())
-    debt_ratio = gcver.gc_debt_ratio(storage_bytes, live_bytes) if live_bytes > 0 else 0.0
+    try:
+        debt_ratio = gcver.gc_debt_ratio(storage_bytes, live_bytes)
+    except ValueError as exc:  # rec-3876: wrap so the admin handler's typed except chain catches it
+        raise maint.DuckLakeMaintenanceError(f"gc_ops: {exc}") from exc
     metric_sink("GcDebtRatio", debt_ratio)
     metric_sink("GcDebtBytes", float(storage_bytes - live_bytes))
     metric_sink("GcStorageObjects", float(len(storage_paths)))
@@ -211,6 +228,8 @@ def gc_ops(
         "snapshot_id": snapshot_id,
         "would_delete_files": would_delete_files,
         "would_delete_bytes": would_delete_bytes,
+        "unsized_candidates": unsized_candidates,
+        "drain_probe_counts": drain_probe_counts,
         "referenced_missing": len(missing),
         "snapshots_expired": snapshots_expired,
         "files_cleaned": files_cleaned,

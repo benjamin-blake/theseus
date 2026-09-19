@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -258,6 +258,74 @@ def test_delete_orphaned_files_never_cleanup_all():
 
 
 # ---------------------------------------------------------------------------
+# older_than override (the drain walk's mechanism) -- refused, not clamped, below the floor
+# ---------------------------------------------------------------------------
+
+
+def test_cleanup_old_files_accepts_an_older_than_override_at_the_floor():
+    con = FakeCon(fetchone_map={"ducklake_cleanup_old_files": (1,)})
+    cleanup_old_files(con, older_than=_NOW - timedelta(days=10), _now=_NOW)
+    stmts = [s for s in con.executed if "ducklake_cleanup_old_files" in s]
+    assert len(stmts) == 1
+
+
+def test_cleanup_old_files_refuses_an_older_than_younger_than_the_grace_floor():
+    with pytest.raises(DuckLakeMaintenanceError, match="younger than the"):
+        cleanup_old_files(FakeCon(), older_than=_NOW, _now=_NOW)
+
+
+def test_delete_orphaned_files_refuses_an_older_than_younger_than_the_grace_floor():
+    with pytest.raises(DuckLakeMaintenanceError, match="younger than the"):
+        delete_orphaned_files(FakeCon(), older_than=_NOW, _now=_NOW)
+
+
+# ---------------------------------------------------------------------------
+# _parse_s3_uri / _default_list_storage (relocated here from ducklake_gc_ops, Decision 193)
+# ---------------------------------------------------------------------------
+
+
+class _FakePaginator:
+    def __init__(self, pages: list[dict[str, Any]]):
+        self._pages = pages
+
+    def paginate(self, **_kwargs: Any) -> Any:
+        return iter(self._pages)
+
+
+class _FakeS3Client:
+    def __init__(self, pages: list[dict[str, Any]]):
+        self._pages = pages
+
+    def get_paginator(self, name: str) -> "_FakePaginator":
+        assert name == "list_objects_v2"
+        return _FakePaginator(self._pages)
+
+
+def test_parse_s3_uri_splits_bucket_and_prefix():
+    assert maint._parse_s3_uri("s3://my-bucket/some/prefix/") == ("my-bucket", "some/prefix/")
+
+
+def test_parse_s3_uri_rejects_non_s3_scheme():
+    with pytest.raises(DuckLakeMaintenanceError, match="must be an s3:// URI"):
+        maint._parse_s3_uri("http://example.com/x")
+
+
+def test_parse_s3_uri_rejects_missing_bucket():
+    with pytest.raises(DuckLakeMaintenanceError, match="carries no bucket"):
+        maint._parse_s3_uri("s3://")
+
+
+def test_default_list_storage_walks_paginated_pages():
+    pages = [{"Contents": [{"Key": "prefix/a.parquet", "Size": 10}]}]
+    result = maint._default_list_storage("s3://my-bucket/prefix/", client=_FakeS3Client(pages))
+    assert result == {"s3://my-bucket/prefix/a.parquet": 10}
+
+
+def test_default_list_storage_handles_a_page_with_no_contents():
+    assert maint._default_list_storage("s3://my-bucket/prefix/", client=_FakeS3Client([{}])) == {}
+
+
+# ---------------------------------------------------------------------------
 # rewrite
 # ---------------------------------------------------------------------------
 
@@ -308,6 +376,15 @@ def test_run_merge_calls_flush_and_merge():
 # ---------------------------------------------------------------------------
 
 
+def _fake_list_storage(_data_path: str) -> dict[str, int]:
+    """G4's byte source: sizes every cleanup/orphan/live-conflict path any run_gc test below uses."""
+    return {
+        **{f"s3://b/cleanup{i}": 100 for i in range(20)},
+        **{f"s3://b/orphan{i}": 100 for i in range(20)},
+        **{f"s3://b/f{i}": 100 for i in range(20)},
+    }
+
+
 def _gc_con(*, file_count: int = 10, cleanup_count: int = 1, orphan_count: int = 0, snapshot_count: int = 5) -> FakeCon:
     """A GC-pass fixture where the live set and the would-delete set are DISJOINT (the happy path
     -- would-delete paths are files already superseded/expired, so they never appear in the live
@@ -336,14 +413,14 @@ def _gc_con(*, file_count: int = 10, cleanup_count: int = 1, orphan_count: int =
 
 def test_run_gc_returns_ok():
     con = _gc_con()
-    result = run_gc(con, ["t1"], _now=_NOW)
+    result = run_gc(con, ["t1"], data_path="s3://b/prod/", list_storage=_fake_list_storage, _now=_NOW)
     assert result["ok"] is True
     assert result["action"] == "gc"
 
 
 def test_run_gc_includes_all_result_keys():
     con = _gc_con()
-    result = run_gc(con, ["t1"], _now=_NOW)
+    result = run_gc(con, ["t1"], data_path="s3://b/prod/", list_storage=_fake_list_storage, _now=_NOW)
     for key in ("files_before", "files_after", "snapshots_expired", "files_cleaned", "orphans_deleted", "guard_stats"):
         assert key in result, f"missing key {key!r}"
     assert "breaker_stats" not in result
@@ -360,17 +437,17 @@ def test_run_gc_g1_violation_raises_and_no_destructive():
             "ducklake_delete_orphaned_files": [],
             "ducklake_snapshots": [(1, _ts(2025, 1, 1)), (2, _ts(2025, 2, 1)), (3, _ts(2025, 3, 1))],
         },
-        fetchone_map={"ducklake_list_files": (3,), "ducklake_expire_snapshots": (0,)},
+        fetchone_map={"ducklake_list_files": (3,), "ducklake_expire_snapshots": (0,), "ducklake_snapshots": (3,)},
     )
     with pytest.raises(DuckLakeMaintenanceError, match="G1 reachability"):
-        run_gc(con, ["t1"], _now=_NOW)
+        run_gc(con, ["t1"], data_path="s3://b/prod/", list_storage=_fake_list_storage, _now=_NOW)
     destructive = [s for s in con.executed if "dry_run=False" in s]
     assert destructive == [], "run_gc must not issue destructive calls after a G1 violation"
 
 
 def test_run_gc_calls_all_five_steps():
     con = _gc_con()
-    run_gc(con, ["t1"], _now=_NOW)
+    run_gc(con, ["t1"], data_path="s3://b/prod/", list_storage=_fake_list_storage, _now=_NOW)
     stmts = " ".join(con.executed)
     assert "ducklake_flush_inlined_data" in stmts
     assert "ducklake_merge_adjacent_files" in stmts
@@ -386,7 +463,7 @@ def test_run_gc_g2_violation_raises():
     con = _gc_con(snapshot_count=5)
     con._fetchone_map["ducklake_snapshots"] = (SNAPSHOT_FLOOR - 1,)  # engine under-retained
     with pytest.raises(DuckLakeMaintenanceError, match="G2 retention floor"):
-        run_gc(con, ["t1"], _now=_NOW, floor=SNAPSHOT_FLOOR)
+        run_gc(con, ["t1"], data_path="s3://b/prod/", list_storage=_fake_list_storage, _now=_NOW, floor=SNAPSHOT_FLOOR)
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,7 @@
 contract:
   id: vp-red-before
   class: D
-  contract_version: 2
+  contract_version: 4
   status: provisional_v0
   description: >-
     validate_vp_replay's two legs. Inverted-polarity plan-only leg: a graduate-disposition
@@ -57,6 +57,37 @@ amendment_log:
       implement_leg_partition rule (a PR-relative hermetic step excluded from replay when the
       measured origin/main..HEAD ancestry has collapsed, closing rec-3845's post-merge failure
       mode); contract_version bumped 1 -> 2 in the same change per Decision 168 clause 4.
+  - date: "2026-09-18"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-vp-replay-rg-portability-guard: added rg_portability_lint -- a static program-position
+      lint over added-or-resolved plans' pre-deploy steps, flagging a command that invokes ripgrep,
+      which the GitHub-hosted runner lacks. Closes the class rec-2938 recorded on 2026-07-31 (a
+      19-plan audit) and PR #1206 hit live: its VP step 3 was the only hermetic pre-deploy step in
+      the corpus invoking rg, and pr-validate reddened at exit 127. rec-2938's stated primary fix
+      (install ripgrep in ci.yml) is counter-indicated by the graduated shard
+      vp-replay-coverage-survives-absent-ripgrep, so the remedy is to lint the authoring instead.
+      The classifier surface relocated to scripts/checks/verification/_vp_replay_classify.py in the
+      same change (Decision 128 decompose-by-default: the lint pushed the module past 500 SLOC).
+      contract_version bumped 2 -> 3 alongside this entry -- the enforced half is the entry itself
+      (contract-population.yaml's change_detection.amendment_log, via validate_contract_drift); the
+      version bump is this file's convention. NOTE: the 2026-09-14 entry above attributes that
+      pairing to "Decision 168 clause 4"; that citation is wrong (clause 4 is subject uniqueness
+      and the downward-only ratchet). It is left as written -- this log is append-only -- and
+      corrected here rather than by editing history.
+  - date: "2026-09-18"
+    semantic_break: false
+    change_class: field_add
+    summary: >-
+      PLAN-vp-expected-literal-carrier: added carrier_rule, self_satisfying_lint, and unsat_guard --
+      schema_version 5 plans declare verification_plan[].expected_literals as their sole assertion
+      carrier instead of an implicit backtick sigil in the free-prose expected field, guarded at
+      authoring time (scripts.roadmap.plan_document) by the hard-failing unsat_guard and the
+      advisory self_satisfying_lint (both scripts.roadmap.vp_literals). Closes the defect class
+      rec-3900/rec-3555 recorded after PLAN-g4-byte-source-and-post-expiry-bound's VP1 stranded an
+      /implement session with an unemittable literal. contract_version bumped 3 -> 4 alongside this
+      entry, per this file's own convention.
 
 # The FOUR frozen outcome classes a dynamically-replayed graduate step's result is classified
 # into (scripts.checks.verification.validate_vp_replay.OUTCOME_CLASSES derive-and-asserts equal
@@ -115,6 +146,35 @@ negated_sweep_lint: >-
   multi-word or flag-bearing remainder, a quoted or shell-metacharacter-bearing path token, or
   more than one candidate path token) -- over-detection is the worse failure here, so an
   ambiguous parse is never flagged.
+
+rg_portability_lint: >-
+  A static, non-executing lint over every pre-deploy step of every diff-present plan that is ADDED
+  or RESOLVED -- precisely the two populations whose steps are executed (the red-before leg replays
+  an added plan's graduate steps; the implement leg replays a resolved plan's hermetic steps). It
+  flags a command invoking `rg` (ripgrep), which is absent from the GitHub-hosted runner: such a
+  step exits 127 wherever it is replayed, which the implement leg reports as an ordinary divergence
+  and the red-before leg classifies `unmeasurable`, a hard failure. Catching it at authoring time
+  is the point -- the failure is otherwise discovered only when a plan's own implement PR reddens.
+  Detection is PROGRAM POSITION, never substring: the command is split on shell control operators,
+  each segment is `shlex.split`, a leading `!`, an `env` wrapper and any directory prefix are
+  stripped, and only the argv HEAD is tested. A substring rule would flag any command that merely
+  NAMES ripgrep inside a quoted string -- including the commands that assert this very lint. Fails
+  OPEN on a segment `shlex` cannot parse (over-detection is the worse failure, matching
+  negated_sweep_lint's posture above). NEITHER under-inclusion arm is silent: the count of
+  out-of-population plans and the count of unparseable segments are each printed, per this check's
+  standing rule that anything outside a leg's set is EXCLUDED with a reason. Merely-MODIFIED plans
+  are deliberately outside the population -- linting them would redden an unrelated PR that touches
+  an old plan for unrelated reasons. Sited as a PRE-PASS ahead of both legs, never inside
+  `_red_before_leg`, which `continue`s on a resolved plan before reaching its lint call site.
+  Finding strings carry the `vp-rg-portability` prefix: `vp-red-before-lint` is asserted absent by
+  the negated-sweep tests whose `! rg` fixtures this lint also flags, and a `vp-replay` prefix
+  would suppress the implement leg's summary PASS line. A finding is never resolved by installing
+  ripgrep on the runner -- the graduated shard vp-replay-coverage-survives-absent-ripgrep pins the
+  absent-ripgrep condition -- nor by relabelling a creds-free step `hermetic: false` to dodge
+  replay. The fix is POSIX `grep` in CANONICAL argument order (`grep -n -A 10 PATTERN PATH`): under
+  POSIXLY_CORRECT=1 GNU grep stops permuting, treats `-A` and `10` as filenames, exits 2 and still
+  prints its matches with the context window silently dropped -- so a negated probe reading a
+  context line inverts to a false pass.
 
 precedence: >-
   When BOTH the negated-sweep lint and the dynamic tautological classification fire on the SAME
@@ -177,3 +237,73 @@ graduation_disposition_authoring: >-
   the un-implemented tree now reddens the plan's OWN PR before the fix exists (rec-3777 tracks the
   residual incentive this creates toward under-classifying as not-applicable; that monitoring is
   not this contract's concern).
+
+carrier_rule: >-
+  PLAN-vp-expected-literal-carrier: the assertion carrier a hermetic step's replayed
+  stdout+stderr is checked against is SELECTED by the plan's own `schema_version`
+  (scripts.roadmap.vp_literals.select_literals, delegated identically by both of
+  validate_vp_replay's legs). schema_version 4-and-below keeps the pre-existing implicit carrier
+  -- a backtick-delimited literal anywhere inside the free-prose `expected` field. schema_version
+  5 REPLACES that implicit sigil with an explicit one: a hermetic step declares
+  `verification_plan[].expected_literals` (a list of strings, empty or absent both PERMITTED --
+  B1 dropped the non-empty requirement so the marker idiom and every plain exit-0-only step stay
+  authorable) and a backtick literal inside that same step's `expected` field is refused at
+  schema-validation time (scripts.roadmap.plan_document), naming `expected_literals` as the fix.
+  Both new fields bind ONLY a hermetic step -- a non-hermetic step's `expected` is free prose no
+  leg ever programmatically checks, so backticks there stay harmless markdown. Never accepted
+  below schema_version 5 (refused outright, not silently ignored under extra=forbid's per-field
+  blindness to cross-field version gating).
+
+self_satisfying_lint: >-
+  ADVISORY (scripts.roadmap.vp_literals.find_self_satisfying_literals, run by
+  scripts.roadmap.plan_document at schema-validation time -- never raises, only WARNs): a
+  schema_version 5 hermetic step's `expected_literals` entry that appears VERBATIM inside that
+  same step's own `command` text is redundant with that command's exit-0 -- the command already
+  names the token as one of its own arguments, so the assertion adds nothing a passing exit code
+  did not already guarantee. Reported, never rejected: this is the repo's established marker
+  idiom (`echo MARKER`, `grep -o -m1 TOKEN FILE`, including the PR #1202 shape below) and must
+  stay authorable. Named `self_satisfying`, deliberately NEVER `tautological` -- that word is
+  reserved above (outcome_classes) for the DYNAMIC replay outcome vocabulary; reusing it here for
+  an unrelated STATIC property in the same contract file would be drift. Measured on the merged
+  corpus at authoring time: roughly two-thirds of the enforced literal population is
+  self-satisfying under this definition -- redundant, not defective, hence advisory rather than a
+  gate.
+
+unsat_guard: >-
+  HARD-FAILING (scripts.roadmap.vp_literals.find_unsatisfiable_literals, run by
+  scripts.roadmap.plan_document at schema-validation time -- raises, blocking commit): a
+  schema_version 5 hermetic step's `expected_literals` entry is REJECTED when the step's own
+  `command` is a chain of grep/rg invocations joined by shell control operators (`&&`, `||`,
+  `;`, `|`) in which EVERY invocation is confidently silenced -- carries `-q`/`--quiet`,
+  `-c`/`--count`, `-l`/`--files-with-matches`, or `-L`/`--files-without-match` without an
+  overriding `-o`/`--only-matching`, or redirects to `/dev/null` -- so the chain can never print a
+  matched literal to stdout+stderr no matter how correct the implementation is. This is the
+  historical PLAN-g4-byte-source-and-post-expiry-bound VP1 shape (four `grep -q` calls chained
+  with `&&`) that PR #1202 fixed by changing its fourth call to `grep -o -m1 "drain" FILE` --
+  which this guard accepts (an `-o` call is never confidently silent) and the self_satisfying_lint
+  above separately flags advisory (`drain` appears verbatim in that same command).
+
+  The suppressor set this guard treats as confidently silencing is declared as real data in
+  `unsat_guard_suppressor_flags` below (never restated here), asserted equal to the code's own
+  tuple by TestContractSuppressorParity so the contract cannot drift from the code.
+
+  Fails OPEN on anything it cannot confidently classify -- a non-grep/rg program, an unparseable
+  shell segment, or a grep/rg call carrying `-o` -- is treated as satisfiable, never rejected.
+  This is a NARROW regression guard for one historical shape, not a general emittability prover:
+  it does not reason about `python -c` or module-invocation commands, which the carrying plan
+  measured at 86% of the enforced literal population. That residual is UNENFORCED by design and
+  owned by rec-3932 (evaluating a closed command-shape vocabulary broad enough to cover it) --
+  never silently treated as "safe" by this guard's silence on it.
+
+# The unsat_guard's suppressor set as real data (never restated as prose above) -- kept sorted so
+# a diff shows exactly which flag changed. TestContractSuppressorParity asserts this list equal
+# to scripts.roadmap.vp_literals.SUPPRESSOR_FLAGS.
+unsat_guard_suppressor_flags:
+  - "--count"
+  - "--files-with-matches"
+  - "--files-without-match"
+  - "--quiet"
+  - "-L"
+  - "-c"
+  - "-l"
+  - "-q"

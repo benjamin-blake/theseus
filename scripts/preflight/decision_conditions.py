@@ -25,9 +25,10 @@ Surfacing, not gating: a passed review_by or a fired condition never blocks anyt
 module. Only the separate ``scripts.checks.ops_governance.validate_reversal_stanzas`` check gates
 a merge, and only on stanza WELL-FORMEDNESS.
 
-Predicate registry: a module-level dict, EMPTY today. Decision 133's two repo_state conditions
-both ship ``predicate: null`` (manual/context; no repo-state predicate is registered yet).
-``register_predicate()`` is the extension point for a future predicate.
+Predicate registry: a module-level dict. Decision 133's two repo_state conditions both ship
+``predicate: null`` (manual/context; no predicate to register there). ``roadmap_items_complete``
+(Decision 194) is the first registered entry. ``register_predicate()`` remains the extension point
+for any future predicate.
 """
 
 from __future__ import annotations
@@ -53,9 +54,10 @@ _REQUIRED_TOP_KEYS = ("decision", "review_by", "on_trigger", "conditions")
 
 PredicateFn = Callable[..., bool]
 
-# Predicate registry: module-level dict, EMPTY today (Decision 133's repo_state conditions both
-# ship predicate: null -- docs/DECISIONS.md Decision 133 stanza). register_predicate() is the
-# extension point for a future predicate (e.g. an alpha-readiness or sustained-slip signal).
+# Predicate registry: module-level dict (Decision 133's repo_state conditions both ship
+# predicate: null -- docs/DECISIONS.md Decision 133 stanza; roadmap_items_complete, registered
+# below for Decision 194, is the first entry). register_predicate() is the extension point for
+# any future predicate (e.g. an alpha-readiness or sustained-slip signal).
 _PREDICATE_REGISTRY: dict[str, PredicateFn] = {}
 
 
@@ -67,6 +69,32 @@ def register_predicate(name: str) -> Callable[[PredicateFn], PredicateFn]:
         return fn
 
     return _decorate
+
+
+@register_predicate("roadmap_items_complete")
+def roadmap_items_complete(items: list[str], roadmap_path: str | Path = "docs/ROADMAP-PLATFORM.yaml") -> bool:
+    """True iff every tier item id in `items` is status 'complete' with every exit criterion 'met'.
+
+    Validates every id exists in the roadmap FIRST, raising KeyError naming every missing id --
+    before evaluating completeness of any item. This ordering matters: checking completeness
+    first would mask a missing id behind an earlier item's incompleteness (fail-loud, not
+    fail-partial). A 'rehomed' exit criterion status does NOT satisfy this predicate -- only
+    'met' does; TierItem._normalize_exit_criteria also coerces a bare-string legacy criterion to
+    status 'open', so it does not satisfy it either.
+    """
+    from scripts.platform_roadmap_state import load  # function-local: AGENTS.md import-safety
+
+    doc = load(Path(roadmap_path))
+    by_id = {item.id: item for item in doc.tier_items}
+
+    missing = [item_id for item_id in items if item_id not in by_id]
+    if missing:
+        raise KeyError(f"unknown tier item id(s): {missing}")
+
+    return all(
+        by_id[item_id].status == "complete" and all(c.status == "met" for c in by_id[item_id].exit_criteria)
+        for item_id in items
+    )
 
 
 @dataclass

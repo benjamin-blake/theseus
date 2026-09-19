@@ -11,14 +11,20 @@ which an any-digit assertion would reject. Uses the resource-header brace-balanc
 from tests/checks/iam_tf/test_oidc_trust_slug_invariants.py.
 
 Also hosts TestProductionGcRuleInvariants (production-gc-and-storage-stability, T2.18 c2): the
-gc_ops EventBridge rule ships DISABLED, no S3 lifecycle configuration targets the data-lake bucket,
-the maintenance role's IAM stays unwidened, the liveness alarm treats missing data as breaching,
-and the gc_ops cron does not collide with this singleton's other two 6-hourly cadences.
+gc_ops EventBridge rule's state matches its declared intent (_INTENDED_GC_OPS_STATE, currently
+"ENABLED" per gc-ops-baseline-gate-and-schedule-enable), no S3 lifecycle configuration targets the
+data-lake bucket, the maintenance role's IAM stays unwidened, the liveness alarm treats missing
+data as breaching, the gc_ops cron does not collide with this singleton's other two 6-hourly
+cadences, and the catalog-DR dump precedes the gc_ops window on the same day. TestGcOpsEnablementBaseline
+adjudicates the committed tests/fixtures/gc_ops_dryrun_baseline.json dry_run reading against the
+shipped G4 caps, licensing the enablement.
 """
 
 from __future__ import annotations
 
+import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -129,20 +135,64 @@ resource "aws_cloudwatch_metric_alarm" "example_alarm" {
 
 
 _TERRAFORM_PERSONAL_DIR = _REPO_ROOT / "terraform" / "personal"
+_DR_TF = _TERRAFORM_PERSONAL_DIR / "ducklake_catalog_dr.tf"
+_FIXTURE_PATH = _REPO_ROOT / "tests" / "fixtures" / "gc_ops_dryrun_baseline.json"
 _LIFECYCLE_CONFIG_RE = re.compile(r'resource\s+"aws_s3_bucket_lifecycle_configuration"\s+"(\w+)"\s*\{')
 _CRON_MINUTE_RE = re.compile(r'schedule_expression\s*=\s*"cron\((\d+)\s')
+_CRON_FIELDS_RE = re.compile(r"cron\((\d+)\s+(\d+)\s+\S+\s+\S+\s+(\S+)\s+\S+\)")
+
+# gc-ops-baseline-gate-and-schedule-enable: the declared intent for the gc_ops rule's state.
+# Parameterised so a rollback flip is one constant edit, no test surgery, no re-keyed check_id.
+_INTENDED_GC_OPS_STATE = "ENABLED"
+
+# Catalog-identity floor for the committed dry_run reading (plan amended 2026-09-17, #1205).
+# FROZEN LITERALS, never derived from field_semantics.yaml: the fixture is an immutable historical
+# reading, so a literal floor can never redden on a future roster rename, and deriving would
+# re-import the very roster whose misreading produced the original (falsified) premise that
+# ducklake_smoke_* names are smoke-resident. They are production-resident -- ducklake_writer's
+# smoke_actions falls through to the production META_SCHEMA -- so no negative clause on them can
+# ever hold. Nothing shipped creates an ops_* table under META_SCHEMA='ducklake_smoke', so a
+# smoke-targeted reading fails every one of these names.
+_PRODUCTION_CATALOG_TABLE_FLOOR = frozenset(
+    {
+        "ops_recommendations_current",
+        "ops_recommendations_history",
+        "ops_decisions_current",
+        "ops_decisions_history",
+        "ops_entity_counters",
+    }
+)
+
+# Provenance anchor: deploy-ducklake-lambdas.yml run 17 shipped #1203's drain walk and completed at
+# this timestamp. captured_at must post-date the COMPLETION rather than the merge commit -- a reading
+# taken inside the merge-to-deploy window would have exercised pre-drain code. The id and the
+# timestamp are pinned TOGETHER so the two provenance fields cannot silently disagree; a fixture
+# re-taken after a later deploy must move both.
+_DRAIN_DEPLOY_RUN_ID = 17
+_DRAIN_DEPLOY_COMPLETED_AT = "2026-09-16T13:21:24+00:00"
 
 
 class TestProductionGcRuleInvariants:
     """production-gc-and-storage-stability (T2.18 c2): the gc_ops rule + its two alarms, and the
     no-lifecycle-on-the-lakehouse invariant."""
 
-    def test_gc_ops_rule_is_created_disabled(self) -> None:
+    def test_gc_ops_rule_state_matches_declared_intent(self) -> None:
+        """Parameterised on _INTENDED_GC_OPS_STATE (gc-ops-baseline-gate-and-schedule-enable) so a
+        rollback flip is one constant edit, no test surgery. Block-scoped: the opposing literal must
+        appear nowhere in the resource block, which also covers the `description` attribute -- an
+        APPLIED resource attribute that ships to AWS, not a comment."""
         text = _ADMIN_TF.read_text(encoding="utf-8")
         block = _find_resource_block(text, "aws_cloudwatch_event_rule", "ducklake_maintenance_gc_ops")
         m = re.search(r'state\s*=\s*"([^"]*)"', block)
         assert m is not None, "gc_ops rule has no state attribute"
-        assert m.group(1) == "DISABLED", "the gc_ops rule must ship DISABLED (Decisions 125/126 code/infra decoupling)"
+        assert m.group(1) == _INTENDED_GC_OPS_STATE, (
+            f"gc_ops rule state {m.group(1)!r} does not match the declared intent {_INTENDED_GC_OPS_STATE!r}"
+        )
+        opposing = "DISABLED" if _INTENDED_GC_OPS_STATE == "ENABLED" else "ENABLED"
+        assert opposing not in block, (
+            f"the opposing literal {opposing!r} still appears in the gc_ops resource block -- check "
+            "the `description` attribute, not just the `state` literal"
+        )
 
     def test_no_lifecycle_configuration_targets_the_data_lake_bucket(self) -> None:
         """Sweep the WHOLE terraform/personal directory, not just _ADMIN_TF/_SMOKE_TF -- the sole
@@ -227,6 +277,33 @@ class TestProductionGcRuleInvariants:
         minutes = {gc_ops_minute.group(1), merge_ops_minute.group(1), control_health_minute.group(1)}
         assert len(minutes) == 3, f"cadence minute collision on this reserved_concurrent_executions=1 singleton: {minutes}"
 
+    def test_dr_dump_precedes_the_gc_ops_window(self) -> None:
+        """Backup precedes destruction: two independently-authored cron literals in two different
+        files, unchecked until this plan enabled the destructive cadence. Does NOT prove the backup
+        COMPLETED (rec-3909's deferred half) -- only that its scheduled window starts first, on the
+        same day."""
+        gc_ops_block = _find_resource_block(
+            _ADMIN_TF.read_text(encoding="utf-8"), "aws_cloudwatch_event_rule", "ducklake_maintenance_gc_ops"
+        )
+        dr_block = _find_resource_block(_DR_TF.read_text(encoding="utf-8"), "aws_cloudwatch_event_rule", "ducklake_catalog_dr")
+        gc_ops_cron = _CRON_FIELDS_RE.search(gc_ops_block)
+        dr_cron = _CRON_FIELDS_RE.search(dr_block)
+        assert gc_ops_cron is not None, "gc_ops rule has no parseable cron schedule_expression"
+        assert dr_cron is not None, "catalog-DR rule has no parseable cron schedule_expression"
+
+        gc_ops_minute, gc_ops_hour, gc_ops_dow = gc_ops_cron.groups()
+        dr_minute, dr_hour, dr_dow = dr_cron.groups()
+        assert dr_dow == gc_ops_dow, (
+            f"catalog-DR ({dr_dow}) and gc_ops ({gc_ops_dow}) do not share a day-of-week -- the "
+            "ordering guarantee only holds within the same weekly window"
+        )
+        dr_offset = int(dr_hour) * 60 + int(dr_minute)
+        gc_ops_offset = int(gc_ops_hour) * 60 + int(gc_ops_minute)
+        assert dr_offset < gc_ops_offset, (
+            f"catalog-DR dump ({dr_hour}:{dr_minute} UTC) does not precede the gc_ops destructive "
+            f"window ({gc_ops_hour}:{gc_ops_minute} UTC) -- backup must run first"
+        )
+
 
 class TestThresholdShapeRedCases:
     def test_non_alarm_description_with_a_legitimate_number_does_not_trip_the_block_scoped_check(self) -> None:
@@ -257,3 +334,92 @@ class TestThresholdShapeRedCases:
         descriptions = _alarm_descriptions_from_text(_SYNTHETIC_MIXED_TF)
         assert "T2.18 / CD.33 H1" in descriptions[0]
         assert not any(_THRESHOLD_SHAPE_RE.search(d) for d in descriptions)
+
+
+class TestGcOpsEnablementBaseline:
+    """gc-ops-baseline-gate-and-schedule-enable: adjudicates the committed operator dry_run reading
+    against the shipped G4 caps, licensing the production enable. NECESSARY, not SUFFICIENT -- the
+    real pass is post-expiry and strict-sized, a strictly larger and less forgiving check (see
+    tests/fixtures/gc_ops_dryrun_baseline.json's own provenance).
+
+    Catalog identity rests on _PRODUCTION_CATALOG_TABLE_FLOOR plus the envelope's own
+    ok/action/dry_run self-identification -- all MEASURED handler output, none operator-attested."""
+
+    def test_committed_dry_run_baseline_licenses_the_enablement(self) -> None:
+        # Deliberately function-local: the rest of this module reads terraform text and needs no
+        # first-party runtime import, so hoisting this would couple collection of every test here
+        # to src.common's own import chain.
+        from src.common.ducklake_maintenance_ops import G4_MAX_DELETE_BYTES, G4_MAX_DELETE_FILES
+
+        assert _FIXTURE_PATH.is_file(), (
+            "tests/fixtures/gc_ops_dryrun_baseline.json is missing -- the operator precondition "
+            "(pre_implementation_checklist) was not satisfied before this plan started"
+        )
+        reading = json.loads(_FIXTURE_PATH.read_text(encoding="utf-8"))
+
+        assert reading.get("referenced_missing") == 0, (
+            f"referenced_missing={reading.get('referenced_missing')!r} -- a catalog-live path is "
+            "missing from storage; RCA before enabling (STOP, do not merge)"
+        )
+        assert reading.get("unsized_candidates") == 0, (
+            f"unsized_candidates={reading.get('unsized_candidates')!r} -- the real pass raises on "
+            "the first unsized path; the first firing would 500 and trip the breaker"
+        )
+
+        ladder = reading.get("drain_probe_counts")
+        assert ladder, "drain_probe_counts is absent or empty -- reading predates #1203's drain walk"
+        admitting = {
+            days: rung
+            for days, rung in ladder.items()
+            if 0 < rung["files"] <= G4_MAX_DELETE_FILES and rung["bytes"] <= G4_MAX_DELETE_BYTES
+        }
+        assert admitting, (
+            "no ladder rung admits a positive count under both G4 caps -- _drain_walk would return "
+            "(None, None) and defer the whole pass every week"
+        )
+
+        tables = set(reading.get("tables") or [])
+        missing = _PRODUCTION_CATALOG_TABLE_FLOOR - tables
+        assert not missing, (
+            f"production-catalog floor name(s) {sorted(missing)} absent from `tables` -- this reading "
+            "was not taken against the production catalog (the ducklake_smoke catalog carries no "
+            "ops_* table). Re-take it against ducklake_ops with an explicit data_path and "
+            "meta_schema; never relax the floor to admit the reading you have."
+        )
+
+        assert reading.get("ok") is True, f"ok={reading.get('ok')!r} -- the committed envelope is not a success response"
+        assert reading.get("action") == "gc_ops", (
+            f"action={reading.get('action')!r} -- the committed envelope is not a gc_ops response. "
+            "action_clone_catalog reads a Neon copy-on-write branch at this same meta_schema and "
+            "data_path, so `action` is what rules that out."
+        )
+        assert reading.get("dry_run") is True, (
+            f"dry_run={reading.get('dry_run')!r} -- the committed reading must be a read-only probe, "
+            "never a real destructive pass"
+        )
+
+        captured_at = reading.get("captured_at")
+        deploy_run_id = reading.get("deploy_run_id")
+        assert captured_at, "captured_at provenance attestation is missing"
+        assert deploy_run_id == _DRAIN_DEPLOY_RUN_ID, (
+            f"deploy_run_id={deploy_run_id!r} -- provenance must name run {_DRAIN_DEPLOY_RUN_ID}, the "
+            "deploy-ducklake-lambdas.yml run whose completion anchors the captured_at bound below. A "
+            "fixture re-taken after a later deploy must move BOTH provenance constants together."
+        )
+        captured_dt = datetime.fromisoformat(str(captured_at).replace("Z", "+00:00"))
+        deploy_completion = datetime.fromisoformat(_DRAIN_DEPLOY_COMPLETED_AT)
+        assert captured_dt > deploy_completion, (
+            f"captured_at ({captured_at}) does not post-date deploy-ducklake-lambdas.yml run "
+            f"{_DRAIN_DEPLOY_RUN_ID}'s completion ({_DRAIN_DEPLOY_COMPLETED_AT}) -- the reading may "
+            "predate the drain code deploy"
+        )
+
+        broadest_rung_files = max((rung["files"] for rung in ladder.values()), default=0)
+        implied_cycles = -(-broadest_rung_files // G4_MAX_DELETE_FILES) if broadest_rung_files else 0
+        print(f"gc_ops dry_run baseline ladder: {ladder}")
+        print(
+            f"admitting rung(s) under G4 caps: {sorted(admitting, key=int)}; illustrative pre-expiry "
+            f"implied drain-cycle estimate (broadest rung {broadest_rung_files} files / "
+            f"{G4_MAX_DELETE_FILES} cap): {implied_cycles} -- rec-3870's N is re-grounded from the "
+            "POST-expiry real-pass ladder, not this pre-expiry canary"
+        )
