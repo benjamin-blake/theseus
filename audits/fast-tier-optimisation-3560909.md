@@ -1,0 +1,566 @@
+# Fast-tier optimisation findings at 3560909
+
+Base SHA: `35609091fd8482d3116e4b360c6ec2bc9ab25b90`
+
+## Established context
+
+- The working branch is `claude/fast-tier-optimisation`. It was rebased onto `origin/main` at
+  `a740b93` before Phase 1 began and at `6b6df4d` before Phase 2 began. The audit base remains pinned at
+  `35609091fd8482d3116e4b360c6ec2bc9ab25b90`; rebasing the working branch does not move the corpus.
+- This file is the cross-session state file. The committed Phase 0 section is complete and
+  authoritative, so later phases must not re-derive, re-measure or re-verify it. Each phase ends in
+  a commit pushed to draft PR #1131, and a session assigned one phase stops at that checkpoint.
+- Root `AGENTS.md`, `scripts/CLAUDE.md`, `tests/CLAUDE.md`, `docs/contracts/git-ops.yaml`, and the
+  audit brief bind this work. In particular: use `bin/venv-python`; keep public-repository data free
+  of credentials and operational identifiers; place the standalone harness below
+  `scripts/checks/deps/` with a mirrored test; keep it out of the registered validation-check
+  surfaces; remain within the 500-SLOC limit; and add an automated test for every behavior change.
+- The pre-commit hook is installed. The repository Python 3.12 environment works, and the harness
+  builds content-addressed environments from each replay tree's `requirements-fast.txt` and
+  `requirements-dev.txt` to reproduce the dependency boundary of `pr-validate`. GitHub PR,
+  workflow and artifact reads worked through the GitHub MCP surface; Phase 1 required no AWS
+  access.
+- The Phase 1 corpus and its SHA evidence live in
+  `scripts/checks/deps/fast_tier_corpus.yaml`. Stratum I is the 16 most recent first-parent merged
+  PRs strictly before the pinned base whose diff contains Python below `scripts/`, `src/` or
+  `tests/`. Stratum P is eight plan-to-implementation pairs with the plan-time prediction and the
+  implementation run's archived `budget.test_s` and `n_selected` recorded separately.
+- Historical replay means the pinned PR diff is applied to a worktree at that PR's merge parent,
+  then passed as status/path tuples to that tree's selector. Replaying the same paths against the
+  current tree is explicitly not equivalent. The harness invokes that tree's real
+  `run_pytest_diff`, adds JUnit and native node-ID capture externally, and compares the union with
+  `deferred` and `not-collected` as distinct verdicts.
+- The mutation probe is not a Phase 1 deliverable. Section 8.3 defers it until a candidate first
+  edits a test or drops an executed node. Phase 1 contains no performance diagnosis and changes no
+  fast-tier behavior.
+- The Phase 0 capability deviation remains durable context: the `agent_platform` AWS assume-role
+  chain was unavailable. AWS and warehouse operations remain out of scope, and no Phase 1 evidence
+  depends on them.
+
+## Phase 0 baseline
+
+The baseline uses 13 implementation-oriented `pr-validate` runs from 2026-09-07 through
+2026-09-10. Every run has a live `selection-manifest` artifact and a reachable job log. Ten runs
+passed and three reached the fast-tier step before failing. Quantiles use linear interpolation over
+the sorted observations.
+
+| Run ID | Result | `--pre` / job | Selected / corpus | Test / allowance | Non-test / 240s | Deferred |
+|---:|---|---:|---:|---:|---:|---:|
+| 34459640761 | pass | 37 / 126s | 22 / 559 | 8.904 / 180s | 28.603s | 0 |
+| 34275095889 | fail | 305 / 371s | 149 / 559 | 242.506 / 298s | 62.119s | 192 |
+| 34273985191 | fail | 382 / 445s | 149 / 559 | 308.592 / 298s | 73.220s | 192 |
+| 34258249886 | fail | 352 / 423s | 103 / 559 | 252.931 / 206s | 98.924s | 0 |
+| 34239943947 | pass | 77 / 144s | 12 / 559 | 7.234 / 180s | 69.714s | 0 |
+| 34168799325 | pass | 37 / 98s | 6 / 558 | 4.206 / 180s | 32.371s | 0 |
+| 34167833034 | pass | 35 / 115s | 4 / 558 | 4.559 / 180s | 30.306s | 0 |
+| 34165486441 | pass | 255 / 458s | 175 / 557 | 190.660 / 350s | 64.233s | 90 |
+| 34137114438 | pass | 294 / 347s | 125 / 551 | 201.562 / 250s | 92.398s | 124 |
+| 34134979966 | pass | 326 / 396s | 125 / 549 | 229.758 / 250s | 95.822s | 124 |
+| 34132131523 | pass | 278 / 352s | 144 / 550 | 180.514 / 288s | 97.435s | 101 |
+| 34130613979 | pass | 249 / 317s | 136 / 548 | 144.453 / 272s | 104.187s | 114 |
+| 34129245922 | pass | 264 / 348s | 143 / 546 | 167.257 / 286s | 96.173s | 101 |
+
+Across all 13 runs, the `--pre` step has a 264s median, 228s IQR, 35s minimum, and 382s
+maximum. Across the ten passing runs, it has a 252s median, 227.5s IQR, 35s minimum, and 326s
+maximum. The whole `pr-validate` job has a 348s median, 252s IQR, 98s minimum, and 458s maximum;
+the passing-only job median is 332s.
+
+The non-`--pre` portion of the job has a 70s median and 14s IQR. Dependency-cache restore has a
+25s median and dependency installation has a 30s median. All 30 recent job logs inspected reported
+a pip-cache hit, so this window contains no cold-cache observation to mix into the primary
+population or characterize separately.
+
+| Governed term | Median | Q1-Q3 | Maximum | Constraint |
+|---|---:|---:|---:|---|
+| `static_s` | 68.572s | 54.021-84.706s | 90.703s | Included in the 240s non-test budget |
+| `test_s` | 180.514s | 8.904-229.758s | 308.592s | `max(180s, 2s * n_selected)`, capped at 1260s |
+| `replay_s` | 3.442s | 0.208-4.752s | 14.737s | Reported against 150s; included in non-test |
+| `unattributed_s` | 3.618s | 2.593-4.751s | 5.592s | Included in the 240s non-test budget |
+| Non-test sum | 73.220s | 62.119-96.173s | 104.187s | Hard 240s budget |
+
+No sampled run breached the non-test budget. Runs `34273985191` and `34258249886` breached their
+breadth-derived test allowances. Selection spans 4-175 modules from corpora of 546-559 modules,
+with a median of 125 selected modules. Eight runs loudly deferred capped transitive residue, for
+1,038 deferrals in aggregate. The pinned-base corpus contains 559 test modules.
+
+`pytest_diff` is the dominant named phase in 9 of 13 runs and in every run selecting at least 103
+modules. It accounts for 1,943.136s of 2,888.640s of artifact-timed work, or 67.3%. Static work
+dominates the four low-breadth runs. The dominant cost is therefore selection breadth plus pytest
+execution for broad diffs; static work remains the addressable cost for small diffs.
+
+Evidence came from GitHub Actions job and step timestamps, all 13 `selection-manifest` artifacts,
+the 30 most recent reachable job logs for pip-cache classification, and the recursive Git tree at
+each artifact SHA for the historical corpus census. The governing formula was checked against
+`scripts/checks/deps/selection_budget.py` and the job structure against `.github/workflows/ci.yml`.
+
+## Phase 1 harness
+
+Complete. `scripts/checks/deps/fast_tier_harness.py` validates the pinned two-stratum manifest,
+reconstructs each Stratum I implementation tree from its merge parent and merge diff, builds the
+tree's fast-tier dependency environment, drives the historical selector and real pytest-diff path,
+records JUnit plus native pytest node IDs, and compares baseline/candidate verdicts across the union
+of nodes. Per-side captures also retain the selection manifest, deferral map, gate failures,
+commands, requirement hashes, environment fingerprint and interpreter. Gate-failure changes are
+included in the reported difference count.
+
+Stratum I's same-ref smoke replay of `pr-1120` exercised the real path twice in the isolated
+environment, captured 100 union node IDs and both JUnit reports, and reported zero node or gate
+differences. Stratum P is emitted separately: all eight pinned plan-to-implementation pairs are
+reported, two predicted the observed selection breadth exactly, and none contained the observed
+`budget.test_s` within its recorded predicted test-half range. These are calibration outputs, not a
+performance diagnosis.
+
+The focused harness suite passes 56 tests with 100% source coverage. This is an instrumentation
+check only; no candidate exists in Phase 1, so no optimisation or recall conclusion is drawn here.
+
+## Phase 2 diagnosis
+
+Complete. This diagnosis uses the committed Phase 0 population and Phase 1 harness as fixed inputs. No
+baseline or harness replay was rerun, and no tier behavior changed in this phase.
+
+### Cost location
+
+The fast tier has two different latency regimes rather than one general slowdown:
+
+| Regime | Authoritative evidence | Diagnosis |
+|---|---|---|
+| Broad diffs | `pytest_diff` is the largest named phase in all sampled runs selecting at least 103 modules. It accounts for 1,943.136s of 2,888.640s of artifact-timed work (67.3%). | Selection breadth and execution of the selected tests are the dominant real work. The breadth is intentional recall, not waste. The addressable part is orchestration paid around the fixed executed-node set. |
+| Small diffs | Static work dominates all four low-breadth runs. `static_s` has a 68.572s median (54.021-84.706s IQR); the complete non-test half has a 73.220s median. | Once pytest is small, the serial static floor is exposed. Its assertions stay; repeated discovery, parsing and subprocess setup within those assertions are the target. |
+| Outside `--pre` | The job-minus-tier median is 70s; pip-cache restore is 25s and dependency installation is 30s. All 30 inspected runs were cache hits. | This is a separate job-clock target. The existing cache avoids downloads but does not avoid reconstructing the installed environment. It cannot improve the governed tier clock and must be reported separately. |
+
+The 67.3% pytest share is an addressable *envelope*, not an estimated saving. It contains both the actual
+execution that supplies the gate's recall and orchestration whose fraction is not yet separately timed.
+Likewise, the 73.220s non-test median is not all removable: it includes the checks themselves, replay and
+unattributed setup. Phase 1's Stratum P timing predictions did not bracket any of the eight observed test
+halves, so they are not used to manufacture a savings estimate. Savings remain unknown until same-ref
+local A/B and fresh CI runs exist.
+
+### Addressable mechanisms
+
+The first test-half candidate will remove duplicate collection, not selected tests. Every non-empty
+affected set currently enters one whole-selection `pytest --collect-only` process to classify
+module-scope excluded-heavy-dependency cases. When at least one module is runnable, the primary pytest
+process then collects those modules again before executing them. The intended candidate moves that
+narrow deferral classification into the primary collection/execution session: suppress only a collection
+result that positively identifies a deliberately excluded and genuinely absent dependency, record the
+same per-file reason, and leave every other collection error hard-red. Lazy runtime imports retain the
+current reactive fallback. This attacks process startup plus the second import/collection pass while
+preserving the selected node set, markers, fixed seed, xdist, timeouts, socket isolation, scoped coverage,
+deferral map and failure semantics. It survives only if the Phase 1 differ reports zero node-verdict and
+gate-verdict changes over the corpus, including distinct deferred and not-collected outcomes.
+
+The first static-half candidates will reuse immutable work within one validation process. The current
+source has concrete duplication independent of timings: the fast-tier SLOC and cyclomatic-complexity
+checks walk and read the same repository independently; the complexity pass parses Python files already
+parsed while constructing the selector/import graph; and self-scoping checks issue fresh changed-file
+git queries after `validate.main` has already derived both diff views. The intended mechanism is a
+run-scoped file/diff inventory with shared text and AST results, starting with the shared SLOC/CC file
+population and the repeated changed-file queries. Each registered check still dispatches in the same
+order and produces its own outcome. Nothing is persisted between runs, and fixture roots and push-
+context bases remain part of the cache key or are passed explicitly. Broader shared parsing proceeds
+only where a local A/B attributes a material saving; this diagnosis does not assume the entire static
+median is redundant I/O.
+
+The workflow-level candidate is a content-addressed installed-environment cache keyed by the runner,
+Python version and an exact resolved fast/dev environment, with an ordinary install on a miss. The
+declaration files contain ranges, so caching an environment indefinitely from their hashes alone is
+ruled out: it would silently freeze a formerly fresh resolution. A safe candidate first needs an exact
+resolution fingerprint or equivalently bounded invalidation. A wheel-cache hit still leaves the observed
+30s installation median, so tuning the existing download cache is not the mechanism. This candidate is
+retained only if fresh CI demonstrates that the larger restore is faster than restore plus install. Its
+evidence must state both `--pre` and whole-job clocks; moving work outside the governed timer is not a
+tier saving.
+
+These are Class 2 optimisations: they change redundant orchestration while keeping the executed node set,
+per-node verdicts, asserted static work and emitted artifacts identical. No Class 1 skip is claimed:
+closure-backed precision has not been proved for an eligible cost. No Class 3 recall reduction is
+intended. The ordered attack is (1) pytest's second collection pass, because broad diffs dominate the
+population; (2) same-run static reuse, because it controls the small-diff floor; and (3) installed-
+environment reuse, because it affects only the job clock.
+
+### Mechanisms ruled out
+
+- **Selector narrowing, demotion and promotion rollback:** ruled out. PR #723 repaired additive selector
+  recall, and PR #966 added protected channels and promoted 25 checks for a measured aggregate cost of
+  only 1.56s. The affected-set breadth is deliberate work. Optimisation will not change which tests or
+  checks qualify.
+- **CAP reduction, protected-channel deferral and silent skipping:** ruled out. The cap applies only to
+  transitive residue, while changed tests, direct importers, cochanged-source mirrors and incident
+  channels are protected. Current deferral is bounded, loud and observable; weakening it exchanges
+  latency for missed pre-merge signal.
+- **Persistent selection, import-graph or coverage caches:** ruled out in this audit. The selector is
+  intentionally live and cacheless, and a persisted cache is a Decision-level change with invalidation
+  and staleness risk. Run-scoped reuse of immutable inputs is deliberately narrower.
+- **New or narrower `pre_globs`:** ruled out while closure validation is advisory. A glob omission is
+  fail-open and skips the exact check that would expose its own incomplete dependency declaration.
+  Existing glob gates remain unchanged.
+- **Overlapping the static and pytest halves:** ruled out. The budgets are a serial partition. Hiding
+  static work under a longer pytest process makes the non-test term vacuous unless critical-path
+  accounting and the synthetic 300s static-sleep probe are preserved. No such budget reinterpretation
+  is needed for the identified duplication.
+- **More pytest workers:** ruled out. The primary path already uses `-n auto`; a fixed seed addresses the
+  cross-worker collection hazard. Worker-count retuning is not a mechanism supported by this baseline.
+- **Dropping scoped coverage:** ruled out. Diff coverage consumes its artifact, and the current
+  include-scoped sysmon configuration has already reduced a measured 4.3x whole-tree tracing penalty to
+  a 2.4% proxy overhead. Removing that remaining work would remove evidence rather than redundant work.
+- **Removing `-v` or test/deferral artifacts:** ruled out for the first candidate. The verbose stream is
+  consumed by `_attribute_failed_test_files` and ci-rca, while the coverage and deferral maps feed
+  `validate_diff_coverage`. The candidate therefore changes neither output. If later measurement makes
+  verbosity material, replacements for every consumer and an artifact upload must land before it changes.
+- **Optimising the reactive heavy-dependency probes first:** ruled out. They occur only after a primary
+  failure with a matching excluded-dependency signature, are already restricted to implicated files and
+  run with bounded concurrency. They do not explain passing-run latency.
+- **Editing tests or replacing pytest:** ruled out at this stage. The baseline identifies breadth, not a
+  particular slow test body, and pytest currently supplies autouse fixtures, socket denial, recursion
+  checks, marker policy, heavy-dependency handling, fixed ordering, timeouts and coverage. A replacement
+  runner would owe equivalence for all of them. Test edits would additionally trigger the deferred
+  mutation probe; neither risk is justified before orchestration-only candidates are exhausted.
+- **Budget increases or relabeling:** ruled out. No sampled non-test half breached 240s, and two test-half
+  breaches are observations to improve, not reasons to weaken the threshold.
+
+## Change ledger
+
+| Change | Class | Mechanism | Estimated saving | What no longer runs | What is no longer produced | Proof | Residual risk |
+|---|---|---|---|---|---|---|---|
+| Phase 2 diagnosis only | N/A | Documentation checkpoint before code | 0s | Nothing | Nothing | Diff limited to this findings document | None; candidate rows begin in the implementation phase |
+| Candidate 1 - **ABANDONED**; code retained in git history at `7f1fa195..015a0240` | Class 2 - identical work, lower cost | The real primary pytest session suppresses only positively identified excluded-and-absent dependency collection reports, records deferrals through xdist worker output, and rolls back coverage produced while importing a deferred module. The former collect-only implementation remains only as a frozen compatibility surface. | The 3.395s orchestration-remainder saving at 144 modules is real (non-overlapping IQRs), but only 1.3% of the Phase 0 264s `--pre` median. The then-used +/-24s cross-PR comparison was workload variation, not a measured noise floor; CI detectability was not established. The explicit abandonment decision stands on the small measured saving and integration costs. Gross-wall saving is null within spread. | **No test nodes are removed.** On this branch, one collect-only process no longer runs. The corrected committed-ref differ from `9cecaab2` to `015a0240` completed all 16 cases and compared 27,878 union-node observations: zero node-verdict changes, zero gate-verdict changes, and identical deferral maps. `deferred` and `not-collected` remain distinct outcomes in the capture vocabulary. | **No loss is observed.** The differ reports identical executed nodes, per-node verdicts, gate verdicts and deferral maps across the corpus. | The initial checkpoint's 72 fixture-only node changes were corrected in `015a0240` by making the shared subprocess double emit the primary-plugin completion record and carrying both new `_pytest_diff` modules into synthetic verifier fixtures. The mandatory 10-case baseline/candidate mutation probe caught all 10 mutations. The original 102 focused tests passed; the correction's 368-test focused suite passed after the one sandbox-denied Git-worktree test was rerun with permission. Ruff and format checks pass. | Costs outweigh this small local saving: rewrite of the fail-closed classification path, permanently frozen `_pytest_diff_collect.py` compatibility surface, test-double changes across the suite, rebase conflict in `_pytest_diff.py` after main also modified it, and a full corpus re-proof because all requirements files and the derived heavy-dependency deferral set moved. Do not integrate Candidate 1; no code revert or rebase in this session. |
+| Candidate 2 - **ABANDONED AS SCOPED**; broader static reuse resolved separately below | Class 2 proposal only; not implemented | Share the SLOC/CC gated-file walk and reuse CC's repeated AST parses and source reads within a run. | No achieved saving. The generous SLOC/CC-first ceiling is 2.153s on the branch diff and 1.463s on a single-test diff; it includes one walk, all CC repeated parse/read time, and even all git-call time. The walk alone costs only 15-23ms. | Nothing; no Candidate 2 code changed. | Nothing. | Clean-tree runtime profile: two 984-file `iter_gated_py_files()` calls in normal `--pre`, not four; CC repeated 948 parses costing 1.774s on the branch diff. Full measurement below. | The diagnosed narrow walk/CC sharing is not worth implementing at this measured magnitude. This scoped decision did not itself abandon run-scoped static reuse as a concept; the current-base low-breadth experiment below separately resolves the broader line. |
+| Static-reuse continuation - **NULL RESULT** | Class 2 proposal only; not implemented | Reuse identical source parses, registered-check module searches and identical-text contract YAML loads across the static checks. | Approximately 7.4s realistically recoverable. A separately composed perfect-reuse ceiling for measured parse/read/walk/git work is 8.624s on the small-diff profile. Both are inside the current-base low-breadth median-exclusive `--pre` IQR width of 11s. | Nothing; no implementation was made. | Nothing. | Five sequential green reruns of a current-base, one-test-file draft PR selected exactly one module every time. The `--pre` median was 41s, IQR 30-41s and full range 27-41s. | Section 12 makes the timing claim null. The 8.624s parse/read/walk/git ceiling is the largest proposed static-reuse envelope the evidence protocol rejected; no target advances to implementation. |
+
+The Candidate 1 row originally used roughly +/-24s as a "CI noise floor"; that label is corrected
+in the row above. Those clocks came from three different PRs with different selection breadths:
+workload variation, not same-workload run-to-run noise. This correction does not reverse or re-measure the
+user's **ABANDONED** decision for Candidate 1; its measured local saving and integration costs
+remain recorded above. The Candidate 2 scoped abandonment also stands as a user decision about
+the measured narrow ceiling, not a claim that cross-case spread is a detection threshold. The
+broader static-reuse line is resolved separately by the current-base experiment below.
+
+## Candidate 1 timing row - fixed-tree local attribution
+
+Prediction stated before measurement: removing one pytest process start and one whole-selection
+collection pass should save roughly a constant amount per run, not an amount proportional to
+selection breadth. This local A/B tests that prediction; it is not Phase 4 CI timing evidence.
+
+Both scratch worktrees were fixed at `dec04c6d`. The baseline restored **only**
+`scripts/checks/_pytest_diff.py` from `9cecaab2`; the candidate kept the `dec04c6d` file. Git
+status confirmed that this was the only tracked source difference throughout. Both sides used the
+same content-addressed Python 3.12 fast/dev environment and the same `dec04c6d` requirements.
+The broad selection was the exact 144-module selected list in the `pr-1114` capture produced by
+the committed-ref corpus replay; the breadth control was its first 18 modules. Each side ran the real
+`run_pytest_diff` five times per selection, alternating baseline then candidate. Every invocation
+kept the real pytest flags, coverage setup, timeout and xdist path. Outer wall time was measured
+locally; pytest's own summary duration was subtracted only for a secondary orchestration-remainder
+readout. Raw timing and pytest logs stayed in gitignored `logs/debug/`.
+
+| Selection | Side | Five outer wall times (s), in run order | Median (s) | Q1-Q3 (s) | Min-max (s) |
+|---|---|---|---:|---:|---:|
+| 144 modules, 3,176 outcomes | Baseline | 358.436, 305.504, 410.900, 365.706, 312.854 | 358.436 | 312.854-365.706 | 305.504-410.900 |
+| 144 modules, 3,176 outcomes | Candidate 1 | 351.011, 365.540, 360.720, 318.053, 315.390 | 351.011 | 318.053-360.720 | 315.390-365.540 |
+| 18 modules, 503 outcomes | Baseline | 9.380, 9.518, 9.111, 9.038, 9.682 | 9.380 | 9.111-9.518 | 9.038-9.682 |
+| 18 modules, 503 outcomes | Candidate 1 | 9.124, 8.387, 8.169, 8.301, 8.436 | 8.387 | 8.301-8.436 | 8.169-9.124 |
+
+The representative broad-set median difference is 7.425s, but the paired differences range from
+-60.036s to +50.180s and both per-side spreads dwarf 7.425s. The gross-wall improvement is
+therefore **null** under section 12's noise rule. The 18-module control has a 0.993s difference
+between medians (0.942s median paired saving), outside its IQR spread; it is a small-set result,
+not an extrapolated broad-set claim. All ten narrow runs passed the same 503 tests. All ten broad
+runs had the same 3 failed, 3,172 passed and 1 skipped summary: the three failures come from a
+reused environment's `lint-imports` launcher pointing to a vanished path, common to both sides.
+No new test or gate-verdict claim is inferred from these timing-only runs.
+
+| Selection | Baseline outer-minus-pytest median (Q1-Q3), s | Candidate median (Q1-Q3), s | Median difference, s |
+|---|---:|---:|---:|
+| 144 modules | 4.836 (4.424-7.820) | 1.441 (1.433-1.510) | 3.395 |
+| 18 modules | 1.618 (1.571-1.620) | 0.796 (0.731-0.814) | 0.822 |
+
+The non-overlapping orchestration remainders show that Candidate 1 removes some local work, but
+the saving grows from 0.822s to 3.395s as selection breadth grows eightfold. The pre-measurement
+constant-saving prediction is **rejected**: the whole-selection collection pass has a
+breadth-dependent cost. This decomposition does not override the null gross-wall result on the
+representative set, and it makes no CI-based timing claim.
+
+At this checkpoint, `dec04c6d` was pushed to draft PR #1131. The PR is marked conflicting with
+main. The GitHub check returned no PR workflow run associated with that head, and there was no
+CI-green signal for it at the last check. Main has changed
+`scripts/checks/_pytest_diff.py` and all requirements files since the candidate branch diverged,
+so its prior identical-deferral-map proof cannot be reused after any integration. This session
+did not rebase, re-run the corpus differ, or start Candidate 2.
+
+## Candidate 2 pre-implementation profile - no tier change
+
+This is a local static-work profile at the current committed branch tree, not a production
+change or a new Phase 0/CI timing population. Runtime-only instrumentation drove the registered
+`--pre` sequence with the Candidate 1 pytest-diff scaffold omitted, so Candidate 1 was not
+re-run. A clean scratch checkout at `1ac7ff91` avoided the Codespace's gitignored
+`logs/debug/` replay environments: the working directory had 14,107 gated Python files and
+would overstate CI-like scan cost, while the clean checkout had 984. The clean profile kept all
+static checks and their pre-glob dispatch real. A second pass supplied a synthetic single-test
+changed path on the same tree to profile a low-breadth Python-diff context; neither pass edited
+tracked source.
+
+The normal `--pre` path calls `iter_gated_py_files()` **twice**, not four times: once from
+`validate_cc_limits` and once from `validate_sloc_limits`. SLOC's second call is only in the
+separate `--update-sloc-budgets` command, and `validate_sloc_budget_raises` never calls the
+iterator. Each clean-tree iterator returned 984 files and cost 15-23ms, including its whole-repo
+walk. The budget-raise guard made no AST parse; CC parsed 954 files, skipping 30 waivered files.
+
+| Clean-tree static context | AST parses | Later same-path/source-hash/mode parses | Their measured parse time | Repeated-read time | All git-call time |
+|---|---:|---:|---:|---:|---:|
+| Current branch diff | 8,720 | 7,561 | 12.160s | 1.757s | 0.212s (51 calls) |
+| One edited test module | 5,952 | 4,847 | 7.507s | 0.999s | 0.096s (26 calls) |
+
+The CC check's own repeated parses accounted for 948 calls / 1.774s in the current branch
+context and 624 calls / 1.207s in the single-test context. These are direct timed
+`ast.parse()` bodies, not a subtraction from gross `--pre` wall time. Five direct, uninstrumented
+check invocations on the clean tree gave these medians (Q1-Q3): CC 4.333s (4.329-4.394), SLOC
+0.172s (0.167-0.178), SLOC budget-raise guard 0.004s (0.003-0.008), contract drift 7.057s
+(6.944-7.075), test-count coupling 4.285s (4.213-4.288), and raises discrimination 3.698s
+(3.672-3.712). The direct check timings corroborate that walks are tiny and repeated parsing,
+not the iterator itself, is the larger static cost.
+
+The diagnosed SLOC/CC-first reuse has a **generous ceiling**, not an achieved saving: removing
+one iterator, all CC repeated parses and file reads, and even **all** measured git-call time
+would recover at most 2.153s on the current branch diff and 1.463s on the single-test context.
+An impossible perfect cache across every repeated parse and read in the entire measured pre
+path, plus one walk and all git calls, has a still-generous ceiling of 14.146s and 8.624s
+respectively. Some AST consumers may not safely share an object, and many git calls are not
+redundant, so actual recoverable time is lower. These are local per-operation ceilings, not
+CI-based timing claims.
+
+Against the authoritative Phase 0 regimes, the current-branch perfect-cache ceiling is 20.6%
+of the 68.572s overall static-half median and 5.4% of the 264s `--pre` median. The four
+low-breadth `--pre` clocks were 35, 37, 37 and 77s, but their 10.5s cross-case IQR came from
+different selections and is **workload variation, not a CI noise floor**. The single-test
+perfect-cache ceiling is 8.624s, or 11.2-24.6% of those total clocks; that comparison gives
+relative magnitude, not detectability. Candidate 2 is **ABANDONED AS SCOPED** per the user's
+decision: the specific SLOC/CC-first ceiling of 1.463-2.153s is not worth implementing. Broader
+run-scoped static reuse remained open at this checkpoint and is resolved by the current-base
+experiment below. No Candidate 2 implementation, rebase, or Candidate 3 work occurred.
+
+## Historical rerun artifact - invalid noise measurement
+
+The historical PR #1131 `ci.yml` run [34763691328](https://github.com/benjamin-blake/theseus/actions/runs/34763691328)
+originally selected two test modules at head `9cecaab2`; five later job reruns selected 424 modules,
+ended red and produced an 83s `--pre` range. That range is **invalid as a noise-floor measurement**.
+The fixed historical checkout did not freeze the comparison base: selection resolves the pinned head
+against live `origin/main`, which had moved far beyond the base used by the original run. The resulting
+424-module workload was almost certainly the same live-base drift artifact later demonstrated directly
+by the attempted 22-module Phase 0 rerun below, not evidence that the original workload was genuinely
+broad.
+
+Historical CI runs are therefore not re-runnable experiments in this repository. Re-running a job
+preserves its head or merge checkout but recomputes selection against live `origin/main`; once main has
+moved, both selection breadth and downstream failure/output work can change. Neither the 83s range from
+this artifact nor the earlier +/-24s and 10.5s cross-case spreads are valid detection thresholds. No
+candidate verdict or Phase 4 timing claim uses them.
+
+## Four additional static checks - location profile only
+
+A detached clean checkout of the committed `d89fb626` tree had 984 gated Python files, 684
+test modules and 47 depth-1 contract YAMLs. Runtime-only instrumentation omitted Candidate 1's
+pytest session but kept the registered static `--pre` sequence real. The earlier five direct
+check medians that exposed these checks were 7.057s (contract drift), 4.333s (CC), 4.285s
+(test-count coupling) and 3.698s (raises discrimination), 19.373s gross together. The
+current clean-tree static-sequence profile read 7.197s, 4.243s, 3.688s and 3.491s
+respectively. Direct component timers and `cProfile` located the work; profiled cumulative
+times are **not** treated as saving estimates because profiling adds overhead. No tier source
+or test was changed.
+
+| Check | Where the time goes | Precision versus identical-work route |
+|---|---|---|
+| `validate_contract_drift` | Five isolated direct runs had a 5.461s median on this machine. Its 31 evaluator resolutions invoke 27 fresh registered-check module searches: 2,033 Python source parses, 3.292s median for those searches, with 2.045s inside source read/parse in a detailed run. There were 157 YAML loads, 1.653s median; 109 loads of identical YAML text cost 1.092s in a detailed run. The eight git subprocess reads cost only 0.035s in the static-sequence profile. Contract-tree enumeration was below 1ms. | Pass 1 must validate the complete 47-contract population, evaluator reading, subject uniqueness and pin-vs-census equality; Pass 2 is already diff-aware. A changed-contracts-only Class 1 scan would lose those assertions/artifacts. Class 2 repeated source/YAML work exists; the full 5.461s is **not** recoverable. |
+| `validate_cc_limits` | One 984-file gated walk costs 15-23ms. It reads 984 files (0.146s) and parses the 954 non-waivered files (1.765s); the remainder of its roughly 4.3s check is AST traversal and branch counting for each function, including nested subtree walks. No subprocess runs. | Whole-repo enumeration is not the cost. A Class 1 changed-Python-file precision route is conceivable only with a proved clean baseline and changed-path coverage; none is proved here. Class 2 parse/text reuse with other static readers exists, while branch counting itself is assertion-required. |
+| `validate_test_count_coupling` | It enumerates all 684 test modules in 4-5ms, reads them in 0.095s and parses them in 1.025s in the static-sequence profile; no subprocess runs. It then discovers 12,887 scopes, computes tainted names in one traversal (0.856s median over three direct runs), and traverses each scope again to inspect exact-count assertions. The two AST passes, not the path glob, dominate the remainder. | Class 1 input-disjoint precision may exist when unchanged test source and a clean prior verdict are proved; merely ignoring tests on a production-data change is not such a proof. Class 2 AST sharing with other tests-tree checks and repeated-scope traversal reduction are identifiable identical-work routes. No route is certified here. |
+| `validate_raises_discrimination` | It enumerates the same 684 tests in 4-5ms, reads them in 0.082s and parses them in 1.161s in the static-sequence profile; no subprocess runs. Three direct runs put import-alias resolution over 684 files at 0.539s median, binding discovery over 340 pytest-importing files at 0.364s and scope enumeration over those files at 0.330s. The remaining time is per-scope site classification and report emission. | The complete `scanned` / `hits` / `directories` census and `examined` accounting are emitted artifacts; a diff-only Class 1 scan would change them. Class 2 AST/text reuse with test-count coupling is possible, but the global census and site classification are required. |
+
+These four **gross** check clocks total 19.373s, roughly two-thirds of a ~30s low-breadth
+static half; that total is not an achievable saving. The measured reusable portions are smaller.
+No accept/abandon conclusion follows from either historical rerun because live-base drift invalidated
+their workloads. A 3-4s static target on a 35-77s PR cannot be judged against the old cross-case 10.5s
+figure or the invalid 83s broad-run range. This is location and route classification only, not a fix
+proposal or a Candidate 3 start.
+
+## Low-breadth rerun attempt - invalidated by live-base drift
+
+Run [34459640761](https://github.com/benjamin-blake/theseus/actions/runs/34459640761)
+was selected from the Phase 0 low-breadth population. Its first two historical attempts used
+the same `6017e4d4` head / `7fe4a927` PR merge checkout, selected 22 modules, passed 514 tests,
+and recorded `--pre` clocks of 37s and 35s. Their job clocks were 126s and 93s. Two observations
+are insufficient for the requested five-run median/IQR.
+
+One new `pr-validate` rerun was issued through the GitHub connection. It checked out the same
+`7fe4a927` merge commit, but selected **437 modules**, failed 47 of 8,582 outcomes in its first
+pytest session, and ended red. Its `--pre` step was 835s and its job was 901s. It is excluded
+from the low-breadth population rather than mixed with the two valid historical attempts.
+Four further reruns were not issued: they would repeat the wrong workload.
+
+This is deterministic base drift, not unexplained runner noise. `ci.yml` checks out full history
+(`fetch-depth: 0`), while `_common.get_changed_files()` and `get_status_aware_diff()` resolve the
+selection against live `origin/main`. At the rerun, `origin/main` was `9dd1648a`; the historical
+merge commit's second parent is `4fb88c1a`. A job rerun preserves the old checkout but does not
+freeze the remote-tracking base. All four offered Phase 0 runs are historical PR checkouts and
+therefore share this moving-base property. The prescribed job-rerun method can no longer recreate
+their original low-breadth workload without changing the workflow or remote base, neither of
+which this session authorizes.
+
+The current recoverable-work estimate is approximately **7.4s** - not the 19.373s gross duration of
+four checks. It combines contract drift's 3.29s repeated module searches and 1.09s identical-text
+YAML reloads with roughly 3.0s of repeated parsing in CC, test-count coupling and raises
+discrimination. A separately composed measured ceiling for repeated parse/read work, one walk and
+all git calls is **8.624s**; it does not formally bound the 7.4s mechanism. Contract drift is the
+largest single located surface at about **4.38s**.
+
+No accept/null verdict is recorded from this attempt. In particular, this is not a Section 15
+null result: the low-breadth harness did not reject the 7.4s estimate; the requested five-run
+threshold was not produced. Declaring either acceptance or a null result would manufacture the
+missing measurement. Candidate 1 remains abandoned and Candidate 2 remains abandoned as scoped;
+no Candidate 3 or implementation work occurred.
+
+## Current-base low-breadth CI noise and Section 15 verdict
+
+Draft PR [#1201](https://github.com/benjamin-blake/theseus/pull/1201) was created from current
+`origin/main` at `9dd1648a2bc2296d2a2153f21ae3e245e259ab64`. Its only change was a comment in
+`tests/test_syspath_hygiene.py`. The initial qualifying run was green and selected exactly that one
+module. Five subsequent `pr-validate` job reruns of workflow run
+[35094004335](https://github.com/benjamin-blake/theseus/actions/runs/35094004335) were issued
+sequentially through the GitHub connection. All five were green, selected exactly
+`tests/test_syspath_hygiene.py`, and passed the same nine tests. `origin/main` was still the exact
+starting SHA after the fifth rerun, so the comparison base and workload did not drift.
+
+| Clock | Five reruns in attempt order (s) | Median (s) | Q1-Q3 (width; % median) | Min-max (width; % median) |
+|---|---|---:|---:|---:|
+| `--pre` step | 33, 41, 41, 41, 27 | **41** | 30-41 (11; 26.8%) | 27-41 (14; 34.1%) |
+| `pr-validate` job | 89, 95, 115, 119, 95 | **95** | 92-117 (25; 26.3%) | 89-119 (30; 31.6%) |
+
+This table uses median-exclusive lower and upper halves, which gives the requested 30-41s quartiles.
+That convention differs from the inclusive hinges used in the Candidate 1 five-run table and from
+Phase 0's linear interpolation. Inclusive hinges would give 33-41s, an 8s IQR width, for this same
+population. The prescribed median-exclusive low-breadth `--pre` spread is 11s (26.8% of the median),
+and the convention-independent full range is 14s (34.1%). The corresponding job-clock spreads are
+25s / 26.3% and 30s / 31.6%. The initial qualifying run is excluded from these five-rerun statistics.
+
+The realistic recoverable-work estimate remains approximately **7.4s**. Its basis is contract
+drift's 3.29s of repeated registered-module searches plus 1.09s of identical-text YAML reloads,
+and roughly 3.0s of repeated parsing across CC, test-count coupling and raises discrimination.
+Contract drift is the largest single target at approximately **4.38s**. The four checks' 19.373s
+gross clock is not a saving estimate. A separate small-diff perfect-reuse ceiling for the measured
+repeated `ast.parse` and `Path.read_text` calls, one repository walk and all git calls is **8.624s**.
+It is not a mathematical bound on the differently composed 7.4s estimate because the latter also
+includes YAML parsing and module-search work outside source read/parse.
+
+This optimisation line is a **Section 15 NULL RESULT** for the measured one-module regime. The
+7.4s realistic estimate is inside both the 8s inclusive-hinge IQR and the prescribed 11s
+median-exclusive IQR. The separate 8.624s parse/read/walk/git ceiling is inside the 11s IQR and the
+14s full range, though it is 0.624s above the alternative 8s IQR. It therefore remains inside the
+observed same-workload spread on the authoritative CI surface and cannot support a Section 12
+improvement claim. Candidate 1's 3.395s orchestration-remainder saving is smaller still. No
+static-reuse target advances to implementation, and Candidate 3 was not started.
+
+The measurement PR was closed without merge, and its local and remote throwaway branches were
+deleted after collection.
+
+## Phase 4 evidence
+
+Not entered. The Phase 3 optimisation line ended in the Section 15 null result above.
+
+## Section 15 standing claim
+
+The explored optimisation line is a **rigorous null result on its measured surfaces**, not a claim
+that no safe fast-tier optimisation exists at every selection breadth.
+
+- Candidate 1 was implemented and proved equivalent across the 16-case corpus: the committed-ref
+  differ compared 27,878 union-node observations with zero node-verdict changes, zero gate-verdict
+  changes and identical deferral maps. Its isolated orchestration remainder saved 3.395s at 144
+  selected modules. It was rejected because the broad gross-wall A/B was null, the isolated saving
+  was only 1.3% of the Phase 0 264s median, and retaining it required a rewrite of the fail-closed
+  classification path, a frozen compatibility surface, suite-wide test-double changes, conflict
+  resolution and a new corpus proof after requirement drift.
+- Static reuse was not implemented. The realistic recoverable estimate is approximately 7.4s in
+  the profiled small-diff context. The largest measured perfect-reuse ceiling is 8.624s for repeated
+  `ast.parse` and `Path.read_text` calls, one repository walk and all git calls. These are separately
+  composed estimates: the 7.4s figure also includes YAML parsing and registered-module-search work,
+  so 8.624s is an impossible all-reuse ceiling for its measured parse/read/walk/git envelope, not a
+  mathematical bound on every static-reuse mechanism. Both estimates were rejected on magnitude.
+- The authoritative same-workload CI experiment was a current-base, one-module, nine-test PR. Five
+  sequential green reruns had a 41s `--pre` median, a median-exclusive IQR width of 11s (26.8%) and
+  a full range of 14s. The 7.4s estimate is also inside the alternative 8s inclusive-hinge IQR. The
+  8.624s ceiling is inside the prescribed 11s IQR and the 14s full range, although it is 0.624s above
+  the alternative IQR. Neither supports an improvement claim under Section 12.
+
+The one-module 11s IQR is not automatically a detection threshold at the Phase 0 population's
+149-module breadth. No repeated current-base broad-diff population was measured, so this null result
+does not generalise to broad static work or to the unstarted installed-environment candidate. At broad
+breadth it establishes only Candidate 1's local 3.395s orchestration result and null gross-wall A/B.
+At one-module breadth it rejects the profiled static-reuse line within the observed CI spread. This
+is the largest claim the evidence supports.
+
+## Section 14.3 harness handback
+
+The committed harness corpus contains 16 pinned implementation PRs and eight pinned
+plan-to-implementation predictor pairs. Its manifest base remains
+`35609091fd8482d3116e4b360c6ec2bc9ab25b90`. After Candidate 1 was removed, the branch was rebased
+onto main base `db63955a8ebf12c92b2651c19cb47a1c84efc16c`. The harness was re-proven against that base's
+`scripts/checks/_pytest_diff.py` content at revert commit
+`794316cbb1cf5cfaec9ff6ceafe9fef6a6e1ef41`; keeper commit
+`9a94f254406311053f7e2ac429ff5e0b5e35476f` contains the resulting harness maintenance fixes.
+
+The post-revert corpus subset used `pr-1126`, baseline `9cecaab2` and reverted-tree candidate
+`794316cb`. It exercised current main's real `_pytest_diff.run_pytest_diff()` primary and reactive
+paths, consumed `DEFERRAL_MAP_REL`, and completed a 2,741-union-node comparison. Repository evolution
+between the old baseline and current main produced 311 node changes, so this was a compatibility
+re-proof rather than a new equivalence claim; the gate verdict was unchanged and both sides recorded
+four deferred modules. The updated mutation manifest caught all 10 mutations on both revisions.
+
+The first post-revert attempts found two harness-maintenance defects: relative artifact paths made a
+worker interpreter resolve under the temporary worktree, and four candidate-side mutation anchors
+still named deleted Candidate 1 seams. `9a94f254` resolves artifact paths absolutely, retargets those
+mutations to current main's equivalent assertions, and adds regression coverage for both failures.
+The focused harness/mutation suite passed 40 tests, branch-scoped mypy and whole-tree ruff/format
+passed, and the final `bin/venv-python -m scripts.validate --pre` run passed all checks with 63 selected
+tests. Generated virtualenv artifact directories were moved out of the workspace before the final
+gate because the repository's static walkers deliberately scan gitignored Python trees too; raw JSON
+results remain under `logs/debug/`.
+
+The retained harness is an executed-node and gate-verdict differ, not a standalone Class 2 artifact-
+equivalence certificate. It exposes both deferral maps for inspection, but a map-only change with no
+node or gate change is not included in `difference_count`, and it does not compare the complete
+diff-coverage artifact. Any future Class 2 candidate must compare those emitted artifacts separately
+before claiming Section 7 equivalence.
+
+## DEVIATIONS
+
+### Capability deviations
+
+- The `agent_platform` AWS assume-role chain was unavailable during preflight. The audit's AWS and
+  warehouse scope is explicitly out of scope, so no implementation evidence depends on it.
+
+### Judgment deviations
+
+- The Candidate 1 ledger initially treated roughly +/-24s from three Phase 0 PRs selecting 175,
+  125 and 149 modules as a CI noise floor. That was cross-workload variation, not repeated-run
+  noise. The error was caught when the abandonment rationale was reviewed. The replacement is the
+  controlled current-base experiment: five sequential green reruns of one SHA, one selected module
+  and nine tests, with an unchanged main base. Its `--pre` median was 41s, its median-exclusive IQR
+  width was 11s, its inclusive-hinge IQR width was 8s, and its full range was 14s.
+- Candidate 1 remained the live branch implementation for two sessions after its abandonment was
+  recorded. That preserved the rejected fail-closed rewrite while later profiling continued. Phase 5
+  removed it by restoring current main's affected files and deleting its added modules; the rejected
+  implementation and its evidence remain available only in git history at `7f1fa195..015a0240`.
+- A historical same-SHA rerun was initially treated as a noise experiment. Selection compared its
+  pinned head with live `origin/main`, so base drift inflated a formerly small workload to 424 modules.
+  The resulting 83s range is invalid, and the earlier 882s-scale observation falls with it. Historical
+  CI runs are not repeatable timing experiments under this repository's live-base selection model.
+- Phase 3 did not proceed as a sequence of implemented candidates. Candidate 1 was implemented,
+  measured, abandoned and later reverted. Candidate 2's diagnosed SLOC/CC scope and its broader
+  static-reuse continuation were profiled before implementation; both stopped on measured magnitude.
+  The installed-environment Candidate 3 was never started. This departs from the brief's nominal
+  change sequence but avoids implementing mechanisms whose measured estimates cannot clear the
+  authoritative surface's observed spread.
+- The controlled five-run table originally said its 11s IQR used the same convention as earlier
+  five-run tables. Independent review found that it used median-exclusive halves while Candidate 1
+  used inclusive hinges. Both values are now stated: 11s under the prescribed median-exclusive
+  convention and 8s under inclusive hinges. The 7.4s realistic estimate is within both; the separate
+  8.624s parse/read/walk/git ceiling is within the 11s IQR and 14s full range but not the 8s IQR.
+- Section 14.1's default instruction to promote the PR to ready is not followed. The optimisation
+  line closed as a null result, the rejected production rewrite was removed, and the operator directed
+  that PR #1131 remain draft for a human disposition decision.
