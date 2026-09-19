@@ -237,6 +237,18 @@ class TestGitAndWorktree:
 
 
 class TestWorkerAndOrchestration:
+    def test_reset_scripts_module_cache_clears_scripts_entries_when_file_launched(self, monkeypatch) -> None:
+        monkeypatch.setattr(harness, "_FILE_LAUNCH", True)
+        fake_modules = {"scripts": object(), "scripts.checks": object(), "other": object()}
+        harness._reset_scripts_module_cache(fake_modules)
+        assert set(fake_modules) == {"other"}
+
+    def test_reset_scripts_module_cache_is_a_noop_when_not_file_launched(self, monkeypatch) -> None:
+        monkeypatch.setattr(harness, "_FILE_LAUNCH", False)
+        fake_modules = {"scripts": object(), "other": object()}
+        harness._reset_scripts_module_cache(fake_modules)
+        assert set(fake_modules) == {"scripts", "other"}
+
     def test_worker_drives_real_seams_and_emits_capture(self, tmp_path: Path, monkeypatch) -> None:
         repo = tmp_path / "repo"
         (repo / "tests").mkdir(parents=True)

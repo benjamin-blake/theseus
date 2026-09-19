@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import threading
+from collections.abc import MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterator
@@ -209,11 +210,21 @@ def _overlay_delta(repo_root: Path, worktree: Path, baseline_ref: str, engine_re
         target.chmod(0o755 if mode == "100755" else 0o644)
 
 
+def _reset_scripts_module_cache(modules: MutableMapping[str, Any] | None = None) -> None:
+    """Drop any cached `scripts`/`scripts.*` modules before a file-launched worker re-imports
+    them under `sys.path`-relative names -- otherwise the stale package-relative import identity
+    from the parent process's launch would shadow the fresh one. No-op when not file-launched.
+    """
+    if not _FILE_LAUNCH:
+        return
+    registry = sys.modules if modules is None else modules
+    for module_name in tuple(registry):
+        if module_name == "scripts" or module_name.startswith("scripts."):
+            del registry[module_name]
+
+
 def _worker(repo_root: Path, diff_path: Path, output_path: Path) -> None:
-    if _FILE_LAUNCH:
-        for module_name in tuple(sys.modules):
-            if module_name == "scripts" or module_name.startswith("scripts."):
-                del sys.modules[module_name]
+    _reset_scripts_module_cache()
     sys.path.insert(0, str(repo_root))
     from scripts.checks import (
         _common,  # noqa: PLC0415
