@@ -110,6 +110,32 @@ def test_ensure_fast_environment_accepts_concurrent_completed_cache(tmp_path: Pa
         assert support.ensure_fast_environment(repo, cache) == (support._environment_python(final), fingerprint)
 
 
+class TestObjectAvailability:
+    def _repo_with_commit(self, tmp_path: Path) -> tuple[Path, str]:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        (repo / "f.txt").write_text("x", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-q", "-m", "c"],
+            cwd=repo,
+            check=True,
+        )
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True)
+        return repo, sha.stdout.strip()
+
+    def test_absent_pinned_object_names_the_shallow_checkout_remedy(self, tmp_path: Path) -> None:
+        repo, _ = self._repo_with_commit(tmp_path)
+        absent_sha = "a" * 40
+        with pytest.raises(support.HarnessError, match="git fetch --unshallow origin main"):
+            support.assert_pinned_objects_available(repo, (absent_sha,), case_id="case-x")
+
+    def test_present_pinned_objects_pass_silently(self, tmp_path: Path) -> None:
+        repo, sha = self._repo_with_commit(tmp_path)
+        support.assert_pinned_objects_available(repo, (sha,), case_id="case-x")
+
+
 def test_predictor_report_recomputes_both_calibration_dimensions() -> None:
     pairs = (
         {

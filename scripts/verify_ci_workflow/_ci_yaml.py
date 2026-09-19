@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from scripts.verify_ci_workflow._shared import _assert_runtime_lock, _get_steps_text, _load
+from scripts.verify_ci_workflow._shared import _assert_runtime_lock, _full_tier_jobs, _get_steps_text, _load
 
 
 def _check_jobs_and_flags() -> None:
@@ -90,37 +90,43 @@ def _check_concurrency() -> None:
     )
 
 
+def _checkout_step(job: dict[str, Any]) -> dict[str, Any] | None:
+    for step in job.get("steps", []):
+        if str(step.get("uses", "")).startswith("actions/checkout"):
+            return step
+    return None
+
+
 def _check_fetch_depth() -> None:
-    data = _load(".github/workflows/ci.yml")
-    jobs = data.get("jobs", {})
+    """Decision 168 (amends/subsumes Decision 159 clause 1): every full-tier job -- the jobs
+    _full_tier_jobs() derives, canary included -- must check out full history (fetch-depth: 0),
+    so history-dependent tests (e.g. the fast-tier corpus harness) never starve on a bounded
+    depth. This rule subsumes the retired main-validate == 2 pin outright.
 
-    pr_job = jobs.get("pr-validate", {})
-    main_job = jobs.get("main-validate", {})
+    pr-validate is NOT a full-tier job (it runs --pre only) -- Decision 181: that leg is
+    RETAINED alongside the rule below, never replaced by it.
+    """
+    ci_data = _load(".github/workflows/ci.yml")
+    canary_data = _load(".github/workflows/main-canary.yml")
 
-    pr_checkout = None
-    main_checkout = None
-
-    for step in pr_job.get("steps", []):
-        if str(step.get("uses", "")).startswith("actions/checkout"):
-            pr_checkout = step
-            break
-
-    for step in main_job.get("steps", []):
-        if str(step.get("uses", "")).startswith("actions/checkout"):
-            main_checkout = step
-            break
-
+    pr_checkout = _checkout_step(ci_data.get("jobs", {}).get("pr-validate", {}))
     assert pr_checkout is not None, "pr-validate has no checkout step"
-    assert main_checkout is not None, "main-validate has no checkout step"
-
     pr_with = pr_checkout.get("with", {}) or {}
     assert pr_with.get("fetch-depth") == 0, f"pr-validate checkout fetch-depth is {pr_with.get('fetch-depth')!r}, expected 0"
 
-    main_with = main_checkout.get("with", {}) or {}
-    assert main_with.get("fetch-depth") == 2, (
-        f"main-validate checkout fetch-depth is {main_with.get('fetch-depth')!r}, expected 2 "
-        "(Decision 159: HEAD~1 must resolve for the push-context diff base, squash-merge convention)"
-    )
+    full_tier_jobs = _full_tier_jobs(ci_data) + _full_tier_jobs(canary_data)
+    # Fail closed (Decision 170): a zero-match derivation here is an authoring/regression bug in
+    # the derivation itself, never a silently-skipped guard.
+    assert full_tier_jobs, "no full-tier job found in ci.yml or main-canary.yml"
+
+    for job_name, job in full_tier_jobs:
+        checkout = _checkout_step(job)
+        assert checkout is not None, f"{job_name} has no checkout step"
+        with_block = checkout.get("with", {}) or {}
+        assert with_block.get("fetch-depth") == 0, (
+            f"{job_name} checkout fetch-depth is {with_block.get('fetch-depth')!r}, expected 0 "
+            "(every full-tier job must check out full history -- Decision 168, amends Decision 159)"
+        )
 
 
 def _check_full_tier_runtime_lock() -> None:

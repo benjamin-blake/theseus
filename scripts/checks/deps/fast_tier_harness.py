@@ -157,6 +157,9 @@ def _git_bytes(repo_root: Path, args: list[str], *, input_bytes: bytes | None = 
 
 
 def historical_diff(repo_root: Path, case: CorpusCase) -> list[tuple[str, str]]:
+    fast_tier_harness_support.assert_pinned_objects_available(
+        repo_root, (case.merge_parent_sha, case.merge_commit_sha), case_id=case.case_id
+    )
     text = _git_text(repo_root, ["diff", "--name-status", "--no-renames", case.merge_parent_sha, case.merge_commit_sha])
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     if digest != case.diff_sha256:

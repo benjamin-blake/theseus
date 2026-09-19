@@ -362,10 +362,10 @@ class TestEndstateStampRefResolves:
         ref = self._recorded_show_ref(recorded)
         assert re.fullmatch(r"[0-9a-f]{7,40}", ref), ref
 
-    def test_stamp_ref_names_commit_hashing_to_the_stamped_fingerprint(self, tmp_path: Path) -> None:
-        _result, recorded = self._drive_drift(tmp_path)
-        ref = self._recorded_show_ref(recorded)
-        root = str(self._repo_root())
+    def _assert_commit_present(self, root: str, ref: str) -> None:
+        """rec-3668: a missing pinned commit is a hard failure naming its remedy, never a skip --
+        session_start_deepen_history.sh is advisory and fail-open, so a failed unshallow must
+        surface here rather than silently passing an unverified stamp."""
         present = subprocess.run(
             ["git", "cat-file", "-e", f"{ref}^{{commit}}"],
             capture_output=True,
@@ -374,8 +374,22 @@ class TestEndstateStampRefResolves:
             errors="replace",
             cwd=root,
         )
-        if present.returncode != 0:
-            pytest.skip(f"stamped commit {ref} is absent from this checkout (shallow or partial clone)")
+        assert present.returncode == 0, (
+            f"stamped commit {ref} is absent from this checkout (shallow or partial clone) -- "
+            "run `git fetch --unshallow origin main` before re-running"
+        )
+
+    def test_stamp_assertion_fails_rather_than_skips_when_commit_absent(self) -> None:
+        absent_ref = "0" * 40
+        with patch.object(subprocess, "run", return_value=MagicMock(returncode=1, stdout="", stderr="")):
+            with pytest.raises(AssertionError, match="git fetch --unshallow origin main"):
+                self._assert_commit_present(str(self._repo_root()), absent_ref)
+
+    def test_stamp_ref_names_commit_hashing_to_the_stamped_fingerprint(self, tmp_path: Path) -> None:
+        _result, recorded = self._drive_drift(tmp_path)
+        ref = self._recorded_show_ref(recorded)
+        root = str(self._repo_root())
+        self._assert_commit_present(root, ref)
         show = subprocess.run(
             ["git", "show", f"{ref}:docs/ROADMAP-PLATFORM.yaml"],
             capture_output=True,

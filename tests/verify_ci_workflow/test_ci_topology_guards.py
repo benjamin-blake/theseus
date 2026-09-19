@@ -1,0 +1,313 @@
+"""Tests for the non-fetch-depth guards in scripts/verify_ci_workflow -- concurrency,
+validate-single-source, and signal-green (Decision 128 decompose target, split from
+tests/verify_ci_workflow/test_ci_data_guards.py once it crossed the 500-SLOC budget; PLAN
+ci-full-tier-history-parity). These suites share _VALID_CI_DATA but are pinned by no VP
+command, so they moved out while the fetch-depth suites deliberately stayed put.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+from unittest.mock import patch
+
+import pytest
+
+from scripts.verify_ci_workflow import (
+    _check_concurrency,
+    _check_signal_green_needs,
+    _check_validate_single_source,
+)
+
+_COMPILED_CACHE_KEY = (
+    "pip-${{ hashFiles('requirements.in', 'requirements-dev.in', 'requirements.txt', 'requirements-dev.txt') }}"
+)
+
+_VALID_CI_DATA: dict[str, Any] = {
+    "jobs": {
+        "pr-validate": {
+            "if": "github.event_name == 'pull_request'",
+            "runs-on": "ubuntu-latest",
+            "concurrency": {"group": "pr-validate-${{ github.ref }}", "cancel-in-progress": True},
+            "steps": [
+                {"uses": "actions/checkout@v4", "with": {"fetch-depth": 0}},
+                {"run": "bin/venv-python -m scripts.validate --pre"},
+            ],
+        },
+        "main-validate": {
+            "if": "github.event_name == 'push'",
+            "runs-on": "ubuntu-latest",
+            "steps": [
+                {"uses": "actions/checkout@v4", "with": {"fetch-depth": 0}},
+                {
+                    "uses": "actions/cache@v6",
+                    "with": {"key": _COMPILED_CACHE_KEY},
+                },
+                {"run": "pip install -r requirements.txt\npip install -r requirements-dev.txt"},
+                {"run": "bin/venv-python -m scripts.validate"},
+            ],
+        },
+        "terraform-validate": {
+            "runs-on": "ubuntu-latest",
+            "steps": [{"run": "terraform validate"}],
+        },
+    }
+}
+
+
+# ---------------------------------------------------------------------------
+# _check_concurrency (CD.21: ci-runner group ABSENT; VTS-11: pr-validate cancels
+# superseded runs on a per-PR key, main-validate does not cancel in-flight runs)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckConcurrencyPassPath:
+    def test_passes_when_no_ci_runner_group(self) -> None:
+        """Also the VTS-11 happy path: pr-validate's fixture concurrency block (per-PR
+        group + cancel-in-progress: True) and main-validate's absent block both satisfy
+        _check_concurrency in one pass."""
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = _VALID_CI_DATA
+            _check_concurrency()
+
+    def test_passes_with_string_cancel_in_progress_values(self) -> None:
+        """cancel-in-progress may be a templated `${{ true }}` expression or a quoted
+        "false" string, not just a bare YAML bool -- both must resolve correctly."""
+        data = {
+            "jobs": {
+                "pr-validate": {
+                    **_VALID_CI_DATA["jobs"]["pr-validate"],
+                    "concurrency": {"group": "pr-validate-${{ github.ref }}", "cancel-in-progress": "${{ true }}"},
+                },
+                "main-validate": {
+                    **_VALID_CI_DATA["jobs"]["main-validate"],
+                    "concurrency": {"group": "main-validate-${{ github.ref }}", "cancel-in-progress": "false"},
+                },
+            }
+        }
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            _check_concurrency()
+
+
+class TestCheckConcurrencyFailPath:
+    def test_fails_when_pr_validate_still_has_ci_runner(self) -> None:
+        data = {
+            "jobs": {
+                "pr-validate": {
+                    **_VALID_CI_DATA["jobs"]["pr-validate"],
+                    "concurrency": {"group": "ci-runner", "cancel-in-progress": False},
+                },
+                "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
+            }
+        }
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            with pytest.raises(AssertionError, match="ci-runner"):
+                _check_concurrency()
+
+    def test_fails_when_main_validate_still_has_ci_runner(self) -> None:
+        data = {
+            "jobs": {
+                "pr-validate": _VALID_CI_DATA["jobs"]["pr-validate"],
+                "main-validate": {
+                    **_VALID_CI_DATA["jobs"]["main-validate"],
+                    "concurrency": {"group": "ci-runner", "cancel-in-progress": False},
+                },
+            }
+        }
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            with pytest.raises(AssertionError, match="ci-runner"):
+                _check_concurrency()
+
+    def test_fails_when_pr_validate_concurrency_block_absent(self) -> None:
+        """Inverts the pre-VTS-11 assumption that a fully absent concurrency block passes:
+        now that pr-validate must declare a per-PR cancel-in-progress group, an absent block
+        fails (on the group-shape assertion, which runs before the cancel-in-progress one)."""
+        data = {
+            "jobs": {
+                "pr-validate": {k: v for k, v in _VALID_CI_DATA["jobs"]["pr-validate"].items() if k != "concurrency"},
+                "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
+            }
+        }
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            with pytest.raises(AssertionError, match="per-PR keyed"):
+                _check_concurrency()
+
+    def test_fails_when_pr_validate_missing_cancel_in_progress(self) -> None:
+        data = {
+            "jobs": {
+                "pr-validate": {
+                    **_VALID_CI_DATA["jobs"]["pr-validate"],
+                    "concurrency": {"group": "pr-validate-${{ github.ref }}"},
+                },
+                "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
+            }
+        }
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            with pytest.raises(AssertionError, match="cancel-in-progress"):
+                _check_concurrency()
+
+    def test_fails_when_main_validate_has_cancel_in_progress(self) -> None:
+        data = {
+            "jobs": {
+                "pr-validate": _VALID_CI_DATA["jobs"]["pr-validate"],
+                "main-validate": {
+                    **_VALID_CI_DATA["jobs"]["main-validate"],
+                    "concurrency": {"group": "main-validate-${{ github.ref }}", "cancel-in-progress": "true"},
+                },
+            }
+        }
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            with pytest.raises(AssertionError, match="cancel-in-progress"):
+                _check_concurrency()
+
+
+# ---------------------------------------------------------------------------
+# _check_validate_single_source (Decision 80: ci.yml single-source-of-truth)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckValidateSingleSourcePassPath:
+    def test_passes_with_real_workflow_file(self) -> None:
+        _check_validate_single_source()
+
+    def test_passes_with_valid_ci_data(self) -> None:
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = _VALID_CI_DATA
+            _check_validate_single_source()
+
+
+class TestCheckValidateSingleSourceFailPath:
+    def test_fails_when_check_step_bypasses_validate(self) -> None:
+        data = {
+            "jobs": {
+                "pr-validate": {
+                    "if": "github.event_name == 'pull_request'",
+                    "runs-on": "ubuntu-latest",
+                    "steps": [
+                        {"uses": "actions/checkout@v4", "with": {"fetch-depth": 0}},
+                        {"run": "bin/venv-python -m scripts.validate_bogus --pre"},
+                    ],
+                },
+                "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
+            }
+        }
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            with pytest.raises(AssertionError, match="scripts.validate_bogus"):
+                _check_validate_single_source()
+
+    def test_fails_when_check_step_invoked_as_script_path(self) -> None:
+        data = {
+            "jobs": {
+                "pr-validate": {
+                    "if": "github.event_name == 'pull_request'",
+                    "runs-on": "ubuntu-latest",
+                    "steps": [{"run": "bin/venv-python scripts/verify_something.py"}],
+                },
+            }
+        }
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            with pytest.raises(AssertionError, match="scripts.verify_something"):
+                _check_validate_single_source()
+
+
+# ---------------------------------------------------------------------------
+# _check_signal_green_needs (Decision 80: signal-green must gate on every
+# PR-gating job, including a job with no `if` key)
+# ---------------------------------------------------------------------------
+
+
+class TestCheckSignalGreenNeedsPassPath:
+    def test_passes_with_real_workflow_file(self) -> None:
+        _check_signal_green_needs()
+
+    def test_passes_when_all_pr_gating_jobs_are_needed(self) -> None:
+        data = {
+            "jobs": {
+                "pr-validate": _VALID_CI_DATA["jobs"]["pr-validate"],
+                "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
+                "terraform-validate": _VALID_CI_DATA["jobs"]["terraform-validate"],
+                "signal-green": {"needs": ["pr-validate", "terraform-validate"]},
+            }
+        }
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            _check_signal_green_needs()
+
+
+class TestCheckSignalGreenNeedsFailPath:
+    def test_fails_when_signal_green_job_missing(self) -> None:
+        data = {"jobs": {"pr-validate": _VALID_CI_DATA["jobs"]["pr-validate"]}}
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            with pytest.raises(AssertionError, match="signal-green job missing"):
+                _check_signal_green_needs()
+
+    def test_fails_when_pr_gating_job_missing_from_needs(self) -> None:
+        data = {
+            "jobs": {
+                "pr-validate": _VALID_CI_DATA["jobs"]["pr-validate"],
+                "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
+                "terraform-validate": _VALID_CI_DATA["jobs"]["terraform-validate"],
+                "signal-green": {"needs": ["pr-validate"]},
+            }
+        }
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            with pytest.raises(AssertionError, match="terraform-validate"):
+                _check_signal_green_needs()
+
+    def test_fails_when_no_if_job_missing_from_needs(self) -> None:
+        """A job with NO `if` key runs on every event (including pull_request), so it is
+        PR-gating -- a naive `'pull_request' in if_str` test would miss this branch."""
+        data = {
+            "jobs": {
+                "pr-validate": _VALID_CI_DATA["jobs"]["pr-validate"],
+                "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
+                "no-if-job": {"runs-on": "ubuntu-latest", "steps": [{"run": "echo hi"}]},
+                "signal-green": {"needs": ["pr-validate"]},
+            }
+        }
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            with pytest.raises(AssertionError, match="no-if-job"):
+                _check_signal_green_needs()
+
+    def test_fails_when_neither_push_nor_pull_request_job_missing_from_needs(self) -> None:
+        """An `if` mentioning neither push nor pull_request (e.g. workflow_dispatch-only)
+        defaults to PR-gating (conservative direction) -- covers _admits_pull_request's
+        final fallback branch."""
+        data = {
+            "jobs": {
+                "pr-validate": _VALID_CI_DATA["jobs"]["pr-validate"],
+                "main-validate": _VALID_CI_DATA["jobs"]["main-validate"],
+                "dispatch-only-job": {
+                    "if": "github.event_name == 'workflow_dispatch'",
+                    "runs-on": "ubuntu-latest",
+                    "steps": [{"run": "echo hi"}],
+                },
+                "signal-green": {"needs": ["pr-validate"]},
+            }
+        }
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            with pytest.raises(AssertionError, match="dispatch-only-job"):
+                _check_signal_green_needs()
+
+    def test_passes_when_needs_is_a_single_string(self) -> None:
+        """signal-green.needs may be a bare string (single dependency) rather than a list."""
+        data = {
+            "jobs": {
+                "pr-validate": _VALID_CI_DATA["jobs"]["pr-validate"],
+                "signal-green": {"needs": "pr-validate"},
+            }
+        }
+        with patch("scripts.verify_ci_workflow._ci_yaml._load") as mock_load:
+            mock_load.return_value = data
+            _check_signal_green_needs()

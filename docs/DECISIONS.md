@@ -2662,6 +2662,23 @@ after 3 rounds with all blocking items applied. Roadmap/queue refs (not DECISION
 > repository's push-context base instead of the injected one. This body is otherwise unedited; see
 > PLAN-root-scoped-diff-base for the full derivation.
 
+> **Correction (2026-09-19, PLAN-ci-full-tier-history-parity, forward reference -- mints no new
+> Decision number; D177 post-lock dialect):** clause 1's "`ci.yml` main-validate and
+> `main-canary.yml` checkout `fetch-depth: 2`" is corrected -- both now check out `fetch-depth: 0`
+> (full history), per Decision 168, which restates the rule scoped to the jobs
+> `scripts.verify_ci_workflow`'s fetch-depth guard reaches (main-validate, canary) rather than the
+> single main-validate == 2 literal this clause pinned. Root cause: rec-3936/rec-3937's fast-tier
+> corpus harness pins historical-diff SHAs 87-142 commits back, which no bounded depth serves
+> stably; a hermetic-corpus end state (rec-3938) is the deliberately-deferred real fix, and this
+> depth raise is its bridge, not the fix. This explicitly revisits, but does not reverse, this
+> entry's own Related credit to "Decision 55/72/129 (fix the generator -- supersedes rec-2903's
+> fetch-depth-alone fix)": that prior work fixed push-context diff-BASE resolution (`HEAD~1` for
+> `get_status_aware_diff()`), a problem `fetch-depth: 2` solved adequately. This correction
+> reinstates a fetch-depth INSTRUMENT for a different problem -- the corpus harness's own pinned
+> historical SHAs -- not a return to fetch-depth-alone as the diff-base fix Decision 55/72/129
+> already superseded. `HEAD~1` still resolves under `fetch-depth: 0` (a strict superset), so clause
+> 1's diff-base guarantee is unaffected by this correction.
+
 **Problem:** `get_status_aware_diff()` and `test_coverage_checker.get_changed_source_files()` resolve their base via `merge-base(origin/main, HEAD)`, which equals HEAD on a clean post-merge main checkout; `get_changed_files()` diffs `origin/main` directly, also HEAD on main. Same result either way: every diff-aware full-tier check silently no-ops post-merge. A MEASUREMENT CORRECTION (Decision 82 framing), not a relaxation.
 
 **Decision:**
