@@ -8,11 +8,12 @@ for input.
 
 Assess a PROPOSED data shape -- the unified acceptance/verification criterion model for the
 Decision 197 clause 3 grain, `work_item_criteria` (one row per (work item, criterion)) -- across
-five surfaces: two designed-unbuilt (the converged column set in Section 10.2; the candidate
-`work_item_criterion_evidence` companion table in Section 10.3) and three built (the roadmap
-exit-criteria ledger; the verification graduation registry plus its differential admission gate;
-the `ops_recommendations` acceptance / verification / verification_tier fields). Answer the five
-questions in Section 7, each with its pinned verdict enum; rate seven dimensions per surface
+six surfaces: two designed-unbuilt (the converged column set in Section 10.2; the candidate
+`work_item_criterion_evidence` companion table in Section 10.3) and four built (the roadmap
+exit-criteria ledger; the verification graduation registry and its differential admission gate;
+the `ops_recommendations` acceptance / verification / verification_tier fields; the red-before
+plan gate). Answer the five questions in Section 7, four of which carry a pinned verdict enum
+and the fifth a structured answer block; rate seven dimensions per surface
 (Section 8); and state, in its own output section, where the converged shape is wrong. Deliver
 exactly two files: `audits/criterion-shape-forks-<base-short-sha>.yaml` and
 `audits/criterion-shape-forks-<base-short-sha>.md`. The ONLY files you create or modify in the
@@ -69,8 +70,11 @@ the wrong surface.
 4. **"status"** is a field name on at least four surfaces with four different enums: the
    criterion ledger (`open | met | rehomed`), a recommendation (`open | closed | in_progress |
    deferred | superseded | declined`), a tier item (`not_started | in_progress | complete |
-   reserved | deferred_post_mvp`), and a contract envelope. The converged shape coins
-   `satisfaction` for the criterion axis -- a word that appears nowhere in the repository today.
+   reserved | deferred_post_mvp`), and a contract envelope. The converged shape proposes
+   `satisfaction` for the criterion axis. That word already appears as PROSE in this repository
+   ("satisfaction oracle", "deterministic satisfaction", "the rehomed non-satisfaction case") but
+   is not a FIELD NAME on any criterion-bearing surface. Judge the collision on that basis, not
+   on novelty.
 5. **"criterion" / "acceptance criteria"** names four surfaces Decision 197 clause 3 unifies: a
    recommendation's `acceptance`, a tier item's `exit_criteria[]`, a plan's
    `verification_plan[]` steps, and a plan's own `acceptance_criteria` list (which clause 3 does
@@ -96,16 +100,19 @@ this audit's subject.
 | S1 | The converged `work_item_criteria` column set (Section 10.2) | designed-unbuilt |
 | S2 | The candidate `work_item_criterion_evidence` table (Section 10.3) | designed-unbuilt |
 | S3 | Roadmap exit-criteria ledger: `ExitCriterion` + `docs/contracts/exit-criteria-ledger.yaml` + its validators | built |
-| S4 | Verification graduation registry + differential admission gate + the red-before plan gate | built |
+| S4 | Verification graduation registry + its differential admission gate (admission-time) | built |
 | S5 | `ops_recommendations` `acceptance` / `verification` / `verification_tier` fields | built |
+| S6 | The red-before plan gate: `validate_vp_replay` + `docs/contracts/vp-red-before.yaml` (plan-time) | built |
 
-S3-S5 are rated, not merely cited: they are the evidence base from which all four forks are
+S3-S6 are rated, not merely cited: they are the evidence base from which all four forks are
 decided, and a fork answered without reference to what is actually built is an opinion, not an
 audit.
 
 ### Out of scope
 
-- The `work_items` and `work_item_edges` tables, except exactly as far as Q3 and Q4 require.
+- The `work_items` table, except exactly as far as Q3 and Q4 require. `work_item_edges` is in scope only
+  where the criterion-level edges bear on Q4 and Q5 (`criterion_traces_to`, `blocked_by`) -- its own
+  vocabulary, cardinality and write path are not yours to design.
 - Decision 196 and the three-tier decision model. Adjacent, not this audit.
 - Any hosted-product or infrastructure surface.
 
@@ -136,7 +143,10 @@ independent; do not rely on `source .venv/bin/activate` persisting.
 
 IF `bin/venv-python` fails: set `meta.contract_notes` to say so, fall back to any Python 3.12+
 with PyYAML for the measurement commands, and downgrade to HYPOTHESIS any finding whose evidence
-depended on a model-loading command you could not run.
+depended on a model-loading command you could not run. A dead interpreter also makes Section 5.2
+unrunnable: in that case set BOTH `meta.contract_notes` and `meta.degraded_dedup: true`, and take
+Section 5.2's degraded path. `degraded_dedup` means "I could not search the recommendation cache",
+whatever the cause; `contract_notes` records what the cause was.
 
 ### 5.2 Dedup cache (MANDATORY -- Section 13 depends on it)
 
@@ -220,8 +230,10 @@ recorded as a finding is worth more than compliance.
 
 ## 7. THE QUESTIONS
 
-Answer all five. Each gets its own `question_answers[]` entry with the pinned verdict enum. A
-verdict with no `basis` finding ids is an opinion; ground it.
+Answer all five. Q1-Q4 each get a `question_answers[]` entry carrying that question's pinned
+verdict enum. Q5 uses a different shape -- an `answers[]` list plus the `deferred_walk_inputs`
+block defined under Q5 -- and carries no top-level verdict. A verdict with no `basis` finding ids
+is an opinion; ground it.
 
 ### Q1 -- Standing versus admitted
 
@@ -252,22 +264,33 @@ runs pre-merge and hermetically, and must revert atomically with the code it ver
 
 ### Q2 -- Who owns `verification_tier` derivation
 
-Decision 48 defines V1/V2/V3 with a deterministic scope-trigger rule and closes with its own
-Limitation clause: "Verification tier classification is documentation-enforced only. No automated
-detection currently exists." No code implements the scope-trigger rule.
+A deterministic tier floor ALREADY EXISTS at PLAN grain.
+`scripts/checks/roadmap/validate_tier_floor.py:49` (`_compute_floor`, documented "Highest-tier-wins
+floor over a plan's scope files (Decision 48 semantics)") returns V3 for an active-manifest Lambda
+code file or a `.tf` path, V2 for a `.py` path, and V1 otherwise; `:62` registers a CI check that
+fails a `schema_version: 2` plan whose declared `verification_tier` is below its computed floor,
+unless `tier_waiver` is set. Its owning tier item T3.17 is `complete`.
+
+Decision 48's own Limitation clause at `docs/DECISIONS.md:7819` still reads "documentation-enforced
+only. No automated detection currently exists." Establish for yourself which of those two is
+current before you answer -- one of them is out of date, and which one is a finding in its own
+right.
+
+What does NOT exist, as far as this brief could establish: any tier derivation at CRITERION grain,
+and any writer that populates the recommendation `verification_tier` field from scope. Verify both.
 
 Options:
 (a) derive the tier from `phase` x `primitive_slot`;
-(b) implement Decision 48's scope-trigger rule as the derivation;
+(b) extend the existing plan-grain `_compute_floor` to criterion grain;
 (c) keep the field stored until a derivation exists;
-(d) drop the field.
+(d) drop the field from the criterion row.
 
 Weigh the recommendation-side semantics (`docs/contracts/ops_recommendations.yaml`
 `verification_tier`: V3 = build + deploy + smoke, Decision 79 / CD.16) against the measured
-population in Section 10.6. Note that a stored tier on a criterion row and a routing signal on a
-work item are not obviously the same thing; say which you mean.
+population in Section 10.6. A stored tier on a criterion row, a floor over a plan's scope, and a
+routing signal on a work item are three different things; say which you mean.
 
-**Verdict enum:** `derive-from-phase-x-slot | implement-dec48-scope-trigger |
+**Verdict enum:** `derive-from-phase-x-slot | extend-plan-grain-floor |
 keep-stored-until-derivation-exists | drop-the-field | other-argued`
 
 ### Q3 -- Identity for the bare-string exit criteria
@@ -303,10 +326,12 @@ data-modeling standard; the decay Decision 176 documents needs history; the four
 vocabulary collapses to a bit in a binary struct -- but neither found repository PRECEDENT for a
 per-criterion evidence journal. Find or rule out that precedent (Section 11 seeds it) and answer.
 
-This question additionally requires an `external_checklist` block. Assess the proposal
-property-by-property against these named external practices, each rated `met | partial | missed`
-with evidence. `partial` requires an argued, property-matched compensating control. This field is
-the SOLE source the maturity top tier reads (Section 15).
+This question additionally requires an `external_checklist` block. Assess THE DESIGN YOU ENDORSE
+in your own verdict -- if you answer (i), rate the one-table proposal; if (ii), rate the two-table
+proposal; if `other-argued`, rate what you propose -- property-by-property against these named
+external practices, each rated `met | partial | missed` with evidence. `partial` requires an
+argued, property-matched compensating control. This field gates the maturity top tier for S1 and
+S2 ONLY (Section 15); it has no bearing on S3, S4, S5 or S6.
 
 1. Event-sourced journal plus current-state projection, rather than state mutation in place.
 2. Type-2 slowly-changing dimension paired with a separate fact table, rather than a widened
@@ -328,7 +353,8 @@ the SOLE source the maturity top tier reads (Section 15).
 
 ### Q5 -- Questions the requester did not think to ask
 
-Answer AND extend. Seeds, each of which you must answer or explicitly dismiss:
+Answer AND extend: add at least two and at most six questions of your own beyond the seeds.
+Seeds, each of which you must answer or explicitly dismiss:
 
 - What happens to a criterion whose text is rewritten under the realized-differently rule -- is
   that a new criterion, a new version of the same criterion, or an amendment, and what does the
@@ -339,9 +365,34 @@ Answer AND extend. Seeds, each of which you must answer or explicitly dismiss:
   ids are writer-allocated in-transaction while criterion ids are authored?
 - The converged shape stores `text` as the requirement. What bounds it? One criterion text in the
   roadmap today is 6,581 characters.
-- Where does an ESCAPED DEFECT re-enter this model -- the case NS4 names as one of the platform's
-  three real mechanisms? Neither the converged shape nor the evidence table has a leg for "the
-  world proved this criterion wrong after it was marked met".
+- Where does an ESCAPED DEFECT re-enter this model? Neither the converged shape nor the evidence
+  table has a leg for it (NS4 names it as one of the platform's three real mechanisms).
+
+**Additionally required on Q5 -- the `deferred_walk_inputs` block.** Decision 197 clause 3
+deferred THREE things to the clause-8 migration: merge keys, identity and join keys. Only identity
+carries a fork of its own (Q3). Answer the other two here, plus the partition column that
+`docs/contracts/data-modeling-standard.yaml#design_time_walk` step 6 requires any new table to
+name, each with a pinned verdict:
+
+```
+deferred_walk_inputs:
+  merge_key:
+    verdict: parent-plus-criterion-id | surrogate-ulid-only | content-hash-composite | other-argued
+    value: "<the key you propose, as a column list>"
+    rationale: ""
+  join_keys:
+    verdict: registry-fk-only | registry-fk-plus-plan-slug | evidence-table-fk | other-argued
+    targets: [<the tables or surfaces this criterion row joins to>]
+    rationale: ""
+  partition_column:
+    verdict: "<column name>" | none-argued
+    applies_to: [work_item_criteria, work_item_criterion_evidence]
+    rationale: ""
+```
+
+Consult `docs/contracts/_joins.yaml` -- this repository's cross-table join/correlation-key
+registry, which `design_time_walk` step 4 makes mandatory reading -- before answering `join_keys`.
+Do not re-derive its content from first principles.
 
 ## 8. RUBRIC
 
@@ -411,13 +462,15 @@ at `04a402a4`. Verify each anchor before you rely on it; record non-resolving an
 | `docs/DECISIONS.md:5329`, `:3352`, `:5442` | Decisions 114 (10,000-line ceiling), 147 (compaction response and the named valves), 110 (single-file roadmap). |
 | `docs/DECISIONS.md:6662`, `:6775`, `:3893` | Decisions 87 (plans as entities; clause 6 rec-vs-plan grain), 84 (portal invariants, I-2 id allocation, I-3 named verbs), 137 (partition every table). |
 | `docs/DECISIONS.md:1236` | Decision 181 (declare-your-coverage: an unenforced arm is declared with a named owner). |
-| `docs/contracts/exit-criteria-ledger.yaml` | Ledger field semantics. `fields.status` (`:57`, `:71`, `:108`) carries the realized-differently rule and Status-Trusted-Never-Inferred. `fields.met_by` carries the `closes_criteria` flip procedure. `fields.blocked_by` carries the edge semantics and the foreign-ratification anti-pattern. |
+| `docs/contracts/exit-criteria-ledger.yaml` | Ledger field semantics. `fields.status` spans `:49`-`:92` and carries the realized-differently rule (`:57`) and Status-Trusted-Never-Inferred (`:71`). `fields.met_by` begins at `:93` and carries the `closes_criteria` flip procedure and its own Status-Trusted-Never-Inferred restatement (`:108`). `fields.blocked_by` begins at `:120`. `fields.blocked_by` carries the edge semantics and the foreign-ratification anti-pattern. |
 | `docs/contracts/verification-registry.yaml` | Registry schema. `check_id` immutability and the (plan_slug, check_id) T3.21 join; `guard_target`/`guard_symbol` as the orphan-detection keys; `check_spec` as the materialization key. Line `:244` carries "permanently FAIL, unnoticed because graduated records are never re-executed as a standing suite". Lines `:222`-`:225`: filename-equals-check_id; `entries/deprecated/` is loader-excluded. |
 | `docs/contracts/vp-red-before.yaml` | `outcome_classes` (`:97`), `unmeasurable_arms` (`:105`), `eligibility_predicate` (`:126`), `graduation_disposition_authoring` (`:216`), `self_satisfying_lint` (`:257`). |
 | `docs/contracts/tier-item-lifecycle.yaml:131` | The bookkeeping walk EXECUTES executable-looking criterion text via subprocess, passing on exit 0; prose criteria fall through to agent judgement with a conservative bias. The only existing execution hook on the exit-criteria surface. |
 | `docs/contracts/data-modeling-standard.yaml` | `rules`, `write_modes` (scd2 / append_only / control), and `design_time_walk` -- the walk this audit feeds. |
 | `docs/contracts/storage-substrate.yaml:126` | `ops_smoke_events`: `write_mode: append_only`, grain "one row per event_id". |
 | `docs/contracts/ops_recommendations.yaml:416` | `execution_result`: "Executor-internal write-only signal. Not read by the planning or triage paths. DQ-EXCLUDED (Decision 63)." |
+| `docs/contracts/_joins.yaml` | The cross-table join / correlation-key registry. `design_time_walk` step 4 makes consulting it mandatory when a new table's join keys are chosen. Required reading for Q5's `join_keys`. |
+| `scripts/checks/roadmap/validate_tier_floor.py:49`, `:62` | `_compute_floor` (Decision 48 semantics over a plan's scope paths) and the registered CI check that enforces it on `schema_version: 2` plans, with a `tier_waiver` escape. Owning item T3.17 is `complete`. |
 | `docs/ROADMAP-PLATFORM.yaml` CD.29 | The six-slot closed kernel; the admission gate; severity `required` with a transient `quarantine`, "never a permanent `advisory`"; the consolidation clause absorbing the rec `verification` projection "as additional typed checks on the same field". `state: pending`. |
 
 ### 10.2 The converged shape (verbatim -- this is the artifact under audit)
@@ -490,14 +543,19 @@ at `04a402a4`. Verify each anchor before you rely on it; record non-resolving an
   (tautological)".
 - `scripts/executor/acceptance_lint.py:25` is `_classify_non_discriminating` -- a pure-string
   classifier that NEVER executes the command.
-- `scripts/platform_roadmap_liveness.py:135` emits a `criterion_blocked_by` blocking edge; this is
-  `blocked_by`'s only runtime consumer.
+- `blocked_by` has three readers: `scripts/platform_roadmap_liveness.py:135` emits a
+  `criterion_blocked_by` blocking edge into the liveness graph;
+  `scripts/checks/roadmap/validate_roadmap_liveness.py:160` reads `crit.blocked_by` into
+  `blocked_refs` to fail a criterion whose text names a non-terminal id with a blocking phrase but
+  carries no matching edge; and `scripts/platform_roadmap_models.py:281` validates each blocker's
+  ref / `until` kind agreement at model-load time.
 
 ### 10.5 Candidate observations (neutral; adjudicate each)
 
 1. The converged shape writes `phase (pre_deploy | post_deploy)`. `_V2_PHASE_ENUM` and the merged
-   plan corpus use `pre-deploy` / `post-deploy`; the corpus also carries roughly 28 free-text
-   `phase` values on plans below `schema_version` 2.
+   plan corpus use `pre-deploy` / `post-deploy` (4,015 and 598 steps of 4,665 carrying a `phase`);
+   the corpus also carries 29 distinct non-enum `phase` values across 52 occurrences, all on
+   `schema_version: 1` plans.
 2. The converged shape states `cN` is positional. Six structured criteria use `cA`..`cF`; ten more
    carry `cN` ids that do not match their position.
 3. Of the cached recommendation rows, none carried a list-form (TypedCheck) `acceptance` value;
@@ -525,9 +583,15 @@ at `04a402a4`. Verify each anchor before you rely on it; record non-resolving an
     tier items, of which 85 carry bare strings.
 13. `evaluator_kind` reuses `EvaluatorSpec`, a model defined for Class D contract evaluators
     rather than for criteria.
-14. The registry holds several hundred live entry files and a small `entries/deprecated/` set,
-    with no status column on any record; retirement is `git mv`.
-15. The longest structured criterion text is 6,581 characters; the median is near 192.
+14. The registry holds 894 live entry files under `config/agent/verification_registry/entries/`
+    and 10 under `entries/deprecated/`, with no status column on any record; retirement is
+    `git mv`.
+15. The longest structured criterion text is 6,581 characters; the median is 193.5 over 394
+    structured criteria.
+16. The converged shape (Section 10.2) cites `scripts/platform_roadmap_models.py` "~L95-101" for
+    the positional-`cN` behaviour. `_normalize_exit_criteria` is at `:98` and the positional
+    assignment at `:104`. The verbatim block is reproduced unedited; the anchor is part of the
+    artifact under audit.
 
 ### 10.6 Dedup pointers
 
@@ -554,8 +618,9 @@ complete); **T3.15** (VP re-execution and durable evidence persistence, complete
 
 ## 11. EMPIRICAL PASS
 
-Bounded measurement. Tag every finding `evidence_kind: static` or `observed`; an observed finding
-outranks a static one at equal severity.
+Bounded measurement. Tag every finding `evidence_kind: static` or `observed`. "Outranks" is
+operational, not decorative: at equal severity, an `observed` finding is ordered ahead of a
+`static` one in `summary.top_improvements`, and is preferred as `summary.highest_leverage_change`.
 
 Required measurements (re-derive on YOUR base sha):
 
@@ -578,8 +643,10 @@ Required measurements (re-derive on YOUR base sha):
   there. This is Q4's precedent search; a null result is a real answer.
 
 Sampling caps -- do NOT exceed: at most 25 registry entry shards; at most 25 plan documents; at
-most 15 tier items read in full. Counting sweeps over the whole roadmap or the whole cache are
-not sampling and are uncapped.
+most 15 tier items read in full. Counting sweeps are not sampling and are uncapped: E1, E2, E3,
+E5 and E7 are counting sweeps, and E7's contract glob is explicitly one -- read each contract's
+`write_mode` / `grain` keys only, never a contract in full, and stop once every file is
+classified.
 
 The counterfactual test, applied to every candidate compensating control you accept: if the defect
 were real, would this control FAIL? A control that cannot catch the break neither lowers severity
@@ -587,7 +654,7 @@ nor justifies dismissal.
 
 ## 12. METHOD
 
-- **P1 Read.** Section 10's decisions and contracts; the five surfaces; Section 3's traps.
+- **P1 Read.** Section 10's decisions and contracts; the six surfaces; Section 3's traps.
 - **P2 Trace.** DD-A, DD-B, DD-C. Do not form verdicts yet.
 - **P3 Empirical.** Section 11, E1-E7.
 - **P4 Adjudicate.** Every Section 10.5 candidate to a disposition per Section 2.
@@ -622,10 +689,15 @@ Each is a live, deliberate decision. Flagging one as a defect is a failed adjudi
 - **Decisions 110 / 114 / 147** -- the roadmap is a single agent-first file; a per-tier split is
   forbidden. The sanctioned relief valves are compaction in place, lifecycle archival, and a
   consciously-cited raise.
-- Closed by the requester, not reopenable: the severity values (`required | quarantine`);
-  judgement as a seventh primitive slot (modelled instead as `evaluator_kind` plus an evidence
-  leg of `review`); registry LINK rather than merge; intent as an edge rather than a column; a
-  DEADLINE for converting the bare strings.
+- Closed by the requester before this audit was commissioned, each with the authority that closed
+  it, none reopenable here: the severity values `required | quarantine` (CD.29's hard-gate clause,
+  which forbids a permanent `advisory`); judgement as a seventh primitive slot (CD.29's six-slot
+  closure -- modelled instead as `evaluator_kind` plus an evidence leg of `review`); the registry
+  relationship being a LINK rather than a merge (Decision 176 clause 4, `docs/DECISIONS.md:1749`);
+  intent as an edge rather than a column (Decision 197 clauses 3 and 5); and a DEADLINE for
+  converting the bare strings (rejected by both prior reviewers on the grounds that a bulk backfill
+  of verification methods manufactures tautologies at scale). You may argue that one of these is
+  wrong IN PROSE under Q5; you may not file it as a finding or answer a fork with it.
 
 ## 14. OUTPUT
 
@@ -637,37 +709,55 @@ Write exactly two files. `<sha>` is your base short sha throughout.
 audit:
   meta: {audited_commit: <origin/main short sha>, base_branch: main,
          model: <your self-reported model name, free text>,
-         methodology_version: 1, scope_surfaces: [S1, S2, S3, S4, S5],
-         degraded_dedup: false, contract_notes: "", stale_anchors: [],
+         methodology_version: 1, scope_surfaces: [S1, S2, S3, S4, S5, S6],
+         degraded_dedup: false, contract_notes: "",
+         stale_anchors: [{kind: anchor|measurement, ref: "<file:line or measurement name>",
+                          prompt_says: "", found_instead: ""}],
          capability_deviations: [{class: capability|judgment, obligation: "", detail: ""}]}
   question_answers:
     - {q: Q1, verdict: a-standing-legs|b-admitted-once|c-bounded-middle|d-other-argued,
        basis: [<finding ids>], prose: ""}
-    - {q: Q2, verdict: derive-from-phase-x-slot|implement-dec48-scope-trigger|
+    - {q: Q2, verdict: derive-from-phase-x-slot|extend-plan-grain-floor|
                keep-stored-until-derivation-exists|drop-the-field|other-argued,
        basis: [], prose: ""}
     - {q: Q3, verdict: pin-ids-in-yaml-now|pin-at-migration-time|terminal-migrated-bare|
                other-argued, basis: [], prose: ""}
     - {q: Q4, verdict: one-table-proof-struct|two-tables-evidence-journal|other-argued,
-       precedent: "<table or artifact name>|none", basis: [], prose: "",
+       precedent: [<table or artifact names; empty list means none found>],
+       basis: [], prose: "",
        external_checklist: [{property: "<one of the seven>", rating: met|partial|missed,
                              evidence: ""}]}
-    - {q: Q5, answers: [{question: "", answer: "", basis: [<finding ids>]}]}
+    - {q: Q5, answers: [{question: "", answer: "", basis: [<finding ids>]}],
+       deferred_walk_inputs:
+         merge_key: {verdict: parent-plus-criterion-id|surrogate-ulid-only|
+                              content-hash-composite|other-argued, value: "", rationale: ""}
+         join_keys: {verdict: registry-fk-only|registry-fk-plus-plan-slug|evidence-table-fk|
+                              other-argued, targets: [], rationale: ""}
+         partition_column: {verdict: "<column name>"|none-argued, applies_to: [], rationale: ""}}
   converged_shape_corrections:
     - {element: "<field or claim in Section 10.2 or 10.3>", what_it_says: "",
        what_is_true: "", evidence: "file:line", consequence: "",
        confidence: CONFIRMED|HYPOTHESIS}
   per_surface_assessment:
-    - {surface: S1..S5, maturity: <derived>, strengths: "", top_gaps: [<finding ids>]}
+    - {surface: S1..S6, maturity: frontier|strong|solid|nascent,
+       strengths: "", top_gaps: [<finding ids>]}
   rubric_ratings:
-    - {surface: S1..S5, dimension: VD1..VD7, rating: strong|adequate|weak|absent|n/a,
+    - {surface: S1..S6, dimension: VD1..VD7, rating: strong|adequate|weak|absent|n/a,
        evidence: "file:line|item-id", note: ""}
   findings:
-    - {id: CSF-01, surface: S1..S5|shared, question: Q1..Q5, dimension: VD1..VD7,
+    - {id: CSF-01, surface: S1..S6|shared, question: Q1..Q5|none, dimension: VD1..VD7|none,
        title, evidence: "file:line|item-id", evidence_kind: static|observed,
        current_behavior, ideal_behavior, gap, compensating_controls_considered: "",
        change_type: add|rescope|enforce|unify|persist|clarify|retune_gate,
        proposed_change: "", acceptance: "", severity: critical|high|medium|low,
+       # change_type: add = a field/table/leg that does not exist; rescope = an existing element's
+       #   meaning or coverage changes; enforce = an existing rule gains a mechanical check;
+       #   unify = two surfaces collapse to one; persist = something computed or discarded becomes
+       #   stored; clarify = wording/semantics only, no shape change; retune_gate = an existing
+       #   gate's threshold, trigger population or polarity changes.
+       # acceptance: how a reviewer would know your proposed_change had landed. NOT a shell
+       #   command and NOT a recommendation acceptance value -- you file no recommendations.
+       # effort: XS <= 1 plan step, S = 2-3, M = 4-8, L > 8 or spans a migration.
        severity_rationale, confidence: CONFIRMED|HYPOTHESIS,
        roadmap_crossref: {classification: novel|planned-insufficient|planned-unbuilt,
                           item_ids: [], dedup_search_terms: [], dedup_hit_count: 0, note: ""},
@@ -677,15 +767,15 @@ audit:
     - {candidate, why_dismissed, compensating_control, control_property_match,
        decision_or_item_id}
   summary: {total_findings, novel_count, planned_insufficient_count, planned_unbuilt_count,
-            top_improvements: [ids], highest_leverage_change: <id>,
-            maturity_S1: <value>, maturity_S2: <value>, maturity_S3: <value>,
-            maturity_S4: <value>, maturity_S5: <value>}
+            top_improvements: [ids], highest_leverage_change: <id>}
+  # maturity lives ONLY in per_surface_assessment[].maturity -- it is not restated in summary.
 ```
 
 `audits/criterion-shape-forks-<sha>.md` -- prose, at most ~1500 words, the executive layer a human
-reads first. It must carry, in this order: the four fork verdicts in one line each; the
-"what the converged shape gets wrong" section; the single highest-leverage change; and the open
-questions you added under Q5.
+reads first. It must carry, in this order: the four fork verdicts (Q1-Q4) in one line each; the
+`deferred_walk_inputs` answers in one line each; the "what the converged shape gets wrong"
+section; the single highest-leverage change; the open questions you added under Q5; and a closing
+line stating how many entries `meta.stale_anchors[]` holds and whether any changed a verdict.
 
 ### Invariants
 
@@ -718,10 +808,13 @@ Assign severity AFTER judgment, by defect class. Never inherit it from this brie
 Compensating controls must PROPERTY-MATCH: the control must exercise the same property AND fail if
 the defect were real. Apply the counterfactual to the control itself.
 
-Maturity is computed LAST, per surface, top-down, first match wins:
+Maturity is computed LAST, per surface, top-down, first match wins. Every finding you file counts
+as open -- findings carry no open/closed axis. A finding whose `surface` is `shared` counts
+against EVERY surface it names in its prose; if it names none, it counts against S1.
 
-- **frontier** -- 0 open `critical` and 0 open `high` findings on that surface, AND no property in
-  Q4's `external_checklist` rated `missed`.
+- **frontier** -- 0 `critical` and 0 `high` findings on that surface, AND (for S1 and S2 only) no
+  property in Q4's `external_checklist` rated `missed`. The checklist does not gate S3, S4, S5 or
+  S6, which have no stake in the one-versus-two-table fork.
 - **strong** -- 0 `critical` and at most 1 `high`.
 - **solid** -- at most 1 `critical`.
 - **nascent** -- otherwise.
@@ -742,12 +835,22 @@ brief's framing does not foreclose it.
    Repo-wide validation is advisory outside CI in this repository; if `bin/venv-python -m
    scripts.validate --pre` fails for a reason unrelated to your two files, record it in
    `meta.contract_notes` and do NOT fix it -- that is outside your write boundary.
-4. Commit with `user.name=Claude`, `user.email=noreply@anthropic.com`. Then
-   `git push -u origin HEAD`.
+   `meta.contract_notes` is a single free-text string with more than one possible writer (here and
+   Section 5.1); APPEND to it, separating entries with `; `, rather than overwriting.
+4. Commit with `user.name=Claude`, `user.email=noreply@anthropic.com`, subject
+   `audit(criterion-shape-forks): findings at <sha>` (the `audit({slug}):` prefix is a registered
+   convention in `docs/contracts/git-ops.yaml`), body = two or three lines naming the four fork
+   verdicts. No co-author or session trailers are required of you. Then `git push -u origin HEAD`.
+   `audits/` already exists and is not gitignored; you are adding two files to it.
 5. Open the PR with `gh pr create --base main --title "audit: unified criterion shape for the
    Decision 197 clause 3 grain (criteria model, evidence journal, live ledger/registry/rec
    fields)"`, ready for review (not a draft), body = a 2-3 sentence lede plus your `summary` block
    in a yaml fence.
+   IF `gh` is absent, unauthenticated, or the PR call fails: do NOT abort and do NOT hunt for
+   another route. The PUSHED BRANCH is the deliverable. Record the failure in
+   `meta.capability_deviations[]` as class `capability`, print the branch name and the two file
+   paths as your closing output, and stop. IF the push itself is rejected, commit locally, record
+   the same way, and print `git log --oneline -1` plus the two paths.
 6. END THE TURN. Do not poll CI, do not merge, do not self-approve, do not subscribe to the PR.
    The human disposes.
 
