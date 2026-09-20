@@ -51,35 +51,55 @@ scope:
   - file: .github/workflows/terraform-apply-sandbox.yml
     action: Modify
     purpose: >-
-      Add a post-apply failure-classification step after BOTH verbatim-apply sites (the push-path
-      apply-sandbox job's "Terraform apply (same plan file the guard inspected)" step, and the
-      gated-apply job's "Terraform apply (gated -- plan.bin verbatim, no re-plan)" step): on a
-      stale-plan match (via stale_plan_signature.py), emit a distinguishable
+      BOTH verbatim-apply sites (the push-path apply-sandbox job's bare "Terraform apply (same
+      plan file the guard inspected)" step, and the gated-apply job's bare "Terraform apply
+      (gated -- plan.bin verbatim, no re-plan)" step) currently run a plain
+      `terraform apply -input=false -lock-timeout=120s plan.bin` with stderr going straight to the
+      job log -- unreadable by any later step (plan-critique round 3 finding: a classification
+      step added only AFTER these, with no companion change, would have nothing to classify).
+      Modify each apply step itself to capture its own stderr (mirroring reconcile.yml's own
+      apply-reconcile job's proven `set +e; STDERR_FILE=$(mktemp); terraform apply ...
+      2>"$STDERR_FILE"; rc=$?; STDERR_CONTENT=$(cat "$STDERR_FILE")` shape, Decision 158 DEP-10)
+      and expose STDERR_CONTENT as a step output, preserving rc as the step's own exit code so
+      `steps.apply.outcome` is unchanged for every other reader (write-convergence-record, the
+      pre-apply-failure predicate, best-effort PR wake). Then add a NEW post-apply classification
+      step immediately after each: read the exposed stderr output, classify it via
+      stale_plan_signature.py, and on a stale-plan match emit a distinguishable
       "::error::PLAN_STALE_CONCURRENT_WRITER ..." marker (mirroring the file's own existing
       CONVERGENCE_READ_ERROR / CONVERGENCE_PARSE_ERROR marker idiom) before the always-run
       convergence-record write. FAILS CLOSED exactly as today at both sites (write red, ci-rca
       files a rec) -- no same-run fresh-replan fallthrough is added here (see constraints: a
       silent post-approval re-plan-and-apply at the gated site would violate Decision 92's
       Environment-gates-execution model; the push site is Decision 77 no-TOCTOU by design).
-      Explicitly exclude the new step's id from the Decision 154 pre-apply-failure allow-list so
-      this failure class still latches the convergence record red (never downgrades to a
-      non-blocking infra_error marker -- this is the anti-masking risk the decision-scout gate
-      flagged against the original draft).
+      Explicitly exclude the new classification step's id from BOTH of the file's two
+      pre-apply-failure allow-lists (the apply-sandbox job's 5-member list including tfvars, and
+      the gated-apply job's separate 4-member list with no tfvars step -- the two are different
+      sizes, not one shared list) so this failure class still latches the convergence record red
+      (never downgrades to a non-blocking infra_error marker -- the anti-masking risk the
+      decision-scout gate flagged against the original draft).
   - file: .github/workflows/reconcile.yml
     action: Modify
     purpose: >-
-      Add the SAME post-apply failure-classification step to the gated-apply-reconcile job's bare
-      "Terraform apply (gated -- plan.bin verbatim, no re-plan)" step (currently the one
-      structurally identical human-gated verbatim-apply site in the whole apply-chain family with
-      NO stale-plan handling of any kind -- flagged by plan-critique round 1 as a third exposed
-      site Decision 190 already predicts will recur). Same fail-closed disposition as above; no
-      same-run fresh-replan (that fallthrough is DEP-10's apply-reconcile-job-only, non-gated
-      behavior -- deliberately not extended here, see constraints). apply-reconcile's own existing
-      inline DEP-10 detection is untouched. NOTE (round 2, informational, not actioned): the
-      apply-reconcile job's OWN "fresh re-plan, guard-PASS" apply step (id: apply_fresh) is a
-      fourth structurally-bare apply step, but its exposure window is same-run with no PR-review
-      gap and no unbounded human-approval wait -- materially smaller than the three covered sites --
-      so it is deliberately left out of this plan's scope rather than silently overclaimed as covered.
+      gated-apply-reconcile's bare "Terraform apply (gated -- plan.bin verbatim, no re-plan)" step
+      (currently the one structurally identical human-gated verbatim-apply site in the whole
+      apply-chain family with NO stale-plan handling of any kind -- flagged by plan-critique
+      round 1 as a third exposed site Decision 190 already predicts will recur) is a plain
+      `terraform apply ...` with no stderr capture, same gap as terraform-apply-sandbox.yml's two
+      sites (round 3 finding). Modify this apply step to capture its own stderr into an exposed
+      step output using the SAME shape reconcile.yml's own apply-reconcile job already proves at
+      its "saved plan" apply step (lines ~394-413: `set +e; STDERR_FILE=$(mktemp); terraform apply
+      ... 2>"$STDERR_FILE"; rc=$?; STDERR_CONTENT=$(cat "$STDERR_FILE")`), preserving rc as the
+      step's own exit code. Add a NEW post-apply classification step immediately after: read the
+      exposed stderr, classify via stale_plan_signature.py, emit the same
+      PLAN_STALE_CONCURRENT_WRITER marker on a match. Same fail-closed disposition as
+      terraform-apply-sandbox.yml; no same-run fresh-replan (that fallthrough is DEP-10's
+      apply-reconcile-job-only, non-gated behavior -- deliberately not extended here, see
+      constraints). apply-reconcile's own existing inline DEP-10 detection and fresh-replan logic
+      are untouched. NOTE (round 2, informational, not actioned): the apply-reconcile job's OWN
+      "fresh re-plan, guard-PASS" apply step (id: apply_fresh) is a fourth structurally-bare apply
+      step, but its exposure window is same-run with no PR-review gap and no unbounded
+      human-approval wait -- materially smaller than the three covered sites -- so it is
+      deliberately left out of this plan's scope rather than silently overclaimed as covered.
   - file: docs/contracts/deploy-paths.yaml
     action: Modify
     purpose: >-
@@ -121,7 +141,7 @@ infrastructure_dependencies:
 acceptance_criteria:
   - "stale_plan_signature.py's classifier matches all three DEP-10 stderr phrasings and rejects an unrelated terraform error or empty input."
   - "A stale-plan apply failure at any of the three newly-covered sites (terraform-apply-sandbox.yml x2, reconcile.yml's gated-apply-reconcile) emits a PLAN_STALE_CONCURRENT_WRITER marker and still latches the convergence record red."
-  - "The new classification step's id is excluded from Decision 154's pre-apply-failure allow-list at both terraform-apply-sandbox.yml call sites."
+  - "The new classification step's id is excluded from BOTH of terraform-apply-sandbox.yml's separate pre-apply-failure allow-lists (apply-sandbox job's 5-member list including tfvars; gated-apply job's own 4-member list with no tfvars step) and from reconcile.yml's gated-apply-reconcile allow-list."
   - "docs/contracts/deploy-paths.yaml's SPLIT-APPLY step names the reject-not-approve action for a redundant pending gated-apply run, in bare-action wording with no restated classification rationale."
   - "convergence_advisory.py's classify() output for pending_gated and pending_codification stays <= 140 chars with a realistic 40-char SHA / full ISO-8601 timestamp."
   - "convergence_classify.py's render_convergence_advisory_red_description() out-of-band-drift branch stays <= 140 chars with a realistic 40-char SHA and a real-shaped GitHub Actions run URL, including a longer-run-id/repo-path variant."
@@ -177,10 +197,10 @@ verification_plan:
       plan's own diff would over-index a narrow sanity check into permanent CI surface.
   - step: 5
     phase: pre-deploy
-    action: Confirm reconcile.yml's gated-apply-reconcile job gained the same classification step
-    command: "grep -n 'PLAN_STALE_CONCURRENT_WRITER' .github/workflows/reconcile.yml"
-    expected: "The marker string appears in reconcile.yml, wired after gated-apply-reconcile's apply step."
-    fix_if: "The marker is absent -- the third exposed site was not actually covered."
+    action: Confirm reconcile.yml's gated-apply-reconcile job gained the same classification step and stays excluded from its own pre-apply-failure allow-list
+    command: "grep -n 'PLAN_STALE_CONCURRENT_WRITER' .github/workflows/reconcile.yml && grep -n 'pre-apply-failure' .github/workflows/reconcile.yml"
+    expected: "The marker string appears in reconcile.yml, wired after gated-apply-reconcile's apply step; gated-apply-reconcile's own pre-apply-failure allow-list ({artifact_sha, tfvars, tf_init, build_ducklake, fetch_plan}) does not include the new classification step's id."
+    fix_if: "The marker is absent (the third exposed site was not actually covered), or the new step id appears in gated-apply-reconcile's pre-apply-failure predicate."
     hermetic: false
     expected_literals: []
     graduation: waive
@@ -238,9 +258,9 @@ test_obligations:
     command: "grep -n 'pre-apply-failure' .github/workflows/terraform-apply-sandbox.yml"
     red_green_expectation: "red before (step absent / step id present in the allow-list), green after"
   - source: .github/workflows/reconcile.yml
-    behavior: "gated-apply-reconcile's bare apply step gains the same stale-plan classification step as the two terraform-apply-sandbox.yml sites."
+    behavior: "gated-apply-reconcile's apply step captures its own stderr, gains the same stale-plan classification step as the two terraform-apply-sandbox.yml sites, and stays excluded from its own separate pre-apply-failure allow-list."
     verification_step: 5
-    command: "grep -n 'PLAN_STALE_CONCURRENT_WRITER' .github/workflows/reconcile.yml"
+    command: "grep -n 'PLAN_STALE_CONCURRENT_WRITER' .github/workflows/reconcile.yml && grep -n 'pre-apply-failure' .github/workflows/reconcile.yml"
     red_green_expectation: "red before (marker absent from reconcile.yml), green after"
   - source: docs/contracts/deploy-paths.yaml
     behavior: "The SPLIT-APPLY step's bare-action wording names rejecting a redundant pending gated-apply run once the out-of-band apply lands."
@@ -255,15 +275,14 @@ constraints:
   - "rec-3955 must not close as duplicate_of rec-3956 -- ci-rca-lifecycle.yaml deliberately has no such category; it closes on its own waiver."
   - "The drift-red description fix (convergence_classify.py) must keep the FULL run URL in render_convergence_red_refusal() and the evidence bundle -- only the 140-char-constrained advisory description shortens to a trailing run-reference; no information is dropped from the uncapped surfaces."
 context:
-  - "Decision-scout verdict: FLAGS_FOUND (2 WARN, 1 NOTE, all incorporated directly, no BLOCK; no re-dispatch needed). CITE: 55, 72, 92, 126, 128, 144, 154, 156, 158, 180, 183, 190, 86."
-  - "gates: decision-scout=FLAGS_FOUND (incorporated); plan-critique=REVISE after round 1 (reconcile with Decision 158/DEP-10, cover reconcile.yml's third exposed site, add graduation dispositions), REVISE after round 2 (a third instance of rec-3954's defect class in convergence_classify.py's drift-red branch, folded into scope) -- both rounds' findings incorporated; awaiting round 3 confirming PROCEED."
-  - "rec-3956/rec-3955 root cause verified live: GitHub Actions run 35511816976/job 106081098650 timeline (queued 2026-09-20T12:52:54Z, approved+started 17:14:43Z, failed 17:15:29Z) confirms the gated-apply human-approval wait window contained PR #1223's SPLIT-APPLY out-of-band admin apply (PLAN-datalake-read-visibility.yaml's own FIXTURE SEQUENCING note dates it before PR #1224's 13:44:40Z commit) -- the two applies did overlap, confirming the task's root-cause hypothesis rather than falsifying it."
-  - "Plan-critique round 1 verified Terraform's own native apply ALREADY correctly detects and fails on this staleness class (the incident itself failed there, at 17:15:29Z) -- the value of this plan's fix is diagnostic classification (a declared, stable ci-rca signature instead of failure_category=unknown), not new prevention. This revision replaced the original pre-emptive state-serial-comparator design accordingly."
-  - "Plan-critique round 2 independently executed render_convergence_advisory_red_description() with realistic data and measured 259 chars on the drift branch (apply_failure branch measures 130, no change needed) -- the same fixture-length blind spot rec-3954's own acceptance criteria call out, in a third call site sharing the same root cause."
-  - "Convergence record independently verified GREEN at f1a9cb2a (run 35525861643, 2026-09-20T17:29:07Z) via live S3 read -- this is closure-and-permanent-fix, not incident response."
-  - "Decision 190 names this exact split-apply race pattern's second occurrence (2026-09-04, Decision 183); this filing (2026-09-20) is arguably its third, now surfacing at gated-apply's own verbatim-apply step rather than the scheduled drift classifier -- state this explicitly in the PR body for institutional memory."
-  - "rec-3955 fingerprint 9a739ef9b5211cf685f571be3b63f8be386543835e8f91fde59bada822089ee1 matches CLOSED rec-2862 (fixed_by_sha stamped); ancestry check correctly re-filed as a fresh REGRESSION (not a chain bump) since 7f27063c is not a descendant of rec-2862's fix -- the mechanism is working as designed, not defective."
-  - "docs/contracts/ci-rca-lifecycle.yaml closure_obligation: duplicate_of is deliberately absent from waiver_categories -- rec-3955 closes on its own no_premerge_gate_by_design waiver, never as a duplicate of rec-3956."
+  - "Decision-scout verdict: FLAGS_FOUND (2 WARN, 1 NOTE, all incorporated, no BLOCK). CITE: 55, 72, 92, 126, 128, 144, 154, 156, 158, 180, 183, 190, 86."
+  - "gates: decision-scout=FLAGS_FOUND (incorporated); plan-critique=REVISE after round 1, REVISE after round 2, REVISE after round 3 -- all incorporated; full narrative in this branch's commit history (see the four plan(...) commits), not restated here."
+  - "rec-3956/rec-3955 root cause verified live via GitHub Actions run 35511816976/job 106081098650 (queued 2026-09-20T12:52:54Z, approved+started 17:14:43Z, failed 17:15:29Z) cross-referenced against PLAN-datalake-read-visibility.yaml's SPLIT-APPLY sequencing (PR #1223/#1224) -- the out-of-band apply and the gated-apply approval wait did overlap."
+  - "Terraform's own native apply already correctly detects this staleness class -- this plan's value is diagnostic classification (a stable ci-rca signature), not new prevention (round 1 finding)."
+  - "Convergence record independently verified GREEN at f1a9cb2a (run 35525861643, 2026-09-20T17:29:07Z) -- closure-and-permanent-fix, not incident response."
+  - "Decision 190 names this split-apply race pattern's second occurrence (2026-09-04, Decision 183); this filing is arguably its third -- state so explicitly in the PR body."
+  - "rec-3955 fingerprint 9a739ef9b5211cf685f571be3b63f8be386543835e8f91fde59bada822089ee1 matches CLOSED rec-2862 (fixed_by_sha stamped); ancestry check correctly re-filed as a fresh REGRESSION since 7f27063c is not a descendant of rec-2862's fix -- the fence is working as designed."
+  - "ci-rca-lifecycle.yaml closure_obligation: duplicate_of is deliberately absent from waiver_categories -- rec-3955 closes on its own no_premerge_gate_by_design waiver, never as a duplicate of rec-3956."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -273,8 +292,8 @@ pre_implementation_checklist:
 execution_steps:
   - "Create scripts/ci/stale_plan_signature.py: extract DEP-10's exact stderr regex (reconcile.yml's apply-reconcile step) into one named, tested classifier function."
   - "Add tests/test_stale_plan_signature.py covering all three DEP-10 phrasings, an unrelated terraform error, and empty/None input."
-  - "Modify .github/workflows/terraform-apply-sandbox.yml: add the post-apply classification step after both verbatim-apply sites; explicitly exclude its step id from the Decision 154 pre-apply-failure predicate."
-  - "Modify .github/workflows/reconcile.yml: add the same post-apply classification step after gated-apply-reconcile's bare apply step."
+  - "Modify .github/workflows/terraform-apply-sandbox.yml: modify BOTH existing bare apply steps to capture their own stderr into an exposed step output (mirroring reconcile.yml's apply-reconcile STDERR_FILE/STDERR_CONTENT shape), preserving each step's own exit code; add the post-apply classification step reading that output after each; explicitly exclude the new step's id from BOTH of the file's separate pre-apply-failure allow-lists."
+  - "Modify .github/workflows/reconcile.yml: modify gated-apply-reconcile's existing bare apply step the same way (capture stderr into an exposed output, preserve exit code); add the same post-apply classification step after it; explicitly exclude the new step's id from gated-apply-reconcile's own separate pre-apply-failure allow-list."
   - "Modify docs/contracts/deploy-paths.yaml: extend the existing Decision 183 SPLIT-APPLY step with the reject-not-approve clause, bare-action wording only."
   - "Modify scripts/ci/convergence_advisory.py: shorten the two description f-strings to fit 140 chars with realistic data."
   - "Modify tests/test_convergence_advisory.py: add the two named test methods with realistic fixtures."
