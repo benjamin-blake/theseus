@@ -153,6 +153,89 @@ locals {
         Action   = ["s3:GetObject"]
         Resource = ["${aws_s3_bucket.data_lake.arn}/tfstate/personal/*"]
       },
+      {
+        # T2.18 c2 (PLAN-datalake-read-visibility): GcDebtRatio's storage term comes from a
+        # current-versions-only listing, so on this versioned bucket it cannot see the bytes it
+        # purports to measure. GetLifecycleConfiguration and GetBucketVersioning are bucket-config
+        # reads with no version-level exposure -- no fence needed for either.
+        Sid      = "DataLakeBucketConfigRead"
+        Effect   = "Allow"
+        Action   = ["s3:GetLifecycleConfiguration", "s3:GetBucketVersioning"]
+        Resource = [aws_s3_bucket.data_lake.arn]
+      },
+      {
+        # s3:ListBucketVersions is BUCKET-level (Resource is the bucket ARN, prefix-scopable only
+        # via the s3:prefix condition key) -- distinct IAM action-type from the OBJECT-level
+        # GetObjectVersion grant below. The s3:prefix condition is the PRIMARY fence admitting only
+        # the two DuckLake data prefixes; the DenyStateAndConvergenceVersionList statement below is
+        # defence-in-depth, not the sole guard (a prefix-conditioned Deny cannot fence an unprefixed
+        # or shorter-prefix list request).
+        Sid      = "DataLakeVersionListRead"
+        Effect   = "Allow"
+        Action   = ["s3:ListBucketVersions"]
+        Resource = [aws_s3_bucket.data_lake.arn]
+        Condition = {
+          StringLike = {
+            "s3:prefix" = [
+              "${local.ducklake_prod_data_prefix}/*",
+              "${local.ducklake_smoke_data_prefix}/*",
+            ]
+          }
+        }
+      },
+      {
+        # s3:GetObjectVersion is OBJECT-level -- scoped directly to the two DuckLake data object
+        # prefixes, never bucket-wide. A bucket-wide grant would reopen the DEP-13
+        # ExternalId-in-state escalation path the two Deny statements below exist to close.
+        Sid    = "DataLakeObjectVersionRead"
+        Effect = "Allow"
+        Action = ["s3:GetObjectVersion"]
+        Resource = [
+          "${aws_s3_bucket.data_lake.arn}/${local.ducklake_prod_data_prefix}/*",
+          "${aws_s3_bucket.data_lake.arn}/${local.ducklake_smoke_data_prefix}/*",
+        ]
+      },
+      {
+        # DEP-13 (T2.18 / PLAN-datalake-read-visibility): OBJECT-level Deny covering the whole
+        # version-read verb family -- not just the one verb granted above -- so a later grant of a
+        # sibling verb (GetObjectVersionAcl/Tagging/Attributes) cannot silently land outside the
+        # fence. Mirrors DenyStateRead's resource shape (bucket.arn/prefix/*), which is what makes
+        # this Deny's action family match the OBJECT-level GetObjectVersion Allow above.
+        Sid    = "DenyStateAndConvergenceVersionRead"
+        Effect = "Deny"
+        Action = [
+          "s3:GetObjectVersion",
+          "s3:GetObjectVersionAcl",
+          "s3:GetObjectVersionTagging",
+          "s3:GetObjectVersionAttributes",
+        ]
+        Resource = [
+          "${aws_s3_bucket.data_lake.arn}/convergence/personal/*",
+          "${aws_s3_bucket.data_lake.arn}/tfplan/personal/*",
+          "${aws_s3_bucket.data_lake.arn}/tfstate/personal/*",
+        ]
+      },
+      {
+        # DEP-13: separate BUCKET-level, s3:prefix-conditioned Deny for s3:ListBucketVersions --
+        # an object-prefix Resource shape (bucket.arn/tfstate/personal/*) would be INERT against
+        # this bucket-level action, since ListBucketVersions is never evaluated against an object
+        # ARN. The Resource here MUST be the bucket ARN, fenced by the same s3:prefix condition key
+        # the Allow above uses, mirroring the two-statement Deny pattern DenyStateAndConvergenceWrite
+        # already sets for the object-level write actions.
+        Sid      = "DenyStateAndConvergenceVersionList"
+        Effect   = "Deny"
+        Action   = ["s3:ListBucketVersions"]
+        Resource = [aws_s3_bucket.data_lake.arn]
+        Condition = {
+          StringLike = {
+            "s3:prefix" = [
+              "convergence/personal/*",
+              "tfplan/personal/*",
+              "tfstate/personal/*",
+            ]
+          }
+        }
+      },
     ]
   })
 }
