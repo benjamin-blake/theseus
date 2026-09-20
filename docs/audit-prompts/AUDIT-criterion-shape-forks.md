@@ -279,7 +279,10 @@ git at compose time: `plan-obligations-enumeration-homed` entered the registry 2
 retired in the 2026-08-25 sharding migration (14 days); `no-retired-ci-role-in-live-surfaces`
 entered 2026-07-24 and was retired in the same migration (about 32 days). Re-derive both
 intervals yourself -- DD-A asks you to establish how long a break survives, and an inherited
-figure would prejudge it. Note what surfaced them: an unrelated migration that touched the rows,
+figure would prejudge it. Do not take `graduated_at` as the entry date without checking: on one of
+these two shards that field reads a day earlier than the commit that introduced the row, because
+it is an authored claim ("today's date when the row is written") rather than a derived fact. Which
+clock you measure from is itself a judgment DD-A should state. Note what surfaced them: an unrelated migration that touched the rows,
 not any standing mechanism. The differential gate re-runs a row only when that row is ADDED or
 MODIFIED in the diff.
 
