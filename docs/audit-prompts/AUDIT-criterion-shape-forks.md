@@ -177,7 +177,8 @@ This populates `logs/.preflight-report.json` and `logs/.recommendations-log.json
 gitignored; they are read caches, never write sources, and you never commit them.
 
 IF cache-gen fails (credentials or egress down): do NOT abort. Set `meta.degraded_dedup: true`,
-mark every `roadmap_crossref` entry `confidence: HYPOTHESIS` with `dedup_hit_count: null`,
+set every affected finding's own `confidence: HYPOTHESIS` (a finding-level field; `roadmap_crossref`
+has no `confidence` key) and its `roadmap_crossref.dedup_hit_count: null`,
 proceed using the recommendation-side dedup pointers in Section 10.6 as your only recs signal,
 and still perform your own greps over the two git-tracked surfaces (`docs/DECISIONS.md`,
 `docs/ROADMAP-PLATFORM.yaml`), which need no credentials.
@@ -371,15 +372,22 @@ behind a storage port with a file-catalog LOCAL adapter and a DuckLake-on-Neon C
 user-selected by configuration. A second append-only table per criterion version, leg and run is
 a different proposition under a local file catalog than under a lakehouse -- join cost, write
 amplification, and whether an evidence row can even be written without a warehouse round-trip all
-change. If your verdict holds under one adapter but not the other, say so explicitly rather than
-answering for the lakehouse alone; that split is itself a finding.
+change. If your verdict holds under one adapter but not the other, record it in the `adapter_split` block
+on this entry: set `splits: true` and name the per-adapter verdicts. The top-level `verdict` then
+carries the CLOUD-adapter answer (DuckLake is where the clause-8 migration lands first), with the
+divergence in `adapter_split` -- do not collapse a genuine split into `other-argued`, which means
+"neither pinned option", not "it depends". A split is itself a finding; file it.
 
 This question additionally requires an `external_checklist` block. Assess THE DESIGN YOU ENDORSE
 in your own verdict -- if you answer (i), rate the one-table proposal; if (ii), rate the two-table
-proposal; if `other-argued`, rate what you propose -- property-by-property against these named
+proposal; if `other-argued`, rate what you propose as a third set tagged `design: as-proposed`
+-- property-by-property against these named
 external practices, each rated `met | partial | missed` with evidence, or `n/a`. `partial` requires an
-argued, property-matched compensating control. Rate the checklist for BOTH candidate designs, not only the one you endorse: emit two
-`external_checklist` blocks, keyed by `design: one-table | two-tables`. Only the design your
+argued, property-matched compensating control. Rate the checklist for BOTH candidate designs, not only the one you endorse: ONE
+`external_checklist` list of EIGHTEEN entries -- all nine properties rated once for
+`design: one-table` and once for `design: two-tables`. Never two `external_checklist` keys: a
+duplicate mapping key is accepted by `yaml.safe_load`, which is the pre-push gate, and silently
+discards nine of the eighteen ratings. Only the design your
 verdict endorses feeds maturity, under the CHECKLIST CONDITION in Section 15, which is the sole
 statement of that scope -- do not infer it from here. Rating both is what keeps the checklist from
 pricing disagreement: endorsing the one-table design otherwise costs you roughly five argued
@@ -417,8 +425,8 @@ deliberately trades. Neither `n/a` nor `partial` gates maturity.
 **Verdict enum:** `one-table-proof-struct | two-tables-evidence-journal | other-argued`
 **Additionally required on this entry:** `precedent: [<table or artifact names>]` -- a LIST, empty
 when you find none (never the string `none`) -- and
-`external_checklist: [{property, rating, evidence}]` covering ALL NINE properties above,
-each identified by its `P1`..`P9` id -- rating seven of nine would silently drop exactly the two
+`external_checklist: [{design, property, rating, evidence}]` covering ALL NINE properties above
+for EACH of the two designs -- eighteen entries, each property identified by its `P1`..`P9` id -- rating seven of nine would silently drop exactly the two
 that argue for consolidation.
 
 ### Q5 -- Questions the requester did not think to ask
@@ -455,7 +463,9 @@ answer in this audit is for.
 reversal_trigger_assessment:
   verdict: not-tripped | tripped-reopen-clause-3 | tripped-but-absorbable | other-argued
   nullable_column_count: <int, by your own count>
-  which_columns: [<the columns structurally null for one of the two WORK-ITEM KINDS>]
+  which_columns: [{column: "<name>", null_for: epic-shaped|task-shaped|both}]
+  # The UNION across both kinds, each entry labelled with the kind(s) it is null for.
+  # nullable_column_count is the length of this list.
   rationale: ""
   basis: [<finding ids, or empty>]
   other_conditions:
@@ -930,12 +940,19 @@ audit:
                other-argued, basis: [], prose: ""}
     - {q: Q4, verdict: one-table-proof-struct|two-tables-evidence-journal|other-argued,
        precedent: [<table or artifact names; empty list means none found>],
+       adapter_split: {splits: true|false,
+                       local_verdict: one-table-proof-struct|two-tables-evidence-journal|
+                                      other-argued|null,
+                       cloud_verdict: one-table-proof-struct|two-tables-evidence-journal|
+                                      other-argued|null, note: ""},
        basis: [], prose: "",
-       external_checklist: [{design: one-table|two-tables,
+       external_checklist: [{design: one-table|two-tables|as-proposed,
                              property: P1|P2|P3|P4|P5|P6|P7|P8|P9,
                              rating: met|partial|missed|n/a, evidence: ""}]}
-    # 18 entries: all nine properties rated for each of the two candidate designs. Only the
-    # entries whose `design` matches your Q4 verdict feed the Section 15 CHECKLIST CONDITION.
+    # 18 entries normally: all nine properties rated for each of the two candidate designs.
+    # Under an `other-argued` verdict add a THIRD set of nine tagged `design: as-proposed`
+    # (27 entries), rating what you actually propose. Only the entries whose `design` matches
+    # your Q4 verdict feed the Section 15 CHECKLIST CONDITION -- `as-proposed` for `other-argued`.
     - {q: Q5, answers: [{question: "", disposition: answered|dismissed, answer: "",
                         basis: [<finding ids>]}],
        reversal_trigger_assessment:
@@ -970,7 +987,9 @@ audit:
     - {surface: S1..S6, dimension: VD1..VD7, rating: strong|adequate|weak|absent|n/a,
        evidence: "file:line|item-id|null", note: ""}
     # evidence is null ONLY on an n/a cell, where `note` carries the one-line reason the
-    # dimension does not structurally apply. Every other rating requires an anchor.
+    # dimension does not structurally apply. Every other rating requires an anchor. On S1/S2,
+    # which exist only as the Section 10.2/10.3 proposal, the anchor is the CONSTRAINT the
+    # rating turns on -- the same convention the findings invariants pin for CONFIRMED.
   findings:
     - {id: CSF-01, surface: S1..S6|shared, affects_surfaces: [S1..S6],
        question: Q1..Q5|none, dimension: VD1..VD7|none,
@@ -983,7 +1002,8 @@ audit:
                           item_ids: [], dedup_search_terms: [],
                           dedup_hit_count: <int, or null under degraded_dedup>, note: ""},
        effort: XS|S|M|L, depends_on: [finding ids],
-       sequencing: {safe_to_queue_now: true|false, blocked_behind: [], note: ""}}
+       sequencing: {safe_to_queue_now: true|false,
+                    blocked_behind: [<finding ids, roadmap item ids or rec ids>], note: ""}}
     # change_type: add = a field/table/leg that does not exist; rescope = an existing element's
     #   meaning or coverage changes; enforce = an existing rule gains a mechanical check;
     #   unify = two surfaces collapse to one; persist = something computed or discarded becomes
@@ -1090,8 +1110,9 @@ empty.
   below where it applies.
   CHECKLIST CONDITION, stated once and nowhere else: no property in Q4's `external_checklist`
   rated `missed`. It gates ONLY the designed surface your Q4 verdict endorses -- S1 under
-  `one-table-proof-struct`, S2 under `two-tables-evidence-journal`, and BOTH S1 and S2 under
-  `other-argued` (you rated what you proposed, which spans them). It never gates S3, S4, S5 or S6.
+  `one-table-proof-struct` reading the `design: one-table` entries, S2 under
+  `two-tables-evidence-journal` reading the `design: two-tables` entries, and BOTH S1 and S2 under
+  `other-argued` reading the `design: as-proposed` entries (what you proposed spans them). It never gates S3, S4, S5 or S6.
   A surface it does not gate reaches `frontier` on finding counts alone.
 - **strong** -- 0 `critical` and at most 1 `high`.
 - **solid** -- at most 1 `critical` AND at most 3 `high`.
