@@ -371,12 +371,15 @@ class TestDataLakeLifecycleGoverned:
             f"{[name for name, _ in matches]}"
         )
 
-    def test_sweep_uses_the_directory_wide_glob_idiom(self) -> None:
-        """Mechanically impossible to narrow to main.tf-only -- reads this module's OWN source."""
-        source = Path(__file__).read_text(encoding="utf-8")
-        assert '_TERRAFORM_PERSONAL_DIR.glob("*.tf")' in source, (
-            'the directory-wide sweep no longer uses the _TERRAFORM_PERSONAL_DIR.glob("*.tf") '
-            "idiom -- a main.tf-only guard would be a weakening (Decision 181)"
+    def test_read_helper_sweeps_every_tf_file_in_the_directory(self, tmp_path: Path) -> None:
+        """BEHAVIORAL, not a source-text scan: a hardcoded single-file read would fail here."""
+        (tmp_path / "main.tf").write_text('resource "x" "y" {}\n', encoding="utf-8")
+        (tmp_path / "other.tf").write_text('resource "x" "z" {}\n', encoding="utf-8")
+        (tmp_path / "not_tf.txt").write_text("ignored\n", encoding="utf-8")
+        file_texts = _tf_dir_file_texts(tmp_path)
+        assert set(file_texts) == {"main.tf", "other.tf"}, (
+            f"expected every .tf file in the directory to be read, got {sorted(file_texts)} -- a "
+            "main.tf-only guard would be a weakening (Decision 181)"
         )
 
     def test_rule_status_is_enabled(self) -> None:
