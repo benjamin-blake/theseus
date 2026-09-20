@@ -786,8 +786,24 @@ jobs:
 
       - name: Terraform apply (gated -- plan.bin verbatim, no re-plan)
         id: apply
+        # Wrapped via scripts/ci/stale_plan_signature.py's --wrap mode (Decision 59 scope
+        # discipline -- no new delegate script; the wrapped command stays literal, real argv in
+        # this run: text): the wrapper runs terraform apply as a subprocess, re-emits its stderr,
+        # preserves its exit code as this step's own (steps.apply.outcome is unchanged for every
+        # other reader -- write-convergence-record, the pre-apply-failure predicate, best-effort
+        # wake comment), and on a DEP-10 stale-plan stderr match emits a distinguishable
+        # PLAN_STALE_CONCURRENT_WRITER ::error:: marker (diagnostic only; this is a Decision
+        # 55/154 anti-masking guard -- it must never be folded into Decision 154's
+        # pre-apply-failure allow-list below) so ci-rca gets a stable signature instead of a
+        # generic failure_category=unknown. FAILS CLOSED exactly as before this wrapper existed --
+        # no same-run fresh-replan fallthrough is added. DEP-10's fresh-replan (Decision 158) is
+        # deliberately scoped to apply-reconcile's own non-gated apply step above, where no human
+        # approval is at stake; silently substituting and auto-applying a fresh plan at this
+        # human-gated site after approval was granted for specific reviewed content would violate
+        # Decision 92's Environment-gates-execution security model. Recovery stays the
+        # workflow_dispatch acknowledge-and-retry path only.
         working-directory: ${{ env.WORKDIR }}
-        run: terraform apply -input=false -lock-timeout=120s plan.bin
+        run: python3 "$GITHUB_WORKSPACE/scripts/ci/stale_plan_signature.py" --wrap -- terraform apply -input=false -lock-timeout=120s plan.bin
 
       - name: Write convergence record (always-run, red-on-failure)
         id: record_write

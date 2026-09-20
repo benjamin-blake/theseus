@@ -110,6 +110,17 @@ class TestPendingGated:
         assert plain_state == pending_state == SUCCESS
         assert plain_desc != pending_desc
 
+    def test_description_stays_within_github_status_char_limit_with_a_real_sha(self) -> None:
+        """rec-3954: the pending_gated description must fit GitHub's 140-char commit-status
+        description limit even with a realistic-length (40-char) git SHA, not just the short
+        test-fixture shas used elsewhere in this file."""
+        real_sha = "a" * 40
+        body = json.dumps({"status": "green", "pending_gated": {"commit_sha": real_sha}})
+        state, desc = classify(0, "", body)
+        assert state == SUCCESS
+        assert real_sha in desc
+        assert len(desc) <= 140
+
 
 class TestPendingCodification:
     """Decision 190: the pending_codification marker surfaces the same way pending_gated does."""
@@ -132,6 +143,17 @@ class TestPendingCodification:
         state, desc = classify(0, "", json.dumps({"status": "green", "pending_codification": "not-a-dict"}))
         assert state == SUCCESS
         assert "converged" in desc
+
+    def test_description_stays_within_github_status_char_limit_with_a_real_timestamp(self) -> None:
+        """rec-3954: the pending_codification description must fit GitHub's 140-char commit-status
+        description limit even with a full ISO-8601 timestamp including a UTC offset, not just the
+        short test-fixture timestamps used elsewhere in this file."""
+        real_timestamp = "2026-09-20T17:29:07+00:00"
+        body = json.dumps({"status": "green", "pending_codification": {"first_seen": real_timestamp}})
+        state, desc = classify(0, "", body)
+        assert state == SUCCESS
+        assert real_timestamp in desc
+        assert len(desc) <= 140
 
 
 class TestGreen:

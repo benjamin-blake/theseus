@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -55,6 +56,21 @@ PENDING_CODIFICATION_BOUND_HOURS = 2.0
 
 RED_CAUSE_OUT_OF_BAND_DRIFT = "out_of_band_drift"
 RED_CAUSE_APPLY_FAILURE = "apply_failure"
+
+_RUN_ID_RE = re.compile(r"/runs/(\d+)")
+
+
+def _drift_run_ref(run_url: str) -> str:
+    """Extract a short trailing run-reference (the numeric GitHub Actions run id) from a full
+    run URL, for the char-limited advisory description below. The FULL run_url is preserved
+    unchanged in render_convergence_red_refusal() and the evidence bundle -- only this
+    140-char-constrained surface shortens (rec-3954's defect class, round 2)."""
+    if not run_url:
+        return "unknown"
+    match = _RUN_ID_RE.search(run_url)
+    if match:
+        return match.group(1)
+    return run_url.rstrip("/").rsplit("/", 1)[-1] or "unknown"
 
 
 def classify_plan(plan_json_text: str) -> str:
@@ -118,15 +134,18 @@ def render_convergence_red_refusal(record: dict[str, Any]) -> str:
 def render_convergence_advisory_red_description(record: dict[str, Any]) -> str:
     """Build the terraform-converged advisory FAILURE description for a red record, naming the
     measured cause instead of unconditionally asserting "last sandbox apply RED at {commit}" --
-    which is false on a drift-caused red (that commit is the last SUCCESSFUL apply)."""
+    which is false on a drift-caused red (that commit is the last SUCCESSFUL apply).
+
+    rec-3954 round 2: the drift branch previously embedded the FULL drift_run_url, measuring 259
+    chars with realistic data -- nearly 2x GitHub's 140-char commit-status description limit. It
+    now uses a short trailing run-reference (the numeric run id, via _drift_run_ref) instead; the
+    full run URL is still available, unshortened, from render_convergence_red_refusal() and the
+    evidence bundle -- no information is dropped, only this char-limited surface shortens."""
     commit = record.get("commit_sha", "") or ""
     cause = derive_red_cause(record)
     if cause == RED_CAUSE_OUT_OF_BAND_DRIFT:
-        run_url = record.get("drift_run_url") or ""
-        return (
-            f"main is non-converged (MEASURED out-of-band drift at {run_url}; commit {commit} is the "
-            "last successful apply, not the failing one). Advisory only -- not a required check."
-        )
+        run_ref = _drift_run_ref(record.get("drift_run_url") or "")
+        return f"main non-converged (out-of-band drift, run {run_ref}); {commit} was last apply. Advisory only."
     return f"main is non-converged (last sandbox apply RED at {commit}). Advisory only -- not a required check."
 
 

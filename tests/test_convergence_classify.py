@@ -206,6 +206,28 @@ class TestRenderConvergenceAdvisoryRedDescription:
         desc = render_convergence_advisory_red_description(record)
         assert "last sandbox apply RED at badsha" in desc
 
+    def test_drift_red_description_stays_within_github_status_char_limit_with_realistic_data(self) -> None:
+        """rec-3954 round 2: the drift branch measured 259 chars with realistic data (a 40-char
+        SHA and a real-shaped GitHub Actions run URL) -- nearly 2x GitHub's 140-char commit-status
+        description limit, the same defect class as rec-3954's two convergence_advisory templates,
+        worse. Proves the shortened description fits with realistic data AND a worst-case
+        longer-run-id variant (a future GitHub Actions run id could grow well past today's 11
+        digits)."""
+        real_sha = "a" * 40
+        realistic_run_url = "https://github.com/benjamin-blake/theseus/actions/runs/35525861643"
+        record = {"status": "red", "commit_sha": real_sha, "drift_run_url": realistic_run_url}
+        desc = render_convergence_advisory_red_description(record)
+        assert len(desc) <= 140
+        assert "35525861643" in desc
+
+        worst_case_run_url = (
+            "https://github.com/some-very-long-organization-name/"
+            "an-extremely-long-repository-name-for-testing/actions/runs/" + "9" * 20
+        )
+        worst_case_record = {"status": "red", "commit_sha": real_sha, "drift_run_url": worst_case_run_url}
+        worst_case_desc = render_convergence_advisory_red_description(worst_case_record)
+        assert len(worst_case_desc) <= 140
+
 
 class TestCliCommands:
     def test_classify_plan_command(self, capsys) -> None:
