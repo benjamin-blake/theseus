@@ -145,6 +145,11 @@ instruction presupposes a capability you lack, record it (Section 5.3) and proce
 
 ### 5.1 Environment
 
+IF `git fetch origin main` fails (network, auth, proxy): do NOT abort. Use the local
+`origin/main` ref as it stands, record a `capability` deviation naming the fetch failure, and
+proceed -- the audited tree is then whatever that ref points at, which `meta.audited_commit` will
+name correctly either way.
+
 ```bash
 git fetch origin main
 git rev-parse --short origin/main          # THIS is your base sha; use it everywhere
@@ -253,9 +258,12 @@ recorded as a finding is worth more than compliance.
 Answer all five. Q1-Q4 each get a `question_answers[]` entry carrying that question's pinned
 verdict enum. Q5 uses a different shape -- an `answers[]` list plus the `reversal_trigger_assessment` and
 `deferred_walk_inputs` blocks defined under Q5 -- and carries no top-level verdict. A verdict with no `basis` finding ids
-is an opinion; ground it. The one exception: a verdict that endorses the status quo may carry an
-empty `basis` IF you also filed no correction bearing on it -- say so in `prose`. Never
-manufacture a finding to satisfy this rule.
+is an opinion; ground it. Two exceptions. A verdict that endorses the status quo may carry an empty `basis` if you also
+filed no correction bearing on it -- say so in `prose`. And for a fork whose subject is UNBUILT,
+an empty `basis` is always permitted: on Q4 (S1 and S2 exist only as the Section 10.2/10.3
+proposal) the "status quo" is the converged shape itself, and on Q3 option (c) there is no built
+artifact to defect against. Never manufacture a finding to satisfy this rule -- Section 17's null
+result outranks it.
 
 ### Q1 -- Standing versus admitted
 
@@ -303,9 +311,9 @@ fails a `schema_version: 2` plan whose declared `verification_tier` is below its
 unless `tier_waiver` is set. Its owning tier item T3.17 is `complete`.
 
 Decision 48's own Limitation clause at `docs/DECISIONS.md:7819` still reads "documentation-enforced
-only. No automated detection currently exists." Establish for yourself which of those two is
-current before you answer -- one of them is out of date, and which one is a finding in its own
-right.
+only. No automated detection currently exists." Establish for yourself which of those two is current before you answer, and adjudicate the
+discrepancy per Section 2 like any other candidate -- "not a defect" is among its permitted
+destinations.
 
 What does NOT exist, as far as this brief could establish: any tier derivation at CRITERION grain,
 and any writer that populates the recommendation `verification_tier` field from scope. Verify both.
@@ -443,6 +451,11 @@ Seeds, each of which you must answer or explicitly dismiss:
   ids are writer-allocated in-transaction while criterion ids are authored?
 - The converged shape stores `text` as the requirement. What bounds it? One criterion text in the
   roadmap today is 6,581 characters.
+- Decision 197 clause 7 renames "recommendation" and the `file_rec` / `update_rec` verbs "with the
+  model, never as a separate later pass", across 323 files, and says the rename "moves the closed
+  named-verb boundary (Decision 84 I-3), it does not open it". No question in this brief touches
+  clause 7. Does the criterion shape you endorse make that rename harder, easier, or neither -- and
+  does anything in it leak the word "recommendation" into a column, an enum or a verb name?
 - Where does an ESCAPED DEFECT re-enter this model? Neither the converged shape nor the evidence
   table has a leg for it (NS4 names it as one of the platform's three real mechanisms).
 
@@ -529,7 +542,28 @@ deferred_walk_inputs:
     verdict: project-id-on-criterion-row | project-id-on-parent-only | no-project-id | other-argued
     rationale: ""
     basis: []
+  read_boundary:
+    verdict: criteria-on-parent-read | separate-named-verb | both | other-argued
+    pick_surface_returns: "<what kind-generic pick_work_item must return at pick time>"
+    rationale: ""
+    basis: []
+  dq_scope:
+    verdict: dq-checked | exempt-with-named-binding | other-argued
+    rationale: ""
+    basis: []
 ```
+
+`read_boundary` is the counterpart to `write_boundary`. Decision 84 I-3 closes the read side to
+NAMED VERBS with no caller SQL, and Decision 197 clause 6 pins a kind-generic `pick_work_item`
+surface that T4.3 c4 already commits to. If a recommendation's `acceptance` becomes child rows,
+something must decide whether the pick surface returns a work item with its criteria attached, or
+whether criteria are a second named read. Say which, and what `pick_work_item` returns.
+
+`dq_scope` follows `scripts/checks/contracts/validate_table_registration.py` and
+`docs/contracts/storage-substrate.yaml`, which are admission control for any new warehouse table:
+a table is DQ-checked like any other or declares an explicit exemption naming the maintenance verb
+that substitutes. Candidate 9's `execution_result` is the worked example of a field that took the
+exemption route without one.
 
 `write_boundary` answers step 3's unasked half. The identity rule pins a ULID "minted once at the
 WRITE BOUNDARY (the writer Lambda / module that owns the insert)", but names no writer for
@@ -851,15 +885,15 @@ nor justifies dismissal.
 
 ## 12. METHOD
 
-- **P1 Read.** Section 10's decisions and contracts; the six surfaces; Section 3's traps.
-- **P2 Trace.** DD-A, DD-B, DD-C. Do not form verdicts yet.
-- **P3 Empirical.** Section 11, E1-E8.
-- **P4 Adjudicate.** Every Section 10.5 candidate to a disposition per Section 2.
-- **P5 Rate.** The Section 8 rubric, every surface.
-- **P6 Dedup.** Section 13, before any finding is written.
-- **P7 Answer.** Q1-Q5, each with its pinned verdict and finding-id basis. Write the
+- **M1 Read.** Section 10's decisions and contracts; the six surfaces; Section 3's traps.
+- **M2 Trace.** DD-A, DD-B, DD-C. Do not form verdicts yet.
+- **M3 Empirical.** Section 11, E1-E8.
+- **M4 Adjudicate.** Every Section 10.5 candidate to a disposition per Section 2.
+- **M5 Rate.** The Section 8 rubric, every surface.
+- **M6 Dedup.** Section 13, before any finding is written.
+- **M7 Answer.** Q1-Q5, each with its pinned verdict and finding-id basis. Write the
   "what the converged shape gets wrong" section here.
-- **P8 Synthesize.** Severity, then maturity, LAST.
+- **M8 Synthesize.** Severity, then maturity, LAST.
 
 ## 13. DEDUP DISCIPLINE
 
@@ -975,7 +1009,11 @@ audit:
          write_boundary: {verdict: portal-writer-verb|merge-time-etl|plan-time-authoring|
                                    other-argued, owner: "", rationale: "", basis: []}
          tenancy: {verdict: project-id-on-criterion-row|project-id-on-parent-only|no-project-id|
-                            other-argued, rationale: "", basis: []}}
+                            other-argued, rationale: "", basis: []}
+         read_boundary: {verdict: criteria-on-parent-read|separate-named-verb|both|other-argued,
+                         pick_surface_returns: "", rationale: "", basis: []}
+         dq_scope: {verdict: dq-checked|exempt-with-named-binding|other-argued,
+                    rationale: "", basis: []}}
   converged_shape_corrections:
     - {element: "<field or claim in Section 10.2 or 10.3>", what_it_says: "",
        what_is_true: "", evidence: "file:line", consequence: "",
@@ -1062,6 +1100,12 @@ from work you chose not to do.
   a `noted[]` entry or an invented finding.
   `findings[]`, `converged_shape_corrections[]`, `rejected_candidates[]` and `noted[]` are
   uncapped -- Section 17's anti-padding rule governs them, not a number.
+- REQUIRED ENTRY COUNTS, so none has to be recovered from prose: `rubric_ratings` = 42 (six
+  surfaces x seven dimensions, `n/a` included); `per_surface_assessment` = 6; `deep_dives` = 3
+  (DD-A, DD-B, DD-C); `measurements` = 8 (E1-E8); `external_checklist` = 18, or 27 under an
+  `other-argued` Q4 verdict; `question_answers` = 5; Q5 `answers[]` = the 6 seeds plus 2 to 6 of
+  your own. `findings[]`, `converged_shape_corrections[]`, `rejected_candidates[]` and `noted[]`
+  are uncapped and unfloored.
 - COUNTING INVARIANT: `findings[]` is the SOLE enumerated list.
   `total_findings = len(findings) = novel_count + planned_insufficient_count +
   planned_unbuilt_count`. Fully-covered candidates live in `rejected_candidates[]`, NOT in
@@ -1169,7 +1213,7 @@ brief's framing does not foreclose it.
   plainly; do not pad. A rubric cell rated `n/a` with a one-line reason is a better answer than a
   manufactured `weak`.
 - **A null result is a success.** "The converged shape is right on all four forks, and here is the
-  disconfirming work I did" is a complete and valuable outcome -- provided Section 12's P2 and P3
+  disconfirming work I did" is a complete and valuable outcome -- provided Section 12's M2 and M3
   actually ran and the companion report shows what could have changed your mind.
 - **You are not the second opinion on a settled design.** Two reviewers already agreed. Your value
   is in the places where a different prior sees a different answer. Where you agree, say so
