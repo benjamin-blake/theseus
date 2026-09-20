@@ -36,15 +36,23 @@ ASSUME NO CANDIDATE IS A REAL DEFECT UNTIL YOU TRACE IT.
 
 A run that merely confirms the candidates below has failed.
 
-Adjudicate each candidate to exactly one disposition:
+Adjudicate each candidate to exactly one of these five destinations:
 
 - CONFIRMED defect, not owned by any existing item -> `findings[]`, `roadmap_crossref.classification: novel`
 - Owned by an existing roadmap item / decision / open recommendation whose remedy you judge
   INSUFFICIENT -> `findings[]`, classification `planned-insufficient`
 - Owned by an existing item whose remedy is adequate but UNBUILT -> `findings[]`, classification
   `planned-unbuilt`
-- Owned and fully covered -> `rejected_candidates[]`, naming the owning id
-- Not a defect -> `rejected_candidates[]`, naming the compensating control and its property match
+- Owned and fully covered, or not a defect -> `rejected_candidates[]`, naming the owning id or the
+  compensating control and its property match
+- A MISSTATEMENT IN THE CONVERGED SHAPE ITSELF (Section 10.2 or 10.3 asserts something the
+  repository contradicts) -> `converged_shape_corrections[]`. File a `findings[]` entry as well
+  ONLY if the misstatement would change a design decision; a wrong line reference or a wrong
+  field-name claim is a correction alone.
+- A NEUTRAL CONSTRAINT with no defect reading -- a fact that bounds the design without any surface
+  being at fault -> `noted[]`, a bare list of `{candidate, what_it_constrains}`. Do not force such
+  an item into `rejected_candidates[]`: it has no compensating control to name, and inventing one
+  is noise.
 
 The converged shape in Section 10.2 is a CANDIDATE TO STRESS, not a settled design. It was
 produced by two reviewers from the same model family. A foreign model's disagreement with it is
@@ -72,7 +80,8 @@ the wrong surface.
    deferred | superseded | declined`), a tier item (`not_started | in_progress | complete |
    reserved | deferred_post_mvp`), and a contract envelope. The converged shape proposes
    `satisfaction` for the criterion axis. That word already appears as PROSE in this repository
-   ("satisfaction oracle", "deterministic satisfaction", "the rehomed non-satisfaction case") but
+   ("satisfaction oracle", "deterministic satisfaction", and a test docstring naming the
+   rehomed non-satisfaction case) but
    is not a FIELD NAME on any criterion-bearing surface. Judge the collision on that basis, not
    on novelty.
 5. **"criterion" / "acceptance criteria"** names four surfaces Decision 197 clause 3 unifies: a
@@ -110,7 +119,9 @@ audit.
 
 ### Out of scope
 
-- The `work_items` table, except exactly as far as Q3 and Q4 require. `work_item_edges` is in scope only
+- The `work_items` table, except exactly as far as Q3, Q4 and Q5 require (Q5's `merge_key` leads
+  with `parent-plus-criterion-id` and Section 10.2 asserts "SCD2 with parent", neither answerable
+  without the parent's identity and versioning scheme). `work_item_edges` is in scope only
   where the criterion-level edges bear on Q4 and Q5 (`criterion_traces_to`, `blocked_by`) -- its own
   vocabulary, cardinality and write path are not yours to design.
 - Decision 196 and the three-tier decision model. Adjacent, not this audit.
@@ -135,8 +146,14 @@ instruction presupposes a capability you lack, record it (Section 5.3) and proce
 ```bash
 git fetch origin main
 git rev-parse --short origin/main          # THIS is your base sha; use it everywhere
+git switch -c audit/criterion-shape-forks-$(git rev-parse --short origin/main) origin/main
 bin/venv-python -c "import yaml, pydantic; print('ok')"
 ```
+
+Create the branch NOW, before any measurement. Every count you re-derive must come from the tree
+you name in `meta.audited_commit`; measuring on some other checkout and labelling it with this sha
+would be an honest measurement of the wrong tree. Section 16 then only commits and pushes this
+same branch -- it does not create it again.
 
 Always invoke `bin/venv-python`, never bare `python` or `python3`. Each shell invocation is
 independent; do not rely on `source .venv/bin/activate` persisting.
@@ -233,7 +250,9 @@ recorded as a finding is worth more than compliance.
 Answer all five. Q1-Q4 each get a `question_answers[]` entry carrying that question's pinned
 verdict enum. Q5 uses a different shape -- an `answers[]` list plus the `deferred_walk_inputs`
 block defined under Q5 -- and carries no top-level verdict. A verdict with no `basis` finding ids
-is an opinion; ground it.
+is an opinion; ground it. The one exception: a verdict that endorses the status quo may carry an
+empty `basis` IF you also filed no correction bearing on it -- say so in `prose`. Never
+manufacture a finding to satisfy this rule.
 
 ### Q1 -- Standing versus admitted
 
@@ -244,15 +263,23 @@ re-tested?
 Today's answer is "admitted once": `docs/contracts/verification-registry.yaml` governance_notes
 records a row that had gone "permanently FAIL, unnoticed because graduated records are never
 re-executed as a standing suite", and a sibling found "permanently TRUE" by the same migration.
-Both had been unnoticed for months. The differential gate re-runs a row only when that row is
-ADDED or MODIFIED in the diff.
+Neither the contract nor Decision 176 states how long either row had been broken. Measured from
+git at compose time: `plan-obligations-enumeration-homed` entered the registry 2026-08-11 and was
+retired in the 2026-08-25 sharding migration (14 days); `no-retired-ci-role-in-live-surfaces`
+entered 2026-07-24 and was retired in the same migration (about 32 days). Re-derive both
+intervals yourself -- DD-A asks you to establish how long a break survives, and an inherited
+figure would prejudge it. Note what surfaced them: an unrelated migration that touched the rows,
+not any standing mechanism. The differential gate re-runs a row only when that row is ADDED or
+MODIFIED in the diff.
 
-Options:
-(a) add `standing_run` and re-differential-on-`guard_target`-touch evidence legs, so graduated
-becomes a live guarantee;
-(b) CD.29's mutation testing (T3.7) plus mark-then-drop retirement remains the whole answer and
-graduated stays "admitted once";
-(c) a bounded middle -- re-differential only when `guard_target` appears in the diff.
+Options, stated so they are mutually exclusive -- pick by MECHANISM, not by sentiment:
+(a) PERIODIC re-execution: a `standing_run` leg that re-runs graduated checks on a schedule
+independent of what any diff touches (with or without a guard_target trigger as well), so
+graduated becomes a live guarantee;
+(b) NO new re-execution: CD.29's mutation testing (T3.7) plus mark-then-drop retirement remains
+the whole answer and graduated stays "admitted once";
+(c) TRIGGERED re-execution ONLY: re-differential when `guard_target` appears in the diff, and no
+scheduled or periodic run. If you would add both a schedule and a trigger, that is (a).
 
 Constraint you must weigh, not ignore: CD.29 is `state: pending`, so answering (a) or (c) is a
 CD.29 amendment, and T3.7 is `deferred_post_mvp`. Decision 176 clause 4 is the standing argument
@@ -296,9 +323,12 @@ keep-stored-until-derivation-exists | drop-the-field | other-argued`
 ### Q3 -- Identity for the bare-string exit criteria
 
 Measured at `04a402a4`: 801 roadmap criteria = 407 bare strings + 394 structured dicts; 259 of
-the 407 sit on `status: complete` items, which the touched-item rule in
-`scripts/checks/roadmap/validate_platform_roadmap.py` never fires on, so lazy migration never
-reaches them. Bare-string ids are auto-assigned positionally at model-load time. In-YAML
+the 407 sit on `status: complete` items. The touched-item rule in
+`scripts/checks/roadmap/validate_platform_roadmap.py:111`-`:132` carries NO status predicate: it
+derives touched ids from the `origin/main` diff and fails ANY touched item that still holds a bare
+string, a `complete` item included. So the reason lazy migration has not reached those 259 is
+STATISTICAL (a finished item is rarely edited), not STRUCTURAL (the gate excludes it). Establish
+for yourself which it is before answering -- the options below turn on exactly that distinction. Bare-string ids are auto-assigned positionally at model-load time. In-YAML
 conversion costs roughly three lines each against a roadmap at 9,925 of a 10,000-line ceiling,
 and a per-tier split is forbidden (Decisions 110/114/147). rec-3660 is the named owner. Decision
 197 clause 8 forbids lift-and-shift before the clause-8 migration.
@@ -329,9 +359,10 @@ per-criterion evidence journal. Find or rule out that precedent (Section 11 seed
 This question additionally requires an `external_checklist` block. Assess THE DESIGN YOU ENDORSE
 in your own verdict -- if you answer (i), rate the one-table proposal; if (ii), rate the two-table
 proposal; if `other-argued`, rate what you propose -- property-by-property against these named
-external practices, each rated `met | partial | missed` with evidence. `partial` requires an
-argued, property-matched compensating control. This field gates the maturity top tier for S1 and
-S2 ONLY (Section 15); it has no bearing on S3, S4, S5 or S6.
+external practices, each rated `met | partial | missed` with evidence, or `n/a`. `partial` requires an
+argued, property-matched compensating control. This field gates the maturity top tier for ONLY
+the one of S1/S2 your verdict endorses (Section 15): a design you rejected is not rated against a
+checklist scoring the design you preferred. It has no bearing on S3, S4, S5 or S6.
 
 1. Event-sourced journal plus current-state projection, rather than state mutation in place.
 2. Type-2 slowly-changing dimension paired with a separate fact table, rather than a widened
@@ -346,9 +377,20 @@ S2 ONLY (Section 15); it has no bearing on S3, S4, S5 or S6.
    permanent advisory state.
 7. Mutation score, or an equivalent adequacy metric, treated as a decay signal on an existing
    suite rather than a one-time admission test.
+8. Transactional read consistency: a criterion's current proof state is readable in a single row
+   read, with no join and no window in which a reader sees claim and evidence from different
+   points in time.
+9. Single-writer atomicity: a criterion's claim and its proof advance in one write, so the row
+   never asserts a state its own evidence does not yet support.
+
+Properties 1-7 favour separation; 8-9 favour consolidation. That asymmetry is deliberate: rate
+what you actually endorse, and mark `n/a` -- never `missed` -- any property that is structurally
+inapplicable to the design your verdict selects. An `n/a` costs nothing and does not gate
+maturity.
 
 **Verdict enum:** `one-table-proof-struct | two-tables-evidence-journal | other-argued`
-**Additionally required on this entry:** `precedent: <table or artifact name> | none`, and
+**Additionally required on this entry:** `precedent: [<table or artifact names>]` -- a LIST, empty
+when you find none (never the string `none`) -- and
 `external_checklist: [{property, rating, evidence}]` covering all seven properties above.
 
 ### Q5 -- Questions the requester did not think to ask
@@ -386,9 +428,18 @@ deferred_walk_inputs:
     rationale: ""
   partition_column:
     verdict: "<column name>" | none-argued
-    applies_to: [work_item_criteria, work_item_criterion_evidence]
+    applies_to: [<only the tables your Q4 verdict endorses>]
+    rationale: ""
+  current_projection:
+    verdict: scd2-history-plus-type1-current | history-only | other-argued
     rationale: ""
 ```
+
+`current_projection` answers `design_time_walk` step 2's second half -- whether
+`work_item_criteria` needs a Type-1 current table alongside its SCD2 history, as
+`ops_priority_queue` and `ops_execution_plans` have, or is history-only. It is adjacent to Q4 but
+not the same question: Q4 asks whether evidence is a separate table, this asks whether the
+criteria table itself is served by a current projection.
 
 Consult `docs/contracts/_joins.yaml` -- this repository's cross-table join/correlation-key
 registry, which `design_time_walk` step 4 makes mandatory reading -- before answering `join_keys`.
@@ -466,7 +517,7 @@ at `04a402a4`. Verify each anchor before you rely on it; record non-resolving an
 | `docs/contracts/verification-registry.yaml` | Registry schema. `check_id` immutability and the (plan_slug, check_id) T3.21 join; `guard_target`/`guard_symbol` as the orphan-detection keys; `check_spec` as the materialization key. Line `:244` carries "permanently FAIL, unnoticed because graduated records are never re-executed as a standing suite". Lines `:222`-`:225`: filename-equals-check_id; `entries/deprecated/` is loader-excluded. |
 | `docs/contracts/vp-red-before.yaml` | `outcome_classes` (`:97`), `unmeasurable_arms` (`:105`), `eligibility_predicate` (`:126`), `graduation_disposition_authoring` (`:216`), `self_satisfying_lint` (`:257`). |
 | `docs/contracts/tier-item-lifecycle.yaml:131` | The bookkeeping walk EXECUTES executable-looking criterion text via subprocess, passing on exit 0; prose criteria fall through to agent judgement with a conservative bias. The only existing execution hook on the exit-criteria surface. |
-| `docs/contracts/data-modeling-standard.yaml` | `rules`, `write_modes` (scd2 / append_only / control), and `design_time_walk` -- the walk this audit feeds. |
+| `docs/contracts/data-modeling-standard.yaml` | `rules`, `write_modes` (scd2 / append_only / control), and `design_time_walk` -- the walk this audit feeds. Its `identity-ulid-at-boundary` rule (`:68`-`:72`) is already pinned and binds Q3 and Q5's `merge_key`: "Identity is a ULID (Crockford base32), minted once at the write boundary ..., never client-side and never a natural-key primary key. Propagated to child rows as foreign keys, never re-derived downstream." `design_time_walk` step 3 restates it. Argue with this pin if you must, but do not answer as though it did not exist. |
 | `docs/contracts/storage-substrate.yaml:126` | `ops_smoke_events`: `write_mode: append_only`, grain "one row per event_id". |
 | `docs/contracts/ops_recommendations.yaml:416` | `execution_result`: "Executor-internal write-only signal. Not read by the planning or triage paths. DQ-EXCLUDED (Decision 63)." |
 | `docs/contracts/_joins.yaml` | The cross-table join / correlation-key registry. `design_time_walk` step 4 makes consulting it mandatory when a new table's join keys are chosen. Required reading for Q5's `join_keys`. |
@@ -474,6 +525,12 @@ at `04a402a4`. Verify each anchor before you rely on it; record non-resolving an
 | `docs/ROADMAP-PLATFORM.yaml` CD.29 | The six-slot closed kernel; the admission gate; severity `required` with a transient `quarantine`, "never a permanent `advisory`"; the consolidation clause absorbing the rec `verification` projection "as additional typed checks on the same field". `state: pending`. |
 
 ### 10.2 The converged shape (verbatim -- this is the artifact under audit)
+
+Reproduced unedited, including any anchor or claim that does not hold. It is a PROPOSAL: where it
+names an enum value or a field that no current surface carries (for example `waived` on the
+satisfaction axis, whose ledger enum today is `open | met | rehomed`), that is the proposal
+extending the existing shape, not a description of what exists. Treat every line as a claim to
+test.
 
 > `work_item_criteria` -- one row per (work item, criterion) version; SCD2 with parent.
 > `ulid` + business key: writer-minted row envelope plus `:cN` / `rec-NNNN` / `check_id`, never
@@ -500,6 +557,11 @@ at `04a402a4`. Verify each anchor before you rely on it; record non-resolving an
 > (ledger status; Status-Trusted-Never-Inferred).
 > `disposition`: `graduate | waive | not-applicable` with iff companions (`plan_document.py`;
 > Decision 132 cl.1).
+>
+> [Reader's note, not part of the converged shape: "iff companions" means the co-required field
+> each disposition value carries -- `graduate` requires a non-empty `graduation_check_id`, `waive`
+> requires a non-empty `graduation_waiver_reason`, `not-applicable` requires neither. Enforced at
+> `scripts/roadmap/plan_document.py:91`-`:99`.]
 > `graduated_check_id` + `plan_slug`: registry FK, the existing T3.21 join; LINK never merge;
 > means ADMITTED, not STANDING (`verification-registry.yaml` governance_notes: graduated records
 > are never re-executed as a standing suite; Decision 176 cl.4: admission is a commit property
@@ -618,7 +680,10 @@ complete); **T3.15** (VP re-execution and durable evidence persistence, complete
 
 ## 11. EMPIRICAL PASS
 
-Bounded measurement. Tag every finding `evidence_kind: static` or `observed`. "Outranks" is
+Bounded measurement. Tag every finding `evidence_kind`: `observed` means you RAN something on the
+audited tree (a command, a count, a replay) and the result is the evidence; `static` means you
+reasoned over file content you read without executing anything. A re-derived count is `observed`.
+"Outranks" is
 operational, not decorative: at equal severity, an `observed` finding is ordered ahead of a
 `static` one in `summary.top_improvements`, and is preferred as `summary.highest_leverage_change`.
 
@@ -725,7 +790,7 @@ audit:
     - {q: Q4, verdict: one-table-proof-struct|two-tables-evidence-journal|other-argued,
        precedent: [<table or artifact names; empty list means none found>],
        basis: [], prose: "",
-       external_checklist: [{property: "<one of the seven>", rating: met|partial|missed,
+       external_checklist: [{property: "<one of the nine>", rating: met|partial|missed|n/a,
                              evidence: ""}]}
     - {q: Q5, answers: [{question: "", answer: "", basis: [<finding ids>]}],
        deferred_walk_inputs:
@@ -733,7 +798,9 @@ audit:
                               content-hash-composite|other-argued, value: "", rationale: ""}
          join_keys: {verdict: registry-fk-only|registry-fk-plus-plan-slug|evidence-table-fk|
                               other-argued, targets: [], rationale: ""}
-         partition_column: {verdict: "<column name>"|none-argued, applies_to: [], rationale: ""}}
+         partition_column: {verdict: "<column name>"|none-argued, applies_to: [], rationale: ""}
+         current_projection: {verdict: scd2-history-plus-type1-current|history-only|other-argued,
+                              rationale: ""}}
   converged_shape_corrections:
     - {element: "<field or claim in Section 10.2 or 10.3>", what_it_says: "",
        what_is_true: "", evidence: "file:line", consequence: "",
@@ -745,24 +812,35 @@ audit:
     - {surface: S1..S6, dimension: VD1..VD7, rating: strong|adequate|weak|absent|n/a,
        evidence: "file:line|item-id", note: ""}
   findings:
-    - {id: CSF-01, surface: S1..S6|shared, question: Q1..Q5|none, dimension: VD1..VD7|none,
+    - {id: CSF-01, surface: S1..S6|shared, affects_surfaces: [S1..S6],
+       question: Q1..Q5|none, dimension: VD1..VD7|none,
        title, evidence: "file:line|item-id", evidence_kind: static|observed,
        current_behavior, ideal_behavior, gap, compensating_controls_considered: "",
        change_type: add|rescope|enforce|unify|persist|clarify|retune_gate,
        proposed_change: "", acceptance: "", severity: critical|high|medium|low,
-       # change_type: add = a field/table/leg that does not exist; rescope = an existing element's
-       #   meaning or coverage changes; enforce = an existing rule gains a mechanical check;
-       #   unify = two surfaces collapse to one; persist = something computed or discarded becomes
-       #   stored; clarify = wording/semantics only, no shape change; retune_gate = an existing
-       #   gate's threshold, trigger population or polarity changes.
-       # acceptance: how a reviewer would know your proposed_change had landed. NOT a shell
-       #   command and NOT a recommendation acceptance value -- you file no recommendations.
-       # effort: XS <= 1 plan step, S = 2-3, M = 4-8, L > 8 or spans a migration.
        severity_rationale, confidence: CONFIRMED|HYPOTHESIS,
        roadmap_crossref: {classification: novel|planned-insufficient|planned-unbuilt,
                           item_ids: [], dedup_search_terms: [], dedup_hit_count: 0, note: ""},
        effort: XS|S|M|L, depends_on: [finding ids],
        sequencing: {safe_to_queue_now: true|false, blocked_behind: [], note: ""}}
+    # change_type: add = a field/table/leg that does not exist; rescope = an existing element's
+    #   meaning or coverage changes; enforce = an existing rule gains a mechanical check;
+    #   unify = two surfaces collapse to one; persist = something computed or discarded becomes
+    #   stored; clarify = wording/semantics only, no shape change; retune_gate = an existing
+    #   gate's threshold, trigger population or polarity changes.
+    # acceptance: how a reviewer would know your proposed_change had landed. NOT a shell
+    #   command and NOT a recommendation acceptance value -- you file no recommendations.
+    # effort: XS <= 1 plan step, S = 2-3, M = 4-8, L > 8 or spans a migration.
+  deep_dives:
+    - {id: DD-A|DD-B|DD-C, conclusion: "", feeds: [Q1..Q5], basis: [<finding ids>]}
+  measurements:
+    - {id: E1..E7, rule: "<the exact command or predicate you used>", result: "",
+       matches_brief: true|false, note: ""}
+    # Every E1-E7 entry is REQUIRED even when it produced no finding -- a measurement that
+    # yields nothing is a result, and matches_brief: false is how a stale compose-time number
+    # is reported. E6 must carry its regex in `rule`.
+  noted:
+    - {candidate: "", what_it_constrains: ""}
   rejected_candidates:
     - {candidate, why_dismissed, compensating_control, control_property_match,
        decision_or_item_id}
@@ -775,15 +853,22 @@ audit:
 reads first. It must carry, in this order: the four fork verdicts (Q1-Q4) in one line each; the
 `deferred_walk_inputs` answers in one line each; the "what the converged shape gets wrong"
 section; the single highest-leverage change; the open questions you added under Q5; and a closing
-line stating how many entries `meta.stale_anchors[]` holds and whether any changed a verdict.
+line stating how many entries `meta.stale_anchors[]` holds, whether any changed a verdict, and
+every `meta.capability_deviations[]` entry of class `capability` in one line each -- a capability
+gap the human never sees is indistinguishable from work you chose not to do.
 
 ### Invariants
 
+- Finding ids are `CSF-NN`, zero-padded, numbered from `CSF-01` in the order you file them.
+  `summary.top_improvements` holds 3 to 5 finding ids, most important first.
+  `findings[]`, `converged_shape_corrections[]`, `rejected_candidates[]` and `noted[]` are
+  uncapped -- Section 17's anti-padding rule governs them, not a number.
 - COUNTING INVARIANT: `findings[]` is the SOLE enumerated list.
   `total_findings = len(findings) = novel_count + planned_insufficient_count +
   planned_unbuilt_count`. Fully-covered candidates live in `rejected_candidates[]`, NOT in
   findings. `rubric_ratings`, `question_answers` and `converged_shape_corrections` are
-  systems-of-record referenced FROM findings, never re-counted. `top_improvements` and
+  systems-of-record referenced FROM findings, never re-counted. `deep_dives[]`, `measurements[]`
+  and `noted[]` are likewise never counted into `total_findings`. `top_improvements` and
   `highest_leverage_change` MUST be finding ids.
 - `control_property_match` is REQUIRED whenever a compensating control is the reason for
   dismissal: name the property the control exercises, cite where it operates (mechanism or
@@ -809,8 +894,10 @@ Compensating controls must PROPERTY-MATCH: the control must exercise the same pr
 the defect were real. Apply the counterfactual to the control itself.
 
 Maturity is computed LAST, per surface, top-down, first match wins. Every finding you file counts
-as open -- findings carry no open/closed axis. A finding whose `surface` is `shared` counts
-against EVERY surface it names in its prose; if it names none, it counts against S1.
+as open -- findings carry no open/closed axis. A finding counts against every surface listed in
+its `affects_surfaces` field. For a finding whose `surface` is a single id, `affects_surfaces` is
+that one id; for `shared`, list every surface it genuinely bears on. `affects_surfaces` is never
+empty.
 
 - **frontier** -- 0 `critical` and 0 `high` findings on that surface, AND (for S1 and S2 only) no
   property in Q4's `external_checklist` rated `missed`. The checklist does not gate S3, S4, S5 or
@@ -827,9 +914,9 @@ brief's framing does not foreclose it.
 1. Derive the base ONCE: `git fetch origin main` then `git rev-parse --short origin/main`. That
    commit IS the audited tree. Use its short sha in both filenames, the branch name, and
    `meta.audited_commit`.
-2. `git switch -c audit/criterion-shape-forks-<sha> origin/main` so the PR diff contains only your
-   two deliverables. This is a deliberate, documented exception to the `AGENTS.md` session-branch
-   rule.
+2. You are already on `audit/criterion-shape-forks-<sha>`, created off `origin/main` in Section
+   5.1, so the PR diff contains only your two deliverables. This is a deliberate, documented
+   exception to the `AGENTS.md` session-branch rule. Do not create or switch branches again.
 3. Validate before pushing: a clean YAML parse of your `.yaml` deliverable is the real pre-push
    gate (`bin/venv-python -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]))" audits/...`).
    Repo-wide validation is advisory outside CI in this repository; if `bin/venv-python -m
