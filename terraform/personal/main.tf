@@ -128,6 +128,46 @@ resource "aws_s3_bucket_policy" "data_lake_https_only" {
 }
 
 # ---------------------------------------------------------------------------
+# DuckLake production-prefix lifecycle (T2.18, PLAN-ducklake-noncurrent-version-reclaim): sweep
+# noncurrent versions + their now-expired delete markers so billed storage reconverges on the
+# listing GcDebtRatio is computed from. Prefix-scoped (trailing slash, from the declared local --
+# never a retyped literal, so a rename of the local cannot silently drop the sweep) to the
+# production DuckLake prefix ONLY; the smoke prefix is a DECLARED exclusion while rec-3892's
+# unexplained-deleter RCA is open there (see _DECLARED_LIFECYCLE_EXCLUSIONS in the companion test
+# module). NO current-version expiration rule: DuckLake addresses live Parquet by key, never by
+# version id, so an age-based rule here would delete data the catalog still references.
+# ---------------------------------------------------------------------------
+
+resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
+  bucket = aws_s3_bucket.data_lake.id
+
+  rule {
+    id     = "ducklake-prod-noncurrent-reclaim"
+    status = "Enabled"
+
+    filter {
+      prefix = "${local.ducklake_prod_data_prefix}/"
+    }
+
+    noncurrent_version_expiration {
+      # Bound to SNAPSHOT_RETAIN_DAYS (src/common/ducklake_maintenance.py) -- an operator
+      # manual-recovery window, not catalog time travel: gc_ops runs after expire_snapshots, so
+      # every file it deletes is already outside the snapshot horizon and no read path pins a
+      # version id. Cross-checked against the Python constant by TestDataLakeLifecycleGoverned.
+      noncurrent_days = 30
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
 # DynamoDB atomic counters (rec/decision ID allocation, Decision 36/37: SSO, no IAM users)
 # Seeded ONCE at greenfield ABOVE the work-account max + 1000 margin (Decision 50 collision guard;
 # work maxes 2026-05-28: recommendations=944, decisions=81 -> floors 1944/1081). The counter VALUES

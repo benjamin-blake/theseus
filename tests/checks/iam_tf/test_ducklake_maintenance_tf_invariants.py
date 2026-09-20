@@ -12,12 +12,21 @@ from tests/checks/iam_tf/test_oidc_trust_slug_invariants.py.
 
 Also hosts TestProductionGcRuleInvariants (production-gc-and-storage-stability, T2.18 c2): the
 gc_ops EventBridge rule's state matches its declared intent (_INTENDED_GC_OPS_STATE, currently
-"ENABLED" per gc-ops-baseline-gate-and-schedule-enable), no S3 lifecycle configuration targets the
-data-lake bucket, the maintenance role's IAM stays unwidened, the liveness alarm treats missing
-data as breaching, the gc_ops cron does not collide with this singleton's other two 6-hourly
-cadences, and the catalog-DR dump precedes the gc_ops window on the same day. TestGcOpsEnablementBaseline
-adjudicates the committed tests/fixtures/gc_ops_dryrun_baseline.json dry_run reading against the
-shipped G4 caps, licensing the enablement.
+"ENABLED" per gc-ops-baseline-gate-and-schedule-enable), the maintenance role's IAM stays
+unwidened, the liveness alarm treats missing data as breaching, the gc_ops cron does not collide
+with this singleton's other two 6-hourly cadences, and the catalog-DR dump precedes the gc_ops
+window on the same day. TestGcOpsEnablementBaseline adjudicates the committed
+tests/fixtures/gc_ops_dryrun_baseline.json dry_run reading against the shipped G4 caps, licensing
+the enablement.
+
+TestDataLakeLifecycleGoverned (PLAN-ducklake-noncurrent-version-reclaim, T2.18) replaces this
+module's former no-lifecycle-at-all invariant (which asserted "no lifecycle configuration on the
+data-lake bucket at all" when the property meant was "no CURRENT-version expiration") with a
+net-tightened guard: it RETAINS the predecessor's directory-wide sweep of every
+terraform/personal/*.tf for every aws_s3_bucket_lifecycle_configuration block referencing
+aws_s3_bucket.data_lake, whatever its resource name, and ADDS cardinality, prefix-scope,
+trailing-slash, declared-coverage, SNAPSHOT_RETAIN_DAYS-binding and status assertions
+(Decision 181). TestDataLakeLifecycleRedCases proves the guard can actually fail.
 """
 
 from __future__ import annotations
@@ -194,20 +203,6 @@ class TestProductionGcRuleInvariants:
             "the `description` attribute, not just the `state` literal"
         )
 
-    def test_no_lifecycle_configuration_targets_the_data_lake_bucket(self) -> None:
-        """Sweep the WHOLE terraform/personal directory, not just _ADMIN_TF/_SMOKE_TF -- the sole
-        existing lifecycle config (ducklake_catalog_dr.tf) legitimately targets the DR bucket, and
-        a two-file-only sweep could never see a future lifecycle rule added elsewhere (e.g. s3.tf)."""
-        for tf_file in sorted(_TERRAFORM_PERSONAL_DIR.glob("*.tf")):
-            text = tf_file.read_text(encoding="utf-8")
-            for match in _LIFECYCLE_CONFIG_RE.finditer(text):
-                block = _find_resource_block(text, "aws_s3_bucket_lifecycle_configuration", match.group(1))
-                assert "aws_s3_bucket.data_lake" not in block, (
-                    f"{tf_file.name}: aws_s3_bucket_lifecycle_configuration {match.group(1)!r} targets "
-                    "the data-lake bucket -- an age-based expiration rule the catalog knows nothing "
-                    "about is over-reclaim BY CONFIGURATION (production-gc-and-storage-stability)."
-                )
-
     def test_maintenance_role_iam_is_not_widened(self) -> None:
         """gc_ops needs NO new IAM: the role already carries s3:ListBucket scoped to the prod prefix
         and cloudwatch:PutMetricData conditioned on the DuckLakeMaintenance namespace -- that
@@ -303,6 +298,212 @@ class TestProductionGcRuleInvariants:
             f"catalog-DR dump ({dr_hour}:{dr_minute} UTC) does not precede the gc_ops destructive "
             f"window ({gc_ops_hour}:{gc_ops_minute} UTC) -- backup must run first"
         )
+
+
+# TestDataLakeLifecycleGoverned (PLAN-ducklake-noncurrent-version-reclaim, T2.18): text-parameterized
+# helpers (mirroring _alarm_blocks_from_text above) so red cases can feed a synthetic corpus.
+
+
+def _tf_dir_file_texts(tf_dir: Path) -> dict[str, str]:
+    """{filename: text}, factored out so red-case fixtures can substitute a synthetic mapping."""
+    return {tf_file.name: tf_file.read_text(encoding="utf-8") for tf_file in sorted(tf_dir.glob("*.tf"))}
+
+
+def _data_lake_lifecycle_blocks_from_texts(file_texts: dict[str, str]) -> list[tuple[str, str]]:
+    """(filename, block_text) for every lifecycle-config block, in any file, referencing
+    aws_s3_bucket.data_lake -- whatever its resource name (Decision 181 breadth)."""
+    found: list[tuple[str, str]] = []
+    for filename, text in file_texts.items():
+        for match in _LIFECYCLE_CONFIG_RE.finditer(text):
+            block = _find_resource_block(text, "aws_s3_bucket_lifecycle_configuration", match.group(1))
+            if "aws_s3_bucket.data_lake" in block:
+                found.append((filename, block))
+    return found
+
+
+def _single_data_lake_lifecycle_block(file_texts: dict[str, str]) -> str:
+    """The one governed block -- asserts cardinality itself, not only via the dedicated test."""
+    matches = _data_lake_lifecycle_blocks_from_texts(file_texts)
+    assert len(matches) == 1, (
+        f"expected exactly one aws_s3_bucket_lifecycle_configuration targeting "
+        f"aws_s3_bucket.data_lake, found {len(matches)}: {[name for name, _ in matches]}"
+    )
+    return matches[0][1]
+
+
+_DATA_PREFIX_LOCAL_RE = re.compile(r'\b(\w+_data_prefix)\s*=\s*"([^"]+)"')
+
+
+def _declared_data_prefix_locals(file_texts: dict[str, str]) -> dict[str, str]:
+    """{local_name: prefix_value}, DERIVED from every *_data_prefix local -- never hand-authored
+    (a hand-written roster lets a future third prefix pass the coverage sweep vacuously)."""
+    roster: dict[str, str] = {}
+    for text in file_texts.values():
+        for match in _DATA_PREFIX_LOCAL_RE.finditer(text):
+            roster[match.group(1)] = match.group(2)
+    return roster
+
+
+# A future *_data_prefix local with no entry here fails the coverage test, never passes vacuously.
+_DECLARED_LIFECYCLE_EXCLUSIONS: dict[str, str] = {
+    "ducklake_smoke_data_prefix": (
+        "rec-3892's unexplained object-disappearance RCA is open in the smoke prefix; a managed "
+        "lifecycle rule there would contaminate that investigation. rec-3945 owns the RCA."
+    ),
+}
+
+# `\b` cannot match inside "noncurrent_version_expiration" (no boundary between two word chars),
+# so the negative lookbehind is a belt-and-suspenders duplicate of that same exclusion.
+_CURRENT_VERSION_EXPIRATION_RE = re.compile(r"(?<!noncurrent_version_)\bexpiration\s*\{([^}]*)\}", re.DOTALL)
+_CURRENT_VERSION_EXPIRATION_AGE_RE = re.compile(r"\b(?:days|date)\s*=")
+_GOVERNED_PREFIX_RE = re.compile(r'prefix\s*=\s*"\$\{local\.ducklake_prod_data_prefix\}/"')
+
+
+class TestDataLakeLifecycleGoverned:
+    """PLAN-ducklake-noncurrent-version-reclaim: net-tightened replacement (Decision 181)."""
+
+    def test_exactly_one_lifecycle_configuration_targets_the_data_lake_bucket(self) -> None:
+        """Directory-wide: a second config added to ANY OTHER FILE must still be caught."""
+        matches = _data_lake_lifecycle_blocks_from_texts(_tf_dir_file_texts(_TERRAFORM_PERSONAL_DIR))
+        assert len(matches) == 1, (
+            f"expected exactly one aws_s3_bucket_lifecycle_configuration targeting "
+            f"aws_s3_bucket.data_lake across every terraform/personal/*.tf, found {len(matches)}: "
+            f"{[name for name, _ in matches]}"
+        )
+
+    def test_sweep_uses_the_directory_wide_glob_idiom(self) -> None:
+        """Mechanically impossible to narrow to main.tf-only -- reads this module's OWN source."""
+        source = Path(__file__).read_text(encoding="utf-8")
+        assert '_TERRAFORM_PERSONAL_DIR.glob("*.tf")' in source, (
+            'the directory-wide sweep no longer uses the _TERRAFORM_PERSONAL_DIR.glob("*.tf") '
+            "idiom -- a main.tf-only guard would be a weakening (Decision 181)"
+        )
+
+    def test_rule_status_is_enabled(self) -> None:
+        """A Disabled rule satisfies every other assertion here while reclaiming nothing."""
+        block = _single_data_lake_lifecycle_block(_tf_dir_file_texts(_TERRAFORM_PERSONAL_DIR))
+        assert re.search(r'status\s*=\s*"Enabled"', block), "governed rule's status is not the literal Enabled"
+
+    def test_prefix_is_derived_from_the_declared_local_with_a_trailing_slash(self) -> None:
+        block = _single_data_lake_lifecycle_block(_tf_dir_file_texts(_TERRAFORM_PERSONAL_DIR))
+        assert _GOVERNED_PREFIX_RE.search(block), (
+            'prefix is not exactly "${local.ducklake_prod_data_prefix}/" -- a retyped literal or a '
+            "missing trailing slash would also match the sibling smoke prefix (Decision 191)"
+        )
+
+    def test_no_current_version_expiration_rule(self) -> None:
+        """An age rule here would delete live Parquet the catalog still references."""
+        block = _single_data_lake_lifecycle_block(_tf_dir_file_texts(_TERRAFORM_PERSONAL_DIR))
+        for body in _CURRENT_VERSION_EXPIRATION_RE.findall(block):
+            assert not _CURRENT_VERSION_EXPIRATION_AGE_RE.search(body), (
+                f"expiration block carries a days/date argument ({body.strip()!r}) -- this deletes "
+                "live Parquet the catalog still references (Decision 55/188)"
+            )
+
+    def test_expired_object_delete_marker_is_present(self) -> None:
+        block = _single_data_lake_lifecycle_block(_tf_dir_file_texts(_TERRAFORM_PERSONAL_DIR))
+        assert re.search(r"expired_object_delete_marker\s*=\s*true", block), (
+            "rec-3907's acceptance criterion 1 second half is unmet"
+        )
+
+    def test_noncurrent_days_bound_to_snapshot_retain_days(self) -> None:
+        # Deliberately function-local: the rest of this module reads terraform text and needs no
+        # first-party runtime import, so hoisting this would couple collection of every test here
+        # to src.common's own import chain.
+        from src.common.ducklake_maintenance import SNAPSHOT_RETAIN_DAYS
+
+        block = _single_data_lake_lifecycle_block(_tf_dir_file_texts(_TERRAFORM_PERSONAL_DIR))
+        nve = re.search(r"noncurrent_version_expiration\s*\{([^}]*)\}", block, re.DOTALL)
+        assert nve is not None, "rule carries no noncurrent_version_expiration block"
+        days_match = re.search(r"noncurrent_days\s*=\s*(\d+)", nve.group(1))
+        assert days_match is not None, "noncurrent_version_expiration block has no noncurrent_days"
+        assert int(days_match.group(1)) == SNAPSHOT_RETAIN_DAYS, (
+            f"noncurrent_days={days_match.group(1)} != SNAPSHOT_RETAIN_DAYS={SNAPSHOT_RETAIN_DAYS}"
+        )
+
+    def test_every_declared_data_prefix_local_is_covered_or_declared_excluded(self) -> None:
+        file_texts = _tf_dir_file_texts(_TERRAFORM_PERSONAL_DIR)
+        block = _single_data_lake_lifecycle_block(file_texts)
+        roster = _declared_data_prefix_locals(file_texts)
+        assert roster, "no *_data_prefix local found -- roster derivation is broken"
+        uncovered = [
+            local_name
+            for local_name in roster
+            if f"local.{local_name}" not in block and not _DECLARED_LIFECYCLE_EXCLUSIONS.get(local_name)
+        ]
+        assert not uncovered, (
+            f"data-prefix local(s) {uncovered} are neither covered nor declared excluded -- a future "
+            "prefix must not pass this coverage sweep vacuously (Decision 191)"
+        )
+
+
+# Red-case fixtures proving the guard above actually discriminates ("a guard that cannot fail is
+# not a guard" -- the plan's VP step 5 fix_if).
+
+_GOOD_DATA_LAKE_LIFECYCLE_TF = """
+resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
+  bucket = aws_s3_bucket.data_lake.id
+
+  rule {
+    id     = "ducklake-prod-noncurrent-reclaim"
+    status = "Enabled"
+
+    filter {
+      prefix = "${local.ducklake_prod_data_prefix}/"
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+}
+"""
+
+
+class TestDataLakeLifecycleRedCases:
+    def test_current_version_expiration_rule_trips(self) -> None:
+        """(a) An age-based `days` argument added to the rule's `expiration` block must trip."""
+        tf = _GOOD_DATA_LAKE_LIFECYCLE_TF.replace(
+            "expiration {\n      expired_object_delete_marker = true\n    }",
+            "expiration {\n      expired_object_delete_marker = true\n      days                        = 45\n    }",
+        )
+        block = _single_data_lake_lifecycle_block({"main.tf": tf})
+        bodies = _CURRENT_VERSION_EXPIRATION_RE.findall(block)
+        assert any(_CURRENT_VERSION_EXPIRATION_AGE_RE.search(body) for body in bodies), "fixture is broken"
+
+    def test_slashless_prefix_trips(self) -> None:
+        """(b) A bare slashless prefix must trip -- it would also match the sibling smoke prefix."""
+        tf = _GOOD_DATA_LAKE_LIFECYCLE_TF.replace(
+            'prefix = "${local.ducklake_prod_data_prefix}/"', 'prefix = "${local.ducklake_prod_data_prefix}"'
+        )
+        block = _single_data_lake_lifecycle_block({"main.tf": tf})
+        assert not _GOVERNED_PREFIX_RE.search(block), "fixture did not actually drop the trailing slash"
+
+    def test_disabled_status_trips(self) -> None:
+        """(c) A Disabled rule satisfies every other assertion while reclaiming nothing."""
+        tf = _GOOD_DATA_LAKE_LIFECYCLE_TF.replace('status = "Enabled"', 'status = "Disabled"')
+        block = _single_data_lake_lifecycle_block({"main.tf": tf})
+        assert not re.search(r'status\s*=\s*"Enabled"', block), "fixture did not actually flip the status"
+
+    def test_second_lifecycle_config_in_another_file_trips_the_cardinality_sweep(self) -> None:
+        """(d) A second config in a DIFFERENT file under a DIFFERENT resource name must still trip."""
+        file_texts = {
+            "main.tf": _GOOD_DATA_LAKE_LIFECYCLE_TF,
+            "rogue.tf": _GOOD_DATA_LAKE_LIFECYCLE_TF.replace(
+                'resource "aws_s3_bucket_lifecycle_configuration" "data_lake"',
+                'resource "aws_s3_bucket_lifecycle_configuration" "data_lake_rogue"',
+            ),
+        }
+        matches = _data_lake_lifecycle_blocks_from_texts(file_texts)
+        assert len(matches) == 2, "fixture does not actually add a second block"
 
 
 class TestThresholdShapeRedCases:
