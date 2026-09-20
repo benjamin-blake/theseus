@@ -449,10 +449,17 @@ answer in this audit is for.
 reversal_trigger_assessment:
   verdict: not-tripped | tripped-reopen-clause-3 | tripped-but-absorbable | other-argued
   nullable_column_count: <int, by your own count>
-  which_columns: [<the columns structurally null for one of the two kinds>]
+  which_columns: [<the columns structurally null for one of the two WORK-ITEM KINDS>]
   rationale: ""
   basis: [<finding ids, or empty>]
 ```
+
+Answer on the TRIGGER'S OWN AXIS: epic-shaped versus task-shaped work items (`kind`, per clause
+3), not plan-origin versus ledger-origin criteria. The origin framing above is how you FIND the
+candidate columns -- a criterion on an epic-shaped item does not come from a plan VP step today --
+but the question the reversal condition asks is whether the two KINDS need required fields the
+child table cannot absorb. If you conclude the two axes are not equivalent, that is itself worth
+saying.
 
 `tripped-but-absorbable` means the nulls exist but a named mechanism (a kind discriminator, a
 sub-table, an extension map) absorbs them without required fields the child table cannot carry --
@@ -810,7 +817,14 @@ Before filing ANY finding, grep the three ownership surfaces: `docs/ROADMAP-PLAT
 DISTINCT OWNING ARTIFACTS your searches surfaced -- recommendations, tier items, candidate
 decisions and Decisions that plausibly own this territory -- summed across all three surfaces,
 never the raw grep line count. List those artifacts in `roadmap_crossref.item_ids`; the count and
-that list must agree. A hit means a sufficiency assessment
+that list must agree.
+
+These two fields record the SEARCH, not the verdict. `classification` records the ADJUDICATION.
+A finding may legitimately carry `dedup_hit_count: 3` with three `item_ids` AND
+`classification: novel` -- that combination says you found three plausible owners, examined each,
+and judged that none actually owns this defect. Say so in `roadmap_crossref.note`. Never zero the
+count to make a `novel` classification look cleaner: a `novel` finding with an honest non-zero
+hit count and a stated reason is stronger evidence than one with an empty search. A hit means a sufficiency assessment
 or a rejection, never a fresh discovery. A finding with no recorded negative search is
 `confidence: HYPOTHESIS`.
 
@@ -844,6 +858,12 @@ Each is a live, deliberate decision. Flagging one as a defect is a failed adjudi
 ## 14. OUTPUT
 
 Write exactly two files. `<sha>` is your base short sha throughout.
+
+The block below is a SCHEMA SKETCH, not literal YAML: it uses `a|b|c` for enums, `<int>` for
+placeholders, and flow mappings for compactness. Your deliverable must be VALID YAML carrying
+these keys with these value types -- render it in whatever block style parses cleanly, since
+Section 16 makes a clean parse the pre-push gate. Key order does not matter; key names and enum
+values do.
 
 `audits/criterion-shape-forks-<sha>.yaml`:
 
@@ -894,7 +914,9 @@ audit:
        strengths: "", top_gaps: [<finding ids>]}
   rubric_ratings:
     - {surface: S1..S6, dimension: VD1..VD7, rating: strong|adequate|weak|absent|n/a,
-       evidence: "file:line|item-id", note: ""}
+       evidence: "file:line|item-id|null", note: ""}
+    # evidence is null ONLY on an n/a cell, where `note` carries the one-line reason the
+    # dimension does not structurally apply. Every other rating requires an anchor.
   findings:
     - {id: CSF-01, surface: S1..S6|shared, affects_surfaces: [S1..S6],
        question: Q1..Q5|none, dimension: VD1..VD7|none,
@@ -924,8 +946,9 @@ audit:
     # Every E1-E8 entry is REQUIRED even when it produced no finding -- a measurement that
     # yields nothing is a result. E6 must carry its regex in `rule`. matches_brief is null whenever
     # this brief states no NUMERIC compose-time figure to compare against -- E6, E8, and E5,
-    # whose only statement is the qualitative "the large majority"; false when it states a number
-    # and yours differs -- and a false ALSO gets a meta.stale_anchors[] entry with
+    # whose only statement is the qualitative "the large majority". E4 IS comparable: candidate 3
+    # states a count of zero list-form values, so true/false applies. false when the brief states
+    # a number (zero included) and yours differs -- and a false ALSO gets a meta.stale_anchors[] entry with
     # kind: measurement, which is the single home the .md closing line counts.
   noted:
     - {candidate: "", what_it_constrains: ""}
@@ -971,8 +994,14 @@ from work you chose not to do.
 - `control_property_match` is REQUIRED whenever a compensating control is the reason for
   dismissal: name the property the control exercises, cite where it operates (mechanism or
   file:line), and state why the control would FAIL if the defect were real.
-- `CONFIRMED` requires the behaviour traced to a file:line or an observed measurement. Anything
-  less is `HYPOTHESIS`.
+- `CONFIRMED` on a BUILT surface (S3-S6) requires the behaviour traced to a file:line or an
+  observed measurement. `CONFIRMED` on a DESIGNED surface (S1, S2) requires the gap traced to a
+  named constraint the proposal violates or fails to satisfy -- a contract rule, a ratified
+  decision clause, or a measured property of the data it must carry, cited by file:line -- with
+  the proposal itself cited as Section 10.2 or 10.3. A design finding is not condemned to
+  `HYPOTHESIS` merely because the table does not exist yet; it is `HYPOTHESIS` when you cannot
+  name what it collides with. `evidence` on such a finding carries the CONSTRAINT's anchor, not a
+  nonexistent implementation's.
 - `converged_shape_corrections[]` may be empty, but an empty one requires a sentence in the
   companion report saying you looked and found nothing -- not silence.
 
