@@ -55,7 +55,8 @@ acceptance_criteria:
   - The rule's prefix carries a TRAILING SLASH, so it cannot also match the sibling smoke prefix
   - No current-version expiration rule targets the data-lake bucket; expired_object_delete_marker remains permitted
   - noncurrent_days equals SNAPSHOT_RETAIN_DAYS, bound by a cross-language assertion in TestDataLakeLifecycleGoverned that imports src.common.ducklake_maintenance FUNCTION-LOCALLY, matching the convention the module already uses and documents at lines 348-352
-  - Every declared DuckLake data-prefix local is either covered by a rule or named in an explicit reasoned exclusion list
+  - The rule's status argument is the literal Enabled -- a Disabled rule satisfies every other assertion here and reclaims nothing, and this repo ships disabled-first elsewhere (_INTENDED_GC_OPS_STATE in the same module), so it is asserted at BOTH the HCL and applied layers
+  - Every name in the test module's _DUCKLAKE_DATA_PREFIX_LOCALS constant is either covered by a rule or carries a non-empty reason string in the sibling _DECLARED_LIFECYCLE_EXCLUSIONS constant -- both module-level, mirroring the parameterised-constant pattern _INTENDED_GC_OPS_STATE already uses at line 146, so the exclusion is checkable rather than aspirational
   - No S3 object version id is pinned in any read path, so a noncurrent version can never be catalog-reachable
   - The retired check_id has no remaining references in active surfaces
   - rec-3870 carries the restart disposition and the reconstructed pre-window evidence
@@ -118,10 +119,16 @@ verification_plan:
     action: the net-tightened guard passes, including the directory-wide cardinality sweep and its red cases
     command: bin/venv-python -m pytest "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestDataLakeLifecycleGoverned" -q
     expected: >-
-      all tests in the new class pass, including the directory-wide assertion that exactly one
+      all tests in the new class pass, including (a) the directory-wide assertion that exactly one
       aws_s3_bucket_lifecycle_configuration across every terraform/personal/*.tf references
-      aws_s3_bucket.data_lake, and red cases proving a current-version expiration rule, a bare
-      slashless prefix, and a SECOND lifecycle config in another file each still trip the guard.
+      aws_s3_bucket.data_lake, (b) the assertion that the rule's status argument is the literal
+      Enabled -- status is a required, hand-authored per-rule argument and a Disabled rule reclaims
+      nothing while satisfying every other assertion, and this repo ships disabled-first elsewhere
+      (_INTENDED_GC_OPS_STATE in this same module), (c) the declared-coverage assertion that every
+      name in the module-level _DUCKLAKE_DATA_PREFIX_LOCALS constant is either covered by a rule or
+      present in the _DECLARED_LIFECYCLE_EXCLUSIONS constant with a non-empty reason string, and
+      (d) red cases proving a current-version expiration rule, a bare slashless prefix, a Disabled
+      status, and a SECOND lifecycle config in another file each still trip the guard.
       Scoped to the node id, NOT the whole module: the module passes 17/17 on the un-implemented
       tree, and validate_vp_replay's red-before leg partitions on phase and graduation ONLY (it does
       not filter on hermetic), so a whole-module command would classify tautological and hard-fail.
@@ -176,14 +183,23 @@ verification_plan:
   - step: 9
     phase: post-deploy
     action: the applied rule is exactly what was authored -- asserted, not read by eye
-    command: bin/venv-python -c "import json,subprocess,re; hcl=open('terraform/personal/ducklake_lambdas.tf').read(); want=re.search(r'ducklake_prod_data_prefix\s*=\s*\"([^\"]+)\"',hcl).group(1)+'/'; out=subprocess.run(['aws','s3api','get-bucket-lifecycle-configuration','--bucket','agent-platform-data-lake','--profile','agent_platform'],check=True,capture_output=True,text=True).stdout; rules=json.loads(out)['Rules']; assert len(rules)==1,(len(rules),rules); r=rules[0]; f=r.get('Filter') or {}; pref=f.get('Prefix') or (f.get('And') or {}).get('Prefix') or r.get('Prefix'); assert pref==want,(pref,want); assert 'NoncurrentVersionExpiration' in r, r; e=r.get('Expiration') or {}; assert e.get('ExpiredObjectDeleteMarker') is True, e; assert 'Days' not in e and 'Date' not in e, e; print('APPLIED RULE OK', pref, r['NoncurrentVersionExpiration'])"
+    command: bin/venv-python -c "import json,subprocess,re,sys; from src.common.ducklake_maintenance import SNAPSHOT_RETAIN_DAYS; hcl=open('terraform/personal/ducklake_lambdas.tf').read(); want=re.search(r'ducklake_prod_data_prefix\s*=\s*\"([^\"]+)\"',hcl).group(1)+'/'; p=subprocess.run(['aws','s3api','get-bucket-lifecycle-configuration','--bucket','agent-platform-data-lake','--profile','agent_platform'],capture_output=True,text=True); sys.exit('READ DENIED -- the prerequisite plan has not landed; do NOT roll back the rule over a missing read grant') if 'AccessDenied' in p.stderr else None; p.check_returncode(); rules=json.loads(p.stdout)['Rules']; assert len(rules)==1,(len(rules),rules); r=rules[0]; assert r.get('Status')=='Enabled', r; f=r.get('Filter') or {}; pref=f.get('Prefix') or (f.get('And') or {}).get('Prefix') or r.get('Prefix'); assert pref==want,(pref,want); nve=r.get('NoncurrentVersionExpiration') or {}; assert nve.get('NoncurrentDays')==SNAPSHOT_RETAIN_DAYS,(nve,SNAPSHOT_RETAIN_DAYS); e=r.get('Expiration') or {}; assert e.get('ExpiredObjectDeleteMarker') is True, e; assert 'Days' not in e and 'Date' not in e, e; assert 'AbortIncompleteMultipartUpload' in r, r; print('APPLIED RULE OK', pref, nve)"
     expected: >-
-      exactly one rule; its prefix equals the DECLARED local plus a trailing slash (derived from the
-      HCL, never retyped -- terraform output is unavailable in the DEV container, which has no
-      terraform); NoncurrentVersionExpiration present; ExpiredObjectDeleteMarker true; and NO Days
-      or Date key in Expiration. The Filter lookup tolerates the Filter.And and legacy top-level
-      Prefix shapes rather than raising KeyError after the rule is already live.
-    fix_if: any assertion fails -- revert via the rollback path below IMMEDIATELY; a current-version Expiration deletes live Parquet
+      exactly one rule, whose Status is Enabled -- a Disabled rule reclaims nothing while satisfying
+      every other assertion here, and status is a required hand-authored argument; its prefix equals
+      the DECLARED local plus a trailing slash (derived from the HCL, never retyped -- terraform
+      output is unavailable in the DEV container, which has no terraform); NoncurrentDays equals the
+      imported SNAPSHOT_RETAIN_DAYS, asserted rather than printed, which is what verifies acceptance
+      criterion 5 at the APPLIED layer; ExpiredObjectDeleteMarker true; NO Days or Date key in
+      Expiration; and AbortIncompleteMultipartUpload present, as execution_steps commits to
+      authoring. The Filter lookup tolerates the Filter.And and legacy top-level Prefix shapes
+      rather than raising KeyError after the rule is already live.
+    fix_if: >-
+      An AccessDenied exits early with its own message -- that means PLAN-datalake-read-visibility
+      has not landed, and it is NOT a reason to roll back a correct rule. Any genuine assertion
+      failure -- especially a current-version Expiration, which deletes live Parquet, or a Disabled
+      status, which means the change achieved nothing -- reverts via the rollback path below
+      IMMEDIATELY.
   - step: 10
     phase: post-deploy
     action: record the post-apply invisible-bytes baseline so convergence is measurable
@@ -207,8 +223,10 @@ test_obligations:
   - source: terraform/personal/main.tf
     behavior: >-
       Across every terraform/personal/*.tf, exactly one aws_s3_bucket_lifecycle_configuration
-      references aws_s3_bucket.data_lake; it is prefix-scoped with a trailing slash, carries no
-      current-version expiration, and keeps noncurrent_days bound to SNAPSHOT_RETAIN_DAYS.
+      references aws_s3_bucket.data_lake; its status is Enabled; it is prefix-scoped with a trailing
+      slash, carries no current-version expiration, keeps noncurrent_days bound to
+      SNAPSHOT_RETAIN_DAYS, and every name in _DUCKLAKE_DATA_PREFIX_LOCALS is either covered by a
+      rule or carries a reasoned entry in _DECLARED_LIFECYCLE_EXCLUSIONS.
     verification_step: 5
     test_selector: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestDataLakeLifecycleGoverned
     red_green_expectation: red before, green after
@@ -261,7 +279,8 @@ pre_implementation_checklist:
   - PLAN-datalake-read-visibility has landed and its recovery-drill fixture is committed
 execution_steps:
   - Add aws_s3_bucket_lifecycle_configuration.data_lake to terraform/personal/main.tf with one prefix-scoped rule (trailing slash, from the declared local), noncurrent_version_expiration, expired_object_delete_marker and abort_incomplete_multipart_upload, and no current-version expiration
-  - Replace the mis-specified guard with TestDataLakeLifecycleGoverned, RETAINING the directory-wide sweep, and add red cases for a current-version expiration rule, a slashless prefix, and a second lifecycle config in another terraform/personal file
+  - Replace the mis-specified guard with TestDataLakeLifecycleGoverned, RETAINING the directory-wide sweep, and add red cases for a current-version expiration rule, a slashless prefix, a Disabled status, and a second lifecycle config in another terraform/personal file
+  - Author the module-level _DUCKLAKE_DATA_PREFIX_LOCALS and _DECLARED_LIFECYCLE_EXCLUSIONS constants (mirroring _INTENDED_GC_OPS_STATE's parameterised shape at line 146) and assert declared coverage against them, so the smoke-prefix exclusion is a declared cell rather than an absence
   - Bind noncurrent_days to SNAPSHOT_RETAIN_DAYS via a function-local import of src.common.ducklake_maintenance inside the test method, matching the convention documented at lines 348-352
   - Move the retired registry shard to entries/deprecated/ and create ducklake-maintenance-tf-invariants carrying BOTH the surviving node ids and the new class's, under this plan's slug
   - Open the PR and let the governed path plan and apply it; the guard classifies this as auto-apply
