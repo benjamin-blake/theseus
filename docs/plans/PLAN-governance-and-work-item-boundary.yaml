@@ -63,12 +63,15 @@ infrastructure_dependencies:
 acceptance_criteria:
 - 'AC1: docs/DECISIONS.md carries entries 196 and 197, each with an envelope whose number matches its
   heading, significance.value numbered_decision, and a justification naming the specific docs/contracts/*.yaml
-  home considered and rejected. Both envelopes are quoted verbatim in execution_steps so the plan-critique
-  category-consistency gate can adjudicate the routing claim against a body sentence rather than a promise.'
+  home considered and rejected (step 20 checks this mechanically). Separately, and because an envelope''s
+  justification IS the self-certification the category-consistency gate exists to test, the plan quotes
+  BODY text verbatim for every clause whose routing is contestable -- 196 clause 1, and 197 clauses 3
+  and 8 -- so that gate adjudicates against the entries'' own prose rather than against their claim about
+  themselves.'
 - 'AC2: Each new entry carries the Status, Date and Decision markers, a fenced yaml reversal-conditions
   stanza, and a Warehouse ID line equal to dec-196 and dec-197 respectively.'
 - 'AC3: Each new entry measures under the Decision 167 per-entry cap of 6,144 bytes, heading to next heading.
-  Measured drafts came in at 5,522 and 5,733 bytes.'
+  Measured on a simulated insertion of the drafted text: dec-196 5,539 bytes, dec-197 5,733 bytes.'
 - 'AC4: Decision 196 declares amends: [134] and states the reversal explicitly -- the corpus was withheld
   as private IP, and a user cannot run the governed loop locally without it, so the moat was the product.'
 - 'AC5: Decision 134''s block carries a dated forward-pointer annotation naming Decision 196, added by
@@ -224,17 +227,24 @@ verification_plan:
   graduation_waiver_reason: Envelope conformance for new entries is already owned by validate_decision_entry_conformance
     (step 3), and Decision 177 makes both bodies append-only once merged, so a registry row pinning these
     two numbers would assert something the corpus already cannot break.
-  action: Prove both entries are present with a conformant envelope and the correct Warehouse ID.
-  command: 'bin/venv-python -c "import sys; from scripts.decisions_md import iter_decision_sections; c=open(''docs/DECISIONS.md'',encoding=''utf-8'').read();
-    found={int(m.group(1)):b for m,b in iter_decision_sections(c)}; ok=[n for n in (196,197) if n in found
-    and (''**Warehouse ID:** dec-%d'' % n) in found[n] and ''value: numbered_decision'' in found[n]];
-    print(''ratified:'', ok); sys.exit(0 if ok==[196,197] else 1)"'
-  expected: Exit 0 and a ratified list naming both numbers. On the un-implemented tree the list is empty
-    and the step exits 1, so it discriminates.
+  action: 'Prove both entries are present with a conformant envelope, the correct Warehouse ID, a number
+    matching the heading, and -- for 196 -- the amends: [134] key AC4 requires.'
+  command: bin/venv-python -c "import sys,yaml; from scripts.decisions_md import iter_decision_sections;
+    F=chr(96)*3; c=open('docs/DECISIONS.md',encoding='utf-8').read(); found={int(m.group(1)):b for m,b
+    in iter_decision_sections(c)}; cut=lambda b:(b.split(F+'yaml'+chr(10),1)[1].split(F,1)[0] if F+'yaml'+chr(10)
+    in b else ''); env=lambda n:(yaml.safe_load(cut(found.get(n,''))) or {}); ok=[n for n in (196,197)
+    if n in found and ('**Warehouse ID:** dec-%d' % n) in found[n] and (env(n).get('significance') or
+    {}).get('value')=='numbered_decision' and env(n).get('number')==n]; am=134 in (env(196).get('amends')
+    or []); print('ratified:', ok, 'dec196_amends_134:', am); sys.exit(0 if ok==[196,197] and am else
+    1)"
+  expected: 'Exit 0, a ratified list naming both numbers, and the amends flag true. The amends leg closes
+    AC4''s previously unverified half: step 5''s edge regex fires on the title text whether or not the
+    envelope key exists, so omitting the key would otherwise leave every step green.'
   expected_literals:
-  - 'ratified: [196, 197]'
-  fix_if: A missing number means the entry was not inserted; a present number absent from the list means
-    its Warehouse ID or significance value is wrong for that heading.
+  - 'dec196_amends_134: True'
+  fix_if: 'A missing number means the entry was not inserted. A present number absent from the list means
+    its Warehouse ID, significance value, or envelope number is wrong for that heading. A false amends
+    flag means Decision 196''s envelope omits amends: [134] -- the title alone does not satisfy AC4.'
 - step: 20
   phase: pre-deploy
   hermetic: true
@@ -277,7 +287,7 @@ verification_plan:
     found={int(m.group(1)):b for m,b in iter_decision_sections(c)}; spans={n: len(found[n].encode(''utf-8''))
     for n in (196,197) if n in found}; over=[n for n,s in spans.items() if s>6144]; print(''spans:'',
     spans, ''over_cap:'', over); sys.exit(0 if len(spans)==2 and not over else 1)"'
-  expected: Exit 0, both numbers present, and an empty over_cap list. Drafts measured 5,522 and 5,733
+  expected: Exit 0, both numbers present, and an empty over_cap list. Drafts measured 5,539 and 5,733
     bytes on a simulated insertion; a materially different figure means the authored text diverged from
     the measured draft.
   expected_literals:
@@ -348,25 +358,28 @@ verification_plan:
   phase: pre-deploy
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: 'Step 11''s reasoning applies unchanged: T1.5''s criterion wording is a carrier
-    text later plans are expected to refine (rec-3660 converts these very strings), so a standing row
-    pinning it would turn ordinary roadmap maintenance into a guard failure. The assertion is also content-keyed
+  graduation_waiver_reason: 'Step 11''s reasoning applies unchanged: T1.5''s wording is carrier text later
+    plans must refine (rec-3660 converts these very strings), so a standing row pinning it would turn
+    ordinary roadmap maintenance into a guard failure. The assertion is content-keyed and span-scoped
     rather than position-keyed precisely because the shape is expected to change.'
-  action: Prove no T1.5 surface -- criteria, intent, or the files_in_scope comment -- still asserts retirement
-    of the git corpus, matched by content rather than by position so the check survives rec-3660's conversion.
-  command: bin/venv-python -c "import sys,yaml; d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'));
-    t=[i for i in d['tier_items'] if i['id']=='T1.5'][0]; texts=[(c['text'] if isinstance(c,dict) else
-    str(c)) for c in t['exit_criteria']]+[str(t.get('intent',''))]+[str(x) for x in (t.get('files_in_scope')
-    or [])]; bad=[x[:50] for x in texts if 'DECISIONS.md' in x and 'retire' in x.lower()]; print('surfaces_still_retiring:',
-    len(bad)); sys.exit(0 if not bad else 1)"
-  expected: Exit 0 with a count of zero. Red on the un-implemented tree, where both c1 and the intent
-    match. The predicate requires BOTH the literal DECISIONS.md and the word retire in the same text,
-    so a future criterion about retiring some other surface does not trip it.
+  action: Prove no T1.5 surface still asserts retirement of the git corpus, scanning the item's RAW lines
+    so a YAML comment is visible. yaml.safe_load discards comments, so a parsed predicate cannot see the
+    files_in_scope comment at all.
+  command: bin/venv-python -c "import sys; from scripts.checks.roadmap._roadmap_spans import item_spans;
+    t=open('docs/ROADMAP-PLATFORM.yaml',encoding='utf-8').read(); lines=t.splitlines(); sp=[s for s in
+    item_spans(t) if s.item_id=='T1.5']; raw=lines[sp[0].start:sp[0].end+1] if sp else []; bad=[l.strip()[:48]
+    for l in raw if 'DECISIONS.md' in l and 'retire' in l.lower()]; print('T15_surfaces_still_retiring:',
+    len(bad)); sys.exit(0 if sp and not bad else 1)"
+  expected: 'Exit 0 with a count of zero. Measured on the un-implemented tree the count is 4 raw lines
+    across three surfaces: the intent (L2895), the files_in_scope comment (L2907), and criterion c1, which
+    carries TWO independent retirement references (L2925 and L2933) inside one 1,500-character bare string.
+    A partial reword of c1 leaves this red, which is the step working correctly.'
   expected_literals:
-  - 'surfaces_still_retiring: 0'
-  fix_if: A non-zero count means a T1.5 criterion or its intent still asserts the end-state Decision 196
-    clause 1 reverses. Reword it in place; do not convert the criteria to structured form (see constraints,
-    Decision 136).
+  - 'T15_surfaces_still_retiring: 0'
+  fix_if: A non-zero count means a T1.5 surface still asserts the end-state Decision 196 clause 1 reverses.
+    Reword every matching line in place, keeping c1 a bare string; do not convert the criteria to structured
+    form (see constraints, Decision 136). If the count is 4, nothing was reworded; if it is 1 or 2, c1
+    was only partly reworded.
 - step: 11
   phase: pre-deploy
   hermetic: true
@@ -474,9 +487,13 @@ verification_plan:
     allowed=('docs/','config/agent/verification_registry/entries/'); files=[f for f in subprocess.run(['git','diff','--name-only',mb],capture_output=True,text=True).stdout.split()
     if not f.startswith(allowed)]; print('out_of_boundary_files:', files); sys.exit(0 if not files else
     1)"
-  expected: Exit 0 and an empty list. The verification-registry prefix is allowed because implement-scope-boundary.yaml's
+  expected: 'Exit 0 and an empty list. The verification-registry prefix is allowed because implement-scope-boundary.yaml''s
     graduated_registry_shard row auto-sanctions the shards steps 9 and 10 owe, which can never be pre-declared
-    scope rows.
+    scope rows. Note on post-merge safety: unlike step 7, this command computes its base in a separate
+    subprocess call, so validate_vp_replay._is_pr_relative returns False and it is NOT excluded by the
+    base-collapsed arm. It is safe only because its assertion is an EMPTY set -- base collapse makes it
+    vacuously green, never red. Anyone inverting its polarity must first re-spell it so origin/main follows
+    git diff, as step 7 does.'
   expected_literals:
   - 'out_of_boundary_files: []'
   fix_if: A named file outside those two prefixes means the scope boundary was crossed; revert it and
@@ -485,11 +502,11 @@ verification_plan:
   phase: pre-deploy
   hermetic: false
   graduation: not-applicable
-  action: Run this LAST, only after steps 1 to 16 and both validate tiers are green. File the roadmap-headroom
-    escalation recommendation check_roadmap_regrowth's escalate=true signal now warrants (headroom under
-    its 500-line threshold; Decision 147's own reversal condition fires only on a second breach of the
-    10,000-line ceiling, and the file is at 9,901), citing the measured GROWTH figure from step 14, then
-    read it back and print its id for the handoff report.
+  action: Run this LAST, only after steps 1 to 16 and 18 to 23 and both validate tiers are green. File
+    the roadmap-headroom escalation recommendation check_roadmap_regrowth's escalate=true signal now warrants
+    (headroom under its 500-line threshold; Decision 147's own reversal condition fires only on a second
+    breach of the 10,000-line ceiling, and the file is at 9,901), citing the measured GROWTH figure from
+    step 14, then read it back and print its id for the handoff report.
   command: bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json,sys; rows=[json.loads(l)
     for l in open('logs/.recommendations-log.jsonl',encoding='utf-8') if l.strip()]; TOK='roadmap-headroom-dec147-escalation';
     hits=[r['id'] for r in rows if r.get('status')=='open' and TOK in (str(r.get('title',''))+str(r.get('context',''))+str(r.get('acceptance',''))+str(r.get('tags','')))];
@@ -573,11 +590,12 @@ context:
   93, 136, 86, 165, 187, 163, 84, 137, 66, 189. Decisions triaged: 148 of 148. Roadmap items intersected:
   4; CONFLICT: 1; RELATED: 3.'
 - 'gates: decision-scout=FLAGS_FOUND (run 1 BLOCK on Decision 197 clause 8''s per-tier roadmap split,
-  pivoted; run 2 on the revised approach FLAGS_FOUND); plan-critique=REVISE after 3 round(s), round 4
-  is the autonomous confirming round'
+  pivoted; run 2 on the revised approach FLAGS_FOUND); plan-critique=REVISE after 4 round(s), round 5
+  pending -- round 4 was the confirming round and returned REVISE, escalated to the operator, who chose
+  one more round'
 - Drafts supplied by the operator; this plan ratifies them, it does not author their substance.
-- 'Entry spans measured on a simulated insertion: dec-196 5,522 B, dec-197 5,733 B, both under the 6,144
-  cap.'
+- 'Entry spans measured on a simulated insertion: dec-196 5,539 B, dec-197 5,733 B, both under the 6,144
+  cap with 605 and 411 bytes spare.'
 - T4.3 is in CD.27's gates list, which is why this plan carries a fallback_reevaluation block.
 - 'otl init in Decision 196 clause 7 is deliberate: otl is the CLI alias of the ontheloop product. T4.24''s
   theseus init is the stale side pending rec-3922, not the other way round -- do not correct 196 backwards.'
@@ -602,6 +620,9 @@ context:
   an adapter, and 196 commits nothing about where AWS adapters live.
 - If T1.5's criteria are ever rewritten with yaml.safe_dump rather than hand-edited, the whole 9,901-line
   file reformats. Every roadmap edit in this plan is a hand edit in place.
+- 'Known residual, deliberately out of scope: T1.5 c2 cross-references an action c1 will no longer perform
+  once repointed. Step 22''s predicate does not match it (c2 names no retirement), so it survives untouched.
+  It rides the step-17 follow-on rec rather than being fixed inline.'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
@@ -633,10 +654,25 @@ execution_steps:
   \ note:\n    data-modeling-standard.yaml owns HOW a table is designed, not WHICH mechanism ships versus\n\
   \    stays private, and exit-criteria-ledger.yaml owns one of the three completion shapes this\n   \
   \ unifies rather than the unification. No prior entry can be amended to carry it."
-- 'Decision 196 clause 1 states the reversal in its own terms: the corpus was withheld as private IP and
-  a moat; Decision 184 made the repository the free tier; a user cannot run the governed loop locally
-  without a copy of the corpus, so the moat was the product. It names Decision 134 clause 5 as the end-state
-  it withdraws and T1.5 c1 as the criterion repointed in the same change.'
+- 'Decision 196''s clause 1 is authored EXACTLY as follows, quoted here so the plan-critique category-consistency
+  gate adjudicates 196''s numbered_decision routing against body text rather than against the envelope''s
+  own self-certification.
+
+
+  1. Storage. Decisions live in git, never warehouse-only, in every tier (this repository included): a
+  governed loop that cannot read its decisions cannot run, and a repository that ships without its constitution
+  is not self-contained. The warehouse projection (ops_decisions, Decision 84) stays a read-side derivative.
+  This REVERSES a held direction rather than settling an open one -- the corpus was withheld as private
+  IP and a moat, and Decision 134 clause 5 accordingly staged docs/DECISIONS.md and docs/DECISIONS_ARCHIVE.md
+  for retirement behind a decisions read portal. Decision 184 made the repository the free tier, and a
+  user cannot run the loop locally without a copy of the corpus, so the moat was the product. T1.5''s
+  retirement surfaces are repointed and the three reversal conditions armed on that cutover (Decisions
+  167, 177, 179) are annotated in the same change.
+
+
+  Clause 1 is a numbered_decision rather than a decision-entry.yaml governance note because that contract
+  owns the corpus''s AUTHORING GRAMMAR -- how an entry is shaped -- not which decisions a user receives
+  or where they live; and it withdraws a ratified end-state, which no contract note can do.'
 - 'Decision 197''s two contestable clauses are authored EXACTLY as follows, quoted here so the plan-critique
   category-consistency gate adjudicates 197''s numbered_decision routing against body text rather than
   against the envelope''s own self-certification.
@@ -675,7 +711,7 @@ execution_steps:
   T1.5's intent in place, both off the retirement end-state, keeping c1's bare-string shape; add the T4.23
   and T4.24 carrier criteria. Hand-edit in place -- never round-trip the file through yaml.safe_dump.
 - Regenerate docs/decisions-index.json.
-- Execute Verification Plan steps 1 to 16 and 18 to 19; loop until pass; on unrecoverable V3 failure stop
+- Execute Verification Plan steps 1 to 16 and 18 to 23; loop until pass; on unrecoverable V3 failure stop
   and RCA (Decision 55).
 - Only once those are green, file the roadmap-headroom escalation rec -- it MUST carry the literal token
   roadmap-headroom-dec147-escalation and the measured GROWTH figure printed by step 14 -- then run step
