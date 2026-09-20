@@ -249,8 +249,8 @@ recorded as a finding is worth more than compliance.
 ## 7. THE QUESTIONS
 
 Answer all five. Q1-Q4 each get a `question_answers[]` entry carrying that question's pinned
-verdict enum. Q5 uses a different shape -- an `answers[]` list plus the `deferred_walk_inputs`
-block defined under Q5 -- and carries no top-level verdict. A verdict with no `basis` finding ids
+verdict enum. Q5 uses a different shape -- an `answers[]` list plus the `reversal_trigger_assessment` and
+`deferred_walk_inputs` blocks defined under Q5 -- and carries no top-level verdict. A verdict with no `basis` finding ids
 is an opinion; ground it. The one exception: a verdict that endorses the status quo may carry an
 empty `basis` IF you also filed no correction bearing on it -- say so in `prose`. Never
 manufacture a finding to satisfy this rule.
@@ -376,9 +376,13 @@ This question additionally requires an `external_checklist` block. Assess THE DE
 in your own verdict -- if you answer (i), rate the one-table proposal; if (ii), rate the two-table
 proposal; if `other-argued`, rate what you propose -- property-by-property against these named
 external practices, each rated `met | partial | missed` with evidence, or `n/a`. `partial` requires an
-argued, property-matched compensating control. This field feeds the maturity top tier under the
-CHECKLIST CONDITION in Section 15, which is the sole statement of its scope -- do not infer the
-scope from here.
+argued, property-matched compensating control. Rate the checklist for BOTH candidate designs, not only the one you endorse: emit two
+`external_checklist` blocks, keyed by `design: one-table | two-tables`. Only the design your
+verdict endorses feeds maturity, under the CHECKLIST CONDITION in Section 15, which is the sole
+statement of that scope -- do not infer it from here. Rating both is what keeps the checklist from
+pricing disagreement: endorsing the one-table design otherwise costs you roughly five argued
+compensating controls against two for the two-table design, and that asymmetry is an artifact of
+which practices the literature has written up, not evidence about this repository.
 
 P1. Event-sourced journal plus current-state projection, rather than state mutation in place.
 P2. Type-2 slowly-changing dimension paired with a separate fact table, rather than a widened
@@ -452,6 +456,9 @@ reversal_trigger_assessment:
   which_columns: [<the columns structurally null for one of the two WORK-ITEM KINDS>]
   rationale: ""
   basis: [<finding ids, or empty>]
+  other_conditions:
+    executor_needs_tier_items_pre_mvp: {near_triggered: true|false, rationale: ""}
+    merge_authored_edges_lossy: {near_triggered: true|false, rationale: ""}
 ```
 
 Answer on the TRIGGER'S OWN AXIS: epic-shaped versus task-shaped work items (`kind`, per clause
@@ -460,6 +467,15 @@ candidate columns -- a criterion on an epic-shaped item does not come from a pla
 but the question the reversal condition asks is whether the two KINDS need required fields the
 child table cannot absorb. If you conclude the two axes are not equivalent, that is itself worth
 saying.
+
+Decision 197 carries THREE reversal conditions at `docs/DECISIONS.md:44`-`:52`, not one. The other
+two are live for this audit and each gets a line in `rationale` if you judge it near-triggered:
+`executor-needs-tier-items-pre-mvp` -- "The MVP bounded iteration cannot complete on recs alone:
+pull the clause-8 migration forward" -- prices Q3 option (b), which defers identity to a migration
+whose date that condition can move; and `merge-authored-edges-lossy` -- "A plan's declared edges
+carry information the merge cannot recover: reopen clause 5" -- bears directly on the converged
+shape's `criterion_traces_to` and `blocked_by` being "authored at merge". Record a judgment on
+each in `other_conditions` below.
 
 `tripped-but-absorbable` means the nulls exist but a named mechanism (a kind discriminator, a
 sub-table, an extension map) absorbs them without required fields the child table cannot carry --
@@ -492,12 +508,34 @@ deferred_walk_inputs:
     verdict: scd2-history-plus-type1-current | history-only | other-argued
     rationale: ""
     basis: []
+  write_boundary:
+    verdict: portal-writer-verb | merge-time-etl | plan-time-authoring | other-argued
+    owner: "<the module or verb that owns the insert>"
+    rationale: ""
+    basis: []
+  tenancy:
+    verdict: project-id-on-criterion-row | project-id-on-parent-only | no-project-id | other-argued
+    rationale: ""
+    basis: []
 ```
 
-Every `deferred_walk_inputs` verdict answers a question Decision 197 clause 3 explicitly DEFERRED,
-so there is no status quo to endorse and often no defect to cite: an empty `basis` is EXPECTED
-here, and `rationale` carries the argument. The grounding rule in the Section 7 preamble does not
-bind these four blocks.
+`write_boundary` answers step 3's unasked half. The identity rule pins a ULID "minted once at the
+WRITE BOUNDARY (the writer Lambda / module that owns the insert)", but names no writer for
+`work_item_criteria`. Neither `merge_key: surrogate-ulid-only` nor the converged shape's
+`authored_at_sha` can be adjudicated without knowing who inserts a criterion row and when -- at
+plan authoring, at squash-merge alongside the edges (clause 5), or through a portal verb. Name it.
+
+`tenancy` follows from clause 2: `project_id` is "a cloud-adapter property, not a mechanism
+requirement", and the local adapter is single-tenant by construction. Say whether a criterion row
+carries it under the cloud adapter, and reconcile your answer with `partition_column` and with
+NS5's prohibition on operator vocabulary in columns.
+
+Every `deferred_walk_inputs` verdict, and `reversal_trigger_assessment` with it, answers a
+question Decision 197 either explicitly DEFERRED or left to a manual trigger, so there is no
+status quo to endorse and often no defect to cite: an empty `basis` is EXPECTED throughout these
+blocks, and `rationale` carries the argument. The grounding rule in the Section 7 preamble binds
+neither them nor `reversal_trigger_assessment` -- `tripped-reopen-clause-3` with an empty `basis`
+and a reasoned `rationale` is a complete answer.
 
 One walk step is explicitly NOT yours: step 8's advice-consult escalation for a new table, a new
 identity scheme or a merge-key change is a Claude-side protocol this run does not discharge. State
@@ -628,13 +666,7 @@ test.
 > (ledger status; Status-Trusted-Never-Inferred).
 > `disposition`: `graduate | waive | not-applicable` with iff companions (`plan_document.py`;
 > Decision 132 cl.1).
->
-> [Reader's note, not part of the converged shape: "iff companions" means the co-required field
-> each disposition value carries -- `graduate` requires a non-empty `graduation_check_id`, `waive`
-> requires a non-empty `graduation_waiver_reason`, `not-applicable` requires neither. Enforced by
-> `_validate_graduation_disposition` at `scripts/roadmap/plan_document.py:91`-`:114` (graduate arm
-> `:95`-`:101`, which also rejects a `graduation_waiver_reason` on a graduate step; waive
-> `:102`-`:108`; not-applicable `:109`-`:113`).]
+
 > `graduated_check_id` + `plan_slug`: registry FK, the existing T3.21 join; LINK never merge;
 > means ADMITTED, not STANDING (`verification-registry.yaml` governance_notes: graduated records
 > are never re-executed as a standing suite; Decision 176 cl.4: admission is a commit property
@@ -643,6 +675,13 @@ test.
 > (target restricted to a decision CLAUSE or the parent item; NS.n forbidden from task-shaped
 > items) and `blocked_by` (live consumer: `validate_roadmap_liveness`).
 > Derived, never stored: proof state (`none | proven | stale`), verification tier, consequence.
+
+Footnote to 10.2, not part of the quoted artifact: "iff companions" means the co-required field
+each disposition value carries -- `graduate` requires a non-empty `graduation_check_id`, `waive`
+requires a non-empty `graduation_waiver_reason`, `not-applicable` requires neither. Enforced by
+`_validate_graduation_disposition` at `scripts/roadmap/plan_document.py:91`-`:114` (graduate arm
+`:95`-`:101`, which also rejects a `graduation_waiver_reason` on a graduate step; waive
+`:102`-`:108`; not-applicable `:109`-`:113`).
 
 ### 10.3 The candidate companion table (verbatim -- the Q4 subject)
 
@@ -888,13 +927,20 @@ audit:
     - {q: Q4, verdict: one-table-proof-struct|two-tables-evidence-journal|other-argued,
        precedent: [<table or artifact names; empty list means none found>],
        basis: [], prose: "",
-       external_checklist: [{property: P1|P2|P3|P4|P5|P6|P7|P8|P9,
+       external_checklist: [{design: one-table|two-tables,
+                             property: P1|P2|P3|P4|P5|P6|P7|P8|P9,
                              rating: met|partial|missed|n/a, evidence: ""}]}
+    # 18 entries: all nine properties rated for each of the two candidate designs. Only the
+    # entries whose `design` matches your Q4 verdict feed the Section 15 CHECKLIST CONDITION.
     - {q: Q5, answers: [{question: "", disposition: answered|dismissed, answer: "",
                         basis: [<finding ids>]}],
        reversal_trigger_assessment:
          {verdict: not-tripped|tripped-reopen-clause-3|tripped-but-absorbable|other-argued,
-          nullable_column_count: <int>, which_columns: [], rationale: "", basis: []},
+          nullable_column_count: <int>, which_columns: [], rationale: "", basis: [],
+          other_conditions: {executor_needs_tier_items_pre_mvp: {near_triggered: true|false,
+                                                                 rationale: ""},
+                             merge_authored_edges_lossy: {near_triggered: true|false,
+                                                          rationale: ""}}},
        deferred_walk_inputs:
          merge_key: {verdict: parent-plus-criterion-id|surrogate-ulid-only|
                               content-hash-composite|other-argued, value: "", rationale: "",
@@ -904,7 +950,11 @@ audit:
          partition_column: {verdict: "<column name>"|none-argued, applies_to: [], rationale: "",
                             basis: []}
          current_projection: {verdict: scd2-history-plus-type1-current|history-only|other-argued,
-                              rationale: "", basis: []}}
+                              rationale: "", basis: []}
+         write_boundary: {verdict: portal-writer-verb|merge-time-etl|plan-time-authoring|
+                                   other-argued, owner: "", rationale: "", basis: []}
+         tenancy: {verdict: project-id-on-criterion-row|project-id-on-parent-only|no-project-id|
+                            other-argued, rationale: "", basis: []}}
   converged_shape_corrections:
     - {element: "<field or claim in Section 10.2 or 10.3>", what_it_says: "",
        what_is_true: "", evidence: "file:line", consequence: "",
@@ -971,7 +1021,11 @@ judgment), and must say which of the two each item is; the single highest-levera
 line stating how many entries `meta.stale_anchors[]` holds, whether any changed a verdict, and
 every `meta.capability_deviations[]` entry of class `capability` in one line each, and -- if
 `meta.degraded_dedup` is true -- one line saying the recommendation-side dedup did not run and
-why; and any `meta.contract_notes` entry in one line. A capability gap or an unsearched dedup surface the human never sees is indistinguishable
+why; any `meta.contract_notes` entry in one line; and -- if you filed any `critical` finding on a
+BUILT surface (S3-S6), meaning the defect is live in the repository today rather than proposed --
+those finding ids on their own line under the heading LIVE CRITICAL. You file no recommendation
+and open no issue for it (Section 5.3), so that line is the only route such a finding has out of
+the deliverable and into the requester's view. A capability gap or an unsearched dedup surface the human never sees is indistinguishable
 from work you chose not to do.
 
 ### Invariants
@@ -1036,8 +1090,12 @@ empty.
   `other-argued` (you rated what you proposed, which spans them). It never gates S3, S4, S5 or S6.
   A surface it does not gate reaches `frontier` on finding counts alone.
 - **strong** -- 0 `critical` and at most 1 `high`.
-- **solid** -- at most 1 `critical`.
+- **solid** -- at most 1 `critical` AND at most 3 `high`.
 - **nascent** -- otherwise.
+
+The `high` bound on `solid` is deliberate: without it a surface with 0 criticals and 8 highs
+matches `solid` on the critical count alone, and every mis-rating that produces points UPWARD --
+the direction this brief's anti-padding stance exists to resist.
 
 The top rating stays reachable where you argued a property-matched compensating control. This
 brief's framing does not foreclose it.
