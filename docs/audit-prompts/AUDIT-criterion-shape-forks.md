@@ -74,8 +74,9 @@ the wrong surface.
    T1.5 "ops_decisions graduation", a warehouse table MIGRATION PHASE with no relation to either.
    Only the first two are in scope.
 3. **"tier"** names two orthogonal axes: verification tier (V1/V2/V3, Decision 48) and roadmap
-   tier, whose values are T-1, T0, T1, T2, T3, T4 and T5 -- seven, not four, and this brief cites
-   T-1.23, T0.12.5 and T5.5 among them. Q2 concerns only the verification axis.
+   tier, whose values are T-1, T0, T1, T2, T3, T4 and T5 -- seven, not four. A `T-1.x` or `T0.x`
+   id is a real tier item, not a typo, and `T5.5` supplies two of the off-position criterion ids
+   in candidate 2. Q2 concerns only the verification axis.
 4. **"status"** is a field name on at least four surfaces with four different enums: the
    criterion ledger (`open | met | rehomed`), a recommendation (`open | closed | in_progress |
    deferred | superseded | declined`), a tier item (`not_started | in_progress | complete |
@@ -333,7 +334,8 @@ keep-stored-until-derivation-exists | drop-the-field | other-argued`
 
 Measured at `04a402a4`: 801 roadmap criteria = 407 bare strings + 394 structured dicts; 259 of
 the 407 sit on `status: complete` items. Read the touched-item rule at
-`scripts/checks/roadmap/validate_platform_roadmap.py:111`-`:132` and establish for yourself what
+`scripts/checks/roadmap/validate_platform_roadmap.py:111`-`:133` (the arm ends at its `break`)
+and establish for yourself what
 population it fires on and what that implies for those 259 -- whether they are beyond the gate's
 reach by construction, or merely seldom in its path. The options below turn on exactly that
 distinction, so form it from the code rather than from any characterisation. Bare-string ids are auto-assigned positionally at model-load time. In-YAML
@@ -751,10 +753,12 @@ requires a non-empty `graduation_waiver_reason`, `not-applicable` requires neith
     `state: pending`. Treat CD.29's live state as what the roadmap says, and note the discrepancy
     if you rely on either reading.
 11. The roadmap stands near its 10,000-line ceiling; rec-3960 is an open High recommendation for
-    the headroom escalation plus two unowned residuals from the plan that landed Decisions
-    196/197.
-12. rec-3660's own title and context measure "88 of 166 tier_items"; the tree today holds 172
-    tier items, of which 85 carry bare strings.
+    the headroom escalation plus unowned residuals from the plan that landed Decisions 196/197 --
+    its title says two, its own context enumerates three.
+12. rec-3660, the named owner of the Q3 work, carries the number 88 twice against two different
+    populations: its TITLE reads "Pay down the 88 bare-string exit_criteria", its CONTEXT reads
+    "88 of 166 tier_items ... still carry bare-string exit_criteria (measured at a702e43)". The
+    tree today holds 172 tier items, of which 85 carry bare strings, and 407 bare criteria.
 13. `evaluator_kind` reuses `EvaluatorSpec`, a model defined for Class D contract evaluators
     rather than for criteria.
 14. The registry holds 894 live entry files under `config/agent/verification_registry/entries/`
