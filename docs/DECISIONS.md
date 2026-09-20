@@ -2,6 +2,115 @@
 
 The canonical corpus of ratified architectural and operational decisions, and the sole ETL source for the `ops_decisions` warehouse table (Decision 84). Fully-superseded entries move to `docs/DECISIONS_ARCHIVE.md` per the archival policy in Decision 146.
 
+## Decision 197: Work-item mechanism boundary -- the mechanism ships, the data does not; roadmap tier items and recommendations converge on one work-item model behind a storage port, and the executor's pick surface is kind-generic from its first implementation (Decided)
+
+```yaml
+number: 197
+status: Decided
+decided_date: "2026-09-20"
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant boundary between shipped mechanism and private operational data,
+    plus a target model three live surfaces must converge on. Not a contract governance note:
+    data-modeling-standard.yaml owns HOW a table is designed, not WHICH mechanism ships versus
+    stays private, and exit-criteria-ledger.yaml owns one of the three completion shapes this
+    unifies rather than the unification. No prior entry can be amended to carry it.
+```
+
+**Status:** Decided
+**Date:** 2026-09-20
+**Warehouse ID:** dec-197 (per Decision 84 backfill)
+
+**Problem:** Work to do lives in two places with no join: `ROADMAP-PLATFORM.yaml` (172 tier items, 796 exit criteria, `depends_on` validated for dangling refs and cycles, at 9,901 of a 10,000-line ceiling) and `ops_recommendations` (writer-allocated ids, a `dependencies` field nothing traverses). Three shapes describe "done": a rec's shell-command `acceptance`, a tier item's prose `exit_criteria`, a plan's `verification_plan` with graduation. Plans mint dependency edges (`bundled_recommendations`, `followon_recs`) that die when the plan file archives. The autonomous executor (T4.3, T4.19, T4.1) is about to lock its pick-up interface to recs alone.
+
+**Intent:** One work-item mechanism ships with the platform and drives the executor in every tier; this operator's work-item rows are private and never ship.
+
+**Decision:**
+1. Boundary. The work-item MECHANISM (schema, portal verbs, edge model, acceptance-criteria model, executor pick surface) is a core shipped component in every tier. The work-item DATA in this repository (roadmap content, recommendations, queue rows) is this operator's IP and never ships.
+2. Storage port. Work items are reached through a named port (Decision 184 clause 2); the local adapter is a file catalog, the cloud adapter is DuckLake-on-Neon; the user selects by configuration. T4.23 is that port's tracked local-adapter item. Tenancy (`project_id`) is a cloud-adapter property, not a mechanism requirement; the local adapter is single-tenant by construction.
+3. Target model (grain first, per the data-modeling default). `work_items`: one row per work item, SCD2, `kind` discriminates epic-shaped (today's tier item) from task-shaped (today's rec); both id schemes survive, type-prefixed and never renumbered. `work_item_criteria`: one row per (work item, criterion) -- criterion text, verification method, status; it carries the graduation concept and subsumes rec `acceptance`, tier-item `exit_criteria` and plan `verification_plan` steps AS CRITERION ROWS ONLY. A plan is never a `work_items` kind: Decision 87 clause 6's rec-versus-plan grain distinction survives unchanged. `work_item_edges`: one row per directed edge, append-only, with a closed validated edge vocabulary. `work_item_criteria` is SCD2 with its parent. All three are partitioned (Decision 137); merge keys, identity and join keys are settled by the clause-8 migration, not here.
+4. Taxonomy stays out of the schema. Tier membership (`T4.x`), verification tiers (`V1..V3`) and `source: ci_rca` are grouping items, edges or extension values, never columns, so a user's work items carry none of this operator's vocabulary.
+5. Edges are authored at merge. A plan DECLARES intended edges; the squash-merge writes them, as `rec-autoclose.yml` already writes closure edges from the `Resolves:` trailer. Plan-declared edges are never the durable record.
+6. Executor pick surface. T4.3's producer and every later consumer are written against the clause-3 grain (`pick_work_item`, one row per pickable item, `kind`-discriminated) even while `kind: rec` is the only populated kind; tier items join by adding a kind, never by rebuilding the surface. T4.3's rec-shaped exit criteria are amended accordingly.
+7. Vocabulary. "Recommendation" and the `file_rec` / `update_rec` verbs are renamed with the model, never as a separate later pass (323 files reference the verbs today; the free tier makes them public API). The rename moves the closed named-verb boundary (Decision 84 I-3), it does not open it.
+8. Sequencing. Design now, migrate once post-MVP (Decision 93), recording the destination while deliberately not building it -- Decision 87 clauses 1-2's own precedent, not frame-lock. No lift-and-shift of the roadmap's current shape into the warehouse occurs meanwhile, and T4.23/T4.24 carry the forward work. Roadmap line-ceiling pressure is relieved only by Decision 147's sanctioned valves (compaction in place, lifecycle archival, or a consciously-cited raise); a per-tier split stays forbidden (Decisions 110, 114, 147).
+
+```yaml reversal-conditions
+decision: 197
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: two-shapes-after-all
+    kind: manual
+    description: "Epic-shaped and task-shaped items need required fields the criteria child table cannot absorb: reopen clause 3 before adding nullable columns."
+  - id: executor-needs-tier-items-pre-mvp
+    kind: manual
+    description: "The MVP bounded iteration cannot complete on recs alone: pull the clause-8 migration forward."
+  - id: merge-authored-edges-lossy
+    kind: manual
+    description: "A plan's declared edges carry information the merge cannot recover: reopen clause 5."
+```
+
+**Related:** Decision 184 (port rule, free-tier boundary), Decisions 81, 84, 87, 93, 128, 137, 147, 185; T4.3, T4.19, T4.22, T4.23, T4.24; Decision 196.
+
+---
+
+## Decision 196: Three-tier decision model for the open-core product -- north stars and product decisions share one shape, platform decisions ship as a read-only per-release snapshot that user decisions supersede (amends Decision 134) (Decided)
+
+```yaml
+number: 196
+status: Decided
+decided_date: "2026-09-20"
+amends: [134]
+significance:
+  value: numbered_decision
+  justification: >-
+    Durable, reversal-relevant product-boundary commitment on what governance a free-tier user
+    receives and how it is layered, carrying a recorded reversal of the corpus's storage
+    direction. Not a contract governance note: decision-entry.yaml owns the corpus's AUTHORING
+    GRAMMAR, not what ships to a user, and cannot bind Tier A's context or amendment policy. Not
+    an amendment of 184, which draws the code boundary, not the decision-corpus boundary.
+```
+
+**Status:** Decided
+**Date:** 2026-09-20
+**Warehouse ID:** dec-196 (per Decision 84 backfill)
+
+**Problem:** Decision 184 makes this repository the free tier, but the decision corpus was designed for one author. A user who imports the platform cannot run the governed loop without the decisions the shipped validators, contracts and skills cite, so the corpus is product surface, not private IP -- yet no entry says which decisions ship, in what form, or how a user layers their own on top. Meanwhile the corpus grew to 175 entries at 758 KB, most of it this operator's history, and a user installing the package would inherit all of it or none of it.
+
+**Intent:** Every user runs on three tiers of decisions with a single shape and a single supersession mechanism, so the platform's governance ships as a versioned template rather than as this operator's diary.
+
+**Decision:** Amends Decision 134 clause 5.
+1. Storage. Decisions live in git, never warehouse-only, in every tier (this repository included): a governed loop that cannot read its decisions cannot run, and a repository that ships without its constitution is not self-contained. The warehouse projection (`ops_decisions`, Decision 84) stays a read-side derivative. This REVERSES a held direction rather than settling an open one -- the corpus was withheld as private IP and a moat, and Decision 134 clause 5 accordingly staged docs/DECISIONS.md and docs/DECISIONS_ARCHIVE.md for retirement behind a decisions read portal. Decision 184 made the repository the free tier, and a user cannot run the loop locally without a copy of the corpus, so the moat was the product. T1.5's retirement surfaces are repointed and the three reversal conditions armed on that cutover (Decisions 167, 177, 179) are annotated in the same change.
+2. The three tiers. Tier A -- the user's north stars: what the product is, what success is, the product invariants. Tier B -- platform decisions: the working template for how the platform operates, imported by the user. Tier C -- the user's own product decisions.
+3. One shape, two policies. A and C share one decision format, one supersession edge model (`amends` / `supersedes` / `superseded_by`) and one validator set; A is distinguished by context policy (always loaded into every agent context) and authority policy (amendment needs explicit human confirmation, never a mechanical edit), carried as `kind: north_star` on the same entry type. No second decision system is built.
+4. Tier B is read-only per release. B ships as a static snapshot pinned to the package version, without this repository's amendment history. Users never edit B: customisation is a Tier C decision carrying `supersedes: [<B id>]`, so upgrades replace B cleanly and every override is explicit and diffable.
+5. Trimming rule for B. A decision ships in B iff a shipped mechanism (validator, contract, skill, hook) cites it. Decisions nothing enforces are this operator's history and stay here. B and its enforcers version together: neither ships without the other.
+6. Id spaces. B and C ids carry distinct prefixes fixed before the first release tag, so a user's numbering never collides with the imported template. The prefix scheme is a Decision 84 I-2 keyspace exception, like `dec-NNN`.
+7. Goodhart countermeasure. Every Tier A entry carries a required `failure_signal` field ("how would we know we have overfit to this?"), enforced by schema; `otl init` scaffolds it. `otl` is the CLI alias of the `ontheloop` product, not the undecided organisation handle Decision 195 clause 4 routes to rec-3905.
+8. Sequencing. Clauses 1-7 bind the design; execution (per-file decision split, B extraction, prefixing, `otl init`) is post-MVP (Decision 93) and rides T4.24, whose exit criteria carry it.
+
+```yaml reversal-conditions
+decision: 196
+review_by: 2027-03-31
+on_trigger: "re-decide via /plan"
+conditions:
+  - id: b-too-large
+    kind: manual
+    description: "The clause-5 rule yields a B snapshot users cannot read in one sitting: revisit the citation criterion or add a second cut."
+  - id: users-need-history
+    kind: manual
+    description: "A real user needs B's amendment history to reason about an edge case: reopen clause 4's no-history rule."
+  - id: north-star-shape-diverges
+    kind: manual
+    description: "Tier A needs a field or edge the shared shape cannot carry: reopen clause 3 before forking the format."
+```
+
+**Related:** Decision 184 (free-tier boundary this extends to the decision corpus), Decision 134 (clause 5's retirement end-state this amends), Decisions 84, 93, 133, 167, 171, 177, 178, 179; T1.5, T4.24; the north-star amendment guard (rec-3959, clause 3's authority policy).
+
+---
+
 ## Decision 195: On The Loop Labs Limited owns the platform; founder-to-company IP assignment, the AWS account-ownership consequence it reopens, and the undecided GitHub organisation handle (amends Decision 106) (Decided)
 
 ```yaml
@@ -1367,6 +1476,7 @@ conditions:
   - id: t15-portal-read
     kind: manual
     description: "T1.5 c1 portal/verb read supersedes the index mechanism entirely."
+    note: "Decision 196 clause 1 forecloses this trigger -- decisions stay git-stored in every tier, so no portal read replaces the index mechanism; retained for the record."
 ```
 
 **Related:** Decision 134 cl.2 and Decision 160 pt.4 amended, pt.9 resolved; Decision 166 pt.9
@@ -1568,6 +1678,7 @@ conditions:
   - id: t15-portal-cutover-retires-the-surface
     kind: manual
     description: "T1.5's portal cutover moves the corpus off docs/DECISIONS.md to warehouse-verb storage -> this file-diff guard loses its subject and retires with it; the invariant re-homes onto the warehouse's own append-only SCD2 versioning (Decision 167 condition (c) precedent)."
+    note: "Decision 196 clause 1 forecloses this trigger -- storage stays git in every tier, so this portal cutover will not occur; retained for the record, not armed toward a portal migration."
 ```
 
 **Related:** Decision 151 (amended -- clause 3(v)'s convention-only stance narrowed to a
@@ -2108,6 +2219,9 @@ significance:
 4. **Routing rule and standing commitment homed in the contract.** The three-question routing rule (durable commitment? reversal-relevant? unclaimed by another row?) and its standing-commitment clause live in `decision-entry.yaml`'s `significance.routing_rule` / `significance.standing_commitment` keys, machine-checkable rather than asserted only in this prose.
 
 **Reversal conditions:** (a) more than 2 of the first 10 new entries authored under the 6,144-byte cap cannot fit their ruling/rationale/reversal content without losing DECISION substance -- retune the cap value or abort the norm, never raise it silently to fit a single entry; (b) two or more entries land in the SAME PR specifically to evade the per-entry cap (split-then-recombine) -- close the loophole at the check, not by raising the cap; (c) T1.5's portal cutover retires the flow this envelope feeds -- these obligations retire with it; (d) migration step 3 never lands and the cap stays WARN-tier indefinitely -- re-audit whether the lever does any work at WARN tier alone. Per Decision 166 point 6 / Decision 145's own precedent: the response to cap pressure is compaction or trimming Related pointer blocks, never a raise to fit.
+
+> **Note (2026-09-20):** condition (c) fires -- Decision 196 clause 1 reverses the T1.5 portal
+> cutover this envelope's obligations were tied to; see Decision 196.
 
 **Rationale:** The envelope and the Significance claim are the same shape decision-scout already reads machine-readably for triage (category_tags, triage_excerpt) -- extending that machine-readability to the routing claim itself closes the "self-certified with no record" gap CFG-03 named. The WARN-tier cap is staged behind a destination-readiness gate (migration step 3) so the pressure is felt before the lever is armed to fail builds -- the audit's own sequencing warning against pressure before a landing spot exists for it.
 
@@ -3929,6 +4043,12 @@ KG.13 / T3.11 c5 (deliberately undisturbed, see boundary note above).
 **Status:** Decided
 **Date:** 2026-07-16
 **Warehouse ID:** dec-134 (keyed on the decision number; synced to ops_decisions via `ops_data_portal --backfill-decisions-md` post-merge, per Decision 84)
+
+> **Amended by Decision 196 (2026-09-20):** clause 5's retirement end-state is REVERSED --
+> docs/DECISIONS.md and docs/DECISIONS_ARCHIVE.md stay git-authoritative in every tier rather
+> than retiring behind a decisions read portal; the three T1.5-cutover reversal conditions this
+> clause armed (Decisions 167, 177, 179) are neutralised accordingly. This body is otherwise
+> unedited; see Decision 196 for the full derivation.
 
 **Decision:**
 Ratifies the `ratify-prose-with-size-governance` disposition of the decisions-authoring-format audit (audits/decisions-authoring-format-d140093.yaml, findings DAF-01..DAF-04, confidence CONFIRMED) as the conscious ruling that audit found absent (its VD5 "absent" rating). This is the Decision-114 parity act for the decision log itself. Five clauses:
