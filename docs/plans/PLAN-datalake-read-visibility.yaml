@@ -1,0 +1,202 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "datalake-read-visibility"
+intent: >-
+  Give the PlatformDev identity the read actions needed to see the S3 bucket configuration and
+  version state governing its own lakehouse data, fence those version-level verbs off the
+  tfstate/tfplan/convergence prefixes, and rehearse data-file recoverability while the evidence
+  of every GC delete still exists.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-datalake-read-visibility.yaml
+phase: T2.18
+scope:
+  - file: terraform/personal/platform_dev_policies.tf
+    action: Modify
+    purpose: >-
+      Add S3 bucket-config and version-level READ grants to the PlatformDev DailyOps inline policy
+      (rec-3892 durable half), and extend the DEP-13 Deny statements to cover the version-level
+      verbs on the fenced prefixes.
+  - file: tests/checks/iam_tf/test_platform_dev_data_lake_read_fence.py
+    action: Create
+    purpose: >-
+      Standing guard: the new reads exist, GetObjectVersion is prefix-scoped rather than
+      bucket-wide, ListBucketVersions carries an s3:prefix condition, and the DEP-13 Denies cover
+      the version verbs on all three fenced prefixes. Deliberately a NEW module so this plan
+      shares no file with PLAN-ducklake-noncurrent-version-reclaim.
+  - file: scripts/checks/iam_tf/validate_agent_observability_read_coverage.py
+    action: Modify
+    purpose: >-
+      Widen OBSERVABILITY_READ_MAP from one role per resource type to many, and add the PlatformDev
+      row for aws_s3_bucket so the new dev-side read coverage is asserted rather than drift-prone.
+  - file: tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py
+    action: Modify
+    purpose: cover the multi-role map shape, including a red case where a declared role row is unmet
+  - file: config/agent/verification_registry/entries/platform-dev-data-lake-read-fence.yaml
+    action: Create
+    purpose: graduate the fence guard as a standing check under this plan's slug
+  - file: tests/fixtures/ducklake_recovery_drill.json
+    action: Create
+    purpose: >-
+      Committed evidence of the copy-forward recovery rehearsal plus the pre-rule forensic
+      inventory of production delete markers and noncurrent versions.
+bundled_recommendations: ["rec-3892"]
+followon_recs: []
+infrastructure_dependencies:
+  - "aws_iam_role_policy.platform_dev_runtime is CI-unexecutable BY DESIGN: iam:PutRolePolicy is scoped to role/agent-platform-* (terraform/bootstrap/github_ci_apply_policy.tf:206-214) and PlatformDev appears only in IAMRoleMetadataWrite (tag/description verbs). Decision 180 clauses 2-3 are permanent -- never widen the CI role to avoid the split."
+  - "SPLIT-APPLY (docs/contracts/deploy-paths.yaml admin_out_of_band.procedure): apply this address out-of-band under agent_platform_admin first (plan -target -> PRESENT -> explicit human acceptance -> apply), then the governed path carries any remainder."
+  - "ADMIN container precondition (Decision 120): bin/setup-cloud-env.sh ran with INSTALL_TERRAFORM=1 and the provider mirror sync succeeded, so TF_CLI_CONFIG_FILE is set and local init of terraform/personal succeeds."
+  - "The four no-default tfvars are recovered from remote state, never pasted into chat, a PR, or any committed file (Decision 101)."
+acceptance_criteria:
+  - rec-3892 acceptance clause 1 holds -- GetLifecycleConfiguration is present in terraform/personal/platform_dev_policies.tf
+  - PlatformDev can read the data-lake bucket lifecycle configuration and list object versions under the production DuckLake prefix; both are AccessDenied before this change
+  - s3:GetObjectVersion is granted only on the production DuckLake object prefix, never bucket-wide
+  - The DEP-13 Deny statements cover the version-level read verbs on tfstate/personal/*, tfplan/personal/*, and convergence/personal/*, so the ExternalId-in-state escalation path stays severed under the new verbs
+  - PlatformDev listing object versions under the tfstate prefix is refused
+  - OBSERVABILITY_READ_MAP asserts the PlatformDev S3 read coverage, so removing the grant reddens a check rather than passing silently
+  - A committed fixture records a successful copy-forward recovery of a real GC-deleted production data file, with storage object count returned to its pre-drill value
+  - The same fixture records the pre-rule inventory of production delete markers and noncurrent versions, preserving the rec-3892 forensic evidence before any expiry rule can age it out
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: PlatformDev carries the bucket-config and version-level read actions
+    command: grep -q "s3:GetLifecycleConfiguration" terraform/personal/platform_dev_policies.tf && grep -q "s3:GetObjectVersion" terraform/personal/platform_dev_policies.tf && grep -q "s3:ListBucketVersions" terraform/personal/platform_dev_policies.tf
+    expected: exit 0 -- all three read actions present; this is rec-3892 acceptance clause 1
+    fix_if: any action absent from the DailyOps inline policy
+    hermetic: true
+    expected_literals: []
+    graduation: graduate
+    graduation_check_id: platform-dev-data-lake-read-fence
+  - step: 2
+    phase: pre-deploy
+    action: the fence guard passes -- grants present, version verbs prefix-scoped, DEP-13 Denies extended
+    command: bin/venv-python -m pytest tests/checks/iam_tf/test_platform_dev_data_lake_read_fence.py -q
+    expected: all tests pass, including the red cases proving a bucket-wide GetObjectVersion grant and a missing Deny each trip the guard
+    fix_if: a grant is unscoped, or a Deny does not cover the version verbs on all three fenced prefixes
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: platform-dev-data-lake-read-fence
+  - step: 3
+    phase: pre-deploy
+    action: the observability read-coverage map asserts the new PlatformDev coverage
+    command: bin/venv-python -m pytest tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py -q
+    expected: all tests pass, including a red case where a declared role row is unmet
+    fix_if: the map still carries one role per resource type, or the PlatformDev row is absent
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      This step exercises validate_agent_observability_read_coverage, which is already a registered
+      scripts.checks module running in the --pre and full tiers; graduating it again would create a
+      second registry row for a check that already has standing enforcement.
+  - step: 4
+    phase: pre-deploy
+    action: fast-tier presubmit is clean before any apply
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: any fast-tier check fails
+    hermetic: false
+    graduation: not-applicable
+  - step: 5
+    phase: post-deploy
+    action: ADMIN container precondition -- local init of terraform/personal succeeds via the Decision 120 provider mirror
+    command: test -n "$TF_CLI_CONFIG_FILE" && cd terraform/personal && terraform init -backend-config=backend-sandbox.hcl -input=false
+    expected: init succeeds; if TF_CLI_CONFIG_FILE is unset the mirror sync did not run and the ADMIN loop is unavailable
+    fix_if: rerun bin/setup-cloud-env.sh with INSTALL_TERRAFORM=1 and confirm a non-empty mirror sync
+  - step: 6
+    phase: post-deploy
+    action: SPLIT-APPLY the CI-unexecutable address after presenting the plan for explicit human acceptance
+    command: cd terraform/personal && terraform plan -target=aws_iam_role_policy.platform_dev_runtime -out=/tmp/platform-dev-reads.tfplan && terraform show /tmp/platform-dev-reads.tfplan
+    expected: the plan shows exactly one in-place update to aws_iam_role_policy.platform_dev_runtime and no other address; PRESENT this output and obtain explicit human acceptance BEFORE running terraform apply, then record who accepted it
+    fix_if: the plan touches any address beyond platform_dev_runtime -- stop and re-scope rather than widening the target
+  - step: 7
+    phase: post-deploy
+    action: the grant is live -- the dev identity can now list object versions under the production prefix
+    command: aws s3api list-object-versions --bucket agent-platform-data-lake --prefix ducklake/ --max-keys 1 --profile agent_platform
+    expected: succeeds and returns version data; this call is AccessDenied on s3:ListBucketVersions before the apply, so success is rec-3892's closure evidence
+    fix_if: still AccessDenied -- the apply did not land or the s3:prefix condition is too narrow
+  - step: 8
+    phase: post-deploy
+    action: the DEP-13 fence holds under the new verbs -- the dev identity cannot reach state prefixes
+    command: aws s3api list-object-versions --bucket agent-platform-data-lake --prefix tfstate/ --max-keys 1 --profile agent_platform; aws s3api list-object-versions --bucket agent-platform-data-lake --prefix convergence/ --max-keys 1 --profile agent_platform
+    expected: BOTH calls are refused with AccessDenied -- a success here means the version-level verbs reopened the ExternalId-in-state escalation path DEP-13 exists to sever; STOP and revert the grant
+    fix_if: either call succeeds -- tighten the s3:prefix condition and extend the Deny before proceeding
+  - step: 9
+    phase: post-deploy
+    action: capture the pre-rule forensic inventory of the production prefix
+    command: aws s3api list-object-versions --bucket agent-platform-data-lake --prefix ducklake/ --profile agent_platform --output json > /tmp/ducklake-versions.json && bin/venv-python -c "import json; d=json.load(open('/tmp/ducklake-versions.json')); v=d.get('Versions',[]); m=d.get('DeleteMarkers',[]); nc=[x for x in v if not x['IsLatest']]; print('noncurrent', len(nc), sum(x['Size'] for x in nc)); print('markers', len(m)); print('marker_range', min(str(x['LastModified']) for x in m), max(str(x['LastModified']) for x in m))"
+    expected: noncurrent count and bytes, delete-marker count, and the marker timestamp range are all recorded into tests/fixtures/ducklake_recovery_drill.json
+    fix_if: the listing is truncated -- paginate fully; a partial inventory is not evidence
+  - step: 10
+    phase: post-deploy
+    action: rehearse copy-forward recovery of a real GC-deleted data file
+    command: bin/venv-python -m scripts.checks.iam_tf.recovery_drill --help 2>/dev/null || echo "MANUAL -- select a ducklake/ key whose latest version is a delete marker over a noncurrent version; aws s3api get-object --version-id to confirm readability; aws s3api copy-object --copy-source with versionId back to the SAME key; aws s3api head-object to confirm ContentLength and ETag match the noncurrent version; aws s3api delete-object to restore prior state"
+    expected: the restored object's ContentLength and ETag match the noncurrent version exactly, and the post-drill object count under the prefix equals the pre-drill count
+    fix_if: copy-object is refused (GetObjectVersion not reaching the object prefix) or the ETag differs (the wrong version was selected)
+  - step: 11
+    phase: post-deploy
+    action: the drill evidence is committed and records a digest, never a raw lakehouse object path
+    command: bin/venv-python -c "import json; d=json.load(open('tests/fixtures/ducklake_recovery_drill.json')); assert d['recovered'] is True; assert d['etag_match'] is True; assert d['post_drill_object_count'] == d['pre_drill_object_count']; assert 'key_sha256' in d and 'key' not in d; print('drill evidence OK', d['captured_at'])"
+    expected: assertions pass and the fixture carries key_sha256 rather than a raw key, per the Decision 101 public-repo boundary
+    fix_if: the fixture records a raw object key, or the object count did not return to its pre-drill value
+  - step: 12
+    phase: post-deploy
+    action: rec-3892 is closed with the live evidence
+    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json; rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl')]; r=next(x for x in rows if x['id']=='rec-3892'); print(r['status']); assert r['status']=='closed'"
+    expected: rec-3892 reads closed in the read cache after the portal write and sync
+    fix_if: still open -- run the update_rec portal call, then re-sync
+test_obligations:
+  - source: terraform/personal/platform_dev_policies.tf
+    behavior: >-
+      The PlatformDev data-lake reads stay prefix-scoped and the DEP-13 Denies keep the
+      version-level verbs off the tfstate, tfplan and convergence prefixes.
+    verification_step: 2
+    test_selector: tests/checks/iam_tf/test_platform_dev_data_lake_read_fence.py
+    red_green_expectation: red before, green after
+  - source: scripts/checks/iam_tf/validate_agent_observability_read_coverage.py
+    behavior: the map asserts read coverage for every declared role row, not just the first role per resource type
+    verification_step: 3
+    test_selector: tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py
+    red_green_expectation: red before, green after
+constraints:
+  - No rescue agents or workaround loops (Decision 55)
+  - Never widen the CI apply role to avoid the SPLIT-APPLY -- Decision 180 clauses 2-3 are permanent
+  - s3:GetObjectVersion is granted on the production DuckLake object prefix only; a bucket-wide grant would reopen the DEP-13 ExternalId-in-state escalation path
+  - Public-repo boundary (Decision 101) -- the drill fixture records a key digest, never raw lakehouse object paths, ARNs or account ids
+  - The recovery drill leaves catalog state unchanged; the restored object is re-deleted in the same session
+context:
+  - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 192, 180, 126, 120, 181, 132, 176, 189, 191, 188. Decisions triaged: 148 of 148. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 3."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "Sequencing: this plan lands FIRST. PLAN-ducklake-noncurrent-version-reclaim depends on the grants here for its post-deploy verification, and on step 9's inventory being captured before any expiry rule exists."
+  - "rec-3892's unexplained smoke-prefix deleter is NOT explained by this plan; the grants here make it investigable for the first time. Its production-prefix counterpart (548 delete markers before gc_ops ever ran there) is what step 9 preserves."
+  - "This plan also discharges rec-3907's second half (the unrehearsed recoverability). rec-3907 itself is bundled and closed by PLAN-ducklake-noncurrent-version-reclaim, whose closure step cites this plan's fixture."
+  - "Decision 113 / Decision 144 clause 3 (DEP-13): DenyStateRead currently denies only s3:GetObject on tfstate/personal/*; s3:GetObjectVersion is a distinct action outside that Deny. Extending the Deny is the load-bearing half of this plan, not a nicety."
+  - "Decision 92 / T2.48 c6: the out-of-band apply is never guard-classified, so the presented plan -target output IS the substituted control. Record who accepted it and feed the outcome into T2.48 c6's auto-apply track record."
+  - "Measured 2026-09-20 from the dev role: s3:ListBucketVersions on this bucket is AccessDenied, which is why step 7 is a genuine before/after proof."
+  - "PlatformDev DailyOps inline policy measures approximately 2,036 B minified against the 10,240 B Decision 156 ceiling, so the added actions have ample headroom; note the precondition is per-policy, not the per-role aggregate."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - Session runs on an ADMIN container with INSTALL_TERRAFORM=1 and a non-empty provider mirror sync, so local init of terraform/personal succeeds (Decision 120)
+  - docs/contracts/deploy-paths.yaml admin_out_of_band.procedure read in full before any apply
+execution_steps:
+  - Add the S3 bucket-config and version-level READ grants to the PlatformDev DailyOps inline policy, scoping s3:GetObjectVersion to the production DuckLake object prefix and conditioning s3:ListBucketVersions with s3:prefix
+  - Extend the DEP-13 Deny statements so the version-level read verbs are refused on tfstate/personal/*, tfplan/personal/* and convergence/personal/*
+  - Create tests/checks/iam_tf/test_platform_dev_data_lake_read_fence.py with the grant, scoping and Deny assertions plus red cases for a bucket-wide grant and a missing Deny
+  - Widen OBSERVABILITY_READ_MAP to many roles per resource type and add the PlatformDev aws_s3_bucket row; extend its test for the multi-role shape
+  - Create the verification registry shard platform-dev-data-lake-read-fence under this plan's slug
+  - Run the ADMIN SPLIT-APPLY -- present the targeted plan, obtain explicit human acceptance, apply, then prove both the grant and the fence live
+  - Capture the pre-rule forensic inventory and run the copy-forward recovery drill; commit tests/fixtures/ducklake_recovery_drill.json
+  - Close rec-3892 through the ops portal with the live before/after evidence
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Revert the platform_dev_policies.tf change and re-apply out-of-band under agent_platform_admin.
+  The grants are read-only and additive, so reverting removes visibility without affecting any
+  write path. The recovery drill is self-reverting by construction (the restored object is
+  re-deleted in the same session).
