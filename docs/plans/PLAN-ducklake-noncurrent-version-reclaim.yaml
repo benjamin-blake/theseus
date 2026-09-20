@@ -1,0 +1,314 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "ducklake-noncurrent-version-reclaim"
+intent: >-
+  Reclaim the production DuckLake prefix's noncurrent S3 versions so billed storage reconverges on
+  the listing GcDebtRatio is computed from, and replace the mis-specified no-lifecycle guard with
+  one that blocks the rule that would actually be unsafe.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-ducklake-noncurrent-version-reclaim.yaml
+phase: T2.18
+closes_criteria: []
+scope:
+  - file: terraform/personal/main.tf
+    action: Modify
+    purpose: >-
+      Add aws_s3_bucket_lifecycle_configuration.data_lake -- one rule, prefix-scoped to the
+      production DuckLake prefix, expiring noncurrent versions and sweeping expired delete markers,
+      with no current-version expiration.
+  - file: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py
+    action: Modify
+    purpose: >-
+      Replace TestProductionGcRuleInvariants::test_no_lifecycle_configuration_targets_the_data_lake_bucket
+      with TestDataLakeLifecycleGoverned. The replacement MUST retain the predecessor's
+      directory-wide sweep of every terraform/personal/*.tf for every
+      aws_s3_bucket_lifecycle_configuration block referencing aws_s3_bucket.data_lake, whatever its
+      resource name -- that breadth is what makes the replacement a strict tightening.
+  - file: config/agent/verification_registry/entries/gc-ops-rule-state-and-no-lakehouse-lifecycle.yaml
+    action: Delete
+    purpose: retire the shard whose check_id asserts no lakehouse lifecycle, which this plan makes false
+  - file: config/agent/verification_registry/entries/deprecated/gc-ops-rule-state-and-no-lakehouse-lifecycle.yaml
+    action: Create
+    purpose: >-
+      Retirement copy in the loader-excluded subtree (scripts/verification_graduation.py:61-69;
+      load_entries is a single-level glob).
+  - file: config/agent/verification_registry/entries/ducklake-maintenance-tf-invariants.yaml
+    action: Create
+    purpose: >-
+      ONE new shard carrying BOTH the surviving TestProductionGcRuleInvariants node ids AND the new
+      TestDataLakeLifecycleGoverned node ids. A separate re-homing shard for the survivors alone is
+      structurally inadmissible -- see the context note on run_differential.
+bundled_recommendations: ["rec-3907", "rec-3892"]
+followon_recs: ["rec-3943", "rec-3944", "rec-3945", "rec-3947"]
+infrastructure_dependencies:
+  - "aws_s3_bucket_lifecycle_configuration CREATE on a non-IAM resource: no delete, no trust diff, no neon_*, no resource-based policy -- deterministic guard exit 0, auto-apply (Decision 77), still subject to subagent review."
+  - "agent-platform-github-ci-apply already holds s3:PutLifecycleConfiguration on the data-lake bucket (terraform/bootstrap/github_ci_apply_policy.tf:76) and the refresh-read s3:GetLifecycleConfiguration (github_ci_apply_reads.tf:34) -- no terraform/bootstrap edit, no scope growth. aws_s3_bucket_lifecycle_configuration already carries read coverage (_read_coverage.py:103) and write coverage (_write_coverage.py:205), so no iam_tf coverage-map edit is owed."
+  - "s3:DeleteLifecycleConfiguration is granted NOWHERE in terraform/ -- _write_companions.py:328 records it as _UNGRANTED_DESTROY, admin-tier. Deleting the resource is therefore both guard-BLOCKED (terraform_apply_guard.py: delete routes to tf-gated-apply) and AccessDenied for the CI apply role. See rollback."
+  - "Decision 119: no local terraform init/plan for terraform/personal; terraform is not installed in the DEV container. CI's required terraform-validate check and the speculative-plan job are the authoritative verifiers."
+  - "HARD PREREQUISITE: PLAN-datalake-read-visibility lands first -- steps 9-10 read live lifecycle and version state from the dev identity, which is AccessDenied until its grants apply."
+acceptance_criteria:
+  - rec-3907 acceptance holds -- noncurrent_version_expiration and expired_object_delete_marker are both present in terraform/personal/main.tf
+  - Across EVERY terraform/personal/*.tf, exactly one aws_s3_bucket_lifecycle_configuration block references aws_s3_bucket.data_lake, and it is the governed one -- the predecessor guard's directory-wide breadth is retained, so a second config added to any other file in the root is still blocked
+  - The rule's prefix carries a TRAILING SLASH, so it cannot also match the sibling smoke prefix
+  - No current-version expiration rule targets the data-lake bucket; expired_object_delete_marker remains permitted
+  - noncurrent_days equals SNAPSHOT_RETAIN_DAYS, bound by a cross-language assertion in TestDataLakeLifecycleGoverned that imports src.common.ducklake_maintenance FUNCTION-LOCALLY, matching the convention the module already uses and documents at lines 348-352
+  - The rule's status argument is the literal Enabled -- a Disabled rule satisfies every other assertion here and reclaims nothing, and this repo ships disabled-first elsewhere (_INTENDED_GC_OPS_STATE in the same module), so it is asserted at BOTH the HCL and applied layers
+  - The DuckLake data-prefix roster is DERIVED from terraform/personal/*.tf (every local matching a *_data_prefix assignment, today exactly ducklake_prod_data_prefix and ducklake_smoke_data_prefix at ducklake_lambdas.tf:35,39), never hand-authored -- a hand-written roster would let a third prefix local added later pass the coverage assertion vacuously, which is Decision 191's own failure mode. Every derived name is either covered by a rule or carries a non-empty reason string in _DECLARED_LIFECYCLE_EXCLUSIONS
+  - No S3 object version id is pinned in any read path, so a noncurrent version can never be catalog-reachable
+  - The retired check_id has no remaining references in active surfaces
+  - rec-3870 carries the restart disposition and the reconstructed pre-window evidence
+  - rec-3892 closes here, where BOTH clauses of its stored two-clause acceptance hold for the first time
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: the lifecycle configuration exists and targets the data-lake bucket
+    command: grep -q 'resource "aws_s3_bucket_lifecycle_configuration" "data_lake"' terraform/personal/main.tf
+    expected: exit 0
+    fix_if: the resource is absent from terraform/personal/main.tf
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: >-
+      The durable form of this assertion is a method on TestDataLakeLifecycleGoverned, graduated by
+      step 5. Graduating the grep separately would mint a second registry shard for the same
+      property, and a shard carries exactly one check_spec, so only one of the two could ever
+      become a standing guard.
+  - step: 2
+    phase: pre-deploy
+    action: rec-3907's own acceptance property holds
+    command: grep -q "noncurrent_version_expiration" terraform/personal/main.tf && grep -q "expired_object_delete_marker" terraform/personal/main.tf
+    expected: exit 0 -- grep, never rg; validate_vp_replay's _rg_portability_pre_pass lints every pre-deploy step of an added plan at any disposition, and ripgrep is absent on the CI runner
+    fix_if: either directive is missing from the rule
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: >-
+      Same property as step 1 and step 5's guard; graduated once, via TestDataLakeLifecycleGoverned
+      in step 5, rather than three times across three shards.
+  - step: 3
+    phase: pre-deploy
+    action: the rule's prefix comes from the declared local rather than a retyped literal
+    command: grep -A 20 'resource "aws_s3_bucket_lifecycle_configuration" "data_lake"' terraform/personal/main.tf | grep -q 'local.ducklake_prod_data_prefix'
+    expected: the lifecycle block references local.ducklake_prod_data_prefix
+    fix_if: the prefix is hardcoded -- a rename of the local would silently drop the sweep (Decision 191)
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: >-
+      A fixed-window grep is adequate at authoring time but unsound as a standing check -- it
+      silently stops covering the rule if the block grows past 20 lines. The durable form is a
+      brace-balanced method on TestDataLakeLifecycleGoverned, graduated by step 5.
+  - step: 4
+    phase: pre-deploy
+    action: no S3 object version id is pinned in any read path
+    command: test -z "$(grep -rnE '\bVersionId\b|\bversion_id\b' --include=*.py src/ scripts/ | grep -viE 'schema_version|contract_version|api_version|plan_version|engine_version' || true)"
+    expected: no matches -- DuckLake addresses data files by key, so a noncurrent version is never catalog-reachable and expiring one cannot remove anything the catalog can reach
+    fix_if: a read path pins a version id -- the Decision 188 safety case for this rule does not hold and the plan must stop
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: >-
+      Green by construction on the un-implemented tree (measured 2026-09-20), so a graduate
+      disposition would be classified tautological and hard-fail Decision 189's red-before leg. The
+      assertion is a pre-existing property this plan RELIES ON rather than one it creates.
+  - step: 5
+    phase: pre-deploy
+    action: the net-tightened guard passes, including the directory-wide cardinality sweep and its red cases
+    command: bin/venv-python -m pytest "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestDataLakeLifecycleGoverned" -q
+    expected: >-
+      all tests in the new class pass, including (a) the directory-wide assertion that exactly one
+      aws_s3_bucket_lifecycle_configuration across every terraform/personal/*.tf references
+      aws_s3_bucket.data_lake, (b) the assertion that the rule's status argument is the literal
+      Enabled -- status is a required, hand-authored per-rule argument and a Disabled rule reclaims
+      nothing while satisfying every other assertion, and this repo ships disabled-first elsewhere
+      (_INTENDED_GC_OPS_STATE in this same module), (c) the declared-coverage assertion that every
+      prefix in the roster DERIVED from terraform/personal/*.tf is either covered by a rule or
+      present in the _DECLARED_LIFECYCLE_EXCLUSIONS map with a non-empty reason string, and
+      (d) the assertion that the rule carries expired_object_delete_marker -- acceptance criterion
+      1's second half, which step 2 waives ONTO this class and which nothing else obliges,
+      (e) the assertion that the rule's prefix derives from local.ducklake_prod_data_prefix rather
+      than a retyped literal, which step 3 waives onto this class and whose hazard step 3's own
+      fix_if names (a rename of the local would silently drop the sweep),
+      (f) the assertion that the directory-wide sweep still uses the predecessor's
+      _TERRAFORM_PERSONAL_DIR.glob("*.tf") idiom, so a main.tf-only guard is mechanically
+      impossible rather than merely forbidden in prose, and
+      (g) red cases proving a current-version expiration rule, a bare slashless prefix, a Disabled
+      status, and a SECOND lifecycle config in another file each still trip the guard.
+      Scoped to the node id, NOT the whole module: the module passes 17/17 on the un-implemented
+      tree, and validate_vp_replay's red-before leg partitions on phase and graduation ONLY (it does
+      not filter on hermetic), so a whole-module command would classify tautological and hard-fail.
+      A missing node id exits pytest 4, which is a genuine red.
+    fix_if: the guard is red, or a red case does not trip -- a guard that cannot fail is not a guard
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: ducklake-maintenance-tf-invariants
+  - step: 6
+    phase: pre-deploy
+    action: the retired check_id has no remaining references in active surfaces
+    command: test 0 -eq "$(grep -rn 'test_no_lifecycle_configuration_targets_the_data_lake_bucket' --include=*.py --include=*.yaml . | grep -v '^./docs/plans/' | grep -v 'entries/deprecated/' | wc -l)"
+    expected: zero references outside historical plan artefacts and the loader-excluded deprecated subtree, both of which are immutable records that legitimately retain the old name
+    fix_if: an active surface still names the removed node id
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: >-
+      A repo-wide grep for a retired node-id string is not plausibly a method of
+      TestDataLakeLifecycleGoverned, and a shard carries one check_spec -- graduating it under that
+      check_id would be a graduation in name only. It is a one-time migration sweep, not a standing
+      invariant.
+  - step: 7
+    phase: pre-deploy
+    action: fast-tier presubmit is clean, including the verification-registry and graduation gates
+    command: bin/venv-python -m scripts.validate --pre
+    expected: >-
+      exit 0 -- in particular validate_verification_registry admits ducklake-maintenance-tf-invariants
+      via run_differential (its check_spec FAILS at origin/main because TestDataLakeLifecycleGoverned
+      does not exist there, so pytest exits 4), and validate_graduation_completeness finds that
+      check_id new-in-diff under this plan's slug
+    fix_if: >-
+      "revert did not produce FAIL (tautological)" means the shard's check_spec passes at
+      origin/main -- it must include the new class's node id, not only the surviving ones
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      docs/contracts/vp-red-before.yaml#recursion_refusal statically refuses a graduate step whose
+      argv head is -m scripts.validate. The step is kernel-expressible (a plain command_exit_zero)
+      but REFUSED, which is what waive records and not-applicable would leave unrecorded.
+  - step: 8
+    phase: pre-deploy
+    action: full-tier validation before commit, as handoff_policy declares
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0 on a COMPLETED full run -- handoff_policy.timeout_disposition is blocked, so a timeout is not a pass; resume later and rerun the full tier from the start
+    fix_if: any full-tier check fails -- do not commit or open the PR until it is green
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      docs/contracts/vp-red-before.yaml#recursion_refusal statically refuses a graduate step whose
+      argv head is -m scripts.validate. Kernel-expressible but REFUSED, which is what waive records.
+  - step: 9
+    phase: post-deploy
+    action: the applied rule is exactly what was authored -- asserted, not read by eye
+    command: bin/venv-python -c "import json,subprocess,re,sys; from src.common.ducklake_maintenance import SNAPSHOT_RETAIN_DAYS; hcl=open('terraform/personal/ducklake_lambdas.tf').read(); want=re.search(r'ducklake_prod_data_prefix\s*=\s*\"([^\"]+)\"',hcl).group(1)+'/'; p=subprocess.run(['aws','s3api','get-bucket-lifecycle-configuration','--bucket','agent-platform-data-lake','--profile','agent_platform'],capture_output=True,text=True); sys.exit('READ DENIED -- the prerequisite plan has not landed; do NOT roll back the rule over a missing read grant') if 'AccessDenied' in p.stderr else None; p.check_returncode(); rules=json.loads(p.stdout)['Rules']; assert len(rules)==1,(len(rules),rules); r=rules[0]; assert r.get('Status')=='Enabled', r; f=r.get('Filter') or {}; pref=f.get('Prefix') or (f.get('And') or {}).get('Prefix') or r.get('Prefix'); assert pref==want,(pref,want); nve=r.get('NoncurrentVersionExpiration') or {}; assert nve.get('NoncurrentDays')==SNAPSHOT_RETAIN_DAYS,(nve,SNAPSHOT_RETAIN_DAYS); e=r.get('Expiration') or {}; assert e.get('ExpiredObjectDeleteMarker') is True, e; assert 'Days' not in e and 'Date' not in e, e; assert 'AbortIncompleteMultipartUpload' in r, r; print('APPLIED RULE OK', pref, nve)"
+    expected: >-
+      exactly one rule, whose Status is Enabled -- a Disabled rule reclaims nothing while satisfying
+      every other assertion here, and status is a required hand-authored argument; its prefix equals
+      the DECLARED local plus a trailing slash (derived from the HCL, never retyped -- terraform
+      output is unavailable in the DEV container, which has no terraform); NoncurrentDays equals the
+      imported SNAPSHOT_RETAIN_DAYS, asserted rather than printed, which is what verifies acceptance
+      criterion 5 at the APPLIED layer; ExpiredObjectDeleteMarker true; NO Days or Date key in
+      Expiration; and AbortIncompleteMultipartUpload present, as execution_steps commits to
+      authoring. The Filter lookup tolerates the Filter.And and legacy top-level Prefix shapes
+      rather than raising KeyError after the rule is already live.
+    fix_if: >-
+      An AccessDenied exits early with its own message -- that means PLAN-datalake-read-visibility
+      has not landed, and it is NOT a reason to roll back a correct rule. Any genuine assertion
+      failure -- especially a current-version Expiration, which deletes live Parquet, or a Disabled
+      status, which means the change achieved nothing -- reverts via the rollback path below
+      IMMEDIATELY.
+  - step: 10
+    phase: post-deploy
+    action: record the post-apply invisible-bytes baseline so convergence is measurable
+    command: aws s3api list-object-versions --bucket agent-platform-data-lake --prefix ducklake/ --profile agent_platform --output json > /tmp/ducklake-reclaim-versions.json && bin/venv-python -c "import json; d=json.load(open('/tmp/ducklake-reclaim-versions.json')); assert d.get('IsTruncated') is not True, 'listing truncated -- paginate fully'; v=d.get('Versions',[]); nc=[x for x in v if not x['IsLatest']]; cur=[x for x in v if x['IsLatest']]; print('invisible_bytes',sum(x['Size'] for x in nc),'listed_bytes',sum(x['Size'] for x in cur),'markers',len(d.get('DeleteMarkers',[])))"
+    expected: invisible_bytes is recorded as the convergence baseline; it should fall toward zero over the retention window and is the quantity rec-3870's restart gate reads
+    fix_if: AccessDenied -- PLAN-datalake-read-visibility has not landed; it is a hard prerequisite
+  - step: 11
+    phase: post-deploy
+    action: rec-3870 carries the restart disposition; rec-3907 and rec-3892 are both closed
+    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json; rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl')]; by={x['id']:x for x in rows}; c=by['rec-3870']['context'] or ''; assert 'metric_version=1' in c and 'restart' in c.lower(), 'rec-3870 lacks the restart disposition'; assert '17.167' in c, 'rec-3870 lacks the reconstructed pre-window reading'; assert by['rec-3907']['status']=='closed', by['rec-3907']['status']; assert by['rec-3892']['status']=='closed', by['rec-3892']['status']; print('rec-3870 annotated; rec-3907 and rec-3892 closed')"
+    expected: >-
+      rec-3870's context names metric_version=1, the restart, and the reconstructed 17.167 figure --
+      asserted on specific literals rather than a bare substring that would pass on a sentence
+      saying the work was deferred; rec-3907 and rec-3892 both read closed
+    fix_if: >-
+      either write did not land -- re-run the portal call, then re-sync. rec-3892 can only close
+      HERE: its stored acceptance is a two-clause conjunction whose clause 1 (the
+      GetLifecycleConfiguration grep) is satisfied by the prerequisite plan and whose clause 2 names
+      TestDataLakeLifecycleGoverned, which this plan creates.
+test_obligations:
+  - source: terraform/personal/main.tf
+    behavior: >-
+      Across every terraform/personal/*.tf, exactly one aws_s3_bucket_lifecycle_configuration
+      references aws_s3_bucket.data_lake; its status is Enabled; it is prefix-scoped with a trailing
+      slash DERIVED FROM local.ducklake_prod_data_prefix rather than a retyped literal, carries no
+      current-version expiration, carries expired_object_delete_marker, keeps noncurrent_days bound
+      to SNAPSHOT_RETAIN_DAYS, sweeps via the _TERRAFORM_PERSONAL_DIR.glob("*.tf") idiom, and covers
+      every DuckLake data-prefix local derived from the .tf text or names it in
+      _DECLARED_LIFECYCLE_EXCLUSIONS with a reason.
+    verification_step: 5
+    test_selector: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestDataLakeLifecycleGoverned
+    red_green_expectation: red before, green after
+  - source: config/agent/verification_registry/entries/ducklake-maintenance-tf-invariants.yaml
+    behavior: >-
+      The new shard is admitted by run_differential (its check_spec FAILS at origin/main because
+      TestDataLakeLifecycleGoverned does not exist there) and is found new-in-diff under this
+      plan's slug.
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    red_green_expectation: red before, green after
+  - source: config/agent/verification_registry/entries/deprecated/gc-ops-rule-state-and-no-lakehouse-lifecycle.yaml
+    behavior: retirement copy of the superseded shard, retained for provenance only
+    verification_step: 7
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      The deprecated subtree is loader-excluded by construction
+      (scripts/verification_graduation.py:61-69 -- load_entries is a single-level glob), so nothing
+      reads this file and it carries no behavior to guard. Asserting on it would test the archive,
+      not the system.
+constraints:
+  - No rescue agents or workaround loops (Decision 55)
+  - The guard replacement and the rule it must admit land in the SAME commit -- never narrow a guard ahead of the change it blocks (Decision 55 / Decision 181)
+  - The replacement guard MUST keep the predecessor's directory-wide sweep; a main.tf-only, data_lake-name-only guard would be a weakening, not a tightening
+  - Never add a current-version expiration rule to this bucket; an age rule would delete live Parquet the catalog still references
+  - The storage-side instrument is NOT changed here -- the maintenance role's IAM stays unwidened (the frozen-Sid-set guard), and the observer belongs outside the actor (rec-3943)
+  - If the test module crosses 500 SLOC, DECOMPOSE it into a facade package (Decision 128/80/104/124); never seed a budget raise
+context:
+  - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 192, 180, 126, 120, 181, 132, 176, 189, 191, 188. Decisions triaged: 148 of 148. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 3."
+  - "gates: decision-scout=FLAGS_FOUND (2 rounds, 148 of 148 triaged each); plan-critique=PROCEED after 4 round(s); round 4 autonomous confirming round per the convergence rule"
+  - "HARD PREREQUISITE: PLAN-datalake-read-visibility lands first. Steps 9-10 are AccessDenied from the dev identity until its grants apply, and its forensic inventory must be captured before any expiry rule exists."
+  - "rec-3892 is bundled HERE, not in the prerequisite, even though the prerequisite does the IAM work. Its stored acceptance is a two-clause conjunction: clause 1 greps platform_dev_policies.tf for GetLifecycleConfiguration (the prerequisite satisfies it) and clause 2 runs TestDataLakeLifecycleGoverned, which only exists once THIS plan creates it. Closing it in the prerequisite would close a rec whose own acceptance command cannot pass. Its unexplained-deleter half is not closed by either plan and is carried forward by rec-3945."
+  - "closes_criteria is EMPTY deliberately: this plan closes no T2.18 criterion. c2 is the sole open one and its closer is rec-3870 over the post-rule N-cycle window, which this plan RESTARTS. Precedent: PLAN-compaction-scope-policy-matrix.yaml:16,500 on this same tier item."
+  - "Decision 181 net-tightening argument (NOT a weakening): the replaced assertion's SUBJECT was mis-specified -- it asserted 'no lifecycle configuration at all' when the property meant was 'no current-version expiration'. The replacement still blocks that, KEEPS the predecessor's directory-wide sweep of every terraform/personal/*.tf for every lifecycle block referencing the bucket whatever its resource name, and ADDS prefix-scope, trailing-slash, cardinality, declared-coverage, SNAPSHOT_RETAIN_DAYS-binding and version-id assertions. Dropping the sweep breadth would make the claim false, which is why it is an explicit constraint and acceptance criterion."
+  - "Decision 132 + registry mechanics, why ONE new shard and not two: validate_graduation_completeness.py:210 requires a graduate step's check_id to be new-in-diff AND carry this plan's plan_slug, so repointing the existing shard satisfies neither. But validate_verification_registry additionally runs every ADDED and MODIFIED row through verification_graduation.run_differential, which materializes the check_spec in a git worktree at origin/main and REQUIRES it to FAIL there (scripts/verification_graduation.py:501, 'revert did not produce FAIL (tautological)'). A separate shard re-homing only the five surviving TestProductionGcRuleInvariants node ids would PASS at baseline and be rejected; editing the existing shard in place is rejected identically via _modified_entries. The only admissible home is one shard whose check_spec includes the new class's node id, so it fails at baseline. Precedent correction: the earlier gc-ops-rule-disabled -> gc-ops-rule-state supersession was admissible only because test_gc_ops_rule_is_created_disabled was RENAMED in the same diff, so the successor's node ids did not exist at the baseline either."
+  - "Trailing slash is load-bearing: local.ducklake_prod_data_prefix is 'ducklake' with no slash, and a bare 'ducklake' prefix ALSO matches 'ducklake-neon-smoke/'. Verified 2026-09-20."
+  - "Smoke prefix deliberately EXCLUDED, declared not absent (Decision 191): rec-3892 records an unexplained deleter there under active investigation, and a managed deleter would contaminate the RCA. rec-3945 owns explaining it and then extending coverage. The prefix holds 8 objects / 7,864 bytes."
+  - "Sub-prefix note: src/lambdas/ducklake_maintenance/handler.py:153-156 writes restore-drill scratch to ducklake/_restore_drill/, UNDER the production prefix, so this rule sweeps it too. That is deliberate and desirable -- it is scratch, and noncurrent-version expiry there is exactly right. A locals-only coverage argument cannot see a runtime-created sub-prefix, so it is recorded here rather than left implied."
+  - "ACCEPTED CONSEQUENCE, forensic: this rule will expire the 548 Jun-Aug background-deleter markers WITHIN ROUGHLY 24-48 HOURS OF APPLY, not after 30 days. Their underlying noncurrent versions are already older than the retention window at apply time, so S3 expires them on the FIRST lifecycle evaluation and sweeps the markers immediately after. (The 18,812 markers from the 2026-09-20 GC firing are day-zero and do survive the full window -- it is only the forensic set that goes straight away.) They are rec-3892's production-side evidence. The prerequisite plan's pre-rule inventory step is what preserves the RECORD of them (counts, byte totals, timestamp range) in a committed fixture before any expiry can fire, which is why that step must run before this plan merges. The smoke prefix's 1,400 markers are NOT swept -- they stay on disk as the primary corpus for rec-3945."
+  - "abort_incomplete_multipart_upload is retained on DR-bucket precedent and on the invisible-bytes thesis (MPU parts are billed and invisible to BOTH ListObjectsV2 and ListObjectVersions), NOT on evidence: s3:ListBucketMultipartUploads is granted to no identity on this bucket, so whether any MPU exists is unmeasurable today. The clause is a no-op if none exist. rec-3947 owns closing that visibility gap and re-grounding the clause in a measurement."
+  - "Measured: the first real GC pass fired 2026-09-20T03:45Z (cron(45 3 ? * SUN *), Sunday) and deleted 18,744 files. Reported GcDebtRatio fell 17.304 -> 8.149; reconstructed TRUE ratio moved 17.304 -> 17.167. 122.8 MiB left the listing, zero bytes left the bill; the metric sees 50.4% of billed bytes. src/common/ducklake_maintenance.py:199-201 derives storage_bytes from a list_objects_v2 walk. DATE PROVENANCE: the CloudWatch datapoint is LABELLED 2026-09-19 because daily buckets are anchored at 09:25Z, so the bucket starting 2026-09-19T09:25Z contains the 09-20T03:45Z firing. 2026-09-19 was a Saturday and the weekly cron cannot have run then. This is the same bucket-label-misread-as-emission-time trap rec-3888's context already records; corrected here from the cron rather than from another probe."
+  - "Delete-marker census, read-only admin probe 2026-09-20: ducklake/ holds 19,360 markers -- 18,812 dated 2026-09-20 (the GC firing; the 68 above GcDeletedFiles are most likely GcDeletedOrphans, a separate metric) and 548 spread thinly across Jun-Aug. That 548 is EXACTLY rec-3892's 2026-09-17 count, unchanged three days later, so the background deleter it names has stopped and is not a live second actor. All candidates are a clean 1:1 noncurrent-version-under-marker shape with ZERO multipart ETags."
+  - "Decision 192 instrument disposition: this rule makes the existing metric faithful by construction once noncurrent bytes age out, but 'correct because an external invariant holds' is not a steady-state design. Routed to follow-ons, NOT built here: rec-3943 (billed-bytes observer from S3 Inventory, storage_invisible_bytes divergence sensor, metric_version dimension), rec-3944 (gc_ops preflight precondition + closed-loop reclaim check), rec-3945 (smoke-prefix lifecycle + deleter RCA). The observer must be SEPARATE from the actor, so the maintenance role's IAM stays unwidened."
+  - "rec-3870 disposition: RESTART the N-cycle window, do not continue it. Say N-cycle, never N=9: rec-3870 re-grounded N to roughly 5 at 2026-09-20T05:06Z (one cycle cleared 18,812 and left 4,999 deferred, so the drain completes at N=2 with steady-state sampling from cycle 3), pending confirmation at cycle 2. VP step 11 writes into that same context field, so hardcoding 9 here would silently revert a re-grounding recorded hours earlier. Cycle 1's reading is knowingly blind and cycles under a fresh expiry window measure the lifecycle catching up, not GC steady state. Record 17.304 -> 17.167 as annotated pre-window evidence under metric_version=1; start the clock when the rule is in effect AND invisible bytes are below threshold. Decision 193 (amending Decision 188 clause 2) is relevant to that clock: G4 now sizes from a pre-pass storage listing and drains partially instead of deferring wholesale, which changes how fast the backlog clears."
+  - "SLOC disposition (Decision 128): tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py measures 342 lines under validate_sloc_limits (non-blank, non-comment) and is unregistered, so its budget is the 500 default. The new class plus red cases, less the removed method, is expected to land just under. If it crosses, DECOMPOSE into a facade package -- never a budget raise, and never a bare --update-sloc-budgets re-seed."
+  - "OPEN FORK for the human, recorded not decided: noncurrent_days = 30 follows rec-3907's stated anchor, SNAPSHOT_RETAIN_DAYS. Note what that window actually buys, because rec-3907's own framing is loose here -- it is an OPERATOR MANUAL-RECOVERY period, NOT catalog time travel. Acceptance criterion 8 establishes that no read path pins a version id, so a noncurrent version is never catalog-reachable; and gc_ops runs AFTER expire_snapshots, so every file it deletes is already outside the snapshot horizon. The real trade is recovery-window length against convergence speed. A 7-day window was argued as the shorter-convergence alternative. 30 is the conservative first window while the rec-3892 deleter RCA is open and recoverability has only just been rehearsed; the cost is a longer blind period before rec-3870 can restart."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - PLAN-datalake-read-visibility has landed and its recovery-drill fixture is committed
+execution_steps:
+  - Add aws_s3_bucket_lifecycle_configuration.data_lake to terraform/personal/main.tf with one prefix-scoped rule (trailing slash, from the declared local), noncurrent_version_expiration, expired_object_delete_marker and abort_incomplete_multipart_upload with days_after_initiation = 1 (the ducklake_catalog_dr.tf:97 precedent), and no current-version expiration
+  - Replace the mis-specified guard with TestDataLakeLifecycleGoverned, RETAINING the directory-wide sweep, and add red cases for a current-version expiration rule, a slashless prefix, a Disabled status, and a second lifecycle config in another terraform/personal file
+  - DERIVE the DuckLake data-prefix roster from terraform/personal/*.tf rather than hand-authoring it, author _DECLARED_LIFECYCLE_EXCLUSIONS as the reasoned exclusion map, and assert that every derived prefix is either covered by a rule or present in that map -- so the smoke-prefix exclusion is a declared cell and a future third prefix cannot pass vacuously
+  - Bind noncurrent_days to SNAPSHOT_RETAIN_DAYS via a function-local import of src.common.ducklake_maintenance inside the test method, matching the convention documented at lines 348-352
+  - Move the retired registry shard to entries/deprecated/ and create ducklake-maintenance-tf-invariants carrying BOTH the surviving node ids and the new class's, under this plan's slug
+  - Open the PR and let the governed path plan and apply it; the guard classifies this as auto-apply
+  - Verify the applied rule live with assertions, capture the invisible-bytes convergence baseline, and annotate rec-3870 with the restart disposition and the 17.167 reconstruction
+  - Confirm rec-3943, rec-3944 and rec-3945 are the recorded follow-ons; they are already filed, so no new portal write is owed
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  FIRST-LINE, in-channel: empty the rule while KEEPING the resource. That is an
+  s3:PutLifecycleConfiguration update, which the CI apply role holds and the deterministic guard
+  classifies as auto-apply, so it flows through the governed PR path. Do NOT reach for deleting the
+  resource: a delete action is guard-BLOCKED and routes to tf-gated-apply, and
+  s3:DeleteLifecycleConfiguration is granted nowhere in terraform/ (_write_companions.py:328 records
+  it as an ungranted admin-tier destroy), so it is AccessDenied for the CI apply role and is a
+  Decision 126 operator-only admin-tier action. IRREVERSIBILITY: objects already expired by a
+  completed sweep are NOT recoverable, so rollback is only fully effective before the first expiry
+  fires -- roughly the retention window after apply. Revert the guard in the same commit.
