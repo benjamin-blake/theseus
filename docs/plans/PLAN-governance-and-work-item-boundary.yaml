@@ -79,7 +79,7 @@ acceptance_criteria:
   the T1.5 c2 residual (E12). Step 17 asserts all three. The trigger is check_roadmap_regrowth''s escalate
   signal, not Decision 147''s reversal condition, which fires only on a breach of the ceiling.'
 - 'AC15: the branch modifies nothing outside docs/ except the auto-sanctioned verification-registry shards
-  (C14). Step 16 asserts.'
+  and .secrets.baseline (C14). Step 16 asserts.'
 - 'AC16: bin/venv-python -m scripts.validate exits 0. Step 19 asserts.'
 verification_plan:
 - step: 1
@@ -478,23 +478,29 @@ verification_plan:
   graduation: waive
   graduation_waiver_reason: The assertion is diff-relative to this branch. As a standing registry row
     it would fail any future pull request that legitimately changes code, which is nearly all of them.
-  action: Prove the branch touches only docs/ and the sanctioned verification-registry shards, so the
-    no-runtime-change claim is mechanical rather than asserted.
+  action: Prove the branch touches only docs/, the sanctioned verification-registry shards, and the
+    sanctioned .secrets.baseline regeneration, so the no-runtime-change claim is mechanical rather
+    than asserted.
   command: git fetch origin main --quiet && bin/venv-python -c "import subprocess,sys; mb=subprocess.run(['git','merge-base','origin/main','HEAD'],capture_output=True,text=True).stdout.strip();
-    allowed=('docs/','config/agent/verification_registry/entries/'); files=[f for f in subprocess.run(['git','diff','--name-only',mb],capture_output=True,text=True).stdout.split()
+    allowed=('docs/','config/agent/verification_registry/entries/','.secrets.baseline'); files=[f for
+    f in subprocess.run(['git','diff','--name-only',mb],capture_output=True,text=True).stdout.split()
     if not f.startswith(allowed)]; print('out_of_boundary_files:', files); sys.exit(0 if not files else
     1)"
   expected: 'Exit 0 and an empty list. The verification-registry prefix is allowed because implement-scope-boundary.yaml''s
     graduated_registry_shard row auto-sanctions the shards steps 9 and 10 owe, which can never be pre-declared
-    scope rows. Note on post-merge safety: unlike step 7, this command computes its base in a separate
-    subprocess call, so validate_vp_replay._is_pr_relative returns False and it is NOT excluded by the
-    base-collapsed arm. It is safe only because its assertion is an EMPTY set -- base collapse makes it
-    vacuously green, never red. Anyone inverting its polarity must first re-spell it so origin/main follows
-    git diff, as step 7 does.'
+    scope rows. .secrets.baseline is allowed because that same contract''s secrets_baseline_regeneration
+    row (trigger.kind scope_file_in_secrets_baseline) auto-sanctions its line_number/generated_at churn
+    whenever the plan''s declared scope contains a results-map key of the baseline -- docs/DECISIONS.md
+    and docs/ROADMAP-PLATFORM.yaml both are (code-review finding, round 1: the allowlist below originally
+    omitted this pre-existing sanction). Note on post-merge safety: unlike step 7, this command computes
+    its base in a separate subprocess call, so validate_vp_replay._is_pr_relative returns False and it
+    is NOT excluded by the base-collapsed arm. It is safe only because its assertion is an EMPTY set --
+    base collapse makes it vacuously green, never red. Anyone inverting its polarity must first re-spell
+    it so origin/main follows git diff, as step 7 does.'
   expected_literals:
   - 'out_of_boundary_files: []'
-  fix_if: A named file outside those two prefixes means the scope boundary was crossed; revert it and
-    route the change to a recommendation instead.
+  fix_if: A named file outside those three prefixes means the scope boundary was crossed; revert it
+    and route the change to a recommendation instead.
 - step: 17
   phase: pre-deploy
   hermetic: false
@@ -593,7 +599,12 @@ constraints:
   directly.'
 - 'C13 (Decision 55): no rescue agents or workaround loops.'
 - 'C14: docs/decisions-index.json and the verification-registry shards are auto-sanctioned by implement-scope-boundary.yaml
-  and are not scope rows.'
+  and are not scope rows. .secrets.baseline drift (line_number/generated_at churn from the detect-secrets
+  pre-commit hook rescanning docs/DECISIONS.md and docs/ROADMAP-PLATFORM.yaml, both in scope) is separately
+  auto-sanctioned by that same contract''s secrets_baseline_regeneration row (trigger.kind scope_file_in_secrets_baseline)
+  and is likewise not a scope row. Code-review finding, round 1: step 16''s allowlist omitted this pre-existing
+  sanction; corrected here rather than filed as a rec, since it is the plan''s own verification step under-asserting
+  an already-sanctioned boundary, not a scope change.'
 - 'C15: every roadmap edit is a hand edit in place. Never round-trip docs/ROADMAP-PLATFORM.yaml through
   yaml.safe_dump -- it reformats the whole file.'
 context:
