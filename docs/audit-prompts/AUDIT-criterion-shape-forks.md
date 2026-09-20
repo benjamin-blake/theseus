@@ -567,8 +567,8 @@ at `04a402a4`. Verify each anchor before you rely on it; record non-resolving an
 | anchor | what is there |
 |---|---|
 | `docs/DECISIONS.md:5` | Decision 197. Clause 3 (the audited grain) at `docs/DECISIONS.md:32`. |
-| `docs/DECISIONS.md:40`-`:42` | Decision 197's `two-shapes-after-all` reversal condition, verbatim: "Epic-shaped and task-shaped items need required fields the criteria child table cannot absorb: reopen clause 3 before adding nullable columns." Q5's `reversal_trigger_assessment` turns on it. |
-| `docs/DECISIONS.md:27` | Decision 197 CLAUSE 2, the storage port -- load-bearing for Q4, Q5 and VD7 and quoted here because the whole design must run on both adapters: "Work items are reached through a named port (Decision 184 clause 2); the local adapter is a file catalog, the cloud adapter is DuckLake-on-Neon; the user selects by configuration. T4.23 is that port's tracked local-adapter item. Tenancy (`project_id`) is a cloud-adapter property, not a mechanism requirement; the local adapter is single-tenant by construction." T4.23 (`deferred_post_mvp`) carries the local adapter's four exit criteria, including in-process reachability of every named verb and a local DuckDB-or-SQLite catalog selected by configuration. |
+| `docs/DECISIONS.md:44`-`:46` | Decision 197's `two-shapes-after-all` reversal condition (`- id:` at `:44`, its `description:` at `:46`), verbatim: "Epic-shaped and task-shaped items need required fields the criteria child table cannot absorb: reopen clause 3 before adding nullable columns." Q5's `reversal_trigger_assessment` turns on it. |
+| `docs/DECISIONS.md:31` | Decision 197 CLAUSE 2, the storage port -- load-bearing for Q4, Q5 and VD7 and quoted here because the whole design must run on both adapters: "Work items are reached through a named port (Decision 184 clause 2); the local adapter is a file catalog, the cloud adapter is DuckLake-on-Neon; the user selects by configuration. T4.23 is that port's tracked local-adapter item. Tenancy (`project_id`) is a cloud-adapter property, not a mechanism requirement; the local adapter is single-tenant by construction." T4.23 (`deferred_post_mvp`) carries SIX exit criteria: c1-c4 are the local adapter proper (in-process reachability of every named verb; a local DuckDB-or-SQLite catalog selected by configuration; no caller SQL and writer-allocated rec ids; contract parity across the in-process and Function URL adapters), and c5-c6 are Decision 197 forward-work carriers naming clause 2's storage port and clause 3's `work_items` / `work_item_criteria` / `work_item_edges` target model respectively. Read c5 and c6 -- they are this audit's own subject written as roadmap criteria. |
 | `docs/DECISIONS.md:59` | Decision 196 (context only; out of scope). |
 | `docs/DECISIONS.md:7778`, `:7819` | Decision 48 tier definitions; its Limitation clause ("documentation-enforced only. No automated detection currently exists"). |
 | `docs/DECISIONS.md:4126`, `:4174` | Decision 132 (graduation as an enforced obligation); residual limitation A, the classification seam. |
@@ -626,7 +626,8 @@ test.
 > each disposition value carries -- `graduate` requires a non-empty `graduation_check_id`, `waive`
 > requires a non-empty `graduation_waiver_reason`, `not-applicable` requires neither. Enforced by
 > `_validate_graduation_disposition` at `scripts/roadmap/plan_document.py:91`-`:114` (graduate arm
-> `:95`-`:99`, waive `:102`-`:108`, not-applicable `:109`-`:113`).]
+> `:95`-`:101`, which also rejects a `graduation_waiver_reason` on a graduate step; waive
+> `:102`-`:108`; not-applicable `:109`-`:113`).]
 > `graduated_check_id` + `plan_slug`: registry FK, the existing T3.21 join; LINK never merge;
 > means ADMITTED, not STANDING (`verification-registry.yaml` governance_notes: graduated records
 > are never re-executed as a standing suite; Decision 176 cl.4: admission is a commit property
@@ -693,7 +694,7 @@ test.
 6. No tier item mixes bare-string and structured criteria: every bare-string-carrying item is
    wholly bare.
 7. The converged shape attributes `authored_at_sha` to "Decision 189's eligibility predicate".
-   That predicate, at `vp-red-before.yaml:126`, is stated as diff status `A` or `??` AND a falsy
+   That predicate, at `docs/contracts/vp-red-before.yaml:126`, is stated as diff status `A` or `??` AND a falsy
    `implementation_declared`; it names no sha comparison.
 8. `T3.15` c1 requires every merged `feat(...)` PR body to contain the executed VP compliance
    table (command, truncated output, attempts, PASS/FAIL); c4 requires a synthetic flaky step
