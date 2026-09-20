@@ -36,7 +36,7 @@ ASSUME NO CANDIDATE IS A REAL DEFECT UNTIL YOU TRACE IT.
 
 A run that merely confirms the candidates below has failed.
 
-Adjudicate each candidate to exactly one of these five destinations:
+Adjudicate each candidate to exactly one of these six destinations:
 
 - CONFIRMED defect, not owned by any existing item -> `findings[]`, `roadmap_crossref.classification: novel`
 - Owned by an existing roadmap item / decision / open recommendation whose remedy you judge
@@ -74,7 +74,8 @@ the wrong surface.
    T1.5 "ops_decisions graduation", a warehouse table MIGRATION PHASE with no relation to either.
    Only the first two are in scope.
 3. **"tier"** names two orthogonal axes: verification tier (V1/V2/V3, Decision 48) and roadmap
-   tier (T1/T2/T3/T4). Q2 concerns only the first.
+   tier, whose values are T-1, T0, T1, T2, T3, T4 and T5 -- seven, not four, and this brief cites
+   T-1.23, T0.12.5 and T5.5 among them. Q2 concerns only the verification axis.
 4. **"status"** is a field name on at least four surfaces with four different enums: the
    criterion ledger (`open | met | rehomed`), a recommendation (`open | closed | in_progress |
    deferred | superseded | declined`), a tier item (`not_started | in_progress | complete |
@@ -287,7 +288,8 @@ against a warehouse home for admission: "the differential gate reads its baselin
 (`git show origin/main:...`), which DuckLake cannot serve; admission is a property of a commit,
 runs pre-merge and hermetically, and must revert atomically with the code it verifies."
 
-**Verdict enum:** `a-standing-legs | b-admitted-once | c-bounded-middle | d-other-argued`
+**Verdict enum:** `a-periodic-standing-runs | b-admitted-once | c-guard-target-triggered-only |
+d-other-argued`
 
 ### Q2 -- Who owns `verification_tier` derivation
 
@@ -356,13 +358,21 @@ data-modeling standard; the decay Decision 176 documents needs history; the four
 vocabulary collapses to a bit in a binary struct -- but neither found repository PRECEDENT for a
 per-criterion evidence journal. Find or rule out that precedent (Section 11 seeds it) and answer.
 
+Answer for BOTH adapters. Decision 197 clause 2 (quoted in Section 10.1) puts the same mechanism
+behind a storage port with a file-catalog LOCAL adapter and a DuckLake-on-Neon CLOUD adapter,
+user-selected by configuration. A second append-only table per criterion version, leg and run is
+a different proposition under a local file catalog than under a lakehouse -- join cost, write
+amplification, and whether an evidence row can even be written without a warehouse round-trip all
+change. If your verdict holds under one adapter but not the other, say so explicitly rather than
+answering for the lakehouse alone; that split is itself a finding.
+
 This question additionally requires an `external_checklist` block. Assess THE DESIGN YOU ENDORSE
 in your own verdict -- if you answer (i), rate the one-table proposal; if (ii), rate the two-table
 proposal; if `other-argued`, rate what you propose -- property-by-property against these named
 external practices, each rated `met | partial | missed` with evidence, or `n/a`. `partial` requires an
-argued, property-matched compensating control. This field gates the maturity top tier for ONLY
-the one of S1/S2 your verdict endorses (Section 15): a design you rejected is not rated against a
-checklist scoring the design you preferred. It has no bearing on S3, S4, S5 or S6.
+argued, property-matched compensating control. This field feeds the maturity top tier under the
+CHECKLIST CONDITION in Section 15, which is the sole statement of its scope -- do not infer the
+scope from here.
 
 1. Event-sourced journal plus current-state projection, rather than state mutation in place.
 2. Type-2 slowly-changing dimension paired with a separate fact table, rather than a widened
@@ -391,7 +401,8 @@ maturity.
 **Verdict enum:** `one-table-proof-struct | two-tables-evidence-journal | other-argued`
 **Additionally required on this entry:** `precedent: [<table or artifact names>]` -- a LIST, empty
 when you find none (never the string `none`) -- and
-`external_checklist: [{property, rating, evidence}]` covering all seven properties above.
+`external_checklist: [{property, rating, evidence}]` covering ALL NINE properties above -- rating
+seven of nine would silently drop exactly the two that argue for consolidation.
 
 ### Q5 -- Questions the requester did not think to ask
 
@@ -422,17 +433,21 @@ deferred_walk_inputs:
     verdict: parent-plus-criterion-id | surrogate-ulid-only | content-hash-composite | other-argued
     value: "<the key you propose, as a column list>"
     rationale: ""
+    basis: [<finding ids, or empty>]
   join_keys:
     verdict: registry-fk-only | registry-fk-plus-plan-slug | evidence-table-fk | other-argued
     targets: [<the tables or surfaces this criterion row joins to>]
     rationale: ""
+    basis: []
   partition_column:
     verdict: "<column name>" | none-argued
     applies_to: [<only the tables your Q4 verdict endorses>]
     rationale: ""
+    basis: []
   current_projection:
     verdict: scd2-history-plus-type1-current | history-only | other-argued
     rationale: ""
+    basis: []
 ```
 
 `current_projection` answers `design_time_walk` step 2's second half -- whether
@@ -459,7 +474,7 @@ a rating or a finding to fill a cell.
 | VD4 | Status honesty -- NS2 and NS4; does a status value carry weight it cannot bear | Q1, Q5 |
 | VD5 | Migration feasibility under declared constraints -- roadmap ceiling, no lift-and-shift, no per-tier split, no deadline | Q3 |
 | VD6 | Derivation discipline -- stored vs derived; every field has a reader; no write-only signal | Q2, Q4 |
-| VD7 | Shipped-mechanism portability -- Decision 197 clauses 1 and 4; no operator taxonomy in columns | Q2, Q5 |
+| VD7 | Shipped-mechanism portability -- Decision 197 clauses 1, 2 and 4: no operator taxonomy in columns, and the shape must run on BOTH the file-catalog local adapter and the DuckLake cloud adapter | Q2, Q4, Q5 |
 
 ## 9. DEEP-DIVES
 
@@ -505,6 +520,7 @@ at `04a402a4`. Verify each anchor before you rely on it; record non-resolving an
 | anchor | what is there |
 |---|---|
 | `docs/DECISIONS.md:5` | Decision 197. Clause 3 (the audited grain) at `docs/DECISIONS.md:32`. |
+| `docs/DECISIONS.md:27` | Decision 197 CLAUSE 2, the storage port -- load-bearing for Q4, Q5 and VD7 and quoted here because the whole design must run on both adapters: "Work items are reached through a named port (Decision 184 clause 2); the local adapter is a file catalog, the cloud adapter is DuckLake-on-Neon; the user selects by configuration. T4.23 is that port's tracked local-adapter item. Tenancy (`project_id`) is a cloud-adapter property, not a mechanism requirement; the local adapter is single-tenant by construction." T4.23 (`deferred_post_mvp`) carries the local adapter's four exit criteria, including in-process reachability of every named verb and a local DuckDB-or-SQLite catalog selected by configuration. |
 | `docs/DECISIONS.md:59` | Decision 196 (context only; out of scope). |
 | `docs/DECISIONS.md:7778`, `:7819` | Decision 48 tier definitions; its Limitation clause ("documentation-enforced only. No automated detection currently exists"). |
 | `docs/DECISIONS.md:4126`, `:4174` | Decision 132 (graduation as an enforced obligation); residual limitation A, the classification seam. |
@@ -514,7 +530,7 @@ at `04a402a4`. Verify each anchor before you rely on it; record non-resolving an
 | `docs/DECISIONS.md:6662`, `:6775`, `:3893` | Decisions 87 (plans as entities; clause 6 rec-vs-plan grain), 84 (portal invariants, I-2 id allocation, I-3 named verbs), 137 (partition every table). |
 | `docs/DECISIONS.md:1236` | Decision 181 (declare-your-coverage: an unenforced arm is declared with a named owner). |
 | `docs/contracts/exit-criteria-ledger.yaml` | Ledger field semantics. `fields.status` spans `:49`-`:92` and carries the realized-differently rule (`:57`) and Status-Trusted-Never-Inferred (`:71`). `fields.met_by` begins at `:93` and carries the `closes_criteria` flip procedure and its own Status-Trusted-Never-Inferred restatement (`:108`). `fields.blocked_by` begins at `:120`. `fields.blocked_by` carries the edge semantics and the foreign-ratification anti-pattern. |
-| `docs/contracts/verification-registry.yaml` | Registry schema. `check_id` immutability and the (plan_slug, check_id) T3.21 join; `guard_target`/`guard_symbol` as the orphan-detection keys; `check_spec` as the materialization key. Line `:244` carries "permanently FAIL, unnoticed because graduated records are never re-executed as a standing suite". Lines `:222`-`:225`: filename-equals-check_id; `entries/deprecated/` is loader-excluded. |
+| `docs/contracts/verification-registry.yaml` | Registry schema. `check_id` immutability and the (plan_slug, check_id) T3.21 join; `guard_target`/`guard_symbol` as the orphan-detection keys; `check_spec` as the materialization key. Lines `:244`-`:245` carry "permanently FAIL, unnoticed because graduated records are never re-executed as a standing suite" -- YAML folding splits it across the two. Several quotes in this map fold the same way. A quoted string that fails to match on its cited line ALONE is not a stale anchor; resolve the fold or grep the file before recording one. Lines `:222`-`:225`: filename-equals-check_id; `entries/deprecated/` is loader-excluded. |
 | `docs/contracts/vp-red-before.yaml` | `outcome_classes` (`:97`), `unmeasurable_arms` (`:105`), `eligibility_predicate` (`:126`), `graduation_disposition_authoring` (`:216`), `self_satisfying_lint` (`:257`). |
 | `docs/contracts/tier-item-lifecycle.yaml:131` | The bookkeeping walk EXECUTES executable-looking criterion text via subprocess, passing on exit 0; prose criteria fall through to agent judgement with a conservative bias. The only existing execution hook on the exit-criteria surface. |
 | `docs/contracts/data-modeling-standard.yaml` | `rules`, `write_modes` (scd2 / append_only / control), and `design_time_walk` -- the walk this audit feeds. Its `identity-ulid-at-boundary` rule (`:68`-`:72`) is already pinned and binds Q3 and Q5's `merge_key`: "Identity is a ULID (Crockford base32), minted once at the write boundary ..., never client-side and never a natural-key primary key. Propagated to child rows as foreign keys, never re-derived downstream." `design_time_walk` step 3 restates it. Argue with this pin if you must, but do not answer as though it did not exist. |
@@ -560,8 +576,9 @@ test.
 >
 > [Reader's note, not part of the converged shape: "iff companions" means the co-required field
 > each disposition value carries -- `graduate` requires a non-empty `graduation_check_id`, `waive`
-> requires a non-empty `graduation_waiver_reason`, `not-applicable` requires neither. Enforced at
-> `scripts/roadmap/plan_document.py:91`-`:99`.]
+> requires a non-empty `graduation_waiver_reason`, `not-applicable` requires neither. Enforced by
+> `_validate_graduation_disposition` at `scripts/roadmap/plan_document.py:91`-`:114` (graduate arm
+> `:95`-`:99`, waive `:102`-`:108`, not-applicable `:109`-`:113`).]
 > `graduated_check_id` + `plan_slug`: registry FK, the existing T3.21 join; LINK never merge;
 > means ADMITTED, not STANDING (`verification-registry.yaml` governance_notes: graduated records
 > are never re-executed as a standing suite; Decision 176 cl.4: admission is a commit property
@@ -708,8 +725,9 @@ Required measurements (re-derive on YOUR base sha):
   there. This is Q4's precedent search; a null result is a real answer.
 
 Sampling caps -- do NOT exceed: at most 25 registry entry shards; at most 25 plan documents; at
-most 15 tier items read in full. Counting sweeps are not sampling and are uncapped: E1, E2, E3,
-E5 and E7 are counting sweeps, and E7's contract glob is explicitly one -- read each contract's
+most 15 tier items read in full. Counting sweeps are not sampling and are uncapped: ALL of E1-E7 are counting sweeps, E6 included
+(it ranges over every criterion, not a 15-item sample, since a capped count would not be the
+count E6 asks you to report), and E7's contract glob is explicitly one -- read each contract's
 `write_mode` / `grain` keys only, never a contract in full, and stop once every file is
 classified.
 
@@ -760,8 +778,9 @@ Each is a live, deliberate decision. Flagging one as a defect is a failed adjudi
   closure -- modelled instead as `evaluator_kind` plus an evidence leg of `review`); the registry
   relationship being a LINK rather than a merge (Decision 176 clause 4, `docs/DECISIONS.md:1749`);
   intent as an edge rather than a column (Decision 197 clauses 3 and 5); and a DEADLINE for
-  converting the bare strings (rejected by both prior reviewers on the grounds that a bulk backfill
-  of verification methods manufactures tautologies at scale). You may argue that one of these is
+  converting the bare strings (closed by the REQUESTER, on their own authority, when commissioning
+  this audit -- not by the prior reviewers, whose agreement would be circular grounds here since
+  Section 2 asks you to disagree with them). You may argue that one of these is
   wrong IN PROSE under Q5; you may not file it as a finding or answer a fork with it.
 
 ## 14. OUTPUT
@@ -780,7 +799,8 @@ audit:
                           prompt_says: "", found_instead: ""}],
          capability_deviations: [{class: capability|judgment, obligation: "", detail: ""}]}
   question_answers:
-    - {q: Q1, verdict: a-standing-legs|b-admitted-once|c-bounded-middle|d-other-argued,
+    - {q: Q1, verdict: a-periodic-standing-runs|b-admitted-once|c-guard-target-triggered-only|
+               d-other-argued,
        basis: [<finding ids>], prose: ""}
     - {q: Q2, verdict: derive-from-phase-x-slot|extend-plan-grain-floor|
                keep-stored-until-derivation-exists|drop-the-field|other-argued,
@@ -792,15 +812,18 @@ audit:
        basis: [], prose: "",
        external_checklist: [{property: "<one of the nine>", rating: met|partial|missed|n/a,
                              evidence: ""}]}
-    - {q: Q5, answers: [{question: "", answer: "", basis: [<finding ids>]}],
+    - {q: Q5, answers: [{question: "", disposition: answered|dismissed, answer: "",
+                        basis: [<finding ids>]}],
        deferred_walk_inputs:
          merge_key: {verdict: parent-plus-criterion-id|surrogate-ulid-only|
-                              content-hash-composite|other-argued, value: "", rationale: ""}
+                              content-hash-composite|other-argued, value: "", rationale: "",
+                     basis: []}
          join_keys: {verdict: registry-fk-only|registry-fk-plus-plan-slug|evidence-table-fk|
-                              other-argued, targets: [], rationale: ""}
-         partition_column: {verdict: "<column name>"|none-argued, applies_to: [], rationale: ""}
+                              other-argued, targets: [], rationale: "", basis: []}
+         partition_column: {verdict: "<column name>"|none-argued, applies_to: [], rationale: "",
+                            basis: []}
          current_projection: {verdict: scd2-history-plus-type1-current|history-only|other-argued,
-                              rationale: ""}}
+                              rationale: "", basis: []}}
   converged_shape_corrections:
     - {element: "<field or claim in Section 10.2 or 10.3>", what_it_says: "",
        what_is_true: "", evidence: "file:line", consequence: "",
@@ -820,7 +843,8 @@ audit:
        proposed_change: "", acceptance: "", severity: critical|high|medium|low,
        severity_rationale, confidence: CONFIRMED|HYPOTHESIS,
        roadmap_crossref: {classification: novel|planned-insufficient|planned-unbuilt,
-                          item_ids: [], dedup_search_terms: [], dedup_hit_count: 0, note: ""},
+                          item_ids: [], dedup_search_terms: [],
+                          dedup_hit_count: <int, or null under degraded_dedup>, note: ""},
        effort: XS|S|M|L, depends_on: [finding ids],
        sequencing: {safe_to_queue_now: true|false, blocked_behind: [], note: ""}}
     # change_type: add = a field/table/leg that does not exist; rescope = an existing element's
@@ -837,13 +861,18 @@ audit:
     - {id: E1..E7, rule: "<the exact command or predicate you used>", result: "",
        matches_brief: true|false, note: ""}
     # Every E1-E7 entry is REQUIRED even when it produced no finding -- a measurement that
-    # yields nothing is a result, and matches_brief: false is how a stale compose-time number
-    # is reported. E6 must carry its regex in `rule`.
+    # yields nothing is a result. E6 must carry its regex in `rule`. matches_brief is null when
+    # this brief states no compose-time figure to compare against (E6, E7); false when it states
+    # one and yours differs -- and a false ALSO gets a meta.stale_anchors[] entry with
+    # kind: measurement, which is the single home the .md closing line counts.
   noted:
     - {candidate: "", what_it_constrains: ""}
   rejected_candidates:
     - {candidate, why_dismissed, compensating_control, control_property_match,
-       decision_or_item_id}
+       owner_ref: "rec-NNNN|T-id|CD.n|dec-NNN|null"}
+    # owner_ref names what owns or excuses the candidate: a recommendation, tier item, candidate
+    # decision or Decision. Use null for a "not a defect" dismissal with no owner; the
+    # compensating_control and control_property_match carry the argument in that case.
   summary: {total_findings, novel_count, planned_insufficient_count, planned_unbuilt_count,
             top_improvements: [ids], highest_leverage_change: <id>}
   # maturity lives ONLY in per_surface_assessment[].maturity -- it is not restated in summary.
@@ -854,13 +883,18 @@ reads first. It must carry, in this order: the four fork verdicts (Q1-Q4) in one
 `deferred_walk_inputs` answers in one line each; the "what the converged shape gets wrong"
 section; the single highest-leverage change; the open questions you added under Q5; and a closing
 line stating how many entries `meta.stale_anchors[]` holds, whether any changed a verdict, and
-every `meta.capability_deviations[]` entry of class `capability` in one line each -- a capability
-gap the human never sees is indistinguishable from work you chose not to do.
+every `meta.capability_deviations[]` entry of class `capability` in one line each, and -- if
+`meta.degraded_dedup` is true -- one line saying the recommendation-side dedup did not run and
+why. A capability gap or an unsearched dedup surface the human never sees is indistinguishable
+from work you chose not to do.
 
 ### Invariants
 
 - Finding ids are `CSF-NN`, zero-padded, numbered from `CSF-01` in the order you file them.
-  `summary.top_improvements` holds 3 to 5 finding ids, most important first.
+  `summary.top_improvements` holds AT MOST 5 finding ids, most important first, and fewer when
+  fewer exist -- an empty list is correct with 0 findings. `summary.highest_leverage_change` is a
+  finding id, or `null` when `findings[]` is empty. Neither is ever padded with a correction id,
+  a `noted[]` entry or an invented finding.
   `findings[]`, `converged_shape_corrections[]`, `rejected_candidates[]` and `noted[]` are
   uncapped -- Section 17's anti-padding rule governs them, not a number.
 - COUNTING INVARIANT: `findings[]` is the SOLE enumerated list.
@@ -868,8 +902,8 @@ gap the human never sees is indistinguishable from work you chose not to do.
   planned_unbuilt_count`. Fully-covered candidates live in `rejected_candidates[]`, NOT in
   findings. `rubric_ratings`, `question_answers` and `converged_shape_corrections` are
   systems-of-record referenced FROM findings, never re-counted. `deep_dives[]`, `measurements[]`
-  and `noted[]` are likewise never counted into `total_findings`. `top_improvements` and
-  `highest_leverage_change` MUST be finding ids.
+  and `noted[]` are likewise never counted into `total_findings`. `top_improvements` entries and
+  a non-null `highest_leverage_change` MUST be finding ids.
 - `control_property_match` is REQUIRED whenever a compensating control is the reason for
   dismissal: name the property the control exercises, cite where it operates (mechanism or
   file:line), and state why the control would FAIL if the defect were real.
@@ -882,9 +916,10 @@ gap the human never sees is indistinguishable from work you chose not to do.
 
 Assign severity AFTER judgment, by defect class. Never inherit it from this brief's framing.
 
-- **critical** -- the shape as proposed would let a criterion be recorded as satisfied on a proof
-  that does not hold, and nothing downstream could detect it; or an irreversible migration would
-  proceed on an unsound identity.
+- **critical** -- on S1/S2: the shape as proposed would let a criterion be recorded as satisfied
+  on a proof that does not hold, with nothing downstream able to detect it, or an irreversible
+  migration would proceed on an unsound identity. On S3-S6: the surface as BUILT already does
+  that today.
 - **high** -- a weakness that materially reduces the guarantee AND whose compensating controls you
   judged insufficient under the counterfactual test.
 - **medium** -- redundancy, ambiguity or inconsistency with a clear fix.
@@ -899,9 +934,13 @@ its `affects_surfaces` field. For a finding whose `surface` is a single id, `aff
 that one id; for `shared`, list every surface it genuinely bears on. `affects_surfaces` is never
 empty.
 
-- **frontier** -- 0 `critical` and 0 `high` findings on that surface, AND (for S1 and S2 only) no
-  property in Q4's `external_checklist` rated `missed`. The checklist does not gate S3, S4, S5 or
-  S6, which have no stake in the one-versus-two-table fork.
+- **frontier** -- 0 `critical` and 0 `high` findings on that surface, AND the checklist condition
+  below where it applies.
+  CHECKLIST CONDITION, stated once and nowhere else: no property in Q4's `external_checklist`
+  rated `missed`. It gates ONLY the designed surface your Q4 verdict endorses -- S1 under
+  `one-table-proof-struct`, S2 under `two-tables-evidence-journal`, and BOTH S1 and S2 under
+  `other-argued` (you rated what you proposed, which spans them). It never gates S3, S4, S5 or S6.
+  A surface it does not gate reaches `frontier` on finding counts alone.
 - **strong** -- 0 `critical` and at most 1 `high`.
 - **solid** -- at most 1 `critical`.
 - **nascent** -- otherwise.
