@@ -101,8 +101,8 @@ def classify(rc: int, stderr: str, body: str) -> tuple[str, str]:
         return (
             SUCCESS,
             (
-                f"main is pending-gated (a routed change at {pending_sha} awaits gated-apply "
-                "reviewer approval; not a failure). Advisory only."
+                f"main is pending-gated (routed change {pending_sha} awaits gated-apply approval; "
+                "not a failure). Advisory only."
             ),
         )
 
@@ -111,10 +111,7 @@ def classify(rc: int, stderr: str, body: str) -> tuple[str, str]:
     if first_seen:
         return (
             SUCCESS,
-            (
-                f"main is pending-codification (a code-behind-state delta measured since {first_seen}, "
-                "not out-of-band drift; not a failure). Advisory only."
-            ),
+            (f"main is pending-codification (code-behind-state delta since {first_seen}; not a failure). Advisory only."),
         )
 
     return SUCCESS, "main is converged (last sandbox apply GREEN). Advisory only."
