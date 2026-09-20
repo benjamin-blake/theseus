@@ -319,18 +319,24 @@ Weigh the recommendation-side semantics (`docs/contracts/ops_recommendations.yam
 population in Section 10.6. A stored tier on a criterion row, a floor over a plan's scope, and a
 routing signal on a work item are three different things; say which you mean.
 
+Reconcile your answer with Decision 197 clause 4, which NS5 carries: verification tiers "are
+grouping items, edges or extension values, never columns". Option (c) keeps a stored column and
+Section 10.2 already lists verification tier under "Derived, never stored", so (c) is in apparent
+tension with a ratified clause. Say whether you read (c) as foreclosed by clause 4, or as
+admissible because clause 4 governs the work-item row rather than the criterion row -- do not
+answer (c) without addressing it.
+
 **Verdict enum:** `derive-from-phase-x-slot | extend-plan-grain-floor |
 keep-stored-until-derivation-exists | drop-the-field | other-argued`
 
 ### Q3 -- Identity for the bare-string exit criteria
 
 Measured at `04a402a4`: 801 roadmap criteria = 407 bare strings + 394 structured dicts; 259 of
-the 407 sit on `status: complete` items. The touched-item rule in
-`scripts/checks/roadmap/validate_platform_roadmap.py:111`-`:132` carries NO status predicate: it
-derives touched ids from the `origin/main` diff and fails ANY touched item that still holds a bare
-string, a `complete` item included. So the reason lazy migration has not reached those 259 is
-STATISTICAL (a finished item is rarely edited), not STRUCTURAL (the gate excludes it). Establish
-for yourself which it is before answering -- the options below turn on exactly that distinction. Bare-string ids are auto-assigned positionally at model-load time. In-YAML
+the 407 sit on `status: complete` items. Read the touched-item rule at
+`scripts/checks/roadmap/validate_platform_roadmap.py:111`-`:132` and establish for yourself what
+population it fires on and what that implies for those 259 -- whether they are beyond the gate's
+reach by construction, or merely seldom in its path. The options below turn on exactly that
+distinction, so form it from the code rather than from any characterisation. Bare-string ids are auto-assigned positionally at model-load time. In-YAML
 conversion costs roughly three lines each against a roadmap at 9,925 of a 10,000-line ceiling,
 and a per-tier split is forbidden (Decisions 110/114/147). rec-3660 is the named owner. Decision
 197 clause 8 forbids lift-and-shift before the clause-8 migration.
@@ -374,35 +380,40 @@ argued, property-matched compensating control. This field feeds the maturity top
 CHECKLIST CONDITION in Section 15, which is the sole statement of its scope -- do not infer the
 scope from here.
 
-1. Event-sourced journal plus current-state projection, rather than state mutation in place.
-2. Type-2 slowly-changing dimension paired with a separate fact table, rather than a widened
+P1. Event-sourced journal plus current-state projection, rather than state mutation in place.
+P2. Type-2 slowly-changing dimension paired with a separate fact table, rather than a widened
    dimension.
-3. Test/build result history as a first-class fact table keyed on (test, run) -- the standard
+P3. Test/build result history as a first-class fact table keyed on (test, run) -- the standard
    shape behind flake detection and suite-health analytics.
-4. Provenance modelling in the W3C PROV sense: entity / activity / agent separated, so "what was
+P4. Provenance modelling in the W3C PROV sense: entity / activity / agent separated, so "what was
    claimed", "what was run" and "who ran it" are distinguishable.
-5. Assurance-case separation (Goal Structuring Notation): CLAIM, ARGUMENT and EVIDENCE are
+P5. Assurance-case separation (Goal Structuring Notation): CLAIM, ARGUMENT and EVIDENCE are
    distinct node types, and evidence is never merged into the claim it supports.
-6. Quarantine registry keyed on (test, run) with a bounded, expiring lifetime rather than a
+P6. Quarantine registry keyed on (test, run) with a bounded, expiring lifetime rather than a
    permanent advisory state.
-7. Mutation score, or an equivalent adequacy metric, treated as a decay signal on an existing
+P7. Mutation score, or an equivalent adequacy metric, treated as a decay signal on an existing
    suite rather than a one-time admission test.
-8. Transactional read consistency: a criterion's current proof state is readable in a single row
+P8. Transactional read consistency: a criterion's current proof state is readable in a single row
    read, with no join and no window in which a reader sees claim and evidence from different
    points in time.
-9. Single-writer atomicity: a criterion's claim and its proof advance in one write, so the row
+P9. Single-writer atomicity: a criterion's claim and its proof advance in one write, so the row
    never asserts a state its own evidence does not yet support.
 
-Properties 1-7 favour separation; 8-9 favour consolidation. That asymmetry is deliberate: rate
-what you actually endorse, and mark `n/a` -- never `missed` -- any property that is structurally
-inapplicable to the design your verdict selects. An `n/a` costs nothing and does not gate
-maturity.
+Properties P1-P7 favour separation; P8-P9 favour consolidation. The 7-2 split is not a verdict --
+it reflects how much of the published literature addresses separation, not how much weight it
+deserves here. Three rating rules keep the count from becoming a thumb on the scale:
+`n/a` for a property structurally inapplicable to the design you endorse; `partial` for a
+property your design DELIBERATELY TRADES AWAY, naming the countervailing property it buys as the
+compensating control (a one-table design trading P1 for P8 and P9 is the obvious case, and it is
+a trade, not a failure); and `missed` reserved for a property the design neither meets nor
+deliberately trades. Neither `n/a` nor `partial` gates maturity.
 
 **Verdict enum:** `one-table-proof-struct | two-tables-evidence-journal | other-argued`
 **Additionally required on this entry:** `precedent: [<table or artifact names>]` -- a LIST, empty
 when you find none (never the string `none`) -- and
-`external_checklist: [{property, rating, evidence}]` covering ALL NINE properties above -- rating
-seven of nine would silently drop exactly the two that argue for consolidation.
+`external_checklist: [{property, rating, evidence}]` covering ALL NINE properties above,
+each identified by its `P1`..`P9` id -- rating seven of nine would silently drop exactly the two
+that argue for consolidation.
 
 ### Q5 -- Questions the requester did not think to ask
 
@@ -421,7 +432,33 @@ Seeds, each of which you must answer or explicitly dismiss:
 - Where does an ESCAPED DEFECT re-enter this model? Neither the converged shape nor the evidence
   table has a leg for it (NS4 names it as one of the platform's three real mechanisms).
 
-**Additionally required on Q5 -- the `deferred_walk_inputs` block.** Decision 197 clause 3
+**Additionally required on Q5 -- the `reversal_trigger_assessment` block.** Decision 197 clause
+3 carries its own reversal condition, `two-shapes-after-all`, verbatim: "Epic-shaped and
+task-shaped items need required fields the criteria child table cannot absorb: reopen clause 3
+before adding nullable columns." The converged shape in Section 10.2 proposes roughly seventeen
+columns, of which a substantial group (`evaluator_kind`, `primitive_slot`, `check_spec`,
+`guard_target`, `guard_symbol`, `hermetic`, `phase`, `severity`, `disposition`,
+`graduated_check_id`, `plan_slug`, `authored_at_sha`) is populated only when a criterion
+originates from a plan VP step or a registry row -- count them yourself against what a tier-item
+exit criterion carries today, and against what a recommendation `acceptance` carries. Then answer
+whether the converged shape ALREADY TRIPS that trigger. This is not a rhetorical question: if it
+does, clause 3 must be reopened before the clause-8 walk proceeds, which changes what every other
+answer in this audit is for.
+
+```
+reversal_trigger_assessment:
+  verdict: not-tripped | tripped-reopen-clause-3 | tripped-but-absorbable | other-argued
+  nullable_column_count: <int, by your own count>
+  which_columns: [<the columns structurally null for one of the two kinds>]
+  rationale: ""
+  basis: [<finding ids, or empty>]
+```
+
+`tripped-but-absorbable` means the nulls exist but a named mechanism (a kind discriminator, a
+sub-table, an extension map) absorbs them without required fields the child table cannot carry --
+name the mechanism, do not gesture at one.
+
+**Also required on Q5 -- the `deferred_walk_inputs` block.** Decision 197 clause 3
 deferred THREE things to the clause-8 migration: merge keys, identity and join keys. Only identity
 carries a fork of its own (Q3). Answer the other two here, plus the partition column that
 `docs/contracts/data-modeling-standard.yaml#design_time_walk` step 6 requires any new table to
@@ -449,6 +486,16 @@ deferred_walk_inputs:
     rationale: ""
     basis: []
 ```
+
+Every `deferred_walk_inputs` verdict answers a question Decision 197 clause 3 explicitly DEFERRED,
+so there is no status quo to endorse and often no defect to cite: an empty `basis` is EXPECTED
+here, and `rationale` carries the argument. The grounding rule in the Section 7 preamble does not
+bind these four blocks.
+
+One walk step is explicitly NOT yours: step 8's advice-consult escalation for a new table, a new
+identity scheme or a merge-key change is a Claude-side protocol this run does not discharge. State
+in your report that it remains open, so the requester can see how much of the walk your deliverable
+actually closes.
 
 `current_projection` answers `design_time_walk` step 2's second half -- whether
 `work_item_criteria` needs a Type-1 current table alongside its SCD2 history, as
@@ -520,6 +567,7 @@ at `04a402a4`. Verify each anchor before you rely on it; record non-resolving an
 | anchor | what is there |
 |---|---|
 | `docs/DECISIONS.md:5` | Decision 197. Clause 3 (the audited grain) at `docs/DECISIONS.md:32`. |
+| `docs/DECISIONS.md:40`-`:42` | Decision 197's `two-shapes-after-all` reversal condition, verbatim: "Epic-shaped and task-shaped items need required fields the criteria child table cannot absorb: reopen clause 3 before adding nullable columns." Q5's `reversal_trigger_assessment` turns on it. |
 | `docs/DECISIONS.md:27` | Decision 197 CLAUSE 2, the storage port -- load-bearing for Q4, Q5 and VD7 and quoted here because the whole design must run on both adapters: "Work items are reached through a named port (Decision 184 clause 2); the local adapter is a file catalog, the cloud adapter is DuckLake-on-Neon; the user selects by configuration. T4.23 is that port's tracked local-adapter item. Tenancy (`project_id`) is a cloud-adapter property, not a mechanism requirement; the local adapter is single-tenant by construction." T4.23 (`deferred_post_mvp`) carries the local adapter's four exit criteria, including in-process reachability of every named verb and a local DuckDB-or-SQLite catalog selected by configuration. |
 | `docs/DECISIONS.md:59` | Decision 196 (context only; out of scope). |
 | `docs/DECISIONS.md:7778`, `:7819` | Decision 48 tier definitions; its Limitation clause ("documentation-enforced only. No automated detection currently exists"). |
@@ -718,16 +766,21 @@ Required measurements (re-derive on YOUR base sha):
   `grep`, `test -f`). State the exact rule you used -- a broader or narrower regex changes the
   count, and a prior measurement of this using a different rule returned a different number.
   Report the rule and the count together, never the count alone.
-- E7. Every append-only per-entity event table that EXISTS today: enumerate from
+- E7. The `phase` population across the merged plan corpus: how many VP steps carry a `phase`, how
+  many are `pre-deploy` and `post-deploy`, and how many DISTINCT non-enum values appear over how
+  many occurrences. This is a counting sweep over every plan, not a 25-plan sample.
+- E8. Every append-only per-entity event table that EXISTS today: enumerate from
   `docs/contracts/storage-substrate.yaml`, `docs/contracts/*.yaml`, and
   `config/lambda/ducklake/field_semantics*.yaml`. Note that `migrations/ducklake_ops_schema.sql`
   is the Neon CATALOG metadata schema, not the ops-table DDL -- do not expect table definitions
   there. This is Q4's precedent search; a null result is a real answer.
 
 Sampling caps -- do NOT exceed: at most 25 registry entry shards; at most 25 plan documents; at
-most 15 tier items read in full. Counting sweeps are not sampling and are uncapped: ALL of E1-E7 are counting sweeps, E6 included
+most 15 tier items read in full. ANY count this brief states in Section 10.5 is re-derivable as a counting sweep, whether or not it
+appears as a numbered measurement below -- the caps bound how many artifacts you READ IN FULL, never
+how many you count over. Counting sweeps are uncapped: ALL of E1-E8 are counting sweeps, E6 included
 (it ranges over every criterion, not a 15-item sample, since a capped count would not be the
-count E6 asks you to report), and E7's contract glob is explicitly one -- read each contract's
+count E6 asks you to report), and E8's contract glob is explicitly one -- read each contract's
 `write_mode` / `grain` keys only, never a contract in full, and stop once every file is
 classified.
 
@@ -739,7 +792,7 @@ nor justifies dismissal.
 
 - **P1 Read.** Section 10's decisions and contracts; the six surfaces; Section 3's traps.
 - **P2 Trace.** DD-A, DD-B, DD-C. Do not form verdicts yet.
-- **P3 Empirical.** Section 11, E1-E7.
+- **P3 Empirical.** Section 11, E1-E8.
 - **P4 Adjudicate.** Every Section 10.5 candidate to a disposition per Section 2.
 - **P5 Rate.** The Section 8 rubric, every surface.
 - **P6 Dedup.** Section 13, before any finding is written.
@@ -752,7 +805,11 @@ nor justifies dismissal.
 Before filing ANY finding, grep the three ownership surfaces: `docs/ROADMAP-PLATFORM.yaml`
 (tier items and candidate decisions), `docs/DECISIONS.md`, and
 `logs/.recommendations-log.jsonl`. Record your search terms and hit count on the finding
-(`roadmap_crossref.dedup_search_terms`, `dedup_hit_count`). A hit means a sufficiency assessment
+(`roadmap_crossref.dedup_search_terms`, `dedup_hit_count`). `dedup_hit_count` is the number of
+DISTINCT OWNING ARTIFACTS your searches surfaced -- recommendations, tier items, candidate
+decisions and Decisions that plausibly own this territory -- summed across all three surfaces,
+never the raw grep line count. List those artifacts in `roadmap_crossref.item_ids`; the count and
+that list must agree. A hit means a sufficiency assessment
 or a rejection, never a fresh discovery. A finding with no recorded negative search is
 `confidence: HYPOTHESIS`.
 
@@ -810,10 +867,13 @@ audit:
     - {q: Q4, verdict: one-table-proof-struct|two-tables-evidence-journal|other-argued,
        precedent: [<table or artifact names; empty list means none found>],
        basis: [], prose: "",
-       external_checklist: [{property: "<one of the nine>", rating: met|partial|missed|n/a,
-                             evidence: ""}]}
+       external_checklist: [{property: P1|P2|P3|P4|P5|P6|P7|P8|P9,
+                             rating: met|partial|missed|n/a, evidence: ""}]}
     - {q: Q5, answers: [{question: "", disposition: answered|dismissed, answer: "",
                         basis: [<finding ids>]}],
+       reversal_trigger_assessment:
+         {verdict: not-tripped|tripped-reopen-clause-3|tripped-but-absorbable|other-argued,
+          nullable_column_count: <int>, which_columns: [], rationale: "", basis: []},
        deferred_walk_inputs:
          merge_key: {verdict: parent-plus-criterion-id|surrogate-ulid-only|
                               content-hash-composite|other-argued, value: "", rationale: "",
@@ -858,12 +918,13 @@ audit:
   deep_dives:
     - {id: DD-A|DD-B|DD-C, conclusion: "", feeds: [Q1..Q5], basis: [<finding ids>]}
   measurements:
-    - {id: E1..E7, rule: "<the exact command or predicate you used>", result: "",
-       matches_brief: true|false, note: ""}
-    # Every E1-E7 entry is REQUIRED even when it produced no finding -- a measurement that
-    # yields nothing is a result. E6 must carry its regex in `rule`. matches_brief is null when
-    # this brief states no compose-time figure to compare against (E6, E7); false when it states
-    # one and yours differs -- and a false ALSO gets a meta.stale_anchors[] entry with
+    - {id: E1..E8, rule: "<the exact command or predicate you used>", result: "",
+       matches_brief: true|false|null, note: ""}
+    # Every E1-E8 entry is REQUIRED even when it produced no finding -- a measurement that
+    # yields nothing is a result. E6 must carry its regex in `rule`. matches_brief is null whenever
+    # this brief states no NUMERIC compose-time figure to compare against -- E6, E8, and E5,
+    # whose only statement is the qualitative "the large majority"; false when it states a number
+    # and yours differs -- and a false ALSO gets a meta.stale_anchors[] entry with
     # kind: measurement, which is the single home the .md closing line counts.
   noted:
     - {candidate: "", what_it_constrains: ""}
@@ -880,18 +941,20 @@ audit:
 
 `audits/criterion-shape-forks-<sha>.md` -- prose, at most ~1500 words, the executive layer a human
 reads first. It must carry, in this order: the four fork verdicts (Q1-Q4) in one line each; the
-`deferred_walk_inputs` answers in one line each; the "what the converged shape gets wrong"
-section; the single highest-leverage change; the open questions you added under Q5; and a closing
+`deferred_walk_inputs` answers in one line each; the "what the converged shape gets wrong" section -- which draws on BOTH
+`converged_shape_corrections[]` (factual misstatements) and any S1/S2 `findings[]` entry (design
+judgment), and must say which of the two each item is; the single highest-leverage change; the open questions you added under Q5; and a closing
 line stating how many entries `meta.stale_anchors[]` holds, whether any changed a verdict, and
 every `meta.capability_deviations[]` entry of class `capability` in one line each, and -- if
 `meta.degraded_dedup` is true -- one line saying the recommendation-side dedup did not run and
-why. A capability gap or an unsearched dedup surface the human never sees is indistinguishable
+why; and any `meta.contract_notes` entry in one line. A capability gap or an unsearched dedup surface the human never sees is indistinguishable
 from work you chose not to do.
 
 ### Invariants
 
 - Finding ids are `CSF-NN`, zero-padded, numbered from `CSF-01` in the order you file them.
-  `summary.top_improvements` holds AT MOST 5 finding ids, most important first, and fewer when
+  `summary.top_improvements` holds AT MOST 5 finding ids ordered by severity first, then
+  `observed` ahead of `static` at equal severity, and fewer when
   fewer exist -- an empty list is correct with 0 findings. `summary.highest_leverage_change` is a
   finding id, or `null` when `findings[]` is empty. Neither is ever padded with a correction id,
   a `noted[]` entry or an invented finding.
@@ -919,7 +982,8 @@ Assign severity AFTER judgment, by defect class. Never inherit it from this brie
 - **critical** -- on S1/S2: the shape as proposed would let a criterion be recorded as satisfied
   on a proof that does not hold, with nothing downstream able to detect it, or an irreversible
   migration would proceed on an unsound identity. On S3-S6: the surface as BUILT already does
-  that today.
+  that today. For a finding whose `affects_surfaces` spans both groups, the BUILT reading
+  governs -- a defect that is live today outranks the same defect merely proposed.
 - **high** -- a weakness that materially reduces the guarantee AND whose compensating controls you
   judged insufficient under the counterfactual test.
 - **medium** -- redundancy, ambiguity or inconsistency with a clear fix.
@@ -950,9 +1014,11 @@ brief's framing does not foreclose it.
 
 ## 16. COMMIT AND PR MECHANICS
 
-1. Derive the base ONCE: `git fetch origin main` then `git rev-parse --short origin/main`. That
-   commit IS the audited tree. Use its short sha in both filenames, the branch name, and
-   `meta.audited_commit`.
+1. You already derived the base in Section 5.1 and it is baked into your branch name. Do NOT
+   re-fetch or re-derive it here: `origin/main` may have advanced mid-run, and a second sha would
+   contradict the branch name, the filenames and `meta.audited_commit`. Use the Section 5.1 sha
+   everywhere. If you notice `origin/main` has moved, that is not a problem to fix -- your audit
+   is of the tree you measured, and `meta.audited_commit` names it correctly.
 2. You are already on `audit/criterion-shape-forks-<sha>`, created off `origin/main` in Section
    5.1, so the PR diff contains only your two deliverables. This is a deliberate, documented
    exception to the `AGENTS.md` session-branch rule. Do not create or switch branches again.
