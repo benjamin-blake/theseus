@@ -18,60 +18,45 @@ scope:
   - file: terraform/personal/platform_dev_policies.tf
     action: Modify
     purpose: >-
-      Add S3 bucket-config and version-level READ grants to the PlatformDev DailyOps inline policy,
-      and add the two DEP-13 Deny statements those verbs require -- an OBJECT-level Deny for the
-      version-read verbs and a separate BUCKET-level, s3:prefix-conditioned Deny for
+      Grant PlatformDev s3:GetLifecycleConfiguration and s3:GetBucketVersioning at the bucket ARN,
+      s3:ListBucketVersions at the bucket ARN under an s3:prefix condition admitting BOTH DuckLake
+      data prefixes, and s3:GetObjectVersion on those two object prefixes only. Add the two DEP-13
+      Deny statements those verbs require -- an OBJECT-level Deny covering the whole version-read
+      verb family, and a separate BUCKET-level, s3:prefix-conditioned Deny for
       s3:ListBucketVersions.
   - file: tests/checks/iam_tf/test_platform_dev_data_lake_read_fence.py
     action: Create
     purpose: >-
-      Standing guard on the grant and fence SHAPES, not merely on verb strings: the version-read
-      verbs are object-prefix scoped, s3:ListBucketVersions is bucket-ARN scoped with an s3:prefix
-      condition, and both Deny statements carry the correct resource shape. Deliberately a NEW
-      module so this plan shares no file with PLAN-ducklake-noncurrent-version-reclaim.
-  - file: scripts/checks/iam_tf/validate_agent_observability_read_coverage.py
-    action: Modify
-    purpose: >-
-      Widen OBSERVABILITY_READ_MAP from one role per resource type to many, with per-role coverage
-      evaluated only over the bucket instances that role's grants are scoped to, so the PlatformDev
-      row does not falsely demand coverage of aws_s3_bucket.ducklake_catalog_dr.
-  - file: tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py
-    action: Modify
-    purpose: >-
-      Cover the multi-role map shape, including the red case that a PlatformDev grant reaching a
-      non-data-lake agent-platform-* bucket FAILS the check.
+      Standing guard on grant and fence SHAPES, not merely verb strings -- an inert Deny (one whose
+      resource shape its verb can never match) must be rejected. Deliberately a NEW module so this
+      plan shares no file with PLAN-ducklake-noncurrent-version-reclaim.
   - file: config/agent/verification_registry/entries/platform-dev-data-lake-read-fence.yaml
     action: Create
     purpose: graduate the fence guard as a standing check under this plan's slug
-  - file: docs/contracts/iam-simulate-fixture.yaml
-    action: Modify
-    purpose: >-
-      Add by_design denial rows asserting expected_decision explicitDeny for the version-read verbs
-      on the three fenced prefixes -- a durable artefact where an ad-hoc CLI AccessDenied cannot
-      discriminate an explicit Deny from mere absence of Allow.
   - file: tests/fixtures/ducklake_recovery_drill.json
     action: Create
     purpose: >-
       Committed evidence of the copy-forward recovery rehearsal, the pre-rule forensic inventory of
-      production delete markers and noncurrent versions, and the drill's own version-count residual.
+      production delete markers and noncurrent versions, and the drill's own measured version-count
+      residual. Lands in a SECOND commit -- see the sequencing note in context.
 bundled_recommendations: []
 followon_recs: []
 infrastructure_dependencies:
-  - "aws_iam_role_policy.platform_dev_runtime is CI-unexecutable BY DESIGN: iam:PutRolePolicy is scoped to role/agent-platform-* (terraform/bootstrap/github_ci_apply_policy.tf Sid IAMRoleWriteBounded, lines 206-220) and aws_iam_role.platform_dev is named PlatformDev (platform_roles.tf:33). Decision 180 clauses 2-3 are permanent -- never widen the CI role to avoid the split."
+  - "aws_iam_role_policy.platform_dev_runtime is CI-unexecutable BY DESIGN: iam:PutRolePolicy is scoped to role/agent-platform-* (terraform/bootstrap/github_ci_apply_policy.tf Sid IAMRoleWriteBounded) and aws_iam_role.platform_dev is named PlatformDev (platform_roles.tf:33). Decision 180 clauses 2-3 are permanent -- never widen the CI role to avoid the split."
   - "SPLIT-APPLY (docs/contracts/deploy-paths.yaml admin_out_of_band.procedure): apply this address out-of-band under agent_platform_admin first (init -> plan -target -> PRESENT -> explicit human acceptance -> apply), then the governed path carries any remainder."
   - "ADMIN container precondition (Decision 120): bin/setup-cloud-env.sh ran with INSTALL_TERRAFORM=1 and the provider mirror sync succeeded, so TF_CLI_CONFIG_FILE is set and local init of terraform/personal succeeds."
-  - "The four no-default tfvars (account_id, owner_email, platform_dev_external_id, platform_admin_external_id) are recovered from remote state per terraform/CLAUDE.md, never pasted into chat, a PR, or any committed file (Decision 101)."
+  - "The four no-default tfvars are recovered from remote state per terraform/CLAUDE.md, never pasted into chat, a PR, or any committed file (Decision 101)."
   - "Permissions-boundary ceiling is clear: PlatformDev carries agent-platform-github-ci-apply-boundary whose DataPlaneAllow grants s3:*, so all new verbs are ceiling-covered and the inert-grant failure mode does not apply."
+  - "EVERY post-deploy step in this plan runs in the ADMIN container under agent_platform_admin. Measured 2026-09-20: PlatformDev AccessDenies on iam:SimulatePrincipalPolicy, so the fence proof CANNOT run in an ordinary DEV session. Granting that verb to PlatformDev is deliberately NOT proposed -- see context."
 acceptance_criteria:
   - PlatformDev can read the data-lake bucket lifecycle configuration; the call is AccessDenied before this change
-  - PlatformDev can list object versions under BOTH DuckLake data prefixes, so rec-3892's smoke-prefix disappearance becomes investigable
-  - s3:GetObjectVersion is granted only on the DuckLake object prefixes, never bucket-wide
+  - PlatformDev can list object versions under BOTH DuckLake data prefixes, so rec-3892's smoke-prefix corpus becomes readable
+  - s3:GetObjectVersion is granted only on the two DuckLake object prefixes, never bucket-wide
   - s3:ListBucketVersions is granted at the bucket ARN with an s3:prefix condition admitting only the DuckLake data prefixes
-  - An OBJECT-level Deny refuses the version-read verbs on tfstate/personal/*, tfplan/personal/* and convergence/personal/*, and a simulate probe returns explicitDeny rather than implicitDeny for s3:GetObjectVersion against a tfstate key
+  - An OBJECT-level Deny refuses the version-read verb family on tfstate/personal/*, tfplan/personal/* and convergence/personal/*, and simulate-principal-policy returns explicitDeny -- not implicitDeny -- for s3:GetObjectVersion against a tfstate key
   - A separate BUCKET-level, s3:prefix-conditioned Deny refuses s3:ListBucketVersions against the fenced prefixes, and the guard rejects the inert object-prefix form of that statement
-  - OBSERVABILITY_READ_MAP asserts PlatformDev coverage over the data-lake bucket only, and a PlatformDev grant reaching any other agent-platform-* bucket fails the check
-  - A committed fixture records a successful copy-forward recovery of a real GC-deleted production data file, including its exact version-count residual
-  - The same fixture records the pre-rule inventory of production delete markers and noncurrent versions, preserving rec-3892's forensic evidence before any expiry rule can age it out
+  - A committed fixture records a successful copy-forward recovery of a real GC-deleted production data file, including its MEASURED version-count delta
+  - The same fixture records the pre-rule inventory of production delete markers and noncurrent versions, preserving rec-3892's production-side evidence before any expiry rule can age it out
 verification_plan:
   - step: 1
     phase: pre-deploy
@@ -90,24 +75,18 @@ verification_plan:
     phase: pre-deploy
     action: the fence guard passes -- grant and Deny SHAPES, not merely verb strings
     command: bin/venv-python -m pytest tests/checks/iam_tf/test_platform_dev_data_lake_read_fence.py -q
-    expected: all tests pass, including the red cases for a bucket-wide GetObjectVersion grant, a missing Deny, and the INERT object-prefix form of the ListBucketVersions Deny
+    expected: >-
+      all tests pass, including red cases for a bucket-wide GetObjectVersion grant, a missing Deny,
+      an s3:prefix condition admitting only one DuckLake prefix, and the INERT object-prefix form of
+      the ListBucketVersions Deny. The object-level Deny must cover the whole version-read family --
+      s3:GetObjectVersion, s3:GetObjectVersionAcl, s3:GetObjectVersionTagging and
+      s3:GetObjectVersionAttributes -- even though only the first is granted, so a later grant of a
+      sibling verb cannot silently land outside the fence.
     fix_if: a grant is unscoped, or a Deny carries a resource shape its verb can never match
     hermetic: false
     graduation: graduate
     graduation_check_id: platform-dev-data-lake-read-fence
   - step: 3
-    phase: pre-deploy
-    action: the observability map asserts PlatformDev coverage without falsely demanding the DR bucket
-    command: bin/venv-python -m pytest tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py -q
-    expected: all tests pass, including test_real_tree_all_covered against the real tree (which holds TWO aws_s3_bucket resources, data_lake and ducklake_catalog_dr) and the red case that a PlatformDev grant reaching a non-data-lake agent-platform-* bucket fails
-    fix_if: test_real_tree_all_covered reddens -- do NOT widen PlatformDev's S3 Resource to the agent-platform-* prefix as the remedy; that reaches the bootstrap state bucket and the DR bucket, neither of which any DEP-13 Deny fences
-    hermetic: false
-    graduation: waive
-    graduation_waiver_reason: >-
-      validate_agent_observability_read_coverage is already a registered scripts.checks module
-      running in the --pre and full tiers; graduating it again would mint a second registry row for
-      a check that already has standing enforcement.
-  - step: 4
     phase: pre-deploy
     action: fast-tier presubmit is clean before any apply
     command: bin/venv-python -m scripts.validate --pre
@@ -117,9 +96,9 @@ verification_plan:
     graduation: waive
     graduation_waiver_reason: >-
       docs/contracts/vp-red-before.yaml#recursion_refusal statically refuses a graduate step whose
-      argv head is -m scripts.validate, and the contract's own precedent for that case is waive
-      rather than not-applicable.
-  - step: 5
+      argv head is -m scripts.validate. Kernel-expressible but REFUSED, which is what waive records
+      and not-applicable would leave unrecorded.
+  - step: 4
     phase: pre-deploy
     action: full-tier validation before commit, as handoff_policy declares
     command: bin/venv-python -m scripts.validate
@@ -128,126 +107,134 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
-      docs/contracts/vp-red-before.yaml#recursion_refusal statically refuses a graduate step whose
-      argv head is -m scripts.validate. Kernel-expressible but REFUSED, which is what waive records.
-  - step: 6
+      Same recursion_refusal as step 3 -- an argv head of -m scripts.validate is statically refused
+      from the graduate partition.
+  - step: 5
     phase: post-deploy
     action: ADMIN precondition -- recover the tfvars and confirm local init succeeds via the Decision 120 mirror
     command: test -n "$TF_CLI_CONFIG_FILE" && cd terraform/personal && terraform init -backend-config=backend-sandbox.hcl -input=false
-    expected: TF_CLI_CONFIG_FILE is set (an unset value means the mirror sync did not run and the ADMIN loop is unavailable) and init succeeds; recover the four no-default tfvars from remote state per terraform/CLAUDE.md BEFORE step 7, or its plan fails on missing required variables
+    expected: TF_CLI_CONFIG_FILE is set (an unset value means the mirror sync did not run and the ADMIN loop is unavailable) and init succeeds; recover the four no-default tfvars from remote state per terraform/CLAUDE.md BEFORE step 6, or its plan fails on missing required variables
     fix_if: rerun bin/setup-cloud-env.sh with INSTALL_TERRAFORM=1 and confirm a non-empty mirror sync
-  - step: 7
+  - step: 6
     phase: post-deploy
     action: SPLIT-APPLY part 1 -- produce and PRESENT the targeted plan
-    command: cd terraform/personal && terraform plan -target=aws_iam_role_policy.platform_dev_runtime -out="$SCRATCH/platform-dev-reads.tfplan" && terraform show "$SCRATCH/platform-dev-reads.tfplan"
-    expected: exactly one in-place update to aws_iam_role_policy.platform_dev_runtime and no other address; write the saved plan to the session scratchpad, never world-readable /tmp, since it renders IAM policy JSON
+    command: mkdir -p "${TMPDIR:-/tmp}/ducklake-drill" && cd terraform/personal && terraform plan -target=aws_iam_role_policy.platform_dev_runtime -out="${TMPDIR:-/tmp}/ducklake-drill/platform-dev-reads.tfplan" && terraform show "${TMPDIR:-/tmp}/ducklake-drill/platform-dev-reads.tfplan"
+    expected: exactly one in-place update to aws_iam_role_policy.platform_dev_runtime and no other address; the scratch path is defined inline in every step that uses it, because each Bash invocation is independent and an export does not carry over
     fix_if: the plan touches any address beyond platform_dev_runtime -- stop and re-scope rather than widening the target
-  - step: 8
+  - step: 7
     phase: post-deploy
     action: SPLIT-APPLY part 2 -- apply only after explicit human acceptance, and record who accepted
-    command: cd terraform/personal && terraform apply "$SCRATCH/platform-dev-reads.tfplan"
-    expected: apply succeeds; the PRESENTED plan output from step 7 IS the substituted control for this address (it is never guard-classified), so record the accepting human and feed the outcome into T2.48 c6's auto-apply track record
-    fix_if: do NOT run this step before a human has reviewed step 7's output and explicitly directed the apply (Decision 126 clause 1)
-  - step: 9
+    command: cd terraform/personal && terraform apply "${TMPDIR:-/tmp}/ducklake-drill/platform-dev-reads.tfplan"
+    expected: apply succeeds; the PRESENTED plan output from step 6 IS the substituted control for this address (it is never guard-classified), so record the accepting human and feed the outcome into T2.48 c6's auto-apply track record
+    fix_if: do NOT run this step before a human has reviewed step 6's output and explicitly directed the apply (Decision 126 clause 1)
+  - step: 8
     phase: post-deploy
-    action: the lifecycle read works -- rec-3892's own check-first item, never yet run
-    command: aws s3api get-bucket-lifecycle-configuration --bucket agent-platform-data-lake --profile agent_platform; echo "exit=$?"
-    expected: either a lifecycle document or NoSuchLifecycleConfiguration -- both prove the grant landed, where AccessDenied proves it did not; record present/absent into the drill fixture, since an unmanaged rule was rec-3892's leading hypothesis
-    fix_if: AccessDenied -- s3:GetLifecycleConfiguration did not apply
-  - step: 10
+    action: the lifecycle read works -- rec-3892's own check-first item, asserted rather than eyeballed
+    command: bin/venv-python -c "import subprocess,sys; p=subprocess.run(['aws','s3api','get-bucket-lifecycle-configuration','--bucket','agent-platform-data-lake','--profile','agent_platform'],capture_output=True,text=True); blob=(p.stdout+p.stderr); sys.exit('FAIL -- AccessDenied, the grant did not land') if 'AccessDenied' in blob else None; ok = p.returncode==0 or 'NoSuchLifecycleConfiguration' in blob; sys.exit('FAIL -- unexpected error '+blob[:200]) if not ok else None; print('LIFECYCLE READ OK -- present' if p.returncode==0 else 'LIFECYCLE READ OK -- absent (NoSuchLifecycleConfiguration)')"
+    expected: exits 0 on either a lifecycle document or NoSuchLifecycleConfiguration, and NON-ZERO on AccessDenied -- the discriminator is an assertion, not prose; record present/absent into the drill fixture
+    fix_if: non-zero -- s3:GetLifecycleConfiguration did not apply
+  - step: 9
     phase: post-deploy
     action: version listing works on BOTH DuckLake prefixes
     command: aws s3api list-object-versions --bucket agent-platform-data-lake --prefix ducklake/ --max-keys 1 --profile agent_platform && aws s3api list-object-versions --bucket agent-platform-data-lake --prefix ducklake-neon-smoke/ --max-keys 1 --profile agent_platform
-    expected: BOTH succeed -- the smoke prefix matters because it is rec-3892's actual locus, and an s3:prefix condition admitting only ducklake/* would not match ducklake-neon-smoke/
+    expected: BOTH succeed -- the smoke prefix matters because it holds rec-3892's 1,400-marker corpus, and an s3:prefix condition admitting only ducklake/* would not match ducklake-neon-smoke/
     fix_if: the smoke call is AccessDenied -- the s3:prefix condition admits only one prefix; widen it to both DuckLake data prefixes
+  - step: 10
+    phase: post-deploy
+    action: the DEP-13 fence returns explicitDeny, not merely a denial
+    command: bin/venv-python -c "import subprocess,json,sys; arn=subprocess.run(['aws','sts','get-caller-identity','--profile','agent_platform_admin','--query','Account','--output','text'],check=True,capture_output=True,text=True).stdout.strip(); role='arn:aws:iam::'+arn+':role/PlatformDev'; B='arn:aws:s3:::agent-platform-data-lake'; rows=[('s3:GetObjectVersion',B+'/tfstate/personal/terraform.tfstate','explicitDeny'),('s3:GetObjectVersion',B+'/convergence/personal/probe','explicitDeny'),('s3:GetObjectVersion',B+'/ducklake/probe.parquet','allowed')]; bad=[]; [bad.append((a,want,subprocess.run(['aws','iam','simulate-principal-policy','--policy-source-arn',role,'--action-names',a,'--resource-arns',r,'--profile','agent_platform_admin','--query','EvaluationResults[0].EvalDecision','--output','text'],check=True,capture_output=True,text=True).stdout.strip())) for a,r,want in rows]; bad=[x for x in bad if x[1]!=x[2]]; sys.exit('FENCE FAIL '+repr(bad)) if bad else print('FENCE OK -- explicitDeny on state prefixes, allowed on ducklake')"
+    expected: >-
+      explicitDeny on the tfstate and convergence probes and allowed on the ducklake probe.
+      explicitDeny is the whole point -- implicitDeny would mean the probe is refused by ABSENCE of
+      Allow and would read identically with the Deny omitted or inert. Verified 2026-09-20 that this
+      tool discriminates all three decisions against the PlatformDev principal, and that the two
+      verbs are implicitDeny today, so this is a genuine before/after.
+    fix_if: >-
+      any row mismatches -- implicitDeny on a state prefix means the Deny is missing or carries a
+      resource shape its verb can never match; a bare denial on the ducklake probe means the grant
+      did not land. This step runs ONLY under agent_platform_admin; PlatformDev AccessDenies on
+      iam:SimulatePrincipalPolicy.
   - step: 11
     phase: post-deploy
-    action: the DEP-13 fence returns explicitDeny, not merely AccessDenied
-    command: bin/venv-python -m scripts.ci.iam_simulate --profile agent_platform_admin --fixture docs/contracts/iam-simulate-fixture.yaml
-    expected: the new by_design rows for s3:GetObjectVersion and s3:ListBucketVersions against tfstate/personal/*, tfplan/personal/* and convergence/personal/* all return explicitDeny; implicitDeny would mean the probe is refused by absence of Allow and would pass identically with the Deny omitted or inert
-    fix_if: any row returns implicitDeny -- the Deny is missing or carries a resource shape its verb can never match; fix before proceeding, the fence is the reason this grant is safe
+    action: capture the pre-rule forensic inventory of BOTH prefixes
+    command: mkdir -p "${TMPDIR:-/tmp}/ducklake-drill" && for P in ducklake/ ducklake-neon-smoke/; do aws s3api list-object-versions --bucket agent-platform-data-lake --prefix "$P" --profile agent_platform --output json > "${TMPDIR:-/tmp}/ducklake-drill/$(echo "$P" | tr / _)json"; done && bin/venv-python -c "import json,os,glob; d=os.environ.get('TMPDIR','/tmp')+'/ducklake-drill'; [print(os.path.basename(f), json.load(open(f)).get('IsTruncated'), len([x for x in json.load(open(f)).get('Versions',[]) if not x['IsLatest']]), len(json.load(open(f)).get('DeleteMarkers',[]))) for f in sorted(glob.glob(d+'/*json'))]"
+    expected: >-
+      per prefix, IsTruncated is false and the noncurrent-version and delete-marker counts are
+      recorded into the fixture. Baseline measured 2026-09-20 -- production 19,360 noncurrent and
+      19,360 markers; smoke 1,400 and 1,400. The smoke corpus is the ONLY surviving record of the
+      deleter rec-3892 names, and the sibling plan's rule does not sweep it.
+    fix_if: IsTruncated is true -- paginate fully; a partial inventory is not evidence
   - step: 12
     phase: post-deploy
-    action: direct probe of the escalation verb against a real state key
-    command: aws s3api get-object --bucket agent-platform-data-lake --key "$(aws s3api list-objects-v2 --bucket agent-platform-data-lake --prefix tfstate/personal/ --max-keys 1 --profile agent_platform_admin --query 'Contents[0].Key' --output text)" --version-id null /dev/null --profile agent_platform
-    expected: AccessDenied -- this is the ExternalId-in-state escalation verb DEP-13 exists to sever, and step 11 has already proven the refusal is an EXPLICIT deny
-    fix_if: the call succeeds -- STOP, revert the grant immediately; the version-read verbs reached tfstate
+    action: rehearse copy-forward recovery, capturing the per-key version count BEFORE the drill
+    command: bin/venv-python -c "import json,os,subprocess; d=os.environ.get('TMPDIR','/tmp')+'/ducklake-drill'; inv=json.load(open(d+'/ducklake_json')); latest={x['Key'] for x in inv.get('DeleteMarkers',[]) if x['IsLatest']}; c=[x for x in inv.get('Versions',[]) if x['Key'] in latest and x['Size']>0 and '-' not in x['ETag'].strip(chr(34))]; assert c, 'no candidate -- needs a delete marker over a sized, NON-multipart noncurrent version'; k=sorted(c,key=lambda x:(x['Key'],x['VersionId']))[0]; key=k['Key']; pre=len([x for x in inv.get('Versions',[]) if x['Key']==key])+len([x for x in inv.get('DeleteMarkers',[]) if x['Key']==key]); json.dump({'key':key,'version_id':k['VersionId'],'size':k['Size'],'etag':k['ETag'],'pre_versions':pre},open(d+'/candidate.json','w')); print('candidate selected, pre-drill versions on this key', pre)" && bin/venv-python -c "import json,os,subprocess; d=os.environ.get('TMPDIR','/tmp')+'/ducklake-drill'; c=json.load(open(d+'/candidate.json')); b='agent-platform-data-lake'; subprocess.run(['aws','s3api','copy-object','--bucket',b,'--key',c['key'],'--copy-source',b+'/'+c['key']+'?versionId='+c['version_id'],'--profile','agent_platform'],check=True,capture_output=True); h=json.loads(subprocess.run(['aws','s3api','head-object','--bucket',b,'--key',c['key'],'--profile','agent_platform'],check=True,capture_output=True,text=True).stdout); assert h['ContentLength']==c['size'],(h['ContentLength'],c['size']); assert h['ETag']==c['etag'],(h['ETag'],c['etag']); print('RECOVERED -- ContentLength and ETag match the noncurrent version')"
+    expected: >-
+      the restored object's ContentLength and ETag match the noncurrent version exactly. Candidate
+      selection excludes multipart ETags by construction, because copy-object on a multipart source
+      yields a whole-object MD5 that will never equal an -N-suffixed source ETag -- that would fail
+      on a CORRECT recovery. Measured 2026-09-20 that all 19,360 production candidates are
+      non-multipart, so the filter excludes nothing today and is a guard against future drift.
+    fix_if: >-
+      the assertion on candidate presence fires -- re-take step 11's inventory, it is stale. A
+      copy-object refusal means GetObjectVersion is not reaching the object prefix.
   - step: 13
     phase: post-deploy
-    action: capture the pre-rule forensic inventory of the production prefix
-    command: aws s3api list-object-versions --bucket agent-platform-data-lake --prefix ducklake/ --profile agent_platform --output json > "$SCRATCH/ducklake-versions.json" && bin/venv-python -c "import json,os; d=json.load(open(os.environ['SCRATCH']+'/ducklake-versions.json')); assert d.get('IsTruncated') is not True, 'listing truncated -- paginate fully, a partial inventory is not evidence'; v=d.get('Versions',[]); m=d.get('DeleteMarkers',[]); nc=[x for x in v if not x['IsLatest']]; print('noncurrent',len(nc),sum(x['Size'] for x in nc)); print('markers',len(m)); print('total_versions',len(v)+len(m))"
-    expected: noncurrent count and bytes, delete-marker count and total version count are recorded into the fixture; the assertion fails loudly on a truncated listing rather than silently under-reporting
-    fix_if: IsTruncated is true -- paginate fully before recording
+    action: re-hide the restored object and assert the MEASURED version delta
+    command: bin/venv-python -c "import json,os,subprocess; d=os.environ.get('TMPDIR','/tmp')+'/ducklake-drill'; c=json.load(open(d+'/candidate.json')); b='agent-platform-data-lake'; subprocess.run(['aws','s3api','delete-object','--bucket',b,'--key',c['key'],'--profile','agent_platform'],check=True,capture_output=True); r=json.loads(subprocess.run(['aws','s3api','list-object-versions','--bucket',b,'--prefix',c['key'],'--profile','agent_platform'],check=True,capture_output=True,text=True).stdout); post=len([x for x in r.get('Versions',[]) if x['Key']==c['key']])+len([x for x in r.get('DeleteMarkers',[]) if x['Key']==c['key']]); delta=post-c['pre_versions']; assert delta==2,(c['pre_versions'],post,delta); print('RESIDUAL measured --', c['pre_versions'], '->', post, 'delta', delta)"
+    expected: >-
+      the delta is exactly 2 -- copy-forward adds a version and a bare delete-object adds a SECOND
+      delete marker. This is a MEASURED delta against the pre-drill count captured in step 12, not
+      an absolute floor and not a hand-authored constant. True restoration would need
+      s3:DeleteObjectVersion, which this plan deliberately does not grant. Both list legs filter on
+      exact key equality, so a sibling key sharing the prefix cannot inflate the count.
+    fix_if: the delta is not 2 -- something else wrote to the key mid-drill; re-take and re-run
   - step: 14
     phase: post-deploy
-    action: rehearse copy-forward recovery -- select a real GC-deleted key and restore its bytes
-    command: bin/venv-python -c "import json,os; d=json.load(open(os.environ['SCRATCH']+'/ducklake-versions.json')); latest={x['Key'] for x in d.get('DeleteMarkers',[]) if x['IsLatest']}; c=[x for x in d.get('Versions',[]) if x['Key'] in latest and x['Size']>0]; assert c, 'no candidate -- no key has a delete marker over a sized noncurrent version'; k=sorted(c,key=lambda x:x['Key'])[0]; json.dump({'key':k['Key'],'version_id':k['VersionId'],'size':k['Size'],'etag':k['ETag']},open(os.environ['SCRATCH']+'/drill-candidate.json','w')); print('candidate selected', k['Size'], 'bytes')" && bin/venv-python -c "import json,os,subprocess; c=json.load(open(os.environ['SCRATCH']+'/drill-candidate.json')); b='agent-platform-data-lake'; subprocess.run(['aws','s3api','copy-object','--bucket',b,'--key',c['key'],'--copy-source',b+'/'+c['key']+'?versionId='+c['version_id'],'--profile','agent_platform'],check=True,capture_output=True); h=json.loads(subprocess.run(['aws','s3api','head-object','--bucket',b,'--key',c['key'],'--profile','agent_platform'],check=True,capture_output=True,text=True).stdout); assert h['ContentLength']==c['size'], (h['ContentLength'],c['size']); assert h['ETag']==c['etag'], (h['ETag'],c['etag']); print('RECOVERED -- ContentLength and ETag match the noncurrent version')"
-    expected: the restored object's ContentLength and ETag match the noncurrent version exactly; the step exits non-zero on any mismatch
-    fix_if: copy-object is refused (GetObjectVersion not reaching the object prefix) or the ETag differs (wrong version selected)
-  - step: 15
-    phase: post-deploy
-    action: re-hide the restored object and record the drill's TRUE version residual
-    command: bin/venv-python -c "import json,os,subprocess; c=json.load(open(os.environ['SCRATCH']+'/drill-candidate.json')); b='agent-platform-data-lake'; subprocess.run(['aws','s3api','delete-object','--bucket',b,'--key',c['key'],'--profile','agent_platform'],check=True,capture_output=True); r=json.loads(subprocess.run(['aws','s3api','list-object-versions','--bucket',b,'--prefix',c['key'],'--profile','agent_platform'],check=True,capture_output=True,text=True).stdout); n=len(r.get('Versions',[]))+len(r.get('DeleteMarkers',[])); print('version_count_after',n); assert n>=3, n; print('RESIDUAL -- +2 versions on this key (copy-forward version + second delete marker); NOT a restoration to prior state')"
-    expected: the key is hidden again, and the version count is exactly two higher than pre-drill -- copy-forward adds a version and a bare delete-object adds a SECOND delete marker; true restoration would need s3:DeleteObjectVersion, which this plan deliberately does not grant
-    fix_if: the key is still readable -- the delete did not land
-  - step: 16
-    phase: post-deploy
     action: the drill evidence is committed, honest about the residual, and free of raw object paths
-    command: bin/venv-python -c "import json; d=json.load(open('tests/fixtures/ducklake_recovery_drill.json')); assert d['recovered'] is True; assert d['etag_match'] is True; assert d['version_residual'] == 2; assert 'key_sha256' in d and 'key' not in d; assert 'lifecycle_configuration_present' in d; assert d['pre_rule_inventory']['markers'] > 0; print('drill evidence OK', d['captured_at'])"
-    expected: assertions pass -- the fixture records key_sha256 rather than a raw key (Decision 101), the honest +2 version residual, the lifecycle-read result, and the pre-rule inventory
-    fix_if: the fixture records a raw object key, or claims a residual of 0
+    command: bin/venv-python -c "import json; d=json.load(open('tests/fixtures/ducklake_recovery_drill.json')); assert d['recovered'] is True; assert d['etag_match'] is True; assert d['version_residual'] == 2; assert 'key_sha256' in d and 'key' not in d; assert 'lifecycle_configuration_present' in d; assert d['pre_rule_inventory']['production']['markers'] > 0; assert d['pre_rule_inventory']['smoke']['markers'] > 0; print('drill evidence OK', d['captured_at'])"
+    expected: assertions pass -- the fixture records key_sha256 rather than a raw key (Decision 101), the measured residual, the lifecycle-read result, and BOTH prefixes' pre-rule inventories
+    fix_if: the fixture records a raw object key, or a residual it did not measure
 test_obligations:
   - source: terraform/personal/platform_dev_policies.tf
     behavior: >-
       The PlatformDev data-lake reads stay prefix-scoped, and BOTH DEP-13 Deny statements keep the
-      version-level verbs off the tfstate, tfplan and convergence prefixes with a resource shape
-      their verbs can actually match.
+      version-read verb family off the tfstate, tfplan and convergence prefixes with a resource
+      shape their verbs can actually match.
     verification_step: 2
     test_selector: tests/checks/iam_tf/test_platform_dev_data_lake_read_fence.py
-    red_green_expectation: red before, green after
-  - source: scripts/checks/iam_tf/validate_agent_observability_read_coverage.py
-    behavior: >-
-      Per-role coverage is asserted only over the bucket instances that role is scoped to, and a
-      PlatformDev grant reaching another agent-platform-* bucket fails the check.
-    verification_step: 3
-    test_selector: tests/checks/iam_tf/test_validate_agent_observability_read_coverage.py
     red_green_expectation: red before, green after
   - source: config/agent/verification_registry/entries/platform-dev-data-lake-read-fence.yaml
     behavior: >-
       The graduated fence check is admitted by run_differential (its check_spec FAILS at
       origin/main, where the guard module does not exist) and is found new-in-diff under this
       plan's slug.
-    verification_step: 4
+    verification_step: 3
     command: bin/venv-python -m scripts.validate --pre
-    red_green_expectation: red before, green after
-  - source: docs/contracts/iam-simulate-fixture.yaml
-    behavior: >-
-      The new by_design rows return expected_decision explicitDeny for the version-read verbs on
-      the three fenced prefixes -- implicitDeny would mean the fence is absent or inert.
-    verification_step: 11
-    command: bin/venv-python -m scripts.ci.iam_simulate --profile agent_platform_admin --fixture docs/contracts/iam-simulate-fixture.yaml
     red_green_expectation: red before, green after
 constraints:
   - No rescue agents or workaround loops (Decision 55)
   - Never widen the CI apply role to avoid the SPLIT-APPLY -- Decision 180 clauses 2-3 are permanent
   - s3:GetObjectVersion is granted on the DuckLake object prefixes only; a bucket-wide grant reopens the DEP-13 ExternalId-in-state escalation path
-  - Never widen PlatformDev's S3 Resource to arn:aws:s3:::agent-platform-* to satisfy the coverage check -- that reaches the bootstrap state bucket and the catalog-DR bucket, neither of which any DEP-13 Deny fences
-  - Public-repo boundary (Decision 101) -- the drill fixture records a key digest, never raw lakehouse object paths, ARNs or account ids; tfvars are never pasted into chat, a PR, or any committed file
-  - Saved terraform plans and version listings go to the session scratchpad, never world-readable /tmp
+  - Do NOT grant PlatformDev iam:SimulatePrincipalPolicy to make the fence proof self-service -- see the context note
+  - Public-repo boundary (Decision 101) -- the drill fixture records a key digest, never raw lakehouse object paths, ARNs or account ids; tfvars are never pasted into chat, a PR, or any committed file. Note AWS CLI error text embeds the caller ARN, so probe output is redacted before it is shared anywhere public
+  - The recovery drill is NOT self-reverting; it leaves a measured +2 version residual on one key
 context:
   - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: Decision 192, 180, 126, 120, 181, 132, 176, 189, 191, 188. Decisions triaged: 148 of 148. Roadmap items intersected: 4; CONFLICT: 0; RELATED: 3."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
-  - "Sequencing: this plan lands FIRST. PLAN-ducklake-noncurrent-version-reclaim depends on the grants here for its post-deploy verification, and on step 13's inventory being captured before any expiry rule exists."
-  - "closes_criteria is EMPTY deliberately. T2.18 c2 is the sole open T2.18 criterion and is rec-3870's, closed over N=9 cycles; this plan is an ENABLER for c2's efficacy half, not its closer. Precedent: PLAN-compaction-scope-policy-matrix.yaml:16,500 on this same tier item."
-  - "rec-3892 is NOT bundled here. Its stored acceptance is a two-clause conjunction whose clause 2 names TestDataLakeLifecycleGoverned, which the SIBLING plan creates; closing it here would close a rec whose own acceptance command cannot pass. The sibling bundles and closes it once both clauses hold."
+  - "Sequencing: this plan lands FIRST. PLAN-ducklake-noncurrent-version-reclaim depends on the grants here, and on step 11's inventory being captured before any expiry rule exists."
+  - "closes_criteria is EMPTY deliberately. T2.18 c2 is the sole open criterion and its closer is rec-3870 over an N=9 window; this plan is an ENABLER for c2's efficacy half, not its closer. Precedent: PLAN-compaction-scope-policy-matrix.yaml:16,500 on this same tier item."
+  - "rec-3892 is NOT bundled here. Its stored acceptance is a two-clause conjunction whose clause 2 names TestDataLakeLifecycleGoverned, which the SIBLING plan creates; closing it here would close a rec whose own acceptance command cannot pass."
   - "This plan also discharges rec-3907's second half (the unrehearsed recoverability). rec-3907 itself is bundled and closed by the sibling, whose closure step cites this plan's fixture."
   - "Decision 113 / Decision 144 clause 3 (DEP-13): DenyStateRead currently denies only s3:GetObject on tfstate/personal/*; s3:GetObjectVersion is a distinct action outside that Deny. The trust document carrying sts:ExternalId lives in tfstate (platform_roles.tf:56), so this is the escalation path, not a formality."
-  - "IAM action-type asymmetry, load-bearing: s3:GetObjectVersion is OBJECT-level (Resource bucket/key) but s3:ListBucketVersions is BUCKET-level (Resource bucket ARN, prefix-scopable only via the s3:prefix condition key). A Deny listing ListBucketVersions against an object-prefix ARN never matches and is INERT -- and a text assertion over HCL cannot see that, which is why step 11 uses simulate and the guard asserts resource shape."
+  - "IAM action-type asymmetry, load-bearing: s3:GetObjectVersion is OBJECT-level (Resource bucket/key) but s3:ListBucketVersions is BUCKET-level (Resource bucket ARN, prefix-scopable only via the s3:prefix condition key). A Deny listing ListBucketVersions against an object-prefix ARN never matches and is INERT -- a text assertion over HCL cannot see that, which is why step 2 asserts resource SHAPE and step 10 uses simulate."
   - "A prefix-conditioned Deny cannot fence an unprefixed or shorter-prefix list, so the Allow's own s3:prefix condition is the PRIMARY fence and the Deny is defence-in-depth."
-  - "Decision 92 / T2.48 c6: the out-of-band apply is never guard-classified, so the presented plan -target output IS the substituted control. Record who accepted it and feed the outcome into c6's track record."
-  - "Measured 2026-09-20 from the dev role: s3:ListBucketVersions on this bucket is AccessDenied, so steps 10 and 12 are genuine before/after proofs."
+  - "Fence-proof mechanism, measured 2026-09-20 under agent_platform_admin: aws iam simulate-principal-policy evaluates the PlatformDev principal correctly, returning explicitDeny on the two Denies that already exist (GetObject on tfstate, PutObject on convergence), implicitDeny on the three verbs this plan adds, and allowed on a verb PlatformDev already holds. That three-way discrimination is what makes the fence checkable. An earlier draft tried to express this through docs/contracts/iam-simulate-fixture.yaml; that is NOT usable -- the fixture carries ONE fixture-level principal (agent-platform-github-ci-apply) with no per-row override, so every row would have simulated the wrong identity, and build_triples additionally rejects any wildcard in a target ARN."
+  - "DELIBERATE NON-GRANT: PlatformDev AccessDenies on iam:SimulatePrincipalPolicy, so the fence proof is admin-only. Granting it was considered and refused on three grounds -- it is a permission-enumeration primitive on the ambient identity every CC-web session assumes, which cuts against the very DEP-13 posture this plan strengthens; it would need its own SPLIT-APPLY and its own fence proof; and the verifier should not be the verified, the same actor/observer separation Decision 188/192 apply to GC. The cost is zero, because every post-deploy step here already runs in the ADMIN container where the SPLIT-APPLY happens."
+  - "DECLARED RESIDUAL (Decision 181 clause 2 / Decision 187 point 2 -- silence is not a disposition): this plan does NOT widen scripts/checks/iam_tf/validate_agent_observability_read_coverage.py, so the new PlatformDev S3 coverage is unasserted and could drift back out. Owner: rec-3946. Two reasons it is not fixed here -- _resource_covered is Effect-BLIND (reproduced: a Deny-only statement returns covered=True), so a naive row would go green on the very Deny this plan adds and stay green with the Allow deleted; and the containment predicate needed for a real red case requires a DECLARED per-role instance set, since a domain derived from the role's own grants is tautological. Both are changes to a shipped check, not to this plan's surface."
+  - "Blast-radius note for rec-3946's implementer: terraform/personal holds TWO aws_s3_bucket resources (data_lake, ducklake_catalog_dr). The module's test_real_tree_all_covered examines 9 observability-managed resources (the module has 11 tests -- different number, do not conflate). A naive PlatformDev row reddens it for the DR bucket, and the tempting remedy -- widening PlatformDev's S3 Resource to arn:aws:s3:::agent-platform-* -- would reach the bootstrap state bucket and the DR bucket, neither of which any DEP-13 Deny fences."
+  - "FIXTURE SEQUENCING: tests/fixtures/ducklake_recovery_drill.json can only be produced by post-deploy steps 11-13, which run after the SPLIT-APPLY, which runs after the PR. It therefore lands in a SECOND commit with the full tier re-run, not in the commit that handoff_policy gates."
+  - "Drill corpus verified 2026-09-20: production holds 19,360 candidates (a delete marker over a sized noncurrent version), 100% of them non-multipart, so a candidate is guaranteed to exist and the ETag assertion is sound. Step 12 still filters on both properties rather than assuming they hold."
   - "PlatformDev DailyOps measures approximately 2,036 B minified against the 10,240 B Decision 156 ceiling; the precondition is per-policy, not the per-role aggregate."
-  - "terraform/personal holds TWO aws_s3_bucket resources (data_lake, ducklake_catalog_dr). test_real_tree_all_covered passes 11/11 today; a naive PlatformDev map row reddens it for the DR bucket."
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -258,23 +245,21 @@ pre_implementation_checklist:
   - docs/contracts/deploy-paths.yaml admin_out_of_band.procedure read in full before any apply
   - The four no-default tfvars recovered from remote state per terraform/CLAUDE.md
 execution_steps:
-  - Add the S3 bucket-config and version-level READ grants to PlatformDev DailyOps, scoping s3:GetObjectVersion to the DuckLake object prefixes and granting s3:ListBucketVersions at the bucket ARN with an s3:prefix condition admitting BOTH DuckLake data prefixes
-  - Add the OBJECT-level Deny for the version-read verbs on tfstate/personal/*, tfplan/personal/* and convergence/personal/*
+  - Grant PlatformDev s3:GetLifecycleConfiguration and s3:GetBucketVersioning at the bucket ARN, s3:ListBucketVersions at the bucket ARN under an s3:prefix condition admitting BOTH DuckLake data prefixes, and s3:GetObjectVersion on those two object prefixes only
+  - Add the OBJECT-level Deny covering s3:GetObjectVersion, s3:GetObjectVersionAcl, s3:GetObjectVersionTagging and s3:GetObjectVersionAttributes on tfstate/personal/*, tfplan/personal/* and convergence/personal/*
   - Add the separate BUCKET-level, s3:prefix-conditioned Deny for s3:ListBucketVersions against those same prefixes
-  - Create tests/checks/iam_tf/test_platform_dev_data_lake_read_fence.py asserting grant and Deny resource SHAPES, with red cases for a bucket-wide grant, a missing Deny, and the inert object-prefix ListBucketVersions Deny
-  - Widen OBSERVABILITY_READ_MAP to many roles per resource type with per-role coverage evaluated only over the buckets that role is scoped to; extend its test including the non-data-lake-bucket red case
-  - Add the by_design explicitDeny rows to docs/contracts/iam-simulate-fixture.yaml
+  - Create the fence guard module asserting grant and Deny resource SHAPES, with red cases for a bucket-wide grant, a missing Deny, a single-prefix condition, and the inert object-prefix ListBucketVersions Deny
   - Create the verification registry shard platform-dev-data-lake-read-fence under this plan's slug
   - Run the ADMIN SPLIT-APPLY -- recover tfvars, init, plan -target, PRESENT, obtain explicit human acceptance, apply
-  - Prove the grant and the fence live, capture the pre-rule forensic inventory, run the copy-forward drill, and commit tests/fixtures/ducklake_recovery_drill.json with its honest version residual
+  - Prove the grant and the fence live via simulate-principal-policy, capture both prefixes' forensic inventories, run the copy-forward drill, and commit the fixture in a second commit with the full tier re-run
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - 'Report: what was implemented, verification results'
 work_areas: []
 rollback: >-
   Revert the platform_dev_policies.tf change and re-apply out-of-band under agent_platform_admin.
   The grants are read-only and additive, so reverting removes visibility without affecting any write
-  path. The recovery drill is NOT self-reverting: copy-forward adds a version and the bare
-  delete-object adds a second delete marker, leaving a permanent +2 version residual on one key
-  (true restoration would need s3:DeleteObjectVersion, deliberately ungranted). The key's digest is
-  recorded in the fixture so the sibling plan's expiry rule can account for it; the residual ages
-  out with the rest of the prefix.
+  path. The recovery drill is NOT self-reverting -- copy-forward adds a version and the bare
+  delete-object adds a second delete marker, a measured +2 residual on one key (true restoration
+  would need s3:DeleteObjectVersion, deliberately ungranted). The key's digest is recorded in the
+  fixture so the sibling plan's expiry rule can account for it; the residual ages out with the rest
+  of the prefix.
