@@ -67,9 +67,11 @@ acceptance_criteria:
     `evaluator: {agent_surface: docs/CLAUDE.md}`, a non-`active` status (closed at birth for a new
     file per contract-population.yaml grandfather_only_forms) and a NON-EMPTY amendment_log.
     Class, subject, evaluator and status are enforced by validate_contract_drift Pass 1 in VP
-    steps 10 and 11. The amendment_log clause is NOT: validate_contract_drift skips a genuinely
+    steps 11 and 12. The amendment_log clause is NOT: validate_contract_drift skips a genuinely
     new file (`if base_text is None: continue`), so an empty log would pass every registered
-    gate. VP step 1 is therefore its ONLY prover.
+    gate. VP step 1 is therefore its ONLY prover, and it asserts against the PARSED amendment_log
+    list rather than a file-wide token grep, which would false-positive on this contract's own
+    prose about the amendment rule.
   - >-
     docs/CLAUDE.md names the contract basename verbatim, so the agent_surface evaluator resolves.
     Proven by VP step 2. This is the single point of failure for the contract's evaluator -- a
@@ -96,11 +98,14 @@ acceptance_criteria:
     The probe is absent from scripts/validate.py's check registry -- it is operator-invoked only
     and never runs in CI. Proven by VP step 7's negative assertion.
   - >-
-    Every prose surface stays within its config/prose_budgets.yaml byte budget, with the pointer
-    landing in docs/CLAUDE.md (836 bytes of headroom) rather than the S1 ambient load-set (6
-    bytes). Proven by VP step 8.
+    Both size registries stay green. Prose: every surface within its config/prose_budgets.yaml
+    byte budget, with the pointer landing in docs/CLAUDE.md (836 bytes of headroom) rather than
+    the S1 ambient load-set (6 bytes) -- proven by VP step 8. Structural:
+    docs/contracts/file-router.yaml at or under the contracts-class 500-effective-line limit after
+    the route lands, which requires compacting its oldest amendment_log entries because it
+    measures 496 today -- proven by VP step 9.
   - >-
-    rec-3941 is open and carries the execution half. Proven by VP step 9. This plan claims no
+    rec-3941 is open and carries the execution half. Proven by VP step 10. This plan claims no
     name, publishes no package, creates no account and stores no credential.
 
 verification_plan:
@@ -110,21 +115,20 @@ verification_plan:
       Prove the contract exists, declares its Class D subject, and carries a NON-EMPTY
       amendment_log. The amendment_log conjunct is load-bearing: validate_contract_drift skips a
       genuinely new file, so this step is the only gate that sees an empty log on this landing.
-    command: "test -f docs/contracts/package-registry-reservation.yaml && grep -o -m1 'subject: package-registry-reservation' docs/contracts/package-registry-reservation.yaml && grep -o -m1 'change_class:' docs/contracts/package-registry-reservation.yaml"
+    command: bin/venv-python -c "import sys,yaml; d=yaml.safe_load(open('docs/contracts/package-registry-reservation.yaml')); log=d.get('amendment_log') or []; print('SUBJECT=%s AMENDMENT_ENTRIES=%d' % (d['contract']['subject'], len(log))); sys.exit(0 if d['contract']['subject']=='package-registry-reservation' and log and all('change_class' in e for e in log) else 1)"
     expected: >-
-      Exit 0 with the subject line and an amendment-entry key echoed. RED BEFORE, verified: the
-      path does not exist on this branch, so the leading test -f short-circuits to exit 1 and
-      prints nothing. The second grep targets change_class rather than the amendment_log key
-      itself, because the key is present even when the list is empty -- only an ENTRY carries
-      change_class.
+      Exit 0 printing the subject and a non-zero entry count. RED BEFORE, verified by execution:
+      the path does not exist, so open() raises FileNotFoundError and the interpreter exits 1,
+      which classifies assertion_failed. Scoped to the parsed amendment_log list, NOT a file-wide
+      token grep: this contract's own body discusses validate_contract_drift's amendment rule, so
+      a bare change_class token search would false-positive on that prose and green an empty log.
     fix_if: >-
-      Exit 1 on the first grep means the subject is missing or misspelled; it must equal the
-      file-router route topic exactly. Exit 1 on the second means amendment_log is present but
-      empty -- add the initial-authoring entry.
+      A non-zero exit with the subject printed means amendment_log is empty or an entry omits
+      change_class -- add the initial-authoring entry. A mismatched subject must be corrected to
+      equal the file-router route topic exactly.
     hermetic: true
     expected_literals:
-      - "subject: package-registry-reservation"
-      - "change_class:"
+      - "AMENDMENT_ENTRIES="
     graduation: waive
     graduation_waiver_reason: >-
       The subject and shape conjuncts duplicate validate_contract_drift, registered in both tiers.
@@ -270,6 +274,37 @@ verification_plan:
       so a graduate disposition would classify tautological and hard-fail this plan's PR.
   - step: 9
     phase: pre-deploy
+    action: >-
+      Prove docs/contracts/file-router.yaml stays within the Decision 166 contracts-class
+      500-effective-line limit AFTER the route lands. It measures 496 today: FOUR lines of
+      headroom against additions costing 8-15, so the amendment-log compaction in execution_steps
+      is mandatory, not optional.
+    command: >-
+      bin/venv-python -c "import sys,pathlib; t=pathlib.Path('docs/contracts/file-router.yaml').read_text(encoding='utf-8');
+      n=len([l for l in t.splitlines() if l.strip() and not l.lstrip().startswith('#')]);
+      print('ROUTER_EFFECTIVE_LINES=%d' % n);
+      sys.exit(0 if (n <= 500 and 'topic: package-registry-reservation' in t) else 1)"
+    expected: >-
+      Exit 0 with a count at or under 500. RED BEFORE, verified by execution: the route is absent
+      today, so the second conjunct is false and the command exits 1 (assertion_failed) even
+      though the count itself currently passes at 496.
+    fix_if: >-
+      A count above 500 means the compaction did not free enough lines -- compact more of the
+      oldest amendment_log entries (dates, plan names and Decision citations preserved, summary
+      bodies collapsed to one line), which is this file's own established valve. Do NOT register a
+      budgets override (it needs an authorising Decision under Decision 165/166 this plan declines
+      to mint) and do NOT split the file (the contracts class forbids splitting a single subject).
+    hermetic: true
+    expected_literals:
+      - "ROUTER_EFFECTIVE_LINES="
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates validate_structural_size_limits, registered in both tiers, which owns the
+      contracts-class limit for every docs/contracts/*.yaml file. The only conjunct that makes
+      this step red today is the route presence, and that is already graduated at step 3 --
+      graduating it again here would double-report one invariant.
+  - step: 10
+    phase: pre-deploy
     action: Confirm rec-3941 exists and carries the execution half, by reading it back from the warehouse.
     command: bin/venv-python -m scripts.ops_data_portal --sync && grep -c 'rec-3941' logs/.recommendations-log.jsonl
     expected: >-
@@ -282,25 +317,28 @@ verification_plan:
       anti-pattern).
     hermetic: false
     graduation: not-applicable
-  - step: 10
+  - step: 11
     phase: pre-deploy
     action: Run the authoritative fast presubmit tier.
     command: bin/venv-python -m scripts.validate --pre
     expected: >-
-      Exit 0. validate_contract_drift, validate_placement, validate_prose_limits,
-      validate_sloc_limits, test_coverage_checker and validate_plan_documents are the likely first
-      failures.
+      Exit 0. validate_structural_size_limits, validate_contract_drift, validate_placement,
+      validate_prose_limits, validate_sloc_limits, test_coverage_checker and
+      validate_plan_documents are the likely first failures.
     fix_if: >-
-      Address the named check. A Decision 128 SLOC crossing on the new module is decomposed, never
-      raised -- a raise needs an authorising Decision under Decision 165, which this plan
-      deliberately does not mint.
+      Address the named check, and note the valves DIFFER by registry. A Decision 128 SLOC
+      crossing on a new PYTHON module is decomposed, never raised. A validate_structural_size_limits
+      failure on docs/contracts/file-router.yaml is the F1 collision (496 of 500 at plan time) and
+      its valve is the OPPOSITE: compact the oldest amendment_log entries, because the contracts
+      class forbids splitting a single subject. Neither takes a budget raise -- that needs an
+      authorising Decision under Decision 165/166, which this plan deliberately does not mint.
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
       The aggregate presubmit tier itself. A graduate disposition here is refused statically by
       vp-red-before.yaml's recursion_refusal, which forbids a graduate step invoking
       scripts.validate. Marked non-hermetic so the implement leg never replays it into recursion.
-  - step: 11
+  - step: 12
     phase: pre-deploy
     action: Run the full validation tier before handoff.
     command: bin/venv-python -m scripts.validate
@@ -309,9 +347,9 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
-      The aggregate full tier itself; same recursion refusal as step 10, and the same non-hermetic
+      The aggregate full tier itself; same recursion refusal as step 11, and the same non-hermetic
       marking for the same reason. Nothing to graduate.
-  - step: 12
+  - step: 13
     phase: post-deploy
     action: >-
       Operator-only, run OUTSIDE this plan's execution once the human has claimed the names. Not
@@ -354,7 +392,7 @@ test_obligations:
     behavior: >-
       The contract keeps a valid Class D envelope with a resolving evaluator, and its amendment_log
       advances whenever its canonical dump changes.
-    verification_step: 10
+    verification_step: 11
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: >-
       No new automated test is authored and none is mechanically required. The behaviour is gated
@@ -366,7 +404,7 @@ test_obligations:
     behavior: >-
       The new route resolves to a tracked file, its topic equals the contract subject, and the new
       scripts/ root module is allowlisted.
-    verification_step: 10
+    verification_step: 11
     command: bin/venv-python -m scripts.validate --pre
     waiver_reason: >-
       validate_placement enforces route link-validity and the scripts-root allowlist tree-wide in
@@ -434,9 +472,35 @@ constraints:
     scripts/ducklake_neon_smoke_test.py, both of which are already in the scripts-root allowlist.
     VP step 7 asserts this negatively.
   - >-
-    Decision 128 -- decompose by default. Keep both new files under 500 SLOC and register NO
-    sloc_budgets entry. A raise marker would need an authorising Decision under Decision 165, which
-    this plan deliberately does not mint.
+    STRUCTURAL SIZE, second registry, different valve. docs/contracts/file-router.yaml measures
+    496 effective lines against the Decision 166 contracts-class limit of 500
+    (config/structural_size_budgets.yaml, validate_structural_size_limits, pre tier): FOUR lines
+    of headroom, while this plan's route + allowlist + amendment entry cost 8 at an absolute floor
+    and 12-15 by the file's own two most recent precedents. Pay for them by COMPACTING the oldest
+    amendment_log entries, the valve this file has already used twice -- and which is free here
+    because _canonical() excludes amendment_log, so compaction is not itself a dump change and
+    needs no extra entry. Do NOT register a budgets override (needs an authorising Decision under
+    Decision 165/166 this plan declines to mint) and do NOT split the file: the contracts class
+    forbids splitting a single subject, which is the exact OPPOSITE of the Decision 128 SLOC
+    valve below. Same failure class as constraint 8, one registry over.
+  - >-
+    docs/contracts/package-registry-reservation.yaml is subject to that same contracts-class
+    500-effective-line limit. Author the three-registry walkthrough TERSE from the start: the
+    class relief valve forbids splitting a single subject, so an over-length contract cannot be
+    recovered by decomposition afterwards.
+  - >-
+    Decision 128 -- decompose by default. Keep both new PYTHON files under 500 SLOC and register
+    NO sloc_budgets entry. A raise marker would need an authorising Decision under Decision 165,
+    which this plan deliberately does not mint.
+  - >-
+    RATIFIED-BRAND NAMESPACE, measured 2026-09-20: `theseus` is ALREADY TAKEN on all three
+    registries (HTTP 200 on PyPI, npm and crates.io). This removes the asymmetry a reviewer would
+    otherwise raise -- the plan is not defending a candidate name while leaving the ratified one
+    unmeasured. It also sharpens the Decision 184 installability rationale: the platform can never
+    ship under `theseus` on any registry whatever rec-3922 decides, so a distinct distribution
+    name is required regardless, and that argument does NOT depend on the rename ratifying. Record
+    this measurement in the contract; do not attempt to contest or acquire the existing `theseus`
+    packages.
   - >-
     No numbered Decision is minted. Per Decision 150 / Decision 86 routing, an operational fact
     routes to a recommendation and a contract -- the same disposition Decision 195 clause 4 already
@@ -464,31 +528,30 @@ context:
   - >-
     gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s).
   - >-
-    Scout flags dispositioned: D101 brand + D101(d) identity -> constraints 2-4. D168 SPIRIT
-    (reservation_status unevaluated) -> block DROPPED, rec-3941 sole tracker; sharper mechanical
-    reason -- validate_contract_drift fails a Class D dump change with no amendment_log entry, so
-    a probe-written status would redden CI every run. D133 capacity -> operator accepted.
+    Scout flags: D101 brand + D101(d) identity -> constraints 2-4. D168 SPIRIT
+    (reservation_status unevaluated) -> DROPPED, rec-3941 sole tracker; sharper reason --
+    validate_contract_drift fails a dump change with no amendment_log entry, so a probe-written
+    status would redden CI every run. D133 capacity -> operator accepted.
   - >-
-    Critique round 1 (REVISE) dispositioned: BLOCKING prose collision -> evaluator retargeted
-    AGENTS.md to docs/CLAUDE.md (constraint 8, VP8), fixing a placement smell not just the byte
-    ceiling. VP3 waiver named a duplication that does not exist (nothing enforces route PRESENCE)
-    -> GRADUATED. VP7 re-boxed to waive. AC1 amendment_log over-claim -> VP1 extended, AC1 names
-    VP1 sole prover. AC5 split (UA test + obligation; identity clause -> constraint 4). AC7 ->
-    VP9. otl-labs.com hedged pending rec-3905.
+    Critique r1 (REVISE): BLOCKING prose collision -> evaluator retargeted to docs/CLAUDE.md
+    (constraint 8, VP8), fixing a placement smell not just a byte ceiling. VP3 waiver named a
+    duplication that does not exist -> GRADUATED. VP7 -> waive. AC1 over-claim -> VP1 sole prover.
   - >-
-    Live premise check, 2026-09-20 from CC-web: ontheloop returns 404 on all three registries and
-    the probe discriminates (requests/express/serde return 200). npm org/user endpoints returned
-    403/401, so @ontheloop scope availability is UNVERIFIED. Re-measure at implement time.
+    Critique r2 (REVISE): r1 resolved, no regressions, both graduate steps verified against the
+    live Decision 189 replay. New BLOCKING find one registry over -> constraint 9 + VP9
+    (file-router 496/500). Plus constraint 10, VP1 proxy tightened, VP11 fix_if, constraint 12.
+  - >-
+    Live check 2026-09-20 (CC-web): ontheloop 404 on all three; probe discriminates
+    (requests/express/serde 200). theseus, the RATIFIED brand, is 200 on all three -- taken
+    (constraint 12). npm org/user endpoints 403/401 so @ontheloop scope is UNVERIFIED. Re-measure.
   - >-
     Red-before exits measured, not assumed: pytest on the absent test file exits 4 (target_absent
     via _vp_replay_classify); VP1-4 each exit 1. Measured because the red-before leg partitions on
     `graduation` ALONE, never `hermetic` (validate_vp_replay.py:525).
   - >-
-    rec-3941 holds the execution half (operator-only). Siblings: rec-3905 (org handle + domains,
-    undecided), rec-3922 (candidate rename, open).
-  - >-
-    Corpus defect found by critique, NOT fixed here: PLAN-company-formation-ownership.yaml steps
-    15/16 mark scripts.validate hermetic: true, which hermetic_authoring forbids. Do not copy it.
+    rec-3941 holds the execution half (operator-only); siblings rec-3905, rec-3922. Corpus defect
+    found by critique, NOT fixed here: PLAN-company-formation-ownership.yaml steps 15/16 mark
+    scripts.validate hermetic true, which hermetic_authoring forbids. Do not copy it.
 
 pre_implementation_checklist:
   - Confirm `git branch --show-current` is the harness session branch, never main.
@@ -504,6 +567,10 @@ pre_implementation_checklist:
     Before editing docs/CLAUDE.md, measure it (`wc -c docs/CLAUDE.md`) against its 3813-byte
     budget in config/prose_budgets.yaml. Do not put the pointer in AGENTS.md -- S1 has 6 bytes of
     headroom (constraint 8).
+  - >-
+    Before editing docs/contracts/file-router.yaml, run VP step 9's command to measure its
+    effective lines against the 500 limit (496 at plan time). The compaction is mandatory, not
+    optional, and must land in the same commit as the route (constraint 9).
   - >-
     Re-measure the three registries before writing any availability claim into the contract -- the
     2026-09-20 measurement in context is a point-in-time observation of third-party state.
@@ -528,7 +595,9 @@ execution_steps:
     constraint; crates.io immutability (yank, never delete) and its GitHub-OAuth ownership coupling
     to rec-3905; the role-alias identity rule with security@otl-labs.com recorded as a CANDIDATE
     pending rec-3905 and the account-owner-should-differ recommendation; and that a claim is a
-    defensive hold, never brand ratification.
+    defensive hold, never brand ratification. Also record the 2026-09-20 measurement that
+    `theseus` is already taken on all three registries (constraint 12), with the disposition
+    "not contested, not acquired" stated explicitly so a later reader does not re-open it.
   - >-
     Implement scripts/package_registry_probe.py. Model the per-registry result as three distinct
     states (claimed / unclaimed / unreachable), never a bool. Map 200 to claimed and 404 to
@@ -544,18 +613,24 @@ execution_steps:
     VP step 5's selector and AC5 resolve. Cover every branch -- a new file defaults to a
     100-percent coverage threshold.
   - >-
+    BEFORE adding anything to docs/contracts/file-router.yaml, compact its oldest amendment_log
+    entries to free the lines the additions consume -- it sits at 496 of 500 effective lines.
+    Preserve every date, plan name and Decision citation; collapse only the summary bodies to one
+    line each, the form its 2026-09-15 and 2026-09-13 entries already used. Then re-measure with
+    VP step 9's command and confirm the post-edit count is at or under 500.
+  - >-
     Add the file-router route (topic `package-registry-reservation`), add
-    scripts/package_registry_probe.py to scripts_root_allowlist.allowed_files, and append the
-    amendment_log entry. Do not touch contract-population.yaml's ratchet pins -- a new contract
-    with a resolving evaluator and a non-`active` status lands in the `declared` bucket, which
-    neither pin is bound to.
+    scripts/package_registry_probe.py to scripts_root_allowlist.allowed_files, and append ONE new
+    amendment_log entry covering the route, the allowlist and the compaction together. Do not
+    touch contract-population.yaml's ratchet pins -- a new contract with a resolving evaluator and
+    a non-`active` status lands in the `declared` bucket, which neither pin is bound to.
   - >-
     Add the docs/CLAUDE.md pointer naming docs/contracts/package-registry-reservation.yaml
     verbatim, under the existing Class-to-home map's operator-procedure row. Keep it to one line
     and re-measure the file against its 3813-byte budget afterwards.
   - >-
-    Run VP steps 1-11 in order. Step 7 is a NEGATIVE assertion -- a non-empty result is a scope
-    breach, not a test to work around. Step 12 is operator-only and is NOT run by the implementing
+    Run VP steps 1-12 in order. Step 7 is a NEGATIVE assertion -- a non-empty result is a scope
+    breach, not a test to work around. Step 13 is operator-only and is NOT run by the implementing
     agent.
   - >-
     Close by presenting the operator walkthrough in chat: the ordered HUMAN steps for all three
