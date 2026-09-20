@@ -132,10 +132,11 @@ verification_plan:
     on the amendment delta the Decision 134 annotation creates.
   command: bin/venv-python -c "import sys; from scripts.checks.decisions.validate_decisions_size import
     validate_decisions_size as f; failed=[]; f(failed); print(failed); sys.exit(1 if failed else 0)"
-  expected: 'Exit 0 and an empty failure list. Expect FOUR WARN lines, not one: the amendment-delta leg
-    fires for any baseline entry whose span changes AND exceeds the cap, and this plan annotates Decisions
-    134 (7,182 B), 167 (7,350 B), 177 (6,630 B) and 179 (6,118 B, which crosses the 6,144 cap on any added
-    line). All four are telemetry and never append to the failure list.'
+  expected: 'Exit 0 and an empty failure list. Expect FIVE WARN lines: four amendment-delta warnings for
+    the baseline entries this plan annotates (Decisions 134, 167, 177 and 179 -- the first three already
+    exceed the cap and 179 crosses it on any added line), plus one standing-pressure aggregate, which
+    fires unconditionally because 25 live and archive entries already exceed 1.2x the cap. All five are
+    telemetry and never append to the failure list.'
   expected_literals: []
   fix_if: An over-cap failure names the entry; trim its Related line first per Decision 167 clause 3,
     then its Problem section, never its Decision clauses, and never by raising the cap.
@@ -201,9 +202,11 @@ verification_plan:
   phase: pre-deploy
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: Envelope conformance for new entries is already owned by validate_decision_entry_conformance
-    (step 3), and Decision 177 makes both bodies append-only once merged, so a registry row pinning these
-    two numbers would assert something the corpus already cannot break.
+  graduation_waiver_reason: Decision 177 clause 1's append-only rule is a standing NORM, not a live mechanism
+    -- its guard validate_live_entry_immutability was retired by Decision 178, and this plan's only append-only
+    enforcement is step 7, which is branch-local and itself waived. A registry row here would therefore
+    assert a property nothing mechanically holds; the residual risk is accepted rather than papered over.
+    Envelope conformance is separately owned by validate_decision_entry_conformance (step 3).
   action: 'Prove both entries are present and conformant: envelope number matching the heading, significance
     numbered_decision, correct Warehouse ID, a fenced reversal-conditions stanza (AC2), amends: [134]
     on 196 (AC4), and both headings first in file order (AC7).'
@@ -215,12 +218,14 @@ verification_plan:
     or {}).get('value')=='numbered_decision' and env(n).get('number')==n and (F+'yaml reversal-conditions')
     in found[n]]; print('ratified:', ok, 'dec196_amends_134:', 134 in (env(196).get('amends') or []),
     'first_two_headings:', [n for n,_ in secs[:2]]); sys.exit(0 if ok==[196,197] and 134 in (env(196).get('amends')
-    or []) and [n for n,_ in secs[:2]]==[196,197] else 1)"
+    or []) and [n for n,_ in secs[:2]]==[197,196] else 1)"
   expected: 'Exit 0, a ratified list naming both numbers, the amends flag true, and first_two_headings
-    of [196, 197]. Each leg closes an acceptance criterion that previously had no asserting step: the
-    stanza leg AC2, the amends leg AC4, the position leg AC7''s second half.'
+    of [197, 196]. The corpus runs newest-first, so 197 sits above 196; inserting them the other way inverts
+    the convention at the head of the file, which Decision 177 makes expensive to correct afterwards.
+    Each leg closes an acceptance criterion that previously had no asserting step: the stanza leg AC2,
+    the amends leg AC4, the position leg AC7.'
   expected_literals:
-  - 'first_two_headings: [196, 197]'
+  - 'first_two_headings: [197, 196]'
   fix_if: 'The printed field names which leg failed. A wrong first_two_headings means the entries were
     not inserted above the previous first heading. A false amends flag means 196''s envelope omits amends:
     [134] -- the title alone does not satisfy AC4.'
@@ -278,13 +283,14 @@ verification_plan:
   phase: pre-deploy
   hermetic: true
   graduation: waive
-  graduation_waiver_reason: Decision 177 makes both bodies append-only once merged, so after this plan
-    the clause numbering cannot regress; a standing registry row would assert something the corpus already
-    cannot break. Its value is entirely at authoring time.
-  action: Prove both ratified entries actually carry the eight numbered clauses this plan's acceptance
-    criteria and roadmap criteria cite. AC9, step 9 and test_obligations bind on 197 clause 6; AC11 binds
-    on 196 clause 8 and 197 clauses 2, 3 and 7. Without this, a T4.3 criterion could cite a clause the
-    corpus does not contain.
+  graduation_waiver_reason: Decision 177 clause 1's append-only rule is a standing NORM, not a live mechanism
+    -- its guard validate_live_entry_immutability was retired by Decision 178, and this plan's only append-only
+    enforcement is step 7, which is branch-local and itself waived. A registry row here would therefore
+    assert a property nothing mechanically holds; the residual risk is accepted rather than papered over.
+    Envelope conformance is separately owned by validate_decision_entry_conformance (step 3).
+  action: Prove both ratified entries carry the eight numbered clauses this plan's criteria cite. AC9,
+    step 9 and test_obligations bind on 197 clause 6; AC11 binds on 196 clauses 8 and 7 and 197 clauses
+    2 and 3. Without this, a roadmap criterion could cite a clause the corpus lacks.
   command: bin/venv-python -c "import sys,re; from scripts.decisions_md import iter_decision_sections;
     c=open('docs/DECISIONS.md',encoding='utf-8').read(); found={int(m.group(1)):b for m,b in iter_decision_sections(c)};
     want={196:8,197:8}; gaps={}; [gaps.setdefault(n,[k for k in range(1,hi+1) if not re.search(r'^'+str(k)+chr(46)+chr(32),
@@ -404,6 +410,7 @@ verification_plan:
     stanza cannot green it.
   expected_literals:
   - 'fence_missing: []'
+  - 'dec167_prose_annotated: True'
   fix_if: A named number in fence_missing means that stanza interior does not yet reference Decision 196.
     A false 167 flag means the annotation is missing, does not name condition (c), or was placed inside
     the fence. See C2.
@@ -559,8 +566,11 @@ constraints:
   roughly 16 of the file''s remaining lines discharging an obligation that does not fire.'
 - 'C7 (Decisions 110, 114, 147): a per-tier roadmap split is forbidden, stated verbatim in config/structural_size_budgets.yaml''s
   roadmaps relief_valve row. Decision 197 clause 8 names Decision 147''s sanctioned valves instead.'
-- 'C8 (Decisions 165, 187): the north-star guard rec must be authorization-shaped, never existence-shaped,
-  and must bind scripts/checks/_marker_guard.py at check-name level rather than copying it.'
+- 'C8 (Decisions 165, 187, 163): the north-star guard rec must be authorization-shaped, never existence-shaped,
+  and must bind scripts/checks/_marker_guard.py at check-name level rather than copying it. It must also
+  state why a north-star amendment is a genuine judgment checkpoint rather than the discretionary gate
+  Decision 163 clause 1 argues against -- that clause holds a universal obligation is enforced structurally,
+  not gated, so a new gate owes its exception.'
 - 'C9 (Decision 86): no new standing prose docs. Rationale goes to the two entries, forward intent to
   the T4.3/T4.23/T4.24 criteria, field semantics to a later contract.'
 - 'C10 (Decision 128): decompose, never raise, if a touched file crosses its SLOC budget.'
@@ -577,9 +587,9 @@ context:
   per-tier roadmap split (pivoted, see C7); run 2 on the revised approach FLAGS_FOUND. CITE: 184, 134,
   150, 87, 93, 136, 86, 165, 187, 163, 84, 137, 66, 189. Decisions triaged: 148 of 148. Roadmap items
   intersected: 4; CONFLICT: 1; RELATED: 3.'
-- 'gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 5 round(s), round 6 pending. Round 4
-  was the confirming round; its REVISE and round 5''s were escalated to the operator, who chose one more
-  round and a Fable advice-consult.'
+- 'gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE after 6 round(s), round 7 pending. Round 4
+  was the confirming round; rounds 4 and 5 were escalated to the operator, who chose one more round and
+  then a Fable advice-consult, whose one-home-per-fact recommendation round 6 applied.'
 - Drafts supplied by the operator; this plan ratifies them, it does not author their substance.
 - 'Roadmap line budget: check_roadmap_regrowth prints escalate=true (headroom under its 500-line threshold)
   independently of this plan. Carrier criteria are capped at two per item, and T1.5 is reworded in place,
@@ -598,8 +608,10 @@ context:
   point.'
 - Decision 196 clause 1 pre-decides neither Decision 184 clause 1's open adapter-residency question nor
   rec-3923 (open, the persona-tiered open-core boundary). The corpus is decision text, not an adapter.
-- 'Known residual, deliberately out of scope: T1.5 c2 cross-references an action c1 will no longer perform
-  once repointed. Step 22''s predicate does not match it, so it survives untouched; it rides E12''s rec.'
+- 'Known residual, deliberately out of scope: T1.5 c2 cross-references an action E8 makes c1 stop performing.
+  Step 22''s predicate does not match it (c2 names no retirement), so it survives untouched. E12 REQUIRES
+  the escalation rec to record it, which is what gives it an owner -- a residual named here and nowhere
+  else would have none.'
 - 'Authoring note: this plan reached round 6 on repeated stale-sibling defects -- a fact corrected in
   one field and left in another restating it. Round 6 consolidated to one home per fact with pointers
   by id (C-ids, E-ids, step numbers). rec-3784 (open, High) is the registered owner of this defect class;
@@ -609,65 +621,143 @@ pre_implementation_checklist:
 - docs/PROJECT_CONTEXT.md read
 - only the plan-cited decision sections
 - All files in scope located and readable
+- E3 and E4 both carry a complete entry body (heading, envelope, markers, clauses 1-8, reversal stanza,
+  Warehouse ID, Related, separator) -- STOP and escalate if either is truncated, because C9 forbids authoring
+  their substance and step 23 requires all eight clauses of each
 - Acceptance criteria understood and verifiable
 execution_steps:
 - 'E1: file the north-star guard recommendation FIRST via scripts.ops_data_portal (C11), so its id can
   be cited in Decision 196''s Related line. It MUST carry the literal token north-star-amendment-guard
   -- step 15 binds on that token and nothing else. Shape it per C8. Do not build the guard.'
-- 'E2: docs/DECISIONS.md -- insert Decision 196 then Decision 197 above the current first heading (C2).
-  Each carries the typed yaml envelope on a BARE ```yaml fence, the Status/Date/Decision markers, Problem,
-  Intent, a fenced ```yaml reversal-conditions stanza, a Warehouse ID line, Related, and the trailing
-  --- separator. Step 8 asserts the envelope, the stanza, the amends key and the insertion position together.'
-- 'E3: Decision 196''s envelope carries amends: [134]. The heading alone does not satisfy it -- step 8
-  reads the envelope key.'
-- 'E4: Decision 196''s clause 1 is authored EXACTLY as follows, quoted here so the plan-critique category-consistency
-  gate adjudicates 196''s numbered_decision routing against body text rather than against the envelope''s
-  own self-certification.
-
-
-  1. Storage. Decisions live in git, never warehouse-only, in every tier (this repository included): a
-  governed loop that cannot read its decisions cannot run, and a repository that ships without its constitution
-  is not self-contained. The warehouse projection (ops_decisions, Decision 84) stays a read-side derivative.
-  This REVERSES a held direction rather than settling an open one -- the corpus was withheld as private
-  IP and a moat, and Decision 134 clause 5 accordingly staged docs/DECISIONS.md and docs/DECISIONS_ARCHIVE.md
-  for retirement behind a decisions read portal. Decision 184 made the repository the free tier, and a
-  user cannot run the loop locally without a copy of the corpus, so the moat was the product. T1.5''s
-  retirement surfaces are repointed and the three reversal conditions armed on that cutover (Decisions
-  167, 177, 179) are annotated in the same change.
-
-
-  Clause 1 is a numbered_decision rather than a decision-entry.yaml governance note because that contract
-  owns the corpus''s AUTHORING GRAMMAR -- how an entry is shaped -- not which decisions a user receives
-  or where they live; and it withdraws a ratified end-state, which no contract note can do.'
-- 'E5: Decision 197''s two contestable clauses are authored EXACTLY as follows, quoted here so the plan-critique
-  category-consistency gate adjudicates 197''s numbered_decision routing against body text rather than
-  against the envelope''s own self-certification.
-
-
-  3. Target model (grain first, per the data-modeling default). work_items: one row per work item, SCD2,
-  kind discriminates epic-shaped (today''s tier item) from task-shaped (today''s rec); both id schemes
-  survive, type-prefixed and never renumbered. work_item_criteria: one row per (work item, criterion)
-  -- criterion text, verification method, status; it carries the graduation concept and subsumes rec acceptance,
-  tier-item exit_criteria and plan verification_plan steps AS CRITERION ROWS ONLY. A plan is never a work_items
-  kind: Decision 87 clause 6''s rec-versus-plan grain distinction survives unchanged. work_item_edges:
-  one row per directed edge with a closed, validated edge vocabulary. All three are partitioned (Decision
-  137); merge keys, identity and join keys land with the clause-8 contract, not here.
-
-
-  8. Sequencing. Design now, migrate once post-MVP (Decision 93), recording the destination while deliberately
-  not building it -- Decision 87 clauses 1-2''s own precedent, not frame-lock. No lift-and-shift of the
-  roadmap''s current shape into the warehouse occurs meanwhile, and T4.23/T4.24 carry the forward work.
-  Roadmap line-ceiling pressure is relieved only by Decision 147''s sanctioned valves (compaction in place,
-  lifecycle archival, or a consciously-cited raise); a per-tier split stays forbidden (Decisions 110,
-  114, 147).
-
-
-  Clause 3 is a numbered_decision rather than data-modeling-standard.yaml content because that contract
-  governs HOW any table is designed, while this fixes WHICH mechanism ships and which data stays private,
-  and binds three live surfaces to one grain. Clause 8 is not mere restatement of Decisions 110/114/147:
-  it records the sequencing commitment (design now, migrate once post-MVP) and names the forbidden option
-  only to close it off for the migration this entry opens -- the prohibition remains those Decisions'',
-  not this one''s.'
+- 'E2: docs/DECISIONS.md -- insert BOTH entries above the current first heading (C2), 197 first and then
+  196 above it, so the file head reads 197, 196, then the previous first heading. The corpus runs newest-first
+  (138 descending heading pairs against 9 ascending); step 8 asserts first_two_headings: [197, 196]. E3
+  and E4 carry the two bodies verbatim and are the ONLY source for them -- author exactly that text, changing
+  nothing except substituting E1''s allocated rec id into Decision 196''s Related line.'
+- "E3: Decision 197 is authored EXACTLY as follows.\n\n## Decision 197: Work-item mechanism boundary --\
+  \ the mechanism ships, the data does not; roadmap tier items and recommendations converge on one work-item\
+  \ model behind a storage port, and the executor's pick surface is kind-generic from its first implementation\
+  \ (Decided)\n\n```yaml\nnumber: 197\nstatus: Decided\ndecided_date: \"2026-09-20\"\nsignificance:\n\
+  \  value: numbered_decision\n  justification: >-\n    Durable, reversal-relevant boundary between shipped\
+  \ mechanism and private operational data,\n    plus a target model three live surfaces must converge\
+  \ on. Not a contract governance note:\n    data-modeling-standard.yaml owns HOW a table is designed,\
+  \ not WHICH mechanism ships versus\n    stays private, and exit-criteria-ledger.yaml owns one of the\
+  \ three completion shapes this\n    unifies rather than the unification. No prior entry can be amended\
+  \ to carry it.\n```\n\n**Status:** Decided\n**Date:** 2026-09-20\n**Warehouse ID:** dec-197 (per Decision\
+  \ 84 backfill)\n\n**Problem:** Work to do lives in two places with no join: `ROADMAP-PLATFORM.yaml`\
+  \ (172 tier items, 796 exit criteria, `depends_on` validated for dangling refs and cycles, at 9,901\
+  \ of a 10,000-line ceiling) and `ops_recommendations` (writer-allocated ids, a `dependencies` field\
+  \ nothing traverses). Three shapes describe \"done\": a rec's shell-command `acceptance`, a tier item's\
+  \ prose `exit_criteria`, a plan's `verification_plan` with graduation. Plans mint dependency edges (`bundled_recommendations`,\
+  \ `followon_recs`) that die when the plan file archives. The autonomous executor (T4.3, T4.19, T4.1)\
+  \ is about to lock its pick-up interface to recs alone.\n\n**Intent:** One work-item mechanism ships\
+  \ with the platform and drives the executor in every tier; this operator's work-item rows are private\
+  \ and never ship.\n\n**Decision:**\n1. Boundary. The work-item MECHANISM (schema, portal verbs, edge\
+  \ model, acceptance-criteria model, executor pick surface) is a core shipped component in every tier.\
+  \ The work-item DATA in this repository (roadmap content, recommendations, queue rows) is this operator's\
+  \ IP and never ships.\n2. Storage port. Work items are reached through a named port (Decision 184 clause\
+  \ 2); the local adapter is a file catalog, the cloud adapter is DuckLake-on-Neon; the user selects by\
+  \ configuration. T4.23 is that port's tracked local-adapter item. Tenancy (`project_id`) is a cloud-adapter\
+  \ property, not a mechanism requirement; the local adapter is single-tenant by construction.\n3. Target\
+  \ model (grain first, per the data-modeling default). `work_items`: one row per work item, SCD2, `kind`\
+  \ discriminates epic-shaped (today's tier item) from task-shaped (today's rec); both id schemes survive,\
+  \ type-prefixed and never renumbered. `work_item_criteria`: one row per (work item, criterion) -- criterion\
+  \ text, verification method, status; it carries the graduation concept and subsumes rec `acceptance`,\
+  \ tier-item `exit_criteria` and plan `verification_plan` steps AS CRITERION ROWS ONLY. A plan is never\
+  \ a `work_items` kind: Decision 87 clause 6's rec-versus-plan grain distinction survives unchanged.\
+  \ `work_item_edges`: one row per directed edge with a closed, validated edge vocabulary. All three are\
+  \ partitioned (Decision 137); merge keys, identity and join keys land with the clause-8 contract, not\
+  \ here.\n4. Taxonomy stays out of the schema. Tier membership (`T4.x`), verification tiers (`V1..V3`)\
+  \ and `source: ci_rca` are grouping items, edges or extension values, never columns, so a user's work\
+  \ items carry none of this operator's vocabulary.\n5. Edges are authored at merge. A plan DECLARES intended\
+  \ edges; the squash-merge writes them, as `rec-autoclose.yml` already writes closure edges from the\
+  \ `Resolves:` trailer. Plan-declared edges are never the durable record.\n6. Executor pick surface.\
+  \ T4.3's producer and every later consumer are written against the clause-3 grain (`pick_work_item`,\
+  \ one row per pickable item, `kind`-discriminated) even while `kind: rec` is the only populated kind;\
+  \ tier items join by adding a kind, never by rebuilding the surface. T4.3's rec-shaped exit criteria\
+  \ are amended accordingly.\n7. Vocabulary. \"Recommendation\" and the `file_rec` / `update_rec` verbs\
+  \ are renamed with the model, never as a separate later pass (323 files reference the verbs today; the\
+  \ free tier makes them public API). The rename moves the closed named-verb boundary (Decision 84 I-3),\
+  \ it does not open it.\n8. Sequencing. Design now, migrate once post-MVP (Decision 93), recording the\
+  \ destination while deliberately not building it -- Decision 87 clauses 1-2's own precedent, not frame-lock.\
+  \ No lift-and-shift of the roadmap's current shape into the warehouse occurs meanwhile, and T4.23/T4.24\
+  \ carry the forward work. Roadmap line-ceiling pressure is relieved only by Decision 147's sanctioned\
+  \ valves (compaction in place, lifecycle archival, or a consciously-cited raise); a per-tier split stays\
+  \ forbidden (Decisions 110, 114, 147).\n\n```yaml reversal-conditions\ndecision: 197\nreview_by: 2027-03-31\n\
+  on_trigger: \"re-decide via /plan\"\nconditions:\n  - id: two-shapes-after-all\n    kind: manual\n \
+  \   description: \"Epic-shaped and task-shaped items need required fields the criteria child table cannot\
+  \ absorb: reopen clause 3 before adding nullable columns.\"\n  - id: executor-needs-tier-items-pre-mvp\n\
+  \    kind: manual\n    description: \"The MVP bounded iteration cannot complete on recs alone: pull\
+  \ the clause-8 migration forward.\"\n  - id: merge-authored-edges-lossy\n    kind: manual\n    description:\
+  \ \"A plan's declared edges carry information the merge cannot recover: reopen clause 5.\"\n```\n\n\
+  **Related:** Decision 184 (port rule, free-tier boundary), Decisions 81, 84, 87, 93, 128, 137, 147,\
+  \ 185; T4.3, T4.19, T4.22, T4.23, T4.24; Decision 196.\n\n---"
+- "E4: Decision 196 is authored EXACTLY as follows. Substitute E1's allocated rec id for the parenthetical\
+  \ at the end of the Related line.\n\n## Decision 196: Three-tier decision model for the open-core product\
+  \ -- north stars and product decisions share one shape, platform decisions ship as a read-only per-release\
+  \ snapshot that user decisions supersede (amends Decision 134) (Decided)\n\n```yaml\nnumber: 196\nstatus:\
+  \ Decided\ndecided_date: \"2026-09-20\"\namends: [134]\nsignificance:\n  value: numbered_decision\n\
+  \  justification: >-\n    Durable, reversal-relevant product-boundary commitment on what governance\
+  \ a free-tier user\n    receives and how it is layered, carrying a recorded reversal of the corpus's\
+  \ storage\n    direction. Not a contract governance note: decision-entry.yaml owns the corpus's AUTHORING\n\
+  \    GRAMMAR, not what ships to a user, and cannot bind Tier A's context or amendment policy. Not\n\
+  \    an amendment of 184, which draws the code boundary, not the decision-corpus boundary.\n```\n\n\
+  **Status:** Decided\n**Date:** 2026-09-20\n**Warehouse ID:** dec-196 (per Decision 84 backfill)\n\n\
+  **Problem:** Decision 184 makes this repository the free tier, but the decision corpus was designed\
+  \ for one author. A user who imports the platform cannot run the governed loop without the decisions\
+  \ the shipped validators, contracts and skills cite, so the corpus is product surface, not private IP\
+  \ -- yet no entry says which decisions ship, in what form, or how a user layers their own on top. Meanwhile\
+  \ the corpus grew to 195 entries at 756 KB, most of it this operator's history, and a user installing\
+  \ the package would inherit all of it or none of it.\n\n**Intent:** Every user runs on three tiers of\
+  \ decisions with a single shape and a single supersession mechanism, so the platform's governance ships\
+  \ as a versioned template rather than as this operator's diary.\n\n**Decision:** Amends Decision 134\
+  \ clause 5.\n1. Storage. Decisions live in git, never warehouse-only, in every tier (this repository\
+  \ included): a governed loop that cannot read its decisions cannot run, and a repository that ships\
+  \ without its constitution is not self-contained. The warehouse projection (`ops_decisions`, Decision\
+  \ 84) stays a read-side derivative. This REVERSES a held direction rather than settling an open one\
+  \ -- the corpus was withheld as private IP and a moat, and Decision 134 clause 5 accordingly staged\
+  \ docs/DECISIONS.md and docs/DECISIONS_ARCHIVE.md for retirement behind a decisions read portal. Decision\
+  \ 184 made the repository the free tier, and a user cannot run the loop locally without a copy of the\
+  \ corpus, so the moat was the product. T1.5's retirement surfaces are repointed and the three reversal\
+  \ conditions armed on that cutover (Decisions 167, 177, 179) are annotated in the same change.\n2. The\
+  \ three tiers. Tier A -- the user's north stars: what the product is, what success is, the product invariants.\
+  \ Tier B -- platform decisions: the working template for how the platform operates, imported by the\
+  \ user. Tier C -- the user's own product decisions.\n3. One shape, two policies. A and C share one decision\
+  \ format, one supersession edge model (`amends` / `supersedes` / `superseded_by`) and one validator\
+  \ set; A is distinguished by context policy (always loaded into every agent context) and authority policy\
+  \ (amendment needs explicit human confirmation, never a mechanical edit), carried as `kind: north_star`\
+  \ on the same entry type. No second decision system is built.\n4. Tier B is read-only per release. B\
+  \ ships as a static snapshot pinned to the package version, without this repository's amendment history.\
+  \ Users never edit B: customisation is a Tier C decision carrying `supersedes: [<B id>]`, so upgrades\
+  \ replace B cleanly and every override is explicit and diffable.\n5. Trimming rule for B. A decision\
+  \ ships in B iff a shipped mechanism (validator, contract, skill, hook) cites it. Decisions nothing\
+  \ enforces are this operator's history and stay here. B and its enforcers version together: neither\
+  \ ships without the other.\n6. Id spaces. B and C ids carry distinct prefixes fixed before the first\
+  \ release tag, so a user's numbering never collides with the imported template. The prefix scheme is\
+  \ a Decision 84 I-2 keyspace exception, like `dec-NNN`.\n7. Goodhart countermeasure. Every Tier A entry\
+  \ carries a required `failure_signal` field (\"how would we know we have overfit to this?\"), enforced\
+  \ by schema; `otl init` scaffolds it. `otl` is the CLI alias of the `ontheloop` product, not the undecided\
+  \ organisation handle Decision 195 clause 4 routes to rec-3905.\n8. Sequencing. Clauses 1-7 bind the\
+  \ design; execution (per-file decision split, B extraction, prefixing, `otl init`) is post-MVP (Decision\
+  \ 93) and rides T4.24, whose exit criteria carry it.\n\n```yaml reversal-conditions\ndecision: 196\n\
+  review_by: 2027-03-31\non_trigger: \"re-decide via /plan\"\nconditions:\n  - id: b-too-large\n    kind:\
+  \ manual\n    description: \"The clause-5 rule yields a B snapshot users cannot read in one sitting:\
+  \ revisit the citation criterion or add a second cut.\"\n  - id: users-need-history\n    kind: manual\n\
+  \    description: \"A real user needs B's amendment history to reason about an edge case: reopen clause\
+  \ 4's no-history rule.\"\n  - id: north-star-shape-diverges\n    kind: manual\n    description: \"Tier\
+  \ A needs a field or edge the shared shape cannot carry: reopen clause 3 before forking the format.\"\
+  \n```\n\n**Related:** Decision 184 (free-tier boundary this extends to the decision corpus), Decision\
+  \ 134 (clause 5's retirement end-state this amends), Decisions 84, 93, 133, 167, 171, 177, 178, 179;\
+  \ T1.5, T4.24; the north-star amendment guard (companion rec, clause 3's authority policy).\n\n---"
+- 'E5: routing adjudication, for the category-consistency gate. Decision 196 clause 1 (see E4) is a numbered_decision
+  rather than a decision-entry.yaml governance note because that contract owns the corpus''s AUTHORING
+  GRAMMAR -- how an entry is shaped -- not which decisions a user receives or where they live; and it
+  withdraws a ratified end-state, which no contract note can do. Decision 197 clause 3 (see E3) is a numbered_decision
+  rather than data-modeling-standard.yaml content because that contract governs HOW any table is designed,
+  while this fixes WHICH mechanism ships and which data stays private, and binds three live surfaces to
+  one grain. Clause 8 is not mere restatement of Decisions 110/114/147: it records the sequencing commitment
+  and names the forbidden option only to close it off for the migration this entry opens -- the prohibition
+  remains those Decisions''.'
 - 'E6: docs/DECISIONS.md -- append the dated forward-pointer annotation inside Decision 134''s block,
   beneath its Warehouse ID line, matching the placement on Decisions 106 and 149. Step 10 asserts it.'
 - 'E7: docs/DECISIONS.md -- neutralise the three T1.5-cutover reversal conditions, each on the surface
@@ -689,7 +779,9 @@ execution_steps:
 - 'E11: execute Verification Plan steps 1 to 16 and 18 to 23; loop until pass; on an unrecoverable failure
   stop and RCA (C13).'
 - 'E12: only once those are green, file the roadmap-headroom escalation rec. It MUST carry the literal
-  token roadmap-headroom-dec147-escalation and the GROWTH figure step 14 prints. Then run step 17.'
+  token roadmap-headroom-dec147-escalation, the GROWTH figure step 14 prints, AND the T1.5 c2 residual
+  recorded in context -- c2 cross-references an action E8 makes c1 stop performing, and this rec is its
+  only owner. Then run step 17.'
 - 'E13: report what was implemented, verification results, and BOTH rec ids by name so the next planning
   session can pick the escalation up directly.'
 rollback: Revert the branch. Nothing outside docs/ and the sanctioned registry shards changes, and the
