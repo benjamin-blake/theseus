@@ -45,9 +45,10 @@ scope:
     the rec-2285 first-''=''-split parse, and no secret on stdout off-runner.'
 - file: tests/test_setup_cloud_env.py
   action: Modify
-  purpose: 'Add the delegation-ordering test step 7 selects with -k materialise: asserts the materialise-tfvars
-    call sits inside the INSTALL_TERRAFORM=1 admin-only branch and after the AWS CLI install. The module
-    is an existing static contract test over the script text.'
+  purpose: Add the delegation-CONTAINMENT test step 7 selects with -k materialise, asserting the materialise_tfvars.sh
+    call lies between the executable INSTALL_TERRAFORM branch line and its matching `fi` (not a substring-ordering
+    check -- 6 of the 8 INSTALL_TERRAFORM occurrences are comments), and that it follows the AWS CLI install.
+    Also assert the no-op case, which belongs to this caller rather than the shared delegate.
 - file: .github/actions/materialise-tfvars/materialise_tfvars.sh
   action: Create
   purpose: 'THE single materialise-tfvars implementation (honours the DEP-08 / rec-2663 consolidation).
@@ -211,10 +212,14 @@ verification_plan:
   phase: pre-deploy
   action: setup-cloud-env delegates to the script inside the admin-only branch
   command: bin/venv-python -m pytest tests/test_setup_cloud_env.py -k "materialise" -q
-  expected: The delegation-ordering test passes, asserting the call sits inside the INSTALL_TERRAFORM=1
-    branch.
-  fix_if: A failure means the fetch could run in the DEV container, handing PlatformDev values the DEP-13
-    / Decision 144 pt 3 fence deliberately denies it.
+  expected: 'The delegation-containment test passes. It must assert CONTAINMENT, not substring ordering:
+    locate the executable branch line `if [ "${INSTALL_TERRAFORM:-0}" = "1" ]; then` and its matching
+    `fi`, and assert the materialise_tfvars.sh call lies between them. A naive script.index() comparison
+    is NOT acceptable -- INSTALL_TERRAFORM appears 8 times in the script, 6 of them in comments (measured
+    2026-09-21), so an ordering check passes even when the delegation sits outside the branch entirely.'
+  fix_if: A failure means the fetch could run in the DEV container, handing PlatformDev the values the
+    DEP-13 / Decision 144 pt 3 DenyStateRead fence deliberately denies it. If the test passes but you
+    used an index comparison, the assertion is vacuous -- rewrite it as containment.
   hermetic: true
   expected_literals: []
   graduation: waive
@@ -481,6 +486,10 @@ constraints:
   2026-09-21: INSTALL_TERRAFORM appears zero times in .github/workflows/, so a guard in the shared unit
   would no-op the composite action at all four apply call sites and disable the reconcile heal verb Decision
   126 point 2 protects.'
+- 'The DEP-13 fence test must assert CONTAINMENT within the executable INSTALL_TERRAFORM branch, never
+  substring ordering: 6 of the script''s 8 INSTALL_TERRAFORM occurrences are comments, so an index comparison
+  would pass with the delegation outside the branch -- the exact DEV-container leak the fence exists to
+  prevent.'
 context:
 - 'Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND; CITE: 168, 127, 120, 113,
   144, 84, 101, 189, 59. Decisions triaged: 148 of 148. Roadmap items intersected: 4; CONFLICT: 0; RELATED:
