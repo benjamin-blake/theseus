@@ -9,6 +9,7 @@ removal and nothing else.
 
 from __future__ import annotations
 
+import pathlib
 from unittest.mock import patch
 
 from scripts.checks import registry
@@ -98,3 +99,16 @@ class TestRemovalNegatives:
         assert declaration is not None
         assert declaration.kind == "skipped"
         assert failed  # unreadable sources are also a hard failure, never a silent pass
+
+    def test_read_returns_none_on_oserror(self) -> None:
+        with (
+            registry.outcome_scope("validate_rec_autoclose_trailer_gate"),
+            patch.object(pathlib.Path, "read_text", side_effect=OSError("unreadable")),
+        ):
+            failed: list[str] = []
+            validate_rec_autoclose_trailer_gate(failed)
+        declaration = registry.pop_declaration()
+        assert declaration is not None
+        assert declaration.kind == "skipped"
+        assert any("could not read" in item for item in failed)
+        assert failed
