@@ -1,0 +1,347 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: rec-autoclose-trailer-gate-oserror-coverage
+intent: >-
+  Close rec-3991, the open Critical source=ci_rca rec that currently hard-blocks every /plan
+  session in this repository, by covering the one untested limb it names -- _read's
+  "except OSError: return None" fallback in the rec-autoclose trailer merge-leg gate -- and by
+  leaving a fix-bound, still-red-on-reintroduction closure artifact behind it.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-rec-autoclose-trailer-gate-oserror-coverage.yaml
+phase: >-
+  Soft-warn exception category ci_rca; names NO tier_item, so the Tier Item Freshness Gate is
+  skipped. The work advances no exit criterion of any roadmap item -- it repairs a defect filed
+  against scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py by the ci-rca agent.
+  Precedent: PLAN-trailer-closure-evidence-gate (the plan that landed the module under repair)
+  scoped itself the same way. T3.9 (post-merge recommendation reconciliation) is the
+  semantically nearest tier_item and is deliberately NOT claimed.
+scope:
+  - file: tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py
+    action: Modify
+    purpose: >-
+      Add exactly one test, named test_read_returns_none_on_oserror, to the EXISTING
+      TestRemovalNegatives class. The name and class are load-bearing: rec-3991's own acceptance
+      command is
+      "bin/venv-python -m pytest tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py::TestRemovalNegatives::test_read_returns_none_on_oserror -q",
+      so any other name or class makes the rec unsatisfiable. The test patches
+      pathlib.Path.read_text to raise OSError (patch.object(pathlib.Path, "read_text",
+      side_effect=OSError(...)) inside a registry.outcome_scope), invokes
+      validate_rec_autoclose_trailer_gate(failed), and asserts BOTH limbs of the unreadable-source
+      outcome: failed gains the "could not read" entry AND registry.pop_declaration() returns
+      kind == "skipped". It must NOT patch this module's own _read binding -- every one of the
+      five existing negatives does, which is exactly why lines 37-38 are uncovered. Measured
+      SLOC 79 with 421 headroom to the 500 limit; the addition is ~18 lines, so no
+      config/sloc_budgets.yaml entry and no raise (Decision 128/165).
+  - file: config/agent/verification_registry/entries/rec-autoclose-trailer-gate-read-oserror.yaml
+    action: Create
+    purpose: >-
+      Graduate VP step 1 into the verification registry as a test_selector shard so the new test
+      becomes a standing regression guard AND so rec-3991's closure has a `shard:` artifact --
+      the strongest closure_gate.KIND_STRENGTH member and the only kind Decision 186 point 4
+      calls still-red-on-reintroduction. Fields mirror the closure-stamp-applicable-seam and
+      ghas-probe-dependency-install precedents: check_id (== VP step 1's graduation_check_id),
+      primitive_slot test_selector, guard_target
+      scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py, guard_symbol _read,
+      plan_slug rec-autoclose-trailer-gate-oserror-coverage, graduated_at, graduated_by, and
+      check_spec.node_id set to the exact node id above. This file is the shard's defining file
+      under the contract's per_kind_defining_file map, so creating it in the same squash-merge
+      that lands the test is what makes the artifact resolve FIX-BOUND (Decision 186 point 4).
+bundled_recommendations:
+  - rec-3991
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py::TestRemovalNegatives::test_read_returns_none_on_oserror
+    exists and passes -- rec-3991's acceptance command is satisfied verbatim, with no rename and
+    no relocation to another class or file.
+  - >-
+    The new test drives the REAL _read helper: it raises OSError from pathlib.Path.read_text and
+    does not patch the module's own _read binding, so lines 37-38 are genuinely executed rather
+    than bypassed.
+  - >-
+    The test asserts BOTH limbs of the unreadable-source outcome -- a non-empty failed list
+    carrying the "could not read" entry, and a registry declaration whose kind is "skipped". A
+    test that merely reaches lines 37-38 without asserting the outcome does not satisfy this.
+  - >-
+    scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py reports 100% line coverage
+    with an empty Missing column when measured under that test file alone (49 statements, 0
+    missed). Measured today at authoring time: 96%, missing 37-38.
+  - >-
+    The eight pre-existing tests in the file still pass unchanged, and no other file's coverage
+    or test outcome regresses.
+  - >-
+    config/agent/verification_registry/entries/rec-autoclose-trailer-gate-read-oserror.yaml
+    exists and is ADMITTED by validate_verification_registry's differential admission gate --
+    the materialized check_spec fails at origin/main and passes at HEAD, never tautological and
+    never skipped.
+  - >-
+    rec-3991 is status=closed in the warehouse with context_v2_json.closure_artifact ==
+    "shard:rec-autoclose-trailer-gate-read-oserror" AND context_v2_json.fixed_by_sha set, both
+    stamped by a SINGLE update_rec call, and the next session preflight reports an empty
+    ci_rca_unresolved_recs list.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Run rec-3991's own acceptance command verbatim -- the new OSError-injection test drives the
+      real _read helper and passes.
+    command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py::TestRemovalNegatives::test_read_returns_none_on_oserror -q
+    expected: >-
+      Exit 0 with a "1 passed" summary line. Measured on the un-implemented tree at authoring
+      time this command exits 4 ("ERROR: not found ... no match in any of [<Class
+      TestRemovalNegatives>]"), which scripts.checks.verification._vp_replay_classify
+      classifies target_absent -- a valid Decision 189 red-before outcome, confirmed live.
+    expected_literals:
+      - "1 passed"
+    fix_if: >-
+      Exit 4 after implementation means the test was named or placed differently -- the name and
+      class are fixed by rec-3991's acceptance string and cannot be changed. A pass that leaves
+      step 2 red means the test patched the module's _read binding instead of
+      pathlib.Path.read_text, so lines 37-38 were never executed.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: rec-autoclose-trailer-gate-read-oserror
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Measure per-file line coverage of the guard module under its mirror test file alone and
+      require 100% with an empty Missing column.
+    command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py -q --no-header --cov=scripts.checks.ci_guards.validate_rec_autoclose_trailer_gate --cov-report=term-missing --cov-fail-under=100
+    expected: >-
+      Exit 0, "9 passed", and a coverage table row reading 49 statements, 0 missed, 100%, with
+      nothing in the Missing column. Measured at authoring time on the un-implemented tree: exit
+      1, 8 passed, 49 statements, 2 missed, 96%, Missing 37-38, and "FAIL Required test coverage
+      of 100% not reached. Total coverage 95.92%".
+    expected_literals:
+      - "100%"
+    fix_if: >-
+      A residual Missing entry naming 37-38 means the OSError never reached the real _read. A
+      100% figure achieved while step 1 fails means the coverage came from some other test --
+      re-read which test entered the branch before accepting the number.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The 100%-per-file property is already owned by the registered full-tier check
+      validate_test_coverage (scripts/checks/misc/validate_test_coverage.py), which derives its
+      file set from the diff and fails on any changed source file below 100%. Graduating a
+      second, narrower standing coverage guard for this one module would duplicate a registered
+      verifier over the same data -- the duplication Decision 86 forbids and the rubric's
+      "duplicates an already-graduated check" waive case. The step stays in the VP as this
+      plan's own measurement.
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Run the fast presubmit tier, which is where the new shard's differential admission gate and
+      the graduation-completeness legs actually fire.
+    command: bin/venv-python -m scripts.validate --pre
+    expected: >-
+      The printed summary reports zero failed checks. validate_verification_registry (pre=True,
+      pre_globs include config/agent/verification_registry/**) runs the VF-06 differential for
+      the newly added shard and must report it ADMITTED; validate_graduation_completeness must
+      pass both legs; validate_plan_documents, validate_sloc_limits and validate_scope_boundary
+      must all pass.
+    fix_if: >-
+      Read the summary, never the exit code -- Decision 73 makes --pre exit 0 while printing
+      "Failed checks" outside CI. A "not admitted" differential means the shard's node id does
+      not fail at origin/main; a "check does not pass on HEAD" means the test itself is red. An
+      orphaned-shard failure means check_id and VP step 1's graduation_check_id disagree.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      The command invokes scripts.validate, which docs/contracts/vp-red-before.yaml's
+      recursion_refusal refuses statically for a graduate disposition, and Decision 73 makes its
+      exit code meaningless outside CI (exit 0 while printing failures), so it is not expressible
+      as a command_exit_zero kernel assertion. Its constituent checks are already registered.
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Run the full presubmit tier locally before handoff, as handoff_policy declares -- this is
+      the tier that carries validate_test_coverage, the check whose post-merge failure filed
+      rec-3991 in the first place.
+    command: bin/venv-python -m scripts.validate
+    expected: >-
+      The printed summary reports zero failed checks, and in particular the "Test coverage check"
+      section reports no file below 100%.
+    fix_if: >-
+      A recurrence of "validate_rec_autoclose_trailer_gate.py: NN% line coverage (expected 100%)"
+      means the fix did not take. Per handoff_policy.timeout_disposition, a timeout is BLOCKED --
+      resume later and rerun the full tier from the start; never commit on a partial run.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Same recursion refusal and Decision 73 exit-code caveat as step 3, at the full tier. The
+      per-file coverage property this step exercises is owned by the registered
+      validate_test_coverage check; graduating it would duplicate that verifier.
+  - step: 5
+    phase: post-deploy
+    action: >-
+      RUN THIS ONLY AFTER the squash-merge has landed on main. Fetch origin/main, PROVE the
+      resolved sha actually added the shard file, then close rec-3991 through the manual route
+      with a fix-bound shard artifact -- rec-autoclose structurally cannot, because
+      close_recs_from_trailer supplies no closure_artifact.
+    command: >-
+      git fetch origin main --quiet && test -f config/agent/verification_registry/entries/rec-autoclose-trailer-gate-read-oserror.yaml && git diff-tree --no-commit-id --name-only -r "$(git rev-parse origin/main)" | grep -x "config/agent/verification_registry/entries/rec-autoclose-trailer-gate-read-oserror.yaml" && bin/venv-python -m scripts.ops_data_portal --update-rec rec-3991 --status closed --resolution "Resolved by PLAN-rec-autoclose-trailer-gate-oserror-coverage: test_read_returns_none_on_oserror drives the real _read helper via a pathlib.Path.read_text OSError, covering lines 37-38 and returning the module to 100% line coverage." --closure-artifact "shard:rec-autoclose-trailer-gate-read-oserror" --closure-fix-sha "$(git rev-parse origin/main)" --profile agent_platform && bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json,pathlib;r=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()];x=next(y for y in r if y['id']=='rec-3991');c=json.loads(x['context_v2_json']);print(x['status'],'|',c.get('closure_artifact'),'|',c.get('fixed_by_sha'));assert x['status']=='closed' and c.get('closure_artifact')=='shard:rec-autoclose-trailer-gate-read-oserror' and c.get('fixed_by_sha')"
+    expected: >-
+      The diff-tree guard prints the shard path (proving origin/main IS the squash-merge that
+      added it), the write succeeds, and the read-back prints closed, the shard token, and a
+      non-empty fixed_by_sha.
+    fix_if: >-
+      The diff-tree guard printing nothing is the ordering failure Decision 186 point 4 creates
+      and is the WHOLE reason it is executable here rather than left to prose: origin/main does
+      not yet point at the squash-merge, so the command-substituted sha names a commit whose
+      diff-tree lacks the shard and the portal would raise ClosureArtifactRequired, leaving
+      rec-3991 OPEN. Wait for the merge, re-fetch, re-run -- never hand-pick a different sha to
+      make the gate pass. Both closure flags MUST ride the same call (Decision 186 point 4);
+      closing first and stamping afterwards no longer satisfies the route. A silent exit 0 with
+      no output means the wrong entrypoint was used; scripts.ops_data_portal is the sanctioned
+      one.
+    hermetic: false
+  - step: 6
+    phase: post-deploy
+    action: >-
+      Confirm the planning hard block is actually lifted -- the outcome this slice exists for.
+    command: bin/venv-python -m scripts.session.preflight && bin/venv-python -c "import json;r=json.load(open('logs/.preflight-report.json'));u=r.get('ci_rca_unresolved_recs') or [];print('unresolved:',[x.get('id') for x in u]);assert all(x.get('id')!='rec-3991' for x in u)"
+    expected: >-
+      The preflight report's ci_rca_unresolved_recs no longer contains rec-3991. At authoring
+      time it contained exactly one entry, rec-3991, so the expected steady state is an empty
+      list.
+    fix_if: >-
+      rec-3991 still present means step 5's write did not land or the local read cache is stale;
+      re-run the portal --sync and re-read, never edit logs/.recommendations-log.jsonl by hand
+      (Single Portal Invariant).
+    hermetic: false
+test_obligations:
+  - source: config/agent/verification_registry/entries/rec-autoclose-trailer-gate-read-oserror.yaml
+    behavior: >-
+      The shard's check_id equals VP step 1's graduation_check_id, and its materialized
+      check_spec is admitted by the differential gate (fails at origin/main, passes at HEAD).
+    verification_step: 3
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Both properties are owned by registered checks -- validate_graduation_completeness fails on
+      an orphaned shard or an unmatched graduate step, and validate_verification_registry runs
+      the real VF-06 differential for every added-or-modified entry in the diff. A dedicated test
+      would duplicate those registered verifiers over the same data rather than guard new
+      behaviour (Decision 86). Mirrors the identical row in PLAN-ghas-probe-install-restore.
+constraints:
+  - >-
+    NO "Resolves: rec-3991" trailer in the squash-merge commit body. rec-3991 is escape-classified
+    on BOTH limbs (context_v2_json.escape_class == "no-edge" AND
+    detection_gap.escape_mode == "tier_misplaced"), so Decision 186 point 1's predicate fires;
+    close_recs_from_trailer threads closure_fix_sha but never closure_artifact, so the trailer
+    would be REFUSED loud-not-red and leave the rec OPEN (Decision 186 point 7). This is a
+    deliberate, contract-authorised departure from AGENTS.md's Resolves-trailer norm -- see
+    docs/contracts/ci-rca-lifecycle.yaml closure_dependency.manual_route and its
+    rec_2923_precedent.
+  - >-
+    Both closure flags ride the SAME update_rec call (Decision 186 point 4) -- the gate reads
+    fixed_by_sha from the write it evaluates, so close-then-stamp-separately no longer satisfies
+    the artifact route.
+  - >-
+    The artifact kind is shard:, the strongest closure_gate.KIND_STRENGTH member and the only one
+    Decision 186 point 4 calls still-red-on-reintroduction. pytest:<nodeid> would also resolve
+    fix-bound here and is deliberately not used.
+  - >-
+    Decision 170: validate_rec_autoclose_trailer_gate already declares examined()/skipped() on
+    every reachable path. Do NOT add a new registered check, a new scripts/checks/ci_guards
+    _manifest.py Entry, a new config/ci_rca_taxonomy.yaml function_to_category row, or a new
+    check_accounting baseline entry.
+  - >-
+    Decision 131: tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py is already
+    the mirror home for the guard module. Do not create a second test file.
+  - >-
+    Decision 59 scope boundary: scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py is
+    NOT in scope and its "except OSError: return None" limb stays exactly as written. rec-3991's
+    preventive_action offers an optional refactor (raise, or a discriminated Union) as an
+    ALTERNATIVE to the test -- adopting it here would be an out-of-scope source change. If it is
+    judged worth doing, file a recommendation via scripts.ops_data_portal instead.
+  - >-
+    Scope the OSError patch to the validate_rec_autoclose_trailer_gate(failed) call only, inside a
+    with block. A module- or session-scoped pathlib.Path.read_text patch would leak and redden
+    unrelated tests under the suite's random ordering.
+  - >-
+    Decision 128/165/130: structural-size governance reaches tests/, but the test file is 79
+    effective SLOC and unregistered (421 headroom to 500). Do not touch config/sloc_budgets.yaml
+    and do not run --update-sloc-budgets -- no budget row and no raise-approved marker are owed.
+  - >-
+    Decision 159: do NOT reach for the coverage baseline. Baselining lines 37-38 would satisfy
+    validate_test_coverage while leaving the limb untested and rec-3991's acceptance command
+    unsatisfiable; the test is the only route that closes the rec.
+  - >-
+    Decision 132/176: VP step 1's graduate disposition obliges validate_graduation_completeness's
+    implement leg to find a new-in-diff registry row whose plan_slug and check_id match the step,
+    and Decision 176's re-grain fixes the record shape as one file per check_id at
+    config/agent/verification_registry/entries/<check_id>.yaml. The filename MUST equal the
+    check_id exactly, or both the shard: artifact and the graduation obligation fail.
+  - >-
+    Decision 73: --pre exits 0 while printing "Failed checks" outside CI. Read the summary, never
+    the exit code.
+  - >-
+    Single Portal Invariant: every recommendation write goes through scripts.ops_data_portal.
+    Never Edit or Write logs/.recommendations-log.jsonl; it is a read cache, never a write source.
+  - >-
+    Decision 55/72: forward-fix only. No rescue agents, no workaround loops, no --ignore-budget,
+    no inline fix of any out-of-scope defect found along the way.
+  - >-
+    bin/venv-python never bare python/python3; Linux/bash only; line length 127; type hints
+    required; no emojis; no em dashes.
+context:
+  - "rec-3991: Critical, source=ci_rca, automatable=false, file scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py; the sole entry in preflight's ci_rca_unresolved_recs (HARD BLOCK on /plan)."
+  - "Originating failure: post-merge CI on main run 35641088311, 'Test coverage check', 95.9% line coverage, missing lines [37, 38]. Module landed in PR #1243 (aecafcaf)."
+  - "Related-Work Check: the plan bundles and closes rec-3991 itself; scope file is the Decision 131 mirror test of the rec's cited source_file, and the failure category (per-file coverage on that same module) is identical."
+  - "Decision 186 fires on BOTH limbs of rec-3991's escape classification -- verified live against the read cache, not inferred."
+  - "Closure route: docs/contracts/ci-rca-lifecycle.yaml closure_dependency.manual_route + rec_2923_precedent; worked example at docs/plans/PLAN-closure-stamp-applicability.yaml VP step 15 (shard:closure-stamp-applicable-seam)."
+  - "Shard field shape copied from config/agent/verification_registry/entries/closure-stamp-applicable-seam.yaml and ghas-probe-dependency-install.yaml."
+  - "Decision 189 red-before: step 1 is the only graduate step; measured live on the un-implemented tree at exit 4 -> target_absent, a valid red outcome. Steps 3 and 4 invoke scripts.validate and are therefore waived, never graduated (recursion refusal)."
+  - "TRAILER DEFERRAL (Decision 142 scout WARN): git-ops.yaml's resolves_trailer states the Resolves obligation unconditionally, and rec-3991 stays in bundled_recommendations because the planning skill's Closure Obligation and the Related-Work Check both require that declaration. The trailer is nonetheless deliberately omitted -- Decision 186 point 7 makes rec-autoclose structurally unable to close this rec (no closure_artifact is threaded), so the trailer would print a refusal marker and leave it OPEN. Route: ci-rca-lifecycle.yaml closure_dependency.manual_route. This diverges from rec_2923_precedent's shape (which also dropped the rec from bundled_recommendations); the divergence is deliberate and recorded here rather than silent. No machine check reads bundled_recommendations, so this is a reviewability note, not a red build."
+  - "Decision 163 disposition: the mandatory full-tier step is VP step 4; verified programmatically via validate_handoff_full_tier._has_full_tier_step against this document -> True. The closure half is no longer prose-only -- VP step 5 carries an executable diff-tree guard and a read-back assertion."
+  - "Decision-scout verdict FLAGS_FOUND. CITE list (verbatim): 186, 189, 176, 132, 170, 131, 59, 72, 55, 103, 84. CONTRADICT: 142 [WARN] (disposed above), 186 [NOTE] (fixed in VP step 5). SPIRIT: 163 [WARN] (both halves disposed above)."
+  - "Decisions triaged: 150 of 150"
+  - "Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1 (T4.23, deferred_post_mvp, matched only on the tests/ prefix; nothing foreclosed)."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+pre_implementation_checklist:
+  - Branch confirmed not on main (harness-assigned session branch)
+  - docs/PROJECT_CONTEXT.md read
+  - Only the plan-cited decision sections read (186, 189, 176, 132, 170, 163, 159, 142, 131, 130, 128/165, 103, 86, 84, 73, 72, 59, 55)
+  - docs/contracts/ci-rca-lifecycle.yaml closure_obligation and closure_dependency read
+  - Both files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    Add test_read_returns_none_on_oserror to the EXISTING TestRemovalNegatives class in
+    tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py. Import pathlib at module
+    level alongside the existing unittest.mock import. Inside the test, open
+    registry.outcome_scope("validate_rec_autoclose_trailer_gate") and
+    patch.object(pathlib.Path, "read_text", side_effect=OSError("unreadable")) together, call
+    validate_rec_autoclose_trailer_gate(failed) with a fresh list, then assert
+    registry.pop_declaration() is not None, its kind == "skipped", "could not read" appears in
+    some entry of failed, and failed is non-empty. Do not patch _MODULE._read.
+  - >-
+    Create config/agent/verification_registry/entries/rec-autoclose-trailer-gate-read-oserror.yaml
+    with check_id rec-autoclose-trailer-gate-read-oserror, primitive_slot test_selector,
+    guard_target scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py, guard_symbol
+    _read, plan_slug rec-autoclose-trailer-gate-oserror-coverage, graduated_at (today, ISO date),
+    graduated_by implement-agent, and check_spec.node_id set to the exact node id from VP step 1.
+  - >-
+    Execute the Verification Plan -- run steps 1 through 4 in order, looping until each passes.
+    On a third consecutive failed fix attempt, STOP and RCA rather than continuing (Decision 55).
+  - >-
+    Commit, push, open the PR and squash-merge WITHOUT a Resolves trailer in the commit body.
+    ORDERING IS LOAD-BEARING: only after the squash-merge has landed AND `git fetch origin main`
+    has advanced the local ref does VP step 5 run -- its diff-tree guard exists to refuse the
+    early-run case rather than let the portal raise ClosureArtifactRequired. Then run VP step 6 to
+    confirm the planning hard block is lifted.
+  - "Report: what was implemented, the VP compliance table, and the rec-3991 closure read-back."
+work_areas: []
+rollback: >-
+  Reverting removes one test and one registry shard; no runtime or check behaviour changes, so
+  the revert is mechanically safe. It is not a safe resting place, though -- the module returns to
+  96% coverage and the next post-merge full tier on main re-reddens the Test coverage check and
+  re-files an equivalent Critical ci_rca rec. Prefer forward-fix (Decision 73). If rec-3991 was
+  already closed, a revert would leave a closed rec whose artifact no longer resolves, which
+  back_validation grades as artifact-absent -- so revert the closure only by filing a fresh rec,
+  never by reopening (Decision 103 bans closed->open).
