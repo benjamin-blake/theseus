@@ -128,14 +128,19 @@ resource "aws_s3_bucket_policy" "data_lake_https_only" {
 }
 
 # ---------------------------------------------------------------------------
-# DuckLake production-prefix lifecycle (T2.18, PLAN-ducklake-noncurrent-version-reclaim): sweep
-# noncurrent versions + their now-expired delete markers so billed storage reconverges on the
-# listing GcDebtRatio is computed from. Prefix-scoped (trailing slash, from the declared local --
-# never a retyped literal, so a rename of the local cannot silently drop the sweep) to the
-# production DuckLake prefix ONLY; the smoke prefix is a DECLARED exclusion while rec-3892's
-# unexplained-deleter RCA is open there (see _DECLARED_LIFECYCLE_EXCLUSIONS in the companion test
-# module). NO current-version expiration rule: DuckLake addresses live Parquet by key, never by
-# version id, so an age-based rule here would delete data the catalog still references.
+# DuckLake data-lake lifecycle (T2.18, PLAN-ducklake-noncurrent-version-reclaim /
+# PLAN-smoke-prefix-lifecycle-coverage): sweep noncurrent versions + their now-expired delete
+# markers so billed storage reconverges on the listing GcDebtRatio is computed from. Both rules
+# are prefix-scoped (trailing slash, from the declared local -- never a retyped literal, so a
+# rename of the local cannot silently drop the sweep). The trailing slash is load-bearing:
+# local.ducklake_prod_data_prefix is the bare string "ducklake", which also prefix-matches
+# "ducklake-neon-smoke/" without it -- the two prefixes must stay separately declared and never
+# collapse into one rule. rec-3892's unexplained-deleter RCA (smoke prefix) is resolved (no
+# unmodeled deleter; all deletions trace to the smoke gc cron), so the smoke prefix is now
+# POSITIVELY covered by a second rule rather than a declared exclusion (rec-3945; see
+# TestDataLakeLifecycleGoverned in the companion test module). NO current-version expiration rule
+# on either: DuckLake addresses live Parquet by key, never by version id, so an age-based rule
+# here would delete data the catalog still references.
 # ---------------------------------------------------------------------------
 
 resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
@@ -154,6 +159,30 @@ resource "aws_s3_bucket_lifecycle_configuration" "data_lake" {
       # manual-recovery window, not catalog time travel: gc_ops runs after expire_snapshots, so
       # every file it deletes is already outside the snapshot horizon and no read path pins a
       # version id. Cross-checked against the Python constant by TestDataLakeLifecycleGoverned.
+      noncurrent_days = 30
+    }
+
+    expiration {
+      expired_object_delete_marker = true
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+
+  rule {
+    id     = "ducklake-smoke-noncurrent-reclaim"
+    status = "Enabled"
+
+    filter {
+      prefix = "${local.ducklake_smoke_data_prefix}/"
+    }
+
+    noncurrent_version_expiration {
+      # Same shape and window as the production rule above -- noncurrent_days stays bound to
+      # SNAPSHOT_RETAIN_DAYS for BOTH rules; revisiting the retention window is rec-3870's
+      # business, not this one's.
       noncurrent_days = 30
     }
 
