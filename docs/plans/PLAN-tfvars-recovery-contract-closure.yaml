@@ -46,6 +46,11 @@ scope:
   action: Create
   purpose: Behavioural tests driving bin/materialise-tfvars.sh with a stubbed aws on PATH - asserts the
     file contents, 600 permissions, the non-admin no-op, and fail-closed on a failed fetch.
+- file: tests/test_setup_cloud_env.py
+  action: Modify
+  purpose: 'Add the delegation-ordering test step 7 selects with -k materialise: asserts the materialise-tfvars
+    call sits inside the INSTALL_TERRAFORM=1 admin-only branch and after the AWS CLI install. The module
+    is an existing static contract test over the script text.'
 bundled_recommendations:
 - rec-3950
 - rec-2843
@@ -62,7 +67,9 @@ acceptance_criteria:
 - bin/materialise-tfvars.sh writes terraform.personal.tfvars at mode 600 from the secret when INSTALL_TERRAFORM=1,
   no-ops otherwise, and exits non-zero on a failed or empty fetch.
 - No email address or AWS account id is introduced into any tracked file by this plan.
-- rec-3950 and rec-2843 are closed with resolutions recorded.
+- rec-2843 is closed with its acceptance output recorded as the closure proof; rec-3950 is routed close_proposed
+  with its misdiagnosis resolution recorded, and remains open pending operator confirmation (Decision
+  103).
 - On the ADMIN container, bin/materialise-tfvars.sh produces a tfvars file carrying all five no-default
   variables at mode 600, verified against live Secrets Manager (V3 post-deploy leg).
 verification_plan:
@@ -71,10 +78,15 @@ verification_plan:
   action: Contract enumerates five no-default vars with per-variable sources
   command: bin/venv-python -c "import yaml; r=yaml.safe_load(open('docs/contracts/terraform-cc-web-operations.yaml'))['tfvars_and_remote_state_recovery'];
     t=r['where_values_live']; ks=sorted(k for k in t if k!='description'); assert ks==['account_id','alerts_email','owner_email','platform_admin_external_id','platform_dev_external_id'],
-    ks; assert 'owner_vs_alerts_email' in r; print('CONTRACT SHAPE OK')"
-  expected: Prints CONTRACT SHAPE OK with no AssertionError.
-  fix_if: A KeyError means where_values_live is still a scalar prose blob; a short key list names the
-    variable still missing.
+    ks; v=str(r['owner_vs_alerts_email']).lower(); assert 'owner_email' in v and 'alerts_email' in v,
+    'key names both variables'; assert 'by design' in v, 'must state the values differ by design'; assert
+    'recovery artefact' in v, 'must state the tag-churn diff is a recovery artefact'; print('CONTRACT
+    SHAPE OK')"
+  expected: Prints CONTRACT SHAPE OK. Asserts the table covers exactly the five variables AND that owner_vs_alerts_email
+    names both variables, states they differ by design, and calls the tag-churn diff a recovery artefact
+    -- so an empty stub cannot satisfy AC2.
+  fix_if: A named AssertionError says which clause is missing. A KeyError on where_values_live means it
+    is still a scalar prose blob.
   hermetic: true
   expected_literals:
   - CONTRACT SHAPE OK
@@ -90,24 +102,27 @@ verification_plan:
     ps=[''docs/contracts/terraform-cc-web-operations.yaml'',''docs/contracts/deploy-paths.yaml'']; [print(p,
     b(p), ''->'', h(p)) for p in ps]; assert all(h(p)>b(p) for p in ps); print(''AMENDMENT_LOG OK'')"'
   expected: Each contract prints a higher entry count than main, then AMENDMENT_LOG OK.
-  fix_if: An AssertionError names the contract whose body changed with no new amendment_log entry; validate_contract_drift
-    fails the PR on it (Decision 168).
+  fix_if: 'FIRST check whether the branch is rebased: measured 2026-09-21 the branch carried 5 amendment_log
+    entries for deploy-paths.yaml against 6 on origin/main, so an un-rebased branch fails this step even
+    when the work is correct. After rebasing, an AssertionError genuinely names a contract whose body
+    changed with no new amendment_log entry (Decision 168; validate_contract_drift fails the PR).'
   hermetic: true
   expected_literals:
   - AMENDMENT_LOG OK
-  graduation: not-applicable
+  graduation: waive
+  graduation_waiver_reason: Depends on this session's transient origin/main base ref, so it is not a stable
+    standing guard; _is_pr_relative would also exclude it post-merge.
 - step: 3
   phase: pre-deploy
   action: 'RED-BEFORE: validator rejects a contract missing a declared no-default variable'
   command: bin/venv-python -m pytest tests/checks/contracts/test_validate_terraform_cc_web_operations.py
     -k "absent_from_table or scalar_where_values_live" -q
-  expected: Both red-path tests pass, proving the guard fires on the drift shape and on the pre-fix scalar
-    shape.
+  expected: The red-path selector collects at least one test and all collected tests pass (pytest exits
+    5 on zero collected, so an empty selector is caught). Count deliberately not pinned.
   fix_if: If these pass against a validator with no third leg they assert nothing; confirm they fail when
     the leg is reverted.
   hermetic: true
-  expected_literals:
-  - 2 passed
+  expected_literals: []
   graduation: waive
   graduation_waiver_reason: A red-path selector over this plan's own new tests; the module already runs
     in the standard pytest suite on every CI run, so a registry row would duplicate the same evidence.
@@ -248,6 +263,21 @@ verification_plan:
     operator confirmation is EXPECTED, not a failure (Decision 103).
   hermetic: false
   graduation: not-applicable
+- step: 14
+  phase: pre-deploy
+  action: Decision 126 framing is present in both required places, not just asserted in the plan
+  command: grep -q 'enabler for the human-gated break-glass loop only' bin/materialise-tfvars.sh && grep
+    -q 'enabler for the human-gated break-glass loop only' docs/contracts/deploy-paths.yaml
+  expected: Exits 0; the clause appears in both the script comment and the deploy-paths amendment.
+  fix_if: A miss means the constraint is prose-only. Decision 126 holds that the escape hatch's danger
+    is that it is AMBIENT, so the enabler-not-escalation framing must be readable at both call sites,
+    not only in this plan. Verified 2026-09-21 that the clause appears in neither file today, so this
+    step discriminates.
+  hermetic: true
+  expected_literals: []
+  graduation: waive
+  graduation_waiver_reason: A fixed-phrase grep is adequate at authoring time but unsound as a standing
+    guard -- a reworded but still-correct comment would red it.
 test_obligations:
 - source: scripts/checks/contracts/validate_terraform_cc_web_operations.py
   behavior: A no-default variable declared in terraform/personal/*.tf but absent from the contract's where_values_live
@@ -297,41 +327,41 @@ context:
   144, 84, 101, 189, 59. Decisions triaged: 148 of 148. Roadmap items intersected: 4; CONFLICT: 0; RELATED:
   4'
 - 'gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)'
-- 'rec-3950 is MISDIAGNOSED, not drift. Verified live 2026-09-20: the SNS endpoint is a confirmed deliverable
-  mailbox and the Owner tag is the GitHub no-reply identity, each correct for its own purpose. Its stated
-  remediation would break alerting or pollute tags, and its acceptance string would commit an email literal
-  into a .tf file. Close-propose as misdiagnosed; never execute it.'
-- rec-2843 acceptance verified PASSING 2026-09-21 (redaction_check.py scrubs _OWNER to [OWNER_EMAIL]);
-  deterministic close available. A parallel queue sweep may close it first - that is satisfied, not a
-  conflict.
-- alerts_email originates in terraform/personal/sns_alerts.tf (T2.18 FP-B / Decision 39), not variables.tf
-  - why the hand-maintained four-var list never learned about it.
-- PlatformAdmin GetSecretValue on the tfvars secret confirmed ALLOWED via iam simulate-principal-policy
-  (source role_PlatformAdmin_AdminOps; no resource policy), so no IAM change is needed. Decision 120's
-  provider-mirror sync is the admin-only fetch precedent this follows.
-- 'Decision 166 headroom: contract at 357 lines against the 500 default; the per-variable mapping plus
-  amendment_log entry must not require a raise marker.'
-- Branch was 10 behind origin/main at authoring; deploy-paths.yaml gained an adjacent SPLIT-APPLY clause
-  and terraform/personal/main.tf gained an S3 lifecycle block (not default_tags). Rebase before implementing.
-- 'Prototype patch for the contract and validator legs: scratchpad uncommitted-doc-fix.patch (reusable).'
-- Verification tier is V3 by explicit operator decision (2026-09-21). Decision 48's exhaustive V3 trigger
-  list does not name bin/**, so V2 was literally defensible and was the scout's NOTE; the operator chose
-  the more cautious tier because the new branch calls live Secrets Manager. Step 11 is the resulting real
-  external-system leg.
-- 'Decision 126 fork resolved by the operator (2026-09-21): accept materialisation as an admin-tier enabler
-  rather than gating it behind an extra opt-in. Rationale recorded: the ADMIN profile is used rarely and
-  almost solely for IAM work, so it is not an ambient surface, and Decision 120''s provider-mirror sync
-  is the existing admin-only-fetch precedent this follows.'
-- 'Planning-time split (Decision 59 routing): the alerts_email redaction gap is filed as rec-3975 and
-  recorded in followon_recs, not left as plan prose. It is the HARD PREREQUISITE for the sequenced value-change
-  plan - rec-3975 must land before any owner_email/alerts_email change reaches a PR, or the new address
-  prints unredacted in a public speculative-plan comment.'
+- 'rec-3950 is MISDIAGNOSED, not drift (verified live 2026-09-20: SNS endpoint is a confirmed deliverable
+  mailbox; the Owner tag is the GitHub no-reply identity; each correct for its own purpose). Its stated
+  remediation breaks alerting or pollutes tags, and its acceptance string would commit an email literal.
+  Close-propose per Decision 103; never execute it. Decision 190: say in the resolution that it was filed
+  from the stale procedure, not a measured diff.'
+- rec-2843 acceptance verified PASSING 2026-09-21, so Decision 103 permits a deterministic close with
+  that output as proof. A parallel queue sweep closing it first is satisfied, not a conflict.
+- alerts_email is declared in terraform/personal/sns_alerts.tf (T2.18 FP-B / Decision 39), not variables.tf
+  -- why the hand-maintained four-var list never learned about it.
+- PlatformAdmin GetSecretValue on the tfvars secret confirmed ALLOWED (iam simulate-principal-policy;
+  source role_PlatformAdmin_AdminOps; no resource policy), so no IAM change. Decision 120's provider-mirror
+  sync is the admin-only-fetch precedent.
+- 'Operator decisions 2026-09-21: tier V3 over the scout''s defensible V2 (Decision 48 NOTE), and the
+  Decision 126 fork accepted as an admin-tier enabler rather than an extra opt-in gate -- rationale: the
+  ADMIN profile is rare and near-exclusively IAM work, so it is not an ambient surface.'
 - 'vp-red-before measured 2026-09-21: the original step-4 graduate command was TAUTOLOGICAL (exit 0 on
-  the un-implemented tree, since the validator passes trivially before the third leg exists). Rewritten
-  to assert the coverage invariant through the new helper, measured genuinely red (ImportError) pre-fix.
-  Decision 189 makes a false graduate a hard plan-PR failure, not a waivable detour.'
+  the un-implemented tree). Rewritten to assert the invariant via the new helper; now classified red-before
+  (assertion_failed, exit 1). Decision 189 makes a false graduate a hard plan-PR failure.'
+- 'Planning-time split (Decision 59): the alerts_email redaction gap is rec-3975, the HARD PREREQUISITE
+  for the sequenced value-change plan -- it must land before any owner_email/alerts_email change reaches
+  a PR.'
+- 'tests/test_setup_cloud_env.py is in scope because step 7''s -k materialise selector names a test that
+  does not exist yet (verified: zero matches).'
+- 'Decision 166: contract at 357 lines against the 500 default; the additions must not need a raise marker.'
+- Branch was 10 behind origin/main at authoring (deploy-paths.yaml gained an adjacent SPLIT-APPLY clause;
+  terraform/personal/main.tf gained an S3 lifecycle block, not default_tags). Rebase before implementing.
+- 'Prototype patch for the contract and validator legs: scratchpad uncommitted-doc-fix.patch (reusable).'
+- plan-critique round 1 = REVISE (9 findings). Findings 1-2 were already fixed on disk when raised (step
+  4 re-measured red-before; scope row added). Findings 3,4,5,7,8,9 applied. Finding 6 (duplicate materialise-tfvars
+  surface vs the DEP-08/rec-2663 consolidation) is an operator fork -- see followon note.
 pre_implementation_checklist:
 - Branch confirmed not on main
+- 'Rebased onto origin/main BEFORE editing (measured 2026-09-21: deploy-paths.yaml amendment_log is 5
+  on this branch vs 6 on main, so step 2''s comparator fails on correct work until the rebase lands).
+  Re-measure the base count after rebasing.'
 - docs/PROJECT_CONTEXT.md read
 - only the plan-cited decision sections
 - All files in scope located and readable
@@ -350,8 +380,11 @@ execution_steps:
   mode 600, fail-closed on empty output.
 - bin/setup-cloud-env.sh - delegate to it inside the INSTALL_TERRAFORM=1 branch after the AWS CLI install.
 - tests/test_materialise_tfvars.py - create behavioural tests driving the script with a stubbed aws binary.
-- Close rec-3950 (misdiagnosed - no drift) and rec-2843 (already satisfied) via scripts.ops_data_portal,
-  and name both in the squash-merge Resolves trailer.
+- 'Close rec-2843 deterministically via scripts.ops_data_portal (its stored acceptance passes; record
+  that output as the closure proof) and name ONLY rec-2843 in the squash-merge Resolves trailer. Route
+  rec-3950 as close_proposed via ops_data_portal --update-rec with the misdiagnosis resolution -- NEVER
+  name rec-3950 in the Resolves trailer: .github/workflows/rec-autoclose.yml closes every id in that trailer,
+  which would auto-close a semantic verdict in breach of Decision 103.'
 - Execute Verification Plan - run each step; loop until pass; on unrecoverable failure stop and RCA (Decision
   55)
 - 'Report: what was implemented, verification results'
