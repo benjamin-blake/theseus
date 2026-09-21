@@ -32,16 +32,11 @@ scope:
   action: Modify
   purpose: Cover the HCL no-default parser and the unlisted / stale / scalar-shaped red paths, plus a
     live contract-vs-module assertion that fails if a future variable lands undocumented.
-- file: bin/materialise-tfvars.sh
-  action: Create
-  purpose: Admin-only fetch of the agent-platform-terraform-personal-tfvars secret into the gitignored
-    terraform/personal/terraform.personal.tfvars at mode 600. A delegated script (matching the existing
-    bin/sync-deps.sh pattern) rather than inline, so it is testable against a stubbed aws binary instead
-    of only greppable.
 - file: bin/setup-cloud-env.sh
   action: Modify
-  purpose: Delegate to bin/materialise-tfvars.sh inside the existing INSTALL_TERRAFORM=1 admin-only branch,
-    after the AWS CLI install completes.
+  purpose: Inside the existing INSTALL_TERRAFORM=1 admin-only branch, after the AWS CLI install, delegate
+    to the SAME single implementation the composite action uses -- so the local break-glass loop and CI
+    can never diverge.
 - file: tests/test_materialise_tfvars.py
   action: Create
   purpose: Behavioural tests driving bin/materialise-tfvars.sh with a stubbed aws on PATH - asserts the
@@ -51,11 +46,30 @@ scope:
   purpose: 'Add the delegation-ordering test step 7 selects with -k materialise: asserts the materialise-tfvars
     call sits inside the INSTALL_TERRAFORM=1 admin-only branch and after the AWS CLI install. The module
     is an existing static contract test over the script text.'
+- file: .github/actions/materialise-tfvars/materialise_tfvars.sh
+  action: Create
+  purpose: 'THE single materialise-tfvars implementation (honours the DEP-08 / rec-2663 consolidation).
+    Fetches the secret, writes the gitignored tfvars at mode 600, emits ::add-mask:: for account_id and
+    both ExternalIds, and fails closed on an empty fetch. Lives under the action directory because that
+    is the sanctioned delegate location the shell-bodies guard recognises (_delegated_script requires
+    a fully-anchored `.sh` under the action dir; .github/actions/subagent-plan-review/review.sh is the
+    precedent).'
+- file: .github/actions/materialise-tfvars/action.yml
+  action: Modify
+  purpose: 'Collapse the three inline shell bodies into one thin adapter: run: bash "${{ github.action_path
+    }}/materialise_tfvars.sh". Required, not optional -- the baseline''s touch-it-fix-it rule obliges
+    extraction the moment a baselined body is edited.'
+- file: config/composite_action_body_baseline.yaml
+  action: Modify
+  purpose: Retire the three now-extracted r3 entries (::#0=5, ::#1=14, ::#2=4). Extraction shrinks the
+    baseline, which is the sanctioned direction; re-register only if the guard still scans a residual
+    inline body in the adapter.
 bundled_recommendations:
 - rec-3950
 - rec-2843
 followon_recs:
 - rec-3975
+- rec-3977
 infrastructure_dependencies: []
 acceptance_criteria:
 - terraform-cc-web-operations.yaml names all five no-default variables and gives each its own recovery
@@ -266,8 +280,8 @@ verification_plan:
 - step: 14
   phase: pre-deploy
   action: Decision 126 framing is present in both required places, not just asserted in the plan
-  command: grep -q 'enabler for the human-gated break-glass loop only' bin/materialise-tfvars.sh && grep
-    -q 'enabler for the human-gated break-glass loop only' docs/contracts/deploy-paths.yaml
+  command: grep -q 'enabler for the human-gated break-glass loop only' .github/actions/materialise-tfvars/materialise_tfvars.sh
+    && grep -q 'enabler for the human-gated break-glass loop only' docs/contracts/deploy-paths.yaml
   expected: Exits 0; the clause appears in both the script comment and the deploy-paths amendment.
   fix_if: A miss means the constraint is prose-only. Decision 126 holds that the escape hatch's danger
     is that it is AMBIENT, so the enabler-not-escalation framing must be readable at both call sites,
@@ -294,6 +308,41 @@ verification_plan:
   graduation: waive
   graduation_waiver_reason: A fixed-substring assertion over one contract's prose; adequate at authoring
     time but a reworded-yet-correct step would red it as a standing guard.
+- step: 16
+  phase: pre-deploy
+  action: Composite-action shell-body guard accepts the extraction (R1/R2/R3 oracle)
+  command: bin/venv-python -m scripts.checks.ci_guards.validate_composite_action_shell_bodies 2>/dev/null
+    || bin/venv-python -c "from scripts.checks.ci_guards.validate_composite_action_shell_bodies import
+    validate_composite_action_shell_bodies as g; f=[]; g(f); print('GUARD FAILURES', f); assert not f"
+  expected: Prints GUARD FAILURES [] -- the adapter is recognised as a thin delegation and R2 test coverage
+    is satisfied.
+  fix_if: An R3 complaint means the adapter still carries a computing inline body (the delegation line
+    must be the only substantive line). An R2 complaint means no test drives materialise_tfvars.sh under
+    the literal `bash --noprofile --norc -e -o pipefail` GitHub argv -- add it to tests/test_materialise_tfvars.py.
+  hermetic: true
+  expected_literals:
+  - GUARD FAILURES []
+  graduation: waive
+  graduation_waiver_reason: Already a registered validate.py check running in both presubmit tiers; a
+    registry row would duplicate it.
+- step: 17
+  phase: pre-deploy
+  action: 'Consolidation is real: exactly one materialise implementation, and the action no longer fetches
+    inline'
+  command: test "$(grep -rlc 'secretsmanager get-secret-value' .github/actions/materialise-tfvars/ | wc
+    -l)" = "1" && grep -q 'secretsmanager get-secret-value' .github/actions/materialise-tfvars/materialise_tfvars.sh
+    && ! grep -q 'secretsmanager get-secret-value' .github/actions/materialise-tfvars/action.yml && grep
+    -q 'materialise_tfvars.sh' bin/setup-cloud-env.sh && echo 'SINGLE IMPLEMENTATION'
+  expected: 'Prints SINGLE IMPLEMENTATION: the fetch exists only in the delegate script, and both callers
+    reference it.'
+  fix_if: 'A failure means a second copy survives -- the DEP-08 / rec-2663 consolidation this plan honours
+    would be reversed. Measured red today: action.yml currently carries the inline fetch.'
+  hermetic: true
+  expected_literals:
+  - SINGLE IMPLEMENTATION
+  graduation: waive
+  graduation_waiver_reason: A fixed-substring census over one action directory; sound at authoring time,
+    brittle as a standing guard if the fetch is ever reworded.
 test_obligations:
 - source: scripts/checks/contracts/validate_terraform_cc_web_operations.py
   behavior: A no-default variable declared in terraform/personal/*.tf but absent from the contract's where_values_live
@@ -302,9 +351,10 @@ test_obligations:
   test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py::TestRecoveryTableCoverage
   red_green_expectation: red before (the pre-fix contract fails both the scalar-shape and missing-alerts_email
     assertions), green after the contract and validator land together
-- source: bin/materialise-tfvars.sh
-  behavior: Writes the tfvars file at mode 600 under INSTALL_TERRAFORM=1, no-ops otherwise, and fails
-    closed on an empty or failed fetch.
+- source: .github/actions/materialise-tfvars/materialise_tfvars.sh
+  behavior: 'The single implementation writes the tfvars at mode 600, emits ::add-mask:: for the three
+    secret-shaped values, and fails closed on an empty fetch -- driven under the literal GitHub composite
+    argv so CI and local behaviour cannot diverge (R2).'
   verification_step: 6
   test_selector: tests/test_materialise_tfvars.py
   red_green_expectation: red before (the script does not exist), green after
@@ -358,6 +408,11 @@ constraints:
   from an enforced one.
 - Decision 190 - rec-3950 carries source=tf_drift but was filed from the stale recovery procedure, not
   a measured plan diff; say so in the resolution so the drift lane's record stays honest.
+- DEP-08 / rec-2663 consolidated 4-5 duplicated materialise-tfvars copies into one composite action; this
+  plan must not create a second. The single implementation lives under the action directory (the delegate
+  location the shell-bodies guard recognises) and BOTH the action and bin/setup-cloud-env.sh call it.
+  The baseline's touch-it-fix-it rule makes the extraction mandatory once a baselined body is edited,
+  so this is the sanctioned remedy, not scope creep.
 context:
 - 'Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND; CITE: 168, 127, 120, 113,
   144, 84, 101, 189, 59. Decisions triaged: 148 of 148. Roadmap items intersected: 4; CONFLICT: 0; RELATED:
@@ -393,6 +448,14 @@ context:
 - plan-critique round 1 = REVISE (9 findings). Findings 1-2 were already fixed on disk when raised (step
   4 re-measured red-before; scope row added). Findings 3,4,5,7,8,9 applied. Finding 6 (duplicate materialise-tfvars
   surface vs the DEP-08/rec-2663 consolidation) is an operator fork -- see followon note.
+- 'plan-critique finding 6 resolved by operator choice (option A, single implementation). Research during
+  rescope found the extraction is REQUIRED, not optional: config/composite_action_body_baseline.yaml pins
+  the action''s three bodies under r3 and its touch-it-fix-it rule obliges extraction on any behavioural
+  edit. Delegate path follows .github/actions/subagent-plan-review/review.sh.'
+- 'rec-3977 filed for the FOURTH materialise-tfvars copy found during rescope: .github/workflows/terraform-drift.yml
+  keeps its own inline fetch+mask sequence (baselined separately under r3) and was missed by DEP-08. Out
+  of scope here per Decision 59 -- a distinct workflow on the alarm-only drift path -- but it must be
+  finished for the consolidation to hold.'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - 'Rebased onto origin/main BEFORE editing (measured 2026-09-21: deploy-paths.yaml amendment_log is 5
@@ -412,9 +475,11 @@ execution_steps:
   leg with brace-depth-aware HCL parsing so a nested validation block is not mistaken for a default.
 - tests/checks/contracts/test_validate_terraform_cc_web_operations.py - add parser and red-path coverage
   plus the live-pair assertion.
-- bin/materialise-tfvars.sh - create the admin-only secret fetch writing terraform.personal.tfvars at
-  mode 600, fail-closed on empty output.
-- bin/setup-cloud-env.sh - delegate to it inside the INSTALL_TERRAFORM=1 branch after the AWS CLI install.
+- .github/actions/materialise-tfvars/materialise_tfvars.sh - create THE single implementation (fetch,
+  mode 600, ::add-mask::, fail-closed); then collapse action.yml's three inline bodies into one thin adapter
+  delegating to it, and retire the three r3 baseline entries. Do NOT create a second copy under bin/.
+- bin/setup-cloud-env.sh - delegate to the SAME script inside the INSTALL_TERRAFORM=1 branch after the
+  AWS CLI install.
 - tests/test_materialise_tfvars.py - create behavioural tests driving the script with a stubbed aws binary.
 - 'Close rec-2843 deterministically via scripts.ops_data_portal (its stored acceptance passes; record
   that output as the closure proof) and name ONLY rec-2843 in the squash-merge Resolves trailer. Route
