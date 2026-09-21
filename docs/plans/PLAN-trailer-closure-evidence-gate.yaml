@@ -124,6 +124,35 @@ scope:
       verbatim as the row identity (Decision 132 / 176). `plan_obligations` reports this as
       "enforced elsewhere" by validate_graduation_completeness, so no mechanical check catches its
       omission from Scope -- it is listed explicitly for that reason.
+  - file: tests/ci_rca/test_close_recs_from_trailer.py
+    action: Modify
+    purpose: >-
+      MANDATORY, and the reason is a regression this gate causes rather than an addition. Every
+      test here drives `close_recs_from_trailer` with `_FIX_SHA = "deadbeef..."` (line 21).
+      `git diff-tree` exits 128 on an unresolvable sha, so `changed_files` returns None and
+      `merge_leg_refuses(None)` is True by design -- the gate would fire in EVERY one of these
+      tests and the per-rec loop would never run, inverting at least six assertions
+      (test_closes_rec_lacking_context_v2_json, the two stamp-threading cases,
+      test_ci_rca_rec_still_gets_stamp_fixed_by_sha_call, and
+      test_writer_transport_failure_sets_exit_code, which asserts rc == 1 and would get 0 because
+      a refusal returns 0). REMEDIATION, chosen not left to discovery: give these tests a
+      code-bearing changed set by monkeypatching `closure_gate.changed_files` at the
+      ci_rca_lifecycle call site, mirroring the `_head()` real-sha helper already in
+      tests/ops_data_portal/test_closure_gate.py:32. Do NOT weaken the gate to accommodate the
+      fixtures. TWO GRADUATED SHARDS pin node ids in this file --
+      `closure-transport-failure-reddens` (test_writer_transport_failure_sets_exit_code) and
+      `closure-stamp-applicable-seam` (test_closes_rec_lacking_context_v2_json), both
+      `guard_symbol: close_recs_from_trailer` -- so both node ids MUST survive under their
+      existing check_id; Decision 132 makes a broken shard a hard pre-merge failure, not churn.
+  - file: tests/test_ci_rca_lifecycle.py
+    action: Modify
+    purpose: >-
+      Same regression in `TestCloseRecsFromTrailerRefusalContract`, which drives the function with
+      the short fake sha "deadbeef": `test_non_gate_exception_still_exits_nonzero` asserts rc == 1
+      twice and would get 0, and `test_closure_refusal_skips_and_exits_zero` asserts a rec id
+      appears in captured stdout, which survives only if the new merge-leg marker enumerates the
+      refused ids -- make it do so, since a refusal that names no rec is not actionable evidence.
+      Apply the same changed-set remediation.
   - file: tests/test_rec_trailer.py
     action: Modify
     purpose: >-
@@ -195,15 +224,17 @@ acceptance_criteria:
     `docs/contracts/git-ops.yaml` states both the carrier rule and the placement rule, and each
     cites its enforcing check.
   - >-
-    Exactly one `diff-tree` invocation exists across closure_gate.py and trailer_closure_gate.py.
+    Exactly one `diff-tree` invocation exists across closure_gate.py, trailer_closure_gate.py and
+    ci_rca_lifecycle.py -- the caller is included because it already imports subprocess and runs
+    four other git verbs, making it the likeliest site for a second one to appear.
   - rec-3775, rec-3901 and rec-2922 are closed by this plan's merge.
 verification_plan:
   - step: 1
     phase: pre-deploy
     action: The shared helper exists and there is exactly one diff-tree call site
-    command: grep -q "def changed_files" scripts/ops_portal/closure_gate.py && test 1 -eq $(grep -ho '"diff-tree"' scripts/ops_portal/closure_gate.py scripts/ops_portal/trailer_closure_gate.py | wc -l)
+    command: grep -q "def changed_files" scripts/ops_portal/closure_gate.py && test 1 -eq $(grep -ho '"diff-tree"' scripts/ops_portal/closure_gate.py scripts/ops_portal/trailer_closure_gate.py scripts/ops_portal/ci_rca_lifecycle.py | wc -l)
     expected: >-
-      The helper is defined, and the argv literal "diff-tree" appears exactly once across both
+      The helper is defined, and the argv literal "diff-tree" appears exactly once across all three
       modules -- counting the real invocation, not prose. closure_gate.py mentions git diff-tree
       three times in docstrings and comments while invoking it once, which is why the assertion
       counts the quoted argv token rather than the prose spelling.
@@ -249,9 +280,15 @@ verification_plan:
   - step: 5
     phase: pre-deploy
     action: End-to-end -- a plan-only merge leaves the trailer's recs open, a code merge closes them
-    command: bin/venv-python -m pytest "tests/checks/ci_guards/test_rec_autoclose_merge_leg.py" "tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py" "tests/checks/ci_guards/test__workflow_shell_bodies.py" -q
-    expected: Refusal leaves recs OPEN with exit 0; the check fails on each removal; the body ratchet is clean.
-    fix_if: A non-zero exit on refusal would redden rec-autoclose and file a spurious critical ci_rca rec.
+    command: bin/venv-python -m pytest "tests/checks/ci_guards/test_rec_autoclose_merge_leg.py" "tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py" "tests/checks/ci_guards/test__workflow_shell_bodies.py" "tests/ci_rca/test_close_recs_from_trailer.py" "tests/test_ci_rca_lifecycle.py" -q
+    expected: >-
+      Refusal leaves recs OPEN with exit 0; the check fails on each removal; the body ratchet is
+      clean; AND the pre-existing close_recs_from_trailer seam contract still holds -- including
+      the two graduated node ids, which must pass under their existing check_ids.
+    fix_if: >-
+      A non-zero exit on refusal would redden rec-autoclose and file a spurious critical ci_rca rec.
+      If the seam tests fail, the gate is firing on their fake shas -- fix the fixtures' changed set,
+      never the gate's fail-closed behaviour.
     hermetic: false
     graduation: graduate
     graduation_check_id: rec-autoclose-merge-leg-refusal-end-to-end
@@ -362,6 +399,17 @@ test_obligations:
     red_green_expectation: >-
       Red before: the caller closes unconditionally, so the still-open assertion fails. Green after:
       open, exit 0, marker emitted.
+  - source: scripts/ops_portal/ci_rca_lifecycle.py
+    behavior: >-
+      With a code-bearing changed set, every pre-gate closure path stays byte-identical: a writer
+      transport failure still exits 1, RecNotFound still exits 0, and closure_fix_sha is still
+      threaded only when the cached row carries a stampable blob.
+    verification_step: 5
+    test_selector: tests/ci_rca/test_close_recs_from_trailer.py
+    red_green_expectation: >-
+      Red before the remediation: the gate fires on these tests' unresolvable fake sha and the loop
+      never runs, so rc == 1 becomes 0 and mock_write is never called. Green after: the seam
+      contract is preserved and both graduated node ids still pass.
   - source: scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py
     behavior: >-
       The check fails when the workflow stops delegating, when the gate is unreferenced, or when
@@ -437,8 +485,15 @@ constraints:
     re-key and junit verdict consumption are ALL rec-3984's. This slice mints no Decision and amends
     none; if the work seems to require one, stop and hand back rather than widening.
   - >-
+    Two GRADUATED shards pin node ids in tests/ci_rca/test_close_recs_from_trailer.py and both
+    carry `guard_symbol: close_recs_from_trailer`: `closure-transport-failure-reddens` and
+    `closure-stamp-applicable-seam`. Both node ids must survive this change under their EXISTING
+    check_id -- renaming or deleting either is a Decision 132 pre-merge gate failure, not churn.
+  - >-
     Out-of-scope defects found while implementing become recommendations via
-    `scripts.ops_data_portal`, never inline fixes (Decision 59 scope boundary).
+    `scripts.ops_data_portal`, never inline fixes (Decision 59 scope boundary). Note the two
+    seam-test files are pre-declared in Scope precisely because Decision 59 has no sanction row
+    deriving a coupled test file -- discovering the coupling at VP9 would leave no in-session route.
 context:
   - "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND (round 2). CITE = 186, 103, 177, 181, 179, 170, 169, 168, 162, 128, 55, 72. Round-2 flags on the acceptance evaluator (D167 routing, D103 amendment) are MOOT -- that work moved to rec-3984."
   - "Decisions triaged: 147 of 147"
@@ -490,6 +545,12 @@ execution_steps:
     register (pre=True, pre_globs, full_segment matching the domain); READ git-ops.yaml rather than
     hardcoding its clauses; declare an examined()/skipped() outcome. Add the `function_to_category`
     row to config/ci_rca_taxonomy.yaml.
+  - >-
+    Repair the close_recs_from_trailer seam BEFORE running the VP: give
+    tests/ci_rca/test_close_recs_from_trailer.py and
+    tests/test_ci_rca_lifecycle.py::TestCloseRecsFromTrailerRefusalContract a code-bearing changed
+    set (monkeypatch changed_files at the call site, or use a real sha via the _head() helper in
+    tests/ops_data_portal/test_closure_gate.py). Both graduated node ids must keep their names.
   - >-
     Tests -- tests/test_rec_trailer.py (both new classes PLUS the attribution-footer regression
     case), tests/ops_data_portal/test_trailer_closure_gate.py, the changed_files cases appended to
