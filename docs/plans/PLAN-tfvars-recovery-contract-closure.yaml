@@ -57,6 +57,10 @@ acceptance_criteria:
   103).
 - tfvars_and_remote_state_recovery.recovery_procedure names the materialisation path, so the stale state-parse-only
   procedure this plan's intent calls out cannot survive it.
+- deploy-paths.yaml's admin_out_of_band tfvars-recovery step names five variables and POINTS at the owning
+  contract, with its inline per-variable location detail and its stale terraform/CLAUDE.md pointer removed
+  -- not merely supplemented, which would leave it a second source of truth against Decision 126 point
+  2.
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -68,7 +72,8 @@ verification_plan:
     'key names both variables'; assert 'by design' in v, 'must state the values differ by design'; assert
     'recovery artefact' in v, 'must state the tag-churn diff is a recovery artefact'; assert 'materialise'
     in str(r['recovery_procedure']).lower(), 'recovery_procedure still prescribes only the state-parse
-    path'; print('CONTRACT SHAPE OK')"
+    path'; assert 'materialis' in str(r['admin_tier_only']).lower(), 'admin_tier_only still grounds itself
+    only in tfstate reads and does not cover the materialisation path'; print('CONTRACT SHAPE OK')"
   expected: Prints CONTRACT SHAPE OK. Asserts the table covers exactly the five variables, that owner_vs_alerts_email
     names both variables and states they differ by design and that the tag-churn diff is a recovery artefact,
     AND that recovery_procedure now points at the materialisation path rather than only the state-parse
@@ -109,11 +114,15 @@ verification_plan:
   phase: pre-deploy
   action: 'RED-BEFORE: validator rejects a contract missing a declared no-default variable'
   command: bin/venv-python -m pytest tests/checks/contracts/test_validate_terraform_cc_web_operations.py
-    -k "absent_from_table or undeclared_variable or scalar_where_values_live" -q
-  expected: All three red-path selectors collect at least one test each and pass, proving the guard fires
-    on the unlisted, stale and scalar shapes. Count deliberately not pinned.
-  fix_if: If these pass against a validator with no third leg they assert nothing; confirm they fail when
-    the leg is reverted.
+    -k absent_from_table -q && bin/venv-python -m pytest tests/checks/contracts/test_validate_terraform_cc_web_operations.py
+    -k undeclared_variable -q && bin/venv-python -m pytest tests/checks/contracts/test_validate_terraform_cc_web_operations.py
+    -k scalar_where_values_live -q
+  expected: 'Each of the three red-path selectors runs as its OWN invocation and passes. Chained, not
+    or-joined: pytest exits 5 when a selector collects nothing, so a missing test breaks the chain. Measured
+    2026-09-21 that an or-joined form exits 0 on a single match (1 passed, 8 deselected), which would
+    green a one-directional leg.'
+  fix_if: Exit 5 names the selector with no matching test -- that direction of the leg is unimplemented
+    or untested. Never collapse these back into one or-joined -k.
   hermetic: true
   expected_literals: []
   graduation: waive
@@ -139,23 +148,28 @@ verification_plan:
 - step: 5
   phase: pre-deploy
   action: 'Decision 170: the new leg REPORTS its examined population (not merely returns it)'
-  command: 'bin/venv-python -c "import io,contextlib; from scripts.checks.contracts.validate_terraform_cc_web_operations
+  command: 'bin/venv-python -c "import io,contextlib,re; from scripts.checks.contracts.validate_terraform_cc_web_operations
     import validate_terraform_cc_web_operations as v; buf=io.StringIO(); f=[]
-
-    import sys
 
     with contextlib.redirect_stdout(buf): v(f)
 
-    out=buf.getvalue(); assert ''no-default'' in out, out; print(''EXAMINED REPORTED'')"'
-  expected: Prints EXAMINED REPORTED -- the check's own output names the no-default population it scanned.
-  fix_if: A missing mention means the leg examines variables without accounting for them, so a vacuous
-    zero-variable pass is byte-identical to an enforced one (Decision 170).
+    out=buf.getvalue(); m=re.search(r''(\\d+)\\s+no-default'', out); assert m and int(m.group(1))>0, out;
+    print(''EXAMINED REPORTED'', m.group(1))"'
+  expected: Prints EXAMINED REPORTED followed by a non-zero count. The check's output must name its scanned
+    population as '<N> no-default ...', not a bare static label -- a label with no number fails.
+  fix_if: 'No match means the leg reports no population, so a vacuous zero-variable pass is indistinguishable
+    from an enforced one (Decision 170). A zero count means the parser matched nothing. Note registry.examined
+    cannot carry this: it overwrites the single current declaration, so stdout is the only available channel
+    and the assertion over it must be load-bearing.'
   hermetic: true
   expected_literals:
   - EXAMINED REPORTED
   graduation: waive
-  graduation_waiver_reason: Anti-vacuity accounting for the step-4 check; it rides the same registry row
-    rather than standing as a second one.
+  graduation_waiver_reason: 'Step 4''s graduated row asserts the coverage invariant by inline set math
+    and never invokes the validator, so it cannot observe this step''s reporting property -- this waiver
+    does NOT defer to it. The reporting clause is a one-time authoring property of the leg: its absence
+    is caught by validate_check_accounting''s declaration scan, and a registry row over a print format
+    would be brittle without adding coverage.'
 - step: 8
   phase: pre-deploy
   action: 'Decision 101 guard: no email address or account id introduced by this plan'
@@ -216,8 +230,11 @@ verification_plan:
   action: deploy-paths names five variables and points at the owning contract
   command: bin/venv-python -c "import yaml; s=str(yaml.safe_load(open('docs/contracts/deploy-paths.yaml'))['admin_out_of_band']['procedure']['steps']);
     assert 'alerts_email' in s, 'five-var list not corrected'; assert 'terraform-cc-web-operations' in
-    s, 'pointer to the owning contract missing'; print('DEPLOY_PATHS POINTER OK')"
-  expected: Prints DEPLOY_PATHS POINTER OK.
+    s, 'pointer to the owning contract missing'; assert \"terraform/CLAUDE.md's remote-state recovery\"
+    not in s, 'stale terraform/CLAUDE.md pointer still present -- detail was supplemented, not replaced';
+    print('DEPLOY_PATHS POINTER OK')"
+  expected: 'Prints DEPLOY_PATHS POINTER OK: five variables named, the owning contract pointed at, and
+    the stale terraform/CLAUDE.md pointer gone.'
   fix_if: '''five-var list not corrected'' means the step still lists four. ''pointer missing'' means
     the per-variable detail was restated here instead of pointed at, which would make deploy-paths a second
     source of truth against Decision 126 point 2. Measured red 2026-09-21.'
@@ -234,9 +251,8 @@ test_obligations:
     must fail.
   verification_step: 3
   test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py::TestRecoveryTableCoverage
-  red_green_expectation: red before (the table is a scalar prose blob and omits alerts_email, so both
-    directions fail), green after; the graduated check tfvars-recovery-table-covers-module is the standing
-    guard
+  red_green_expectation: red before (the three red-path tests do not exist, so each chained selector exits
+    5), green after
 - source: docs/contracts/terraform-cc-web-operations.yaml
   behavior: The recovery table must name every no-default variable declared in terraform/personal/*.tf
     and keep owner_email and alerts_email on separate, non-interchangeable sources.
@@ -254,7 +270,9 @@ test_obligations:
   verification_step: 15
   command: bin/venv-python -c "import yaml; s=str(yaml.safe_load(open('docs/contracts/deploy-paths.yaml'))['admin_out_of_band']['procedure']['steps']);
     assert 'alerts_email' in s, 'five-var list not corrected'; assert 'terraform-cc-web-operations' in
-    s, 'pointer to the owning contract missing'; print('DEPLOY_PATHS POINTER OK')"
+    s, 'pointer to the owning contract missing'; assert \"terraform/CLAUDE.md's remote-state recovery\"
+    not in s, 'stale terraform/CLAUDE.md pointer still present -- detail was supplemented, not replaced';
+    print('DEPLOY_PATHS POINTER OK')"
   red_green_expectation: red before (the step lists four variables and names no owning contract), green
     after
 constraints:
@@ -279,6 +297,12 @@ constraints:
   from an enforced one.
 - Decision 190 - rec-3950 carries source=tf_drift but was filed from the stale recovery procedure, not
   a measured plan diff; say so in the resolution so the drift lane's record stays honest.
+- admin_tier_only currently grounds its admin-only claim specifically in reading tfstate/personal/*. Once
+  recovery_procedure names the Secrets Manager materialisation path, that rationale no longer covers it
+  -- widen admin_tier_only to cover both. The fact holds (PlatformDev holds secretsmanager:GetSecretValue
+  only on the inference-credential ARNs, never the tfvars secret), but a break-glass agent reading the
+  amended contract would not know it. Leaving this is the plan's own defect class reproduced at the field
+  it rewrites.
 context:
 - 'Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND; CITE: 168, 127, 120, 113,
   144, 84, 101, 189, 59. Decisions triaged: 148 of 148. Roadmap items intersected: 4; CONFLICT: 0; RELATED:
