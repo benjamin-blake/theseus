@@ -26,12 +26,15 @@ scope:
     its own amendment_log entry (Class D).
 - file: scripts/checks/contracts/validate_terraform_cc_web_operations.py
   action: Modify
-  purpose: Add a third leg asserting every no-default variable declared in terraform/personal/*.tf appears
-    in the contract's where_values_live mapping, so a new variable cannot drift unlisted.
+  purpose: 'Add a BIDIRECTIONAL third leg: every no-default variable declared in terraform/personal/*.tf
+    appears in the contract''s where_values_live mapping (module subset of contract), AND every key listed
+    there is still declared in the module (contract subset of module). The second direction is what stops
+    a stale entry for a retired variable surviving in the standing guard.'
 - file: tests/checks/contracts/test_validate_terraform_cc_web_operations.py
   action: Modify
-  purpose: Cover the HCL no-default parser and the unlisted / stale / scalar-shaped red paths, plus a
-    live contract-vs-module assertion that fails if a future variable lands undocumented.
+  purpose: Cover the HCL no-default parser and all three red paths -- unlisted, stale and scalar-shaped
+    -- plus a live contract-vs-module assertion that fails if a future variable lands undocumented or
+    a retired one lingers.
 bundled_recommendations:
 - rec-3950
 - rec-2843
@@ -45,8 +48,9 @@ acceptance_criteria:
   source; no variable shares a source entry with another.
 - The contract records that owner_email and alerts_email differ by design and that the resulting Owner
   tag-churn diff is a recovery artefact, never drift to apply.
-- validate_terraform_cc_web_operations fails when a no-default variable declared in terraform/personal/*.tf
-  is absent from where_values_live, and passes on the corrected pair.
+- validate_terraform_cc_web_operations fails BOTH when a no-default variable declared in terraform/personal/*.tf
+  is absent from where_values_live AND when where_values_live lists a key the module no longer declares;
+  it passes on the corrected pair.
 - No email address or AWS account id is introduced into any tracked file by this plan.
 - rec-2843 is closed with its acceptance output recorded as the closure proof; rec-3950 is routed close_proposed
   with its misdiagnosis resolution recorded, and remains open pending operator confirmation (Decision
@@ -70,15 +74,19 @@ verification_plan:
     AND that recovery_procedure now points at the materialisation path rather than only the state-parse
     it was written for.
   fix_if: '''where_values_live is still a scalar prose blob'' means the per-variable restructure has not
-    landed. A short key list names the variable still missing. A named clause failure says which part
-    of owner_vs_alerts_email or recovery_procedure is absent.'
+    landed. A short key list names the variable still missing. A bare KeyError means the owner_vs_alerts_email
+    key is absent entirely; a named assertion says which of its clauses, or recovery_procedure''s materialisation
+    pointer, is missing.'
   hermetic: true
   expected_literals:
   - CONTRACT SHAPE OK
   graduation: waive
-  graduation_waiver_reason: The durable form of this assertion is the validate_terraform_cc_web_operations
-    third leg added by this plan (step 4, graduated there). A second registry row asserting the same contract
-    shape would duplicate it.
+  graduation_waiver_reason: Step 4 graduates ONLY the bidirectional coverage invariant, which is the clause
+    that drifts mechanically as the module gains or retires variables. This step's other clauses -- owner_vs_alerts_email's
+    by-design and recovery-artefact wording, and recovery_procedure naming the materialisation path --
+    are one-time prose corrections with no mechanical drift vector, and any later edit to them is separately
+    caught by validate_contract_drift's Class D amendment_log rule. A registry row over fixed prose substrings
+    would be brittle without adding coverage.
 - step: 2
   phase: pre-deploy
   action: Both Class D contracts gained an amendment_log entry relative to main
@@ -101,9 +109,9 @@ verification_plan:
   phase: pre-deploy
   action: 'RED-BEFORE: validator rejects a contract missing a declared no-default variable'
   command: bin/venv-python -m pytest tests/checks/contracts/test_validate_terraform_cc_web_operations.py
-    -k "absent_from_table or scalar_where_values_live" -q
-  expected: The red-path selector collects at least one test and all collected tests pass (pytest exits
-    5 on zero collected, so an empty selector is caught). Count deliberately not pinned.
+    -k "absent_from_table or undeclared_variable or scalar_where_values_live" -q
+  expected: All three red-path selectors collect at least one test each and pass, proving the guard fires
+    on the unlisted, stale and scalar shapes. Count deliberately not pinned.
   fix_if: If these pass against a validator with no third leg they assert nothing; confirm they fail when
     the leg is reverted.
   hermetic: true
@@ -117,16 +125,15 @@ verification_plan:
   command: bin/venv-python -c "import yaml; from scripts.checks.contracts.validate_terraform_cc_web_operations
     import _declared_no_default_variables as decl; from pathlib import Path; d=decl(Path('terraform/personal'));
     t=yaml.safe_load(open('docs/contracts/terraform-cc-web-operations.yaml'))['tfvars_and_remote_state_recovery']['where_values_live'];
-    listed={k for k in t if k!='description'}; missing=sorted(d-listed); print('UNCOVERED', missing);
-    assert not missing and len(d)>=5"
-  expected: Prints UNCOVERED [] and exits 0.
-  fix_if: 'Measured RED on the un-implemented tree 2026-09-21 (ImportError: _declared_no_default_variables
-    does not exist yet), so it carries a genuine red-before signal rather than passing by construction.
-    Post-fix, a non-empty list names the module variable still absent from the recovery table -- this
-    is the durable invariant a future terraform/personal variable trips.'
+    listed={k for k in t if k!='description'}; missing=sorted(d-listed); stale=sorted(listed-d); print('UNCOVERED',
+    missing, 'STALE', stale); assert not missing and not stale and len(d)>=5"
+  expected: Prints UNCOVERED [] STALE [] and exits 0.
+  fix_if: UNCOVERED names a module variable absent from the recovery table; STALE names a table key the
+    module no longer declares. This is the durable bidirectional invariant a future terraform/personal
+    variable -- added or retired -- trips.
   hermetic: true
   expected_literals:
-  - UNCOVERED []
+  - UNCOVERED [] STALE []
   graduation: graduate
   graduation_check_id: tfvars-recovery-table-covers-module
 - step: 5
@@ -152,11 +159,11 @@ verification_plan:
 - step: 8
   phase: pre-deploy
   action: 'Decision 101 guard: no email address or account id introduced by this plan'
-  command: bin/venv-python -c "import subprocess,re; d=subprocess.run(['git','diff','origin/main','--','docs/contracts','scripts','tests'],capture_output=True,text=True).stdout;
+  command: bin/venv-python -c "import subprocess,re; d=subprocess.run(['git','diff','origin/main','--'],capture_output=True,text=True).stdout;
     adds=[l for l in d.splitlines() if l.startswith('+') and not l.startswith('+++')]; bad=[l for l in
     adds if re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}', l) or re.search(r'(?<![0-9A-Za-z])[0-9]{12}(?![0-9A-Za-z])',
     l)]; print('LEAKED', len(bad)); assert not bad, bad[:3]"
-  expected: Prints LEAKED 0.
+  expected: Prints LEAKED 0 across the whole diff against main -- no pathspec, matching AC wording.
   fix_if: A non-zero count prints the offending added lines; move the literal into the Secrets Manager
     entry and reference it by role instead.
   hermetic: true
@@ -193,8 +200,12 @@ verification_plan:
   action: 'Closure obligation: both bundled recs reach a terminal or proposed state'
   command: bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json; rows=[json.loads(l)
     for l in open('logs/.recommendations-log.jsonl') if l.strip()]; d={r['id']:r for r in rows}; [print(i,
-    d[i]['status']) for i in ['rec-3950','rec-2843']]; assert d['rec-2843']['status']=='closed'"
-  expected: rec-2843 prints closed; rec-3950 prints its status after the operator acts on the close_proposed.
+    d[i]['status'], bool(d[i].get('resolution'))) for i in ['rec-3950','rec-2843']]; assert d['rec-2843']['status']=='closed';
+    assert d['rec-2843'].get('resolution'), 'rec-2843 closure proof not recorded'; assert d['rec-3950'].get('resolution'),
+    'rec-3950 misdiagnosis resolution not recorded'"
+  expected: Both recs print with a True resolution flag; rec-2843 prints closed. rec-3950's STATUS is
+    deliberately not asserted -- it stays open pending operator confirmation (Decision 103) -- but its
+    recorded resolution IS asserted, so skipping the close_proposed write fails the step.
   fix_if: rec-2843 still open means the deterministic closure did not run. rec-3950 staying open pending
     operator confirmation is EXPECTED, not a failure (Decision 103). Use the portal --sync surface; scripts.sync.ops
     accepts only 'sync' and calling it directly breaches AGENTS.md portal discipline.
@@ -218,12 +229,14 @@ verification_plan:
     time but a reworded-yet-correct step would red it as a standing guard.
 test_obligations:
 - source: scripts/checks/contracts/validate_terraform_cc_web_operations.py
-  behavior: A no-default variable declared in terraform/personal/*.tf but absent from the contract's where_values_live
-    mapping must fail the check; a scalar where_values_live must also fail.
+  behavior: A no-default variable declared in terraform/personal/*.tf but absent from where_values_live
+    must fail; a key listed there but no longer declared in the module must also fail; and a scalar where_values_live
+    must fail.
   verification_step: 3
   test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py::TestRecoveryTableCoverage
-  red_green_expectation: red before (the pre-fix contract fails both the scalar-shape and missing-alerts_email
-    assertions), green after the contract and validator land together
+  red_green_expectation: red before (the table is a scalar prose blob and omits alerts_email, so both
+    directions fail), green after; the graduated check tfvars-recovery-table-covers-module is the standing
+    guard
 - source: docs/contracts/terraform-cc-web-operations.yaml
   behavior: The recovery table must name every no-default variable declared in terraform/personal/*.tf
     and keep owner_email and alerts_email on separate, non-interchangeable sources.
@@ -231,8 +244,8 @@ test_obligations:
   command: bin/venv-python -c "import yaml; from scripts.checks.contracts.validate_terraform_cc_web_operations
     import _declared_no_default_variables as decl; from pathlib import Path; d=decl(Path('terraform/personal'));
     t=yaml.safe_load(open('docs/contracts/terraform-cc-web-operations.yaml'))['tfvars_and_remote_state_recovery']['where_values_live'];
-    listed={k for k in t if k!='description'}; missing=sorted(d-listed); print('UNCOVERED', missing);
-    assert not missing and len(d)>=5"
+    listed={k for k in t if k!='description'}; missing=sorted(d-listed); stale=sorted(listed-d); print('UNCOVERED',
+    missing, 'STALE', stale); assert not missing and not stale and len(d)>=5"
   red_green_expectation: red before (the table is a scalar prose blob and omits alerts_email), green after;
     the graduated check tfvars-recovery-table-covers-module is the standing guard
 - source: docs/contracts/deploy-paths.yaml
@@ -270,7 +283,9 @@ context:
 - 'Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND; CITE: 168, 127, 120, 113,
   144, 84, 101, 189, 59. Decisions triaged: 148 of 148. Roadmap items intersected: 4; CONFLICT: 0; RELATED:
   4'
-- 'gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)'
+- 'gates: decision-scout=FLAGS_FOUND (148/148 triaged); plan-critique=REVISE x3 (9, 12, 10 findings) then
+  SPLIT at the round-3 escalation, then REVISE (3 narrow findings) on the post-split round 4; all dispositioned,
+  no recurrence at a recorded-fixed anchor.'
 - SPLIT at round 3 (operator decision 2026-09-21). Rounds 1/2/3 returned 9/12/10 findings, 8 of round
   3's in the consolidation half while the contract+validator half stayed clean two rounds running. The
   consolidation and the ADMIN container fetch moved to rec-3978, which carries the design and all eight
