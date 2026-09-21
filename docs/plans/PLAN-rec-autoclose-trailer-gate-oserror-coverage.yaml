@@ -51,7 +51,8 @@ scope:
       that lands the test is what makes the artifact resolve FIX-BOUND (Decision 186 point 4).
 bundled_recommendations:
   - rec-3991
-followon_recs: []
+followon_recs:
+  - rec-3996
 infrastructure_dependencies: []
 acceptance_criteria:
   - >-
@@ -66,12 +67,14 @@ acceptance_criteria:
     The test asserts BOTH limbs of the unreadable-source outcome -- a non-empty failed list
     carrying the "could not read" entry, and a registry declaration whose kind is "skipped". A
     test that merely reaches lines 37-38 without asserting the outcome does not satisfy this.
-    NOT MACHINE-VERIFIABLE BY THIS PLAN, and deliberately flagged as such: an assertion-free test
-    that injects the OSError would still pass VP step 1 (exit 0, "1 passed"), still pass VP step 2
-    (lines 37-38 execute, so coverage reaches 100%), and would still be ADMITTED by the shard's
-    differential gate. This criterion is therefore a CODE-REVIEW obligation -- the reviewer must
-    read the test body and confirm both assertions are physically present. Do not mark it met on
-    the strength of a green VP.
+    NOT DISCRIMINATED BY ANY VP STEP IN THIS PLAN, and deliberately flagged as such: an
+    assertion-free test that injects the OSError would still pass VP step 1 (exit 0, "1 passed"),
+    still pass VP step 2 (lines 37-38 execute, so coverage reaches 100%), and would still be
+    ADMITTED by the shard's differential gate. Physical PRESENCE of the two assertions is
+    greppable in principle (a grep_count would express it), but presence is not the same property
+    as asserting the right outcome, so this criterion is routed to CODE-REVIEW: the reviewer reads
+    the test body and confirms both assertions are present and correct. Do not mark it met on the
+    strength of a green VP.
   - >-
     scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py reports 100% line coverage
     with an empty Missing column when measured under that test file alone (49 statements, 0
@@ -136,13 +139,15 @@ verification_plan:
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
-      The 100%-per-file property is already owned by the registered full-tier check
-      validate_test_coverage (scripts/checks/misc/validate_test_coverage.py), which derives its
-      file set from the diff and fails on any changed source file below 100%. Graduating a
-      second, narrower standing coverage guard for this one module would duplicate a registered
-      verifier over the same data -- the duplication Decision 86 forbids and the rubric's
-      "duplicates an already-graduated check" waive case. The step stays in the VP as this
-      plan's own measurement.
+      Duplicates the check VP step 1 already graduates. The standing guard against this defect
+      recurring is the shard rec-autoclose-trailer-gate-read-oserror, whose test_selector fails
+      the moment the OSError test is deleted -- which is precisely what would drop these two
+      lines back out of coverage. A second standing guard asserting the derived 100% figure would
+      restate that same fact at narrower scope (the rubric's "duplicates an already-graduated
+      check" waive case, and the duplication Decision 86 forbids). Deliberately NOT justified by
+      validate_test_coverage: that check derives its file set from the diff, and this PR does not
+      modify the guard module, so it will not measure it here (plan-critique round 2, finding 2).
+      The step stays in the VP as this plan's own red-to-green measurement.
   - step: 3
     phase: pre-deploy
     action: >-
@@ -175,8 +180,12 @@ verification_plan:
       rec-3991 in the first place.
     command: bin/venv-python -m scripts.validate
     expected: >-
-      The printed summary reports zero failed checks, and in particular the "Test coverage check"
-      section reports no file below 100%.
+      The printed summary reports zero failed checks. Note what the "Test coverage check" section
+      can and cannot tell you here: it derives its file set from the diff, and this PR does not
+      modify the guard module, so it will NOT re-measure that module on this branch. Its purpose
+      at this step is to confirm the diff introduces no OTHER coverage regression; VP step 2 is
+      the authoritative measurement of the guard module itself, and the post-merge full tier on
+      main is where validate_test_coverage would have caught a recurrence.
     fix_if: >-
       A recurrence of "validate_rec_autoclose_trailer_gate.py: NN% line coverage (expected 100%)"
       means the fix did not take. Per handoff_policy.timeout_disposition, a timeout is BLOCKED --
@@ -184,9 +193,10 @@ verification_plan:
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
-      Same recursion refusal and Decision 73 exit-code caveat as step 3, at the full tier. The
-      per-file coverage property this step exercises is owned by the registered
-      validate_test_coverage check; graduating it would duplicate that verifier.
+      Same recursion refusal and Decision 73 exit-code caveat as step 3, at the full tier: the
+      command invokes scripts.validate, which vp-red-before.yaml's recursion_refusal refuses
+      statically for a graduate disposition, and its exit code is not a kernel assertion outside
+      CI. Its constituent checks are each already registered in their own right.
   - step: 5
     phase: post-deploy
     action: >-
@@ -221,7 +231,10 @@ verification_plan:
       PERMANENTLY once any other PR merges after this one, and no amount of re-fetching could
       recover it. Both closure flags MUST ride the same call (Decision 186 point 4); closing
       first and stamping afterwards no longer satisfies the route. A silent exit 0 with no output
-      means the wrong entrypoint was used; scripts.ops_data_portal is the sanctioned one.
+      means the wrong entrypoint was used; scripts.ops_data_portal is the sanctioned one. Leave
+      the bare `--sync` exactly as written: it takes NO --profile, because cli.py dispatches it as
+      a parameterless sync() that uses the ambient AWS_PROFILE. Adding --profile there would be a
+      call into a signature that does not exist -- do not "fix" the asymmetry with --update-rec.
     hermetic: false
   - step: 6
     phase: post-deploy
@@ -279,14 +292,17 @@ constraints:
   - >-
     Decision 59 scope boundary: scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py is
     NOT in scope and its "except OSError: return None" limb stays exactly as written. rec-3991's
-    preventive_action offers a refactor (raise, or a discriminated Union[str, Exception]) as an
-    ALTERNATIVE to the test -- adopting it here would be an out-of-scope source change.
-    DISPOSITION, decided at plan time and recorded rather than deferred: the refactor is DECLINED
-    on the merits, and followon_recs stays empty DELIBERATELY. It is rec-3991's own suggested
-    alternative, not a newly-discovered out-of-scope defect, and the rec's acceptance command
-    fixes the test-only route, so no follow-on rec is owed (decision-scout answer (c) reached the
-    same conclusion independently). An implementing agent must NOT read this as an open invitation
-    to file one, and must not refactor _read.
+    preventive_action has TWO halves and BOTH are disposed here, so closing the rec discards
+    neither (plan-critique round 2, finding 1). (1) PRIMARY, class-level: codify the
+    OSError-injection negative-test obligation for every ci_guards module that reads via
+    pathlib.Path.read_text inside a try/except OSError. DEFERRED, not declined -- it needs a new
+    registered check, or a Class D contract clause plus a declared evaluator, which is far outside
+    an XS test-only slice. Filed as rec-3996 and recorded in followon_recs, per the planning
+    skill's Planning-time split clause. (2) The "as an alternative" refactor of _read (raise, or a
+    discriminated Union[str, Exception]): DECLINED on the merits -- it is rec-3991's own stated
+    alternative to the test rather than a newly-discovered defect, and the rec's acceptance
+    command fixes the test-only route (decision-scout answer (c) concurred). An implementing agent
+    must not refactor _read, and must not file a further rec for either half.
   - >-
     Scope the OSError patch to the validate_rec_autoclose_trailer_gate(failed) call only, inside a
     with block. A module- or session-scoped pathlib.Path.read_text patch would leak and redden
@@ -330,9 +346,9 @@ context:
   - "Decision-scout verdict FLAGS_FOUND. CITE list (verbatim): 186, 189, 176, 132, 170, 131, 59, 72, 55, 103, 84. CONTRADICT: 142 [WARN] (disposed above), 186 [NOTE] (fixed in VP step 5). SPIRIT: 163 [WARN] (both halves disposed above)."
   - "Decisions triaged: 150 of 150"
   - "Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1 (T4.23, deferred_post_mvp, matched only on the tests/ prefix; nothing foreclosed)."
-  - "Preventive-action disposition: rec-3991's suggested _read refactor is DECLINED on the merits at plan time (see the Decision 59 constraint); followon_recs is empty deliberately, not by omission."
+  - "Preventive-action disposition -- BOTH halves (see the Decision 59 constraint): the PRIMARY class-level template obligation for guarded ci_guards readers is DEFERRED to rec-3996 (in followon_recs); the 'as an alternative' _read refactor is DECLINED on the merits. Closing rec-3991 therefore discards neither."
   - "VP step 5 resolves its fix sha FROM THE ARTIFACT (git rev-list -1 origin/main -- <shard>), never from main's tip, so it survives main advancing past the squash-merge (critique round 1, blocking finding 1)."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE round 1, all findings disposed; confirming round pending"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 2 round(s)"
 pre_implementation_checklist:
   - Branch confirmed not on main (harness-assigned session branch)
   - docs/PROJECT_CONTEXT.md read
