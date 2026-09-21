@@ -113,15 +113,20 @@ verification_plan:
     in the standard pytest suite on every CI run, so a registry row would duplicate the same evidence.
 - step: 4
   phase: pre-deploy
-  action: Recovery table covers every no-default variable declared in the live module
-  command: bin/venv-python -c "from scripts.checks.contracts.validate_terraform_cc_web_operations import
-    validate_terraform_cc_web_operations as v; f=[]; v(f); print('FAILURES', f); assert not f"
-  expected: Prints FAILURES [] and exits 0.
-  fix_if: 'A non-empty list names the variable missing from, or stale in, the recovery table. This is
-    the durable invariant: a future terraform/personal variable added without a table entry fails here.'
+  action: 'RED-BEFORE (graduate): recovery table covers every no-default variable in the live module'
+  command: bin/venv-python -c "import yaml; from scripts.checks.contracts.validate_terraform_cc_web_operations
+    import _declared_no_default_variables as decl; from pathlib import Path; d=decl(Path('terraform/personal'));
+    t=yaml.safe_load(open('docs/contracts/terraform-cc-web-operations.yaml'))['tfvars_and_remote_state_recovery']['where_values_live'];
+    listed={k for k in t if k!='description'}; missing=sorted(d-listed); print('UNCOVERED', missing);
+    assert not missing and len(d)>=5"
+  expected: Prints UNCOVERED [] and exits 0.
+  fix_if: 'Measured RED on the un-implemented tree 2026-09-21 (ImportError: _declared_no_default_variables
+    does not exist yet), so it carries a genuine red-before signal rather than passing by construction.
+    Post-fix, a non-empty list names the module variable still absent from the recovery table -- this
+    is the durable invariant a future terraform/personal variable trips.'
   hermetic: true
   expected_literals:
-  - FAILURES []
+  - UNCOVERED []
   graduation: graduate
   graduation_check_id: tfvars-recovery-table-covers-module
 - step: 5
@@ -206,6 +211,18 @@ verification_plan:
   graduation_waiver_reason: docs/contracts/vp-red-before.yaml#recursion_refusal statically refuses an
     argv head of -m scripts.validate as a graduated check.
 - step: 11
+  phase: pre-deploy
+  action: Full validation tier is green (handoff_policy.full_validation_required_before_commit)
+  command: bin/venv-python -m scripts.validate
+  expected: Full-tier Validation Summary reports all checks passed.
+  fix_if: Address the named check. The full tier is the pre-handoff gate this plan's handoff_policy declares;
+    a timeout is handoff_policy.timeout_disposition=blocked -- resume and rerun from the start, never
+    partially.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: docs/contracts/vp-red-before.yaml#recursion_refusal statically refuses an
+    argv head of -m scripts.validate as a graduated check.
+- step: 12
   phase: post-deploy
   action: '[post-deploy] ADMIN-container live materialisation against real Secrets Manager'
   command: INSTALL_TERRAFORM=1 bash bin/materialise-tfvars.sh && bin/venv-python -c "import os, re, stat;
@@ -220,7 +237,7 @@ verification_plan:
     file. A mode mismatch means the chmod is missing.
   hermetic: false
   graduation: not-applicable
-- step: 12
+- step: 13
   phase: post-deploy
   action: 'Closure obligation: both bundled recs reach a terminal or proposed state'
   command: bin/venv-python -m scripts.sync.ops pull >/dev/null && bin/venv-python -c "import json; rows=[json.loads(l)
@@ -309,6 +326,10 @@ context:
   recorded in followon_recs, not left as plan prose. It is the HARD PREREQUISITE for the sequenced value-change
   plan - rec-3975 must land before any owner_email/alerts_email change reaches a PR, or the new address
   prints unredacted in a public speculative-plan comment.'
+- 'vp-red-before measured 2026-09-21: the original step-4 graduate command was TAUTOLOGICAL (exit 0 on
+  the un-implemented tree, since the validator passes trivially before the third leg exists). Rewritten
+  to assert the coverage invariant through the new helper, measured genuinely red (ImportError) pre-fix.
+  Decision 189 makes a false graduate a hard plan-PR failure, not a waivable detour.'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
