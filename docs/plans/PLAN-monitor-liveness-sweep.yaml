@@ -31,9 +31,13 @@ scope:
     purpose: >-
       Wire the second leg into detect_stale_loops, delegate identity to sensor_liveness_episodes,
       make `_probe_acceptance` (:314) emit a leg selector and `stale_peers_for_probe` (:594) return
-      leg-aware results rather than a flat loop-name list, and widen `_charge`'s sweeps_max cap
-      (currently len(peers)+1, which would raise a FALSE
-      structural-violation RuntimeError once two classes sweep). Fleet behaviour is DECIDED here,
+      leg-aware results rather than a flat loop-name list, and widen BOTH `_charge` caps -- :568
+      sets sweeps_max AND ids_max to len(peers)+1 on one line, and a both-legs-stale peer pays up to
+      two rec_by_id fetches as well as two sweeps, so widening only sweeps_max leaves the sibling
+      cap to raise a FALSE structural-violation RuntimeError. Bound it rather than over-engineering:
+      fleet collapse fires at 3, so at most 2 non-collapsed episodes per leg = 4 total regardless of
+      peer count; at the live 10 peers neither cap is reachable, and sweeps_max must still widen
+      because test_call_budget_caps_equal_len_peers_plus_one (:518) runs N=2. Fleet behaviour is DECIDED here,
       not deferred: (a) FLEET_COLLAPSE_MIN_STALE counts DISTINCT PEERS, never (peer, leg) pairs --
       a fleet event means several monitors broke together, and counting pairs would let two peers
       stale on both legs reach 4 and trigger a spurious collapse that suppresses every per-loop
@@ -165,7 +169,11 @@ verification_plan:
       raise (an earlier draft claimed one; reading the stub refutes it). The real consequence is
       that every peer a test makes stale now goes stale on BOTH legs with identical anchors, so each
       files two episodes, breaking the exact-equality assertions at :195, :210, :224, :325, :404 and
-      :418-420. The stub must become query-aware first, or none of those fixes mean anything
+      :418-420. The stub must become query-aware first, or none of those fixes mean anything.
+      PRESERVE the assertion SHAPE, not just the intent: assert list length AND membership, never
+      relax an equality operator to a membership one -- implement-scope-boundary.yaml names
+      operator-loosening as CONTENT weakening's dominant form in practice, and no mechanical guard
+      catches it here
     expected_literals:
       - "passed"
     fix_if: >-
@@ -338,13 +346,16 @@ constraints:
     11 calls to 21, hourly, ~500/day against a 5,000/hour authenticated limit. The REAL Decision 88
     exposure is on the warehouse side and must be named: detect_stale_loops is "lazy and bounded --
     a healthy tick issues zero warehouse reads" only because of its `if not stale: return` early
-    exit. Recs are never auto-closed, so once any peer is stale every hourly tick pays a resolved
-    sweep. The count is PER EPISODE, not per loop (_resolved_rows_for_loop is called from
-    _reconcile_episode), so a peer stale on both legs pays two sweeps plus up to two rec_by_id
-    fetches: up to ~48 warehouse reads/day per such peer, where there were zero. Keep the sweep
-    prefix loop-wide (`Loop: {loop}.%`) and discriminate the leg CLIENT-SIDE in _filter_resolved_rows
-    -- that is the difference between one sweep and two. Registered named verbs throughout, so
-    invariant (ii) holds, but the cost is real and was previously accounted for one leg only.
+    exit. The recurring cost is SMALLER than an earlier draft of this constraint claimed, and the
+    claim is corrected here rather than left conservative-but-wrong: _reconcile_episode guards the
+    resolved sweep behind `if existing is None:` (:473-477), so a peer whose rec is already filed
+    and open pays ZERO sweeps per tick, not one. The only per-tick warehouse read while anything is
+    stale is the single source-scoped find_recs("loop_liveness_stale") at :566-567, which the second
+    leg does not change. Sweep cost is per EPISODE, paid on first file and on a cross-anchor
+    re-open, so a peer stale on both legs pays at most two at those moments. Keep the sweep prefix
+    loop-wide (`Loop: {loop}.%`), discriminate the leg CLIENT-SIDE in _filter_resolved_rows, and
+    MEMOISE _resolved_rows_for_loop per loop per tick -- Decision 88 invariant (ii) forbids an
+    ad-hoc re-fetch of data already in hand, and the loop-wide prefix makes the memo trivial.
   - >-
     NO second register. derive_scheduled_peers() walks every .github/workflows/*.yml on:.schedule
     block at run time, and PLAN-sensor-liveness.yaml:827 records that its audit rejected a declared
@@ -481,7 +492,12 @@ execution_steps:
     (sensor_liveness.py:594) must return leg-aware results instead of a flat loop-name list, and
     _dispatch's argv parse (__main__.py:173-176) must accept that selector. Extending only the CLI
     cannot discriminate a leg, and would make a CADENCE-leg rec's acceptance start failing whenever
-    only the success leg is stale -- a regression of acceptance_criteria[1], not a fix.
+    only the success leg is stale -- a regression of acceptance_criteria[1], not a fix. DECIDE the
+    bare form, do not leave it to inference: `--liveness-probe {loop}` with NO selector means the
+    CADENCE leg, because _decide_action (:440-446) rewrites only title and context on update, so
+    every already-filed cadence rec keeps its stored selector-less acceptance string forever. A bare
+    form meaning "stale on any leg" would start failing those legacy recs on a success-only outage
+    -- the same regression, reintroduced through the back door.
   - >-
     Extend loop_liveness_stale's description and signal_interpretation in
     config/agent/data_quality/source_registry.yaml to cover both legs.
