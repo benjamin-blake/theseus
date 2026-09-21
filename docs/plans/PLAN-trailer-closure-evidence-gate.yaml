@@ -1,0 +1,473 @@
+schema_version: 4
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: trailer-closure-evidence-gate
+intent: >-
+  Make a `Resolves:` trailer a CLAIM that must survive evidence checks rather than an instruction
+  to close. Three recorded angles of one defect -- no notion of merge leg, no acceptance
+  verification, a parser that matches word-wrapped prose -- have falsely closed recs three times;
+  Decision 103's closed->open ban makes every unwind cost successor ids plus a corrective PR.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-trailer-closure-evidence-gate.yaml
+phase: >-
+  Ad-hoc rec-driven ops-data-integrity fix (soft-warn exception category `ad_hoc_rec`); names no
+  tier_item, so the Tier Item Freshness Gate is skipped. Slice 1 of a two-slice split decided at
+  planning time; slice 2 is rec-3984.
+scope:
+  - file: scripts/rec_trailer.py
+    action: Modify
+    purpose: >-
+      rec-2922. Replace the MULTILINE `^resolves\s*:` regex -- which matches ANY line-initial
+      `Resolves:`, including a word-wrapped prose line -- with true git-trailer semantics: parse
+      the FINAL blank-line-delimited block and accept `Resolves:` lines only when that whole block
+      is `Key: value`-shaped (`^[A-Za-z][A-Za-z-]*:\s`). Fail closed: a message whose trailer is
+      not in the final block yields no ids, which refuses a close rather than performing one.
+  - file: scripts/ops_portal/closure_gate.py
+    action: Modify
+    purpose: >-
+      DRY extraction only, no behaviour change. `_fix_commit_touches` already runs
+      `git diff-tree --no-commit-id --name-only -r <sha>`; lift that into a module-level
+      `changed_files(sha, root) -> set[str] | None` (None = unresolvable sha, preserving the
+      existing fail-closed posture) and have `_fix_commit_touches` call it. The merge-leg gate
+      consumes the same helper, so the repo never grows a second `git diff-tree` call site.
+  - file: scripts/ops_portal/trailer_closure_gate.py
+    action: Create
+    purpose: >-
+      New pure-predicate module modelled on closure_gate.py's posture (resolves a fact or returns
+      a verdict; never writes, files, retries or downgrades a status -- Decision 55/72). Holds
+      `merge_leg_refuses(changed)` (True when the changed set is non-empty and every path is under
+      `docs/plans/`) and `acceptance_verdict(acceptance, root) -> "pass" | "fail" | "unverifiable"`
+      over the restricted grammar. Target ~150 effective lines, hard ceiling 500.
+  - file: scripts/ops_portal/ci_rca_lifecycle.py
+    action: Modify
+    purpose: >-
+      `close_recs_from_trailer` consults both gates before each `update_rec`. Merge-leg refusal is
+      evaluated ONCE per run and refuses the whole trailer; the acceptance verdict is per-rec.
+      Both refusals print a Decision-155-shaped marker through the existing
+      `_mirror_refusal_to_step_summary`, leave the rec OPEN, and DO NOT touch exit_code -- the same
+      loud-not-red posture the Decision 186 `ClosureArtifactRequired` catch already uses, because
+      rec-autoclose is in ci-rca.yml's watched set and reddening it files a spurious critical rec.
+      Currently 364 effective lines; the delta must keep it under 500 (Decision 128).
+  - file: scripts/executor/acceptance_lint.py
+    action: Modify
+    purpose: >-
+      Home of the SHARED decidable-leg grammar, so the repo has exactly one definition of "which
+      acceptance shapes can be decided mechanically". Adds a pure `decidable_legs(acceptance)`
+      splitter built on the existing `_normalize_acceptance` (which already handles the `list[str]`
+      and `list[dict]` TypedCheck forms). Slice 1 consumes it read-only from the closure gate; the
+      `require_decidable` write-boundary binding is rec-3984's, NOT this plan's.
+  - file: .github/workflows/rec-autoclose.yml
+    action: Modify
+    purpose: >-
+      Header-comment only: document that a trailer whose merge diff is confined to `docs/plans/`
+      is refused. The inline `run:` body is NOT touched -- its
+      `autoclose::close-resolved-recs-from-resolves-trailer` key is pinned at 37 lines by the
+      Decision 162 R3 ratchet, which is exactly why all new logic is importable Python. The
+      comment also satisfies rec-3901's own acceptance grep for `docs/plans` in this file.
+  - file: docs/contracts/git-ops.yaml
+    action: Modify
+    purpose: >-
+      `resolves_trailer` gains the carrier rule rec-3901 asks for: the trailer belongs ONLY on the
+      IMPLEMENTATION merge; a plan merge carries none. Per Decision 168 (Class D contracts) and
+      T2.54:c1, the clause must name its enforcing evaluator -- it cites
+      `validate_rec_autoclose_trailer_gate` so it does not land as an orphaned clause.
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      SPLIT ROUTING, per decision-entry.yaml's `significance.routing_rule` three questions.
+      (i) A NUMBERED entry -- Decision 195, `amends: [103]` -- for admitting a restricted argv
+      evaluator alongside the sanctioned `shell=True` oracle. All three routing questions answer
+      yes (durable commitment; reversal-relevant, since divergence between the two evaluators IS
+      the reversal trigger; no cd_state_flip / operational_fact / field_semantics / work_item row
+      owns it), and Decision 186 is the direct precedent -- itself numbered with `amends: [103]`
+      for a comparable narrowing. Needs the typed yaml envelope with a `significance` claim, a
+      reversal-conditions stanza carrying the evaluator-convergence obligation, and must fit
+      Decision 167 clause 3's 6144-byte heading-to-next-heading cap (hard-fail).
+      (ii) A DATED `[Amendment YYYY-MM-DD: ...]` annotation on Decision 186 -- the
+      `amendment_forms.trailing_bracket` pinned spelling, appended per Decision 177's append-only
+      live-body rule (never a mid-line splice). It is a genuine gloss on point 2's own text:
+      the single-enforcement-site rule governs the closure-ARTIFACT obligation, so source-specific
+      preconditions at a closure CALLER are permitted and tighten rather than weaken (point 8's
+      five enumerated weakenings are untriggered). It must also state the residual plainly -- a
+      manual `update_rec(id, {"status": "closed"})` bypasses both new gates by construction.
+  - file: docs/decisions-index.json
+    action: Modify
+    purpose: >-
+      Decision 134: `validate_decisions_index_freshness` is a REQUIRED both-tier check whose
+      absence is itself a failure. Minting Decision 195 moves the derivation, so the index must be
+      regenerated in the same PR.
+  - file: scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py
+    action: Create
+    purpose: >-
+      Registered `--pre` check pinning the delegation shape statically: rec-autoclose.yml still
+      delegates to `close_recs_from_trailer`; that function references both gates; and
+      git-ops.yaml's carrier clause is present. Resolves the Decision 131 mirror finding (the
+      `tests/checks/ci_guards/` test home now mirrors a real module) and gives the new contract
+      clause the evaluator Decision 168 requires.
+  - file: scripts/checks/ci_guards/_manifest.py
+    action: Modify
+    purpose: >-
+      Register the check as a bare string-literal `Entry` (Decision 169 / check-manifest.yaml),
+      `pre=True` with `pre_globs` covering `.github/workflows/**`, `scripts/ops_portal/**`,
+      `docs/contracts/git-ops.yaml` and this domain, so it runs only when something it guards moves.
+  - file: config/ci_rca_taxonomy.yaml
+    action: Modify
+    purpose: >-
+      A new check module obligates a `function_to_category` row (plan_obligations, enforced by
+      validate_ci_rca_taxonomy): map `validate_rec_autoclose_trailer_gate` to its failure
+      category so a red run routes to the right ci-rca classification instead of falling through.
+  - file: tests/test_rec_trailer.py
+    action: Modify
+    purpose: >-
+      Adds `TestWrappedProseNotATrailer` (rec-2922's named selector -- the #803 shape: a commit
+      body that explicitly disclaims closing, whose line-wrap puts `Resolves:` mid-paragraph) and
+      `TestPlanOnlyMergeRefusesTrailer` (rec-3901's named selector). Both fail without the fix.
+  - file: tests/test_rec_autoclose.py
+    action: Create
+    purpose: >-
+      rec-3867's named selector path. Covers `acceptance_verdict`: pass, fail, negated leg,
+      multi-leg conjunction, the `||` exclusion, unparseable shapes (`|`, redirect, `$()`, `;`),
+      empty acceptance, and the `list[str]` / `list[dict]` TypedCheck forms. Asserts argv
+      execution -- no `shell=True` anywhere on the path.
+  - file: tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py
+    action: Create
+    purpose: >-
+      The `test_<module>.py` mirror the ci_guards domain names uniformly (Decision 131): asserts
+      the check fails on each removal (workflow stops delegating; gates unreferenced; git-ops
+      carrier clause absent) and passes intact, and that it declares an examined()/skipped()
+      outcome. Kept separate from the merge-leg file below, which exists at the path rec-3775's
+      own acceptance command names.
+  - file: tests/checks/ci_guards/test_rec_autoclose_merge_leg.py
+    action: Create
+    purpose: >-
+      rec-3775's named selector path. Covers `merge_leg_refuses` (plan-only diff refuses; mixed
+      diff proceeds; code-only diff proceeds; empty/unresolvable changed set refuses) and the new
+      check module's own assertions.
+bundled_recommendations:
+  - rec-3775
+  - rec-3901
+  - rec-2922
+followon_recs:
+  - rec-3984
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    A squash-merge whose entire diff is under `docs/plans/` does NOT close any rec named in its
+    `Resolves:` trailer; each is left open with a greppable refusal marker.
+  - >-
+    A rec whose `acceptance` has at least one statically decidable leg that FAILS against the
+    merged tree is NOT closed, and the refusal names the failing leg.
+  - >-
+    A commit body carrying a line-wrapped `Resolves:` inside a prose paragraph yields zero trailer
+    ids, so the #803 false-closure shape cannot recur.
+  - >-
+    Neither refusal changes the workflow's exit code; rec-autoclose stays green so no spurious
+    source=ci_rca rec is filed against a correct refusal.
+  - >-
+    The acceptance evaluator never invokes a shell: every executed leg is an argv list.
+  - >-
+    `docs/contracts/git-ops.yaml`'s Resolves-trailer rule names the implementation merge as the
+    sole valid carrier AND names its enforcing check.
+  - >-
+    A rec closed despite an UNDECIDABLE acceptance emits a distinct greppable marker naming it, so
+    the uncovered population is visible per closure rather than only as plan prose (Decision 163),
+    and the coverage map declares rec-3984 as the named owner of the residual (Decision 181 cl. 2).
+  - >-
+    rec-3775, rec-3901 and rec-2922 are closed by this plan's merge; rec-3867 remains OPEN with an
+    acceptance re-pointed at a selector only rec-3984 satisfies.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: The shared changed-file helper exists and closure_gate delegates to it
+    command: grep -q "def changed_files" scripts/ops_portal/closure_gate.py && test 1 -eq $(cat scripts/ops_portal/closure_gate.py scripts/ops_portal/trailer_closure_gate.py | grep -c "git diff-tree")
+    expected: The helper is defined once and no module carries a second `git diff-tree` call site.
+    fix_if: A duplicated subprocess call means the DRY extraction was skipped; lift it and re-run.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: trailer-gate-changed-files-single-call-site
+  - step: 2
+    phase: pre-deploy
+    action: The trailer-closure gate module exists and ci_rca_lifecycle consults it
+    command: test -f scripts/ops_portal/trailer_closure_gate.py && grep -q "trailer_closure_gate" scripts/ops_portal/ci_rca_lifecycle.py
+    expected: Both present -- the gates are wired into the closure caller, not left unreferenced.
+    fix_if: An unreferenced module means close_recs_from_trailer still closes unconditionally.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: trailer-gate-wired-into-closure-caller
+  - step: 3
+    phase: pre-deploy
+    action: The ci_guards suite -- merge-leg refusal, the check module, and the workflow body ratchet
+    command: bin/venv-python -m pytest "tests/checks/ci_guards/test_rec_autoclose_merge_leg.py" "tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py" "tests/checks/ci_guards/test__workflow_shell_bodies.py" -q
+    expected: All pass, including plan-only-refuses, mixed-diff-proceeds, each check-removal case, and a clean body ratchet.
+    fix_if: A plan-only diff that still closes means the predicate is inverted or the changed set is empty-by-accident; check the HEAD^..HEAD derivation.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: rec-autoclose-merge-leg-refusal
+  - step: 4
+    phase: pre-deploy
+    action: The acceptance evaluator returns correct verdicts and never uses a shell
+    command: bin/venv-python -m pytest "tests/test_rec_autoclose.py" -q
+    expected: Pass/fail/unverifiable verdicts correct across all grammar shapes; the no-shell assertion holds.
+    fix_if: A `shell=True` on the path is a security regression, not a style nit -- acceptance strings are agent-supplied input.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: rec-autoclose-acceptance-verdict-argv-only
+  - step: 5
+    phase: pre-deploy
+    action: Word-wrapped prose is no longer parsed as a trailer, and the plan-leg case is covered
+    command: bin/venv-python -m pytest "tests/test_rec_trailer.py::TestWrappedProseNotATrailer" "tests/test_rec_trailer.py::TestPlanOnlyMergeRefusesTrailer" "tests/test_rec_trailer.py::TestParseResolvesTrailer" -q
+    expected: All three classes pass -- the new strictness does not regress the existing happy paths.
+    fix_if: A regression in TestParseResolvesTrailer means the trailer-block rule is too strict; a real final-block trailer must still parse.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: rec-trailer-true-trailer-semantics
+  - step: 6
+    phase: pre-deploy
+    action: The workflow documents the plan-leg refusal (rec-3901's own acceptance predicate)
+    command: grep -q "docs/plans" .github/workflows/rec-autoclose.yml
+    expected: Present in the header comment; the inline run body is unchanged.
+    fix_if: Absent means rec-3901's acceptance fails and this plan's own gate would refuse to close it.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: rec-autoclose-documents-plan-leg-refusal
+  - step: 7
+    phase: pre-deploy
+    action: The contract names the implementation merge as sole trailer carrier and cites its evaluator
+    command: grep -qi "implementation merge" docs/contracts/git-ops.yaml && grep -q "validate_rec_autoclose_trailer_gate" docs/contracts/git-ops.yaml
+    expected: Both present -- the clause is enforced, not orphaned (Decision 168 / T2.54:c1).
+    fix_if: A clause with no named evaluator is exactly the orphan T2.54:c1 exists to eliminate.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: git-ops-resolves-carrier-rule-has-evaluator
+  - step: 8
+    phase: pre-deploy
+    action: The new check is registered and the workflow body ratchet is undisturbed
+    command: grep -q "validate_rec_autoclose_trailer_gate" scripts/checks/ci_guards/_manifest.py && grep -qE "examined\(|skipped\(" scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py && bin/venv-python -c "from scripts.checks.ci_guards.validate_composite_action_shell_bodies import validate_composite_action_shell_bodies as f; failed=[]; f(failed); raise SystemExit(1 if failed else 0)"
+    expected: Registered, declaring an examined()/skipped() outcome (Decision 170), and no unbaselined R1/R2/R3 violation -- the 37-line inline body did not grow.
+    fix_if: A ratchet violation means logic leaked into the workflow body; move it into the gate module.
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: trailer-gate-registered-and-body-ratchet-clean
+  - step: 9
+    phase: pre-deploy
+    action: A closure on an undecidable acceptance is machine-visible, not silent
+    command: grep -q "_ACCEPTANCE_UNDECIDABLE_MARKER" scripts/ops_portal/ci_rca_lifecycle.py && grep -q "rec-3984" docs/contracts/git-ops.yaml
+    expected: The marker constant exists and the coverage declaration names rec-3984 as the residual's owner.
+    fix_if: Without the marker the 33% uncovered population is invisible at runtime -- the declared-vs-executed failure Decision 163 point 2 names.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: trailer-gate-undecidable-acceptance-marked
+  - step: 10
+    phase: pre-deploy
+    action: The governance edits landed in the correct routed forms
+    command: grep -q "^## Decision 195:" docs/DECISIONS.md && grep -q "^\[Amendment 2026-09-2" docs/DECISIONS.md && bin/venv-python -c "import json,pathlib; d=json.loads(pathlib.Path('docs/decisions-index.json').read_text()); raise SystemExit(0 if any(str(e).find('195')>=0 for e in (d if isinstance(d,list) else d.values())) else 1)"
+    expected: Decision 195 exists as a numbered entry, the dated 186 annotation is appended, and the index carries 195.
+    fix_if: A numbered entry without an index regeneration fails validate_decisions_index_freshness (Decision 134); an annotation used where routing_rule requires a number is the Decision 167 mis-route.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      A date-bearing grep is transient by construction -- it pins the authoring date of this
+      session's edit, which no standing regression guard should assert forever. The durable
+      obligations are graduated at steps 1-8.
+  - step: 11
+    phase: pre-deploy
+    action: Full presubmit gate before handoff
+    command: bin/venv-python -m scripts.validate --pre
+    expected: Exit 0.
+    fix_if: Any check fails -- fix on the branch; ci-rca watches main only, so a --pre failure gates nothing but must not be merged.
+    hermetic: false
+    graduation: not-applicable
+  - step: 12
+    phase: post-deploy
+    action: The three bundled recs reached terminal status via the trailer this plan itself gates
+    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json; rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip()]; bad=[i for i in ('rec-3775','rec-3901','rec-2922') if not any(r.get('id')==i and r.get('status')=='closed' for r in rows)]; raise SystemExit(1 if bad else 0)"
+    expected: All three closed -- and closed by a gate that verified their acceptance, which is the point.
+    fix_if: If any stayed open, read the refusal marker in the run's step summary before re-driving; a refusal here is the gate working, not a bug.
+    hermetic: false
+    graduation: not-applicable
+  - step: 13
+    phase: post-deploy
+    action: rec-3867 remains open and its acceptance no longer passes trivially
+    command: bin/venv-python -c "import json,subprocess; rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip()]; r=next(x for x in rows if x.get('id')=='rec-3867'); raise SystemExit(0 if r['status']=='open' and subprocess.run(['bash','-c',r['acceptance']],capture_output=True).returncode!=0 else 1)"
+    expected: Open, with an acceptance that only rec-3984's slice satisfies.
+    fix_if: If rec-3867 closed, a partial fix closed a rec on a weak acceptance proxy -- the exact defect class this plan exists to prevent.
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/rec_trailer.py
+    behavior: >-
+      A `Resolves:` line inside a word-wrapped prose paragraph is not a trailer; only the final
+      `Key: value` block carries ids.
+    verification_step: 5
+    test_selector: tests/test_rec_trailer.py::TestWrappedProseNotATrailer
+    red_green_expectation: >-
+      Red before: the MULTILINE regex matches the wrapped line and returns ids. Green after: returns [].
+  - source: scripts/ops_portal/trailer_closure_gate.py
+    behavior: >-
+      A changed-file set confined to docs/plans/ refuses the trailer; a set containing any other
+      path does not.
+    verification_step: 3
+    test_selector: tests/checks/ci_guards/test_rec_autoclose_merge_leg.py
+    red_green_expectation: >-
+      Red before: the module does not exist, so collection fails. Green after: all cases pass.
+  - source: scripts/ops_portal/ci_rca_lifecycle.py
+    behavior: >-
+      close_recs_from_trailer leaves a rec OPEN on either refusal and does not alter exit_code.
+    verification_step: 4
+    test_selector: tests/test_rec_autoclose.py
+    red_green_expectation: >-
+      Red before: the caller closes unconditionally, so the refusal assertions fail. Green after: open, exit 0.
+  - source: scripts/executor/acceptance_lint.py
+    behavior: >-
+      decidable_legs splits normalized acceptance into decidable and opaque legs across the str,
+      list[str] and list[dict] forms, and excludes any command containing `||`.
+    verification_step: 4
+    test_selector: tests/test_rec_autoclose.py
+    red_green_expectation: >-
+      Red before: the symbol does not exist (ImportError). Green after: the grammar cases pass.
+  - source: scripts/ops_portal/closure_gate.py
+    behavior: >-
+      changed_files returns the commit's changed paths and None for an unresolvable sha, and
+      _fix_commit_touches keeps its existing fail-closed behaviour through it.
+    verification_step: 4
+    test_selector: tests/test_rec_autoclose.py
+    red_green_expectation: >-
+      Red before: the helper does not exist. Green after: extraction is behaviour-preserving.
+  - source: scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py
+    behavior: >-
+      The check fails when the workflow stops delegating to close_recs_from_trailer, when the gates
+      are unreferenced, or when the git-ops carrier clause is absent.
+    verification_step: 3
+    test_selector: tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py
+    red_green_expectation: >-
+      Red before: the check module does not exist. Green after: it fails on each removal and passes intact.
+  - source: .github/workflows/rec-autoclose.yml
+    behavior: >-
+      The workflow documents the plan-leg refusal and its inline run body stays within the
+      Decision 162 R3 ratchet ceiling.
+    verification_step: 3
+    test_selector: tests/checks/ci_guards/test__workflow_shell_bodies.py
+    red_green_expectation: >-
+      Red before: the `docs/plans` mention is absent. Green after: present, with the body ratchet clean.
+constraints:
+  - No rescue agents or workaround loops (Decision 55); a refusal surfaces and stops, never remediates.
+  - >-
+    Single Portal Invariant (Decision 84): closure writes stay `update_rec`-only. The gates decide
+    whether to CALL it; they never write, and never touch logs/ caches.
+  - >-
+    Loud-not-red is mandatory. Neither refusal may set exit_code -- rec-autoclose is in ci-rca.yml's
+    watched set, so a red run files a spurious critical rec for correct behaviour.
+  - >-
+    Never a shell. The acceptance evaluator executes argv lists only; acceptance strings are
+    agent-supplied input and the job holds writer credentials (AGENTS.md `## Safety`).
+  - >-
+    Do not touch the workflow's inline `run:` body -- pinned at 37 lines by the Decision 162 R3
+    ratchet. Logic belongs in importable Python.
+  - >-
+    Decision 128 headroom, measured with the gate's own formula (non-blank, non-comment-only
+    lines): acceptance_lint.py 336 (164 free), ci_rca_lifecycle.py 364 (136 free), closure_gate.py
+    238 (262 free). No file needs decomposing at this size -- but if a delta threatens 500,
+    decompose into a facade package; NEVER register a budget raise.
+  - >-
+    Decision 170: the new check must declare an examined()/skipped() outcome.
+    `validate_check_accounting` runs in both tiers with no marker escape and a frozen
+    `_BASELINE_SEED`, so an undeclared, unbaselined check fails the PR.
+  - >-
+    Decision 168 point 2: the check must READ `docs/contracts/git-ops.yaml` -- the contract
+    basename must appear as an executable-context string literal in the check module (or a one-hop
+    import) for the evaluator to resolve. Hardcoding the clause text does not resolve.
+  - >-
+    Decision 177: DECISIONS.md live bodies are append-only. The Decision 186 annotation is an
+    APPENDED dated trailing-bracket line -- never a mid-line splice or table-cell edit.
+  - >-
+    Decision 167 clause 3: Decision 195's heading-to-next-heading UTF-8 span must stay within
+    6144 bytes. Hard-fail, measured by validate_decisions_size.
+  - >-
+    Out of scope, do not implement here: the `require_decidable` write-boundary binding, the
+    `workflow_run` re-key, and junit verdict consumption. All three are rec-3984.
+  - >-
+    Out-of-scope defects found while implementing become recommendations via
+    `scripts.ops_data_portal`, never inline fixes (Decision 59 scope boundary).
+context:
+  - "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND (round 2, against the revised slice-1 approach). CITE = 186, 103, 177, 181, 179, 170, 169, 168, 162, 128, 55, 72."
+  - "Decisions triaged: 147 of 147"
+  - "Roadmap items intersected: 9; CONFLICT: 0; RELATED: 8"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "Scout flag dispositions: D167 routing -- ADOPTED (Decision 195 numbered for the 103 scoping; dated annotation for the 186 gloss). D134 -- ADOPTED (decisions-index.json added to scope). D163 -- ADOPTED (residual made machine-visible via marker + coverage declaration, VP step 9). D186 SPIRIT -- ADOPTED (annotation states the manual-update_rec bypass residual). D131 naming -- ADOPTED (mirror test added alongside rec-3775's named path). D128 SLOC -- scout figures (410/450) were WRONG; re-measured 336/364 with the gate formula, no decomposition needed."
+  - "Bundled: rec-3775, rec-3901, rec-2922. Deliberately NOT bundled: rec-3867 (slice 1 delivers only its static half; closing it on a partial fix reproduces this plan's own defect class)."
+  - "Follow-on rec-3984 carries slice 2: workflow_run re-key, pytest-junit verdict consumption, require_decidable ratchet."
+  - "Incidents this fixes: #803 (wrapped prose -> rec-2185/2697/2894), #1152 (plan merge -> rec-3764/3761/3759), #1199 (plan merge -> rec-3871/3876/3888). rec-940 is the acceptance-never-checked shape."
+  - "Measured: 869 of 1289 open recs (67%) carry >=1 statically decidable acceptance leg; all four historical false-closures do. Coverage detail lives in rec-3984, not restated here."
+  - "Decision 186 pt 2 (`No second gate`) is scoped by amendment, not contradicted: it governs the closure-ARTIFACT obligation (a property of the rec); these are preconditions of one command whose merge-diff input has no referent for a manual `declined` write. They tighten, so pt 8's ratchet is untriggered."
+  - "Decision 103's `No new acceptance machinery` is scoped by amendment: the sanctioned oracle (scripts/rec_relevance.py::_run_acceptance_probe) is subprocess.run(shell=True). Converging the two evaluators is owed and named in rec-3984."
+  - "Decision 163 residual, stated not hidden: slice 1's guarantee covers the decidable population only. rec-3984 closes the gap; do not describe this gate as universal."
+  - "Fable advice-consult informed siting (option C + both amendments), the changed_files extraction, and the rec-2471/rec-2949 partition. It recommends; it decided nothing."
+  - "rec-2471 and rec-2949 were considered and deliberately partitioned out. rec-2949 blocker: a Fixed-by: <sha> override feeds closure_fix_sha into closure_gate._fix_commit_touches, which fails closed on any sha absent from the fetch-depth:2 checkout."
+  - "Gotcha: `git diff-tree` on a true (non-squash) merge commit lists nothing without -m. main is single-parent today; derive the changed set over HEAD^..HEAD so this stays true if that changes."
+  - "Gotcha: acceptance is not always a str -- list[str] and list[dict] TypedCheck forms exist (CD.29). Use _normalize_acceptance; do not re-implement it."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections (103, 186, 84, 55, 128, 131, 162, 168) read -- not all of DECISIONS.md
+  - docs/contracts/decision-entry.yaml amendment_forms read before writing either annotation
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    scripts/rec_trailer.py -- replace the MULTILINE match with final-trailer-block parsing; keep
+    the existing dedup, case-insensitivity and malformed-token behaviour byte-for-byte.
+  - >-
+    scripts/ops_portal/closure_gate.py -- extract `changed_files(sha, root)` from
+    `_fix_commit_touches` and delegate to it. Behaviour-preserving; no new call site.
+  - >-
+    scripts/executor/acceptance_lint.py -- add the pure `decidable_legs` splitter over
+    `_normalize_acceptance`. No new write-boundary binding in this plan.
+  - >-
+    scripts/ops_portal/trailer_closure_gate.py -- create `merge_leg_refuses` and
+    `acceptance_verdict`. Argv execution only. Fail closed with a stated reason on `|`, redirect,
+    `$()`, `;`, `||` and empty acceptance, distinguishing "unparseable" from "failed" in the marker.
+  - >-
+    scripts/ops_portal/ci_rca_lifecycle.py -- consult the merge-leg gate once per run and the
+    acceptance verdict per rec, before `update_rec`. Reuse `_mirror_refusal_to_step_summary`;
+    leave exit_code untouched on every refusal.
+  - >-
+    .github/workflows/rec-autoclose.yml -- header comment naming the plan-leg refusal. Do not edit
+    the inline run body.
+  - >-
+    docs/contracts/git-ops.yaml -- add the carrier rule and cite validate_rec_autoclose_trailer_gate.
+  - >-
+    scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py + _manifest.py -- create and
+    register the check with pre_globs scoped to what it guards; it must READ git-ops.yaml (the
+    basename as an executable-context string literal, Decision 168 pt 2) and declare an
+    examined()/skipped() outcome (Decision 170). Add its `function_to_category` row to
+    config/ci_rca_taxonomy.yaml, and graduate the VP steps marked `graduate` into the
+    verification registry (validate_graduation_completeness).
+  - >-
+    docs/DECISIONS.md -- (i) mint Decision 195 (`amends: [103]`) admitting the restricted argv
+    evaluator, with the typed yaml envelope, a significance claim, and a reversal-conditions
+    stanza carrying the evaluator-convergence obligation; keep it under 6144 bytes. (ii) Append
+    the dated trailing-bracket annotation on Decision 186 scoping point 2 and stating the
+    manual-update_rec bypass residual. Read decision-entry.yaml's routing_rule and amendment_forms
+    before writing either.
+  - >-
+    docs/decisions-index.json -- regenerate in the SAME PR; validate_decisions_index_freshness is
+    required in both tiers and its absence is itself a failure.
+  - >-
+    ci_rca_lifecycle.py -- add `_ACCEPTANCE_UNDECIDABLE_MARKER` and emit it for any rec closed on
+    an undecidable acceptance, so the uncovered population is visible per closure; declare the
+    coverage in git-ops.yaml naming rec-3984 as the residual's owner (Decision 181 clause 2).
+  - >-
+    Tests -- tests/test_rec_trailer.py (both new classes), tests/test_rec_autoclose.py,
+    tests/checks/ci_guards/test_rec_autoclose_merge_leg.py. Each must fail without its change.
+  - >-
+    Re-point rec-3867's acceptance via `update_rec` at a selector only rec-3984 satisfies, so it
+    cannot be closed on slice 1's partial fix. Portal call only -- never a cache edit.
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  Revert the merge. The gates are additive preconditions: reverting restores unconditional
+  trailer closure, loses no data, and leaves no migration to unwind. Any rec left OPEN by a
+  refusal is closable through the normal portal route.
