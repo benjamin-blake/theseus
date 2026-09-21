@@ -1,0 +1,369 @@
+schema_version: 5
+implementation_declared: false
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: smoke-prefix-lifecycle-coverage
+intent: >-
+  Close rec-3945 by extending the data-lake S3 lifecycle rule to the DuckLake smoke prefix, now that
+  rec-3892's unexplained-deleter RCA is resolved, converting a declared exclusion into declared
+  coverage without weakening any lifecycle assertion.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-smoke-prefix-lifecycle-coverage.yaml
+phase: T2.18
+closes_criteria: []
+scope:
+  - file: terraform/personal/main.tf
+    action: Modify
+    purpose: >-
+      Add a SECOND rule block to aws_s3_bucket_lifecycle_configuration.data_lake, prefix-scoped to
+      "${local.ducklake_smoke_data_prefix}/" on the same shape as the production rule
+      (noncurrent_version_expiration with noncurrent_days bound to SNAPSHOT_RETAIN_DAYS,
+      expiration.expired_object_delete_marker true, abort_incomplete_multipart_upload, and NO
+      current-version expiration). The trailing slash is load-bearing -- local.ducklake_prod_data_prefix
+      is the bare string "ducklake", which also prefix-matches "ducklake-neon-smoke/", so the two
+      prefixes stay separately declared and are never collapsed into one rule. Rewrite the header
+      comment at :135, which currently states the exclusion rationale this plan retires.
+  - file: tests/fixtures/terraform_hcl_blocks.py
+    action: Create
+    purpose: >-
+      New home for the HCL-text helpers both halves of the split need -- _find_resource_block (11 call
+      sites across both concerns) and _tf_dir_file_texts. tests/fixtures/ is an importable package that
+      does not start with "test_", so it is exempt by construction from validate_no_cross_test_imports
+      (Decision 131 clause 2). Hoisted, never duplicated: two copies would be a second surface to drift.
+  - file: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py
+    action: Modify
+    purpose: >-
+      Keep TestDataLakeLifecycleGoverned and TestDataLakeLifecycleRedCases IN PLACE so both stored rec
+      acceptance oracles stay collectable at their recorded node ids (Decision 103). Move the GC/alarm
+      concern out (see the sibling module). Reshape every lifecycle assertion from whole-resource-block
+      matching to PER-RULE matching, remove ducklake_smoke_data_prefix from
+      _DECLARED_LIFECYCLE_EXCLUSIONS, and add test_smoke_prefix_is_covered_not_excluded -- the node
+      rec-3945's stored acceptance names, which does not yet exist. Import the hoisted helpers from
+      tests.fixtures.terraform_hcl_blocks.
+  - file: tests/checks/iam_tf/test_ducklake_maintenance_gc_rule_invariants.py
+    action: Create
+    purpose: >-
+      Sibling module receiving the GC/alarm concern -- TestProductionGcRuleInvariants (146 SLOC),
+      TestGcOpsEnablementBaseline (75), TestAlarmDescriptionsPinNoThreshold (49) and
+      TestThresholdShapeRedCases (26). This is the Decision 128/130 decomposition that discharges the
+      497/500 unregistered-file limit; NO config/sloc_budgets.yaml entry is added in either direction.
+  - file: config/agent/verification_registry/entries/ducklake-maintenance-tf-invariants.yaml
+    action: Modify
+    purpose: >-
+      Drop the five moved TestProductionGcRuleInvariants node ids; retain the reshaped
+      TestDataLakeLifecycleGoverned ids at their unchanged paths and add the new coverage node. The
+      shard's guard_target (terraform/personal/main.tf) stays coherent because the lifecycle rule lives
+      there. Re-submitted to run_differential as a MODIFIED row.
+  - file: config/agent/verification_registry/entries/ducklake-maintenance-gc-rule-invariants.yaml
+    action: Create
+    purpose: >-
+      New shard carrying the five re-pointed GC node ids at their new module path, guard_target
+      terraform/personal/ducklake_maintenance.tf. Admissible under run_differential because the module
+      does not exist at origin/main, so its check_spec fails there.
+bundled_recommendations: ["rec-3945"]
+followon_recs: []
+infrastructure_dependencies:
+  - >-
+    aws_s3_bucket_lifecycle_configuration UPDATE (a second rule block on an existing resource): no
+    delete, no trust diff, no IAM, no resource-based policy -- deterministic guard exit 0, auto-apply
+    (Decision 77 / Decision 126 clause 1), still subject to subagent review. This does NOT route to
+    tf-gated-apply.
+  - >-
+    agent-platform-github-ci-apply already holds s3:PutLifecycleConfiguration on the data-lake bucket
+    (terraform/bootstrap/github_ci_apply_policy.tf:76) and the refresh-read s3:GetLifecycleConfiguration
+    (github_ci_apply_reads.tf:34). No terraform/bootstrap edit and no IAM scope growth is owed.
+  - >-
+    Decision 119: no local terraform init/validate/plan for terraform/personal -- terraform is not
+    installed in the DEV container and provider checksums are egress-blocked. CI's required
+    terraform-validate check and the speculative-plan job are the authoritative verifiers; every
+    terraform VP step here is grep-only.
+  - >-
+    PlatformDev already holds s3:GetLifecycleConfiguration, s3:GetBucketVersioning and
+    s3:ListBucketVersions on both DuckLake prefixes (platform_dev_policies.tf:159-185, landed #1223), so
+    the post-deploy steps read live state from the dev identity without an admin container.
+acceptance_criteria:
+  - >-
+    rec-3945's stored acceptance command passes verbatim, at its recorded node id: grep for
+    ducklake_smoke_data_prefix in terraform/personal/main.tf succeeds AND
+    tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestDataLakeLifecycleGoverned::test_smoke_prefix_is_covered_not_excluded
+    passes. The node id is unchanged by the split -- an oracle relocation was NOT required.
+  - >-
+    rec-3892's stored acceptance command also still passes verbatim at its recorded node id
+    (TestDataLakeLifecycleGoverned as a whole), proving the decomposition broke no stored oracle.
+  - >-
+    aws_s3_bucket_lifecycle_configuration.data_lake carries exactly TWO rules; the smoke rule derives
+    its prefix from local.ducklake_smoke_data_prefix with a trailing slash, binds noncurrent_days to
+    SNAPSHOT_RETAIN_DAYS, sets expired_object_delete_marker true, and declares no current-version
+    expiration.
+  - >-
+    _DECLARED_LIFECYCLE_EXCLUSIONS no longer names ducklake_smoke_data_prefix, and the coverage sweep
+    proves POSITIVE coverage for both *_data_prefix locals derived from the .tf text rather than passing
+    through an exclusion (Decision 191).
+  - >-
+    Every lifecycle assertion is per-rule, demonstrated by red-case fixtures: a two-rule configuration
+    whose SECOND rule carries a wrong noncurrent_days, a Disabled status, a missing
+    expired_object_delete_marker, or a slash-less prefix FAILS the corresponding guard. Under the
+    pre-existing whole-block assertions each of those fixtures passed.
+  - >-
+    Both test modules measure under 500 SLOC and neither appears in config/sloc_budgets.yaml -- the
+    crossing was met by decomposition, not by a budget raise (Decision 128).
+  - >-
+    validate_no_cross_test_imports passes: neither test module imports the other, and the shared HCL
+    helpers resolve from tests/fixtures/.
+  - >-
+    All thirteen pre-existing registry node ids remain reachable under the disposition table in context --
+    five re-pointed, three retained unchanged, five reshaped strictly stronger, none dropped
+    (Decision 187: silence is not a disposition).
+  - >-
+    Post-apply, the live bucket reports two lifecycle rules with the smoke rule Enabled, and
+    GcReferencedMissing remains 0 on the next smoke gc cycle -- reachability, not a storage delta
+    (Decision 192).
+  - >-
+    rec-3892 carries the RCA resolution recorded via the portal, and rec-3945 reads closed.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: the smoke prefix local reaches the lifecycle configuration
+    command: grep -q 'local.ducklake_smoke_data_prefix}/' terraform/personal/main.tf
+    expected: exit 0 -- grep, never rg; validate_vp_replay's _rg_portability_pre_pass lints every pre-deploy step of an added plan at any disposition
+    fix_if: non-zero means the second rule was not added, or its prefix was retyped as a literal instead of derived from the local
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: Subsumed by step 5's per-rule prefix guard, which asserts the same property structurally across every rule rather than as a fixed-string presence check anywhere in the file.
+  - step: 2
+    phase: pre-deploy
+    action: the smoke rule is a SECOND rule, not a rewritten production rule
+    command: test 2 -eq "$(grep -c '^    id     = ' terraform/personal/main.tf)"
+    expected: exactly two rule ids in the file -- the production rule must survive intact alongside the new smoke rule
+    fix_if: 1 means the production rule was replaced rather than joined; 3 or more means an unintended extra rule landed
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: An indentation-anchored count is adequate at authoring time but too brittle to stand as a registry guard; step 5's per-rule sweep carries the durable form.
+  - step: 3
+    phase: pre-deploy
+    action: the smoke prefix is no longer a declared exclusion
+    command: bin/venv-python -c "import tests.checks.iam_tf.test_ducklake_maintenance_tf_invariants as m; assert 'ducklake_smoke_data_prefix' not in m._DECLARED_LIFECYCLE_EXCLUSIONS, m._DECLARED_LIFECYCLE_EXCLUSIONS; print('SMOKE_NOT_EXCLUDED')"
+    expected: the exclusion roster no longer names the smoke prefix, so the coverage sweep must prove positive coverage instead of passing through a declared absence
+    fix_if: the entry survives -- the sweep would still pass vacuously and rec-3945 would be closed on an exclusion rather than on coverage
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: Duplicates the property step 5's new coverage node asserts directly and structurally; graduating a grep over the roster literal would pin the implementation shape rather than the behaviour.
+  - step: 4
+    phase: pre-deploy
+    action: no test module imports another test module after the split
+    command: bin/venv-python -m scripts.checks.hygiene.validate_no_cross_test_imports
+    expected: exit 0 -- the shared HCL helpers must resolve from tests/fixtures/, which is exempt by construction, never by one test module importing the other
+    fix_if: a failure names the importing module; hoist the remaining shared helper into tests/fixtures/terraform_hcl_blocks.py rather than duplicating it or adding a grandfather entry
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: Already a standing repo-wide check with its own enforcement path; graduating a second registry row for the same guard would duplicate an existing check rather than add coverage.
+  - step: 5
+    phase: pre-deploy
+    action: the reshaped per-rule lifecycle guards and the new coverage node all pass
+    command: bin/venv-python -m pytest "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestDataLakeLifecycleGoverned" "tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestDataLakeLifecycleRedCases" -q
+    expected: >-
+      all pass, including test_smoke_prefix_is_covered_not_excluded (which does not exist at origin/main,
+      so this command is RED before implementation) and the reshaped per-rule assertions. The critical
+      reshape is the noncurrent_days guard, which today searches only the FIRST
+      noncurrent_version_expiration block and would let a second rule carrying a wrong value pass
+      undetected.
+    fix_if: a red case passing means the reshape was not net-tightening -- a guard that cannot fail is not a guard (Decision 181)
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: ducklake-maintenance-tf-invariants
+  - step: 6
+    phase: pre-deploy
+    action: the re-pointed GC/alarm node ids pass at their new module path
+    command: bin/venv-python -m pytest tests/checks/iam_tf/test_ducklake_maintenance_gc_rule_invariants.py -q
+    expected: all moved classes pass unchanged at the new path -- the move is a relocation, never a rewrite, and the module does not exist at origin/main so this command is RED before implementation
+    fix_if: an import error means the hoisted helpers were not re-pointed; a behavioural failure means the move altered a test rather than relocating it
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: ducklake-maintenance-gc-rule-invariants
+  - step: 7
+    phase: pre-deploy
+    action: both test modules cleared the SLOC limit by decomposition, not by a budget raise
+    command: bin/venv-python -c "import pathlib; from scripts.checks.sloc._shared import _SLOC_LIMIT; import yaml; b=(yaml.safe_load(pathlib.Path('config/sloc_budgets.yaml').read_text()) or {}).get('budgets') or {}; ms=['tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py','tests/checks/iam_tf/test_ducklake_maintenance_gc_rule_invariants.py']; [print(m, len([l for l in pathlib.Path(m).read_text().splitlines() if l.strip() and not l.strip().startswith('#')])) for m in ms]; assert all(len([l for l in pathlib.Path(m).read_text().splitlines() if l.strip() and not l.strip().startswith('#')]) <= _SLOC_LIMIT for m in ms), 'over limit'; assert not any(m in b for m in ms), 'a budget entry was registered -- Decision 128 requires decomposition'; print('SLOC_OK_NO_BUDGET_ENTRY')"
+    expected: both modules at or under the limit with no budget registration
+    fix_if: an over-limit module means the split was uneven -- rebalance by class; a budget entry means the decompose-by-default rule was bypassed
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: validate_sloc_limits and validate_sloc_budget_raises already enforce both halves repo-wide in the --pre tier; a registry row here would duplicate a standing check.
+  - step: 8
+    phase: pre-deploy
+    action: every pre-existing registry node id is still reachable
+    command: bin/venv-python -c "import yaml,pathlib,subprocess; old=subprocess.run(['git','show','origin/main:config/agent/verification_registry/entries/ducklake-maintenance-tf-invariants.yaml'],capture_output=True,text=True).stdout; ids=[x for x in (yaml.safe_load(old) or {})['check_spec']['command'] if '::' in x]; now=[]; [now.extend([y for y in (yaml.safe_load(p.read_text()) or {}).get('check_spec',{}).get('command',[]) if '::' in y]) for p in pathlib.Path('config/agent/verification_registry/entries').glob('*.yaml')]; names=[i.rsplit('::',1)[1] for i in ids]; missing=[n for n in names if not any(n==c.rsplit('::',1)[1] for c in now)]; assert not missing, f'node ids dropped without disposition -- {missing}'; print('ALL_NODE_IDS_REACHABLE')"
+    expected: every test-function name carried by the origin/main shard is still carried by some live shard, re-pointed or retained
+    fix_if: a named missing node id must be re-pointed, or deliberately retired with a filed rec recorded in the disposition table -- never dropped inside a retirement (Decision 187)
+    hermetic: true
+    expected_literals: []
+    graduation: waive
+    graduation_waiver_reason: Asserts a property of this specific migration against origin/main, which is transient session state by construction and not a standing regression guard.
+  - step: 9
+    phase: pre-deploy
+    action: fast-tier gate
+    command: bin/venv-python -m scripts.validate --pre
+    expected: >-
+      exit 0 -- in particular validate_verification_registry admits both shards via run_differential
+      (the modified ducklake-maintenance-tf-invariants row fails at origin/main because
+      test_smoke_prefix_is_covered_not_excluded does not exist there; the new
+      ducklake-maintenance-gc-rule-invariants row fails because its module does not exist there), and
+      validate_graduation_completeness finds a registry record for each graduate step.
+    fix_if: a differential rejection means a shard passes unchanged at origin/main and carries no new property; re-read the sibling plan's run_differential note before re-submitting
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: docs/contracts/vp-red-before.yaml#recursion_refusal -- a hermetic step may never invoke scripts.validate.
+  - step: 10
+    phase: pre-deploy
+    action: full-tier gate before handoff
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0 on a COMPLETED full run -- handoff_policy.timeout_disposition is blocked, so a timeout is not a pass; resume later and rerun full from the start
+    fix_if: any failure blocks the commit; forward-fix, never a workaround (Decision 55)
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: docs/contracts/vp-red-before.yaml#recursion_refusal -- a hermetic step may never invoke scripts.validate.
+  - step: 11
+    phase: post-deploy
+    action: the live bucket carries both rules with the smoke rule Enabled and correctly bound
+    command: aws s3api get-bucket-lifecycle-configuration --bucket agent-platform-data-lake --profile agent_platform --output json > "${TMPDIR:-/tmp}/dl-lifecycle.json" && bin/venv-python -c "import json,os; from src.common.ducklake_maintenance import SNAPSHOT_RETAIN_DAYS; d=json.load(open(os.environ.get('TMPDIR','/tmp')+'/dl-lifecycle.json')); rs=d['Rules']; assert len(rs)==2, [r.get('ID') for r in rs]; sm=[r for r in rs if r['Filter'].get('Prefix')=='ducklake-neon-smoke/'][0]; assert sm['Status']=='Enabled', sm['Status']; assert sm['NoncurrentVersionExpiration']['NoncurrentDays']==SNAPSHOT_RETAIN_DAYS, sm; assert 'Days' not in sm.get('Expiration',{}) and 'Date' not in sm.get('Expiration',{}), sm; print('SMOKE_RULE_LIVE')"
+    expected: >-
+      two rules live, the smoke rule Enabled, its NoncurrentDays equal to the Python constant, and NO
+      current-version expiration argument -- a current-version age rule would delete live Parquet the
+      catalog still references, which is the one shape this resource must never carry.
+    fix_if: a Disabled rule reclaims nothing while satisfying every structural assertion; a missing rule means the apply did not land -- check the CI apply job rather than re-applying locally
+  - step: 12
+    phase: post-deploy
+    action: reachability holds on the next smoke gc cycle -- the safety invariant, not a storage delta
+    command: aws cloudwatch get-metric-statistics --namespace DuckLakeMaintenance --metric-name GcReferencedMissing --start-time "$(date -u -d '8 days ago' +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --period 3600 --statistics Maximum --profile agent_platform --output json | bin/venv-python -c "import json,sys; d=json.load(sys.stdin); pts=d.get('Datapoints',[]); assert pts, 'NO DATAPOINTS -- an unemitted metric reads ABSENT, not breached; confirm a smoke gc cycle ran before reading this as a pass'; assert max(p['Maximum'] for p in pts)==0.0, pts; print('REFERENCED_MISSING_ZERO', len(pts))"
+    expected: >-
+      at least one datapoint and every one of them zero. This is the Decision 192 per-cycle safety
+      invariant applied to the newly-governed prefix: an AWS-native lifecycle rule carries no
+      reachability assertion of its own, so the catalog-live set must be shown disjoint from what the
+      rule expires. An empty result is an explicit failure, never a pass -- absence is the worst failure
+      shape for a guard whose job is to be noticed.
+    fix_if: non-zero referenced_missing after the rule went live is a real catalog/storage inconsistency -- RCA it (Decision 55), never re-run to green
+  - step: 13
+    phase: post-deploy
+    action: the RCA resolution is recorded and rec-3945 is closed
+    command: bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json; by={x['id']:x for x in (json.loads(l) for l in open('logs/.recommendations-log.jsonl'))}; c=(by['rec-3892']['context'] or '').replace(',',''); assert '2026-06-28' in c, 'rec-3892 lacks the burst date'; assert '18812' in c, 'rec-3892 lacks the production reconciliation figure'; assert by['rec-3945']['status']=='closed', by['rec-3945']['status']; print('RECS_RECORDED')"
+    expected: rec-3892's context carries the burst dates and the production reconciliation figures, and rec-3945 reads closed
+    fix_if: a missing append or an open rec-3945 means a portal write did not land -- re-run the portal call and re-sync; never edit the JSONL cache, which is a read cache and never a write source
+test_obligations:
+  - source: terraform/personal/main.tf
+    behavior: >-
+      aws_s3_bucket_lifecycle_configuration.data_lake carries a second rule whose prefix derives from
+      local.ducklake_smoke_data_prefix with a trailing slash; EVERY rule in the resource (not merely the
+      first) is Enabled, binds noncurrent_days to SNAPSHOT_RETAIN_DAYS, sets expired_object_delete_marker,
+      and declares no current-version expiration; and every *_data_prefix local derived from the .tf text
+      is positively covered rather than declared-excluded.
+    verification_step: 5
+    test_selector: tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py::TestDataLakeLifecycleGoverned
+    red_green_expectation: red before, green after
+  - source: tests/checks/iam_tf/test_ducklake_maintenance_gc_rule_invariants.py
+    behavior: >-
+      The relocated GC/alarm invariants -- gc_ops rule state, maintenance-role IAM non-widening, liveness
+      alarm missing-data treatment, cron non-collision, and DR-dump ordering -- hold unchanged at the new
+      module path.
+    verification_step: 6
+    test_selector: tests/checks/iam_tf/test_ducklake_maintenance_gc_rule_invariants.py
+    red_green_expectation: red before (module absent), green after
+  - source: tests/fixtures/terraform_hcl_blocks.py
+    behavior: >-
+      _find_resource_block and _tf_dir_file_texts resolve from a non-test package, so both sibling modules
+      consume one implementation and validate_no_cross_test_imports stays green.
+    verification_step: 4
+    command: bin/venv-python -m scripts.checks.hygiene.validate_no_cross_test_imports
+    red_green_expectation: red before, green after
+  - source: config/agent/verification_registry/entries/ducklake-maintenance-tf-invariants.yaml
+    behavior: >-
+      The modified shard is re-admitted by run_differential -- its check_spec fails at origin/main because
+      test_smoke_prefix_is_covered_not_excluded does not exist there -- and every node id it sheds is
+      picked up by the sibling shard.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    red_green_expectation: red before, green after
+  - source: config/agent/verification_registry/entries/ducklake-maintenance-gc-rule-invariants.yaml
+    behavior: >-
+      The new shard is admitted by run_differential (its module does not exist at origin/main) and carries
+      all five re-pointed GC node ids.
+    verification_step: 9
+    command: bin/venv-python -m scripts.validate --pre
+    red_green_expectation: red before, green after
+constraints:
+  - No rescue agents or workaround loops (Decision 55).
+  - >-
+    Decision 128/130 -- the 497/500 crossing is met by DECOMPOSITION. Do not add a
+    config/sloc_budgets.yaml entry for either module, and do not run --update-sloc-budgets to seed one.
+  - >-
+    Decision 181 / docs/contracts/implement-scope-boundary.yaml CONTENT invariant -- the whole-block to
+    per-rule reshape must be net-tightening. No assertion, budget or acceptance criterion may be weakened;
+    every reshaped guard ships with a red case proving it discriminates.
+  - >-
+    Decision 187 -- no node id disappears inside a retirement. Every one of the twelve origin/main node
+    ids is dispositioned in the context table as re-pointed, retained or reshaped.
+  - >-
+    Decision 103 -- do NOT relocate TestDataLakeLifecycleGoverned. Both rec-3892's and rec-3945's stored
+    acceptance oracles name its current module path; moving it would make rec-3945 unprobeable to closure.
+    The split moves the GC concern instead, which no stored oracle names.
+  - >-
+    Decision 119 -- no local terraform init/validate/plan for terraform/personal. Every terraform VP step
+    is grep-only; CI's terraform-validate check and the speculative-plan job are authoritative.
+  - >-
+    Decision 126 -- infra intent is a PR touching terraform/**; CI plans and applies. Never a
+    self-directed terraform apply.
+  - >-
+    Decision 66 -- call get_rec_write_guidance() BEFORE the rec-3892 update_rec composition, not after a
+    rejection.
+  - >-
+    Decision 88 / warehouse-as-source-of-truth -- logs/.recommendations-log.jsonl is a read cache, never a
+    write source. Both rec writes go through scripts.ops_data_portal.
+  - >-
+    grep, never rg, in every pre-deploy VP step (validate_vp_replay's _rg_portability_pre_pass).
+  - >-
+    noncurrent_days stays bound to SNAPSHOT_RETAIN_DAYS (30) for BOTH rules. Revisiting the retention
+    window is rec-3870's business, not this plan's.
+context:
+  - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: dec-128, dec-130, dec-191, dec-181, dec-126, dec-119, dec-176, dec-132, dec-066, dec-048. Decisions triaged: 150 of 150. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "Scout flag dispositions: dec-103 WARN dissolved by inverting the split direction (stored oracles stay at their recorded node ids, so no acceptance relocation is needed); dec-131 NOTE pivoted (shared helpers hoisted to tests/fixtures/, not duplicated); dec-192 NOTE adopted (VP step 12 asserts reachability, not a storage delta); dec-187 WARN adopted (disposition table below)."
+  - "RCA VERDICT, established 2026-09-21 from version-level S3 reads; full evidence rides the rec-3892 portal append (VP step 13), never restated here: rec-3892's premise is refuted. No unmodeled deleter exists. All 1,400 smoke-prefix delete markers fall in two Sunday bursts -- 2026-06-07T12:57-12:59 (174, out-of-band gc invocation) and 2026-06-28T05:00 (1,226, exactly the smoke gc cron 0 5 ? * SUN *) -- with nothing deleted since. The FilesCleaned/OrphansDeleted 0.0 readings were CORRECT: the sampled 21-day window contained no deletions. Independent corroboration: the first production gc_ops pass (2026-09-20T03:47, cron 45 3 ? * SUN *) produced 18,812 markers reconciling exactly to GcDeletedFiles 18,744 + GcDeletedOrphans 68 with GcReferencedMissing 0.0."
+  - "This clears rec-3945's stated gate ('FIRST explain the deleter, SECOND extend the rule') and retires the _DECLARED_LIFECYCLE_EXCLUSIONS reason string at tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py:348-353."
+  - "DECISION 187 DISPOSITION TABLE, all THIRTEEN origin/main node ids (count asserted by VP step 8, not eyeballed). RE-POINTED to the new GC module (5): test_gc_ops_rule_state_matches_declared_intent, test_maintenance_role_iam_is_not_widened, test_liveness_alarm_treats_missing_data_as_breaching, test_gc_ops_rule_cron_does_not_collide_with_the_singleton_cadences, test_dr_dump_precedes_the_gc_ops_window. RETAINED unchanged (3): test_exactly_one_lifecycle_configuration_targets_the_data_lake_bucket (resource cardinality, not rule cardinality -- still exactly one configuration), test_read_helper_sweeps_every_tf_file_in_the_directory, test_no_current_version_expiration_rule (already iterates every expiration body, so already per-rule). RESHAPED strictly stronger (5): test_rule_status_is_enabled, test_prefix_is_derived_from_the_declared_local_with_a_trailing_slash, test_expired_object_delete_marker_is_present, test_noncurrent_days_bound_to_snapshot_retain_days, and test_every_declared_data_prefix_local_is_covered_or_declared_excluded -- the last stops accepting a declared exclusion for the smoke local and must prove positive coverage. LOST: none."
+  - "The noncurrent_days reshape is the load-bearing one: the current guard (:412) re.searches only the FIRST noncurrent_version_expiration block, so a second rule with a wrong or absent value passes undetected today."
+  - "SLOC arithmetic (limit 500, file currently 497, unregistered): header/helpers 80, TestAlarmDescriptionsPinNoThreshold 49, TestProductionGcRuleInvariants 146, TestDataLakeLifecycleGoverned 88, TestDataLakeLifecycleRedCases 33, TestThresholdShapeRedCases 26, TestGcOpsEnablementBaseline 75. Moving the GC/alarm concern out leaves ~201 in place, with headroom where the growth actually is."
+  - "run_differential admissibility (the sibling plan's lesson at PLAN-ducklake-noncurrent-version-reclaim.yaml): a shard is admitted only if its check_spec FAILS at origin/main. Both shards qualify -- one because the new coverage node does not exist there, the other because its module does not."
+  - "ACCEPTED CONSEQUENCE: the new rule expires the smoke prefix's 1,400 delete markers and their noncurrent versions within roughly 24-48h of apply, not after 30 days, because those versions already exceed the window at apply time. Same shape the sibling plan recorded for production's 548. The evidence record is preserved by the VP step 13 portal append, which is why that step is not optional."
+  - "rec-3892 is CLOSED (auto-closed by the Resolves: trailer on #1225 against its IAM-visibility acceptance clause); it is deliberately NOT in bundled_recommendations. Only rec-3945 is bundled."
+  - "T2.18 freshness gate: silent-completion NO (c2 open, needs N=9 weekly GcReferencedMissing==0 cycles, one run so far; rec-3870 is the committed closer); stale-reference NONE (all six files_in_scope paths exist); supersession NONE; gating CDs CD.31/33/34 ratified as dec-078/081/107, CD.29 pending but gates completion only, which this plan does not attempt."
+  - "BOOKKEEPING GAP, surfaced not fixed: terraform/personal/main.tf hosts the lifecycle rule but is absent from T2.18's files_in_scope, so this work is not discoverable from the roadmap item. Incompleteness rather than a retired surface, so no re-grounding obligation fires."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - get_rec_write_guidance() called before composing the rec-3892 append (Decision 66)
+execution_steps:
+  - Create tests/fixtures/terraform_hcl_blocks.py -- hoist _find_resource_block and _tf_dir_file_texts verbatim from the existing module; no behavioural change.
+  - Create tests/checks/iam_tf/test_ducklake_maintenance_gc_rule_invariants.py -- relocate TestProductionGcRuleInvariants, TestGcOpsEnablementBaseline, TestAlarmDescriptionsPinNoThreshold and TestThresholdShapeRedCases verbatim, importing the hoisted helpers. A relocation, never a rewrite.
+  - Modify tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py -- remove the moved classes, import the hoisted helpers, reshape the four whole-block assertions to iterate every rule, remove the smoke entry from _DECLARED_LIFECYCLE_EXCLUSIONS, and add test_smoke_prefix_is_covered_not_excluded plus a red case per reshaped guard.
+  - Modify terraform/personal/main.tf -- add the second rule block and rewrite the header comment that states the retired exclusion rationale.
+  - Update both verification-registry shards to the node ids named in the disposition table.
+  - Call get_rec_write_guidance(), then update_rec on rec-3892 with the RCA resolution and the evidence figures.
+  - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
+  - 'Report: what was implemented, verification results'
+work_areas: []
+rollback: >-
+  s3:DeleteLifecycleConfiguration is granted NOWHERE in terraform/ (recorded as _UNGRANTED_DESTROY,
+  admin-tier), so removing the resource outright is both guard-BLOCKED and AccessDenied for the CI apply
+  role. The in-band rollback is therefore to revert the second rule block in terraform/personal/main.tf
+  and let CI apply the one-rule configuration, which is an UPDATE and auto-applies. Objects already
+  expired are not recoverable by rollback; the smoke corpus is disposable by construction (the CI gate
+  recreates it under force_recreate_tables on every push), which is why this rule is hygiene rather than
+  a data-durability change.
