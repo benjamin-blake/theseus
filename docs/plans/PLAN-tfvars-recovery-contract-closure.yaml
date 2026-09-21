@@ -278,6 +278,22 @@ verification_plan:
   graduation: waive
   graduation_waiver_reason: A fixed-phrase grep is adequate at authoring time but unsound as a standing
     guard -- a reworded but still-correct comment would red it.
+- step: 15
+  phase: pre-deploy
+  action: deploy-paths names five variables and points at the owning contract
+  command: bin/venv-python -c "import yaml; s=str(yaml.safe_load(open('docs/contracts/deploy-paths.yaml'))['admin_out_of_band']['procedure']['steps']);
+    assert 'alerts_email' in s, 'five-var list not corrected'; assert 'terraform-cc-web-operations' in
+    s, 'pointer to the owning contract missing'; print('DEPLOY_PATHS POINTER OK')"
+  expected: Prints DEPLOY_PATHS POINTER OK.
+  fix_if: '''five-var list not corrected'' means the step still lists four. ''pointer missing'' means
+    the per-variable detail was restated here instead of pointed at, which would make deploy-paths a second
+    source of truth against Decision 126 point 2. Measured red 2026-09-21.'
+  hermetic: true
+  expected_literals:
+  - DEPLOY_PATHS POINTER OK
+  graduation: waive
+  graduation_waiver_reason: A fixed-substring assertion over one contract's prose; adequate at authoring
+    time but a reworded-yet-correct step would red it as a standing guard.
 test_obligations:
 - source: scripts/checks/contracts/validate_terraform_cc_web_operations.py
   behavior: A no-default variable declared in terraform/personal/*.tf but absent from the contract's where_values_live
@@ -298,6 +314,26 @@ test_obligations:
   verification_step: 7
   test_selector: tests/test_setup_cloud_env.py
   red_green_expectation: red before (no delegation present), green after
+- source: docs/contracts/terraform-cc-web-operations.yaml
+  behavior: The recovery table must name every no-default variable declared in terraform/personal/*.tf
+    and keep owner_email and alerts_email on separate, non-interchangeable sources.
+  verification_step: 4
+  command: bin/venv-python -c "import yaml; from scripts.checks.contracts.validate_terraform_cc_web_operations
+    import _declared_no_default_variables as decl; from pathlib import Path; d=decl(Path('terraform/personal'));
+    t=yaml.safe_load(open('docs/contracts/terraform-cc-web-operations.yaml'))['tfvars_and_remote_state_recovery']['where_values_live'];
+    listed={k for k in t if k!='description'}; missing=sorted(d-listed); print('UNCOVERED', missing);
+    assert not missing and len(d)>=5"
+  red_green_expectation: red before (the table is a scalar prose blob and omits alerts_email), green after;
+    the graduated check tfvars-recovery-table-covers-module is the standing guard
+- source: docs/contracts/deploy-paths.yaml
+  behavior: The admin_out_of_band tfvars-recovery step names five variables and points at the owning contract
+    rather than restating per-variable detail.
+  verification_step: 15
+  command: bin/venv-python -c "import yaml; s=str(yaml.safe_load(open('docs/contracts/deploy-paths.yaml'))['admin_out_of_band']['procedure']['steps']);
+    assert 'alerts_email' in s, 'five-var list not corrected'; assert 'terraform-cc-web-operations' in
+    s, 'pointer to the owning contract missing'; print('DEPLOY_PATHS POINTER OK')"
+  red_green_expectation: red before (the step lists four variables and names no owning contract), green
+    after
 constraints:
 - Decision 101 public-repo boundary - no email address, AWS account id, ARN or ExternalId enters a tracked
   file. Role-alias SEMANTICS may be documented; literal addresses may not.
