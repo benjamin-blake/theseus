@@ -6848,12 +6848,19 @@ The merge-gate design consequences of Decision 89 are PRESERVED, not overturned.
 - Run: https://github.com/benjamin-blake/agent-platform/actions/runs/31536138747 (workflow_dispatch, main @ 84f9209, 2026-08-11T21:04:49Z, conclusion=success) -- the sole Actions run id cited anywhere in this file.
 - This is a point-in-time probe, not continuous coverage. The monitor-blind window 2026-07-06 .. 2026-08-10 saw all six scheduled runs fail unactioned because `GHAS_PROBE_TOKEN` was unprovisioned, so the three controls were UNVERIFIED across that window (not proven-disabled) until this run confirmed them. The monitor still carries no persistent-unavailability alarm, so a recurrence before this stanza's review_by would again surface to nobody.
 
+**Live-probe verification (2026-09-21):**
+- Secret scanning: `scanning_status=enabled` (GitHub API, `repo_http_status=200`).
+- Push protection: `push_protection=enabled` (same endpoint).
+- Actions permissions: `actions_enabled=True`, `allowed_actions=all` (`actions_http_status=200`; alerts endpoint `alerts_http_status=200`).
+- Run: https://github.com/benjamin-blake/theseus/actions/runs/35652936888 (workflow_dispatch, main @ b84755ea, 2026-09-21T20:44:23Z, conclusion=success). This retires the 2026-08-11 bullet's "the sole Actions run id cited anywhere in this file" parenthetical by dated annotation (Decision 177's post-lock correction dialect) -- a second run id is now cited above, that bullet's own text is untouched.
+- This closes the second monitor-blind window: two consecutive scheduled runs failed (34849585629 on 2026-09-14, 35605883403 on 2026-09-21), reproducing the ULF-01 shape -- commit 570b9a53 (PR #1169) pulled `yaml` into `scripts.checks.misc.validate_ghas_probe`'s transitive closure with no install step in `ghas-probe.yml`. Restored by `PLAN-ghas-probe-install-restore` (#1246): an additive `pip install pyyaml` step, plus a new registered `--pre` guard (`validate_workflow_dependency_install`) that makes a workflow job invoking a `scripts.*` module with no preceding same-job dependency install structurally unmergeable going forward -- this drift class cannot recur unnoticed at PR time. The monitor's persistent-unavailability gap (no alarm on repeated blind windows) remains open, tracked separately (rec-3092, rec-3974; `PLAN-monitor-liveness-sweep`).
+
 **Reversal conditions:**
 This live-probe annotation is re-verified, never silently renewed, when either of the following fires: (a) `GHAS_PROBE_TOKEN` nears or reaches its 2027-05-31 expiry -- re-verify the three controls and record dated evidence on this Decision, or mark them UNVERIFIED, then re-arm; or (b) the ghas-probe monitor goes blind again (no successful run in more than 14 days, the 2026-07/08 shape) -- investigate and restore probing, then update the evidence. This stanza schedules re-verification of Decision 83's live-probe ANNOTATION only, never re-decision of its holding: a token expiry cannot un-reverse Decision 89's premise, which stands independent of probe cadence.
 
 ```yaml reversal-conditions
 decision: 83
-review_by: 2027-04-30
+review_by: 2027-03-31
 on_trigger: "re-verify the three controls and record dated evidence on Decision 83, or mark them UNVERIFIED, then re-arm; never silently renew"
 conditions:
   - id: probe-token-expiry
