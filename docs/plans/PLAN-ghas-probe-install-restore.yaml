@@ -42,7 +42,13 @@ scope:
     action: Create
     purpose: >-
       New registered --pre check: a job step invoking a scripts module whose transitive imports
-      need a third-party distribution must be preceded, in the SAME job, by a dependency install.
+      need a third-party distribution must have a dependency install in the SAME job, AT OR BEFORE
+      that step -- including textually earlier inside the invoking step's OWN `run:` body. The
+      same-body form is not hypothetical: reconcile.yml::apply-reconcile's race-guard step (:257)
+      carries `pip install boto3 requests` (:264) and `python3 -m scripts.ci.reconcile_target`
+      (:265) in one body, and is correct. A strict preceding-STEP reading reds it, which VP step 3
+      would catch only after the guard is written, and would steer an implementer toward an ad-hoc
+      reconcile.yml exclusion -- a weakening -- rather than the correct widening.
       The discriminator is third-party NEED, not bare scripts.*-invocation -- two live jobs
       (terraform-apply-sandbox.yml::apply-sandbox step 5, ::advisory-status step 2) invoke
       `python3 -m scripts.ci.convergence_classify` / `convergence_advisory` with no install anywhere
@@ -83,7 +89,9 @@ scope:
   - file: tests/checks/ci_guards/test_validate_workflow_dependency_install.py
     action: Create
     purpose: >-
-      Pass paths for all THREE real install shapes plus red cases: install-after-invoke, install in a
+      Pass paths for all THREE real install shapes, PLUS the two install POSITIONS -- a preceding
+      step (reconcile.yml::resolve-target) and the same run: body (reconcile.yml::apply-reconcile,
+      :264-265) -- plus red cases: install-after-invoke, install in a
       DIFFERENT job, no install at all, and a match inside an --allowedTools / Bash(...) permission
       token. Red cases must call
       the real check entrypoint, not reimplement a negated assertion inline (rec-3952's class).
@@ -114,10 +122,11 @@ acceptance_criteria:
   - >-
     validate_workflow_dependency_install is registered, runs in --pre, and FAILS on a job invoking a
     scripts module that NEEDS a third-party distribution with no preceding install step in the same
-    job -- and does NOT fail a job invoking a stdlib-only module
-    (terraform-apply-sandbox.yml::apply-sandbox step 5, ::advisory-status step 2), nor
-    reconcile.yml::resolve-target, whose "Install reconcile_target's runtime deps" step
-    (pip install boto3 requests) precedes its invocation in the same job.
+    job -- and does NOT fail any of the three legitimately-correct shapes in the live corpus:
+    terraform-apply-sandbox.yml::apply-sandbox step 5 and ::advisory-status step 2 (stdlib-only
+    modules, no install needed anywhere); reconcile.yml::resolve-target (install in a preceding
+    STEP of the same job, :139-142 before :144-163); and reconcile.yml::apply-reconcile (install
+    in the SAME run: body as the invocation, :264 before :265).
   - >-
     The probe reports all three controls (secret scanning, push protection, Actions permissions) as
     observed, with no control proven-disabled and no inability-to-verify.
@@ -403,7 +412,9 @@ execution_steps:
     Write scripts/checks/ci_guards/validate_workflow_dependency_install.py, reusing
     _workflow_shell_bodies._iter_workflows and _step_identity. Encode BOTH predicates as DATA, not
     prose. INVOCATION set: `python -m scripts.`, `.venv/bin/python -m scripts.`, `bin/venv-python`
-    -- with the EXCLUSION keyed on the tool-permission token shape: a match inside an
+    -- and the install may sit at or before the invoking step IN THE SAME JOB, including textually
+    earlier within that step's own `run:` body (reconcile.yml:264-265). EXCLUSION keyed on the
+    tool-permission token shape: a match inside an
     `--allowedTools`/`--disallowedTools` value, or inside a `Bash(...)` permission token, is a
     permission STRING and not an invocation (ci-rca.yml:464). Key it on that token, NEVER on
     "inside quotes" -- quoting is fail-open across a corpus where quoted arguments are everywhere,
@@ -422,8 +433,10 @@ execution_steps:
     in config/ci_rca_taxonomy.yaml.
   - >-
     Write the tests: pass paths for ALL THREE real install shapes, and red cases for
-    install-after-invoke, install-in-a-different-job, no-install, and the quoted-argument false
-    positive. Call the real check entrypoint, never a reimplemented assertion.
+    install-after-invoke (with NO same-body install), install-in-a-different-job, no-install, and
+    the permission-token false positive -- a match inside an --allowedTools / Bash(...) token
+    (ci-rca.yml:464). NOT a "match inside quotes" rule: that is fail-open and would suppress
+    terraform-apply-sandbox.yml:224's genuine command substitution. Call the real check entrypoint, never a reimplemented assertion.
   - >-
     Add config/agent/verification_registry/entries/ghas-probe-dependency-install.yaml with
     check_id: ghas-probe-dependency-install, matching VP step 2's graduation_check_id verbatim.
