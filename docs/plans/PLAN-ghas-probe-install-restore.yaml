@@ -1,0 +1,458 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "ghas-probe-install-restore"
+intent: >-
+  Restore the ULF-01 GHAS control probe to a working state and make the drift class that broke it
+  structurally impossible at PR time, so the three confidential-data-boundary controls Decision
+  83/101 depend on are verified live again instead of sitting unverified behind a red badge.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-ghas-probe-install-restore.yaml
+phase: >-
+  Slice 1 of 2, and a prerequisite for PLAN-monitor-liveness-sweep (slice 2). The overlap is
+  docs/DECISIONS.md ONLY -- different entries (this slice Decision 83, slice 2 Decision 62), so the
+  ordering is a same-file merge-order constraint, not a shared-stanza one. Slice 2 no longer touches
+  config/ci_rca_taxonomy.yaml at all. It also matters that slice 1's probe restoration closes the
+  live window slice 2's pinned red-before measures, so slice 1 must land first regardless. Scoped as ad_hoc_rec with NO tier_item claimed,
+  mirroring PLAN-backlog-health-detection's precedent for alarm-not-gate substrate work that T1.6
+  describes but whose own subject (the DQ runner's live-reader checks) this does not touch.
+scope:
+  - file: .github/workflows/ghas-probe.yml
+    action: Modify
+    purpose: >-
+      Add a `pip install pyyaml` step before the probe step, mirroring deploy-prod-lambdas.yml:148
+      and deploy-ducklake-lambdas.yml:164's `pip install pyyaml pydantic` shape. Genuinely additive:
+      the existing `run: python -m scripts.checks.misc.validate_ghas_probe` line is NOT changed.
+      Deliberately NOT requirements.txt -- ci.yml:66-68 records that installing it fills the
+      runner's disk (~3GB of torch+CUDA wheels) -- and deliberately NOT the backlog-health venv
+      shape, which would force the run line to .venv/bin/python and stop being additive. yaml is
+      the chain's only third-party need at RUNTIME. The earlier justification ("_schema.py imports
+      dataclasses only") was wrong: the probe's STATIC closure also reaches pydantic, via
+      _common.py:214's deferred `from scripts.roadmap.plan_document import load`. The install is
+      correct because that edge is function-scope and the probe never calls it -- so the guard's
+      model is static while the install's content is the runtime need, and the plan says so rather
+      than eliding the difference. Unpinned `pyyaml` is
+      a deliberate choice, not an omission: it matches the two deploy workflows' existing shape and
+      keeps the job's install surface to one line. `pip install -r requirements-fast.txt` (18 lines,
+      already carries pyyaml>=6.0.3) is the pinned alternative and is equally additive -- take it
+      instead if a pin is wanted inside the one job holding GHAS_PROBE_TOKEN.
+  - file: scripts/checks/ci_guards/validate_workflow_dependency_install.py
+    action: Create
+    purpose: >-
+      New registered --pre check: a job step invoking a scripts module whose transitive imports
+      need a third-party distribution must have a dependency install in the SAME job, AT OR BEFORE
+      that step -- including textually earlier inside the invoking step's OWN `run:` body. The
+      same-body form is not hypothetical: reconcile.yml::apply-reconcile's race-guard step (:257)
+      carries `pip install boto3 requests` (:264) and `python3 -m scripts.ci.reconcile_target`
+      (:265) in one body, and is correct. A strict preceding-STEP reading reds it, which VP step 3
+      would catch only after the guard is written, and would steer an implementer toward an ad-hoc
+      reconcile.yml exclusion -- a weakening -- rather than the correct widening.
+      The discriminator is third-party NEED, not bare scripts.*-invocation -- two live jobs
+      (terraform-apply-sandbox.yml::apply-sandbox step 5, ::advisory-status step 2) invoke
+      `python3 -m scripts.ci.convergence_classify` / `convergence_advisory` with no install anywhere
+      and are legitimately correct, because both modules are stdlib-only (verified). Reuses
+      _workflow_shell_bodies._iter_workflows/_step_identity for the walk and
+      scripts.dependency_graph.import_subgraph for the first-party closure. NOTE the second half
+      honestly: import_subgraph yields FIRST-PARTY modules only (_FIRST_PARTY_ROOTS is
+      ("src","scripts"), so third-party distributions are never nodes), so the need test is a small
+      NEW analysis over that closure -- ast-scan each member's top-level import roots and subtract
+      sys.stdlib_module_names plus src/scripts/tests. Name sys.stdlib_module_names as the stdlib
+      oracle; an earlier draft claimed "no new import analyser", which was wrong. Declares examined/skipped per Decision 170.
+  - file: scripts/checks/ci_guards/_manifest.py
+    action: Modify
+    purpose: >-
+      Register the check as a bare Entry literal (Decision 169 -- never a scripts/validate.py import
+      edit). pre=True with pre_globs covering the new module's IMPORT CLOSURE, not just
+      .github/workflows/**: validate_pre_glob_closure is a blocking --pre auditor over import-kind
+      edges. The closure is at least _common.py, registry.py, dependency_graph.py,
+      _workflow_shell_bodies.py and through it _marker_guard.py -> decisions_md.py, plus
+      extract_imports.py via dependency_graph -- treat that as a floor, not an exhaustive list, and
+      let validate_pre_glob_closure name any remainder. Mirror validate_schedule_removal_markers'
+      precedent, and defer the dependency_graph import (both existing consumers do, citing
+      networkx cost -- validate_pre_glob_closure.py:183, Decision 153).
+  - file: config/ci_rca_taxonomy.yaml
+    action: Modify
+    purpose: >-
+      Add the function_to_category row the new check module mechanically obligates (surfaced by
+      scripts.roadmap.plan_obligations). No workflows-map row is owed by anyone: ghas-probe is
+      already adjudicated at :353, and slice 2 no longer touches this file.
+  - file: config/composite_action_body_baseline.yaml
+    action: Modify
+    purpose: >-
+      Register one r3_workflows entry at ceiling 1 for the new step's body key
+      (.github/workflows/ghas-probe.yml::probe::<slug>). Adding an inline `run:` step without this
+      fails validate_composite_action_shell_bodies, which is pre=True with NO pre_globs so it runs
+      on every --pre. The file already carries this workflow at :167, and validate_scope_boundary
+      would STOP an implementer who tried to add the row mid-implement, so it must be scoped here.
+  - file: tests/checks/ci_guards/test_validate_workflow_dependency_install.py
+    action: Create
+    purpose: >-
+      Pass paths for all THREE real install shapes, PLUS the two install POSITIONS -- a preceding
+      step (reconcile.yml::resolve-target) and the same run: body (reconcile.yml::apply-reconcile,
+      :264-265) -- plus red cases: install-after-invoke, install in a
+      DIFFERENT job, no install at all, and a match inside an --allowedTools / Bash(...) permission
+      token. Red cases must call
+      the real check entrypoint, not reimplement a negated assertion inline (rec-3952's class).
+  - file: config/agent/verification_registry/entries/ghas-probe-dependency-install.yaml
+    action: Create
+    purpose: >-
+      Graduated verification-registry shard for the VP step that admits the new guard, per the
+      new_check_module obligation enforced by validate_graduation_completeness.
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      Dated APPENDED live-probe evidence annotation on Decision 83 carrying the new
+      workflow_dispatch run id, retiring by annotation its 2026-08-11 "the sole Actions run id cited
+      anywhere in this file" parenthetical, and RE-ARMING the reversal-conditions stanza as that
+      stanza's own on_trigger requires ("then re-arm; never silently renew"). Append-only
+      (Decision 177); the fenced stanza interior is the one carve-out (clause 4), which is what
+      makes the re-arm legal here rather than a deferral to slice 2. BOUND the bump: the existing
+      `review_by: 2027-04-30` is anchored to condition (a), GHAS_PROBE_TOKEN's 2027-05-31 expiry, so
+      the new value must be STRICTLY EARLIER than 2027-04-30 -- "on or before" would admit leaving
+      it unchanged, which AC4 and VP step 7 both treat as a silent renewal and therefore a failure. An unbounded bump would satisfy condition (b)'s
+      re-arm while silently weakening condition (a).
+bundled_recommendations: []
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    .github/workflows/ghas-probe.yml installs dependencies before invoking
+    scripts.checks.misc.validate_ghas_probe, and a workflow_dispatch run of it concludes success.
+  - >-
+    validate_workflow_dependency_install is registered, runs in --pre, and FAILS on a job invoking a
+    scripts module that NEEDS a third-party distribution with no preceding install step in the same
+    job -- and does NOT fail any of the three legitimately-correct SHAPES, spread across four jobs,
+    in the live corpus:
+    terraform-apply-sandbox.yml::apply-sandbox step 5 and ::advisory-status step 2 (stdlib-only
+    modules, no install needed anywhere); reconcile.yml::resolve-target (install in a preceding
+    STEP of the same job, :139-142 before :144-163); and reconcile.yml::apply-reconcile (install
+    in the SAME run: body as the invocation, :264 before :265).
+  - >-
+    The probe reports all three controls (secret scanning, push protection, Actions permissions) as
+    observed, with no control proven-disabled and no inability-to-verify.
+  - >-
+    docs/DECISIONS.md gains only appended lines, with EXACTLY ONE permitted deletion: Decision 83's
+    old `review_by` line inside the fenced reversal-conditions stanza, which Decision 177 clause 4
+    makes mutable. Zero deletions means the stanza was silently renewed, which its own on_trigger
+    forbids, and is equally a failure.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Prove the new guard is red before the fix. Stash the workflow fix, run the check against the
+      real repo tree, and confirm it names ghas-probe.yml.
+    command: "git stash push -m redbefore-ghas -- .github/workflows/ghas-probe.yml && git stash list | head -1 | grep -q redbefore-ghas && { bin/venv-python -m scripts.validate --pre; echo \"REDBEFORE_EXIT:$?\"; git stash pop; }"
+    expected: >-
+      --pre exits non-zero, emits the line REDBEFORE_EXIT:1, and the guard's own failure text
+      contains "invokes scripts with no preceding install step" naming the offending job
+    fix_if: >-
+      No REDBEFORE_EXIT line at all means the stash did not take and the step proved nothing -- fix
+      the setup, do not relax the assertion. The named-stash guard exists because `git stash push`
+      with NO local change to that path prints "No local changes to save" and exits 0, which would
+      let the chain run against an unmodified tree and then pop an unrelated pre-existing stash
+      entry. REDBEFORE_EXIT:0 with the stash confirmed means the guard cannot see the defect it
+      exists to catch -- most likely the same-job constraint is unenforced, or the third-party-need
+      discriminator wrongly clears the probe's yaml dependency.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Mutates the working tree via git stash and asserts on a deliberately-reverted state, so it is
+      not replayable as a standing guard: replayed against the un-implemented tree the guard module
+      is absent and --pre would red for an unrelated reason. The standing guard graduates at step 2.
+  - step: 2
+    phase: pre-deploy
+    action: exercise the guard's pass path and all four red cases against the real check function
+    command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_workflow_dependency_install.py tests/checks/ci_guards/test__manifest.py -q
+    expected: every test passes, including the install-in-a-different-job red case
+    expected_literals:
+      - "passed"
+    fix_if: >-
+      A red case passing against a deliberately-broken fixture means the test asserts on its own
+      inline logic rather than calling the check -- rewrite it to invoke the real entrypoint.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ghas-probe-dependency-install
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Prove the guard is green after the fix AND that it examined every script-invoking workflow
+      rather than silently skipping them (Decision 170).
+    command: bin/venv-python -m scripts.validate --pre
+    expected: >-
+      --pre exits 0 and the guard prints its NON-VACUOUS branch line, "dependency-install guard:
+      enforced over N job(s)", with N non-zero
+    fix_if: >-
+      If the guard prints its vacuous branch instead, it examined nothing and the green is
+      meaningless -- the exact silent-skip failure this plan exists to remove. The two branches must
+      print DIFFERENT literals so a zero count can never satisfy this step.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Live-corpus non-vacuity is deliberately left UN-ADMITTED to the verification registry, and the
+      honest reason is that it cannot be admitted: vp-red-before.yaml's recursion_refusal statically
+      refuses a graduate disposition on any step whose argv head is `-m scripts.validate`, which
+      this step's is. Step 2's shard admits the guard's fixture classification only, NOT this
+      assertion -- so the non-vacuity check runs every --pre but carries no registry entry. Round 2
+      of critique correctly rejected an earlier waiver here that claimed step 2 covered it.
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Run the FULL validation tier before commit, as
+      handoff_policy.full_validation_required_before_commit declares. --pre alone does not discharge
+      it.
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0 across the full tier
+    fix_if: >-
+      A new registered check commonly fails validate_check_accounting (missing Decision 170
+      declaration), validate_graduation_completeness (missing or orphaned shard), or
+      validate_pre_glob_closure (pre_globs narrower than the module's import closure) rather than on
+      its own logic -- read which check failed before touching the guard.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates the registered full tier itself, already the authoritative post-merge verifier --
+      no isolated behaviour here to admit to the verification registry.
+  - step: 5
+    phase: post-deploy
+    action: >-
+      Dispatch ghas-probe against main after merge and confirm the job gets past the import that has
+      killed it since 2026-09-14. This is the only step that proves the corrective; the guard proves
+      only that the YAML shape is right.
+    command: "echo 'DISPATCH VIA MCP: mcp__github__actions_run_trigger(method=\"run_workflow\", owner=\"benjamin-blake\", repo=\"theseus\", workflow_id=\"ghas-probe.yml\", ref=\"main\"), then poll mcp__github__actions_get for the run conclusion'"
+    expected: the run concludes success, with no ModuleNotFoundError in the probe step
+    fix_if: >-
+      A ModuleNotFoundError naming a package other than yaml means the install step resolved a
+      different requirements file than the probe's import chain needs; a 401/403 instead means
+      GHAS_PROBE_TOKEN has expired, which is a DIFFERENT fault from this plan's and is handled by
+      Decision 83's rotation procedure, not by editing the workflow.
+    hermetic: false
+  - step: 6
+    phase: post-deploy
+    action: >-
+      Read the probe job's own output and confirm each of the three controls was actually observed,
+      not merely that the job exited 0.
+    command: "echo 'READ VIA MCP: mcp__github__get_job_logs(owner=\"benjamin-blake\", repo=\"theseus\", run_id=<step 5 run id>, return_content=true) and read the control-state lines'"
+    expected: >-
+      secret scanning, push protection and Actions permissions each report an observed state, with
+      no control proven-disabled and no inability-to-verify
+    fix_if: >-
+      A green job with no per-control state lines means the probe short-circuited -- treat as
+      unverified, not as verified. Per Decision 101 the log must carry control state only, never a
+      raw response body or the token.
+    hermetic: false
+    graduation: not-applicable
+  - step: 7
+    phase: post-deploy
+    action: >-
+      Append the dated live-probe evidence to Decision 83 citing step 5's run id, then prove the
+      edit was purely additive (Decision 177 append-only; no mid-line splice).
+    command: "git fetch origin main --quiet && git diff -U0 origin/main -- docs/DECISIONS.md | grep -E '^-' | grep -v '^--- '"
+    expected: >-
+      exactly one deletion line, Decision 83's old `review_by: 2027-04-30`, which the re-arm
+      replaces. No deletion touches prose, the 2026-08-11 evidence annotation, or any other entry.
+      The filter is `grep -E '^-'` minus the `--- ` file header DELIBERATELY: the earlier
+      `^-[^-]` form could not see a deleted markdown BULLET (a removed "- Run: https://..." renders
+      as "-- Run: ...") and Decision 83's 2026-08-11 live-probe evidence bullets are exactly that
+      shape -- the "Secret scanning:" line and the "Run: https://..." line carrying the "sole
+      Actions run id" parenthetical this step exists to protect. Cited by anchor text, not line
+      number: DECISIONS.md is append-only and grows, so a pinned line number goes stale on any
+      merge (main appended 13 lines during this plan's own review, shifting them all).
+    fix_if: >-
+      A DELETED line outside the fenced stanza means a baseline line was spliced -- the 2026-08-11
+      "sole Actions run id" parenthetical must be retired BY the new dated annotation naming it,
+      never by editing that sentence. Conversely ZERO deleted lines means review_by was not bumped,
+      so the stanza was silently renewed -- which its own on_trigger ("never silently renew")
+      forbids. Both branches are defects; the stanza interior is mutable under Decision 177
+      clause 4, the prose body is not. A plain --numstat count cannot express this and is
+      deliberately not used.
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/checks/ci_guards/validate_workflow_dependency_install.py
+    behavior: >-
+      A workflow job invoking scripts.* with no preceding same-job dependency install is rejected;
+      an install in a sibling job does not satisfy it.
+    verification_step: 2
+    test_selector: tests/checks/ci_guards/test_validate_workflow_dependency_install.py
+    red_green_expectation: >-
+      Red before the guard exists (no such module); green after, with step 1 independently proving
+      the guard fails against the pre-fix ghas-probe.yml.
+  - source: .github/workflows/ghas-probe.yml
+    behavior: >-
+      The probe installs its dependencies before invoking scripts, so its import chain resolves.
+    verification_step: 1
+    command: "git stash push -m redbefore-ghas -- .github/workflows/ghas-probe.yml && git stash list | head -1 | grep -q redbefore-ghas && { bin/venv-python -m scripts.validate --pre; echo \"REDBEFORE_EXIT:$?\"; git stash pop; }"
+    red_green_expectation: >-
+      Step 1 stashes the fix and proves the guard names this file; step 5 proves the live run
+      recovers. Red before, green after, on both the structural and behavioural legs.
+  - source: scripts/checks/ci_guards/_manifest.py
+    behavior: the new Entry is discoverable through registry aggregation and runs in --pre
+    verification_step: 2
+    test_selector: tests/checks/ci_guards/test__manifest.py
+    red_green_expectation: >-
+      The existing manifest mirror test asserts every Entry resolves; an unregistered or
+      mis-pathed Entry fails it before --pre ever runs the check.
+  - source: config/ci_rca_taxonomy.yaml
+    behavior: the new check resolves to a function_to_category row
+    verification_step: 3
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Already owned by the registered validate_ci_rca_taxonomy check (validate_ci_rca_taxonomy.py:
+      32-47), which fails --pre for any registered check with no function_to_category row. A mirror
+      test here would re-assert an existing registered check against the same data and add a second
+      surface to keep in sync, which Decision 86 forbids.
+  - source: config/agent/verification_registry/entries/ghas-probe-dependency-install.yaml
+    behavior: the shard's check_id equals VP step 2's graduation_check_id
+    verification_step: 3
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Shard-to-step correspondence is owned by the registered validate_graduation_completeness
+      check, which fails --pre on an orphaned shard or an unadmitted graduate step. A dedicated test
+      would duplicate that registered verifier rather than guard new behaviour.
+  - source: config/composite_action_body_baseline.yaml
+    behavior: >-
+      the new inline `run:` step's body key is registered at ceiling 1
+    verification_step: 4
+    command: bin/venv-python -m scripts.validate
+    waiver_reason: >-
+      Owned by the registered validate_composite_action_shell_bodies check, which is pre=True with
+      no pre_globs and fails on any unregistered inline run: body key. A dedicated test would
+      duplicate that registered verifier over the same data.
+constraints:
+  - >-
+    Decision 177 append-only: every baseline line of Decision 83 must survive verbatim. The
+    2026-08-11 "sole Actions run id" parenthetical is retired BY the new dated annotation naming it,
+    never by a splice. Clause 4 carves out the fenced reversal-conditions stanza interior, which is
+    why this slice MAY re-arm it -- and does, because the stanza's own on_trigger says "then re-arm;
+    never silently renew". That obligation is discharged here, not deferred to slice 2. Arming the
+    probe-monitor-blind PREDICATE remains slice 2's.
+  - >-
+    Decision 169: register via scripts/checks/ci_guards/_manifest.py, never a scripts/validate.py
+    import edit.
+  - >-
+    Decision 170: the new check declares examined()/skipped(); a zero-examined green is a defect,
+    not a pass.
+  - >-
+    config/check_accounting_baseline.yaml is a shrink-only grandfather roster -- the new check must
+    DECLARE its accounting, never be baselined into it.
+  - >-
+    Decision 101: no token values, no raw response bodies, no account ids in any log line, test
+    fixture, or appended Decision evidence. Run ids and control-state words only.
+  - >-
+    The new module carries NO config/coverage_baseline.yaml entry, so it inherits the Decision 48 V2
+    100% per-file line-coverage standard -- including the vacuous branch VP step 3 requires it to
+    print and every arm of the INVOCATION and INSTALL sets. Lowering it would need a
+    `# baseline-lowered: dec-NNN` marker naming a Decision that names this file, and none exists, so
+    write the fixtures to reach 100% rather than planning a baseline entry.
+  - No rescue agents or workaround loops (Decision 55); no skipping or weakening an existing check.
+context:
+- 'Decision-scout verdict FLAGS_FOUND. CITE list (verbatim): 62, 74, 83, 151, 150, 55, 170, 169, 61,
+  103, 72, 128, 48, 86, 73. Decisions triaged: 150 of 150. Roadmap items intersected: 9; CONFLICT: 1;
+  RELATED: 7. Of the CITE list, this slice acts on 83, 151, 170, 169, 48, 73 and 101; 62, 74, 61, 103,
+  72, 128 and 86 are slice 2''s.'
+- 'gates: decision-scout=FLAGS_FOUND (150 of 150 triaged); plan-critique=PROCEED after 6 rounds -- rounds
+  1-3 REVISE, round 4 confirming REVISE (same-run-body install shape), round 5 confirming REVISE (python3
+  absent from the invocation DATA set), round 6 confirming PROCEED.'
+- 'Scout WARN (Decision 177) applied: the original approach said "in-place amendment", which 177 forbids.
+  Both DECISIONS.md edits are dated appends; VP step 7 mechanically proves it.'
+- 'Root cause: commit 570b9a53 (PR #1169, 2026-09-13) added `from scripts.checks import _common` to
+  scripts/checks/registry.py:69, pulling `yaml` into the probe''s transitive import chain. ghas-probe.yml
+  has no install step, so it dies at import and never reaches the GitHub API.'
+- Second blind window; the first (2026-07-06..08-10, six failures, unprovisioned token) is recorded
+  in rec-3092 -- slice 2's rec, history here, not motivation.
+- 'Trigger: two consecutive failed scheduled runs (34849585629, 35605883403). Last success 2026-09-07T13:09:30Z
+  is EXACTLY 14 days before 2026-09-21, so Decision 83''s "more than 14 days" trips 09-22 strictly --
+  the failed runs are the trigger, not the day count.'
+- 'Install shapes, THREE: `pip install -r requirements*.txt` (ci.yml:69-72), `pip install <pkgs>` (deploy-prod-lambdas.yml:148),
+  `python -m venv` + `.venv/bin/pip` (backlog-health.yml:66-70, ci-rca.yml:95-98). `pip install -e .[dev]`
+  is NOT one -- ci-rca.yml:91-94 names it only in a comment saying it would be a no-op.'
+- 'Invocation shapes, FOUR: `python`, `python3`, `.venv/bin/python` (all `-m scripts.`) and `bin/venv-python`.
+  `python3` is used by reconcile.yml, terraform-apply-sandbox.yml and terraform-drift.yml.'
+- 'T1.6 [CONFLICT, scout]: same mechanism class; this slice neither advances nor forecloses it and makes
+  no roadmap edit.'
+- 'This slice ships the PR-time guard only; the detection half is slice 2''s. Nothing is unowned if
+  slice 2 does not land: the probe-monitor-blind predicate is rec-3979''s, rec-3092 and rec-3974 are
+  slice 2''s followons, all filed and open.'
+- 'VP step 3''s branch literal is prose by construction: expected_literals is hermetic-only and recursion_refusal
+  forbids a hermetic `-m scripts.validate` step.'
+- 'Deferred to rec-3989: the grammar covers MODULE invocation only -- file-path (7 live) and heredoc
+  (3 live) shapes fall outside it. Benign today; forward under-enforcement only. Name the gap in the
+  skipped() declaration.'
+- 'Not in scope: the ci-rca watched set -- ghas-probe is already adjudicated excluded at ci_rca_taxonomy.yaml:353.'
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - Read only the plan-cited decision sections -- 83, 177, 151, 170, 169, 101 -- not all of DECISIONS.md
+  - >-
+    Read scripts/checks/ci_guards/_workflow_shell_bodies.py first -- the guard reuses its
+    _iter_workflows walk and _step_identity grammar rather than adding a second walker
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - >-
+    Confirm PLAN-monitor-liveness-sweep has NOT already landed a conflicting docs/DECISIONS.md
+    change; BOTH of this slice's PRs merge first (the taxonomy overlap no longer exists)
+execution_steps:
+  - >-
+    Add a `pip install pyyaml` step to ghas-probe.yml's probe job, between the setup-python step and
+    the probe run step. Do NOT touch the existing run line, do NOT use requirements.txt (ci.yml:
+    66-68 documents it as a ~3GB disk-filling install), and do NOT use the backlog-health venv shape
+    -- both break the additive property this plan's rollback depends on.
+  - >-
+    Write scripts/checks/ci_guards/validate_workflow_dependency_install.py, reusing
+    _workflow_shell_bodies._iter_workflows and _step_identity. Encode BOTH predicates as DATA, not
+    prose. INVOCATION set, FOUR shapes: `python -m scripts.`, `python3 -m scripts.`,
+    `.venv/bin/python -m scripts.`, `bin/venv-python`. `python3` is NOT covered by the `python`
+    entry -- "python -m scripts." is not a substring of "python3 -m scripts." -- and reconcile.yml
+    and terraform-apply-sandbox.yml invoke ONLY via python3, so omitting it silently under-enforces
+    over a quarter of the invoking corpus and makes the same-body branch below unreachable on live
+    input (its sole instance, reconcile.yml:264-265, is a python3 invocation), letting its fixture
+    pass for the wrong reason
+    -- and the install may sit at or before the invoking step IN THE SAME JOB, including textually
+    earlier within that step's own `run:` body (reconcile.yml:264-265). EXCLUSION keyed on the
+    tool-permission token shape: a match inside an
+    `--allowedTools`/`--disallowedTools` value, or inside a `Bash(...)` permission token, is a
+    permission STRING and not an invocation (ci-rca.yml:464). Key it on that token, NEVER on
+    "inside quotes" -- quoting is fail-open across a corpus where quoted arguments are everywhere,
+    and it would suppress a real invocation such as terraform-apply-sandbox.yml:224's command
+    substitution inside double quotes. INSTALL set: `pip install -r
+    requirements*.txt`, `pip install <pkgs>`, and `python -m venv` + `.venv/bin/pip`. THREE shapes --
+    `pip install -e .[dev]` is NOT one, it appears only in ci-rca.yml:91-94's comment saying it
+    would be a no-op. A composite-action install is deliberately NOT in the set: _iter_workflows
+    globs .github/workflows/ only, so a `uses:`-referenced action's install is invisible without a
+    second walk this plan does not add. Declare examined()/skipped() (Decision 170) and print
+    "dependency-install guard: enforced over N job(s)" on the NON-VACUOUS branch with a DIFFERENT
+    vacuous-branch literal -- VP step 3 asserts on the former, so it is a load-bearing output
+    contract, not cosmetic.
+  - >-
+    Register the Entry in scripts/checks/ci_guards/_manifest.py and add the function_to_category row
+    in config/ci_rca_taxonomy.yaml.
+  - >-
+    Write the tests: pass paths for ALL THREE real install shapes, and red cases for
+    install-after-invoke (with NO same-body install), install-in-a-different-job, no-install, and
+    the permission-token false positive -- a match inside an --allowedTools / Bash(...) token
+    (ci-rca.yml:464). NOT a "match inside quotes" rule: that is fail-open and would suppress
+    terraform-apply-sandbox.yml:224's genuine command substitution. Call the real check entrypoint, never a reimplemented assertion.
+  - >-
+    Add config/agent/verification_registry/entries/ghas-probe-dependency-install.yaml with
+    check_id: ghas-probe-dependency-install, matching VP step 2's graduation_check_id verbatim.
+  - >-
+    Execute Verification Plan steps 1-4 -- run each; loop until pass; on unrecoverable V3 failure
+    stop and RCA (Decision 55).
+  - Commit, push, open the PR, and merge once CI is green.
+  - >-
+    AFTER the code PR merges: execute VP steps 5 and 6 (dispatch the probe, read its control
+    states). The evidence cannot be written before the run that produces it.
+  - >-
+    Then open a SECOND PR from a NEW branch off post-merge main (never commit on main) carrying only
+    the docs/DECISIONS.md change: the dated Decision 83 evidence citing step 5's run id, the
+    annotation retiring the "sole Actions run id" parenthetical, and the reversal-stanza re-arm. Run
+    VP step 7 on that branch. THIS follow-up PR is what must merge before slice 2 begins, since
+    slice 2 also edits docs/DECISIONS.md.
+  - 'Report: what was implemented, verification results, and the run id cited in the annotation.'
+work_areas: []
+rollback: >-
+  The workflow change is a single additive step -- reverting it returns the probe to its current
+  blind state, which is not a safe resting place, so prefer forward-fix (Decision 73). The new check
+  can be disabled by removing its Entry from _manifest.py without touching any other check.

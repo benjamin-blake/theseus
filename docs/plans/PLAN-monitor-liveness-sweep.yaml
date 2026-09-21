@@ -1,0 +1,540 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "monitor-liveness-sweep"
+intent: >-
+  Close the one real gap in the landed scheduled-loop liveness backstop: it asserts that a schedule
+  is still FIRING, never that it is still SUCCEEDING, so a monitor whose runs fire on cadence and
+  fail every time is invisible to it. Add a success-age leg on the same hourly carrier, with
+  leg-aware episode identity so the two legs resolve independently.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-monitor-liveness-sweep.yaml
+phase: >-
+  Slice 2 of 2. Depends on PLAN-ghas-probe-install-restore's BOTH PRs merging first (its code PR and
+  its follow-up Decision 83 evidence PR) because both slices edit docs/DECISIONS.md -- though they
+  now touch DIFFERENT entries, slice 1 Decision 83 and this slice Decision 62, since arming the
+  Decision 83 predicate split out to rec-3979 at round 2. Scoped as ad_hoc_rec, no tier_item
+  claimed; this plan closes no rec (followon only).
+scope:
+  - file: scripts/convergence_health/sensor_liveness_success.py
+    action: Create
+    purpose: >-
+      The success-age leg. Computes each peer's newest `?event=schedule&status=success` run age and
+      classifies it against the SAME cron-derived threshold. A SIBLING module, not an inline
+      addition: sensor_liveness.py measures 496 SLOC against the unregistered 500 default (exact
+      counter: non-blank non-comment lines), so four lines of headroom remain and Decision 128
+      makes decomposition the default response, never a budget raise.
+  - file: scripts/convergence_health/sensor_liveness.py
+    action: Modify
+    purpose: >-
+      Wire the second leg into detect_stale_loops, delegate identity to sensor_liveness_episodes,
+      make `_probe_acceptance` (:314) emit a leg selector and `stale_peers_for_probe` (:594) return
+      leg-aware results rather than a flat loop-name list, and widen BOTH `_charge` caps -- :568
+      sets sweeps_max AND ids_max to len(peers)+1 on one line, and a both-legs-stale peer pays up to
+      two rec_by_id fetches as well as two sweeps, so widening only sweeps_max leaves the sibling
+      cap to raise a FALSE structural-violation RuntimeError. Bound it rather than over-engineering:
+      fleet collapse fires at 3, so at most 2 non-collapsed episodes per leg = 4 total regardless of
+      peer count; at the live 10 peers neither cap is reachable, and sweeps_max must still widen
+      because test_call_budget_caps_equal_len_peers_plus_one (:518) runs N=2. Fleet behaviour is DECIDED here,
+      not deferred: (a) FLEET_COLLAPSE_MIN_STALE counts DISTINCT PEERS, never (peer, leg) pairs --
+      a fleet event means several monitors broke together, and counting pairs would let two peers
+      stale on both legs reach 4 and trigger a spurious collapse that suppresses every per-loop
+      episode; (b) the fleet episode is leg-keyed like every other, (__fleet__, leg), so the two
+      legs cannot collide on the open matcher and each carries its own remediation -- cadence means
+      schedules stopped firing, success means runs are firing and failing, which are different
+      operator actions and must not share a rec; (c) fleet_threshold_seconds and
+      `since_ts = max(anchor_ts)` are computed per leg over that leg's own stale set.
+      test_open_per_loop_recs_are_suppressed_not_closed (:407-420) does NOT discriminate (a): its 3
+      peers stale on both legs collapse under either rule (distinct=3, pairs=6). The discriminating
+      case is TWO peers stale on both legs -- distinct=2 (no collapse, correct) vs pairs=4 (spurious
+      collapse suppressing every per-loop episode) -- and it does not exist yet. Add it.
+  - file: config/agent/data_quality/source_registry.yaml
+    action: Modify
+    purpose: >-
+      Extend loop_liveness_stale's description and signal_interpretation to cover the success leg.
+      Reuses the registered source rather than minting a second one -- same population, same
+      carrier, same episode grain, same FILE/UPDATE-ONLY-NEVER-CLOSE posture.
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      Dated APPENDED annotation on Decision 62 ONLY, recording that its 2026-06-16 clause ("the
+      silent-cron failure mode 62 worried about is mitigated by a persistent-unavailability alarm
+      (Decision 74)") named an alarm that does not operate on the primary dev surface, and that the
+      operative mitigation is now the derived-peer backstop plus this success leg. The annotation
+      also records that the leg's threshold is CRON-DERIVED, so Decision 83's condition (b) prose
+      ("more than 14 days") now agrees only by coincidence -- 0 7 * * 1 x 2 = 1209600s -- and would
+      silently redefine itself if that cron changed. Decision 83 is NOT edited here: arming its
+      predicate is split to rec-3979. Append-only (Decision 177).
+  - file: scripts/convergence_health/__main__.py
+    action: Modify
+    purpose: >-
+      Extend `_dispatch`'s argv parse so `--liveness-probe` accepts a leg selector alongside the
+      workflow token (:173-176 currently treats the next non-`--` token as the workflow). The
+      oracle's OTHER two halves live in sensor_liveness.py, not here -- see that scope row. Without
+      the full chain every success-leg rec is stamped with an oracle measuring CADENCE only, so it
+      would pass its own stored acceptance while stale; and worse, main_liveness_probe exits 1 if
+      ANYTHING in the flat list is stale, so a cadence-leg rec's acceptance would start failing
+      whenever only the success leg is stale -- a regression of acceptance_criteria[1].
+  - file: scripts/convergence_health/sensor_liveness_episodes.py
+    action: Create
+    purpose: >-
+      The named Decision 128 decomposition that funds F2's grain change. Lifts the episode
+      identity block -- _episode_title, _parse_episode_title, _is_open_loop_row,
+      _filter_resolved_rows, _same_anchor_best_row, _cross_anchor_newest, _episode_context -- out of
+      sensor_liveness.py behind the Decision 80/104/124 facade, re-keyed on (loop, leg). This is the
+      mechanism the previous draft was missing: it asserted sensor_liveness.py "must NET-SHRINK"
+      without naming what moves, which is an outcome, not a decomposition step. Measured: the seven
+      lift targets total 64 SLOC, taking sensor_liveness.py from 496 to 432 and leaving ~68 lines
+      for the second-leg wiring, the _charge widening, the fleet handling and the probe
+      discriminator. Budget that honestly -- it is thin. The lift also carries _REMEDIATION_BY_STATE
+      and _REMEDIATION_GENERIC (used only by _episode_context) and RESOLVED_REC_STATUSES (used only
+      by _filter_resolved_rows), and costs ~8 re-export lines back in sensor_liveness.py because the
+      existing suite reaches these symbols through the module object (sl._same_anchor_best_row at
+      :247, sl._filter_resolved_rows at :315, sl._parse_episode_title at :568-569,
+      sl._is_open_loop_row at :572-573, sl.RESOLVED_REC_STATUSES at :627).
+  - file: tests/convergence_health/test___main__.py
+    action: Modify
+    purpose: >-
+      Owns the --liveness-probe CLI class (:324-343) and the _dispatch routing tests (:379-386), so
+      the leg-selector argv change lands its assertions here. Absent from an earlier draft, which
+      pointed __main__.py's obligation at a different module's suite that exercises no argv dispatch
+      and no exit code.
+  - file: tests/convergence_health/test_sensor_liveness_episodes.py
+    action: Create
+    purpose: leg-aware matcher behaviour, including the cross-leg cases F2 names
+  - file: tests/convergence_health/test_sensor_liveness_success.py
+    action: Create
+    purpose: >-
+      The success-age classification, including the case this plan exists for: runs firing on
+      cadence, every one of them red, cadence leg silent, success leg stale.
+  - file: tests/convergence_health/test_sensor_liveness.py
+    action: Modify
+    purpose: >-
+      Prove the two legs compose without regressing the cadence leg, and that the start-anchored
+      title grammar (`Loop: {k}. Episode: {a}. Bucket: {n}.`) is preserved so recs_by_title_prefix's
+      whole-pattern LIKE bind still matches (Decision 142).
+  - file: config/agent/verification_registry/entries/loop-liveness-success-age.yaml
+    action: Create
+    purpose: graduated shard admitted by VP step 1
+bundled_recommendations: []
+followon_recs:
+  - rec-3092
+  - rec-3974
+  - rec-3979
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    A peer whose scheduled runs fire on cadence but never succeed within its cron-derived threshold
+    is classified stale by the success leg, while the existing cadence leg stays silent on it.
+  - >-
+    The cadence leg's behaviour is unchanged: a peer with no `event=schedule` run at all is still
+    classified exactly as before, with the same anchor, bucket and title grammar.
+  - >-
+    A success-leg rec's stored acceptance command discriminates the success leg: it reports STALE
+    while the success leg is stale, rather than passing on the cadence leg's verdict.
+  - >-
+    Both scripts/convergence_health/sensor_liveness.py and the new sensor_liveness_episodes.py sit
+    at or below 500 SLOC with NO config/sloc_budgets.yaml entry added and no raise-approved marker.
+  - >-
+    Episode identity is keyed on (loop, leg): two legs stale on one peer produce two independently
+    resolvable episodes, and neither overwrites the other's title or context on a later tick.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Exercise the success-age classification against a stubbed caller, including the
+      runs-fire-but-all-red case that motivated this plan and the no-token unobservable case.
+    command: bin/venv-python -m pytest tests/convergence_health/test_sensor_liveness_success.py tests/convergence_health/test_sensor_liveness_episodes.py -q
+    expected: >-
+      all pass, including the all-red-runs case, the unobservable case, and the leg-aware matcher
+      cases (two legs stale on one peer resolve independently and neither overwrites the other)
+    expected_literals:
+      - "passed"
+    fix_if: >-
+      A test that stubs the success-age function itself proves nothing -- it must drive the real
+      classifier against a stubbed HTTP caller, the injection seam detect_stale_loops already uses.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: loop-liveness-success-age
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Prove the cadence leg did not regress and the start-anchored title grammar survives.
+    command: bin/venv-python -m pytest tests/convergence_health/test_sensor_liveness.py tests/convergence_health/test___main__.py -q
+    expected: >-
+      the cadence-leg suite passes with every BEHAVIOURAL assertion preserved, after the in-place
+      changes the second leg genuinely forces. The blast radius is ~8 assertions, not two tests:
+      _gh_caller's dispatcher regex matches the workflow-runs path segment and IGNORES the query
+      string, so a status=success URL returns the SAME payload as the cadence query -- there is no dead-query
+      raise (an earlier draft claimed one; reading the stub refutes it). The real consequence is
+      that every peer a test makes stale now goes stale on BOTH legs with identical anchors, so each
+      files two episodes, breaking the exact-equality assertions at :195, :210, :224, :325, :404 and
+      :418-420. The stub must become query-aware first, or none of those fixes mean anything.
+      PRESERVE the assertion SHAPE, not just the intent: assert list length AND membership, never
+      relax an equality operator to a membership one -- implement-scope-boundary.yaml names
+      operator-loosening as CONTENT weakening's dominant form in practice, and no mechanical guard
+      catches it here
+    expected_literals:
+      - "passed"
+    fix_if: >-
+      A title-prefix test failing means the leg marker was inserted BEFORE the anchored
+      `Loop: {k}. Episode: {a}. Bucket: {n}.` prefix; recs_by_title_prefix binds the whole LIKE
+      pattern with no implicit wildcard, so the marker must come after it (Decision 142).
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      This is a regression assertion over an already-graduated suite (the cadence leg landed with
+      PLAN-sensor-liveness and carries its own registry shard); re-admitting the same behaviour
+      under a second check_id would duplicate an existing registry entry.
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Replay the PINNED live observation from this plan's context as a fixture through the real
+      classifier, and prove the success leg reports STALE on it while the cadence leg reports
+      fresh. The live window is not re-queried: it self-closes the moment slice 1 restores the
+      probe, and this plan's own phase ordering requires slice 1 to merge first.
+    command: bin/venv-python -m pytest tests/convergence_health/test_sensor_liveness_success.py -k pinned_ghas_probe_observation -q
+    expected: >-
+      the pinned observation classifies success-leg STALE and cadence-leg fresh against the
+      cron-derived 1209600s threshold. The fixture pins the RAW payload subset (id, created_at,
+      updated_at, conclusion) rather than the two derived ages, so it can still discriminate a wrong
+      query string or a created_at-vs-updated_at anchor choice that derived ages would hide
+    expected_literals:
+      - "passed"
+    fix_if: >-
+      If the fixture classifies cadence-leg stale too, the age arithmetic is reading the wrong
+      field -- the pinned last RUN is 6954s old (fresh) while the pinned last SUCCESS is 1217716s
+      old (stale); that divergence IS the defect this plan closes, so a fixture collapsing them
+      proves nothing.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      This step replays two frozen September-2026 timestamps, so its verdict can never change and it
+      is the wrong thing to make a standing registry guard -- a shard over it would be green forever
+      by construction. The pinned case is instead a MEMBER of step 1's suite, which carries the real
+      red-before (module absent) and holds the standing admission.
+  - step: 4
+    phase: pre-deploy
+    action: run the fast presubmit tier as a pre-check before pushing
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: >-
+      validate_sloc_limits failing on sensor_liveness.py means the leg was added inline rather than
+      delegated to the sibling module -- move it, do not raise the budget (Decision 128).
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates the registered --pre tier itself; there is no isolated behaviour here to admit
+      beyond the tier, whose own checks are already registered.
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      Run the FULL validation tier before commit, as
+      handoff_policy.full_validation_required_before_commit declares, and confirm the SLOC ceiling
+      held.
+    command: bin/venv-python -m scripts.validate
+    expected: >-
+      exit 0 across the full tier, with no config/sloc_budgets.yaml entry added for
+      scripts/convergence_health/sensor_liveness.py
+    fix_if: >-
+      A new sloc_budgets.yaml entry appearing in the diff means the decomposition was abandoned for
+      a budget raise; Decision 128 makes that a deliberate, marker-carrying exception, not a
+      side effect.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Duplicates the registered full tier, already the authoritative post-merge verifier -- nothing
+      isolated to admit to the verification registry.
+  - step: 6
+    phase: post-deploy
+    action: >-
+      Observe the next scheduled convergence-health tick and confirm the success leg ran against the
+      live API on its real carrier, not only under test.
+    command: "echo 'READ VIA MCP: mcp__github__actions_list(method=\"list_workflow_runs\", owner=\"benjamin-blake\", repo=\"theseus\", resource_id=\"convergence-health.yml\") then mcp__github__get_job_logs for the sensor-liveness step'"
+    expected: >-
+      the tick concludes success and its log shows the success leg evaluating every derived peer,
+      with a per-peer verdict and no unhandled exception
+    fix_if: >-
+      A raise on a dead query is CORRECT behaviour (Decision 55 fail-loud, no outbox) -- do not
+      catch it into a reassuring empty population. A 401/403 means the workflow token lacks
+      actions:read; fix the permission, not the classifier.
+    hermetic: false
+    graduation: not-applicable
+  - step: 7
+    phase: post-deploy
+    action: >-
+      confirm the DECISIONS.md edit stayed append-only and that rec-3974's circular deferral was
+      actually repaired
+    command: |-
+      bin/venv-python -m scripts.sync.ops sync && git fetch origin main --quiet && git diff --numstat origin/main -- docs/DECISIONS.md && grep '"rec-3974"' logs/.recommendations-log.jsonl | grep -c 'ci_rca_signals'
+    expected: >-
+      the numstat deletions field is 0 (Decision 83 untouched, Decision 62 append-only), and
+      rec-3974's refreshed context names ci_rca_signals as owned rather than excluded
+    fix_if: >-
+      A non-zero deletions count means Decision 62's 2026-06-16 clause was spliced rather than
+      annotated -- restore it and append a dated correction naming the clause. A zero grep count
+      means rec-3974 still excludes the two detectors, leaving them owned by nobody; update it
+      through the portal, never by editing the read cache, which is never a write source.
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/convergence_health/sensor_liveness_success.py
+    behavior: >-
+      A peer whose runs fire on cadence but never succeed inside its threshold is classified stale;
+      a peer succeeding inside its threshold is not; an unobservable API yields an explicit
+      unobservable verdict, never a reassuring fresh.
+    verification_step: 1
+    test_selector: tests/convergence_health/test_sensor_liveness_success.py
+    red_green_expectation: red before (module absent), green after
+  - source: scripts/convergence_health/sensor_liveness.py
+    behavior: >-
+      Both legs compose; the cadence leg's anchors, buckets, fleet collapse and start-anchored title
+      grammar are unchanged.
+    verification_step: 2
+    test_selector: tests/convergence_health/test_sensor_liveness.py
+    red_green_expectation: >-
+      Green before; updated in place for a query-aware _gh_caller stub, the widened budget cap
+      (:518), and the ~8 exact-equality assertions a second episode per stale peer breaks, with
+      every behavioural assertion preserved. The new behaviour's red-before lives in steps 1 and 3.
+  - source: scripts/convergence_health/sensor_liveness_episodes.py
+    behavior: >-
+      Episode identity is keyed on (loop, leg): two legs stale on one peer resolve independently,
+      neither overwrites the other's title or context, and the fleet key does not collide.
+    verification_step: 1
+    test_selector: tests/convergence_health/test_sensor_liveness_episodes.py
+    red_green_expectation: red before (module absent), green after
+  - source: scripts/convergence_health/__main__.py
+    behavior: >-
+      --liveness-probe reports the success leg, so a success-leg rec's stored acceptance oracle
+      discriminates it rather than passing on the cadence verdict.
+    verification_step: 2
+    test_selector: tests/convergence_health/test___main__.py
+    red_green_expectation: >-
+      Red before: today the oracle routes through a flat loop-name list and measures cadence only,
+      so a success-leg rec would pass its own acceptance while stale AND a cadence-leg rec would
+      start failing on a success-only outage. Green after, asserted where the argv dispatch and
+      exit code actually live.
+  - source: config/agent/data_quality/source_registry.yaml
+    behavior: loop_liveness_stale's declared semantics cover both legs
+    verification_step: 4
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Registry shape is already owned by the registered check_source_registry check, which fails
+      --pre on a malformed or unregistered source. A dedicated test would re-assert an existing
+      registered verifier over the same data, the second-surface drift Decision 86 forbids.
+  - source: docs/DECISIONS.md
+    behavior: the Decision 62 correction is additive; Decision 83 is not edited by this plan
+    verification_step: 7
+    command: |-
+      bin/venv-python -m scripts.sync.ops sync && git fetch origin main --quiet && git diff --numstat origin/main -- docs/DECISIONS.md && grep '"rec-3974"' logs/.recommendations-log.jsonl | grep -c 'ci_rca_signals'
+    waiver_reason: >-
+      Append-only conformance is asserted mechanically by VP step 7's numstat deletions field rather
+      than by a unit test; Decision 178 retired validate_live_entry_immutability, so this diff
+      assertion is the operative check and a test over DECISIONS.md prose would assert nothing more.
+  - source: config/agent/verification_registry/entries/loop-liveness-success-age.yaml
+    behavior: the shard's check_id equals VP step 1's graduation_check_id
+    verification_step: 4
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Shard-to-step correspondence is owned by the registered validate_graduation_completeness
+      check, which fails --pre on an orphaned shard or an unadmitted graduate step. A dedicated test
+      would duplicate that registered verifier.
+constraints:
+  - >-
+    Decision 88 governs NEON CATALOG EGRESS, not the GitHub API -- an earlier draft cited it against
+    Actions calls, which was an over-read. GitHub cost here is fine and bounded: the tick goes from
+    11 calls to 21, hourly, ~500/day against a 5,000/hour authenticated limit. The REAL Decision 88
+    exposure is on the warehouse side and must be named: detect_stale_loops is "lazy and bounded --
+    a healthy tick issues zero warehouse reads" only because of its `if not stale: return` early
+    exit. The recurring cost is SMALLER than an earlier draft of this constraint claimed, and the
+    claim is corrected here rather than left conservative-but-wrong: _reconcile_episode guards the
+    resolved sweep behind `if existing is None:` (:473-477), so a peer whose rec is already filed
+    and open pays ZERO sweeps per tick, not one. The only per-tick warehouse read while anything is
+    stale is the single source-scoped find_recs("loop_liveness_stale") at :566-567, which the second
+    leg does not change -- read that as the STEADY-STATE read, not an exhaustive one: in the
+    post-closure dwell window (rec resolved, peer still stale, _decide_action returning "drop")
+    `existing` is None every tick, so the sweep and a possible rec_by_id run each tick for the whole
+    mute window. Another reason the per-loop-per-tick memo below is mandatory, not an optimisation. Sweep cost is per EPISODE, paid on first file and on a cross-anchor
+    re-open, so a peer stale on both legs pays at most two at those moments. Keep the sweep prefix
+    loop-wide (`Loop: {loop}.%`), discriminate the leg CLIENT-SIDE in _filter_resolved_rows, and
+    MEMOISE _resolved_rows_for_loop per loop per tick -- Decision 88 invariant (ii) forbids an
+    ad-hoc re-fetch of data already in hand, and the loop-wide prefix makes the memo trivial.
+  - >-
+    NO second register. derive_scheduled_peers() walks every .github/workflows/*.yml on:.schedule
+    block at run time, and PLAN-sensor-liveness.yaml:827 records that its audit rejected a declared
+    register as "a fourth register over the same population". The success leg reuses the derived
+    peer set and the cron-derived threshold; it introduces no liveness_sla_days field, no new
+    source, and no new workflow.
+  - >-
+    Decision 128 decompose-by-default: sensor_liveness.py is at 496 SLOC against the unregistered
+    500 default and ci_rca_signals.py at 497. The leg goes in a sibling module and VP step 5 proves
+    no budget entry was added.
+  - >-
+    CHANGE the episode grain from (loop) to (loop, leg); PRESERVE everything else about it --
+    FILE/UPDATE ONLY and NEVER auto-closed, restored cadence does not resolve a filed rec, a human
+    does. Three surfaces currently declare the old grain and ALL must be corrected in this plan, not
+    left to contradict it: constraints here, scripts/convergence_health/sensor_liveness.py:21-23's
+    module docstring ("the open matcher keys on (loop) ALONE"), and
+    config/agent/data_quality/source_registry.yaml:212 ("the open matcher keys on the loop alone").
+    The leg marker must follow the start-anchored `Loop: {k}. Episode: {a}. Bucket: {n}.` title
+    prefix, never precede it, or recs_by_title_prefix's whole-pattern LIKE bind stops matching
+    (Decision 142).
+  - >-
+    Decision 55 fail-loud, no outbox: a dead query raises rather than reporting an empty, reassuring
+    population. Do not catch a transport failure into a fresh verdict.
+  - >-
+    Decision 177 append-only: every baseline line of Decision 62 survives verbatim, and the
+    2026-06-16 clause is corrected BY a dated appended annotation naming it, never by a splice.
+    Decision 83 is NOT touched by this plan at all -- arming its predicate is rec-3979's, and doing
+    it here would red --pre on every PR (validate_reversal_stanzas is pre=True with no pre_globs and
+    turns any predicate exception into MALFORMED, while ci.yml's pr-validate carries neither
+    GITHUB_TOKEN nor id-token). Do not treat clause 4's stanza carve-out as a licence to set
+    `predicate:` here.
+  - >-
+    Decision 101 -- run ids and control-state words only; no tokens, response bodies or account ids.
+  - >-
+    NOT in scope: adding any workflow to the ci-rca watched set. _VALID_CI_RCA_VALUES is
+    ("watched","excluded") and watched is bidirectionally locked to ci-rca.yml's filter, so
+    "watched but advisory" is unrepresentable and watching means a Critical queue hard-block. If
+    hour-scale detection is ever needed the sanctioned route is a NEW non-blocking value in that
+    enum -- a reviewable data-model change owned by T1.13 -- never a flip of the binary field.
+  - No rescue agents or workaround loops (Decision 55); no check skipped, disabled or weakened.
+context:
+  - >-
+    Decision-scout FLAGS_FOUND. CITE (verbatim): 62, 74, 83, 151, 150, 55, 170, 169, 61, 103, 72,
+    128, 48, 86, 73. Triaged 150 of 150; 9 roadmap items, CONFLICT 1, RELATED 7.
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - >-
+    RESHAPED twice; see the commit bodies. Round 1: sensor_liveness.py (landed 2026-09-18) already
+    runs this backstop with a DERIVED peer set, and PLAN-sensor-liveness.yaml:827 records its audit
+    rejecting the declared-register shape the first draft proposed. Round 2: the predicate arming
+    split out to rec-3979, and the episode grain corrected to (loop, leg).
+  - >-
+    Residual gap, the whole of this plan: sensor_liveness.py:215 asks `?event=schedule&per_page=1`
+    -- newest scheduled RUN, unfiltered by conclusion -- so it catches "stopped firing" and misses
+    "fires and every run fails", the 2026-09-14 ghas-probe mode.
+  - >-
+    PINNED RED-BEFORE OBSERVATION, captured live 2026-09-21T15:24:46Z, before slice 1 closes the
+    window (it self-closes on the first successful probe run, and this plan's phase ordering
+    REQUIRES slice 1 to merge first). ghas-probe.yml, cron 0 7 * * 1, threshold 1209600s. Last
+    SUCCESS run 34125799719 at 2026-09-07T13:09:30Z, age 1217716s -> success-leg STALE. Last RUN
+    35605883403 at 2026-09-21T13:28:52Z, conclusion failure, age 6954s -> cadence-leg FRESH. That
+    divergence is the defect, measured. VP step 3 replays these exact values as a fixture; it does
+    NOT re-query, because by implementation time the answer will have changed.
+  - >-
+    Decision 163 answered by the shape: the threshold is DERIVED from each peer's cron, so there is
+    no declared number to be discretionary about (clause 1). The first draft's escalation-ladder
+    answer was prose with no implementation and is withdrawn.
+  - >-
+    rec-3092 (premise "no liveness advisory exists", filed 2026-08-11) was superseded by
+    PLAN-sensor-liveness; its surviving ask is the predicate, now rec-3979's. This plan closes no
+    rec -- followon only.
+  - >-
+    T1.6 [CONFLICT, scout]: same mechanism class, already advanced by PLAN-sensor-liveness. No
+    roadmap edit; the criterion's subject remains the DQ runner.
+  - >-
+    rec-3979 (split out at round 2): Decision 83's predicate cannot be armed from any source --
+    validate_reversal_stanzas is pre=True with no globs and turns any predicate exception into
+    MALFORMED, and ci.yml's pr-validate carries neither GITHUB_TOKEN nor id-token, so both a live
+    Actions call AND a warehouse find_recs red --pre on every PR. Returning False when unobservable
+    is the healthy/unobservable conflation this workstream exists to remove.
+  - >-
+    Deferred to rec-3974: ci_rca_signals.py's two gh-based detectors return None for both healthy
+    and unobservable -- 11 test modules patch those symbols by string and the file is at 497/500,
+    so it needs its own facade decomposition. Note the exposure this leaves: the preflight surface
+    reporting on THIS sensor stays false-green while the plan adds a leg to it.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - >-
+    BOTH of PLAN-ghas-probe-install-restore's PRs merged to main -- the code PR and the follow-up
+    Decision 83 evidence PR. NOT because of a shared Decision 83 stanza (this slice no longer edits
+    Decision 83 at all), but because slice 1's first successful probe run closes the live window
+    whose measurement VP step 3 pins, and because both slices touch docs/DECISIONS.md
+  - docs/PROJECT_CONTEXT.md read
+  - >-
+    Read scripts/convergence_health/sensor_liveness.py IN FULL before writing anything, including
+    its module docstring. PRESERVE its derived-peer, title-anchoring and never-close invariants.
+    Its episode-grain paragraph (:21-23) is the ONE thing this plan changes -- (loop) becomes
+    (loop, leg) -- so that docstring is a correction target, not an invariant to hold
+  - >-
+    Read only the plan-cited decision sections -- 62, 74, 83, 177, 128, 142, 55, 101 -- not all of
+    DECISIONS.md
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    Write scripts/convergence_health/sensor_liveness_success.py: for each derived peer, query
+    `?event=schedule&status=success&per_page=1` through the SAME injected caller seam, compare the
+    age against staleness_threshold_seconds(peer's own cron), and return a per-peer verdict that
+    distinguishes stale / fresh / unobservable. PARAMETERISE _assess_peer's query and anchor label
+    rather than reimplementing its arithmetic -- its own docstring (:262-263) says it is shared by
+    detect_stale_loops and --liveness-probe "so the two never compute staleness differently", and a
+    reimplementation would quietly break that named invariant. Parameterising also inherits the
+    _query_last_run dead-query raise and the intro:{sha} never-succeeded fallback for free, both of
+    which are the wanted behaviour. Accounting: one additional bounded GitHub call per
+    peer per tick (11 -> 21 calls hourly, negligible against the 5,000/hour limit). The cost that
+    matters is on the WAREHOUSE side -- see constraints -- because a never-auto-closed stale peer
+    makes every subsequent tick pay find_recs.
+  - >-
+    Wire the leg into detect_stale_loops as a second finding class, delegating rather than
+    inlining so sensor_liveness.py stays within its four lines of SLOC headroom. Append the leg
+    marker AFTER the start-anchored title prefix, never before it.
+  - >-
+    Lift the episode-identity block (_episode_title, _parse_episode_title, _is_open_loop_row,
+    _filter_resolved_rows, _same_anchor_best_row, _cross_anchor_newest, _episode_context) into
+    scripts/convergence_health/sensor_liveness_episodes.py, re-keyed on (loop, leg). This is what
+    funds the SLOC budget AND what makes two legs independently resolvable -- the previous draft
+    asserted the grain was preserved, which was wrong: every matcher keys on (loop) alone, so two
+    legs stale on one peer would flip-flop one rec's title every hour forever.
+  - >-
+    Widen _charge's sweeps_max (currently len(peers)+1) so two finding classes cannot raise a FALSE
+    structural-violation RuntimeError, and decide the _FLEET_LOOP_KEY behaviour for two legs --
+    a single "__fleet__" literal collides on the open matcher if both legs collapse.
+  - >-
+    Make the acceptance oracle leg-aware across all THREE of its surfaces, not just the CLI:
+    _probe_acceptance (sensor_liveness.py:314) must emit a leg selector, stale_peers_for_probe
+    (sensor_liveness.py:594) must return leg-aware results instead of a flat loop-name list, and
+    _dispatch's argv parse (__main__.py:173-176) must accept that selector. Extending only the CLI
+    cannot discriminate a leg, and would make a CADENCE-leg rec's acceptance start failing whenever
+    only the success leg is stale -- a regression of acceptance_criteria[1], not a fix. DECIDE the
+    bare form, do not leave it to inference: `--liveness-probe {loop}` with NO selector means the
+    CADENCE leg, because _decide_action (:440-446) rewrites only title and context on update, so
+    every already-filed cadence rec keeps its stored selector-less acceptance string forever. A bare
+    form meaning "stale on any leg" would start failing those legacy recs on a success-only outage
+    -- the same regression, reintroduced through the back door. SYMMETRICALLY, decide the untagged
+    legacy TITLE the same way: _is_open_loop_row (:342-355) matches title.startswith("Loop: {loop}.
+    "), and re-keyed on (loop, leg) it must treat a title with NO leg marker as CADENCE. Live, not
+    hypothetical -- rec-3860 is open right now as "Loop: main-canary.yml. Episode:
+    run:31336661344. Bucket: 8. ..." with no marker, so if untagged does not map to cadence the
+    first post-merge tick files a DUPLICATE open rec against that peer. Give it a test using
+    rec-3860's exact legacy title shape; no test this plan otherwise names would catch it, because
+    every existing test injects its own open_recs titles.
+  - >-
+    Extend loop_liveness_stale's description and signal_interpretation in
+    config/agent/data_quality/source_registry.yaml to cover both legs.
+    Append the dated Decision 62 annotation ONLY -- recording both the dead-alarm correction and
+    that the threshold is now cron-derived, so Decision 83's "more than 14 days" prose agrees only
+    by coincidence. Do NOT touch Decision 83: arming its predicate is rec-3979's, and doing it here
+    reds --pre on every PR. Re-read Decision 177's dialect first; this is an append, never a splice.
+  - >-
+    Write the tests, including the runs-fire-but-all-red case, and add
+    config/agent/verification_registry/entries/loop-liveness-success-age.yaml with check_id
+    loop-liveness-success-age matching VP step 1's graduation_check_id verbatim.
+  - >-
+    Execute Verification Plan steps 1-5 -- run each; loop until pass; on unrecoverable V3 failure
+    stop and RCA (Decision 55).
+  - >-
+    Update rec-3974 through the portal so it explicitly owns the two gh-based preflight detectors
+    this plan defers -- its current context excludes them on the assumption this plan would carry
+    them, which is a circular deferral. VP step 7 asserts the update landed.
+  - >-
+    Commit WITHOUT a Resolves trailer -- this plan closes no rec; rec-3092's surviving ask is the
+    predicate, now rec-3979's. Push, open the PR, merge on green, then execute VP steps 6 and 7.
+  - 'Report: what was implemented, verification results, and the success leg''s first live verdicts.'
+work_areas: []
+rollback: >-
+  The success leg is additive and injected behind the same seam as the cadence leg: removing its
+  call site restores the prior behaviour exactly, with no schema, table or rec-grain change to undo.
+  Filed recs are never auto-closed, so a rollback leaves any already-filed rec for human triage --
+  which is the intended posture, not a leak.
