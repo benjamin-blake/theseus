@@ -1,0 +1,433 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "monitor-liveness-sweep"
+intent: >-
+  Give every alarm-not-gate scheduled monitor a machine-enforced liveness SLA and a detective
+  control that fires on ABSENCE of a successful run, so a monitor that stops working is detected
+  within one cadence period instead of going unnoticed for weeks -- and repair the two existing
+  liveness detectors that silently report healthy because the binary they shell out to is not
+  installed.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-monitor-liveness-sweep.yaml
+phase: >-
+  Slice 2 of 2. DEPENDS ON PLAN-ghas-probe-install-restore (slice 1) being merged first: both touch
+  config/ci_rca_taxonomy.yaml and docs/DECISIONS.md, and arming Decision 83's probe-monitor-blind
+  predicate against a probe that cannot run would mint a condition that fires on its own corrective.
+  Scoped as ad_hoc_rec (bundles rec-3092, no tier_item claimed), mirroring
+  PLAN-backlog-health-detection; a T1.6 progress_note records that the generic substrate exists so
+  the roadmap does not misstate its own state.
+scope:
+  - file: scripts/github_rest.py
+    action: Create
+    purpose: >-
+      Shared urllib GitHub REST client, extracted verbatim from validate_ghas_probe.py's existing
+      _headers/_get rather than written fresh. No new dependency; no gh. Decision 100 -- call
+      GitHub's own API, do not vendor a substitute.
+  - file: scripts/checks/misc/validate_ghas_probe.py
+    action: Modify
+    purpose: consume the extracted client so there is exactly one GitHub REST transport
+  - file: scripts/monitor_liveness/__init__.py
+    action: Create
+    purpose: facade re-exporting the package's public surface (Decision 80/104/124 pattern)
+  - file: scripts/monitor_liveness/port.py
+    action: Create
+    purpose: >-
+      The NAMED PORT (Decision 184): last_success_age(workflow) -> Fresh | Stale | Unavailable, a
+      tri-state that never conflates "healthy" with "could not observe". Transport-agnostic.
+  - file: scripts/monitor_liveness/github_adapter.py
+    action: Create
+    purpose: the GitHub Actions adapter behind the port -- one adapter, not the interface itself
+  - file: scripts/monitor_liveness/sweep.py
+    action: Create
+    purpose: >-
+      Taxonomy-driven sweep over every ci_rca:excluded scheduled row carrying liveness_sla_days.
+      ONE batched Actions API read per invocation, never one call per row (Decision 88 invariant --
+      its D4 driver was exactly a preflight per-session fan-out).
+  - file: scripts/preflight/ci_rca_signals.py
+    action: Modify
+    purpose: >-
+      REMOVE _check_ci_rca_liveness and _check_convergence_sensor_liveness (both shell out to gh,
+      which AGENTS.md states is deliberately not installed; both catch OSError -- FileNotFoundError
+      is an OSError -- and return None, which they ALSO return for healthy). They MOVE to
+      monitor_liveness rather than being edited in place: this file is 593 raw lines against an
+      unregistered 500-SLOC default, so growing it would force a budget raise Decision 128 forbids
+      as the default response.
+  - file: scripts/preflight/monitor_liveness.py
+    action: Create
+    purpose: preflight consumer -- renders stale rows AND unavailable observations as distinct lines
+  - file: scripts/session/preflight.py
+    action: Modify
+    purpose: wire the consumer and add the monitor_liveness_alert report key
+  - file: scripts/preflight/summary.py
+    action: Modify
+    purpose: print the alert, including the UNAVAILABLE case
+  - file: scripts/preflight/decision_conditions.py
+    action: Modify
+    purpose: >-
+      Register the probe-monitor-blind predicate (today only roadmap_items_complete is registered)
+      so Decision 83's reversal condition (b) fires mechanically instead of as prose.
+  - file: config/ci_rca_taxonomy.yaml
+    action: Modify
+    purpose: >-
+      Add liveness_sla_days to every ci_rca:excluded scheduled row, and REWORD the six rationale
+      strings asserting "a red scheduled run is already its own alarm" -- a claim rec-3092 records
+      as empirically falsified and which has now failed twice.
+  - file: scripts/checks/ci_guards/validate_ci_rca_adjudication.py
+    action: Modify
+    purpose: >-
+      Make ci_rca:excluded + scheduled + no liveness_sla_days an invalid state. This is the
+      structural half of the control and the reason the class cannot silently regrow.
+  - file: .github/workflows/backlog-health.yml
+    action: Modify
+    purpose: >-
+      Add the liveness sweep to the existing three-job monitor rather than creating a new workflow
+      (which would need its own watcher). Holds Decision 103's one-structural-read-per-episode shape.
+  - file: scripts/backlog_health/escalate.py
+    action: Modify
+    purpose: file/update/close one rollup rec via the landed scripts.rec_episode.run_episode
+  - file: config/agent/data_quality/source_registry.yaml
+    action: Modify
+    purpose: register the new monitor_liveness_blind source
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      Dated APPENDED annotation on Decision 62 recording that its 2026-06-16 mitigation clause
+      ("mitigated by a persistent-unavailability alarm (Decision 74)") was false in practice, and
+      arming Decision 83's reversal-conditions predicate slot. Append-only (Decision 177); the
+      fenced reversal-conditions stanza is the one carve-out (clause 4).
+  - file: docs/ROADMAP-PLATFORM.yaml
+    action: Modify
+    purpose: T1.6 progress_note only -- no criterion flip (Status-Trusted-Never-Inferred)
+  - file: tests/monitor_liveness/test_port.py
+    action: Create
+    purpose: tri-state contract, including the no-gh-on-PATH and API-unreachable cases
+  - file: tests/monitor_liveness/test_sweep.py
+    action: Create
+    purpose: stale/fresh/unavailable bucketing and the single-batched-read budget
+  - file: tests/checks/ci_guards/test_validate_ci_rca_adjudication.py
+    action: Modify
+    purpose: red case for an excluded scheduled row missing liveness_sla_days
+  - file: tests/test_session_preflight_decomposition.py
+    action: Modify
+    purpose: >-
+      FROZEN_REPORT_KEYS grows by one. THREE edits, not one: the frozenset member, the
+      len(...) == 51 self-check at line 134, and the in-test assertion plus docstring at lines
+      376-381. Fixing only the obvious one leaves the rest failing.
+  - file: config/agent/verification_registry/entries/monitor-liveness-staleness.yaml
+    action: Create
+    purpose: graduated shard for the admitting VP step
+bundled_recommendations:
+  - rec-3092
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    last_success_age returns three distinguishable states, and returns Unavailable -- never Fresh --
+    when the GitHub API cannot be reached or no token is present.
+  - >-
+    validate_ci_rca_adjudication FAILS on a ci_rca:excluded scheduled row that declares no
+    liveness_sla_days.
+  - >-
+    A preflight run surfaces a stale monitor as its own report key, and surfaces an unobservable
+    sweep as a DISTINCT unavailable line rather than as silence.
+  - >-
+    No module under scripts/preflight/ shells out to gh; the two retired detectors have no
+    remaining references.
+  - >-
+    The backlog-health sweep files exactly one rollup rec per episode via run_episode, and closes it
+    when the finding set empties.
+  - rec-3092 is closed by this plan's merge.
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: >-
+      Prove the port's tri-state contract, especially that an unreachable API yields Unavailable and
+      never Fresh -- the exact conflation this plan exists to remove.
+    command: bin/venv-python -m pytest tests/monitor_liveness/test_port.py tests/monitor_liveness/test_sweep.py -q
+    expected: all pass, including the unreachable-API and missing-token cases
+    expected_literals:
+      - "passed"
+    fix_if: >-
+      A test that asserts Unavailable by patching the port itself proves nothing -- it must drive
+      the real adapter against a stubbed transport that raises.
+    hermetic: true
+  - step: 2
+    phase: pre-deploy
+    action: >-
+      Red-before on the structural half: strip liveness_sla_days from one excluded scheduled row and
+      confirm the extended adjudication check rejects it.
+    command: git stash push config/ci_rca_taxonomy.yaml && bin/venv-python -m scripts.validate --pre; echo "EXIT:$?"; git stash pop
+    expected: >-
+      --pre exits non-zero and the failure names validate_ci_rca_adjudication and the row missing
+      liveness_sla_days
+    expected_literals:
+      - "EXIT:1"
+    fix_if: >-
+      EXIT:0 means the new assertion is not reached for that row -- most likely the scheduled-row
+      predicate reads the taxonomy instead of the workflow's own `on:` block, so a row the taxonomy
+      does not mark scheduled escapes the requirement.
+    hermetic: true
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      Prove the gh retirement is complete, not partial -- no module under scripts/preflight/ still
+      shells out to it, and the two retired detector symbols have no remaining callers.
+    command: "! grep -rn '\"gh\"' scripts/preflight/ && ! grep -rn '_check_ci_rca_liveness\\|_check_convergence_sensor_liveness' scripts/ --include=*.py; echo \"SWEEP:$?\""
+    expected: both greps find nothing, so the sweep reports clean
+    expected_literals:
+      - "SWEEP:0"
+    fix_if: >-
+      A surviving reference means a caller still expects the old None-means-both contract; repoint
+      it at the port rather than re-adding a shim.
+    hermetic: true
+  - step: 4
+    phase: pre-deploy
+    action: >-
+      Run the live sweep from this container against the real Actions API and confirm it reports the
+      state we already measured independently.
+    command: bin/venv-python -m scripts.monitor_liveness.sweep --json
+    expected: >-
+      one batched API read; every excluded scheduled row resolves to Fresh, Stale or Unavailable;
+      no row is silently omitted
+    fix_if: >-
+      If every row reports Unavailable, GITHUB_TOKEN is absent or unscoped -- that is a real
+      Unavailable, and the sweep is behaving correctly; confirm the token before treating it as a
+      defect.
+    hermetic: false
+  - step: 5
+    phase: pre-deploy
+    action: prove the preflight report key lands and the frozen-key test was fully updated
+    command: bin/venv-python -m pytest tests/test_session_preflight_decomposition.py -q
+    expected: passes with the frozen key count at 52
+    expected_literals:
+      - "passed"
+    fix_if: >-
+      A failure naming len(FROZEN_REPORT_KEYS) means only one of the three sites was updated -- the
+      frozenset member, the line-134 self-check, and the line-376-381 assertion plus docstring all
+      move together.
+    hermetic: true
+  - step: 6
+    phase: pre-deploy
+    action: run the fast presubmit tier as a pre-check before pushing
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    expected_literals:
+      - "All checks passed"
+    fix_if: >-
+      validate_sloc_limits failing on scripts/preflight/ci_rca_signals.py means the detectors were
+      copied rather than MOVED -- delete the originals.
+    hermetic: true
+  - step: 7
+    phase: post-deploy
+    action: >-
+      Dispatch backlog-health in dry_run and confirm the sweep job reports findings without filing,
+      then confirm a real episode files exactly one rollup rec.
+    command: "echo 'DISPATCH VIA MCP: mcp__github__actions_run_trigger(method=\"run_workflow\", owner=\"benjamin-blake\", repo=\"theseus\", workflow_id=\"backlog-health.yml\", ref=\"main\", inputs={\"dry_run\":\"true\"}), then poll mcp__github__actions_get and read the sweep job via mcp__github__get_job_logs'"
+    expected: >-
+      the sweep job reports per-row liveness verdicts and, in dry_run, files nothing; the episode
+      budget stays at one structural read
+    fix_if: >-
+      More than one rollup rec per episode means run_episode was called per row instead of per
+      class -- Decision 103's episode budget is the constraint, not a style preference.
+    hermetic: false
+  - step: 8
+    phase: post-deploy
+    action: confirm rec-3092 closed on merge and the DECISIONS.md edits stayed append-only
+    command: bin/venv-python -m scripts.sync.ops sync && git fetch origin main --quiet && git diff origin/main -- docs/DECISIONS.md | grep -c '^-[^-]'; echo "DELETIONS:$?"
+    expected: rec-3092 reads closed in the refreshed cache, and the DECISIONS.md diff has no deletion lines
+    fix_if: >-
+      Any deletion line means Decision 62's 2026-06-16 amendment clause was spliced rather than
+      annotated. Restore it and append a dated correction that names the clause instead.
+    hermetic: false
+test_obligations:
+  - source: scripts/monitor_liveness/port.py
+    behavior: >-
+      Fresh, Stale and Unavailable are distinguishable; an unreachable API or absent token yields
+      Unavailable, never Fresh.
+    verification_step: 1
+    test_selector: tests/monitor_liveness/test_port.py
+    red_green_expectation: red before (module absent), green after
+  - source: scripts/monitor_liveness/sweep.py
+    behavior: every excluded scheduled row resolves to a state via ONE batched API read
+    verification_step: 1
+    test_selector: tests/monitor_liveness/test_sweep.py
+    red_green_expectation: red before, green after
+  - source: scripts/monitor_liveness/github_adapter.py
+    behavior: the adapter maps transport failure to Unavailable rather than raising or returning Fresh
+    verification_step: 1
+    test_selector: tests/monitor_liveness/test_port.py
+    red_green_expectation: red before, green after
+  - source: scripts/checks/ci_guards/validate_ci_rca_adjudication.py
+    behavior: an excluded scheduled row with no liveness_sla_days is rejected
+    verification_step: 2
+    command: git stash push config/ci_rca_taxonomy.yaml && bin/venv-python -m scripts.validate --pre; echo "EXIT:$?"; git stash pop
+    red_green_expectation: >-
+      Red before (the assertion does not exist, so a stripped row passes); green after, with step 2
+      proving the rejection against the real taxonomy.
+  - source: scripts/preflight/ci_rca_signals.py
+    behavior: no gh subprocess and no silent None-means-healthy path survives in this module
+    verification_step: 3
+    command: "! grep -rn '\"gh\"' scripts/preflight/ && ! grep -rn '_check_ci_rca_liveness\\|_check_convergence_sensor_liveness' scripts/ --include=*.py; echo \"SWEEP:$?\""
+    red_green_expectation: red before (both greps hit today), green after
+  - source: scripts/preflight/monitor_liveness.py
+    behavior: a stale row and an unobservable sweep render as DISTINCT preflight lines
+    verification_step: 5
+    test_selector: tests/test_session_preflight_decomposition.py
+    red_green_expectation: red before, green after
+  - source: scripts/session/preflight.py
+    behavior: the report carries monitor_liveness_alert as a top-level key
+    verification_step: 5
+    test_selector: tests/test_session_preflight_decomposition.py
+    red_green_expectation: >-
+      The frozen-key test fails until all three count sites move together -- red before, green after.
+  - source: scripts/preflight/summary.py
+    behavior: the alert prints, including the UNAVAILABLE case
+    verification_step: 5
+    test_selector: tests/test_session_preflight_decomposition.py
+    red_green_expectation: red before, green after
+  - source: scripts/preflight/decision_conditions.py
+    behavior: probe-monitor-blind is registered and evaluates against the port
+    verification_step: 1
+    test_selector: tests/monitor_liveness/test_port.py
+    red_green_expectation: red before (only roadmap_items_complete is registered), green after
+  - source: scripts/backlog_health/escalate.py
+    behavior: one rollup rec per episode, closed when the finding set empties
+    verification_step: 7
+    command: "echo 'DISPATCH VIA MCP: mcp__github__actions_run_trigger(method=\"run_workflow\", owner=\"benjamin-blake\", repo=\"theseus\", workflow_id=\"backlog-health.yml\", ref=\"main\", inputs={\"dry_run\":\"true\"}), then poll mcp__github__actions_get and read the sweep job via mcp__github__get_job_logs'"
+    red_green_expectation: >-
+      Waiver: the episode path is exercised live in step 7 rather than unit-tested, because
+      run_episode's file/update/close orchestration is already covered by the landed
+      backlog_health suite and re-mocking it here would assert on the mock.
+  - source: scripts/github_rest.py
+    behavior: a single shared transport; HTTP and URL errors surface as typed failures
+    verification_step: 1
+    test_selector: tests/monitor_liveness/test_port.py
+    red_green_expectation: red before, green after
+  - source: scripts/checks/misc/validate_ghas_probe.py
+    behavior: the probe still reports the three control states through the extracted client
+    verification_step: 6
+    command: bin/venv-python -m scripts.validate --pre
+    red_green_expectation: >-
+      Waiver: behaviour is unchanged by construction -- this is a transport extraction, and the
+      probe's own live behaviour is slice 1's VP step 6. --pre re-runs its existing suite.
+constraints:
+  - >-
+    Decision 177 append-only: no baseline line of Decision 62 or 83 may be edited. The 2026-06-16
+    mitigation clause is corrected BY a dated appended annotation that names it, never by a splice.
+    The fenced reversal-conditions stanza is the one carve-out (clause 4), so arming the predicate
+    slot there is legal.
+  - >-
+    Decision 88 invariant: ONE batched Actions read per sweep invocation. A per-row fan-out in
+    preflight is the exact shape that drove D4. A row absent from the batched page is treated as
+    Stale, not Fresh -- the conservative direction.
+  - >-
+    Decision 184 port rule: last_success_age is the named port; the GitHub client is one adapter.
+    A local-tier install with no Actions API must get Unavailable, not a crash.
+  - >-
+    Decision 170: the extended adjudication check declares examined()/skipped(); "could not
+    examine" is never an empty domain.
+  - >-
+    Decision 103: the sweep holds backlog-health's one-structural-read-per-episode budget and files
+    at CLASS level via run_episode -- never per-row, never touching an individual rec by id.
+  - >-
+    Decision 128 decompose-by-default: the two detectors MOVE into monitor_liveness. No SLOC budget
+    raise; scripts/preflight/ci_rca_signals.py must shrink.
+  - >-
+    NOT in scope: adding any workflow to the ci-rca watched set. _VALID_CI_RCA_VALUES is
+    ("watched","excluded") and watched is bidirectionally locked to ci-rca.yml's filter, so
+    "watched but advisory" is unrepresentable and watching means a Critical queue hard-block.
+  - >-
+    Decision 101 -- run ids and control-state words only; no tokens, response bodies or account
+    ids.
+  - No rescue agents or workaround loops (Decision 55); no check skipped, disabled or weakened.
+context:
+  - >-
+    Decision-scout verdict FLAGS_FOUND. CITE list (verbatim): 62, 74, 83, 151, 150, 55, 170, 169,
+    61, 103, 72, 128, 48, 86, 73. Decisions triaged: 150 of 150. Roadmap items intersected: 9;
+    CONFLICT: 1; RELATED: 7.
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - >-
+    Scout WARN (Decision 177) applied -- the original "in-place amendment to Decision 62" is
+    forbidden; both edits are dated appends, proven by VP step 8.
+  - >-
+    Scout WARN (Decision 163) -- "a policy universal in name but discretionary in enforcement is
+    strictly worse than either". Answered, not deferred: the liveness_sla_days half IS structural
+    (VP step 2), and the detection half escalates the rollup rec's priority after N consecutive
+    missed cadences rather than resting at one flat advisory. It stays non-blocking under CD.12's
+    alarm-not-gate carve-out, which is a deliberate recorded choice.
+  - >-
+    Scout NOTE (Decision 184) applied -- port/adapter split rather than a GitHub-bound function.
+  - >-
+    T1.6 [CONFLICT, scout]: c5 ("Persistent DQ unavailability files a rec and alarms") is the same
+    mechanism class. This plan ADVANCES the generic substrate but does NOT close c5 -- the DQ
+    runner's own unavailability stays T1.6's subject. Recorded as a progress_note, no criterion
+    flip. T1.6:c7 retires config/agent/data_quality/; registering one more source there is the
+    established path (backlog_health already registers four) and retires with them.
+  - >-
+    rec-3092's stored acceptance is three greps that a dead gh-based implementation would satisfy.
+    It is bundled and its acceptance must become the functional tests in VP step 1.
+  - >-
+    Evidence the transport works before building on it: GET
+    /repos/{owner}/{repo}/actions/workflows/ghas-probe.yml/runs?status=success returned HTTP 200
+    from this container using the ambient GITHUB_TOKEN, total_count 6, latest 2026-09-07T13:09:30Z.
+  - >-
+    Both historical blind windows: 2026-07-06..2026-08-10 (unprovisioned token, six runs) and
+    2026-09-14.. (missing dependency install). Two unrelated causes, one observable.
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - PLAN-ghas-probe-install-restore merged to main first -- confirm before starting
+  - docs/PROJECT_CONTEXT.md read
+  - >-
+    Read only the plan-cited decision sections -- 62, 74, 83, 177, 151, 170, 169, 103, 88, 184, 128,
+    101, 72 -- not all of DECISIONS.md
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+execution_steps:
+  - >-
+    Extract _headers/_get from scripts/checks/misc/validate_ghas_probe.py into scripts/github_rest.py
+    and repoint the probe at it. Behaviour-preserving; no new dependency.
+  - >-
+    Build scripts/monitor_liveness/ -- port.py (the tri-state named port), github_adapter.py (the
+    one adapter), sweep.py (taxonomy-driven, ONE batched read), __init__.py facade.
+  - >-
+    MOVE _check_ci_rca_liveness and _check_convergence_sensor_liveness out of
+    scripts/preflight/ci_rca_signals.py into the package, re-expressed over the port as tri-state.
+    Delete the originals -- copying leaves the SLOC budget breached and the gh path alive.
+  - >-
+    Add liveness_sla_days to every ci_rca:excluded scheduled row in config/ci_rca_taxonomy.yaml and
+    reword the six "a red run is already its own alarm" rationales. Record, in the ghas-probe row's
+    rationale, that a ci-rca watch was considered and rejected, and that the sanctioned route if
+    hour-scale detection is ever needed is a NEW non-blocking value in the ci_rca enum -- a
+    reviewable data-model change owned by T1.13 -- never a flip of the binary field.
+  - >-
+    Extend validate_ci_rca_adjudication with the liveness_sla_days assertion plus examined/skipped
+    declarations, and add its red case to the existing mirror test.
+  - >-
+    Wire the preflight consumer, the report key, and the summary line. Update ALL THREE
+    FROZEN_REPORT_KEYS sites together.
+  - Register the probe-monitor-blind predicate in scripts/preflight/decision_conditions.py.
+  - >-
+    Add the sweep job to .github/workflows/backlog-health.yml, the rollup source to
+    escalate.py, and the source registry entry.
+  - >-
+    Append the dated Decision 62 annotation and arm Decision 83's predicate slot. Append-only --
+    re-read Decision 177's dialect before touching either entry.
+  - Add the T1.6 progress_note. No criterion flip.
+  - Add the graduated verification-registry shard.
+  - >-
+    Execute Verification Plan steps 1-6 -- run each; loop until pass; on unrecoverable V3 failure
+    stop and RCA (Decision 55).
+  - >-
+    Commit with a 'Resolves: rec-3092' trailer, push, open the PR, merge on green, then execute VP
+    steps 7 and 8.
+  - 'Report: what was implemented, verification results, and the sweep''s first live verdict set.'
+work_areas: []
+rollback: >-
+  The sweep and its preflight consumer are additive and can be disabled by removing the
+  liveness_sla_days rows, which the extended check then rejects -- so rollback means reverting the
+  check extension in the same commit, not the rows alone. The detector MOVE is not safely
+  reversible piecemeal: reverting it restores two silently-blind detectors, so prefer forward-fix
+  (Decision 73).
