@@ -94,8 +94,9 @@ scope:
   - file: tests/test_data_quality_execute.py
     action: Modify
     purpose: >-
-      re-point the not-routed-table fixture off ops_session_log (it is the negative case for
-      apply_backend_routing and must name a table that is genuinely outside _OPS_TABLES)
+      hygiene, not a behavior fix: the apply_backend_routing negative fixture names ops_session_log,
+      which is already outside _OPS_TABLES, so it passes before and after. Re-pointed so the negative
+      case does not illustrate itself with a table that no longer exists
   - file: tests/checks/contracts/test_validate_log_storage_registry.py
     action: Modify
     purpose: >-
@@ -103,7 +104,9 @@ scope:
       (it carries no config/coverage_baseline.yaml entry)
   - file: tests/checks/contracts/test_validate_portal_drift.py
     action: Modify
-    purpose: update the token-ban fixtures for the narrowed _OPS_TABLE_TOKENS tuple
+    purpose: >-
+      add a tuple pin -- the suite today asserts nothing about _OPS_TABLE_TOKENS (its only token
+      fixture uses ops_recommendations), so narrowing the tuple would otherwise turn no test red
 bundled_recommendations: ["rec-3393"]
 followon_recs: []
 closes_criteria: ["T2.26:c2", "T2.26:c3", "T2.26:c7", "T2.26:c8"]
@@ -114,7 +117,8 @@ acceptance_criteria:
     and resolve_table_spec raises, so both Lambda boundary handlers refuse it (T2.26:c2)
   - >-
     no legacy ops write path or routing sentinel survives for ops_session_log in scripts/, src/
-    or config/, and no contract live body names it as a current surface (T2.26:c3)
+    or config/ outside the graduated-shard home config/agent/verification_registry/, and no
+    contract live body names it as a current surface (T2.26:c3)
   - >-
     replacement closure verified -- the retired surface is deleted rather than fallback-guarded,
     and every criterion elsewhere that named it is re-grounded onto a live owner (T2.26:c7)
@@ -134,8 +138,13 @@ verification_plan:
   - step: 2
     phase: pre-deploy
     action: sweep the production surfaces for any surviving reference
-    command: bash -c "! grep -rq 'ops_session_log' scripts/ src/ config/"
-    expected: exit 0 with no output
+    command: bash -c "! grep -rq --exclude-dir=verification_registry 'ops_session_log' scripts/ src/ config/"
+    expected: >-
+      exit 0 with no output. verification_registry is excluded because this plan's OWN graduated
+      shards land at config/agent/verification_registry/entries/<graduation_check_id>.yaml and
+      store each check_spec.command verbatim -- four of this plan's graduate commands embed the
+      literal ops_session_log, so an unexcluded sweep would self-match, fail green-after, and be
+      refused admission by validate_verification_registry's pass-on-HEAD requirement.
     fix_if: a reference survives in a script, Lambda source or config file
     hermetic: true
     graduation: graduate
@@ -164,7 +173,7 @@ verification_plan:
     expected_literals: ["CONTRACT_BODIES_CLEAN"]
   - step: 4
     phase: pre-deploy
-    action: prove every roadmap criterion that named the retired table is re-grounded
+    action: prove every roadmap criterion that named the retired table is re-grounded, index-free
     command: >-
       bin/venv-python -c "import yaml;
       d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'));
@@ -173,9 +182,12 @@ verification_plan:
       assert 'ops_session_log' not in c7['text'], c7;
       c3=[c for c in ti['T2.26']['exit_criteria'] if c['id']=='c3'][0];
       assert 'Section 5' not in c3['text'], c3;
-      assert 'ops_session_log' not in ti['T2.11b']['exit_criteria'][2], ti['T2.11b']['exit_criteria'][2];
-      assert 'ops_session_log' not in ti['T2.15']['exit_criteria'][1], ti['T2.15']['exit_criteria'][1];
+      assert not any('ops_session_log' in str(c) for c in ti['T2.11b']['exit_criteria']), ti['T2.11b']['exit_criteria'];
+      assert not any('ops_session_log' in str(c) for c in ti['T2.15']['exit_criteria']), ti['T2.15']['exit_criteria'];
       assert 'loop definition' in ' '.join(str(x) for x in ti['T2.11b']['exit_criteria']);
+      assert 'scripts/s3_log_store.py' in ti['T2.26']['files_in_scope'], ti['T2.26']['files_in_scope'];
+      cd40=[c for c in d['candidate_decisions'] if c['id']=='CD.40'][0];
+      assert cd40['state']=='pending' and any('clause 1 realized' in str(x) for x in cd40['discipline_points']);
       print('ROADMAP_REGROUNDED')"
     expected: >-
       prints the marker. Asserts only DURABLE wording properties -- no criterion status field is
@@ -303,7 +315,8 @@ verification_plan:
       except SystemExit:
           raise
       except Exception as exc:
-          msg = str(exc)
+          body = getattr(exc, 'body', None) or {}
+          msg = body.get('error') or getattr(exc, 'text', '') or str(exc)
       assert \"unknown or missing ops table 'ops_session_log'\" in msg, msg
       allow = msg.split('expected one of', 1)[1]
       assert 'ops_session_log' not in allow, allow
@@ -391,8 +404,10 @@ test_obligations:
     verification_step: 8
     test_selector: tests/checks/contracts/test_validate_portal_drift.py
     red_green_expectation: >-
-      red before if the fixtures pin the five-token tuple, green after the tuple and fixtures are
-      narrowed together; the check must still fail on a live ops-table token
+      red before -- the new pin asserts ops_session_log is absent from _OPS_TABLE_TOKENS and that
+      the five survivors remain, and the tuple carries six tokens today. Green after the tuple is
+      narrowed. Without this pin the narrowing is unenforced: the suite currently references only
+      ops_recommendations and passes identically before and after.
   - source: config/lambda/ducklake/field_semantics.static.yaml
     behavior: >-
       the registry the writer and reader derive their allow-list from no longer serves
@@ -476,7 +491,7 @@ context:
   - "Live probe 2026-09-21: an unknown-table read returns the DEPLOYED allow-list, and it still names ops_session_log -- [ops_recommendations, ops_decisions, ops_entity_counters, ops_priority_queue, ops_session_log, ops_execution_plans, ops_smoke_events]. VP step 12 asserts the post-deploy list drops it."
   - "GOTCHA: the graduated check roadmap-wording-sweep-definition-host joins ALL of T2.11b's exit_criteria and asserts 'loop definition' is present. That phrase lives in criterion index 4. Edit index 2 only -- VP step 4 pins both."
   - "GOTCHA: get_ops_table_routing() appears in merged PLAN-t115-* VP commands. Per Decision 148 those are not replayed by this PR, and no verification_registry entry references it."
-  - "GOTCHA: validate_log_storage_registry and the two sync/schema modules carry NO config/coverage_baseline.yaml entry, so they are held to 100% line coverage -- delete helpers and their tests together. scripts/s3_log_store.py is pinned at 76.7 and removals only raise it."
+  - "GOTCHA: validate_log_storage_registry and the two sync/schema modules carry NO config/coverage_baseline.yaml entry, so they are held to 100% line coverage -- delete helpers and their tests together. scripts/s3_log_store.py is pinned at 76.7; removing UNCOVERED lines raises the ratio but removing covered ones lowers it, so treat the pin as a thing VP step 10 verifies, not a premise."
   - "T2.26 files_in_scope names none of this slice's real surfaces (Decision 136); widen it in the same roadmap edit."
   - "ci-rca DEFERRAL (rec-3991, Critical, scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py): fails all three Related-Work conditions -- different file, no shared Decision Record, different failure category (code_regression test-coverage gap vs a surface retirement). prior_deferrals count 0. Operator confirmed another agent owns it."
   - "critique r1: VP step 4 originally asserted criterion status==open. Removed -- c3 is a declared closes_criteria member the bookkeeping walk flips to met, and verification_graduation.run_differential refuses a graduated row that does not pass on HEAD. Graduated rows must assert only durable properties."
@@ -508,8 +523,12 @@ execution_steps:
     scripts/s3_log_store.py -- delete _OPS_TABLE_ROUTING, FALLBACK_OPS_TABLE_ROUTING and
     get_ops_table_routing(); keep _load_log_storage_registry serving priority_queue_key only.
   - >-
-    docs/contracts/log-storage.yaml -- remove routing.ops_table_routing, retire the death-dated
-    sentinel sentence, drop the .session-telemetry.jsonl example, add an amendment_log entry.
+    docs/contracts/log-storage.yaml -- remove routing.ops_table_routing, retire BOTH death-dated
+    sentinel sentences (the top-level note and priority_queue.legacy_producer.note's 'repoints at
+    T2.26' clause), add an amendment_log entry. Do NOT touch patterns.locally_produced.examples:
+    dropping .session-telemetry.jsonl would shrink test_log_storage_examples_resolve.py's enforced
+    domain from two entries to one with no criterion requiring it (Decision 181), and that test
+    file is not a scope member, so editing it would trip the LOCATION invariant.
   - >-
     scripts/checks/contracts/validate_log_storage_registry.py -- narrow to priority_queue_key parity;
     keep the fail-closed branches and the module at 100% coverage.
@@ -522,10 +541,12 @@ execution_steps:
   - >-
     docs/ROADMAP-PLATFORM.yaml -- re-ground T2.26 c3, T3.20 c7, T2.11b criterion index 2 and T2.15
     criterion index 1 (drop its ops_session_log DQ clause only); widen T2.26 files_in_scope; add the
-    CD.40 clause-1 realization note. Flip NO statuses.
+    CD.40 clause-1 realization note -- that note must carry the literal 'clause 1 realized' and must
+    NOT change CD.40's state, which stays pending on T3.20's four unbuilt clauses. Flip NO statuses.
   - >-
     tests -- add the registry-refusal test and tests/s3_log_store/test_routing_registry.py; update the
-    reconcile-gate, warehouse-write-sources, DQ-routing, portal-drift and log-storage-examples fixtures.
+    reconcile-gate, warehouse-write-sources and DQ-routing fixtures; and add a tuple pin to the
+    portal-drift suite, which today asserts nothing about _OPS_TABLE_TOKENS.
   - >-
     Before merging: update_rec rec-3393's acceptance through the portal so its oracle matches this
     plan's design -- the stored oracle sweeps docs/contracts/ for ops_session_log, which this plan
