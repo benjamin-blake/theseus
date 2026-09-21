@@ -39,10 +39,12 @@ scope:
 - file: docs/contracts/terraform-cc-web-operations.yaml
   action: Modify
   purpose: Repoint recovery_procedure at the delegate (raw command retained as fallback), add the delegate
-    to referenced_repo_paths, and log a Class D amendment_log entry. Also add one factual sentence to
-    admin_tier_only recording that both recovery paths, the delegate included, require deliberately assuming
-    the admin tier -- so that fact lives in the Class D contract rather than only in this one-shot plan
-    file.
+    to referenced_repo_paths, and log a Class D amendment_log entry. AMEND -- do not append to -- admin_tier_only's
+    existing closing sentence ('either requires deliberately assuming the admin tier') so it names the
+    delegate too; appending a second sentence asserting the same fact is the duplication AGENTS.md forbids.
+    Add one sentence to operator_only_break_glass.scope recording that assuming the admin tier is itself
+    the deliberate operator act Decision 126 asks for, so a future agent wiring another admin-tier fetch
+    into bootstrap finds a durable answer instead of re-tripping the scout flag.
 - file: tests/test_materialise_tfvars_delegate.py
   action: Create
   purpose: Drive the delegate under the literal GitHub composite argv with a stubbed aws, plus the YAML
@@ -54,7 +56,8 @@ scope:
 bundled_recommendations:
 - rec-3978
 - rec-3977
-followon_recs: []
+followon_recs:
+- rec-3993
 infrastructure_dependencies: []
 acceptance_criteria:
 - Exactly one file under .github/ contains the Secrets Manager fetch -- the delegate. action.yml and terraform-drift.yml
@@ -75,6 +78,8 @@ acceptance_criteria:
   fails if the script is ever deleted.
 - No AWS account id, ExternalId or email literal is introduced into any tracked file.
 - rec-3978 and rec-3977 reach a terminal state with their closure proof recorded.
+- Each delegate failure mode (fetch failed, empty secret, write failed) emits a pairwise-distinct, greppable
+  stderr message, so the three signals the collapsed CI steps used to carry survive in the log.
 verification_plan:
 - step: 1
   phase: pre-deploy
@@ -85,8 +90,11 @@ verification_plan:
   expected: Prints CARRIERS 1 followed by the delegate path alone. The literal carries a COMPUTED count,
     so it cannot be satisfied by the command text alone. Measured 2026-09-21 on the un-implemented tree
     this exits 1 with AssertionError naming action.yml and terraform-drift.yml -- the red-before signal.
-  fix_if: The assertion prints every file still carrying an inline fetch. A file listed other than the
-    delegate means that copy was not collapsed.
+  fix_if: 'The assertion prints every file still carrying an inline fetch. A file listed other than the
+    delegate means that copy was not collapsed. CARRIERS 0 with an empty list is the OTHER direction:
+    the grep matched nothing, which usually means the aws invocation was line-broken between the verb
+    tokens so ''secretsmanager get-secret-value'' no longer appears on one line. That is a false green
+    risk, not a pass.'
   hermetic: true
   expected_literals:
   - CARRIERS 1
@@ -184,18 +192,25 @@ verification_plan:
   phase: pre-deploy
   action: Delegate behaviour under the literal GitHub composite argv (chained selectors)
   command: bin/venv-python -m pytest tests/test_materialise_tfvars_delegate.py -k install_terraform_unset
-    -q && bin/venv-python -m pytest tests/test_materialise_tfvars_delegate.py -k no_secret_on_stdout -q
-    && bin/venv-python -m pytest tests/test_materialise_tfvars_delegate.py -k mode_600 -q && bin/venv-python
+    -q && bin/venv-python -m pytest tests/test_materialise_tfvars_delegate.py -k silent_on_both_streams
+    -q && bin/venv-python -m pytest tests/test_materialise_tfvars_delegate.py -k mode_600 -q && bin/venv-python
     -m pytest tests/test_materialise_tfvars_delegate.py -k first_equals_split -q && bin/venv-python -m
     pytest tests/test_materialise_tfvars_delegate.py -k fail_closed_on_empty -q && bin/venv-python -m
     pytest tests/test_materialise_tfvars_delegate.py -k masks_under_github_actions -q && bin/venv-python
-    -m pytest tests/test_materialise_tfvars_delegate.py -k preexisting_file_preserved -q
-  expected: 'Seven selectors, each its OWN invocation, all pass. CHAINED with &&, never or-joined -- measured
+    -m pytest tests/test_materialise_tfvars_delegate.py -k preexisting_file_preserved -q && bin/venv-python
+    -m pytest tests/test_materialise_tfvars_delegate.py -k distinct_failure_messages -q && bin/venv-python
+    -m pytest tests/test_materialise_tfvars_delegate.py -k temp_file_beside_destination -q
+  expected: Nine selectors, each its OWN invocation, all pass. CHAINED with &&, never or-joined -- measured
     2026-09-21 that -k "real or nonexistent" exits 0 on a single match (1 passed, 8 deselected), which
-    would green a leg whose other assertions do not exist. masks_under_github_actions asserts the POSITIVE
-    direction (all three key names produce ::add-mask:: lines with GITHUB_ACTIONS set); this diff DELETES
-    terraform-drift.yml''s own mask step, so without it nothing proves masking survived. Measured 2026-09-21
-    the whole chain exits 4 (module absent).'
+    would green a leg whose other assertions do not exist. silent_on_both_streams asserts TOTAL silence
+    on stdout AND stderr with GITHUB_ACTIONS unset (matching acceptance criterion 4 and VP step 12, not
+    the weaker 'no secret-shaped value'). masks_under_github_actions asserts the POSITIVE direction --
+    this diff DELETES terraform-drift.yml's own mask step, so without it nothing proves masking survived.
+    distinct_failure_messages asserts three pairwise-distinct stderr strings across stubbed fetch-failure
+    / empty-secret / write-failure modes, which is the compensating control for the step-level granularity
+    this consolidation spends. temp_file_beside_destination asserts the mktemp template sits beside the
+    destination, so the mv is a same-filesystem atomic rename. Measured 2026-09-21 the chain exits 4 (module
+    absent).
   fix_if: Exit 5 names the selector with no matching test -- that behaviour is untested. Exit 4 means
     the module does not exist yet. Each -k token must appear VERBATIM in a test METHOD name (see constraints)
     -- measured, -k is case- and separator-sensitive. Never collapse these into one or-joined -k.
@@ -207,12 +222,16 @@ verification_plan:
   command: bin/venv-python -m pytest tests/test_setup_cloud_env.py -k admin_branch_calls_shared_delegate
     -q && bin/venv-python -m pytest tests/test_setup_cloud_env.py -k failed_fetch_does_not_abort -q
   expected: 'Both selectors pass as separate invocations. The second must EXECUTE the warn-and-continue
-    construct, not grep for it: extract the anchor-delimited block from bin/setup-cloud-env.sh, re-declare
-    log(), substitute a stub delegate that exits 1, and run the block under bash -euo pipefail -c, asserting
-    exit 0 and that the post-fetch line is reached. Running the whole 256-line bootstrap is NOT the technique
-    -- the module''s docstring forbids executing networked installers. Measured 2026-09-21: a bare call
-    under set -euo pipefail exits 1 and never reaches the session_start hooks, while the if/else form
-    exits 0 and does. This chain exits 4 today (neither node exists).'
+    construct, not grep for it: extract the block delimited by the EXISTING unique literals `if [ "${INSTALL_TERRAFORM:-0}"
+    = "1" ]; then` (bin/setup-cloud-env.sh:195) and its matching `else` (:213) -- no new anchor comments
+    are introduced, re-declare log(), substitute a stub delegate that exits 1, and run the block under
+    bash -euo pipefail -c, asserting exit 0 and that the post-fetch line is reached. Running the whole
+    256-line bootstrap is NOT the technique -- the module''s docstring forbids executing networked installers.
+    Measured 2026-09-21: a bare call under set -euo pipefail exits 1 and never reaches the session_start
+    hooks, while the if/else form exits 0 and does. This chain exits 5 today -- measured 2026-09-21: tests/test_setup_cloud_env.py
+    EXISTS and only the class and its methods are absent, so -k deselects all 3 collected items and pytest
+    exits 5 (no tests collected). Steps 6 and 8 exit 4 because their module does not exist at all. The
+    `::node-id` form would exit 4; the -k form exits 5.'
   fix_if: Exit 4 or 5 names the absent node. A structural grep alone does not satisfy this step -- the
     property under test is errexit suppression, which only execution can prove.
   hermetic: false
@@ -223,11 +242,16 @@ verification_plan:
   command: bin/venv-python -m pytest tests/test_materialise_tfvars_delegate.py -k action_wiring -q &&
     bin/venv-python -m pytest tests/test_materialise_tfvars_delegate.py -k drift_wiring -q && bin/venv-python
     -m pytest tests/test_materialise_tfvars_delegate.py -k baseline_retired -q && bin/venv-python -m pytest
-    tests/checks/contracts/test_validate_terraform_cc_web_operations.py -q
-  expected: Four selectors, each its OWN invocation, all pass. This is the step that RUNS the pytest evidence
-    the action.yml, terraform-drift.yml, baseline and contract test_obligations name -- steps 2-5 assert
-    the same claims statically and carry the red-before signal. Measured 2026-09-21 this exits 4 on the
-    un-implemented tree.
+    tests/test_materialise_tfvars_delegate.py -k contract_repoint -q && bin/venv-python -m pytest tests/checks/contracts/test_validate_terraform_cc_web_operations.py
+    -q
+  expected: Five selectors, each its OWN invocation, all pass. This is the step that RUNS the pytest evidence
+    the action.yml, terraform-drift.yml, baseline and contract test_obligations name; steps 2-5 assert
+    the same claims statically and carry the red-before signal. contract_repoint loads the LIVE docs/contracts/terraform-cc-web-operations.yaml
+    and asserts both halves -- added because tests/checks/contracts/test_validate_terraform_cc_web_operations.py
+    builds SYNTHETIC contracts under tmp_path and is 20-passed/exit-0 on the un-implemented tree (measured
+    2026-09-21), so it is green-before AND green-after and cannot carry a red-before obligation. Measured
+    2026-09-21 this chain exits 4 (module absent). The final leg re-runs the existing contract module
+    as a regression check.
   fix_if: Exit 5 names the selector with no matching test. Exit 4 means the module does not exist yet.
     The contract module already exists and passes today, so a failure there is a regression from the referenced_repo_paths
     edit.
@@ -288,17 +312,22 @@ verification_plan:
 - step: 12
   phase: pre-deploy
   action: REAL external system -- drive the delegate against live Secrets Manager (ADMIN container)
-  command: bash .github/actions/materialise-tfvars/materialise_tfvars.sh > /tmp/mt.out 2>/tmp/mt.err;
-    echo "exit=$?"; test ! -s /tmp/mt.out && test ! -s /tmp/mt.err && echo "NO OUTPUT"; stat -c '%a' terraform/personal/terraform.personal.tfvars;
-    sed 's/=.*//' terraform/personal/terraform.personal.tfvars | tr -d ' "' | grep -c . ; rm -f /tmp/mt.out
-    /tmp/mt.err
-  expected: exit=0, then NO OUTPUT, then 600, then 5. Values are NEVER printed -- only the mode, a key-name
-    count, and the fact that both streams were empty. Requires an ADMIN container; confirm with aws sts
-    get-caller-identity --profile agent_platform_admin first. Probed 2026-09-21 the live secret holds
-    exactly the five contract-named keys in 371 bytes.
-  fix_if: 'AccessDenied means a PlatformDev (DEV) container -- that is the INTENDED fail-closed DEP-13
-    outcome, not a defect; re-run from ADMIN. Any non-empty stream is a Decision 101 breach and means
-    the GITHUB_ACTIONS gate on ::add-mask:: is missing or inverted.'
+  command: bash -c 'set -uo pipefail; trap "rm -f /tmp/mt.out /tmp/mt.err" EXIT; bash .github/actions/materialise-tfvars/materialise_tfvars.sh
+    >/tmp/mt.out 2>/tmp/mt.err || exit 1; F=terraform/personal/terraform.personal.tfvars; MODE=$(stat
+    -c %a "$F"); KEYS=$(sed "s/=.*//" "$F" | tr -d " \"" | grep -c .); SILENT=0; if [ ! -s /tmp/mt.out
+    ] && [ ! -s /tmp/mt.err ]; then SILENT=1; fi; echo "MODE $MODE KEYS $KEYS SILENT $SILENT"; [ "$MODE"
+    = 600 ] && [ "$KEYS" = 5 ] && [ "$SILENT" = 1 ]'
+  expected: 'Prints exactly MODE 600 KEYS 5 SILENT 1 and EXITS 0. The chain now ENDS on the assertion,
+    not on cleanup -- measured 2026-09-21 that the previous '';''-joined form ending in rm -f exited 0
+    even with non-empty stdout, so it could never report the Decision 101 breach its own fix_if describes.
+    Cleanup moved to an EXIT trap. Values are NEVER printed: only the mode, a key-name COUNT, and a silence
+    flag. Requires an ADMIN container. Probed 2026-09-21 the live secret holds exactly the five contract-named
+    keys in 371 bytes.'
+  fix_if: 'A non-zero exit prints which of the three assertions failed via the MODE/KEYS/SILENT values.
+    SILENT 0 means the delegate wrote to a stream with GITHUB_ACTIONS unset -- a Decision 101 breach,
+    meaning the $GITHUB_ACTIONS gate on ::add-mask:: is missing or inverted. AccessDenied means a PlatformDev
+    container -- the INTENDED fail-closed DEP-13 outcome; re-run from ADMIN rather than recording the
+    step as satisfied.'
   hermetic: false
   graduation: not-applicable
 - step: 13
@@ -353,11 +382,12 @@ verification_plan:
   graduation: not-applicable
 test_obligations:
 - source: .github/actions/materialise-tfvars/materialise_tfvars.sh
-  behavior: 'Writes the tfvars file mode 600 with INSTALL_TERRAFORM UNSET; emits no secret-shaped value
-    on either stream with GITHUB_ACTIONS unset; masks on first ''='' only under GITHUB_ACTIONS; fails
-    closed on an empty secret; leaves a pre-existing file intact when the fetch fails; and emits an ::add-mask::
-    line for all three protected keys when GITHUB_ACTIONS IS set (the positive direction -- this diff
-    deletes terraform-drift.yml''s own mask step).'
+  behavior: 'Writes the tfvars file mode 600 with INSTALL_TERRAFORM UNSET; emits NOTHING on either stdout
+    or stderr with GITHUB_ACTIONS unset (total silence, not merely no secret-shaped value); emits an ::add-mask::
+    line for all three protected keys when GITHUB_ACTIONS IS set, masking on first ''='' only; fails closed
+    on an empty secret; leaves a pre-existing file byte-identical when the fetch fails; creates its temp
+    file beside the destination so the mv is an atomic same-filesystem rename; and emits a pairwise-distinct
+    stderr message per failure mode.'
   verification_step: 6
   test_selector: tests/test_materialise_tfvars_delegate.py::TestDelegateBehaviour
   red_green_expectation: red before, green after
@@ -386,10 +416,11 @@ test_obligations:
   test_selector: tests/test_setup_cloud_env.py::TestAdminTfvarsFetch
   red_green_expectation: red before, green after
 - source: docs/contracts/terraform-cc-web-operations.yaml
-  behavior: recovery_procedure names the delegate and referenced_repo_paths declares it, so the contract's
-    validator fails if the script is deleted.
+  behavior: recovery_procedure names the delegate and referenced_repo_paths declares it, asserted against
+    the LIVE contract file (not a tmp_path synthetic), so the contract's own validator fails if the script
+    is deleted.
   verification_step: 8
-  test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py
+  test_selector: tests/test_materialise_tfvars_delegate.py::TestContractRepoint
   red_green_expectation: red before, green after
 constraints:
 - The INSTALL_TERRAFORM gate belongs in bin/setup-cloud-env.sh, NEVER in the shared delegate. INSTALL_TERRAFORM
@@ -399,13 +430,14 @@ constraints:
 - '::add-mask:: is a GitHub-runner sentinel, not redaction. Gate its emission on $GITHUB_ACTIONS or the
   local ADMIN shell prints account_id and both ExternalIds into the session transcript, breaching the
   contract''s never_paste clause and Decision 101.'
-- 'Test NAMING CONTRACT, load-bearing: every -k token the VP selects (install_terraform_unset, no_secret_on_stdout,
+- 'Test NAMING CONTRACT, load-bearing: every -k token the VP selects (install_terraform_unset, silent_on_both_streams,
   mode_600, first_equals_split, fail_closed_on_empty, masks_under_github_actions, preexisting_file_preserved,
-  admin_branch_calls_shared_delegate, failed_fetch_does_not_abort, action_wiring, drift_wiring, baseline_retired)
-  MUST appear VERBATIM in a test METHOD name, inside the CamelCase class its test_obligations row names.
-  Measured 2026-09-21 on pytest 9.1.1: -k WorkflowRatchetLiveSurface collects 4 of 27 while -k workflow_ratchet_live_surface
-  collects 0 -- -k substring matching is case- AND separator-sensitive, so declaring the classes without
-  the snake_case method tokens makes VP steps 6, 7 and 8 exit 5 under an otherwise-conforming implementation.'
+  distinct_failure_messages, temp_file_beside_destination, admin_branch_calls_shared_delegate, failed_fetch_does_not_abort,
+  action_wiring, drift_wiring, baseline_retired, contract_repoint) MUST appear VERBATIM in a test METHOD
+  name, inside the CamelCase class its test_obligations row names. Measured 2026-09-21 on pytest 9.1.1:
+  -k WorkflowRatchetLiveSurface collects 4 of 27 while -k workflow_ratchet_live_surface collects 0 --
+  -k substring matching is case- AND separator-sensitive, so declaring the classes without the snake_case
+  method tokens makes VP steps 6, 7 and 8 exit 5 under an otherwise-conforming implementation.'
 - The adapter's ONLY effective line is the delegate call. Measured -- adding set -euo pipefail makes _delegated_script
   return None, re-ratcheting the body under R3. Comments are stripped and free.
 - The delegate takes NO argv -- _DELEGATE_LINE_RE is fully anchored and admits no arguments. It also stays
@@ -447,10 +479,6 @@ context:
 - 'Scout CONTRADICT Decision 55 [NOTE] -- accepted and fixed: temp-file + mv (constraints).'
 - 'Scout CONTRADICT Decision 144 [NOTE] -- resolved: delegate stays profile-free by necessity; PlatformDev
   AccessDenied recorded as the intended fail-closed outcome (constraints).'
-- Scout SPIRIT Decision 126 [WARN] on wiring the fetch into the INSTALL_TERRAFORM=1 bootstrap -- raised
-  and resolved by operating context, NOT a deviation- ADMIN containers are used only for IAM changes and
-  IAM planning, so the container itself is the deliberate operator act the flag assumed was missing. Recorded
-  so the point is not re-litigated.
 - 'Slice 1 is db8b9212 (PR #1242); it repointed recovery_procedure at the materialisation path, leaving
   a documented local path with no local tooling. This slice supplies it.'
 - Extraction precedent is .github/actions/subagent-plan-review/review.sh (rec-2924). R1/R2 do NOT bind
@@ -462,15 +490,22 @@ context:
 - tests/checks/ci_guards/test_validate_composite_action_shell_bodies.py:118 and tests/checks/test__marker_guard.py:149
   use '.github/actions/materialise-tfvars::#0' as a fixture. Both pass the string into PURE functions,
   so retiring the baseline key does not break them; the example in docs/contracts/marker-grammar.yaml:173
-  merely goes stale (out of scope, Decision 59).
+  merely goes stale (out of scope, Decision 59; routed to rec-3993 per that decision's out-of-scope-becomes-recommendation
+  rule rather than left implicit).
+- 'Scout SPIRIT Decision 126 [WARN] on wiring the fetch into the INSTALL_TERRAFORM=1 bootstrap -- raised
+  and resolved by operating context, NOT a deviation: ADMIN containers are used only for IAM changes and
+  IAM planning, so the container itself is the deliberate operator act the flag assumed was missing. The
+  durable record goes in operator_only_break_glass.scope (see that scope row), not only here.'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - docs/PROJECT_CONTEXT.md read
 - Only the plan-cited decision sections read
 - All files in scope located and readable
 - Acceptance criteria understood and verifiable
-- Confirm ADMIN container before VP step 12 -- the live Secrets Manager step (aws sts get-caller-identity
-  --profile agent_platform_admin)
+- Confirm ADMIN container before VP step 12 using the AMBIENT credential path the delegate actually resolves
+  -- `aws sts get-caller-identity --query Arn --output text` with NO --profile, asserting the ARN names
+  PlatformAdmin. Probing with --profile agent_platform_admin would pass in a container where the profile
+  exists but AWS_PROFILE is unset, while the profile-free delegate AccessDenies.
 execution_steps:
 - 'Create .github/actions/materialise-tfvars/materialise_tfvars.sh -- fetch to a temp file, assert non-empty,
   chmod 600, emit ::add-mask:: only under $GITHUB_ACTIONS using the rec-2285 first-''='' split, then mv
