@@ -76,9 +76,13 @@ scope:
     action: Modify
     purpose: >-
       Add a licensed-work brand invariant with two concrete predicates: (1) LICENSE's Licensed
-      Work parameter names the ratified mark; (2) LICENSING.md carries a continuity note naming
-      BOTH the current mark and the former one, so a holder of a pre-rename copy can identify
-      their grant. Predicate (2) replaces the round-1 "work-identity mapping to the repository
+      Work parameter names the ratified mark; (2) LICENSING.md carries a continuity note in which
+      a SINGLE LINE names BOTH marks, so a holder of a pre-rename copy can identify their grant.
+      The co-location is load-bearing, not stylistic: after this change LICENSING.md contains the
+      new mark at its retitled heading and the old one at the two preserved historical statements,
+      so a mere "both marks appear somewhere in the file" predicate is satisfied whether or not the
+      note is ever written -- vacuous on the shipped tree, and the same defect class as the
+      discarded slug mapping. Predicate (2) replaces the round-1 "work-identity mapping to the repository
       slug" wording, which had no workable predicate: the slug stays `theseus` by design, so an
       equality assertion fails and a presence assertion is trivially true.
   - file: tests/checks/hygiene/test_validate_licence_consistency.py
@@ -121,14 +125,15 @@ acceptance_criteria:
     envelope-borne amends edges.
   - >-
     Decision 101 clause (d)'s lead-in, which binds the boundary to "The public site
-    (theseus.support)", is carried through clause (e)'s domain change by the same blockquote -- so
+    (theseus.support)", is carried through clause (e)'s domain change by the same blockquote, which
+    states so in the pinned form "clause (d)'s site reference follows"  -- so
     clause (d) does not end up binding the public-content boundary to a retired domain. This is the
     second half of the paired requirement in the Decision 101 execution step; the first half is the
     criterion below.
   - >-
     The securities-law prohibition in Decision 101 clause (d) SURVIVES in brand-neutral successor
     form: docs/DECISIONS.md carries at least two occurrences of "performance figures", counted
-    wrap-robustly rather than by line -- the
+    after stripping the blockquote marker and squeezing newlines rather than by line -- the
     original bullet (preserved append-only) and the successor statement that binds the prohibition
     to any hosted product rather than to the retired brand. Retiring the brand must not retire the
     rule, and this bullet is its only live normative home in the repository.
@@ -163,13 +168,16 @@ acceptance_criteria:
     change, the pre-boundary copy sentence, the `agent-platform` -> `theseus` repository rename,
     and the GitHub issues URL) are unchanged.
   - >-
-    LICENSING.md carries a continuity note naming BOTH the ratified mark and the former one, so a
-    holder of a pre-rename copy can identify the work their grant covers. This is the legally
-    load-bearing half of the Licensed Work rename.
+    LICENSING.md carries a continuity note in which a SINGLE LINE names both the ratified mark and
+    the former one, so a holder of a pre-rename copy can identify the work their grant covers. This
+    is the legally load-bearing half of the Licensed Work rename, and the co-location requirement
+    is what keeps the assertion from being satisfied by the preserved historical statements.
   - >-
     validate_licence_consistency fails on a tree where LICENSE's Licensed Work is reverted to
-    Theseus, AND on a tree whose LICENSING.md drops the continuity note; it passes on the
-    implemented tree.
+    Theseus, AND on a tree whose LICENSING.md keeps its preserved historical statements and
+    retitled heading but drops the continuity note; it passes on the implemented tree. The second
+    case requires a dedicated negative fixture -- `_VALID_LICENSING` names neither mark, so the
+    default fixture cannot exercise it.
   - >-
     rec-3922 reads status closed after the portal update, and its own recorded acceptance command
     passes.
@@ -183,18 +191,24 @@ verification_plan:
       Confirm Decision 198 exists, is uniquely numbered, and carries the required metadata
       envelope including the amends edge set and BOTH significance rebuttals.
     command: >-
-      test "$(grep -c '^## Decision 198:' docs/DECISIONS.md)" = 1 && sed -n '/^## Decision 198:/,/^## Decision /p'
-      docs/DECISIONS.md | grep -q 'amends:' && sed -n '/^## Decision 198:/,/^## Decision /p' docs/DECISIONS.md
-      | grep -q 'package-registry-reservation' && sed -n '/^## Decision 198:/,/^## Decision /p' docs/DECISIONS.md
-      | grep -qi 'operational.fact'
+      test "$(grep -c '^## Decision 198:' docs/DECISIONS.md)" = 1 && bin/venv-python -c "import re,yaml;raw=open('docs/DECISIONS.md',encoding='utf-8').read();m=re.search(r'^##
+      Decision 198:.*?\n\x60\x60\x60yaml\n(.*?)\n\x60\x60\x60',raw,re.S|re.M);assert m,'no bare yaml envelope after the
+      heading';e=yaml.safe_load(m.group(1));assert e.get('number')==198,'envelope number mismatch';assert
+      101 in e.get('amends',[]),'amends lacks 101';j=e['significance']['justification'];assert
+      'package-registry-reservation' in j,'field_semantics rebuttal absent from significance.justification';assert
+      'operational' in j.lower(),'operational_fact rebuttal absent from significance.justification';print('envelope ok')"
     expected: >-
-      Exit 0. Exactly one Decision 198 heading; its envelope declares an amends edge set and its
-      significance justification answers both the field_semantics and operational_fact routing
-      challenges.
+      Exit 0. Exactly one Decision 198 heading, and the bare yaml envelope parses with number 198,
+      101 among its amends, and BOTH routing rebuttals inside significance.justification itself.
+      Scoping matters: a grep over the whole entry span would be satisfied by Rationale prose while
+      the justification read "a durable architectural commitment", which is precisely the envelope
+      obligation Decision 167 clause 2 imposes and which _significance_issues does not check
+      beyond non-emptiness.
     fix_if: >-
       More than one heading means a numbering race -- another session took 198; renumber to the
-      next free number and update every pointer. A missing rebuttal fails Decision 167 clause 2's
-      envelope requirement and the rec-3015/rec-3016 property tests.
+      next free number and update every pointer (including this command's literal). A rebuttal
+      present in the body but absent from significance.justification still fails, and should: the
+      justification is the field Decision 167 clause 2 binds.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -234,21 +248,28 @@ verification_plan:
       grep -q 'Amended by Decision 198' docs/DECISIONS.md && grep -q '^- \*\*Guerdon\*\* = external brand
       for the trading PRODUCT' docs/DECISIONS.md && grep -q '^Domain: `theseus.support` (Cloudflare-managed
       DNS, already owned).$' docs/DECISIONS.md && grep -q '^- Primary audience: data-engineering hiring
-      managers' docs/DECISIONS.md && test "$(tr '\n' ' ' < docs/DECISIONS.md | tr -s ' ' | grep -oi 'performance
-      figures' | wc -l)" -ge 2 && S=$(sed -n '/^## Decision 101:/,/^## Decision [0-9]\+:/p' docs/DECISIONS.md) &&
-      echo "$S" | grep -q 'onthelooplabs.com' && echo "$S" | grep -q 'On The Loop Labs' && for c in a d e f; do
+      managers' docs/DECISIONS.md && test "$(sed 's/^> \?//' docs/DECISIONS.md | tr '\n' ' ' | tr -s ' ' | grep -oi
+      'performance figures' | wc -l)" -ge 2 && S=$(sed -n '/^## Decision 101:/,/^## Decision [0-9]\+:/p' docs/DECISIONS.md) &&
+      echo "$S" | grep -q 'onthelooplabs.com' && echo "$S" | grep -q 'On The Loop Labs' &&
+      echo "$S" | grep -qi "clause (d)'s site reference follows" && for c in a d e f; do
       echo "$S" | grep -qi "clause ($c)" || exit 1; done
     expected: >-
       Exit 0. The dated annotation exists, the original clause (a), (e) and (f) lines survive
       verbatim (proving the correction was appended rather than spliced), the securities-law
       prohibition appears at least twice -- the preserved original plus its brand-neutral successor
       -- the Decision 101 span names the settled web domain, proving clause (d)'s lead-in was
-      carried through clause (e)'s change rather than left bound to a retired domain, it names the
-      company so clause (a)'s replacement hierarchy is actually stated, and it addresses all four
+      carried through clause (e)'s change rather than left bound to a retired domain -- asserted by
+      a pinned literal ("clause (d)'s site reference follows") rather than by the domain grep alone,
+      which amending clause (e)'s Domain line would satisfy on its own and so could not
+      discriminate -- it names the company so clause (a)'s replacement hierarchy is actually
+      stated, and it addresses all four
       amended clauses by letter. That last check closes a polarity gap: the original-line greps
       above prove append-only compliance, NOT that a successor was written, so without it a
       blockquote silently omitting clause (a) or (f) would pass every step. Newlines are squeezed
-      before counting, so a successor sentence that wraps mid-phrase still counts.
+      before counting AFTER the blockquote marker is stripped, so a successor sentence that wraps
+      mid-phrase inside the annotation still counts. Stripping the marker is required, not
+      cosmetic: without it a wrapped phrase reads "performance > figures" and counts zero, which
+      would fail a correct implementation with a fix_if that misdiagnoses the cause.
     fix_if: >-
       A missing original line means a clause was rewritten in place, which violates Decision 177's
       exact-line append-only embedding -- restore the line and move the correction into the
@@ -383,14 +404,17 @@ verification_plan:
       ! grep -q 'theseus.support' COMMERCIAL-LICENSE.md && grep -q 'github.com/benjamin-blake/theseus/issues'
       COMMERCIAL-LICENSE.md && grep -q '^## Using On The Loop$' LICENSING.md && grep -q 'formerly named Theseus'
       LICENSING.md && grep -q 'obtained a copy of Theseus at or before the boundary commit' LICENSING.md &&
-      grep -q 'On The Loop' CONTRIBUTING.md && grep -q 'On The Loop' COMMERCIAL-LICENSE.md &&
+      grep -q '^On The Loop is source-available' CONTRIBUTING.md && grep -q 'offers On The Loop under two
+      licences' CONTRIBUTING.md && grep -q '^On The Loop is licensed under' COMMERCIAL-LICENSE.md &&
       grep -q 'otl-labs.com' COMMERCIAL-LICENSE.md && grep -q '^# On The Loop$' README.md
     expected: >-
       Exit 0. LICENSE names On The Loop with the Licensor untouched; the LICENSING.md historical
       statements and the GitHub issues URL survive verbatim; all five forward-standing prose
       positions no longer name Theseus AND positively name the ratified mark, so deleting a
-      sentence never satisfies the gate: CONTRIBUTING.md and COMMERCIAL-LICENSE.md each name the
-      mark, LICENSING.md's retitled section heading is asserted by its own literal (which the
+      sentence never satisfies the gate: each NAMED position carries its own positive literal
+      (CONTRIBUTING.md lines 3 and 15, COMMERCIAL-LICENSE.md line 3), so rewriting one of them
+      around the mark -- "offers the Licensed Work under two licences" -- fails rather than
+      riding a file-wide match, LICENSING.md's retitled section heading is asserted by its own literal (which the
       continuity note cannot stand in for), the settled email domain is positively present, and
       README's H1 is the mark. All four historical statements are pinned, including the
       pre-boundary copy sentence -- the most rewrite-prone line in a brand sweep, and the one the
@@ -488,11 +512,17 @@ verification_plan:
       bin/venv-python -m scripts.decisions_index --check && git diff --name-only origin/main |
       grep -q '^docs/decisions-index.json$'
     expected: >-
-      Exit 0. The index reports current and docs/decisions-index.json is in the diff. NOTE a
-      negated grep for logs/.decisions-index.jsonl was REMOVED here: that path is gitignored
-      (.gitignore:135) and untracked, so git diff can never list it and the clause could never
-      fail -- a false guard of exactly the kind step 11 warns about. The Single Portal Invariant is
-      enforced by validate_decisions_local_writes at step 16, which can actually fail.
+      Exit 0. The index reports current and docs/decisions-index.json is in the diff. NOTE on the
+      Single Portal Invariant, stated precisely because an earlier draft of this step got it twice
+      wrong: a negated grep for logs/.decisions-index.jsonl was removed as unfalsifiable (the path
+      is gitignored at .gitignore:135 and untracked, so git diff never lists it), and
+      validate_decisions_local_writes is NOT a backstop for it either -- that check globs
+      scripts/**/*.py and personal_scripts/**/*.py for SOURCE patterns opening the cache for write,
+      so it is green before and after and cannot observe a hand-edit. The honest position: the
+      cache is gitignored, so a hand-edit never reaches the repo at all; the standing source-level
+      guards are validate_decisions_local_writes for the decisions cache and validate_rec_write_paths
+      for the recs cache, neither of which discriminates for this change. This step asserts the
+      index regeneration only.
     fix_if: >-
       A drift report means the index was not regenerated: run
       `bin/venv-python -m scripts.decisions_index --write`. A modified logs/.decisions-index.jsonl
@@ -518,8 +548,10 @@ verification_plan:
       the read cache, so no separate pull is needed.
     fix_if: >-
       Status still open means execution step 15's update_rec call did not run or failed. Re-run it
-      through the portal -- never hand-edit logs/.recommendations-log.jsonl, which
-      validate_decisions_local_writes and the Single Portal Invariant forbid.
+      through the portal -- never hand-edit logs/.recommendations-log.jsonl. The standing guard for
+      that cache is validate_rec_write_paths (NOT validate_decisions_local_writes, which never
+      mentions the recs cache); both are source-level checks, so the real reason not to hand-edit is
+      the Single Portal Invariant itself, not a check that would catch you.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -615,9 +647,11 @@ test_obligations:
   - source: scripts/checks/hygiene/validate_licence_consistency.py
     behavior: >-
       The two predicates the narrowed leg actually asserts: LICENSE's Licensed Work parameter
-      names the ratified mark (On The Loop), and LICENSING.md's continuity note names both the
-      current and the former mark so a pre-rename licensee can still identify the work their grant
-      covers. The leg reads no other file; the forward-standing positions in CONTRIBUTING.md,
+      names the ratified mark (On The Loop), and LICENSING.md carries a SINGLE LINE naming both
+      marks -- the continuity note -- so a pre-rename licensee can still identify the work their
+      grant covers. Whole-file co-occurrence is NOT sufficient and must not be implemented: the
+      preserved historical statements supply the old mark and the retitled heading supplies the new
+      one, so a file-wide predicate passes with no note present. The leg reads no other file; the forward-standing positions in CONTRIBUTING.md,
       COMMERCIAL-LICENSE.md and README.md are guarded by VP step 9, which graduates into the
       registry as licensed-work-mark-and-historical-split.
     verification_step: 11
@@ -633,9 +667,11 @@ test_obligations:
     verification_step: 11
     test_selector: tests/checks/hygiene/test_validate_licence_consistency.py::test_licensing_continuity_note_names_both_marks
     red_green_expectation: >-
-      Red before: LICENSING.md carries no continuity note at all, so the new node id fails. Green
-      after: it passes. Unlike the discarded slug-mapping idea, this predicate is neither
-      trivially true nor self-contradictory -- the note does not exist today and the plan creates it.
+      Red before: no line of LICENSING.md names both marks, so the new node id fails (verified: the
+      file's three Theseus occurrences share no line with the new mark). Green after: it passes.
+      The negative fixture is the load-bearing half -- a LICENSING.md that keeps lines 3 and 18 and
+      the retitled heading but DROPS the note must still fail, which is what proves the predicate
+      is not satisfied by the preserved text.
   - source: LICENSE
     behavior: >-
       The Licensed Work parameter names the ratified mark On The Loop, and the Licensor parameter
@@ -762,6 +798,7 @@ context:
   - "tests/checks/hygiene/test_validate_licence_consistency.py coupling, RE-SCOPED after round 5 narrowed the new leg to scan LICENSE + LICENSING.md only: `_tree()` already writes both, so its four-file set does NOT change and no fixture gains a file. What does change: the _VALID_LICENSE fixture (line 28 carries 'Licensed Work:        Theseus'); the line-113 .replace anchored on that exact literal; _VALID_LICENSING (lines 46-51), which names no mark and must gain the continuity note the new predicate asserts; and TestAccountingDeclaration's `assert declaration.count == 5  # 4 licence artefacts + 1 class-(a) path` if the leg changes how many files are examined. The three synthetic '# theseus' README fixtures (lines 53, 143, 147) need NO change -- the leg does not scan README."
   - "Reversal-stanza discharge lands as an annotation, never a stanza edit: validate_reversal_stanzas 'never gates on review date or fired conditions', and manual conditions are surfacing-only. Precedent: Decision 171 discharged Decision 101 clause (f)'s deferral by annotation."
   - "docs/decisions-index.json is a REQUIRED committed artefact; absence or drift fails in BOTH tiers. Regenerate with `bin/venv-python -m scripts.decisions_index --write`. T1.5 c8 (not_started) will later baseline against it -- do not also edit T1.5, whose 8 criteria are bare strings."
+  - "Decision 101 carries a THIRD theseus.support occurrence at docs/DECISIONS.md:5946, in the 'Scope of this decision' paragraph ('The theseus.support site and DNS are deferred_post_mvp items (S1.2/S1.3 in docs/ROADMAP-SEMANTO.yaml)'). It sits outside clause (d)'s lead-in and clause (e)'s Domain line, so the blockquote does not reach it, and it is left deliberately: it is session-scoped scoping prose pointing at ROADMAP-SEMANTO items that still say theseus.support, so it stays accurate until rec-3986 lands. Recorded because the plan enumerates its residues everywhere else."
   - "docs/PROJECT_CONTEXT.md carries a `Source stamp: ROADMAP-PLATFORM.yaml @ <sha>` line. preflight's endstate_drift already reports stale (reason stamp_ref_new_ids_named) BEFORE this change, and it is a preflight signal, not a gating check -- do not chase it here."
   - "UNNAMED COUPLING the T2.11b conversion must respect: config/agent/verification_registry/entries/roadmap-wording-sweep-definition-host.yaml reads that item's criteria and asserts a substring of their text. It survives the bare->structured conversion only because it was defensively authored as `c['text'] if isinstance(c,dict) else str(c)` -- so the conversion must preserve every criterion text VERBATIM, moving it into a `text:` field and changing nothing else."
 pre_implementation_checklist:
@@ -807,8 +844,10 @@ execution_steps:
     product, keeping the investment-solicitation / securities-law rationale word-for-word.
     (ii) FOLLOW THE DOMAIN THROUGH CLAUSE (d)'s LEAD-IN. Clause (d) opens "The public site
     (theseus.support) must enforce the following boundary at all times" -- so amending clause (e)'s
-    Domain line alone would leave clause (d) binding the boundary to a retired domain. One sentence
-    noting that clause (d)'s site reference follows clause (e)'s change closes it.
+    Domain line alone would leave clause (d) binding the boundary to a retired domain. Close it
+    with a sentence containing the PINNED literal "clause (d)'s site reference follows", which VP
+    step 3 asserts; the domain grep alone cannot discriminate this case, since amending clause (e)
+    satisfies it.
   - >-
     docs/DECISIONS.md -- append a dated blockquote to Decision 195 recording that clause 4's handle
     is settled as `otl-labs` and its org-handle-decided reversal condition PARTIALLY discharged
