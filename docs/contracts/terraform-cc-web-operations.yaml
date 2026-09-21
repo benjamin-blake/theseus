@@ -35,6 +35,20 @@ contract:
 
 amendment_log:
   - date: "2026-09-21"
+    semantic_break: false
+    change_class: prose_improvement
+    summary: >-
+      PLAN-materialise-tfvars-delegate-consolidation (rec-3978, rec-3977): repointed
+      recovery_procedure at `.github/actions/materialise-tfvars/materialise_tfvars.sh` -- the
+      delegate script the governed CI apply path now calls (Decision 162 R2 extraction), which
+      also collapses the local admin-tier recovery command into the same tested implementation.
+      The raw `aws secretsmanager get-secret-value` command is retained as a fallback. Added the
+      delegate to `referenced_repo_paths`; amended (not appended to) `admin_tier_only`'s closing
+      sentence so it names both recovery paths -- direct and via the delegate; and added one
+      sentence to `operator_only_break_glass.scope` recording that assuming the admin tier is
+      itself the deliberate operator act Decision 126 asks for. No procedural change to WHICH
+      credentials are required or WHERE values are sourced from.
+  - date: "2026-09-21"
     semantic_break: true
     change_class: correction
     summary: >-
@@ -83,6 +97,7 @@ amendment_log:
 # Every repo-relative path this contract's procedure names, verified to exist by
 # validate_terraform_cc_web_operations (scripts/checks/contracts/validate_terraform_cc_web_operations.py).
 referenced_repo_paths:
+  - .github/actions/materialise-tfvars/materialise_tfvars.sh
   - .github/workflows/terraform-apply-sandbox.yml
   - .github/workflows/terraform-drift.yml
   - .github/workflows/terraform-provider-mirror-seed.yml
@@ -193,17 +208,21 @@ tfvars_and_remote_state_recovery:
     pages to a no-reply address that cannot receive mail) or pollute the `Owner` tag with a real
     mailbox literal in a public repository (Decision 101).
   recovery_procedure: >-
-    Materialise the whole tfvars set at once, the same way CI does it (see
-    `operator_only_break_glass.apply_posture` below): fetch the
-    `agent-platform-terraform-personal-tfvars` Secrets Manager entry under the
-    `agent_platform_admin` profile (`aws secretsmanager get-secret-value --secret-id
-    agent-platform-terraform-personal-tfvars --profile agent_platform_admin --query SecretString
-    --output text`) and write its body to the gitignored
-    `terraform/personal/terraform.personal.tfvars`, then pass it to `terraform plan`/`apply` via
-    `-var-file` (or individual `-var` flags). State-parsing (after `init`, `terraform state show`
-    / a parse of the state JSON) remains a fallback per-variable path when the Secrets Manager
-    entry itself is unavailable or stale -- see each `where_values_live` entry's `source` for
-    that variable's state location.
+    Materialise the whole tfvars set at once via the shared delegate the governed CI apply path
+    also calls: `.github/actions/materialise-tfvars/materialise_tfvars.sh` (Decision 162 R2
+    extraction; also wired directly into `bin/setup-cloud-env.sh`'s `INSTALL_TERRAFORM=1` ADMIN
+    branch -- see `operator_only_break_glass.apply_posture` below). It fetches the
+    `agent-platform-terraform-personal-tfvars` Secrets Manager entry under ambient credentials
+    (profile-free by design -- see `admin_tier_only` below) and writes its body, via a fail-closed
+    temp-file-then-mv, to the gitignored `terraform/personal/terraform.personal.tfvars`, ready to
+    pass to `terraform plan`/`apply` via `-var-file` (or individual `-var` flags). The raw command
+    is retained as a fallback for a container where running the delegate directly is inconvenient:
+    `aws secretsmanager get-secret-value --secret-id agent-platform-terraform-personal-tfvars
+    --profile agent_platform_admin --query SecretString --output text`, writing its body to the
+    same destination. State-parsing (after `init`, `terraform state show` / a parse of the state
+    JSON) remains a fallback per-variable path when the Secrets Manager entry itself is
+    unavailable or stale -- see each `where_values_live` entry's `source` for that variable's
+    state location.
   never_paste: >-
     Never paste these values into chat, a PR, or any committed file -- the ExternalIds are
     AssumeRole trust secrets and the account id is shape-blocked by the pre-commit
@@ -219,9 +238,11 @@ tfvars_and_remote_state_recovery:
     reading `tfstate/personal/*` directly, and only `PlatformAdmin` (the `agent_platform_admin`
     profile) may do so -- `PlatformDev` is explicitly denied `s3:GetObject` on
     `tfstate/personal/*` (the `DenyStateRead` statement in
-    `terraform/personal/platform_dev_policies.tf`'s DailyOps policy). Both procedures are
-    therefore unreachable from the routine runtime identity by design -- either requires
-    deliberately assuming the admin tier.
+    `terraform/personal/platform_dev_policies.tf`'s DailyOps policy). Both procedures -- whether
+    run as the raw command or via the shared `materialise_tfvars.sh` delegate, which stays
+    profile-free and relies on the same ambient admin-tier credentials -- are therefore
+    unreachable from the routine runtime identity by design -- either requires deliberately
+    assuming the admin tier.
 
 sticky_and_observed: >-
   (CD.35 / T2.20 Wave 1) The apply job reads a durable convergence record as a precondition and
@@ -247,7 +268,11 @@ operator_only_break_glass:
     only after a human has reviewed the plan and explicitly directed it -- never self-directed,
     never the default path. The operator-recovery procedure itself is quarantined at
     `docs/contracts/deploy-paths.yaml#admin_out_of_band.procedure` (Decision 127 / tier_item
-    T2.41) -- not surfaced here.
+    T2.41) -- not surfaced here. Wiring the `materialise_tfvars.sh` delegate call into
+    `bin/setup-cloud-env.sh`'s `INSTALL_TERRAFORM=1` branch is not a deviation from that norm:
+    ADMIN containers are used only for IAM changes and IAM planning, so assuming the admin tier to
+    boot one IS the deliberate operator act Decision 126 asks for -- the container's existence is
+    the authorization, not a gap a future agent needs to re-flag.
   apply_posture: >-
     (record-backed sandbox CD, CD.35 / T2.20 Wave 1) Sandbox CD auto-apply
     (`.github/workflows/terraform-apply-sandbox.yml`; push-to-main touching

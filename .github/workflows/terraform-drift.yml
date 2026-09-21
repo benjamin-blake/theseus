@@ -139,41 +139,16 @@ jobs:
           .venv/bin/pip install --quiet --upgrade pip
           .venv/bin/pip install -r requirements.txt
 
-      - name: Materialise tfvars from Secrets Manager
+      - name: Materialise tfvars from Secrets Manager (shared action)
+        # rec-3977: consumes the shared composite action (Decision 162 R2 extraction) instead of
+        # carrying its own inline fetch/mask/assert copy -- the fifth such inline copy in the
+        # repo, now collapsed to the one materialise_tfvars.sh implementation. The
+        # steps.oidc_drift.outcome == 'success' gate rides this replacement step exactly as it did
+        # the three steps it replaces (Decision 190): a composite action cannot express that
+        # condition internally, so it MUST ride the caller's step or an ungated step would run
+        # after a failed assume.
         if: steps.oidc_drift.outcome == 'success'
-        run: |
-          set -euo pipefail
-          aws secretsmanager get-secret-value \
-            --secret-id agent-platform-terraform-personal-tfvars \
-            --query SecretString --output text \
-            > terraform/personal/terraform.personal.tfvars
-
-      - name: Mask secret-sourced tfvars values in logs
-        # rec-2285: split on first '=' only so values containing '=' are not truncated.
-        if: steps.oidc_drift.outcome == 'success'
-        run: |
-          set -euo pipefail
-          while IFS= read -r line; do
-            key=${line%%=*}
-            value=${line#*=}
-            key=$(printf '%s' "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            value=$(printf '%s' "$value" | sed 's/^[[:space:]]*"//;s/"[[:space:]]*$//')
-            case "$key" in
-              account_id|platform_dev_external_id|platform_admin_external_id)
-                if [ -n "$value" ]; then
-                  echo "::add-mask::${value}"
-                fi
-                ;;
-            esac
-          done < terraform/personal/terraform.personal.tfvars
-
-      - name: Assert tfvars file is non-empty (fail-closed)
-        if: steps.oidc_drift.outcome == 'success'
-        run: |
-          test -s terraform/personal/terraform.personal.tfvars || {
-            echo "terraform.personal.tfvars is empty or missing -- check the agent-platform-terraform-personal-tfvars secret" >&2
-            exit 1
-          }
+        uses: ./.github/actions/materialise-tfvars
 
       - name: Terraform init (S3 backend, sandbox)
         if: steps.oidc_drift.outcome == 'success'

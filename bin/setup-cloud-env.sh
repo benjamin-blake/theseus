@@ -210,8 +210,24 @@ if [ "${INSTALL_TERRAFORM:-0}" = "1" ]; then
     else
         log "WARNING: terraform provider mirror sync produced no local mirror (non-fatal); TF_CLI_CONFIG_FILE not set -- terraform/personal init falls back to the pre-mirror CI-delegated posture (terraform/CLAUDE.md)."
     fi
+
+    # rec-3977/rec-3978 (Decision 162 R2): calls the SAME delegate the governed CI apply path uses
+    # (.github/actions/materialise-tfvars/materialise_tfvars.sh), so the local ADMIN break-glass
+    # loop and CI share one implementation. Warn-and-continue, like the mirror sync above -- a
+    # missing/stale tfvars file here is non-fatal to the rest of bootstrap (the session_start
+    # hooks below still need to run), and the delegate itself preserves any pre-existing tfvars
+    # file byte-identical on a failed fetch (never truncates before confirming the fetch
+    # succeeded). Profile-free by design (DEP-13, Decision 157): a PlatformDev container
+    # AccessDenies on this secret, which is the intended fail-closed outcome -- re-run from an
+    # ADMIN container.
+    t0=$SECONDS
+    if bash "$REPO_ROOT/.github/actions/materialise-tfvars/materialise_tfvars.sh"; then
+        log "materialise-tfvars: $((SECONDS - t0))s"
+    else
+        log "WARNING: materialise-tfvars fetch failed (non-fatal); terraform/personal/terraform.personal.tfvars may be stale or missing -- any pre-existing file was preserved unchanged. Re-run from an ADMIN container to retry."
+    fi
 else
-    log "Terraform provider mirror sync skipped (INSTALL_TERRAFORM != 1)"
+    log "Terraform provider mirror sync and tfvars fetch skipped (INSTALL_TERRAFORM != 1)"
 fi
 
 # 6. github-mcp-server (for the .mcp.json `github-full` MCP server) ------------

@@ -21,42 +21,12 @@ runs:
     - name: Materialise tfvars from Secrets Manager
       shell: bash
       working-directory: ${{ inputs.working-directory }}
-      run: |
-        set -euo pipefail
-        aws secretsmanager get-secret-value \
-          --secret-id agent-platform-terraform-personal-tfvars \
-          --query SecretString --output text \
-          > terraform/personal/terraform.personal.tfvars
-
-    - name: Mask secret-sourced tfvars values in logs
-      # rec-2214: emit ::add-mask:: for account_id and the two ExternalId trust secrets BEFORE
-      # any downstream step writes plan.json / review.txt, so they are redacted in subsequent
-      # log output. rec-2285: split on first '=' only (line%%=* / line#*=) so values containing
-      # '=' are not truncated.
-      shell: bash
-      working-directory: ${{ inputs.working-directory }}
-      run: |
-        set -euo pipefail
-        while IFS= read -r line; do
-          key=${line%%=*}
-          value=${line#*=}
-          key=$(printf '%s' "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-          value=$(printf '%s' "$value" | sed 's/^[[:space:]]*"//;s/"[[:space:]]*$//')
-          case "$key" in
-            account_id|platform_dev_external_id|platform_admin_external_id)
-              if [ -n "$value" ]; then
-                echo "::add-mask::${value}"
-              fi
-              ;;
-          esac
-        done < terraform/personal/terraform.personal.tfvars
-
-    - name: Assert tfvars file is non-empty (fail-closed)
-      # Fail-closed (Decision 77): a missing or empty tfvars file reds the run before plan.
-      shell: bash
-      working-directory: ${{ inputs.working-directory }}
-      run: |
-        test -s terraform/personal/terraform.personal.tfvars || {
-          echo "terraform.personal.tfvars is empty or missing -- check the agent-platform-terraform-personal-tfvars secret" >&2
-          exit 1
-        }
+      # Thin adapter only -- the body lives in materialise_tfvars.sh (Decision 162 R2) so it is
+      # shellcheckable and testable under the exact `bash --noprofile --norc -e -o pipefail`
+      # invocation GitHub uses here. materialise_tfvars.sh clears the inherited errexit itself and
+      # checks every failure path explicitly; do NOT re-inline the fetch/mask/assert logic this
+      # collapsed (rec-3977). The ONLY effective line is the delegate call -- adding
+      # `set -euo pipefail` here would make the shared guard's _delegated_script classifier stop
+      # recognising this as a thin adapter. materialise_tfvars.sh's own exit status propagates as
+      # this step's status (last command of the body).
+      run: bash "${{ github.action_path }}/materialise_tfvars.sh"
