@@ -110,7 +110,8 @@ scope:
       (Decision 177); the fenced stanza interior is the one carve-out (clause 4), which is what
       makes the re-arm legal here rather than a deferral to slice 2. BOUND the bump: the existing
       `review_by: 2027-04-30` is anchored to condition (a), GHAS_PROBE_TOKEN's 2027-05-31 expiry, so
-      the new value must be ON OR BEFORE 2027-04-30. An unbounded bump would satisfy condition (b)'s
+      the new value must be STRICTLY EARLIER than 2027-04-30 -- "on or before" would admit leaving
+      it unchanged, which AC4 and VP step 7 both treat as a silent renewal and therefore a failure. An unbounded bump would satisfy condition (b)'s
       re-arm while silently weakening condition (a).
 bundled_recommendations: []
 followon_recs: []
@@ -122,7 +123,8 @@ acceptance_criteria:
   - >-
     validate_workflow_dependency_install is registered, runs in --pre, and FAILS on a job invoking a
     scripts module that NEEDS a third-party distribution with no preceding install step in the same
-    job -- and does NOT fail any of the three legitimately-correct shapes in the live corpus:
+    job -- and does NOT fail any of the three legitimately-correct SHAPES, spread across four jobs,
+    in the live corpus:
     terraform-apply-sandbox.yml::apply-sandbox step 5 and ::advisory-status step 2 (stdlib-only
     modules, no install needed anywhere); reconcile.yml::resolve-target (install in a preceding
     STEP of the same job, :139-142 before :144-163); and reconcile.yml::apply-reconcile (install
@@ -411,7 +413,13 @@ execution_steps:
   - >-
     Write scripts/checks/ci_guards/validate_workflow_dependency_install.py, reusing
     _workflow_shell_bodies._iter_workflows and _step_identity. Encode BOTH predicates as DATA, not
-    prose. INVOCATION set: `python -m scripts.`, `.venv/bin/python -m scripts.`, `bin/venv-python`
+    prose. INVOCATION set, FOUR shapes: `python -m scripts.`, `python3 -m scripts.`,
+    `.venv/bin/python -m scripts.`, `bin/venv-python`. `python3` is NOT covered by the `python`
+    entry -- "python -m scripts." is not a substring of "python3 -m scripts." -- and reconcile.yml
+    and terraform-apply-sandbox.yml invoke ONLY via python3, so omitting it silently under-enforces
+    over a quarter of the invoking corpus and makes the same-body branch below unreachable on live
+    input (its sole instance, reconcile.yml:264-265, is a python3 invocation), letting its fixture
+    pass for the wrong reason
     -- and the install may sit at or before the invoking step IN THE SAME JOB, including textually
     earlier within that step's own `run:` body (reconcile.yml:264-265). EXCLUSION keyed on the
     tool-permission token shape: a match inside an
