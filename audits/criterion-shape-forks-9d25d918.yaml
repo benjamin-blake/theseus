@@ -343,6 +343,63 @@ audit:
       - T4.23
       note: Safe as a design input now; implementation waits for Decision 197 clause-8 migration and human disposition.
         No portal recommendation filed.
+  - id: CSF-07
+    surface: S4
+    affects_surfaces:
+    - S4
+    candidate_ref: null
+    question: Q1
+    dimension: VD3
+    title: Graduated-check decay has no bounded detection latency until T3.7 lands
+    evidence: scripts/checks/verification/validate_verification_registry.py:194; docs/contracts/verification-registry.yaml:244;
+      config/agent/verification_registry/entries/deprecated/plan-obligations-enumeration-homed.yaml; config/agent/verification_registry/entries/deprecated/no-retired-ci-role-in-live-surfaces.yaml
+    evidence_kind: observed
+    current_behavior: The differential gate re-runs a graduated record only when that record is added or modified in
+      the diff (validate_verification_registry.py:194-196). Git history at the audited base shows plan-obligations-enumeration-homed
+      resident from b91b92b3 (2026-08-11) to 4b9d252b (2026-08-25), 14 days, and no-retired-ci-role-in-live-surfaces
+      from c129ea2e (2026-07-24) to the same migration, 32 days; both were surfaced only because the sharding
+      migration re-pointed the records (DD-A).
+    ideal_behavior: A graduated check that goes permanently FAIL or permanently TRUE after admission is detected on a
+      bounded clock by a named mechanism, without depending on an unrelated edit to its shard.
+    gap: Under admitted-once semantics (Q1 verdict b) no built mechanism bounds the interval. T3.7 c1 (scheduled
+      mutation testing on graduated-check targets) and c3 (registry orphan detection) are the owned remedy and are
+      deferred_post_mvp.
+    compensating_controls_considered: The modified-record differential (validate_verification_registry.py:27, :194-196)
+      exercises only records present in the diff; for an untouched shard it never runs, so it would not fail if the
+      defect were real. CD.12 mark-then-drop retirement acts only after something else has flagged the row.
+    change_type: enforce
+    proposed_change: Build T3.7 c1 and c3 as specified (scheduled mutation on graduated-check targets; registry orphan
+      detection), alarm-not-gate, filing recs; record in verification-registry.yaml governance_notes that graduated
+      means admitted at a commit and that post-admission detection latency is bounded only once T3.7 lands.
+    acceptance: A graduated shard whose guard target is deleted, or whose check survives every mutant on its target,
+      is flagged by a scheduled run within one schedule period without any edit to the shard.
+    severity: high
+    severity_rationale: Materially reduces the guarantee a graduated row carries (NS3), and the only compensating
+      control fails the counterfactual for untouched rows. Not critical -- graduation is documented as admission,
+      not standing health (verification-registry.yaml:244), so no reader is promised a live guarantee today.
+    confidence: HYPOTHESIS
+    roadmap_crossref:
+      classification: planned-unbuilt
+      item_ids:
+      - T3.7
+      - dec-176
+      dedup_search_terms:
+      - standing suite
+      - never re-executed
+      - mutation testing on graduated
+      - orphan detection
+      dedup_hit_count: null
+      note: ROADMAP-PLATFORM.yaml hits are T3.7 (its c1/c3 exit criteria match the gap; deferred_post_mvp, unbuilt)
+        and CD.29's meta-validation clause naming T3.7; DECISIONS.md hit is Decision 176, which fixes the registry
+        shape and does not promise re-execution. Recommendation ownership cannot be verified without AWS; confidence
+        is downgraded for that reason.
+    effort: L
+    depends_on: []
+    sequencing:
+      safe_to_queue_now: false
+      blocked_behind:
+      - T3.7
+      note: The remedy is T3.7 itself, deferred_post_mvp; no portal recommendation filed.
   converged_shape_corrections:
   - candidate_ref: candidate 1
     element: phase
@@ -400,7 +457,9 @@ audit:
       adequacy mechanism, not an already-live control. A periodic green run catches permanent FAIL but not permanent
       TRUE. Re-differential against moving origin/main wrongly rejects still-useful unchanged checks whose behavior
       exists on both trees. T3.7 remains deferred_post_mvp and CD.29 pending. No periodic-standing amendment is recommended;
-      present staleness detection latency is unbounded.
+      present staleness detection latency is unbounded. CSF-07 records that unbounded post-admission latency as the
+      declared residual on S4, owned by T3.7 (planned-unbuilt) -- a reason to build T3.7, not to amend CD.29 with a
+      standing run.
   - q: Q2
     verdict: drop-the-field
     basis: []
@@ -433,6 +492,9 @@ audit:
     precedent:
     - ops_smoke_events (append-only kernel smoke table, not per-criterion domain precedent)
     - T3.15 PR-body VP compliance table (prose evidence precursor, not immutable journal)
+    - ops_execution_plans (SCD2 child keyed on parent rec_id plus revision, current = latest revision per rec_id,
+      storage-substrate.yaml:79-92, grain :87 -- the criteria-table precedent for "SCD2 with its parent", distinct
+      from the evidence-journal search)
     adapter_split:
       splits: false
       local_verdict: two-tables-evidence-journal
@@ -445,7 +507,10 @@ audit:
       current reads; it is not inherently CRUD. Two tables need a transactional writer, version-scoped named reads,
       immutable artifact references and explicit reducer. The fully-qualified work_item_criterion_evidence name is
       unambiguous beside CI artifact-retention and CI-RCA bundle contracts. No production per-criterion journal exists
-      in the enumerated repository inventory; smoke infrastructure and PR tables are limited precedents.
+      in the enumerated repository inventory; smoke infrastructure and PR tables are limited precedents. For the criteria table itself, ops_execution_plans
+      (one row per (rec_id, revision), current = latest revision per rec_id) is the SCD2-with-parent sibling, so
+      design_time_walk step 8's existing-sibling exemption may apply to work_item_criteria; the evidence table has no
+      sibling and remains the one new table to escalate.
     external_checklist:
     - design: one-table
       property: P1
@@ -540,10 +605,13 @@ audit:
         mismatched versions; single-row no-join property is deliberately traded away. https://ducklake.select/docs/stable/duckdb/advanced_features/transactions
     - design: two-tables
       property: P9
-      rating: partial
-      evidence: Buys independent observation writes. A single writer transaction must validate referenced evidence
-        and advance claim atomically; failure injection must roll back both. This protocol is proposed, not present
-        in Section 10.3. https://ducklake.select/docs/stable/duckdb/advanced_features/transactions
+      rating: met
+      evidence: The repository's write primitive already spans tables in one transaction -- write_scd2 performs the
+        history MERGE-on-ULID append, the current write-through and the ops_entity_counters advance between one
+        BEGIN TRANSACTION and one COMMIT (src/common/ducklake_writes.py:128, :186-206; docs/contracts/ducklake_writer.yaml:49-58;
+        docs/contracts/ops_entity_counters.yaml:109-112). A criterion revision plus its evidence row is the same
+        mechanism extended by one table pair, so claim and proof advance in one write; Section 10.3 does not state it
+        and the clause-8 walk must, with failure injection rolling back both. https://ducklake.select/docs/stable/duckdb/advanced_features/transactions
   - q: Q5
     answers:
     - question: When realized-differently text changes, what happens to identity?
@@ -615,7 +683,7 @@ audit:
       - column: evaluator_kind
         null_for: both
       - column: primitive_slot
-        null_for: both
+        null_for: epic-shaped
       - column: check_spec
         null_for: both
       - column: guard_target
@@ -627,7 +695,7 @@ audit:
       - column: phase
         null_for: both
       - column: severity
-        null_for: both
+        null_for: epic-shaped
       - column: disposition
         null_for: both
       - column: graduated_check_id
@@ -636,8 +704,12 @@ audit:
         null_for: both
       - column: authored_at_sha
         null_for: both
-      rationale: These 12 values are absent from native ExitCriterion and recommendation acceptance representations
-        on both parent kinds; assigning defaults or inferring them is not observation. This is origin/method sparsity,
+      rationale: Ten of these 12 values are absent from native ExitCriterion and recommendation acceptance
+        representations on both parent kinds; primitive_slot and severity are null for epic-shaped items only, because
+        the task-shaped parent's acceptance contract already admits list[TypedCheck] with type (the CD.29 slot) and
+        severity (ops_recommendations.yaml:294-296), although today's rec population never uses the typed form (E4
+        could not be re-measured here; the brief reports zero list-form rows). Assigning defaults or inferring them is
+        not observation. This is origin/method sparsity,
         not incompatible required fields of epic versus task parents. A criterion-specific discriminated verification-method
         payload (execution/review/unresolved-legacy) absorbs applicable method fields, while provenance remains version-bound.
         Nullability alone does not meet the trigger's cannot-absorb condition. No third work-item kind is necessary;
@@ -671,32 +743,50 @@ audit:
         - git verification registry (plan_slug, check_id, git_ref)
         - plan revisions
         - work_item_edges
+        - ops_execution_plans (via met_by, the ledger's declared forward FK -- exit-criteria-ledger.yaml:97-99)
         rationale: Evidence carries criterion_version_ulid; criterion joins parent logical identity and explicit parent
-          version when provenance requires it. Preserve registry (plan_slug, graduated_check_id) as a cross-system
+          version when provenance requires it. The ledger already reserves met_by as a future ops_execution_plans
+          foreign key (exit-criteria-ledger.yaml:97-99), so a met criterion's resolving plan revision is an existing
+          join target, not a new one. Preserve registry (plan_slug, graduated_check_id) as a cross-system
           link qualified by registry git ref. _joins.yaml:12 defines logical, not engine-enforced FKs; register these
           new joins there during migration.
         basis: []
       partition_column:
-        verdict: recorded_at
+        verdict: created_timestamp
         applies_to:
         - work_item_criteria
         - work_item_criterion_evidence
-        rationale: Writer-stamped UTC mutation/event time, day transform, on both logical tables; criteria recorded_at
-          is revision time and evidence recorded_at is ingestion time. Preserve occurred_at for late events and causal
-          ordering. Decision 137 requires partitioning on both adapters.
+        rationale: Follow the existing SCD2 envelope rather than a new column. created_timestamp is minted by
+          ducklake_runtime._derive_fields(), never caller-supplied, carried unchanged on UPDATE, and partitions every
+          history table via day(created_timestamp) with the current table on bucket(8, <merge key>)
+          (ops_recommendations.yaml:500-508, :567; field_semantics.yaml:454-461 for ops_execution_plans). So
+          work_item_criteria history is day(created_timestamp) and its current projection is
+          bucket(8, [work_item_identity, criterion_id]) per the merge_key above; work_item_criterion_evidence
+          (append-only, history-only) is day(created_timestamp) as ingestion time. Keep occurred_at on evidence for
+          late events and causal ordering -- occurred_at is a NEW column with no counterpart on any ops table and is
+          not the partition column. Decision 137 requires partitioning on both adapters.
         basis: []
       current_projection:
         verdict: scd2-history-plus-type1-current
         rationale: Serving pick/read paths should not repeatedly window the full history. A transactionally maintained
           current projection is derivative, not a third independent source of truth. Evidence remains append-only
-          without a mutable current fact table.
+          without a mutable current fact table. The cloud adapter already maintains exactly this pair --
+          write_scd2 writes the history append and the current write-through projection in one transaction
+          (src/common/ducklake_writes.py:128; docs/contracts/ducklake_writer.yaml:49-51) and ops_execution_plans serves
+          current = latest revision per rec_id (storage-substrate.yaml:87) -- so work_item_criteria reuses that
+          primitive rather than a new projection mechanism.
         basis: []
       write_boundary:
         verdict: portal-writer-verb
         owner: 'proposed work-item storage-port writer: record_criterion_revision / record_criterion_evidence'
         rationale: A shared storage-port writer module owns allocation, validation, idempotency and the transaction
           for both adapters. Merge-time ingestion calls that verb; it is not a second writer. Name below is proposed,
-          not existing.
+          not existing. The proposed record_criterion_revision / record_criterion_evidence verbs extend the existing
+          write_scd2 / file_scd2 primitive, which already commits the history append, the current projection and the
+          ops_entity_counters allocation inside one BEGIN TRANSACTION / COMMIT (src/common/ducklake_writes.py:128,
+          :186-206; docs/contracts/ducklake_writer.yaml:49-58; docs/contracts/ops_entity_counters.yaml:109-112); a
+          criterion revision plus its evidence row is one more table pair inside that same transaction, not a second
+          transaction model.
         basis: []
       tenancy:
         verdict: project-id-on-criterion-row
@@ -876,8 +966,9 @@ audit:
     what_it_constrains: DECISIONS.md:7819 is historical; validate_tier_floor.py:49-90 and complete T3.17 now mechanically
       enforce a plan-level floor. This does not imply a criterion floor exists.
   - candidate: nullable-field count
-    what_it_constrains: 12 proposed method/provenance columns lack native equivalents in both parent kinds. This is
-      not a proof that epic/task required fields cannot be absorbed.
+    what_it_constrains: 10 of the 12 proposed method/provenance columns lack native equivalents in both parent kinds;
+      primitive_slot and severity have a task-shaped contract counterpart in TypedCheck (ops_recommendations.yaml:294-296)
+      that no cached rec uses. This is not a proof that epic/task required fields cannot be absorbed.
   - candidate: external-practice precision
     what_it_constrains: P6 exact test/run+expiry shape is an audit bar, not established universal practice. P7 adequacy
       belongs to a run policy as well as storage. A two-table vote cannot substitute for either control.
@@ -905,12 +996,6 @@ audit:
     compensating_control: null
     control_property_match: null
     owner_ref: dec-197
-  - candidate: Q1 live-standing interpretation
-    why_dismissed: Graduation is an admission property, not an evergreen claim. Keeping this meaning is coherent;
-      T3.7 is the declared deferred mutation/orphan policy, and no bounded detection latency is claimed today.
-    compensating_control: null
-    control_property_match: null
-    owner_ref: dec-176
   rubric_ratings:
   - surface: S1
     dimension: VD1
@@ -1029,9 +1114,11 @@ audit:
     note: Immutable check_id and filename placement retain addressing.
   - surface: S4
     dimension: VD3
-    rating: adequate
-    evidence: scripts/verification_graduation.py:486
-    note: Real live/base differential rejects new tautologies; unchanged entries are outside admission-time scope.
+    rating: weak
+    evidence: scripts/checks/verification/validate_verification_registry.py:194
+    note: 'CSF-07: admission-time differential rejects new tautologies, but an untouched graduated shard is never
+      re-run, so post-admission decay (permanent FAIL for 14 days, permanent TRUE for 32 days) is undetectable
+      from what the surface stores until T3.7.'
   - surface: S4
     dimension: VD4
     rating: strong
@@ -1142,9 +1229,11 @@ audit:
     strengths: Explicit ledger semantics and touched-item/reference controls; bounded legacy conversion is intentional.
     top_gaps: []
   - surface: S4
-    maturity: frontier
-    strengths: Commit-local differential admission and candid lifecycle limitations.
-    top_gaps: []
+    maturity: strong
+    strengths: Commit-local differential admission and candid lifecycle limitations; one high finding (CSF-07,
+      planned-unbuilt against T3.7).
+    top_gaps:
+    - CSF-07
   - surface: S5
     maturity: frontier
     strengths: Explicit legacy semantics and governed writer; no verified new defect in its scoped fields.
@@ -1154,14 +1243,14 @@ audit:
     strengths: Leg-sensitive replay and explicit unmeasurable outcomes. Scope is plan-time, not standing validation.
     top_gaps: []
   summary:
-    total_findings: 6
+    total_findings: 7
     novel_count: 0
     planned_insufficient_count: 6
-    planned_unbuilt_count: 0
+    planned_unbuilt_count: 1
     top_improvements:
+    - CSF-07
     - CSF-01
     - CSF-02
     - CSF-06
     - CSF-03
-    - CSF-04
     highest_leverage_change: CSF-01
