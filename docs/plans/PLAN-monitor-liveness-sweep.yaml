@@ -46,8 +46,10 @@ scope:
       schedules stopped firing, success means runs are firing and failing, which are different
       operator actions and must not share a rec; (c) fleet_threshold_seconds and
       `since_ts = max(anchor_ts)` are computed per leg over that leg's own stale set.
-      test_open_per_loop_recs_are_suppressed_not_closed (:405-420) is the test whose verdict turns
-      on (a).
+      test_open_per_loop_recs_are_suppressed_not_closed (:407-420) does NOT discriminate (a): its 3
+      peers stale on both legs collapse under either rule (distinct=3, pairs=6). The discriminating
+      case is TWO peers stale on both legs -- distinct=2 (no collapse, correct) vs pairs=4 (spurious
+      collapse suppressing every per-loop episode) -- and it does not exist yet. Add it.
   - file: config/agent/data_quality/source_registry.yaml
     action: Modify
     purpose: >-
@@ -351,7 +353,10 @@ constraints:
     resolved sweep behind `if existing is None:` (:473-477), so a peer whose rec is already filed
     and open pays ZERO sweeps per tick, not one. The only per-tick warehouse read while anything is
     stale is the single source-scoped find_recs("loop_liveness_stale") at :566-567, which the second
-    leg does not change. Sweep cost is per EPISODE, paid on first file and on a cross-anchor
+    leg does not change -- read that as the STEADY-STATE read, not an exhaustive one: in the
+    post-closure dwell window (rec resolved, peer still stale, _decide_action returning "drop")
+    `existing` is None every tick, so the sweep and a possible rec_by_id run each tick for the whole
+    mute window. Another reason the per-loop-per-tick memo below is mandatory, not an optimisation. Sweep cost is per EPISODE, paid on first file and on a cross-anchor
     re-open, so a peer stale on both legs pays at most two at those moments. Keep the sweep prefix
     loop-wide (`Loop: {loop}.%`), discriminate the leg CLIENT-SIDE in _filter_resolved_rows, and
     MEMOISE _resolved_rows_for_loop per loop per tick -- Decision 88 invariant (ii) forbids an
@@ -497,7 +502,14 @@ execution_steps:
     CADENCE leg, because _decide_action (:440-446) rewrites only title and context on update, so
     every already-filed cadence rec keeps its stored selector-less acceptance string forever. A bare
     form meaning "stale on any leg" would start failing those legacy recs on a success-only outage
-    -- the same regression, reintroduced through the back door.
+    -- the same regression, reintroduced through the back door. SYMMETRICALLY, decide the untagged
+    legacy TITLE the same way: _is_open_loop_row (:342-355) matches title.startswith("Loop: {loop}.
+    "), and re-keyed on (loop, leg) it must treat a title with NO leg marker as CADENCE. Live, not
+    hypothetical -- rec-3860 is open right now as "Loop: main-canary.yml. Episode:
+    run:31336661344. Bucket: 8. ..." with no marker, so if untagged does not map to cadence the
+    first post-merge tick files a DUPLICATE open rec against that peer. Give it a test using
+    rec-3860's exact legacy title shape; no test this plan otherwise names would catch it, because
+    every existing test injects its own open_recs titles.
   - >-
     Extend loop_liveness_stale's description and signal_interpretation in
     config/agent/data_quality/source_registry.yaml to cover both legs.
