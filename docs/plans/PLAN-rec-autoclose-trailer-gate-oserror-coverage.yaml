@@ -66,6 +66,12 @@ acceptance_criteria:
     The test asserts BOTH limbs of the unreadable-source outcome -- a non-empty failed list
     carrying the "could not read" entry, and a registry declaration whose kind is "skipped". A
     test that merely reaches lines 37-38 without asserting the outcome does not satisfy this.
+    NOT MACHINE-VERIFIABLE BY THIS PLAN, and deliberately flagged as such: an assertion-free test
+    that injects the OSError would still pass VP step 1 (exit 0, "1 passed"), still pass VP step 2
+    (lines 37-38 execute, so coverage reaches 100%), and would still be ADMITTED by the shard's
+    differential gate. This criterion is therefore a CODE-REVIEW obligation -- the reviewer must
+    read the test body and confirm both assertions are physically present. Do not mark it met on
+    the strength of a green VP.
   - >-
     scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py reports 100% line coverage
     with an empty Missing column when measured under that test file alone (49 statements, 0
@@ -112,12 +118,17 @@ verification_plan:
       require 100% with an empty Missing column.
     command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py -q --no-header --cov=scripts.checks.ci_guards.validate_rec_autoclose_trailer_gate --cov-report=term-missing --cov-fail-under=100
     expected: >-
-      Exit 0, "9 passed", and a coverage table row reading 49 statements, 0 missed, 100%, with
-      nothing in the Missing column. Measured at authoring time on the un-implemented tree: exit
-      1, 8 passed, 49 statements, 2 missed, 96%, Missing 37-38, and "FAIL Required test coverage
-      of 100% not reached. Total coverage 95.92%".
+      Exit 0, "9 passed", a coverage table row reading 49 statements, 0 missed, 100% with nothing
+      in the Missing column, and the success line "Required test coverage of 100% reached."
+      Measured at authoring time on the un-implemented tree: exit 1, 8 passed, 49 statements, 2
+      missed, 96%, Missing 37-38, and "FAIL Required test coverage of 100% not reached. Total
+      coverage: 95.92%". The literal is deliberately the full "... 100% reached" phrase, not the
+      bare "100%": the bare form appears in the FAILING output too ("of 100% not reached") and so
+      asserts nothing, while the full phrase is absent from it -- both verified by substring test
+      at authoring time, and the success wording itself was observed live by running the same
+      command with a satisfiable --cov-fail-under.
     expected_literals:
-      - "100%"
+      - "Required test coverage of 100% reached"
     fix_if: >-
       A residual Missing entry naming 37-38 means the OSError never reached the real _read. A
       100% figure achieved while step 1 fails means the coverage came from some other test --
@@ -184,21 +195,33 @@ verification_plan:
       with a fix-bound shard artifact -- rec-autoclose structurally cannot, because
       close_recs_from_trailer supplies no closure_artifact.
     command: >-
-      git fetch origin main --quiet && test -f config/agent/verification_registry/entries/rec-autoclose-trailer-gate-read-oserror.yaml && git diff-tree --no-commit-id --name-only -r "$(git rev-parse origin/main)" | grep -x "config/agent/verification_registry/entries/rec-autoclose-trailer-gate-read-oserror.yaml" && bin/venv-python -m scripts.ops_data_portal --update-rec rec-3991 --status closed --resolution "Resolved by PLAN-rec-autoclose-trailer-gate-oserror-coverage: test_read_returns_none_on_oserror drives the real _read helper via a pathlib.Path.read_text OSError, covering lines 37-38 and returning the module to 100% line coverage." --closure-artifact "shard:rec-autoclose-trailer-gate-read-oserror" --closure-fix-sha "$(git rev-parse origin/main)" --profile agent_platform && bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json,pathlib;r=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()];x=next(y for y in r if y['id']=='rec-3991');c=json.loads(x['context_v2_json']);print(x['status'],'|',c.get('closure_artifact'),'|',c.get('fixed_by_sha'));assert x['status']=='closed' and c.get('closure_artifact')=='shard:rec-autoclose-trailer-gate-read-oserror' and c.get('fixed_by_sha')"
+      git fetch origin main --quiet && SHARD=config/agent/verification_registry/entries/rec-autoclose-trailer-gate-read-oserror.yaml && test -f "$SHARD" && MERGE_SHA=$(git rev-list -1 origin/main -- "$SHARD") && test -n "$MERGE_SHA" && git diff-tree --no-commit-id --name-only -r "$MERGE_SHA" | grep -x "$SHARD" && bin/venv-python -m scripts.ops_data_portal --update-rec rec-3991 --status closed --resolution "Resolved by PLAN-rec-autoclose-trailer-gate-oserror-coverage: test_read_returns_none_on_oserror drives the real _read helper via a pathlib.Path.read_text OSError, covering lines 37-38 and returning the module to 100% line coverage." --closure-artifact "shard:rec-autoclose-trailer-gate-read-oserror" --closure-fix-sha "$MERGE_SHA" --profile agent_platform && bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json,pathlib;r=[json.loads(l) for l in pathlib.Path('logs/.recommendations-log.jsonl').read_text().splitlines() if l.strip()];x=next(y for y in r if y['id']=='rec-3991');c=json.loads(x['context_v2_json']);print(x['status'],'|',c.get('closure_artifact'),'|',c.get('fixed_by_sha'));assert x['status']=='closed' and c.get('closure_artifact')=='shard:rec-autoclose-trailer-gate-read-oserror' and c.get('fixed_by_sha')"
     expected: >-
-      The diff-tree guard prints the shard path (proving origin/main IS the squash-merge that
-      added it), the write succeeds, and the read-back prints closed, the shard token, and a
-      non-empty fixed_by_sha.
+      MERGE_SHA resolves to the commit that ADDED the shard, the diff-tree guard echoes the shard
+      path, the write succeeds, and the read-back prints closed, the shard token, and a
+      fixed_by_sha equal to MERGE_SHA. The sha is derived FROM THE ARTIFACT
+      (git rev-list -1 origin/main -- "$SHARD"), never from main's tip, and the single MERGE_SHA
+      variable feeds both the guard and --closure-fix-sha so they can never disagree. Verified
+      against a real precedent shard at authoring time: rev-list -1 still names the adding commit
+      for closure-stamp-applicable-seam.yaml although main has advanced many merges since, and
+      that sha's diff-tree lists the file.
     fix_if: >-
-      The diff-tree guard printing nothing is the ordering failure Decision 186 point 4 creates
-      and is the WHOLE reason it is executable here rather than left to prose: origin/main does
-      not yet point at the squash-merge, so the command-substituted sha names a commit whose
-      diff-tree lacks the shard and the portal would raise ClosureArtifactRequired, leaving
-      rec-3991 OPEN. Wait for the merge, re-fetch, re-run -- never hand-pick a different sha to
-      make the gate pass. Both closure flags MUST ride the same call (Decision 186 point 4);
-      closing first and stamping afterwards no longer satisfies the route. A silent exit 0 with
-      no output means the wrong entrypoint was used; scripts.ops_data_portal is the sanctioned
-      one.
+      TWO distinct failures, with different remedies -- do not apply the wrong one. (a) MERGE_SHA
+      resolves EMPTY (rev-list prints nothing, exit 0, so `test -n` stops the chain): the
+      squash-merge has not landed on origin/main yet. Wait for the merge, re-fetch, re-run. (b)
+      MERGE_SHA resolves but names a commit that is not this plan's squash-merge -- possible only
+      if a later commit also touched the shard, since main merges roughly every 30 minutes and
+      rev-list -1 returns the MOST RECENT toucher. Decision 186 point 4 binds "added or modified",
+      so a later modifying commit still resolves; if it is nonetheless the wrong fix attribution,
+      name this plan's squash-merge sha explicitly and pass THAT to both the guard and
+      --closure-fix-sha, which is exactly what closure_dependency.rec_2923_precedent does (it
+      stamps the commit that actually fixed the defect, not a merge tip). The prohibition is
+      narrow and survives both branches: never name a sha whose diff-tree does not carry the
+      shard. Note that using main's tip is what this step deliberately avoids -- it would refuse
+      PERMANENTLY once any other PR merges after this one, and no amount of re-fetching could
+      recover it. Both closure flags MUST ride the same call (Decision 186 point 4); closing
+      first and stamping afterwards no longer satisfies the route. A silent exit 0 with no output
+      means the wrong entrypoint was used; scripts.ops_data_portal is the sanctioned one.
     hermetic: false
   - step: 6
     phase: post-deploy
@@ -256,9 +279,14 @@ constraints:
   - >-
     Decision 59 scope boundary: scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py is
     NOT in scope and its "except OSError: return None" limb stays exactly as written. rec-3991's
-    preventive_action offers an optional refactor (raise, or a discriminated Union) as an
-    ALTERNATIVE to the test -- adopting it here would be an out-of-scope source change. If it is
-    judged worth doing, file a recommendation via scripts.ops_data_portal instead.
+    preventive_action offers a refactor (raise, or a discriminated Union[str, Exception]) as an
+    ALTERNATIVE to the test -- adopting it here would be an out-of-scope source change.
+    DISPOSITION, decided at plan time and recorded rather than deferred: the refactor is DECLINED
+    on the merits, and followon_recs stays empty DELIBERATELY. It is rec-3991's own suggested
+    alternative, not a newly-discovered out-of-scope defect, and the rec's acceptance command
+    fixes the test-only route, so no follow-on rec is owed (decision-scout answer (c) reached the
+    same conclusion independently). An implementing agent must NOT read this as an open invitation
+    to file one, and must not refactor _read.
   - >-
     Scope the OSError patch to the validate_rec_autoclose_trailer_gate(failed) call only, inside a
     with block. A module- or session-scoped pathlib.Path.read_text patch would leak and redden
@@ -297,12 +325,14 @@ context:
   - "Closure route: docs/contracts/ci-rca-lifecycle.yaml closure_dependency.manual_route + rec_2923_precedent; worked example at docs/plans/PLAN-closure-stamp-applicability.yaml VP step 15 (shard:closure-stamp-applicable-seam)."
   - "Shard field shape copied from config/agent/verification_registry/entries/closure-stamp-applicable-seam.yaml and ghas-probe-dependency-install.yaml."
   - "Decision 189 red-before: step 1 is the only graduate step; measured live on the un-implemented tree at exit 4 -> target_absent, a valid red outcome. Steps 3 and 4 invoke scripts.validate and are therefore waived, never graduated (recursion refusal)."
-  - "TRAILER DEFERRAL (Decision 142 scout WARN): git-ops.yaml's resolves_trailer states the Resolves obligation unconditionally, and rec-3991 stays in bundled_recommendations because the planning skill's Closure Obligation and the Related-Work Check both require that declaration. The trailer is nonetheless deliberately omitted -- Decision 186 point 7 makes rec-autoclose structurally unable to close this rec (no closure_artifact is threaded), so the trailer would print a refusal marker and leave it OPEN. Route: ci-rca-lifecycle.yaml closure_dependency.manual_route. This diverges from rec_2923_precedent's shape (which also dropped the rec from bundled_recommendations); the divergence is deliberate and recorded here rather than silent. No machine check reads bundled_recommendations, so this is a reviewability note, not a red build."
+  - "TRAILER DEFERRAL (Decision 142 scout WARN): the Resolves trailer is deliberately omitted (Decision 186 point 7 -- rec-autoclose threads no closure_artifact, so it would refuse and leave the rec OPEN), yet rec-3991 STAYS in bundled_recommendations because the Closure Obligation and the Related-Work Check both require that declaration. This knowingly diverges from rec_2923_precedent, which also dropped the rec. Reviewability note, not a red build: no machine check reads bundled_recommendations. Full reasoning in this plan's commit body."
   - "Decision 163 disposition: the mandatory full-tier step is VP step 4; verified programmatically via validate_handoff_full_tier._has_full_tier_step against this document -> True. The closure half is no longer prose-only -- VP step 5 carries an executable diff-tree guard and a read-back assertion."
   - "Decision-scout verdict FLAGS_FOUND. CITE list (verbatim): 186, 189, 176, 132, 170, 131, 59, 72, 55, 103, 84. CONTRADICT: 142 [WARN] (disposed above), 186 [NOTE] (fixed in VP step 5). SPIRIT: 163 [WARN] (both halves disposed above)."
   - "Decisions triaged: 150 of 150"
   - "Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1 (T4.23, deferred_post_mvp, matched only on the tests/ prefix; nothing foreclosed)."
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "Preventive-action disposition: rec-3991's suggested _read refactor is DECLINED on the merits at plan time (see the Decision 59 constraint); followon_recs is empty deliberately, not by omission."
+  - "VP step 5 resolves its fix sha FROM THE ARTIFACT (git rev-list -1 origin/main -- <shard>), never from main's tip, so it survives main advancing past the squash-merge (critique round 1, blocking finding 1)."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=REVISE round 1, all findings disposed; confirming round pending"
 pre_implementation_checklist:
   - Branch confirmed not on main (harness-assigned session branch)
   - docs/PROJECT_CONTEXT.md read
@@ -329,6 +359,11 @@ execution_steps:
   - >-
     Execute the Verification Plan -- run steps 1 through 4 in order, looping until each passes.
     On a third consecutive failed fix attempt, STOP and RCA rather than continuing (Decision 55).
+  - >-
+    At code-review, state explicitly whether acceptance criterion 3 holds: the reviewer reads the
+    new test body and confirms BOTH assertions are present (the "could not read" entry in failed,
+    and the declaration kind "skipped"). No VP step can discriminate this -- an assertion-free
+    test passes every one of them -- so a green VP is not evidence for this criterion.
   - >-
     Commit, push, open the PR and squash-merge WITHOUT a Resolves trailer in the commit body.
     ORDERING IS LOAD-BEARING: only after the squash-merge has landed AND `git fetch origin main`
