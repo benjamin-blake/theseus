@@ -384,6 +384,25 @@ test_obligations:
     s, 'pointer to the owning contract missing'; print('DEPLOY_PATHS POINTER OK')"
   red_green_expectation: red before (the step lists four variables and names no owning contract), green
     after
+- source: .github/actions/materialise-tfvars/action.yml
+  behavior: The action must delegate to the single implementation and carry no inline secret fetch of
+    its own, so the CI apply path and the local break-glass loop share one code path.
+  verification_step: 17
+  command: test "$(grep -rlc 'secretsmanager get-secret-value' .github/actions/materialise-tfvars/ | wc
+    -l)" = "1" && grep -q 'secretsmanager get-secret-value' .github/actions/materialise-tfvars/materialise_tfvars.sh
+    && ! grep -q 'secretsmanager get-secret-value' .github/actions/materialise-tfvars/action.yml && grep
+    -q 'materialise_tfvars.sh' bin/setup-cloud-env.sh && echo 'SINGLE IMPLEMENTATION'
+  red_green_expectation: red before (action.yml carries the inline secretsmanager fetch today, and the
+    delegate does not exist), green after the extraction
+- source: config/composite_action_body_baseline.yaml
+  behavior: After extraction the action must carry no baselined inline body left unregistered or over
+    ceiling; the shell-bodies guard is the oracle for whether the retired r3 entries were correctly retired.
+  verification_step: 16
+  command: bin/venv-python -m scripts.checks.ci_guards.validate_composite_action_shell_bodies 2>/dev/null
+    || bin/venv-python -c "from scripts.checks.ci_guards.validate_composite_action_shell_bodies import
+    validate_composite_action_shell_bodies as g; f=[]; g(f); print('GUARD FAILURES', f); assert not f"
+  red_green_expectation: red before (the three r3 bodies are live and the adapter does not exist), green
+    after; an R3 complaint names any residual computing body in the adapter
 constraints:
 - Decision 101 public-repo boundary - no email address, AWS account id, ARN or ExternalId enters a tracked
   file. Role-alias SEMANTICS may be documented; literal addresses may not.
@@ -445,17 +464,11 @@ context:
 - Branch was 10 behind origin/main at authoring (deploy-paths.yaml gained an adjacent SPLIT-APPLY clause;
   terraform/personal/main.tf gained an S3 lifecycle block, not default_tags). Rebase before implementing.
 - 'Prototype patch for the contract and validator legs: scratchpad uncommitted-doc-fix.patch (reusable).'
-- plan-critique round 1 = REVISE (9 findings). Findings 1-2 were already fixed on disk when raised (step
-  4 re-measured red-before; scope row added). Findings 3,4,5,7,8,9 applied. Finding 6 (duplicate materialise-tfvars
-  surface vs the DEP-08/rec-2663 consolidation) is an operator fork -- see followon note.
-- 'plan-critique finding 6 resolved by operator choice (option A, single implementation). Research during
-  rescope found the extraction is REQUIRED, not optional: config/composite_action_body_baseline.yaml pins
-  the action''s three bodies under r3 and its touch-it-fix-it rule obliges extraction on any behavioural
-  edit. Delegate path follows .github/actions/subagent-plan-review/review.sh.'
-- 'rec-3977 filed for the FOURTH materialise-tfvars copy found during rescope: .github/workflows/terraform-drift.yml
-  keeps its own inline fetch+mask sequence (baselined separately under r3) and was missed by DEP-08. Out
-  of scope here per Decision 59 -- a distinct workflow on the alarm-only drift path -- but it must be
-  finished for the consolidation to hold.'
+- 'plan-critique: round 1 REVISE (9 findings, all dispositioned). Finding 6 resolved by operator choice
+  of a single implementation -- rescope found extraction is MANDATORY, since config/composite_action_body_baseline.yaml
+  pins the action''s three bodies under r3 and its touch-it-fix-it rule obliges extraction on any behavioural
+  edit; _delegated_script requires the delegate be a .sh under the action dir (precedent .github/actions/subagent-plan-review/review.sh).
+  rec-3977 filed for a FOURTH inline copy in terraform-drift.yml that DEP-08 missed (Decision 59).'
 pre_implementation_checklist:
 - Branch confirmed not on main
 - 'Rebased onto origin/main BEFORE editing (measured 2026-09-21: deploy-paths.yaml amendment_log is 5
