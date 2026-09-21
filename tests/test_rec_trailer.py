@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from scripts.rec_trailer import parse_resolves_trailer
 
 
@@ -111,6 +113,76 @@ class TestParseResolvesTrailer:
     def test_multiple_trailer_lines(self) -> None:
         msg = "Resolves: rec-100\nResolves: rec-200"
         assert parse_resolves_trailer(msg) == ["rec-100", "rec-200"]
+
+    def test_colon_with_no_following_whitespace_no_longer_parses(self) -> None:
+        """rec-2922's ONE deliberate behaviour change beyond the block rule: the old
+        `^resolves\\s*:\\s*` accepted a colon with no following whitespace; the new
+        `^[A-Za-z][A-Za-z-]*:\\s` block-line shape requires it. Fail-safe direction: a trailer
+        that no longer parses is a non-closure, not a false closure (Decision 103)."""
+        assert parse_resolves_trailer("Resolves:rec-2187") == []
+
+
+class TestWrappedProseNotATrailer:
+    """rec-2922's named selector. #803's shape (commit 73387861): a `Resolves:` line wrapped
+    inside a prose paragraph is never a trailer under the any-Key:value-block rule -- the whole
+    block (paragraph) is rejected because its OTHER lines are not `Key: value`-shaped."""
+
+    def test_wrapped_prose_yields_no_ids(self) -> None:
+        msg = (
+            "fix: address the flaky retry path\n\n"
+            "This change reworks the retry loop so that a transient failure no longer\n"
+            "Resolves: the underlying race by itself; it only masks it under load. rec-9999\n"
+            "is unrelated and should not be picked up either.\n"
+        )
+        assert parse_resolves_trailer(msg) == []
+
+    def test_resolves_line_with_prose_siblings_in_same_block_rejected(self) -> None:
+        msg = "Body prose line one.\nResolves: rec-100\nBody prose line three."
+        assert parse_resolves_trailer(msg) == []
+
+
+class TestAttributionFooterStillParses:
+    """REGRESSION guard pinning this repository's own commit convention: a `Resolves:` block
+    followed by a blank line and the mandated `Co-Authored-By:` / `Claude-Session:` attribution
+    footer must still parse under the any-block rule -- it must not silently regress to
+    final-block-only, which would break 79 of 122 historical Resolves commits."""
+
+    def test_resolves_block_then_attribution_footer(self) -> None:
+        msg = (
+            "feat(slug): implement thing\n\n"
+            "Resolves: rec-3775, rec-3901, rec-2922\n\n"
+            "Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n"
+            "Claude-Session: https://claude.ai/code/session_abc123\n"
+        )
+        assert parse_resolves_trailer(msg) == ["rec-3775", "rec-3901", "rec-2922"]
+
+
+class TestPlanOnlyMergeRefusesTrailer:
+    """rec-3901's own acceptance predicate. NON-VACUITY: parse_resolves_trailer is a pure parser
+    with no notion of a merge leg, and a plan merge's trailer is well-formed and SHOULD parse --
+    so this asserts the END-TO-END outcome via the gate (imported here, never re-tested as a
+    parser concern): given a well-formed trailer AND a plan-only changed set, merge_leg_refuses
+    returns True and close_recs_from_trailer attempts no close."""
+
+    def test_well_formed_trailer_but_plan_only_diff_refuses_close(self) -> None:
+        from scripts.ops_portal.ci_rca_lifecycle import close_recs_from_trailer
+        from scripts.ops_portal.trailer_closure_gate import merge_leg_refuses
+
+        msg = "docs(plan): author PLAN-example\n\nResolves: rec-1234"
+        ids = parse_resolves_trailer(msg)
+        assert ids == ["rec-1234"]  # the trailer itself is well-formed and parses
+
+        changed = {"docs/plans/PLAN-example.yaml"}
+        assert merge_leg_refuses(changed) is True  # but the merge-leg gate refuses to act on it
+
+        with (
+            patch("scripts.ops_portal.ci_rca_lifecycle.changed_files", return_value=changed),
+            patch("scripts.ops_data_portal.update_rec") as mock_update,
+        ):
+            rc = close_recs_from_trailer(ids, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", "https://x/runs/1", {})
+
+        assert rc == 0
+        mock_update.assert_not_called()
 
 
 # VP7 autoclose test marker

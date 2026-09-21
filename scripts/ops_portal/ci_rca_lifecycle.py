@@ -22,13 +22,22 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from scripts.ops_portal.closure_gate import closure_stamps_applicable
+from scripts.ops_portal._common import ROOT
+from scripts.ops_portal.closure_gate import changed_files, closure_stamps_applicable
+from scripts.ops_portal.trailer_closure_gate import merge_leg_refuses
 
 logger = logging.getLogger(__name__)
 
 # Decision 155-shaped marker (mirrors decisions.py::_ORPHAN_GUARD_TRANSIENT_MARKER): distinct,
 # greppable, and mirrored to $GITHUB_STEP_SUMMARY when set.
 _ESCAPE_CLOSURE_REFUSAL_MARKER = "[REC-AUTOCLOSE] Decision 186 closure refusal"
+
+# Merge-leg refusal markers (rec-3775 / rec-3901): two DISTINCT constants, never one shared with
+# each other or with _ESCAPE_CLOSURE_REFUSAL_MARKER above, so a future shift to true merge
+# commits (which would make EVERY autoclose refuse under the empty/None arm while the workflow
+# stays green by design) is greppable apart from a normal plan-leg refusal.
+_MERGE_LEG_PLAN_ONLY_REFUSAL_MARKER = "[REC-AUTOCLOSE] merge-leg refusal (plan-only diff)"
+_MERGE_LEG_EMPTY_REFUSAL_MARKER = "[REC-AUTOCLOSE] merge-leg refusal (empty/unresolvable diff)"
 
 # Fail-closed default: a legacy closed head with no fixed_by_sha (every rec closed before this
 # change; manual closures) cannot run the ancestry check -- so it always classifies as a
@@ -363,14 +372,15 @@ def compute_escape_class(failed_nodeid: str, selection_manifest: dict) -> str:
     return _ESCAPE_UNKNOWN_DATA_EDGE
 
 
-def _mirror_refusal_to_step_summary(marker: str) -> None:
+def _mirror_refusal_to_step_summary(heading: str, marker: str) -> None:
     """Best-effort mirror to $GITHUB_STEP_SUMMARY (Decision 155 shape) -- never raises; a CI-only
-    convenience, absent in a local run where the env var is unset."""
+    convenience, absent in a local run where the env var is unset. `heading` is parametrised
+    (never hardcoded) so a caller's refusal shape is never mislabelled as another caller's."""
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if not summary_path:
         return
     with open(summary_path, "a", encoding="utf-8") as f:  # noqa: PTH123 -- mirrors decisions.py:183's precedent
-        f.write(f"\n## {_ESCAPE_CLOSURE_REFUSAL_MARKER}\n\n{marker}\n")
+        f.write(f"\n## {heading}\n\n{marker}\n")
 
 
 def close_recs_from_trailer(
@@ -401,10 +411,28 @@ def close_recs_from_trailer(
     below and sets exit_code=1 -- never discriminated by message substring. The existing post-close
     stamp_fixed_by_sha call is kept for non-escape ci_rca recs and is idempotent where both run.
 
+    MERGE-LEG GATE (rec-3775 / rec-3901): before the per-rec loop, resolves the merge commit's
+    changed-file set (closure_gate.changed_files) once and consults merge_leg_refuses over it. If
+    the gate refuses -- the diff is None/unresolvable, empty (the true-merge-commit shape), or
+    confined to docs/plans/ -- every id in `ids` is left OPEN, a Decision-155-shaped marker is
+    printed (mirrored to $GITHUB_STEP_SUMMARY when set) naming which arm fired, and this function
+    returns 0 WITHOUT touching exit_code or attempting any write -- rec-autoclose stays green
+    (Decision 186 pt 7's loud-not-red posture) for a refusal that is correct behaviour, not a
+    failure.
+
     Returns the exit code sys.exit() should use (0 normally; 1 iff a non-gate exception occurred
     while closing any rec).
     """
     from scripts.ops_data_portal import ClosureArtifactRequired, RecNotFound, update_rec  # noqa: PLC0415
+
+    changed = changed_files(commit_sha, ROOT)
+    if merge_leg_refuses(changed):
+        heading = _MERGE_LEG_EMPTY_REFUSAL_MARKER if not changed else _MERGE_LEG_PLAN_ONLY_REFUSAL_MARKER
+        shape = "empty or unresolvable" if not changed else "confined to docs/plans/"
+        marker = f"{heading}: {', '.join(ids)} left OPEN -- merge diff is {shape}, commit {commit_sha}"
+        print(marker)
+        _mirror_refusal_to_step_summary(heading, marker)
+        return 0
 
     resolution = f"Auto-closed by rec-autoclose workflow: merge commit {commit_sha} (run: {run_url})"
     exit_code = 0
@@ -428,7 +456,7 @@ def close_recs_from_trailer(
         except ClosureArtifactRequired as exc:
             marker = f"{_ESCAPE_CLOSURE_REFUSAL_MARKER}: {rec_id} left OPEN -- {exc}"
             print(marker)
-            _mirror_refusal_to_step_summary(marker)
+            _mirror_refusal_to_step_summary(_ESCAPE_CLOSURE_REFUSAL_MARKER, marker)
             continue
         except RecNotFound as exc:
             print(f"rec-autoclose: WARN {rec_id} not found in portal ({exc}) -- skipping")

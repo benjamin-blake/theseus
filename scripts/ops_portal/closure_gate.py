@@ -173,16 +173,16 @@ _KIND_FACT_RESOLVERS = {
 }
 
 
-def _fix_commit_touches(defining_files: list[str], fix_sha: Optional[str], root: Path) -> bool:
-    """True iff fix_sha is non-empty, resolves via a read-only local `git diff-tree`, and its
-    changed-file list intersects defining_files. An unresolvable sha (non-zero exit) REFUSES --
-    fail closed (Decision 55), mirroring classify_closed_head's posture. No fetch, no network:
-    an unresolvable sha is the caller's problem to fix (e.g. a shallow checkout), never this
-    module's to paper over."""
-    if not fix_sha:
-        return False
+def changed_files(sha: Optional[str], root: Path) -> Optional[set[str]]:
+    """The set of file paths changed by `sha`'s diff-tree. None if `sha` is falsy or unresolvable
+    (non-zero exit), preserving the existing fail-closed posture callers rely on (Decision 55),
+    mirroring classify_closed_head's posture. No fetch, no network: an unresolvable sha is the
+    caller's problem to fix (e.g. a shallow checkout), never this module's to paper over. The
+    single read-only local `git diff-tree` call this module makes; see module docstring."""
+    if not sha:
+        return None
     result = subprocess.run(  # noqa: S603 -- literal argv, read-only git verb; see module docstring
-        ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", fix_sha],
+        ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", sha],
         cwd=root,
         capture_output=True,
         text=True,
@@ -191,8 +191,17 @@ def _fix_commit_touches(defining_files: list[str], fix_sha: Optional[str], root:
         check=False,
     )
     if result.returncode != 0:
+        return None
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def _fix_commit_touches(defining_files: list[str], fix_sha: Optional[str], root: Path) -> bool:
+    """True iff fix_sha resolves (via changed_files()) and its changed-file list intersects
+    defining_files. Delegates the diff-tree call to changed_files() -- an unresolvable/falsy
+    fix_sha yields None, which never intersects, preserving the prior fail-closed behaviour."""
+    touched = changed_files(fix_sha, root)
+    if touched is None:
         return False
-    touched = {line.strip() for line in result.stdout.splitlines() if line.strip()}
     return any(f in touched for f in defining_files)
 
 

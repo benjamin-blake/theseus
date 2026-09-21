@@ -20,7 +20,9 @@ from scripts.ops_portal.closure_gate import (
     ARTIFACT_KINDS,
     KIND_STRENGTH,
     WAIVER_CATEGORIES,
+    _fix_commit_touches,
     _fixture_kind_fact,
+    changed_files,
     closure_stamps_applicable,
     is_escape_classified,
     is_valid_waiver,
@@ -211,3 +213,63 @@ class TestContractParity:
             f"declared-but-not-importing: {sorted(declared - importers)}; "
             f"importing-but-undeclared: {sorted(importers - declared)}"
         )
+
+
+def _throwaway_commit(tmp_path) -> tuple:  # noqa: ANN001
+    """A tiny, self-contained real git repo with one known commit touching a.txt and b.txt.
+
+    Deliberately NEVER uses this checkout's own HEAD: a `pull_request`-triggered CI run checks
+    out a synthetic two-parent merge commit, and `git diff-tree` lists NOTHING for a true merge
+    commit by default (the exact gotcha rec-3775's merge-leg gate itself guards against) -- an
+    ambient-HEAD-based test would pass locally (a normal single-parent commit) and fail in CI.
+    Mirrors the throwaway-repo pattern in tests/verification_graduation/conftest.py.
+    """
+    import subprocess
+
+    repo = tmp_path / "throwaway"
+    repo.mkdir()
+
+    def _git(args: list[str]) -> subprocess.CompletedProcess:
+        result = subprocess.run(["git", *args], cwd=str(repo), capture_output=True, text=True, encoding="utf-8")
+        assert result.returncode == 0, f"git {args} failed: {result.stderr}"
+        return result
+
+    _git(["init", "-q"])
+    _git(["config", "user.email", "test@example.com"])
+    _git(["config", "user.name", "Test"])
+    (repo / "a.txt").write_text("hello\n", encoding="utf-8")
+    _git(["add", "-A"])
+    _git(["commit", "-q", "-m", "initial"])
+    (repo / "a.txt").write_text("hello again\n", encoding="utf-8")
+    (repo / "b.txt").write_text("new file\n", encoding="utf-8")
+    _git(["add", "-A"])
+    _git(["commit", "-q", "-m", "second"])
+    sha = _git(["rev-parse", "HEAD"]).stdout.strip()
+    return repo, sha
+
+
+class TestChangedFiles:
+    """rec-3775's DRY extraction: changed_files(sha, root) is the sole diff-tree call site, and
+    _fix_commit_touches keeps its fail-closed behaviour through the delegation (behaviour-
+    preserving, not a new capability)."""
+
+    def test_returns_the_commits_changed_paths(self, tmp_path) -> None:  # noqa: ANN001
+        repo, sha = _throwaway_commit(tmp_path)
+        touched = changed_files(sha, repo)
+        assert touched == {"a.txt", "b.txt"}
+
+    def test_none_sha_returns_none(self) -> None:
+        assert changed_files(None, ROOT) is None
+        assert changed_files("", ROOT) is None
+
+    def test_unresolvable_sha_returns_none(self) -> None:
+        assert changed_files("0" * 40, ROOT) is None
+
+    def test_fix_commit_touches_still_fail_closed_on_unresolvable_sha(self) -> None:
+        assert _fix_commit_touches(["some/file.py"], "0" * 40, ROOT) is False
+        assert _fix_commit_touches(["some/file.py"], None, ROOT) is False
+
+    def test_fix_commit_touches_still_intersects_real_changed_set(self, tmp_path) -> None:  # noqa: ANN001
+        repo, sha = _throwaway_commit(tmp_path)
+        assert _fix_commit_touches(["a.txt"], sha, repo) is True
+        assert _fix_commit_touches(["this/path/was/never/touched.py"], sha, repo) is False

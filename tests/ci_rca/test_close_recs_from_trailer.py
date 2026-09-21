@@ -18,7 +18,20 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
+import pytest
+
 _FIX_SHA = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+
+@pytest.fixture(autouse=True)
+def _code_bearing_changed_set():
+    """Give every test in this module a code-bearing merge diff so rec-3775's merge-leg gate
+    never refuses on this module's deliberately-unresolvable `_FIX_SHA` -- these tests exercise
+    the CLOSURE seam, not the merge-leg gate itself (covered separately in
+    tests/ops_data_portal/test_trailer_closure_gate.py and
+    tests/checks/ci_guards/test_rec_autoclose_merge_leg.py)."""
+    with patch("scripts.ops_portal.ci_rca_lifecycle.changed_files", return_value={"scripts/example.py"}):
+        yield
 
 
 def test_closes_rec_lacking_context_v2_json(tmp_path) -> None:
