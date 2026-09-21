@@ -3,11 +3,11 @@ handoff_policy:
   full_validation_required_before_commit: true
   timeout_disposition: blocked
 slug: tfvars-recovery-contract-closure
-intent: Make the break-glass tfvars recovery path correct, machine-enforced, and frictionless, so an admin-tier
-  agent can produce a terraform plan without following a stale procedure that returns a wrong value. Supports
-  the governed-deployment leg of the platform control plane.
+intent: Correct a stale, actively-misleading tfvars recovery procedure in two Class D contracts and make
+  the correction machine-enforced, so a break-glass agent cannot follow a documented path that returns
+  a wrong value. Supports the governed-deployment leg of the platform control plane.
 plan_type: IMPLEMENTATION
-verification_tier: V3
+verification_tier: V2
 plan_path: docs/plans/PLAN-tfvars-recovery-contract-closure.yaml
 phase: ad_hoc_rec (soft-warn category; no tier_item claimed, so the Tier Item Freshness Gate is skipped).
   Driven by rec-3950 plus a defect hit live in a break-glass session. Adjacent to T2.44's DEP-13 fence,
@@ -32,50 +32,13 @@ scope:
   action: Modify
   purpose: Cover the HCL no-default parser and the unlisted / stale / scalar-shaped red paths, plus a
     live contract-vs-module assertion that fails if a future variable lands undocumented.
-- file: bin/setup-cloud-env.sh
-  action: Modify
-  purpose: Inside the existing INSTALL_TERRAFORM=1 admin-only branch, after the AWS CLI install, delegate
-    to the SAME single implementation the composite action uses -- so the local break-glass loop and CI
-    can never diverge.
-- file: tests/test_materialise_tfvars.py
-  action: Create
-  purpose: 'Behavioural tests driving .github/actions/materialise-tfvars/materialise_tfvars.sh with a
-    stubbed aws on PATH under the literal GitHub composite argv (bash --noprofile --norc -e -o pipefail,
-    satisfying R2): mode-600, fail-closed on empty fetch, the CI-shaped INSTALL_TERRAFORM-unset case,
-    the rec-2285 first-''=''-split parse, and no secret on stdout off-runner.'
-- file: tests/test_setup_cloud_env.py
-  action: Modify
-  purpose: Add the delegation-CONTAINMENT test step 7 selects with -k materialise, asserting the materialise_tfvars.sh
-    call lies between the executable INSTALL_TERRAFORM branch line and its matching `fi` (not a substring-ordering
-    check -- 6 of the 8 INSTALL_TERRAFORM occurrences are comments), and that it follows the AWS CLI install.
-    Also assert the no-op case, which belongs to this caller rather than the shared delegate.
-- file: .github/actions/materialise-tfvars/materialise_tfvars.sh
-  action: Create
-  purpose: 'THE single materialise-tfvars implementation (honours the DEP-08 / rec-2663 consolidation).
-    ALWAYS fetches when invoked -- no INSTALL_TERRAFORM guard; that gate is the local caller''s. Writes
-    the gitignored tfvars at mode 600, preserves the rec-2285 first-''=''-split parse, and fails closed
-    on an empty fetch. Emits ::add-mask:: for account_id and both ExternalIds ONLY when $GITHUB_ACTIONS
-    is set: the runner intercepts that sentinel, a local ADMIN shell would instead print the literal secret
-    into the session transcript, against this contract''s own never_paste clause and Decision 101. Lives
-    under the action directory because that is the delegate location _delegated_script recognises (precedent:
-    subagent-plan-review/review.sh).'
-- file: .github/actions/materialise-tfvars/action.yml
-  action: Modify
-  purpose: 'Collapse the three inline shell bodies into one thin adapter: run: bash "${{ github.action_path
-    }}/materialise_tfvars.sh", PRESERVING the working-directory input and its wiring. The r3 baseline
-    sanctions extract OR raise-with-marker; extraction is the better option here because it is what lets
-    the local caller share one implementation.'
-- file: config/composite_action_body_baseline.yaml
-  action: Modify
-  purpose: Retire the three now-extracted r3 entries (::#0=5, ::#1=14, ::#2=4). Extraction shrinks the
-    baseline, which is the sanctioned direction; re-register only if the guard still scans a residual
-    inline body in the adapter.
 bundled_recommendations:
 - rec-3950
 - rec-2843
 followon_recs:
 - rec-3975
 - rec-3977
+- rec-3978
 infrastructure_dependencies: []
 acceptance_criteria:
 - terraform-cc-web-operations.yaml names all five no-default variables and gives each its own recovery
@@ -84,19 +47,10 @@ acceptance_criteria:
   tag-churn diff is a recovery artefact, never drift to apply.
 - validate_terraform_cc_web_operations fails when a no-default variable declared in terraform/personal/*.tf
   is absent from where_values_live, and passes on the corrected pair.
-- .github/actions/materialise-tfvars/materialise_tfvars.sh ALWAYS fetches when invoked -- it carries no
-  INSTALL_TERRAFORM guard -- writing the tfvars at mode 600 and failing closed on an empty or failed fetch.
-  The admin-only gate lives in bin/setup-cloud-env.sh, the local caller, because CI never sets INSTALL_TERRAFORM
-  and a guard in the shared unit would no-op the action at all four apply call sites.
 - No email address or AWS account id is introduced into any tracked file by this plan.
 - rec-2843 is closed with its acceptance output recorded as the closure proof; rec-3950 is routed close_proposed
   with its misdiagnosis resolution recorded, and remains open pending operator confirmation (Decision
   103).
-- On the ADMIN container, .github/actions/materialise-tfvars/materialise_tfvars.sh produces a tfvars file
-  carrying all five no-default variables at mode 600, verified against live Secrets Manager (V3 post-deploy
-  leg).
-- 'With $GITHUB_ACTIONS unset, the delegate emits no secret-shaped value on stdout or stderr; the ::add-mask::
-  lines appear only on the runner.'
 - tfvars_and_remote_state_recovery.recovery_procedure names the materialisation path, so the stale state-parse-only
   procedure this plan's intent calls out cannot survive it.
 verification_plan:
@@ -104,7 +58,8 @@ verification_plan:
   phase: pre-deploy
   action: Contract enumerates five no-default vars with per-variable sources
   command: bin/venv-python -c "import yaml; r=yaml.safe_load(open('docs/contracts/terraform-cc-web-operations.yaml'))['tfvars_and_remote_state_recovery'];
-    t=r['where_values_live']; ks=sorted(k for k in t if k!='description'); assert ks==['account_id','alerts_email','owner_email','platform_admin_external_id','platform_dev_external_id'],
+    t=r['where_values_live']; assert isinstance(t, dict), 'where_values_live is still a scalar prose blob';
+    ks=sorted(k for k in t if k!='description'); assert ks==['account_id','alerts_email','owner_email','platform_admin_external_id','platform_dev_external_id'],
     ks; v=str(r['owner_vs_alerts_email']).lower(); assert 'owner_email' in v and 'alerts_email' in v,
     'key names both variables'; assert 'by design' in v, 'must state the values differ by design'; assert
     'recovery artefact' in v, 'must state the tag-churn diff is a recovery artefact'; assert 'materialise'
@@ -114,8 +69,9 @@ verification_plan:
     names both variables and states they differ by design and that the tag-churn diff is a recovery artefact,
     AND that recovery_procedure now points at the materialisation path rather than only the state-parse
     it was written for.
-  fix_if: A named AssertionError says which clause is missing. A KeyError on where_values_live means it
-    is still a scalar prose blob.
+  fix_if: '''where_values_live is still a scalar prose blob'' means the per-variable restructure has not
+    landed. A short key list names the variable still missing. A named clause failure says which part
+    of owner_vs_alerts_email or recovery_procedure is absent.'
   hermetic: true
   expected_literals:
   - CONTRACT SHAPE OK
@@ -193,42 +149,10 @@ verification_plan:
   graduation: waive
   graduation_waiver_reason: Anti-vacuity accounting for the step-4 check; it rides the same registry row
     rather than standing as a second one.
-- step: 6
-  phase: pre-deploy
-  action: materialise-tfvars writes the file at 600 from a stubbed secret fetch and no-ops off-admin
-  command: bin/venv-python -m pytest tests/test_materialise_tfvars.py -q
-  expected: 'All delegate behavioural tests pass: mode-600 write, fail-closed on empty fetch, the rec-2285
-    first-''=''-split parse, ::add-mask:: for exactly account_id and the two ExternalIds under GITHUB_ACTIONS,
-    and NO secret-shaped value on stdout with GITHUB_ACTIONS unset.'
-  fix_if: 'A permissions failure means no chmod. A stdout-leak failure means the ::add-mask:: emission
-    is not gated on $GITHUB_ACTIONS. Note there is deliberately NO no-op case here -- the delegate always
-    fetches; the admin gate is the caller''s, asserted at step 7.'
-  hermetic: true
-  expected_literals: []
-  graduation: waive
-  graduation_waiver_reason: The test module runs in the standard pytest suite; graduating a second selector
-    over the same module adds no independent signal.
-- step: 7
-  phase: pre-deploy
-  action: setup-cloud-env delegates to the script inside the admin-only branch
-  command: bin/venv-python -m pytest tests/test_setup_cloud_env.py -k "materialise" -q
-  expected: 'The delegation-CONTAINMENT test passes. It must assert containment, not substring ordering:
-    locate the executable INSTALL_TERRAFORM branch line and its matching fi, then assert the materialise_tfvars.sh
-    call lies between them. A naive script.index() comparison is NOT acceptable -- INSTALL_TERRAFORM appears
-    8 times in the script, 6 of them in comments (measured 2026-09-21), so an ordering check passes even
-    when the delegation sits outside the branch entirely.'
-  fix_if: A failure means the fetch could run in the DEV container, handing PlatformDev the values the
-    DEP-13 / Decision 144 pt 3 DenyStateRead fence deliberately denies it. If the test passes but an index
-    comparison was used, the assertion is vacuous -- rewrite it as containment.
-  hermetic: true
-  expected_literals: []
-  graduation: waive
-  graduation_waiver_reason: Same module-duplication reason as step 6; tests/test_setup_cloud_env.py already
-    runs every CI.
 - step: 8
   phase: pre-deploy
   action: 'Decision 101 guard: no email address or account id introduced by this plan'
-  command: bin/venv-python -c "import subprocess,re; d=subprocess.run(['git','diff','origin/main','--','docs/contracts','bin','scripts','tests'],capture_output=True,text=True).stdout;
+  command: bin/venv-python -c "import subprocess,re; d=subprocess.run(['git','diff','origin/main','--','docs/contracts','scripts','tests'],capture_output=True,text=True).stdout;
     adds=[l for l in d.splitlines() if l.startswith('+') and not l.startswith('+++')]; bad=[l for l in
     adds if re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}', l) or re.search(r'(?<![0-9A-Za-z])[0-9]{12}(?![0-9A-Za-z])',
     l)]; print('LEAKED', len(bad)); assert not bad, bad[:3]"
@@ -242,19 +166,6 @@ verification_plan:
   graduation_waiver_reason: 'Green by construction on the un-implemented tree (measured 2026-09-21: zero
     added lines match), so it carries no red-before signal; the standing equivalent is the pre-commit
     never-commit hook plus scripts/ci/redaction_check.py.'
-- step: 9
-  phase: pre-deploy
-  action: Full scope test modules pass
-  command: bin/venv-python -m pytest tests/checks/contracts/test_validate_terraform_cc_web_operations.py
-    tests/test_materialise_tfvars.py tests/test_setup_cloud_env.py -q
-  expected: All three modules pass with no failures.
-  fix_if: A setup_cloud_env ordering failure means the delegation was inserted at the wrong point in the
-    script.
-  hermetic: true
-  expected_literals: []
-  graduation: waive
-  graduation_waiver_reason: An aggregate re-run of modules already covered by steps 3, 6 and 7 and by
-    the standard suite.
 - step: 10
   phase: pre-deploy
   action: Fast presubmit tier is green
@@ -277,47 +188,18 @@ verification_plan:
   graduation: waive
   graduation_waiver_reason: docs/contracts/vp-red-before.yaml#recursion_refusal statically refuses an
     argv head of -m scripts.validate as a graduated check.
-- step: 12
-  phase: post-deploy
-  action: '[post-deploy] ADMIN-container live materialisation against real Secrets Manager'
-  command: INSTALL_TERRAFORM=1 bash .github/actions/materialise-tfvars/materialise_tfvars.sh && bin/venv-python
-    -c "import os, re, stat; p='terraform/personal/terraform.personal.tfvars'; st=os.stat(p); assert st.st_size>0,
-    'empty tfvars'; assert stat.S_IMODE(st.st_mode)==0o600, oct(stat.S_IMODE(st.st_mode)); ks={m.group(1)
-    for l in open(p) if (m:=re.match(r'\\s*([a-z_]+)\\s*=', l))}; req={'account_id','owner_email','platform_dev_external_id','platform_admin_external_id','alerts_email'};
-    assert req <= ks, sorted(req-ks); print('MATERIALISED 5 keys mode-600')"
-  expected: 'Prints MATERIALISED 5 keys mode-600. Asserts the real secret-to-file path end to end: non-empty,
-    mode 600, and all five no-default variables present. Never prints a value.'
-  fix_if: AccessDenied means the session is not on the PlatformAdmin chain (run only in the ADMIN container).
-    A missing key names a variable absent from the secret body - add it to the secret, never to a tracked
-    file. A mode mismatch means the chmod is missing.
-  hermetic: false
-  graduation: not-applicable
 - step: 13
   phase: post-deploy
   action: 'Closure obligation: both bundled recs reach a terminal or proposed state'
-  command: bin/venv-python -m scripts.sync.ops pull >/dev/null && bin/venv-python -c "import json; rows=[json.loads(l)
+  command: bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json; rows=[json.loads(l)
     for l in open('logs/.recommendations-log.jsonl') if l.strip()]; d={r['id']:r for r in rows}; [print(i,
     d[i]['status']) for i in ['rec-3950','rec-2843']]; assert d['rec-2843']['status']=='closed'"
   expected: rec-2843 prints closed; rec-3950 prints its status after the operator acts on the close_proposed.
   fix_if: rec-2843 still open means the deterministic closure did not run. rec-3950 staying open pending
-    operator confirmation is EXPECTED, not a failure (Decision 103).
+    operator confirmation is EXPECTED, not a failure (Decision 103). Use the portal --sync surface; scripts.sync.ops
+    accepts only 'sync' and calling it directly breaches AGENTS.md portal discipline.
   hermetic: false
   graduation: not-applicable
-- step: 14
-  phase: pre-deploy
-  action: Decision 126 framing lands in the right place for each consumer
-  command: grep -q 'never self-directed' .github/actions/materialise-tfvars/materialise_tfvars.sh && grep
-    -q 'enabler for the human-gated break-glass loop only' bin/setup-cloud-env.sh && grep -q 'enabler
-    for the human-gated break-glass loop only' docs/contracts/deploy-paths.yaml
-  expected: Exits 0; the clause appears in both the script comment and the deploy-paths amendment.
-  fix_if: The shared delegate is the GOVERNED CI apply path at four call sites, so the break-glass-enabler
-    clause is false there; it carries the weaker, always-true 'never self-directed' framing instead. The
-    break-glass-enabler clause belongs to the LOCAL caller and the deploy-paths amendment.
-  hermetic: true
-  expected_literals: []
-  graduation: waive
-  graduation_waiver_reason: A fixed-phrase grep is adequate at authoring time but unsound as a standing
-    guard -- a reworded but still-correct comment would red it.
 - step: 15
   phase: pre-deploy
   action: deploy-paths names five variables and points at the owning contract
@@ -334,61 +216,6 @@ verification_plan:
   graduation: waive
   graduation_waiver_reason: A fixed-substring assertion over one contract's prose; adequate at authoring
     time but a reworded-yet-correct step would red it as a standing guard.
-- step: 16
-  phase: pre-deploy
-  action: Composite-action shell-body guard accepts the extraction (R3 oracle)
-  command: bin/venv-python -c "from scripts.checks.ci_guards.validate_composite_action_shell_bodies import
-    validate_composite_action_shell_bodies as g; f=[]; g(f); print('GUARD FAILURES', f); assert not f"
-  expected: 'Prints GUARD FAILURES []. GREEN BEFORE AND AFTER BY DESIGN -- this is a REGRESSION guard,
-    not a red-before proof: the guard passes today because the three bodies are correctly baselined, and
-    it must still pass once they are extracted. Measured green 2026-09-21 (exit 0).'
-  fix_if: 'An R3 complaint is the live failure mode: either the adapter still carries a computing inline
-    body (the delegation line must be its only substantive line, per _delegated_script), or a retired
-    r3 baseline key still has a live body. R1/R2 cannot bind here -- this action declares no outputs:
-    -- so do not chase them. The earlier `-m` invocation form was VACUOUS (the module has no __main__,
-    so it exited 0 silently); this fallback form is the real oracle.'
-  hermetic: true
-  expected_literals:
-  - GUARD FAILURES []
-  graduation: waive
-  graduation_waiver_reason: Already a registered validate.py check running in both presubmit tiers; a
-    registry row would duplicate it.
-- step: 17
-  phase: pre-deploy
-  action: 'Consolidation is real and the action''s interface is preserved: one implementation, no inline
-    fetch, working-directory still honoured'
-  command: test "$(grep -rl 'secretsmanager get-secret-value' bin/ .github/actions/ | wc -l)" = "1" &&
-    grep -q 'secretsmanager get-secret-value' .github/actions/materialise-tfvars/materialise_tfvars.sh
-    && ! grep -q 'secretsmanager get-secret-value' .github/actions/materialise-tfvars/action.yml && !
-    test -e bin/materialise-tfvars.sh && grep -q 'materialise_tfvars.sh' bin/setup-cloud-env.sh && grep
-    -q 'inputs.working-directory' .github/actions/materialise-tfvars/action.yml && echo 'SINGLE IMPLEMENTATION'
-  expected: 'Prints SINGLE IMPLEMENTATION: the fetch exists only in the delegate script, and both callers
-    reference it.'
-  fix_if: A failure means a second copy survives anywhere under bin/ or .github/actions/ (reversing the
-    DEP-08 / rec-2663 consolidation), a stray bin/materialise-tfvars.sh was created, or the collapsed
-    adapter dropped the working-directory wiring -- the last silently writes the tfvars to the wrong path
-    on the apply path. Census deliberately spans bin/ AND .github/actions/.
-  hermetic: true
-  expected_literals:
-  - SINGLE IMPLEMENTATION
-  graduation: waive
-  graduation_waiver_reason: A fixed-substring census over one action directory; sound at authoring time,
-    brittle as a standing guard if the fetch is ever reworded.
-- step: 18
-  phase: pre-deploy
-  action: 'CI-SHAPED: the delegate fetches with INSTALL_TERRAFORM unset (the case all four apply call
-    sites rely on)'
-  command: bin/venv-python -m pytest tests/test_materialise_tfvars.py -k "install_terraform_unset" -q
-  expected: The test drives the delegate with INSTALL_TERRAFORM absent and a stubbed aws, asserting the
-    tfvars file IS written. Name the test test_writes_tfvars_when_install_terraform_unset.
-  fix_if: 'A failure means the delegate carries the admin gate and would no-op in CI. Measured 2026-09-21:
-    INSTALL_TERRAFORM appears zero times in .github/workflows/, so a guard in the shared unit silently
-    disables terraform-apply-sandbox (x2) and reconcile (x2), taking the Decision 126 heal verb with it.'
-  hermetic: true
-  expected_literals: []
-  graduation: waive
-  graduation_waiver_reason: The module already runs in the standard pytest suite; a registry row over
-    the same selector adds no independent signal.
 test_obligations:
 - source: scripts/checks/contracts/validate_terraform_cc_web_operations.py
   behavior: A no-default variable declared in terraform/personal/*.tf but absent from the contract's where_values_live
@@ -397,19 +224,6 @@ test_obligations:
   test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py::TestRecoveryTableCoverage
   red_green_expectation: red before (the pre-fix contract fails both the scalar-shape and missing-alerts_email
     assertions), green after the contract and validator land together
-- source: .github/actions/materialise-tfvars/materialise_tfvars.sh
-  behavior: 'The single implementation writes the tfvars at mode 600, emits ::add-mask:: for the three
-    secret-shaped values, and fails closed on an empty fetch -- driven under the literal GitHub composite
-    argv so CI and local behaviour cannot diverge (R2).'
-  verification_step: 6
-  test_selector: tests/test_materialise_tfvars.py
-  red_green_expectation: red before (the script does not exist), green after
-- source: bin/setup-cloud-env.sh
-  behavior: The materialise-tfvars delegation stays inside the INSTALL_TERRAFORM=1 admin-only branch and
-    after the AWS CLI install.
-  verification_step: 7
-  test_selector: tests/test_setup_cloud_env.py
-  red_green_expectation: red before (no delegation present), green after
 - source: docs/contracts/terraform-cc-web-operations.yaml
   behavior: The recovery table must name every no-default variable declared in terraform/personal/*.tf
     and keep owner_email and alerts_email on separate, non-interchangeable sources.
@@ -430,22 +244,6 @@ test_obligations:
     s, 'pointer to the owning contract missing'; print('DEPLOY_PATHS POINTER OK')"
   red_green_expectation: red before (the step lists four variables and names no owning contract), green
     after
-- source: .github/actions/materialise-tfvars/action.yml
-  behavior: 'The extraction must be behaviour-preserving against the three bodies it replaces: the rec-2285
-    first-''=''-split parse, ::add-mask:: for exactly account_id, platform_dev_external_id and platform_admin_external_id,
-    and the fail-closed non-empty assert -- plus no inline fetch and preserved working-directory wiring.'
-  verification_step: 6
-  command: bin/venv-python -m pytest tests/test_materialise_tfvars.py -q
-  red_green_expectation: red before (the delegate and its tests do not exist, and action.yml still carries
-    the three inline bodies), green after the extraction proves equivalence
-- source: config/composite_action_body_baseline.yaml
-  behavior: After extraction the action must carry no baselined inline body left unregistered or over
-    ceiling; the shell-bodies guard is the oracle for whether the retired r3 entries were correctly retired.
-  verification_step: 16
-  command: bin/venv-python -c "from scripts.checks.ci_guards.validate_composite_action_shell_bodies import
-    validate_composite_action_shell_bodies as g; f=[]; g(f); print('GUARD FAILURES', f); assert not f"
-  red_green_expectation: red before (the three r3 bodies are live and the adapter does not exist), green
-    after; an R3 complaint names any residual computing body in the adapter
 constraints:
 - Decision 101 public-repo boundary - no email address, AWS account id, ARN or ExternalId enters a tracked
   file. Role-alias SEMANTICS may be documented; literal addresses may not.
@@ -470,64 +268,30 @@ constraints:
   from an enforced one.
 - Decision 190 - rec-3950 carries source=tf_drift but was filed from the stale recovery procedure, not
   a measured plan diff; say so in the resolution so the drift lane's record stays honest.
-- DEP-08 / rec-2663 consolidated 4-5 duplicated materialise-tfvars copies into one composite action; this
-  plan must not create a second. The single implementation lives under the action directory (the delegate
-  location the shell-bodies guard recognises) and BOTH the action and bin/setup-cloud-env.sh call it.
-  The baseline's touch-it-fix-it rule makes the extraction mandatory once a baselined body is edited,
-  so this is the sanctioned remedy, not scope creep.
-- 'Collapsing action.yml''s three steps into one adapter MUST preserve the `working-directory` input and
-  the adapter step''s `working-directory: ${{ inputs.working-directory }}` wiring. All four current call
-  sites rely on the default ''.'', and the delegate writes terraform/personal/terraform.personal.tfvars
-  relative to cwd, so dropping it is a silent wrong-path write on the terraform apply path.'
-- '::add-mask:: is a GitHub-runner sentinel, not a redaction primitive. Gate its emission on $GITHUB_ACTIONS
-  -- unset, the literal account_id and both ExternalIds would be printed to the local session transcript,
-  breaching tfvars_and_remote_state_recovery.never_paste and Decision 101.'
-- 'The INSTALL_TERRAFORM gate lives in bin/setup-cloud-env.sh, NEVER in the shared delegate. Measured
-  2026-09-21: INSTALL_TERRAFORM appears zero times in .github/workflows/, so a guard in the shared unit
-  would no-op the composite action at all four apply call sites and disable the reconcile heal verb Decision
-  126 point 2 protects.'
-- 'The DEP-13 fence test must assert CONTAINMENT within the executable INSTALL_TERRAFORM branch, never
-  substring ordering: 6 of the script''s 8 INSTALL_TERRAFORM occurrences are comments, so an index comparison
-  would pass with the delegation outside the branch -- the exact DEV-container leak the fence exists to
-  prevent.'
 context:
 - 'Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND; CITE: 168, 127, 120, 113,
   144, 84, 101, 189, 59. Decisions triaged: 148 of 148. Roadmap items intersected: 4; CONFLICT: 0; RELATED:
   4'
 - 'gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)'
-- 'rec-3950 is MISDIAGNOSED, not drift (verified live 2026-09-20: SNS endpoint is a confirmed deliverable
-  mailbox; the Owner tag is the GitHub no-reply identity; each correct for its own purpose). Its stated
-  remediation breaks alerting or pollutes tags, and its acceptance string would commit an email literal.
-  Close-propose per Decision 103; never execute it. Decision 190: say in the resolution that it was filed
-  from the stale procedure, not a measured diff.'
+- SPLIT at round 3 (operator decision 2026-09-21). Rounds 1/2/3 returned 9/12/10 findings, 8 of round
+  3's in the consolidation half while the contract+validator half stayed clean two rounds running. The
+  consolidation and the ADMIN container fetch moved to rec-3978, which carries the design and all eight
+  established hazards. This plan is now the contract+validator half only.
+- 'rec-3950 is MISDIAGNOSED, not drift (verified live 2026-09-20: the SNS endpoint is a confirmed deliverable
+  mailbox, the Owner tag is the GitHub no-reply identity, each correct for its purpose). Its remediation
+  would break alerting or pollute tags and its acceptance would commit an email literal. Close-propose
+  per Decision 103, never execute. Decision 190: record that it was filed from the stale procedure, not
+  a measured diff.'
 - rec-2843 acceptance verified PASSING 2026-09-21, so Decision 103 permits a deterministic close with
   that output as proof. A parallel queue sweep closing it first is satisfied, not a conflict.
 - alerts_email is declared in terraform/personal/sns_alerts.tf (T2.18 FP-B / Decision 39), not variables.tf
   -- why the hand-maintained four-var list never learned about it.
-- PlatformAdmin GetSecretValue on the tfvars secret confirmed ALLOWED (iam simulate-principal-policy;
-  source role_PlatformAdmin_AdminOps; no resource policy), so no IAM change. Decision 120's provider-mirror
-  sync is the admin-only-fetch precedent.
-- 'Operator decisions 2026-09-21: tier V3 over the scout''s defensible V2 (Decision 48 NOTE), and the
-  Decision 126 fork accepted as an admin-tier enabler rather than an extra opt-in gate -- rationale: the
-  ADMIN profile is rare and near-exclusively IAM work, so it is not an ambient surface.'
-- 'vp-red-before measured 2026-09-21: the original step-4 graduate command was TAUTOLOGICAL (exit 0 on
-  the un-implemented tree). Rewritten to assert the invariant via the new helper; now classified red-before
-  (assertion_failed, exit 1). Decision 189 makes a false graduate a hard plan-PR failure.'
-- 'Planning-time split (Decision 59): the alerts_email redaction gap is rec-3975, the HARD PREREQUISITE
-  for the sequenced value-change plan -- it must land before any owner_email/alerts_email change reaches
-  a PR.'
-- 'tests/test_setup_cloud_env.py is in scope because step 7''s -k materialise selector names a test that
-  does not exist yet (verified: zero matches).'
-- 'Decision 166: contract at 357 lines against the 500 default; the additions must not need a raise marker.'
-- Branch was 10 behind origin/main at authoring (deploy-paths.yaml gained an adjacent SPLIT-APPLY clause;
-  terraform/personal/main.tf gained an S3 lifecycle block, not default_tags). Rebase before implementing.
-- 'plan-critique: round 1 REVISE (9 findings) + round 2 REVISE (12 findings); all dispositioned, none
-  recurring at the same anchor. Round 2''s blocking pair: a shared-unit INSTALL_TERRAFORM guard would
-  have no-opped the action at 4 apply call sites (measured: 0 hits in .github/workflows/), and an ungated
-  ::add-mask:: prints secrets off-runner. Finding 6 resolved by operator choice of one implementation;
-  r3 sanctions extract OR raise-with-marker, so extraction was chosen, not forced. Re-measured 2026-09-21:
-  steps 1,5,14,17,18 red; step 16 green-before by design (regression guard). rec-3975 and rec-3977 carry
-  the Decision 59 deferrals.'
+- 'Tier is V2 after the split: the live Secrets Manager leg that justified V3 left with the consolidation,
+  so V3 would have nothing to exercise. Scope is contracts plus one Python check.'
+- 'Measured red on the un-implemented tree 2026-09-21: steps 1, 4, 5, 15. Step 8 is green by construction
+  (no added line matches) and waived accordingly.'
+- Branch was 10 behind origin/main at authoring (deploy-paths.yaml gained an adjacent SPLIT-APPLY clause).
+  Rebase before implementing -- step 2's comparator fails on correct work until then.
 pre_implementation_checklist:
 - Branch confirmed not on main
 - 'Rebased onto origin/main BEFORE editing (measured 2026-09-21: deploy-paths.yaml amendment_log is 5
@@ -547,29 +311,15 @@ execution_steps:
   leg with brace-depth-aware HCL parsing so a nested validation block is not mistaken for a default.
 - tests/checks/contracts/test_validate_terraform_cc_web_operations.py - add parser and red-path coverage
   plus the live-pair assertion.
-- '.github/actions/materialise-tfvars/materialise_tfvars.sh - create THE single implementation: ALWAYS
-  fetch (no INSTALL_TERRAFORM guard -- that is the caller''s), mode 600, fail-closed, rec-2285 first-''=''-split
-  parse, and ::add-mask:: gated on $GITHUB_ACTIONS; then collapse action.yml''s three inline bodies into
-  one thin adapter delegating to it, and retire the three r3 baseline entries. Do NOT create a second
-  copy under bin/.'
-- bin/setup-cloud-env.sh - OWNS the INSTALL_TERRAFORM=1 gate and delegates to the SAME script inside it,
-  after the AWS CLI install.
-- tests/test_materialise_tfvars.py - create behavioural tests driving the script with a stubbed aws binary.
 - 'Close rec-2843 deterministically via scripts.ops_data_portal (its stored acceptance passes; record
   that output as the closure proof) and name ONLY rec-2843 in the squash-merge Resolves trailer. Route
   rec-3950 as close_proposed via ops_data_portal --update-rec with the misdiagnosis resolution -- NEVER
   name rec-3950 in the Resolves trailer: .github/workflows/rec-autoclose.yml closes every id in that trailer,
   which would auto-close a semantic verdict in breach of Decision 103.'
-- tests/test_materialise_tfvars.py - include test_writes_tfvars_when_install_terraform_unset (the CI-shaped
-  case step 18 selects) and an assertion that no secret-shaped value reaches stdout with $GITHUB_ACTIONS
-  unset.
 - Execute Verification Plan - run each step; loop until pass; on unrecoverable failure stop and RCA (Decision
   55)
 - 'Report: what was implemented, verification results'
 work_areas: []
-rollback: 'The contract, validator, delegate script and tests all revert with the commit; no infrastructure
-  state is touched and no terraform apply runs, so there is nothing to unwind in AWS. BUT the blast radius
-  is not zero: a botched adapter disables the composite action at four call sites (terraform-apply-sandbox
-  x2, reconcile x2), which takes the Decision 126 heal verb offline until reverted. Verify steps 16, 17
-  and 18 green before merge; revert the adapter first if CI reds. Rec closures are reversible via ops_data_portal
-  --update-rec.'
+rollback: Documentation, one validator leg and its tests -- revert the commit. No infrastructure state
+  is touched, no terraform apply runs, and no CI action is modified, so there is nothing to unwind. The
+  rec closures are reversible via ops_data_portal --update-rec.
