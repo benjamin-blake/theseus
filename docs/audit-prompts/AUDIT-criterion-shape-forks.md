@@ -1281,7 +1281,12 @@ brief's framing does not foreclose it.
    `meta.contract_notes` and do NOT fix it -- that is outside your write boundary.
    `meta.contract_notes` is a single free-text string with more than one possible writer (here and
    Section 5.1); APPEND to it, separating entries with `; `, rather than overwriting.
-4. Commit with `user.name=Claude`, `user.email=noreply@anthropic.com`, subject
+4. Commit under an identity that is TRUE. Do not commit as Claude: this brief was composed by a
+   Claude session but you are not one, the repository is public, and a false authorship claim
+   would be permanent in its git history. Use your operator's configured git identity if one is
+   set; otherwise set `user.name` to your own self-reported model name and `user.email` to
+   `noreply@users.noreply.github.com`. Name the executing model in the PR body too -- `meta.model`
+   inside the YAML should not be the only place the truth lands. Commit subject
    `audit(criterion-shape-forks): findings at <sha>` (the `audit({slug}):` prefix is a registered
    convention in `docs/contracts/git-ops.yaml`), body = two or three lines naming the four fork
    verdicts. No co-author or session trailers are required of you. Then `git push -u origin HEAD`.
