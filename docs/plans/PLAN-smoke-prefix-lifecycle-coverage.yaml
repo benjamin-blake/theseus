@@ -171,10 +171,11 @@ acceptance_criteria:
     (Decision 187: silence is not a disposition).
   - >-
     Post-apply, the live bucket reports two lifecycle rules with the smoke rule Enabled; the smoke
-    prefix retains at least the pre-rule floor of 8 current versions while its noncurrent versions and
-    delete markers both fall below the pre-rule census of 1,400; and a smoke gc cycle has completed
-    within a window anchored to the apply. This criterion claims NO catalog-vs-storage reachability
-    property -- that property is unavailable on the smoke path and is carried by rec-3973.
+    prefix's noncurrent versions and delete markers both fall below the pre-rule census of 1,400; and a
+    smoke gc cycle has completed within a window anchored to the apply. This criterion asserts the
+    UNDER-reclaim direction only. Neither catalog-vs-storage reachability nor an over-reclaim bound on
+    the current-version count is claimed -- a storage census cannot carry either on this path, and both
+    are carried by rec-3973.
   - >-
     rec-3892 carries the RCA resolution recorded via the portal, and rec-3945 reads closed.
 verification_plan:
@@ -309,36 +310,35 @@ verification_plan:
     fix_if: a Disabled rule reclaims nothing while satisfying every structural assertion; a missing rule means the apply did not land -- check the CI apply job rather than re-applying locally
   - step: 13
     phase: post-deploy
-    action: the smoke prefix reclaimed only non-live bytes, and the smoke gc cadence completed after the apply
-    command: test -n "$SMOKE_RULE_APPLIED_AT" && aws s3api list-object-versions --bucket agent-platform-data-lake --prefix ducklake-neon-smoke/ --profile agent_platform --output json > "${TMPDIR:-/tmp}/smoke-post-rule.json" && aws cloudwatch get-metric-statistics --namespace DuckLakeMaintenance --metric-name GcDurationMs --start-time "$SMOKE_RULE_APPLIED_AT" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --period 3600 --statistics Maximum --profile agent_platform --output json > "${TMPDIR:-/tmp}/smoke-gc-ran.json" && bin/venv-python -c "import json,os; d=json.load(open(os.environ.get('TMPDIR','/tmp')+'/smoke-post-rule.json')); v=d.get('Versions',[]); mk=d.get('DeleteMarkers',[]); cur=[x for x in v if x['IsLatest']]; non=[x for x in v if not x['IsLatest']]; assert len(cur) >= 8, f'current versions {len(cur)} below the measured pre-rule floor of 8 -- OVER-RECLAIM'; assert len(non) < 1400, f'noncurrent {len(non)} not reclaimed from the pre-rule 1400'; assert len(mk) < 1400, f'markers {len(mk)} not swept from the pre-rule 1400'; g=json.load(open(os.environ.get('TMPDIR','/tmp')+'/smoke-gc-ran.json')).get('Datapoints',[]); assert g, 'no smoke gc cycle since the apply'; print('SMOKE_RECLAIM_SANE', len(cur), len(non), len(mk), len(g))"
+    action: the smoke prefix reclaimed its non-live bytes, and a smoke gc cycle completed after the apply
+    command: test -n "$SMOKE_RULE_APPLIED_AT" && aws s3api list-object-versions --bucket agent-platform-data-lake --prefix ducklake-neon-smoke/ --profile agent_platform --output json > "${TMPDIR:-/tmp}/smoke-post-rule.json" && aws cloudwatch get-metric-statistics --namespace DuckLakeMaintenance --metric-name GcDurationMs --start-time "$SMOKE_RULE_APPLIED_AT" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --period 3600 --statistics Maximum --profile agent_platform --output json > "${TMPDIR:-/tmp}/smoke-gc-ran.json" && bin/venv-python -c "import json,os; d=json.load(open(os.environ.get('TMPDIR','/tmp')+'/smoke-post-rule.json')); v=d.get('Versions',[]); mk=d.get('DeleteMarkers',[]); cur=[x for x in v if x['IsLatest']]; non=[x for x in v if not x['IsLatest']]; assert len(non) < 1400, f'noncurrent {len(non)} not reclaimed from the pre-rule 1400'; assert len(mk) < 1400, f'markers {len(mk)} not swept from the pre-rule 1400'; g=json.load(open(os.environ.get('TMPDIR','/tmp')+'/smoke-gc-ran.json')).get('Datapoints',[]); assert g, 'no smoke gc cycle since the apply'; print('SMOKE_RECLAIM_SANE', len(cur), len(non), len(mk), len(g))"
     expected: >-
-      Falsifiable in BOTH directions. OVER-RECLAIM: the current-version key set must stay at or above
-      the pre-rule floor of 8 measured 2026-09-21 -- the rule expires only noncurrent versions and
-      delete markers, so a drop means it touched live data. Symmetric with the under-reclaim legs
-      rather than a bare non-empty check, which a rule that deleted 7 of 8 keys would pass.
-      UNDER-RECLAIM: noncurrent versions and delete markers must both fall below the pre-rule census of
-      1,400 -- a rule that reclaims nothing leaves them at 1,400.
-      The GcDurationMs leg proves ONLY that the smoke gc cadence completed after the apply (G1
-      catalog-vs-catalog disjointness, G2 retention floor and G3 catalog sanity all held). It is NOT
-      reachability evidence and this step no longer claims it is: SMOKE_RULE_APPLIED_AT anchors the
-      window to the apply, because an unanchored lookback returns datapoints from before the rule
-      existed and would pass vacuously.
-      THE CATALOG-VS-STORAGE REACHABILITY PROPERTY IS NOT ASSERTED HERE AND IS NOT AVAILABLE ON THIS
-      PATH -- carrier rec-3973, named in followon_recs. G1 (assert_reachability) is
-      live_paths & would_delete_paths, both catalog-derived; referenced_missing (live_paths -
-      storage_paths) lives in ducklake_gc_verification.py and is called only from the production verb
-      the smoke Lambda must not import. Decision 192's per-cycle invariant governs that verb (clauses
-      1/3/4), not an AWS-native managed primitive (Decision 100); the production prefix shipped this
-      identical rule shape with no post-deploy reachability assertion and routed its residue to
-      follow-on recs on the same principle -- the observer must be separate from the actor.
+      UNDER-RECLAIM ONLY. Noncurrent versions and delete markers must both fall below the pre-rule
+      census of 1,400 -- a rule that reclaims nothing leaves them at exactly 1,400, which is what this
+      command returns today. The current-version count is PRINTED for the record but deliberately NOT
+      asserted: see the over-reclaim note below.
+      The GcDurationMs leg proves ONLY that a smoke gc cycle completed after the apply (G1
+      catalog-vs-catalog disjointness, G2 retention floor and G3 catalog sanity all held, since run_gc
+      raises on any of those and the emit sits after it returns; G4 is NOT covered -- an over-budget
+      pass defers without raising and still emits). SMOKE_RULE_APPLIED_AT anchors the window, because
+      an unanchored lookback returns datapoints from before the rule existed and passes vacuously.
+      GcDurationMs has exactly one emitter, the smoke handler, so it cannot be satisfied by the
+      production cadence -- but it cannot distinguish the scheduled Sunday cycle from an out-of-band
+      or CI-triggered action_gc invocation either, so this step claims a CYCLE, never a cadence.
+      TWO PROPERTIES ARE DELIBERATELY NOT ASSERTED ON THIS PATH, both carried by rec-3973.
+      (1) CATALOG-VS-STORAGE REACHABILITY: G1 is live_paths & would_delete_paths, both catalog-derived;
+      referenced_missing (live_paths - storage_paths) is called only from the production verb the smoke
+      Lambda must not import. (2) OVER-RECLAIM VIA A CURRENT-VERSION COUNT: a storage census cannot
+      carry it. The rule has no current-version expiration, so it cannot lower that count -- while the
+      smoke gc legitimately can and does (the 2026-06-28 pass in this plan's own RCA deleted 1,226
+      objects), and this very step requires a gc cycle to have run. Any floor would therefore fail for
+      the wrong reason or pass vacuously, and no operator-judged re-baseline can separate the two.
     fix_if: >-
-      A current-version count below 8 is an over-reclaim incident -- RCA it (Decision 55), never re-run
-      to green; if routine CI activity has legitimately moved the floor, re-baseline it and record the
-      new figure rather than lowering the assertion. Unchanged 1,400/1,400 counts mean the rule did not
-      apply or did not match the prefix; check the CI apply job and the trailing slash. An unset
-      SMOKE_RULE_APPLIED_AT fails the step by design -- export the CI apply completion time (RFC3339).
-      No datapoint in the anchored window means no smoke gc has run since the apply; wait for the
-      Sunday 05:00 cadence. Do NOT read absence as a pass.
+      Unchanged 1,400/1,400 counts mean the rule did not apply or did not match the prefix -- check the
+      CI apply job and the trailing slash; do not lower the thresholds. An unset SMOKE_RULE_APPLIED_AT
+      fails the step by design -- export the CI apply completion time (RFC3339). No datapoint in the
+      anchored window means no smoke gc cycle has run since the apply; wait for the Sunday 05:00
+      schedule or an invocation. Do NOT read absence as a pass.
   - step: 14
     phase: post-deploy
     action: the RCA resolution is recorded and rec-3945 is closed
@@ -459,6 +459,7 @@ execution_steps:
   - Create config/agent/verification_registry/entries/ducklake-maintenance-gc-rule-invariants.yaml carrying the FIVE re-pointed GC node ids at the new module path, guard_target terraform/personal/ducklake_maintenance.tf, plan_slug smoke-prefix-lifecycle-coverage, plus graduated_at and graduated_by. Do NOT copy plan_slug ducklake-noncurrent-version-reclaim forward -- that fails the implement-leg match.
   - 'git mv config/agent/verification_registry/entries/ducklake-maintenance-tf-invariants.yaml into entries/deprecated/ -- retire it, never edit it: a modified pre-existing row can discharge no graduate obligation.'
   - Confirm no live surface still resolves the retired check_id (VP step 9).
+  - 'At the pre-deploy/post-deploy boundary, capture the CI apply completion time in RFC3339 and export it as SMOKE_RULE_APPLIED_AT -- VP step 13 fails closed without it, and an unanchored window passes vacuously.'
   - Call get_rec_write_guidance(), then update_rec on rec-3892 with the RCA resolution and the evidence figures.
   - Execute Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and RCA (Decision 55)
   - 'Report: what was implemented, verification results'
