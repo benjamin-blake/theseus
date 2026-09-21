@@ -82,7 +82,8 @@ scope:
       no placement rule. Add BOTH, or the contract and the tightened parser contradict each other on
       day one. (i) CARRIER (rec-3901): the trailer belongs only on the IMPLEMENTATION merge; a plan
       merge carries none. (ii) PLACEMENT (rec-2922): it must sit in a block whose every line is
-      `Key: value`-shaped -- never mid-paragraph -- and it may precede the attribution footer.
+      `Key: value`-shaped -- never mid-paragraph -- and it may precede the attribution footer. The
+      space after the colon is REQUIRED (`Resolves:rec-NNNN` does not parse).
       Per Decision 168 and T2.54:c1 both clauses cite `validate_rec_autoclose_trailer_gate` as their
       enforcing evaluator so neither lands orphaned. MANDATORY COMPANION: this is a `class: D`
       contract and `resolves_trailer` is a top-level key, so changing its canonical dump without a
@@ -465,8 +466,15 @@ constraints:
     watched set, so a red run files a spurious critical rec for correct behaviour.
   - >-
     Decision 128 headroom, measured with the gate's own formula (non-blank, non-comment-only lines):
-    ci_rca_lifecycle.py 364 (136 free), closure_gate.py 238 (262 free), rec_trailer.py 26 (474 free).
-    No decomposition is owed at this size; if a delta threatens 500, decompose -- never register a raise.
+    ci_rca_lifecycle.py 364 (136 free), closure_gate.py 238 (262 free), rec_trailer.py 26 (474 free),
+    tests/ci_rca/test_close_recs_from_trailer.py 107 (393 free), and -- the TIGHTEST in this change --
+    tests/test_ci_rca_lifecycle.py 470 (only 30 free). None is registered in config/sloc_budgets.yaml,
+    so each is bounded at 500. A raise is structurally unavailable here: validate_sloc_budget_raises
+    needs a `# raise-approved: dec-NNN` marker naming a real authorising Decision, and this slice
+    mints none. So the seam remediation in TestCloseRecsFromTrailerRefusalContract MUST be a single
+    class-scoped autouse fixture (or a conftest.py helper) -- roughly 4-6 lines -- NOT per-call-site
+    patch() restructuring across its four call sites, which would overrun. If a delta still threatens
+    500, decompose; never register a raise.
   - >-
     Do not touch the workflow's inline `run:` body -- pinned at 37 lines by the Decision 162 R3
     ratchet. Logic belongs in importable Python.
@@ -490,6 +498,18 @@ constraints:
     `closure-stamp-applicable-seam`. Both node ids must survive this change under their EXISTING
     check_id -- renaming or deleting either is a Decision 132 pre-merge gate failure, not churn.
   - >-
+    A THIRD shard, `closure-stamp-contract-parity`
+    (tests/ops_data_portal/test_closure_gate.py::TestContractParity::
+    test_stamp_precondition_call_sites_match_importers), is at risk from IMPORT STYLE alone. It
+    derives its importer set by AST and recognises only an `ImportFrom` of
+    `scripts.ops_portal.closure_gate` naming the symbol, or an `ast.Import` of the dotted module.
+    `from scripts.ops_portal import closure_gate` -- the natural way to write
+    `closure_gate.changed_files(...)` -- matches NEITHER, so swapping the import would drop
+    ci_rca_lifecycle.py out of the derived set and fail the shard as declared-but-not-importing.
+    KEEP the existing `from scripts.ops_portal.closure_gate import closure_stamps_applicable` line
+    and import `changed_files` ALONGSIDE it, calling it bare. VP step 3 runs that test, so a slip
+    is caught in-session -- but do not rediscover it.
+  - >-
     Out-of-scope defects found while implementing become recommendations via
     `scripts.ops_data_portal`, never inline fixes (Decision 59 scope boundary). Note the two
     seam-test files are pre-declared in Scope precisely because Decision 59 has no sanction row
@@ -498,7 +518,7 @@ context:
   - "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND (round 2). CITE = 186, 103, 177, 181, 179, 170, 169, 168, 162, 128, 55, 72. Round-2 flags on the acceptance evaluator (D167 routing, D103 amendment) are MOOT -- that work moved to rec-3984."
   - "Decisions triaged: 147 of 147"
   - "Roadmap items intersected: 9; CONFLICT: 0; RELATED: 8"
-  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "gates: decision-scout=FLAGS_FOUND (round 2 of 2); plan-critique=PROCEED after 5 round(s). Rounds 1-4 returned REVISE; no finding recurred at any tag+anchor, so no oscillation interrupt fired. Rounds 4 and 5 were operator-authorised after escalation."
   - "Incidents cured: #803 (wrapped prose closed rec-2185/2697/2894), #1152 (plan merge closed rec-3764/3761/3759), #1199 (plan merge closed rec-3871/3876/3888). All three are parser + merge-leg shapes; none needs acceptance verification."
   - "MEASURED, load-bearing: over 600 commits on origin/main, 122 carry a Resolves: line. A final-block-only rule parses 43 (79 lost); the any-Key:value-block rule parses 116 (6 lost) and still returns [] for #803 (commit 73387861). The loss is caused by the mandated Co-Authored-By: / Claude-Session: footer forming the final block."
   - "The 6 lost are NOT all benign, enumerated rather than implied: 3 are `Resolves: none (...)` no-ops, 1 is commit 73387861 (the defect being cured), and 2 -- 2b9e3200e and 342274a8b -- are LEGITIMATE implementation merges whose trailer abuts prose with no blank line. Under the new rule those would not close and would need a manual update_rec. Direction is fail-safe (Decision 103 makes a false closure unrecoverable; a non-closure is not), and the new git-ops placement rule prevents recurrence -- but the ongoing operational cost is real and is stated here rather than hidden behind the bare count."
@@ -522,7 +542,12 @@ pre_implementation_checklist:
 execution_steps:
   - >-
     scripts/rec_trailer.py -- replace the MULTILINE match with the any-`Key: value`-block rule.
-    Keep the existing dedup, case-insensitivity and malformed-token behaviour byte-for-byte.
+    Keep the existing dedup, case-insensitivity and malformed-token behaviour byte-for-byte. ONE
+    deliberate behaviour change beyond the block rule, which must be stated in the git-ops placement
+    clause rather than left implicit: the old `^resolves\s*:\s*` accepted a colon with no following
+    whitespace, while `^[A-Za-z][A-Za-z-]*:\s` requires it -- so `Resolves:rec-NNNN` no longer
+    parses. No existing fixture covers it and the direction is fail-safe, but the contract must say
+    the space is required.
   - >-
     scripts/ops_portal/closure_gate.py -- extract `changed_files(sha, root)` from
     `_fix_commit_touches` and delegate to it. Behaviour-preserving; no new call site.
