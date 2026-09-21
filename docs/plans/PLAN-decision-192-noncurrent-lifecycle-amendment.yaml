@@ -36,8 +36,10 @@ acceptance_criteria:
   - >-
     Decision 192's span in docs/DECISIONS.md carries a dated "> **Update (2026-09-21):**"
     annotation that (a) restates that a CURRENT-VERSION age expiration remains forbidden, (b)
-    states why a NONCURRENT-version rule is categorically distinct, (c) declares the as-shipped
-    production-only scoping AND the check that enforces it, and (d) records the residual
+    states why a NONCURRENT-version rule is categorically distinct, (c) declares the durable
+    PER-PREFIX scoping SHAPE (each declared *_data_prefix local either covered or
+    declared-excluded) AND the check that enforces it -- never a point-in-time prefix roster,
+    which PLAN-smoke-prefix-lifecycle-coverage falsifies -- and (d) records the residual
     current-versions-only blindness bounding both clause 3(b) and G4's byte cap.
   - >-
     The annotation states that it RECORDS the scoping f1a9cb2a (#1225) already shipped and grants
@@ -57,12 +59,15 @@ verification_plan:
       The annotation is present INSIDE Decision 192's span. The awk slice is load-bearing: a
       whole-file grep would pass if the text landed in the wrong entry, which is the most likely
       authoring error here.
-    command: "awk '/^## Decision 192:/,/^## Decision 191:/' docs/DECISIONS.md | grep -q 'NONCURRENT-version rule is'"
+    command: "awk '/^## Decision 192:/,/^## Decision 191:/' docs/DECISIONS.md | grep -q 'TestDataLakeLifecycleGoverned'"
     expected: "Exit 0."
     fix_if: >-
-      Exit 1 means the annotation is absent, or landed outside Decision 192's span (most likely
-      appended to the wrong entry or after the "---" separator). Move it inside the span; never
-      widen the slice to make the check pass.
+      THREE causes, in order of likelihood. (1) The annotation is absent. (2) It landed outside
+      Decision 192's span (wrong entry, or after the "---" separator). (3) The grep token was
+      split by a line wrap -- this is why the token is the single unhyphenated identifier
+      `TestDataLakeLifecycleGoverned` rather than a multi-word phrase: textwrap breaks on spaces
+      AND hyphens, so any phrase here is wrap-fragile. Do NOT move correctly-placed text to chase
+      cause (3), and never widen the awk slice to make the check pass.
     hermetic: true
     graduation: graduate
     graduation_check_id: decision-192-noncurrent-lifecycle-amendment
@@ -111,7 +116,7 @@ verification_plan:
       Decision 192's body span stays within the 6,144-byte per-entry norm, so the annotation emits
       no rec-3243 amendment-delta accretion warning.
     command: "bin/venv-python -c \"import pathlib; t=pathlib.Path('docs/DECISIONS.md').read_text(encoding='utf-8'); n=len(t[t.find('## Decision 192:'):t.find('## Decision 191:')].encode()); print('D192 span', n, 'of 6144'); assert n<=6144, ('over the per-entry norm by %d bytes -- TRIM, never raise (Decision 167)' % (n-6144))\""
-    expected: "Prints a span at or below 6144; measured at authoring time as 6130."
+    expected: "Prints a span at or below 6144; measured at authoring time as 6118 (26 bytes margin)."
     fix_if: >-
       Over the norm: TRIM the annotation (drop a path in favour of a greppable symbol name, or
       shorten a clause). Decision 167's own reversal text makes trimming or compaction the
@@ -153,7 +158,7 @@ test_obligations:
       Decision 192's span must carry the dated annotation explaining why a noncurrent-version-only
       lifecycle rule does not violate the standing no-lifecycle-expiration constraint.
     verification_step: 1
-    command: "awk '/^## Decision 192:/,/^## Decision 191:/' docs/DECISIONS.md | grep -q 'NONCURRENT-version rule is'"
+    command: "awk '/^## Decision 192:/,/^## Decision 191:/' docs/DECISIONS.md | grep -q 'TestDataLakeLifecycleGoverned'"
     red_green_expectation: >-
       Red before: verified empirically at authoring time -- the command exits 1 against the
       current tree (assertion_failed, a legitimate red-before outcome). Green after the annotation
@@ -211,9 +216,15 @@ constraints:
     (terraform/personal/main.tf, the comment on the noncurrent_version_expiration block).
   - >-
     Do NOT modify terraform/personal/main.tf, the iam_tf test module, or anything under src/.
-    This plan is governance-only. The lifecycle rule already shipped; the smoke prefix is owned by
-    PLAN-smoke-prefix-lifecycle-coverage (rec-3945) and rec-3892's RCA -- the annotation must not
-    read as closing either one inline (Decision 55).
+    This plan is governance-only; the lifecycle rule already shipped.
+    The annotation must NOT name rec-3892 or rec-3945 as live gates. VERIFIED 2026-09-21 by live
+    warehouse read (rec_by_id, not the local cache): BOTH ARE CLOSED. rec-3892's RCA verdict is
+    PREMISE REFUTED -- no unmodeled deleter exists in the smoke prefix; all 1,400 smoke delete
+    markers fall in two Sunday bursts predating the sampled window. rec-3945 is resolved by
+    PLAN-smoke-prefix-lifecycle-coverage, which extends the rule to the smoke prefix. That change
+    was NOT yet on origin/main at 34a5a57b when this plan was authored, so an annotation claiming
+    "production prefix ONLY" would be false within hours of being dated -- precisely the
+    re-litigation trigger this plan exists to remove. State the durable per-prefix SHAPE instead.
   - >-
     Cap pressure is answered by TRIMMING, never a raise (Decision 167 reversal text). If the
     annotation must grow, drop a file path in favour of a greppable symbol name before dropping
@@ -244,8 +255,9 @@ context:
     so the PRODUCTION surface is declared, not just the smoke one); Decision 150 NOTE (routing
     settled by the human as annotation-that-records).
   - >-
-    MEASURED at origin/main 34a5a57b: D192 span 5,056 -> 6,130 of the 6,144 norm. That entry is
-    now effectively FULL -- a future annotation needs Decision 149 compaction, not accretion.
+    MEASURED at origin/main 34a5a57b: D192 span 5,056 -> 6,118 of the 6,144 norm (26 bytes
+    margin, stress-tested against re-wrap at widths 88/90/96). That entry is now effectively FULL
+    -- a future annotation needs Decision 149 compaction, not accretion.
   - >-
     PRE-VERIFIED on a scratch copy (repo untouched): zero typed keys changed on D192 or the other
     149 entries, count stable at 150 -- the basis for CONDITIONAL index regeneration. VP step 1
@@ -254,8 +266,9 @@ context:
     PROVENANCE: residual gap after PLAN-lakehouse-noncurrent-version-expiry was abandoned as
     superseded by f1a9cb2a. rec-3907 is CLOSED. No rec tracks this; scoped at the human's request.
   - >-
-    KNOWN GAP, deferred: the guard asserts PRESENCE only. A coupling guard (rule implies
-    annotation) needs an iam_tf test edit; revisit when rec-3945 changes the rule's shape.
+    KNOWN GAP: the guard asserts PRESENCE only. A coupling guard (rule implies annotation) needs
+    an iam_tf test edit, out of scope for a governance-only plan. rec-3945 is already CLOSED, so
+    the revisit trigger has passed -- this is an open residual, not a scheduled follow-up.
 pre_implementation_checklist:
   - Branch confirmed not on main (harness-assigned session branch)
   - docs/PROJECT_CONTEXT.md read
@@ -271,28 +284,41 @@ execution_steps:
     carries all four required content elements, is reproduced here verbatim so the implementer
     need not re-derive it (adjust only if a constraint above demands a trim):
   - >-
+    VERBATIM ANNOTATION TEXT (measured 6,118 of the 6,144-byte span, 26 bytes margin; wrap each
+    line at width 96 with a "> " prefix, which is the width already used by Decision 192's
+    existing blockquote). Re-run VP step 4 after any edit -- do not trust the authored figure.
+    Stress-tested at re-wrap widths 88/90/96: the span stays at or below 6,121 and the grep token
+    survives intact at every width.
+  - >-
     "> **Update (2026-09-21):** clause 3(b)'s GcDebtRatio bound now has an S3 reclaimer. The
     standing \"NEVER add an S3 lifecycle expiration rule over the lakehouse prefix\"
     (PLAN-production-gc-and-storage-stability.yaml:815) forbids a CURRENT-VERSION age rule that
     would delete live Parquet the catalog does not track; that stands. A NONCURRENT-version rule
     is categorically distinct -- it touches only versions already outside the G1 live set
     (Decision 188 cl.2) -- so this RECORDS the scoping f1a9cb2a (#1225) shipped and grants no new
-    delete authority. Production prefix ONLY, enforced by `TestDataLakeLifecycleGoverned` in the
-    iam_tf tf-invariants module; smoke is a DECLARED exclusion pending rec-3892 (rec-3945).
-    `noncurrent_days` binds `SNAPSHOT_RETAIN_DAYS` as an OPERATOR RECOVERY window, NOT catalog
-    time travel: gc_ops runs after expire_snapshots. RESIDUAL: `list_storage` uses ListObjectsV2,
-    so clause 3(b) and G4's byte cap (Decision 193 cl.1) stay current-versions-only and
-    under-report billed bytes; clause 3(a)'s G1 invariant is UNAFFECTED." -- wrapped as blockquote
-    lines each prefixed "> ", at the repository's normal line width.
+    delete authority. Scoping is PER-PREFIX from the declared `*_data_prefix` locals, each either
+    covered or declared-excluded, enforced by `TestDataLakeLifecycleGoverned`. `noncurrent_days`
+    binds `SNAPSHOT_RETAIN_DAYS` as an OPERATOR RECOVERY window, NOT catalog time travel: gc_ops
+    runs after expire_snapshots. RESIDUAL: `list_storage` uses ListObjectsV2, so clause 3(b) and
+    G4's byte cap (Decision 193 cl.1) stay current-versions-only and under-report billed bytes;
+    clause 3(a)'s G1 invariant is UNAFFECTED."
+  - >-
+    DATE COUPLING: 2026-09-21 appears in FOUR coupled places -- the annotation text, VP step 2's
+    `s.find('> **Update (2026-09-21):**')` literal, acceptance criterion 1, and the registry row's
+    graduated_at. If the implementation date differs, ALL FOUR move together; changing only the
+    annotation makes VP step 2 hard-fail and leaves acceptance criterion 1 unsatisfied.
   - >-
     config/agent/verification_registry/entries/decision-192-noncurrent-lifecycle-amendment.yaml --
     create with check_id equal to the filename stem (the placement leg of
     validate_verification_registry requires filename == check_id), primitive_slot
     command_exit_zero, guard_target docs/DECISIONS.md, guard_symbol null, plan_slug
     decision-192-noncurrent-lifecycle-amendment, graduated_at the implementation date, and a
-    check_spec whose command is the VP step 1 awk-slice pipeline. The awk slice is what makes the
-    row admissible: a whole-file grep would pass on origin/main too and the VF-06 differential
-    gate would reject it as tautological.
+    check_spec whose command is the VP step 1 awk-slice pipeline. TWO mechanical requirements.
+    (1) A shell pipeline enters check_spec as ["bash", "-c", "<pipeline>"], matching the sibling
+    rows that carry pipelines (e.g. cc-web-signing-hook-registered.yaml); a bare ["awk", ...]
+    argv would never see the `| grep`. (2) The awk slice is what makes the row admissible -- a
+    whole-file grep would pass on origin/main too and the VF-06 differential gate would reject it
+    as tautological ("not admitted").
   - >-
     Run the Verification Plan in order; steps 1-4 are cheap and diagnose each other. Do NOT
     regenerate docs/decisions-index.json unless step 3 reports drift; if it does, understand the
