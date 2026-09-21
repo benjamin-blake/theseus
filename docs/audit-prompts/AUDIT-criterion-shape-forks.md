@@ -91,9 +91,17 @@ the wrong surface.
    `verification_plan[]` steps, and a plan's own `acceptance_criteria` list (which clause 3 does
    NOT name and which is out of scope).
 6. **"severity"** names CD.29 check severity (`required | quarantine`), `telemetry_observations`
-   severity, and recommendation `priority`. Only the first is in scope, and it is closed
-   (Section 13).
-7. **"evidence"** is already taken twice: `docs/contracts/github-actions-evidence.yaml` is a CI
+   severity, and recommendation `priority`. Only the CD.29 sense is in scope as a SUBJECT, and it
+   is closed (Section 13); the finding-level severity you assign is a separate thing -- see the
+   next trap.
+7. **The brief overloads three of its own tokens**, and you should read each by its position:
+   `CONFIRMED` is an adjudication outcome in Section 2 ("a CONFIRMED defect") AND an evidence-
+   strength value in `confidence: CONFIRMED|HYPOTHESIS` -- a CONFIRMED defect may legitimately
+   carry `confidence: HYPOTHESIS`. `severity` names the CD.29 check severity in trap 6 AND the
+   finding-level `critical|high|medium|low` you assign in Section 15; only the latter is an output
+   of yours. `strong` is a rubric rating AND a maturity band; a `strong` cell and a `strong`
+   surface are different scales.
+8. **"evidence"** is already taken twice: `docs/contracts/github-actions-evidence.yaml` is a CI
    artifact RETENTION taxonomy, and `docs/contracts/ci-rca-lifecycle.yaml#evidence_scope` is a
    CI-RCA bundle rule. Neither is the proposed `work_item_criterion_evidence` table. If you
    recommend that name, say why the collision is tolerable.
@@ -329,7 +337,7 @@ Options:
 
 Weigh the recommendation-side semantics (`docs/contracts/ops_recommendations.yaml`
 `verification_tier`: V3 = build + deploy + smoke, Decision 79 / CD.16) against the measured
-population in Section 10.6. A stored tier on a criterion row, a floor over a plan's scope, and a
+population in Section 10.5 candidate 4. A stored tier on a criterion row, a floor over a plan's scope, and a
 routing signal on a work item are three different things; say which you mean.
 
 Reconcile your answer with Decision 197 clause 4, which NS5 carries: verification tiers "are
@@ -389,21 +397,24 @@ carries the CLOUD-adapter answer (DuckLake is where the clause-8 migration lands
 divergence in `adapter_split` -- do not collapse a genuine split into `other-argued`, which means
 "neither pinned option", not "it depends". A split is itself a finding; file it.
 
-This question additionally requires an `external_checklist` block. Assess THE DESIGN YOU ENDORSE
-in your own verdict -- if you answer (i), rate the one-table proposal; if (ii), rate the two-table
-proposal; if `other-argued`, rate what you propose as a third set tagged `design: as-proposed`
--- property-by-property against these named
-external practices, each rated `met | partial | missed` with evidence, or `n/a`. `partial` requires an
-argued, property-matched compensating control. Rate the checklist for BOTH candidate designs, not only the one you endorse: ONE
-`external_checklist` list of EIGHTEEN entries -- all nine properties rated once for
-`design: one-table` and once for `design: two-tables`. Never two `external_checklist` keys: a
-duplicate mapping key is accepted by `yaml.safe_load`, which is the pre-push gate, and silently
-discards nine of the eighteen ratings. Only the design your
-verdict endorses feeds maturity, under the CHECKLIST CONDITION in Section 15, which is the sole
-statement of that scope -- do not infer it from here. Rating both is what keeps the checklist from
-pricing disagreement: endorsing the one-table design otherwise costs you roughly five argued
-compensating controls against two for the two-table design, and that asymmetry is an artifact of
-which practices the literature has written up, not evidence about this repository.
+This question additionally requires an `external_checklist` block.
+
+RATE BOTH candidate designs property-by-property against the named external practices below, each
+rated `met | partial | missed` with evidence, or `n/a`; `partial` requires an argued,
+property-matched compensating control. Under an `other-argued` verdict, rate a THIRD set tagged
+`design: as-proposed` describing what you actually propose.
+
+SHAPE: one `external_checklist` list -- eighteen entries (all nine properties rated once for
+`design: one-table` and once for `design: two-tables`), or twenty-seven when the `as-proposed`
+set is added. Never two `external_checklist` keys: a duplicate mapping key is accepted by
+`yaml.safe_load`, the pre-push gate, and silently discards nine of the eighteen ratings.
+
+SCOPE: which sets you RATE is not optional; which set FEEDS MATURITY is decided by your verdict,
+under the CHECKLIST CONDITION in Section 15, which is the sole statement of that scope -- do not
+infer it from here. Rating both is what keeps the checklist from pricing disagreement: endorsing
+the one-table design otherwise costs you roughly five argued compensating controls against two
+for the two-table design, and that asymmetry is an artifact of which practices the literature has
+written up, not evidence about this repository.
 
 P1. Event-sourced journal plus current-state projection, rather than state mutation in place.
 P2. Type-2 slowly-changing dimension paired with a separate fact table, rather than a widened
@@ -426,12 +437,13 @@ P9. Single-writer atomicity: a criterion's claim and its proof advance in one wr
 
 Properties P1-P7 favour separation; P8-P9 favour consolidation. The 7-2 split is not a verdict --
 it reflects how much of the published literature addresses separation, not how much weight it
-deserves here. Three rating rules keep the count from becoming a thumb on the scale:
-`n/a` for a property structurally inapplicable to the design you endorse; `partial` for a
-property your design DELIBERATELY TRADES AWAY, naming the countervailing property it buys as the
-compensating control (a one-table design trading P1 for P8 and P9 is the obvious case, and it is
-a trade, not a failure); and `missed` reserved for a property the design neither meets nor
-deliberately trades. Neither `n/a` nor `partial` gates maturity.
+deserves here. Three rating rules keep the count from becoming a thumb on the scale, and they apply to EVERY
+entry -- rate the design you reject on its own architectural merits, exactly as you rate the one
+you endorse, not as a strawman. `n/a`: the property is structurally inapplicable to the design
+being rated. `partial`: that design TRADES the property away by construction, buying a named
+countervailing property -- a one-table design trades P1 for P8 and P9 whether or not you endorse
+it, and that is a trade, not a failure. `missed`: the design neither meets the property nor buys
+anything by giving it up. Neither `n/a` nor `partial` gates maturity.
 
 **Verdict enum:** `one-table-proof-struct | two-tables-evidence-journal | other-argued`
 **Additionally required on this entry:** `precedent: [<table or artifact names>]` -- a LIST, empty
@@ -480,6 +492,9 @@ reversal_trigger_assessment:
   verdict: not-tripped | tripped-reopen-clause-3 | tripped-but-absorbable | other-argued
   nullable_column_count: <int, by your own count>
   which_columns: [{column: "<name>", null_for: epic-shaped|task-shaped|both}]
+  # epic-shaped and task-shaped are the only two kinds clause 3 names (today's tier item and
+  # today's recommendation). If you judge a third kind necessary, say so in rationale rather
+  # than inventing a null_for value.
   # The UNION across both kinds, each entry labelled with the kind(s) it is null for.
   # nullable_column_count is the length of this list.
   rationale: ""
@@ -497,7 +512,8 @@ child table cannot absorb. If you conclude the two axes are not equivalent, that
 saying.
 
 Decision 197 carries THREE reversal conditions at `docs/DECISIONS.md:44`-`:52`, not one. The other
-two are live for this audit and each gets a line in `rationale` if you judge it near-triggered:
+two are live for this audit and each is answered ONLY in its own `other_conditions` entry -- the
+top-level `rationale` belongs to `two-shapes-after-all` alone, never a duplicate of them:
 `executor-needs-tier-items-pre-mvp` -- "The MVP bounded iteration cannot complete on recs alone:
 pull the clause-8 migration forward" -- prices Q3 option (b), which defers identity to a migration
 whose date that condition can move; and `merge-authored-edges-lossy` -- "A plan's declared edges
@@ -725,7 +741,13 @@ test.
 > items) and `blocked_by` (live consumer: `validate_roadmap_liveness`).
 > Derived, never stored: proof state (`none | proven | stale`), verification tier, consequence.
 
-Footnote to 10.2, not part of the quoted artifact: "iff companions" means the co-required field
+Footnote to 10.2, not part of the quoted artifact. Three spellings of one concept appear across
+these surfaces and they are NOT three columns: the registry row's own key is `check_id`
+(`docs/contracts/verification-registry.yaml`), a plan VP step declares `graduation_check_id`
+(`scripts/roadmap/plan_document.py:80`), and the converged shape names the foreign key
+`graduated_check_id`. When counting nullable columns for `which_columns`, count ONE.
+
+Also: "iff companions" means the co-required field
 each disposition value carries -- `graduate` requires a non-empty `graduation_check_id`, `waive`
 requires a non-empty `graduation_waiver_reason`, `not-applicable` requires neither. Enforced by
 `_validate_graduation_disposition` at `scripts/roadmap/plan_document.py:91`-`:114` (graduate arm
@@ -891,7 +913,12 @@ nor justifies dismissal.
 - **M1 Read.** Section 10's decisions and contracts; the six surfaces; Section 3's traps.
 - **M2 Trace.** DD-A, DD-B, DD-C. Do not form verdicts yet.
 - **M3 Empirical.** Section 11, E1-E8.
-- **M4 Adjudicate.** Every Section 10.5 candidate to a disposition per Section 2.
+- **M4 Adjudicate.** Every Section 10.5 candidate to a disposition per Section 2. Each of the
+  sixteen must be traceable to exactly one destination: `findings[]` and
+  `converged_shape_corrections[]` carry `candidate_ref` ("candidate 7", matching Section 10.5's
+  numbering), `rejected_candidates[]` and `noted[]` carry `candidate`. An entry that did not come
+  from a Section 10.5 candidate sets `candidate_ref: null` -- your own discoveries are welcome and
+  need no backref.
 - **M5 Rate.** The Section 8 rubric, every surface.
 - **M6 Dedup.** Section 13, before any finding is written.
 - **M7 Answer.** Q1-Q5, each with its pinned verdict and finding-id basis. Write the
@@ -907,7 +934,9 @@ Before filing ANY finding, grep the three ownership surfaces: `docs/ROADMAP-PLAT
 DISTINCT OWNING ARTIFACTS your searches surfaced -- recommendations, tier items, candidate
 decisions and Decisions that plausibly own this territory -- summed across all three surfaces,
 never the raw grep line count. List those artifacts in `roadmap_crossref.item_ids`; the count and
-that list must agree.
+that list must agree whenever the count is an integer. Under `degraded_dedup` the count is null
+while `item_ids` still carries whatever the two git-tracked surfaces yielded -- the agreement rule
+does not bind a null, and emptying the list to satisfy it would discard real search results.
 
 These two fields record the SEARCH, not the verdict. `classification` records the ADJUDICATION.
 A finding may legitimately carry `dedup_hit_count: 3` with three `item_ids` AND
@@ -1018,7 +1047,8 @@ audit:
          dq_scope: {verdict: dq-checked|exempt-with-named-binding|other-argued,
                     rationale: "", basis: []}}
   converged_shape_corrections:
-    - {element: "<field or claim in Section 10.2 or 10.3>", what_it_says: "",
+    - {candidate_ref: "candidate <N>|null",
+       element: "<field or claim in Section 10.2 or 10.3>", what_it_says: "",
        what_is_true: "", evidence: "file:line", consequence: "",
        confidence: CONFIRMED|HYPOTHESIS}
   per_surface_assessment:
@@ -1033,6 +1063,7 @@ audit:
     # rating turns on -- the same convention the findings invariants pin for CONFIRMED.
   findings:
     - {id: CSF-01, surface: S1..S6|shared, affects_surfaces: [S1..S6],
+       candidate_ref: "candidate <N>|null",
        question: Q1..Q5|none, dimension: VD1..VD7|none,
        title, evidence: "file:line|item-id", evidence_kind: static|observed,
        current_behavior, ideal_behavior, gap, compensating_controls_considered: "",
