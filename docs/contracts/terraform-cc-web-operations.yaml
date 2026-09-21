@@ -34,6 +34,21 @@ contract:
     check: validate_terraform_cc_web_operations
 
 amendment_log:
+  - date: "2026-09-21"
+    semantic_break: true
+    change_class: correction
+    summary: >-
+      PLAN-tfvars-recovery-contract-closure (rec-3950, rec-2843): corrected recoverable_vars
+      from four to five no-default variables (alerts_email was undeclared -- it lives in
+      sns_alerts.tf, not variables.tf, so the hand-maintained list never learned about it);
+      restructured where_values_live from a single prose blob into a per-variable mapping
+      naming each variable's declaring file and recovery source; added owner_vs_alerts_email
+      to record that owner_email and alerts_email are non-interchangeable by design and that
+      their tag/subscription-endpoint diff is a recovery artefact, not drift; and repointed
+      recovery_procedure at the Secrets Manager materialisation path CI already uses (the
+      prior state-parse-only procedure was stale), widening admin_tier_only's rationale to
+      cover both recovery paths. Enforced going forward by
+      validate_terraform_cc_web_operations' new bidirectional recovery-table-coverage leg.
   - date: "2026-09-13"
     semantic_break: false
     change_class: prose_improvement
@@ -120,33 +135,92 @@ tfvars_and_remote_state_recovery:
     standalone `s3://.../terraform.personal.tfvars` object to fetch -- do not go looking for
     that file.
   recoverable_vars: >-
-    The four no-default vars (`account_id`, `owner_email`, `platform_dev_external_id`,
-    `platform_admin_external_id`) are recoverable from the remote Terraform state in S3, which IS
-    the source of truth.
+    Five no-default vars (`account_id`, `alerts_email`, `owner_email`,
+    `platform_dev_external_id`, `platform_admin_external_id`) are recoverable; see
+    `where_values_live` below for each variable's declaring file and per-variable recovery
+    source. `validate_terraform_cc_web_operations` enforces this list bidirectionally against
+    `terraform/personal/*.tf` -- it fails on a declared no-default variable missing from the
+    table below, and equally on a table entry for a variable the module no longer declares.
   state_location: >-
     State: `s3://agent-platform-data-lake/tfstate/personal/sandbox/terraform.tfstate` (region
     `eu-west-2`), wired via `terraform -chdir=terraform/personal init
     -backend-config=backend-sandbox.hcl`.
-  where_values_live: >-
-    The values live as resource attributes in that state: `account_id` in every resource ARN;
-    the two ExternalIds in the IAM roles' `assume_role_policy` trust documents
-    (`sts:ExternalId` condition); `owner_email` in resource tags / the SNS subscription
-    endpoint. `account_id` is also obtainable from `aws sts get-caller-identity`.
+  where_values_live:
+    description: >-
+      Per-variable recovery source. Prefer materialising the whole set at once from the same
+      Secrets Manager entry CI sources from (see `recovery_procedure` below) over deriving values
+      variable-by-variable; each entry's `source` below also names the state-parsing fallback and
+      is the audit trail for where each value lives once recovered.
+    account_id:
+      declared_in: terraform/personal/variables.tf
+      source: >-
+        The `agent-platform-terraform-personal-tfvars` Secrets Manager entry (see
+        `recovery_procedure`); also derivable from any resource ARN in the remote state, or from
+        `aws sts get-caller-identity --profile agent_platform_admin`.
+    owner_email:
+      declared_in: terraform/personal/variables.tf
+      source: >-
+        The `agent-platform-terraform-personal-tfvars` Secrets Manager entry; also present as
+        the `Owner` resource tag value in the remote state -- the GitHub no-reply role-alias
+        identity (see `owner_vs_alerts_email` below; this is never the alerts mailbox).
+    platform_dev_external_id:
+      declared_in: terraform/personal/variables.tf
+      source: >-
+        The `agent-platform-terraform-personal-tfvars` Secrets Manager entry; also present as
+        the PlatformDev IAM role's `assume_role_policy` trust document `sts:ExternalId`
+        condition in the remote state. Admin-tier only (see `admin_tier_only` below).
+    platform_admin_external_id:
+      declared_in: terraform/personal/variables.tf
+      source: >-
+        The `agent-platform-terraform-personal-tfvars` Secrets Manager entry; also present as
+        the PlatformAdmin IAM role's `assume_role_policy` trust document `sts:ExternalId`
+        condition in the remote state. Admin-tier only (see `admin_tier_only` below).
+    alerts_email:
+      declared_in: terraform/personal/sns_alerts.tf
+      source: >-
+        The `agent-platform-terraform-personal-tfvars` Secrets Manager entry; also present as
+        the SNS topic subscription `endpoint` attribute in the remote state -- the deliverable
+        alerts-mailbox role-alias (see `owner_vs_alerts_email` below; this is never the Owner
+        tag identity).
+  owner_vs_alerts_email: >-
+    `owner_email` and `alerts_email` are two different role-alias identities that must never be
+    reconciled to the same value: `owner_email` backs the GitHub no-reply identity used for
+    resource `Owner` tags (a stable per-repo identifier, never a deliverable mailbox);
+    `alerts_email` backs the SNS alerts subscription endpoint (a real, deliverable mailbox that
+    must receive and confirm the page-out email). They differ BY DESIGN. Reading the tag-vs-
+    subscription-endpoint diff as drift is a misdiagnosis -- the diff is a RECOVERY ARTEFACT of
+    two intentionally distinct sources, and "fixing" it would either break alerting (routing
+    pages to a no-reply address that cannot receive mail) or pollute the `Owner` tag with a real
+    mailbox literal in a public repository (Decision 101).
   recovery_procedure: >-
-    After `init`, recover them with `terraform state show` / a parse of the state JSON, then
-    pass via `-var` (or a regenerated, still-gitignored tfvars) for `plan`.
+    Materialise the whole tfvars set at once, the same way CI does it (see
+    `operator_only_break_glass.apply_posture` below): fetch the
+    `agent-platform-terraform-personal-tfvars` Secrets Manager entry under the
+    `agent_platform_admin` profile (`aws secretsmanager get-secret-value --secret-id
+    agent-platform-terraform-personal-tfvars --profile agent_platform_admin --query SecretString
+    --output text`) and write its body to the gitignored
+    `terraform/personal/terraform.personal.tfvars`, then pass it to `terraform plan`/`apply` via
+    `-var-file` (or individual `-var` flags). State-parsing (after `init`, `terraform state show`
+    / a parse of the state JSON) remains a fallback per-variable path when the Secrets Manager
+    entry itself is unavailable or stale -- see each `where_values_live` entry's `source` for
+    that variable's state location.
   never_paste: >-
     Never paste these values into chat, a PR, or any committed file -- the ExternalIds are
     AssumeRole trust secrets and the account id is shape-blocked by the pre-commit
     `never-commit` hook.
-  admin_tier_only: >-
-    ExternalId-based state recovery is admin-tier-only (DEP-13 / T2.44 / Decision 144 pt.3): the
-    recovery path above requires reading `tfstate/personal/*` directly, and only `PlatformAdmin`
-    (the `agent_platform_admin` profile) may do so. `PlatformDev` (the ambient `agent_platform`
-    runtime identity used by every CC-web session) is explicitly denied `s3:GetObject` on
+  admin_tier_only: >-  # pragma: allowlist secret -- GetSecretValue is an IAM action name, not a credential
+    Both recovery paths are admin-tier-only (DEP-13 / T2.44 / Decision 144 pt.3), never reachable
+    from `PlatformDev` (the ambient `agent_platform` runtime identity used by every CC-web
+    session). The Secrets Manager materialisation path above requires
+    `secretsmanager:GetSecretValue` on the `agent-platform-terraform-personal-tfvars` secret,
+    which only `PlatformAdmin` holds (AdminOps' wildcard-resource `SecretsManagerAdmin` Sid) --
+    `PlatformDev`'s own `GetSecretValue` grant is scoped to the two inference-credential secret
+    ARNs only (`InferenceCredentialsRead`), never this one. The state-parsing fallback requires
+    reading `tfstate/personal/*` directly, and only `PlatformAdmin` (the `agent_platform_admin`
+    profile) may do so -- `PlatformDev` is explicitly denied `s3:GetObject` on
     `tfstate/personal/*` (the `DenyStateRead` statement in
-    `terraform/personal/platform_dev_policies.tf`'s DailyOps policy), so this ExternalId recovery
-    procedure is unreachable from the routine runtime identity by design -- it requires
+    `terraform/personal/platform_dev_policies.tf`'s DailyOps policy). Both procedures are
+    therefore unreachable from the routine runtime identity by design -- either requires
     deliberately assuming the admin tier.
 
 sticky_and_observed: >-

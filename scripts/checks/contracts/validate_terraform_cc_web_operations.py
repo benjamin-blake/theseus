@@ -5,10 +5,17 @@ Mirrors validate_git_ops_contract.py's two-leg design against the terraform-side
 terraform/CLAUDE.md still carries a resolvable pointer to
 docs/contracts/terraform-cc-web-operations.yaml, and (2) every repo-relative path the contract's
 own `referenced_repo_paths` list declares exists in the working tree.
+
+A third, bidirectional leg (PLAN-tfvars-recovery-contract-closure) closes the tfvars-recovery
+table against the live module: (3a) every no-default variable declared in
+terraform/personal/*.tf appears in the contract's `where_values_live` per-variable mapping, and
+(3b) every key listed there is still declared in the module -- catching a stale entry for a
+retired variable, not merely an undocumented new one.
 """
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import yaml
@@ -17,12 +24,68 @@ from scripts.checks import _common, registry
 
 _CONTRACT_REL_PATH = "docs/contracts/terraform-cc-web-operations.yaml"
 _TERRAFORM_CLAUDE_MD_REL_PATH = "terraform/CLAUDE.md"
+_NO_DEFAULT_MODULE_REL_DIR = "terraform/personal"
+
+_VARIABLE_BLOCK_RE = re.compile(r'variable\s+"([A-Za-z0-9_-]+)"\s*\{')
+_DEFAULT_ASSIGNMENT_RE = re.compile(r"^\s*default\s*=")
+
+
+def _extract_brace_block(text: str, open_index: int) -> tuple[str, int]:
+    """Return (body, index_after_close) for the `{...}` block starting at text[open_index].
+
+    Brace-depth-aware: tracks nesting so an inner block's braces don't prematurely close the
+    outer one.
+    """
+    depth = 0
+    i = open_index
+    body_start = open_index + 1
+    while i < len(text):
+        char = text[i]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[body_start:i], i + 1
+        i += 1
+    raise ValueError(f"unbalanced braces starting at index {open_index}")
+
+
+def _has_top_level_default(body: str) -> bool:
+    """True if `body` (a variable block's interior) declares `default = ...` at depth 0.
+
+    A `default` key nested inside a sub-block (e.g. `validation { ... }`) is never mistaken for
+    the variable's own default -- only a depth-0 line counts.
+    """
+    depth = 0
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("#", "//")):
+            continue
+        if depth == 0 and _DEFAULT_ASSIGNMENT_RE.match(line):
+            return True
+        depth += line.count("{") - line.count("}")
+    return False
+
+
+def _declared_no_default_variables(module_dir: Path) -> set[str]:
+    """Return the names of variables declared in `module_dir`/*.tf with no top-level default."""
+    no_default: set[str] = set()
+    for tf_file in sorted(module_dir.glob("*.tf")):
+        text = tf_file.read_text(encoding="utf-8")
+        for match in _VARIABLE_BLOCK_RE.finditer(text):
+            name = match.group(1)
+            body, _ = _extract_brace_block(text, match.end() - 1)
+            if not _has_top_level_default(body):
+                no_default.add(name)
+    return no_default
 
 
 @registry.register("validate_terraform_cc_web_operations", owner="platform")
 def validate_terraform_cc_web_operations(failed: list[str], *, repo_root: Path | None = None) -> None:
-    """Fail if terraform/CLAUDE.md drops its pointer to terraform-cc-web-operations.yaml, or if
-    the contract names a repo path that does not exist."""
+    """Fail if terraform/CLAUDE.md drops its pointer to terraform-cc-web-operations.yaml, if
+    the contract names a repo path that does not exist, or if the tfvars-recovery table and the
+    live terraform/personal module's no-default variables have drifted apart in either direction."""
     print("\n=== terraform-cc-web-operations contract pointer resolution ===")
     root = repo_root if repo_root is not None else _common.ROOT
 
@@ -68,3 +131,45 @@ def validate_terraform_cc_web_operations(failed: list[str], *, repo_root: Path |
             f"  PASS: {_TERRAFORM_CLAUDE_MD_REL_PATH} points at {_CONTRACT_REL_PATH}; "
             f"all {len(named_paths)} named path(s) exist."
         )
+
+    _validate_recovery_table_coverage(failed, contract_data, root)
+
+
+def _validate_recovery_table_coverage(failed: list[str], contract_data: object, root: Path) -> None:
+    """Third leg (Decision 170: reports its examined population via stdout, since
+    `registry.examined()` is a single per-dispatch slot already spent on `referenced_repo_paths`
+    above)."""
+    module_dir = root / _NO_DEFAULT_MODULE_REL_DIR
+    if not module_dir.is_dir():
+        print(f"  SKIP: {_NO_DEFAULT_MODULE_REL_DIR}/ not found; recovery-table coverage not checked.")
+        return
+
+    declared = _declared_no_default_variables(module_dir)
+    print(f"  Examined {len(declared)} no-default variable(s) declared in {_NO_DEFAULT_MODULE_REL_DIR}/*.tf.")
+
+    tfvars_recovery = contract_data.get("tfvars_and_remote_state_recovery") if isinstance(contract_data, dict) else None
+    where_values_live = tfvars_recovery.get("where_values_live") if isinstance(tfvars_recovery, dict) else None
+
+    if not isinstance(where_values_live, dict):
+        failed.append(
+            "terraform-cc-web-operations contract: tfvars_and_remote_state_recovery.where_values_live "
+            "is not a per-variable mapping"
+        )
+        return
+
+    listed = {k for k in where_values_live if k != "description"}
+    missing_from_table = sorted(declared - listed)
+    stale_in_table = sorted(listed - declared)
+
+    if missing_from_table:
+        failed.append(
+            "terraform-cc-web-operations contract: where_values_live is missing declared "
+            f"no-default variable(s): {missing_from_table}"
+        )
+    if stale_in_table:
+        failed.append(
+            "terraform-cc-web-operations contract: where_values_live lists variable(s) no "
+            f"longer declared in {_NO_DEFAULT_MODULE_REL_DIR}: {stale_in_table}"
+        )
+    if not missing_from_table and not stale_in_table:
+        print(f"  PASS: where_values_live covers exactly the {len(declared)} declared no-default variable(s).")
