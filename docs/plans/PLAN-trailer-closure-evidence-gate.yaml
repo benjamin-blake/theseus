@@ -49,9 +49,18 @@ scope:
     action: Modify
     purpose: >-
       `close_recs_from_trailer` consults `merge_leg_refuses` ONCE per run, before the per-rec loop,
-      and refuses the whole trailer when it fires. The refusal prints a Decision-155-shaped marker
-      through the existing `_mirror_refusal_to_step_summary`, leaves every named rec OPEN, and DOES
-      NOT touch exit_code -- the loud-not-red posture the Decision 186 `ClosureArtifactRequired`
+      and refuses the whole trailer when it fires. It prints a Decision-155-shaped marker, leaves
+      every named rec OPEN, and DOES NOT touch exit_code. CRITICAL: do NOT reuse
+      `_mirror_refusal_to_step_summary` verbatim -- it hardcodes
+      `## [REC-AUTOCLOSE] Decision 186 closure refusal` as the heading, so a merge-leg refusal
+      would file itself in $GITHUB_STEP_SUMMARY as a Decision 186 closure-ARTIFACT refusal and
+      feed `print_ci_rca_back_validation`'s refused-rec listing under a heading it does not
+      implement -- this plan's own defect class (a governance signal asserting something untrue)
+      reproduced in its remedy. Parametrise the helper's heading and add TWO distinct module-level
+      constants: `_MERGE_LEG_REFUSAL_MARKER` for the plan-only arm and a separate one for the
+      empty/None arm, so a future shift to true merge commits (which would make EVERY autoclose
+      refuse while the workflow stays green by design) is greppable apart from a normal plan-leg
+      refusal -- the loud-not-red posture the Decision 186 `ClosureArtifactRequired`
       catch already uses, because rec-autoclose sits in ci-rca.yml's watched set and reddening it
       would file a spurious critical ci_rca rec for correct behaviour. 364 effective lines today
       (136 headroom); keep it under 500 (Decision 128).
@@ -72,7 +81,12 @@ scope:
       merge carries none. (ii) PLACEMENT (rec-2922): it must sit in a block whose every line is
       `Key: value`-shaped -- never mid-paragraph -- and it may precede the attribution footer.
       Per Decision 168 and T2.54:c1 both clauses cite `validate_rec_autoclose_trailer_gate` as their
-      enforcing evaluator so neither lands orphaned.
+      enforcing evaluator so neither lands orphaned. MANDATORY COMPANION: this is a `class: D`
+      contract and `resolves_trailer` is a top-level key, so changing its canonical dump without a
+      new `amendment_log[]` entry FAILS `validate_contract_drift`
+      (contract-population.yaml#change_detection.amendment_log). Add a dated entry
+      (`date` / `semantic_break` / `change_class: field_add` / `summary`) and bump
+      `contract_version` 1 -> 2, per this file's own convention.
   - file: scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py
     action: Create
     purpose: >-
@@ -86,9 +100,14 @@ scope:
     action: Modify
     purpose: >-
       Register the check as a bare string-literal `Entry` (Decision 169 / check-manifest.yaml) with
-      `pre=True`, a `full_segment=` value matching the domain's existing entries, and `pre_globs`
-      covering `.github/workflows/**`, `scripts/ops_portal/**`, `docs/contracts/git-ops.yaml` and
-      `scripts/checks/ci_guards/**`, so it runs only when something it guards moves.
+      `pre=True` and `full_segment="full_after_lint"` (17 of the domain's 18 entries use it; do not
+      copy the lone `full_after_dependency_health` outlier). `pre_globs` MUST cover its whole import
+      closure or `validate_pre_glob_closure` fails the PR with an uncovered-closure fail-open:
+      `.github/workflows/**`, `scripts/ops_portal/**`, `docs/contracts/git-ops.yaml`,
+      `scripts/checks/ci_guards/**`, AND `scripts/checks/_common.py` plus
+      `scripts/checks/registry.py` -- every glob-gated ci_guards entry declares those last two,
+      because any registered check imports `registry` and in practice `_common` for ROOT, and
+      neither is matched by `scripts/checks/ci_guards/**`.
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
     purpose: >-
@@ -107,9 +126,22 @@ scope:
     purpose: >-
       Adds `TestWrappedProseNotATrailer` (rec-2922's named selector -- #803's shape, a `Resolves:`
       line wrapped inside a prose paragraph) and `TestPlanOnlyMergeRefusesTrailer` (rec-3901's named
-      selector). Critically also adds a REGRESSION case pinning this repository's real commit shape
-      -- a `Resolves:` block followed by a blank line and the `Co-Authored-By:` / `Claude-Session:`
-      footer -- as STILL PARSING, so the any-block rule cannot silently regress to final-block-only.
+      selector). Critically also adds `TestAttributionFooterStillParses`, a REGRESSION case pinning
+      this repository's real commit shape -- a `Resolves:` block followed by a blank line and the
+      `Co-Authored-By:` / `Claude-Session:` footer -- as STILL PARSING, so the any-block rule cannot
+      silently regress to final-block-only. NON-VACUITY REQUIREMENT for
+      `TestPlanOnlyMergeRefusesTrailer`: `parse_resolves_trailer` is a pure parser with no notion of
+      a merge leg, and a plan merge's trailer is well-formed and SHOULD parse -- so a test that only
+      calls the parser would be vacuous while still greening rec-3901's acceptance. It must assert
+      the END-TO-END outcome: given a well-formed trailer AND a plan-only changed set,
+      `merge_leg_refuses` returns True and no close is attempted. Import the gate here rather than
+      re-testing the parser.
+  - file: tests/ops_portal/__init__.py
+    action: Create
+    purpose: >-
+      `tests/ops_portal/` does not exist yet; Decision 131 point 4 requires every mirror test
+      package to carry an `__init__.py`. No check enforces it today, so it is named here rather
+      than left to be discovered.
   - file: tests/ops_portal/test_trailer_closure_gate.py
     action: Create
     purpose: >-
@@ -195,10 +227,12 @@ verification_plan:
   - step: 4
     phase: pre-deploy
     action: The trailer parser refuses prose but still accepts this repo's real commit shape
-    command: bin/venv-python -m pytest "tests/test_rec_trailer.py" -q
+    command: bin/venv-python -m pytest "tests/test_rec_trailer.py" -q -k "TestWrappedProseNotATrailer or TestPlanOnlyMergeRefusesTrailer or TestAttributionFooterStillParses"
     expected: >-
-      TestWrappedProseNotATrailer and TestPlanOnlyMergeRefusesTrailer pass, the attribution-footer
-      regression case still parses, and TestParseResolvesTrailer is unregressed.
+      All three new classes pass. The -k narrowing is load-bearing, not cosmetic: the unnarrowed
+      file passes today (21 tests), which Decision 189's red-before leg classifies as tautological
+      and hard-fails on this plan's own PR. Narrowed, it is target_absent until the classes exist.
+      TestParseResolvesTrailer regression coverage rides step 9's full --pre run instead.
     fix_if: >-
       If the attribution-footer case returns [], the rule has collapsed to final-block-only -- which
       breaks 79 of 122 historical Resolves commits and this plan's own closure path.
@@ -226,8 +260,10 @@ verification_plan:
   - step: 7
     phase: pre-deploy
     action: The contract states carrier AND placement, each citing its evaluator
-    command: grep -qi "implementation merge" docs/contracts/git-ops.yaml && grep -qiE "key:[[:space:]]*value" docs/contracts/git-ops.yaml && grep -q "validate_rec_autoclose_trailer_gate" docs/contracts/git-ops.yaml
-    expected: Both clauses present and both name the enforcing check (Decision 168 / T2.54:c1).
+    command: grep -qi "implementation merge" docs/contracts/git-ops.yaml && grep -qiE "key:[[:space:]]*value" docs/contracts/git-ops.yaml && grep -q "validate_rec_autoclose_trailer_gate" docs/contracts/git-ops.yaml && grep -qE "contract_version:[[:space:]]*2" docs/contracts/git-ops.yaml
+    expected: >-
+      Both clauses present, both naming the enforcing check (Decision 168 / T2.54:c1), and the
+      contract_version bumped alongside its amendment_log entry.
     fix_if: >-
       A placement rule in code but not in the contract is the contradiction this step exists to
       prevent; a clause with no named evaluator is the orphan T2.54:c1 exists to eliminate.
@@ -412,7 +448,10 @@ context:
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
-  - only the plan-cited decision sections (186, 103, 55, 128, 131, 162, 168, 170) read -- not all of DECISIONS.md
+  - >-
+    only the plan-cited decision sections read -- not all of DECISIONS.md. The set is the scout's
+    CITE list (186, 103, 177, 181, 179, 170, 169, 168, 162, 128, 55, 72) plus 131 (mirror-test
+    convention) and 189 (red-before replay, which this plan's VP step 4 turns on).
   - Branch rebased onto origin/main before authoring
   - All files in scope located and readable
   - Acceptance criteria understood and verifiable
@@ -428,11 +467,13 @@ execution_steps:
     empty set as REFUSE. Import the shared helper; no `subprocess` of its own.
   - >-
     scripts/ops_portal/ci_rca_lifecycle.py -- consult the gate once per run before the per-rec loop.
-    Reuse `_mirror_refusal_to_step_summary`; leave exit_code untouched on refusal.
+    Parametrise `_mirror_refusal_to_step_summary`'s heading and add distinct marker constants for
+    the plan-only and empty/None arms; leave exit_code untouched on refusal.
   - .github/workflows/rec-autoclose.yml -- header comment only. Do not edit the inline run body.
   - >-
     docs/contracts/git-ops.yaml -- add the carrier rule AND the placement rule, both citing
-    validate_rec_autoclose_trailer_gate.
+    validate_rec_autoclose_trailer_gate; add the dated `amendment_log[]` entry and bump
+    `contract_version` 1 -> 2 in the same edit, or validate_contract_drift fails the PR.
   - >-
     scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py + _manifest.py -- create and
     register (pre=True, pre_globs, full_segment matching the domain); READ git-ops.yaml rather than
