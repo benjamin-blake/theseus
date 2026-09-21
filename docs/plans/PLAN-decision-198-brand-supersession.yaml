@@ -92,7 +92,7 @@ scope:
       `examined`; asserting against the already-read licence and licensing strings leaves it at 4
       and the count holds untouched.
 bundled_recommendations: ["rec-3922"]
-followon_recs: ["rec-3986", "rec-3990", "rec-3992"]
+followon_recs: ["rec-3986", "rec-3990", "rec-3992", "rec-3995"]
 infrastructure_dependencies:
   - >-
     data-pipeline (src/lambdas/data-pipeline/manifest.yaml, status: active) -- packages
@@ -235,21 +235,29 @@ verification_plan:
       for the trading PRODUCT' docs/DECISIONS.md && grep -q '^Domain: `theseus.support` (Cloudflare-managed
       DNS, already owned).$' docs/DECISIONS.md && grep -q '^- Primary audience: data-engineering hiring
       managers' docs/DECISIONS.md && test "$(tr '\n' ' ' < docs/DECISIONS.md | tr -s ' ' | grep -oi 'performance
-      figures' | wc -l)" -ge 2 && sed -n '/^## Decision 101:/,/^## Decision [0-9]\+:/p' docs/DECISIONS.md |
-      grep -q 'onthelooplabs.com'
+      figures' | wc -l)" -ge 2 && S=$(sed -n '/^## Decision 101:/,/^## Decision [0-9]\+:/p' docs/DECISIONS.md) &&
+      echo "$S" | grep -q 'onthelooplabs.com' && echo "$S" | grep -q 'On The Loop Labs' && for c in a d e f; do
+      echo "$S" | grep -qi "clause ($c)" || exit 1; done
     expected: >-
       Exit 0. The dated annotation exists, the original clause (a), (e) and (f) lines survive
       verbatim (proving the correction was appended rather than spliced), the securities-law
       prohibition appears at least twice -- the preserved original plus its brand-neutral successor
-      -- and the Decision 101 span names the settled web domain, proving clause (d)'s lead-in was
-      carried through clause (e)'s change rather than left bound to a retired domain. Newlines are
-      squeezed before counting, so a successor sentence that wraps mid-phrase still counts.
+      -- the Decision 101 span names the settled web domain, proving clause (d)'s lead-in was
+      carried through clause (e)'s change rather than left bound to a retired domain, it names the
+      company so clause (a)'s replacement hierarchy is actually stated, and it addresses all four
+      amended clauses by letter. That last check closes a polarity gap: the original-line greps
+      above prove append-only compliance, NOT that a successor was written, so without it a
+      blockquote silently omitting clause (a) or (f) would pass every step. Newlines are squeezed
+      before counting, so a successor sentence that wraps mid-phrase still counts.
     fix_if: >-
       A missing original line means a clause was rewritten in place, which violates Decision 177's
       exact-line append-only embedding -- restore the line and move the correction into the
       blockquote. A "performance figures" count of 1 means the blockquote retired the prohibition
       along with the brand; add the brand-neutral successor sentence. A missing domain match means
-      only clause (e) was amended and clause (d)'s lead-in still points at the retired site.
+      only clause (e) was amended and clause (d)'s lead-in still points at the retired site. A
+      missing clause letter or company name means the blockquote replaced fewer clauses than
+      acceptance criterion 2 requires -- most likely clause (a), whose replacement IS what
+      retiring the marks means in the corpus.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -555,9 +563,12 @@ verification_plan:
       declares. The fast tier alone does not discharge that declaration (rec-2965 / Decision 163).
     command: bin/venv-python -m scripts.validate
     expected: >-
-      Exit 0 on a completed full run. This additionally exercises the full-tier-only decision
-      checks -- notably validate_supersession_annotations, which is where a missing victim-side
-      pointer on Decision 195 or 196 would otherwise surface post-merge as a critical ci_rca rec.
+      Exit 0 on a completed full run. NOTE validate_supersession_annotations is NOT full-tier-only:
+      scripts/checks/decisions/_manifest.py registers it pre=True with docs/DECISIONS.md in its
+      pre_globs, and that entry is the authority -- the module docstring still says otherwise and
+      is deliberately stale. The victim-side pointers are therefore already gated in --pre, by VP
+      step 5 directly and by step 16. This step's own contribution is the full-tier-only checks
+      the fast tier skips, plus the completed-run evidence handoff_policy requires.
     fix_if: >-
       A timeout is `blocked`, not a pass: resume later and rerun the full tier from the start
       rather than committing on a partial run. A full-tier-only failure that reproduces on
@@ -569,6 +580,29 @@ verification_plan:
       because vp-red-before.yaml's recursion_refusal statically refuses a graduate step invoking
       scripts.validate, and it would duplicate the registry's own host. The contract's carrying
       plan waived its equivalent two steps for exactly this reason.
+  - step: 18
+    phase: pre-deploy
+    action: >-
+      Bind the T2.11b verbatim-preservation obligation mechanically: every converted criterion text
+      must equal its origin/main bare string exactly, not merely be structurally well-formed.
+    command: >-
+      bin/venv-python -c "import yaml,subprocess;base=yaml.safe_load(subprocess.run(['git','show','origin/main:docs/ROADMAP-PLATFORM.yaml'],capture_output=True,text=True,check=True).stdout);cur=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'));g=lambda
+      d:[x for x in d['tier_items'] if x['id']=='T2.11b'][0]['exit_criteria'];b=set(g(base));c={e['text']
+      for e in g(cur)};print('texts',len(c));assert b==c,'criterion text changed during conversion: %r' % sorted(b^c)"
+    expected: >-
+      Exit 0 reporting the criterion count. The six converted texts are set-equal to the six bare
+      strings on origin/main -- the conversion moved each string into a text field and changed
+      nothing else.
+    fix_if: >-
+      A symmetric-difference report names the reworded criterion. Restore its text byte-identically.
+      This matters because config/agent/verification_registry/entries/roadmap-wording-sweep-definition-host.yaml
+      asserts a substring of ONE of the six, so five could be silently reworded during a hand
+      conversion with nothing red -- structural checks alone do not catch it.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Reads the origin/main image via git show, so it depends on this session's transient base-ref
+      state rather than a standing property of the tree -- the same ground as steps 4, 6 and 13.
 test_obligations:
   - source: scripts/checks/hygiene/validate_licence_consistency.py
     behavior: >-
@@ -685,9 +719,14 @@ constraints:
     Do NOT touch docs/ROADMAP-SEMANTO.yaml (rec-3986). It is a recorded, reasoned deferral --
     Semanto survives as the internal marketing/comms roadmap name only, never a public-facing mark.
   - >-
-    Do NOT touch docs/contracts/package-registry-reservation.yaml. A downstream authored plan
-    rebases onto main after this merges and corrects its header line itself; editing it here is a
-    scope collision.
+    Do NOT touch docs/contracts/package-registry-reservation.yaml -- but NOT for the reason
+    originally recorded. There is no in-flight downstream plan: PLAN-ontheloop-package-registries
+    carries implementation_declared: True and merged at cb68d712 (#1239) on 2026-09-21. The real
+    ground is sequencing -- that contract cannot cite Decision 198 before Decision 198 exists, so
+    correcting its header is genuine follow-on work, owned by rec-3995. Its header asserts
+    "'On The Loop' is a CANDIDATE name tracked at rec-3922 (open)" and that the retired hierarchy
+    "remains" ratified; this plan falsifies both and closes rec-3922, so Decision 198's
+    deferred-residue clause must name rec-3995 alongside rec-3986 and rec-3990.
   - >-
     If any Decision text cites dbt as the naming analogue, it MUST state that dbt Core is Apache-2.0
     while this repository is deliberately BUSL-1.1 -- otherwise a later agent reasons from
@@ -739,7 +778,9 @@ execution_steps:
     of Theseus and Guerdon, Semanto's survival as the internal marketing/comms roadmap name only,
     the clause-by-clause amendment map, the identifier map, the Licensed Work rename, the
     trademark and registry-availability basis, the Decision 196 clause 7 reconciliation, the
-    PARTIAL discharge of Decision 195 clause 4, and the deferred residues (rec-3986, rec-3990).
+    PARTIAL discharge of Decision 195 clause 4, and the deferred residues (rec-3986, rec-3990,
+    rec-3995 -- the last being a Class D contract this merge leaves asserting a superseded
+    hierarchy).
     Add a reversal stanza. Keep the whole entry under 6144 bytes.
   - >-
     docs/DECISIONS.md -- append a dated `> **Amended by Decision 198 (2026-09-21):**` blockquote to
@@ -819,7 +860,9 @@ execution_steps:
     mark and the former one. SCANNED FILE SET IS EXACTLY `LICENSE` AND `LICENSING.md` -- both are
     already written by the test's `_tree()` fixture, so the leg needs no new fixture files. Do NOT
     widen it to CONTRIBUTING.md, COMMERCIAL-LICENSE.md or README.md: all three are gated by VP
-    step 9 instead (step 10 gates the agent-instruction surfaces), and scanning them would redden every fixture test for files
+    step 9 instead (step 10 gates the agent-instruction surfaces). Scanning CONTRIBUTING.md or
+    COMMERCIAL-LICENSE.md would redden every fixture test, since `_tree()` does not write them;
+    README.md it DOES write, so the reason there is scope discipline rather than fixture breakage, and scanning them would redden every fixture test for files
     `_tree()` does not write. Do NOT implement a repository-slug mapping -- the slug stays `theseus` by design, so an
     equality assertion fails and a presence assertion is trivially true. Keep the existing
     Licensor regex untouched. This STRENGTHENS a registered
