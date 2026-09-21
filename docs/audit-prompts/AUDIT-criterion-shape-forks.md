@@ -196,6 +196,30 @@ proceed using the recommendation-side dedup pointers in Section 10.6 as your onl
 and still perform your own greps over the two git-tracked surfaces (`docs/DECISIONS.md`,
 `docs/ROADMAP-PLATFORM.yaml`), which need no credentials.
 
+### 5.2b THE REPOSITORY IS PUBLIC -- read this before you write anything
+
+`origin` is a PUBLIC GitHub repository. Your two deliverables, your commit message and your PR
+body are all world-readable the moment you push, and this is the repository's FIRST governance
+rule (`AGENTS.md`, public-content boundary).
+
+NEVER write into any field, file, commit message or PR body: an AWS account id or ARN, an IAM
+ExternalId, principal id or access-key id, any credential, token or API key, a Lambda Function
+URL or any other internal hostname or endpoint, or a raw traceback / command output that might
+carry one. This binds `meta.contract_notes` and `capability_deviations[].detail` in particular,
+because both invite you to paste what went wrong, and you hold AWS credentials that make a
+failure message likely to contain exactly these shapes.
+
+Say WHAT failed and WHY in your own words; never paste the raw error. "The ops portal was
+unreachable under the assume-role profile" is the right level of detail. A stack trace, a signed
+URL or an account-bearing ARN is not.
+
+Do not rely on the repository's `never-commit` pre-commit hook to catch this: it is a
+`repo: local` hook under the pre-commit framework, which a fresh container will not have
+installed or wired unless you install it yourself. You are the control here.
+
+If a finding genuinely depends on a confidential value, describe its SHAPE and location rather
+than its content, and say in `meta.contract_notes` that you withheld it.
+
 ### 5.3 Capability deviations register
 
 You will meet obligations this repository's own agents satisfy with tooling you may not have.
@@ -449,8 +473,11 @@ anything by giving it up. Neither `n/a` nor `partial` gates maturity.
 **Additionally required on this entry:** `precedent: [<table or artifact names>]` -- a LIST, empty
 when you find none (never the string `none`) -- and
 `external_checklist: [{design, property, rating, evidence}]` covering ALL NINE properties above
-for EACH of the two designs -- eighteen entries, each property identified by its `P1`..`P9` id -- rating seven of nine would silently drop exactly the two
-that argue for consolidation.
+for EACH design rated -- eighteen entries, or twenty-seven under an `other-argued` verdict, each
+property identified by its `P1`..`P9` id. Rating seven of nine would silently drop exactly the two
+that argue for consolidation; emitting no `as-proposed` set under `other-argued` would leave the
+Section 15 CHECKLIST CONDITION reading an EMPTY set, which passes trivially -- a check that
+cannot fail, which is the thing NS3 exists to refuse.
 
 ### Q5 -- Questions the requester did not think to ask
 
@@ -572,9 +599,12 @@ deferred_walk_inputs:
     basis: []
 ```
 
-`read_boundary` is the counterpart to `write_boundary`. Decision 84 I-3 closes the read side to
-NAMED VERBS with no caller SQL, and Decision 197 clause 6 pins a kind-generic `pick_work_item`
-surface that T4.3 c4 already commits to. If a recommendation's `acceptance` becomes child rows,
+`read_boundary` is the counterpart to `write_boundary`, and it is the one part of this audit with
+a NEAR-TERM consequence: clause 8 defers the migration post-MVP, but clause 6's pick surface is
+T4.3, which is `not_started` rather than deferred, and whatever it locks is what later consumers
+inherit. Decision 84 I-3 closes the read side to NAMED VERBS with no caller SQL. Note candidate 16
+before answering: the decision and the criterion that implements it use two different names for
+this surface. If a recommendation's `acceptance` becomes child rows,
 something must decide whether the pick surface returns a work item with its criteria attached, or
 whether criteria are a second named read. Say which, and what `pick_work_item` returns.
 
@@ -835,7 +865,12 @@ requires a non-empty `graduation_waiver_reason`, `not-applicable` requires neith
     `git mv`.
 15. The longest structured criterion text is 6,581 characters; the median is 193.5 over 394
     structured criteria.
-16. The converged shape (Section 10.2) cites `scripts/platform_roadmap_models.py` "~L95-101" for
+16. Decision 197 clause 6 names the kind-generic surface `pick_work_item`. T4.3's criterion c4,
+    added in the same merge that ratified the decision, names "the priority-queue producer and
+    `pick_rec` admission surface" as the thing that must be kind-generic, citing clause 6. T4.3 is
+    `not_started` and is the nearest-term item of the three that carry this work; T4.23 and T4.24
+    are `deferred_post_mvp`.
+17. The converged shape (Section 10.2) cites `scripts/platform_roadmap_models.py` "~L95-101" for
     the positional-`cN` behaviour. `_normalize_exit_criteria` is at `:98` and the positional
     assignment at `:104`. The verbatim block is reproduced unedited; the anchor is part of the
     artifact under audit.
@@ -914,7 +949,7 @@ nor justifies dismissal.
 - **M2 Trace.** DD-A, DD-B, DD-C. Do not form verdicts yet.
 - **M3 Empirical.** Section 11, E1-E8.
 - **M4 Adjudicate.** Every Section 10.5 candidate to a disposition per Section 2. Each of the
-  sixteen must be traceable to exactly one destination: `findings[]` and
+  seventeen must be traceable to exactly one destination: `findings[]` and
   `converged_shape_corrections[]` carry `candidate_ref` ("candidate 7", matching Section 10.5's
   numbering), `rejected_candidates[]` and `noted[]` carry `candidate`. An entry that did not come
   from a Section 10.5 candidate sets `candidate_ref: null` -- your own discoveries are welcome and
@@ -1099,8 +1134,12 @@ audit:
   noted:
     - {candidate: "", what_it_constrains: ""}
   rejected_candidates:
-    - {candidate, why_dismissed, compensating_control, control_property_match,
+    - {candidate, why_dismissed, compensating_control: "<the control, or null>",
+       control_property_match: "<why it would FAIL if the defect were real, or null>",
        owner_ref: "rec-NNNN|T-id|CD.n|dec-NNN|null"}
+    # A dismissal that rests on a compensating control MUST fill both control fields. A dismissal
+    # that asserts there is no defect to control for sets both null and carries its whole argument
+    # in why_dismissed -- do not invent a control to fill a field.
     # owner_ref names what owns or excuses the candidate: a recommendation, tier item, candidate
     # decision or Decision. Use null for a "not a defect" dismissal with no owner; the
     # compensating_control and control_property_match carry the argument in that case.
@@ -1110,7 +1149,10 @@ audit:
 ```
 
 `audits/criterion-shape-forks-<sha>.md` -- prose, at most ~1500 words, the executive layer a human
-reads first. It must carry, in this order: the four fork verdicts (Q1-Q4) in one line each; the
+reads first. It must carry, in this order: the `reversal_trigger_assessment` verdict FIRST, in
+one line, because a tripped trigger means clause 3 is reopened before the clause-8 walk proceeds
+and that changes what every other answer here is for; the four fork verdicts (Q1-Q4) in one line
+each; the
 `deferred_walk_inputs` answers in one line each; the "what the converged shape gets wrong" section -- which draws on BOTH
 `converged_shape_corrections[]` (factual misstatements) and any S1/S2 `findings[]` entry (design
 judgment), and must say which of the two each item is; the single highest-leverage change; the open questions you added under Q5; and a closing
@@ -1189,8 +1231,11 @@ empty.
   CHECKLIST CONDITION, stated once and nowhere else: no property in Q4's `external_checklist`
   rated `missed`. It gates ONLY the designed surface your Q4 verdict endorses -- S1 under
   `one-table-proof-struct` reading the `design: one-table` entries, S2 under
-  `two-tables-evidence-journal` reading the `design: two-tables` entries, and BOTH S1 and S2 under
-  `other-argued` reading the `design: as-proposed` entries (what you proposed spans them). It never gates S3, S4, S5 or S6.
+  `two-tables-evidence-journal` reading the `design: two-tables` entries -- and note that a
+  two-table endorsement spans S1 AND S2, so its entries gate BOTH; and BOTH S1 and S2 under
+  `other-argued` reading the `design: as-proposed` entries (what you proposed spans them).
+  Only a `one-table-proof-struct` endorsement gates a single surface, because under it S2 is the
+  design you rejected and carries no maturity of its own. It never gates S3, S4, S5 or S6.
   A surface it does not gate reaches `frontier` on finding counts alone.
 - **strong** -- 0 `critical` and at most 1 `high`.
 - **solid** -- at most 1 `critical` AND at most 3 `high`.
@@ -1239,10 +1284,18 @@ brief's framing does not foreclose it.
 
 ## 17. GUARDRAILS
 
+- **Public repository.** Everything you write is world-readable on push. No account ids, ARNs,
+  credentials, endpoints, internal hostnames or raw tracebacks in any deliverable, commit message
+  or PR body -- see Section 5.2b, which you are the only enforcement of.
 - **Write boundary, closed list.** `audits/criterion-shape-forks-<sha>.yaml` and
   `audits/criterion-shape-forks-<sha>.md`. Nothing else in the tree. Not a contract, not a
   decision, not the roadmap, not a plan, not a test, not a recommendation through the portal.
   Regenerated gitignored caches are expected and never committed.
+- **The structured output is large; the prose should not be.** Roughly a hundred pinned entries
+  are required (42 rubric cells, 18-27 checklist ratings, 8 measurements, the `deferred_walk_inputs`
+  and `reversal_trigger_assessment` verdicts, 6 surface assessments, 5 question answers). Those are
+  cheap and mechanical -- fill them completely. The word budget belongs to the places you DISAGREE:
+  a rubric cell needs a rating and a one-line note, not a paragraph.
 - **Precision over volume.** Fewer than ~8 surviving findings is a valid result -- state it
   plainly; do not pad. A rubric cell rated `n/a` with a one-line reason is a better answer than a
   manufactured `weak`.
