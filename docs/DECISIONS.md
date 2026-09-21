@@ -391,6 +391,19 @@ significance:
 > partially at the youngest cutoff admitting a positive count under both caps rather than always
 > deferring the whole pass.
 
+> **Update (2026-09-21):** clause 3(b)'s GcDebtRatio bound now has an S3 reclaimer. The
+> standing "NEVER add an S3 lifecycle expiration rule over the lakehouse prefix"
+> (PLAN-production-gc-and-storage-stability.yaml:815) forbids a CURRENT-VERSION age rule that
+> would delete live Parquet the catalog does not track; that stands. A NONCURRENT-version rule
+> is categorically distinct -- it touches only versions already outside the G1 live set
+> (Decision 188 cl.2) -- so this RECORDS the scoping f1a9cb2a (#1225) shipped and grants no new
+> delete authority. Scoping is PER-PREFIX from the declared `*_data_prefix` locals, each either
+> covered or declared-excluded, enforced by `TestDataLakeLifecycleGoverned`. `noncurrent_days`
+> binds `SNAPSHOT_RETAIN_DAYS` as an OPERATOR RECOVERY window, NOT catalog time travel: gc_ops
+> runs after expire_snapshots. RESIDUAL: `list_storage` uses ListObjectsV2, so clause 3(b) and
+> G4's byte cap (Decision 193 cl.1) stay current-versions-only and under-report billed bytes;
+> clause 3(a)'s G1 invariant is UNAFFECTED.
+
 **Problem:**
 T2.18 c2 required "S3 storage confirmed stable after N maintenance cycles". That text does not adjudicate: it is satisfied by a job that deletes the whole prefix (storage falls, so over-reclaim is invisible to a bytes-only metric), and it is unmeasurable -- the data-lake bucket holds 12+ unrelated prefixes, and absolute storage on an ingesting lakehouse is not supposed to be stable regardless of GC correctness. A draft of the licensing plan also proposed a `gc_ops` cell on the `maintenance_policy` matrix (Decision 191) before establishing that the matrix's sole consumer (`scope.resolve_scope`) has no per-table dimension for a catalog-wide verb.
 
