@@ -1,0 +1,586 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: "t2-26-retire-ops-session-log"
+intent: >-
+  Execute the ops_session_log retirement CD.40 decided and T2.26 owns: delete the last
+  registered-but-unprovisioned ops table from the closed DuckLake writer/reader registry and sweep
+  every surviving code, config and contract reference, so the boundary stops advertising a table
+  that does not exist and T2.26's last four criteria can close.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-t2-26-retire-ops-session-log.yaml
+phase: T2.26
+scope:
+  - file: config/lambda/ducklake/field_semantics.static.yaml
+    action: Modify
+    purpose: >-
+      delete the dormant_ops_tables.ops_session_log schema block, its contract_table_ops
+      reconcile-governance entry, and the table name from the header comment on line 6
+  - file: config/lambda/ducklake/field_semantics.yaml
+    action: Modify
+    purpose: >-
+      regenerated projection only -- run scripts.schema_to_field_semantics, never hand-edit
+      (T2.29:c8 gives the generator sole ownership of this file)
+  - file: scripts/schema_to_field_semantics.py
+    action: Modify
+    purpose: drop ops_session_log from _DORMANT_TABLE_IDS so the generator stops splicing it
+  - file: scripts/sync/ops.py
+    action: Modify
+    purpose: >-
+      delete the unreachable _coerce_ops_session_log_row helper and its _coerce_rows_list dispatch
+      branch (dead: the table is absent from _TABLE_TO_LOCAL, so the branch can never be taken)
+  - file: scripts/s3_log_store.py
+    action: Modify
+    purpose: >-
+      delete the ops-table routing concept entirely -- _OPS_TABLE_ROUTING,
+      FALLBACK_OPS_TABLE_ROUTING and get_ops_table_routing() -- keeping _load_log_storage_registry
+      for the surviving priority_queue_key accessor
+  - file: docs/contracts/log-storage.yaml
+    action: Modify
+    purpose: >-
+      remove routing.ops_table_routing and retire BOTH death-dated sentinel sentences -- the one in
+      note and the 'repoints at T2.26' clause in priority_queue.legacy_producer.note -- plus an
+      amendment_log entry. patterns.locally_produced.examples is deliberately NOT touched
+  - file: scripts/checks/contracts/validate_log_storage_registry.py
+    action: Modify
+    purpose: >-
+      narrow the parity check to priority_queue_key -- the routing-map arm is deleted, not
+      relaxed, so examined() keeps reporting a genuinely enforced arm (Decision 170)
+  - file: scripts/checks/contracts/validate_portal_drift.py
+    action: Modify
+    purpose: drop ops_session_log from _OPS_TABLE_TOKENS now the table is retired
+  - file: docs/contracts/session-id.yaml
+    action: Modify
+    purpose: >-
+      re-ground contract.description and fields.session_id.governance_notes so ops_session_log is
+      no longer named as a session_id carrier; amendment_log entry
+  - file: docs/contracts/data-modeling-standard.yaml
+    action: Modify
+    purpose: drop ops_session_log from write_modes.scd2.example_tables; amendment_log entry
+  - file: docs/ROADMAP-PLATFORM.yaml
+    action: Modify
+    purpose: >-
+      five re-groundings, no status flips -- T2.26 c3's stale runbook Section 5 reference, T3.20
+      c7 scoped to telemetry_sessions, T2.11b criterion index 2's token list, T2.15 criterion
+      index 1's ops_session_log DQ clause, and a CD.40 clause-1 realization note; plus widen
+      T2.26 files_in_scope to this slice's real surfaces
+  - file: tests/test_ducklake_scd2_schema.py
+    action: Modify
+    purpose: >-
+      new red-before test that ops_table_names() excludes ops_session_log and
+      resolve_table_spec raises SchemaGateError for it
+  - file: tests/s3_log_store/test_routing_registry.py
+    action: Create
+    purpose: mirror-home guard that s3_log_store exposes no ops-table routing surface
+  - file: tests/sync/ops/test_coercion.py
+    action: Modify
+    purpose: delete the _coerce_ops_session_log_row test class alongside the helper
+  - file: tests/sync/ops/test_coercion_edges.py
+    action: Modify
+    purpose: delete the two ops_session_log coercion-edge tests alongside the helper
+  - file: tests/test_schema_to_field_semantics.py
+    action: Modify
+    purpose: test_dormant_tables_present expectation set drops ops_session_log
+  - file: tests/checks/ops_governance/test_validate_reconcile_pending_gate.py
+    action: Modify
+    purpose: >-
+      test_ops_table_ids_real expected set drops ops_session_log; the synthetic _blocking_tables
+      fixture is re-pointed onto a name that is not a retired real table
+  - file: tests/checks/ops_governance/test_validate_warehouse_write_sources.py
+    action: Modify
+    purpose: re-point the synthetic writer.write fixture off the retired table name
+  - file: tests/test_data_quality_execute.py
+    action: Modify
+    purpose: >-
+      hygiene, not a behavior fix: the apply_backend_routing negative fixture names ops_session_log,
+      which is already outside _OPS_TABLES, so it passes before and after. Re-pointed so the negative
+      case does not illustrate itself with a table that no longer exists
+  - file: tests/checks/contracts/test_validate_log_storage_registry.py
+    action: Modify
+    purpose: >-
+      update the parity tests for the narrowed surface and keep the module at 100% line coverage
+      (it carries no config/coverage_baseline.yaml entry)
+  - file: tests/checks/contracts/test_validate_portal_drift.py
+    action: Modify
+    purpose: >-
+      add a tuple pin -- the suite today asserts nothing about _OPS_TABLE_TOKENS (its only token
+      fixture uses ops_recommendations), so narrowing the tuple would otherwise turn no test red
+bundled_recommendations: ["rec-3393"]
+followon_recs: []
+closes_criteria: ["T2.26:c2", "T2.26:c3", "T2.26:c7", "T2.26:c8"]
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    ops_session_log is absent from the DuckLake table registry -- ops_table_names() excludes it
+    and resolve_table_spec raises, so both Lambda boundary handlers refuse it (T2.26:c2)
+  - >-
+    no legacy ops write path or routing sentinel survives for ops_session_log in scripts/, src/
+    or config/ outside the graduated-shard home config/agent/verification_registry/, and no
+    contract live body names it as a current surface (T2.26:c3)
+  - >-
+    replacement closure verified -- the retired surface is deleted rather than fallback-guarded,
+    and every criterion elsewhere that named it is re-grounded onto a live owner (T2.26:c7)
+  - >-
+    the ops_session_log _current view surface is gone from the registry declaration and confirmed
+    absent from the live ops_catalog by information_schema query (T2.26:c8)
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: prove the closed boundary now refuses the retired table at the registry layer
+    command: bin/venv-python -m pytest tests/test_ducklake_scd2_schema.py -k ops_session_log -q
+    expected: the new refusal tests pass; ops_table_names() excludes the table and resolve_table_spec raises SchemaGateError
+    fix_if: the table still resolves -- field_semantics.yaml was not regenerated after the sidecar edit
+    hermetic: false
+    graduation: graduate
+    graduation_check_id: ops-session-log-registry-refused
+  - step: 2
+    phase: pre-deploy
+    action: sweep the production surfaces for any surviving reference
+    command: bash -c "! grep -rq --exclude-dir=verification_registry --exclude-dir=__pycache__ 'ops_session_log' scripts/ src/ config/"
+    expected: >-
+      exit 0 with no output. verification_registry is excluded because this plan's OWN graduated
+      shards land at config/agent/verification_registry/entries/<graduation_check_id>.yaml and
+      store each check_spec.command verbatim -- four of this plan's graduate commands embed the
+      literal ops_session_log, so an unexcluded sweep would self-match, fail green-after, and be
+      refused admission by validate_verification_registry's pass-on-HEAD requirement.
+    fix_if: >-
+      rule out stale bytecode first -- a .pyc compiled before the edit still carries the token, and
+      step 8 (which would refresh it) runs later, which is why __pycache__ is excluded. Otherwise a
+      reference genuinely survives in a script, Lambda source or config file.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ops-session-log-production-surface-absent
+    expected_literals: []
+  - step: 3
+    phase: pre-deploy
+    action: prove no contract LIVE body still names the retired table or its death-dated sentinels
+    command: >-
+      bin/venv-python -c "import yaml;
+      ls=yaml.safe_load(open('docs/contracts/log-storage.yaml'));
+      assert 'ops_table_routing' not in ls['routing'], ls['routing'];
+      assert 'ops_session_log' not in ls['note'], ls['note'];
+      assert 'repoints at T2.26' not in ls['priority_queue']['legacy_producer']['note'];
+      dm=yaml.safe_load(open('docs/contracts/data-modeling-standard.yaml'));
+      assert 'ops_session_log' not in dm['write_modes']['scd2']['example_tables'];
+      si=yaml.safe_load(open('docs/contracts/session-id.yaml'));
+      assert 'ops_session_log' not in si['contract']['description'];
+      assert 'ops_session_log' not in si['fields']['session_id']['governance_notes'];
+      print('CONTRACT_BODIES_CLEAN')"
+    expected: prints the clean marker after all six assertions hold
+    fix_if: a contract live body still names the retired table -- re-ground it rather than deleting its amendment_log
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ops-session-log-contract-bodies-clean
+    expected_literals: ["CONTRACT_BODIES_CLEAN"]
+  - step: 4
+    phase: pre-deploy
+    action: prove every roadmap criterion that named the retired table is re-grounded, index-free
+    command: >-
+      bin/venv-python -c "import yaml;
+      d=yaml.safe_load(open('docs/ROADMAP-PLATFORM.yaml'));
+      ti={t['id']:t for t in d['tier_items']};
+      c7=[c for c in ti['T3.20']['exit_criteria'] if c['id']=='c7'][0];
+      assert 'ops_session_log' not in c7['text'], c7;
+      c3=[c for c in ti['T2.26']['exit_criteria'] if c['id']=='c3'][0];
+      assert 'Section 5' not in c3['text'], c3;
+      assert not any('ops_session_log' in str(c) for c in ti['T2.11b']['exit_criteria']), ti['T2.11b']['exit_criteria'];
+      assert not any('ops_session_log' in str(c) for c in ti['T2.15']['exit_criteria']), ti['T2.15']['exit_criteria'];
+      assert 'loop definition' in ' '.join(str(x) for x in ti['T2.11b']['exit_criteria']);
+      assert 'scripts/s3_log_store.py' in ti['T2.26']['files_in_scope'], ti['T2.26']['files_in_scope'];
+      cd40=[c for c in d['candidate_decisions'] if c['id']=='CD.40'][0];
+      assert any('clause 1 realized' in str(x) for x in cd40['discipline_points']), cd40['discipline_points'];
+      print('ROADMAP_REGROUNDED')"
+    expected: >-
+      prints the marker. Asserts only DURABLE wording properties -- no criterion status field is
+      asserted, because c3 is a declared closes_criteria member that the bookkeeping walk flips to
+      met, which would make a graduated row unadmittable on HEAD.
+    fix_if: >-
+      a failure names the criterion still carrying the token; re-ground its text without touching
+      its status (only the bookkeeping walk flips status)
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ops-session-log-roadmap-regrounded
+    expected_literals: ["ROADMAP_REGROUNDED"]
+  - step: 5
+    phase: pre-deploy
+    action: confirm the generated projection matches its sidecar source after regeneration
+    command: bin/venv-python -m scripts.schema_to_field_semantics --check
+    expected: exit 0 -- no drift between the sidecar and the generated field_semantics.yaml
+    fix_if: drift means field_semantics.yaml was hand-edited instead of regenerated (T2.29:c8)
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      This is an already-registered drift gate that is green on the un-implemented tree by
+      construction, so it cannot serve as a red-before graduate step and would duplicate the
+      existing check if registered again.
+    expected_literals: []
+  - step: 6
+    phase: pre-deploy
+    action: confirm the reconcile deploy gate still passes after the registry shrinks
+    command: bin/venv-python -m scripts.checks.ops_governance.validate_reconcile_pending_gate --deploy-gate
+    expected: exit 0 -- no reconcile_scope ducklake table carries a non-empty pending_reconcile
+    fix_if: >-
+      the sidecar's contract_table_ops entry was deleted without its dormant_ops_tables twin (or
+      vice versa), leaving an unclassified table the gate fails closed on
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Green on the un-implemented tree and already bound as deploy-ducklake-lambdas.yml's
+      reconcile-gate job, so graduating it would duplicate a live deploy-time gate.
+    expected_literals: []
+  - step: 7
+    phase: pre-deploy
+    action: replay the graduated roadmap-wording registry check verbatim against the edited roadmap
+    command: >-
+      bin/venv-python -c "import yaml, subprocess, sys;
+      row=yaml.safe_load(open('config/agent/verification_registry/entries/roadmap-wording-sweep-definition-host.yaml'));
+      sys.exit(subprocess.run(row['check_spec']['command']).returncode)"
+    expected: >-
+      prints OK and exits 0 -- T2.11b criterion index 4 still carries 'loop definition', so the
+      index-2 edit did not disturb the phrase this registry row pins
+    fix_if: >-
+      a non-zero exit means the T2.11b edit touched criterion index 4 instead of index 2; restore
+      index 4's wording rather than editing the registry row
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      The property is already covered by the graduated registry entry
+      roadmap-wording-sweep-definition-host (graduated 2026-09-07); this step replays that row's
+      own check_spec, so registering it again would duplicate the identical row.
+    expected_literals: []
+  - step: 8
+    phase: pre-deploy
+    action: run every touched module's mirror-home suite
+    command: >-
+      bin/venv-python -m pytest tests/sync/ops tests/s3_log_store tests/checks/contracts
+      tests/checks/ops_governance tests/contracts_enforcement tests/platform_roadmap_models
+      tests/test_schema_to_field_semantics.py tests/test_data_quality_execute.py
+      tests/test_ducklake_scd2_schema.py -q
+    expected: all suites pass with no skips introduced by the deletions
+    fix_if: a deleted helper still has a live test importing it
+    hermetic: false
+    graduation: not-applicable
+  - step: 9
+    phase: pre-deploy
+    action: run the authoritative fast presubmit tier
+    command: bin/venv-python -m scripts.validate --pre
+    expected: exit 0
+    fix_if: read the named check's own failure text; never weaken a check to obtain green (Decision 181)
+    hermetic: false
+    graduation: not-applicable
+  - step: 10
+    phase: pre-deploy
+    action: run the full presubmit tier before handoff, as handoff_policy declares
+    command: bin/venv-python -m scripts.validate
+    expected: exit 0 on a completed full-tier run
+    fix_if: >-
+      on timeout the disposition is blocked -- resume later and rerun the full tier from the
+      start, never commit on a partial run
+    hermetic: false
+    graduation: not-applicable
+  - step: 11
+    phase: post-deploy
+    action: confirm the governed DuckLake code-deploy channel ran green on the merge commit
+    command: >-
+      mcp__github__actions_list for workflow deploy-ducklake-lambdas.yml on main, then
+      mcp__github__get_job_logs for the run whose head_sha equals the squash-merge SHA
+    expected: >-
+      all five jobs conclude success -- deploy-maintenance, maintenance-smoke, reconcile-gate,
+      deploy-serving, smoke
+    fix_if: >-
+      a red reconcile-gate means a pending_reconcile survived the sidecar edit; never fall back to
+      a local build_lambda --ducklake-only --deploy (Decision 125/126)
+    hermetic: false
+  - step: 12
+    phase: post-deploy
+    action: confirm the governed prod code-deploy channel ran green on the merge commit
+    command: >-
+      mcp__github__actions_list for workflow deploy-prod-lambdas.yml on main, then
+      mcp__github__get_job_logs for the run whose head_sha equals the squash-merge SHA
+    expected: the deploy job reports deployed=true and the smoke job concludes success
+    fix_if: >-
+      a bootstrap-window no-op (deployed=false) means DEPLOY_ROLE_PROVISIONED is unset -- surface
+      it rather than deploying locally
+    hermetic: false
+  - step: 13
+    phase: post-deploy
+    action: prove the deployed reader boundary now refuses the retired table by name
+    command: |-
+      bin/venv-python -c "
+      import sys; sys.path.insert(0, '.')
+      from src.common.ducklake_reader_client import DuckLakeReader
+      r = DuckLakeReader(profile='agent_platform')
+      try:
+          r.current_state('ops_session_log')
+          raise SystemExit('UNEXPECTED_SUCCESS: the table still resolves')
+      except SystemExit:
+          raise
+      except Exception as exc:
+          body = getattr(exc, 'body', None) or {}
+          msg = body.get('error') or getattr(exc, 'text', '') or str(exc)
+      assert \"unknown or missing ops table 'ops_session_log'\" in msg, msg
+      allow = msg.split('expected one of', 1)[1]
+      assert 'ops_session_log' not in allow, allow
+      print('READER_REFUSES_RETIRED_TABLE')
+      "
+    expected: >-
+      prints the marker. The reader returns HTTP 500 with error_type runtime and the body
+      "unknown or missing ops table 'ops_session_log': expected one of [...]", and that allow-list
+      no longer contains ops_session_log. Measured pre-change 2026-09-21: the same call returned
+      HTTP 502 after three cold-resume retries (registered but unprovisioned), and the allow-list
+      for a genuinely unknown table still listed 'ops_session_log'.
+    fix_if: >-
+      an HTTP 502, or an allow-list still naming the table, means the deployed package carries the
+      old field_semantics.yaml -- re-check step 11's deploy-serving job rather than deploying locally
+    hermetic: false
+  - step: 14
+    phase: post-deploy
+    action: confirm no ops_session_log physical table or current view exists in the live catalog
+    command: >-
+      bin/venv-python -c "import sys; sys.path.insert(0,'.');
+      from src.common.ducklake_reader_client import DuckLakeReader;
+      r=DuckLakeReader(profile='agent_platform');
+      rows=r.query('ops_recommendations', \"SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'ops_session_log%'\");
+      print('SESSION_LOG_TABLES:', len(rows), rows)"
+    expected: zero rows -- no ops_session_log_history and no ops_session_log_current in ops_catalog
+    fix_if: >-
+      a row means the table was provisioned between planning and implementation; stop and RCA
+      rather than dropping it inline (Decision 55)
+    hermetic: false
+  - step: 15
+    phase: post-deploy
+    action: confirm the live ops tables still pass data-quality after the registry shrank
+    command: bin/venv-python -m scripts.data_quality_runner --json
+    expected: verdict PASS with no FAIL or HARD_GATE for ops_recommendations, ops_decisions, ops_priority_queue or ops_execution_plans
+    fix_if: a DQ failure means a surviving table's routing was disturbed by the sidecar edit
+    hermetic: false
+  - step: 16
+    phase: post-deploy
+    action: confirm the bundled recommendation actually closed on merge
+    command: >-
+      bin/venv-python -m scripts.sync.ops sync && bin/venv-python -c "import json;
+      rows=[json.loads(l) for l in open('logs/.recommendations-log.jsonl', encoding='utf-8') if l.strip()];
+      r=next(x for x in rows if x['id']=='rec-3393');
+      assert r['status']=='closed', r['status'];
+      print('REC_3393_CLOSED')"
+    expected: prints REC_3393_CLOSED after the read cache is refreshed from the warehouse
+    fix_if: >-
+      still open means the squash-merge body carried no `Resolves: rec-3393` trailer, or the
+      trailer-closure gate refused it -- re-file the closure through the portal, never by editing
+      the local cache
+    hermetic: false
+test_obligations:
+  - source: scripts/schema_to_field_semantics.py
+    behavior: the generator no longer splices ops_session_log into the ops_tables projection
+    verification_step: 8
+    test_selector: tests/test_schema_to_field_semantics.py::TestGenerate::test_dormant_tables_present
+    red_green_expectation: >-
+      red before (the test asserts ops_session_log is present and dormant), green after the
+      expectation set and the generator constant are narrowed together
+  - source: scripts/sync/ops.py
+    behavior: the coercion dispatch carries no branch for a table the sync layer cannot pull
+    verification_step: 8
+    test_selector: tests/sync/ops/test_coercion_edges.py
+    red_green_expectation: >-
+      red before (the existing tests import _coerce_ops_session_log_row), green after helper and
+      tests are deleted together
+  - source: scripts/s3_log_store.py
+    behavior: the module exposes no ops-table routing surface
+    verification_step: 8
+    test_selector: tests/s3_log_store/test_routing_registry.py
+    red_green_expectation: >-
+      red before (the new guard asserts get_ops_table_routing and FALLBACK_OPS_TABLE_ROUTING are
+      absent, and both exist today), green after the routing concept is deleted
+  - source: scripts/checks/contracts/validate_log_storage_registry.py
+    behavior: >-
+      the parity check still fails closed on a missing or non-string priority_queue_key, and no
+      longer asserts on a routing map that no longer exists
+    verification_step: 8
+    test_selector: tests/checks/contracts/test_validate_log_storage_registry.py
+    red_green_expectation: >-
+      red before (the existing tests build contracts carrying ops_table_routing), green after the
+      check and its tests are narrowed together
+  - source: scripts/checks/contracts/validate_portal_drift.py
+    behavior: the token ban still fires for every ops table that actually exists
+    verification_step: 8
+    test_selector: tests/checks/contracts/test_validate_portal_drift.py
+    red_green_expectation: >-
+      red before -- the new pin asserts ops_session_log is absent from _OPS_TABLE_TOKENS and that
+      the five survivors remain, and the tuple carries six tokens today. Green after the tuple is
+      narrowed. Without this pin the narrowing is unenforced: the suite currently references only
+      ops_recommendations and passes identically before and after.
+  - source: config/lambda/ducklake/field_semantics.static.yaml
+    behavior: >-
+      the registry the writer and reader derive their allow-list from no longer serves
+      ops_session_log at either boundary
+    verification_step: 1
+    test_selector: tests/test_ducklake_scd2_schema.py
+    red_green_expectation: >-
+      red before (ops_table_names() currently includes ops_session_log and resolve_table_spec
+      returns a spec for it), green after the sidecar block is deleted and the projection regenerated
+  - source: config/lambda/ducklake/field_semantics.yaml
+    behavior: >-
+      the generated projection both Lambda handlers derive their allow-list from serves no
+      ops_session_log spec
+    verification_step: 1
+    test_selector: tests/test_ducklake_scd2_schema.py
+    red_green_expectation: >-
+      red before (the generated file still carries the ops_tables.ops_session_log block, so
+      resolve_table_spec returns a spec), green after regeneration from the narrowed sidecar
+  - source: docs/contracts/log-storage.yaml
+    behavior: >-
+      the contract declares no ops-table routing map, and the parity check agrees with
+      s3_log_store's surviving constants
+    verification_step: 8
+    test_selector: tests/checks/contracts/test_validate_log_storage_registry.py
+    red_green_expectation: >-
+      red before (the existing parity tests build contracts carrying ops_table_routing and assert
+      against FALLBACK_OPS_TABLE_ROUTING), green after contract and check are narrowed together
+  - source: docs/ROADMAP-PLATFORM.yaml
+    behavior: >-
+      no roadmap exit criterion names ops_session_log as a live surface, and T2.11b criterion
+      index 4's pinned wording is undisturbed
+    verification_step: 8
+    test_selector: tests/platform_roadmap_models
+    red_green_expectation: >-
+      red before on VP step 4's own assertions (T3.20 c7, T2.26 c3, T2.11b index 2 and T2.15
+      index 1 all still carry the stale text today), green after the five re-groundings land;
+      the linked command guards the roadmap model itself against a malformed edit
+  - source: docs/contracts/session-id.yaml
+    behavior: the Class C contract no longer names ops_session_log as a session_id carrier
+    verification_step: 8
+    test_selector: tests/contracts_enforcement
+    waiver_reason: >-
+      Prose re-grounding of a Class C contract's description and governance_notes plus an
+      amendment_log entry. No field, type, nullability or dq_intent changes, so no behavior exists
+      to guard; the token's absence is asserted structurally by VP step 3's graduated check, and
+      the linked command keeps the contract-enforcement suite honest about the edit.
+  - source: docs/contracts/data-modeling-standard.yaml
+    behavior: the scd2 write-mode example list no longer cites a retired table
+    verification_step: 8
+    test_selector: tests/checks/contracts/test_validate_data_model_standard.py
+    waiver_reason: >-
+      An illustrative example_tables list plus an amendment_log entry. The write_modes semantics,
+      the design_time_walk and every enforced rule are untouched, so there is no behavior change
+      to red-before; VP step 3's graduated check asserts the token's absence structurally.
+constraints:
+  - No rescue agents or workaround loops (Decision 55); forward-fix only, closure needs proof (Decision 103)
+  - >-
+    Never weaken a check to obtain green (Decision 181) -- the routing-map parity arm is DELETED,
+    not relaxed. The one deliberate narrowing, _OPS_TABLE_TOKENS 6 -> 5, is a reviewed exception:
+    operator-confirmed, synced with T2.11b's criterion in the same PR (Decision 163), and newly
+    pinned by a test that did not exist before. Nothing is softened merely to obtain green
+  - >-
+    field_semantics.yaml is generated -- regenerate via scripts.schema_to_field_semantics, never
+    hand-edit (T2.29:c8)
+  - >-
+    Deploy only through the governed CD channels (Decision 125/126); a local
+    build_lambda --ducklake-only --deploy is break-glass and is not this plan's path
+  - >-
+    /implement never flips a criterion status during verification -- only the bookkeeping walk
+    does, on a verified VP pass, for the declared closes_criteria
+  - Do not edit the body of Decision 78 or Decision 111 (Decision 177 append-only)
+context:
+  - "Decision-scout verdict: FLAGS_FOUND. Decisions triaged: 150 of 150. Roadmap items intersected: 11; CONFLICT: 1; RELATED: 9."
+  - "CITE: Decision 84, 79, 105, 111, 125, 126, 136, 168, 174, 181, 187, 191, 95, 96, 97, 148, 163, 55, 103, 59, 177, 78"
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=PROCEED after 3 round(s); round 3 autonomous"
+  - "Live probe 2026-09-21 via ducklake_reader query_ops on information_schema.tables: ops_catalog holds no ops_session_log_history or ops_session_log_current. Retirement is code+config only -- zero DDL, zero terraform."
+  - "Live probe 2026-09-21: read_ops_current on ops_session_log returns HTTP 502 after three cold-resume retries, because the table is registered but unprovisioned. Step 13 asserts this becomes a named fail-closed refusal."
+  - "scout WARN Decision 181 + Decision 170: emptying ops_table_routing would have forced relaxing validate_log_storage_registry's non-empty guard and left examined() reporting a vacuous arm. Disposition: pivot -- delete the routing concept (operator-confirmed)."
+  - "scout WARN Decision 111 / T2.11b: _OPS_TABLE_TOKENS is the only enforcer of T2.11b criterion index 2. Disposition: remove the token AND re-ground that criterion in the same PR (operator-confirmed), so enforcer and criterion stay in sync (Decision 163)."
+  - "scout CONFLICT T3.20:c7 names ops_session_log as a live surface and is status open. Disposition: re-ground c7 to telemetry_sessions only (operator-confirmed); status stays open, T3.20's own build is untouched."
+  - "scout NOTE Decision 78 clause 2 scopes ops_session_log to MIGRATE. CD.40 supersedes with retire. Record the divergence in CD.40's realization note; never edit Decision 78's body (Decision 177)."
+  - "scout NOTE Decision 187: the retired ops_table_routing parity property needs a carrier or an extinguished statement. It is EXTINGUISHED -- zero map entries remain, get_ops_table_routing has no production caller, and no verification_registry entry guards it."
+  - "Live probe 2026-09-21: an unknown-table read returns the DEPLOYED allow-list, and it still names ops_session_log -- [ops_recommendations, ops_decisions, ops_entity_counters, ops_priority_queue, ops_session_log, ops_execution_plans, ops_smoke_events]. VP step 13 asserts the post-deploy list drops it."
+  - "GOTCHA: the graduated check roadmap-wording-sweep-definition-host joins ALL of T2.11b's exit_criteria and asserts 'loop definition' is present. That phrase lives in criterion index 4. Edit index 2 only -- VP step 4 pins both."
+  - "GOTCHA: get_ops_table_routing() appears in merged PLAN-t115-* VP commands. Per Decision 148 those are not replayed by this PR, and no verification_registry entry references it."
+  - "GOTCHA: validate_log_storage_registry and the two sync/schema modules carry NO config/coverage_baseline.yaml entry, so they are held to 100% line coverage -- delete helpers and their tests together. scripts/s3_log_store.py is pinned at 76.7; removing UNCOVERED lines raises the ratio but removing covered ones lowers it, so treat the pin as a thing VP step 10 verifies, not a premise."
+  - "T2.26 files_in_scope names none of this slice's real surfaces (Decision 136); widen it in the same roadmap edit."
+  - "ci-rca DEFERRAL (rec-3991, Critical, scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py): fails all three Related-Work conditions -- different file, no shared Decision Record, different failure category (code_regression test-coverage gap vs a surface retirement). prior_deferrals count 0. Operator confirmed another agent owns it."
+  - "critique r1: VP step 4 originally asserted criterion status==open. Removed -- c3 is a declared closes_criteria member the bookkeeping walk flips to met, and verification_graduation.run_differential refuses a graduated row that does not pass on HEAD. Graduated rows must assert only durable properties."
+  - "critique r1: VP step 2 is wrapped as bash -c because CommandExitZeroCheck runs subprocess.run(list) shell-free; bash is in verification_graduation._INTERPRETER_ALLOWLIST."
+  - "critique r1: docs/contracts/log-storage.yaml patterns.locally_produced.examples is deliberately NOT edited. Dropping .session-telemetry.jsonl would shrink test_log_storage_examples_resolve.py's enforced domain from 2 entries to 1 with no acceptance criterion requiring it; the entry still resolves via the gitignored arm (.gitignore:134). Declare-your-coverage, Decision 181."
+  - "critique r1: docs/contracts/storage-substrate.yaml dropped from scope -- its tables index carries no ops_session_log entry, so an amendment_log-only edit would record an amendment that did not happen."
+  - "critique r1: rec-3393's stored acceptance oracle sweeps docs/contracts/ for ops_session_log, which this plan deliberately preserves in amendment_log provenance. Execution steps update_rec the oracle to the VP step 3 live-body assertion before closing."
+  - "OUT OF SCOPE, file as a rec: T2.15 criterion index 1 routes ops_session_log DQ coverage to telemetry_agent_turns -- a table CD.40's own body forbids creating. This plan re-grounds only the ops_session_log clause."
+  - "Closing all four criteria leaves every T2.26 criterion met or rehomed. Do NOT auto-flip the item to complete -- surface it for operator confirmation (Status-Trusted-Never-Inferred)."
+  - "OUT OF SCOPE, file as a rec: validate_table_registration.py's docstring and T2.26:c10 both cite Decision 170 for table-registration admission control, but Decision 170 is the examined()/skipped() channel. Apparent mis-citation; do not fix inline (Decision 59)."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - docs/contracts/tier-item-lifecycle.yaml replacement_closure_check and bookkeeping_walk read before staging any roadmap edit
+execution_steps:
+  - >-
+    config/lambda/ducklake/field_semantics.static.yaml -- delete the dormant_ops_tables.ops_session_log
+    block, the contract_table_ops.ops_session_log entry, and the name in the line-6 header comment.
+  - >-
+    scripts/schema_to_field_semantics.py -- drop ops_session_log from _DORMANT_TABLE_IDS, then run
+    bin/venv-python -m scripts.schema_to_field_semantics to regenerate field_semantics.yaml.
+  - >-
+    scripts/sync/ops.py -- delete _coerce_ops_session_log_row and its elif branch in _coerce_rows_list;
+    delete the matching tests in tests/sync/ops/test_coercion.py and test_coercion_edges.py.
+  - >-
+    scripts/s3_log_store.py -- delete _OPS_TABLE_ROUTING, FALLBACK_OPS_TABLE_ROUTING and
+    get_ops_table_routing(); keep _load_log_storage_registry serving priority_queue_key only.
+  - >-
+    docs/contracts/log-storage.yaml -- remove routing.ops_table_routing, retire BOTH death-dated
+    sentinel sentences (the top-level note and priority_queue.legacy_producer.note's 'repoints at
+    T2.26' clause), add an amendment_log entry. Do NOT touch patterns.locally_produced.examples:
+    dropping .session-telemetry.jsonl would shrink test_log_storage_examples_resolve.py's enforced
+    domain from two entries to one with no criterion requiring it (Decision 181), and that test
+    file is not a scope member, so editing it would trip the LOCATION invariant.
+  - >-
+    scripts/checks/contracts/validate_log_storage_registry.py -- narrow to priority_queue_key parity;
+    keep the fail-closed branches and the module at 100% coverage.
+  - >-
+    scripts/checks/contracts/validate_portal_drift.py -- remove ops_session_log from _OPS_TABLE_TOKENS.
+  - >-
+    docs/contracts/session-id.yaml and data-modeling-standard.yaml -- re-ground the live bodies and add
+    one amendment_log entry each. Do NOT touch storage-substrate.yaml: its tables index carries no
+    ops_session_log entry, so an amendment_log entry there would record no amendment.
+  - >-
+    docs/ROADMAP-PLATFORM.yaml -- re-ground T2.26 c3, T3.20 c7, T2.11b criterion index 2 and T2.15
+    criterion index 1; widen T2.26 files_in_scope; add the
+    CD.40 clause-1 realization note -- that note must carry the literal 'clause 1 realized' and must
+    NOT change CD.40's state, which stays pending on T3.20's four unbuilt clauses. Flip NO statuses.
+  - >-
+    T2.15 criterion index 1 replacement text (do NOT delete the criterion and do NOT leave a
+    subject-less fragment -- the criterion count must stay 3): "Turn-grain telemetry DQ coverage
+    registered in ops.yaml once CD.40 (T3.20's agent-turn telemetry capture) is ratified and the
+    turn surface is live (T3.2/T3.3). [Re-grounded by PLAN-t2-26-retire-ops-session-log: the
+    original clause framed this as REPLACING ops_session_log DQ coverage, which never existed --
+    the table was retired at T2.26 having never been provisioned. This criterion's separate
+    telemetry_agent_turns staleness, a table CD.40's own body forbids creating, is out of scope
+    and routes to its own rec.]"
+  - >-
+    tests -- add the registry-refusal test and tests/s3_log_store/test_routing_registry.py; update the
+    reconcile-gate, warehouse-write-sources and DQ-routing fixtures; and add a tuple pin to the
+    portal-drift suite, which today asserts nothing about _OPS_TABLE_TOKENS.
+  - >-
+    Before merging: update_rec rec-3393's acceptance through the portal so its oracle matches this
+    plan's design -- the stored oracle sweeps docs/contracts/ for ops_session_log, which this plan
+    deliberately preserves in amendment_log provenance. Replace it with the VP step 3 contract-live-body
+    assertion plus the VP step 2 production sweep.
+  - >-
+    File two out-of-scope findings as recommendations via scripts.ops_data_portal (Decision 59, never
+    fix inline): (a) T2.15 criterion index 1 routes DQ coverage to telemetry_agent_turns, a table CD.40's
+    own body forbids creating; (b) validate_table_registration.py's docstring and T2.26 c10 both cite
+    Decision 170 for table-registration admission control, but Decision 170 is the examined()/skipped()
+    check-accounting channel.
+  - >-
+    Put `Resolves: rec-3393` in the IMPLEMENTATION PR's squash-merge body -- not on any docs/plans-only
+    merge, which rec-autoclose.yml's merge-leg gate correctly refuses.
+  - >-
+    Execute the Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and
+    RCA (Decision 55).
+  - 'Report: what was implemented, verification results, and the T2.26 completion question for the operator'
+work_areas: []
+rollback: >-
+  git revert the squash-merge commit and let both governed CD channels redeploy the restored
+  field_semantics.yaml. No data migration is involved -- the table was never provisioned -- so
+  revert is a pure code rollback.
