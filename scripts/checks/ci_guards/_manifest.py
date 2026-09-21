@@ -211,4 +211,19 @@ ENTRIES: tuple[Entry, ...] = (
         ),
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_rec_autoclose_trailer_gate",
+        module="scripts.checks.ci_guards.validate_rec_autoclose_trailer_gate",
+        attr="validate_rec_autoclose_trailer_gate",
+        pre=True,
+        pre_globs=(
+            ".github/workflows/**",
+            "scripts/ops_portal/**",
+            "docs/contracts/git-ops.yaml",
+            "scripts/checks/ci_guards/**",
+            "scripts/checks/_common.py",
+            "scripts/checks/registry.py",
+        ),
+        full_segment="full_after_lint",
+    ),
 )

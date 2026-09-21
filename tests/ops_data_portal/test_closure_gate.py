@@ -20,7 +20,9 @@ from scripts.ops_portal.closure_gate import (
     ARTIFACT_KINDS,
     KIND_STRENGTH,
     WAIVER_CATEGORIES,
+    _fix_commit_touches,
     _fixture_kind_fact,
+    changed_files,
     closure_stamps_applicable,
     is_escape_classified,
     is_valid_waiver,
@@ -211,3 +213,33 @@ class TestContractParity:
             f"declared-but-not-importing: {sorted(declared - importers)}; "
             f"importing-but-undeclared: {sorted(importers - declared)}"
         )
+
+
+class TestChangedFiles:
+    """rec-3775's DRY extraction: changed_files(sha, root) is the sole diff-tree call site, and
+    _fix_commit_touches keeps its fail-closed behaviour through the delegation (behaviour-
+    preserving, not a new capability)."""
+
+    def test_returns_the_commits_changed_paths(self) -> None:
+        touched = changed_files(_head(), ROOT)
+        assert touched is not None
+        assert isinstance(touched, set)
+        assert len(touched) > 0
+
+    def test_none_sha_returns_none(self) -> None:
+        assert changed_files(None, ROOT) is None
+        assert changed_files("", ROOT) is None
+
+    def test_unresolvable_sha_returns_none(self) -> None:
+        assert changed_files("0" * 40, ROOT) is None
+
+    def test_fix_commit_touches_still_fail_closed_on_unresolvable_sha(self) -> None:
+        assert _fix_commit_touches(["some/file.py"], "0" * 40, ROOT) is False
+        assert _fix_commit_touches(["some/file.py"], None, ROOT) is False
+
+    def test_fix_commit_touches_still_intersects_real_changed_set(self) -> None:
+        touched = changed_files(_head(), ROOT)
+        assert touched is not None
+        one_touched_file = next(iter(touched))
+        assert _fix_commit_touches([one_touched_file], _head(), ROOT) is True
+        assert _fix_commit_touches(["this/path/was/never/touched.py"], _head(), ROOT) is False

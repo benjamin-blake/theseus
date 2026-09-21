@@ -538,6 +538,12 @@ class TestCloseRecsFromTrailerRefusalContract:
     (Decision 186) -- the refusal-contract mirror lives here; threading tests live in
     tests/ci_rca/test_close_recs_from_trailer.py (SLOC decomposition target)."""
 
+    @pytest.fixture(autouse=True)
+    def _code_bearing_changed_set(self):
+        # rec-3775's merge-leg gate would otherwise refuse on this class's fake "deadbeef" sha.
+        with patch("scripts.ops_portal.ci_rca_lifecycle.changed_files", return_value={"scripts/example.py"}):
+            yield
+
     def test_closure_refusal_skips_and_exits_zero(self, capsys: pytest.CaptureFixture) -> None:
         from scripts.ops_data_portal import ClosureArtifactRequired
         from scripts.ops_portal.ci_rca_lifecycle import close_recs_from_trailer
