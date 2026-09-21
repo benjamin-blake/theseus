@@ -1,0 +1,453 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: materialise-tfvars-delegate-consolidation
+intent: Collapse the materialise-tfvars composite action's three inline shell bodies into one delegate
+  script, switch terraform-drift.yml's surviving inline copy to the shared action, and call the same delegate
+  from bin/setup-cloud-env.sh's ADMIN branch, so the governed CI apply path and the local break-glass
+  loop share ONE implementation. Supplies the tested local tooling that slice 1 (db8b9212) left the recovery
+  contract pointing at.
+plan_type: IMPLEMENTATION
+verification_tier: V3
+plan_path: docs/plans/PLAN-materialise-tfvars-delegate-consolidation.yaml
+phase: ad_hoc_rec (soft-warn category; no tier_item claimed, so the Tier Item Freshness Gate is skipped).
+  Driven by rec-3978 + rec-3977. RELATED-only to T2.46 (DEP-08 consolidation) and T2.47, both not_started
+  with no open criteria -- no criterion is foreclosed or duplicated.
+scope:
+- file: .github/actions/materialise-tfvars/materialise_tfvars.sh
+  action: Create
+  purpose: 'THE single implementation. Fetch the secret to a temp file, chmod 600, emit ::add-mask:: only
+    under $GITHUB_ACTIONS, fail closed on empty, then mv into place. Takes NO argv -- the guard''s _DELEGATE_LINE_RE
+    forbids arguments on the delegate line, so configuration is env-only.'
+- file: .github/actions/materialise-tfvars/action.yml
+  action: Modify
+  purpose: Collapse three inline bodies into ONE thin adapter step whose only effective line is the delegate
+    call. Preserves the working-directory input and its wiring (the delegate resolves the tfvars path
+    relative to cwd).
+- file: config/composite_action_body_baseline.yaml
+  action: Modify
+  purpose: 'Retire SIX now-stale entries -- three r3 (materialise-tfvars #0/#1/#2) and three r3_workflows
+    (terraform-drift materialise/mask/assert). Removals are always unrestricted; no marker needed.'
+- file: .github/workflows/terraform-drift.yml
+  action: Modify
+  purpose: rec-3977's fifth inline copy -> uses the shared action, carrying the if steps.oidc_drift.outcome
+    == 'success' gate onto the replacement step.
+- file: bin/setup-cloud-env.sh
+  action: Modify
+  purpose: Call the SAME delegate inside the existing INSTALL_TERRAFORM=1 admin branch, warn-and-continue.
+- file: docs/contracts/terraform-cc-web-operations.yaml
+  action: Modify
+  purpose: Repoint recovery_procedure at the delegate (raw command retained as fallback), add the delegate
+    to referenced_repo_paths, and log a Class D amendment_log entry.
+- file: tests/test_materialise_tfvars_delegate.py
+  action: Create
+  purpose: Drive the delegate under the literal GitHub composite argv with a stubbed aws, plus the YAML
+    wiring assertions for action.yml and terraform-drift.yml.
+- file: tests/test_setup_cloud_env.py
+  action: Modify
+  purpose: Assert the admin branch calls the shared delegate AND that a failing delegate does not abort
+    the script under set -euo pipefail.
+bundled_recommendations:
+- rec-3978
+- rec-3977
+followon_recs: []
+infrastructure_dependencies: []
+acceptance_criteria:
+- Exactly one file under .github/ contains the Secrets Manager fetch -- the delegate. action.yml and terraform-drift.yml
+  carry none.
+- action.yml's step is classified a thin adapter by _delegated_script, and no .github/actions/materialise-tfvars
+  r3 entry survives in the baseline.
+- terraform-drift.yml consumes the shared action with its oidc_drift gate intact, and all three of its
+  tfvars r3_workflows entries are retired in the same change.
+- The delegate writes the tfvars file mode 600 with INSTALL_TERRAFORM UNSET, and emits no secret-shaped
+  value on stdout or stderr with GITHUB_ACTIONS unset.
+- A failed fetch leaves any pre-existing tfvars file byte-identical, and bin/setup-cloud-env.sh continues
+  to its session_start hooks rather than aborting.
+- recovery_procedure names the delegate and referenced_repo_paths includes it, so the contract's own validator
+  fails if the script is ever deleted.
+- No AWS account id, ExternalId or email literal is introduced into any tracked file.
+- rec-3978 and rec-3977 reach a terminal state with their closure proof recorded.
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: Sole implementation -- only the delegate carries the Secrets Manager fetch
+  command: bin/venv-python -c "import subprocess; out=sorted(subprocess.run(['grep','-rl','secretsmanager
+    get-secret-value','.github/'],capture_output=True,text=True).stdout.split()); print('CARRIERS', len(out),
+    out); assert out==['.github/actions/materialise-tfvars/materialise_tfvars.sh'], out"
+  expected: Prints CARRIERS 1 followed by the delegate path alone. The literal carries a COMPUTED count,
+    so it cannot be satisfied by the command text alone. Measured 2026-09-21 on the un-implemented tree
+    this exits 1 with AssertionError naming action.yml and terraform-drift.yml -- the red-before signal.
+  fix_if: The assertion prints every file still carrying an inline fetch. A file listed other than the
+    delegate means that copy was not collapsed.
+  hermetic: true
+  expected_literals:
+  - CARRIERS 1
+  graduation: graduate
+  graduation_check_id: materialise-tfvars-single-implementation
+- step: 2
+  phase: pre-deploy
+  action: Thin adapter recognised by the guard, and the three composite r3 entries retired
+  command: bin/venv-python -c "from scripts.checks.ci_guards.validate_composite_action_shell_bodies import
+    scan_repository, _load_baseline; s=scan_repository(); b=_load_baseline(); live=[k for k in s['r3_bodies']
+    if k.startswith('.github/actions/materialise-tfvars::')]; stale=[k for k in b['r3'] if k.startswith('.github/actions/materialise-tfvars::')];
+    print('LIVE_R3', len(live), 'BASELINE_R3', len(stale)); assert not live and not stale, (live, stale)"
+  expected: Prints LIVE_R3 0 BASELINE_R3 0 -- both COMPUTED counts. A non-output-producing thin adapter
+    is excluded from r3 scanning entirely, so a non-zero LIVE_R3 means the body is still not a thin adapter.
+    Measured 2026-09-21 this exits 1 on the un-implemented tree (three live bodies).
+  fix_if: A LIVE_R3 entry means the adapter still computes. The commonest cause is a carried-over set
+    -euo pipefail line -- measured, that alone makes _delegated_script return None and re-ratchets the
+    body under R3. The adapter's only effective line must be the delegate call; comments are free.
+  hermetic: true
+  expected_literals:
+  - LIVE_R3 0 BASELINE_R3 0
+  graduation: graduate
+  graduation_check_id: materialise-tfvars-adapter-is-thin-delegate
+- step: 3
+  phase: pre-deploy
+  action: terraform-drift inline copy gone and its three r3_workflows entries retired
+  command: bin/venv-python -c "import yaml; from scripts.checks.ci_guards import _workflow_shell_bodies
+    as w; pat=('materialise-tfvars-from-secrets-manager','mask-secret-sourced-tfvars-values-in-logs','assert-tfvars-file-is-non-empty-fail-closed');
+    s=w.scan_workflow_bodies(); b=yaml.safe_load(open('config/composite_action_body_baseline.yaml'))['r3_workflows'];
+    live=[k for k in s if k.startswith('.github/workflows/terraform-drift.yml::') and k.split('::')[-1]
+    in pat]; stale=[k for k in b if k.startswith('.github/workflows/terraform-drift.yml::') and k.split('::')[-1]
+    in pat]; print('LIVE', len(live), 'STALE', len(stale)); assert not live and not stale, (live, stale)"
+  expected: Prints LIVE 0 STALE 0 -- both COMPUTED counts. Measured 2026-09-21 this exits 1 on the un-implemented
+    tree. Note there are THREE drift entries, not one -- assert-tfvars-file-is-non-empty-fail-closed is
+    baselined at 4 alongside materialise (5) and mask (14).
+  fix_if: A STALE key with an empty LIVE list means the workflow was edited but the baseline was not.
+    That combination ALSO reds TestWorkflowRatchetLiveSurface.test_seeded_ceiling_equals_measured, which
+    is a two-sided equality pin over r3_workflows -- both edits must land in the same change.
+  hermetic: true
+  expected_literals:
+  - LIVE 0 STALE 0
+  graduation: graduate
+  graduation_check_id: terraform-drift-consumes-materialise-tfvars-action
+- step: 4
+  phase: pre-deploy
+  action: Decision 190 -- the replacement uses-step keeps the oidc_drift gate
+  command: bin/venv-python -c "import yaml; j=yaml.safe_load(open('.github/workflows/terraform-drift.yml'))['jobs']['drift-detect'];
+    st=[s for s in j['steps'] if isinstance(s,dict) and 'materialise-tfvars' in str(s.get('uses',''))];
+    print('USES_STEPS', len(st)); assert len(st)==1, len(st); cond=str(st[0].get('if','')); print('GATED',
+    int('oidc_drift.outcome' in cond and 'success' in cond)); assert 'oidc_drift.outcome' in cond and
+    'success' in cond, cond"
+  expected: 'Prints USES_STEPS 1 then GATED 1 -- both COMPUTED. Measured three ways 2026-09-21 against
+    the real tree and a simulated implemented tree: un-implemented exits 1 at USES_STEPS 0; correctly
+    implemented exits 0 with GATED 1; implemented but with the if-gate dropped exits 1 at GATED 0. The
+    Decision 190 half therefore bites independently -- it is not decoration riding on the uses-step assertion.'
+  fix_if: An empty cond means the gate was dropped. A composite action cannot express the condition internally,
+    so it MUST ride the caller's step -- without it an ungated step runs after a failed assume and the
+    cycle reds at tfvars materialisation instead of at the loud 'Fail loudly on a failed assume' classifier,
+    inferring the cause from an exit code.
+  hermetic: true
+  expected_literals:
+  - USES_STEPS 1
+  - GATED 1
+  graduation: graduate
+  graduation_check_id: terraform-drift-materialise-step-retains-oidc-gate
+- step: 5
+  phase: pre-deploy
+  action: Contract repoint -- recovery_procedure names the delegate and the path is declared
+  command: bin/venv-python -c "import yaml; d=yaml.safe_load(open('docs/contracts/terraform-cc-web-operations.yaml'));
+    path='.github/actions/materialise-tfvars/materialise_tfvars.sh'; a=path in (d.get('referenced_repo_paths')
+    or []); b='materialise_tfvars.sh' in str(d['tfvars_and_remote_state_recovery']['recovery_procedure']);
+    print('PATH_DECLARED', a, 'RECOVERY_NAMES_DELEGATE', b); assert a and b, (a, b)"
+  expected: Prints PATH_DECLARED True RECOVERY_NAMES_DELEGATE True -- both COMPUTED booleans, so neither
+    half can pass on command text alone. Measured 2026-09-21 this exits 1 on the un-implemented tree.
+    validate_terraform_cc_web_operations asserts every referenced_repo_paths entry exists, so this also
+    makes the contract's own guard fail if the delegate is later deleted.
+  fix_if: A named assertion says which half is missing. Adding the path to referenced_repo_paths without
+    creating the delegate reds validate_terraform_cc_web_operations -- both land together.
+  hermetic: true
+  expected_literals:
+  - PATH_DECLARED True RECOVERY_NAMES_DELEGATE True
+  graduation: graduate
+  graduation_check_id: tfvars-recovery-procedure-names-delegate
+- step: 6
+  phase: pre-deploy
+  action: Delegate behaviour under the literal GitHub composite argv (chained selectors)
+  command: bin/venv-python -m pytest tests/test_materialise_tfvars_delegate.py -k install_terraform_unset
+    -q && bin/venv-python -m pytest tests/test_materialise_tfvars_delegate.py -k no_secret_on_stdout -q
+    && bin/venv-python -m pytest tests/test_materialise_tfvars_delegate.py -k mode_600 -q && bin/venv-python
+    -m pytest tests/test_materialise_tfvars_delegate.py -k first_equals_split -q && bin/venv-python -m
+    pytest tests/test_materialise_tfvars_delegate.py -k fail_closed_on_empty -q && bin/venv-python -m
+    pytest tests/test_materialise_tfvars_delegate.py -k preexisting_file_preserved -q
+  expected: Six selectors, each its OWN invocation, all pass. CHAINED with &&, never or-joined -- measured
+    2026-09-21 that -k "real or nonexistent" exits 0 on a single match (1 passed, 8 deselected), which
+    would green a leg whose other assertions do not exist. Measured 2026-09-21 the whole chain exits 4
+    on the un-implemented tree (module absent).
+  fix_if: Exit 5 names the selector with no matching test -- that behaviour is untested. Exit 4 means
+    the module does not exist yet. Never collapse these into one or-joined -k.
+  hermetic: false
+  graduation: not-applicable
+- step: 7
+  phase: pre-deploy
+  action: setup-cloud-env admin branch delegates, and a failed fetch does not abort bootstrap
+  command: bin/venv-python -m pytest tests/test_setup_cloud_env.py -k admin_branch_calls_shared_delegate
+    -q && bin/venv-python -m pytest tests/test_setup_cloud_env.py -k failed_fetch_does_not_abort -q
+  expected: Both selectors pass as separate invocations. The second must EXECUTE the warn-and-continue
+    construct with a failing stub rather than grep for it -- measured 2026-09-21 that a bare call under
+    set -euo pipefail exits 1 and never reaches the session_start hooks, while the if/else form exits
+    0 and does. Measured 2026-09-21 this chain exits 4 (neither node exists).
+  fix_if: Exit 4 or 5 names the absent node. A structural grep alone does not satisfy this step -- the
+    property under test is errexit suppression, which only execution can prove.
+  hermetic: false
+  graduation: not-applicable
+- step: 8
+  phase: pre-deploy
+  action: Wiring and baseline-retirement tests (chained selectors)
+  command: bin/venv-python -m pytest tests/test_materialise_tfvars_delegate.py -k action_wiring -q &&
+    bin/venv-python -m pytest tests/test_materialise_tfvars_delegate.py -k drift_wiring -q && bin/venv-python
+    -m pytest tests/test_materialise_tfvars_delegate.py -k baseline_retired -q && bin/venv-python -m pytest
+    tests/checks/contracts/test_validate_terraform_cc_web_operations.py -q
+  expected: Four selectors, each its OWN invocation, all pass. This is the step that RUNS the pytest evidence
+    the action.yml, terraform-drift.yml, baseline and contract test_obligations name -- steps 2-5 assert
+    the same claims statically and carry the red-before signal. Measured 2026-09-21 this exits 4 on the
+    un-implemented tree.
+  fix_if: Exit 5 names the selector with no matching test. Exit 4 means the module does not exist yet.
+    The contract module already exists and passes today, so a failure there is a regression from the referenced_repo_paths
+    edit.
+  hermetic: false
+  graduation: not-applicable
+- step: 9
+  phase: pre-deploy
+  action: REGRESSION -- composite-action shell-body guard stays clean
+  command: bin/venv-python -c "from scripts.checks.ci_guards.validate_composite_action_shell_bodies import
+    validate_composite_action_shell_bodies as v; f=[]; v(f); print('VIOLATIONS', len(f)); assert not f,
+    f"
+  expected: 'Prints VIOLATIONS 0 -- a COMPUTED count. GREEN BEFORE AND AFTER: measured 2026-09-21 this
+    already exits 0 on the un-implemented tree, so it proves NOTHING about this plan''s implementation
+    and is a regression guard only. Steps 1-5 carry the red-before signal.'
+  fix_if: An R3 failure names an unbaselined body. An R3-workflow failure names a workflow body. Never
+    silence either by adding a raise-approved marker -- extraction is the sanctioned route here.
+  hermetic: true
+  expected_literals:
+  - VIOLATIONS 0
+  graduation: waive
+  graduation_waiver_reason: Green by construction on the un-implemented tree (measured 2026-09-21, exit
+    0), so it carries no red-before signal and a graduate disposition would red this plan's own PR under
+    Decision 189. The standing equivalent already exists as registry check composite-action-shell-bodies-clean.
+- step: 10
+  phase: pre-deploy
+  action: REGRESSION -- the r3_workflows equality pin still holds
+  command: bin/venv-python -m pytest tests/checks/ci_guards/test__workflow_shell_bodies.py::TestWorkflowRatchetLiveSurface
+    -q
+  expected: All four cases pass, including test_seeded_ceiling_equals_measured. GREEN BEFORE AND AFTER
+    (measured 2026-09-21, exit 0); it turns red only in the intermediate state where the drift workflow
+    is edited but its three baseline entries are not.
+  fix_if: A mismatched dict names the key whose declared ceiling no longer equals its measured body. For
+    a removed body the measured side reads None -- delete the entry rather than adjusting it.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: An existing registry check (workflow-body-roster-covers-live-tree) already
+    graduates this exact node id; duplicating it would add a second row over identical evidence. Also
+    green-before, so it is ineligible under Decision 189.
+- step: 11
+  phase: pre-deploy
+  action: Decision 101 leak guard across the publishable surface (.github and config included)
+  command: bin/venv-python -c "import subprocess,re; d=subprocess.run(['git','diff','origin/main','--','.github','config','bin','docs','tests'],capture_output=True,text=True).stdout;
+    adds=[l for l in d.splitlines() if l.startswith('+') and not l.startswith('+++')]; bad=[l for l in
+    adds if re.search(r'(?<![0-9A-Za-z])[0-9]{12}(?![0-9A-Za-z])', l) or re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}',
+    l)]; print('LEAKED', len(bad)); assert not bad, bad[:3]"
+  expected: Prints LEAKED 0. Pathspec names .github and config explicitly per rec-3978 constraint 8, plus
+    bin, docs and tests because this plan touches all five.
+  fix_if: A non-zero count prints the offending added lines. The commonest cause is a realistic test fixture
+    -- measured 2026-09-21 that a 12-digit account_id fixture trips this guard (though not the pre-commit
+    hook, which only blocks 12-digit runs inside an ARN). Use non-numeric placeholders in fixtures; masking
+    only needs a non-empty value, not a realistic one.
+  hermetic: true
+  expected_literals:
+  - LEAKED 0
+  graduation: waive
+  graduation_waiver_reason: Green by construction on the un-implemented tree (zero added lines match),
+    so no red-before signal; the standing equivalents are the pre-commit never-commit hook and scripts/ci/redaction_check.py.
+- step: 12
+  phase: pre-deploy
+  action: REAL external system -- drive the delegate against live Secrets Manager (ADMIN container)
+  command: bash .github/actions/materialise-tfvars/materialise_tfvars.sh > /tmp/mt.out 2>/tmp/mt.err;
+    echo "exit=$?"; test ! -s /tmp/mt.out && test ! -s /tmp/mt.err && echo "NO OUTPUT"; stat -c '%a' terraform/personal/terraform.personal.tfvars;
+    sed 's/=.*//' terraform/personal/terraform.personal.tfvars | tr -d ' "' | grep -c . ; rm -f /tmp/mt.out
+    /tmp/mt.err
+  expected: exit=0, then NO OUTPUT, then 600, then 5. Values are NEVER printed -- only the mode, a key-name
+    count, and the fact that both streams were empty. Requires an ADMIN container; confirm with aws sts
+    get-caller-identity --profile agent_platform_admin first. Probed 2026-09-21 the live secret holds
+    exactly the five contract-named keys in 371 bytes.
+  fix_if: 'AccessDenied means a PlatformDev (DEV) container -- that is the INTENDED fail-closed DEP-13
+    outcome, not a defect; re-run from ADMIN. Any non-empty stream is a Decision 101 breach and means
+    the GITHUB_ACTIONS gate on ::add-mask:: is missing or inverted.'
+  hermetic: false
+  graduation: not-applicable
+- step: 13
+  phase: pre-deploy
+  action: Fast presubmit tier is green
+  command: bin/venv-python -m scripts.validate --pre
+  expected: Validation Summary reports all checks passed. Measured green on this branch 2026-09-21 before
+    implementation.
+  fix_if: Address the named check; never bypass with --ignore-budget.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: docs/contracts/vp-red-before.yaml#recursion_refusal statically refuses an
+    argv head of -m scripts.validate as a graduated check.
+- step: 14
+  phase: pre-deploy
+  action: Full validation tier is green (handoff_policy.full_validation_required_before_commit)
+  command: bin/venv-python -m scripts.validate
+  expected: Full-tier Validation Summary reports all checks passed.
+  fix_if: Address the named check. Decision 163 makes this step mandatory -- validate_handoff_full_tier
+    fails the PR if the VP carries no bare -m scripts.validate step. A timeout is handoff_policy.timeout_disposition=blocked
+    -- resume and rerun from the start, never partially.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: docs/contracts/vp-red-before.yaml#recursion_refusal statically refuses an
+    argv head of -m scripts.validate as a graduated check.
+- step: 15
+  phase: post-deploy
+  action: REAL external system -- dispatch terraform-drift.yml FROM MAIN and confirm it materialises
+  command: bin/venv-python -c "print('mcp__github__actions_run_trigger(owner=benjamin-blake, repo=theseus,
+    workflow=terraform-drift.yml, ref=main) then mcp__github__get_job_logs for drift-detect')"
+  expected: The drift-detect job assumes the planner role, runs the shared composite action, and completes
+    its plan with secret-sourced values masked in the log. MUST be dispatched with ref=main -- the job
+    presents the reserved session name tf-drift-convergence-writer, which only the AssumeMainReservedSession
+    trust statement accepts, and that statement's sub is pinned to refs/heads/main. A feature-branch dispatch
+    fails the assume, skips every gated step and verifies NOTHING, so rec-3977's 'dispatch terraform-drift.yml'
+    is only valid post-merge.
+  fix_if: OIDC_ASSUME_FAILED means the dispatch used the wrong ref. A failure at the materialise step
+    means the composite action is not wired as the drift job expects.
+  hermetic: false
+  graduation: not-applicable
+- step: 16
+  phase: post-deploy
+  action: Closure obligation -- both bundled recs reach a terminal state
+  command: bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json; d={r['id']:r
+    for r in (json.loads(l) for l in open('logs/.recommendations-log.jsonl') if l.strip())}; [print(i,
+    d[i]['status'], bool(d[i].get('resolution'))) for i in ['rec-3978','rec-3977']]; assert all(d[i]['status']=='closed'
+    and d[i].get('resolution') for i in ['rec-3978','rec-3977'])"
+  expected: Both recs print closed with a True resolution flag.
+  fix_if: An open status means the closure write did not run. Use the portal --sync surface; scripts.sync.ops
+    accepts only 'sync' and calling it directly breaches AGENTS.md portal discipline.
+  hermetic: false
+  graduation: not-applicable
+test_obligations:
+- source: .github/actions/materialise-tfvars/materialise_tfvars.sh
+  behavior: Writes the tfvars file mode 600 with INSTALL_TERRAFORM UNSET; emits no secret-shaped value
+    on either stream with GITHUB_ACTIONS unset; masks on first '=' only under GITHUB_ACTIONS; fails closed
+    on an empty secret; leaves a pre-existing file intact when the fetch fails.
+  verification_step: 6
+  test_selector: tests/test_materialise_tfvars_delegate.py::TestDelegateBehaviour
+  red_green_expectation: red before, green after
+- source: .github/actions/materialise-tfvars/action.yml
+  behavior: The step is a thin adapter delegating to materialise_tfvars.sh, carries no inline fetch, and
+    still declares and wires the working-directory input.
+  verification_step: 8
+  test_selector: tests/test_materialise_tfvars_delegate.py::TestActionWiring
+  red_green_expectation: red before, green after
+- source: .github/workflows/terraform-drift.yml
+  behavior: drift-detect consumes the shared composite action exactly once and keeps the steps.oidc_drift.outcome
+    == 'success' gate on that step.
+  verification_step: 8
+  test_selector: tests/test_materialise_tfvars_delegate.py::TestDriftWiring
+  red_green_expectation: red before, green after
+- source: config/composite_action_body_baseline.yaml
+  behavior: No r3 or r3_workflows entry survives for a body this change removed, in either direction.
+  verification_step: 8
+  test_selector: tests/test_materialise_tfvars_delegate.py::TestBaselineRetired
+  red_green_expectation: red before, green after
+- source: bin/setup-cloud-env.sh
+  behavior: The INSTALL_TERRAFORM=1 branch calls the shared delegate, and a failing delegate does not
+    abort the script under set -euo pipefail.
+  verification_step: 7
+  test_selector: tests/test_setup_cloud_env.py::test_failed_fetch_does_not_abort
+  red_green_expectation: red before, green after
+- source: docs/contracts/terraform-cc-web-operations.yaml
+  behavior: recovery_procedure names the delegate and referenced_repo_paths declares it, so the contract's
+    validator fails if the script is deleted.
+  verification_step: 8
+  test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py
+  red_green_expectation: red before, green after
+constraints:
+- The INSTALL_TERRAFORM gate belongs in bin/setup-cloud-env.sh, NEVER in the shared delegate. INSTALL_TERRAFORM
+  appears ZERO times in .github/workflows/, so a guard in the shared unit no-ops the action at all four
+  apply call sites (terraform-apply-sandbox apply-sandbox + speculative-plan, reconcile apply-reconcile
+  + gated-apply-reconcile) and takes the Decision 126 heal verb offline.
+- '::add-mask:: is a GitHub-runner sentinel, not redaction. Gate its emission on $GITHUB_ACTIONS or the
+  local ADMIN shell prints account_id and both ExternalIds into the session transcript, breaching the
+  contract''s never_paste clause and Decision 101.'
+- The adapter's ONLY effective line is the delegate call. Measured -- adding set -euo pipefail makes _delegated_script
+  return None, re-ratcheting the body under R3. Comments are stripped and free.
+- The delegate takes NO argv -- _DELEGATE_LINE_RE is fully anchored and admits no arguments. It also stays
+  profile-free -- all four CI call sites use OIDC ambient credentials, so hardcoding --profile agent_platform_admin
+  would break them. PlatformDev AccessDenied is the intended fail-closed DEP-13 outcome; document it in
+  the delegate header and pin it in the test.
+- Preserve action.yml's working-directory input and wiring -- the delegate resolves the tfvars path relative
+  to cwd, so dropping it silently misplaces the file on the apply path. No call site currently overrides
+  the '.' default; bin/setup-cloud-env.sh cds to REPO_ROOT at line 107.
+- Write via temp file + mv. aws ... > file truncates BEFORE aws runs -- measured, a failed fetch destroys
+  a pre-existing tfvars (0 bytes) while the atomic form preserves it byte-identical. Harmless in CI (fresh
+  clone) but the ADMIN bootstrap is explicitly re-runnable, and warn-and-continue would mask the loss
+  behind a non-fatal log line (Decision 55). The mirror-sync precedent at bin/setup-cloud-env.sh:211 is
+  warn-and-continue but NON-destructive; it is not precedent for a destructive one. The WARNING must state
+  the pre-existing file was preserved.
+- Test fixtures use non-numeric placeholders -- a 12-digit account_id fixture trips this plan's own Decision
+  101 leak guard (measured). Masking needs a non-empty value, not a realistic one.
+- Amend the else-branch log at bin/setup-cloud-env.sh:214, which currently names only the mirror sync
+  as skipped -- it now also skips the tfvars fetch.
+- No rescue agents or workaround loops (Decision 55).
+context:
+- 'Decision-scout verdict + CITE list -- FLAGS_FOUND. CITE: Decision 162, Decision 101, Decision 77, Decision
+  189, Decision 132, Decision 181, Decision 168. RELATED: Decision 172, Decision 154, Decision 166, Decision
+  163, Decision 187, Decision 86/127.'
+- 'gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)'
+- 'Decisions triaged: 150 of 150'
+- 'Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5'
+- 'Scout CONTRADICT Decision 190 [WARN] -- accepted and fixed: the oidc_drift gate rides the replacement
+  uses-step (VP step 4).'
+- 'Scout CONTRADICT Decision 55 [NOTE] -- accepted and fixed: temp-file + mv (constraints).'
+- 'Scout CONTRADICT Decision 144 [NOTE] -- resolved: delegate stays profile-free by necessity; PlatformDev
+  AccessDenied recorded as the intended fail-closed outcome (constraints).'
+- Scout SPIRIT Decision 126 [WARN] on wiring the fetch into the INSTALL_TERRAFORM=1 bootstrap -- raised
+  and resolved by operating context, NOT a deviation- ADMIN containers are used only for IAM changes and
+  IAM planning, so the container itself is the deliberate operator act the flag assumed was missing. Recorded
+  so the point is not re-litigated.
+- 'Slice 1 is db8b9212 (PR #1242); it repointed recovery_procedure at the materialisation path, leaving
+  a documented local path with no local tooling. This slice supplies it.'
+- Extraction precedent is .github/actions/subagent-plan-review/review.sh (rec-2924). R1/R2 do NOT bind
+  here -- this action declares no outputs -- so the literal-argv test is voluntary conformance, not a
+  rule obligation. R3 sanctions extract OR raise-with-marker; extraction is chosen.
+- Retiring the three terraform-drift r3_workflows entries is CI-ENFORCED, not hygiene- TestWorkflowRatchetLiveSurface.test_seeded_ceiling_equals_measured
+  is a two-sided equality pin. The composite r3 section has no equivalent pin, so those three are rec-mandated
+  hygiene.
+- tests/checks/ci_guards/test_validate_composite_action_shell_bodies.py:118 and tests/checks/test__marker_guard.py:149
+  use '.github/actions/materialise-tfvars::#0' as a fixture. Both pass the string into PURE functions,
+  so retiring the baseline key does not break them; the example in docs/contracts/marker-grammar.yaml:173
+  merely goes stale (out of scope, Decision 59).
+pre_implementation_checklist:
+- Branch confirmed not on main
+- docs/PROJECT_CONTEXT.md read
+- Only the plan-cited decision sections read
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+- Confirm ADMIN container before VP step 11 (aws sts get-caller-identity --profile agent_platform_admin)
+execution_steps:
+- 'Create .github/actions/materialise-tfvars/materialise_tfvars.sh -- fetch to a temp file, assert non-empty,
+  chmod 600, emit ::add-mask:: only under $GITHUB_ACTIONS using the rec-2285 first-''='' split, then mv
+  into place. No argv, no profile flag, no INSTALL_TERRAFORM gate. Header documents the DEP-13 admin-tier
+  fail-closed posture.'
+- Rewrite .github/actions/materialise-tfvars/action.yml as ONE thin adapter step whose sole effective
+  line is bash "${{ github.action_path }}/materialise_tfvars.sh", keeping the working-directory input
+  and its wiring.
+- Replace terraform-drift.yml's three inline steps with a single uses- ./.github/actions/materialise-tfvars
+  step carrying if- steps.oidc_drift.outcome == 'success'.
+- Delete the six stale baseline entries from config/composite_action_body_baseline.yaml (three r3, three
+  r3_workflows).
+- Add the warn-and-continue delegate call inside bin/setup-cloud-env.sh's existing INSTALL_TERRAFORM=1
+  branch after the mirror sync, and amend the else-branch log at line 214.
+- Repoint docs/contracts/terraform-cc-web-operations.yaml's recovery_procedure at the delegate, add it
+  to referenced_repo_paths, and append a Class D amendment_log entry.
+- Write tests/test_materialise_tfvars_delegate.py and extend tests/test_setup_cloud_env.py per the test_obligations
+  table.
+- Execute the Verification Plan -- run each step; loop until pass; on unrecoverable V3 failure stop and
+  RCA (Decision 55).
+- Report- what was implemented, verification results
+rollback: Single-commit revert. The action's public interface (name, working-directory input, no outputs)
+  is unchanged, so the four apply call sites need no edit in either direction. Reverting also restores
+  the six baseline entries, which the r3_workflows equality pin requires to match the restored bodies.
