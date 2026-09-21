@@ -27,6 +27,9 @@ Every non-governance doc class has a subtree home; put new files there, not at t
 | REPORT-ONLY deliverables + spike notes | `docs/plans/reports/` |
 | Operator procedures (agent-led) | `procedure:` blocks in `docs/contracts/*.yaml` |
 
+Example: `docs/contracts/package-registry-reservation.yaml`'s `procedure:` block holds the
+PyPI/npm/crates.io namespace-reservation walkthrough (rec-3941).
+
 Audit OUTPUTS live in `audits/`, not under `docs/`. The discovery index is
 `docs/contracts/file-router.yaml`.
 
