@@ -37,7 +37,7 @@ scope:
       _TERRAFORM_PERSONAL_DIR, which BOTH halves need (:147 GC-side to derive _DR_TF; :367-428 lifecycle-side).
       Each reshaped guard is extracted here as a module-level PREDICATE the class method delegates to, so a
       red case can invoke the real guard and assert pytest.raises(AssertionError) instead of merely
-      re-asserting that its own fixture was mutated -- the weakness the four existing red cases at :475-511
+      re-asserting that its own fixture was mutated -- the weakness the four existing red cases at :474-509
       carry.
       tests/fixtures/ is an importable package that
       does not start with "test_", so it is exempt by construction from validate_no_cross_test_imports
@@ -107,7 +107,7 @@ scope:
       graduated_at and graduated_by. guard_target terraform/personal/ducklake_maintenance.tf. Admissible
       under run_differential because the module does not exist at origin/main.
 bundled_recommendations: ["rec-3945"]
-followon_recs: []
+followon_recs: ["rec-3973"]
 infrastructure_dependencies:
   - >-
     aws_s3_bucket_lifecycle_configuration UPDATE (a second rule block on an existing resource): no
@@ -171,11 +171,10 @@ acceptance_criteria:
     (Decision 187: silence is not a disposition).
   - >-
     Post-apply, the live bucket reports two lifecycle rules with the smoke rule Enabled; the smoke
-    prefix retains a non-empty current-version key set while its noncurrent versions and delete markers
-    both fall below the pre-rule census of 1,400; and a smoke gc cycle has completed since the apply,
-    which is the observable proof that run_gc's G1 reachability guard did not abort against a
-    catalog-live file the rule removed (Decision 192 applied through a signal the smoke path actually
-    emits).
+    prefix retains at least the pre-rule floor of 8 current versions while its noncurrent versions and
+    delete markers both fall below the pre-rule census of 1,400; and a smoke gc cycle has completed
+    within a window anchored to the apply. This criterion claims NO catalog-vs-storage reachability
+    property -- that property is unavailable on the smoke path and is carried by rec-3973.
   - >-
     rec-3892 carries the RCA resolution recorded via the portal, and rec-3945 reads closed.
 verification_plan:
@@ -310,26 +309,36 @@ verification_plan:
     fix_if: a Disabled rule reclaims nothing while satisfying every structural assertion; a missing rule means the apply did not land -- check the CI apply job rather than re-applying locally
   - step: 13
     phase: post-deploy
-    action: the smoke prefix reclaimed only non-live bytes, and the smoke catalog still reconciles against storage
-    command: aws s3api list-object-versions --bucket agent-platform-data-lake --prefix ducklake-neon-smoke/ --profile agent_platform --output json > "${TMPDIR:-/tmp}/smoke-post-rule.json" && aws cloudwatch get-metric-statistics --namespace DuckLakeMaintenance --metric-name GcDurationMs --start-time "$(date -u -d '8 days ago' +%Y-%m-%dT%H:%M:%SZ)" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --period 3600 --statistics Maximum --profile agent_platform --output json > "${TMPDIR:-/tmp}/smoke-gc-ran.json" && bin/venv-python -c "import json,os; d=json.load(open(os.environ.get('TMPDIR','/tmp')+'/smoke-post-rule.json')); v=d.get('Versions',[]); mk=d.get('DeleteMarkers',[]); cur=[x for x in v if x['IsLatest']]; non=[x for x in v if not x['IsLatest']]; assert cur, 'NO CURRENT VERSIONS -- the rule removed live objects'; assert len(non) < 1400, f'noncurrent {len(non)} not reclaimed from the pre-rule 1400'; assert len(mk) < 1400, f'markers {len(mk)} not swept from the pre-rule 1400'; g=json.load(open(os.environ.get('TMPDIR','/tmp')+'/smoke-gc-ran.json')).get('Datapoints',[]); assert g, 'NO SMOKE GC CYCLE since the rule applied -- catalog-side reachability is unproven, not proven'; print('SMOKE_RECLAIM_SANE', len(cur), len(non), len(mk), len(g))"
+    action: the smoke prefix reclaimed only non-live bytes, and the smoke gc cadence completed after the apply
+    command: test -n "$SMOKE_RULE_APPLIED_AT" && aws s3api list-object-versions --bucket agent-platform-data-lake --prefix ducklake-neon-smoke/ --profile agent_platform --output json > "${TMPDIR:-/tmp}/smoke-post-rule.json" && aws cloudwatch get-metric-statistics --namespace DuckLakeMaintenance --metric-name GcDurationMs --start-time "$SMOKE_RULE_APPLIED_AT" --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --period 3600 --statistics Maximum --profile agent_platform --output json > "${TMPDIR:-/tmp}/smoke-gc-ran.json" && bin/venv-python -c "import json,os; d=json.load(open(os.environ.get('TMPDIR','/tmp')+'/smoke-post-rule.json')); v=d.get('Versions',[]); mk=d.get('DeleteMarkers',[]); cur=[x for x in v if x['IsLatest']]; non=[x for x in v if not x['IsLatest']]; assert len(cur) >= 8, f'current versions {len(cur)} below the measured pre-rule floor of 8 -- OVER-RECLAIM'; assert len(non) < 1400, f'noncurrent {len(non)} not reclaimed from the pre-rule 1400'; assert len(mk) < 1400, f'markers {len(mk)} not swept from the pre-rule 1400'; g=json.load(open(os.environ.get('TMPDIR','/tmp')+'/smoke-gc-ran.json')).get('Datapoints',[]); assert g, 'no smoke gc cycle since the apply'; print('SMOKE_RECLAIM_SANE', len(cur), len(non), len(mk), len(g))"
     expected: >-
-      Falsifiable in BOTH directions, which the superseded GcReferencedMissing formulation was not.
-      Over-reclaim: a non-empty current-version key set must survive -- a rule that touched live objects
-      drives it toward zero. Under-reclaim: noncurrent versions and delete markers must both fall below
-      the pre-rule census of 1,400 each -- a rule that reclaims nothing leaves them at 1,400.
-      Catalog-side reachability rides the smoke gc cycle itself: run_gc's G1 guard (assert_reachability)
-      RAISES on a catalog-live path missing from storage, and a raised pass emits no metrics at all, so
-      the presence of a GcDurationMs datapoint after the apply IS the evidence that G1 did not abort.
-      WHY NOT GcReferencedMissing: it has exactly one emitter, ducklake_gc_ops.py:200, the PRODUCTION
-      gc_ops verb. The smoke Lambda never imports that module by design
-      (src/common/ducklake_maintenance.py:190 -- "ducklake_gc_ops must not be part of the smoke Lambda's
-      import graph"), and the metric carries no Dimensions (ducklake_metrics.py:36-39), so every
-      datapoint it could ever return describes the production prefix this plan does not touch.
+      Falsifiable in BOTH directions. OVER-RECLAIM: the current-version key set must stay at or above
+      the pre-rule floor of 8 measured 2026-09-21 -- the rule expires only noncurrent versions and
+      delete markers, so a drop means it touched live data. Symmetric with the under-reclaim legs
+      rather than a bare non-empty check, which a rule that deleted 7 of 8 keys would pass.
+      UNDER-RECLAIM: noncurrent versions and delete markers must both fall below the pre-rule census of
+      1,400 -- a rule that reclaims nothing leaves them at 1,400.
+      The GcDurationMs leg proves ONLY that the smoke gc cadence completed after the apply (G1
+      catalog-vs-catalog disjointness, G2 retention floor and G3 catalog sanity all held). It is NOT
+      reachability evidence and this step no longer claims it is: SMOKE_RULE_APPLIED_AT anchors the
+      window to the apply, because an unanchored lookback returns datapoints from before the rule
+      existed and would pass vacuously.
+      THE CATALOG-VS-STORAGE REACHABILITY PROPERTY IS NOT ASSERTED HERE AND IS NOT AVAILABLE ON THIS
+      PATH -- carrier rec-3973, named in followon_recs. G1 (assert_reachability) is
+      live_paths & would_delete_paths, both catalog-derived; referenced_missing (live_paths -
+      storage_paths) lives in ducklake_gc_verification.py and is called only from the production verb
+      the smoke Lambda must not import. Decision 192's per-cycle invariant governs that verb (clauses
+      1/3/4), not an AWS-native managed primitive (Decision 100); the production prefix shipped this
+      identical rule shape with no post-deploy reachability assertion and routed its residue to
+      follow-on recs on the same principle -- the observer must be separate from the actor.
     fix_if: >-
-      An empty current-version set is an over-reclaim incident -- RCA it (Decision 55), never re-run to
-      green. Unchanged 1,400/1,400 counts mean the rule did not apply or did not match the prefix; check
-      the CI apply job and the trailing slash. No GcDurationMs datapoint means no smoke gc has run since
-      the apply -- wait for the Sunday cadence or invoke the gate; do NOT read the absence as a pass.
+      A current-version count below 8 is an over-reclaim incident -- RCA it (Decision 55), never re-run
+      to green; if routine CI activity has legitimately moved the floor, re-baseline it and record the
+      new figure rather than lowering the assertion. Unchanged 1,400/1,400 counts mean the rule did not
+      apply or did not match the prefix; check the CI apply job and the trailing slash. An unset
+      SMOKE_RULE_APPLIED_AT fails the step by design -- export the CI apply completion time (RFC3339).
+      No datapoint in the anchored window means no smoke gc has run since the apply; wait for the
+      Sunday 05:00 cadence. Do NOT read absence as a pass.
   - step: 14
     phase: post-deploy
     action: the RCA resolution is recorded and rec-3945 is closed
@@ -422,6 +431,7 @@ constraints:
 context:
   - "Decision-scout verdict + CITE list: FLAGS_FOUND. CITE: dec-128, dec-130, dec-191, dec-181, dec-126, dec-119, dec-176, dec-132, dec-066, dec-048. Decisions triaged: 150 of 150. Roadmap items intersected: 1; CONFLICT: 0; RELATED: 1."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "CONTESTED-RESIDUE CONSULT (planning skill Critique Gate): VP step 13 failed critique twice at the same anchor -- first asserting a metric only the production verb emits, then inferring reachability from G1, which is a catalog-vs-catalog disjointness check and cannot see a storage-side deletion. Escalated as an oscillation interrupt; a model:fable consult recommended dropping the reachability claim, keeping the storage invariant, and filing a carrier. ONE CORRECTION to that advice, recorded so it is not propagated: it cited Decision 192 clause 5 (the smoke gc verb is unaffected) as proof the invariant does not bind smoke -- that phrase is about the G4 byte-half sizing degradation, not the invariant scope. The disposition rests instead on clauses 1/3/4 (the Decision licenses destructive GC on the ADMIN function and defines the invariant for gc_ops), Decision 100 (managed primitives), and the production precedent at PLAN-ducklake-noncurrent-version-reclaim, which shipped this identical rule shape with no post-deploy reachability assertion and routed its residue to rec-3943/3944/3945."
   - "Scout flag dispositions: dec-103 WARN dissolved by inverting the split direction (stored oracles stay at their recorded node ids, so no acceptance relocation is needed); dec-131 NOTE pivoted (shared helpers hoisted to tests/fixtures/, not duplicated); dec-192 NOTE adopted, then CORRECTED at the confirming round: the first formulation read GcReferencedMissing, which only the production gc_ops verb emits and which carries no Dimensions, so it could not fail for the smoke prefix. VP step 13 now asserts a two-directional storage invariant plus smoke-gc completion as the G1-did-not-abort signal; dec-187 WARN adopted (disposition table below)."
   - "RCA VERDICT, established 2026-09-21 from version-level S3 reads; full evidence rides the rec-3892 portal append (VP step 14), never restated here: rec-3892's premise is refuted. No unmodeled deleter exists. All 1,400 smoke-prefix delete markers fall in two Sunday bursts -- 2026-06-07T12:57-12:59 (174, out-of-band gc invocation) and 2026-06-28T05:00 (1,226, exactly the smoke gc cron 0 5 ? * SUN *) -- with nothing deleted since. The FilesCleaned/OrphansDeleted 0.0 readings were CORRECT: the sampled 21-day window contained no deletions. Independent corroboration: the first production gc_ops pass (2026-09-20T03:47, cron 45 3 ? * SUN *) produced 18,812 markers reconciling exactly to GcDeletedFiles 18,744 + GcDeletedOrphans 68 with GcReferencedMissing 0.0."
   - "This clears rec-3945's stated gate ('FIRST explain the deleter, SECOND extend the rule') and retires the _DECLARED_LIFECYCLE_EXCLUSIONS reason string at tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py:348-353."
@@ -441,7 +451,7 @@ pre_implementation_checklist:
   - Acceptance criteria understood and verifiable
   - get_rec_write_guidance() called before composing the rec-3892 append (Decision 66)
 execution_steps:
-  - Create tests/fixtures/terraform_hcl_blocks.py -- hoist _find_resource_block and _tf_dir_file_texts verbatim from the existing module; no behavioural change.
+  - Create tests/fixtures/terraform_hcl_blocks.py -- hoist _find_resource_block, _tf_dir_file_texts and _TERRAFORM_PERSONAL_DIR from the existing module, AND add the new brace-balanced rule-block splitter (rule bodies nest, so no flat regex splits them; AC 5 cannot be met without it), AND extract each reshaped lifecycle guard as a module-level predicate the class method delegates to, so a red case can invoke the real guard rather than re-asserting its own fixture.
   - Create tests/checks/iam_tf/test_ducklake_maintenance_gc_rule_invariants.py -- relocate TestProductionGcRuleInvariants, TestGcOpsEnablementBaseline, TestAlarmDescriptionsPinNoThreshold and TestThresholdShapeRedCases verbatim, importing the hoisted helpers. A relocation, never a rewrite.
   - Modify tests/checks/iam_tf/test_ducklake_maintenance_tf_invariants.py -- remove the moved classes, import the hoisted helpers, reshape the four whole-block assertions to iterate every rule, remove the smoke entry from _DECLARED_LIFECYCLE_EXCLUSIONS, and add test_smoke_prefix_is_covered_not_excluded plus a red case per reshaped guard.
   - Modify terraform/personal/main.tf -- add the second rule block and rewrite the header comment that states the retired exclusion rationale.
