@@ -43,8 +43,11 @@ scope:
       never write, file, retry or downgrade a status -- Decision 55/72). Holds
       `merge_leg_refuses(changed) -> bool`: True when the changed set is None, EMPTY, or entirely
       under `docs/plans/`. Empty refuses deliberately -- `git diff-tree -r` on a true (non-squash)
-      merge commit lists nothing, and a fail-open there would reinstate the defect. Imports the
-      shared helper; contains no `subprocess` of its own. Target ~70 effective lines.
+      merge commit lists nothing, and a fail-open there would reinstate the defect. CALLER OWNS THE
+      I/O: `ci_rca_lifecycle` calls `closure_gate.changed_files(commit_sha, ROOT)` and passes the
+      result in. This module imports neither `changed_files` nor `subprocess` -- it is a pure
+      predicate over an already-computed set, so it stays trivially unit-testable and ships no dead
+      import (ruff F401 would redden the full tier at VP step 10). Target ~50 effective lines.
   - file: scripts/ops_portal/ci_rca_lifecycle.py
     action: Modify
     purpose: >-
@@ -136,19 +139,23 @@ scope:
       the END-TO-END outcome: given a well-formed trailer AND a plan-only changed set,
       `merge_leg_refuses` returns True and no close is attempted. Import the gate here rather than
       re-testing the parser.
-  - file: tests/ops_portal/__init__.py
+  - file: tests/ops_data_portal/test_trailer_closure_gate.py
     action: Create
     purpose: >-
-      `tests/ops_portal/` does not exist yet; Decision 131 point 4 requires every mirror test
-      package to carry an `__init__.py`. No check enforces it today, so it is named here rather
-      than left to be discovered.
-  - file: tests/ops_portal/test_trailer_closure_gate.py
-    action: Create
+      The gate's own unit coverage, sited in the ESTABLISHED package for this source tree.
+      Decision 131 point 1 returns `None` for `scripts/ops_portal/**` on BOTH mapping rules
+      (Decision 124 preserved), so there is no mirror obligation here and no mirror-derived path --
+      `tests/ops_data_portal/` is where `closure_gate` and the ci_rca lifecycle modules are already
+      tested (21 files, own `__init__.py`). Do NOT create a new `tests/ops_portal/` package.
+      Covers `merge_leg_refuses` over a plan-only set (refuses), a mixed set (proceeds), a
+      code-only set (proceeds), and the empty / None sets (refuse, fail-closed).
+  - file: tests/ops_data_portal/test_closure_gate.py
+    action: Modify
     purpose: >-
-      Mirror-named home (Decision 131) for the gate's own unit coverage: `merge_leg_refuses` over a
-      plan-only set (refuses), a mixed set (proceeds), a code-only set (proceeds), and the empty /
-      None sets (refuse, fail-closed); plus `changed_files` returning None on an unresolvable sha
-      and `_fix_commit_touches` keeping its behaviour through the extraction.
+      The extraction's behaviour-preservation evidence belongs beside `closure_gate`'s 20 existing
+      tests, not in a separate file named for another module: `changed_files` returns the commit's
+      paths and None for an unresolvable sha, and `_fix_commit_touches` keeps its fail-closed
+      behaviour through the delegation.
   - file: tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py
     action: Create
     purpose: >-
@@ -218,7 +225,7 @@ verification_plan:
   - step: 3
     phase: pre-deploy
     action: The gate's own unit coverage, including the fail-closed empty/None cases
-    command: bin/venv-python -m pytest "tests/ops_portal/test_trailer_closure_gate.py" -q
+    command: bin/venv-python -m pytest "tests/ops_data_portal/test_trailer_closure_gate.py" "tests/ops_data_portal/test_closure_gate.py" -q
     expected: Plan-only refuses; mixed and code-only proceed; empty and None refuse; the extraction is behaviour-preserving.
     fix_if: If the empty set proceeds, the gate fails OPEN on a true merge commit -- the defect reinstated.
     hermetic: false
@@ -335,7 +342,7 @@ test_obligations:
       merge_leg_refuses is True for a plan-only, empty or None changed set and False for any set
       carrying a non-plan path.
     verification_step: 3
-    test_selector: tests/ops_portal/test_trailer_closure_gate.py
+    test_selector: tests/ops_data_portal/test_trailer_closure_gate.py
     red_green_expectation: >-
       Red before: the module does not exist, so collection fails. Green after: all five cases pass.
   - source: scripts/ops_portal/closure_gate.py
@@ -343,9 +350,10 @@ test_obligations:
       changed_files returns the commit's paths and None for an unresolvable sha; _fix_commit_touches
       keeps its fail-closed behaviour through the extraction.
     verification_step: 3
-    test_selector: tests/ops_portal/test_trailer_closure_gate.py
+    test_selector: tests/ops_data_portal/test_closure_gate.py
     red_green_expectation: >-
-      Red before: the helper does not exist. Green after: extraction is behaviour-preserving.
+      Red before: the helper does not exist, so the new cases fail. Green after: extraction is
+      behaviour-preserving and the 20 pre-existing closure_gate tests stay green.
   - source: scripts/ops_portal/ci_rca_lifecycle.py
     behavior: >-
       close_recs_from_trailer leaves every named rec OPEN on a plan-only merge and returns exit 0.
@@ -438,8 +446,9 @@ context:
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
   - "Incidents cured: #803 (wrapped prose closed rec-2185/2697/2894), #1152 (plan merge closed rec-3764/3761/3759), #1199 (plan merge closed rec-3871/3876/3888). All three are parser + merge-leg shapes; none needs acceptance verification."
   - "MEASURED, load-bearing: over 600 commits on origin/main, 122 carry a Resolves: line. A final-block-only rule parses 43 (79 lost); the any-Key:value-block rule parses 116 (6 lost) and still returns [] for #803 (commit 73387861). The loss is caused by the mandated Co-Authored-By: / Claude-Session: footer forming the final block."
+  - "The 6 lost are NOT all benign, enumerated rather than implied: 3 are `Resolves: none (...)` no-ops, 1 is commit 73387861 (the defect being cured), and 2 -- 2b9e3200e and 342274a8b -- are LEGITIMATE implementation merges whose trailer abuts prose with no blank line. Under the new rule those would not close and would need a manual update_rec. Direction is fail-safe (Decision 103 makes a false closure unrecoverable; a non-closure is not), and the new git-ops placement rule prevents recurrence -- but the ongoing operational cost is real and is stated here rather than hidden behind the bare count."
   - "Decision 186 pt 2 (`No second gate`) is NOT contradicted: it scopes the closure-ARTIFACT obligation, and pt 8's five enumerated weakenings are untriggered by an additive caller-sited refusal. In-repo precedent: closure_gate.closure_stamps_applicable is already consumed caller-side by close_recs_from_trailer and inactivity_sweep, its docstring stating it is kept out of assert_closure_obligation's path so it never reads as a second gate. No Decision amendment is needed for this slice."
-  - "Residual, stated not hidden: a manual `update_rec(id, {'status': 'closed'})` and scripts/ci_rca/inactivity_sweep.py::close_inactive_recs are both closure paths this gate does not bind. Neither involves a merge, so the merge-leg predicate has no referent there."
+  - "Residual, stated not hidden: a manual `update_rec(id, {'status': 'closed'})` and scripts/ci_rca/inactivity_sweep.py::close_inactive_recs are both closure paths this gate does not bind. Neither involves a merge, so the merge-leg predicate has no referent there. A trailer abutting prose is a third: it now parses to nothing and needs the same manual route."
   - "rec-3867 (acceptance never verified) is NOT bundled and is NOT addressed by this slice at all. rec-3984 now owns it end to end, including the argv evaluator, the Decision routing and the CI-verdict consumption; rec-3867 and rec-3984 overlap and should be reconciled when rec-3984 is planned."
   - "rec-2471 and rec-2949 were considered and partitioned out. rec-2949 blocker: a Fixed-by: <sha> override feeds closure_fix_sha into closure_gate._fix_commit_touches, which fails closed on any sha absent from the fetch-depth:2 checkout."
   - "Gotcha: `git diff-tree -r <sha>` lists nothing for a true merge commit. main is single-parent today (squash merges), and the gate treats an empty or None set as REFUSE, so the fail-open case is closed by construction rather than by assuming the shape holds."
@@ -464,9 +473,11 @@ execution_steps:
     `_fix_commit_touches` and delegate to it. Behaviour-preserving; no new call site.
   - >-
     scripts/ops_portal/trailer_closure_gate.py -- create `merge_leg_refuses`, treating None and the
-    empty set as REFUSE. Import the shared helper; no `subprocess` of its own.
+    empty set as REFUSE. It imports nothing from closure_gate: the caller computes the changed set
+    and passes it in.
   - >-
-    scripts/ops_portal/ci_rca_lifecycle.py -- consult the gate once per run before the per-rec loop.
+    scripts/ops_portal/ci_rca_lifecycle.py -- call `closure_gate.changed_files(commit_sha, ROOT)`
+    once per run and pass the result to `merge_leg_refuses` before the per-rec loop.
     Parametrise `_mirror_refusal_to_step_summary`'s heading and add distinct marker constants for
     the plan-only and empty/None arms; leave exit_code untouched on refusal.
   - .github/workflows/rec-autoclose.yml -- header comment only. Do not edit the inline run body.
@@ -481,8 +492,9 @@ execution_steps:
     row to config/ci_rca_taxonomy.yaml.
   - >-
     Tests -- tests/test_rec_trailer.py (both new classes PLUS the attribution-footer regression
-    case), tests/ops_portal/test_trailer_closure_gate.py, and the two ci_guards files. Each must
-    fail without its change.
+    case), tests/ops_data_portal/test_trailer_closure_gate.py, the changed_files cases appended to
+    tests/ops_data_portal/test_closure_gate.py, and the two ci_guards files. Each must fail without
+    its change.
   - >-
     Graduate every `graduate` VP step into config/agent/verification_registry/entries/, using each
     step's graduation_check_id verbatim as the row identity.
