@@ -1,0 +1,362 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: tfvars-recovery-contract-closure
+intent: Correct a stale, actively-misleading tfvars recovery procedure in two Class D contracts and make
+  the correction machine-enforced, so a break-glass agent cannot follow a documented path that returns
+  a wrong value. Supports the governed-deployment leg of the platform control plane.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-tfvars-recovery-contract-closure.yaml
+phase: ad_hoc_rec (soft-warn category; no tier_item claimed, so the Tier Item Freshness Gate is skipped).
+  Driven by rec-3950 plus a defect hit live in a break-glass session. Adjacent to T2.44's DEP-13 fence,
+  which this plan preserves rather than modifies.
+scope:
+- file: docs/contracts/terraform-cc-web-operations.yaml
+  action: Modify
+  purpose: recoverable_vars says four no-default vars; there are five. Restructure where_values_live from
+    one prose blob into a per-variable mapping, add the owner_vs_alerts_email non-interchangeability key
+    and per-variable role-alias semantics (no literal addresses), and log the change in amendment_log
+    (Class D obligation).
+- file: docs/contracts/deploy-paths.yaml
+  action: Modify
+  purpose: admin_out_of_band.procedure carries the same four-var list; correct to five and replace the
+    inline per-variable detail with a pointer to the owning contract so this file stays navigation. Requires
+    its own amendment_log entry (Class D).
+- file: scripts/checks/contracts/validate_terraform_cc_web_operations.py
+  action: Modify
+  purpose: 'Add a BIDIRECTIONAL third leg: every no-default variable declared in terraform/personal/*.tf
+    appears in the contract''s where_values_live mapping (module subset of contract), AND every key listed
+    there is still declared in the module (contract subset of module). The second direction is what stops
+    a stale entry for a retired variable surviving in the standing guard.'
+- file: tests/checks/contracts/test_validate_terraform_cc_web_operations.py
+  action: Modify
+  purpose: Cover the HCL no-default parser and all three red paths -- unlisted, stale and scalar-shaped
+    -- plus a live contract-vs-module assertion that fails if a future variable lands undocumented or
+    a retired one lingers.
+bundled_recommendations:
+- rec-3950
+- rec-2843
+followon_recs:
+- rec-3975
+- rec-3977
+- rec-3978
+infrastructure_dependencies: []
+acceptance_criteria:
+- terraform-cc-web-operations.yaml names all five no-default variables and gives each its own recovery
+  source; no variable shares a source entry with another.
+- The contract records that owner_email and alerts_email differ by design and that the resulting Owner
+  tag-churn diff is a recovery artefact, never drift to apply.
+- validate_terraform_cc_web_operations fails BOTH when a no-default variable declared in terraform/personal/*.tf
+  is absent from where_values_live AND when where_values_live lists a key the module no longer declares;
+  it passes on the corrected pair.
+- No email address or AWS account id is introduced into any tracked file by this plan.
+- rec-2843 is closed with its acceptance output recorded as the closure proof; rec-3950 is routed close_proposed
+  with its misdiagnosis resolution recorded, and remains open pending operator confirmation (Decision
+  103).
+- tfvars_and_remote_state_recovery.recovery_procedure names the materialisation path, so the stale state-parse-only
+  procedure this plan's intent calls out cannot survive it.
+- deploy-paths.yaml's admin_out_of_band tfvars-recovery step names five variables and POINTS at the owning
+  contract, with its inline per-variable location detail and its stale terraform/CLAUDE.md pointer removed
+  -- not merely supplemented, which would leave it a second source of truth against Decision 126 point
+  2.
+verification_plan:
+- step: 1
+  phase: pre-deploy
+  action: Contract enumerates five no-default vars with per-variable sources
+  command: bin/venv-python -c "import yaml; r=yaml.safe_load(open('docs/contracts/terraform-cc-web-operations.yaml'))['tfvars_and_remote_state_recovery'];
+    t=r['where_values_live']; assert isinstance(t, dict), 'where_values_live is still a scalar prose blob';
+    ks=sorted(k for k in t if k!='description'); assert ks==['account_id','alerts_email','owner_email','platform_admin_external_id','platform_dev_external_id'],
+    ks; v=str(r['owner_vs_alerts_email']).lower(); assert 'owner_email' in v and 'alerts_email' in v,
+    'key names both variables'; assert 'by design' in v, 'must state the values differ by design'; assert
+    'recovery artefact' in v, 'must state the tag-churn diff is a recovery artefact'; assert 'materialise'
+    in str(r['recovery_procedure']).lower(), 'recovery_procedure still prescribes only the state-parse
+    path'; assert 'materialis' in str(r['admin_tier_only']).lower(), 'admin_tier_only still grounds itself
+    only in tfstate reads and does not cover the materialisation path'; print('CONTRACT SHAPE OK')"
+  expected: Prints CONTRACT SHAPE OK. Asserts the table covers exactly the five variables, that owner_vs_alerts_email
+    names both variables and states they differ by design and that the tag-churn diff is a recovery artefact,
+    AND that recovery_procedure now points at the materialisation path rather than only the state-parse
+    it was written for.
+  fix_if: '''where_values_live is still a scalar prose blob'' means the per-variable restructure has not
+    landed. A short key list names the variable still missing. A bare KeyError means the owner_vs_alerts_email
+    key is absent entirely; a named assertion says which of its clauses, or recovery_procedure''s materialisation
+    pointer, is missing.'
+  hermetic: true
+  expected_literals:
+  - CONTRACT SHAPE OK
+  graduation: waive
+  graduation_waiver_reason: Step 4 graduates ONLY the bidirectional coverage invariant, which is the clause
+    that drifts mechanically as the module gains or retires variables. This step's other clauses -- owner_vs_alerts_email's
+    by-design and recovery-artefact wording, and recovery_procedure naming the materialisation path --
+    are one-time prose corrections with no mechanical drift vector, and any later edit to them is separately
+    caught by validate_contract_drift's Class D amendment_log rule. A registry row over fixed prose substrings
+    would be brittle without adding coverage.
+- step: 2
+  phase: pre-deploy
+  action: Both Class D contracts gained an amendment_log entry relative to main
+  command: 'bin/venv-python -c "import subprocess,yaml; h=lambda p: len(yaml.safe_load(open(p))[''amendment_log'']);
+    b=lambda p: len(yaml.safe_load(subprocess.run([''git'',''show'',''origin/main:''+p],capture_output=True,text=True).stdout)[''amendment_log'']);
+    ps=[''docs/contracts/terraform-cc-web-operations.yaml'',''docs/contracts/deploy-paths.yaml'']; [print(p,
+    b(p), ''->'', h(p)) for p in ps]; assert all(h(p)>b(p) for p in ps); print(''AMENDMENT_LOG OK'')"'
+  expected: Each contract prints a higher entry count than main, then AMENDMENT_LOG OK.
+  fix_if: 'FIRST check whether the branch is rebased: measured 2026-09-21 the branch carried 5 amendment_log
+    entries for deploy-paths.yaml against 6 on origin/main, so an un-rebased branch fails this step even
+    when the work is correct. After rebasing, an AssertionError genuinely names a contract whose body
+    changed with no new amendment_log entry (Decision 168; validate_contract_drift fails the PR).'
+  hermetic: true
+  expected_literals:
+  - AMENDMENT_LOG OK
+  graduation: waive
+  graduation_waiver_reason: Depends on this session's transient origin/main base ref, so it is not a stable
+    standing guard; _is_pr_relative would also exclude it post-merge.
+- step: 3
+  phase: pre-deploy
+  action: 'RED-BEFORE: validator rejects a contract missing a declared no-default variable'
+  command: bin/venv-python -m pytest tests/checks/contracts/test_validate_terraform_cc_web_operations.py
+    -k absent_from_table -q && bin/venv-python -m pytest tests/checks/contracts/test_validate_terraform_cc_web_operations.py
+    -k undeclared_variable -q && bin/venv-python -m pytest tests/checks/contracts/test_validate_terraform_cc_web_operations.py
+    -k scalar_where_values_live -q
+  expected: 'Each of the three red-path selectors runs as its OWN invocation and passes. Chained, not
+    or-joined: pytest exits 5 when a selector collects nothing, so a missing test breaks the chain. Measured
+    2026-09-21 that an or-joined form exits 0 on a single match (1 passed, 8 deselected), which would
+    green a one-directional leg.'
+  fix_if: Exit 5 names the selector with no matching test -- that direction of the leg is unimplemented
+    or untested. Never collapse these back into one or-joined -k.
+  hermetic: true
+  expected_literals: []
+  graduation: waive
+  graduation_waiver_reason: A red-path selector over this plan's own new tests; the module already runs
+    in the standard pytest suite on every CI run, so a registry row would duplicate the same evidence.
+- step: 4
+  phase: pre-deploy
+  action: 'RED-BEFORE (graduate): recovery table covers every no-default variable in the live module'
+  command: bin/venv-python -c "import yaml; from scripts.checks.contracts.validate_terraform_cc_web_operations
+    import _declared_no_default_variables as decl; from pathlib import Path; d=decl(Path('terraform/personal'));
+    t=yaml.safe_load(open('docs/contracts/terraform-cc-web-operations.yaml'))['tfvars_and_remote_state_recovery']['where_values_live'];
+    listed={k for k in t if k!='description'}; missing=sorted(d-listed); stale=sorted(listed-d); print('UNCOVERED',
+    missing, 'STALE', stale); assert not missing and not stale and len(d)>=5"
+  expected: Prints UNCOVERED [] STALE [] and exits 0.
+  fix_if: UNCOVERED names a module variable absent from the recovery table; STALE names a table key the
+    module no longer declares. This is the durable bidirectional invariant a future terraform/personal
+    variable -- added or retired -- trips.
+  hermetic: true
+  expected_literals:
+  - UNCOVERED [] STALE []
+  graduation: graduate
+  graduation_check_id: tfvars-recovery-table-covers-module
+- step: 5
+  phase: pre-deploy
+  action: 'Decision 170: the new leg REPORTS its examined population (not merely returns it)'
+  command: 'bin/venv-python -c "import io,contextlib,re; from scripts.checks.contracts.validate_terraform_cc_web_operations
+    import validate_terraform_cc_web_operations as v; buf=io.StringIO(); f=[]
+
+    with contextlib.redirect_stdout(buf): v(f)
+
+    out=buf.getvalue(); m=re.search(r''(\\d+)\\s+no-default'', out); assert m and int(m.group(1))>0, out;
+    print(''EXAMINED REPORTED'', m.group(1))"'
+  expected: Prints EXAMINED REPORTED followed by a non-zero count. The check's output must name its scanned
+    population as '<N> no-default ...', not a bare static label -- a label with no number fails.
+  fix_if: 'No match means the leg reports no population, so a vacuous zero-variable pass is indistinguishable
+    from an enforced one (Decision 170). A zero count means the parser matched nothing. Note registry.examined
+    cannot carry this: it overwrites the single current declaration, so stdout is the only available channel
+    and the assertion over it must be load-bearing.'
+  hermetic: true
+  expected_literals:
+  - EXAMINED REPORTED
+  graduation: waive
+  graduation_waiver_reason: 'Step 4''s graduated row asserts the coverage invariant by inline set math
+    and never invokes the validator, so it cannot observe this step''s reporting property -- this waiver
+    does NOT defer to it. The reporting clause is a one-time authoring property of the leg: its absence
+    is caught by validate_check_accounting''s declaration scan, and a registry row over a print format
+    would be brittle without adding coverage.'
+- step: 8
+  phase: pre-deploy
+  action: 'Decision 101 guard: no email address or account id introduced by this plan'
+  command: bin/venv-python -c "import subprocess,re; d=subprocess.run(['git','diff','origin/main','--'],capture_output=True,text=True).stdout;
+    adds=[l for l in d.splitlines() if l.startswith('+') and not l.startswith('+++')]; bad=[l for l in
+    adds if re.search(r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}', l) or re.search(r'(?<![0-9A-Za-z])[0-9]{12}(?![0-9A-Za-z])',
+    l)]; print('LEAKED', len(bad)); assert not bad, bad[:3]"
+  expected: Prints LEAKED 0 across the whole diff against main -- no pathspec, matching AC wording.
+  fix_if: A non-zero count prints the offending added lines; move the literal into the Secrets Manager
+    entry and reference it by role instead.
+  hermetic: true
+  expected_literals:
+  - LEAKED 0
+  graduation: waive
+  graduation_waiver_reason: 'Green by construction on the un-implemented tree (measured 2026-09-21: zero
+    added lines match), so it carries no red-before signal; the standing equivalent is the pre-commit
+    never-commit hook plus scripts/ci/redaction_check.py.'
+- step: 10
+  phase: pre-deploy
+  action: Fast presubmit tier is green
+  command: bin/venv-python -m scripts.validate --pre
+  expected: Validation Summary reports all checks passed.
+  fix_if: Address the named check; never bypass with --ignore-budget.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: docs/contracts/vp-red-before.yaml#recursion_refusal statically refuses an
+    argv head of -m scripts.validate as a graduated check.
+- step: 11
+  phase: pre-deploy
+  action: Full validation tier is green (handoff_policy.full_validation_required_before_commit)
+  command: bin/venv-python -m scripts.validate
+  expected: Full-tier Validation Summary reports all checks passed.
+  fix_if: Address the named check. The full tier is the pre-handoff gate this plan's handoff_policy declares;
+    a timeout is handoff_policy.timeout_disposition=blocked -- resume and rerun from the start, never
+    partially.
+  hermetic: false
+  graduation: waive
+  graduation_waiver_reason: docs/contracts/vp-red-before.yaml#recursion_refusal statically refuses an
+    argv head of -m scripts.validate as a graduated check.
+- step: 13
+  phase: post-deploy
+  action: 'Closure obligation: both bundled recs reach a terminal or proposed state'
+  command: bin/venv-python -m scripts.ops_data_portal --sync && bin/venv-python -c "import json; rows=[json.loads(l)
+    for l in open('logs/.recommendations-log.jsonl') if l.strip()]; d={r['id']:r for r in rows}; [print(i,
+    d[i]['status'], bool(d[i].get('resolution'))) for i in ['rec-3950','rec-2843']]; assert d['rec-2843']['status']=='closed';
+    assert d['rec-2843'].get('resolution'), 'rec-2843 closure proof not recorded'; assert d['rec-3950'].get('resolution'),
+    'rec-3950 misdiagnosis resolution not recorded'"
+  expected: Both recs print with a True resolution flag; rec-2843 prints closed. rec-3950's STATUS is
+    deliberately not asserted -- it stays open pending operator confirmation (Decision 103) -- but its
+    recorded resolution IS asserted, so skipping the close_proposed write fails the step.
+  fix_if: rec-2843 still open means the deterministic closure did not run. rec-3950 staying open pending
+    operator confirmation is EXPECTED, not a failure (Decision 103). Use the portal --sync surface; scripts.sync.ops
+    accepts only 'sync' and calling it directly breaches AGENTS.md portal discipline.
+  hermetic: false
+  graduation: not-applicable
+- step: 15
+  phase: pre-deploy
+  action: deploy-paths names five variables and points at the owning contract
+  command: bin/venv-python -c "import yaml; s=str(yaml.safe_load(open('docs/contracts/deploy-paths.yaml'))['admin_out_of_band']['procedure']['steps']);
+    assert 'alerts_email' in s, 'five-var list not corrected'; assert 'terraform-cc-web-operations' in
+    s, 'pointer to the owning contract missing'; assert \"terraform/CLAUDE.md's remote-state recovery\"
+    not in s, 'stale terraform/CLAUDE.md pointer still present -- detail was supplemented, not replaced';
+    print('DEPLOY_PATHS POINTER OK')"
+  expected: 'Prints DEPLOY_PATHS POINTER OK: five variables named, the owning contract pointed at, and
+    the stale terraform/CLAUDE.md pointer gone.'
+  fix_if: '''five-var list not corrected'' means the step still lists four. ''pointer missing'' means
+    the per-variable detail was restated here instead of pointed at, which would make deploy-paths a second
+    source of truth against Decision 126 point 2. Measured red 2026-09-21.'
+  hermetic: true
+  expected_literals:
+  - DEPLOY_PATHS POINTER OK
+  graduation: waive
+  graduation_waiver_reason: A fixed-substring assertion over one contract's prose; adequate at authoring
+    time but a reworded-yet-correct step would red it as a standing guard.
+test_obligations:
+- source: scripts/checks/contracts/validate_terraform_cc_web_operations.py
+  behavior: A no-default variable declared in terraform/personal/*.tf but absent from where_values_live
+    must fail; a key listed there but no longer declared in the module must also fail; and a scalar where_values_live
+    must fail.
+  verification_step: 3
+  test_selector: tests/checks/contracts/test_validate_terraform_cc_web_operations.py::TestRecoveryTableCoverage
+  red_green_expectation: red before (the three red-path tests do not exist, so each chained selector exits
+    5), green after
+- source: docs/contracts/terraform-cc-web-operations.yaml
+  behavior: The recovery table must name every no-default variable declared in terraform/personal/*.tf
+    and keep owner_email and alerts_email on separate, non-interchangeable sources.
+  verification_step: 4
+  command: bin/venv-python -c "import yaml; from scripts.checks.contracts.validate_terraform_cc_web_operations
+    import _declared_no_default_variables as decl; from pathlib import Path; d=decl(Path('terraform/personal'));
+    t=yaml.safe_load(open('docs/contracts/terraform-cc-web-operations.yaml'))['tfvars_and_remote_state_recovery']['where_values_live'];
+    listed={k for k in t if k!='description'}; missing=sorted(d-listed); stale=sorted(listed-d); print('UNCOVERED',
+    missing, 'STALE', stale); assert not missing and not stale and len(d)>=5"
+  red_green_expectation: red before (the table is a scalar prose blob and omits alerts_email), green after;
+    the graduated check tfvars-recovery-table-covers-module is the standing guard
+- source: docs/contracts/deploy-paths.yaml
+  behavior: The admin_out_of_band tfvars-recovery step names five variables and points at the owning contract
+    rather than restating per-variable detail.
+  verification_step: 15
+  command: bin/venv-python -c "import yaml; s=str(yaml.safe_load(open('docs/contracts/deploy-paths.yaml'))['admin_out_of_band']['procedure']['steps']);
+    assert 'alerts_email' in s, 'five-var list not corrected'; assert 'terraform-cc-web-operations' in
+    s, 'pointer to the owning contract missing'; assert \"terraform/CLAUDE.md's remote-state recovery\"
+    not in s, 'stale terraform/CLAUDE.md pointer still present -- detail was supplemented, not replaced';
+    print('DEPLOY_PATHS POINTER OK')"
+  red_green_expectation: red before (the step lists four variables and names no owning contract), green
+    after
+constraints:
+- Decision 101 public-repo boundary - no email address, AWS account id, ARN or ExternalId enters a tracked
+  file. Role-alias SEMANTICS may be documented; literal addresses may not.
+- 'DEP-13 / Decision 144 point 3 - PlatformDev is denied tfstate reads by design, so the contract''s admin_tier_only
+  framing is load-bearing: the new per-variable table must not imply the two ExternalIds are recoverable
+  from the routine runtime identity. Preserve that qualifier when restructuring where_values_live.'
+- Decision 84 Single Portal Invariant - rec closures go through scripts.ops_data_portal only; never edit
+  logs/.recommendations-log.jsonl.
+- Class D contract changes require an amendment_log entry (validate_contract_drift / check_amendment_log_for_class_d).
+- Decision 86 - no new standing prose-architecture doc; the role-alias semantics ride the existing contract's
+  per-variable table.
+- No rescue agents or workaround loops (Decision 55).
+- Out of scope by design - adding alerts_email to redaction_check.py's _SCRUB_SPECS and any owner_email
+  / alerts_email VALUE change. Both belong to the sequenced follow-on plan, which must land the redaction
+  fix BEFORE any value change reaches a PR.
+- Decision 103 - a semantic relevance verdict never auto-closes a rec. rec-2843 closes deterministically
+  with its own acceptance output recorded as proof; rec-3950's misdiagnosis verdict routes as close_proposed
+  for operator confirmation.
+- Decision 170 - the new leg must report its examined population so a vacuous pass is distinguishable
+  from an enforced one.
+- Decision 190 - rec-3950 carries source=tf_drift but was filed from the stale recovery procedure, not
+  a measured plan diff; say so in the resolution so the drift lane's record stays honest.
+- admin_tier_only currently grounds its admin-only claim specifically in reading tfstate/personal/*. Once
+  recovery_procedure names the Secrets Manager materialisation path, that rationale no longer covers it
+  -- widen admin_tier_only to cover both. The fact holds (PlatformDev holds secretsmanager:GetSecretValue
+  only on the inference-credential ARNs, never the tfvars secret), but a break-glass agent reading the
+  amended contract would not know it. Leaving this is the plan's own defect class reproduced at the field
+  it rewrites.
+context:
+- 'Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND; CITE: 168, 127, 120, 113,
+  144, 84, 101, 189, 59. Decisions triaged: 148 of 148. Roadmap items intersected: 4; CONFLICT: 0; RELATED:
+  4'
+- 'gates: decision-scout=FLAGS_FOUND (148/148 triaged); plan-critique=REVISE x3 (9, 12, 10 findings) then
+  SPLIT at the round-3 escalation, then REVISE (3 narrow findings) on the post-split round 4; all dispositioned,
+  no recurrence at a recorded-fixed anchor.'
+- SPLIT at round 3 (operator decision 2026-09-21). Rounds 1/2/3 returned 9/12/10 findings, 8 of round
+  3's in the consolidation half while the contract+validator half stayed clean two rounds running. The
+  consolidation and the ADMIN container fetch moved to rec-3978, which carries the design and all eight
+  established hazards. This plan is now the contract+validator half only.
+- 'rec-3950 is MISDIAGNOSED, not drift (verified live 2026-09-20: the SNS endpoint is a confirmed deliverable
+  mailbox, the Owner tag is the GitHub no-reply identity, each correct for its purpose). Its remediation
+  would break alerting or pollute tags and its acceptance would commit an email literal. Close-propose
+  per Decision 103, never execute. Decision 190: record that it was filed from the stale procedure, not
+  a measured diff.'
+- rec-2843 acceptance verified PASSING 2026-09-21, so Decision 103 permits a deterministic close with
+  that output as proof. A parallel queue sweep closing it first is satisfied, not a conflict.
+- alerts_email is declared in terraform/personal/sns_alerts.tf (T2.18 FP-B / Decision 39), not variables.tf
+  -- why the hand-maintained four-var list never learned about it.
+- 'Tier is V2 after the split: the live Secrets Manager leg that justified V3 left with the consolidation,
+  so V3 would have nothing to exercise. Scope is contracts plus one Python check.'
+- 'Measured red on the un-implemented tree 2026-09-21: steps 1, 4, 5, 15. Step 8 is green by construction
+  (no added line matches) and waived accordingly.'
+- Branch was 10 behind origin/main at authoring (deploy-paths.yaml gained an adjacent SPLIT-APPLY clause).
+  Rebase before implementing -- step 2's comparator fails on correct work until then.
+pre_implementation_checklist:
+- Branch confirmed not on main
+- 'Rebased onto origin/main BEFORE editing (measured 2026-09-21: deploy-paths.yaml amendment_log is 5
+  on this branch vs 6 on main, so step 2''s comparator fails on correct work until the rebase lands).
+  Re-measure the base count after rebasing.'
+- docs/PROJECT_CONTEXT.md read
+- only the plan-cited decision sections
+- All files in scope located and readable
+- Acceptance criteria understood and verifiable
+execution_steps:
+- docs/contracts/terraform-cc-web-operations.yaml - correct recoverable_vars to five naming the declaring
+  file, restructure where_values_live into a per-variable mapping with role-alias semantics, add owner_vs_alerts_email,
+  add an amendment_log entry.
+- docs/contracts/deploy-paths.yaml - correct the four-var list to five, replace inline detail with a pointer
+  to the owning contract, add an amendment_log entry.
+- scripts/checks/contracts/validate_terraform_cc_web_operations.py - add the no-default-variable coverage
+  leg with brace-depth-aware HCL parsing so a nested validation block is not mistaken for a default.
+- tests/checks/contracts/test_validate_terraform_cc_web_operations.py - add parser and red-path coverage
+  plus the live-pair assertion.
+- 'Close rec-2843 deterministically via scripts.ops_data_portal (its stored acceptance passes; record
+  that output as the closure proof) and name ONLY rec-2843 in the squash-merge Resolves trailer. Route
+  rec-3950 as close_proposed via ops_data_portal --update-rec with the misdiagnosis resolution -- NEVER
+  name rec-3950 in the Resolves trailer: .github/workflows/rec-autoclose.yml closes every id in that trailer,
+  which would auto-close a semantic verdict in breach of Decision 103.'
+- Execute Verification Plan - run each step; loop until pass; on unrecoverable failure stop and RCA (Decision
+  55)
+- 'Report: what was implemented, verification results'
+work_areas: []
+rollback: Documentation, one validator leg and its tests -- revert the commit. No infrastructure state
+  is touched, no terraform apply runs, and no CI action is modified, so there is nothing to unwind. The
+  rec closures are reversible via ops_data_portal --update-rec.
