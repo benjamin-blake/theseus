@@ -382,9 +382,15 @@ the 407 sit on `status: complete` items. Read the touched-item rule at
 and establish for yourself what
 population it fires on and what that implies for those 259 -- whether they are beyond the gate's
 reach by construction, or merely seldom in its path. The options below turn on exactly that
-distinction, so form it from the code rather than from any characterisation. Bare-string ids are auto-assigned positionally at model-load time. In-YAML
-conversion costs roughly three lines each against a roadmap at 9,925 of a 10,000-line ceiling,
-and a per-tier split is forbidden (Decisions 110/114/147). rec-3660 is the named owner. Decision
+distinction, so form it from the code rather than from any characterisation. Bare-string ids are auto-assigned positionally at model-load time.
+
+In-YAML conversion replaces a 1-line bare string with a structured entry: 3 physical lines in the
+minimal `id`/`text`/`status` form, so a net +2 each at best, against a measured average of about
+6.5 lines per structured criterion versus about 1.1 per bare one today -- roughly +5.4 each in
+practice. At the MINIMAL form, converting all 407 adds on the order of +814 lines to a roadmap
+standing at 9,925 of a 10,000-line ceiling, which breaches it; at the practical average it is far
+worse. Re-derive all three figures yourself -- they bound what option (a) can even mean, and a
+per-tier split is forbidden (Decisions 110/114/147). rec-3660 is the named owner. Decision
 197 clause 8 forbids lift-and-shift before the clause-8 migration.
 
 Options:
@@ -593,8 +599,9 @@ deferred_walk_inputs:
     pick_surface_returns: "<what kind-generic pick_work_item must return at pick time>"
     rationale: ""
     basis: []
-  dq_scope:
-    verdict: dq-checked | exempt-with-named-binding | other-argued
+  dq_intent:
+    verdict: per-field-dq-intent | table-level-only | none-argued | other-argued
+    fields_with_not_null: [<criterion fields you would enforce not_null on>]
     rationale: ""
     basis: []
 ```
@@ -608,11 +615,18 @@ this surface. If a recommendation's `acceptance` becomes child rows,
 something must decide whether the pick surface returns a work item with its criteria attached, or
 whether criteria are a second named read. Say which, and what `pick_work_item` returns.
 
-`dq_scope` follows `scripts/checks/contracts/validate_table_registration.py` and
-`docs/contracts/storage-substrate.yaml`, which are admission control for any new warehouse table:
-a table is DQ-checked like any other or declares an explicit exemption naming the maintenance verb
-that substitutes. Candidate 9's `execution_result` is the worked example of a field that took the
-exemption route without one.
+`dq_intent` follows the Class A contract pattern this repository already uses for row-bearing
+tables: each field carries its own `dq_intent` block declaring what is enforced --
+`docs/contracts/exit-criteria-ledger.yaml` and `docs/contracts/ops_recommendations.yaml` are the
+two nearest worked examples, and both govern exactly the surfaces clause 3 unifies. Say which
+criterion fields you would enforce `not_null` or `accepted_values` on, and which you would leave
+unenforced.
+
+Deliberately NOT the `dq_scope` exemption rule at
+`docs/contracts/data-modeling-standard.yaml:158`-`:163`: that rule is scoped to CONTROL-class
+tables (the worked example is `docs/contracts/ops_entity_counters.yaml`), and clause 3 makes
+`work_item_criteria` SCD2, not control. Candidate 9's `execution_result` is the worked example of
+a field that ended up DQ-excluded on an SCD2 table without that route existing for it.
 
 `write_boundary` answers step 3's unasked half. The identity rule pins a ULID "minted once at the
 WRITE BOUNDARY (the writer Lambda / module that owns the insert)", but names no writer for
@@ -868,8 +882,10 @@ requires a non-empty `graduation_waiver_reason`, `not-applicable` requires neith
 16. Decision 197 clause 6 names the kind-generic surface `pick_work_item`. T4.3's criterion c4,
     added in the same merge that ratified the decision, names "the priority-queue producer and
     `pick_rec` admission surface" as the thing that must be kind-generic, citing clause 6. T4.3 is
-    `not_started` and is the nearest-term item of the three that carry this work; T4.23 and T4.24
-    are `deferred_post_mvp`.
+    `not_started`; T4.23 is `deferred_post_mvp` and its c5/c6 are the only roadmap criteria
+    carrying clause 2 and clause 3 forward work. Decision 197 clause 8 says "T4.23/T4.24 carry the
+    forward work", but T4.24's entry mentions neither Decision 197 nor `work_item` -- its c7/c8
+    carry Decision 196.
 17. The converged shape (Section 10.2) cites `scripts/platform_roadmap_models.py` "~L95-101" for
     the positional-`cN` behaviour. `_normalize_exit_criteria` is at `:98` and the positional
     assignment at `:104`. The verbatim block is reproduced unedited; the anchor is part of the
@@ -895,8 +911,8 @@ Roadmap items owning nearby territory: **T-1.23** (the exit-criteria ledger itse
 complete); **T3.15** (VP re-execution and durable evidence persistence, complete); **T3.7**
 (mutation testing and orphan detection, `deferred_post_mvp`); **T3.10** (retire the legacy
 `verification` projection, `not_started`); **T3.9** (post-merge recommendation reconciliation,
-`not_started`); **T4.23** / **T4.24** (the Decision 197 forward-work carriers,
-`deferred_post_mvp`); **T4.3** (the kind-generic pick surface, `not_started`).
+`not_started`); **T4.23** (`deferred_post_mvp`; c5 and c6 are the only roadmap criteria carrying Decision 197
+clause 2 and clause 3 forward work); **T4.3** (the kind-generic pick surface, `not_started`).
 
 ## 11. EMPIRICAL PASS
 
@@ -1079,8 +1095,8 @@ audit:
                             other-argued, rationale: "", basis: []}
          read_boundary: {verdict: criteria-on-parent-read|separate-named-verb|both|other-argued,
                          pick_surface_returns: "", rationale: "", basis: []}
-         dq_scope: {verdict: dq-checked|exempt-with-named-binding|other-argued,
-                    rationale: "", basis: []}}
+         dq_intent: {verdict: per-field-dq-intent|table-level-only|none-argued|other-argued,
+                     fields_with_not_null: [], rationale: "", basis: []}}
   converged_shape_corrections:
     - {candidate_ref: "candidate <N>|null",
        element: "<field or claim in Section 10.2 or 10.3>", what_it_says: "",
