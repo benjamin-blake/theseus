@@ -274,9 +274,12 @@ scope:
       their new clauses. Reading ci-rca-lifecycle.yaml by basename literal is what makes the
       Decision 168 evaluator-reads-the-contract binding resolve for the second contract edit too.
       Keep the examined()/skipped() declaration on every reachable path. Also update this module's
-      DOCSTRING: it describes assertion 1 as pinning rec-autoclose.yml's delegation and claims that
-      workflow's inline `run:` body "is pinned at 37 lines by the Decision 162 R3 ratchet" -- that
-      37-line entry is retired by this plan, so both sentences must be re-pointed at ci.yml.
+      DOCSTRING, which goes stale in THREE places: it opens "pinning three facts" and enumerates
+      1/2/3, while this plan takes the check to four-plus assertions and raises the examined-count
+      test; its assertion-1 sentence pins rec-autoclose.yml's delegation; and that same sentence
+      claims the workflow's inline `run:` body "is pinned at 37 lines by the Decision 162 R3
+      ratchet", an entry this plan retires. Correct the count and re-point both sentences at
+      ci.yml.
   - file: tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py
     action: Modify
     purpose: >-
@@ -297,10 +300,15 @@ scope:
       says the trailer "Triggers `rec-autoclose.yml` to close each rec via the ops portal" --
       false after the cutover. (b) Its CLOSING sentence (lines 311-313) reads "every named rec is
       left OPEN, not closed. Fallback: `--update-rec rec-NNNN --status closed --resolution ...`
-      (Decision 70)." That is sound TODAY, because the only refusal it can follow is a merge-leg
-      refusal -- a case where the gate correctly did not apply. After this cutover an ACCEPTANCE
-      refusal also leaves recs open, and that same unconditional sentence would authorise closing
-      exactly those. Make it conditional in the same shape as the skill fix: the fallback is
+      (Decision 70)." That is sound TODAY, and the REASON is the sharpest argument in this row --
+      it is not that a merge-leg refusal is the only refusal that can precede it. A Decision 186
+      ClosureArtifactRequired refusal also leaves recs open today. The sentence is nonetheless safe
+      because assert_closure_obligation is called INSIDE update_rec, so the manual fallback command
+      RE-HITS that gate and an escape-classified rec still cannot be closed by it. After this
+      cutover an ACCEPTANCE refusal also leaves recs open -- and assert_acceptance_verdict returns
+      None on the manual route, because no verdict record is supplied there. That asymmetry is
+      exactly why the acceptance gate needs the conditional and the 186 gate did not: one gate
+      re-arms on the fallback path and the other does not. Make it conditional in the same shape as the skill fix: the fallback is
       sanctioned after a transport failure or a MERGE-LEG refusal, and is FORBIDDEN after a verdict
       refusal, whose only sanctioned route is the printed close_proposed command. Hardening the two
       instruction surfaces while leaving the contract they defer to unconditional would fix F4
@@ -335,8 +343,10 @@ scope:
       (line 172) states "rec-autoclose.yml, on closing a source=ci_rca rec from a Resolves: trailer,
       calls ... stamp_fixed_by_sha" -- re-point at ci.yml's trailer-closure job. (iv) the
       `# CLOSURE TRAP` comment header (line 488) asserts "rec-autoclose.yml is the SOLE caller of
-      ci_rca_lifecycle.stamp_fixed_by_sha", falsified by the cutover; it sits three lines above the
-      `trap:` key already being widened, so correcting one and not the other would be conspicuous.
+      ci_rca_lifecycle.stamp_fixed_by_sha", falsified by the cutover; it sits seven lines above the
+      `trap:` key already being widened (header at 488, comment block ending 493,
+      closure_dependency at 494, trap at 495), so correcting one and not the other would be
+      conspicuous.
       (v) closure_dependency.manual_route's
       trailing sentence names rec-autoclose as the workflow that "cannot be trusted to process the
       Resolves trailer" -- re-point that phrase at the ci.yml closure job; it is a few words and
@@ -485,13 +495,29 @@ scope:
       wall-clock guess against a variable-length pipeline is the root defect and would rot again at
       the next shape change. The instruction becomes: WAIT FOR THE trailer-closure JOB TO CONCLUDE
       on the push run at the merge sha, then act on what it reports. Retrieval route, named
-      explicitly: mcp__github__get_job_logs on that job. Do NOT instruct an agent to read
+      explicitly and in order: mcp__github__get_job_logs needs a run id and a job id, so FIRST
+      resolve the push run at the merge sha (mcp__github__actions_list by head sha), then list its
+      jobs, then read the trailer-closure job's log. Do NOT instruct an agent to read
       $GITHUB_STEP_SUMMARY -- there is no job-summary read in the github MCP surface an agent
       holds, so that instruction would not be actionable; the marker PRINTED IN THE JOB LOG is.
-      Then: a refusal marker naming that rec id means FORBIDDEN to force-close -- the printed
-      close_proposed command is the only sanctioned route. A CONCLUDED job with no marker for that
-      rec id means transport failed, and today's fallback applies unchanged. An absent marker from
-      a job that has not concluded is not evidence of non-refusal and must never be read as one.
+      PARTITION ON POSITIVE PER-REC EVIDENCE, NOT ON THE JOB'S CONCLUSION. The load-bearing
+      predicate is whether the job reported an outcome FOR THAT REC, and the fallback is available
+      ONLY on positive evidence of a non-refusing outcome for that specific rec id. Branch 1,
+      FORBIDDEN: the job printed a refusal marker naming that rec id -- the printed close_proposed
+      command is the only sanctioned route. Branch 2, FALLBACK AVAILABLE: the job printed a line
+      naming that rec id showing it was processed WITHOUT a refusal. The loop supplies one in every
+      processed case -- `rec-autoclose: closed {rec_id}`, `WARN {rec_id} not found in portal`, and
+      `ERROR closing {rec_id}` (scripts/ops_portal/ci_rca_lifecycle.py:455-467) -- so this branch
+      is decidable from the log alone. Branch 3, EVERYTHING ELSE, FAIL CLOSED: no line naming that
+      rec, unparseable or absent output, a job that has not concluded, AND a job that concluded IN
+      FAILURE. State that collapse explicitly -- it is the property that makes the partition
+      robust. Keying branch 2 on the JOB having concluded instead would fail open: a job that dies
+      before or inside the per-rec loop (artifact load or parse failure, a reader outage while
+      building recs_cache, a timeout kill) has concluded and printed no marker, yet evaluated
+      nothing -- and would route the agent to force-close every trailer-named rec, including ones
+      whose verdict was `fails`. Absence of ALL output must therefore land in branch 3 rather than
+      reading as "nothing was refused": no workflow in .github/workflows/ sets PYTHONUNBUFFERED, so
+      a timeout kill can discard buffered stdout that was genuinely written.
       Also correct line 405's venue claim that the trailer "triggers rec-autoclose to close each
       named rec".
   - file: .claude/commands/implement.md
@@ -594,8 +620,9 @@ acceptance_criteria:
     "a caller closes around the client-side gate" -- instructed by the repository itself, and
     acceptance criterion 2 would be false in practice on the day this merged. DELIBERATELY NOT
     CLAIMED: two NON-trailer surfaces still hand an agent a direct close --
-    .claude/commands/orient.md:64's LIKELY-RESOLVED soft prompt, and this contract's own
-    closure_dependency.manual_route. Both belong to the rec-3999 residual, are named there, and
+    .claude/commands/orient.md:64's LIKELY-RESOLVED soft prompt, and
+    docs/contracts/ci-rca-lifecycle.yaml's closure_dependency.manual_route (that key lives in
+    ci-rca-lifecycle.yaml; git-ops.yaml carries no occurrence of it). Both belong to the rec-3999 residual, are named there, and
     stay deferred. Claiming "no instruction surface" outright would commit exactly the
     overstatement this plan forbids the Decision body one field away.
   - >-
