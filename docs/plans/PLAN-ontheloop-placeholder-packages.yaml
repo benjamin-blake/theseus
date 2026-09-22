@@ -81,7 +81,12 @@ scope:
     action: Modify
     purpose: >-
       A publish_artifacts row indexing the registry-publication channel (trigger, actor_role
-      operator, recovery), plus the Class D amendment_log entry Decision 168 requires. Decision 126 clause 1 governs the three
+      operator, recovery, blocks_ref, description), the Class D amendment_log entry Decision 168
+      requires, AND an update to the file's own header comment, which today enumerates "the three
+      agent intents ... plus the operator-only admin tier" and would silently describe four
+      channels while the body carries five. validate_contract_drift cannot see that: a
+      comment-only edit never changes the parsed dict, so it always passes. VP step 11's
+      DP_HEADER_NAMES_ROW literal is the guard instead. Decision 126 clause 1 governs the three
       AGENT intents plus an operator-only admin tier; a registry publish is neither, so this row
       is a deliberate EXTENSION of the operator tier rather than something clause 1 compels --
       taken because the index is the documented place an agent looks for a shipping path, and a
@@ -94,8 +99,8 @@ scope:
   - file: docs/contracts/package-registry-reservation.yaml
     action: Modify
     purpose: >-
-      TEN corrections under one dated amendment_log entry, contract_version 1 -> 2. Four are
-      rec-3995's; two more are the stale rec-3922 framing in posture.disposition and
+      ELEVEN corrections under one dated amendment_log entry, contract_version 1 -> 2. Four are
+      rec-3995's; three more are the stale rec-3922 framing in posture.disposition and
       posture.neutral_placeholder that rec-3995's own oracle does not reach; four are
       execution-discovered. Also adds the machine-readable pypi_trusted_publisher block VP step 13
       checks the live workflow against.
@@ -153,12 +158,13 @@ acceptance_criteria:
     class, limit 500), and the amendment-log compaction lost no date and no PLAN-/Decision/rec
     citation token. Proven by VP steps 14-15, the latter by set-difference over both.
   - >-
-    rec-3995's acceptance oracle passes, and each of the ten corrections is asserted against the
+    rec-3995's acceptance oracle passes, and each of the eleven corrections is asserted against the
     specific key it belongs to: C1 header comment, C2 posture.installability_rationale,
     C3 identity.security_contact, C4 identity.crates_io_ownership (rec-3995's four);
     C5 posture.disposition, C6 posture.neutral_placeholder (the two its own oracle misses);
     C7 posture.scope_anti_squatting, C8 procedure.npm, C9 procedure.pypi, C10 procedure.crates_io
-    (execution-discovered). Zero live rec-3922 citations outside the append-only amendment_log,
+    (execution-discovered); C11 tracking.note, which still lists the now-closed rec-3922 as a live
+    sibling. Zero live rec-3922 citations outside the append-only amendment_log,
     a complete pypi_trusted_publisher block, contract_version 2. Proven by VP steps 16-17.
   - >-
     The four artefacts are published and OURS -- the probe exits 0 (step 24) and the owner read
@@ -287,7 +293,7 @@ verification_plan:
     action: >-
       deploy-paths.yaml indexes the registry-publication channel, so the navigation index names
       every shipping trigger (Decision 126 clause 1).
-    command: bin/venv-python -c "import sys,yaml;d=yaml.safe_load(open('docs/contracts/deploy-paths.yaml'));r=d.get('publish_artifacts') or {};miss=[k for k in ('trigger','recovery','blocks_ref','description') if not r.get(k)];print('DP_ROW_PRESENT='+str(bool(r)));print('DP_ACTOR='+str(r.get('actor_role')));print('DP_MISSING_KEYS='+str(miss));sys.exit(0 if r and r.get('actor_role')=='operator' and not miss else 1)"
+    command: bin/venv-python -c "import sys,yaml,pathlib;raw=pathlib.Path('docs/contracts/deploy-paths.yaml').read_text();d=yaml.safe_load(raw);hdr=raw.split('contract:',1)[0];r=d.get('publish_artifacts') or {};miss=[k for k in ('trigger','recovery','blocks_ref','description') if not r.get(k)];hok='publish_artifacts' in hdr;print('DP_ROW_PRESENT='+str(bool(r)));print('DP_ACTOR='+str(r.get('actor_role')));print('DP_MISSING_KEYS='+str(miss));print('DP_HEADER_NAMES_ROW='+str(hok));sys.exit(0 if r and r.get('actor_role')=='operator' and not miss and hok else 1)"
     expected: >-
       The row exists with an operator actor_role and carries all four keys its four sibling
       channels carry -- trigger, recovery, blocks_ref and description.
@@ -295,7 +301,7 @@ verification_plan:
       Row missing, or shaped unlike its siblings -- a row without blocks_ref/description reads as
       a second source of truth rather than the pointer Decision 126 clause 2 requires.
     hermetic: true
-    expected_literals: ["DP_ROW_PRESENT=True", "DP_ACTOR=operator", "DP_MISSING_KEYS=[]"]
+    expected_literals: ["DP_ROW_PRESENT=True", "DP_ACTOR=operator", "DP_MISSING_KEYS=[]", "DP_HEADER_NAMES_ROW=True"]
     graduation: graduate
     graduation_check_id: ontheloop-deploy-paths-publish-row
   - step: 12
@@ -377,22 +383,26 @@ verification_plan:
   - step: 17
     phase: pre-deploy
     action: >-
-      Each of the ten corrections is asserted against the SPECIFIC key it belongs to, and no live
+      Each of the eleven corrections is asserted against the SPECIFIC key it belongs to, and no live
       (non-amendment_log) surface still cites rec-3922. Assertions read raw text for the header
       comment and key-scoped values for everything else -- never a yaml.safe_dump flattening, which
       strips comments AND re-wraps long strings, so a substring probe over it can silently pass or
       fail on where the reflow lands.
-    command: bin/venv-python -c "import re,yaml,pathlib;raw=pathlib.Path('docs/contracts/package-registry-reservation.yaml').read_text();d=yaml.safe_load(raw);po=d['posture'];idn=d['identity'];pr=d['procedure'];hdr=raw.split('contract:',1)[0];tp=d.get('pypi_trusted_publisher') or {};c1='rec-3922' not in hdr and 'Theseus / Guerdon / Semanto' not in hdr and 'Decision 198' in hdr;print('C1_HEADER_CLEAN='+str(c1));c2='rec-3922' not in po['installability_rationale'] and 'RATIFIED brand' not in po['installability_rationale'];print('C2_INSTALLABILITY_CLEAN='+str(c2));c3='CANDIDATE' not in idn['security_contact'];print('C3_SECURITY_CONTACT_SETTLED='+str(c3));c4='undecided' not in idn['crates_io_ownership'];print('C4_CRATES_OWNERSHIP_SETTLED='+str(c4));c5='rec-3922' not in po['disposition'];print('C5_DISPOSITION_CLEAN='+str(c5));c6='rec-3922' not in po['neutral_placeholder'];print('C6_NEUTRAL_CLEAN='+str(c6));c7='@onthelooplabs' in po['scope_anti_squatting'] and not re.search(r'@ontheloop(?!labs)',po['scope_anti_squatting']);print('C7_NPM_SCOPE='+str(c7));c8=any('org creation' in s['action'].lower() for s in pr['npm']);print('C8_ORG_CREATION='+str(c8));c9=any('Trusted Publishing' in s['action'] for s in pr['pypi']) and any('does not reserve' in s['action'].lower() for s in pr['pypi']);print('C9_PYPI_OIDC='+str(c9));c10=any('scoped API token' in s['action'] for s in pr['crates_io']);print('C10_CRATES_TOKEN='+str(c10));live=int('rec-3922' in hdr)+sum('rec-3922' in v for v in (po['disposition'],po['neutral_placeholder'],po['installability_rationale'],d['tracking']['note']));print('LIVE_REC3922='+str(live));miss=[k for k in ('repository','workflow_filename','environment','restage_obligation') if not tp.get(k)];print('TRUST_KEYS_MISSING='+str(miss));print('CONTRACT_VERSION='+str(d['contract']['contract_version']));import sys;sys.exit(0 if all([c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,live==0,not miss,d['contract']['contract_version']==2]) else 1)"
+    command: bin/venv-python -c "import re,yaml,pathlib;raw=pathlib.Path('docs/contracts/package-registry-reservation.yaml').read_text();d=yaml.safe_load(raw);po=d['posture'];idn=d['identity'];pr=d['procedure'];hdr=raw.split('contract:',1)[0];tp=d.get('pypi_trusted_publisher') or {};c1='rec-3922' not in hdr and 'Theseus / Guerdon / Semanto' not in hdr and 'Decision 198' in hdr;print('C1_HEADER_CLEAN='+str(c1));c2='rec-3922' not in po['installability_rationale'] and 'RATIFIED brand' not in po['installability_rationale'];print('C2_INSTALLABILITY_CLEAN='+str(c2));c3='CANDIDATE' not in idn['security_contact'];print('C3_SECURITY_CONTACT_SETTLED='+str(c3));c4='undecided' not in idn['crates_io_ownership'];print('C4_CRATES_OWNERSHIP_SETTLED='+str(c4));c5='rec-3922' not in po['disposition'];print('C5_DISPOSITION_CLEAN='+str(c5));c6='rec-3922' not in po['neutral_placeholder'];print('C6_NEUTRAL_CLEAN='+str(c6));c7='@onthelooplabs' in po['scope_anti_squatting'] and 'rec-3941' in po['scope_anti_squatting'] and not re.search(r'@ontheloop(?!labs)',po['scope_anti_squatting']);print('C7_NPM_SCOPE='+str(c7));c8=any('org creation' in s['action'].lower() for s in pr['npm']);print('C8_ORG_CREATION='+str(c8));c9=any('Trusted Publishing' in s['action'] for s in pr['pypi']) and any('does not reserve' in s['action'].lower() for s in pr['pypi']);print('C9_PYPI_OIDC='+str(c9));c10=any('scoped API token' in s['action'] for s in pr['crates_io']);print('C10_CRATES_TOKEN='+str(c10));c11='rec-3922' not in d['tracking']['note'];print('C11_TRACKING_NOTE_CLEAN='+str(c11));live=int('rec-3922' in hdr)+sum('rec-3922' in v for v in (po['disposition'],po['neutral_placeholder'],po['installability_rationale'],d['tracking']['note']));print('LIVE_REC3922='+str(live));miss=[k for k in ('repository','workflow_filename','environment','restage_obligation') if not tp.get(k)];print('TRUST_KEYS_MISSING='+str(miss));print('CONTRACT_VERSION='+str(d['contract']['contract_version']));import sys;sys.exit(0 if all([c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,c11,live==0,not miss,d['contract']['contract_version']==2]) else 1)"
     expected: >-
-      All ten correction markers True, zero live rec-3922 citations, the pypi_trusted_publisher
+      All eleven correction markers True, zero live rec-3922 citations, the pypi_trusted_publisher
       block complete, contract_version 2. C1-C4 are rec-3995's four; C5-C6 are the two its own
       oracle does not reach; C7-C10 are the execution-discovered four.
     fix_if: >-
       Any marker False names exactly which correction was missed. LIVE_REC3922 > 0 means a live
       surface still cites a closed rec -- historical amendment_log entries are deliberately excluded
-      from that count, since the log is append-only provenance.
+      from that count, since the log is append-only provenance. NOTE for the implementer: C8's
+      'org creation' and C10's 'scoped API token' PRESCRIBE wording rather than match incumbent
+      text (the contract today says 'org-creation flow', hyphenated, and names no token scope), and
+      C10 is case-sensitive. Write the amended procedure steps to satisfy them; do not read them as
+      already-satisfied.
     hermetic: true
-    expected_literals: ["C1_HEADER_CLEAN=True", "C2_INSTALLABILITY_CLEAN=True", "C3_SECURITY_CONTACT_SETTLED=True", "C4_CRATES_OWNERSHIP_SETTLED=True", "C5_DISPOSITION_CLEAN=True", "C6_NEUTRAL_CLEAN=True", "C7_NPM_SCOPE=True", "C8_ORG_CREATION=True", "C9_PYPI_OIDC=True", "C10_CRATES_TOKEN=True", "LIVE_REC3922=0", "TRUST_KEYS_MISSING=[]", "CONTRACT_VERSION=2"]
+    expected_literals: ["C1_HEADER_CLEAN=True", "C2_INSTALLABILITY_CLEAN=True", "C3_SECURITY_CONTACT_SETTLED=True", "C4_CRATES_OWNERSHIP_SETTLED=True", "C5_DISPOSITION_CLEAN=True", "C6_NEUTRAL_CLEAN=True", "C7_NPM_SCOPE=True", "C8_ORG_CREATION=True", "C9_PYPI_OIDC=True", "C10_CRATES_TOKEN=True", "C11_TRACKING_NOTE_CLEAN=True", "LIVE_REC3922=0", "TRUST_KEYS_MISSING=[]", "CONTRACT_VERSION=2"]
     graduation: graduate
     graduation_check_id: ontheloop-contract-ten-corrections
   - step: 18
@@ -450,7 +460,7 @@ verification_plan:
     action: >-
       [OPERATOR] Publish in ascending-immutability order in one sitting -- PyPI, then npm bare, then
       npm scoped, then crates.io.
-    command: 'echo "1) Approve the publish-ontheloop.yml dispatch (PyPI, OIDC, no token). 2) npm publish from packages/ontheloop-js then packages/ontheloop-js-scoped (2FA OTP; zero dependencies, so no npm install is required at any point). 3) cargo publish from packages/ontheloop-rs using a single-use token scoped publish-new to crate pattern ontheloop, 1-day expiry."'
+    command: 'echo "Publish from the SAME scratch copy step 21 dry-ran, never the repository working tree -- cargo publish builds during verification and writes target/ plus a generated Cargo.lock, and .gitignore carries no target/ entry (constraint 4 forbids adding one). Publishing a different tree than the one dry-run also voids the dry-run evidence on the one registry that is immutable. 1) Approve the publish-ontheloop.yml dispatch (PyPI, OIDC, no token). 2) npm publish from ontheloop-js then ontheloop-js-scoped (2FA OTP; zero dependencies, so no npm install at any point). 3) cargo publish from ontheloop-rs using a single-use token scoped publish-new to crate pattern ontheloop, 1-day expiry."'
     expected: Four artefacts published under the four intended names.
     fix_if: A publish fails -- do NOT retry with a broader-scoped credential; diagnose first.
   - step: 23
@@ -581,7 +591,7 @@ test_obligations:
   - source: docs/contracts/deploy-paths.yaml
     behavior: Indexes the registry-publication channel with a trigger, an operator actor_role and a recovery pointer.
     verification_step: 11
-    command: bin/venv-python -c "import sys,yaml;d=yaml.safe_load(open('docs/contracts/deploy-paths.yaml'));r=d.get('publish_artifacts') or {};miss=[k for k in ('trigger','recovery','blocks_ref','description') if not r.get(k)];print('DP_ROW_PRESENT='+str(bool(r)));print('DP_ACTOR='+str(r.get('actor_role')));print('DP_MISSING_KEYS='+str(miss));sys.exit(0 if r and r.get('actor_role')=='operator' and not miss else 1)"
+    command: bin/venv-python -c "import sys,yaml,pathlib;raw=pathlib.Path('docs/contracts/deploy-paths.yaml').read_text();d=yaml.safe_load(raw);hdr=raw.split('contract:',1)[0];r=d.get('publish_artifacts') or {};miss=[k for k in ('trigger','recovery','blocks_ref','description') if not r.get(k)];hok='publish_artifacts' in hdr;print('DP_ROW_PRESENT='+str(bool(r)));print('DP_ACTOR='+str(r.get('actor_role')));print('DP_MISSING_KEYS='+str(miss));print('DP_HEADER_NAMES_ROW='+str(hok));sys.exit(0 if r and r.get('actor_role')=='operator' and not miss and hok else 1)"
     waiver_reason: >-
       Guarded by the registered validate_contract_drift check, which already fails a Class D
       canonical-dump change carrying no new amendment_log entry. A bespoke pytest assertion over
@@ -673,7 +683,7 @@ context:
     intersected 5, CONFLICT 0, RELATED 5. CITE: Decisions 198, 101, 171, 194, 184, 195, 166, 162,
     168, 172, 94, 128, 132. Both WARN contradictions and both SPIRIT notes resolved by adopting the
     scout's own suggested resolutions.
-  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE r1 (12 items, all addressed); <verdict> after <N> round(s)"
+  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE r1 (12 items) + REVISE r2 (3 items), all disposed; <verdict> after 3 round(s); round 3 autonomous"
   - "Procedure half merged as PR #1239 (cb68d712). Decision 198 clause 6 names rec-3995 as this contract's header carrier."
   - >-
     OPERATOR-ATTESTED out-of-band state, not discoverable from the repo: PyPI pending Trusted
