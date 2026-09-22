@@ -1,0 +1,10 @@
+//! Reserved namespace placeholder for the On The Loop platform distribution.
+//!
+//! See @onthelooplabs/ontheloop and <https://github.com/benjamin-blake/theseus> for the
+//! canonical platform package. This placeholder is a defensive namespace hold (rec-3941) -- it
+//! carries no platform code and no dependency.
+
+/// Returns the reserved placeholder identity string.
+pub fn placeholder_identity() -> &'static str {
+    "ontheloop"
+}
