@@ -53,9 +53,21 @@ scope:
       are different risks -- an unrecognised-but-parseable shape is merely outside junit's
       competence, while an unparseable one is a command whose segments we cannot enumerate at all;
       (d)
-      node_key(node_id) -> (classname, name), the INVERSE reconstruction; (e)
-      index_report(path) -> {(classname, name): arm}; (f) outcome_for(index, node_id) covering the
-      parametrize-prefix expansion and the multi-node conjunction; (g)
+      node_key(node_id) -> the target's DOTTED IDENTITY, and matching by PREFIX AT `::`/`.`
+      BOUNDARIES against each report testcase's own dotted identity (`classname` + `.` + `name`)
+      rather than by equality on a (classname, name) pair. This is a CORRECTION found while
+      verifying critique item B5, and it is not cosmetic: an equality formulation treats the last
+      `::` segment as a method name, so a CLASS-LEVEL target such as
+      `tests/test_agent_sdk_mcp_server.py::TestEndToEnd` -- a perfectly ordinary pytest selector --
+      would look up name="TestEndToEnd", miss, and resolve `absent` -> `unmeasurable` forever.
+      MEASURED: 24 of the 315 pure junit-routed recs (7.6%) carry at least one class-level target,
+      so the equality formulation would have silently made 24 recs undecidable. The prefix rule
+      handles method, class, nested-class and parametrized targets uniformly and mirrors pytest's
+      own selection semantics: a target selects every report entry it is a prefix of, and ALL of
+      them must pass; (e) index_report(path) -> the dotted identities and their arms; (f)
+      outcome_for(index, node_id) covering the class-selector expansion, the parametrize-prefix
+      expansion and the multi-node conjunction, with a target matching NO entry resolving `absent`;
+      (g)
       junit_verdict(census_doc, junit_path, sha) -> {sha, report_available, source: "junit",
       records: [...]} in slice A's record shape with source "junit". MUST NOT import
       closure_stamps_applicable (constraint 11, inherited from slice A).
@@ -66,8 +78,10 @@ scope:
       on the new module: it resolves to exactly this path, so Decision 131's mirror rule is
       satisfied without a colocation exception. Covers TestJunitVerdict (the total arm map; the
       class-based and parametrized node-id inversions against a fixture report carrying NO file=
-      attribute; the absent-report arm resolving EVERY entry to unmeasurable rather than a silent
-      pass) and TestJunitGrammar (each arm's declared route, the non-empty reason on every arm, the
+      attribute; test_class_level_selector_matches_every_method_in_the_class, the B5-derived arm
+      proving a `file.py::TestClass` target resolves against every method the report carries for
+      that class and fails if any of them did not pass; the absent-report arm resolving EVERY entry
+      to unmeasurable rather than a silent pass) and TestJunitGrammar (each arm's declared route, the non-empty reason on every arm, the
       parse-failure arm routing to refusal rather than to the probe, and totality of the arm
       classification over a corpus of real acceptance shapes).
   - file: scripts/rec_trailer_acceptance.py
@@ -90,7 +104,17 @@ scope:
       slice A. `scripts.backlog_health.probe.is_pytest_command` remains the predicate for "this
       command runs pytest" (reused, never re-minted -- probe.run_one branches on it for its own
       pytest timeout, so a second predicate could disagree with the executor's); the partition
-      narrows WITHIN that set rather than replacing it.
+      narrows WITHIN that set rather than replacing it. Slice A declares the census entry shape as
+      {rec_id, acceptance, acceptance_sha256, bucket}; this plan adds a per-entry `route` field, so
+      update that declared field list in the same change and check whether slice A's own census
+      tests pin the key set.
+      (1b) TWO BRANCHES THAT ARE CURRENTLY FAIL-CLOSED ONLY BY INFERENCE, and must be DECLARED and
+      tested rather than left to be reasoned about: what `junit_verdict` does when the CENSUS
+      artifact is missing -- `trailer-census` can fail while this job still runs under `always()`,
+      which is why the job carries TWO download steps and not one -- and what `rejoin` does when the
+      junit verdict DOCUMENT is absent entirely. Both must resolve every affected entry to a named
+      refusing arm, never to an empty record set that silently closes nothing while reporting
+      success. An empty document and a missing document must not be indistinguishable.
       (2) rejoin gains the junit verdict document and REFUSES when a rec_id appears in BOTH
       documents -- two sources for one rec is the TAP hazard at the transport layer, and a routing
       defect must fail the closure rather than pick a winner. (3) a junit-verdict CLI verb as a
@@ -119,8 +143,14 @@ scope:
       same split slice A gives its evaluator job). Its artifact download is a `uses:` step
       (actions/download-artifact) with `continue-on-error: true` and NO run-id input -- so
       provenance is STRUCTURAL: the report can only be the current run's. A `uses:` step carries no
-      `run:` body and is not governed by the R3 ratchet at all. Its only `run:` body is the
-      one-line thin adapter. trailer-closure gains trailer-junit-verdict in `needs` and passes
+      `run:` body and is not governed by the R3 ratchet at all. BODY BUDGET, corrected at critique
+      round 1: this job contributes AT LEAST TWO new r3_workflows entries, not one. Its `uses:`
+      steps (checkout, setup-python, and BOTH artifact downloads -- see the census-artifact note
+      below) carry no body, but the dependency-install step and the adapter step each do, and
+      r3_workflows keys are `<workflow>::<job>::<step>`, so each needs its own baseline entry AND
+      its own `# raise-approved:` marker under gates_new_entry True. Register each at its
+      exactly-measured effective count; do not assume the adapter body is the only one. Compare
+      .github/workflows/backlog-health.yml's probe job, which carries the same shape. trailer-closure gains trailer-junit-verdict in `needs` and passes
       --junit-verdict. DECLARED COST, stated here because it changes agent-visible behaviour:
       trailer-closure now waits behind `main-validate`, so trailer closure completes roughly 16 to
       20 minutes after the merge rather than within a couple of minutes. That is unavoidable --
@@ -133,9 +163,14 @@ scope:
       SECOND INTERACTION, from PLAN-backlog-health-probe-decides-pytest: that plan's new registered
       check validate_sandbox_runner_test_deps arms on marker M2 -- a job whose step bodies invoke
       scripts.backlog_health's probe verb OR any module importing scripts.backlog_health.probe.
-      scripts/rec_trailer_acceptance.py imports that module for is_pytest_command, so THIS job may
-      arm M2 even though it never probes. Complying costs one install line and is the fail-safe
-      direction; do not weaken the guard to exempt this job. VERIFIED at plan time that adding main-validate to a `needs` list cannot
+      scripts/rec_trailer_acceptance.py imports that module for is_pytest_command, so a job invoking
+      IT would arm M2 despite never probing. RESOLUTION, chosen over both the options the critique
+      named: this job's adapter invokes `bin/venv-python -m scripts.rec_trailer_acceptance_junit`
+      DIRECTLY -- the sibling module is probe-free by construction, so M2 never arms on a job that
+      executes nothing, and nothing is relocated out of probe.py (which the prerequisite plan is
+      concurrently editing) and no fail-closed guard is weakened. The routing that DOES import
+      probe stays in the census stage, where M2 arming is correct. If a later change makes this job
+      reach probe transitively, COMPLY with the guard; never weaken it to exempt this job. VERIFIED at plan time that adding main-validate to a `needs` list cannot
       sweep this job into the full-tier set: _full_tier_jobs derives membership from a job's own
       steps_text containing the literal `scripts.validate`, never from the needs graph
       (scripts/verify_ci_workflow/_shared.py lines 48-64). No step text may contain
@@ -146,8 +181,9 @@ scope:
   - file: config/composite_action_body_baseline.yaml
     action: Modify
     purpose: >-
-      Register the ONE new inline `run:` body under r3_workflows at its exactly-measured effective
-      count. The r3_workflows RegistrySpec sets gates_new_entry True and _marker_guard.check_diff
+      Register EVERY new inline `run:` body under r3_workflows at its exactly-measured effective
+      count -- AT LEAST TWO (the dependency install and the thin adapter), corrected at critique
+      round 1 from an earlier budget of one. The r3_workflows RegistrySpec sets gates_new_entry True and _marker_guard.check_diff
       requires a marker on EVERY new entry regardless of value, so a thin adapter shrinks the count
       but never removes the marker obligation. The entry carries
       `# raise-approved: dec-NNN <reason>` citing THE DECISION SLICE A LANDS, whose body is required
@@ -171,8 +207,14 @@ scope:
       literal would miss. Two further assertions: every such job's artifact download step names no
       run-id (the same-run provenance binding), and docs/contracts/git-ops.yaml states the
       source-admission clause. Reading git-ops.yaml by basename literal is already how Decision 168
-      point 2's evaluator binding resolves here and stays unchanged. Keep examined()/skipped() on
-      every reachable path (Decision 170) and raise the examined count. Update the module DOCSTRING,
+      point 2's evaluator binding resolves here and stays unchanged. STRUCTURAL NOTE the removal
+      negatives depend on: the derived assertions require a YAML PARSE of ci.yml rather than the
+      substring reads this module does today, and they add a fourth entry to the module's `sources`
+      dict. All six existing removal-negative tests are built on the current `_read`/`sources`
+      shape, so widening it is not a local edit -- re-read that module and its test file together
+      before changing either, and keep `_read`'s OSError branch intact (a graduated shard pins it).
+      Keep examined()/skipped() on every reachable path (Decision 170) and raise the examined
+      count. Update the module DOCSTRING,
       which slice A already rewrites -- re-point it again rather than leaving A's count stale.
   - file: tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py
     action: Modify
@@ -196,7 +238,19 @@ scope:
       an authoritative record already carries -- the TAP rule, which is what makes the junit route
       a retrieval of the rec's own oracle rather than a substitute for it, and therefore what keeps
       Decision 103's "the deterministic probe is the rec's existing acceptance oracle" satisfied);
-      the DECLARED grammar arms, each with a reason AND its declared route; the same-run provenance
+      the DECLARED grammar arms under the LITERAL key `source_admission` (spelled with an
+      underscore -- VP step 10 greps for exactly that token, so prose spelling it "source-admission"
+      leaves the step red), each arm with a reason AND its declared route. The parse-failure arm's
+      justification must be the CONCRETE divergence, not the word "defensive": slice A's grammar
+      check is `bash -n`, and the two predicates genuinely disagree -- verified at plan time that
+      `pytest tests/x.py \` (trailing backslash) gives `bash -n` rc=0, so slice A ADMITS it, while
+      `shlex.split` raises. This arm catches a class slice A lets through, in the fail-closed
+      direction, and it is also the live counterexample to the narrowed acceptance criterion's
+      claim (b). Also declare the PRECEDENCE between this partition and slice A's
+      `lint_acceptance_command(require_decidable=True)` refusal: a lint refusal WINS and the entry
+      is out_of_grammar regardless of route. Benign today (0 of the 315 junit-routed recs are lint-
+      refused), but currently unspecified, and if routing won over a lint refusal a rec slice A
+      refused could become closable through the junit source. the same-run provenance
       binding and why it is structural rather than content-keyed (a junit report carries no sha);
       the rejoin disjointness refusal; and ONE declared residual naming its owner per Decision 181
       clause 2 -- the 153 pytest-carrying acceptances the junit route does NOT claim, which stay on
@@ -298,13 +352,29 @@ acceptance_criteria:
     is the TAP hazard at the transport layer, and a routing defect fails the closure rather than
     silently electing a winner.
   - >-
-    This slice REGRESSES NOTHING and refuses nothing slice A would have closed. Measured over 1332
-    open recs: 468 acceptances carry a pytest invocation; 315 are pure single-segment `::node_id`
-    and move to the junit route; the remaining 153 (66 mixed &&-only, 8 mixed with another
-    operator, 8 negated, 73 bare-`pytest <path>`, 0 untokenizable) stay on slice A's probe path and
-    close exactly as they would without this plan. Decision 186 point 8's weakening ratchet is not
-    engaged in either direction: no rec becomes closable that was not, and none becomes unclosable.
-    The per-arm counts and each arm's declared route are recorded in docs/contracts/git-ops.yaml.
+    THREE VERIFIED CLAIMS, stated as what is actually checked rather than as an absolute. (i) The
+    153-rec residual routes UNCHANGED: measured over 1332 open recs, 468 acceptances carry a pytest
+    invocation, 315 are pure single-segment `::node_id` and move to junit, and the remaining 153
+    (66 mixed &&-only, 8 mixed with another operator, 8 negated, 73 bare-`pytest <path>`) stay on
+    slice A's probe path and close exactly as they would without this plan. (ii) The measured
+    partition counts above hold, asserted by test over the live corpus shape. (iii) EVERY divergence
+    from slice A is fail-closed in a NAMED arm. An earlier draft claimed "regresses nothing" and
+    "none becomes unclosable" as invariants; that was FALSE and is retracted, with all four
+    counterexamples named rather than hidden: (a) rec-2935, whose class-level target is entirely
+    integration-marked and so can never appear in the report -- 1 rec, see the separate criterion;
+    (b) a shlex-untokenizable but bash-valid command such as a trailing-backslash `pytest tests/x.py
+    \` -- population 0 today, but this is an invariant and not a census, and it is exactly the arm
+    that catches what slice A's `bash -n` admits; (c) a main-validate run that produces no artifact,
+    which resolves all 315 to `unmeasurable` at once; and (d), in the OPPOSITE direction and the one
+    this plan must not paper over, the junit route can yield `holds` where slice A's sandbox would
+    yield `fails` -- a test that passes in the full-tier run but fails under `unshare -rmn` with no
+    network and no credentials. That makes a rec CLOSABLE that was not. It is almost certainly the
+    more correct verdict, because junit is the authoritative oracle and the sandbox is a
+    reconstruction; but this plan cannot claim both "junit is the better oracle" and "outcomes are
+    identical", so it claims only the first. Decision 186 point 8's ratchet is not engaged: (d) is a
+    verdict-source correction at a gate that did not previously exist for this population, not a
+    relaxation of the closure predicate. The per-arm counts and routes are recorded in
+    docs/contracts/git-ops.yaml.
   - >-
     NO new numbered Decision is minted. The three Decision 167 property tests were run and route
     this content to the existing contract home: the envelope test is moot because no entry is
@@ -354,7 +424,8 @@ verification_plan:
     expected: >-
       Every JUNIT_ARMS member maps to exactly one ACCEPTANCE_VERDICTS member with only passed
       yielding holds; a class-based node id resolves against a fixture report carrying no file=
-      attribute; and an absent report resolves every entry to unmeasurable.
+      attribute; a CLASS-LEVEL selector resolves against every method the report carries for that
+      class; and an absent report resolves every entry to unmeasurable.
     fix_if: >-
       An arm maps to None, or a missing testcase resolves to holds -- absence would then read as a
       pass. Or the class-based lookup fails, which means the reconstruction was copied from
@@ -486,7 +557,7 @@ verification_plan:
     action: >-
       rec-3984's acceptance has been corrected in the warehouse BEFORE the merge, so the gate
       evaluates the junit-routed oracle rather than the three slice-A greps it was filed with.
-    command: bin/venv-python -m scripts.sync.ops sync && grep -F rec-3984 logs/.recommendations-log.jsonl | grep -c "TestTapExclusion"
+    command: bin/venv-python -m scripts.sync.ops sync && grep -F rec-3984 logs/.recommendations-log.jsonl | grep -c "TestJunitRouting"
     expected: A non-zero count is printed -- the refreshed read cache shows the corrected acceptance.
     fix_if: >-
       Zero -- the update did not land, and trailer-closing rec-3984 would close it on an oracle that
@@ -741,10 +812,17 @@ constraints:
     engaged because every change here refuses strictly more than slice A alone.
   - >-
     Decision 103's binding clause -- "The deterministic probe is the rec's existing acceptance
-    shell-command oracle. No new acceptance machinery is introduced." -- is satisfied, not crossed
-    again: the junit record IS the outcome of running the rec's own oracle, retrieved rather than
-    re-produced, which is strictly more faithful to that clause than a sandboxed re-run. State this
-    in the contract clause; it is the argument a reviewer will ask for. The verdict LAYER's crossing
+    shell-command oracle. No new acceptance machinery is introduced." -- is satisfied rather than
+    crossed again, but the claim must be stated PRECISELY and not as identity. CI runs the node
+    under `pytest tests/ -m "not integration" -n auto --timeout 120 --randomly-seed=<fixed>
+    --cov=src --disable-socket`, with `tests/` as the sole root; the rec's own command is a bare
+    `pytest <node>`. So the junit record is the outcome of running THE SAME NODE under a DIFFERENT
+    FLAG SET, not a byte-identical re-execution of the rec's argv. That is still strictly more
+    faithful to Decision 103 than a sandboxed re-run, which diverges on the same axes AND adds
+    `unshare -rmn`, no network and no credentials -- but it is a narrower claim. Measured today: 0
+    of the 315 junit-routed recs name a node outside `tests/`, so the root divergence opens no live
+    gap; the marker divergence is the rec-2935 case, disclosed separately. State this divergence in
+    the contract clause rather than the identity claim; it is the argument a reviewer will ask for. The verdict LAYER's crossing
     of 103 is slice A's and is already amended by slice A's landed Decision.
   - >-
     Decision 191 (spirit, surfaced by the decision-scout gate): "Exclusion is a DECLARED cell
@@ -784,10 +862,15 @@ constraints:
     effective lines before slice A's three jobs.
   - >-
     Decision 189 red-before: the partition is graduation == "graduate" ALONE; hermetic false does NOT
-    exempt. All four graduate steps were replayed against this tree during planning and each exits 4
-    (target_absent): the two new test modules do not exist and TestTapExclusion / TestJunitJobAssertions
-    name classes that do not. No graduate step invokes scripts.validate. Use POSIX grep, never rg
-    (absent from the runner, and rg_portability_lint refuses it).
+    exempt. Evidence re-derived from verification_plan[*].command over the four graduate steps, not
+    restated from memory: step 1 selects tests/test_rec_trailer_acceptance.py::TestJunitRouting,
+    steps 2 and 3 select TestJunitVerdict and TestJunitGrammar in
+    tests/test_rec_trailer_acceptance_junit.py, and step 4 selects
+    tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py::TestJunitJobAssertions. Each
+    exits 4 (target_absent) against this tree -- the first three because neither test module exists
+    yet, the fourth because that file exists but names no such class. No graduate step invokes
+    scripts.validate. Use POSIX grep, never rg (absent from the runner, and rg_portability_lint
+    refuses it).
   - >-
     Decision 73: --pre exits 0 while printing "Failed checks" outside CI. Read the SUMMARY, never the
     exit code. The full tier takes 16 to 20 minutes on this container and is not waivable.
@@ -814,7 +897,8 @@ context:
   - "Junit substrate re-verified live this session, not taken from the dossier: pyproject.toml sets no junit_family; a report generated from tests/ci_rca/test_close_recs_from_trailer.py carries ZERO file= attributes; classname is the dotted module path (tests.ci_rca.test_close_recs_from_trailer) with a dotted class suffix for class-based tests; name carries the parametrize suffix (test_param[1]); a passing testcase has no child elements, a skipped one has <skipped>, a failing one <failure>. ci.yml uploads it as artifact pytest-junit from main-validate with if: always() and if-no-files-found: ignore, so an absent artifact is a real branch."
   - "DESIGN HISTORY, recorded so a critic does not re-open a settled fork. This plan first proposed an UNCONDITIONAL exclusion of every pytest-carrying acceptance from the probe, which would have refused 82 recs slice A can close, plus 3 more naming integration-marked nodes CI never reports. The coordinator rejected that framing and ruled for the static partition now authored, on the ground that conditioning the route on the command GRAMMAR is not the same kind of conditioning as gating it on whether the junit report exists: the first is a static property of the text and cannot fail open, the second is the absence-of-evidence shape slice A removed. The measurements that killed the unconditional version are below. rec-4002 is re-scoped accordingly."
   - "Grammar population measured with a quote-aware shlex(posix=True, punctuation_chars=True) split over 1332 open recs on 2026-09-22: 468 pytest-carrying = 315 pure single-segment ::node_id (-> JUNIT), 66 mixed &&-only, 8 mixed with another operator, 8 with a leading ! negation, 73 with no ::node_id (all -> slice A's PROBE, unchanged), and 0 untokenizable (-> REFUSE, an arm that is empty today and must still exist). The partition is provably static: 0 of 1332 open-rec acceptances fail the tokenizer, and the route is computed without reading a report, touching disk or executing anything."
-  - "Integration disposition, measured exactly rather than by file: the full tier runs pytest -m \"not integration\" (scripts/checks/_scaffolding.py::_build_unit_test_cmd), which deselects exactly 21 of 12,764 collected tests, and exactly 3 open recs (rec-2231, rec-2935, rec-3897) name one of those 21. A deselected node is ABSENT from the report and resolves to unmeasurable -- so those 3 are junit-undecidable. All 3 are live/network tests, and all 3 are pure single-segment node ids, so they are junit-routed and will refuse. This is the one population the partition makes WORSE than slice A alone, and it is 3 recs; it rides rec-4002."
+  - "Integration disposition, CORRECTED at critique round 1 and re-verified per NODE rather than per file. The full tier runs pytest -m \"not integration\" (scripts/checks/_scaffolding.py::_build_unit_test_cmd), deselecting exactly 21 of 12,764 collected tests. An earlier draft claimed 3 affected recs; the true count is ONE. rec-2231 is a mixed && chain and routes to the probe, unaffected. rec-3897 names test_post_expiry_probe_is_superset_of_pre_expiry_probe_real_engine, which is NOT one of the 21 -- the earlier match was at class granularity and was wrong. Only rec-2935 is affected: it names class TestEndToEnd, whose single method IS marked, so the whole class is absent and resolves unmeasurable forever. SEVERITY, stated honestly rather than conceded: that test needs live AWS credentials slice A's evaluator job deliberately does not hold, so under slice A alone it returns fails, not holds. It would not have closed either way -- slice B changes the verdict LABEL, not closability. Rides rec-4002."
+  - "IMPOSSIBILITY CLAIM RETRACTED. An earlier draft asserted the partition cannot address the integration case statically because integration-marking is a property of the test source rather than of the command text. The premise is true; the conclusion does not follow. It is not derivable from the command TEXT -- the property this partition deliberately restricts itself to -- but it IS fully derivable statically from the tree at the merge commit, the same checkout the census stage already runs in, via pytest --collect-only -m \"not integration\" <node>, with no artifact read and no absence-of-evidence, because test source cannot go missing the way a junit report can. This plan deliberately does NOT build that arm: it would cost the partition its executes-nothing property for a population of 1 rec that would not close anyway. Weighing that trade is rec-4002's, not this plan's."
   - "NOT SPLIT FURTHER. The junit source and the routing partition cannot be separated: a source with no partition has no population to claim, and a partition with no source routes 315 recs to nothing. 15 scope rows against slice A's 34, with 2 source .py and 2 test .py."
   - "NO new numbered Decision, by routing not omission -- see acceptance criterion 10 for the three Decision 167 property tests. The r3_workflows marker cites SLICE A's Decision, whose body is required by slice A's own scope row to name .github/workflows/ci.yml; resolve that number at implement time against DECISIONS.md, never hardcode it, and note Decision 165 point 2 re-checks the citation on every run thereafter."
   - "rec-3984 reconciliation: its acceptance as filed (three greps) is satisfied entirely by slice A, so trailer-closing it unchanged would be a false closure of exactly the kind this run exists to stop. It is UPDATED FIRST (VP step 11, pre-merge) to a pure pytest ::node_id naming tests/test_rec_trailer_acceptance.py::TestJunitRouting, which is itself pure-single-segment and therefore junit-routed, making its closure evidence of the source it asked for. rec-3867 is slice A's to supersede and is untouched here."
@@ -830,6 +914,8 @@ pre_implementation_checklist:
   - Acceptance criteria understood and verifiable
   - Slice A's landed Decision number resolved from DECISIONS.md for the r3_workflows marker
   - docs/contracts/git-ops.yaml's live contract_version read, not assumed
+  - scripts/rec_trailer_acceptance.py's post-slice-A effective SLOC measured BEFORE adding routing, rejoin and the CLI verb -- slice A's plan could not measure it, and Decision 128 forbids planning a budget crossing blind
+  - "Constraint 17's cohesion warning re-read -- VP steps 5-10 waive against class selectors that literally contain their node ids, so confirm no rename or move has broken that containment before relying on a waiver"
 execution_steps:
   - Create scripts/rec_trailer_acceptance_junit.py and tests/test_rec_trailer_acceptance_junit.py -- JUNIT_ARMS, the total verdict_for_junit map, the declared GRAMMAR_ARMS with per-arm reasons, node_key inversion, index_report, outcome_for with parametrize expansion and multi-node conjunction, and junit_verdict.
   - Add the static three-arm routing partition, the rejoin disjointness refusal and the junit-verdict CLI verb to scripts/rec_trailer_acceptance.py; cover them in tests/test_rec_trailer_acceptance.py::TestJunitRouting, including the arm proving a mixed chain stays on slice A's probe path.
@@ -840,6 +926,7 @@ execution_steps:
   - Re-point config/agent/verification_registry/entries/git-ops-trailer-carrier-and-placement-rules.yaml's contract_version literal to the value this change leaves behind.
   - Create the four verification_registry shards for VP steps 1, 2, 3 and 4.
   - Update rec-3984's acceptance through the ops portal BEFORE the merge, then verify it with VP step 11.
+  - Confirm rec-4002's acceptance names the CONJUNCTION remedy (tests/test_rec_trailer_acceptance_junit.py::TestConjunctionLegsDecidedByJunit), not the retired TestJunitClaimsEveryPytestLeg oracle; correct it through the ops portal if it has drifted back. A residual-owning rec whose acceptance asserts the design this plan rejected can never close honestly, which is the same trap VP step 11 exists to prevent for rec-3984.
   - Execute the Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55).
   - "Report: what was implemented, verification results"
 work_areas: []
