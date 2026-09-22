@@ -1,14 +1,20 @@
 """Tests for validate_rec_autoclose_trailer_gate() -- the Resolves: trailer merge-leg gate's
 delegation-shape pin (rec-3775 / rec-2922 / rec-3901).
 
-Pass-path fixture is the real committed repository state. Each negative patches this module's
-own `_read` binding to simulate ONE removal (workflow stops delegating; ci_rca_lifecycle no
-longer references the gate; either git-ops.yaml clause absent) so it fails on exactly that
-removal and nothing else.
+Pass-path fixture is the real committed repository state. The five removal negatives patch this
+module's own `_read` binding to simulate ONE removal (workflow stops delegating; ci_rca_lifecycle
+no longer references the gate; either git-ops.yaml clause absent; a source returns None) so each
+fails on exactly that removal and nothing else. `test_read_returns_none_on_oserror` is
+deliberately NOT one of these: it patches `pathlib.Path.read_text` instead, so the real `_read`
+helper's `except OSError: return None` branch actually executes. Do NOT rewrite it onto the
+`_run(sources)` / patched-`_read` pattern the other five use -- doing so would silently drop
+coverage of that branch back to the state that filed rec-3991, and the shard's test_selector and
+the coverage gate would both stay green while the branch went untested again.
 """
 
 from __future__ import annotations
 
+import pathlib
 from unittest.mock import patch
 
 from scripts.checks import registry
@@ -98,3 +104,17 @@ class TestRemovalNegatives:
         assert declaration is not None
         assert declaration.kind == "skipped"
         assert failed  # unreadable sources are also a hard failure, never a silent pass
+
+    def test_read_returns_none_on_oserror(self) -> None:
+        with (
+            registry.outcome_scope("validate_rec_autoclose_trailer_gate"),
+            patch.object(pathlib.Path, "read_text", side_effect=OSError("unreadable")),
+        ):
+            failed: list[str] = []
+            validate_rec_autoclose_trailer_gate(failed)
+        declaration = registry.pop_declaration()
+        assert declaration is not None
+        assert declaration.kind == "skipped"
+        matching = [item for item in failed if "could not read" in item]
+        assert matching, failed
+        assert any(path in matching[0] for path in (_WORKFLOW_PATH, _LIFECYCLE_MODULE_PATH, _GIT_OPS_CONTRACT))
