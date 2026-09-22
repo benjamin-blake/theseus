@@ -1,0 +1,857 @@
+schema_version: 5
+handoff_policy:
+  full_validation_required_before_commit: true
+  timeout_disposition: blocked
+slug: trailer-acceptance-static-gate
+intent: >-
+  Stop rec-autoclose closing a rec named in a Resolves: trailer without ever checking that rec's
+  own acceptance oracle (measured: 30 of 100 auto-closed recs failed their own acceptance at the
+  commit that closed them), by introducing a verdict LAYER over the existing oracle -- a verdict
+  record, a verdict vocabulary, one assertion site at update_rec, and a grammar precondition on
+  the oracle itself -- and wiring the STATIC verdict source into it.
+plan_type: IMPLEMENTATION
+verification_tier: V2
+plan_path: docs/plans/PLAN-trailer-acceptance-static-gate.yaml
+phase: >-
+  Soft-warn exception category ad_hoc_rec (carrying recs rec-3867 / rec-3984); names NO tier_item,
+  so the Tier Item Freshness Gate is skipped. Precedent: PLAN-rec-autoclose-trailer-gate-oserror-
+  coverage and PLAN-trailer-closure-evidence-gate scoped themselves identically. T3.9 is the
+  nearest tier_item and is deliberately NOT claimed -- see context for the c3 boundary and the c4
+  gap, which is owned by rec-4000.
+scope:
+  - file: docs/plans/PLAN-trailer-acceptance-static-gate.yaml
+    action: Modify
+    purpose: >-
+      This plan's own path -- always touched per docs/contracts/implement-scope-boundary.yaml's
+      implementing_plan_bookkeeping sanction row, whose permitted_field_edits lists
+      implementation_declared FIRST. Flip implementation_declared to true after code review and a
+      full-tier pass. Omitting this row leaves the plan out of the diff and makes
+      validate_graduation_completeness, validate_scope_boundary and validate_vp_replay all no-op,
+      which would satisfy VP step 17 VACUOUSLY.
+  - file: scripts/rec_trailer_acceptance.py
+    action: Create
+    purpose: >-
+      The verdict LAYER, sited at scripts/ root beside its siblings rec_trailer.py /
+      rec_relevance.py / rec_episode.py. Deliberately NOT under scripts/ops_portal/: it imports
+      scripts.backlog_health, which transitively reaches scripts.ops_data_portal via
+      scripts.rec_episode, and an ops_portal -> ops_data_portal edge violates .importlinter's
+      no-cycles-ops-data-portal-executor layering (Decision 124). Holds (a) census(ids, rows,
+      repo_root) -> entries [{rec_id, acceptance, acceptance_sha256, bucket}], classifying with the
+      EXISTING scripts.backlog_health.census.classify_command AND calling
+      lint_acceptance_command(acceptance, require_decidable=True) -- a refusal maps straight to
+      out_of_grammar, which is where the grammar ratchet is EXECUTED on this plan's own path
+      (Decision 163; the write-boundary binding is deferred to rec-4001 for the measured reason in
+      that rec); (b) evaluate(entries, repo_root, sha) -> the verdict document {sha,
+      isolation_available, source, records: [{rec_id, sha, acceptance_sha256, verdict, source,
+      arm}]}, executing only `probeable` entries through the EXISTING
+      scripts.backlog_health.probe.run_all sandbox; (c) verdict_for(bucket, probe_verdict), a TOTAL
+      map from census.BUCKETS x (probe.VERDICTS | {None}) onto the four-value vocabulary; (d)
+      rejoin(census_doc, verdict_doc), the untrusted-artifact rejoin on rec_id + acceptance_sha256
+      mirroring escalate.rejoin_probe_verdicts; (e) the census/evaluate/close CLI verbs the three
+      new ci.yml jobs invoke as THIN ADAPTERS (Decision 162 spirit -- logic here, not in a workflow
+      body). `source` is "static" throughout: the extension point slice B adds "junit" records at.
+      MUST NOT import closure_stamps_applicable (constraint 10).
+  - file: tests/test_rec_trailer_acceptance.py
+    action: Create
+    purpose: >-
+      Mirror test (Decision 131 colocation rule for a scripts/ root module). Covers the total
+      bucket x probe-verdict map; the shared-arm parity assertion against
+      scripts.backlog_health.probe.VERDICTS and census.BUCKETS; the AXIS parity assertion against
+      docs/contracts/vp-red-before.yaml's OUTCOME_CLASSES (constraint 5); the census stage mapping
+      an undecidable acceptance to out_of_grammar; the acceptance_sha256 rejoin drop paths (unknown
+      rec_id, changed acceptance, malformed artifact); and an isolation_unavailable run resolving
+      to `unmeasurable` for every entry rather than a silent pass.
+  - file: scripts/ops_portal/closure_gate.py
+    action: Modify
+    purpose: >-
+      The ONE assertion site's predicate half. Adds ACCEPTANCE_VERDICTS (holds / fails /
+      unmeasurable / out_of_grammar), AcceptanceVerdictRefused(ValueError), and
+      assert_acceptance_verdict(existing_status, new_status, rec_id, acceptance, record) -- a pure
+      predicate that raises when a record IS supplied and either verdict != "holds", or
+      record["rec_id"] != rec_id, or record["acceptance_sha256"] != sha256(acceptance), or
+      record["sha"] != the closing write's fixed_by_sha; and returns None when record is None.
+      Fires only on a transition INTO a bound status from a not-already-bound one, reusing this
+      module's existing _BOUND_STATUSES and terminal_definition semantics. 245 SLOC, 255 headroom.
+      Verified during planning: closure_gate symbols are absent from
+      scripts/checks/hygiene/validate_ops_portal_patch_targets.py's _MOVED_CALLERS (which names
+      only file_decision / update_decision / backfill_decisions_from_md), and update_rec is not a
+      moved caller, so no patch-target row changes -- re-confirm if that map grows.
+  - file: tests/ops_data_portal/test_closure_gate.py
+    action: Modify
+    purpose: >-
+      Add TestAcceptanceVerdict covering every refusal arm plus the absent-record pass-through and
+      the status-preserving-write no-op. 218 SLOC, 282 headroom. Do NOT touch
+      TestContractParity::test_stamp_precondition_call_sites_match_importers, a graduated shard.
+  - file: scripts/ops_data_portal.py
+    action: Modify
+    purpose: >-
+      Add the keyword-only acceptance_verdict kwarg to update_rec and call
+      assert_acceptance_verdict immediately beside the existing assert_closure_obligation call --
+      ONE ENFORCEMENT SITE (Decision 186 point 2), never a second gate. The kwarg is a GATE INPUT
+      only: deliberately NOT added to the closure_stamps dict, so closure_stamps_applicable never
+      gates it and the ~99.6% of open recs carrying no context_v2_json stay closable. HARD SLOC
+      CONSTRAINT: 478 effective lines, 22 headroom, no config/sloc_budgets.yaml entry -- the whole
+      change, docstring lines included, must fit in <= 20 added effective lines, or the file is
+      decomposed (Decision 128), never budget-raised.
+  - file: scripts/ops_portal/ci_rca_lifecycle.py
+    action: Modify
+    purpose: >-
+      Thread the verdict into the closure loop and bind the gate STRUCTURALLY (Decision 163).
+      close_recs_from_trailer gains acceptance_verdicts: Optional[dict[str, dict]] AND
+      require_acceptance_verdict: bool = False. When require_acceptance_verdict is True (what the
+      ci.yml closure job passes), a rec with no verdict in the map is NOT passed to update_rec at
+      all -- it is left OPEN with the same marker treatment as a refusal, so the trailer path can
+      never fail open. The default False preserves every existing caller. On
+      AcceptanceVerdictRefused: print a NEW, distinct Decision-155-shaped marker constant (never
+      shared with _ESCAPE_CLOSURE_REFUSAL_MARKER or either merge-leg marker), mirror it to
+      $GITHUB_STEP_SUMMARY via the existing _mirror_refusal_to_step_summary, print a close_proposed
+      command, leave the rec OPEN, and do NOT touch exit_code. The existing ClosureArtifactRequired
+      catch and its exit-0 posture are PRESERVED unchanged (Decision 186 point 7). 385 SLOC, 115
+      headroom.
+  - file: tests/ci_rca/test_close_recs_from_trailer.py
+    action: Modify
+    purpose: >-
+      Add TestAcceptanceVerdictRefusal (non-holds leaves the rec open, prints the marker, emits
+      close_proposed, returns 0; holds closes; absent-with-require_acceptance_verdict-True leaves it
+      open; absent-with-default-False closes) and a regression arm asserting the
+      ClosureArtifactRequired catch still returns 0 after the relocation. 117 SLOC, 383 headroom --
+      new tests go here, NOT in tests/test_ci_rca_lifecycle.py (474 SLOC, 26 headroom). Do NOT
+      disturb the two graduated shards pinned in this file.
+  - file: scripts/executor/acceptance_lint.py
+    action: Modify
+    purpose: >-
+      Two changes on one tokenizer. (1) ADD require_decidable, a second keyword-only flag beside the
+      existing require_discrimination -- never a duplicate linter. It strips surrounding backticks
+      (as validate_acceptance_feasibility already does -- rec-163 is backtick-wrapped), splits on
+      shell control operators with shlex(posix=True, punctuation_chars=True), and REFUSES only when
+      NO segment carries a decidable assertion. A segment is decidable when its argv head is in
+      {grep, rg, test, [, wc}, when it is a pytest invocation carrying a ::node_id, OR when it
+      carries a declared `--assert-<name>` exit-contract flag -- the already-ratified idiom at
+      scripts/ci_rca/probe_health.py:239 and scripts/preflight/ci_rca_gauges.py:438, which a
+      head-token-only rule would wrongly refuse because those heads are bin/venv-python. GRAMMAR
+      SHAPE ONLY -- never node existence, since the test does not exist when the rec is filed.
+      (2) FIX a live false-pass in the EXISTING _classify_non_discriminating: it splits with
+      chain_parts[0].split("|"), which cuts INSIDE quotes, so a lone grep carrying quoted
+      alternation evades require_discrimination entirely. Verified against shipped code during
+      planning: lint_acceptance_command("grep -q 'a\\|b' f", require_discrimination=True) returns
+      ok=True and grep -qE "a|b" f returns ok=True, while the control grep -q plain f correctly
+      returns ok=False. Rebuild that splitter on the same quote-aware tokenizer or the new flag
+      inherits the hole. Measured blast radius of the fix: 23 of 1327 open recs (1.73%) newly
+      refused -- all of them true positives the old splitter let through -- and ZERO shipped
+      acceptance literals under scripts/ affected, so no auto-filer breaks. 336 SLOC, 164 headroom.
+  - file: tests/test_executor_acceptance_lint.py
+    action: Modify
+    purpose: >-
+      Add TestRequireDecidable (prose refused; bare `pytest tests/x.py -q` refused; backtick-wrapped
+      grep admitted; a pipeline whose final segment is `grep -q` admitted -- the shape
+      scripts/backlog_health/escalate.py's four rollup recs file; a `--assert-<name>` exit contract
+      admitted; default False leaves every existing caller byte-for-byte unchanged) and a
+      regression arm on the quote-aware fix asserting that a lone grep with quoted alternation is
+      now correctly refused under require_discrimination=True. 349 SLOC, 151 headroom.
+  - file: .github/workflows/ci.yml
+    action: Modify
+    purpose: >-
+      Three new push-only jobs, mirroring backlog-health.yml's ratified three-job credential split.
+      trailer-census (id-token: write) parses the trailer, reads the named recs via the DuckLake
+      reader, classifies, uploads trailer_census.json; executes nothing. trailer-acceptance-evaluate
+      (needs trailer-census; permissions {contents: read} ONLY, no id-token, persist-credentials
+      false) runs the sysctl step that unblocks unprivileged user namespaces, then the sandboxed
+      evaluator; uploads acceptance_verdict.json. trailer-closure (needs both, if: always(),
+      id-token: write) rejoins and closes with require_acceptance_verdict True. EVERY job body is a
+      THIN ADAPTER -- one `bin/venv-python -m scripts.rec_trailer_acceptance <verb>` line (Decision
+      162 spirit) -- so no logic lives in a workflow body. The closure verb must preserve today's
+      `sys.exit(close_recs_from_trailer(...))` contract exactly: a Decision 186
+      ClosureArtifactRequired refusal and an acceptance refusal both leave the rec OPEN and exit 0
+      (loud-not-red), and the closing write stamps the same merge-commit GITHUB_SHA that Decision
+      142's ancestry check consumes. Constraints: each job's `if` is `github.event_name == 'push'`
+      (so _admits_pull_request excludes it from signal-green.needs); no step text may contain the
+      literal `scripts.validate` (it would sweep the job into _full_tier_jobs and demand
+      fetch-depth 0); no check-like module name matching ^(validate|verify|check); ci.yml is at 220
+      effective lines against the ci_workflows class's 500 (Decision 166).
+  - file: .github/workflows/rec-autoclose.yml
+    action: Modify
+    purpose: >-
+      Remove the closure step ONLY. The backfill, detect-decisions and install-dependencies steps
+      stay in the SAME job under its existing `autoclose` job id -- never renamed, because the R3
+      baseline keys are workflow::job::step and a rename mints new entries. The backfill step's
+      `sys.exit(1 if result["failed"] else 0)` must stay byte-intact: Decision 155's reversal
+      condition (c) is mechanically pinned to it by the graduated shard
+      rec-autoclose-failed-counter-exit-present (node id
+      tests/ops_data_portal/test_decisions_divergence_guard.py::TestSubstantiveSignalPin::test_rec_autoclose_exits_nonzero_on_failed_rows),
+      so "backfill untouched" is load-bearing, not incidental. rec-autoclose stays a ci_rca-watched
+      workflow.
+  - file: config/composite_action_body_baseline.yaml
+    action: Modify
+    purpose: >-
+      Remove the retired
+      `.github/workflows/rec-autoclose.yml::autoclose::close-resolved-recs-from-resolves-trailer:
+      37` entry (removals are unrestricted) and register EVERY new ci.yml inline `run:` body at its
+      exactly-measured effective-line count under r3_workflows. VERIFIED DURING PLANNING: the
+      r3_workflows RegistrySpec sets gates_new_entry=lambda _value: True and
+      _marker_guard.check_diff requires a marker on every new entry regardless of value, so the
+      thin-adapter route shrinks the counts but does NOT remove the marker obligation. Each entry
+      therefore carries `# raise-approved: dec-NNN <reason>` citing the Decision this plan adds,
+      whose body must mention `.github/workflows/ci.yml` (workflow_mention_candidates yields the
+      full key plus the workflow path; no existing Decision names ci.yml -- Decision 166 names only
+      reconcile.yml and terraform-apply-sandbox.yml). No new top-level section.
+  - file: config/ci_rca_taxonomy.yaml
+    action: Modify
+    purpose: >-
+      Correct one prose clause this plan falsifies: the `rec-autoclose` row's rationale states the
+      workflow "closes recs from a Resolves trailer", which stops being true when closure moves to
+      ci.yml. Reword to name the backfill role it retains and point at ci.yml for closure. Prose
+      only -- no tier, no ci_rca flag, no agent_loop_caps, and no classifier surface is touched, so
+      validate_ci_rca_adjudication's per-workflow agreement assertions are unaffected. Operator
+      ruling: correcting a knowingly-false rationale here beats deferring it to slice B.
+  - file: scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py
+    action: Modify
+    purpose: >-
+      EXTEND this registered check rather than adding a new one -- its pre_globs already cover
+      .github/workflows/**, scripts/ops_portal/**, docs/contracts/git-ops.yaml and
+      scripts/checks/ci_guards/**, and config/ci_rca_taxonomy.yaml already carries its
+      function_to_category row (environment), so extension needs no new glob, no new taxonomy row,
+      and no check_accounting_baseline entry Decision 170's frozen _BASELINE_SEED could not
+      grandfather. Re-point assertion 1 from rec-autoclose.yml to ci.yml; add assertions that the
+      evaluator job declares NO id-token permission and no secret env (the Decision 143 clause-1
+      discharge -- this assertion is ESCAPE-FREE: no marker, no config allowlist, no skip path),
+      that the closure job consumes an acceptance verdict and passes require_acceptance_verdict,
+      and that BOTH docs/contracts/git-ops.yaml and docs/contracts/ci-rca-lifecycle.yaml state
+      their new clauses. Reading ci-rca-lifecycle.yaml by basename literal is what makes the
+      Decision 168 evaluator-reads-the-contract binding resolve for the second contract edit too.
+      Keep the examined()/skipped() declaration on every reachable path.
+  - file: tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py
+    action: Modify
+    purpose: >-
+      Add TestAcceptanceGateAssertions covering each new assertion's pass AND fail limb. 98 SLOC,
+      402 headroom. Do NOT rename or relocate
+      TestRemovalNegatives::test_read_returns_none_on_oserror -- a graduated shard pins it.
+  - file: docs/contracts/git-ops.yaml
+    action: Modify
+    purpose: >-
+      Add a trailer_acceptance_gate key beside the existing resolves_trailer clause: the four-value
+      verdict vocabulary AND the axis that makes it distinct from vp-red-before.yaml's, the
+      verdict-record field list, the rejoin key (rec_id + acceptance_sha256 + sha), the refusal
+      semantics (every non-holds leaves the rec OPEN, loud-not-red, with a close_proposed command),
+      the STRUCTURAL binding (the trailer path passes require_acceptance_verdict True, so it cannot
+      fail open), and the residual this confines the fail-open to -- non-trailer callers of
+      update_rec -- naming rec-3999 as its owner per Decision 181 clause 2. Sited here, not in
+      ci-rca-lifecycle.yaml, because resolves_trailer already lives here, the registered evaluator
+      already READS this file (Decision 168 point 2), and this file has 196 effective lines of
+      headroom against the contracts class's 500 where ci-rca-lifecycle.yaml has 24. Requires a new
+      amendment_log[] entry AND contract_version 2 -> 3, or validate_contract_drift fails.
+  - file: docs/contracts/ci-rca-lifecycle.yaml
+    action: Modify
+    purpose: >-
+      Two narrow corrections the relocation forces, plus one amendment_log[] entry and
+      contract_version 1 -> 2. (i) closure_obligation.refusal_contract names rec-autoclose.yml as
+      the workflow that catches ClosureArtifactRequired -- reword to name ci.yml's closure job and
+      keep the exit-0 claim. (ii) closure_dependency.trap is scoped to rec-autoclose -- widen it to
+      the CI workflow, since a CI-sourced ci_rca rec now cannot assume its own closure auto-stamps
+      either (this is T2.54:c1's clause + evaluator pair). HARD SIZE CONSTRAINT: 476 effective
+      lines against the 500 contracts-class limit -- keep the whole edit under ~20 lines or compact
+      the oldest amendment_log entries in the same change.
+      stamp_precondition.call_sites is deliberately NOT touched (constraint 10).
+  - file: docs/DECISIONS.md
+    action: Modify
+    purpose: >-
+      One NEW numbered Decision plus two dated in-place annotations (Decision 177 dialect -- both
+      amended bodies are append-only, so neither is rewritten). The Decision's SUBJECT is the
+      VERDICT LAYER, not the venue: a standing closure PRECONDITION -- no rec closes on a supplied
+      verdict that is not `holds`, or whose record is mis-keyed against the rec, its acceptance hash
+      or the closing sha -- asserted at the single update_rec site and bound structurally on the
+      trailer path. That gate, binding every closure path through that site, is the significance
+      claim (Decision 150 / decision-entry.yaml routing_rule Q3, the Decision 186 justification
+      shape); the reuse of scripts/backlog_health's evaluator is recorded as a CLARIFICATION of
+      103's existing on-demand-per-rec allowance, never as the amendment's substance -- narrowed to
+      venue-reuse alone this content would route to a dated annotation on 103 with no new number.
+      The body must also state the two-boundary frame explicitly: write-boundary validation checks
+      SHAPE, verify-boundary validation checks TRUTH, so the grammar ratchet is a PRECONDITION for
+      the close-time oracle run, never a substitute for it -- 24 of the 30 measured false closures
+      are well-formed oracles whose assertion simply did not hold, which only a close-time run
+      catches. `amends` names BOTH 103 (the "No new acceptance machinery is introduced" clause,
+      which the verdict layer -- not the oracle -- crosses) and 186 (point 7 names rec-autoclose.yml
+      as the catching workflow, which this relocation falsifies). The body MUST mention
+      `.github/workflows/ci.yml` to authorise the r3_workflows markers, MUST justify the vocabulary
+      axis (constraint 5), and MUST carry the Decision 167 fenced yaml envelope with a
+      `significance` field whose justification names the contract home considered and rejected.
+      Stay inside decision-entry.yaml's per_entry_size_norm.cap_bytes (6144). DO NOT HARDCODE THE
+      NUMBER: 198 is claimed by the merged-but-unlanded PLAN-decision-198-brand-supersession, so
+      resolve the next free number at implement time against DECISIONS.md AND every plan under
+      docs/plans/.
+  - file: tests/fixtures/trailer_acceptance_smoke.json
+    action: Create
+    purpose: >-
+      The two-entry payload VP step 20 drives the real pipeline over: one acceptance known to pass
+      at HEAD and rec-940's acceptance, the dossier exhibit that returns zero matches on main today.
+      Held as a fixture rather than inlined so the smoke run is reproducible and the discriminating
+      pair is reviewable.
+  - file: config/agent/verification_registry/entries/trailer-acceptance-verdict-refuses-non-holds.yaml
+    action: Create
+    purpose: >-
+      Graduate VP step 4 as a test_selector shard so the refusal predicate becomes a standing
+      regression guard. Fields mirror rec-autoclose-trailer-gate-read-oserror.yaml.
+  - file: config/agent/verification_registry/entries/trailer-acceptance-evaluator-job-is-credential-free.yaml
+    action: Create
+    purpose: >-
+      Graduate VP step 8 as a test_selector shard pinning the Decision 143 privilege separation --
+      the evaluator job declares no id-token permission and no secret env. This is the security
+      boundary, so it gets a standing, escape-free guard rather than a one-time assertion.
+  - file: config/agent/verification_registry/entries/trailer-closure-cannot-fail-open.yaml
+    action: Create
+    purpose: >-
+      Graduate VP step 6 as a test_selector shard pinning the Decision 163 structural binding: with
+      require_acceptance_verdict True, a rec with no verdict is never passed to update_rec. This is
+      the clause that makes the gate executed rather than merely declared, so it gets a standing
+      guard.
+bundled_recommendations: []
+followon_recs:
+  - rec-3999
+  - rec-4000
+  - rec-4001
+infrastructure_dependencies: []
+acceptance_criteria:
+  - >-
+    A rec named in a Resolves: trailer whose acceptance command does NOT pass at the merge commit
+    is left OPEN by the closure job, with a distinct greppable marker, a $GITHUB_STEP_SUMMARY
+    mirror, and a printed close_proposed command -- and the job still exits 0 (loud-not-red).
+  - >-
+    The gate is EXECUTED, not merely declared (Decision 163): the ci.yml closure job passes
+    require_acceptance_verdict True, so a trailer-named rec with no verdict is never passed to
+    update_rec. The remaining fail-open is confined to non-trailer callers of update_rec and is
+    named in docs/contracts/git-ops.yaml with rec-3999 as its owner (Decision 181 clause 2).
+  - >-
+    The verdict vocabulary is exactly {holds, fails, unmeasurable, out_of_grammar}; every non-holds
+    value leaves the rec open. The bucket x probe-verdict map is TOTAL and is asserted total by a
+    test that reddens when either upstream vocabulary gains a member. Its intersection with
+    docs/contracts/vp-red-before.yaml's OUTCOME_CLASSES is exactly {"unmeasurable"} -- the one
+    genuinely shared arm -- and that equality is asserted, not restated.
+  - >-
+    The evaluator runs in a ci.yml job declaring permissions {contents: read} with no id-token grant
+    and no writer secret (Decision 143), and the registered guard's assertion of that fact is
+    escape-free: no marker, no config allowlist, no skip path. The sandbox, not the grammar
+    allowlist, is the boundary.
+  - >-
+    The verdict is asserted at exactly ONE site -- update_rec, beside assert_closure_obligation
+    (Decision 186 point 2). A stale or mis-keyed verdict (wrong rec_id, wrong acceptance_sha256,
+    wrong sha) cannot close a rec.
+  - >-
+    acceptance_verdict is a gate INPUT, never a context_v2_json stamp: update_rec's
+    closure_stamps_applicable precondition is not extended, so the ~99.6% of open recs carrying no
+    context_v2_json blob stay closable. Verified by a test closing a blob-less rec on a holds
+    verdict.
+  - >-
+    The relocation preserves every property of the step it replaces: ClosureArtifactRequired is
+    still caught, still prints its own marker, still leaves the rec OPEN and still exits 0; the
+    closing write still stamps the merge-commit GITHUB_SHA Decision 142's ancestry check consumes;
+    CI remains a ci_rca-watched workflow, and rec-autoclose.yml's backfill step keeps the
+    `sys.exit(1 if result["failed"] else 0)` line Decision 155's reversal condition (c) is pinned
+    to.
+  - >-
+    lint_acceptance_command(..., require_decidable=True) refuses an acceptance command carrying no
+    decidable assertion in any segment, admits a declared `--assert-<name>` exit contract, and is
+    EXECUTED in the trailer census stage, where a refusal becomes the out_of_grammar verdict.
+    Default False leaves every existing caller unchanged. The write-boundary and
+    validate_acceptance_literals bindings are deliberately deferred to rec-4001 -- binding them now
+    would refuse three shipped `bin/venv-python -m scripts.validate --pre` acceptance literals that
+    active budget_breach / budget_bypass filers write at runtime.
+  - >-
+    The pre-existing quote-cutting false-pass in _classify_non_discriminating is fixed on the same
+    quote-aware tokenizer, so a lone grep carrying quoted alternation no longer evades
+    require_discrimination. Measured: 23 of 1327 open recs newly refused, 0 shipped acceptance
+    literals affected.
+  - >-
+    rec-3867 is SUPERSEDED via the ops portal, never trailer-closed: its acceptance names
+    tests/test_rec_autoclose.py, which does not exist and is not created here, so it can never pass
+    and the new gate would correctly refuse it.
+  - >-
+    docs/contracts/git-ops.yaml and docs/contracts/ci-rca-lifecycle.yaml each carry a new
+    amendment_log[] entry AND a contract_version bump, each with an evaluator that demonstrably
+    reads them (Decision 168); the new numbered Decision carries a Decision 167 fenced yaml envelope
+    with a significance claim resting on the GATE, amends both 103 and 186, and lands alongside
+    dated annotations on 103 and on 186 point 7 rather than edits to either body (Decision 177).
+verification_plan:
+  - step: 1
+    phase: pre-deploy
+    action: The four-value verdict vocabulary and its total bucket x probe-verdict mapping exist.
+    command: bin/venv-python -m pytest "tests/test_rec_trailer_acceptance.py::TestVerdictMapping::test_mapping_is_total" -q
+    expected: The mapping test passes; every (bucket, probe_verdict) pair resolves to one of the four verdicts.
+    fix_if: A pair maps to None or raises -- the map is partial, so an upstream vocabulary change would silently drop a verdict.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: trailer-acceptance-verdict-map-is-total
+    expected_literals:
+      - "1 passed"
+  - step: 2
+    phase: pre-deploy
+    action: The shared arms are asserted equal to scripts.backlog_health's own vocabularies rather than restated.
+    command: bin/venv-python -m pytest "tests/test_rec_trailer_acceptance.py::TestVerdictMapping::test_probe_vocabulary_parity" -q
+    expected: The parity test passes, deriving both upstream sets from scripts.backlog_health at runtime.
+    fix_if: The test hardcodes the upstream members -- a new probe verdict or census bucket would then map to nothing silently.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: trailer-acceptance-probe-vocabulary-parity
+    expected_literals:
+      - "1 passed"
+  - step: 3
+    phase: pre-deploy
+    action: >-
+      The vocabulary axis is asserted, not asserted-by-prose -- exactly one word is shared with
+      vp-red-before.yaml's outcome classes, and it is `unmeasurable`.
+    command: bin/venv-python -m pytest "tests/test_rec_trailer_acceptance.py::TestVerdictMapping::test_axis_parity_with_vp_red_before" -q
+    expected: The intersection of ACCEPTANCE_VERDICTS with OUTCOME_CLASSES is exactly the single shared arm.
+    fix_if: >-
+      The intersection grows -- a word has been reused across two contracts whose polarity is
+      inverted, which is the drift vp-red-before.yaml's own self_satisfying-vs-tautological note warns about.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: trailer-acceptance-vocabulary-axis-parity
+    expected_literals:
+      - "1 passed"
+  - step: 4
+    phase: pre-deploy
+    action: The closure-gate predicate refuses every non-holds verdict and every mis-keyed record, and passes an absent one.
+    command: bin/venv-python -m pytest "tests/ops_data_portal/test_closure_gate.py::TestAcceptanceVerdict" -q
+    expected: Every refusal arm raises AcceptanceVerdictRefused; the absent-record and status-preserving-write arms return None.
+    fix_if: A mis-keyed record (wrong rec_id, acceptance_sha256 or sha) is accepted -- a stale verdict could then close a rec.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: trailer-acceptance-verdict-refuses-non-holds
+    expected_literals:
+      - "passed"
+  - step: 5
+    phase: pre-deploy
+    action: >-
+      close_recs_from_trailer leaves a refused rec OPEN, prints the marker and close_proposed, and
+      still returns 0 -- and the pre-existing ClosureArtifactRequired catch still does the same.
+    command: bin/venv-python -m pytest "tests/ci_rca/test_close_recs_from_trailer.py::TestAcceptanceVerdictRefusal" -q
+    expected: Both refusal arms leave the rec open with exit_code 0; the holds arm closes.
+    fix_if: exit_code becomes 1 on either refusal -- a designed refusal would then redden a ci_rca-watched workflow.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: trailer-acceptance-refusal-is-loud-not-red
+    expected_literals:
+      - "passed"
+  - step: 6
+    phase: pre-deploy
+    action: With require_acceptance_verdict True, a rec carrying no verdict is never passed to update_rec.
+    command: bin/venv-python -m pytest "tests/ci_rca/test_close_recs_from_trailer.py::TestAcceptanceVerdictRefusal::test_absent_verdict_is_refused_when_required" -q
+    expected: The rec is left OPEN and update_rec is never called; the default-False arm still closes it.
+    fix_if: update_rec is called -- the gate is declared but not executed, the Decision 163 defect.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: trailer-closure-cannot-fail-open
+    expected_literals:
+      - "1 passed"
+  - step: 7
+    phase: pre-deploy
+    action: A blob-less rec (no context_v2_json) still closes on a holds verdict -- the kwarg is a gate input, not a stamp.
+    command: bin/venv-python -m pytest "tests/ci_rca/test_close_recs_from_trailer.py::TestAcceptanceVerdictRefusal::test_closes_blobless_rec_on_holds" -q
+    expected: The blob-less rec closes; closure_stamps_applicable is never consulted for the acceptance verdict.
+    fix_if: update_rec raises the not-stampable ValueError -- the kwarg was wired into closure_stamps and now blocks ~99.6% of recs.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: trailer-acceptance-verdict-is-gate-input-not-stamp
+    expected_literals:
+      - "1 passed"
+  - step: 8
+    phase: pre-deploy
+    action: >-
+      The extended registered check asserts the ci.yml delegation, the escape-free credential-free
+      evaluator job, the closure job's require_acceptance_verdict, and both contract clauses.
+    command: bin/venv-python -m pytest "tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py::TestAcceptanceGateAssertions" -q
+    expected: Each new assertion has a passing AND a failing limb, and the check still declares examined()/skipped() on every path.
+    fix_if: An assertion has no failing limb -- it would pass vacuously against a workflow that dropped the property.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: trailer-acceptance-evaluator-job-is-credential-free
+    expected_literals:
+      - "passed"
+  - step: 9
+    phase: pre-deploy
+    action: require_decidable refuses an undecidable acceptance and admits the shapes the repo actually files.
+    command: bin/venv-python -m pytest "tests/test_executor_acceptance_lint.py::TestRequireDecidable" -q
+    expected: >-
+      Prose and bare-pytest-path acceptances are refused; backtick-wrapped grep, a pipeline whose
+      tail segment asserts, and a declared --assert-<name> exit contract are all admitted.
+    fix_if: >-
+      The backlog_health rollup shape or a --assert-<name> oracle is refused -- the scheduled
+      monitor's own weekly filing and the two ratified exit-contract sensors would break.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: acceptance-lint-require-decidable-admits-pipeline-tail
+    expected_literals:
+      - "passed"
+  - step: 10
+    phase: pre-deploy
+    action: The pre-existing quote-cutting false-pass is closed -- a lone grep with quoted alternation no longer evades the lint.
+    command: bin/venv-python -m pytest "tests/test_executor_acceptance_lint.py::TestRequireDecidable::test_quoted_alternation_is_still_non_discriminating" -q
+    expected: A lone grep carrying quoted alternation is refused under require_discrimination=True, as a plain lone grep already is.
+    fix_if: It is admitted -- the splitter still cuts inside quotes, and the new flag has inherited the same hole.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: acceptance-lint-splitter-is-quote-aware
+    expected_literals:
+      - "1 passed"
+  - step: 11
+    phase: pre-deploy
+    action: The census stage EXECUTES the grammar ratchet -- an undecidable acceptance becomes the out_of_grammar verdict.
+    command: bin/venv-python -m pytest "tests/test_rec_trailer_acceptance.py::TestCensus::test_undecidable_acceptance_is_out_of_grammar" -q
+    expected: A trailer-named rec whose acceptance carries no decidable assertion is classified out_of_grammar and never probed.
+    fix_if: It is classified probeable -- the ratchet is declared but not executed on the one path this plan owns.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: trailer-census-executes-decidability-ratchet
+    expected_literals:
+      - "1 passed"
+  - step: 12
+    phase: pre-deploy
+    action: docs/contracts/git-ops.yaml declares the trailer acceptance gate the registered evaluator reads.
+    command: grep -c "trailer_acceptance_gate" docs/contracts/git-ops.yaml
+    expected: A non-zero count is printed and grep exits 0.
+    fix_if: grep exits 1 -- the Decision 168 evaluator/contract binding is not in place, so the new clause is orphaned.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: git-ops-declares-trailer-acceptance-gate
+  - step: 13
+    phase: pre-deploy
+    action: ci.yml carries the acceptance-verdict wiring (the literal rec-3984's acceptance greps for).
+    command: grep -c "acceptance_verdict" .github/workflows/ci.yml
+    expected: A non-zero count is printed and grep exits 0.
+    fix_if: grep exits 1 -- the closure job is not consuming a verdict document.
+    hermetic: true
+    graduation: graduate
+    graduation_check_id: ci-yml-consumes-acceptance-verdict
+  - step: 14
+    phase: pre-deploy
+    action: Decision 155's reversal condition (c) is still mechanically pinned -- the backfill step's failed-counter exit survives.
+    command: bin/venv-python -m pytest "tests/ops_data_portal/test_decisions_divergence_guard.py::TestSubstantiveSignalPin::test_rec_autoclose_exits_nonzero_on_failed_rows" -q
+    expected: The graduated shard rec-autoclose-failed-counter-exit-present still passes against the edited workflow.
+    fix_if: It fails -- the closure-step removal disturbed the backfill step; restore its `sys.exit(1 if result["failed"] else 0)` line verbatim.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Already a graduated registry shard (rec-autoclose-failed-counter-exit-present); a second
+      registry row for the same node id would duplicate an existing standing guard exactly.
+  - step: 15
+    phase: pre-deploy
+    action: The plan document validates.
+    command: bin/venv-python -m scripts.roadmap.plan_document docs/plans/PLAN-trailer-acceptance-static-gate.yaml
+    expected: PASS against the PlanDocument schema, with no unsat_guard failure.
+    fix_if: A schema failure -- fix the plan before proceeding; a WARN on the context span or a self-satisfying literal is advisory only.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Re-running the plan-document validator is already a standing gate (validate_plan_documents in
+      both presubmit tiers); a registry shard would duplicate it exactly.
+  - step: 16
+    phase: pre-deploy
+    action: The R3 workflow-body ratchet and the contract-drift guard both pass over the new workflow and contract edits.
+    command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_composite_action_shell_bodies.py tests/checks/contracts/test__ratchet.py -q
+    expected: Every new ci.yml run-body has a baseline entry with an authorising marker, and both contract bumps are accepted.
+    fix_if: An unregistered body or an unauthorised marker -- register the body, or make the new Decision name .github/workflows/ci.yml.
+    hermetic: true
+    graduation: waive
+    graduation_waiver_reason: >-
+      Both guards are already registered checks with their own graduated coverage; this step is a
+      fast local pre-flight of them, not a new standing regression guard.
+  - step: 17
+    phase: pre-deploy
+    action: The three declaration-armed gates see this plan in the diff and run for real rather than no-opping.
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay tests/checks/verification/validate_graduation_completeness tests/checks/verification/validate_scope_boundary -q
+    expected: The replay, graduation-completeness and scope-boundary suites pass with this plan present and implementation_declared true.
+    fix_if: Any gate prints "no docs/plans/PLAN-*.yaml in the diff -- no-op" -- the plan's own path is missing from the commit.
+    hermetic: true
+    graduation: not-applicable
+  - step: 18
+    phase: pre-deploy
+    action: Run the fast presubmit tier, where the new shards' differential admission gate and both graduation legs fire.
+    command: bin/venv-python -m scripts.validate --pre
+    expected: >-
+      The printed summary reports zero failed checks. validate_verification_registry runs the
+      differential for each of the three new shards and must report every one ADMITTED;
+      validate_rec_autoclose_trailer_gate, validate_composite_action_shell_bodies,
+      validate_contract_drift, validate_plan_documents and validate_scope_boundary must all pass.
+    fix_if: >-
+      Read the summary, never the exit code -- Decision 73 makes --pre exit 0 while printing
+      "Failed checks" outside CI. A "not admitted" differential means a shard's node id does not
+      fail at origin/main; an R3-workflow violation means a new ci.yml run-body is unregistered or
+      its marker cites a Decision that does not name .github/workflows/ci.yml.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      The command invokes scripts.validate, which docs/contracts/vp-red-before.yaml's
+      recursion_refusal refuses statically for a graduate disposition, and Decision 73 makes its
+      exit code meaningless outside CI (exit 0 while printing failures), so it is not expressible
+      as a command_exit_zero kernel assertion. Its constituent checks are already registered.
+  - step: 19
+    phase: pre-deploy
+    action: Run the full presubmit tier locally before handoff, as handoff_policy declares.
+    command: bin/venv-python -m scripts.validate
+    expected: >-
+      The printed summary reports zero failed checks, including the full-tier-only legs
+      (validate_test_coverage, the DQ runner, the verifier harness) over every scope file.
+    fix_if: >-
+      Per handoff_policy.timeout_disposition, a timeout is BLOCKED -- resume later and rerun the
+      full tier from the start; never commit on a partial run. Budget ~16-20 minutes.
+    hermetic: false
+    graduation: waive
+    graduation_waiver_reason: >-
+      Same recursion refusal and Decision 73 exit-code caveat as step 18, at the full tier: the
+      command invokes scripts.validate, which vp-red-before.yaml's recursion_refusal refuses
+      statically for a graduate disposition, and its exit code is not a kernel assertion outside
+      CI. Its constituent checks are each already registered in their own right.
+  - step: 20
+    phase: post-deploy
+    action: >-
+      Run the real pipeline at HEAD over a two-entry payload -- one acceptance known to pass and
+      rec-940's acceptance, the dossier exhibit known to fail on main today -- and confirm the
+      verdicts discriminate.
+    command: bin/venv-python -m scripts.rec_trailer_acceptance evaluate --payload tests/fixtures/trailer_acceptance_smoke.json --artifact-dir /tmp/trailer_acceptance_smoke
+    expected: >-
+      isolation_available is true and the two records carry verdict "holds" and verdict "fails"
+      respectively -- the evaluator genuinely discriminates a satisfied oracle from an unsatisfied
+      one at a real tree.
+    fix_if: >-
+      isolation_available is false -- the sandbox primitive did not engage on this container; do not
+      treat any verdict from that run as real. Re-read the same two literals from the merged push
+      run's trailer-acceptance-evaluate job log instead. Both verdicts identical means the payload
+      is not discriminating.
+    hermetic: false
+    graduation: not-applicable
+  - step: 21
+    phase: post-deploy
+    action: rec-3867 is superseded through the portal, not trailer-closed.
+    command: bin/venv-python -m scripts.ops_data_portal --sync && grep -F rec-3867 logs/.recommendations-log.jsonl | grep -c superseded
+    expected: The refreshed read cache shows rec-3867 with status superseded.
+    fix_if: The rec is still open, or closed rather than superseded -- re-run the portal update; never hand-edit the cache.
+    hermetic: false
+    graduation: not-applicable
+test_obligations:
+  - source: scripts/rec_trailer_acceptance.py
+    behavior: The bucket x probe-verdict map stays total, and its shared arms stay equal to scripts.backlog_health's own vocabularies.
+    verification_step: 1
+    test_selector: tests/test_rec_trailer_acceptance.py::TestVerdictMapping::test_mapping_is_total
+    red_green_expectation: red before (module absent), green after
+  - source: scripts/ops_portal/closure_gate.py
+    behavior: A non-holds or mis-keyed acceptance verdict refuses the closing write; an absent one does not.
+    verification_step: 4
+    test_selector: tests/ops_data_portal/test_closure_gate.py::TestAcceptanceVerdict
+    red_green_expectation: red before (class absent), green after
+  - source: scripts/ops_portal/ci_rca_lifecycle.py
+    behavior: >-
+      A refused rec is left OPEN with a distinct marker and a close_proposed command, exit_code stays
+      0, and require_acceptance_verdict True makes an absent verdict a refusal rather than a close.
+    verification_step: 6
+    test_selector: tests/ci_rca/test_close_recs_from_trailer.py::TestAcceptanceVerdictRefusal::test_absent_verdict_is_refused_when_required
+    red_green_expectation: red before, green after
+  - source: scripts/ops_data_portal.py
+    behavior: acceptance_verdict is a gate input, never a context_v2_json stamp, so a blob-less rec still closes.
+    verification_step: 7
+    test_selector: tests/ci_rca/test_close_recs_from_trailer.py::TestAcceptanceVerdictRefusal::test_closes_blobless_rec_on_holds
+    red_green_expectation: red before (kwarg absent), green after
+  - source: scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py
+    behavior: >-
+      The check asserts ci.yml's delegation, the evaluator job's credential-free permissions, the
+      closure job's require_acceptance_verdict, and both contracts' new clauses.
+    verification_step: 8
+    test_selector: tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py::TestAcceptanceGateAssertions
+    red_green_expectation: red before, green after
+  - source: scripts/executor/acceptance_lint.py
+    behavior: >-
+      require_decidable refuses a no-assertion acceptance, admits a pipeline tail and a declared
+      --assert-<name> exit contract, and the quote-aware splitter no longer lets quoted alternation
+      evade require_discrimination.
+    verification_step: 10
+    test_selector: tests/test_executor_acceptance_lint.py::TestRequireDecidable::test_quoted_alternation_is_still_non_discriminating
+    red_green_expectation: red before, green after
+  - source: .github/workflows/ci.yml
+    behavior: >-
+      The evaluator job declares no id-token permission, and the closure job consumes a verdict
+      document and passes require_acceptance_verdict.
+    verification_step: 8
+    test_selector: tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py::TestAcceptanceGateAssertions
+    red_green_expectation: red before, green after
+  - source: .github/workflows/rec-autoclose.yml
+    behavior: The closure step is gone and the backfill step's failed-counter exit survives byte-intact.
+    verification_step: 14
+    test_selector: tests/ops_data_portal/test_decisions_divergence_guard.py::TestSubstantiveSignalPin::test_rec_autoclose_exits_nonzero_on_failed_rows
+    red_green_expectation: green before and after -- an anti-regression pin on the step this plan must NOT disturb
+  - source: config/composite_action_body_baseline.yaml
+    behavior: Every new ci.yml run-body is registered at its measured count with an authorising raise-approved marker.
+    verification_step: 16
+    command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_composite_action_shell_bodies.py
+    waiver_reason: >-
+      Config data consumed by an already-registered, already-tested guard; the guard's own suite is
+      the behaviour test and a second one would duplicate it exactly.
+  - source: config/ci_rca_taxonomy.yaml
+    behavior: The rec-autoclose row's rationale no longer claims the workflow closes recs from a Resolves trailer.
+    verification_step: 8
+    test_selector: tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py::TestAcceptanceGateAssertions
+    waiver_reason: >-
+      A prose-only correction to a rationale field no evaluator parses -- validate_ci_rca_adjudication
+      asserts tier, ci_rca and agent_loop_caps agreement, never rationale text. There is no behaviour
+      to guard, and inventing a literal-pin test on a prose sentence would be the drift this repo's
+      own contract-parity rules exist to prevent.
+  - source: scripts/rec_trailer_acceptance.py
+    behavior: The census stage executes the decidability ratchet, so an undecidable acceptance becomes out_of_grammar.
+    verification_step: 11
+    test_selector: tests/test_rec_trailer_acceptance.py::TestCensus::test_undecidable_acceptance_is_out_of_grammar
+    red_green_expectation: red before, green after
+  - source: docs/contracts/git-ops.yaml
+    behavior: The contract declares trailer_acceptance_gate, which the registered evaluator reads and asserts.
+    verification_step: 12
+    command: grep -c "trailer_acceptance_gate" docs/contracts/git-ops.yaml
+    red_green_expectation: red before (grep exits 1), green after
+  - source: docs/contracts/ci-rca-lifecycle.yaml
+    behavior: >-
+      refusal_contract and closure_dependency.trap name ci.yml rather than rec-autoclose.yml, and the
+      extended guard reads this contract by basename literal so the Decision 168 binding resolves.
+    verification_step: 8
+    test_selector: tests/checks/ci_guards/test_validate_rec_autoclose_trailer_gate.py::TestAcceptanceGateAssertions
+    red_green_expectation: red before, green after
+  - source: config/agent/verification_registry/entries/trailer-acceptance-verdict-refuses-non-holds.yaml
+    behavior: The shard's check_id equals VP step 4's graduation_check_id and its check_spec is admitted by the differential gate.
+    verification_step: 17
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay tests/checks/verification/validate_graduation_completeness
+    waiver_reason: >-
+      Both properties are owned by registered checks -- validate_graduation_completeness fails on an
+      orphaned shard or an unmatched graduate step, and validate_verification_registry runs the real
+      differential for every added-or-modified entry in the diff. A dedicated test would duplicate
+      those registered verifiers over the same data (Decision 86). Mirrors the identical row in
+      PLAN-rec-autoclose-trailer-gate-oserror-coverage.
+  - source: config/agent/verification_registry/entries/trailer-acceptance-evaluator-job-is-credential-free.yaml
+    behavior: The shard's check_id equals VP step 8's graduation_check_id and its check_spec is admitted by the differential gate.
+    verification_step: 17
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay tests/checks/verification/validate_graduation_completeness
+    waiver_reason: >-
+      Same registered-verifier ownership as the sibling shard row above; a dedicated test would
+      duplicate validate_graduation_completeness and validate_verification_registry over the same
+      data rather than guard new behaviour (Decision 86).
+  - source: config/agent/verification_registry/entries/trailer-closure-cannot-fail-open.yaml
+    behavior: The shard's check_id equals VP step 6's graduation_check_id and its check_spec is admitted by the differential gate.
+    verification_step: 17
+    command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay tests/checks/verification/validate_graduation_completeness
+    waiver_reason: >-
+      Same registered-verifier ownership as the two sibling shard rows above; a dedicated test would
+      duplicate validate_graduation_completeness and validate_verification_registry over the same
+      data rather than guard new behaviour (Decision 86).
+constraints:
+  - No rescue agents or workaround loops (Decision 55/72); the gate refuses and surfaces -- it never files, retries, synthesises or downgrades.
+  - >-
+    Decision 143 (SETTLED, not a fork): the evaluator job holds permissions {contents: read}, no
+    id-token grant and no writer secret, and the guard's assertion of that is escape-free -- no
+    marker, no allowlist, no skip path. rec-autoclose.yml's job-level id-token: write is exactly why
+    an in-handler guard cannot be the boundary. The grammar allowlist is defence-in-depth only.
+  - >-
+    Decision 186: point 2's ONE ENFORCEMENT SITE -- assert_acceptance_verdict is called beside
+    assert_closure_obligation inside update_rec, never as a second gate elsewhere. Point 7's catch
+    contract must survive the relocation byte-for-behaviour: ClosureArtifactRequired caught, marker
+    printed, rec left OPEN, exit 0.
+  - >-
+    Decision 163: both new flags must be EXECUTED, not merely declared. require_acceptance_verdict
+    True on the trailer path means it cannot fail open; require_decidable is executed in the census
+    stage. The two deferred bindings (write boundary, validate_acceptance_literals) are owned by
+    rec-4001 and the non-trailer closure residual by rec-3999 -- named owners, not declarations
+    (Decision 181 clause 2).
+  - >-
+    Two-boundary frame: write-boundary validation checks SHAPE, verify-boundary validation checks
+    TRUTH. The grammar ratchet is a precondition for the close-time oracle run, never a substitute --
+    24 of the 30 measured false closures are well-formed oracles whose assertion simply did not hold,
+    and only the close-time run catches those. State this in the Decision or a reviewer will
+    reasonably ask why a single-digit filing-time refusal rate warrants a numbered Decision.
+  - >-
+    Decision 189 vocabulary axis: keep a SEPARATE top-level vocabulary and justify why. vp-red-
+    before.yaml classifies whether a step correctly failed BEFORE implementation (assertion_failed is
+    a PASS there); this one classifies whether a rec's oracle HOLDS at the closing commit (fails is
+    the false-closure signal) -- inverted polarity, so verbatim reuse would be drift. out_of_grammar
+    is not tautological: tautological is a measured exit 0, out_of_grammar is a deliberate refusal to
+    execute, and it routes differently (rewrite the acceptance, not re-run). The axis is asserted by
+    VP step 3, not merely stated.
+  - >-
+    NEVER shell=True and never a new executor: execution goes through
+    scripts.backlog_health.probe.run_all, whose sandbox (unshare -rmn, read-only bind mount, no
+    network, pid cap, bounded timeout) is live-validated on GitHub-hosted runners in backlog-health
+    runs 3/4/5 and reproduced locally in this planning session.
+  - >-
+    Decision 162 spirit: every new ci.yml job body is a thin
+    `bin/venv-python -m scripts.rec_trailer_acceptance <verb>` adapter. This does NOT remove the
+    marker obligation -- r3_workflows sets gates_new_entry True, so every new inline run body needs a
+    baseline entry AND a marker whose Decision mentions `.github/workflows/ci.yml`.
+  - >-
+    Decision 155: rec-autoclose.yml's backfill step keeps `sys.exit(1 if result["failed"] else 0)`
+    byte-intact; the graduated shard rec-autoclose-failed-counter-exit-present pins reversal
+    condition (c) to it. Do not rename the `autoclose` job -- R3 keys are workflow::job::step.
+  - >-
+    Decision 142: the closure job stamps the same merge-commit GITHUB_SHA the ancestry check
+    consumes. CI is already a ci_rca-watched workflow (config/ci_rca_taxonomy.yaml `CI` row and
+    ci-rca.yml's workflows filter), so the rec-2849 property survives the move.
+  - >-
+    scripts/rec_trailer_acceptance.py MUST NOT import closure_stamps_applicable. The graduated shard
+    tests/ops_data_portal/test_closure_gate.py::TestContractParity::
+    test_stamp_precondition_call_sites_match_importers derives importers of that symbol by AST; a new
+    importer requires updating ci-rca-lifecycle.yaml's stamp_precondition.call_sites in the same PR,
+    which this plan deliberately avoids.
+  - >-
+    Decision 189 red-before: the partition is graduation == "graduate" ALONE; hermetic false does NOT
+    exempt. Every graduate pre-deploy step above was replayed against the un-implemented tree during
+    planning and genuinely fails. No graduate step invokes scripts.validate (statically refused for
+    recursion). Use POSIX grep in canonical argument order, never rg (absent from the runner).
+  - >-
+    Decision 128 SLOC: scripts/ops_data_portal.py has 22 effective lines of headroom and no budget
+    entry -- decompose rather than raise if the update_rec change cannot fit.
+    docs/contracts/ci-rca-lifecycle.yaml has 24 lines of headroom against the contracts class's 500.
+  - >-
+    Decision 168: each Class D contract edit needs an amendment_log[] entry, a contract_version bump,
+    AND an evaluator that demonstrably reads it -- the extended guard must read BOTH git-ops.yaml and
+    ci-rca-lifecycle.yaml by basename literal.
+  - >-
+    Decision 59 scope boundary: scripts/ops_portal/cli.py line 45 is an argparse dest-to-column
+    mapping dict that validate_acceptance_literals' AST walk misreads as an acceptance literal. It is
+    a scanner defect, recorded in rec-4001, and must NOT be fixed inline here.
+  - >-
+    Decision 73: `--pre` exits 0 while printing "Failed checks" outside CI. Read the SUMMARY, never
+    the exit code. The full tier takes ~16-20 minutes on this container and is not waivable.
+  - bin/venv-python never python/python3; Linux/bash only; line length 127; type hints; no emojis; no em dashes; no comments unless the why is non-obvious.
+context:
+  - "Research dossier (measurements, prior art, rejected forks): the /overseer session's DOSSIER-trailer-acceptance.md; not restated here."
+  - "Decision-scout verdict: FLAGS_FOUND. CITE: 150, 177, 167, 165, 166, 128, 124, 155, 142, 181, 168, 132, 176. CONTRADICT: 186 (WARN), 103 (NOTE), 189 (NOTE). SPIRIT: 163 (WARN), 162 (WARN), 143 (NOTE). RELATED: 197, 67, 55, 72, 131, 184, 48. ROADMAP CITE: T3.9:c3, T2.54:c1."
+  - "Decisions triaged: 150 of 150."
+  - "Roadmap items intersected: 20; CONFLICT: 0; RELATED: 18."
+  - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
+  - "Defect measured: 30 of 100 auto-closed recs failed their own acceptance at the closing commit; exhibit rec-940 reproduced live this session (verdict fails). Composition of the 30: 24 plain literal greps that did not hold, 4 inverted/negated flag semantics, 2 grep-without--q, and ZERO attributable to ||-chains, pipelines or quoted alternation -- which is why the permissive grammar was chosen over an exit-semantics rule, on that rule's own stated tiebreak."
+  - "Reuse premise verified live: scripts/backlog_health census+probe is an existing, ratified, sandboxed acceptance-command executor with the same three-job credential split; backlog-health runs 3/4/5 are green with isolation engaged, and the probe reproduced rec-940's failure locally. Per the scout, this is 103's permitted on-demand-per-rec mode, not a contradiction -- the clause this plan actually crosses is 103's OTHER half, no new acceptance machinery, which the verdict LAYER crosses."
+  - "require_decidable blast radius measured against logs/.recommendations-log.jsonl: 72 of 1327 open recs (5.4%) refused with the --assert-<name> admission, 0 source=ci_rca, all four backlog_health rollup shapes admitted."
+  - "Write-boundary binding DEFERRED to rec-4001 on measured evidence: it would refuse three shipped `bin/venv-python -m scripts.validate --pre` acceptance literals (scripts/checks/_budget_recs.py:217 and :282, scripts/convergence_health/budget_ingest.py:371) that active budget_breach / budget_bypass filers write at runtime. The ratchet is instead executed in the census stage, where a refusal is a verdict rather than a write failure."
+  - "T3.9 boundary (c3): that criterion's closure-with-recorded-proof subject overlaps this gate, but T3.9's MVP signal is FILE-LEVEL overlap between a merge's changed files and open recs' `file` field -- a different population from the trailer's named ids. No T3.9 criterion is closed here."
+  - "T3.9:c4 gap owned by rec-4000: a `holds` verdict does not evaluate the ci_rca fingerprint rule, so a source=ci_rca rec named in a trailer whose acceptance holds still closes without its fingerprint resolved."
+  - "Slice boundary: this is slice A. Slice B (PLAN-trailer-acceptance-junit-verdict) adds the junit ::node_id source. A merges first. Operator adjusted the boundary to let this plan correct config/ci_rca_taxonomy.yaml's rec-autoclose rationale prose."
+  - "rec-3984 is NOT named in this plan's trailer even though this plan lands all three legs of its acceptance -- slice B owns it per the operator-confirmed boundary."
+  - "Decision numbering: 198 is claimed by the unlanded PLAN-decision-198-brand-supersession; resolve the next free number at implement time, never at plan time."
+pre_implementation_checklist:
+  - Branch confirmed not on main
+  - docs/PROJECT_CONTEXT.md read
+  - only the plan-cited decision sections
+  - All files in scope located and readable
+  - Acceptance criteria understood and verifiable
+  - Next free Decision number resolved against DECISIONS.md AND every plan under docs/plans/
+execution_steps:
+  - Create scripts/rec_trailer_acceptance.py and tests/test_rec_trailer_acceptance.py -- vocabulary, total map, axis parity, census (executing require_decidable), evaluate, rejoin, thin-adapter CLI.
+  - Extend scripts/ops_portal/closure_gate.py with ACCEPTANCE_VERDICTS, AcceptanceVerdictRefused and assert_acceptance_verdict; cover it in tests/ops_data_portal/test_closure_gate.py.
+  - Add update_rec's acceptance_verdict kwarg beside assert_closure_obligation, within the 20-effective-line headroom budget.
+  - Thread acceptance_verdicts plus require_acceptance_verdict through close_recs_from_trailer with its own marker and close_proposed emission; preserve the ClosureArtifactRequired catch and exit-0 posture; cover both in tests/ci_rca/test_close_recs_from_trailer.py.
+  - Add require_decidable to lint_acceptance_command and rebuild _classify_non_discriminating's splitter on the same quote-aware tokenizer; cover both, including the --assert-<name> admission.
+  - Add the three push-only ci.yml jobs as thin adapters, remove rec-autoclose.yml's closure step leaving the backfill byte-intact, register every new run-body in config/composite_action_body_baseline.yaml with an authorising marker, and correct config/ci_rca_taxonomy.yaml's rec-autoclose rationale.
+  - Extend scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py and its test with the new escape-free assertions, reading both contracts by basename literal.
+  - Amend docs/contracts/git-ops.yaml and docs/contracts/ci-rca-lifecycle.yaml (amendment_log entry plus contract_version bump each).
+  - Resolve the next free Decision number, then add the new numbered Decision plus dated annotations on Decision 103 and on Decision 186 point 7.
+  - Create the three verification_registry shards for VP steps 4, 6 and 8.
+  - Supersede rec-3867 via the ops portal; never trailer-close it.
+  - Execute the Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55).
+  - "Report: what was implemented, verification results"
+work_areas: []
+rollback: >-
+  Revert the merge. The gate is additive: with the three ci.yml jobs removed and rec-autoclose.yml
+  restored, trailer closure returns to its current unverified behaviour, and both new flags
+  (require_decidable, require_acceptance_verdict) default to False so no existing write path changes.
+  The quote-aware splitter fix is the one behavioural change that outlives a partial revert; it
+  tightens an already-bound flag and was measured to affect no shipped acceptance literal.
