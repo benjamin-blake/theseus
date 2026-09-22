@@ -81,9 +81,11 @@ scope:
     action: Modify
     purpose: >-
       A publish_artifacts row indexing the registry-publication channel (trigger, actor_role
-      operator, recovery), plus the Class D amendment_log entry Decision 168 requires. Decision 126
-      clause 1 gives each shipping trigger exactly one indexed row; without it a fourth trigger
-      exists that the navigation index does not name.
+      operator, recovery), plus the Class D amendment_log entry Decision 168 requires. Decision 126 clause 1 governs the three
+      AGENT intents plus an operator-only admin tier; a registry publish is neither, so this row
+      is a deliberate EXTENSION of the operator tier rather than something clause 1 compels --
+      taken because the index is the documented place an agent looks for a shipping path, and a
+      fourth trigger it does not name is the improvisation risk clause 1's Problem describes.
   - file: docs/contracts/file-router.yaml
     action: Modify
     purpose: >-
@@ -114,6 +116,9 @@ followon_recs:
   - rec-3941
   - rec-4013
   - rec-4014
+  - rec-4015
+  - rec-4016
+  - rec-4017
 closes_criteria: []
 infrastructure_dependencies: []
 
@@ -131,9 +136,11 @@ acceptance_criteria:
     `environment: pypi`, carries `id-token: write` on the publish job and no id-token permission at
     the top level, and references no secret, password or upload-artifact. Proven by VP steps 6-7.
   - >-
-    Every governance registration a new workflow and a new subtree require is present: the
-    r3_workflows body entry, the ci_rca_taxonomy row, the CODEOWNERS row, the deploy-paths
-    publish_artifacts row and the file-router route. Proven by VP steps 8-11 and 14.
+    Every registration this repository mechanically requires of a new workflow is present -- the
+    r3_workflows body entry and the ci_rca_taxonomy row -- alongside three VOLUNTARY ones the
+    plan adds for discoverability and change-control: the CODEOWNERS row, the deploy-paths
+    publish_artifacts row, and the file-router route (validate_placement checks route shape and
+    dead targets only; it does not require a subtree to be routed). Proven by VP steps 8-11, 14.
   - >-
     The PyPI trust binding is structurally guarded, not merely described: the contract records the
     repository/workflow-filename/environment triple and a check fails if the live workflow drifts
@@ -143,16 +150,21 @@ acceptance_criteria:
     preserved by construction. Proven by VP step 12.
   - >-
     docs/contracts/file-router.yaml stays at or under 490 effective lines (Decision 166 contracts
-    class, limit 500) and the amendment-log compaction lost no date, plan name or Decision citation.
-    Proven by VP steps 14-15.
+    class, limit 500), and the amendment-log compaction lost no date and no PLAN-/Decision/rec
+    citation token. Proven by VP steps 14-15, the latter by set-difference over both.
   - >-
-    rec-3995's acceptance oracle passes -- the contract no longer asserts the retired
-    Theseus/Guerdon/Semanto hierarchy and cites Decision 198 -- and all ten corrections are recorded
-    with contract_version 2. Proven by VP steps 16-17.
+    rec-3995's acceptance oracle passes, and each of the ten corrections is asserted against the
+    specific key it belongs to: C1 header comment, C2 posture.installability_rationale,
+    C3 identity.security_contact, C4 identity.crates_io_ownership (rec-3995's four);
+    C5 posture.disposition, C6 posture.neutral_placeholder (the two its own oracle misses);
+    C7 posture.scope_anti_squatting, C8 procedure.npm, C9 procedure.pypi, C10 procedure.crates_io
+    (execution-discovered). Zero live rec-3922 citations outside the append-only amendment_log,
+    a complete pypi_trusted_publisher block, contract_version 2. Proven by VP steps 16-17.
   - >-
-    rec-3941 remains OPEN at merge and closes only when the operator's publishes make
-    `bin/venv-python -m scripts.package_registry_probe --require-claimed ontheloop` exit 0 AND the
-    ownership check confirms the claims are ours. Proven by VP steps 24-25.
+    The four artefacts are published and OURS -- the probe exits 0 (step 24) and the owner read
+    names the company identity on each (step 25). rec-3941 is deliberately NOT closed by this
+    plan's merge and carries no closure step; it is the operator's post-publish disposition,
+    which is why it sits in followon_recs rather than bundled_recommendations.
 
 verification_plan:
   - step: 1
@@ -168,11 +180,14 @@ verification_plan:
   - step: 2
     phase: pre-deploy
     action: Both npm manifests declare their intended names -- bare defensive hold and canonical scope.
-    command: bin/venv-python -c "import json,pathlib;b=json.loads(pathlib.Path('packages/ontheloop-js/package.json').read_text());s=json.loads(pathlib.Path('packages/ontheloop-js-scoped/package.json').read_text());print('JS_BARE='+b['name']);print('JS_SCOPED='+s['name']);print('JS_VERSIONS='+b['version']+','+s['version']);print('JS_LICENSES='+b['license']+','+s['license'])"
+    command: bin/venv-python -c "import json,pathlib;b=json.loads(pathlib.Path('packages/ontheloop-js/package.json').read_text());s=json.loads(pathlib.Path('packages/ontheloop-js-scoped/package.json').read_text());print('JS_BARE='+b['name']);print('JS_SCOPED='+s['name']);print('JS_VERSIONS='+b['version']+','+s['version']);print('JS_LICENSES='+b['license']+','+s['license']);print('JS_SCOPED_ACCESS='+str((s.get('publishConfig') or {}).get('access')))"
     expected: Bare and scoped names both correct, both at 0.0.0, both BUSL-1.1.
-    fix_if: Either manifest missing, or the scope spelled @ontheloop rather than @onthelooplabs.
+    fix_if: >-
+      Either manifest missing, the scope spelled @ontheloop rather than @onthelooplabs, or
+      publishConfig.access absent -- a scoped package's FIRST publish defaults to `restricted`
+      and fails with HTTP 402 on a free org, which no dry-run detects.
     hermetic: true
-    expected_literals: ["JS_BARE=ontheloop", "JS_SCOPED=@onthelooplabs/ontheloop", "JS_VERSIONS=0.0.0,0.0.0", "JS_LICENSES=BUSL-1.1,BUSL-1.1"]
+    expected_literals: ["JS_BARE=ontheloop", "JS_SCOPED=@onthelooplabs/ontheloop", "JS_VERSIONS=0.0.0,0.0.0", "JS_LICENSES=BUSL-1.1,BUSL-1.1", "JS_SCOPED_ACCESS=public"]
     graduation: graduate
     graduation_check_id: ontheloop-js-manifest-identity
   - step: 3
@@ -238,7 +253,7 @@ verification_plan:
   - step: 8
     phase: pre-deploy
     action: The workflow's inline run body is registered in the r3_workflows baseline (Decision 162 R3).
-    command: bin/venv-python -c "import yaml;from scripts.checks.ci_guards import _workflow_shell_bodies as w;b=yaml.safe_load(open('config/composite_action_body_baseline.yaml'))['r3_workflows'];k=[x for x in w.scan_workflow_bodies() if 'publish-ontheloop' in x];print('WF_BODIES='+str(len(k)));print('WF_BODIES_UNREGISTERED='+str(len([x for x in k if x not in b])))"
+    command: bin/venv-python -c "import sys,yaml;from scripts.checks.ci_guards import _workflow_shell_bodies as w;b=yaml.safe_load(open('config/composite_action_body_baseline.yaml'))['r3_workflows'];k=[x for x in w.scan_workflow_bodies() if 'publish-ontheloop' in x];u=[x for x in k if x not in b];print('WF_BODIES='+str(len(k)));print('WF_BODIES_UNREGISTERED='+str(len(u)));sys.exit(0 if len(k)==1 and not u else 1)"
     expected: Exactly one inline body, registered.
     fix_if: >-
       An unregistered body fails validate_composite_action_shell_bodies; a second body means the
@@ -260,7 +275,7 @@ verification_plan:
   - step: 10
     phase: pre-deploy
     action: CODEOWNERS carries a path row for the publish workflow.
-    command: bin/venv-python -c "import pathlib;t=pathlib.Path('.github/CODEOWNERS').read_text();print('CODEOWNERS_ROW='+str(any(l.startswith('/.github/workflows/publish-ontheloop.yml') for l in t.splitlines())))"
+    command: bin/venv-python -c "import sys,pathlib;t=pathlib.Path('.github/CODEOWNERS').read_text();ok=any(l.startswith('/.github/workflows/publish-ontheloop.yml') for l in t.splitlines());print('CODEOWNERS_ROW='+str(ok));sys.exit(0 if ok else 1)"
     expected: A row exists, so changing the publish path needs code-owner review.
     fix_if: Row absent -- the Environment gates execution but nothing gates modification.
     hermetic: true
@@ -272,11 +287,15 @@ verification_plan:
     action: >-
       deploy-paths.yaml indexes the registry-publication channel, so the navigation index names
       every shipping trigger (Decision 126 clause 1).
-    command: bin/venv-python -c "import yaml;d=yaml.safe_load(open('docs/contracts/deploy-paths.yaml'));r=d.get('publish_artifacts') or {};print('DP_ROW_PRESENT='+str(bool(r)));print('DP_ACTOR='+str(r.get('actor_role')));print('DP_HAS_TRIGGER='+str(bool(r.get('trigger'))));print('DP_HAS_RECOVERY='+str(bool(r.get('recovery'))))"
-    expected: The row exists with an operator actor_role, a trigger and a recovery pointer.
-    fix_if: Row missing -- a fourth shipping trigger exists that the index does not name.
+    command: bin/venv-python -c "import sys,yaml;d=yaml.safe_load(open('docs/contracts/deploy-paths.yaml'));r=d.get('publish_artifacts') or {};miss=[k for k in ('trigger','recovery','blocks_ref','description') if not r.get(k)];print('DP_ROW_PRESENT='+str(bool(r)));print('DP_ACTOR='+str(r.get('actor_role')));print('DP_MISSING_KEYS='+str(miss));sys.exit(0 if r and r.get('actor_role')=='operator' and not miss else 1)"
+    expected: >-
+      The row exists with an operator actor_role and carries all four keys its four sibling
+      channels carry -- trigger, recovery, blocks_ref and description.
+    fix_if: >-
+      Row missing, or shaped unlike its siblings -- a row without blocks_ref/description reads as
+      a second source of truth rather than the pointer Decision 126 clause 2 requires.
     hermetic: true
-    expected_literals: ["DP_ROW_PRESENT=True", "DP_ACTOR=operator", "DP_HAS_TRIGGER=True", "DP_HAS_RECOVERY=True"]
+    expected_literals: ["DP_ROW_PRESENT=True", "DP_ACTOR=operator", "DP_MISSING_KEYS=[]"]
     graduation: graduate
     graduation_check_id: ontheloop-deploy-paths-publish-row
   - step: 12
@@ -287,8 +306,12 @@ verification_plan:
     command: bin/venv-python -c "import pathlib;ms=('setup-node','actions-rs/','dtolnay/rust-toolchain','setup-rust');hits=sorted({w.name for w in pathlib.Path('.github/workflows').glob('*.yml') for m in ms if m in w.read_text()});print('TOOLCHAIN_WORKFLOWS='+str(hits));print('TOOLCHAIN_HITS='+str(len(hits)))"
     expected: Zero workflows reference a Node or Rust toolchain action.
     fix_if: >-
-      A toolchain step was added -- that makes the repository polyglot in CI and fires Decision 80's
-      revisit trigger, which this plan is not scoped to handle.
+      A toolchain step was added. NOTE the citation precisely: Decision 80 clause 4's revisit
+      trigger is `executor concurrency > 1 AND (KG.13 filed OR a measured fast-tier budget
+      breach)`, which a Node or Rust toolchain does NOT fire. This assertion is therefore a NEW
+      VOLUNTARY guard introduced by this plan, not a Decision 80 consequence -- it keeps 80's
+      stated PREMISE (single-language, no compiled build) true rather than its trigger unfired.
+      Widening it is a judgement call for a future plan, not a gate failure to route around.
     hermetic: true
     expected_literals: ["TOOLCHAIN_HITS=0"]
     graduation: waive
@@ -317,7 +340,7 @@ verification_plan:
     action: >-
       file-router carries the new route and still sits under its Decision 166 contracts-class limit
       with real headroom.
-    command: bin/venv-python -c "import yaml;from pathlib import Path;from scripts.checks.structural._classify import effective_lines;p=Path('docs/contracts/file-router.yaml');txt=p.read_text();d=yaml.safe_load(txt);e=effective_lines(txt);print('ROUTER_EFF='+str(e));print('ROUTER_HEADROOM_OK='+str(e<=490));print('ROUTER_HAS_ROUTE='+str(any(r['topic']=='ontheloop-placeholder-packages' for r in d['routes'])))"
+    command: bin/venv-python -c "import sys,yaml;from pathlib import Path;from scripts.checks.structural._classify import effective_lines;p=Path('docs/contracts/file-router.yaml');txt=p.read_text();d=yaml.safe_load(txt);e=effective_lines(txt);hr=any(r['topic']=='distribution-packages' for r in d['routes']);print('ROUTER_EFF='+str(e));print('ROUTER_HEADROOM_OK='+str(e<=490));print('ROUTER_HAS_ROUTE='+str(hr));sys.exit(0 if e<=490 and hr else 1)"
     expected: Route present; effective lines at or under 490 (measured projection 476).
     fix_if: Compaction was insufficient, or the route is missing.
     hermetic: true
@@ -327,11 +350,14 @@ verification_plan:
   - step: 15
     phase: pre-deploy
     action: The file-router amendment-log compaction preserved every historical date and added exactly one entry.
-    command: bin/venv-python -c "import yaml,subprocess;b=yaml.safe_load(subprocess.run(['git','show','origin/main:docs/contracts/file-router.yaml'],capture_output=True,text=True).stdout)['amendment_log'];h=yaml.safe_load(open('docs/contracts/file-router.yaml'))['amendment_log'];print('ROUTER_DATES_LOST='+str(sorted(set(e['date'] for e in b)-set(e['date'] for e in h))));print('ROUTER_ENTRY_DELTA='+str(len(h)-len(b)))"
-    expected: No date lost; exactly one entry added.
+    command: bin/venv-python -c "import re,yaml,subprocess;tok=lambda es:set(re.findall(r'PLAN-[a-z0-9-]+|Decision [0-9]+|rec-[0-9]+',' '.join(e['summary'] for e in es)));b=yaml.safe_load(subprocess.run(['git','show','origin/main:docs/contracts/file-router.yaml'],capture_output=True,text=True).stdout)['amendment_log'];h=yaml.safe_load(open('docs/contracts/file-router.yaml'))['amendment_log'];print('ROUTER_DATES_LOST='+str(sorted(set(e['date'] for e in b)-set(e['date'] for e in h))));print('ROUTER_CITATIONS_LOST='+str(sorted(tok(b)-tok(h))));print('ROUTER_ENTRY_DELTA='+str(len(h)-len(b)))"
+    expected: >-
+      No date lost, no PLAN-/Decision/rec citation token lost, exactly one entry added. The
+      citation set-difference is what makes this step prove acceptance criterion 7 rather than
+      just its date half.
     fix_if: Compaction dropped an entry outright rather than shortening its summary.
     hermetic: true
-    expected_literals: ["ROUTER_DATES_LOST=[]", "ROUTER_ENTRY_DELTA=1"]
+    expected_literals: ["ROUTER_DATES_LOST=[]", "ROUTER_CITATIONS_LOST=[]", "ROUTER_ENTRY_DELTA=1"]
     graduation: waive
     graduation_waiver_reason: >-
       PR-relative -- compares HEAD against origin/main. Post-merge that ancestry collapses and the
@@ -341,7 +367,7 @@ verification_plan:
   - step: 16
     phase: pre-deploy
     action: rec-3995's acceptance oracle -- the contract drops the retired hierarchy and cites Decision 198.
-    command: bin/venv-python -c "import pathlib;t=pathlib.Path('docs/contracts/package-registry-reservation.yaml').read_text();print('REC3995_OLD_HIERARCHY='+str('remains Theseus / Guerdon / Semanto' in t));print('REC3995_CITES_198='+str('Decision 198' in t))"
+    command: bin/venv-python -c "import sys,pathlib;t=pathlib.Path('docs/contracts/package-registry-reservation.yaml').read_text();old='remains Theseus / Guerdon / Semanto' in t;new='Decision 198' in t;print('REC3995_OLD_HIERARCHY='+str(old));print('REC3995_CITES_198='+str(new));sys.exit(0 if (not old) and new else 1)"
     expected: Old hierarchy gone, Decision 198 cited.
     fix_if: The header still describes On The Loop as a candidate or the retired hierarchy as ratified.
     hermetic: true
@@ -351,17 +377,24 @@ verification_plan:
   - step: 17
     phase: pre-deploy
     action: >-
-      All ten corrections are recorded -- including the two stale rec-3922 references rec-3995's own
-      oracle does not reach -- and contract_version is bumped.
-    command: bin/venv-python -c "import yaml;d=yaml.safe_load(open('docs/contracts/package-registry-reservation.yaml'));t=yaml.safe_dump(d);print('SCOPE_ONTHELOOPLABS='+str('@onthelooplabs' in t));print('ORG_CREATION_RULE='+str('org creation' in t.lower()));print('TRUSTED_PUBLISHING='+str('Trusted Publishing' in t));print('PENDING_NOT_RESERVING='+str('does not reserve' in t.lower()));print('CRATES_TOKEN_FIRST='+str('scoped API token' in t));print('NO_STALE_REC3922='+str('rec-3922 (open)' not in t and 'until rec-3922 ratifies' not in t));print('CONTRACT_VERSION='+str(d['contract']['contract_version']))"
-    expected: All six correction markers present, no stale rec-3922 framing, contract_version 2.
+      Each of the ten corrections is asserted against the SPECIFIC key it belongs to, and no live
+      (non-amendment_log) surface still cites rec-3922. Assertions read raw text for the header
+      comment and key-scoped values for everything else -- never a yaml.safe_dump flattening, which
+      strips comments AND re-wraps long strings, so a substring probe over it can silently pass or
+      fail on where the reflow lands.
+    command: bin/venv-python -c "import re,yaml,pathlib;raw=pathlib.Path('docs/contracts/package-registry-reservation.yaml').read_text();d=yaml.safe_load(raw);po=d['posture'];idn=d['identity'];pr=d['procedure'];hdr=raw.split('contract:',1)[0];tp=d.get('pypi_trusted_publisher') or {};c1='rec-3922' not in hdr and 'Theseus / Guerdon / Semanto' not in hdr and 'Decision 198' in hdr;print('C1_HEADER_CLEAN='+str(c1));c2='rec-3922' not in po['installability_rationale'] and 'RATIFIED brand' not in po['installability_rationale'];print('C2_INSTALLABILITY_CLEAN='+str(c2));c3='CANDIDATE' not in idn['security_contact'];print('C3_SECURITY_CONTACT_SETTLED='+str(c3));c4='undecided' not in idn['crates_io_ownership'];print('C4_CRATES_OWNERSHIP_SETTLED='+str(c4));c5='rec-3922' not in po['disposition'];print('C5_DISPOSITION_CLEAN='+str(c5));c6='rec-3922' not in po['neutral_placeholder'];print('C6_NEUTRAL_CLEAN='+str(c6));c7='@onthelooplabs' in po['scope_anti_squatting'] and not re.search(r'@ontheloop(?!labs)',po['scope_anti_squatting']);print('C7_NPM_SCOPE='+str(c7));c8=any('org creation' in s['action'].lower() for s in pr['npm']);print('C8_ORG_CREATION='+str(c8));c9=any('Trusted Publishing' in s['action'] for s in pr['pypi']) and any('does not reserve' in s['action'].lower() for s in pr['pypi']);print('C9_PYPI_OIDC='+str(c9));c10=any('scoped API token' in s['action'] for s in pr['crates_io']);print('C10_CRATES_TOKEN='+str(c10));live=int('rec-3922' in hdr)+sum('rec-3922' in v for v in (po['disposition'],po['neutral_placeholder'],po['installability_rationale'],d['tracking']['note']));print('LIVE_REC3922='+str(live));miss=[k for k in ('repository','workflow_filename','environment','restage_obligation') if not tp.get(k)];print('TRUST_KEYS_MISSING='+str(miss));print('CONTRACT_VERSION='+str(d['contract']['contract_version']));import sys;sys.exit(0 if all([c1,c2,c3,c4,c5,c6,c7,c8,c9,c10,live==0,not miss,d['contract']['contract_version']==2]) else 1)"
+    expected: >-
+      All ten correction markers True, zero live rec-3922 citations, the pypi_trusted_publisher
+      block complete, contract_version 2. C1-C4 are rec-3995's four; C5-C6 are the two its own
+      oracle does not reach; C7-C10 are the execution-discovered four.
     fix_if: >-
-      A correction was dropped, the posture block still treats On The Loop as a candidate, or the
-      version was not bumped alongside the amendment_log entry (this file's convention).
+      Any marker False names exactly which correction was missed. LIVE_REC3922 > 0 means a live
+      surface still cites a closed rec -- historical amendment_log entries are deliberately excluded
+      from that count, since the log is append-only provenance.
     hermetic: true
-    expected_literals: ["SCOPE_ONTHELOOPLABS=True", "ORG_CREATION_RULE=True", "TRUSTED_PUBLISHING=True", "PENDING_NOT_RESERVING=True", "CRATES_TOKEN_FIRST=True", "NO_STALE_REC3922=True", "CONTRACT_VERSION=2"]
+    expected_literals: ["C1_HEADER_CLEAN=True", "C2_INSTALLABILITY_CLEAN=True", "C3_SECURITY_CONTACT_SETTLED=True", "C4_CRATES_OWNERSHIP_SETTLED=True", "C5_DISPOSITION_CLEAN=True", "C6_NEUTRAL_CLEAN=True", "C7_NPM_SCOPE=True", "C8_ORG_CREATION=True", "C9_PYPI_OIDC=True", "C10_CRATES_TOKEN=True", "LIVE_REC3922=0", "TRUST_KEYS_MISSING=[]", "CONTRACT_VERSION=2"]
     graduation: graduate
-    graduation_check_id: ontheloop-contract-execution-corrections
+    graduation_check_id: ontheloop-contract-ten-corrections
   - step: 18
     phase: pre-deploy
     action: >-
@@ -384,14 +417,26 @@ verification_plan:
   - step: 20
     phase: post-deploy
     action: >-
-      [OPERATOR, BEFORE ANY DISPATCH] Confirm the `pypi` GitHub Environment exists with a required
-      reviewer. A workflow naming an environment that does not exist causes GitHub to auto-create it
-      with NO protection rules, which would publish ungated on the first dispatch.
-    command: 'echo "Via MCP: mcp__github__actions_run_trigger(method=run_workflow, owner=benjamin-blake, repo=theseus, workflow_id=publish-ontheloop.yml, ref=main); then mcp__github__actions_get -- the run MUST enter status=waiting pending reviewer approval BEFORE any step executes. A run that proceeds straight to publishing proves the Environment is unprotected."'
-    expected: The run enters `waiting`; no step executes until the reviewer approves.
+      [OPERATOR, NON-DESTRUCTIVE PRECONDITION CHECK -- performs no publish] Confirm all four
+      publish prerequisites hold. Three are already satisfied out-of-band and are recorded here so
+      a later reader need not rediscover them; the fourth is not yet done. (i) The PyPI PENDING
+      Trusted Publisher is registered for project ontheloop against repo benjamin-blake/theseus,
+      workflow publish-ontheloop.yml, environment pypi -- without it the OIDC exchange fails
+      outright, because a project-scoped token cannot exist before the project does. (ii) The npm
+      organization onthelooplabs exists, so the @onthelooplabs scope is held and a scoped publish
+      has somewhere to land. (iii) crates.io sign-in via GitHub OAuth is live. (iv) NOT YET DONE --
+      the `pypi` GitHub Environment must exist WITH a required reviewer. Read its protection_rules
+      via the API; never probe it by dispatching, because a missing environment is auto-created
+      UNPROTECTED on first use and the probe's negative outcome would itself be an irreversible
+      unvalidated publish under the very name this plan exists to claim correctly.
+    command: 'echo "Non-destructively: GET /repos/benjamin-blake/theseus/environments/pypi and require a non-empty protection_rules array containing a required_reviewers rule. Re-confirm the PyPI pending publisher on pypi.org (Your projects -> Publishing), the npm org at npmjs.com/org/onthelooplabs, and crates.io sign-in. NO workflow dispatch occurs in this step."'
+    expected: >-
+      All four confirmed. The pypi Environment returns a required_reviewers protection rule; the
+      pending publisher, npm org and crates.io sign-in are present.
     fix_if: >-
-      The run executes immediately -- stop, delete the auto-created Environment, recreate it with a
-      required reviewer, and re-dispatch.
+      The Environment is absent or has an empty protection_rules array -- create it with a required
+      reviewer BEFORE any dispatch. If the pending publisher is missing, register it; if the npm org
+      is missing, create it. Do not proceed to step 21 with any of the four unconfirmed.
   - step: 21
     phase: post-deploy
     action: >-
@@ -411,11 +456,15 @@ verification_plan:
   - step: 23
     phase: post-deploy
     action: >-
-      [OPERATOR] Point the bare npm name at the canonical scoped package, configure Trusted
-      Publishing now that both packages exist, and revoke the single-use crates.io token.
-    command: 'echo "npm deprecate ontheloop (message naming @onthelooplabs/ontheloop as canonical); configure Trusted Publishing on both npm packages and the crates.io crate; revoke the single-use crates.io token."'
+      [OPERATOR] Point the bare npm name at the canonical scoped package and revoke the single-use
+      crates.io token. Deliberately NOT done here: configuring Trusted Publishing on npm or
+      crates.io. Both bind to a GitHub Actions workflow, which would require a Node or Rust
+      toolchain in CI -- contradicting constraint 7 and reddening this plan's own graduated step-12
+      guard. That question is real but needs a plan that can weigh the toolchain trade honestly;
+      it is routed to rec-4015 rather than smuggled in as an operator instruction here.
+    command: 'echo "npm deprecate ontheloop with a message naming @onthelooplabs/ontheloop as canonical; then revoke the single-use crates.io token. Do NOT configure npm or crates.io Trusted Publishing -- see rec-4015."'
     expected: The bare name points at the scoped package; no long-lived publish credential survives anywhere.
-    fix_if: The single-use token still exists -- revoke it.
+    fix_if: The single-use token still exists -- revoke it before closing out.
   - step: 24
     phase: post-deploy
     action: rec-3941's acceptance oracle passes -- all three registries report claimed.
@@ -435,7 +484,7 @@ verification_plan:
   - step: 26
     phase: post-deploy
     action: rec-3995 is closed by the squash-merge Resolves trailer.
-    command: 'bin/venv-python -m scripts.sync.ops pull && grep -oE ''"id": "rec-3995"[^}]*"status": "[a-z]*"'' logs/.recommendations-log.jsonl'
+    command: 'bin/venv-python -m scripts.sync.ops sync && grep -oE ''"id": "rec-3995"[^}]*"status": "[a-z]*"'' logs/.recommendations-log.jsonl'
     expected: rec-3995 shows status closed.
     fix_if: Still open -- the Resolves trailer was omitted from the squash-merge commit body.
 
@@ -510,7 +559,7 @@ test_obligations:
   - source: .github/CODEOWNERS
     behavior: Carries a path row for the publish workflow.
     verification_step: 10
-    command: bin/venv-python -c "import pathlib;t=pathlib.Path('.github/CODEOWNERS').read_text();print('CODEOWNERS_ROW='+str(any(l.startswith('/.github/workflows/publish-ontheloop.yml') for l in t.splitlines())))"
+    command: bin/venv-python -c "import sys,pathlib;t=pathlib.Path('.github/CODEOWNERS').read_text();ok=any(l.startswith('/.github/workflows/publish-ontheloop.yml') for l in t.splitlines());print('CODEOWNERS_ROW='+str(ok));sys.exit(0 if ok else 1)"
     waiver_reason: >-
       CODEOWNERS is enforced GitHub-side by the main-protection ruleset (T2.50), not by any in-repo
       runtime; a pytest assertion over its text would restate VP step 10 without adding
@@ -532,7 +581,7 @@ test_obligations:
   - source: docs/contracts/deploy-paths.yaml
     behavior: Indexes the registry-publication channel with a trigger, an operator actor_role and a recovery pointer.
     verification_step: 11
-    command: bin/venv-python -c "import yaml;d=yaml.safe_load(open('docs/contracts/deploy-paths.yaml'));r=d.get('publish_artifacts') or {};print('DP_ROW_PRESENT='+str(bool(r)));print('DP_ACTOR='+str(r.get('actor_role')));print('DP_HAS_TRIGGER='+str(bool(r.get('trigger'))));print('DP_HAS_RECOVERY='+str(bool(r.get('recovery'))))"
+    command: bin/venv-python -c "import sys,yaml;d=yaml.safe_load(open('docs/contracts/deploy-paths.yaml'));r=d.get('publish_artifacts') or {};miss=[k for k in ('trigger','recovery','blocks_ref','description') if not r.get(k)];print('DP_ROW_PRESENT='+str(bool(r)));print('DP_ACTOR='+str(r.get('actor_role')));print('DP_MISSING_KEYS='+str(miss));sys.exit(0 if r and r.get('actor_role')=='operator' and not miss else 1)"
     waiver_reason: >-
       Guarded by the registered validate_contract_drift check, which already fails a Class D
       canonical-dump change carrying no new amendment_log entry. A bespoke pytest assertion over
@@ -540,7 +589,7 @@ test_obligations:
   - source: docs/contracts/file-router.yaml
     behavior: Carries the packages/ route and stays inside the Decision 166 contracts-class limit.
     verification_step: 14
-    command: bin/venv-python -c "import yaml;from pathlib import Path;from scripts.checks.structural._classify import effective_lines;p=Path('docs/contracts/file-router.yaml');txt=p.read_text();d=yaml.safe_load(txt);e=effective_lines(txt);print('ROUTER_EFF='+str(e));print('ROUTER_HEADROOM_OK='+str(e<=490));print('ROUTER_HAS_ROUTE='+str(any(r['topic']=='ontheloop-placeholder-packages' for r in d['routes'])))"
+    command: bin/venv-python -c "import sys,yaml;from pathlib import Path;from scripts.checks.structural._classify import effective_lines;p=Path('docs/contracts/file-router.yaml');txt=p.read_text();d=yaml.safe_load(txt);e=effective_lines(txt);hr=any(r['topic']=='distribution-packages' for r in d['routes']);print('ROUTER_EFF='+str(e));print('ROUTER_HEADROOM_OK='+str(e<=490));print('ROUTER_HAS_ROUTE='+str(hr));sys.exit(0 if e<=490 and hr else 1)"
     waiver_reason: >-
       Guarded by two registered checks already -- validate_placement for route link-validity and
       validate_structural_size_limits for the effective-line ceiling. A pytest mirror would restate
@@ -550,7 +599,7 @@ test_obligations:
       Records the ten corrections, cites Decision 198, carries the pypi_trusted_publisher trust
       triple, and gains an amendment_log entry with a contract_version bump.
     verification_step: 16
-    command: bin/venv-python -c "import pathlib;t=pathlib.Path('docs/contracts/package-registry-reservation.yaml').read_text();print('REC3995_OLD_HIERARCHY='+str('remains Theseus / Guerdon / Semanto' in t));print('REC3995_CITES_198='+str('Decision 198' in t))"
+    command: bin/venv-python -c "import sys,pathlib;t=pathlib.Path('docs/contracts/package-registry-reservation.yaml').read_text();old='remains Theseus / Guerdon / Semanto' in t;new='Decision 198' in t;print('REC3995_OLD_HIERARCHY='+str(old));print('REC3995_CITES_198='+str(new));sys.exit(0 if (not old) and new else 1)"
     waiver_reason: >-
       Guarded by validate_contract_drift (amendment_log obligation) and by VP step 13's trust-triple
       check, which is mirrored in the pytest suite. A further pytest assertion over this contract's
@@ -572,9 +621,12 @@ constraints:
     in its own class row.
   - >-
     NO .gitignore change and NO `npm install` anywhere in the repository tree. Tier_item T2.53
-    criterion c7 reserves that remedy to itself -- it requires .gitignore coverage PLUS a
-    deterministic registered check, explicitly "NOT a .gitignore convention" -- and states an
-    absolute standing rule against in-tree npm installs until it lands. The placeholders are
+    criterion c7 is INDEPENDENTLY LANDABLE -- "any session may land it as standalone work;
+    registering it here records the OBLIGATION, not a scheduling constraint" -- so it does not
+    reserve the remedy. This plan declines it on scope grounds, not exclusivity: c7's remedy is
+    .gitignore coverage PLUS a deterministic registered check (explicitly "NOT a .gitignore
+    convention"), which is a hygiene work item this plan is not scoped to build. c7's absolute
+    standing rule against in-tree npm installs binds regardless and is respected by construction. The placeholders are
     zero-dependency, so no install is ever required; operator dry-runs happen in a scratch copy.
   - >-
     NO README.md or any other .md file under packages/. Both existing non-agent prose classes
@@ -591,9 +643,13 @@ constraints:
     packages/ holds the PLATFORM's distribution namespace (Decision 184 clause 1), not a product's
     -- Decision 178 keeps this repository platform-only.
   - >-
-    No Node or Rust toolchain enters CI (VP step 12 enforces this). Only the PyPI publish runs in
-    Actions; npm and crates.io publish locally. Decision 80's single-language/no-compiled-build
-    premise and its clause 4 revisit trigger are therefore unchanged.
+    No Node or Rust toolchain enters CI (VP step 12). Only the PyPI publish runs in Actions; npm
+    and crates.io publish locally. This keeps Decision 80's stated PREMISE -- single-language,
+    no compiled build -- true. It is a NEW VOLUNTARY repo-wide guard this plan introduces, NOT a
+    Decision 80 consequence: clause 4's revisit trigger is `executor concurrency > 1 AND (KG.13
+    filed OR a measured fast-tier budget breach)`, which a toolchain does not fire. No Decision
+    authorises the prohibition; a future plan wanting a Node or Rust step should weigh it on the
+    merits rather than treat this guard as settled law.
   - >-
     The four per-package LICENSE copies extend the Decision 195 clause 2 surface from one file to
     five, and validate_licence_consistency pins only the root. VP step 4's byte-equality check is
@@ -613,26 +669,35 @@ constraints:
 
 context:
   - >-
-    Decision-scout verdict FLAGS_FOUND (round 2, against the settled approach). CITE list:
-    Decision 198, 101, 171, 194, 184, 195, 166, 162, 168, 172, 94, 128, 132. Both WARN
-    contradictions (Decision 127 prose class, Decision 126 deploy-paths index) resolved by adopting
-    the scout's own suggested resolutions; both SPIRIT notes (Decision 80, Decision 163) adopted.
-  - "Decisions triaged: 151 of 151"
-  - "Roadmap items intersected: 5; CONFLICT: 0; RELATED: 5"
-  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=<verdict> after <N> round(s)"
-  - "Planning-time split: rec-4013 (packages/**/README.md prose class + its Decision) and rec-4014 (--require-claimed asserts existence, not ownership) filed at Step 8."
-  - "Procedure half merged as PR #1239 (cb68d712); this is rec-3941's execution half, which stays open."
-  - "Decision 198 clause 6 names rec-3995 as the carrier for this contract's header; this plan bundles and closes it."
+    decision-scout=FLAGS_FOUND over 2 rounds; 151 of 151 decisions triaged; roadmap items
+    intersected 5, CONFLICT 0, RELATED 5. CITE: Decisions 198, 101, 171, 194, 184, 195, 166, 162,
+    168, 172, 94, 128, 132. Both WARN contradictions and both SPIRIT notes resolved by adopting the
+    scout's own suggested resolutions.
+  - "gates: decision-scout=FLAGS_FOUND (resolved); plan-critique=REVISE r1 (12 items, all addressed); <verdict> after <N> round(s)"
+  - "Procedure half merged as PR #1239 (cb68d712). Decision 198 clause 6 names rec-3995 as this contract's header carrier."
   - >-
-    rec-3995's own acceptance oracle does NOT reach posture.disposition or
-    posture.neutral_placeholder, both of which also carry the stale rec-3922 framing -- hence ten
-    corrections, not the four the rec names. VP step 17's NO_STALE_REC3922 literal closes that gap.
-  - "A PyPI pending Trusted Publisher does NOT reserve the name and is invalidated if another user registers it first (verified against PyPI docs, 2026-09-21)."
-  - "A GitHub Environment referenced but not configured is auto-created WITHOUT protection rules -- see VP step 20."
-  - "npm OIDC first-publish support is UNVERIFIED (docs neither confirm nor deny); the local 2FA path is the certain one for a contested name."
-  - "BUSL-1.1 verified to package cleanly on all three toolchains (cargo package; npm pack, bare and scoped; python -m build -> License-Expression: BUSL-1.1, Metadata-Version 2.4)."
-  - "cargo 1.94.1, rustc 1.94.1, node v22.22.2 and npm 10.9.7 are all present in CC-web, so operator dry-runs are local."
-
+    OPERATOR-ATTESTED out-of-band state, not discoverable from the repo: PyPI pending Trusted
+    Publisher registered (ontheloop / benjamin-blake/theseus / publish-ontheloop.yml / pypi); npm
+    org onthelooplabs created, so @onthelooplabs is held; crates.io GitHub-OAuth sign-in live. The
+    `pypi` GitHub Environment is NOT yet created -- VP step 20 item (iv) is the only open one.
+  - >-
+    `@onthelooplabs` is an explicit operator decision from the planning session (organisation
+    onthelooplabs, product ontheloop, scoped package canonical), recorded as an operational fact
+    outside Decision 198 clause 3's map, which names the GitHub org handle otl-labs and no npm org.
+  - >-
+    VP authoring: never assert over yaml.safe_dump output -- it strips comments and re-wraps long
+    strings. Read raw text for prose/comments, key-scope for structure. Rationale and measurement in
+    this plan's commit body; the defect class is rec-4016.
+  - "A PyPI pending publisher does NOT reserve the name and is invalidated if another party registers it first (PyPI docs, 2026-09-21)."
+  - "A GitHub Environment referenced but not configured is auto-created WITHOUT protection rules -- hence VP step 20's non-destructive API read."
+  - "npm OIDC first-publish support is UNVERIFIED (docs neither confirm nor deny); local 2FA is the certain path for a contested name."
+  - "BUSL-1.1 verified to package cleanly on cargo package, npm pack (bare and scoped), and python -m build (License-Expression: BUSL-1.1, Metadata-Version 2.4)."
+  - "cargo 1.94.1, rustc 1.94.1, node v22.22.2, npm 10.9.7 all present in CC-web, so operator dry-runs are local."
+  - >-
+    Planning-time split filed via the portal: rec-4013 (packages README prose class + its Decision),
+    rec-4014 (--require-claimed asserts existence, not ownership), rec-4015 (npm/crates Trusted
+    Publishing vs the CI toolchain), rec-4016 and rec-4017 (the two authoring-lint gaps that
+    produced this plan's own round-1 REVISE).
 pre_implementation_checklist:
   - Branch confirmed not on main
   - docs/PROJECT_CONTEXT.md read
@@ -643,6 +708,7 @@ pre_implementation_checklist:
   - Acceptance criteria understood and verifiable
 
 execution_steps:
+  - Verify the four publish preconditions in VP step 20 are recorded accurately before anything else (three are already satisfied out-of-band).
   - Create the four placeholder package roots, each with its manifest, one trivial real function, and a LICENSE copied byte-for-byte from the root LICENSE. No .md files.
   - Author .github/workflows/publish-ontheloop.yml -- dispatch-only, environment pypi, id-token write on the publish job only, no secret reference.
   - Register the workflow -- r3_workflows body entry, ci_rca_taxonomy row, CODEOWNERS row, and the deploy-paths publish_artifacts row with its amendment_log entry.
