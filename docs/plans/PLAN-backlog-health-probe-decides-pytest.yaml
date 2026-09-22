@@ -31,8 +31,17 @@ scope:
   - file: .github/workflows/backlog-health.yml
     action: Modify
     purpose: >-
-      Add `.venv/bin/pip install -r requirements-fast.txt` to the PROBE job's "Activate venv" step
-      only (line 109's block), immediately after the existing requirements.txt install. The census
+      In the PROBE job's "Activate venv" step only (line 109's block), change the existing install
+      line to the COMBINED one-line form `.venv/bin/pip install -r requirements.txt -r
+      requirements-fast.txt`. Do NOT add a fourth line. The combined form is MANDATORY, not
+      cosmetic: config/composite_action_body_baseline.yaml line 91 pins
+      ".github/workflows/backlog-health.yml::probe::activate-venv" at 3, that body is exactly 3
+      effective lines today (venv create, pip upgrade, requirements install), and a fourth line
+      makes validate_composite_action_shell_bodies fail with "R3-workflow: GREW to 4 lines
+      (baseline ceiling 3)". That Entry is pre=True, so it gates the PR and would redden VP step 6.
+      config/composite_action_body_baseline.yaml is deliberately NOT in this plan's scope: raising
+      that ceiling needs a `# raise-approved: dec-NNN` marker naming a Decision that authorizes
+      this baseline key or workflow path, and no such Decision exists. The census
       and escalate jobs are NOT touched: neither executes a rec-authored command, so neither needs
       a test runner. requirements-fast.txt is chosen over requirements-dev.txt on measured grounds
       (see context): 13 direct pins against roughly 290, and ZERO new distributions enter CI
@@ -57,7 +66,15 @@ scope:
       BEFORE the command in the same `&&` chain and are unaffected; dropping `exec` leaves one
       extra bash process inside the namespace, which the existing pid cap already bounds.
       Do NOT also "fix" TimeoutExpired's grandchild reach here -- that is rec-3691's territory and
-      is out of this plan's scope boundary. 133 SLOC, 367 headroom.
+      is out of this plan's scope boundary. KNOWN RESIDUAL, unchanged by this edit and deliberately
+      NOT fixed (Decision 59 scope boundary): for a cmd carrying a top-level `;` or `||`, the
+      `mount && ulimit && {cmd}` chain lets the command's tail run even when the bind mount or the
+      pid cap failed. No isolation property regresses -- `unshare -rmn` engages the user, mount and
+      net namespaces before any of this, so the command is still networkless and still outside the
+      host mount namespace. Add a one-line comment at that exact line recording the residual; a
+      `{ ...; }` group or a trailing `|| exit 1` would close it, but both change the chain's
+      grammar for every acceptance command at once, which is more than a one-token change and
+      belongs in its own rec. 133 SLOC, 367 headroom.
   - file: scripts/backlog_health/census.py
     action: Modify
     purpose: >-
@@ -106,15 +123,32 @@ scope:
     action: Create
     purpose: >-
       The inheritance mechanism, chosen over amending the MERGED slice A plan document (see
-      context for why). A new registered check binding on POSITIVE EVIDENCE: any workflow job
-      whose step bodies contain the unprivileged-user-namespace sysctl marker
-      (`apparmor_restrict_unprivileged_userns=0`) is a job that runs the acceptance sandbox, and
-      MUST install requirements-fast.txt in that same job at or before that step. The marker is
-      the right predicate because a sandbox job that omits the sysctl cannot engage isolation at
-      all on ubuntu-latest, so probe.run_all returns ISOLATION_UNAVAILABLE for every entry -- an
-      honest verdict, never a false fail. The guard therefore never has to reason about absence of
-      evidence. Reuse scripts/checks/ci_guards/_workflow_shell_bodies.py's comment-blanking helper
-      so a commented-out sysctl line cannot spoof the predicate. MUST declare examined(n,
+      context for why). A new registered check binding on POSITIVE EVIDENCE, armed by EITHER of
+      two markers in a job's step bodies -- never only the first:
+      (M1) the unprivileged-user-namespace sysctl string `apparmor_restrict_unprivileged_userns=0`
+      (live today at .github/workflows/backlog-health.yml:118); OR
+      (M2) a step body invoking the sandbox executor -- the `scripts.backlog_health` module, and
+      specifically its `probe` verb (live today at :121), plus any module that imports
+      scripts.backlog_health.probe.
+      A job matching either MUST install requirements-fast.txt in that same job at or before the
+      matching step. M2 is the STRONGER evidence and the reason M1 alone is insufficient: M1 is an
+      OS-specific PRECONDITION for the sandbox, not the sandbox itself. Two ways a job escapes M1
+      while still needing a test runner, both real: (a) ubuntu-22.04, a self-hosted runner, or a
+      future ubuntu-latest whose AppArmor default relaxes engages `unshare -rmn` with no sysctl
+      step at all -- the probe then returns REAL verdicts with pytest absent, which is exactly the
+      false-FAIL population this guard exists to prevent; (b) Decision 162's R3 ratchet actively
+      pushes workflow bodies out of .github/workflows/ into scripts/ci/ or a composite action, so
+      a sysctl that follows the repo's own standing instruction walks out of this guard's view
+      (see context for that governance tension, named rather than patched around). M2 also fires
+      on slice A's evaluator job BY CONSTRUCTION, since that evaluator reuses this same module.
+      Comment defence: scripts/checks/ci_guards/_workflow_shell_bodies.py's `_effective_lines`
+      (line 56, module-private) drops blank and FULL-LINE comments, which kills the commented-out
+      sysctl spoof, but it does NOT strip TRAILING comments -- so `run: echo hi #
+      apparmor_restrict_unprivileged_userns=0` would still spoof M1. Strip trailing comments in
+      this guard's own narrow helper and cover it with a mirror-test arm; do not relocate the
+      sibling's module-private `_blank_shell_comments` out of
+      validate_workflow_dependency_install.py (that would trip Decision 162 r3 touch-it-fix-it on
+      a module this plan otherwise does not touch). MUST declare examined(n,
       unit="jobs") on the non-vacuous branch and skipped(reason) otherwise -- it is NOT in
       config/check_accounting_baseline.yaml and cannot be added there (Decision 170 clause 3,
       shrink-only and _BASELINE_SEED-frozen). Sibling precedent to mirror for structure, NOT to
@@ -136,8 +170,11 @@ scope:
   - file: config/ci_rca_taxonomy.yaml
     action: Modify
     purpose: >-
-      One function_to_category row, `validate_sandbox_runner_test_deps: code_regression`, mirroring
-      its nearest sibling validate_workflow_dependency_install. validate_ci_rca_taxonomy fails on
+      One function_to_category row, `validate_sandbox_runner_test_deps: dependency_gap`, the value
+      its nearest sibling validate_workflow_dependency_install actually carries
+      (config/ci_rca_taxonomy.yaml line 120) and the better fit for a missing install. No
+      validator distinguishes the legal values, so nothing would catch a mismatched one -- the
+      value is a deliberate call, not a default. validate_ci_rca_taxonomy fails on
       any registered check absent from this map, so the row lands in the same PR as the
       registration or the taxonomy guard reddens.
   - file: tests/checks/ci_guards/test_validate_sandbox_runner_test_deps.py
@@ -146,35 +183,46 @@ scope:
       Mirror-rule test file (Decision 131). Must contain
       TestSandboxRunnerTestDeps::test_sysctl_job_without_test_runner_install_is_flagged (VP step 4's
       graduated node) plus, at minimum: a positive arm (a job with the sysctl AND the install
-      passes), a comment-blanking arm (a commented-out sysctl line does not arm the guard), a
-      scoping arm (a job WITHOUT the sysctl is never required to install the test runner), an
-      accounting arm asserting examined()/skipped() is declared on both branches (Decision 170),
-      and a live arm over the real .github/workflows/backlog-health.yml.
+      passes); an M2 arm -- a job with NO sysctl that invokes `scripts.backlog_health probe`
+      without the install IS flagged, the arm that covers the ubuntu-22.04 / self-hosted /
+      relaxed-default and the Decision-162-relocation escapes; a full-line comment arm (a
+      commented-out sysctl line does not arm the guard); a TRAILING comment arm (`run: echo hi #
+      apparmor_restrict_unprivileged_userns=0` does not arm it either); a scoping arm (a job
+      matching NEITHER marker is never required to install the test runner); an accounting arm
+      asserting examined()/skipped() is declared on both branches (Decision 170); and a live arm
+      over the real .github/workflows/backlog-health.yml, which carries BOTH markers today
+      (:118 and :121) and must pass once the install lands.
   - file: config/agent/verification_registry/entries/backlog-health-probe-installs-test-runner.yaml
     action: Create
     purpose: >-
       Graduation shard for VP step 1 (Decision 176 one-record-per-file, filename equals check_id).
       primitive_slot test_selector; guard_target .github/workflows/backlog-health.yml; guard_symbol
-      probe; plan_slug backlog-health-probe-decides-pytest; check_spec.node_id set to VP step 1's
+      probe; plan_slug backlog-health-probe-decides-pytest; graduated_at (the implementing
+      session's date) and graduated_by (implement-agent) -- every live shard carries both, so
+      omitting them would make this the odd record out; check_spec.node_id set to VP step 1's
       exact node id.
   - file: config/agent/verification_registry/entries/backlog-health-probe-runs-compound-commands.yaml
     action: Create
     purpose: >-
       Graduation shard for VP step 2. primitive_slot test_selector; guard_target
-      scripts/backlog_health/probe.py; guard_symbol _isolated_argv; check_spec.node_id set to VP
-      step 2's exact node id.
+      scripts/backlog_health/probe.py; guard_symbol _isolated_argv; plan_slug
+      backlog-health-probe-decides-pytest; graduated_at and graduated_by as above;
+      check_spec.node_id set to VP step 2's exact node id.
   - file: config/agent/verification_registry/entries/backlog-health-census-anchors-pytest-target.yaml
     action: Create
     purpose: >-
       Graduation shard for VP step 3. primitive_slot test_selector; guard_target
-      scripts/backlog_health/census.py; guard_symbol parse_pytest_target; check_spec.node_id set to
-      VP step 3's exact node id.
+      scripts/backlog_health/census.py; guard_symbol parse_pytest_target; plan_slug
+      backlog-health-probe-decides-pytest; graduated_at and graduated_by as above;
+      check_spec.node_id set to VP step 3's exact node id.
   - file: config/agent/verification_registry/entries/sandbox-runner-test-deps-guard.yaml
     action: Create
     purpose: >-
       Graduation shard for VP step 4. primitive_slot test_selector; guard_target
       scripts/checks/ci_guards/validate_sandbox_runner_test_deps.py; guard_symbol
-      validate_sandbox_runner_test_deps; check_spec.node_id set to VP step 4's exact node id.
+      validate_sandbox_runner_test_deps; plan_slug backlog-health-probe-decides-pytest;
+      graduated_at and graduated_by as above; check_spec.node_id set to VP step 4's exact node
+      id.
 bundled_recommendations:
   - rec-4005
 followon_recs: []
@@ -195,10 +243,15 @@ acceptance_criteria:
     scripts/checks/_pytest_diff.py with no pytest invocation returns None, and a directory-or--k
     invocation returns None.
   - >-
-    A new registered check fails any workflow job that carries the unprivileged-user-namespace
-    sysctl step without installing requirements-fast.txt in the same job, and passes the repaired
-    backlog-health probe job. It declares examined()/skipped() on both branches and is mapped in
-    config/ci_rca_taxonomy.yaml.
+    A new registered check fails any workflow job that carries EITHER the unprivileged-user-
+    namespace sysctl string OR a step invoking the scripts.backlog_health sandbox executor,
+    without installing requirements-fast.txt in the same job; and passes the repaired
+    backlog-health probe job, which carries both markers. The two-marker arming is load-bearing,
+    not belt-and-braces: the sysctl alone is an Ubuntu 23.10/24.04 AppArmor default, not a
+    timeless property, so a job on ubuntu-22.04, on a self-hosted runner, or on a future
+    ubuntu-latest whose default relaxes would engage the sandbox with no sysctl step and return
+    real verdicts with pytest absent. It declares examined()/skipped() on both branches and is
+    mapped in config/ci_rca_taxonomy.yaml.
   - >-
     The four graduation shards exist, each filename equals its check_id, each check_id equals its
     VP step's graduation_check_id, and each is ADMITTED by validate_verification_registry's
@@ -324,14 +377,19 @@ verification_plan:
     expected: >-
       The printed summary reports zero failed checks. validate_verification_registry must report
       all four new shards ADMITTED; validate_graduation_completeness must pass both legs;
-      validate_check_manifests, validate_ci_rca_taxonomy, validate_check_accounting,
-      validate_plan_documents, validate_sloc_limits and validate_scope_boundary must all pass.
+      validate_composite_action_shell_bodies must pass -- it is the check the combined one-line
+      install form exists to satisfy, and it reddens immediately if the probe job's Activate venv
+      body grew to 4 effective lines; validate_check_manifests, validate_ci_rca_taxonomy,
+      validate_check_accounting, validate_plan_documents, validate_sloc_limits and
+      validate_scope_boundary must all pass.
     fix_if: >-
       Read the summary, never the exit code -- Decision 73 makes --pre exit 0 while printing
       "Failed checks" outside CI. A "not admitted" differential means a shard's node id does not
       fail at origin/main. A check_accounting failure means the new guard declared
       examined()/skipped() on only one branch. A bijection failure means the @register name and
-      the Entry name disagree.
+      the Entry name disagree. "R3-workflow: GREW to 4 lines (baseline ceiling 3)" means the
+      install was added as a fourth line instead of folded into the combined one-line form --
+      fix the workflow, never the baseline.
     hermetic: false
     graduation: waive
     graduation_waiver_reason: >-
@@ -426,8 +484,9 @@ test_obligations:
       Exit 4 (method absent from the existing class) before, "1 passed" after.
   - source: scripts/checks/ci_guards/validate_sandbox_runner_test_deps.py
     behavior: >-
-      A workflow job carrying the unprivileged-userns sysctl marker without a requirements-fast.txt
-      install in the same job is flagged; a job without the marker is never required to install it.
+      A workflow job carrying EITHER the unprivileged-userns sysctl marker or a scripts.backlog_health
+      executor invocation, without a requirements-fast.txt install in the same job, is flagged; a
+      job carrying neither marker is never required to install it.
     verification_step: 4
     test_selector: tests/checks/ci_guards/test_validate_sandbox_runner_test_deps.py::TestSandboxRunnerTestDeps::test_sysctl_job_without_test_runner_install_is_flagged
     red_green_expectation: >-
@@ -528,7 +587,8 @@ context:
   - "Coupling, the reason all three fixes land together: exec truncation is what MASKS the pytest gap (82 of 98 never reach pytest), so installing pytest alone moves 10 verdicts; removing exec alone would raise the wrong-FAIL population toward 98 AND convert 46 honest expected_fail_missing_node recs into probed fails. Each fix makes the others' absence worse."
   - "Option review, recorded rather than assumed. (a) requirements-dev.txt: ~290 pins into the one job that executes untrusted input -- rejected on surface. (b) requirements-fast.txt: 13 pins, ALREADY installed by ci.yml pr-validate on every PR, so zero new distributions enter CI -- CHOSEN. (c) a new narrow file: duplicates (b) and creates a second surface to sync -- rejected. (d) a pytest-only pin: measured to exit 4 'unrecognized arguments: --randomly-seed=last --disable-socket' under pyproject addopts -- rejected as non-functional. (e) decline to probe pytest and return an honest unmeasurable: NOT unreasonable and costs no install surface, but it forecloses the stated purpose -- slice A's gate could then never decide the 35% of the backlog, and its own acceptance idiom, that is pytest-shaped. Rejected on purpose-fit, not on principle."
   - "Slice A inheritance mechanism, chosen deliberately: a registered CI guard keyed on the unprivileged-userns sysctl marker, NOT an amendment to the merged slice A plan, NOT a superseding note, NOT a scope row editing it, NOT a follow-on rec. Rationale: Decision 163 -- a universal obligation is enforced structurally, not documented; a prose obligation in a merged plan rots silently, and slice A's evaluator job trips the guard by construction the moment it is authored."
-  - "Positive-evidence containment for that guard: a sandbox job that omits the sysctl cannot engage isolation on ubuntu-latest at all, so probe.run_all returns ISOLATION_UNAVAILABLE for every entry -- honest, never a false fail. The guard therefore never branches on absence of evidence."
+  - "Positive-evidence containment, stated at the strength the evidence supports and no further. On ubuntu-latest TODAY (the 23.10/24.04 AppArmor default), a sandbox job omitting the sysctl cannot engage isolation, so probe.run_all returns ISOLATION_UNAVAILABLE for every entry -- honest, never a false fail. That is an OS-version-scoped fact, NOT a timeless one: ubuntu-22.04, a self-hosted runner, or a relaxed future default all engage unshare -rmn with no sysctl present, returning real verdicts with pytest absent. This is why the guard arms on the executor marker too; neither marker's absence is ever read as 'nothing needed'."
+  - "Governance tension, named rather than patched around: Decision 162 R3 pushes workflow bodies out of .github/workflows/ into scripts/ci/ or composite actions -- the same ratchet that forces this plan's combined one-line install form. A sandbox job whose sysctl step relocates under that standing instruction walks out of a sysctl-only guard's view while still needing a test runner. The executor marker keeps the guard armed across that relocation. If a future relocation moves the EXECUTOR invocation off the workflow surface too, the guard needs re-siting, which is a rec -- never a third marker bolted on inline."
   - "Budget: the repaired probe ran all 958 entries in 336.8s locally against _DEFAULT_GLOBAL_BUDGET_S of 25 minutes and a 30-minute job timeout; 958 of 958 decided."
   - "Decision-scout verdict + CITE list (verbatim decision ids): FLAGS_FOUND. CITE: Decision 62, Decision 55, Decision 169, Decision 170, Decision 132, Decision 176, Decision 189, Decision 131, Decision 163. CONTRADICT NOTE: Decision 182 (fast-tier non-test budget -- resolved by narrowed pre_globs), Decision 103 (no second relevance evaluator -- resolved by an explicit constraint). SPIRIT NOTE: Decision 143 (install surface of the untrusted-execution job -- resolved by choosing the 13-pin file already in CI and leaving the permissions block untouched). ROADMAP: T1.13, T2.54, T4.23 all RELATED; CONFLICT 0. Decisions triaged: 150 of 150."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
@@ -541,8 +601,11 @@ pre_implementation_checklist:
   - Acceptance criteria understood and verifiable
 execution_steps:
   - >-
-    .github/workflows/backlog-health.yml -- add the requirements-fast.txt install to the PROBE
-    job's Activate venv step only, leaving census and escalate untouched.
+    .github/workflows/backlog-health.yml -- in the PROBE job's Activate venv step only, replace the
+    existing install line with the combined one-line form
+    `.venv/bin/pip install -r requirements.txt -r requirements-fast.txt`, holding that body at 3
+    effective lines (config/composite_action_body_baseline.yaml line 91). Leave census and escalate
+    untouched, and do not touch the baseline file.
   - >-
     scripts/backlog_health/probe.py -- drop the `exec ` prefix in _isolated_argv; update the
     module docstring's sandbox description so it no longer implies exec semantics.
@@ -554,13 +617,14 @@ execution_steps:
     tests/test_backlog_health_census.py -- add the three pinned node ids, each asserting behaviour
     rather than token presence.
   - >-
-    scripts/checks/ci_guards/validate_sandbox_runner_test_deps.py -- new registered check with
-    examined()/skipped() on both branches; register it in _manifest.py with narrowed pre_globs and
-    map it in config/ci_rca_taxonomy.yaml.
+    scripts/checks/ci_guards/validate_sandbox_runner_test_deps.py -- new registered check armed by
+    EITHER the sysctl marker or the scripts.backlog_health executor marker, stripping full-line AND
+    trailing comments, with examined()/skipped() on both branches; register it in _manifest.py with
+    narrowed pre_globs and map it `dependency_gap` in config/ci_rca_taxonomy.yaml.
   - >-
     tests/checks/ci_guards/test_validate_sandbox_runner_test_deps.py -- mirror-rule test file with
-    the pinned node id plus the positive, comment-blanking, scoping, accounting and live-workflow
-    arms.
+    the pinned node id plus the positive, executor-marker, full-line-comment, trailing-comment,
+    scoping, accounting and live-workflow arms.
   - >-
     config/agent/verification_registry/entries/ -- create the four shards, filename equals
     check_id equals the VP step's graduation_check_id.
