@@ -1,0 +1,45 @@
+name: publish-ontheloop
+
+# workflow_dispatch-only PyPI publish via OIDC Trusted Publishing (rec-3941, Decision 163/172).
+#
+# This workflow claims and republishes ONLY the `ontheloop` PyPI project via PyPI's Trusted
+# Publisher OIDC exchange -- no PyPI API token is stored anywhere, and the `pypi` GitHub
+# Environment's required reviewer gates every dispatch (see
+# docs/contracts/package-registry-reservation.yaml VP step 20 / pypi_trusted_publisher). npm and
+# crates.io publish locally by the operator -- no Node or Rust toolchain enters CI
+# (PLAN-ontheloop-placeholder-packages constraint).
+#
+# Trigger: manual only, dispatched by the operator after building confidence via a local dry-run
+# (twine check). Never runs on push or pull_request.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build distribution
+        run: python -m pip install --upgrade build && python -m build packages/ontheloop-py
+
+      - name: Publish to PyPI (Trusted Publishing -- OIDC, no token)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/ontheloop-py/dist
