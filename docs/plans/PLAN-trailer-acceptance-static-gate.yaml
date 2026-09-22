@@ -87,19 +87,28 @@ scope:
     action: Modify
     purpose: >-
       Add TestAcceptanceVerdict covering every refusal arm plus the absent-record pass-through and
-      the status-preserving-write no-op. 218 SLOC, 282 headroom. Do NOT touch
+      the status-preserving-write no-op. It MUST include an arm proving the closing sha reaching
+      the predicate is not sourced from the record -- a record whose own sha field differs from the
+      closing sha is REFUSED -- so the self-comparison reading of F3 cannot ship green.
+      218 SLOC, 282 headroom. Do NOT touch
       TestContractParity::test_stamp_precondition_call_sites_match_importers, a graduated shard.
   - file: scripts/ops_data_portal.py
     action: Modify
     purpose: >-
-      Add the keyword-only acceptance_verdict kwarg to update_rec and call
-      assert_acceptance_verdict immediately beside the existing assert_closure_obligation call --
-      ONE ENFORCEMENT SITE (Decision 186 point 2), never a second gate. The kwarg is a GATE INPUT
-      only: deliberately NOT added to the closure_stamps dict, so closure_stamps_applicable never
-      gates it and the ~99.6% of open recs carrying no context_v2_json stay closable. HARD SLOC
-      CONSTRAINT: 478 effective lines, 22 headroom, no config/sloc_budgets.yaml entry -- the whole
-      change, docstring lines included, must fit in <= 20 added effective lines, or the file is
-      decomposed (Decision 128), never budget-raised.
+      Add TWO keyword-only parameters to update_rec -- `acceptance_verdict: Optional[dict] = None`
+      AND `closing_sha: Optional[str] = None` -- and call assert_acceptance_verdict immediately
+      beside the existing assert_closure_obligation call (ONE ENFORCEMENT SITE, Decision 186
+      point 2, never a second gate). `closing_sha` is its own parameter DELIBERATELY, not a field
+      read out of the acceptance_verdict payload: if the sha rode inside the record, the
+      predicate's `record["sha"] != closing_sha` arm would become a self-comparison -- vacuously
+      true in production while VP step 4 stayed green, because that step calls the predicate
+      directly with independently supplied arguments. Both values are GATE INPUTS: neither is added
+      to the closure_stamps dict, so closure_stamps_applicable never gates either and the ~99.6% of
+      open recs carrying no context_v2_json stay closable. HARD SLOC CONSTRAINT: 478 effective
+      lines, 22 headroom, no config/sloc_budgets.yaml entry -- the whole change, DOCSTRING LINES
+      INCLUDED (they are non-blank and non-comment, so they count), must fit in <= 20 added
+      effective lines. Budget it as: 2 signature lines, 1 call line, 3-4 docstring lines, leaving
+      margin. If it does not fit, DECOMPOSE (Decision 128); never raise the budget.
   - file: scripts/ops_portal/ci_rca_lifecycle.py
     action: Modify
     purpose: >-
@@ -192,9 +201,12 @@ scope:
       (id aws-creds), and `Backfill decisions to warehouse`. The aws-creds step is load-bearing
       twice over: the backfill needs those credentials for DUCKLAKE_WRITER_URL, and the graduated
       shard rec-autoclose-backfill-not-cancelled asserts every `steps.<id>.` reference in the
-      backfill's `if` resolves to a real step id. HEADER: lines 7-12 describe the merge-leg gate as
-      behaviour of THIS workflow, which the relocation falsifies -- rewrite them to describe the
-      backfill role this workflow retains and point at ci.yml for closure. Leaving a knowingly-false
+      backfill's `if` resolves to a real step id. HEADER: rewrite lines 2-12 entirely, not just
+      7-12. Lines 2-5 are the MORE false half ("Layer 2 durable closure edge: reads Resolves:
+      rec-NNNN trailers ... and closes each named rec via the ops portal"), and lines 7-12 describe
+      the merge-leg gate as this workflow's own behaviour. Both are falsified by the relocation --
+      rewrite the block to describe the DECISIONS.md backfill role this workflow retains and point
+      at ci.yml for closure. Leaving a knowingly-false
       header while this same plan corrects config/ci_rca_taxonomy.yaml's stale rationale would be
       the exact double standard this plan refuses to tolerate. The backfill step's
       `sys.exit(1 if result["failed"] else 0)` must stay byte-intact: Decision 155's reversal
@@ -265,7 +277,10 @@ scope:
   - file: docs/contracts/git-ops.yaml
     action: Modify
     purpose: >-
-      Add a trailer_acceptance_gate key beside the existing resolves_trailer clause: the four-value
+      Correct resolves_trailer's own opening sentence, which says the trailer "Triggers
+      `rec-autoclose.yml` to close each rec via the ops portal" -- false after the cutover, and
+      stopping one sentence short of the clause being edited would be the same double standard this
+      plan refuses twice elsewhere. Then add a trailer_acceptance_gate key beside it: the four-value
       verdict vocabulary AND the axis that makes it distinct from vp-red-before.yaml's, the
       verdict-record field list, the rejoin key (rec_id + acceptance_sha256 + sha), the refusal
       semantics (every non-holds leaves the rec OPEN, loud-not-red, with a close_proposed command),
@@ -289,7 +304,10 @@ scope:
       the workflow that catches ClosureArtifactRequired -- reword to name ci.yml's closure job and
       keep the exit-0 claim. (ii) closure_dependency.trap is scoped to rec-autoclose -- widen it to
       the CI workflow, since a CI-sourced ci_rca rec now cannot assume its own closure auto-stamps
-      either (this is T2.54:c1's clause + evaluator pair). HARD SIZE CONSTRAINT: 476 effective
+      either (this is T2.54:c1's clause + evaluator pair). (iii) closure_dependency.manual_route's
+      trailing sentence names rec-autoclose as the workflow that "cannot be trusted to process the
+      Resolves trailer" -- re-point that phrase at the ci.yml closure job; it is a few words and
+      fits the headroom. HARD SIZE CONSTRAINT: 476 effective
       lines against the 500 contracts-class limit -- keep the whole edit under ~20 lines or compact
       the oldest amendment_log entries in the same change.
       stamp_precondition.call_sites is deliberately NOT touched (constraint 10).
@@ -315,7 +333,12 @@ scope:
       are well-formed oracles whose assertion simply did not hold, which only a close-time run
       catches. `amends` names BOTH 103 (the "No new acceptance machinery is introduced" clause,
       which the verdict layer -- not the oracle -- crosses) and 186 (point 7 names rec-autoclose.yml
-      as the catching workflow, which this relocation falsifies). The body MUST mention
+      as the catching workflow, AND reversal condition (c), whose monitored description names a
+      rec "refused at rec-autoclose" -- both falsified by this relocation). The 186 annotation must
+      also record that reversal condition (d), "a caller closes around the client-side gate", was
+      LIVE IN THE INSTRUCTION LAYER when this plan was written and is hardened by it: the implement
+      skill's post-merge closeout fallback instructed agents to force-close any rec still open ~5
+      minutes after merge, which after the cutover is exactly a rec the gate refused. The body MUST mention
       `.github/workflows/ci.yml` to authorise the r3_workflows markers, MUST justify the vocabulary
       axis (constraint 5), and MUST carry the Decision 167 fenced yaml envelope with a
       `significance` field whose justification names the contract home considered and rejected.
@@ -384,6 +407,68 @@ scope:
       is documented after the cutover. Leaving the shard green against a knowingly-false header was
       the rejected alternative: it is the same defect class this plan corrects in
       config/ci_rca_taxonomy.yaml, and tolerating our own instance of it would be a double standard.
+  - file: tests/test_ci_rca_lifecycle.py
+    action: Modify
+    purpose: >-
+      F1, the cutover's CI-breaking stale reference.
+      TestCloseRecsFromTrailerRefusalContract::test_rec_autoclose_step_delegates_to_helper (line
+      585) asserts `"close_recs_from_trailer" in body` against .github/workflows/rec-autoclose.yml
+      -- the exact NEGATION of VP step 14. Re-point it at .github/workflows/ci.yml alongside the
+      re-point already planned in the guard's own test file; this is an INDEPENDENT second
+      assertion, not the same one. Its sibling assertion (`"for rec_id in ids:" not in body`) holds
+      for either workflow and needs no change. 474 effective lines with 26 of headroom, so this
+      must stay a path-literal swap: if the edit grows the file past 500, move the test to
+      tests/ci_rca/test_close_recs_from_trailer.py (383 headroom) rather than raising a budget
+      (Decision 128). The graduated shard rec-autoclose-merge-leg-refusal-end-to-end runs this
+      module in its check_spec, so it stays GREEN only if this re-point lands in the same change.
+  - file: config/agent/verification_registry/entries/git-ops-trailer-carrier-and-placement-rules.yaml
+    action: Modify
+    purpose: >-
+      F2. This shard's check_spec greps `contract_version:[[:space:]]*2` against
+      docs/contracts/git-ops.yaml, and this plan bumps that contract to 3. Re-point the literal to
+      3 in the same change. Nothing would redden if it were left -- validate_verification_registry
+      replays only added-or-modified entries, so the shard would simply rot -- which is exactly why
+      it must be corrected deliberately, the same judgement applied to
+      rec-autoclose-documents-plan-leg-refusal. The other three greps in that check_spec are
+      unaffected by this plan.
+  - file: .claude/skills/implement/SKILL.md
+    action: Modify
+    purpose: >-
+      F4, the instruction-layer bypass -- the single most consequential correction in this plan.
+      Line 409's post-merge closeout fallback instructs an agent to force-close any bundled rec
+      still open ~5 minutes after merge via a direct `--update-rec ... --status closed` call. After
+      this cutover, a rec left open BECAUSE THE GATE REFUSED IT is exactly a rec still open after
+      five minutes, and that direct call is a non-trailer update_rec path where
+      assert_acceptance_verdict receives no record and returns None. Decision 186's reversal
+      condition (d) is "a caller closes around the client-side gate"; uncorrected, this is the
+      repository instructing agents to satisfy it. Make the fallback CONDITIONAL: the agent must
+      first read the run log or $GITHUB_STEP_SUMMARY for the refusal markers this plan emits, and
+      is FORBIDDEN from force-closing a rec the gate refused -- that rec is left open and its
+      printed close_proposed command is the only sanctioned route. A rec still open because
+      TRANSPORT failed (no marker present) keeps today's fallback unchanged. Also correct line
+      405's venue claim that the trailer "triggers rec-autoclose to close each named rec".
+  - file: .claude/commands/implement.md
+    action: Modify
+    purpose: >-
+      F4, second surface. Line 126 repeats the unconditional fallback in one sentence ("verify
+      rec-autoclose closed each rec; close directly if not"). Mirror the skill's conditional form
+      and its venue correction. The two files must not disagree: this command file is Layer 3 and
+      the skill is its methodology, so a divergence here reinstates the bypass through the shorter
+      of the two surfaces.
+  - file: AGENTS.md
+    action: Modify
+    purpose: >-
+      F4 venue rename. Line 150's Resolves-trailer bullet says naming recs in the squash-merge body
+      triggers `rec-autoclose.yml`; after the cutover the trailer is consumed by ci.yml's
+      trailer-closure job. One-line correction to the ambient S1 load-set, pointer-only -- do NOT
+      restate the gate's semantics here, which belong in docs/contracts/git-ops.yaml (Decision 86).
+  - file: .github/pull_request_template.md
+    action: Modify
+    purpose: >-
+      F4 venue rename. Line 30's comment tells authors the trailer must sit in the squash-merge
+      commit body because `rec-autoclose.yml` parses that message. The placement instruction stays
+      exactly as it is -- it is still correct and still load-bearing -- only the workflow name
+      changes to ci.yml's trailer-closure job.
 bundled_recommendations: []
 followon_recs:
   - rec-3999
@@ -451,6 +536,14 @@ acceptance_criteria:
     behaviour, and the extended check carries a STANDING retired-delegation assertion for that fact
     -- so a re-added closure step cannot silently bypass the gate after this plan merges.
   - >-
+    No instruction surface tells an agent to close around the gate. The implement skill's and
+    implement command's post-merge closeout fallback is CONDITIONAL: an agent must distinguish a
+    rec still open because transport failed (fallback unchanged) from a rec the gate REFUSED
+    (force-closing forbidden; the printed close_proposed command is the only sanctioned route).
+    Uncorrected, this is Decision 186 reversal condition (d) -- "a caller closes around the
+    client-side gate" -- instructed by the repository itself, and acceptance criterion 2 would be
+    false in practice on the day this merged.
+  - >-
     Both declared residuals are recorded in docs/contracts/git-ops.yaml with a named owner, not
     merely in this plan: non-trailer callers of update_rec (rec-3999), and the require_decidable
     ratchet's unenforced write-boundary and validate_acceptance_literals surfaces (rec-4001).
@@ -516,7 +609,9 @@ verification_plan:
     command: bin/venv-python -m pytest "tests/ops_data_portal/test_closure_gate.py::TestAcceptanceVerdict" -q
     expected: >-
       Every refusal arm raises AcceptanceVerdictRefused -- including a record whose sha field does
-      not equal the closing sha passed in. The absent-record and status-preserving-write arms return None.
+      not equal the closing sha passed in, which proves the closing sha is supplied independently
+      rather than read back out of the record. The absent-record and status-preserving-write arms
+      return None.
     fix_if: A mis-keyed record (wrong rec_id, acceptance_sha256 or closing sha) is accepted -- a stale verdict could then close a rec.
     hermetic: true
     graduation: graduate
@@ -659,7 +754,8 @@ verification_plan:
     fix_if: >-
       It exits 1 -- the old closure step survives the cutover, so two workflows would close recs and
       the rec-autoclose one would bypass the verdict gate entirely (assert_acceptance_verdict
-      returns None when no record is supplied).
+      returns None when no record is supplied). If this step passes but step 15 fails, the workflow
+      was edited without re-pointing the two live tests that assert the OPPOSITE of it.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -669,10 +765,19 @@ verification_plan:
       graduated separately here.
   - step: 15
     phase: pre-deploy
-    action: Decision 155's reversal condition (c) is still mechanically pinned -- the backfill step's failed-counter exit survives.
-    command: bin/venv-python -m pytest "tests/ops_data_portal/test_decisions_divergence_guard.py::TestSubstantiveSignalPin::test_rec_autoclose_exits_nonzero_on_failed_rows" -q
-    expected: The graduated shard rec-autoclose-failed-counter-exit-present still passes against the edited workflow.
-    fix_if: It fails -- the closure-step removal disturbed the backfill step; restore its `sys.exit(1 if result["failed"] else 0)` line verbatim.
+    action: >-
+      Both anti-regression pins on the edited workflow hold -- Decision 155's failed-counter exit
+      survives, and the independent delegation assertion in tests/test_ci_rca_lifecycle.py has been
+      re-pointed at ci.yml rather than left asserting the negation of step 14.
+    command: bin/venv-python -m pytest "tests/ops_data_portal/test_decisions_divergence_guard.py::TestSubstantiveSignalPin::test_rec_autoclose_exits_nonzero_on_failed_rows" "tests/test_ci_rca_lifecycle.py::TestCloseRecsFromTrailerRefusalContract::test_rec_autoclose_step_delegates_to_helper" -q
+    expected: >-
+      Both pass. The graduated shard rec-autoclose-failed-counter-exit-present still holds, and the
+      re-pointed delegation test now asserts ci.yml delegates rather than rec-autoclose.yml.
+    fix_if: >-
+      The first fails -- the closure-step removal disturbed the backfill step; restore its
+      `sys.exit(1 if result["failed"] else 0)` line verbatim. The second fails -- the delegation
+      assertion was not re-pointed, which also reds the graduated shard
+      rec-autoclose-merge-leg-refusal-end-to-end, whose check_spec runs this module.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -691,10 +796,16 @@ verification_plan:
       both presubmit tiers); a registry shard would duplicate it exactly.
   - step: 17
     phase: pre-deploy
-    action: The R3 workflow-body ratchet, the contract-drift guard, and the re-pointed plan-leg shard all pass.
+    action: >-
+      The R3 workflow-body ratchet's own suite and the contract-population ratchet's own suite both
+      pass over the new workflow bodies and the two contract edits. (The shards' differential is
+      step 19's job, not this step's -- this runs the two guards' unit suites only.)
     command: bin/venv-python -m pytest tests/checks/ci_guards/test_validate_composite_action_shell_bodies.py tests/checks/contracts/test__ratchet.py -q
-    expected: Every new ci.yml run-body has a baseline entry with an authorising marker, and both contract bumps are accepted.
-    fix_if: An unregistered body or an unauthorised marker -- register the body, or make the new Decision name .github/workflows/ci.yml.
+    expected: Both suites pass, so neither guard's own logic regressed under the edits this plan makes to the surfaces they govern.
+    fix_if: >-
+      A suite fails -- the guard's logic was disturbed. An unregistered body or unauthorised marker
+      surfaces at step 19 instead, where the guards actually run against the diff: register the
+      body, or make the new Decision name .github/workflows/ci.yml.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -702,10 +813,16 @@ verification_plan:
       fast local pre-flight of them, not a new standing regression guard.
   - step: 18
     phase: pre-deploy
-    action: The three declaration-armed gates see this plan in the diff and run for real rather than no-opping.
+    action: >-
+      The three declaration-armed gates' own unit suites pass. (Whether they SEE this plan in the
+      diff is proven at step 19, where they run against the real diff -- this step exercises their
+      logic, not their arming.)
     command: bin/venv-python -m pytest tests/checks/verification/validate_vp_replay tests/checks/verification/validate_graduation_completeness tests/checks/verification/validate_scope_boundary -q
-    expected: The replay, graduation-completeness and scope-boundary suites pass with this plan present and implementation_declared true.
-    fix_if: Any gate prints "no docs/plans/PLAN-*.yaml in the diff -- no-op" -- the plan's own path is missing from the commit.
+    expected: All three suites pass, so none of the three gates' logic regressed under this plan's edits.
+    fix_if: >-
+      A suite fails -- that gate's logic was disturbed. If instead step 19 prints "no
+      docs/plans/PLAN-*.yaml in the diff -- no-op" for any of the three, the plan's own path is
+      missing from the commit and the gates are passing VACUOUSLY.
     hermetic: true
     graduation: waive
     graduation_waiver_reason: >-
@@ -719,8 +836,8 @@ verification_plan:
     command: bin/venv-python -m scripts.validate --pre
     expected: >-
       The printed summary reports zero failed checks. validate_verification_registry runs the
-      differential for each of the four new shards and the re-pointed one, and must report every one
-      ADMITTED; validate_rec_autoclose_trailer_gate, validate_composite_action_shell_bodies,
+      differential for each of the SEVEN new shards and replays the two re-pointed ones, and must
+      report every one ADMITTED; validate_rec_autoclose_trailer_gate, validate_composite_action_shell_bodies,
       validate_contract_drift, validate_plan_documents and validate_scope_boundary must all pass.
     fix_if: >-
       Read the summary, never the exit code -- Decision 73 makes --pre exit 0 while printing
@@ -925,6 +1042,56 @@ test_obligations:
       validate_verification_registry re-runs this shard's differential on every modified entry in the
       diff, and the shard IS itself a standing check; a test asserting that a check still passes would
       be a guard over a guard, with no behaviour of its own to protect (Decision 86).
+  - source: tests/test_ci_rca_lifecycle.py
+    behavior: The independent delegation assertion asserts ci.yml delegates, not rec-autoclose.yml -- the negation of VP step 14.
+    verification_step: 15
+    test_selector: tests/test_ci_rca_lifecycle.py::TestCloseRecsFromTrailerRefusalContract::test_rec_autoclose_step_delegates_to_helper
+    red_green_expectation: >-
+      green before and after -- it passes today against rec-autoclose.yml and must pass after
+      against ci.yml; left un-re-pointed it goes RED, taking the graduated shard
+      rec-autoclose-merge-leg-refusal-end-to-end with it.
+  - source: config/agent/verification_registry/entries/git-ops-trailer-carrier-and-placement-rules.yaml
+    behavior: The shard's contract_version literal tracks the git-ops.yaml bump, so it keeps asserting a true fact.
+    verification_step: 19
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      The shard IS a standing check; a test asserting that a check still passes would be a guard
+      over a guard with no behaviour of its own (Decision 86). validate_verification_registry
+      replays it because this change modifies the entry, which is the real verification.
+  - source: .claude/skills/implement/SKILL.md
+    behavior: >-
+      The post-merge closeout fallback is conditional -- an agent may not force-close a rec the gate
+      refused, only one left open by transport failure.
+    verification_step: 19
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Layer-4 agent instruction prose with no importable behaviour: the property is what a future
+      agent is TOLD, which no unit test can execute. validate_prompt_compliance is the registered
+      guard over this surface. A literal-pin test on the sentence would be the prose-pinning drift
+      this repository's own contract-parity rules reject.
+  - source: .claude/commands/implement.md
+    behavior: The Layer-3 command mirrors the skill's conditional fallback rather than repeating the unconditional form.
+    verification_step: 19
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      Same Layer-3/4 instruction-prose reasoning as the skill row above; the two surfaces must agree,
+      and validate_prompt_compliance is the registered guard over both.
+  - source: AGENTS.md
+    behavior: The Resolves-trailer bullet names the workflow that actually consumes the trailer after the cutover.
+    verification_step: 19
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      A one-line pointer correction in the ambient S1 load-set with no importable behaviour. The
+      edited bullet is not one of the AGENTS.md subsections a standing test pins verbatim (those are
+      Commit signing, the two-tier presubmit table's Full row, and the two ci-rca Merge-protocol
+      bullets), verified during this revision.
+  - source: .github/pull_request_template.md
+    behavior: The template names the workflow that parses the squash-merge commit body after the cutover.
+    verification_step: 19
+    command: bin/venv-python -m scripts.validate --pre
+    waiver_reason: >-
+      A comment in a GitHub template, not executable by anything. The PLACEMENT instruction it
+      carries is unchanged and still correct; only the workflow name moves.
 constraints:
   - No rescue agents or workaround loops (Decision 55/72); the gate refuses and surfaces -- it never files, retries, synthesises or downgrades.
   - >-
@@ -1004,6 +1171,13 @@ constraints:
   - >-
     Decision 73: `--pre` exits 0 while printing "Failed checks" outside CI. Read the SUMMARY, never
     the exit code. The full tier takes ~16-20 minutes on this container and is not waivable.
+  - >-
+    COHESION WARNING, load-bearing for the waivers: VP step 7's successful-close test lives inside
+    TestAcceptanceVerdictRefusal, and VP step 10's require_discrimination test lives inside
+    TestRequireDecidable. Those placements are slightly counter-intuitive by name and are exactly
+    what makes steps 7 and 10's class-selector waivers valid. A later tidy-the-class-names refactor
+    that moves either test out would silently un-cover it with nothing failing. If the names are
+    ever tidied, re-home the graduated shard in the same change.
   - bin/venv-python never python/python3; Linux/bash only; line length 127; type hints; no emojis; no em dashes; no comments unless the why is non-obvious.
 context:
   - "Research dossier (measurements, prior art, rejected forks): the /overseer session's DOSSIER-trailer-acceptance.md; not restated here."
@@ -1011,13 +1185,15 @@ context:
   - "Decisions triaged: 150 of 150."
   - "Roadmap items intersected: 20; CONFLICT: 0; RELATED: 18."
   - "gates: decision-scout=FLAGS_FOUND; plan-critique=<verdict> after <N> round(s)"
-  - "NOT SPLIT, deliberately: both natural seams (machinery-then-wiring, gate-then-ratchet) produce an INERT INTERMEDIATE merge -- a first PR that lands the predicate and the vocabulary with nothing calling them, which is the exact declared-but-not-executed shape (Decision 163) this plan exists to fix. Recorded at plan-critique round 1, which tested both seams."
+  - "NOT SPLIT -- MEASURED, not asserted. Across 446 IMPLEMENTATION plans the scope-row median is 8 and p90 is 22, but 118 carry implementation_declared true (executed to completion) and seven of those have >= 28 rows, topping out at 61 rows / 31 source .py / 29 test .py. This plan at 34 rows carries 6 non-test .py and 6 test .py -- LESS code than PLAN-backlog-health-detection, its closest structural analogue (29 rows, 9 source, 10 test, declared), which built the very package this plan reuses plus a three-job workflow. The remaining rows are registry shards, config and prose: high row count, low cognitive load. The instruction-layer fix cannot precede this plan (hardening a fallback before the gate exists is meaningless) and must not follow it, because the window would be one in which the repo instructs agents to defeat the gate -- Decision 186 reversal condition (d), live by construction."
+  - "Seam analysis (plan-critique round 1): both natural seams (machinery-then-wiring, gate-then-ratchet) produce an INERT INTERMEDIATE merge -- a first PR that lands the predicate and the vocabulary with nothing calling them, which is the exact declared-but-not-executed shape (Decision 163) this plan exists to fix. Recorded at plan-critique round 1, which tested both seams."
   - "Defect measured: 30 of 100 auto-closed recs failed their own acceptance at the closing commit; exhibit rec-940 reproduced live this session (verdict fails). Composition of the 30: 24 plain literal greps that did not hold, 4 inverted/negated flag semantics, 2 grep-without--q, and ZERO attributable to ||-chains, pipelines or quoted alternation -- which is why the permissive grammar was chosen over an exit-semantics rule, on that rule's own stated tiebreak."
   - "Reuse premise verified live: scripts/backlog_health census+probe is an existing, ratified, sandboxed acceptance-command executor with the same three-job credential split; backlog-health runs 3/4/5 are green with isolation engaged, and the probe reproduced rec-940's failure locally. Per the scout, this is 103's permitted on-demand-per-rec mode, not a contradiction -- the clause this plan actually crosses is 103's OTHER half, no new acceptance machinery, which the verdict LAYER crosses."
   - "require_decidable blast radius measured against logs/.recommendations-log.jsonl: 72 of 1327 open recs (5.4%) refused with the --assert-<name> admission, 0 source=ci_rca, all four backlog_health rollup shapes admitted."
   - "Write-boundary binding DEFERRED to rec-4001 on measured evidence: it would refuse three shipped `bin/venv-python -m scripts.validate --pre` acceptance literals (scripts/checks/_budget_recs.py:217 and :282, scripts/convergence_health/budget_ingest.py:371) that active budget_breach / budget_bypass filers write at runtime. The ratchet is instead executed in the census stage, where a refusal is a verdict rather than a write failure."
   - "T3.9 boundary (c3): that criterion's closure-with-recorded-proof subject overlaps this gate, but T3.9's MVP signal is FILE-LEVEL overlap between a merge's changed files and open recs' `file` field -- a different population from the trailer's named ids. No T3.9 criterion is closed here."
   - "T3.9:c4 gap owned by rec-4000: a `holds` verdict does not evaluate the ci_rca fingerprint rule, so a source=ci_rca rec named in a trailer whose acceptance holds still closes without its fingerprint resolved."
+  - "Stale-reference sweep completed at round 2 over the whole tree for the old venue. Corrected here: tests/test_ci_rca_lifecycle.py, the two falsified shards, config/ci_rca_taxonomy.yaml, AGENTS.md, .github/pull_request_template.md, both implement instruction surfaces, and resolves_trailer's own opening sentence. Deliberately NOT corrected: audits/** (append-only historical records), .github/workflows/ci-rca.yml comments and tests/verify_ci_workflow/test_ci_rca_and_canary.py's _REQUIRED_WORKFLOWS (rec-autoclose REMAINS ci_rca-watched via its backfill job, so both stay true), and a stale prose docstring at tests/ops/test_drain_glue_orphan_cli.py:169 that asserts nothing (Decision 59: out of scope, not fixed inline)."
   - "Slice boundary: this is slice A. Slice B (PLAN-trailer-acceptance-junit-verdict) adds the junit ::node_id source. A merges first. Operator adjusted the boundary to let this plan correct config/ci_rca_taxonomy.yaml's rec-autoclose rationale prose."
   - "rec-3984 is NOT named in this plan's trailer even though this plan lands all three legs of its acceptance -- slice B owns it per the operator-confirmed boundary."
   - "Decision numbering: 198 is claimed by the unlanded PLAN-decision-198-brand-supersession; resolve the next free number at implement time, never at plan time."
@@ -1037,8 +1213,10 @@ execution_steps:
   - Add the three push-only ci.yml jobs as thin adapters, remove rec-autoclose.yml's closure step leaving the backfill byte-intact, register every new run-body in config/composite_action_body_baseline.yaml with an authorising marker, and correct config/ci_rca_taxonomy.yaml's rec-autoclose rationale.
   - Extend scripts/checks/ci_guards/validate_rec_autoclose_trailer_gate.py and its test with the new escape-free assertions, reading both contracts by basename literal.
   - Amend docs/contracts/git-ops.yaml and docs/contracts/ci-rca-lifecycle.yaml (amendment_log entry plus contract_version bump each).
-  - Resolve the next free Decision number, then add the new numbered Decision plus dated annotations on Decision 103 and on Decision 186 point 7.
-  - Create the three verification_registry shards for VP steps 4, 6 and 8.
+  - Make the post-merge closeout fallback conditional in .claude/skills/implement/SKILL.md and .claude/commands/implement.md, and correct the four venue-rename surfaces (SKILL.md, AGENTS.md, .github/pull_request_template.md, and resolves_trailer's own opening sentence).
+  - Re-point the two falsified graduated shards and the live delegation assertion in tests/test_ci_rca_lifecycle.py.
+  - Resolve the next free Decision number, then add the new numbered Decision plus dated annotations on Decision 103 and on Decision 186 (point 7 and reversal condition (c)).
+  - Create the seven verification_registry shards for VP steps 1, 4, 5, 6, 8, 9 and 11, and re-point the two shards this cutover falsifies (rec-autoclose-documents-plan-leg-refusal, git-ops-trailer-carrier-and-placement-rules).
   - Supersede rec-3867 via the ops portal; never trailer-close it.
   - Execute the Verification Plan -- run each step; loop until pass; on unrecoverable failure stop and RCA (Decision 55).
   - "Report: what was implemented, verification results"
