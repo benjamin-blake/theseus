@@ -245,4 +245,23 @@ ENTRIES: tuple[Entry, ...] = (
         ),
         full_segment="full_after_lint",
     ),
+    Entry(
+        name="validate_sandbox_runner_test_deps",
+        module="scripts.checks.ci_guards.validate_sandbox_runner_test_deps",
+        attr="validate_sandbox_runner_test_deps",
+        pre=True,
+        pre_globs=(
+            ".github/workflows/**",
+            "scripts/checks/ci_guards/validate_sandbox_runner_test_deps.py",
+            "scripts/checks/ci_guards/_workflow_shell_bodies.py",
+            "scripts/checks/_common.py",
+            "scripts/checks/_marker_guard.py",
+            "scripts/checks/registry.py",
+            "scripts/decisions_md.py",
+            "scripts/dependency_graph.py",
+            "scripts/extract_imports.py",
+            "scripts/lambda_manifest.py",
+        ),
+        full_segment="full_after_lint",
+    ),
 )

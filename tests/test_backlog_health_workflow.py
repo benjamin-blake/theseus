@@ -48,3 +48,27 @@ def test_probe_job_still_credential_free() -> None:
     assert "id-token" not in permissions
     assert "secrets." not in dumped
     assert "persist-credentials: false" in dumped
+
+
+def _activate_venv_body(job: dict[str, Any]) -> str:
+    step = next(s for s in job["steps"] if s.get("name") == "Activate venv")
+    return step.get("run") or ""
+
+
+def test_probe_job_installs_the_test_runner() -> None:
+    """Regression guard for the pytest-decides-acceptance fix (rec-4005): the probe job is the
+    sole executor of rec-authored commands, and 98 of its 958 probeable commands are pytest-
+    shaped -- without a test runner installed, every one of them exits 4 ("unrecognized
+    arguments" against pyproject.toml's --randomly-seed/--disable-socket addopts) rather than
+    deciding pass/fail. The install must stay scoped to the probe job alone: census and escalate
+    never execute rec-authored commands and gain no test-runner install."""
+    workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
+    jobs = workflow["jobs"]
+
+    probe_body = _activate_venv_body(jobs["probe"])
+    assert "requirements-fast.txt" in probe_body
+    assert "requirements.txt" in probe_body
+
+    for job_name in ("census", "escalate"):
+        body = _activate_venv_body(jobs[job_name])
+        assert "requirements-fast.txt" not in body, f"{job_name} job must not install the test runner"

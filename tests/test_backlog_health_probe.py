@@ -111,6 +111,33 @@ class TestRunOne:
         assert "PYTEST_ADDOPTS" in env
         assert "cache_dir=" in env["PYTEST_ADDOPTS"]
 
+    def test_compound_command_runs_every_segment(self, tmp_path: Path) -> None:
+        """Proves AND/OR-list semantics, not absence of a token: extracts the inner bash program
+        run_one builds, strips the known mount/ulimit prefix, and executes the remaining command
+        portion through a REAL `bash -c` whose command writes a marker file from its SECOND `&&`
+        segment -- asserting the marker exists. A test that merely greps the argv for "exec"
+        would pass against a reintroduction that re-execs under a different spelling (e.g.
+        `exec bash -c ...`), since it never proves the second segment actually runs."""
+        marker = tmp_path / "marker.txt"
+        cmd = f"true && touch {marker}"
+        captured = {}
+
+        def fake_runner(argv, **kwargs):
+            captured["argv"] = argv
+            return MagicMock(returncode=0)
+
+        probe.run_one(cmd, repo_root=tmp_path, runner=fake_runner)
+        inner = captured["argv"][-1]
+        prefix = f"mount --bind -o ro {tmp_path} {tmp_path} && ulimit -u {probe._PID_CAP} && "
+        assert inner.startswith(prefix), inner
+        command_portion = inner[len(prefix) :]
+        assert command_portion == cmd, "the mount/ulimit prefix must be followed by the raw command, never `exec {cmd}`"
+
+        assert not marker.exists()
+        result = subprocess.run(["bash", "-c", command_portion], capture_output=True, text=True)
+        assert result.returncode == 0
+        assert marker.exists(), "the second `&&` segment never ran -- the command was truncated"
+
 
 class TestRunAll:
     def test_isolation_unavailable_marks_every_entry_and_never_runs(self, tmp_path: Path) -> None:

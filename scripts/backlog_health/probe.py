@@ -12,7 +12,9 @@ Each command runs under `unshare -rmn` (new user/mount/net namespaces, current u
 root inside) with a read-only self-bind-mount of the checkout, a `ulimit -u` pid cap, and
 PYTHONPYCACHEPREFIX / PYTEST_ADDOPTS redirected to a per-probe scratch dir so pytest's own cache
 writes never touch the read-only tree. Network is unreachable inside the new net namespace by
-construction (no interface beyond loopback).
+construction (no interface beyond loopback). The command runs as the LAST member of an `&&` chain
+(never `exec`'d), so a compound command's every segment executes and the verdict reflects the
+AND/OR list's own exit status, not just its first simple command's.
 
 Five verdicts, NEVER a silent pass: PASS/FAIL/TIMEOUT come from actually running the command;
 BUDGET_EXHAUSTED means the global wall-clock budget ran out before this entry's turn; and
@@ -75,7 +77,14 @@ def isolation_available(repo_root: Path, runner: Callable[..., Any] = subprocess
 
 
 def _isolated_argv(cmd: str, repo_root: Path, pid_cap: int) -> list[str]:
-    inner = f"mount --bind -o ro {repo_root} {repo_root} && ulimit -u {pid_cap} && exec {cmd}"
+    # No `exec` before {cmd}: `exec A && B` replaces the shell with A and B never runs, so an
+    # `exec`'d compound command would silently execute only its first simple command and report
+    # that segment's exit status as the whole AND/OR list's verdict.
+    # KNOWN RESIDUAL (Decision 59 scope boundary, out of this fix's scope): a {cmd} carrying a
+    # top-level `;` or `||` can let its tail run even when the mount or ulimit segment before it
+    # failed -- `unshare -rmn` still engages the user/mount/net namespaces before any of this, so
+    # the command stays networkless and outside the host mount namespace either way.
+    inner = f"mount --bind -o ro {repo_root} {repo_root} && ulimit -u {pid_cap} && {cmd}"
     return ["unshare", "-rmn", "--", "bash", "-c", inner]
 
 
