@@ -400,6 +400,85 @@ audit:
       blocked_behind:
       - T3.7
       note: The remedy is T3.7 itself, deferred_post_mvp; no portal recommendation filed.
+  - id: CSF-08
+    surface: S1
+    affects_surfaces:
+    - S1
+    - S3
+    candidate_ref: null
+    question: Q5
+    dimension: VD2
+    title: >-
+      A live consumer reads declared plan-to-criterion links from merged, unimplemented plans; clause 5
+      edge durability does not cover that window
+    evidence: >-
+      scripts/platform_roadmap_state.py:85-135 (compute_followon_state); scripts/session/preflight.py:350;
+      docs/DECISIONS.md Decision 197 clause 5; docs/ROADMAP-PLATFORM.yaml T4.5 exit criteria;
+      config/lambda/ducklake/field_semantics.yaml#ops_tables.ops_execution_plans; scripts/roadmap/plan_document.py:218
+    evidence_kind: observed
+    current_behavior: >-
+      compute_followon_state globs every docs/plans/PLAN-*.yaml (454 at 5ce6e4b5; 152 parsed after the closes_criteria
+      substring skip at :104-110) on every compute_state_dict call and reads each plan's declared closes_criteria to
+      decide whether an open criterion on an in_progress item already has a merged plan in flight (needs_followon_plan).
+      Measured 4.42s of a 4.36s call; roadmap-side gate evaluation ~0s; YAML load 0.55s. preflight.py:350 is the
+      production caller; 40 test modules reach the path; a one-file edit to the module selects 137 test modules.
+    ideal_behavior: >-
+      The in-flight predicate is served by a named read over durable plan content, so no reader scans the plan
+      directory and the predicate survives the T4.6 authority flip that retires PLAN-{slug}.yaml.
+    gap: >-
+      Decision 197 clause 5 makes edges durable only at the implementation squash-merge and states plan-declared edges
+      are never the durable record. This consumer needs declared links from plans that have merged but not yet
+      implemented -- exactly the window clause 5 excludes. ops_execution_plans today carries plan_text (VARCHAR) and
+      steps, not a closes_criteria column, and its merge_key is rec_id alone, which human plans lack (T4.5 c4).
+    compensating_controls_considered: >-
+      T4.5 (deferred_post_mvp, behind T4.2 XL) extends ops_execution_plans to carry the plan document via git->warehouse
+      ETL; because PlanDocument.closes_criteria is a first-class validated field, that ETL would carry the links as row
+      CONTENT rather than as edges, satisfying this consumer without tripping merge_authored_edges_lossy. Decision 87's
+      2026-08-19 amendment keeps human-plan residency timed to T4.6, so the control is planned, not live. The substring
+      skip is a constant-factor mitigation already outgrown once (~350 to 454 files).
+    change_type: clarify
+    proposed_change: >-
+      Record compute_followon_state as a named consumer of declared plan-to-criterion links in the clause-8 migration
+      inputs, and require T4.5's ETL to project closes_criteria as queryable row content (or the plans-side named read
+      to expose it) rather than relying on work_item_edges. Until then any interim fix caches at the compute_state_dict
+      output boundary and never indexes docs/plans/ as a second plan-content surface (rec-4006, rec-4007).
+    acceptance: >-
+      The clause-8 migration design names the in-flight predicate's read path; a merged, unimplemented plan's
+      closes_criteria are retrievable by named read without a directory scan; needs_followon_plan for a fixture
+      in_progress item is identical before and after the read-path change.
+    severity: medium
+    severity_rationale: >-
+      A design gap in migration inputs with a concrete remedy T4.5 can absorb. Not high because the consumer is served
+      correctly today by the file scan and nothing is lost until T4.6 retires the files.
+    confidence: HYPOTHESIS
+    roadmap_crossref:
+      classification: planned-insufficient
+      item_ids:
+      - T4.5
+      - T4.6
+      - dec-197
+      - dec-087
+      dedup_search_terms:
+      - compute_followon_state
+      - closes_criteria
+      - needs_followon_plan
+      - merge_authored_edges_lossy
+      dedup_hit_count: null
+      note: >-
+        POST-AUDIT ADDENDUM 2026-09-22, authored in-session, not by the audited model. The reversal_trigger_assessment
+        for merge_authored_edges_lossy (near_triggered false) stands only under the assumption that T4.5 projects
+        closes_criteria as plan-row content; if its ETL carried execution metadata alone the trigger would bite. An
+        earlier session conclusion that "the migration does not touch this hotspot" was verified against T4.23 (roadmap
+        criteria) only and does not hold for T4.5 (plans). Recommendation-side ownership not re-checked.
+    effort: S
+    depends_on: []
+    sequencing:
+      safe_to_queue_now: true
+      blocked_behind:
+      - T4.5
+      note: >-
+        Design input now. The interim test-scoped cache (rec-4006) and the vacuous-scan guard (rec-4007) are filed as
+        recommendations and do not wait on this.
   converged_shape_corrections:
   - candidate_ref: candidate 1
     element: phase
@@ -1243,9 +1322,9 @@ audit:
     strengths: Leg-sensitive replay and explicit unmeasurable outcomes. Scope is plan-time, not standing validation.
     top_gaps: []
   summary:
-    total_findings: 7
+    total_findings: 8
     novel_count: 0
-    planned_insufficient_count: 6
+    planned_insufficient_count: 7
     planned_unbuilt_count: 1
     top_improvements:
     - CSF-07
