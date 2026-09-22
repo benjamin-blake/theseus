@@ -232,19 +232,6 @@ def _coerce_ops_execution_plans_row(row: dict) -> dict:
     return row
 
 
-def _coerce_ops_session_log_row(row: dict) -> dict:
-    """Coerce string-serialised values in an ops_session_log row to proper Python types."""
-    for field in ("recs_attempted", "recs_closed"):
-        row[field] = _coerce_array(row.get(field))
-    duration = row.get("duration_minutes")
-    if not isinstance(duration, int):
-        try:
-            row["duration_minutes"] = int(duration) if duration else None
-        except (ValueError, TypeError):
-            row["duration_minutes"] = None
-    return row
-
-
 def check_sso(profile: str = _SSO_PROFILE) -> bool:
     """Return True if the given SSO profile has valid credentials."""
     try:
@@ -382,8 +369,6 @@ def _coerce_rows_list(table: str, raw_rows: list[dict]) -> list[dict]:
             row = _coerce_ops_priority_queue_row(row)
         elif table == "ops_decisions":
             row = _coerce_ops_decisions_row(row)
-        elif table == "ops_session_log":
-            row = _coerce_ops_session_log_row(row)
         elif table == "ops_execution_plans":
             row = _coerce_ops_execution_plans_row(row)
         rows.append(row)

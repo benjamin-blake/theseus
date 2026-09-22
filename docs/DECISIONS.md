@@ -7258,6 +7258,17 @@ DuckLake v1.0 eliminates the Glue catalog dependency while preserving S3 as the 
 
 **Related:** CD.31 (ratified), Decision 50 (superseded by Decision 78), Decision 51 (superseded by Decision 78), Decision 56 (superseded by Decision 78), Decision 67 (interim ratification path used because T-1.1 is not_started; its Lambda-deploy clause was subsequently lifted by Decision 79, STRATEGIC clause retained), Decision 69 (superseded by Decision 78; Single-Portal invariant PRESERVED at primitive level -- portal abstraction unchanged)
 
+[Amendment 2026-09-22, PLAN-t2-26-retire-ops-session-log (T2.26): clause 2's ops_session_log entry is
+corrected -- that table is RETIRED, not migrated. It was never provisioned in the personal
+account, so there was no data to move; the retirement deletes a registration the closed
+DuckLake writer/reader boundary was still advertising. CD.40 records the retire disposition and
+T2.26 is the doer. The semantics ops_session_log was to carry -- a per-session record of what
+changed and why -- are served by git history, which is already the authoritative log of session
+outcomes (Decision 174's precedent: retirement is by deletion, with provenance in git history);
+turn-grain telemetry on the canonical telemetry_observations / telemetry_transcripts pair
+(Decisions 95/96/97, built at T3.20) covers the forward event-tier need. Clause 2's other named
+tables are unaffected.]
+
 ---
 
 ## Decision 77: Two-Axis Environment/Phase Taxonomy + Sandbox Auto-Apply (Decided)

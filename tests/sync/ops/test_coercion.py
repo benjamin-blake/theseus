@@ -239,37 +239,6 @@ class TestCoerceOpsDecisionsRow:
         mock_reject.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# _coerce_ops_session_log_row() tests
-# ---------------------------------------------------------------------------
-
-
-class TestCoerceOpsSessionLogRow:
-    def test_coerces_array_fields(self):
-        from scripts.sync.ops import _coerce_ops_session_log_row
-
-        row = {"recs_attempted": "[rec-001, rec-002]", "recs_closed": "[rec-001]", "duration_minutes": "45"}
-        result = _coerce_ops_session_log_row(row)
-        assert result["recs_attempted"] == ["rec-001", "rec-002"]
-        assert result["recs_closed"] == ["rec-001"]
-        assert result["duration_minutes"] == 45
-
-    def test_null_duration_becomes_none(self):
-        from scripts.sync.ops import _coerce_ops_session_log_row
-
-        row = {"duration_minutes": ""}
-        result = _coerce_ops_session_log_row(row)
-        assert result["duration_minutes"] is None
-
-    def test_empty_array_fields_return_empty_list(self):
-        from scripts.sync.ops import _coerce_ops_session_log_row
-
-        row = {"recs_attempted": "", "recs_closed": "[]"}
-        result = _coerce_ops_session_log_row(row)
-        assert result["recs_attempted"] == []
-        assert result["recs_closed"] == []
-
-
 def test_coerce_array_handles_native_list():
     """DuckLake reader returns native lists; the coercion returns them element-typed (not re-parsed)."""
     from scripts.sync.ops import _coerce_array

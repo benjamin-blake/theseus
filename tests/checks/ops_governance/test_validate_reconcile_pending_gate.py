@@ -383,7 +383,7 @@ class TestSharedPredicate:
                     "reconcile_scope": "ducklake",
                     "pending_reconcile": {"history": [], "current": []},
                 },
-                "ops_session_log": {
+                "ops_synthetic_exempt": {
                     "reconcile_scope": "exempt",
                     "pending_reconcile": {"history": ["whatever"], "current": []},
                 },
@@ -455,7 +455,6 @@ class TestRealRepoIntegration:
             "ops_decisions",
             "ops_entity_counters",
             "ops_priority_queue",
-            "ops_session_log",
             "ops_execution_plans",
             "ops_smoke_events",
         }

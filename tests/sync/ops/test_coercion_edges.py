@@ -43,14 +43,6 @@ class TestIntCoercionExceptionPaths:
         result = _coerce_ops_priority_queue_row(row)
         assert result["rank"] is None
 
-    def test_ops_session_log_row_unparsable_duration_becomes_none(self):
-        """_coerce_ops_session_log_row: a non-numeric duration_minutes string is caught and becomes None."""
-        from scripts.sync.ops import _coerce_ops_session_log_row
-
-        row = {"duration_minutes": "not-a-number", "recs_attempted": "[]", "recs_closed": "[]"}
-        result = _coerce_ops_session_log_row(row)
-        assert result["duration_minutes"] is None
-
 
 class TestCoerceOpsDecisionsRowExceptionPaths:
     def test_unparsable_decision_id_string_becomes_none(self):
@@ -175,14 +167,6 @@ class TestCoerceRowsListDispatch:
         rows = [{"decision_id": "42", "related_decisions": "[]"}]
         result = _coerce_rows_list("ops_decisions", rows)
         assert result[0]["decision_id"] == 42
-
-    def test_dispatches_ops_session_log_coercion(self):
-        """_coerce_rows_list routes ops_session_log rows through _coerce_ops_session_log_row."""
-        from scripts.sync.ops import _coerce_rows_list
-
-        rows = [{"duration_minutes": "45", "recs_attempted": "[]", "recs_closed": "[]"}]
-        result = _coerce_rows_list("ops_session_log", rows)
-        assert result[0]["duration_minutes"] == 45
 
     def test_dispatches_ops_execution_plans_coercion(self):
         """_coerce_rows_list routes ops_execution_plans rows through _coerce_ops_execution_plans_row."""

@@ -26,19 +26,15 @@ _REPO_ROOT = Path(__file__).parent.parent
 _LOGS_DIR = _REPO_ROOT / "logs"
 
 # ---------------------------------------------------------------------------
-# Declarative log-key -> ops-table routing registry, mirrored from
-# docs/contracts/log-storage.yaml. Ops writes themselves transit the portal on
-# the DuckLake boundary (Decision 84); this module only reads/writes JSONL.
+# Declarative priority-queue key registry, mirrored from docs/contracts/log-storage.yaml.
+# Ops writes themselves transit the portal on the DuckLake boundary (Decision 84); this
+# module only reads/writes JSONL.
 # ---------------------------------------------------------------------------
 
-_OPS_TABLE_ROUTING: dict[str, str] = {
-    ".session-telemetry.jsonl": "ops_session_log",
-}
 _OPS_PRIORITY_QUEUE_KEY = "priority-queue/.priority-queue.jsonl"
 
-# Fallback constants -- identical to the routing values above and equal to the
+# Fallback constant -- identical to the routing value above and equal to the
 # docs/contracts/log-storage.yaml routing block (anti-drift, T-1.15).
-FALLBACK_OPS_TABLE_ROUTING: dict[str, str] = _OPS_TABLE_ROUTING
 FALLBACK_PRIORITY_QUEUE_KEY: str = _OPS_PRIORITY_QUEUE_KEY
 
 # Lazy YAML registry (T-1.15): loaded on first accessor call, never at import.
@@ -58,21 +54,14 @@ def _load_log_storage_registry() -> dict:
             doc = yaml.safe_load(fh)
         routing = doc["routing"]
         result: dict = {
-            "ops_table_routing": routing["ops_table_routing"],
             "priority_queue_key": routing["priority_queue_key"],
         }
     except Exception:  # noqa: BLE001
         result = {
-            "ops_table_routing": FALLBACK_OPS_TABLE_ROUTING,
             "priority_queue_key": FALLBACK_PRIORITY_QUEUE_KEY,
         }
     _LOG_STORAGE_REGISTRY = result
     return _LOG_STORAGE_REGISTRY
-
-
-def get_ops_table_routing() -> dict[str, str]:
-    """Return the log-key -> ops-table routing map, sourced from log-storage.yaml or in-code fallback."""
-    return _load_log_storage_registry()["ops_table_routing"]
 
 
 def get_priority_queue_key() -> str:
