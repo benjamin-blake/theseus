@@ -1,6 +1,6 @@
 # Commercial licensing
 
-Theseus is licensed under the Business Source License 1.1. Non-production use is permitted by
+On The Loop is licensed under the Business Source License 1.1. Non-production use is permitted by
 that licence at no cost. **Production use before the Change Date requires a commercial licence.**
 
 See [`LICENSING.md`](LICENSING.md) for the licence boundary and [`LICENSE`](LICENSE) for the
@@ -21,8 +21,8 @@ Open an issue at https://github.com/benjamin-blake/theseus/issues asking to be c
 commercial licensing. Do not include confidential details in a public issue -- say only that you
 want to discuss licensing, and the maintainer will arrange a private channel.
 
-A dedicated contact address is expected once `theseus.support` is live; this page will name it
-directly at that point.
+A dedicated contact address is expected once a mailbox at `otl-labs.com` is live; this page will
+name it directly at that point.
 
 ## What a commercial licence would cover
 

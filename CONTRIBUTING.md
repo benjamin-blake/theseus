@@ -1,6 +1,6 @@
 # Contributing
 
-Theseus is source-available under the Business Source License 1.1. See
+On The Loop is source-available under the Business Source License 1.1. See
 [`LICENSING.md`](LICENSING.md) for what that means and where the licence boundary sits.
 
 ## Current posture
@@ -12,7 +12,7 @@ and discussion are welcome. If that changes, this file changes with it.
 
 Read this section before opening a pull request, because it is the part with real consequences.
 
-The maintainer offers Theseus under two licences: BUSL-1.1 to everyone, and a separate commercial
+The maintainer offers On The Loop under two licences: BUSL-1.1 to everyone, and a separate commercial
 licence to anyone who needs production use before the Change Date. **Offering the same code under
 two licences requires holding the copyright in all of it, or holding a licence broad enough to
 sublicense it.**

@@ -3,9 +3,11 @@
 Two invariants, one check:
 
 1. **Licence-file consistency.** LICENSE is parameterised BUSL-1.1 with every Parameter
-   populated and no template placeholder surviving; LICENSE-APACHE holds the preserved
-   Apache-2.0 text; LICENSING.md states the forward-only boundary and names a real
-   40-hex commit; README agrees with all three.
+   populated and no template placeholder surviving; its Licensed Work parameter names the
+   ratified mark (Decision 198). LICENSE-APACHE holds the preserved Apache-2.0 text.
+   LICENSING.md states the forward-only boundary, names a real 40-hex commit, and carries a
+   single-line continuity note naming both the ratified mark and the former one (Decision 198).
+   README agrees with all three.
 
 2. **No class-(a) old-slug survivor.** The repository slug moved
    benjamin-blake/agent-platform -> benjamin-blake/theseus, but roughly twenty BARE
@@ -74,6 +76,12 @@ _BUSL_REQUIRED = (
 _PLACEHOLDER = re.compile(r"\[[^\]\n]*\]")
 _SHA40 = re.compile(r"\b[0-9a-f]{40}\b")
 
+# Licensed-work brand invariant (Decision 198). Two predicates, both read off text the licence
+# leg already loaded -- neither re-reads a file, so this does not widen the examined() count.
+_RATIFIED_MARK = "On The Loop"
+_FORMER_MARK = "Theseus"
+_LICENSED_WORK_MARK = re.compile(r"^Licensed Work: +" + re.escape(_RATIFIED_MARK) + r"\b", re.M)
+
 
 def _read(rel: str) -> str | None:
     path = _REPO_ROOT / rel
@@ -116,6 +124,13 @@ def _check_licence_files(failed: list[str]) -> int:
                 f"licence consistency: {_LICENSE}'s Parameters block still contains a bracket "
                 "placeholder -- an unfilled parameter makes the grant defective"
             )
+        # Licensed-work brand invariant, predicate 1: the Licensed Work parameter names the
+        # ratified mark, not merely SOME non-empty value (the _BUSL_REQUIRED check above).
+        if not _LICENSED_WORK_MARK.search(licence):
+            failed.append(
+                f"licence consistency: {_LICENSE}'s Licensed Work parameter does not name the "
+                f"ratified mark ({_RATIFIED_MARK!r})"
+            )
 
     apache = _read(_LICENSE_APACHE)
     if apache is None:
@@ -142,6 +157,15 @@ def _check_licence_files(failed: list[str]) -> int:
             failed.append(
                 f"licence consistency: {_LICENSING}'s self-verifying rule is not provenance-scoped "
                 "-- unscoped, a post-flip licensee could revert LICENSE and self-certify Apache-2.0"
+            )
+        # Licensed-work brand invariant, predicate 2: a SINGLE LINE names both the ratified mark
+        # and the former one, so a holder of a pre-rename copy can identify the work their grant
+        # covers. Whole-file co-occurrence is NOT sufficient -- see the docstring note below.
+        if not any(_RATIFIED_MARK in line and _FORMER_MARK in line for line in licensing.splitlines()):
+            failed.append(
+                f"licence consistency: {_LICENSING} carries no continuity note naming both "
+                f"{_RATIFIED_MARK!r} and {_FORMER_MARK!r} on a single line -- a holder of a "
+                "pre-rename copy could not identify the work their grant covers"
             )
 
     readme = _read(_README)

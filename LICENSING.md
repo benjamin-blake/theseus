@@ -68,7 +68,9 @@ or on the fourth anniversary of its own first publication, whichever comes first
 version's Change Date may be moved **earlier**, never later -- moving it later would be the same
 kind of retroactive claim that the forward-only rule forbids in the other direction.
 
-## Using Theseus
+## Using On The Loop
+
+On The Loop is the same Licensed Work formerly named Theseus; the rename changes no licence term.
 
 - **Non-production use** -- evaluation, research, internal development and testing, demonstration,
   and reading, modifying or redistributing the source -- is permitted by the licence. See the

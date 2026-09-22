@@ -1,4 +1,4 @@
-# AGENTS.md — Theseus Platform
+# AGENTS.md - On The Loop Platform
 
 Universal rules. For full project context, see `docs/PROJECT_CONTEXT.md` on demand.
 
